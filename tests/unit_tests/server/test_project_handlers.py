@@ -558,6 +558,168 @@ class TestProjectGetCronSessions:
             "cron-new"
         ]
 
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_name_convention_fallback_backfills_missing_cron_id(
+        registered_channel, sessions_dir
+    ):
+        """存量 team 执行会话：目录名符合 cron_<ts>_<jobid> 约定但元数据缺
+        cron_id（旧版隐式建链路被跳过）。按 cron_id 查询时兜底列出并回写
+        cron_id 自愈，回写后从普通会话列表退场。"""
+        _make_session("cron_1770000000000_job-legacy", last_user_message_at=250.0)
+
+        response = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": "default", "cron_id": "job-legacy"},
+        )
+
+        assert response["ok"] is True
+        assert [
+            item["session_id"] for item in response["payload"]["sessions"]
+        ] == ["cron_1770000000000_job-legacy"]
+        assert response["payload"]["sessions"][0]["cron_id"] == "job-legacy"
+
+        _drain()
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        meta = get_session_metadata(
+            "cron_1770000000000_job-legacy", cache_bust=True, enable_writeback=False
+        )
+        assert meta.get("cron_id") == "job-legacy"
+
+        normal = await _call(
+            registered_channel, "project.get_sessions", {"project_id": "default"}
+        )
+        assert "cron_1770000000000_job-legacy" not in [
+            item["session_id"] for item in normal["payload"]["sessions"]
+        ]
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_name_convention_fallback_bypasses_project_filter(
+        registered_channel, sessions_dir, tmp_path
+    ):
+        """兜底命中绕过项目归属过滤：任务挂在真实项目、存量会话 project_id
+        为空（归入默认项目）时，仍出现在该任务所属项目的触发的会话列表。"""
+        project_dir = _abspath(tmp_path, "team-app")
+        project = _make_project("TeamApp", project_dir)
+        _make_session("cron_177000000001_job-in-project", last_user_message_at=100.0)
+
+        response = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": project.project_id, "cron_id": "job-in-project"},
+        )
+
+        assert response["ok"] is True
+        assert [
+            item["session_id"] for item in response["payload"]["sessions"]
+        ] == ["cron_177000000001_job-in-project"]
+
+    @staticmethod
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("hidden", [False, True])
+    async def test_name_convention_fallback_preserves_existing_project(
+        registered_channel, sessions_dir, tmp_path, hidden
+    ):
+        """已有归属（包括隐藏项目）不得被查询迁移，正确项目的查询保持稳定。"""
+        owner = _make_project(
+            "Owner", _abspath(tmp_path, "owner"), hidden=hidden
+        )
+        other = _make_project("Other", _abspath(tmp_path, "other"))
+        session_id = "cron_177000000004_job-bound"
+        _make_session(session_id, project_id=owner.project_id)
+
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        for _ in range(2):
+            response = await _call(
+                registered_channel,
+                "project.get_cron_sessions",
+                {"project_id": other.project_id, "cron_id": "job-bound"},
+            )
+            assert response["ok"] is True
+            assert response["payload"]["sessions"] == []
+            _drain()
+            meta = get_session_metadata(
+                session_id, cache_bust=True, enable_writeback=False
+            )
+            assert meta["project_id"] == owner.project_id
+            assert not meta.get("cron_id")
+
+        if not hidden:
+            for _ in range(2):
+                response = await _call(
+                    registered_channel,
+                    "project.get_cron_sessions",
+                    {"project_id": owner.project_id, "cron_id": "job-bound"},
+                )
+                assert response["ok"] is True
+                assert [
+                    item["session_id"] for item in response["payload"]["sessions"]
+                ] == [session_id]
+                _drain()
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_name_convention_fallback_no_false_positive(
+        registered_channel, sessions_dir
+    ):
+        """目录名与查询 cron_id 不符、或不符合 cron_*_{jobid} 约定的会话不被
+        兜底误收。"""
+        _make_session("cron_177000000002_job-other", last_user_message_at=100.0)
+        _make_session("cron-session", last_user_message_at=200.0)
+
+        response = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": "default", "cron_id": "job-legacy"},
+        )
+
+        assert response["ok"] is True
+        assert response["payload"]["sessions"] == []
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_name_convention_fallback_survives_second_query(
+        registered_channel, sessions_dir, tmp_path
+    ):
+        """兜底回写需同时补齐 project_id：自愈后的第二次查询走正常路径并重新
+        应用项目归属过滤，若只回写 cron_id，存量会话 project_id 为空会被归到
+        默认项目，从真实项目任务的触发的会话列表二次消失。"""
+        project_dir = _abspath(tmp_path, "team-app2")
+        project = _make_project("TeamApp2", project_dir)
+        _make_session("cron_177000000003_job-twice", last_user_message_at=100.0)
+
+        for round_no in range(2):
+            response = await _call(
+                registered_channel,
+                "project.get_cron_sessions",
+                {"project_id": project.project_id, "cron_id": "job-twice"},
+            )
+            assert response["ok"] is True
+            assert [
+                item["session_id"] for item in response["payload"]["sessions"]
+            ] == ["cron_177000000003_job-twice"], f"round {round_no}"
+            # 强制异步写队列落盘：不落盘时第二轮会读到回写前的旧磁盘状态、
+            # 再次命中兜底，掩盖二次消失问题。
+            _drain()
+
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        meta = get_session_metadata(
+            "cron_177000000003_job-twice", cache_bust=True, enable_writeback=False
+        )
+        assert meta.get("cron_id") == "job-twice"
+        assert meta.get("project_id") == project.project_id
+
 
 # ===========================================================================
 # project.create

@@ -65,12 +65,17 @@ def _resolve_cron_execution_context(
     ts: str,
     message_handler: MessageHandler | None = None,
 ) -> tuple[str, str]:
-    """Resolve channel_id and session_id for team cron agent execution.
+    """Resolve the placeholder channel_id and session_id for team cron runs.
 
     Team jobs always use an isolated ``cron_*`` session so scheduled runs start
     fresh and are not cancelled when the creator TUI/web window closes
     (``cancel_agent_sessions_on_disconnect``). ``job.session_id`` is kept for IM
     push routing only.
+
+    The ``cron_<ts>_<job.id>`` id built here is a transient placeholder: both
+    the scheduled wake path and ``trigger_run_now_info`` replace it with the
+    session explicitly created via ``_allocate_execution_session`` (which
+    carries ``cron_id``), keeping team and single-agent linkage identical.
     """
     _ = message_handler
     channel_id = (job.targets or CronTargetChannel.TUI.value).strip() or CronTargetChannel.TUI.value
@@ -897,18 +902,28 @@ class CronSchedulerService:
         # 普通 cron 原先先把本地构造的 ``cron_<timestamp>_<job>`` 返回给 Web，
         # 再在 wake 阶段向 AgentServer 创建真正的 session。两个 ID 不同，前端会
         # 先跳到不存在的 warmup 占位页。立即分配并返回真正的执行 session，wake
-        # 阶段复用它即可；team cron 的 session 仍由原有流式路径创建。
+        # 阶段复用它即可。
+        # team cron 历史上由流式 chat.send 在 AgentServer 侧隐式建会话，会话与
+        # 任务的 ``cron_id`` 关联依赖聊天准入的元数据同步
+        # （``prepare_chat_turn → sync_chat_request_metadata``）这一隐性副作用：
+        # 链路一旦被跳过（现场出现过旧版 auto team binding 先落了一份无
+        # cron_id 的 metadata），任务照常执行、结果照常推送，但执行会话永远
+        # 进不了前端"触发的会话"列表（project.get_cron_sessions 按 cron_id 过滤）。
+        # team 同样在此显式 session.create（带 cron_id）预建执行会话，两条路径归一。
         # proactive.tick has its own wake handler and sends PROACTIVE_TICK to a
         # stable session (``cron_<job_id>``).  It never consumes a normal cron
         # chat session, so allocating one here would leave an orphan session.
         mode = state.exec_mode or CRON_JOB_DEFAULT_MODE
-        if mode != "proactive.tick" and not is_team_cron_mode(mode):
-            state.exec_session_id = await self._allocate_single_agent_session(
+        if mode != "proactive.tick":
+            state.exec_session_id = await self._allocate_execution_session(
                 job,
                 mode=mode,
                 run_id=run_id,
             )
-            state.exec_channel_id = "__cron__"
+            if not is_team_cron_mode(mode):
+                # team 的流式事件按 targets 渠道回传（SwarmFlow 直播到 Web/TUI），
+                # 执行渠道路由保留 targets；单 agent 恒走内部 ``__cron__`` 渠道。
+                state.exec_channel_id = "__cron__"
             state.execution_session_allocated = True
         self._runs[run_id] = state
         self._schedule_event(wake_dt, "wake", job.id, run_id)
@@ -927,7 +942,7 @@ class CronSchedulerService:
             )
         return "__cron__", f"cron_{ts}_{job.id}"
 
-    async def _allocate_single_agent_session(
+    async def _allocate_execution_session(
         self,
         job: CronJob,
         *,
@@ -1411,13 +1426,20 @@ class CronSchedulerService:
                 state.exec_work_mode = job.work_mode or DEFAULT_WEB_WORK_MODE
                 state.exec_project_id = job.project_id or None
                 state.exec_project_dir = None
-                if not is_team_cron_mode(mode) and not state.execution_session_allocated:
-                    exec_session_id = await self._allocate_single_agent_session(
+                # 所有模式（含 team）统一显式预建执行会话：session.create 直接带
+                # cron_id，会话与任务的关联不再依赖聊天准入元数据同步的隐性副作用
+                # （team 旧链路因此出现过"任务执行成功但触发的会话列表为空"）。
+                # run_now 已分配过的（execution_session_allocated）在此复用。
+                if not state.execution_session_allocated:
+                    exec_session_id = await self._allocate_execution_session(
                         job,
                         mode=mode,
                         run_id=run_id,
                     )
-                    state.exec_channel_id = "__cron__"
+                    if not is_team_cron_mode(mode):
+                        # team 的流式事件按 targets 渠道回传，保留渠道路由；
+                        # 单 agent 恒走内部 ``__cron__`` 渠道。
+                        state.exec_channel_id = "__cron__"
                     state.exec_session_id = exec_session_id
                     state.execution_session_allocated = True
                 cron_meta = {
