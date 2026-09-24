@@ -1152,6 +1152,26 @@ class TestProjectRemoveRestore:
         assert cc.hide_project_jobs.await_args.args == (proj.project_id,)
         assert callable(cc.hide_project_jobs.await_args.kwargs["commit"])
 
+        # 任务总数随响应带回:0 表示项目下没有定时任务,前端据此只提示
+        # "项目已移除",不再附带"其定时任务已停止"。
+        assert resp["payload"]["stopped_cron_jobs"] == 0
+
+        # 项目下有任务时数量原样透传(含移除前已停用的),前端保持原文案
+        pa2 = _abspath(tmp_path, "app2")
+        proj2 = _make_project("P2", pa2)
+
+        async def hide_jobs_three(project_id, *, commit=None):
+            if commit is not None:
+                await commit()
+            return {"stopped_cron_jobs": 3}
+
+        cc.hide_project_jobs = AsyncMock(side_effect=hide_jobs_three)
+        resp2 = await _call(
+            registered_channel, "project.remove", {"project_id": proj2.project_id}
+        )
+        assert resp2["ok"] is True
+        assert resp2["payload"]["stopped_cron_jobs"] == 3
+
     @staticmethod
     @pytest.mark.asyncio
     async def test_remove_aborts_when_cron_stop_fails(registered_channel, tmp_path):
