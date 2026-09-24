@@ -2927,6 +2927,15 @@ class JiuWenSwarm:
                 if permission_reservation is not None:
                     permission_reservation.release_if_unstarted()
 
+            if result.ok and not result.payload.get("content"):
+                from jiuwenswarm.server.runtime.agent_adapter.cron_reply import (
+                    cron_empty_reply_fallback,
+                )
+
+                fallback = cron_empty_reply_fallback(request.params)
+                if fallback:
+                    result.payload["content"] = fallback
+
             if result.ok and result.payload.get("content"):
                 content = result.payload["content"]
                 content_str = content if isinstance(content, str) else str(content)
