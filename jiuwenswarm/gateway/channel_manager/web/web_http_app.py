@@ -406,6 +406,15 @@ def create_web_http_app(channel: Any) -> FastAPI:
     )
     app.state.web_channel = channel
 
+    # 行为审计：挂全局 HTTP 审计中间件（企业版生效；记录 4xx 含认证失败、成功请求 UA）。
+    # install_audit_middleware 内置 is_enterprise 门控与异常吞没，非企业版为空操作，不影响业务。
+    try:
+        from jiuwenswarm.telemetry.audit import install_audit_middleware
+
+        install_audit_middleware(app)
+    except Exception:
+        logger.warning("[WebHTTP] install_audit_middleware skipped", exc_info=True)
+
     @app.get("/", include_in_schema=False)
     @app.get("/doc/", include_in_schema=False)
     @app.get("/docs", include_in_schema=False)

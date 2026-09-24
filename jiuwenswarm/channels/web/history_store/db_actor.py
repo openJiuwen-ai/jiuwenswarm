@@ -18,6 +18,8 @@ import logging
 import threading
 from typing import Any, Awaitable
 
+from jiuwenswarm.common.audit_emit import audit_data_error
+
 logger = logging.getLogger("jiuwenswarm.web.history")
 
 
@@ -59,12 +61,14 @@ class HistoryDbActor:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
+    @audit_data_error("gateway", "db_run_sync")
     def run_sync(self, coro: Awaitable[Any], *, timeout: float = 30.0) -> Any:
         """同步上下文：把 coro 投到 actor loop 执行并阻塞等结果。"""
         self.ensure_started()
         fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return fut.result(timeout=timeout)
 
+    @audit_data_error("gateway", "db_run_async")
     async def run_async(self, coro: Awaitable[Any]) -> Any:
         """async 上下文（来自其他 loop）：投递到 actor loop 并 await future。"""
         self.ensure_started()

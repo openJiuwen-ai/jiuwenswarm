@@ -159,3 +159,66 @@ class AuditTimer:
 
     def __exit__(self, *exc: Any) -> None:
         self.cost_ms = int((time.perf_counter() - self._start) * 1000)
+
+
+def audit_data_error(
+    submdl: str,
+    proc: str | None = None,
+    rspcd: str = "E005",
+):
+    """数据层异常统一审计切面（集中一处实现，覆盖各数据层模块）。
+
+    装饰数据层函数（同步或异步均可）：正常返回原值；若抛异常，先打一条 EVT
+    审计（SUBMDL/PROC 标识来源，RSPCD 默认 E005 系统异常），再**原样抛出**，
+    不改变业务异常行为。企业版才真正产出审计；非企业版 ``emit_audit_evt`` 为 no-op。
+
+    惯用法::
+
+        @audit_data_error("agent", "git_run")
+        def _run_git(...): ...
+    """
+    import asyncio
+    import functools
+
+    def decorator(func: Any) -> Any:
+        proc_name = proc or func.__name__
+
+        @functools.wraps(func)
+        def _sync(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return func(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    emit_audit_evt(
+                        SUBMDL=submdl,
+                        PROC=proc_name,
+                        RSPCD=rspcd,
+                        EVT=f"data error: {proc_name}",
+                        MSG=str(exc),
+                    )
+                except Exception as _emit_exc:  # noqa: BLE001
+                    logger.debug("audit emit failed: %s", _emit_exc)
+                raise
+
+        @functools.wraps(func)
+        async def _async(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await func(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    emit_audit_evt(
+                        SUBMDL=submdl,
+                        PROC=proc_name,
+                        RSPCD=rspcd,
+                        EVT=f"data error: {proc_name}",
+                        MSG=str(exc),
+                    )
+                except Exception as _emit_exc:  # noqa: BLE001
+                    logger.debug("audit emit failed: %s", _emit_exc)
+                raise
+
+        if asyncio.iscoroutinefunction(func):
+            return _async
+        return _sync
+
+    return decorator

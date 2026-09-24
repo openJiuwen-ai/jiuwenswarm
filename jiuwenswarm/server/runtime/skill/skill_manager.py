@@ -2625,6 +2625,16 @@ class SkillManager:
                     author=author,
                     source_type="prebuilt",
                 )
+            try:
+                from jiuwenswarm.common.audit_emit import emit_audit_ua
+                emit_audit_ua(
+                    SUBMDL="agent",
+                    PROC="skill_install_prebuilt",
+                    UA="prebuilt skill installed",
+                    DETAIL=f"skill_id={skill_id};version={version};source_id={source_id}",
+                )
+            except Exception as _emit_exc:  # noqa: BLE001
+                logger.debug("audit emit failed: %s", _emit_exc)
             return {
                 "ok": True,
                 "skill_name": str(record.get("name") or skill_name).strip(),
@@ -6371,6 +6381,16 @@ class SkillManager:
             item for item in records if item is not record
         ]
         self._save_state()
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_ua
+            emit_audit_ua(
+                SUBMDL="agent",
+                PROC="skill_remove_installation",
+                UA="skill installation removed",
+                DETAIL=f"name={name};origin={origin}",
+            )
+        except Exception as _emit_exc:  # noqa: BLE001
+            logger.debug("audit emit failed: %s", _emit_exc)
         return True
 
     @_state_transactional

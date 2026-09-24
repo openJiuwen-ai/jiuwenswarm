@@ -242,6 +242,16 @@ class _InboundGatewayServer:
             return
         self._running = True
         self._task = asyncio.create_task(self._serve_loop(), name="gateway-inbound-server")
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_ua
+            emit_audit_ua(
+                SUBMDL="gateway",
+                PROC="inbound_server_start",
+                RSPCD="0000",
+                UA="gateway inbound server started",
+            )
+        except Exception as _emit_exc:  # noqa: BLE001
+            logger.debug("audit emit failed: %s", _emit_exc)
 
     async def stop(self) -> None:
         self._running = False
@@ -253,6 +263,16 @@ class _InboundGatewayServer:
                 await task
             except asyncio.CancelledError:
                 pass
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_ua
+            emit_audit_ua(
+                SUBMDL="gateway",
+                PROC="inbound_server_stop",
+                RSPCD="0000",
+                UA="gateway inbound server stopped",
+            )
+        except Exception as _emit_exc:  # noqa: BLE001
+            logger.debug("audit emit failed: %s", _emit_exc)
 
     async def handle_message(self, msg) -> bool:
         await self._queue.put(msg)
@@ -903,15 +923,29 @@ class GatewayServer:
 
         ws_max_size = 8 * 2**20  # 8 MB — matches AgentServer link
 
-        self._server = await ws_serve(
-            self._connection_handler,
-            self.config.host,
-            self.config.port,
-            ping_interval=20,
-            ping_timeout=600,
-            max_size=ws_max_size,
-        )
-        self._running = True
+        try:
+            self._server = await ws_serve(
+                self._connection_handler,
+                self.config.host,
+                self.config.port,
+                ping_interval=20,
+                ping_timeout=600,
+                max_size=ws_max_size,
+            )
+            self._running = True
+        except Exception as exc:
+            try:
+                from jiuwenswarm.common.audit_emit import emit_audit_evt
+                emit_audit_evt(
+                    SUBMDL="gateway",
+                    PROC="gateway_start",
+                    RSPCD="E005",
+                    EVT="gateway start failed",
+                    MSG=str(exc),
+                )
+            except Exception as _emit_exc:  # noqa: BLE001
+                logger.debug("audit emit failed: %s", _emit_exc)
+            raise
         paths = ", ".join(self.config.routes.keys())
         logger.info(
             "[App] Gateway server started: ws://%s:%s [%s]",
@@ -919,6 +953,16 @@ class GatewayServer:
             self.config.port,
             paths,
         )
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_ua
+            emit_audit_ua(
+                SUBMDL="gateway",
+                PROC="gateway_start",
+                RSPCD="0000",
+                UA="gateway server started",
+            )
+        except Exception as _emit_exc:  # noqa: BLE001
+            logger.debug("audit emit failed: %s", _emit_exc)
 
     async def stop(self) -> None:
         self._running = False
@@ -934,6 +978,16 @@ class GatewayServer:
             await self._server.wait_closed()
             self._server = None
         logger.info("[App] Gateway server stopped")
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_ua
+            emit_audit_ua(
+                SUBMDL="gateway",
+                PROC="gateway_stop",
+                RSPCD="0000",
+                UA="gateway server stopped",
+            )
+        except Exception as _emit_exc:  # noqa: BLE001
+            logger.debug("audit emit failed: %s", _emit_exc)
 
     async def send(self, msg, *, routing_target: "RoutingTarget | None" = None) -> None:
         # V2: 提取 agent_ref，优先 3 元组查找，2↔3 双向兜底（_lookup_client）。
