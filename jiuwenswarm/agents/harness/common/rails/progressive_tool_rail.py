@@ -719,8 +719,16 @@ class ProgressiveToolRail(DeepAgentRail):
         navigation_section = await self._build_navigation_section()
         if navigation_section is None:
             # Empty deferred set: clear fingerprint so a later non-empty set rebuilds.
+            # Also drop a stale TOOL_NAVIGATION left from a previous non-empty set
+            # (e.g. every deferred MCP tool was removed mid-session).
             if not name_fp:
                 self._navigation_name_fingerprint = frozenset()
+                if (
+                    spb is not None
+                    and section_present
+                    and hasattr(spb, "remove_section")
+                ):
+                    spb.remove_section(SectionName.TOOL_NAVIGATION)
             return
 
         if spb is not None and hasattr(spb, "add_section"):
@@ -816,8 +824,73 @@ class ProgressiveToolRail(DeepAgentRail):
     # Deferred tool cache
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _is_navigable_ability(ability: Any) -> bool:
+        """True for tool/workflow/agent cards; false for MCP server configs in list()."""
+        name = str(getattr(ability, "name", "") or "").strip()
+        if not name:
+            return False
+        # AbilityManager.list() also appends McpServerConfig entries.
+        if type(ability).__name__ == "McpServerConfig":
+            return False
+        if (
+            getattr(ability, "server_id", None) is not None
+            and getattr(ability, "server_name", None) is not None
+            and not hasattr(ability, "input_params")
+        ):
+            return False
+        return True
+
+    @staticmethod
+    async def _sync_ability_manager_mcp_tools(ability_manager: Any) -> None:
+        """Drop stale MCP ToolCards after ResourceMgr refresh.
+
+        ``list_tool_info`` re-reads live MCP tools from ResourceMgr and *writes*
+        them into ``_tools``, but never deletes removed ones. ProgressiveToolRail
+        used to call ``list()`` only, so deleted MCP tools stayed in the
+        TOOL_NAVIGATION system prompt until session restart.
+        """
+        list_tool_info = getattr(ability_manager, "list_tool_info", None)
+        if not callable(list_tool_info):
+            return
+        mcp_servers = getattr(ability_manager, "_mcp_servers", None)
+        if not mcp_servers:
+            return
+
+        live_infos = await list_tool_info()
+        live_names = {
+            str(getattr(info, "name", "") or "").strip()
+            for info in (live_infos or [])
+        }
+        live_names.discard("")
+
+        tools = getattr(ability_manager, "_tools", None)
+        if not isinstance(tools, dict):
+            return
+
+        is_mcp = getattr(ability_manager, "_is_tool_in_mcp_server", None)
+        removed: list[str] = []
+        for name, card in list(tools.items()):
+            card_id = str(getattr(card, "id", "") or "")
+            if callable(is_mcp):
+                try:
+                    mcp_card = bool(is_mcp(card_id))
+                except Exception:  # noqa: BLE001 — treat as non-MCP on probe failure
+                    mcp_card = str(name).startswith("mcp_")
+            else:
+                mcp_card = str(name).startswith("mcp_")
+            if mcp_card and name not in live_names:
+                tools.pop(name, None)
+                removed.append(name)
+        if removed:
+            logger.info(
+                "%s pruned stale MCP abilities from ability_manager: %s",
+                _LOG_PREFIX,
+                sorted(removed),
+            )
+
     async def _get_all_tool_infos(self, agent: Any = None) -> list[Any]:
-        """Get all registered tool infos from ability_manager."""
+        """Get navigable tool cards from ability_manager (MCP list kept in sync)."""
         resolved = agent or self._runtime_agent or self._deep_agent
         if resolved is None:
             return []
@@ -827,7 +900,12 @@ class ProgressiveToolRail(DeepAgentRail):
             return []
 
         try:
-            return list(ability_manager.list())
+            await self._sync_ability_manager_mcp_tools(ability_manager)
+            return [
+                ability
+                for ability in ability_manager.list()
+                if self._is_navigable_ability(ability)
+            ]
         except Exception as exc:
             logger.warning(
                 "%s failed to list ability_manager tools: error=%s",

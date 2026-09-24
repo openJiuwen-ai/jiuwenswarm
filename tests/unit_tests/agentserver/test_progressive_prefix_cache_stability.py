@@ -37,6 +37,10 @@ class _RecordingSPB:
     def has_section(self, name) -> bool:
         return name in self._by_name
 
+    def remove_section(self, name) -> None:
+        self._by_name.pop(name, None)
+        self.sections = [s for s in self.sections if s.name != name]
+
 
 @pytest.mark.asyncio
 async def test_before_model_call_orders_tools_by_eager_list():
@@ -228,3 +232,93 @@ def test_invalidate_deferred_tool_cache_clears_navigation_fingerprint():
     assert rail._navigation_name_fingerprint is None
     assert rail._cached_all_tool_infos == []
     assert rail._cached_deferred_tool_infos == []
+
+
+@pytest.mark.asyncio
+async def test_navigation_drops_removed_mcp_tool_after_list_tool_info_sync():
+    """Deleted MCP tools must leave TOOL_NAVIGATION after ResourceMgr refresh.
+
+    Regression: ability_manager.list() kept stale mcp_* ToolCards that
+    list_tool_info only writes, never deletes — so mid-session removals still
+    appeared in the system prompt navigation section.
+    """
+    echo = _card(
+        "mcp_mock-dynamic_echo",
+        "sid.mock-dynamic.echo",
+    )
+    ping = _card(
+        "mcp_mock-dynamic_ping",
+        "sid.mock-dynamic.ping",
+    )
+    new_tool = _card(
+        "mcp_mock-dynamic_new_tool",
+        "sid.mock-dynamic.new_tool",
+    )
+    tools = {
+        echo.name: echo,
+        ping.name: ping,
+        new_tool.name: new_tool,
+    }
+
+    async def list_tool_info():
+        # Live ResourceMgr snapshot no longer includes new_tool.
+        return [
+            SimpleNamespace(name=echo.name, description=echo.description, parameters={}),
+            SimpleNamespace(name=ping.name, description=ping.description, parameters={}),
+        ]
+
+    def is_mcp(card_id: str) -> bool:
+        return str(card_id).startswith("sid.")
+
+    am = SimpleNamespace(
+        _tools=tools,
+        _mcp_servers={
+            "mock-dynamic": SimpleNamespace(
+                server_id="sid",
+                server_name="mock-dynamic",
+            )
+        },
+        list=lambda: list(tools.values()),
+        list_tool_info=list_tool_info,
+        _is_tool_in_mcp_server=is_mcp,
+    )
+
+    rail = ProgressiveToolRail(eager_tools=["tools_search", "invoke_tool"])
+    # Simulate prior turn that had already published a 3-tool navigation.
+    rail._navigation_name_fingerprint = frozenset(
+        {echo.name, ping.name, new_tool.name}
+    )
+    rail._cached_all_tool_infos = [echo, ping, new_tool]
+    rail._cached_deferred_tool_infos = [echo, ping, new_tool]
+
+    from openjiuwen.harness.prompts import PromptSection
+
+    spb = _RecordingSPB()
+    spb.add_section(
+        PromptSection(
+            name=SectionName.TOOL_NAVIGATION,
+            content={
+                "cn": f"- {echo.name}\n- {new_tool.name}\n- {ping.name}",
+                "en": f"- {echo.name}\n- {new_tool.name}\n- {ping.name}",
+            },
+            priority=70,
+        )
+    )
+    agent = SimpleNamespace(ability_manager=am, system_prompt_builder=spb)
+    rail._deep_agent = agent
+    ctx = SimpleNamespace(
+        agent=agent,
+        inputs=SimpleNamespace(
+            tools=[_card("tools_search"), _card("invoke_tool")],
+        ),
+    )
+
+    await rail.before_model_call(ctx)
+
+    assert new_tool.name not in tools
+    nav = spb._by_name[SectionName.TOOL_NAVIGATION]
+    cn = nav.content["cn"] if isinstance(nav.content, dict) else str(nav.content)
+    assert new_tool.name not in cn
+    assert echo.name in cn
+    assert ping.name in cn
+    assert rail._navigation_name_fingerprint == frozenset({echo.name, ping.name})

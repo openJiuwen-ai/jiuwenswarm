@@ -551,6 +551,11 @@ from jiuwenswarm.server.runtime.agent_adapter.deepagent_task_plan_binding_patch 
     apply_deepagent_task_plan_binding_patch,
 )
 from jiuwenswarm.common.mcp_call_timeout_patch import apply_mcp_call_timeout_patch
+from jiuwenswarm.common.mcp_tool_list_refresh_patch import (
+    apply_mcp_tool_list_refresh_patch,
+    refresh_registered_mcp_tool_lists,
+    resolve_mcp_tool_list_ttl_s,
+)
 from jiuwenswarm.perf.context import DeepResearchReportType
 from jiuwenswarm.perf.interface_hooks import (
     clear_perf_summary_context,
@@ -2403,6 +2408,9 @@ class JiuWenSwarmDeepAdapter:
         # (TC_MCP_CALL_014). AbilityManager __init_subclass__ hook is a
         # classmethod. Honors config ``timeout_s``. Idempotent (_PATCHED).
         apply_mcp_call_timeout_patch()
+        # 企业 MCP 模板：远端 list_tools 结果可按 TTL 刷新进 ResourceMgr，
+        # 避免会话中途新加工具一直看不到。幂等。
+        apply_mcp_tool_list_refresh_patch()
         # 绑定交互续轮的 task id 到 TaskPlan 任务，使外层循环收敛。幂等。
         apply_deepagent_task_plan_binding_patch()
         self._instance: DeepAgent | None = None
@@ -4332,7 +4340,12 @@ class JiuWenSwarmDeepAdapter:
         #   - cancelling()==0 → anyio-internal cancel → skip this server
         #   - cancelling()>0  → real outer cancel (interrupt / WS drop) → re-raise
         try:
-            result = await Runner.resource_mgr.add_mcp_server(cfg, tag=tag)
+            ttl_s = self._mcp_tool_list_ttl_s()
+            # SDK rejects expiry_time <= 0; ttl==0 means "every turn" via turn hook.
+            expiry = ttl_s if ttl_s > 0 else None
+            result = await Runner.resource_mgr.add_mcp_server(
+                cfg, tag=tag, expiry_time=expiry
+            )
             ok = True
             if result is not None:
                 is_ok = getattr(result, "is_ok", None)
@@ -4369,6 +4382,49 @@ class JiuWenSwarmDeepAdapter:
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] MCP server register failed: %s", exc)
             return False
+
+    def _mcp_tool_list_ttl_s(self) -> float:
+        """Seconds between enterprise MCP tool-list refreshes (0 = every turn)."""
+        config = self._config_base_cache if isinstance(self._config_base_cache, dict) else None
+        if config is None and isinstance(self._config_cache, dict):
+            config = self._config_cache
+        return resolve_mcp_tool_list_ttl_s(config)
+
+    async def _refresh_stale_mcp_tool_lists(self) -> None:
+        """Re-list remote MCP tools when TTL elapsed; invalidate rail if changed.
+
+        Enterprise templates register tools once at add_mcp_server. Without this
+        hook, mid-session tool additions on the MCP server stay invisible.
+        """
+        if not self._registered_mcp_server_ids:
+            return
+        try:
+            changed = await refresh_registered_mcp_tool_lists(
+                server_ids=sorted(self._registered_mcp_server_ids),
+                ttl_s=self._mcp_tool_list_ttl_s(),
+            )
+        except Exception as exc:  # noqa: BLE001 — never block the user turn
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] MCP tool-list refresh failed: %s",
+                exc,
+            )
+            return
+        if not changed:
+            return
+        rail = getattr(self, "_progressive_tool_rail", None)
+        invalidate = getattr(rail, "invalidate_deferred_tool_cache", None)
+        if callable(invalidate):
+            try:
+                invalidate()
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] progressive tool rail cache invalidated "
+                    "after MCP tool-list change"
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] progressive rail invalidate failed: %s",
+                    exc,
+                )
 
     async def _unregister_mcp_server(self, server_id: str) -> None:
         if self._instance is None:
@@ -18146,6 +18202,9 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             raise RuntimeError("JiuWenSwarmDeepAdapter 未初始化，请先调用 create_instance()")
 
+        # 企业 MCP：按 TTL 重新 list_tools，使会话中途新增的远端工具对本轮可见。
+        await self._refresh_stale_mcp_tool_lists()
+
         self._inject_extension_config_into_inputs(inputs)
 
         _req_model = (request.params.get("model_name") or "") if isinstance(request.params, dict) else ""
@@ -18924,6 +18983,9 @@ class JiuWenSwarmDeepAdapter:
 
         if self._instance is None:
             raise RuntimeError("JiuWenSwarmDeepAdapter 未初始化，请先调用 create_instance()")
+
+        # 企业 MCP：按 TTL 重新 list_tools，使会话中途新增的远端工具对本轮可见。
+        await self._refresh_stale_mcp_tool_lists()
 
         self._inject_extension_config_into_inputs(inputs)
 
