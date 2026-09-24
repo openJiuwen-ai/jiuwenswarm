@@ -1313,6 +1313,30 @@ def _taskless_completion_enabled(session_id: str) -> bool:
         return True
 
 
+def _round_failed_recovery_enabled(session_id: str) -> bool:
+    """Read TeamSpec.enable_round_failed_recovery for the session's team.
+
+    Defaults True (recovery behavior: a member's
+    chat.error re-evaluates settle, so a board that the round-failed recovery
+    path converged — tasks released back to pool or cancelled by the session
+    breaker — closes the stream and pushes is_complete instead of hanging).
+    False = emergency rollback to the pre-fix hang (teammate chat.error never
+    re-evaluates settle). Any accessor miss returns True so the toggle is
+    purely opt-out and never breaks the fixed behavior. Mirrors
+    _taskless_completion_enabled.
+    """
+    try:
+        tm = get_team_manager(None)
+        handler = tm.get_monitor_handler(session_id)
+        if handler is None:
+            return True
+        team_agent = getattr(getattr(handler, "_monitor", None), "_team_agent", None)
+        spec = getattr(team_agent, "team_spec", None)
+        return bool(getattr(spec, "enable_round_failed_recovery", True))
+    except Exception:
+        return True
+
+
 async def _team_round_settled(channel_id: str | None, session_id: str) -> bool:
     """Return whether the DB-backed team state is safe to finish this round."""
     try:
@@ -2806,6 +2830,14 @@ async def _consume_stream_with_query(
                                 "rid": round_id,
                             },
                         )
+                    # 成员失败后同样评估settle。纯评估：全员 settled 且全部任务终态且无未读消息
+                    # 才会关流，否则 no-op（任务回池重派期间绝不误关）。会话
+                    # 熔断把全部任务收敛 CANCELLED 后，由这里关闭流并推送
+                    # is_complete，而不是挂到客户端看门狗。
+                    if _round_failed_recovery_enabled(session_id) and await _finish_round_if_settled(
+                        channel_id, session_id, round_id, reason="chat.error",
+                    ):
+                        break
                     continue
                 # chat.final: if team events (team.member / team.task /
                 # workflow.updated) have already been broadcast (tracked
