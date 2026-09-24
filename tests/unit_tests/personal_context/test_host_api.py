@@ -40,6 +40,13 @@ UNCONFIGURED_PROJECTION = {
     "model_index": None,
     "model_id": None,
     "fetch_services": [],
+    "im_learning": {
+        "enabled": False,
+        "targets": [],
+        "since_ms": None,
+        "fetch_interval_seconds": 600.0,
+        "fetch_top_n": 50,
+    },
 }
 
 

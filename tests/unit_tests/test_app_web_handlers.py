@@ -1338,6 +1338,8 @@ def test_web_forwards_only_canonical_personal_context_rpc_methods():
         "personal_context.fetch.get_run_status",
         "personal_context.fetch.get_authorization_status",
         "personal_context.fetch.authorize_provider",
+        "personal_context.im_learning.get_status",
+        "personal_context.im_learning.run_now",
         "personal_context.context.stream_graph",
         "personal_context.context.stream_tree",
         "personal_context.context.search_pages",
@@ -1357,7 +1359,7 @@ def test_web_forwards_only_canonical_personal_context_rpc_methods():
 
     assert forwarded == methods
     assert no_local == methods
-    assert len(methods) == 25
+    assert len(methods) == 27
 
 
 # =====================================================================

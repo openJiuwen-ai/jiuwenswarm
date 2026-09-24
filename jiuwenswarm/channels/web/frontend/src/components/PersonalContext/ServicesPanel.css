@@ -135,6 +135,39 @@
   cursor: not-allowed;
 }
 
+/* 头部右侧按钮组：「上下文采集」主按钮 + 「IM 学习」次级入口 */
+.pc-services__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* IM 学习（数字分身）入口：描边胶囊，弱于主按钮 */
+.pc-services__iml-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 16px;
+  height: 32px;
+  border: 1px solid #d9d9d9;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #191919;
+  font-size: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.pc-services__iml-btn:hover {
+  border-color: #191919;
+}
+
+.pc-services__iml-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ── 统计卡片：来源 / 知识数 / 正在采集 ── */
 .pc-services__stats {
   display: flex;

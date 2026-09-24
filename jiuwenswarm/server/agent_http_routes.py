@@ -421,6 +421,8 @@ ROUTES: list[RouteSpec] = [
     RouteSpec("PATCH", "/im/hosting/policy", ReqMethod.IM_HOSTING_POLICY_PATCH.value),
     RouteSpec("POST", "/im/hosting/actions/poll-now", ReqMethod.IM_HOSTING_POLL_NOW.value),
     RouteSpec("GET", "/im/hosting/targets/{id}/history", ReqMethod.IM_HOSTING_HISTORY.value),
+    RouteSpec("POST", "/im/hosting/login/start", ReqMethod.IM_HOSTING_LOGIN_START.value),
+    RouteSpec("GET", "/im/hosting/login/status", ReqMethod.IM_HOSTING_LOGIN_STATUS.value),
     RouteSpec("POST", "/runtime/browser/actions/restart", ReqMethod.BROWSER_RUNTIME_RESTART.value),
     RouteSpec("POST", "/proactive/actions/tick", ReqMethod.PROACTIVE_TICK.value),
     RouteSpec("POST", "/acp/tool-responses", ReqMethod.ACP_TOOL_RESPONSE.value),

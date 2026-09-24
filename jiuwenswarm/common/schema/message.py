@@ -206,6 +206,10 @@ class ReqMethod(Enum):
     PERSONAL_CONTEXT_CONTEXT_SEARCH_PAGES = "personal_context.context.search_pages"
     PERSONAL_CONTEXT_CONTEXT_GET_NODE = "personal_context.context.get_node"
     PERSONAL_CONTEXT_CONTEXT_GET_SOURCE = "personal_context.context.get_source"
+    PERSONAL_CONTEXT_IM_LEARNING_GET_STATUS = (
+        "personal_context.im_learning.get_status"
+    )
+    PERSONAL_CONTEXT_IM_LEARNING_RUN_NOW = "personal_context.im_learning.run_now"
 
     # Plugin management (reuses skills marketplace infrastructure)
     PLUGINS_LIST = "plugins.list"
@@ -326,6 +330,8 @@ class ReqMethod(Enum):
     IM_HOSTING_POLICY_PATCH = "im.hosting.policy.patch"
     IM_HOSTING_POLL_NOW = "im.hosting.poll_now"
     IM_HOSTING_HISTORY = "im.hosting.history"
+    IM_HOSTING_LOGIN_START = "im.hosting.login.start"
+    IM_HOSTING_LOGIN_STATUS = "im.hosting.login.status"
 
 
 class EventType(Enum):

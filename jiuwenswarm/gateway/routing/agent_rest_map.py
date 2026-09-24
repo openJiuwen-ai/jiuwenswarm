@@ -200,6 +200,8 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("im.hosting.policy.patch", "PATCH", "/im/hosting/policy"),
     ("im.hosting.poll_now", "POST", "/im/hosting/actions/poll-now"),
     ("im.hosting.history", "GET", "/im/hosting/targets/{id}/history"),
+    ("im.hosting.login.start", "POST", "/im/hosting/login/start"),
+    ("im.hosting.login.status", "GET", "/im/hosting/login/status"),
     ("browser.runtime_restart", "POST", "/runtime/browser/actions/restart"),
     ("proactive.tick", "POST", "/proactive/actions/tick"),
     ("acp.tool_response", "POST", "/acp/tool-responses"),

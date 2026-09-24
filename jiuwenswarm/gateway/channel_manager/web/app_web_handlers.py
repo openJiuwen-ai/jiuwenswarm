@@ -727,6 +727,8 @@ _FORWARD_REQ_METHODS = frozenset({
     "personal_context.context.search_pages",
     "personal_context.context.get_node",
     "personal_context.context.get_source",
+    "personal_context.im_learning.get_status",
+    "personal_context.im_learning.run_now",
     "plugins.list",
     "plugins.install",
     "plugins.uninstall",
@@ -783,6 +785,8 @@ _FORWARD_REQ_METHODS = frozenset({
     "im.hosting.policy.patch",
     "im.hosting.poll_now",
     "im.hosting.history",
+    "im.hosting.login.start",
+    "im.hosting.login.status",
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
@@ -881,6 +885,8 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "personal_context.context.search_pages",
     "personal_context.context.get_node",
     "personal_context.context.get_source",
+    "personal_context.im_learning.get_status",
+    "personal_context.im_learning.run_now",
     "plugins.list",
     "plugins.install",
     "plugins.uninstall",
@@ -915,6 +921,8 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "im.hosting.policy.patch",
     "im.hosting.poll_now",
     "im.hosting.history",
+    "im.hosting.login.start",
+    "im.hosting.login.status",
 })
 
 # 配置信息：config.get 返回、config.set 可修改的键（前端 param 名 -> 环境变量名）

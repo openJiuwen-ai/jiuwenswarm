@@ -43,6 +43,8 @@ interface PersonalContextGraphPanelProps {
   onNavigateServices: () => void;
   /** dev-stable 适配：跳转设置视图（开关/模型/授权）。 */
   onNavigateSettings: () => void;
+  /** 跳转 IM 学习视图（数字分身学习配置面）。 */
+  onNavigateImLearning: () => void;
 }
 
 type Transform = { x: number; y: number; scale: number };
@@ -291,6 +293,7 @@ export function PersonalContextGraphPanel({
   isActive,
   onNavigateServices,
   onNavigateSettings,
+  onNavigateImLearning,
 }: PersonalContextGraphPanelProps) {
   const { t } = useTranslation();
   const { graph, loadingGraph, status, config, loadGraph, loadStatus } = usePersonalContextStore();
@@ -1259,6 +1262,14 @@ export function PersonalContextGraphPanel({
           >
             <Settings size={16} />
             <span>{t('personalContext.settings.title')}</span>
+          </button>
+          <button
+            type="button"
+            className="pc-graph__refresh"
+            onClick={onNavigateImLearning}
+            title={t('personalContext.imLearning.title')}
+          >
+            <span>{t('personalContext.imLearning.title')}</span>
           </button>
           <button
             type="button"

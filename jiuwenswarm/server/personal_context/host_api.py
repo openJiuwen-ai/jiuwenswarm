@@ -201,6 +201,14 @@ def _initial_stored_config(*, collection_enabled: bool) -> dict[str, object]:
     }
 
 
+def _im_learning_defaults() -> dict[str, object]:
+    """IM 学习配置的默认形态（跟随 Core ImLearningConfig 默认值，避免双处漂移）。"""
+    default_factory = PersonalContext.Config.model_fields["im_learning"].default_factory
+    if default_factory is None:
+        raise RuntimeError("PersonalContext im_learning defaults are invalid")
+    return default_factory().model_dump(mode="json", by_alias=True)
+
+
 def _unconfigured_projection() -> dict[str, object]:
     max_pages, max_subdirectories = _directory_capacity_defaults()
     strategy_profile, model_index, model_id = _default_strategy_and_model()
@@ -214,6 +222,7 @@ def _unconfigured_projection() -> dict[str, object]:
         "model_index": model_index,
         "model_id": model_id,
         "fetch_services": [],
+        "im_learning": _im_learning_defaults(),
     }
 
 
@@ -499,6 +508,14 @@ def _semantic_config_dump(config: PersonalContext.Config) -> dict[str, object]:
     if isinstance(client, dict):
         # Core 的 ModelClientConfig.client_id 是 uuid4 默认值，每次 from_dict 都不同。
         client.pop("client_id", None)
+    im_learning = dumped.get("im_learning")
+    if isinstance(im_learning, dict):
+        targets = im_learning.get("targets")
+        # target.title 是纯展示元数据：仅改标题不应触发 deactivate→activate 运行时重启。
+        if isinstance(targets, list):
+            for target in targets:
+                if isinstance(target, dict):
+                    target.pop("title", None)
     return dumped
 
 
@@ -909,6 +926,7 @@ class PersonalContextHostAPI:
             "collection_enabled",
             "agent_use_enabled",
             "strategy_profile",
+            "im_learning",
         }
         if unknown:
             _raise_host_error("runtime patch contains unsupported fields")
@@ -1022,6 +1040,35 @@ class PersonalContextHostAPI:
                 ),
             )
             return _project_stored_config(stored)
+
+    async def get_im_learning_status(self) -> dict[str, object]:
+        """Return the IM learning status surface plus the Host readiness flag.
+
+        ``host_active`` distinguishes "the Host has no applied configuration"
+        (False) from "configured but the scheduler is not running" (True with
+        ``running=False``); the unconfigured projection keeps the response
+        shape safe for the frontend panel draft state.
+        """
+
+        async with self._operation_lock:
+            if self._stored_config is None:
+                return {
+                    "running": False,
+                    "enabled": False,
+                    "host_active": False,
+                }
+            status = await self._personal_context.get_im_learning_status()
+            if not isinstance(status, dict):
+                _raise_host_error("PersonalContext IM learning status is invalid")
+            return {"host_active": True, **status}
+
+    async def run_im_learning_now(self) -> bool:
+        """Trigger one immediate IM learning cycle; False when inactive."""
+
+        async with self._operation_lock:
+            if self._stored_config is None:
+                return False
+            return await self._personal_context.run_im_learning_now()
 
     async def list_fetch_services(self) -> list[dict[str, object]]:
         """Return every fixed fetch service configuration."""

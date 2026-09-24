@@ -141,6 +141,99 @@ export type FetchServicePatch = Partial<
   >
 >;
 
+// ── IM 学习（对齐 openjiuwen ImLearningConfig，harness/personal_context/config.py）──
+export type ImLearningTargetKind = 'group' | 'user';
+
+/** 学习白名单目标三元组 + 展示标题（title 仅展示元数据，改 title 不触发运行时重启）。 */
+export type ImLearningTarget = {
+  channel_id: string;
+  kind: ImLearningTargetKind;
+  external_id: string;
+  title?: string | null;
+};
+
+export type ImLearningConfig = {
+  enabled: boolean;
+  targets: ImLearningTarget[];
+  /** 学习起始毫秒时间戳；null = 不限（全量回填）。 */
+  since_ms: number | null;
+  /** 学习采集周期（秒），gt=0 le=31_536_000，与托管轮询周期相互独立。 */
+  fetch_interval_seconds: number;
+  /** 单会话单轮抓取条数上限，ge=1 le=200。 */
+  fetch_top_n: number;
+};
+
+/** IM 学习渠道（与 im.hosting.discover 的 channel_id 同域）。 */
+export type ImLearningChannelId = 'feishu' | 'dingtalk' | 'welink';
+
+export const IM_LEARNING_CHANNELS: readonly ImLearningChannelId[] = [
+  'feishu',
+  'dingtalk',
+  'welink',
+];
+
+/** im.hosting.discover 返回的近期会话（学习白名单选择器数据源，与托管 UI 同源）。 */
+export type ImLearningDiscoverItem = {
+  channel_id: ImLearningChannelId;
+  target_kind: ImLearningTargetKind;
+  external_id: string;
+  title?: string | null;
+  already_hosted?: boolean;
+};
+
+/** backfill 单目标行（pending = 回填中，truncated = 达平台翻页上限待续传）。 */
+export type ImLearningBackfillRow = {
+  channel_id: string;
+  kind: string;
+  external_id: string;
+};
+
+export type ImLearningBackfill = {
+  ready: boolean;
+  pending: ImLearningBackfillRow[];
+  truncated?: ImLearningBackfillRow[];
+};
+
+/** 学习链活跃 run（fetch 抓取 / index 索引两阶段）。 */
+export type ImLearningActiveRun = {
+  id: string;
+  stage: 'fetch' | 'index';
+  source_key?: string;
+  status?: string;
+  lease_expires_at_ms?: number;
+};
+
+/** im_learning.get_status 响应：阶段状态快照 + 宿主就绪标志。 */
+export type ImLearningStatus = {
+  /** 宿主已配置并启动（false = 宿主未就绪，区别于 scheduler 未运行）。 */
+  host_active: boolean;
+  running: boolean;
+  enabled: boolean;
+  targets?: number;
+  db_path?: string | null;
+  backfill?: ImLearningBackfill;
+  active_runs?: ImLearningActiveRun[];
+  last_cycle_at_ms?: number | null;
+  last_cycle_targets?: number;
+  last_cycle_persisted?: number;
+  last_cycle_errors?: number;
+  last_indexed_at_ms?: number | null;
+  last_error?: string | null;
+};
+
+/** im.hosting.login.* 关联会话快照（两阶段：app_setup → user_auth）。 */
+export type ImLoginPhase = 'idle' | 'app_setup' | 'user_auth' | 'logged_in' | 'failed';
+
+export type ImLoginSession = {
+  channel_id: ImLearningChannelId;
+  phase: ImLoginPhase;
+  url?: string | null;
+  message?: string | null;
+  error?: string | null;
+  started_at_ms?: number;
+  updated_at_ms?: number;
+};
+
 export type PersonalContextConfig = {
   configured: boolean;
   collection_enabled: boolean;
@@ -149,6 +242,7 @@ export type PersonalContextConfig = {
   model_index: number | null;
   model_id: string | null;
   fetch_services: FetchServiceConfig[];
+  im_learning: ImLearningConfig;
 };
 
 // ── 授权结果 ──────────────────────────────────────────────────────────────
@@ -278,7 +372,10 @@ export const pcApi = {
   getConfig: () =>
     webRequest<PersonalContextConfig>('personal_context.runtime.get_config'),
 
-  patchConfig: (patch: { strategy_profile?: StrategyProfile }) =>
+  patchConfig: (patch: {
+    strategy_profile?: StrategyProfile;
+    im_learning?: ImLearningConfig;
+  }) =>
     webRequest<PersonalContextConfig>(
       'personal_context.runtime.patch_config',
       { patch },
@@ -466,7 +563,74 @@ export const pcApi = {
     webRequest<ContextSourceDetail>('personal_context.context.get_source', {
       source_id,
     }),
+
+  /**
+   * IM 学习阶段状态快照（宿主透传门面 + host_active 就绪标志）。
+   * 只读小 payload，与 get_run_status 同档超时；轮询失败跳过本周期不堆积。
+   */
+  getImLearningStatus: () =>
+    webRequest<ImLearningStatus>(
+      'personal_context.im_learning.get_status',
+      {},
+      { timeoutMs: FETCH_RUN_STATUS_TIMEOUT_MS },
+    ),
+
+  /**
+   * 立即触发一轮学习（fetch + index）。triggered=false 表示学习未启用或采集总闸未开。
+   * 后端会唤醒 scheduler 立即执行，受 _operation_lock 串行影响，放宽到与采集操作同档。
+   */
+  runImLearningNow: () =>
+    webRequest<{ triggered: boolean }>(
+      'personal_context.im_learning.run_now',
+      {},
+      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+    ),
+
+  /**
+   * 从最近会话中发现可学习目标（复用 im.hosting.discover，与托管 UI 数据同源）。
+   * 后端可能触发 CLI 探活，对齐托管面板用 60s 超时。
+   */
+  discoverImConversations: (channel_id: ImLearningChannelId) =>
+    webRequest<{ conversations?: ImLearningDiscoverItem[] }>(
+      'im.hosting.discover',
+      { channel_id },
+      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+    ),
+
+  /**
+   * 发起渠道关联（后端单飞编排：应用配置 + 设备码授权）。
+   * 立即返回会话快照，链接/阶段由 getImLoginStatus 轮询获取。
+   */
+  startImLogin: (channel_id: ImLearningChannelId) =>
+    webRequest<{ login?: ImLoginSession }>(
+      'im.hosting.login.start',
+      { channel_id },
+      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+    ),
+
+  /** 查询关联会话状态；无会话时后端现场探活。 */
+  getImLoginStatus: (channel_id: ImLearningChannelId) =>
+    webRequest<{ login?: ImLoginSession }>(
+      'im.hosting.login.status',
+      { channel_id },
+      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+    ),
 };
+
+/**
+ * 读取后端结构化错误码（IM_NOT_LOGGED_IN 等）。
+ * 网关会把 WS res payload.code 提升到顶层；HTTP 路径与 WS 路径都兜底读 payload。
+ */
+export function webErrorCode(e: unknown): string | undefined {
+  if (!(e instanceof Error)) return undefined;
+  const carrier = e as Error & { code?: unknown; payload?: unknown };
+  if (typeof carrier.code === 'string' && carrier.code) return carrier.code;
+  if (carrier.payload && typeof carrier.payload === 'object') {
+    const code = (carrier.payload as { code?: unknown }).code;
+    if (typeof code === 'string' && code) return code;
+  }
+  return undefined;
+}
 
 /** provider → 本地化标签 key（i18n）。 */
 export const PROVIDER_LABEL_KEYS: Record<FetchProvider, string> = {

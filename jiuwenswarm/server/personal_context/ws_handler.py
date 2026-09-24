@@ -56,6 +56,8 @@ PERSONAL_CONTEXT_REQUEST_METHODS = frozenset(
         ReqMethod.PERSONAL_CONTEXT_CONTEXT_SEARCH_PAGES,
         ReqMethod.PERSONAL_CONTEXT_CONTEXT_GET_NODE,
         ReqMethod.PERSONAL_CONTEXT_CONTEXT_GET_SOURCE,
+        ReqMethod.PERSONAL_CONTEXT_IM_LEARNING_GET_STATUS,
+        ReqMethod.PERSONAL_CONTEXT_IM_LEARNING_RUN_NOW,
     }
 )
 
@@ -307,6 +309,10 @@ async def _execute(
         return await host.get_graph_page(_text(params, "node_id"))
     if method == ReqMethod.PERSONAL_CONTEXT_CONTEXT_GET_SOURCE:
         return await host.get_source(_text(params, "source_id"))
+    if method == ReqMethod.PERSONAL_CONTEXT_IM_LEARNING_GET_STATUS:
+        return _payload(await host.get_im_learning_status())
+    if method == ReqMethod.PERSONAL_CONTEXT_IM_LEARNING_RUN_NOW:
+        return {"triggered": await host.run_im_learning_now()}
     raise ValueError("unknown PersonalContext method")
 
 

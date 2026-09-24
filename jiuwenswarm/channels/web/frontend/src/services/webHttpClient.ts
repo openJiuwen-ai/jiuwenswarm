@@ -153,6 +153,8 @@ const ROUTES: Record<string, RouteRow> = {
   'im.hosting.policy.patch': { verb: 'PATCH', path: '/im/hosting/policy', kind: 'unary' },
   'im.hosting.poll_now': { verb: 'POST', path: '/im/hosting/actions/poll-now', kind: 'unary' },
   'im.hosting.history': { verb: 'GET', path: '/im/hosting/targets/{id}/history', kind: 'unary' },
+  'im.hosting.login.start': { verb: 'POST', path: '/im/hosting/login/start', kind: 'unary' },
+  'im.hosting.login.status': { verb: 'GET', path: '/im/hosting/login/status', kind: 'unary' },
 };
 
 const PATH_PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;

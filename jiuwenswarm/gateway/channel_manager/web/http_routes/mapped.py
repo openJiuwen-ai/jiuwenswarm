@@ -321,6 +321,16 @@ _IM_HOSTING_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         "im-hosting", "托管代回 history",
         path_to_param={"id": "id"},
     ),
+    WebHttpMappedRoute(
+        "POST", "/im/hosting/login/start", "im.hosting.login.start",
+        "im-hosting", "发起渠道关联（应用配置+设备码授权）",
+        accept_body=True,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/im/hosting/login/status", "im.hosting.login.status",
+        "im-hosting", "查询渠道关联会话状态",
+        query_keys=("channel_id",),
+    ),
 )
 
 SETTINGS_ROUTES: tuple[WebHttpMappedRoute, ...] = (

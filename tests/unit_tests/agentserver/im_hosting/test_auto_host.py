@@ -4,12 +4,17 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.server.im.im_connector.types import ChannelTarget, Identity
+from jiuwenswarm.server.im.im_connector.types import (
+    ChannelTarget,
+    Identity,
+    TestResult as ConnectorTestResult,
+)
 from jiuwenswarm.server.im.im_hosting.auto_host import (
     channel_allows_auto_host,
     identity_ids,
     select_auto_host_candidates,
 )
+from jiuwenswarm.server.im.im_hosting.login import ImNotLoggedInError
 from jiuwenswarm.server.im.im_hosting.reply_bridge import resolve_target_persona
 
 
@@ -158,3 +163,66 @@ async def test_register_auto_skips_released_target(tmp_path: Path):
     summary = await svc.register_auto_targets("dingtalk", conversations=convs)
     assert summary["added"] == []
     assert store.get_target(target["id"])["enabled"] is False
+
+
+class _FakeLoggedOutPlugin:
+    """CLI 二进制可响应 help（test_connection 通过）但账号未配置。"""
+
+    CLI_NAME = "lark-cli"
+
+    async def discover_conversations(self, *, query_count: int) -> list[ChannelTarget]:
+        return []
+
+    async def test_connection(self) -> ConnectorTestResult:
+        return ConnectorTestResult(ok=True, message="lark-cli 可用")
+
+    async def resolve_identity(self) -> None:
+        return None
+
+
+class _FakeEmptyLoggedInPlugin:
+    """已登录但近期无会话：应返回空列表而非报错。"""
+
+    async def discover_conversations(self, *, query_count: int) -> list[ChannelTarget]:
+        return []
+
+    async def test_connection(self) -> ConnectorTestResult:
+        return ConnectorTestResult(ok=True, message="lark-cli 可用")
+
+    async def resolve_identity(self) -> Identity:
+        return Identity(account="me")
+
+
+@pytest.mark.asyncio
+async def test_discover_logged_out_raises_clear_error(tmp_path: Path):
+    from jiuwenswarm.server.im.im_hosting.policy import HostingPolicyStore
+    from jiuwenswarm.server.im.im_hosting.service import HostingPollService
+    from jiuwenswarm.server.im.im_hosting.store import HostingStore
+
+    store = HostingStore(tmp_path / "hosting.db")
+    svc = HostingPollService(
+        store=store,
+        policy=HostingPolicyStore(store=store),
+        connectors={"feishu": _FakeLoggedOutPlugin()},  # type: ignore[dict-item]
+    )
+    with pytest.raises(ImNotLoggedInError, match="未登录") as excinfo:
+        await svc.discover("feishu")
+    # 结构化错误码：前端据此弹出统一关联浮层（即时关联）。
+    assert excinfo.value.code == "IM_NOT_LOGGED_IN"
+
+
+@pytest.mark.asyncio
+async def test_discover_empty_but_logged_in_returns_empty_list(tmp_path: Path):
+    from jiuwenswarm.server.im.im_hosting.policy import HostingPolicyStore
+    from jiuwenswarm.server.im.im_hosting.service import HostingPollService
+    from jiuwenswarm.server.im.im_hosting.store import HostingStore
+
+    store = HostingStore(tmp_path / "hosting.db")
+    svc = HostingPollService(
+        store=store,
+        policy=HostingPolicyStore(store=store),
+        connectors={"feishu": _FakeEmptyLoggedInPlugin()},  # type: ignore[dict-item]
+    )
+    payload = await svc.discover("feishu")
+    assert payload["channel_id"] == "feishu"
+    assert payload["conversations"] == []

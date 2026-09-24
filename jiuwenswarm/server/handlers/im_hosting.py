@@ -11,6 +11,7 @@ from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext
+from jiuwenswarm.server.im.im_hosting.login import ImError
 from jiuwenswarm.server.im.im_hosting.policy import CHANNEL_IDS
 from jiuwenswarm.server.im.im_hosting.service import get_hosting_service
 
@@ -45,6 +46,11 @@ async def handle_im_hosting(ctx: RequestContext) -> None:
     except ValueError as exc:
         await _send(ctx, ok=False, payload={"error": str(exc), "code": "BAD_REQUEST"})
         return
+    except ImError as exc:
+        # 结构化错误码（IM_NOT_LOGGED_IN 等）：网关会把 payload.code 提升到
+        # WS res 顶层，前端据此触发即时关联浮层等分支。
+        await _send(ctx, ok=False, payload={"error": str(exc), "code": exc.code})
+        return
     except Exception as exc:  # noqa: BLE001
         logger.exception("[im_hosting] %s failed", method)
         await _send(ctx, ok=False, payload={"error": str(exc)})
@@ -61,6 +67,16 @@ async def _dispatch(svc, method: ReqMethod, params: dict[str, Any]) -> dict[str,
             raise ValueError("channel_id required")
         count = params.get("query_count")
         return await svc.discover(channel_id, query_count=int(count) if count else None)
+    if method == ReqMethod.IM_HOSTING_LOGIN_START:
+        channel_id = str(params.get("channel_id") or "").strip()
+        if channel_id not in CHANNEL_IDS:
+            raise ValueError("channel_id required")
+        return {"login": await svc.login_start(channel_id)}
+    if method == ReqMethod.IM_HOSTING_LOGIN_STATUS:
+        channel_id = str(params.get("channel_id") or "").strip()
+        if channel_id not in CHANNEL_IDS:
+            raise ValueError("channel_id required")
+        return {"login": await svc.login_status(channel_id)}
     if method == ReqMethod.IM_HOSTING_TARGETS_LIST:
         channel_id = str(params.get("channel_id") or "").strip() or None
         return {"targets": svc.store.list_targets(channel_id)}

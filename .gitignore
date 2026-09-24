@@ -40,6 +40,7 @@ pnpm-debug.log*
 # Environment files
 .env
 .env_personal
+.env.*.local
 /deploy/enterprise/.env.custom
 /deploy/enterprise/.link-mtls-test/
 !.env.example

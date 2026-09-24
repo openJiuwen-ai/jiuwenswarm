@@ -228,6 +228,16 @@ class _FakeHost:
             {"source_id": source_id, "title": "Source"},
         )
 
+    async def get_im_learning_status(self) -> dict[str, object]:
+        return self._record(
+            "get_im_learning_status",
+            None,
+            {"running": True, "enabled": True, "host_active": True},
+        )
+
+    async def run_im_learning_now(self) -> bool:
+        return self._record("run_im_learning_now", None, True)
+
 
 class _FakeWebSocket:
     def __init__(self) -> None:
@@ -501,6 +511,20 @@ PERSONAL_CONTEXT_HOST_CALLS = [
         "src_abc",
         {"source_id": "src_abc", "title": "Source"},
     ),
+    (
+        ReqMethod.PERSONAL_CONTEXT_IM_LEARNING_GET_STATUS,
+        {},
+        "get_im_learning_status",
+        None,
+        {"running": True, "enabled": True, "host_active": True},
+    ),
+    (
+        ReqMethod.PERSONAL_CONTEXT_IM_LEARNING_RUN_NOW,
+        {},
+        "run_im_learning_now",
+        None,
+        {"triggered": True},
+    ),
 ]
 
 
@@ -508,7 +532,7 @@ def test_agentserver_registers_canonical_personal_context_methods() -> None:
     assert server_module._PERSONAL_CONTEXT_REQ_METHODS == {
         item for item in ReqMethod if item.value.startswith("personal_context.")
     }
-    assert len(server_module._PERSONAL_CONTEXT_REQ_METHODS) == 25
+    assert len(server_module._PERSONAL_CONTEXT_REQ_METHODS) == 27
 
 
 @pytest.mark.asyncio

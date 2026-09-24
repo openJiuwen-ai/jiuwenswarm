@@ -15,6 +15,7 @@ from jiuwenswarm.server.im.im_hosting.auto_host import (
 )
 from jiuwenswarm.server.im.im_hosting.cli_resolve import resolve_cli_path
 from jiuwenswarm.server.im.im_hosting.connectors import channel_label, ensure_connector
+from jiuwenswarm.server.im.im_hosting.login import ImNotLoggedInError, get_login_manager
 from jiuwenswarm.server.im.im_hosting.policy import CHANNEL_IDS, HostingPolicyStore
 from jiuwenswarm.server.im.im_hosting.poller import run_poll_once
 from jiuwenswarm.server.im.im_hosting.reply_bridge import AgentManagerLike
@@ -150,6 +151,15 @@ class HostingPollService:
             probe = await plugin.test_connection()
             if not probe.ok:
                 raise RuntimeError(probe.message or f"{channel_label(channel_id)} 未登录，无法拉取近期会话")
+            # CLI 二进制能响应 help 不代表已登录：再验证一次账号态，
+            # 未登录时抛带 code 的错误，前端据此弹出统一关联浮层（即时关联）。
+            identity = await plugin.resolve_identity()
+            if identity is None:
+                cli_name = str(getattr(plugin, "CLI_NAME", "") or "").strip()
+                who = f"{cli_name} " if cli_name else ""
+                raise ImNotLoggedInError(
+                    f"{channel_label(channel_id)} {who}未登录，无法拉取近期会话，请先完成 CLI 账号配置后重试"
+                )
         hosted = self.store.hosted_keys(channel_id)
         items = []
         for conv in convs:
@@ -165,6 +175,18 @@ class HostingPollService:
                 }
             )
         return {"channel_id": channel_id, "conversations": items}
+
+    async def login_start(self, channel_id: str) -> dict[str, Any]:
+        """发起渠道关联（应用配置 + 设备码授权），返回会话快照供前端渲染二维码。"""
+        if channel_id not in CHANNEL_IDS:
+            raise ValueError("channel_id required")
+        return await get_login_manager().start(channel_id)
+
+    async def login_status(self, channel_id: str) -> dict[str, Any]:
+        """查询关联会话状态；无会话时现场探活（已登录可直接返回成功）。"""
+        if channel_id not in CHANNEL_IDS:
+            raise ValueError("channel_id required")
+        return await get_login_manager().status(channel_id)
 
     def _drop_auto_for_disabled_kinds(self, channel_id: str, ch_policy: dict[str, Any]) -> int:
         drop_kinds: list[str] = []

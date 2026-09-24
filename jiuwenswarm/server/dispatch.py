@@ -207,6 +207,8 @@ HANDLERS: dict[ReqMethod, HandlerSpec] = {
     ReqMethod.IM_HOSTING_POLICY_PATCH: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
     ReqMethod.IM_HOSTING_POLL_NOW: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
     ReqMethod.IM_HOSTING_HISTORY: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
+    ReqMethod.IM_HOSTING_LOGIN_START: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
+    ReqMethod.IM_HOSTING_LOGIN_STATUS: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
 }
 
 

@@ -300,23 +300,45 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
     setLoading(true);
     setError(null);
     try {
-      const [status, listed, discovered, policyPayload] = await Promise.all([
+      // discover 单独容错：渠道未关联（IM_NOT_LOGGED_IN）时只影响会话发现，
+      // 不得拖垮 targets/policy/channels 的展示（GW-01 回归修复）。
+      const [statusRes, listedRes, policyRes, discoverRes] = await Promise.allSettled([
         webRequest<{ channels?: ChannelStatus[] }>('im.hosting.status'),
         webRequest<{ targets?: HostedTarget[] }>('im.hosting.targets.list', { channel_id: channelId }),
+        webRequest<{ policy?: Record<ChannelId, ChannelPolicy> }>('im.hosting.policy.get'),
         webRequest<{ conversations?: DiscoverItem[] }>(
           'im.hosting.discover',
           { channel_id: channelId },
           { timeoutMs: 60000 },
         ),
-        webRequest<{ policy?: Record<ChannelId, ChannelPolicy> }>('im.hosting.policy.get'),
       ]);
-      setChannels(status.channels || []);
-      setTargets(listed.targets || []);
-      setDiscoverItems(discovered.conversations || []);
-      setChannelPolicy(policyPayload.policy?.[channelId] || null);
-    } catch (err) {
-      setDiscoverItems([]);
-      setError(err instanceof Error ? err.message : String(err));
+
+      const failures: unknown[] = [];
+      if (statusRes.status === 'fulfilled') {
+        setChannels(statusRes.value.channels || []);
+      } else {
+        failures.push(statusRes.reason);
+      }
+      if (listedRes.status === 'fulfilled') {
+        setTargets(listedRes.value.targets || []);
+      } else {
+        failures.push(listedRes.reason);
+      }
+      if (policyRes.status === 'fulfilled') {
+        setChannelPolicy(policyRes.value.policy?.[channelId] || null);
+      } else {
+        failures.push(policyRes.reason);
+      }
+      if (discoverRes.status === 'fulfilled') {
+        setDiscoverItems(discoverRes.value.conversations || []);
+      } else {
+        setDiscoverItems([]);
+        failures.push(discoverRes.reason);
+      }
+      if (failures.length > 0) {
+        const first = failures[0];
+        setError(first instanceof Error ? first.message : String(first));
+      }
     } finally {
       setLoading(false);
     }

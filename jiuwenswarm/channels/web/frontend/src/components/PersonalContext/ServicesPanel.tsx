@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Loader2, PlayCircle, Plus, X } from 'lucide-react';
+import { Loader2, MessageSquareText, PlayCircle, Plus, X } from 'lucide-react';
 import { Switch } from '../Switch';
 import { usePersonalContextStore } from '../../stores';
 import {
@@ -293,15 +293,27 @@ export function PersonalContextServicesPanel({
           </button>
           <div className="pc-services__head-row">
             <h3 className="pc-services__head-title">{t('personalContext.services.addKnowledge')}</h3>
-            <button
-              type="button"
-              className="pc-services__add-btn"
-              onClick={openDrawer}
-              disabled={!isConnected}
-            >
-              <Plus size={16} />
-              {t('personalContext.services.addContent')}
-            </button>
+            <div className="pc-services__head-actions">
+              <button
+                type="button"
+                className="pc-services__iml-btn"
+                onClick={() => setInfoTab('imLearning')}
+                disabled={!isConnected}
+                title={t('personalContext.imLearning.subtitle')}
+              >
+                <MessageSquareText size={16} />
+                {t('personalContext.imLearning.title')}
+              </button>
+              <button
+                type="button"
+                className="pc-services__add-btn"
+                onClick={openDrawer}
+                disabled={!isConnected}
+              >
+                <Plus size={16} />
+                {t('personalContext.services.addContent')}
+              </button>
+            </div>
           </div>
         </div>
 
