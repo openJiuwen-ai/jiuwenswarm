@@ -6827,6 +6827,7 @@ class JiuWenSwarmDeepAdapter:
         *,
         enable_read_image_multimodal: bool,
         vision_tool_available: bool,
+        image_input_status: str = "unknown",
     ) -> dict[str, Any]:
         """Expose image paths when native image input is unavailable."""
         if enable_read_image_multimodal:
@@ -6871,21 +6872,28 @@ class JiuWenSwarmDeepAdapter:
         if not media_items:
             return inputs
 
+        status_message = JiuWenSwarmDeepAdapter._image_input_status_message(image_input_status)
         tool_context = {
             "marker": "jiuwenswarm_image_tool_context",
             "mediaPath": first_path,
             "mediaItems": media_items,
             "question": question,
+            "imageInputStatus": image_input_status,
             "toolHint": (
-                (
-                    "当前主模型不支持原生图片输入。请调用已配置的图片理解工具；"
-                    "优先使用 image_reading(local_url=mediaPath, prompt=question)，"
-                    "或使用 visual_question_answering(image_path_or_url=mediaPath, question=question)。"
-                )
-                if vision_tool_available
-                else (
-                    "当前主模型不支持原生图片输入，且没有配置可用的视觉模型工具。"
-                    "请直接向用户说明当前没有图片理解能力，不要猜测图片内容。"
+                status_message
+                + "本次图片未作为原生图片输入发送给主模型。"
+                + (
+                    (
+                        "请调用已配置的图片理解工具；"
+                        "优先使用 image_reading(local_url=mediaPath, prompt=question)，"
+                        "或使用 visual_question_answering(image_path_or_url=mediaPath, question=question)。"
+                    )
+                    if vision_tool_available
+                    else (
+                        "没有配置可用的视觉模型工具。"
+                        "请根据上述状态向用户说明本次无法直接读图的原因，不要猜测图片内容。"
+                        "能力未确认不等于模型不支持读图。"
+                    )
                 )
             ),
         }
@@ -6906,6 +6914,7 @@ class JiuWenSwarmDeepAdapter:
         enable_read_image_multimodal: bool,
         model: Any | None,
         vision_tool_available: bool,
+        image_input_status: str = "unknown",
     ) -> dict[str, Any] | None:
         if enable_read_image_multimodal:
             return None
@@ -6921,13 +6930,11 @@ class JiuWenSwarmDeepAdapter:
         model_config = getattr(model, "model_config", None)
         model_name = str(getattr(model_config, "model_name", "") or "").strip()
         model_label = f"（{model_name}）" if model_name else ""
+        content = JiuWenSwarmDeepAdapter._image_input_status_message(image_input_status, model_label)
         if vision_tool_available:
-            content = f"当前模型{model_label}不支持原生图片理解，已切换为图片理解工具处理。"
+            content += "已切换为图片理解工具处理。"
         else:
-            content = (
-                f"当前模型{model_label}不支持原生图片理解，"
-                "且未配置可用的视觉模型工具。"
-            )
+            content += "未配置可用的视觉模型工具，本次图片未作为原生图片输入发送。"
         notice = {
             "event_type": "chat.notice",
             "notice_type": "image_tool_fallback",
@@ -6936,6 +6943,7 @@ class JiuWenSwarmDeepAdapter:
             "request_id": request.request_id,
             "session_id": request.session_id,
             "image_count": len(image_files),
+            "image_input_status": image_input_status,
         }
         if model_name:
             notice["model_name"] = model_name
@@ -6943,6 +6951,20 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def _native_image_input_enabled(config: dict[str, Any], model: Any | None) -> bool:
+        return JiuWenSwarmDeepAdapter._native_image_input_status(config, model) == "supported"
+
+    @staticmethod
+    def _image_input_status_message(status: str, model_label: str = "") -> str:
+        model = f"当前模型{model_label}"
+        messages = {
+            "disabled": f"{model}已在配置中关闭原生图片输入。",
+            "unsupported": f"{model}的当前接口经检测不支持原生图片输入。",
+        }
+        return messages.get(status, f"尚未确认{model}的接口是否支持原生图片输入。")
+
+    @staticmethod
+    def _native_image_input_status(config: dict[str, Any], model: Any | None) -> str:
+        """Read a status snapshot; never start or wait for a probe here."""
         # Per-model declaration (``supports_vision`` on ModelClientConfig) takes
         # priority over the global react config and the probe cache.
         if model is not None:
@@ -6950,12 +6972,16 @@ class JiuWenSwarmDeepAdapter:
             if mcc is not None:
                 supports_vision = getattr(mcc, "supports_vision", None)
                 if isinstance(supports_vision, bool):
-                    return supports_vision
+                    return "supported" if supports_vision else "disabled"
 
         configured = config.get("enable_read_image_multimodal")
         if isinstance(configured, bool):
-            return configured
-        return get_cached_image_support(model) is True
+            return "supported" if configured else "disabled"
+        supported = get_cached_image_support(model)
+        if isinstance(supported, bool):
+            return "supported" if supported else "unsupported"
+        # None is inconclusive; the existing cache does not expose a reason.
+        return "unknown"
 
     @staticmethod
     def _resolve_enable_read_image_multimodal(
@@ -15292,14 +15318,16 @@ class JiuWenSwarmDeepAdapter:
                 request,
                 inputs,
             )
-            enable_read_image_multimodal = self._native_image_input_enabled(
+            image_input_status = self._native_image_input_status(
                 self._config_cache,
                 resolved_model,
             )
+            enable_read_image_multimodal = image_input_status == "supported"
             inputs = self._prepare_react_image_tool_prompt(
                 request,
                 inputs,
                 enable_read_image_multimodal=enable_read_image_multimodal,
+                image_input_status=image_input_status,
                 vision_tool_available=(
                     getattr(self, "_vision_model_config", None) is not None
                 ),
@@ -15821,13 +15849,15 @@ class JiuWenSwarmDeepAdapter:
             if rewrite_turn_text:
                 inputs["query"] = team_turn.text
             inputs = self._prepare_multimodal_image_inputs(request, inputs)
-            enable_read_image_multimodal = self._native_image_input_enabled(
+            image_input_status = self._native_image_input_status(
                 self._config_cache,
                 resolved_model,
             )
+            enable_read_image_multimodal = image_input_status == "supported"
             image_tool_fallback_notice = self._build_image_tool_fallback_notice(
                 request,
                 enable_read_image_multimodal=enable_read_image_multimodal,
+                image_input_status=image_input_status,
                 model=resolved_model,
                 vision_tool_available=(
                     getattr(self, "_vision_model_config", None) is not None
@@ -15840,6 +15870,7 @@ class JiuWenSwarmDeepAdapter:
                 vision_tool_available=(
                     getattr(self, "_vision_model_config", None) is not None
                 ),
+                image_input_status=image_input_status,
             )
             if rewrite_turn_text:
                 inputs[TEAM_USER_TURN_KEY] = team_turn.with_text(inputs["query"])
@@ -16278,14 +16309,16 @@ class JiuWenSwarmDeepAdapter:
                 request,
                 inputs,
             )
-            enable_read_image_multimodal = self._native_image_input_enabled(
+            image_input_status = self._native_image_input_status(
                 self._config_cache,
                 resolved_model,
             )
+            enable_read_image_multimodal = image_input_status == "supported"
             image_tool_fallback_notice = self._build_image_tool_fallback_notice(
                 request,
                 enable_read_image_multimodal=enable_read_image_multimodal,
                 model=resolved_model,
+                image_input_status=image_input_status,
                 vision_tool_available=(
                     getattr(self, "_vision_model_config", None) is not None
                 ),
@@ -16297,6 +16330,7 @@ class JiuWenSwarmDeepAdapter:
                 vision_tool_available=(
                     getattr(self, "_vision_model_config", None) is not None
                 ),
+                image_input_status=image_input_status,
             )
             if image_tool_fallback_notice is not None:
                 yield AgentResponseChunk(
