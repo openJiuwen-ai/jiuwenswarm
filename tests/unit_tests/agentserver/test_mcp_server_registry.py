@@ -551,6 +551,118 @@ async def test_chat_empty_list_without_office_claw_skips() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_request_mcp_office_claw_routed_to_identity_pinned(monkeypatch) -> None:
+    """Regression: relay fallback branch places office-claw in request_mcp_servers
+    without an office_claw_mcp field. Source-2 must route that connector through
+    identity-pinned registration so office_claw_* tools (e.g. scheduled-task
+    tools) actually register — never silently become 'no tools'."""
+
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    _stub_office_claw_system_tools(
+        monkeypatch,
+        tools=[
+            {
+                "name": "office_claw_post_message",
+                "description": "post",
+                "input_params": {},
+            },
+            {
+                "name": "office_claw_register_scheduled_task",
+                "description": "schedule",
+                "input_params": {},
+            },
+        ],
+    )
+
+    generic_discover_calls: list[str] = []
+
+    async def generic_discover(name, config):
+        generic_discover_calls.append(name)
+        return (
+            [{"name": "unexpected_generic_tool", "description": "x", "input_params": {}}],
+            {"_mcp_client_type": "stdio", "command": "node", "args": ["x.js"]},
+        )
+
+    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", generic_discover)
+
+    adapter = _bare_session_adapter()
+    request = AgentRequest(
+        request_id="r1",
+        channel_id="officeclaw",
+        session_id="s1",
+        params={
+            "request_mcp_servers": {
+                "mcpServers": {
+                    "office-claw": {
+                        "command": "node",
+                        "args": ["mcp.js"],
+                        "cwd": "/tmp",
+                        "env": {"OFFICE_CLAW_INVOCATION_ID": "inv-1"},
+                    }
+                }
+            }
+        },
+    )
+    result = await adapter.register_request_scoped_office_claw_mcp(request)
+    assert result is not None
+    assert "office_claw_post_message" in result.tool_names
+    assert "office_claw_register_scheduled_task" in result.tool_names
+    assert "unexpected_generic_tool" not in result.tool_names
+    assert result.invocation_id == "inv-1"
+    assert generic_discover_calls == [], (
+        "office-claw must not be discovered via the generic "
+        "list_request_mcp_server_tools path when Source-1 is absent"
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_request_mcp_office_claw_failure_logs_error(monkeypatch) -> None:
+    """If identity-pinned registration for a Source-2 office-claw connector
+    fails, the agent must lose the tools with an ERROR (not silent 'no tools')."""
+
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+
+    def bad_validate(config, **_kwargs):
+        raise ValueError("simulated identity validation failure")
+
+    monkeypatch.setattr(interface_deep, "validate_office_claw_mcp_config", bad_validate)
+
+    generic_discover_calls: list[str] = []
+
+    async def generic_discover(name, config):
+        generic_discover_calls.append(name)
+        return ([], {"_mcp_client_type": "stdio"})
+
+    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", generic_discover)
+
+    adapter = _bare_session_adapter()
+    request = AgentRequest(
+        request_id="r1",
+        channel_id="officeclaw",
+        session_id="s1",
+        params={
+            "request_mcp_servers": {
+                "mcpServers": {
+                    "office-claw": {
+                        "command": "node",
+                        "args": ["mcp.js"],
+                        "cwd": "/tmp",
+                    }
+                }
+            }
+        },
+    )
+    result = await adapter.register_request_scoped_office_claw_mcp(request)
+    assert result is None
+    assert generic_discover_calls == [], (
+        "office-claw Source-2 must never fall back to the generic path; "
+        "we should fail loud (no silent generic discovery)"
+    )
+
+
+@pytest.mark.asyncio
 async def test_chat_empty_list_keeps_leftover_pptx(monkeypatch) -> None:
     resource_manager = _ResourceManager()
     monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
