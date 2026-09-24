@@ -43,6 +43,8 @@ _TITLE_MAX_LEN = 50
 # 心跳任务会话目录前缀，不参与 session.list 等列表展示
 _HEARTBEAT_SESSION_PREFIX = "heartbeat_"
 _DELIVERY_KIND_SERVER_PUSH = "server_push"
+_CHANNEL_ID_LOCK_VERSION = 1
+_CHANNEL_ID_LOCK_VERSION_KEY = "channel_id_lock_version"
 
 
 def resolve_session_runtime_team_name(metadata: dict[str, Any] | None) -> str:
@@ -63,6 +65,58 @@ _INJECTED_TAG_START_RE = re.compile(
 
 def _has_valid_work_mode(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() in SUPPORTED_WORK_MODES
+
+
+def _is_first_lock_available(metadata: dict[str, Any], key: str) -> bool:
+    """Return whether a string metadata field has not been locked yet."""
+    value = metadata.get(key)
+    return not (isinstance(value, str) and value.strip())
+
+
+def _migrate_legacy_channel_id_lock(
+    session_id: str,
+    metadata: dict[str, Any],
+    *,
+    sessions_root: str | Path | None = None,
+) -> bool:
+    """Repair pre-lock channel ownership from the first persisted user turn.
+
+    Before channel ownership became first-write-wins, a later request from a
+    linked channel could overwrite ``metadata.channel_id``.  New sessions carry
+    a lock-version marker.  For an unmarked legacy session, use the earliest
+    user history record as the authoritative creation channel, then mark the
+    migration so later cross-channel traffic cannot change it again.
+
+    Returns ``True`` only when metadata changed.  If no usable user record is
+    available, leave the session unmarked so a later read can retry after the
+    asynchronous history writer has flushed the first turn.
+    """
+    if metadata.get(_CHANNEL_ID_LOCK_VERSION_KEY) == _CHANNEL_ID_LOCK_VERSION:
+        return False
+
+    try:
+        from jiuwenswarm.server.runtime.session.session_history import (
+            load_history_records,
+        )
+
+        records = load_history_records(
+            session_id,
+            sessions_root=str(sessions_root) if sessions_root is not None else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("迁移会话 %s 的 channel_id 失败: %s", session_id, exc)
+        return False
+
+    for record in records:
+        if record.get("role") not in {"user", "human"}:
+            continue
+        first_channel_id = record.get("channel_id")
+        if not isinstance(first_channel_id, str) or not first_channel_id.strip():
+            return False
+        metadata["channel_id"] = first_channel_id.strip()
+        metadata[_CHANNEL_ID_LOCK_VERSION_KEY] = _CHANNEL_ID_LOCK_VERSION
+        return True
+    return False
 
 
 # ── 惰性迁移:读取时推断缺失字段并回写磁盘 ──────────────────────────────────
@@ -168,7 +222,13 @@ def _apply_metadata_defaults_with_inference(
     metadata.setdefault("pin_order", 0)
     metadata.setdefault("status", "idle")
 
-    changed = False  # 是否有需要写盘的确定性推断
+    # 一次性修复旧版本中被后续跨通道请求覆写的会话归属。
+    # 即使批量读取关闭了普通字段回写，此迁移仍需持久化版本标记，
+    # 否则每次 session.list 都会重复读取 history，且无法真正完成一次性修复。
+    channel_lock_migrated = _migrate_legacy_channel_id_lock(
+        session_id, metadata, sessions_root=sessions_root
+    )
+    changed = channel_lock_migrated  # 是否有需要写盘的确定性推断
 
     # 惰性迁移:历史 .../agent/workspace 前缀重映射到 jiuwenclaw_workspace。
     # 与 project_dir 的"首次锁定不可改"语义不冲突:重映射前后指向同一逻辑目录,
@@ -249,7 +309,7 @@ def _apply_metadata_defaults_with_inference(
                         break
 
     # 确定性推断成功时异步写盘(不阻塞读路径)
-    if changed and enable_writeback:
+    if changed and (enable_writeback or channel_lock_migrated):
         try:
             _enqueue_write(
                 session_id,
@@ -899,6 +959,7 @@ def init_session_metadata(
     metadata = {
         "session_id": session_id,
         "channel_id": channel_id,
+        _CHANNEL_ID_LOCK_VERSION_KEY: _CHANNEL_ID_LOCK_VERSION,
         "user_id": user_id,
         "created_at": _current_timestamp(),
         "last_message_at": _current_timestamp(),
@@ -1015,6 +1076,7 @@ def update_session_metadata(
         metadata = {
             "session_id": session_id,
             "channel_id": channel_id or "",
+            _CHANNEL_ID_LOCK_VERSION_KEY: _CHANNEL_ID_LOCK_VERSION,
             "user_id": user_id or "",
             "created_at": _current_timestamp(),
             "last_message_at": _current_timestamp(),
@@ -1040,14 +1102,15 @@ def update_session_metadata(
             metadata["channel_metadata"] = channel_metadata
     else:
         # 更新现有元数据
+        _migrate_legacy_channel_id_lock(
+            session_id, metadata, sessions_root=root_s
+        )
         # channel_id：首次锁定——仅当磁盘值为空时写入，后续不覆盖
-        # （与 project_dir/project_id/cron_id/user_id/work_mode 一致语义，
+        # （与 project_dir/project_id/cron_id/work_mode 一致语义，
         # 避免联机共享会话被其他通道消息覆写归属通道）
-        if channel_id and not (
-            isinstance(metadata.get("channel_id"), str)
-            and metadata.get("channel_id", "").strip()
-        ):
+        if channel_id and _is_first_lock_available(metadata, "channel_id"):
             metadata["channel_id"] = channel_id
+            metadata[_CHANNEL_ID_LOCK_VERSION_KEY] = _CHANNEL_ID_LOCK_VERSION
         if user_id is not None:
             metadata["user_id"] = user_id
         if mode is not None and mode != "unknown":
@@ -1196,6 +1259,7 @@ def sync_session_request_metadata(
         metadata = {
             "session_id": session_id,
             "channel_id": channel_id or "",
+            _CHANNEL_ID_LOCK_VERSION_KEY: _CHANNEL_ID_LOCK_VERSION,
             "user_id": "",
             "created_at": now,
             "last_message_at": now,
@@ -1217,6 +1281,9 @@ def sync_session_request_metadata(
         }
         effective_project_dir = project_dir or None
     else:
+        _migrate_legacy_channel_id_lock(
+            session_id, metadata, sessions_root=root_s
+        )
         # 校验 project_dir：首次锁定 / 不一致告警不覆盖
         locked_project = metadata.get("project_dir")
         if isinstance(locked_project, str) and locked_project.strip():
@@ -1261,12 +1328,10 @@ def sync_session_request_metadata(
         if mode is not None and explicit_mode_provided:
             metadata["mode"] = mode
         # channel_id：首次锁定——仅当磁盘值为空时写入，后续不覆盖
-        # （与 project_dir/project_id/cron_id/user_id/work_mode 一致语义）
-        if channel_id and not (
-            isinstance(metadata.get("channel_id"), str)
-            and metadata.get("channel_id", "").strip()
-        ):
+        # （与 project_dir/project_id/cron_id/work_mode 一致语义）
+        if channel_id and _is_first_lock_available(metadata, "channel_id"):
             metadata["channel_id"] = channel_id
+            metadata[_CHANNEL_ID_LOCK_VERSION_KEY] = _CHANNEL_ID_LOCK_VERSION
         # last_message_at：仅 chat 轮次刷新。语义为「agent 最后输出时间」，
         # 只读 RPC 无 agent 输出，不应刷新——否则只读查询会把历史会话的排序时间
         # 刷新成「现在」，导致旧会话被置顶。
@@ -1472,6 +1537,7 @@ def set_session_delivery_context(
         metadata = {
             "session_id": session_id,
             "channel_id": normalized_channel_id,
+            _CHANNEL_ID_LOCK_VERSION_KEY: _CHANNEL_ID_LOCK_VERSION,
             "user_id": "",
             "created_at": _current_timestamp(),
             "last_message_at": _current_timestamp(),
@@ -1488,15 +1554,18 @@ def set_session_delivery_context(
             "status": "idle",
         }
     else:
+        _migrate_legacy_channel_id_lock(
+            session_id, metadata, sessions_root=root_s
+        )
         # channel_id：首次锁定——会话归属通道稳定，不被联机场景下其他通道的
         # server_push 覆写；delivery_context.channel_id 仍保持动态更新，
         # 供 build_server_push_message 路由异步推送（evolution watcher 等）到
         # 用户最近活动的通道。
-        if normalized_channel_id and not (
-            isinstance(metadata.get("channel_id"), str)
-            and metadata.get("channel_id", "").strip()
+        if normalized_channel_id and _is_first_lock_available(
+            metadata, "channel_id"
         ):
             metadata["channel_id"] = normalized_channel_id
+            metadata[_CHANNEL_ID_LOCK_VERSION_KEY] = _CHANNEL_ID_LOCK_VERSION
         metadata["last_message_at"] = _current_timestamp()
 
     delivery_context: dict[str, Any] = {

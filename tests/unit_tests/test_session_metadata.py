@@ -218,6 +218,91 @@ class TestUpdateSessionMetadata:
         assert data["message_count"] == 1
 
     @staticmethod
+    @pytest.mark.parametrize(
+        ("case_name", "stored_value"),
+        [("missing", None), ("empty", ""), ("non_string", 123)],
+    )
+    def test_channel_id_writes_when_first_lock_available(
+        sessions_dir, case_name, stored_value
+    ):
+        """空、缺失或非字符串的旧 channel_id 应由首个有效请求锁定。"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _METADATA_CACHE,
+            _METADATA_QUEUE,
+            init_session_metadata,
+            update_session_metadata,
+        )
+
+        session_id = f"sess_first_lock_{case_name}"
+        init_session_metadata(
+            session_id=session_id,
+            sessions_root=sessions_dir,
+        )
+        meta_path = sessions_dir / session_id / "metadata.json"
+        data = _read_json(meta_path)
+        data.pop("channel_id_lock_version", None)
+        if stored_value is None:
+            data.pop("channel_id", None)
+        else:
+            data["channel_id"] = stored_value
+        meta_path.write_text(json.dumps(data), encoding="utf-8")
+        _METADATA_CACHE.clear()
+
+        update_session_metadata(
+            session_id=session_id,
+            channel_id="web",
+            sessions_root=sessions_dir,
+        )
+        _METADATA_QUEUE.join()
+
+        assert _read_json(meta_path)["channel_id"] == "web"
+
+    @staticmethod
+    def test_legacy_channel_id_migrates_from_first_user_history(sessions_dir):
+        """升级后按首条用户记录恢复曾被跨通道请求覆写的会话归属。"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _METADATA_CACHE,
+            _METADATA_QUEUE,
+            get_session_metadata,
+            init_session_metadata,
+        )
+
+        session_id = "sess_legacy_channel_owner"
+        init_session_metadata(
+            session_id=session_id,
+            channel_id="web",
+            sessions_root=sessions_dir,
+        )
+        session_dir = sessions_dir / session_id
+        meta_path = session_dir / "metadata.json"
+        data = _read_json(meta_path)
+        data["channel_id"] = "feishu"
+        data.pop("channel_id_lock_version", None)
+        meta_path.write_text(json.dumps(data), encoding="utf-8")
+        records = [
+            {"role": "assistant", "channel_id": "feishu", "content": "ready"},
+            {"role": "user", "channel_id": "web", "content": "first"},
+            {"role": "user", "channel_id": "feishu", "content": "linked"},
+        ]
+        (session_dir / "history.json").write_text(
+            "\n".join(json.dumps(record) for record in records) + "\n",
+            encoding="utf-8",
+        )
+        _METADATA_CACHE.clear()
+
+        migrated = get_session_metadata(
+            session_id,
+            cache_bust=True,
+            sessions_root=sessions_dir,
+        )
+        _METADATA_QUEUE.join()
+
+        assert migrated["channel_id"] == "web"
+        persisted = _read_json(meta_path)
+        assert persisted["channel_id"] == "web"
+        assert persisted["channel_id_lock_version"] == 1
+
+    @staticmethod
     def test_fallback_create_when_no_metadata(sessions_dir):
         """外部渠道隐式创建 session 时,metadata 不存在,应自动创建"""
         from jiuwenswarm.server.runtime.session.session_metadata import (
