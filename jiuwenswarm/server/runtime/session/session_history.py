@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import datetime
+import enum
 import logging
 import json
 import os
@@ -114,6 +115,13 @@ BUFFER_FLUSH_INTERVAL = 5.0
 BUFFER_MAX_SIZE = 100
 PENDING_MAX_SECONDS = 2.0
 
+ERROR_DEDUP_ENABLED_ENV = "JIUWENSWARM_ERROR_DEDUP_ENABLED"
+ERROR_DEDUP_MAX_REPEATS_ENV = "JIUWENSWARM_ERROR_DEDUP_MAX_REPEATS"
+ERROR_DEDUP_STATE_MAX = 4096
+
+_dedup_lock = threading.Lock()
+_error_dedup_state: "OrderedDict[str, tuple[str, int]]" = OrderedDict()
+
 _buffer_lock = threading.Lock()
 _session_buffer: dict[str, dict[str, Any]] = {}
 _session_buffer_type: dict[str, str] = {}
@@ -133,6 +141,43 @@ _SHUTDOWN_DONE: bool = False
 def _is_ephemeral_heartbeat_session(session_id: str) -> bool:
     """Heartbeat sessions are one-shot and should not pollute history.json(l)."""
     return (session_id or "").startswith("heartbeat")
+
+
+class HistoryAppendStatus(enum.Enum):
+    """Outcome of :func:`append_history_record`.
+
+    Only :data:`SUPPRESSED_DUPLICATE` means the consecutive-error dedup
+    mechanism fired. The two :data:`SKIPPED_*` outcomes mean the record was
+    skipped for unrelated reasons (heartbeat session, empty payload) and
+    callers that wire-suppress on the dedup outcome MUST NOT treat those
+    as "duplicate suppressed".
+    """
+
+    PERSISTED = "persisted"
+    SKIPPED_HEARTBEAT = "skipped_heartbeat"
+    SKIPPED_EMPTY = "skipped_empty"
+    SUPPRESSED_DUPLICATE = "suppressed_duplicate"
+
+
+def _dedup_touch(session_id: str, fp: str, max_repeats: int) -> bool:
+    """Update state and return True if the caller should suppress.
+
+    Same fingerprint in the same session: bump it and suppress only once
+    the count exceeds ``max_repeats``. Different fingerprint (or first hit):
+    record and let the caller persist. Refreshes LRU recency either way.
+    """
+    with _dedup_lock:
+        state = _error_dedup_state.get(session_id)
+        if state is not None and state[0] == fp:
+            new_count = state[1] + 1
+            _error_dedup_state[session_id] = (fp, new_count)
+            _error_dedup_state.move_to_end(session_id)
+            return new_count > max_repeats
+        _error_dedup_state[session_id] = (fp, 1)
+        _error_dedup_state.move_to_end(session_id)
+        while len(_error_dedup_state) > ERROR_DEDUP_STATE_MAX:
+            _error_dedup_state.popitem(last=False)
+        return False
 
 
 def _has_persistable_assistant_payload(
@@ -1095,6 +1140,68 @@ def enrich_history_messages_session_id(
     return out
 
 
+def _error_fingerprint(content: str) -> str:
+    """归一化错误文本为去重指纹：折叠空白、去掉首尾空白。"""
+    return re.sub(r"\s+", " ", (content or "")).strip()
+
+
+def _is_error_like(event_type: str | None, content_text: str) -> bool:
+    """判断一条 assistant 记录是否是“错误类”记录，用于连续错误抑制。"""
+    et = str(event_type or "").strip()
+    if et == "chat.error":
+        return True
+    # Gateway 本地兜底（Path B）用 chat.final 携带 cron 失败文本。
+    if et == "chat.final" and "[cron] 任务执行失败" in (content_text or ""):
+        return True
+    return False
+
+
+def et_is_round_final(event_type: str | None) -> bool:
+    """Whether this assistant record marks the end of a successful round.
+
+    Only :data:`chat.final` (the success-final emitted by the harness)
+    resets the dedup state. ``chat.tool_call`` / ``chat.tool_result`` /
+    ``chat.file`` events mid-round were the previous reset trigger; that
+    was wrong because a tick that fails partway through (e.g. agent ran a
+    tool then hit a network error) would have every intermediate event
+    wipe the suppression and bubble the next tick's identical error.
+    """
+    return str(event_type or "").strip() == "chat.final"
+
+
+def should_suppress_duplicate_error(
+    session_id: str, event_type: str | None, content_text: str
+) -> bool:
+    """Consecutive-identical-error suppression.
+
+    Returns True only when the caller should suppress (skip persist and
+    skip wire emission). Non-error records or a disabled env var return
+    False.
+    """
+    if not _is_error_like(event_type, content_text):
+        return False
+    if os.getenv(ERROR_DEDUP_ENABLED_ENV, "1") != "1":
+        return False
+    try:
+        max_repeats = int(os.getenv(ERROR_DEDUP_MAX_REPEATS_ENV, "1") or "1")
+    except (TypeError, ValueError):
+        max_repeats = 1
+    fp = _error_fingerprint(content_text)
+    return _dedup_touch(session_id, fp, max_repeats)
+
+
+def reset_error_dedup(session_id: str) -> None:
+    """Clear the session's dedup state.
+
+    Called when a successful round ends (``chat.final``) or an interactive
+    user records a new message in the same session. Resets both the
+    fingerprint and count so the next identical error is treated as a
+    fresh occurrence and surfaces to the wire again.
+    """
+    with _dedup_lock:
+        _error_dedup_state.pop(session_id, None)
+
+
 def append_history_record(
     *,
     session_id: str,
@@ -1110,12 +1217,29 @@ def append_history_record(
     sessions_root: str | Path | None = None,
     task_id: str | None = None,
     subagent_id: str | None = None,
-) -> None:
-    """向指定 session 的 history.json 追加一条 JSONL 记录（可合并事件先缓冲）。"""
+    request: Any | None = None,
+) -> "HistoryAppendStatus":
+    """Append a JSONL record to ``history.json(l)`` for the given session.
+
+    Returns a :class:`HistoryAppendStatus` enum describing the outcome:
+    :data:`PERSISTED` (record was written or queued), :data:`SKIPPED_HEARTBEAT`
+    (heartbeat session), :data:`SKIPPED_EMPTY` (assistant payload had nothing
+    worth persisting), :data:`SUPPRESSED_DUPLICATE` (consecutive identical
+    error was deduped — see :func:`should_suppress_duplicate_error`).
+    Callers that gate wire-level suppression on this function must branch
+    on :data:`SUPPRESSED_DUPLICATE` specifically; the other ``SKIPPED_*``
+    outcomes mean the record was skipped for unrelated reasons and must
+    still flow normally to consumers.
+
+    ``request`` is used to detect cron/proactive ticks so the user-role
+    record written at the start of every facade request doesn't reset the
+    dedup counter for background flows. Pass the original AgentRequest
+    when available; otherwise user-role records are treated as interactive.
+    """
     sid = (session_id or "default").strip() or "default"
     if _is_ephemeral_heartbeat_session(sid):
         logger.debug("skip heartbeat session history: session_id=%s event_type=%s", sid, event_type)
-        return
+        return HistoryAppendStatus.SKIPPED_HEARTBEAT
     rid = str(request_id or "").strip()
     cid = str(channel_id or "").strip()
     role_norm = "assistant" if role == "assistant" else "user"
@@ -1130,7 +1254,21 @@ def append_history_record(
             sid,
             event_type or "",
         )
-        return
+        return HistoryAppendStatus.SKIPPED_EMPTY
+
+    if role_norm == "assistant":
+        if _is_error_like(event_type, content_text):
+            if should_suppress_duplicate_error(sid, event_type, content_text):
+                logger.info(
+                    "suppressed duplicate error history: session_id=%s event_type=%s",
+                    sid,
+                    event_type,
+                )
+                return HistoryAppendStatus.SUPPRESSED_DUPLICATE
+        elif et_is_round_final(event_type):
+            reset_error_dedup(sid)
+    elif role_norm == "user":
+        pass  # user records never reset dedup — see should_suppress_duplicate_error
 
     item: dict[str, Any] = {
         "id": f"{rid}:{role_norm}",
@@ -1219,6 +1357,8 @@ def append_history_record(
             )
     except Exception as exc:
         logger.warning("更新会话元数据失败: %s", exc)
+
+    return HistoryAppendStatus.PERSISTED
 
 
 def append_compact_history_records(
