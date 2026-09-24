@@ -104,6 +104,10 @@ spec:
               value: "<<AGENT_RUNTIME_PORT>>"
             - name: OPENJIUWEN_SERVICE_REDIS_URL
               value: "<<OPENJIUWEN_SERVICE_REDIS_URL>>"
+            - name: REDIS_USERNAME
+              # ACL 用户名；与 REDIS_PASSWORD（Secret envFrom 注入）配对，
+              # 由 bootstrap 作为 username kwarg 注入客户端。留空则走 default 用户
+              value: "<<REDIS_USERNAME>>"
             - name: OPENJIUWEN_SERVICE_REQUEST_TIMEOUT_SECONDS
               value: "<<AGENT_RUNTIME_REQUEST_TIMEOUT>>"
             - name: OPENJIUWEN_SERVICE_DB_TYPE
