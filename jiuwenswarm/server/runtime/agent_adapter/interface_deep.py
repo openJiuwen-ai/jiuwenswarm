@@ -1718,6 +1718,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             existing = self._session_adapters.get(sid)
             if existing is not None:
                 await self._reload_session_adapter_if_stale(sid, existing)
+                # 预热实例的 create 期专家重放早于 metadata 写入（空放）；
+                # 复用前对账补挂（一次性、幂等，详见 expert_capability）。
+                reconcile = getattr(existing, "_reconcile_expert_binding_on_reuse", None)
+                if callable(reconcile):
+                    await reconcile()
                 try:
                     from jiuwenswarm.agents.harness.common.session_ops_service import (
                         refresh_session_context_if_stale,

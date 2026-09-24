@@ -135,6 +135,7 @@ class _ExpertAssemblyExtension:
             if hasattr(adapter, "_expert_load_record"):
                 adapter._expert_load_record = None
                 adapter._current_expert_id = None
+                adapter._expert_reuse_reconciled = False
             return
         if point is AssemblyPoint.AFTER_INSTANCE_READY:
             # 专家（仅 session 级子适配器）：按 session metadata 重放，

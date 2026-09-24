@@ -47,19 +47,33 @@ class IdentityRail(DeepAgentRail):
     4. If not, add the default identity section back.
 
     This ensures the agent always reflects the latest IDENTITY.md state.
+
+    Yield rule (expert persona guard): the rail only manages identity sections
+    it recognizes — the default static identity (same factory as
+    ``build_shared_identity_section``) or one installed by itself from
+    IDENTITY.md.  If the current identity section is anything else (e.g. an
+    expert persona hot-bound via ``load_agent_template`` with
+    ``replace_existing=True``), the rail leaves it untouched: IDENTITY.md is
+    meant to win over the *default* assistant identity, never over an
+    explicitly loaded expert.  After the expert is unloaded, the unbind
+    snapshot restore brings back a rail-managed section and the rail resumes.
     """
 
     def __init__(
-        self,
-        *,
-        language: str = "en",
-        identity_md_path: str | None = None,
+            self,
+            *,
+            language: str = "en",
+            identity_md_path: str | None = None,
     ) -> None:
         super().__init__()
         self._language: str = language
         self._identity_md_path: str | None = identity_md_path
         self._system_prompt_builder = None
         self._default_section: PromptSection | None = None
+        # 本 rail 从 IDENTITY.md 装上的 identity section 内容（判等用）；
+        # 与 _default_section 一起构成「可覆盖」集合，其余 identity 一律让路。
+        self._installed_section_content: dict | None = None
+        self._foreign_identity_yield_logged = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -109,24 +123,49 @@ class IdentityRail(DeepAgentRail):
         if self._system_prompt_builder is None:
             return
 
+        current = self._system_prompt_builder.get_section(_SECTION_NAME)
+        if current is not None and not self._is_managed_identity(current):
+            # 专家 persona 等显式绑定的 identity：只让 IDENTITY.md 赢过默认身份，
+            # 不赢过显式装载的专家——整段让路，专家在场期间不干预。
+            if not self._foreign_identity_yield_logged:
+                self._foreign_identity_yield_logged = True
+                logger.info(
+                    "[IdentityRail] identity section held by an external binding "
+                    "(e.g. expert persona); yield until it is released"
+                )
+            return
+
         self._system_prompt_builder.remove_section(_SECTION_NAME)
 
         content = self._read_identity_md()
 
         if content:
-            self._system_prompt_builder.add_section(
-                PromptSection(
-                    name=_SECTION_NAME,
-                    content={self._language: content},
-                    priority=_SECTION_PRIORITY,
-                )
+            section = PromptSection(
+                name=_SECTION_NAME,
+                content={self._language: content},
+                priority=_SECTION_PRIORITY,
             )
+            self._system_prompt_builder.add_section(section)
+            self._installed_section_content = dict(section.content)
         elif self._default_section is not None:
+            self._installed_section_content = None
             self._system_prompt_builder.add_section(self._default_section)
+        else:
+            self._installed_section_content = None
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _is_managed_identity(self, section: PromptSection) -> bool:
+        """该 identity section 是否归本 rail 管理（默认身份或自己装上的）。"""
+        if (
+                self._default_section is not None
+                and section.content == self._default_section.content
+        ):
+            return True
+        installed = self._installed_section_content
+        return installed is not None and section.content == installed
 
     def _resolve_identity_md_path(self) -> Path:
         if self._identity_md_path:

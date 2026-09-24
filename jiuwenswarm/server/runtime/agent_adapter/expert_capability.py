@@ -51,6 +51,10 @@ class ExpertCapabilityMixin:
     #    create_instance 重建时由宿主置 None）──
     _expert_load_record: Any = None
     _current_expert_id: str | None = None
+    # 复用对账一次性旗标：既有适配器复用分支的补重放只试一次
+    # （防包损坏时逐轮重试刷日志；恢复阀门是适配器驱逐重建）。
+    # 实例重建时由装配扩展（BEFORE_INSTANCE_READY）随专家态一并复位。
+    _expert_reuse_reconciled: bool = False
 
     @property
     def _expert_apply_lock(self) -> asyncio.Lock:
@@ -469,6 +473,48 @@ class ExpertCapabilityMixin:
                 exc,
             )
             self._write_expert_load_failure_notice(expert_id)
+
+    async def _reconcile_expert_binding_on_reuse(self) -> None:
+        """既有适配器复用时的专家绑定对账（预热洞修复）。
+
+        场景：session 级实例由后台预热提前建完（warm pool 的 prepare_session），
+        create_instance 尾部的专家重放跑在 session.create 写 metadata 之前而空放；
+        首问起 _get_or_create_session_adapter 走既有分支直接复用，重放永不补跑，
+        人设整段会话缺席。本方法由复用分支每轮调用：当前未挂专家但 metadata
+        有绑定时补一次重放。
+
+        一次性语义：成功则 _current_expert_id 置位、后续轮次属性检查即早退；
+        进入重放前即置 _expert_reuse_reconciled，失败（包损坏等）不逐轮重试——
+        与 create 期重放的一次性语义对齐。metadata.expert_id 能写入必先经过
+        fetch+校验（load_expert / session.create 判型），本地必有缓存包，
+        重放不触网。
+        """
+        if self._current_expert_id or self._expert_reuse_reconciled:
+            return
+        session_id = self._parent_session_id
+        if not session_id:
+            return
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+        try:
+            metadata = get_session_metadata(session_id)  # 缓存读，逐轮成本可忽略
+        except Exception:
+            return
+        expert_id = str((metadata or {}).get("expert_id") or "").strip()
+        if not expert_id:
+            return
+        # team 线冷构造不经此挂载（replay 内部对 expert_type=team 自带跳过），
+        # 这里提前拦掉省一次 cache_bust 读盘
+        if str((metadata or {}).get("expert_type") or "agent") == "team":
+            return
+        self._expert_reuse_reconciled = True
+        logger.info(
+            "[session_id=%s] [JiuWenSwarmDeepAdapter] 复用既有实例但专家未挂载，"
+            "补做重放: expert=%s（实例或为预热产物，create 期重放早于 metadata 写入）",
+            session_id, expert_id,
+        )
+        await self._replay_expert_from_metadata()
 
     def expert_switch_blocked(self, session_id: str | None) -> bool:
         """在 root 适配器上调用：该 session 正处于回合执行中则 True。
