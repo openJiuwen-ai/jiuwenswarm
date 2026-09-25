@@ -753,7 +753,7 @@ async def scrape_one_page(page, page_url: str, dismiss_cookie: bool = False) -> 
         # "commit" fires on the very first response byte — the earliest possible
         # signal. Sites like REI hang connections for "load"/"domcontentloaded"
         # when they detect a headless browser, but typically still send HTML bytes.
-        resp = await page.goto(page_url, wait_until="commit", timeout=common.OPERATION_TIMEOUT_SECONDS * 1000)
+        resp = await page.goto(page_url, wait_until="commit", timeout=common.PAGE_LOAD_TIMEOUT_SECONDS * 1000)
         if resp and resp.status >= 400:
             logger.warning("      [scrape] HTTP %d for %s", resp.status, page_url)
             return html, []

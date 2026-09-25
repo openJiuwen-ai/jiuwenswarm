@@ -167,6 +167,98 @@ _DANGEROUS_COMMAND_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
 ]
 
+# Every backend process (launcher, AgentServer, Gateway, Web) is a Python
+# interpreter, so killing Python by name takes the whole service down.
+# Matches python, python3.13, pythonw.exe, py.exe and python*.
+_PYTHON_IMAGE = r"(?:python|pythonw|py)[\d.]*(?:\.exe)?\*?"
+_PYTHON_KILL_BY_NAME = (
+    "blocked pattern: killing python processes by name also kills the JiuwenSwarm backend; "
+    "kill the specific PIDs your command started instead"
+)
+_PYTHON_NAME_KILL_PATTERNS = (
+    re.compile(
+        rf"\btaskkill\b[^\n\r;|&]*?/im\s+['\"]?\*?{_PYTHON_IMAGE}['\"]?(?=\s|$|[;&|])",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\btaskkill\b[^\n\r;|&]*?/fi\s+['\"]\s*imagename\s+eq\s+\*?{_PYTHON_IMAGE}(?=['\"\s]|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:stop-process|spps)\b[^\n\r;|&]*?-(?:name|processname)\s+['\"]?\*?{_PYTHON_IMAGE}['\"]?(?=\s|$|[;&|,)])",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:get-process|gps)\s+(?:-name\s+)?['\"]?\*?{_PYTHON_IMAGE}"
+        rf"['\"]?(?=\s|\|)[^\n\r;]*?\|\s*(?:stop-process|spps|kill)\b",
+        re.IGNORECASE,
+    ),
+    # Sub-expression form: Stop-Process -Id (Get-Process python).Id — the
+    # pipe pattern above never sees the `)` and there is no literal PID.
+    re.compile(
+        rf"\b(?:stop-process|spps)\b[^\n\r;|&]*\(\s*(?:get-process|gps)\s+"
+        rf"(?:-name\s+)?['\"]?\*?{_PYTHON_IMAGE}(?=['\"\s).,;|]|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:wmic|win32_process)\b[^\n\r]*?\bname\s*(?:=|like|-eq|-like|-match)\s*['\"]?%?\*?python"
+        r"[^\n\r]*?\b(?:delete|terminate)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:pkill|killall)\b(?:\s+-\S+)*\s+"
+        r"(?:'python[\d.]*w?'|\"python[\d.]*w?\"|python[\d.]*w?(?=$|[\s;&|]))",
+        re.IGNORECASE,
+    ),
+)
+_DANGEROUS_COMMAND_PATTERNS.extend((p, _PYTHON_KILL_BY_NAME) for p in _PYTHON_NAME_KILL_PATTERNS)
+
+# Kill-by-PID forms whose targets are checked against the backend processes.
+_TASKKILL_SEGMENT_RE = re.compile(r"\btaskkill\b[^\n\r;|&]*", re.IGNORECASE)
+_TASKKILL_PID_RE = re.compile(r"/pid\s+(\d+)", re.IGNORECASE)
+_TASKKILL_FI_PID_RE = re.compile(r"\bpid\s+eq\s+(\d+)", re.IGNORECASE)
+_STOP_PROCESS_IDS_RE = re.compile(
+    r"\b(?:stop-process|spps)\b(?:[^\n\r;|&]*?\s-id[:\s]*|\s+)(\d+(?:\s*,\s*\d+)*)\b",
+    re.IGNORECASE,
+)
+_GET_PROCESS_ID_PIPE_RE = re.compile(
+    r"\b(?:get-process|gps)\s+-id\s+(\d+(?:\s*,\s*\d+)*)[^\n\r;|&]*"
+    r"\|\s*(?:stop-process|spps|kill)\b",
+    re.IGNORECASE,
+)
+_WMIC_TERMINATE_PID_RE = re.compile(
+    r"\bwmic\b[^\n\r]*?\bprocessid\s*=\s*(\d+)[^\n\r]*?\b(?:terminate|delete)\b",
+    re.IGNORECASE,
+)
+_CIM_PROCESSID_RE = re.compile(r"\bprocessid\s*=\s*'?(\d+)", re.IGNORECASE)
+# Shell words, keeping separators as standalone tokens so the POSIX kill
+# argument scan stops at `;`, `|` and `&`.
+_SHELL_TOKEN_RE = re.compile(r"[^\s;&|]+|[;&|]")
+_SIGSPEC_RE = re.compile(r"-(\d+)")
+# Largest signal number bash accepts as a `-N` sigspec; larger magnitudes are
+# negative-PID operands (`kill -9 -4242` targets a process group).
+_MAX_SIGNAL_NUMBER = 64
+
+_BACKEND_MODULES = (
+    "jiuwenswarm.app",
+    "jiuwenswarm.start_services",
+    "jiuwenswarm.server.app_agentserver",
+    "jiuwenswarm.gateway.app_gateway",
+    "jiuwenswarm.channels.web.app_web",
+)
+_BACKEND_SCRIPT_SUFFIXES = tuple(module.replace(".", "/") + ".py" for module in _BACKEND_MODULES)
+_BACKEND_ENTRY_POINTS = frozenset(
+    {
+        "jiuwenswarm-start",
+        "jiuwenswarm-app",
+        "jiuwenswarm-agentserver",
+        "jiuwenswarm-gateway",
+        "jiuwenswarm-web",
+        "jiuwenswarm-desktop",
+    }
+)
+_BACKEND_FLAGS = frozenset({"--desktop-run-agent", "--desktop-run-gateway"})
+
 _POWERSHELL_TOKENS = (
     "powershell ",
     "powershell.exe ",
@@ -272,7 +364,125 @@ def _check_command_safety(command: str) -> str | None:
     for pattern, message in _DANGEROUS_COMMAND_PATTERNS:
         if pattern.search(command):
             return message
-    return None
+    return _check_backend_pid_kill(command)
+
+
+def _posix_kill_pids(command: str) -> set[int]:
+    """PIDs a POSIX ``kill`` invocation would actually signal.
+
+    Mirrors bash's parsing: ``-0``/``-9``/``-TERM`` are sigspecs, ``-s SIG``
+    and ``-n NUM`` consume the next token, and the LAST sigspec wins — so
+    ``kill -0 -n 9 <pid>`` is a SIGKILL, not an existence probe. A negative
+    operand too large to be a signal number targets a process group.
+    Quoted forms (``bash -c 'kill -9 <pid>'``) are seen through because
+    tokens are stripped of surrounding quotes.
+    """
+    tokens = _SHELL_TOKEN_RE.findall(command)
+    pids: set[int] = set()
+    index = 0
+    while index < len(tokens):
+        word = tokens[index].strip("'\"")
+        if word != "kill" and not word.endswith(("/kill", "\\kill")):
+            index += 1
+            continue
+        index += 1
+        found: set[int] = set()
+        signal_is_zero = False
+        options_done = False
+        while index < len(tokens):
+            token = tokens[index].strip("'\"")
+            index += 1
+            if token in (";", "|", "&"):
+                break
+            if not options_done:
+                if token == "--":
+                    options_done = True
+                    continue
+                if token == "-l":  # `kill -l` lists signal names; no targets
+                    found.clear()
+                    break
+                if token in ("-s", "-n"):
+                    if index < len(tokens):
+                        signal_is_zero = tokens[index].strip("'\"") == "0"
+                        index += 1
+                    continue
+                sigspec = _SIGSPEC_RE.fullmatch(token)
+                if sigspec and int(sigspec.group(1)) <= _MAX_SIGNAL_NUMBER:
+                    signal_is_zero = sigspec.group(1) == "0"
+                    continue
+                if re.fullmatch(r"-[A-Za-z]+", token):  # -TERM / -SIGHUP
+                    signal_is_zero = False
+                    continue
+            operand = re.fullmatch(r"-?(\d+)", token)
+            if operand:
+                found.add(int(operand.group(1)))
+                continue
+            break  # job spec (%1) or any other word ends this invocation
+        if found and not signal_is_zero:
+            pids.update(found)
+    return pids
+
+
+def _kill_target_pids(command: str) -> set[int]:
+    pids: set[int] = _posix_kill_pids(command)
+    for segment in _TASKKILL_SEGMENT_RE.findall(command):
+        pids.update(int(pid) for pid in _TASKKILL_PID_RE.findall(segment))
+        pids.update(int(pid) for pid in _TASKKILL_FI_PID_RE.findall(segment))
+    for pattern in (_STOP_PROCESS_IDS_RE, _GET_PROCESS_ID_PIPE_RE):
+        for group in pattern.findall(command):
+            pids.update(int(pid) for pid in re.split(r"\s*,\s*", group))
+    pids.update(int(pid) for pid in _WMIC_TERMINATE_PID_RE.findall(command))
+    lowered = command.lower()
+    if "invoke-cimmethod" in lowered and "terminate" in lowered:
+        pids.update(int(pid) for pid in _CIM_PROCESSID_RE.findall(command))
+    return pids
+
+
+def _is_backend_cmdline(cmdline: Sequence[str]) -> bool:
+    for index, arg in enumerate(cmdline):
+        if arg in _BACKEND_FLAGS:
+            return True
+        if arg == "-m" and index + 1 < len(cmdline) and cmdline[index + 1] in _BACKEND_MODULES:
+            return True
+    # Script paths and entry-point names are only trusted in executable
+    # positions (the command word or the first two arguments). Scanning every
+    # argument made the agent's own shells unkillable whenever a command merely
+    # mentioned a backend file (`git diff -- jiuwenswarm/app.py`).
+    for index, arg in enumerate(cmdline[:3]):
+        if index and (arg.startswith("-") or any(ch.isspace() for ch in arg)):
+            continue
+        normalized = arg.replace("\\", "/")
+        if normalized.endswith(_BACKEND_SCRIPT_SUFFIXES):
+            return True
+        if normalized.rsplit("/", 1)[-1].lower().removesuffix(".exe") in _BACKEND_ENTRY_POINTS:
+            return True
+    return False
+
+
+def _backend_pids() -> set[int]:
+    """PIDs of this process, its ancestors and every JiuwenSwarm service process."""
+    import psutil
+
+    pids = {os.getpid()}
+    with contextlib.suppress(psutil.Error):
+        pids.update(parent.pid for parent in psutil.Process().parents())
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        if _is_backend_cmdline(proc.info.get("cmdline") or ()):
+            pids.add(proc.info["pid"])
+    return pids
+
+
+def _check_backend_pid_kill(command: str) -> str | None:
+    targets = _kill_target_pids(command)
+    if not targets:
+        return None
+    protected = sorted(targets & _backend_pids())
+    if not protected:
+        return None
+    return (
+        f"blocked: PID {', '.join(map(str, protected))} belongs to the JiuwenSwarm backend "
+        "or its launcher; kill only the processes your command started"
+    )
 
 
 # Options of `git worktree add` that consume the following token as a value.
