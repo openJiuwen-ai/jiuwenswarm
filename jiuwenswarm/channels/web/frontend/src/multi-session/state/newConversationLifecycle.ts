@@ -17,6 +17,7 @@ interface ConversationRuntimeSettings {
   selectedModelName: string | null;
   projectDir?: string | null;
   persistSession?: boolean;
+  preserveSelectedSkills?: boolean;
 }
 
 export type NewConversationEntrySettings = Pick<ConversationRuntimeSettings, 'mode' | 'selectedModelName'>;
@@ -65,6 +66,7 @@ export function resetNewConversationRuntime(settings: ConversationRuntimeSetting
     previousRuntime?.agentSelectionIntent.kind === 'select' ? previousRuntime.agentSelectionIntent : null;
   const preservedAgentGroupSelection =
     previousRuntime?.agentGroupSelectionIntent.kind === 'select' ? previousRuntime.agentGroupSelectionIntent : null;
+  const preservedSelectedSkills = settings.preserveSelectedSkills ? previousRuntime?.selectedSkills ?? [] : [];
   useChatStore.getState().removeRuntime(NEW_CONVERSATION_ID);
   useSessionStore.getState().removeRuntime(NEW_CONVERSATION_ID);
   useTodoStore.getState().removeRuntime(NEW_CONVERSATION_ID);
@@ -78,6 +80,9 @@ export function resetNewConversationRuntime(settings: ConversationRuntimeSetting
   if (preservedAgentGroupSelection) {
     useSessionStore.getState().setAgentGroupSelectionIntent(NEW_CONVERSATION_ID, preservedAgentGroupSelection);
   }
+  preservedSelectedSkills.forEach((skill) => {
+    useSessionStore.getState().addSelectedSkill(NEW_CONVERSATION_ID, skill);
+  });
   if (preservedDraft) {
     useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, preservedDraft);
   }
