@@ -10,11 +10,21 @@ import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
  *   useEvolution / useSkillToasts；发布与登录由公共 AssetPublishHost 承载
  * - 视图：SkillGraphTab / MarketplaceView / SkillDetailView；弹窗：UploadSkillModal / DocToSkillModal /
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import MoreIcon from '../../assets/work-mode/more-rimless.svg?react';
 import NewConversationIcon from '../../assets/new_conversation.svg?react';
-import { PageCard, PageHeader, PageToolbar, PageToolbarSearch, Tabs } from '../ui';
+import {
+  Button,
+  Dialog,
+  PageCard,
+  PageHeader,
+  PageToolbar,
+  PageToolbarSearch,
+  Tag,
+  Tabs,
+  type TagVariant,
+} from '../ui';
 import { webRequest } from '../../services/webClient';
 import { SourceManagerModal } from '../../features/SourceManagerModal';
 import { SkillNetSearchModal } from '../../features/SkillNetSearchModal';
@@ -66,6 +76,43 @@ const MY_SKILLS_EMPTY_KEY: Record<'all' | 'enabled' | 'disabled' | 'builtin', st
   disabled: 'skills.noDisabledSkills',
   builtin: 'skills.noBuiltinSkills',
 };
+
+export type VetFinding = {
+  category: string;
+  severity: string;
+  file: string;
+  line: number;
+  evidence: string;
+  rule_id: string;
+};
+
+type PendingVet = {
+  name: string;
+  grade: string;
+  contentHash: string;
+  token: string;
+  findings: VetFinding[];
+};
+
+const VET_EVIDENCE_MAX_LENGTH = 280;
+
+function truncateVetEvidence(evidence: string): string {
+  return evidence.length > VET_EVIDENCE_MAX_LENGTH ? `${evidence.slice(0, VET_EVIDENCE_MAX_LENGTH)}…` : evidence;
+}
+
+function vetGradeBadgeVariant(grade: string): TagVariant {
+  switch (grade.toUpperCase()) {
+    case 'EXTREME':
+    case 'HIGH':
+      return 'danger';
+    case 'MEDIUM':
+      return 'warning';
+    case 'LOW':
+      return 'success';
+    default:
+      return 'neutral';
+  }
+}
 
 function MySkillsGroupHeader({ label }: { label: string }) {
   return (
@@ -192,6 +239,11 @@ export function SkillPanel({
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
   const [synthesizeTooltip, setSynthesizeTooltip] = useState<{ left: number; top: number } | null>(null);
+
+  // 安全审查（skill-vetter）：待批准的启用拦截
+  const [pendingVet, setPendingVet] = useState<PendingVet | null>(null);
+  const [vetApproving, setVetApproving] = useState(false);
+  const vetDialogTitleId = useId();
 
   // 挂载/激活时序标记
   const prevIsActiveRef = useRef(isActive);
@@ -989,9 +1041,24 @@ export function SkillPanel({
           name: string;
           enabled: boolean;
           detail?: string;
+          code?: string;
+          grade?: string;
+          content_hash?: string;
+          token?: string;
+          findings?: VetFinding[];
         }>('skills.toggle', withSession({ name: skillName, enabled: newEnabled }));
 
         if (!result.success) {
+          if (result.code === 'SKILL_VET_BLOCKED') {
+            setPendingVet({
+              name: skillName,
+              grade: result.grade ?? 'HIGH',
+              contentHash: result.content_hash ?? '',
+              token: result.token ?? '',
+              findings: result.findings ?? [],
+            });
+            return;
+          }
           throw new Error(result.detail || 'Failed to toggle skill');
         }
 
@@ -1020,6 +1087,46 @@ export function SkillPanel({
     [skills, selectedSkill, isSkillPackage, fetchSkills, withSession, showMessage, t],
   );
 
+  const handleCancelVet = useCallback(() => {
+    setPendingVet(null);
+  }, []);
+
+  const handleApproveVet = useCallback(async () => {
+    if (!pendingVet || vetApproving) return;
+    const { name, contentHash, token } = pendingVet;
+    setVetApproving(true);
+    try {
+      const approveResult = await webRequest<{ success: boolean; detail?: string }>(
+        'skills.vet-approve',
+        withSession({ name, content_hash: contentHash, token }),
+      );
+      if (!approveResult.success) {
+        throw new Error(approveResult.detail || t('skills.setEnabledError'));
+      }
+
+      const toggleResult = await webRequest<{ success: boolean; detail?: string }>(
+        'skills.toggle',
+        withSession({ name, enabled: true }),
+      );
+      if (!toggleResult.success) {
+        throw new Error(toggleResult.detail || t('skills.setEnabledError'));
+      }
+
+      setSkills((prev) => prev.map((s) => (s.name === name ? { ...s, enabled: true } : s)));
+
+      if (selectedSkill && selectedSkill.name === name) {
+        setSelectedSkill({ ...selectedSkill, enabled: true });
+      }
+
+      setPendingVet(null);
+    } catch (error) {
+      console.error('Failed to approve and enable skill:', error);
+      showMessage('error', t('skills.setEnabledError'));
+    } finally {
+      setVetApproving(false);
+    }
+  }, [pendingVet, vetApproving, selectedSkill, withSession, showMessage, t]);
+
   const renderMySkillCard = (skill: SkillItem) => {
     const displayName = skill.display_name || skill.name;
     const isDisabled = skill.enabled === false;
@@ -1030,35 +1137,53 @@ export function SkillPanel({
     const isPackBlocked = isPackage && (skill.blocked_members?.length ?? 0) > 0;
     const listKey = skill.path || `${skill.source || 'local'}:${skill.name}`;
 
-    const titleEndContent = skill.has_evolutions ? (
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          handleOpenSkill(skill.name);
-          setDetailTab('experience');
-        }}
-        className="relative shrink-0 w-5 h-5 flex items-center justify-center text-text-muted hover:text-text"
-        title={t('skills.actions.viewEvolution')}
-        data-testid="skill-panel-my-skill-card-evolution-btn"
+    const grade = skill.grade ?? (pendingVet?.name === skill.name ? pendingVet.grade : undefined);
+    const gradeBadge = grade ? (
+      <Tag
+        variant={vetGradeBadgeVariant(grade)}
+        className="shrink-0"
+        data-testid="skill-panel-vet-grade-badge"
+        data-variant={skill.name}
       >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="lucide lucide-bell-dot-icon lucide-bell-dot"
-        >
-          <path d="M10.268 21a2 2 0 0 0 3.464 0" />
-          <path d="M11.68 2.009A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673c-.824-.85-1.678-1.731-2.21-3.348" />
-          <circle cx="18" cy="5" r="3" />
-        </svg>
-      </button>
-    ) : undefined;
+        {t('skills.vet.badge', { grade })}
+      </Tag>
+    ) : null;
+
+    const titleEndContent =
+      gradeBadge || skill.has_evolutions ? (
+        <>
+          {gradeBadge}
+          {skill.has_evolutions ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleOpenSkill(skill.name);
+                setDetailTab('experience');
+              }}
+              className="relative shrink-0 w-5 h-5 flex items-center justify-center text-text-muted hover:text-text"
+              title={t('skills.actions.viewEvolution')}
+              data-testid="skill-panel-my-skill-card-evolution-btn"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="lucide lucide-bell-dot-icon lucide-bell-dot"
+              >
+                <path d="M10.268 21a2 2 0 0 0 3.464 0" />
+                <path d="M11.68 2.009A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673c-.824-.85-1.678-1.731-2.21-3.348" />
+                <circle cx="18" cy="5" r="3" />
+              </svg>
+            </button>
+          ) : null}
+        </>
+      ) : undefined;
 
     const labelTags: string[] = [];
     if (skill.skill_type === 'swarm_skill') {
@@ -1412,6 +1537,78 @@ export function SkillPanel({
           onCreateFromKnowledge={handleCreateFromKnowledge}
           onClose={() => setDocToSkillModalOpen(false)}
         />
+      )}
+      {/* 安全审查拦截弹窗（skill-vetter）：HIGH/EXTREME 技能需批准后才能启用 */}
+      {pendingVet && (
+        <Dialog open titleId={vetDialogTitleId} closeDisabled={vetApproving} onCancel={handleCancelVet}>
+          <div className="p-5" data-testid="skill-panel-vet-blocked-modal">
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <h3
+                id={vetDialogTitleId}
+                className="text-lg font-semibold text-text-strong"
+                data-testid="skill-panel-vet-blocked-title"
+              >
+                {t('skills.vet.blockedTitle')}
+              </h3>
+              <Tag variant={vetGradeBadgeVariant(pendingVet.grade)} data-testid="skill-panel-vet-blocked-grade-badge">
+                {t('skills.vet.badge', { grade: pendingVet.grade })}
+              </Tag>
+            </div>
+            <p className="text-sm text-text-muted mb-5" data-testid="skill-panel-vet-blocked-body">
+              {t('skills.vet.blockedBody', { grade: pendingVet.grade })}
+            </p>
+            <div className="mb-5">
+              <div className="mb-2 text-sm font-medium text-text-strong">{t('skills.vet.findingsTitle')}</div>
+              {pendingVet.findings.length === 0 ? (
+                <p className="text-sm text-text-muted" data-testid="skill-panel-vet-no-findings">
+                  {t('skills.vet.noFindings')}
+                </p>
+              ) : (
+                <ul
+                  className="max-h-64 overflow-y-auto rounded-md border border-border bg-panel"
+                  data-testid="skill-panel-vet-findings"
+                >
+                  {pendingVet.findings.map((finding, index) => (
+                    <li
+                      key={`${finding.rule_id}-${finding.file}-${finding.line}-${index}`}
+                      className="border-b border-border p-2 text-sm last:border-b-0"
+                      data-testid="skill-panel-vet-finding"
+                      data-variant={finding.rule_id}
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Tag variant={vetGradeBadgeVariant(finding.severity)}>{finding.severity}</Tag>
+                        <span className="font-mono text-xs text-text-muted">
+                          {finding.file}:{finding.line}
+                        </span>
+                        <span className="font-mono text-xs text-text-muted">{finding.rule_id}</span>
+                      </div>
+                      <p className="mt-1 break-words text-text">{truncateVetEvidence(finding.evidence)}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="flex justify-end gap-3">
+              <Button
+                size="sm"
+                disabled={vetApproving}
+                onClick={handleCancelVet}
+                data-testid="skill-panel-vet-cancel-btn"
+              >
+                {t('skills.vet.cancel')}
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                loading={vetApproving}
+                onClick={handleApproveVet}
+                data-testid="skill-panel-vet-approve-btn"
+              >
+                {t('skills.vet.approve')}
+              </Button>
+            </div>
+          </div>
+        </Dialog>
       )}
       {synthesizeTooltip && <TopAnchorTooltip pos={synthesizeTooltip} text={t('skills.actions.synthesizeTooltip')} />}
     </>

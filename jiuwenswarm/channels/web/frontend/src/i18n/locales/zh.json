@@ -2087,6 +2087,15 @@
       "skillRetrieval": "技能检索",
       "skillGraph": "技能图谱"
     },
+    "vet": {
+      "blockedTitle": "需要安全审查",
+      "blockedBody": "该技能安全扫描等级为 {{grade}}，启用前请查看审查结果。",
+      "approve": "批准并启用",
+      "cancel": "取消",
+      "badge": "{{grade}}",
+      "findingsTitle": "审查结果",
+      "noFindings": "未发现风险项。"
+    },
     "mySkillsTabs": {
       "all": "全部",
       "enabled": "启用",

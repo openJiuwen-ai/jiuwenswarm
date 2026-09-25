@@ -50,6 +50,8 @@ export type SkillItem = {
   requested_enabled?: boolean;
   /** 技能包：阻止整包可用的成员列表 */
   blocked_members?: SkillPackBlockedMember[];
+  /** 安全扫描等级（skill-vetter）：LOW | MEDIUM | HIGH | EXTREME */
+  grade?: string;
 };
 
 /** 技能包中被阻塞的成员（skills.list / skills.get / skills.toggle 返回） */
