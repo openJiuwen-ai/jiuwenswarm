@@ -709,3 +709,204 @@ async def test_goal_steering_uses_real_adapter_stream_and_closes_after_clear(tmp
             await asyncio.gather(reader, return_exceptions=True)
         await agent.stop()
         await Runner.stop()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial_delivery", ["human", "idle_steer"])
+async def test_mailbox_steer_reaches_running_runtime_sdk_with_agent_provenance(tmp_path, monkeypatch, initial_delivery):
+    """Real mailbox -> AgentServer -> Runtime -> adapter -> locked SDK loop."""
+    from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
+        SessionMessagingRoute, SessionMessagingRouteRail, SessionMessagingToolkit,
+        bind_session_messaging_route, reset_session_messaging_route,
+        with_session_messaging_route, current_session_messaging_route,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions.root_context import extract_permission_user_content
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+    from jiuwenswarm.runtime.service import AgentRuntime
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.runtime.session.session_message_service import SessionMessageService, SessionMessageSource
+    from jiuwenswarm.server.runtime.session.session_message_store import SessionMessageStore
+    import jiuwenswarm.server.agent_ws_server as server_module
+    import jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit as toolkit_module
+
+    await Runner.start()
+    from openjiuwen.core.foundation.tool import LocalFunction
+    inherited_routes = []
+    async def probe_route():
+        inherited_routes.append(current_session_messaging_route())
+        return "route captured"
+    route_tool = LocalFunction(card=ToolCard(name="session_message_list", description="Inspect the inherited route", input_params={"type": "object", "properties": {}}), func=probe_route)
+    class CrossSessionModel(ScriptedModel):
+        async def invoke(self, messages, **kwargs):
+            response = await super().invoke(messages, **kwargs)
+            if len(self.messages) == 2:
+                response.tool_calls = [ToolCall(id="route-call", type="function", name="session_message_list", arguments="{}")]
+            return response
+    model, tool = CrossSessionModel(), GatedTool()
+    sdk = create_deep_agent(
+        model=model, tools=[tool, route_tool], rails=[SessionMessagingRouteRail()], workspace=str(tmp_path), enable_task_loop=True,
+        max_iterations=4, enable_model_anomaly_detection_rail=False,
+        enable_read_image_multimodal=False,
+    )
+    sid = f'sess_cross_steering_{uuid.uuid4().hex}'
+    session = create_agent_session(session_id=sid, card=sdk.card)
+    await session.pre_run(inputs={})
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance, adapter._parent_session_id = sdk, sid
+    adapter._is_session_scoped_adapter = True
+    await adapter.install_session_input_guard()
+    await sdk.start(session=session)
+    facade = JiuWenSwarm()
+    facade._adapter = adapter
+    chunks = []
+
+    class PreparedAgent:
+        deliver_session_input = facade.deliver_session_input
+        async def process_message_stream(self, req):
+            output = await sdk.attach_output()
+            assert output is not None
+            try:
+                initial = with_session_messaging_route({'query': req.params['query']}, SessionMessagingRoute(sid, req.request_id, 'owner'))
+                await sdk.send_input(SendInputRequest(request_id=req.request_id, inputs=initial))
+                yield AgentResponseChunk(request_id=req.request_id, channel_id=req.channel_id,
+                    payload={"event_type": "runtime.accepted"})
+                async for chunk in output:
+                    chunks.append(chunk)
+                yield AgentResponseChunk(request_id=req.request_id, channel_id=req.channel_id,
+                    payload={'event_type': 'chat.final', 'content': 'original completed'}, is_complete=True)
+            finally:
+                await output.close(abort_active_round=True)
+    prepared = PreparedAgent()
+    manager = SimpleNamespace(
+        cancel_all_inflight_work=AsyncMock(), cleanup=AsyncMock(),
+        begin_foreground_chat=AsyncMock(), end_foreground_chat=AsyncMock(),
+        create_session=AsyncMock(return_value=sid),
+        get_agent_for_session_nowait=Mock(return_value=prepared),
+    )
+    runtime = AgentRuntime(agent_manager=manager, initializer=AsyncMock(),
+        plan_controller=SimpleNamespace(ensure_state=AsyncMock(return_value=SimpleNamespace(events=[])),
+            check_post_process_exit=AsyncMock(return_value=[]), reset_session=Mock(), active_sessions=set()))
+    monkeypatch.setattr(runtime, '_prepare_chat_turn', AsyncMock(return_value=('agent', None, prepared)))
+    monkeypatch.setattr(runtime, 'describe_session', AsyncMock(return_value=SimpleNamespace(channel_id='web')))
+    await runtime._register_session(session_id=sid, channel_id='web')
+    server = object.__new__(AgentWebSocketServer)
+    server._execution_runtime = lambda: runtime
+    server.send_push = AsyncMock()
+    metadata = lambda session_id: {'session_id': session_id, 'title': 'Source Agent', 'user_id': 'owner', 'channel_id': 'web', 'mode': 'agent'}
+    monkeypatch.setattr(server_module, 'get_session_metadata', lambda session_id, **kw: metadata(session_id))
+    admission = SimpleNamespace(begin_session_message=AsyncMock(side_effect=AssertionError('steer must not request independent task admission')),
+        end_session_message=AsyncMock())
+    mailbox = SessionMessageService(store=SessionMessageStore(tmp_path / 'mailbox.sqlite3'), admission=admission, execute=server.execute_internal_session_message)
+    monkeypatch.setattr(mailbox, '_session_metadata', metadata)
+    runtime.set_session_message_service(mailbox)
+    server._session_message_service = mailbox
+    monkeypatch.setattr(server_module, 'enqueue_history_request_completion', lambda *a, **kw: None)
+    monkeypatch.setattr(server_module, 'build_server_push_message', lambda **kw: dict(kw))
+    original = AgentRequest(request_id='original', channel_id='web', session_id=sid, user_id='owner',
+        req_method=ReqMethod.CHAT_SEND, is_stream=True, params={'mode': 'agent', 'query': 'original task'})
+    async def collect():
+        return [event async for event in runtime.stream(original, trigger_hook=False)]
+    if initial_delivery == "idle_steer":
+        first = await mailbox.send_message(
+            SessionMessageSource(session_id='source-1', request_id='initial', tool_call_id='initial', idempotency_key='initial', user_id='owner'),
+            target_session_id=sid, message='original task', input_mode='steer',
+        )
+        async def await_initial():
+            while mailbox.store.get(first['message_id']).status in {'queued', 'running'}:
+                await asyncio.sleep(.01)
+            return mailbox.store.get(first['message_id'])
+        reader = asyncio.create_task(await_initial())
+    else:
+        reader = asyncio.create_task(collect())
+    try:
+        await asyncio.wait_for(tool.entered.wait(), 10)
+        context_token = set_runtime_context(runtime, manager)
+        route_token = bind_session_messaging_route(session_id='source-1', request_id='source-request', user_id='owner',
+            cross_session={'chain_id': 'chain-root', 'message_id': 'parent', 'hop_count': 1})
+        call_token = toolkit_module._SESSION_MESSAGING_TOOL_CALL_ID.set('cross-steer-call')
+        try:
+            receipt = await SessionMessagingToolkit().send_message(sid, 'CROSS_AGENT_ADJUSTMENT_731', input_mode='steer')
+        finally:
+            toolkit_module._SESSION_MESSAGING_TOOL_CALL_ID.reset(call_token)
+            reset_session_messaging_route(route_token)
+            reset_runtime_context(context_token)
+        assert receipt['accepted']
+        async def wait_delivered():
+            while mailbox.store.get(receipt['message_id']).status in {'queued', 'running'}:
+                await asyncio.sleep(.01)
+        await asyncio.wait_for(wait_delivered(), 10)
+        record = mailbox.store.get(receipt['message_id'])
+        assert record.status == 'delivered', record
+        assert not reader.done() and not tool.cancelled and len(model.messages) == 1
+        admission.begin_session_message.assert_not_called()
+        if initial_delivery == "human":
+            server.send_push.assert_not_called()
+        else:
+            assert mailbox.store.get(first['message_id']).status == 'running'
+            assert not any(call.args[0]['payload'].get('is_processing') is False for call in server.send_push.call_args_list)
+        tool.release.set()
+        events = await asyncio.wait_for(reader, 15)
+        if initial_delivery == "human":
+            assert any(event.payload and event.payload.get('event_type') == 'chat.final' for event in events)
+        else:
+            assert events.status == 'succeeded', events
+        assert mailbox.store.get(record.message_id).status == 'delivered'
+        prompt = next(str(message.content) for message in model.messages[-1] if 'CROSS_AGENT_ADJUSTMENT_731' in str(message.content))
+        assert 'cross_session_message' in prompt and 'internal_dispatch' in prompt
+        assert 'source-1' in prompt and record.message_id in prompt
+        assert extract_permission_user_content(prompt) is None
+        marker = next(chunk.payload for chunk in chunks if getattr(chunk, 'type', None) == 'session_input_received')
+        assert marker['message_origin'] == 'cross_session_agent'
+        assert marker['cross_session']['message_id'] == record.message_id
+        assert marker['cross_session']['source_tool_call_id'] == 'cross-steer-call'
+        assert marker['cross_session']['chain_id'] == 'chain-root'
+        assert inherited_routes[-1].chain_id == 'chain-root'
+        assert inherited_routes[-1].parent_message_id == record.message_id
+        assert inherited_routes[-1].hop_count == 2
+        assert not tool.cancelled
+    finally:
+        tool.release.set()
+        await mailbox.stop()
+        if not reader.done():
+            reader.cancel()
+        await asyncio.gather(reader, return_exceptions=True)
+        await sdk.stop()
+        await runtime.close()
+        await Runner.stop()
+
+@pytest.mark.asyncio
+async def test_sdk_model_tool_call_preserves_source_session_route(tmp_path):
+    from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
+        SessionMessagingRoute, SessionMessagingRouteRail, SessionMessagingToolkit,
+        with_session_messaging_route,
+    )
+    class SendingModel(ScriptedModel):
+        async def invoke(self, messages, **kwargs):
+            response = await super().invoke(messages, **kwargs)
+            if len(self.messages) == 1:
+                response.tool_calls = [ToolCall(id='source-tool-call', type='function', name='session_send_message',
+                    arguments=json.dumps({'target_session_id': 'target-1', 'message': 'adjust', 'input_mode': 'steer'}))]
+            return response
+    service = SimpleNamespace(send_message=AsyncMock(return_value={'accepted': True, 'status': 'queued'}))
+    tool = next(t for t in SessionMessagingToolkit(service).get_tools() if t.card.name == 'session_send_message')
+    await Runner.start()
+    sdk = create_deep_agent(model=SendingModel(), tools=[tool], rails=[SessionMessagingRouteRail()],
+        workspace=str(tmp_path), enable_task_loop=True, max_iterations=4,
+        enable_model_anomaly_detection_rail=False, enable_read_image_multimodal=False)
+    session = create_agent_session(session_id=f'route_{uuid.uuid4().hex}', card=sdk.card)
+    await session.pre_run(inputs={})
+    await sdk.ensure_initialized()
+    await sdk.start(session=session)
+    output = await sdk.attach_output()
+    try:
+        inputs = with_session_messaging_route({'query': 'send'}, SessionMessagingRoute('source-1', 'source-request', 'owner'))
+        await sdk.send_input(SendInputRequest(request_id='source-request', inputs=inputs))
+        async for _ in output:
+            pass
+        assert service.send_message.call_count == 1
+        source = service.send_message.call_args.args[0]
+        assert source.session_id == 'source-1'
+        assert source.tool_call_id == 'source-tool-call'
+    finally:
+        await output.close(abort_active_round=True)
+        await sdk.stop()
+        await Runner.stop()

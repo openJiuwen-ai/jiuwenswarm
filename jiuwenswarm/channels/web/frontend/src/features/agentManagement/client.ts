@@ -119,7 +119,9 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
           {
             ...(options.filter ? { filter: options.filter } : {}),
             ...(options.includeTeamCompatibility ? { include_team_compatibility: true } : {}),
+            ...(options.query ? { query: options.query } : {}),
           },
+          !options.query,
         );
 
         const items = (payload.templates || []).map((item) =>

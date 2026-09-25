@@ -112,6 +112,44 @@ async def test_five_calls_and_request_scope_cannot_be_forged(api):
 
 
 @pytest.mark.asyncio
+async def test_prepare_blocks_same_completed_version_until_force_is_enabled(api):
+    server, _, _ = api
+    metadata = {
+        "asset_name": "demo",
+        "version": "1.0.0",
+        "description": "First release",
+        "tags": [],
+    }
+    first = await server.call(
+        "prepare",
+        params(kind="skill", local_id="demo", metadata=metadata),
+        gateway_user="browser-user",
+    )
+    await server.call(
+        "commit",
+        params(draft_id=first["draft_id"], request_id="first-release"),
+        gateway_user="browser-user",
+    )
+    await server.service.wait_idle()
+
+    duplicate = await server.call(
+        "prepare",
+        params(kind="skill", local_id="demo", metadata=metadata),
+        gateway_user="browser-user",
+    )
+    assert duplicate["can_submit"] is False
+    assert duplicate["errors"] == [{"code": "VERSION_CONFLICT", "field": "version"}]
+
+    forced = await server.call(
+        "prepare",
+        params(kind="skill", local_id="demo", metadata=metadata, force=True),
+        gateway_user="browser-user",
+    )
+    assert forced["can_submit"] is True
+    assert forced["errors"] == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "extra",
     [

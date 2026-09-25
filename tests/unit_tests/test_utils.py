@@ -5,10 +5,12 @@
 # TEST ONLY: credential-shaped values are constructed synthetic fixtures and
 # URL literals use RFC-reserved domains; no external request is performed.
 
+import ast
 import importlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -166,6 +168,60 @@ class TestLoggerSetup:
         assert '\"authorization_outcome\":\"allow\"' not in sanitized
         assert '\"authorization_outcome\":\"deny\"' not in sanitized
         assert sanitized.count("******(fp:") == 2
+
+    @staticmethod
+    def test_log_sanitizer_handles_oversized_identifiers_in_linear_time():
+        """A 10KB session/run id must not trigger quadratic regex backtracking."""
+        raw = (
+            "session_id=" + "s" * 10_240
+            + " run_id=" + "x" * 10_240
+        )
+
+        started = time.perf_counter()
+        sanitized = utils._sanitize_log_text(raw)
+        elapsed = time.perf_counter() - started
+
+        assert sanitized == raw
+        assert elapsed < 1.0, f"log sanitization took {elapsed:.3f}s"
+
+    @staticmethod
+    def test_log_sanitizer_unclosed_quote_does_not_leak_next_line_secret():
+        """A truncated secret must not swallow a later line's masking.
+
+        The closing-quote lookup must not cross the newline: otherwise the
+        next line's value-opening quote is consumed as this value's closing
+        quote and that secret stays in plaintext.
+        """
+        raw = "'my_auth_token': 'oops-truncated\npassword_v2: 'hunter2'"
+
+        sanitized = utils._sanitize_log_text(raw)
+
+        assert "oops-truncated" not in sanitized
+        assert "hunter2" not in sanitized
+
+    @staticmethod
+    def test_log_sanitizer_unclosed_quote_masks_only_current_line():
+        """An unclosed quote masks to end of line; later lines stay readable.
+
+        Uses a quoted key so only the named-KV channel (not the earlier
+        unquoted-key pass) can match, exercising the unclosed-quote branch.
+        """
+        raw = "'user_token': 'abc\ncritical error detail: disk full"
+
+        sanitized = utils._sanitize_log_text(raw)
+
+        assert "abc" not in sanitized
+        assert "critical error detail: disk full" in sanitized
+
+    @staticmethod
+    def test_log_sanitizer_quoted_value_does_not_cross_newline():
+        """Closing-quote lookup stays on the current line (old-regex semantics)."""
+        raw = "'auth_token': \"a\nb\""
+
+        sanitized = utils._sanitize_log_text(raw)
+
+        assert '"a' not in sanitized
+        assert '\nb"' in sanitized
 
 
 class TestSourceRecordMasking:
@@ -344,6 +400,25 @@ class TestSourceRecordMasking:
             assert utils._source_record_masking_installed is True
         finally:
             self._restore_state(state)
+
+
+def test_sanitize_log_text_stays_linear_on_long_identifier_runs():
+    """A long identifier-like run must not make masking quadratic.
+
+    Tool results and model output routinely carry long unbroken runs (base64,
+    hashes, minified code). The named-key pattern once rescanned the run from
+    every offset, so 8k chars took seconds and 200k chars would take minutes.
+    """
+    run = "y" * 200_000
+    raw = f"{run} {{'CAT_CAFE_CALLBACK_TOKEN': 'tok-secret'}} {run}"
+
+    started = time.perf_counter()
+    masked = utils._sanitize_log_text(raw)
+    elapsed = time.perf_counter() - started
+
+    assert "tok-secret" not in masked
+    assert masked.startswith(run)
+    assert elapsed < 2.0, f"masking 400k chars took {elapsed:.2f}s"
 
 
 class TestUserWorkspace:
@@ -851,7 +926,6 @@ class TestCleanupStaleOpenjiuwenDescs:
         (
             "jiuwenswarm/app.py",
             "jiuwenswarm/gateway/app_gateway.py",
-            "jiuwenswarm/server/app_agentserver.py",
         ),
     )
     def test_startup_entrypoints_clean_before_openjiuwen_import(relative_path):
@@ -866,3 +940,56 @@ class TestCleanupStaleOpenjiuwenDescs:
         ]
         if openjiuwen_imports:
             assert cleanup_call < min(openjiuwen_imports)
+
+    @staticmethod
+    def test_agentserver_runtime_backend_cleans_before_openjiuwen_import():
+        """Front defers OpenJiuwen; Runtime backend must still clean first."""
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "jiuwenswarm" / "server" / "app_agentserver.py").read_text(
+            encoding="utf-8"
+        )
+        tree = ast.parse(source)
+        func = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_preload_runtime_backend"
+        )
+        cleanup_lineno: int | None = None
+        openjiuwen_lineno: int | None = None
+        for node in ast.walk(func):
+            if isinstance(node, ast.Call):
+                name = None
+                if isinstance(node.func, ast.Name):
+                    name = node.func.id
+                elif isinstance(node.func, ast.Attribute):
+                    name = node.func.attr
+                if name == "prepare_runtime_workspace":
+                    keywords = {kw.arg: kw.value for kw in node.keywords}
+                    flag = keywords.get("cleanup_stale_descs")
+                    if isinstance(flag, ast.Constant) and flag.value is True:
+                        cleanup_lineno = node.lineno
+                if (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id == "_configure_openjiuwen_logging"
+                ):
+                    openjiuwen_lineno = (
+                        node.lineno if openjiuwen_lineno is None else min(openjiuwen_lineno, node.lineno)
+                    )
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "openjiuwen"
+            ):
+                openjiuwen_lineno = (
+                    node.lineno if openjiuwen_lineno is None else min(openjiuwen_lineno, node.lineno)
+                )
+            if isinstance(node, ast.Import):
+                if any(
+                    alias.name == "openjiuwen" or alias.name.startswith("openjiuwen.")
+                    for alias in node.names
+                ):
+                    openjiuwen_lineno = (
+                        node.lineno if openjiuwen_lineno is None else min(openjiuwen_lineno, node.lineno)
+                    )
+        assert cleanup_lineno is not None
+        assert openjiuwen_lineno is not None
+        assert cleanup_lineno < openjiuwen_lineno

@@ -236,10 +236,10 @@ def _first_nonempty(*values: Any) -> str:
 def _extract_placement_ips(instance_info: Mapping[str, Any] | None) -> tuple[str, str]:
     """Read node / sandbox IP from YuanRong GET, including jiuwenbox aliases.
 
-    Register writes a placeholder ``address`` (instance_id) because the
-    registry rejects empty address. Placement must be PATCHed once the
-    actual IPs exist. YuanRong may use ``node_ip`` / ``sandbox_ip`` or
-    pass through jiuwenbox ``ip_address``.
+    Register writes ``address=pending`` and leaves ``node`` empty because
+    the registry rejects empty address but not empty node. Placement must
+    be PATCHed once the actual IPs exist. YuanRong may use ``node_ip`` /
+    ``sandbox_ip`` or pass through jiuwenbox ``ip_address``.
     """
     if not isinstance(instance_info, Mapping):
         return "", ""
@@ -676,12 +676,22 @@ class AgentOSRouterClient(AgentServerClient):
         token_path = path if allow_query_token else urllib.parse.urlparse(path).path
         header_map = headers_to_dict(headers)
         token = extract_token_from_path_and_headers(token_path, header_map or headers)
-        return await self._verify_request_token(
+        result = await self._verify_request_token(
             token=token,
             headers=header_map,
             remote=remote,
             channel=channel,
         )
+        if channel == "web" and result.success:
+            if self.auth_enabled:
+                if not str(result.user_id or "").strip():
+                    return AuthResult(success=False, error="authenticated user identity is missing")
+            else:
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
+                query_user_id = str((query.get("user_id") or [""])[0] or "").strip()
+                if query_user_id:
+                    result.user_id = query_user_id
+        return result
 
     def set_key_issuer(
         self,
@@ -2640,6 +2650,61 @@ class AgentOSRouterClient(AgentServerClient):
                 str(info.sandbox_id or ""),
             )
 
+    async def _cleanup_agent_after_create_not_running(
+        self,
+        agent_info: AgentInfo,
+        *,
+        exc: BaseException,
+    ) -> None:
+        """create 已成功但一直未 running：删沙箱并注销注册中心占位行。
+
+        登记发生在 wait 之前。探针超时 / failed 时若只打日志，YuanRong 实例和
+        ``POST /api/instances`` 写入的条目都会留下。与请求路径
+        :meth:`_cleanup_agent_on_instance_unavailable` 共用 :meth:`delete_agent`；
+        runtime 若已被并发 cleanup 摘掉，仍补一次 unregister（幂等）。
+        """
+        session_id = str(agent_info.metadata.get("session_id") or "")
+        sandbox_id = str(agent_info.sandbox_id or "")
+        log_agentos(
+            logger,
+            logging.WARNING,
+            "sandbox.cleanup.not_running",
+            user_id=agent_info.user_id,
+            session_id=session_id,
+            sandbox_id=sandbox_id,
+            agent_type=agent_info.agent_type,
+            instance=sandbox_id,
+            reason=type(exc).__name__,
+        )
+        key_values: dict[str, Any] | None = None
+        if "session_id" in self._agent_manager.key_fields and session_id:
+            key_values = {"session_id": session_id}
+        try:
+            deleted = await self.delete_agent(
+                agent_info.user_id,
+                agent_info.agent_type,
+                key_values=key_values,
+            )
+        except Exception:  # noqa: BLE001 - background register must not raise
+            logger.exception(
+                "[AgentOSRouter] not-running cleanup failed: "
+                "user_id=%s agent_type=%s sandbox_id=%s",
+                agent_info.user_id,
+                agent_info.agent_type,
+                sandbox_id,
+            )
+            deleted = False
+        if deleted:
+            return
+        try:
+            await self._unregister_agent(agent_info)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[AgentOSRouter] unregister after not-running cleanup failed: "
+                "agent_id=%s",
+                agent_info.agent_id,
+            )
+
     async def _cleanup_agent_on_instance_unavailable(
         self,
         runtime: AgentRuntime,
@@ -2846,16 +2911,24 @@ class AgentOSRouterClient(AgentServerClient):
             ):
                 return
 
-            # create 返回时沙箱通常还在探针中：placeholder address=instance_id。
+            # create 返回时沙箱通常还在探针中：address=pending，node 留空。
             # 等到 status=running 后再读 node_ip / sandbox_ip（含 jiuwenbox
             # ip_address），PATCH 注册中心 placement，供调度/路由使用。
+            # 一直到不了 running（超时 / failed）时删沙箱并注销刚才写入的登记，
+            # 避免 CREATING 实例和占位 registry 行一直留着（cron 无用户断连回收）。
             sandbox_id = str(agent_info.sandbox_id or "").strip()
-            instance_info = await self._wait_yuanrong_running(
-                sandbox_id,
-                user_id=str(agent_info.user_id or ""),
-                session_id=str(agent_info.metadata.get("session_id") or ""),
-                agent_type=str(agent_info.agent_type or ""),
-            )
+            try:
+                instance_info = await self._wait_yuanrong_running(
+                    sandbox_id,
+                    user_id=str(agent_info.user_id or ""),
+                    session_id=str(agent_info.metadata.get("session_id") or ""),
+                    agent_type=str(agent_info.agent_type or ""),
+                )
+            except YuanrongAgentApiError as exc:
+                await self._cleanup_agent_after_create_not_running(
+                    agent_info, exc=exc
+                )
+                return
             node_ip, sandbox_ip = _extract_placement_ips(instance_info)
             if not (node_ip or sandbox_ip):
                 log_agentos(

@@ -130,6 +130,8 @@ async function mount(context) {
       createElement(TaskQueue, {
         isProcessing: true,
         onSendTask: (text, media, options) => api.sendMessage(text, sid, media, options),
+        onContinueQueuedSessionMessages: (targetSessionId) =>
+          api.request('session.message.continue_queued', { session_id: targetSessionId }),
         onDrainTaskQueueIfIdle: api.drainTaskQueueIfIdle,
       }),
       createElement(A2UIProvider, null,
@@ -202,6 +204,90 @@ function assertNodeBefore(earlier, later, message) {
   const following = earlier.ownerDocument.defaultView.Node.DOCUMENT_POSITION_FOLLOWING;
   assert.ok(relation & following, message);
 }
+
+test('queued cross-session message appears in the target queue until it starts', async (context) => {
+  const c = await mount(context);
+  try {
+    const streamId = c.runtime().currentStreamId;
+    const message = {
+      message_id: 'sm-1',
+      source_session_id: 'source-1',
+      source_title: 'Source',
+      target_session_id: c.sid,
+      content: 'Check the weather',
+      status: 'queued',
+    };
+    c.receive('session.message.updated', { message });
+    const row = document.querySelector('[data-testid="chat-panel-cross-session-queue-item"]');
+    assert.ok(row);
+    assert.match(row.textContent, /Check the weather/);
+    assert.match(row.textContent, /Source/);
+    assert.equal(row.querySelector('button'), null);
+    const resume = document.querySelector('[data-testid="chat-panel-cross-session-queue-resume"]');
+    assert.ok(resume);
+    await act(async () => resume.click());
+    const continuation = c.socket.requests.find((request) => request.method === 'session.message.continue_queued');
+    assert.ok(continuation);
+    assert.equal(continuation.params.session_id, c.sid);
+    await act(async () => c.socket.response(continuation.id));
+    assert.equal(c.runtime().currentStreamId, streamId);
+    assert.equal(c.runtime().isProcessing, true);
+
+    c.receive('session.message.updated', { message: { ...message, status: 'running' } });
+    assert.equal(document.querySelector('[data-testid="chat-panel-cross-session-queue-item"]'), null);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('cross-session final replaces later output from the same request', async (context) => {
+  const c = await mount(context);
+  try {
+    const route = {
+      request_id: 'cross-session-turn',
+      turn_request_id: 'cross-session-turn',
+      message_origin: 'cross_session_agent',
+      session_message_id: 'sm-1',
+      cross_session: {
+        message_id: 'sm-1',
+        source_session_id: 'source-1',
+        content: 'Check the weather',
+      },
+    };
+    c.receive('chat.delta', { ...route, content: '杭州今日天气' });
+    c.receive('chat.final', { ...route, content: '杭州今日天气' });
+    c.receive('chat.delta', { ...route, content: '杭州今日天气' });
+    c.receive('chat.final', { ...route, content: '杭州今日天气' });
+
+    const reply = c.runtime().messages.find((message) => message.id === 'cross-session-assistant-cross-session-turn');
+    assert.equal(reply?.content, '杭州今日天气');
+    assert.equal(reply?.isStreaming, false);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('mixed queues show pause only on the local section', async (context) => {
+  const c = await mount(context);
+  try {
+    c.queue('local task');
+    act(() => useChatStore.getState().setQueuePaused(c.sid, true));
+    c.receive('session.message.updated', { message: {
+      message_id: 'sm-mixed',
+      source_session_id: 'source-1',
+      source_title: 'Source',
+      target_session_id: c.sid,
+      content: 'remote task',
+      status: 'queued',
+    } });
+    assert.equal(document.querySelector('[data-testid="chat-panel-task-queue-header"] [data-testid="chat-panel-task-queue-paused-badge"]'), null);
+    assert.ok(document.querySelector('[data-testid="chat-panel-cross-session-queue-section"]'));
+    assert.ok(document.querySelector('[data-testid="chat-panel-task-queue-local-section"] [data-testid="chat-panel-task-queue-paused-badge"]'));
+    assert.ok(document.querySelector('[data-testid="chat-panel-task-queue-local-section"] [data-testid="chat-panel-task-queue-resume"]'));
+  } finally {
+    await c.dispose();
+  }
+});
 
 test('two queued messages: only the selected item steers, locks double click, and waits for Runtime ACK', async (context) => {
   const c = await mount(context);
@@ -1013,6 +1099,31 @@ test('editing, deleting and clearing queued messages preserve sending and unknow
     assert.equal(c.runtime().taskQueue.length, 0);
     c.receive('runtime.accepted', { request_id: c.requests()[0].id });
     assert.equal(c.receipt(sending).status, 'accepted');
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('cross-session steering keeps its Agent source and the original task running', async (context) => {
+  const c = await mount(context);
+  try {
+    addOriginalUser(c);
+    const received = {
+      request_id: 'original', input_request_id: 'cross-steer', content: 'Agent adjustment',
+      timestamp: Date.now(), message_origin: 'cross_session_agent', session_message_id: 'sm-cross',
+      cross_session: { message_id: 'sm-cross', source_session_id: 'source-agent', source_title: 'Source Agent', content: 'Agent adjustment' },
+    };
+    c.receive('chat.input_received', received);
+    c.receive('chat.input_received', received);
+    await c.flush();
+    const inputs = c.runtime().messages.filter(m => m.supplementalInput?.requestId === 'cross-steer');
+    assert.equal(inputs.length, 1);
+    assert.deepEqual(inputs[0].crossSession, {
+      messageId: 'sm-cross', sourceSessionId: 'source-agent', sourceTitle: 'Source Agent', content: 'Agent adjustment',
+    });
+    assert.equal(c.runtime().isProcessing, true);
+    assert.equal(c.requests().length, 0);
+    assert.match(document.body.textContent, /Source Agent/);
   } finally {
     await c.dispose();
   }

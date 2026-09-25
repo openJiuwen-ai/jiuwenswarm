@@ -24,6 +24,7 @@
     "processing": "处理中…",
     "retry": "重试",
     "editMenu": {
+      "actionFailed": "无法完成文本编辑操作，请重试。",
       "cut": "剪切",
       "copy": "复制",
       "paste": "粘贴",
@@ -50,7 +51,7 @@
     "settings": "设置",
     "logs": "日志",
     "update": "更新",
-    "personalContext": "上下文"
+    "personalContext": "知识"
   },
   "applicationPlugins": {
     "title": "应用插件",
@@ -98,7 +99,7 @@
       "agent": "智能体",
       "browser": "浏览器",
       "channels": "频道",
-      "personalContext": "上下文",
+      "personalContext": "知识",
       "archivedTasks": "已归档的任务",
       "experimental": "实验功能"
     },
@@ -138,12 +139,14 @@
       "deleteArchivedSessionsRecord": "永久删除项目“{{projectName}}”下全部已归档对话，此操作不可恢复。",
       "archivedSessionsDeleted": "已删除 {{count}} 个已归档对话",
       "batchPartialFailure": "成功 {{succeeded}} 项，失败 {{failed}} 项。",
+      "removedProjectNote": "该项目已移除，其对话暂不显示在工作区。恢复任一对话会一并恢复该项目。",
       "errors": {
         "forbidden": "该资源不支持此操作",
         "notFound": "资源不存在或已发生变化，请刷新后重试",
         "sessionGone": "该会话已不存在，无法恢复",
         "requestFailed": "操作失败，请稍后重试",
-        "sessionRestoreFailed": "对话恢复失败，请刷新后重试"
+        "sessionRestoreFailed": "对话恢复失败，请刷新后重试",
+        "projectNameConflict": "已有同名项目占用了该名称，无法一并恢复项目。请先重命名同名项目。"
       }
     },
     "dialog": {
@@ -456,6 +459,10 @@
         "title": "技能自动检索",
         "description": "基于已安装技能数量，动态选择智能体的技能发现策略"
       },
+      "ttse_enabled": {
+        "title": "本地环境事实与任务经验自动演进",
+        "description": "控制智能体对于环境事实和任务经验学习"
+      },
       "free_search_ddg_enabled": { "title": "DuckDuckGo 搜索", "description": "启用 DuckDuckGo 免费搜索来源。" },
       "free_search_bing_enabled": { "title": "Bing 搜索", "description": "启用 Bing 免费搜索来源。" },
       "jina_api_key": { "title": "Jina API 密钥" },
@@ -562,6 +569,10 @@
     "team": {
       "memberLanes": "成员轨迹泳道",
       "members": "成员"
+    },
+    "composer": {
+      "collapse": "收起输入框",
+      "expand": "展开输入框"
     },
     "layout": {
       "hideSessions": "收起会话栏",
@@ -792,6 +803,9 @@
     "placeholder": "需要帮你做些什么？输入“/”快速引用技能及指令",
     "placeholderCompacting": "压缩进行中，暂时无法发送消息",
     "modelNotConfigured": "还没有配置可用的模型。请在「设置 → 模型」里配置一个模型，或登录获取限时免费模型。",
+    "sessionArchived": "该会话已归档，无法继续对话。请恢复会话或新建会话。",
+    "sessionDeleted": "该会话已被删除，无法继续对话。",
+    "sessionOperationInProgress": "该会话正在执行归档或删除操作，请稍后再试。",
     "placeholderAwaitingApproval": "请先处理上方待确认项",
     "placeholderProcessing": "处理中，输入新指令可中断...",
     "placeholderProcessingQueue": "处理中，输入新指令将加入等待队列...",
@@ -908,6 +922,7 @@
     "agentGroupNoMatches": "没有找到匹配的专家团",
     "agentGroupRemove": "移除专家团",
     "agentGroupSkillsLocked": "已选择专家团，不能额外添加专家团技能",
+    "teamSkillsGroupLocked": "已选择团队技能，不能额外选择专家团",
     "agentGroupBinding": "当前对话已绑定专家团，暂不可更换",
     "agentGroupFirstBuildOnly": "专家团只能在首次创建 Team 时选择",
     "agentOnlyInSingleAgentMode": "专家仅支持在单 Agent 模式下选择",
@@ -960,16 +975,6 @@
     "historyLoadMore": "加载更多历史消息",
     "continuedFromChat": "从原会话继续",
     "openSourceChat": "打开原会话",
-    "sideConversation": {
-      "title": "侧会话",
-      "from": "来自 {{title}}",
-      "empty": "在不离开主会话的情况下提问",
-      "placeholder": "发送消息到侧会话",
-      "send": "发送消息",
-      "working": "处理中…",
-      "sendFailed": "消息发送失败，请重试。",
-      "close": "关闭侧会话"
-    },
     "config": {
       "mode": {
         "cluster": "集群模式",
@@ -1086,6 +1091,7 @@
     "toolbarUnavailablePlan": "计划模式进行中，暂不可选择目标",
     "overwriteConfirm": "当前目标“{{currentObjective}}”尚未完成。是否替换为“{{requestedObjective}}”？",
     "closeTag": "取消目标",
+    "closeTagDisabled": "会话进行中，无法关闭目标",
     "badge": "目标",
     "status": {
       "active": "进行中",
@@ -1716,6 +1722,7 @@
       "updateFailed": "更新任务失败",
       "updateFailedWithReason": "更新任务失败：{{reason}}",
       "deleteFailed": "删除任务失败",
+      "deleteSessionBusy": "该定时任务关联的会话正在运行，无法删除。请先手动停止会话，再重试删除。",
       "toggleFailed": "更新任务状态失败",
       "previewFailed": "预览触发时间失败",
       "runNowFailed": "立即执行失败",
@@ -1795,11 +1802,12 @@
     },
     "settings": {
       "subtitle": "选择个人上下文采用哪种方式采集、整理和生成。",
-      "masterEnable": "启用个人上下文",
+      "masterEnable": "启用个人上下文知识",
       "masterEnableHint": "总开关，控制个人上下文采集与 agent 加载上下文。",
       "enable": "采集个人上下文内容",
       "enableHint": "支持自动周期性采集上下文内容并自动构建图谱。",
       "strategyProfile": "上下文采集模式",
+      "strategyLockedByFetch": "采集任务正在运行或停止中，结束后可切换模式。",
       "strategy_agent": "智能体处理",
       "strategy_balanced": "大模型处理",
       "strategy_rules": "规则处理",
@@ -1810,7 +1818,9 @@
       "modelHint": "选择已在 JiuwenSwarm 中配置的模型。",
       "collectionStopPending": "采集任务运行中，稍后生效",
       "collectionStoppingRetry": "采集任务仍在运行或停止中，请稍后再试",
-      "operationTimeout": "请求超时，请稍后重试"
+      "operationTimeout": "请求超时，请稍后重试",
+      "collectionTimeoutReconciling": "请求超时，正在核对实际采集状态",
+      "collectionReconciling": "请求结果尚未确认，正在核对实际采集状态"
     },
     "authorization": {
       "title": "内容采集授权",
@@ -1880,8 +1890,8 @@
       "sourceType": "来源类型",
       "sourceLocator": "原始链接",
       "sourceFirstSeen": "采集时间",
-      "graphTitle": "你的专属上下文",
-      "graphSubtitle": "把零散的本地文档、网络来源等碎片信息，一键转化为清晰可视的结构化个人上下文",
+      "graphTitle": "你的专属上下文知识",
+      "graphSubtitle": "把零散的本地文档、网络来源等碎片信息，一键转化为清晰可视的结构化个人上下文知识",
       "tabNodes": "上下文节点",
       "tabEdges": "连线",
       "addKnowledge": "来源管理",
@@ -1910,6 +1920,7 @@
       "colActions": "操作",
       "stateCollecting": "正在采集",
       "stateCompleted": "采集完成",
+      "statePartial": "部分成功：{{completed}}/{{total}}，{{failed}} 项失败",
       "stateFailed": "采集失败",
       "stateWaiting": "等待采集",
       "stateStopped": "已停止",
@@ -1931,14 +1942,14 @@
       "startedAt": "开始",
       "finishedAt": "结束",
       "backToGraph": "返回图谱",
-      "addKnowledge": "添加上下文",
+      "addKnowledge": "添加上下文知识",
       "collectAll": "全部开始采集",
       "statSources": "来源",
       "statKnowledge": "上下文节点数",
-      "statCollecting": "正在采集",
+      "statCollecting": "进行中的采集任务",
       "knowledgeSource": "上下文来源",
       "lastRun": "上次采集",
-      "fetchTaskRunning": "当前有采集任务正在运行，请等待完成后再修改配置"
+      "fetchTaskRunning": "当前有采集任务正在运行或停止中，请等待结束后再修改配置"
     },
     "addContent": {
       "title": "添加内容",
@@ -2000,7 +2011,7 @@
         "bookmarksPathLabel": "书签文件路径",
         "bookmarksPathPlaceholder": "留空使用 Edge 默认 Bookmarks 路径",
         "foldersLabel": "需采集的书签文件夹",
-        "foldersPlaceholder": "如 收藏栏/技术，多个用逗号分隔",
+        "foldersPlaceholder": "如 收藏夹栏/技术，多个用逗号分隔",
         "foldersHint": "可选，留空采集全部"
       },
       "github": {
@@ -2124,7 +2135,7 @@
     "noEnabledSkills": "暂无启用的技能",
     "noBuiltinSkills": "暂无内置技能",
     "setEnabledError": "设置技能启用状态失败",
-    "packBlockedHint": "技能包包含未安装或已禁用的技能，请先在「包含技能」中处理后再启用",
+    "packBlockedHint": "技能包包含未安装或已禁用的技能",
     "packMemberToggleConfirm": "该技能属于技能包 {{packs}}，切换启用状态将影响整个技能包的可用性。确认继续？",
     "setEnabledSuccess": "已启用技能 {name}",
     "setDisabledSuccess": "已禁用技能 {name}",
@@ -3031,9 +3042,10 @@
         "uploadInvalidType": "仅支持 .zip、.tar 和 .tar.gz 专家团包",
         "errors": {
           "nameRequired": "请输入专家团名称",
-          "descriptionRequired": "请输入专家团介绍",
+          "descriptionRequired": "请输入专家团能力介绍",
           "personaRequired": "请输入专家团介绍",
-          "leaderRequired": "请选择负责人"
+          "leaderRequired": "请选择负责人",
+          "membersRequired": "请至少选择一名成员"
         }
       },
       "picker": {
@@ -3074,6 +3086,8 @@
     "paused": "已暂停",
     "waitingTasks": "等待任务",
     "messageQueue": "消息队列",
+    "crossSessionMessageQueue": "跨会话消息",
+    "localMessageQueue": "本地消息",
     "turnRunning": "任务执行",
     "turnElapsed": "任务用时",
     "workCompleted": "已完成 {{duration}}",
@@ -3518,17 +3532,21 @@
       "conversationArchived": "已归档任务会话",
       "archiveView": "查看",
       "archiveUndo": "撤销",
-      "deleteProject": "删除项目",
-      "deleteProjectDescription": "删除“<name>{{projectName}}</name>”下的定时任务和非运行中会话。若有普通会话正在运行，将跳过这些会话并保留项目；可停止后重试。不删除工作目录。已删除内容不可恢复。",
-      "projectDeletedSummary": "项目已删除：{{sessions}} 个对话、{{crons}} 个定时任务",
-      "deleteFailedSummary": "项目删除未完成：已删除 {{sessions}} 个对话、{{crons}} 个定时任务。",
-      "deleteSkippedRunning": "已删除 {{sessions}} 个对话、{{crons}} 个定时任务；{{count}} 个对话仍在运行，已跳过并保留项目。请先手动停止这些对话，再重试删除。",
+      "removeProject": "移除项目",
+      "removeProjectConfirm": "移除",
+      "removeProjectDescription": "从列表中移除“<name>{{projectName}}</name>”并隐藏其对话；已归档的对话仍可在归档页查看。其下的定时任务将停止并保留（恢复项目后默认保持停止，需手动重新启用），工作目录不受影响。可撤销，或通过同一目录重新创建项目恢复。",
+      "projectRemoved": "项目已移除",
+      "projectRemovedSummary": "项目已移除，其定时任务已停止",
       "archiveSessions": "归档全部会话",
-      "archiveSessionsDescription": "归档“<name>{{projectName}}</name>”下全部普通会话。运行中的会话将保留并略过，定时任务保持不变。",
+      "archiveConfirmTitle": "归档（{{count}}）个聊天",
+      "archiveConfirmTitleFallback": "归档所有聊天",
+      "archiveConfirmDescription": "这会归档当前项目的聊天，你之后可以在已归档的聊天中找到它们。",
+      "archiveConfirmAll": "全部归档",
       "sessionsArchived": "已归档 {{count}} 个会话",
-      "archiveSkippedRunning": "有 {{count}} 个会话正在运行中，已略过归档",
-      "archiveSkippedRunningWithSuccess": "已归档 {{succeeded}} 个会话；有 {{count}} 个会话正在运行中，已略过",
-      "batchPartialFailure": "成功 {{succeeded}} 项，失败 {{failed}} 项。可重试失败项。",
+      "archiveBatchFailedRunning": "有 {{count}} 个聊天正在运行，无法归档",
+      "archiveBatchFailedFinishing": "有 {{count}} 个聊天的 swarm flow 已结束，回合收尾中，请稍后重试",
+      "archiveBatchFailedSubagentFinishing": "有 {{count}} 个聊天的子任务仍在收尾，会话稍后自动结束，请稍后重试",
+      "archiveBatchFailed": "有 {{count}} 个聊天归档失败",
       "defaultProjectName": "默认项目",
       "absolutePathError": "请输入绝对路径，例如 /Users/name/work/project",
       "errors": {
@@ -3537,10 +3555,17 @@
         "pathMissing": "项目目录不存在，请选择已存在的目录",
         "projectUnavailable": "项目不可用，请刷新后重试",
         "archiveSessionBusy": "对话正在运行，无法归档。请先手动停止，再重试归档。",
+        "archiveSessionFinishing": "swarm flow 已结束，会话回合收尾中，请稍后重试归档。",
+        "archiveSessionSubagentFinishing": "子任务仍在收尾，会话稍后自动结束，请稍后重试归档。",
         "deleteSessionBusy": "对话正在运行，无法删除。请先手动停止，再重试删除。",
+        "deleteSessionFinishing": "swarm flow 已结束，会话回合收尾中，请稍后重试删除。",
+        "deleteSessionSubagentFinishing": "子任务仍在收尾，会话稍后自动结束，请稍后重试删除。",
         "archiveForbidden": "该任务不支持归档",
         "archiveNotFound": "资源不存在或已发生变化，请刷新后重试",
-        "archiveFailed": "归档操作失败，请稍后重试"
+        "archiveFailed": "归档操作失败，请稍后重试",
+        "projectNameConflict": "已有同名项目占用了该名称，无法恢复项目。请先重命名同名项目。",
+        "cronStopFailed": "该项目的定时任务未能全部停止，项目保持可见未移除。请稍后重试。",
+        "removeSessionBusy": "项目下有对话正在运行，无法移除。请先停止相关对话，再重试移除。"
       },
       "cancel": "取消",
       "confirm": "确定"
@@ -3653,6 +3678,9 @@
     "customOption": "自定义",
     "customPlaceholder": "没有合适的选项？输入您的答案...",
     "skippedSummary": "已跳过"
+  },
+  "skillPackagePrompt": {
+    "creating": "正在创建…"
   },
   "qaSummary": {
     "title": "问题澄清"
@@ -3832,7 +3860,8 @@
       "stepDone": "已完成，请继续下一步",
       "error": "连接失败，请重试",
       "retry": "重试",
-      "timeout": "等待授权超时，请重新打开授权页面重试"
+      "timeout": "等待授权超时，请重新打开授权页面重试",
+      "cancelConnect": "取消连接"
     },
     "registerMcp": {
       "title": "配置连接器",
@@ -3875,19 +3904,6 @@
     }
   },
   "auth": {
-    "title": "登录 JiuwenSwarm",
-    "subtitle": "输入你的账号与密码以继续",
-    "username": "账号",
-    "usernamePlaceholder": "输入账号",
-    "password": "密码",
-    "passwordPlaceholder": "输入密码",
-    "login": "登录",
-    "loggingIn": "登录中…",
-    "invalidCredentials": "账号或密码错误",
-    "loginFailed": "登录失败,请稍后重试",
-    "authRequired": "需要登录后才能访问",
-    "secureHint": "登录后将自动保持登录状态",
-    "logout": "登出",
     "huawei": {
       "title": "登录华为账号",
       "subtitle": "登录后即可使用账号提供的模型，无需配置 API Key。",
@@ -4199,7 +4215,6 @@
       "statusFailed": "任务失败",
       "statusPaused": "已暂停",
       "statusTerminated": "已终止",
-      "statusInstalled": "已安装",
       "actionConfig": "配置信息",
       "actionDelete": "删除",
       "actionPause": "暂停任务",

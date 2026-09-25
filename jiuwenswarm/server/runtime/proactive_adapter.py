@@ -240,15 +240,22 @@ async def trigger_main_agent(
         # 从没收到卡片（前端按 chat.error 显示报错气泡）。故必须识别 chat.error 为
         # 未送达：不计 delivered、不写 history、不占 cooldown。
         had_chat_error = False
-        # proactive 标记只覆盖"推荐话术那一轮"：第一个非空 assistant 文本 final 之前
-        # 的 chunk（delta/reasoning/final）才注入 source=proactive_recommendation 等标记，
-        # 其后的 chunk（工具调用、进度正文、结果 final）一律不打标 → 前端按无 source
-        # 处理 = 普通气泡/工具块，不退化成推荐卡片。
+        # proactive 标记只覆盖"推荐话术那一轮"：话术轮（最后一个非工具轮非空 final）
+        # 之前的 chunk（delta/reasoning/final）才注入 source=proactive_recommendation
+        # 等标记，其后的 chunk（话术后的自我延续、进度正文、结果 final）一律不打标 →
+        # 前端按无 source 处理 = 普通气泡/工具块，不退化成推荐卡片。
         # 根因：前端卡片渲染由"逐 chunk 的 source"决定（useWebSocket.ts:2709 /
         # MessageItem.tsx:513 / buildTurnTimeline.ts:284），不由 request_id 决定。此前
         # 无脑给每个 chunk setdefault(source) 导致主 agent 在话术后继续跑工具推进用户
         # 任务时，后续进度/工具消息也被渲染成技能推荐卡片（共享同一 request_id）。
         proactive_marking_closed = False
+        # 工具轮识别（工具先行场景）：主 agent 收到推荐指令后可能先跑工具（如 ls/diff
+        # 对比目录），工具轮结束会吐一个总结 final（"命令执行完毕…"），它只是工具轮
+        # 的进度正文，不是推荐话术——但首个非空 final 会抢占卡片锚点，导致卡片 content
+        # 变成工具总结、真正话术被抑制（bug）。靠"自上一个 final 以来是否出现过
+        # chat.tool_call"区分工具轮 final 与话术轮 final：工具轮总结被抑制（不打标
+        # 不透传），话术轮 final（最后一个非空 final）才打标成为卡片交付物。
+        saw_tool_call_since_last_final = False
         push_failed = False
         try:
             async for chunk in agent.process_message_stream(agent_request):
@@ -286,11 +293,21 @@ async def trigger_main_agent(
                         # 延续轮的 chat.error 同样不透传——卡片已成功送达，后台延续
                         # 失败不应向用户报错，记 warning 即可。
                         continue
+                    # 记录工具调用：用于区分工具轮 final 与话术轮 final。
+                    if isinstance(evt, str) and evt.endswith(".tool_call"):
+                        saw_tool_call_since_last_final = True
                     is_nonempty_assistant_final = (
                         isinstance(evt, str) and evt.endswith(".final")
                         and isinstance(chunk_payload.get("content"), str)
                         and bool(chunk_payload.get("content"))
                     )
+                    # 工具轮总结 final（该轮出现过 tool_call）：主 agent 跑工具的进度
+                    # 正文，不是推荐话术。抑制不透传前端、不打标，窗口保持打开等待
+                    # 话术轮——否则工具轮总结会抢占卡片锚点（bug：卡片 content 是
+                    # "命令执行完毕…"而非推荐正文）。
+                    if is_nonempty_assistant_final and saw_tool_call_since_last_final:
+                        saw_tool_call_since_last_final = False
+                        continue
                     if not is_chat_error:
                         # 注入 source/proactive_type：主 agent 的 chunk 是普通对话格式，
                         # 不带主动推荐标记。前端靠 payload.source==='proactive_recommendation'
@@ -308,16 +325,16 @@ async def trigger_main_agent(
                             if not logged_rec_id:
                                 logger.info("[ProactiveEngine] injecting proactive_rec_id=%s into chunks", rec_id)
                                 logged_rec_id = True
-                        # 话术那一轮的非空 final = 推荐正文已发完，其后不再打标。
+                        # 话术轮的非空 final = 推荐正文已发完，其后不再打标。
+                        # （工具轮总结 final 已在上方被抑制，走到这里的非空 final 是
+                        # 话术轮——即最后一个非空 final。）
                         if is_nonempty_assistant_final:
                             proactive_marking_closed = True
-                    # 累积话术文本：第一个非空 final（=推荐正文，与打标关闭点是同一处）
-                    # 即话术全文。其后工具轮次的进度 final 不覆盖——on_delivered 要的是
-                    # 推荐正文，不是后续工具轮次的产出文本。delta 在话术轮内兜底拼接，
-                    # 同样只在标记未关闭前（即首个非空 final 之前）累积。
+                    # 累积话术文本：话术轮非空 final（=推荐正文，最后一个非空 final）
+                    # 即话术全文。delta 在话术轮内兜底拼接，同样只在标记未关闭前累积。
                     if is_nonempty_assistant_final:
-                        if not final_content:
-                            final_content = chunk_payload.get("content")
+                        # 覆盖式：保留最后一个非空 final 的内容作为交付物。
+                        final_content = chunk_payload.get("content")
                     elif isinstance(evt, str) and evt.endswith(".delta") and not proactive_marking_closed:
                         c = chunk_payload.get("content")
                         if isinstance(c, str):

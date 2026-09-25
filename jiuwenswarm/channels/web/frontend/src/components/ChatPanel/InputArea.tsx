@@ -32,9 +32,12 @@ import {
   usePersonalContextStore,
 } from '../../stores';
 import { seedAgentCatalog, useAgentCatalogStore } from '../../stores/agentCatalogStore';
+import { getSelectedAgentGroup } from '../../stores/agentGroupCatalogSeed';
 import { supportsPlanMode } from '../../features/planMode/wireMode';
 import { applyPlanToggle, evaluatePlanToggle } from '../../features/planMode/planModeGate';
+import { applyGoalArm, evaluateGoalArm } from '../../features/goalMode/goalModeGate';
 import { queueOrAddGoalObjectiveMessage } from '../../features/goalPendingObjectiveBubble';
+import { OverwriteGoalConfirmModal } from '../GoalBar/OverwriteGoalConfirmModal';
 import { AgentMode, MediaItem, Permission, type ProjectInfo } from '../../types';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import { ProjectCreateMenu, type ProjectCreateMode } from '../../multi-session/sidebar/ProjectCreateMenu';
@@ -64,6 +67,7 @@ import {
   shouldExecuteRegisteredSlashCommand,
 } from './slashCommands/semantics';
 import { withUploadDocumentBlock } from '../../utils/documentMessage';
+import { planUnsentImageDiscard, type UnsentImageDraft } from './unsentImageDiscard';
 import { ExtensionPickerPanel } from './ExtensionPickerPanel';
 import { SkillPickerPanel } from './SkillPickerPanel';
 import { PickerPanel } from './PickerPanel';
@@ -88,11 +92,13 @@ import { useDesktopLocalFilePickerReady } from '../../hooks';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { getInputProjectOptions, isDefaultInputProject } from './projectSelection';
 import {
+  canRetryAttachmentDraft,
   DESKTOP_CLIPBOARD_IMAGES_EVENT,
   getClipboardImageFiles,
   inspectClipboardImageFiles,
   IMAGE_INPUT_DISABLED_ALERT_KEY,
   isImageInputDisabled,
+  resolveImageMimeType,
   shouldAlertImagePasteDisabled,
   type DesktopClipboardImagesEventDetail,
 } from './clipboardImagePaste';
@@ -102,6 +108,7 @@ import GoalIcon from '../../assets/agent-management/goal.svg?react';
 import PlanIcon from '../../assets/agent-management/planned-events.svg?react';
 import SkillIcon from '../../assets/agent-management/agent-skill.svg?react';
 import closeSvg from '../../assets/work-mode/close.svg?raw';
+import { insertPlainText } from '../../utils/textEditCommands';
 
 // 个人上下文图标——文档/知识库隐喻，与 SessionSidebar 的 personalContextNavIcon 同源内联 SVG。
 function PersonalContextIcon(props: SVGProps<SVGSVGElement>) {
@@ -157,6 +164,7 @@ import {
   createAgentManagementClient,
   createAgentGroupManagementClient,
   getAgentAvatarUrl,
+  isAgentGroupSelected,
   type AgentCatalogItem,
   type AgentGroupCatalogItem,
   type AgentGroupIdentity,
@@ -297,13 +305,13 @@ function isDefaultProject(project: ProjectInfo): boolean {
 interface InputAreaProps {
   onSubmit: (content: string, mediaItems?: MediaItem[]) => void;
   onEnsureSession: (initialTitle?: string) => Promise<string | null>;
-  onNewSession: () => void;
   onForkSession: (sourceSessionId: string) => Promise<void>;
-  onStartSideConversation: (sourceSessionId: string, prompt?: string) => Promise<void>;
   /** Signals that the user is editing an existing real Session. */
   onInputIntent?: (sessionId: string) => void;
   onPersistMedia: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   onPersistDocuments: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
+  /** Delete an unsent image copy under the session uploads directory. */
+  onDiscardMedia?: (sessionId: string, path: string) => Promise<unknown>;
   onInterrupt: (newInput?: string) => void;
   onCancel: () => void;
   onSwitchMode: (mode: AgentMode) => void;
@@ -523,6 +531,15 @@ function attachmentToMediaItem(attachment: AttachmentDraft): MediaItem {
   };
 }
 
+function toUnsentImageDraft(draft: AttachmentDraft): UnsentImageDraft {
+  return {
+    id: draft.id,
+    kind: draft.kind,
+    status: draft.status,
+    persistedPath: pickString(draft.persistedMediaItem?.path),
+  };
+}
+
 function buildUploadMediaItem(attachment: AttachmentDraft, payload: Pick<AttachmentDraft, 'base64Data'>): MediaItem {
   return {
     type: attachment.kind,
@@ -675,12 +692,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   {
     onSubmit,
     onEnsureSession,
-    onNewSession,
     onForkSession,
-    onStartSideConversation,
     onInputIntent,
     onPersistMedia,
     onPersistDocuments,
+    onDiscardMedia,
     onInterrupt,
     onCancel,
     onSwitchMode,
@@ -742,7 +758,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
   const [agentOptionsStatus, setAgentOptionsStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const agentManagementClient = useMemo(() => createAgentManagementClient(), []);
-  const [groupOptions, setGroupOptions] = useState<AgentGroupCatalogItem[]>([]);
+  const [groupOptions, setGroupOptions] = useState<AgentGroupCatalogItem[]>(
+    () => [getSelectedAgentGroup()].filter((group): group is AgentGroupCatalogItem => group !== null),
+  );
   const [groupOptionsStatus, setGroupOptionsStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [failedGroupAvatarIds, setFailedGroupAvatarIds] = useState<ReadonlySet<string>>(() => new Set());
   const groupManagementClient = useMemo(() => createAgentGroupManagementClient(), []);
@@ -752,6 +770,23 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const timeoutId = window.setTimeout(() => setProjectDirError(null), 3000);
     return () => window.clearTimeout(timeoutId);
   }, [projectDirError, workDialogOpen]);
+
+  // bugfix 2026092201 bug001 子问题 1：覆盖已有目标时改用自定义弹窗（OverwriteGoalConfirmModal）
+  // 取代 window.confirm。confirmGoalOverwrite 把参数存进这个 state、返回一个等按钮点击才
+  // resolve 的 Promise；两处需要"确认覆盖"的调用点（handleSubmit 整行提交 / 建议菜单选中后
+  // 立即执行）都改用同一个 useCallback，不再各自内联 window.confirm。
+  const [goalOverwriteRequest, setGoalOverwriteRequest] = useState<{
+    currentObjective: string;
+    requestedObjective: string;
+    resolve: (confirmed: boolean) => void;
+  } | null>(null);
+  const confirmGoalOverwrite = useCallback(
+    (currentObjective: string, requestedObjective: string) =>
+      new Promise<boolean>((resolve) => {
+        setGoalOverwriteRequest({ currentObjective, requestedObjective, resolve });
+      }),
+    [],
+  );
 
   const [composerSuggestion, setComposerSuggestion] = useState<ComposerSuggestionState | null>(null);
   const [composerSuggestionIndex, setComposerSuggestionIndex] = useState(0);
@@ -843,7 +878,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     (s) => s.runtimes[activeSessionId ?? '']?.agentGroupBindingPending ?? null,
   );
   const agentGroupLocked = Boolean(agentGroupBinding || agentGroupBindingPending);
-  const selectedGroup = groupOptions.find((item) => item.id === selectedGroupId) ?? null;
+  const selectedGroup = groupOptions.find((item) => item.name === selectedGroupId || item.id === selectedGroupId) ?? null;
   const installedGroupOptions = useMemo(
     () => groupOptions.filter((item) => item.installed && item.capabilities.canUse),
     [groupOptions],
@@ -957,8 +992,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     isTeamMode && activeSessionId !== NEW_CONVERSATION_ID && !agentGroupBinding && !agentGroupBindingPending,
   );
   const agentGroupPickerLocked = agentGroupLocked || existingTeamGroupSelectionDisabled;
+  const teamGroupSelectionActive = isTeamMode && Boolean(selectedGroupId);
+  const teamSkillSelectionActive = isTeamMode && selectedSkills.length > 0;
   const agentSelectionDisabled = isTeamMode;
-  const agentGroupSelectionDisabled = isAgentMode || agentGroupPickerLocked;
+  const agentGroupSelectionDisabled = isAgentMode || agentGroupPickerLocked || teamSkillSelectionActive;
 
   useEffect(() => {
     if (!isTeamMode && !isAgentMode) return;
@@ -971,21 +1008,22 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const showWorkContextRow = activeSessionId === NEW_CONVERSATION_ID;
   /** Goal 入口是否适用于当前上下文（agent 模式 + 已接入 onSetGoal，如欢迎页新会话就不适用） */
   const canUseGoalMenu = isAgentMode && Boolean(onSetGoal);
-  // 只跟 armed 挂钩：这个 tag 是"下一条消息将用于设置目标"的过渡态指示，发送后 armed 变 false
-  // 就该跟着消失，不能靠"目标是否存在"续命——目标存在与否、当前状态、编辑/暂停/删除，已经由
-  // 输入框上方常驻的 GoalBar 完整覆盖，工具栏这里再挂一份重复的常驻入口只会显得"选择没解除"。
-  const goalTagVisible = canUseGoalMenu && goalArmed;
+  // bugfix 2026092201 bug001 第2轮修订：原来只跟 armed 挂钩（发送后 armed 变 false 就消失，
+  // 理由是"目标是否存在"已由 GoalBar 覆盖，工具栏不需要重复常驻）。但这样一来目标在真正执行
+  // 期间（armed 已经变 false、hasUnfinishedGoal 才是 true）这个 tag 会凭空消失，跟 Plan 的
+  // tag（跟 planActive 走、整个执行期间常驻）体验不一致，用户测试后明确要求对齐 Plan——所以
+  // 改成跟"+"菜单开关的 `goalChecked` 同一个公式：武装中或者真有未完成目标都要显示，关闭按钮
+  // 会在下面按 evaluateGoalArm 的"关闭方向"结果做忙态保护，不会出现"tag 一直在、点了却把执行
+  // 中的目标误关掉"的问题。
+  const goalTagVisible = canUseGoalMenu && (goalArmed || hasUnfinishedGoal);
   // Plan 是持续开关（不是 Goal 那种"下一条消息生效"的过渡态）：打开后一直用
   // agent.plan 发送，直到用户点叉或后端推 plan.mode_exited。
   // 和 Goal 一样只对单 agent 开放，集群模式不提供 Plan 入口。
   const planActive = usePlanStore((s) => s.runtimes[activeSessionId ?? '']?.active ?? false);
-  const planPendingExplicitEntry = usePlanStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.pendingExplicitEntry ?? false,
-  );
   // 个人上下文：agent 加载开关（总开关联动）。总开关关闭时整个菜单项隐藏；开启时默认打开，可单独控制。
   const isConnected = useSessionStore((s) => s.isConnected);
   const personalContextMasterEnabled = usePersonalContextStore(
-    (s) => s.config.collection_enabled || s.config.agent_use_enabled,
+    (s) => s.config.master_enabled ?? (s.config.collection_enabled || s.config.agent_use_enabled),
   );
   const agentUseEnabled = usePersonalContextStore((s) => s.config.agent_use_enabled);
   const agentUsePending = usePersonalContextStore((s) => !!s.pendingWrites.agent_use_enabled);
@@ -1005,9 +1043,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const swarmflowBudget = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.swarmflowBudget ?? null);
   // 进入真实会话后开关只读：仅新建对话页可修改，真实会话可查看不可改
   const swarmflowToggleDisabled = isProcessing || (activeSessionId !== NEW_CONVERSATION_ID && hasHistory);
-  // Plan 已经真正生效：开关打开且至少发出过一条 Plan 消息（pendingExplicitEntry 已被消费）。
-  // 区别于"刚打开开关但还没发消息"的未提交态——后者和 Goal 的 armed 一样可以被对方随手顶替。
-  const planCommitted = planActive && !planPendingExplicitEntry;
   const canUsePlanMenu = supportsPlanMode(mode);
   const planTagVisible = canUsePlanMenu && planActive;
 
@@ -1029,17 +1064,21 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const items = getComposerSuggestionItems(
       composerSuggestion,
       mentionableMembers,
-      getWebSlashCommandsForMode(slashCommands, mode).map((command) => ({
-        ...command,
-        description: resolveSlashCommandDescription(command, commandDescriptionLanguage),
-      })),
+      getWebSlashCommandsForMode(slashCommands, mode)
+        .filter((command) => findSlashCommand(command.name))
+        .map((command) => ({
+          ...command,
+          description: resolveSlashCommandDescription(command, commandDescriptionLanguage),
+        })),
       slashSkills,
       isTeamMode,
     );
     return items.map((item) =>
-      item.itemKind === 'command' && isSlashCommandDisabledByGoal(item.id, hasUnfinishedGoal)
-        ? { ...item, disabled: true, disabledReason: t('plan.toolbarUnavailableGoal') }
-        : item,
+      item.itemKind === 'skill' && teamGroupSelectionActive
+        ? { ...item, disabled: true, disabledReason: t('chat.teamSkillsGroupLocked') }
+        : item.itemKind === 'command' && isSlashCommandDisabledByGoal(item.id, hasUnfinishedGoal)
+          ? { ...item, disabled: true, disabledReason: t('plan.toolbarUnavailableGoal') }
+          : item,
     );
   }, [
     commandDescriptionLanguage,
@@ -1050,6 +1089,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     mode,
     slashCommands,
     slashSkills,
+    teamGroupSelectionActive,
     t,
   ]);
 
@@ -1263,7 +1303,46 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     setAttachmentAlerts((prev) => prev.filter((item) => item.id !== id));
   }, []);
 
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+  const discardedImageUploadsRef = useRef(new Map<string, string>());
+  const onDiscardMediaRef = useRef(onDiscardMedia);
+  onDiscardMediaRef.current = onDiscardMedia;
+
+  const requestImageDiscard = useCallback((sessionId: string, path: string) => {
+    const discard = onDiscardMediaRef.current;
+    if (!discard || !sessionId || sessionId === NEW_CONVERSATION_ID || !path) return;
+    void discard(sessionId, path).catch((error) => {
+      console.error('Failed to discard unsent image:', error);
+    });
+  }, []);
+
+  const releaseUnsentUploads = useCallback((drafts: AttachmentDraft[]) => {
+    const removingIds = new Set(drafts.map((draft) => draft.id));
+    const remaining = attachmentsRef.current.filter((draft) => !removingIds.has(draft.id));
+    const plan = planUnsentImageDiscard(
+      drafts.map(toUnsentImageDraft),
+      remaining.map(toUnsentImageDraft),
+    );
+    const sessionId = activeSessionId || '';
+    for (const id of plan.pendingIds) {
+      discardedImageUploadsRef.current.set(id, sessionId);
+    }
+    for (const path of plan.paths) {
+      requestImageDiscard(sessionId, path);
+    }
+  }, [activeSessionId, requestImageDiscard]);
+
   const updateAttachment = useCallback((id: string, update: Partial<AttachmentDraft>) => {
+    if (discardedImageUploadsRef.current.has(id)) {
+      const persistedPath = pickString(update.persistedMediaItem?.path);
+      const terminal = Boolean(persistedPath) || update.status === 'error' || update.status === 'ready';
+      if (!terminal) return;
+      const uploadSessionId = discardedImageUploadsRef.current.get(id) ?? '';
+      discardedImageUploadsRef.current.delete(id);
+      if (persistedPath) requestImageDiscard(uploadSessionId, persistedPath);
+      return;
+    }
     setAttachments((prev) => {
       if (prev.some((item) => item.id === id)) {
         return prev.map((item) => (item.id === id ? { ...item, ...update } : item));
@@ -1278,19 +1357,22 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       }
       return prev;
     });
-  }, []);
+  }, [requestImageDiscard]);
 
   const removeAttachment = useCallback((id: string) => {
+    const target = attachmentsRef.current.find((item) => item.id === id);
+    if (target) releaseUnsentUploads([target]);
     setAttachments((prev) => prev.filter((item) => item.id !== id));
     setAttachmentMenuId((current) => (current === id ? null : current));
-  }, []);
+  }, [releaseUnsentUploads]);
 
   const clearAttachments = useCallback(() => {
+    releaseUnsentUploads(attachmentsRef.current);
     setAttachments([]);
     setAttachmentAlerts([]);
     setAttachmentMenuId(null);
     clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
-  }, []);
+  }, [releaseUnsentUploads]);
 
   const attachmentSessionIdRef = useRef(activeSessionId);
   useEffect(() => {
@@ -1518,7 +1600,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   const retryAttachment = useCallback(
     (attachment: AttachmentDraft) => {
-      uploadAttachment(attachment);
+      if (attachment.kind !== 'image') {
+        uploadAttachment(attachment);
+        return;
+      }
+      const mimeType = resolveImageMimeType(attachment.filename, attachment.mimeType);
+      const previewUrl = attachment.base64Data
+        ? `data:${mimeType};base64,${attachment.base64Data}`
+        : attachment.previewUrl;
+      uploadAttachment({ ...attachment, mimeType, previewUrl });
     },
     [uploadAttachment],
   );
@@ -1557,7 +1647,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           id: makeAttachmentId(file),
           kind,
           filename: file.name || (kind === 'document' ? `document-${Date.now()}` : `image-${Date.now()}`),
-          mimeType: file.type || 'application/octet-stream',
+          mimeType:
+            kind === 'image'
+              ? resolveImageMimeType(file.name || '', file.type)
+              : file.type || 'application/octet-stream',
           size: file.size,
           file,
           ...(localPath ? { localPath } : {}),
@@ -1642,18 +1735,22 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           return items;
         }
 
+        const mimeType =
+          pick.kind === 'image'
+            ? resolveImageMimeType(pick.filename, pick.mime_type)
+            : pick.mime_type || 'application/octet-stream';
         const draft: AttachmentDraft = {
           id: `${pick.filename}-${pick.size}-${generateUuidV4()}`,
           kind: pick.kind,
           filename: pick.filename,
-          mimeType: pick.mime_type || 'application/octet-stream',
+          mimeType,
           size: pick.size,
           localPath: pick.path,
           status: 'uploading',
           ...(pick.kind === 'image' && pick.base64
             ? {
                 base64Data: pick.base64,
-                previewUrl: `data:${pick.mime_type || 'application/octet-stream'};base64,${pick.base64}`,
+                previewUrl: `data:${mimeType};base64,${pick.base64}`,
               }
             : {}),
         };
@@ -1992,6 +2089,21 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           return;
         }
       }
+      // bugfix 2026092201 bug001 子问题 3：`/goal`（不带目标正文——handleSubmit 精确输入
+      // `/goal` 回车，或 insertComposerToken 在建议菜单选中后立即走到这里）与 `/plan` 对齐，
+      // 选中/回车即"武装"、立刻显示"目标"tag，不再只插入一个占位 chip、什么状态都不改。
+      // 带目标正文的 `/goal set <objective>`、`/goal <objective>` 一次性单发用法不受影响，
+      // args 非空会跳过这里、继续走下面 command.execute 的正常解析。互斥判断统一走
+      // goalModeGate，和"+"菜单的目标开关共用同一套决策层，不再各自定制。
+      if (command.name === 'goal' && args.trim() === '') {
+        const decision = evaluateGoalArm(activeSessionId, true);
+        if (!decision.ok) {
+          if (decision.reason) pushAttachmentAlert(t(decision.reason));
+          return;
+        }
+        applyGoalArm(activeSessionId, true);
+        return;
+      }
       if (command.name !== 'compact') {
         await command.execute(context, args);
         return;
@@ -2020,7 +2132,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const trimmedBase = richContent.trim();
 
     // 拦截当前模式支持的斜杠命令：控制命令不走 chat.send / 队列 / 中断逻辑。
-    // Team 仅支持全局 /new，其余注册命令仍以普通文本发送。
+    // Team 模式下注册命令仍以普通文本发送。
     if (trimmedBase.startsWith('/')) {
       const { name, args } = parseSlashLine(trimmedBase);
       const cmd = findSlashCommand(name);
@@ -2032,6 +2144,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           return;
         }
         if (slashSid) useChatStore.getState().setInputValue(slashSid, '');
+        releaseUnsentUploads(attachmentsRef.current);
         setAttachments([]);
         setAttachmentAlerts([]);
         if (inputRef.current) inputRef.current.innerHTML = '';
@@ -2046,12 +2159,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               inputLine: trimmedBase,
               addMessage: useChatStore.getState().addMessage,
               submitMessage: onSubmit,
-              startNewConversation: onNewSession,
               forkConversation: onForkSession,
-              startSideConversation: onStartSideConversation,
               runGoalAction: runGoalSlashAction,
-              confirmGoalOverwrite: (currentObjective, requestedObjective) =>
-                window.confirm(t('goal.overwriteConfirm', { currentObjective, requestedObjective })),
+              confirmGoalOverwrite,
             },
             args,
           );
@@ -2145,9 +2255,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     composerDisabled,
     isInterruptible,
     onSubmit,
-    onNewSession,
     onForkSession,
-    onStartSideConversation,
     runGoalSlashAction,
     onInterrupt,
     mode,
@@ -2158,6 +2266,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     onSetGoal,
     onDrainTaskQueueIfIdle,
     pushAttachmentAlert,
+    releaseUnsentUploads,
     t,
   ]);
 
@@ -2269,6 +2378,20 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       // slash 选中
       if (kind === 'slash') {
         if (slashItemKind === 'skill') {
+          const slashSid = useChatStore.getState().activeSessionId;
+          const slashRuntime = slashSid ? useSessionStore.getState().getRuntime(slashSid) : undefined;
+          if (
+            slashSid &&
+            isAgentGroupSelected(
+              slashRuntime?.mode,
+              slashRuntime?.agentGroupSelectionIntent,
+              slashRuntime?.agentGroupBinding,
+              slashRuntime?.agentGroupBindingPending,
+            )
+          ) {
+            setComposerSuggestion(null);
+            return;
+          }
           const trigger = getCurrentComposerTrigger();
           if (trigger) {
             const beforeRange = range.cloneRange();
@@ -2280,7 +2403,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             range.deleteContents();
           }
           savedRangeRef.current = range.cloneRange();
-          const slashSid = useChatStore.getState().activeSessionId;
           if (slashSid) useSessionStore.getState().addSelectedSkill(slashSid, value);
           insertSkillChipRef.current(value);
           setComposerSuggestion(null);
@@ -2293,9 +2415,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           setComposerSuggestion(null);
           return;
         }
-        // 无参命令（/new、/fork、/plan、/compact）：选中即执行，不插入文本、不再等回车。
+        // 无参命令（/fork、/plan、/compact）：选中即执行，不插入文本、不再等回车。
         // `/fork title`、`/plan hi` 这类手工输入不走此选中路径，提交时会被当作普通消息。
-        if (slashCmd && slashTakesArgs === false) {
+        // `/goal` 后端元数据是 takesArgs:true（要支持 `/goal <objective>` 一次性单发），但
+        // "不带正文、从建议菜单选中"这一种情况要跟 /plan 对齐——选中即武装、清空输入框，不再
+        // 插入占位 chip（bugfix 2026092201 bug001 子问题 3），所以这里单独把 'goal' 也纳入
+        // 这条"选中即执行"分支；executeSlashCommand 内部会按 args 是否为空区分"武装"还是
+        // 走 goalCommand 正常解析。
+        if (slashCmd && (slashTakesArgs === false || slashCmd.name === 'goal')) {
           const trigger = getCurrentComposerTrigger();
           if (trigger) {
             const beforeRange = range.cloneRange();
@@ -2306,12 +2433,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             setRangeStartByTextOffset(range, el, Math.max(0, beforeTextLength - triggerLength));
             range.deleteContents();
           }
-          if (slashCmd.name === 'new') {
-            if (slashSid) useChatStore.getState().setInputValue(slashSid, '');
-            setAttachments([]);
-            setAttachmentAlerts([]);
-            el.innerHTML = '';
-          } else if (slashSid) {
+          if (slashSid) {
             useChatStore.getState().setInputValue(slashSid, extractPlainText());
           }
           setComposerSuggestion(null);
@@ -2326,12 +2448,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 inputLine: `/${value}`,
                 addMessage: useChatStore.getState().addMessage,
                 submitMessage: onSubmit,
-                startNewConversation: onNewSession,
                 forkConversation: onForkSession,
-                startSideConversation: onStartSideConversation,
                 runGoalAction: runGoalSlashAction,
-                confirmGoalOverwrite: (currentObjective, requestedObjective) =>
-                  window.confirm(t('goal.overwriteConfirm', { currentObjective, requestedObjective })),
+                confirmGoalOverwrite,
               },
               '',
             );
@@ -2471,10 +2590,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       executeSlashCommand,
       extractPlainText,
       getCurrentComposerTrigger,
+      releaseUnsentUploads,
       mode,
-      onNewSession,
       onForkSession,
-      onStartSideConversation,
       onSubmit,
       runGoalSlashAction,
       setRangeStartByTextOffset,
@@ -2660,7 +2778,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   const handlePaste = useCallback(
     (event: ClipboardEvent<HTMLDivElement>) => {
-      const hasText = Boolean(event.clipboardData.getData('text/plain').trim());
+      const text = event.clipboardData.getData('text/plain');
+      const hasText = text.length > 0;
       if (hasText) {
         notifyKVCInputIntent();
       }
@@ -2683,6 +2802,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
       if (clipboardHasFileItems(event.clipboardData) && !hasText) {
         event.preventDefault();
+        return;
+      }
+      if (hasText) {
+        event.preventDefault();
+        insertPlainText(event.currentTarget, text);
       }
     },
     [appendAttachmentFiles, handleDesktopFilePaste, imageInputDisabled, notifyKVCInputIntent, pushAttachmentAlert, t],
@@ -2868,6 +2992,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       };
       const sid = useChatStore.getState().activeSessionId;
       if (!sid || !inputRef.current) return;
+      const runtime = useSessionStore.getState().getRuntime(sid);
+      if (
+        isAgentGroupSelected(
+          runtime?.mode,
+          runtime?.agentGroupSelectionIntent,
+          runtime?.agentGroupBinding,
+          runtime?.agentGroupBindingPending,
+        )
+      ) return;
 
       // 清空输入框并插入前缀文本（如"帮我修改这个技能"）
       inputRef.current.textContent = detail.prefixText || '';
@@ -2908,7 +3041,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     };
     window.addEventListener('chat-input-insert-skill', handler);
     return () => window.removeEventListener('chat-input-insert-skill', handler);
-  }, [insertSkillChip, extractPlainText]);
+  }, [extractPlainText, insertSkillChip]);
   // 外部进入新会话时可以预选技能。把 canonical session state 同步成输入框
   // 中的 chip，避免用户开始编辑后被 handleEditorInput 误判为手动移除。
   useEffect(() => {
@@ -3207,7 +3340,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                               >
                                 {t('chat.uploadFailed')}
                               </span>
-                              {attachment.file && (
+                              {canRetryAttachmentDraft(attachment) && (
                                 <button
                                   type="button"
                                   className="chat-input-attachment-retry"
@@ -3301,12 +3434,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 }}
                 onPick={insertComposerToken}
                 loading={slashCatalogLoading}
-                slashSkillsOnly={false}
+                slashSkillsOnly={isTeamMode}
               />
             )}
             <div
               ref={inputRef}
               contentEditable={!composerDisabled}
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
               aria-disabled={composerDisabled}
               suppressContentEditableWarning
               onBeforeInput={handleEditorBeforeInput}
@@ -3484,7 +3620,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                           <button type="button" role="tab" aria-selected={pickerTab === 'agent'} aria-disabled={agentSelectionDisabled} className={pickerTab === 'agent' ? 'is-active' : ''} disabled={agentSelectionDisabled} data-testid="chat-panel-agent-picker-agent-tab" title={agentSelectionDisabled ? t('chat.agentOnlyInSingleAgentMode') : undefined} onClick={() => { setPickerTab('agent'); setAgentPickerQuery(''); }}>{t('chat.agent')}</button>
                                         ) : null}
                                         {!isAgentMode ? (
-                                          <button type="button" role="tab" aria-selected={pickerTab === 'group'} aria-disabled={agentGroupSelectionDisabled} className={pickerTab === 'group' ? 'is-active' : ''} disabled={agentGroupSelectionDisabled} data-testid="chat-panel-agent-picker-agent-group-tab" title={isAgentMode ? t('chat.agentGroupOnlyInTeamMode') : existingTeamGroupSelectionDisabled ? t('chat.agentGroupFirstBuildOnly') : agentGroupLocked ? t('chat.agentGroupBinding') : undefined} onClick={() => { setPickerTab('group'); setAgentPickerQuery(''); }}>{t('chat.agentGroup')}</button>
+                                          <button type="button" role="tab" aria-selected={pickerTab === 'group'} aria-disabled={agentGroupSelectionDisabled} className={pickerTab === 'group' ? 'is-active' : ''} disabled={agentGroupSelectionDisabled} data-testid="chat-panel-agent-picker-agent-group-tab" title={isAgentMode ? t('chat.agentGroupOnlyInTeamMode') : teamSkillSelectionActive ? t('chat.teamSkillsGroupLocked') : existingTeamGroupSelectionDisabled ? t('chat.agentGroupFirstBuildOnly') : agentGroupLocked ? t('chat.agentGroupBinding') : undefined} onClick={() => { setPickerTab('group'); setAgentPickerQuery(''); }}>{t('chat.agentGroup')}</button>
                                         ) : null}
                                       </div>
                                     ) : null
@@ -3637,7 +3773,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                       data-tooltip={
                                         isAgentMode
                                           ? t('chat.agentGroupOnlyInTeamMode')
-                                          : existingTeamGroupSelectionDisabled
+                                          : teamSkillSelectionActive
+                                            ? t('chat.teamSkillsGroupLocked')
+                                            : existingTeamGroupSelectionDisabled
                                             ? t('chat.agentGroupFirstBuildOnly')
                                             : item.description || t('chat.agentGroupBinding')
                                       }
@@ -3894,33 +4032,31 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           })()}
                         {canUseGoalMenu &&
                           (() => {
-                            // Goal 和 Plan 互斥：已有真正生效的计划时不能再选目标；"打开"方向沿用原逻辑，
-                            // "关闭"方向不受限制（跟输入框旁边现有的目标 chip 关闭按钮一致，随时可关）。
+                            // Goal 和 Plan 互斥：已有真正生效的计划时不能再选目标。能否武装/解除武装统一走
+                            // goalModeGate（evaluateGoalArm/applyGoalArm）——`/goal` 斜杠命令选中即武装、
+                            // 目标 tag 关闭按钮也调同一套决策层，不再各自定制一份判断（bugfix 2026092201
+                            // bug001；第2轮补上关闭方向的会话忙态保护）。
                             const goalChecked = goalArmed || hasUnfinishedGoal;
-                            const goalDisabledOn = hasUnfinishedGoal || planCommitted;
-                            const goalDisabledOnTitle = hasUnfinishedGoal
-                              ? t('goal.toolbarUnavailable')
-                              : planCommitted
-                                ? t('goal.toolbarUnavailablePlan')
-                                : undefined;
-                            const goalDisabled = goalChecked ? false : goalDisabledOn;
-                            const goalTitle = goalChecked ? undefined : goalDisabledOnTitle;
+                            // bugfix 2026092201 bug001 第2轮：开、关两个方向分别求 evaluateGoalArm 的决策——
+                            // 之前"已勾选就永远不 disabled"会导致目标真正执行期间（goalChecked 恒为 true）
+                            // 这个开关完全没有保护，随手一点 `next=false` 就会把执行中的目标清掉、会话跟着
+                            // 停摆。现在关闭方向也要过 evaluateGoalArm 的忙态检查，跟"计划"开关关闭时受
+                            // planModeGate 保护的做法对齐。
+                            const goalOffDecision = evaluateGoalArm(activeSessionId, false);
+                            const goalOnDecision = evaluateGoalArm(activeSessionId, true);
+                            const goalDisabled = goalChecked ? !goalOffDecision.ok : !goalOnDecision.ok;
+                            const goalActiveDecision = goalChecked ? goalOffDecision : goalOnDecision;
+                            const goalTitle = goalActiveDecision.reason ? t(goalActiveDecision.reason) : undefined;
                             const toggleGoal = (next: boolean) => {
                               if (!activeSessionId) return;
                               if (next) {
-                                if (goalDisabledOn) return;
-                                // 走到这里 planCommitted 一定是 false（否则上面已 disabled），所以 planActive
-                                // 为 true 时只可能是"刚打开开关、还没发过消息"的未提交态，可以放心顶掉。
-                                // 内部互斥复位（非用户主动退出计划模式），直接 setActive、不过 planModeGate。
-                                if (planActive) {
-                                  usePlanStore.getState().setActive(activeSessionId, false);
-                                }
-                                useGoalStore.getState().setArmed(activeSessionId, true);
-                              } else {
-                                if (currentGoal) {
-                                  onClearGoal?.(activeSessionId);
-                                }
-                                useGoalStore.getState().setArmed(activeSessionId, false);
+                                applyGoalArm(activeSessionId, true);
+                                return;
+                              }
+                              const applied = applyGoalArm(activeSessionId, false);
+                              if (!applied) return;
+                              if (currentGoal) {
+                                onClearGoal?.(activeSessionId);
                               }
                               // 不关闭菜单：用户拨动开关后保持菜单打开，便于看到开关状态变化并继续操作。
                             };
@@ -4187,31 +4323,40 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     )}
                   </div>
                 )}
-                {goalTagVisible && (
-                  <div className="chat-agent-tag" data-testid="chat-panel-goal-tag">
-                    <span className="chat-agent-tag__avatar chat-agent-tag__avatar--plain" aria-hidden="true">
-                      <GoalIcon aria-hidden="true" />
-                    </span>
-                    <span className="chat-agent-tag__label" data-testid="chat-panel-goal-tag-label">
-                      {t('goal.toolbarTag')}
-                    </span>
-                    <button
-                      type="button"
-                      className="chat-agent-tag__close"
-                      data-testid="chat-panel-goal-tag-close"
-                      aria-label={t('goal.closeTag')}
-                      onClick={() => {
-                        if (!activeSessionId) return;
-                        if (currentGoal) {
-                          onClearGoal?.(activeSessionId);
-                        }
-                        useGoalStore.getState().setArmed(activeSessionId, false);
-                      }}
-                    >
-                      <WorkIcon name="close" />
-                    </button>
-                  </div>
-                )}
+                {goalTagVisible &&
+                  (() => {
+                    // 关闭「目标」tag 与"+"菜单目标开关、evaluateGoalArm 共用同一套忙态保护
+                    // （bugfix 2026092201 bug001 第2轮）：目标真正执行期间不能被随手关掉/清除，
+                    // 跟「计划」chip 关闭按钮受 planModeGate 保护的做法对齐。
+                    const goalCloseBlocked = !evaluateGoalArm(activeSessionId, false).ok;
+                    return (
+                      <div className="chat-agent-tag" data-testid="chat-panel-goal-tag">
+                        <span className="chat-agent-tag__avatar chat-agent-tag__avatar--plain" aria-hidden="true">
+                          <GoalIcon aria-hidden="true" />
+                        </span>
+                        <span className="chat-agent-tag__label" data-testid="chat-panel-goal-tag-label">
+                          {t('goal.toolbarTag')}
+                        </span>
+                        <button
+                          type="button"
+                          className="chat-agent-tag__close"
+                          data-testid="chat-panel-goal-tag-close"
+                          disabled={goalCloseBlocked}
+                          aria-label={goalCloseBlocked ? t('goal.closeTagDisabled') : t('goal.closeTag')}
+                          onClick={() => {
+                            if (!activeSessionId) return;
+                            const applied = applyGoalArm(activeSessionId, false);
+                            if (!applied) return;
+                            if (currentGoal) {
+                              onClearGoal?.(activeSessionId);
+                            }
+                          }}
+                        >
+                          <WorkIcon name="close" />
+                        </button>
+                      </div>
+                    );
+                  })()}
 
                 {planTagVisible && (
                   <div className="chat-agent-tag" data-testid="chat-panel-plan-tag">
@@ -4420,7 +4565,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   }}
                   onPick={insertComposerToken}
                   loading={slashCatalogLoading}
-                  slashSkillsOnly={false}
+                  slashSkillsOnly={isTeamMode}
                   placement="below"
                 />
               )}
@@ -4816,6 +4961,21 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             })()}
         </div>
       </div>
+
+      {goalOverwriteRequest && (
+        <OverwriteGoalConfirmModal
+          currentObjective={goalOverwriteRequest.currentObjective}
+          requestedObjective={goalOverwriteRequest.requestedObjective}
+          onConfirm={() => {
+            goalOverwriteRequest.resolve(true);
+            setGoalOverwriteRequest(null);
+          }}
+          onCancel={() => {
+            goalOverwriteRequest.resolve(false);
+            setGoalOverwriteRequest(null);
+          }}
+        />
+      )}
     </>
   );
 });

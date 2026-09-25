@@ -19,9 +19,9 @@ import { usePersonalContextStore } from '../../stores';
 import { useSessionStore } from '../../stores';
 import {
   STRATEGY_OPTIONS,
+  hasRunningFetchTask,
   isFetchTaskRunningError,
   pcApi,
-  type PersonalContextStatus,
 } from '../../services/personalContextApi';
 import { toast } from '../../components/ui/Toast/toastStore';
 import './SettingsPanel.css';
@@ -30,14 +30,6 @@ import githubLogo from '../../assets/settings/channels/GitHub.svg';
 import gitcodeLogo from '../../assets/settings/channels/gitcode.png';
 interface PersonalContextSettingsPanelProps {
   isConnected: boolean;
-}
-
-/** 是否存在尚未停完的采集任务（采集进度里 running/stopping）。 */
-function hasRunningFetchTask(status: PersonalContextStatus | null | undefined): boolean {
-  if (!status) return false;
-  return Object.values(status.fetch_run_progress ?? {}).some(
-    (item) => item.run_state === 'running' || item.run_state === 'stopping',
-  );
 }
 
 /** webClient 请求超时错误（code=REQUEST_TIMEOUT）。 */
@@ -61,7 +53,9 @@ export function PersonalContextSettingsPanel({
     status,
     loadingConfig,
     pendingWrites,
+    configNeedsReconciliation,
     loadAll,
+    loadStatus,
     setMasterEnabled,
     setEnabled,
     setStrategyProfile,
@@ -77,8 +71,8 @@ export function PersonalContextSettingsPanel({
   const currentModelName =
     config.model_index != null ? availableModels[config.model_index]?.model_name ?? null : null;
 
-  // 总开关为派生状态：任一子开关开启即视为开启。
-  const masterEnabled = config.collection_enabled || config.agent_use_enabled;
+  // 总开关为独立持久化状态；兼容旧配置缺失时按子开关派生兜底。
+  const masterEnabled = config.master_enabled ?? (config.collection_enabled || config.agent_use_enabled);
 
   const [error, setError] = useState<string | null>(null);
   const [githubModalOpen, setGithubModalOpen] = useState(false);
@@ -87,6 +81,7 @@ export function PersonalContextSettingsPanel({
   // 后端 stored_config 落盘后不带 configured 字段，只有 PersonalContextStatus 稳定带。
   // 因此"是否已配置"以 status.configured 为准，而非 config.configured。
   const isConfigured = status?.configured === true || config.collection_enabled === true;
+  const fetchActive = hasRunningFetchTask(status);
 
   useEffect(() => {
     if (!isConnected) return;
@@ -101,13 +96,25 @@ export function PersonalContextSettingsPanel({
     }
   }, [isConnected, loadAll, loadAuthStatus]);
 
-  // 写操作统一处理：请求超时用 toast 提示。关闭/开启都可能等后端最长 30s 停任务，
-  // 超时后开关会回弹，直接提示比挂一条持久错误条更友好。
+  useEffect(() => {
+    if (!isConnected) return;
+    const id = window.setInterval(() => void loadStatus().catch(() => {}), 5000);
+    return () => window.clearInterval(id);
+  }, [isConnected, loadStatus]);
+
+  // 请求超时后由 store 核对实际配置；核对期间开关保持请求态。
   const runWrite = useCallback(
     (op: () => Promise<void>): Promise<void> =>
       op().catch((e: unknown) => {
         if (isRequestTimeoutError(e)) {
-          toast.open({ content: t('personalContext.settings.operationTimeout'), variant: 'warning' });
+          toast.open({
+            content: t(
+              usePersonalContextStore.getState().configNeedsReconciliation
+                ? 'personalContext.settings.collectionTimeoutReconciling'
+                : 'personalContext.settings.operationTimeout',
+            ),
+            variant: 'warning',
+          });
           return;
         }
         setError(e instanceof Error ? e.message : String(e));
@@ -116,7 +123,7 @@ export function PersonalContextSettingsPanel({
   );
 
   // 开启采集前确认任务已真正停完：若后端还在跑/停，start 会排在 _operation_lock 后面干等
-  // （stop 最长 30s），两个请求串行容易触发前端 60s 超时，这里提前拦截。
+  // 两个请求串行容易触发前端超时，这里提前拦截。
   const isFetchStillRunning = useCallback(async (): Promise<boolean> => {
     try {
       const fresh = await pcApi.getStatus();
@@ -174,13 +181,14 @@ export function PersonalContextSettingsPanel({
       }
       void setStrategyProfile(profile).catch((e: unknown) => {
         if (isFetchTaskRunningError(e)) {
+          void loadStatus().catch(() => {});
           toast.open({ content: t('personalContext.services.fetchTaskRunning'), variant: 'warning' });
           return;
         }
         setError(e instanceof Error ? e.message : String(e));
       });
     },
-    [config.model_index, setStrategyProfile, t],
+    [config.model_index, loadStatus, setStrategyProfile, t],
   );
 
   const handleModel = useCallback(
@@ -316,12 +324,21 @@ export function PersonalContextSettingsPanel({
         {/* 总开关 */}
         <SettingRow
           title={t('personalContext.settings.masterEnable')}
-          description={t('personalContext.settings.masterEnableHint')}
+          description={t(
+            configNeedsReconciliation
+              ? 'personalContext.settings.collectionReconciling'
+              : 'personalContext.settings.masterEnableHint',
+          )}
         >
           <Switch
             checked={masterEnabled}
             onChange={handleMasterEnabled}
-            disabled={!isConnected || !!pendingWrites.collection_enabled || !!pendingWrites.agent_use_enabled}
+            disabled={
+              !isConnected ||
+              configNeedsReconciliation ||
+              !!pendingWrites.collection_enabled ||
+              !!pendingWrites.agent_use_enabled
+            }
           />
         </SettingRow>
 
@@ -330,12 +347,16 @@ export function PersonalContextSettingsPanel({
             {/* 采集个人上下文内容 */}
             <SettingRow
               title={t('personalContext.settings.enable')}
-              description={t('personalContext.settings.enableHint')}
+              description={t(
+                configNeedsReconciliation
+                  ? 'personalContext.settings.collectionReconciling'
+                  : 'personalContext.settings.enableHint',
+              )}
             >
               <Switch
                 checked={config.collection_enabled}
                 onChange={handleEnabled}
-                disabled={!isConnected || !!pendingWrites.collection_enabled}
+                disabled={!isConnected || configNeedsReconciliation || !!pendingWrites.collection_enabled}
               />
             </SettingRow>
 
@@ -344,13 +365,16 @@ export function PersonalContextSettingsPanel({
             {/* 上下文采集模式 */}
             <SettingRow
               title={t('personalContext.settings.strategyProfile')}
-              description={t('personalContext.settings.subtitle')}
+              description={t(fetchActive
+                ? 'personalContext.settings.strategyLockedByFetch'
+                : 'personalContext.settings.subtitle')}
             >
               <select
                 className="pc-settings__select"
+                data-testid="personal-context-strategy-select"
                 value={config.strategy_profile}
                 onChange={(e) => handleStrategy(e.target.value as 'rules' | 'balanced' | 'agent')}
-                disabled={!isConnected || !!pendingWrites.strategy_profile}
+                disabled={!isConnected || fetchActive || !!pendingWrites.strategy_profile}
               >
                 {STRATEGY_OPTIONS.map((s) => (
                   <option key={s} value={s}>{t('personalContext.settings.strategy_' + s)}</option>

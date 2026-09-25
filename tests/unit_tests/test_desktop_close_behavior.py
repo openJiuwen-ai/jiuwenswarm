@@ -102,6 +102,14 @@ def test_window_api_hides_close_action_setting_outside_windows(
     assert api.set_close_action(desktop_app.CLOSE_ACTION_HIDE) is False
 
 
+def test_windows_close_prompt_adapts_to_wrapped_message(desktop_app) -> None:
+    source = inspect.getsource(desktop_app.DesktopRuntime._prompt_windows_close_action)
+
+    assert "message.Size = Size(382, message.GetPreferredSize(Size(382, 0)).Height)" in source
+    assert "first_option_top = max(62, message.Bottom + 14)" in source
+    assert "dialog.ClientSize = Size(430, cancel_button.Bottom + 20)" in source
+
+
 def test_saved_ask_prompts_again(
     desktop_app, tmp_path: Path, monkeypatch
 ) -> None:

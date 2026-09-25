@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from functools import wraps
 
 
@@ -27,6 +28,10 @@ from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService, _cron_next_
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 
 
+# 列表/调度等批量路径查询"项目准入"闸门时的最大并发数。
+_GATE_QUERY_CONCURRENCY = 8
+
+
 def _serialize_mutation(method):
     """Keep project fencing/cleanup and cron creation in one admission order."""
 
@@ -50,6 +55,13 @@ class CronController:
             scheduler._lifecycle_mutation_lock = asyncio.Lock()
         self.mutation_lock = scheduler._lifecycle_mutation_lock
         self._target_channel: CronTargetChannel | None = None
+        # 准入闸门是跨进程 RPC,列表时按项目去重后并发查询,这里限制并发上限,
+        # 避免任务/项目很多时一次性打出上百个请求。
+        self._gate_concurrency = asyncio.Semaphore(_GATE_QUERY_CONCURRENCY)
+
+    async def _gate_allowed(self, project_id: str | None, user_id: str | None) -> bool:
+        async with self._gate_concurrency:
+            return await self._scheduler.project_execution_allowed(project_id, user_id)
 
     @property
     def store(self) -> CronJobStore:
@@ -162,34 +174,71 @@ class CronController:
 
     async def list_jobs(self) -> list[dict[str, Any]]:
         jobs = await self._store.list_jobs()
+        # project_execution_allowed 是一次跨进程 RPC。同项目多任务共享同一
+        # (project_id, user_id) 判定:去重后并发查询,避免把一次列表请求
+        # 放大成逐任务串行 N 次往返(每个 10s 超时)。
+        # 同项目同属主共享一次判定;用有序列表而非集合,避免依赖集合迭代顺序
+        # 与 gather 结果逐一对应。
+        keys = list(dict.fromkeys((job.project_id, job.user_id) for job in jobs))
+        if not keys:
+            return []
+        verdicts = await asyncio.gather(
+            *(self._gate_allowed(pid, uid) for pid, uid in keys)
+        )
+        allowed = dict(zip(keys, verdicts))
         return [
-            j.to_dict()
-            for j in jobs
-            if await self._scheduler.project_execution_allowed(j.project_id, j.user_id)
+            job.to_dict()
+            for job in jobs
+            if allowed[(job.project_id, job.user_id)]
         ]
 
     @_serialize_mutation
-    async def delete_project_jobs(
-        self, project_id: str, *, user_id=None, checkpoint=None, plan=None
-    ) -> dict:
-        jobs = []
-        for job in await self._store.list_jobs():
-            if job.project_id == project_id and str(job.user_id or "") == str(user_id or ""):
-                jobs.append(job)
-        if plan:
-            await plan([job.id for job in jobs])
-        for job in jobs:
-            if job.enabled:
-                await self._store.update_job(job.id, {"enabled": False})
-        await self._scheduler.reload()
-        await self._scheduler.stop_project_runs(project_id, user_id)
-        for job in jobs:
-            # Project finish deletes its sessions after cron jobs are removed.
-            await self._store.delete_job(job.id)
-            if checkpoint:
-                await checkpoint(job.id)
-        await self._scheduler.reload()
-        return {"deleted_cron_jobs": len(jobs)}
+    async def hide_project_jobs(self, project_id: str, *, commit=None) -> dict:
+        """项目移除(隐藏)时停止其下全部定时任务:停用 + 取消在途执行。
+
+        不按 user_id 过滤:项目不是用户私有资源,「项目隐藏 ⇒ 其下任务全部
+        停用」是不变量。若按操作者过滤,其他属主的任务会保持 enabled,项目
+        恢复后直接回到触发状态,违背「恢复后默认停止」。任务记录原样保留,
+        恢复项目后默认保持停用,由用户手动重新启用。
+
+        返回的 stopped_cron_jobs 是项目下任务总数(含移除前已停用的),
+        并非本次实际停用的数量。
+        """
+        # Keep admission closed until the AgentServer commits hidden=True.
+        self._scheduler.close_project_admission(project_id)
+        enabled_job_ids: list[str] = []
+        try:
+            jobs = [job for job in await self._store.list_jobs() if job.project_id == project_id]
+            enabled_job_ids = [job.id for job in jobs if job.enabled]
+            disable = getattr(self._store, "disable_project_jobs", None)
+            if callable(disable):
+                await disable(project_id)
+            else:
+                for job in jobs:
+                    if job.enabled:
+                        await self._store.update_job(job.id, {"enabled": False})
+            await self._scheduler.reload()
+            await self._scheduler.stop_project_runs(project_id)
+            if commit is not None:
+                await commit()
+            return {"stopped_cron_jobs": len(jobs)}
+        except Exception:
+            # A rejected AgentServer commit must not leave visible-project jobs
+            # disabled. Restore only jobs that were enabled before this attempt.
+            try:
+                for job_id in enabled_job_ids:
+                    await self._store.update_job(job_id, {"enabled": True})
+                if enabled_job_ids:
+                    await self._scheduler.reload()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "failed to restore cron jobs after project remove failure: %s",
+                    project_id,
+                )
+                raise
+            raise
+        finally:
+            self._scheduler.reopen_project_admission(project_id)
 
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
         job = await self._store.get_job(job_id)
@@ -223,6 +272,13 @@ class CronController:
         else:
             mode = None
         model_name = validate_cron_model(params.get("model_name"))
+        model_selection = params.get("model_selection")
+        if model_selection is not None:
+            from jiuwenswarm.common.model_selection import ModelSelection
+            from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+            selection = ModelSelection.model_validate(model_selection)
+            ModelSelectionResolver().resolve(selection)
+            model_selection = selection.model_dump()
         # mcp：会话级 MCP 选择，随 job 落库；调度执行时注入 chat.send 的
         # ``mcp`` 字段走 AgentServer 的 reconcile_session_mcp。只做类型
         # 规范化（strip/去空/去重），不校验存在性（断连后 job 应降级运行）。
@@ -311,6 +367,7 @@ class CronController:
             timeout_seconds=timeout_seconds,
             project_id=resolved_project_id,
             model_name=model_name,
+            model_selection=model_selection,
             mcp=mcp,
             app_id=app_id,
             work_mode=work_mode,

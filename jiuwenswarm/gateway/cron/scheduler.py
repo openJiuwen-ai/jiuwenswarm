@@ -34,6 +34,26 @@ from jiuwenswarm.runtime.cron.cron_expr import next_cron_datetime
 
 logger = logging.getLogger(__name__)
 
+# 需要用户作答才能继续的中断事件。cron 执行会话是无人值守的（``common/cron_session.py``
+# 明确 cron 运行"另一端没有操作者"），这类事件一旦出现就没有人能回答，本轮不可能
+# 再产出结果，必须立刻以失败收场，而不是让 job 挂到超时。取值与 CLI/前端判定
+# "需要用户输入"的事件集合对齐（``channels/cli/events.py:needs_user_input``，
+# 另含 harness 激活确认：它同样是等人 accept/reject 的挂起点）。
+CRON_INTERRUPT_EVENT_TYPES = frozenset(
+    {
+        "chat.ask_user_question",
+        "plan.approval_required",
+        "harness.activate_interaction",
+    }
+)
+
+CRON_INTERRUPT_RESULT_TEXT = "[cron] 任务执行遇到审批中断，未返回结果内容"
+
+
+def _is_cron_interrupt_event(event_type: str) -> bool:
+    """Whether *event_type* parks the turn waiting for a human answer."""
+    return str(event_type or "").strip() in CRON_INTERRUPT_EVENT_TYPES
+
 
 def _now_utc_ts() -> float:
     return time.time()
@@ -45,12 +65,17 @@ def _resolve_cron_execution_context(
     ts: str,
     message_handler: MessageHandler | None = None,
 ) -> tuple[str, str]:
-    """Resolve channel_id and session_id for team cron agent execution.
+    """Resolve the placeholder channel_id and session_id for team cron runs.
 
     Team jobs always use an isolated ``cron_*`` session so scheduled runs start
     fresh and are not cancelled when the creator TUI/web window closes
     (``cancel_agent_sessions_on_disconnect``). ``job.session_id`` is kept for IM
     push routing only.
+
+    The ``cron_<ts>_<job.id>`` id built here is a transient placeholder: both
+    the scheduled wake path and ``trigger_run_now_info`` replace it with the
+    session explicitly created via ``_allocate_execution_session`` (which
+    carries ``cron_id``), keeping team and single-agent linkage identical.
     """
     _ = message_handler
     channel_id = (job.targets or CronTargetChannel.TUI.value).strip() or CronTargetChannel.TUI.value
@@ -253,7 +278,8 @@ class CronSchedulerService:
         self._events: list[tuple[float, int, _Event]] = []
         self._seq = 0
         self._lifecycle_mutation_lock = asyncio.Lock()
-        self._lifecycle_last_reconcile = 0.0
+        self._hiding_projects: set[str] = set()
+        self._project_admission_revisions: dict[str, int] = {}
         self._lifecycle_owners: set[str] = {""}
         from jiuwenswarm.gateway.cron.lifecycle_owners import LifecycleOwners
         # Lifecycle ownership 是 Gateway 侧路由元数据，原本与 cron_jobs.json 同目录。
@@ -333,8 +359,15 @@ class CronSchedulerService:
         state: CronRunState,
         *,
         reason: str = "ghost",
-    ) -> None:
-        """Fire-and-forget: 向 AgentServer 发送 CHAT_CANCEL 中断请求。
+        strict: bool = False,
+    ) -> bool:
+        """向 AgentServer 发送 CHAT_CANCEL 中断请求，返回中断是否成功送达。
+
+        默认 fire-and-forget：网络断开、连接超时或 AgentServer 不可达都不
+        影响主流程，只是最佳努力的中断。``strict=True`` 时错误直接抛出，供
+        "必须确认已停才能继续"的调用方（项目隐藏）使用。
+
+        strict 模式等待后端确认完成停止，失败响应与传输失败都会中止隐藏。
 
         触发场景:
         - ``reason="ghost"``: cron_jobs.json 被删除或 job 被移除后，gateway
@@ -384,6 +417,8 @@ class CronSchedulerService:
             "session_id": target_session_id,
             "cron": {"job_id": state.job_id, "run_id": state.run_id},
         }
+        if strict:
+            cancel_params["wait_for_stop"] = True
         if project_id:
             cancel_params["project_id"] = project_id
         if project_dir:
@@ -399,7 +434,14 @@ class CronSchedulerService:
                 timestamp=self._now_fn(),
                 user_id=user_id or None,
             )
-            await self._agent_client.send_request(interrupt_env)
+            response = (
+                await self._agent_client.send_request(interrupt_env, timeout=30)
+                if strict else await self._agent_client.send_request(interrupt_env)
+            )
+            if strict:
+                payload = response.payload if isinstance(response.payload, dict) else {}
+                if not response.ok or payload.get("success") is not True:
+                    raise RuntimeError(payload.get("error") or payload.get("message") or "cron stop was not confirmed")
             logger.info(
                 "[Cron] AgentServer interrupt sent (%s): "
                 "job_id=%s run_id=%s session_id=%s",
@@ -408,7 +450,11 @@ class CronSchedulerService:
                 state.run_id,
                 target_session_id,
             )
+            return True
         except (OSError, RuntimeError) as exc:
+            if strict:
+                # 中断送不出去 ⇒ 无法保证任务停止,交由调用方决定是否中止。
+                raise
             # Fire-and-forget: 网络断开、连接超时或 AgentServer 不可达
             # 都不影响主流程，只是最佳努力的中断
             logger.warning(
@@ -420,6 +466,7 @@ class CronSchedulerService:
                 target_session_id,
                 exc,
             )
+            return False
 
     async def start(self) -> None:
         if self._running:
@@ -509,12 +556,41 @@ class CronSchedulerService:
             for at_ts, seq, ev in self._events
             if ev.kind == "push_update" and ev.job_id in new_job_ids
         ]
+        # 已到点但尚未被主循环消费的 wake/push 事件必须原样保留。
+        # 运行期 reload 可能恰好落在触发边界之后、事件被消费之前——
+        # 最常见的触发源是本调度器自己：每次 run 成功后
+        # _mark_last_session_ready 写 last_session_id 会 bump store
+        # revision，5s 轮询随即 reload。下方重排只按 now 向未来计算
+        # （_compute_next_run），这一轮会被静默吞掉：无 wake、无 session、
+        # 无推送、无日志（实测：每 2 分钟的任务，上一轮在边界前 4s 完成
+        # 触发 reload，11:00 那轮整体丢失，用户看到侧边栏缺一个
+        # cron-session）。保留后 _on_wake/_on_push 自身的幂等保护
+        # （already_active / pushed_final / placeholder_sent）可防止
+        # 已开始或已完成的 run 被重复触发；被删除 job 的事件不保留，
+        # 与 push_update 同口径防幽灵任务。
+        now_ts = self._now_fn()
+        due_unconsumed_events = [
+            (at_ts, seq, ev)
+            for at_ts, seq, ev in self._events
+            if ev.kind in ("wake", "push") and at_ts <= now_ts and ev.job_id in new_job_ids
+        ]
+        due_unconsumed_job_ids = {ev.job_id for _, _, ev in due_unconsumed_events}
         self._events.clear()
         # 不重置 _seq：保留的 push_update 事件携带原始 seq 值，
         # 若重置为 0，新调度事件的 seq 会从 1 开始递增，与保留事件的 seq 碰撞。
         # 当 at_ts 也相同时，heapq 元组比较回退到 _Event 比较（即使 _Event
         # 已加 order=True，仍应避免 seq 碰撞以保证排序语义正确）。
         for item in pending_push_updates:
+            heapq.heappush(self._events, item)
+        if due_unconsumed_events:
+            logger.info(
+                "[Cron] reload kept %d due unconsumed event(s): %s",
+                len(due_unconsumed_events),
+                ", ".join(
+                    f"{ev.kind}:{ev.run_id}" for _, _, ev in due_unconsumed_events
+                ),
+            )
+        for item in due_unconsumed_events:
             heapq.heappush(self._events, item)
 
         # 取消并清理不再存在于 store 中的运行任务（ghost tasks）。
@@ -561,6 +637,11 @@ class CronSchedulerService:
                 push_dt, wake_dt, run_id = self._compute_next_run(job, now_ts=now)
             except Exception as exc:  # noqa: BLE001
                 if self._is_croniter_no_next_date(exc):
+                    # A one-shot may be more than the missed-trigger window late
+                    # while its original wake/push is still queued. Let those
+                    # events run; the push handler will mark the job expired.
+                    if job.enabled and job.id in due_unconsumed_job_ids:
+                        continue
                     # 已过期的 one-shot：标记 expired 并停用，避免 UI 仍显示"运行中/已暂停"。
                     # 这里故意不提前 continue 掉 disabled 的任务——一个单次任务如果在到期前
                     # 被手动暂停，同样需要能被检测到"已经没有下一次执行时间"从而转入过期态，
@@ -644,116 +725,101 @@ class CronSchedulerService:
         await self._sync_store_revision()
         self._reload_event.set()
 
-    async def reconcile_project_lifecycles(self) -> None:
-        """Resume interrupted Gateway stages before admitting new cron work."""
-        from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
-        jobs = await self._store.list_jobs()
-        owners = self._lifecycle_owners | self._lifecycle_owner_store.read() | {str(job.user_id or "") for job in jobs}
-        for owner in owners:
-            self.remember_lifecycle_owner(owner)
-        for owner in owners:
-            async def call(method, params, *, owner=owner):
-                return await fetch_agent_unary(
-                    agent_client=self._agent_client,
-                    req_method=ReqMethod(method),
-                    params=params,
-                    session_id=None,
-                    user_id=owner or None,
-                    channel_id="__cron__",
-                    timeout_seconds=120,
-                )
-            ok, inventory = await call("project.lifecycle", {"inventory": True})
-            if not ok:
-                continue
-            for project in inventory.get("projects", []):
-                operation = project.get("operation") or {}
-                pending = operation and operation.get("status") != "completed"
-                if not pending or operation.get("kind") != "delete":
-                    continue
-                if pending and not operation.get("retryable", True):
-                    continue
-                project_id = project["project_id"]
-                try:
-                    ok, token = await call(
-                        "project.delete",
-                        {"project_id": project_id, "_lifecycle_stage": "prepare"},
-                    )
-                    if not ok or "operation_id" not in token:
-                        continue
-                    all_jobs = await self._store.list_jobs()
-                    matching = [
-                        job
-                        for job in all_jobs
-                        if job.project_id == project_id and str(job.user_id or "") == owner
-                    ]
-                    planned = list(
-                        dict.fromkeys(
-                            [*operation.get("planned_cron_job_ids", []), *(job.id for job in matching)]
-                        )
-                    )
-                    saved, _ = await call("project.lifecycle", {**token, "planned_cron_job_ids": planned})
-                    if not saved:
-                        continue
-                    for job in matching:
-                        if job.enabled:
-                            await self._store.update_job(job.id, {"enabled": False})
-                    await self.reload()
-                    await self.stop_project_runs(project_id, owner)
-                    completed = list(operation.get("completed_items", {}).get("cron", []))
-                    for job in matching:
-                        await self._store.delete_job(job.id)
-                        if job.id not in completed:
-                            completed.append(job.id)
-                        saved, failure = await call("project.lifecycle", {**token, "completed_cron_job_ids": completed})
-                        if not saved:
-                            raise RuntimeError(failure.get("error", "checkpoint failed"))
-                    await self.reload()
-                    await call(
-                        "project.delete",
-                        {
-                            **token,
-                            "_lifecycle_stage": "finish",
-                            "deleted_cron_jobs": len(planned),
-                            "completed_cron_job_ids": completed,
-                        },
-                    )
-                except Exception as exc:
-                    logger.warning("project lifecycle recovery deferred: %s: %s", project_id, exc)
-                    if "token" in locals() and token.get("operation_id"):
-                        await call("project.lifecycle", {**token, "failed": True, "error": str(exc),
-                                                         "phase": "delete_cron"})
-
     def remember_lifecycle_owner(self, user_id: str | None) -> None:
         owner = str(user_id or "")
         self._lifecycle_owner_store.remember(owner)
         self._lifecycle_owners.add(owner)
 
+    def close_project_admission(self, project_id: str) -> None:
+        """Stop admitting a project's jobs until ``reopen_project_admission``.
+
+        Bumping the revision invalidates the verdict of gate queries already in
+        flight: they answer for the pre-hide state and must not let a job run.
+        """
+        self._hiding_projects.add(project_id)
+        self._project_admission_revisions[project_id] = (
+            self._project_admission_revisions.get(project_id, 0) + 1
+        )
+
+    def reopen_project_admission(self, project_id: str) -> None:
+        """Release the admission fence; verdicts taken while it was held are void."""
+        self._project_admission_revisions[project_id] = (
+            self._project_admission_revisions.get(project_id, 0) + 1
+        )
+        self._hiding_projects.discard(project_id)
+
     async def project_execution_allowed(self, project_id: str | None, user_id: str | None = None) -> bool:
         self.remember_lifecycle_owner(user_id)
+        if project_id in self._hiding_projects:
+            return False
         if not project_id or project_id in {"default", "default_code"}:
             return True
         from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
+        revision = self._project_admission_revisions.get(project_id, 0)
         ok, payload = await fetch_agent_unary(
             agent_client=self._agent_client, req_method=ReqMethod.PROJECT_LIFECYCLE,
             params={"project_id": project_id}, session_id=None, user_id=user_id,
             channel_id="__cron__", timeout_seconds=10,
         )
-        return bool(ok and payload.get("exists") and not payload.get("execution_blocked", True))
+        # 隐藏(移除)项目的定时任务一律不放行:不到点触发、不进任务列表、
+        # 不可手动启用/立即执行。enabled 标志在项目移除时已被停用,这里是
+        # 防止任何路径(如历史数据)让隐藏项目的任务继续跑的执行层闸门。
+        return bool(
+            ok
+            and revision == self._project_admission_revisions.get(project_id, 0)
+            and project_id not in self._hiding_projects
+            and payload.get("exists")
+            and not payload.get("hidden")
+            and not payload.get("execution_blocked", True)
+        )
 
-    async def stop_project_runs(self, project_id: str, user_id: str | None = None) -> None:
-        matching = [state for state in list(self._runs.values())
-                    if state.exec_project_id == project_id and str(state.exec_user_id or "") == str(user_id or "")]
+    async def stop_project_runs(self, project_id: str) -> None:
+        """Cancel every in-flight run of a project, regardless of owning user.
+
+        Hiding a project must leave nothing running and nothing left to push:
+        the interrupt is sent in ``strict`` mode so a transport failure raises
+        (the caller aborts the hide instead of hiding a project whose jobs may
+        still be executing), and the cancelled runs' queued ``push`` /
+        ``push_update`` events are dropped.  Without the latter the results
+        would still be delivered after the project is gone from the UI, since
+        ``reload`` only prunes events of jobs that left the store entirely.
+        """
+        matching = []
+        for state in list(self._runs.values()):
+            job = self._jobs.get(state.job_id)
+            if state.exec_project_id == project_id or getattr(job, "project_id", None) == project_id:
+                matching.append(state)
         tasks = []
         for state in matching:
-            await self._cancel_agent_session(state, reason="project_archive")
             task = self._run_tasks.get(state.run_id)
             if task is not None and not task.done():
                 task.cancel()
                 tasks.append(task)
+        self._drop_run_events({state.run_id for state in matching})
         if tasks:
             _, pending = await asyncio.wait(tasks, timeout=10)
             if pending:
                 raise RuntimeError("cron runs are still stopping")
+        for state in matching:
+            if state.exec_session_id:
+                await self._cancel_agent_session(state, reason="project_archive", strict=True)
+        self._drop_run_events({state.run_id for state in matching})
+
+    def _drop_run_events(self, run_ids: set[str]) -> int:
+        """Remove queued events of the given runs (wake/push/push_update).
+
+        Returns the number of dropped events.  ``self._events`` is a heap of
+        ``(at_ts, seq, _Event)``, so after filtering it must be re-heapified.
+        """
+        if not run_ids:
+            return 0
+        kept = [item for item in self._events if item[2].run_id not in run_ids]
+        dropped = len(self._events) - len(kept)
+        if dropped:
+            self._events = kept
+            heapq.heapify(self._events)
+            logger.info("[Cron] dropped %d queued event(s) of stopped runs", dropped)
+        return dropped
 
     async def stop_job_runs(self, job_id: str) -> None:
         matching = [state for state in list(self._runs.values()) if state.job_id == job_id]
@@ -783,7 +849,20 @@ class CronSchedulerService:
             timeout_seconds=120,
         )
         if not ok or result.get("failed_count"):
-            raise RuntimeError(result.get("error") or "cron sessions could not be deleted")
+            # delete_cron_sessions returns per-session results; surface the
+            # first failure's code (e.g. SESSION_BUSY) so the web/TUI handler
+            # can translate it via i18n instead of a generic DELETE_FAILED.
+            failed = next(
+                (item for item in (result.get("results") or []) if not item.get("ok")),
+                None,
+            )
+            err = RuntimeError(
+                (failed.get("error") if failed else None)
+                or result.get("error")
+                or "cron sessions could not be deleted"
+            )
+            err.code = (failed.get("code") if failed else None) or result.get("code") or "DELETE_FAILED"
+            raise err
         return result
 
     async def trigger_run_now(self, job_id: str) -> str:
@@ -823,18 +902,28 @@ class CronSchedulerService:
         # 普通 cron 原先先把本地构造的 ``cron_<timestamp>_<job>`` 返回给 Web，
         # 再在 wake 阶段向 AgentServer 创建真正的 session。两个 ID 不同，前端会
         # 先跳到不存在的 warmup 占位页。立即分配并返回真正的执行 session，wake
-        # 阶段复用它即可；team cron 的 session 仍由原有流式路径创建。
+        # 阶段复用它即可。
+        # team cron 历史上由流式 chat.send 在 AgentServer 侧隐式建会话，会话与
+        # 任务的 ``cron_id`` 关联依赖聊天准入的元数据同步
+        # （``prepare_chat_turn → sync_chat_request_metadata``）这一隐性副作用：
+        # 链路一旦被跳过（现场出现过旧版 auto team binding 先落了一份无
+        # cron_id 的 metadata），任务照常执行、结果照常推送，但执行会话永远
+        # 进不了前端"触发的会话"列表（project.get_cron_sessions 按 cron_id 过滤）。
+        # team 同样在此显式 session.create（带 cron_id）预建执行会话，两条路径归一。
         # proactive.tick has its own wake handler and sends PROACTIVE_TICK to a
         # stable session (``cron_<job_id>``).  It never consumes a normal cron
         # chat session, so allocating one here would leave an orphan session.
         mode = state.exec_mode or CRON_JOB_DEFAULT_MODE
-        if mode != "proactive.tick" and not is_team_cron_mode(mode):
-            state.exec_session_id = await self._allocate_single_agent_session(
+        if mode != "proactive.tick":
+            state.exec_session_id = await self._allocate_execution_session(
                 job,
                 mode=mode,
                 run_id=run_id,
             )
-            state.exec_channel_id = "__cron__"
+            if not is_team_cron_mode(mode):
+                # team 的流式事件按 targets 渠道回传（SwarmFlow 直播到 Web/TUI），
+                # 执行渠道路由保留 targets；单 agent 恒走内部 ``__cron__`` 渠道。
+                state.exec_channel_id = "__cron__"
             state.execution_session_allocated = True
         self._runs[run_id] = state
         self._schedule_event(wake_dt, "wake", job.id, run_id)
@@ -853,7 +942,7 @@ class CronSchedulerService:
             )
         return "__cron__", f"cron_{ts}_{job.id}"
 
-    async def _allocate_single_agent_session(
+    async def _allocate_execution_session(
         self,
         job: CronJob,
         *,
@@ -872,6 +961,7 @@ class CronSchedulerService:
                 "project_id": job.project_id or "",
                 "work_mode": job.work_mode or DEFAULT_WEB_WORK_MODE,
                 "model_name": job.model_name or None,
+                "model_selection": job.model_selection,
                 "cron_id": job.id,
                 "user_id": cron_user_id,
                 # 创建即带标题：标题若为空，则完全依赖首条用户消息的
@@ -982,10 +1072,6 @@ class CronSchedulerService:
     async def _loop(self) -> None:
         while self._running:
             try:
-                if self._now_fn() - self._lifecycle_last_reconcile >= 10:
-                    self._lifecycle_last_reconcile = self._now_fn()
-                    async with self._lifecycle_mutation_lock:
-                        await self.reconcile_project_lifecycles()
                 if not self._events:
                     self._reload_event.clear()
                     try:
@@ -1030,16 +1116,23 @@ class CronSchedulerService:
         job = self._jobs.get(ev.job_id)
         if (
             job is not None
-            and ev.kind == "wake"
             and not await self.project_execution_allowed(job.project_id, job.user_id)
         ):
             return
 
         # Handle proactive.tick mode: send WebSocket request to AgentServer
         if job is not None and job.mode == "proactive.tick" and ev.kind == "wake":
-            logger.info("[Cron] triggering proactive.tick for job=%s run_id=%s", job.id, ev.run_id)
             previous_state = self._runs.get(ev.run_id)
             manually_triggered = bool(previous_state and previous_state.manually_triggered)
+            # Reload may retain a due scheduled wake for a job now disabled in
+            # the store. Manual run-now requests remain valid for disabled jobs.
+            if not job.enabled and not manually_triggered:
+                logger.info(
+                    "[Cron] skipping disabled proactive.tick job=%s run_id=%s",
+                    job.id, ev.run_id,
+                )
+                return
+            logger.info("[Cron] triggering proactive.tick for job=%s run_id=%s", job.id, ev.run_id)
             try:
                 # Create run state for tracking
                 tz = ZoneInfo(job.timezone)
@@ -1304,12 +1397,14 @@ class CronSchedulerService:
             )
             return
         state.exec_mode = mode
+        state.exec_project_id = job.project_id or None
         state.exec_user_id = str(job.user_id or "").strip() or None
 
         async def _run_agent() -> None:
             state.status = "running"
             state.started_at = self._now_fn()
             ok = False
+            is_cancelled_ghost = False
             mode = state.exec_mode or CRON_JOB_DEFAULT_MODE
             channel_id = ""
             exec_session_id = ""
@@ -1331,13 +1426,20 @@ class CronSchedulerService:
                 state.exec_work_mode = job.work_mode or DEFAULT_WEB_WORK_MODE
                 state.exec_project_id = job.project_id or None
                 state.exec_project_dir = None
-                if not is_team_cron_mode(mode) and not state.execution_session_allocated:
-                    exec_session_id = await self._allocate_single_agent_session(
+                # 所有模式（含 team）统一显式预建执行会话：session.create 直接带
+                # cron_id，会话与任务的关联不再依赖聊天准入元数据同步的隐性副作用
+                # （team 旧链路因此出现过"任务执行成功但触发的会话列表为空"）。
+                # run_now 已分配过的（execution_session_allocated）在此复用。
+                if not state.execution_session_allocated:
+                    exec_session_id = await self._allocate_execution_session(
                         job,
                         mode=mode,
                         run_id=run_id,
                     )
-                    state.exec_channel_id = "__cron__"
+                    if not is_team_cron_mode(mode):
+                        # team 的流式事件按 targets 渠道回传，保留渠道路由；
+                        # 单 agent 恒走内部 ``__cron__`` 渠道。
+                        state.exec_channel_id = "__cron__"
                     state.exec_session_id = exec_session_id
                     state.execution_session_allocated = True
                 cron_meta = {
@@ -1359,6 +1461,8 @@ class CronSchedulerService:
                 }
                 if job.model_name:
                     params["model_name"] = job.model_name
+                if job.model_selection:
+                    params["model_selection"] = dict(job.model_selection)
                 # 会话级 MCP 选择：注入 chat.send 的 ``mcp`` 字段，走 AgentServer
                 # 与 chat-session 相同的 reconcile_session_mcp 通道（增量注册/注销）；
                 # 未配置（None）时保持既有行为（仅 init 全局默认集）。
@@ -1427,23 +1531,34 @@ class CronSchedulerService:
             except asyncio.CancelledError:
                 state.status = "failed"
                 state.error = "cancelled"
+                is_cancelled_ghost = True
                 # Ghost task: cancelled by reload because job no longer in store.
                 # Do NOT schedule push_update — the user has removed this job and
                 # should not see any result from it. Raising CancelledError here
-                # so the finally block can detect it via state.error == "cancelled"
-                # and skip push_update scheduling.
+                # so the finally block can skip push_update scheduling.
                 raise
             except Exception as exc:  # noqa: BLE001
                 state.status = "failed"
-                state.error = str(exc)
+                state.error = str(exc).strip() or type(exc).__name__
+                logger.warning(
+                    "[Cron] agent run failed job=%s run_id=%s error_type=%s error=%s",
+                    job.id,
+                    run_id,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
             finally:
                 state.finished_at = self._now_fn()
-                is_cancelled_ghost = state.error == "cancelled"
-                should_deliver_result = bool(state.result_text) and not is_cancelled_ghost
                 # Ensure failed runs also produce result_text so push logic can deliver it.
                 # But for cancelled ghost tasks, skip — no result should be pushed for
                 # a job the user has removed.
-                if not state.result_text and state.error and not is_cancelled_ghost:
+                if (
+                    state.status == "failed"
+                    and not state.result_text
+                    and not is_cancelled_ghost
+                ):
+                    state.error = str(state.error or "").strip() or "未知错误"
                     state.result_text = f"[cron] 任务执行失败: {state.error}"
                 if state.result_text and not ok and not is_cancelled_ghost:
                     await self._append_failure_history_on_agentserver(
@@ -1652,8 +1767,10 @@ class CronSchedulerService:
     ) -> tuple[str, bool]:
         """Run a single-agent cron turn until its terminal stream result."""
         stream_gen = self._agent_client.send_request_stream(envelope)
+        interrupted = False
 
         async def _consume() -> tuple[str, bool]:
+            nonlocal interrupted
             result_text = ""
             error_text = ""
             try:
@@ -1667,12 +1784,24 @@ class CronSchedulerService:
                         error_text = text or "任务执行失败"
                     elif text:
                         result_text = text
+                    if _is_cron_interrupt_event(event_type):
+                        # 无人可答 ⇒ 本轮已卡在中断点上，立即收尾。继续消费只会
+                        # 等到流关闭（或挂满 timeout）后仍以空结果失败。
+                        interrupted = True
+                        break
             finally:
                 try:
                     await stream_gen.aclose()
                 except Exception:
                     pass
 
+            if interrupted:
+                logger.warning(
+                    "[Cron] single-agent stream hit interrupt event, failing fast "
+                    "request_id=%s",
+                    getattr(envelope, "request_id", ""),
+                )
+                return CRON_INTERRUPT_RESULT_TEXT, False
             if error_text:
                 return error_text, False
             if result_text:
@@ -1680,7 +1809,12 @@ class CronSchedulerService:
             return "[cron] 任务执行完成但未返回结果内容", False
 
         try:
-            return await asyncio.wait_for(_consume(), timeout=timeout_seconds)
+            result = await asyncio.wait_for(_consume(), timeout=timeout_seconds)
+            if interrupted:
+                # Closing the Gateway stream only drops its receive queue; the
+                # AgentServer session still needs an explicit interrupt.
+                await self._cancel_agent_session(state, reason="interrupt")
+            return result
         except asyncio.TimeoutError:
             timeout_min = max(1, int(timeout_seconds // 60))
             logger.warning(
@@ -1706,7 +1840,12 @@ class CronSchedulerService:
         request_metadata.setdefault("cron", cron_meta)
 
         round_state = new_cron_team_round_state()
-        consume_meta: dict[str, Any] = {"ok": True, "ended_early": False, "error_text": ""}
+        consume_meta: dict[str, Any] = {
+            "ok": True,
+            "ended_early": False,
+            "error_text": "",
+            "interrupted": False,
+        }
         stream_gen = self._agent_client.send_request_stream(envelope)
 
         async def _consume() -> tuple[str, bool]:
@@ -1727,8 +1866,9 @@ class CronSchedulerService:
                 )
             try:
                 async for chunk in stream_gen:
+                    published = True
                     if callable(publish_chunk):
-                        await publish_chunk(
+                        published = await publish_chunk(
                             chunk,
                             session_id=exec_session_id,
                             request_metadata=request_metadata,
@@ -1736,6 +1876,24 @@ class CronSchedulerService:
                     payload = chunk.payload if isinstance(chunk.payload, dict) else None
                     event_type = str((payload or {}).get("event_type") or "").strip()
                     note_seen_event(event_type)
+                    auto_accepts = getattr(
+                        self._message_handler, "auto_accepts_evolution_approval", None
+                    )
+                    if event_type == "chat.ask_user_question" and published is False:
+                        if callable(auto_accepts) and auto_accepts(payload):
+                            # MessageHandler queued an automatic evolution answer.
+                            continue
+                    if _is_cron_interrupt_event(event_type):
+                        # leader 的 ask_user/审批中断同样无人可答：本轮不可能再产出
+                        # 报告，立即停止消费并取消团队会话，而不是一直等到超时。
+                        consume_meta["interrupted"] = True
+                        consume_meta["ended_early"] = not chunk.is_complete
+                        logger.warning(
+                            "[Cron] team stream hit interrupt event=%s request_id=%s",
+                            event_type,
+                            getattr(envelope, "request_id", ""),
+                        )
+                        break
                     if payload:
                         apply_cron_team_round_event(round_state, payload)
                         # team.error 由团队运行时直接抛出，不会经 gateway 归一化成
@@ -1781,6 +1939,11 @@ class CronSchedulerService:
                 except Exception:
                     pass
 
+            if consume_meta.get("interrupted"):
+                # 中断意味着本轮已停在等人回答的点上，leader/workflow 的部分输出
+                # 不能冒充报告，直接以中断文案失败收场（ended_early 已置位，
+                # 调用方会据此取消团队会话）。
+                return CRON_INTERRUPT_RESULT_TEXT, False
             text = _pick_cron_team_result_text(
                 leader_text=str(round_state.get("leader_text") or ""),
                 workflow_text=str(round_state.get("workflow_text") or ""),

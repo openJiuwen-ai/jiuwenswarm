@@ -48,6 +48,7 @@ from openjiuwen.agent_teams.schema.deep_agent_spec import (
     WorkspaceSpec,
     register_rail_provider,
 )
+from openjiuwen.agent_teams.schema.team import ExternalCliMemberSpec
 from openjiuwen.core.foundation.llm import ModelClientConfig
 from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.single_agent.rail.base import (
@@ -1413,16 +1414,69 @@ def test_enriched_spec_serialization_round_trip() -> None:
     assert any(not name.startswith("swarm.") for name in rail_types)
 
 
-def test_enrich_applies_agent_group_as_hybrid_member_snapshots(monkeypatch) -> None:
+def _write_agent_group_assembly_fixture(root: Path) -> Path:
+    package_dir = root / "sample-expert-group"
+    manifests = {
+        "leader": ("专家团负责人", "负责人描述", "."),
+        "member1": ("方案分析专家", "方案分析描述", "./persona"),
+        "member2": ("风险与质量复核专家", "风险复核描述", "./persona"),
+    }
+    (package_dir / "manifest.json").parent.mkdir(parents=True)
+    (package_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "sample-expert-group",
+                "package_type": "agent_group",
+                "instruction": "Leader 负责理解用户目标",
+                "agents": list(manifests),
+                "skills": ["skill_name_1"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    headings = {
+        "leader": "专家团负责人",
+        "member1": "方案分析专家",
+        "member2": "风险与质量复核专家",
+    }
+    for member_id, (name, description, persona_dir) in manifests.items():
+        member_dir = package_dir / "agents" / member_id
+        (member_dir / "manifest.json").parent.mkdir(parents=True)
+        (member_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "package_type": "agent_template",
+                    "name": name,
+                    "description": description,
+                    "persona": {"dir": persona_dir},
+                }
+            ),
+            encoding="utf-8",
+        )
+        persona = member_dir / "persona" / f"{member_id}.md"
+        persona.parent.mkdir(parents=True)
+        persona.write_text(f"# {headings[member_id]}\n", encoding="utf-8")
+    (package_dir / "agents" / "leader" / "AGENT.md").write_text(
+        "# Expert Group Leader\n",
+        encoding="utf-8",
+    )
+    skill = package_dir / "skills" / "skill_name_1" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# Shared skill\n", encoding="utf-8")
+    return package_dir
+
+
+def test_enrich_applies_agent_group_as_hybrid_member_snapshots(
+    monkeypatch, tmp_path: Path
+) -> None:
     """AgentGroup prompts stay Team-owned while capabilities use snapshots."""
     from jiuwenswarm.server.runtime import extension_package_manager as package_manager
 
-    resources = package_manager.get_equipment_resources_agent_groups_dir()
-    assert resources is not None
+    package_dir = _write_agent_group_assembly_fixture(tmp_path)
     monkeypatch.setattr(
         package_manager,
         "resolve_agent_group_dir",
-        lambda _name: resources / "sample-expert-group",
+        lambda _name: package_dir,
     )
     monkeypatch.setattr(
         package_manager,
@@ -1488,6 +1542,42 @@ def test_enrich_applies_agent_group_as_hybrid_member_snapshots(monkeypatch) -> N
         }
         assert restored_members["member1"].prompt == predefined["member1"].prompt
         assert restored.leader.prompt == spec.leader.prompt
+
+
+def test_enrich_agent_group_builds_predefined_external_member(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from jiuwenswarm.server.runtime import extension_package_manager as package_manager
+
+    group = _write_agent_group_assembly_fixture(tmp_path)
+    manifest_path = group / "agents" / "member1" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runtime"] = {
+        "provider_name": "codex",
+        "provider_version": "0.1.0",
+        "config": {},
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(package_manager, "resolve_agent_group_dir", lambda _name: group)
+
+    spec = _make_team_spec()
+    enrich_team_spec_for_swarm(
+        spec,
+        session_id="s",
+        mode="team",
+        channel_id="web",
+        agent_group_name="sample-expert-group",
+    )
+
+    members = {member.member_name: member for member in spec.predefined_members}
+    member = members["member1"]
+    assert isinstance(member, ExternalCliMemberSpec)
+    assert member.external_cli.cli_agent == "codex"
+    assert [Path(skill["dir"]).name for skill in member.external_cli.skills] == [
+        "skill_name_1"
+    ]
+    assert spec.agents["member1"].agent_template_spec is None
 
 
 def test_send_file_returns_empty_without_request_id() -> None:

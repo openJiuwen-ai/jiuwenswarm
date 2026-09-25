@@ -24,6 +24,7 @@
     "processing": "Processing…",
     "retry": "Retry",
     "editMenu": {
+      "actionFailed": "Unable to complete the text editing action. Please try again.",
       "cut": "Cut",
       "copy": "Copy",
       "paste": "Paste",
@@ -50,7 +51,7 @@
     "settings": "Settings",
     "logs": "Logs",
     "update": "Updates",
-    "personalContext": "Context"
+    "personalContext": "Knowledge"
   },
   "applicationPlugins": {
     "title": "Application plugins",
@@ -98,7 +99,7 @@
       "agent": "Agent",
       "browser": "Browser",
       "channels": "Channels",
-      "personalContext": "Context",
+      "personalContext": "Knowledge",
       "archivedTasks": "Archived Tasks",
       "experimental": "Experimental"
     },
@@ -138,12 +139,14 @@
       "deleteArchivedSessionsRecord": "Permanently delete all archived conversations in the project \"{{projectName}}\". This cannot be undone.",
       "archivedSessionsDeleted": "Deleted {{count}} archived conversations",
       "batchPartialFailure": "{{succeeded}} succeeded, {{failed}} failed.",
+      "removedProjectNote": "This project was removed, so its conversations stay hidden from the workspace. Restoring any conversation restores the project too.",
       "errors": {
         "forbidden": "This operation is not supported for this resource",
         "notFound": "The resource no longer exists or has changed. Refresh and try again.",
         "sessionGone": "This conversation no longer exists and cannot be restored.",
         "requestFailed": "The operation failed. Please try again later.",
-        "sessionRestoreFailed": "Failed to restore the conversation. Refresh and try again."
+        "sessionRestoreFailed": "Failed to restore the conversation. Refresh and try again.",
+        "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first."
       }
     },
     "dialog": {
@@ -459,6 +462,10 @@
         "title": "Automatic Skill Retrieval",
         "description": "Dynamically select the agent's skill discovery strategy based on the number of installed Skills."
       },
+      "ttse_enabled": {
+        "title": "Local environment facts and task experience auto-evolution",
+        "description": "Control the agent's learning of environment facts and task experience"
+      },
       "free_search_ddg_enabled": {
         "title": "DuckDuckGo search",
         "description": "Enable the free DuckDuckGo search source."
@@ -571,6 +578,10 @@
     "team": {
       "memberLanes": "Member trajectory lanes",
       "members": "Members"
+    },
+    "composer": {
+      "collapse": "Collapse composer",
+      "expand": "Expand composer"
     },
     "layout": {
       "hideSessions": "Collapse sessions",
@@ -801,6 +812,9 @@
     "placeholder": "What can I do for you? Type \"/\" to quickly reference skills and commands",
     "placeholderCompacting": "Context compression in progress. Messages are temporarily disabled",
     "modelNotConfigured": "No model is configured yet. Configure one in Settings → Models, or sign in to get the limited-time free models.",
+    "sessionArchived": "This session has been archived. Restore it or start a new session to continue.",
+    "sessionDeleted": "This session has been deleted and can no longer be used.",
+    "sessionOperationInProgress": "An archive or delete operation is in progress for this session. Please try again later.",
     "placeholderAwaitingApproval": "Please respond to the pending confirmation above",
     "placeholderProcessing": "Processing, enter to interrupt...",
     "placeholderProcessingQueue": "Processing, new input will join the queue...",
@@ -917,6 +931,7 @@
     "agentGroupNoMatches": "No matching Expert Teams found",
     "agentGroupRemove": "Remove Expert Team",
     "agentGroupSkillsLocked": "An Expert Team is selected; additional Expert Team skills are unavailable",
+    "teamSkillsGroupLocked": "Team skills are selected; an Expert Team cannot be selected",
     "agentGroupBinding": "This conversation is bound to an Expert Team and cannot be changed",
     "agentGroupFirstBuildOnly": "Expert Teams can only be selected when a Team is first created",
     "agentOnlyInSingleAgentMode": "Experts can only be selected in single-Agent mode",
@@ -969,16 +984,6 @@
     "historyLoadMore": "Load more history",
     "continuedFromChat": "Continued from chat",
     "openSourceChat": "Open source chat",
-    "sideConversation": {
-      "title": "Side chat",
-      "from": "From {{title}}",
-      "empty": "Ask a question without leaving the main chat",
-      "placeholder": "Message side chat",
-      "send": "Send message",
-      "working": "Working…",
-      "sendFailed": "Message could not be sent. Try again.",
-      "close": "Close side chat"
-    },
     "config": {
       "mode": {
         "cluster": "Cluster",
@@ -1095,6 +1100,7 @@
     "toolbarUnavailablePlan": "Plan mode is in progress, so Goal isn't available",
     "overwriteConfirm": "The current goal \"{{currentObjective}}\" is unfinished. Replace it with \"{{requestedObjective}}\"?",
     "closeTag": "Cancel goal",
+    "closeTagDisabled": "Cannot close the goal while the session is busy",
     "badge": "Goal",
     "status": {
       "active": "Active",
@@ -1725,6 +1731,7 @@
       "updateFailed": "Failed to update task",
       "updateFailedWithReason": "Failed to update task: {{reason}}",
       "deleteFailed": "Failed to delete task",
+      "deleteSessionBusy": "The session associated with this scheduled task is still running and cannot be deleted. Please stop the session manually and try again.",
       "toggleFailed": "Failed to update task status",
       "previewFailed": "Failed to preview next runs",
       "runNowFailed": "Failed to trigger the task immediately",
@@ -1810,6 +1817,7 @@
       "enable": "Collect Personal Context",
       "enableHint": "Periodic context harvesting & graph building.",
       "strategyProfile": "Context strategy",
+      "strategyLockedByFetch": "A fetch task is running or stopping. You can change the strategy when it finishes.",
       "strategy_agent": "Agent",
       "strategy_balanced": "LLM",
       "strategy_rules": "Rules",
@@ -1819,7 +1827,9 @@
       "modelHint": "Select a model configured in JiuwenSwarm.",
       "collectionStopPending": "A fetch task is running; the setting takes effect shortly.",
       "collectionStoppingRetry": "A fetch task is still running or stopping. Please try again in a moment.",
-      "operationTimeout": "Request timed out. Please try again in a moment."
+      "operationTimeout": "Request timed out. Please try again in a moment.",
+      "collectionTimeoutReconciling": "Request timed out. Checking the actual collection state.",
+      "collectionReconciling": "Request result is still unknown. Checking the actual collection state."
     },
     "authorization": {
       "title": "Content source authorization",
@@ -1919,6 +1929,7 @@
       "colActions": "Actions",
       "stateCollecting": "Fetching",
       "stateCompleted": "Completed",
+      "statePartial": "Partially completed: {{completed}}/{{total}}, {{failed}} failed",
       "stateFailed": "Failed",
       "stateWaiting": "Waiting",
       "stateStopped": "Stopped",
@@ -1944,10 +1955,10 @@
       "collectAll": "Collect All",
       "statSources": "Sources",
       "statKnowledge": "Context Nodes",
-      "statCollecting": "Collecting",
+      "statCollecting": "Active fetch tasks",
       "knowledgeSource": "Context Source",
       "lastRun": "Last Run",
-      "fetchTaskRunning": "A fetch task is currently running. Please wait for it to complete before changing settings."
+      "fetchTaskRunning": "A fetch task is running or stopping. Please wait for it to finish before changing settings."
     },
     "addContent": {
       "title": "Add content",
@@ -2134,7 +2145,7 @@
     "noEnabledSkills": "No enabled skills",
     "noBuiltinSkills": "No builtin skills",
     "setEnabledError": "Failed to set skill enabled status",
-    "packBlockedHint": "This skill pack contains uninstalled or disabled skills. Resolve them under \"Included Skills\" before enabling.",
+    "packBlockedHint": "This skill pack contains uninstalled or disabled skills.",
     "packMemberToggleConfirm": "This skill belongs to skill pack(s) {{packs}}. Changing its enabled state will affect the availability of the entire pack. Continue?",
     "setEnabledSuccess": "Skill {name} enabled",
     "setDisabledSuccess": "Skill {name} disabled",
@@ -3045,9 +3056,10 @@
         "uploadInvalidType": "Only .zip, .tar and .tar.gz Expert Team packages are supported",
         "errors": {
           "nameRequired": "Enter an Expert Team name",
-          "descriptionRequired": "Enter an Expert Team description",
+          "descriptionRequired": "Enter an Expert Team capability description",
           "personaRequired": "Enter an Expert Team introduction",
-          "leaderRequired": "Choose a leader Expert"
+          "leaderRequired": "Choose a leader Expert",
+          "membersRequired": "Choose at least one member Expert"
         }
       },
       "picker": {
@@ -3088,6 +3100,8 @@
     "paused": "Paused",
     "waitingTasks": "Waiting Tasks",
     "messageQueue": "Message Queue",
+    "crossSessionMessageQueue": "Cross-session messages",
+    "localMessageQueue": "Local messages",
     "turnRunning": "Running",
     "turnElapsed": "Took",
     "workCompleted": "Completed {{duration}}",
@@ -3532,17 +3546,21 @@
       "conversationArchived": "Task session archived",
       "archiveView": "View",
       "archiveUndo": "Undo",
-      "deleteProject": "Delete project",
-      "deleteProjectDescription": "Delete the cron jobs and idle conversations in “<name>{{projectName}}</name>”. Running ordinary conversations will be skipped and the project kept until you stop them and retry. The working directory stays. Deleted content cannot be recovered.",
-      "projectDeletedSummary": "Project deleted: {{sessions}} conversation(s), {{crons}} cron job(s)",
-      "deleteFailedSummary": "Project deletion incomplete: deleted {{sessions}} conversation(s) and {{crons}} cron job(s).",
-      "deleteSkippedRunning": "Deleted {{sessions}} conversation(s) and {{crons}} cron job(s). Skipped {{count}} running conversation(s) and kept the project. Stop them manually, then retry deletion.",
+      "removeProject": "Remove project",
+      "removeProjectConfirm": "Remove",
+      "removeProjectDescription": "Remove “<name>{{projectName}}</name>” from the list and hide its conversations. Archived conversations stay available in the archive page. Its cron jobs are stopped and kept (they stay stopped after the project is restored and must be re-enabled manually); the working directory is unaffected. Undo, or create a project with the same directory to restore it.",
+      "projectRemoved": "Project removed",
+      "projectRemovedSummary": "Project removed; its cron jobs were stopped",
       "archiveSessions": "Archive all conversations",
-      "archiveSessionsDescription": "Archive all ordinary conversations in “<name>{{projectName}}</name>”. Running conversations will remain active and be skipped. Cron jobs stay unchanged.",
+      "archiveConfirmTitle": "Archive ({{count}}) conversations",
+      "archiveConfirmTitleFallback": "Archive all conversations",
+      "archiveConfirmDescription": "This will archive conversations in the current project. You can find them later in archived conversations.",
+      "archiveConfirmAll": "Archive all",
       "sessionsArchived": "Archived {{count}} conversations",
-      "archiveSkippedRunning": "{{count}} conversation(s) are running and were skipped",
-      "archiveSkippedRunningWithSuccess": "Archived {{succeeded}} conversation(s); {{count}} running conversation(s) were skipped",
-      "batchPartialFailure": "{{succeeded}} succeeded, {{failed}} failed. Failed items can be retried.",
+      "archiveBatchFailedRunning": "{{count}} conversation(s) are running and could not be archived",
+      "archiveBatchFailedFinishing": "The swarm flow has ended and {{count}} conversation(s) are wrapping up. Please try again shortly.",
+      "archiveBatchFailedSubagentFinishing": "{{count}} conversation(s) still have sub-tasks wrapping up and will finish on their own. Please try again shortly.",
+      "archiveBatchFailed": "{{count}} conversation(s) failed to archive",
       "defaultProjectName": "Default Project",
       "absolutePathError": "Enter an absolute path, for example /Users/name/work/project",
       "errors": {
@@ -3551,10 +3569,17 @@
         "pathMissing": "Project directory does not exist. Choose an existing directory.",
         "projectUnavailable": "Project unavailable. Refresh and retry.",
         "archiveSessionBusy": "This conversation is running and cannot be archived. Stop it manually, then try again.",
+        "archiveSessionFinishing": "The swarm flow has ended and the conversation is wrapping up. Please try archiving again shortly.",
+        "archiveSessionSubagentFinishing": "Sub-tasks are still wrapping up. This conversation will finish on its own; please try archiving again shortly.",
         "deleteSessionBusy": "This conversation is running and cannot be deleted. Stop it manually, then try again.",
+        "deleteSessionFinishing": "The swarm flow has ended and the conversation is wrapping up. Please try deleting again shortly.",
+        "deleteSessionSubagentFinishing": "Sub-tasks are still wrapping up. This conversation will finish on its own; please try deleting again shortly.",
         "archiveForbidden": "This task does not support archiving.",
         "archiveNotFound": "The resource no longer exists or has changed. Refresh and try again.",
-        "archiveFailed": "The archive operation failed. Please try again later."
+        "archiveFailed": "The archive operation failed. Please try again later.",
+        "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first.",
+        "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again.",
+        "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again."
       },
       "cancel": "Cancel",
       "confirm": "Confirm"
@@ -3667,6 +3692,9 @@
     "customOption": "Custom",
     "customPlaceholder": "No suitable option? Type your answer...",
     "skippedSummary": "Skipped"
+  },
+  "skillPackagePrompt": {
+    "creating": "Creating…"
   },
   "qaSummary": {
     "title": "Clarifications"
@@ -3846,7 +3874,8 @@
       "stepDone": "Done, continue to the next step",
       "error": "Connection failed, please retry",
       "retry": "Retry",
-      "timeout": "Authorization timed out, please reopen the page and retry"
+      "timeout": "Authorization timed out, please reopen the page and retry",
+      "cancelConnect": "Cancel connection"
     },
     "registerMcp": {
       "title": "Configure connector",
@@ -3889,19 +3918,6 @@
     }
   },
   "auth": {
-    "title": "Sign in to JiuwenSwarm",
-    "subtitle": "Enter your account and password to continue",
-    "username": "Account",
-    "usernamePlaceholder": "Enter account",
-    "password": "Password",
-    "passwordPlaceholder": "Enter password",
-    "login": "Sign in",
-    "loggingIn": "Signing in…",
-    "invalidCredentials": "Invalid account or password",
-    "loginFailed": "Sign-in failed, please retry later",
-    "authRequired": "Sign-in required to access",
-    "secureHint": "You'll stay signed in after login",
-    "logout": "Sign out",
     "huawei": {
       "title": "Sign in with HUAWEI ID",
       "subtitle": "Sign in to use the models your account provides — no API key needed.",
@@ -4215,7 +4231,6 @@
       "statusFailed": "Task failed",
       "statusPaused": "Paused",
       "statusTerminated": "Terminated",
-      "statusInstalled": "Installed",
       "actionConfig": "Configuration",
       "actionDelete": "Delete",
       "actionPause": "Pause task",

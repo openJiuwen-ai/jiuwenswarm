@@ -104,9 +104,32 @@ export interface TrajectoryV2Reduction {
   subjects: ReadonlyMap<string, TrajectoryV2SubjectProjection>
 }
 
+/**
+ * Where one subject's event chain stood when retention removed the turns
+ * before it, so the events that remain replay as they did with those turns
+ * still loaded.
+ */
+export interface TrajectoryV2SubjectSeed {
+  /** Events already ordered, which later events are numbered after. */
+  eventCount: number
+  /** Epoch the removed events ended in, and the sequence expected next in it. */
+  sequenceEpoch?: string
+  nextSequence?: number
+  /** Whether that epoch was blocked by a sequence gap. */
+  blocked: boolean
+  /** The last committed window, which the next delta may be based on. */
+  window?: { id: string, messages: readonly ContextMessage[] }
+  /** The window the active epoch's baseline is diffed against. */
+  epochBaselineBase?: readonly ContextMessage[]
+  /** Compaction context held for the next model request. */
+  held?: HeldCompactionContext
+}
+
 export interface TrajectoryV2Reducer {
   apply(records: readonly OtlpExportTraceServiceRequest[]): TrajectoryV2Reduction
   clear(): void
+  /** Replace the checkpoint seeds subjects start from; every subject replays again. */
+  seed(seeds: ReadonlyMap<string, TrajectoryV2SubjectSeed>): void
 }
 
 interface SubjectAccumulator {
@@ -1121,7 +1144,59 @@ function askUserEventProjection(
   }
 }
 
-function rebuildSubject(subjectId: string, events: readonly ParsedEvent[]): TrajectoryV2SubjectProjection {
+function messagesFromUnknown(value: unknown): ContextMessage[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const messages = value.map(contextMessage)
+  return messages.every(message => message !== undefined) ? messages as ContextMessage[] : undefined
+}
+
+/**
+ * Read one subject's seed from a retention checkpoint whose message lists are
+ * already resolved, normalizing messages exactly as commits are normalized.
+ *
+ * @returns The seed, or undefined when the checkpoint does not describe one.
+ */
+export function parseTrajectoryV2SubjectSeed(value: unknown): TrajectoryV2SubjectSeed | undefined {
+  const candidate = object(value)
+  if (candidate === undefined
+    || !Number.isSafeInteger(candidate.eventCount) || Number(candidate.eventCount) < 0
+    || typeof candidate.blocked !== 'boolean') return undefined
+  const window = object(candidate.window)
+  const windowMessages = window === undefined ? undefined : messagesFromUnknown(window.messages)
+  if (window !== undefined && (typeof window.id !== 'string' || windowMessages === undefined)) {
+    return undefined
+  }
+  const epochBaselineBase = candidate.epochBaselineBase === undefined
+    ? undefined
+    : messagesFromUnknown(candidate.epochBaselineBase)
+  if (candidate.epochBaselineBase !== undefined && epochBaselineBase === undefined) return undefined
+  const held = object(candidate.held)
+  const heldBase = held === undefined ? undefined : messagesFromUnknown(held.base)
+  const heldOperations = held === undefined || !Array.isArray(held.operations)
+    ? undefined
+    : held.operations.map(contextDelta)
+  if (held !== undefined && (heldBase === undefined || heldOperations === undefined
+    || heldOperations.some(operation => operation === undefined))) return undefined
+  return {
+    eventCount: Number(candidate.eventCount),
+    blocked: candidate.blocked,
+    ...(typeof candidate.sequenceEpoch === 'string' ? { sequenceEpoch: candidate.sequenceEpoch } : {}),
+    ...(Number.isSafeInteger(candidate.nextSequence) ? { nextSequence: Number(candidate.nextSequence) } : {}),
+    ...(window === undefined || windowMessages === undefined
+      ? {}
+      : { window: { id: String(window.id), messages: windowMessages } }),
+    ...(epochBaselineBase === undefined ? {} : { epochBaselineBase }),
+    ...(heldBase === undefined || heldOperations === undefined
+      ? {}
+      : { held: { base: heldBase, operations: heldOperations as ContextDelta[] } }),
+  }
+}
+
+function rebuildSubject(
+  subjectId: string,
+  events: readonly ParsedEvent[],
+  seed: TrajectoryV2SubjectSeed | undefined,
+): TrajectoryV2SubjectProjection {
   const accumulator: SubjectAccumulator = {
     diagnostics: [],
     events: [],
@@ -1136,11 +1211,18 @@ function rebuildSubject(subjectId: string, events: readonly ParsedEvent[]): Traj
   const askUserRequested = new Map<string, ParsedEvent>()
   const askUserResolved = new Map<string, ParsedEvent>()
   const referencedCompactionOperationIds = new Set<string>()
-  let activeEpoch: string | undefined
-  let epochBaselineBase: readonly ContextMessage[] | undefined
-  let lastWindow: readonly ContextMessage[] | undefined
-  let heldCompactionContext: HeldCompactionContext | undefined
-  let subjectOrder = 0
+  // A checkpoint stands in for the events retention removed: the chain resumes
+  // where they left it, so the first remaining delta finds its base window.
+  let activeEpoch: string | undefined = seed?.sequenceEpoch
+  let epochBaselineBase: readonly ContextMessage[] | undefined = seed?.epochBaselineBase
+  let lastWindow: readonly ContextMessage[] | undefined = seed?.window?.messages
+  let heldCompactionContext: HeldCompactionContext | undefined = seed?.held
+  let subjectOrder = seed?.eventCount ?? 0
+  if (seed?.window !== undefined) accumulator.windows.set(seed.window.id, [...seed.window.messages])
+  if (seed?.sequenceEpoch !== undefined) {
+    if (seed.nextSequence !== undefined) expectedByEpoch.set(seed.sequenceEpoch, seed.nextSequence)
+    if (seed.blocked) blockedEpochs.add(seed.sequenceEpoch)
+  }
   for (const event of orderedEpochEvents(events)) {
     subjectOrder += 1
     if (activeEpoch !== event.sequenceEpoch) {
@@ -1467,6 +1549,7 @@ export function createTrajectoryV2Reducer(): TrajectoryV2Reducer {
   // so it is rebuilt only when one of them was added or replaced.
   const projections = new Map<string, TrajectoryV2SubjectProjection>()
   const dirtySubjects = new Set<string>()
+  let seeds: ReadonlyMap<string, TrajectoryV2SubjectSeed> = new Map()
   return {
     apply(records) {
       for (const record of records) {
@@ -1500,7 +1583,7 @@ export function createTrajectoryV2Reducer(): TrajectoryV2Reducer {
       }
       for (const [subjectId, events] of eventsBySubject) {
         if (!dirtySubjects.has(subjectId) && projections.has(subjectId)) continue
-        projections.set(subjectId, rebuildSubject(subjectId, [...events.values()]))
+        projections.set(subjectId, rebuildSubject(subjectId, [...events.values()], seeds.get(subjectId)))
       }
       dirtySubjects.clear()
       return { diagnostics: globalDiagnostics, subjects: new Map(projections) }
@@ -1510,6 +1593,11 @@ export function createTrajectoryV2Reducer(): TrajectoryV2Reducer {
       globalDiagnostics.length = 0
       projections.clear()
       dirtySubjects.clear()
+      seeds = new Map()
+    },
+    seed(nextSeeds) {
+      seeds = nextSeeds
+      projections.clear()
     },
   }
 }

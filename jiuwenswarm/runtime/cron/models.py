@@ -363,6 +363,7 @@ class CronJob:
     last_session_id: str | None = None
     # 执行时使用的模型；None 表示使用 AgentServer 默认模型
     model_name: str | None = None
+    model_selection: dict[str, str] | None = None
     # 执行时会话级启用的 MCP 名称列表（来自创建时 chat-session 的快照，
     # 或显式传入）；None 表示不注入（沿用既有全局默认集行为）。
     mcp: list[str] | None = None
@@ -411,6 +412,8 @@ class CronJob:
             d["last_session_id"] = self.last_session_id
         if self.model_name:
             d["model_name"] = self.model_name
+        if self.model_selection:
+            d["model_selection"] = dict(self.model_selection)
         if self.mcp:
             d["mcp"] = list(self.mcp)
         if self.app_id:
@@ -527,6 +530,11 @@ class CronJob:
             if isinstance(model_raw, str) and model_raw.strip()
             else None
         )
+        selection_raw = data.get("model_selection")
+        job_model_selection = None
+        if isinstance(selection_raw, dict):
+            from jiuwenswarm.common.model_selection import ModelSelection
+            job_model_selection = ModelSelection.model_validate(selection_raw).model_dump()
         # mcp：老数据兜底（无 mcp 字段 → None，行为与改造前一致）
         job_mcp = normalize_cron_job_mcp(data.get("mcp", None))
         app_id_raw = data.get("app_id", "")
@@ -565,6 +573,7 @@ class CronJob:
             project_id=project_id,
             last_session_id=last_session_id,
             model_name=job_model_name,
+            model_selection=job_model_selection,
             mcp=job_mcp,
             app_id=job_app_id,
             user_id=job_user_id,

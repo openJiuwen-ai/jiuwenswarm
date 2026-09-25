@@ -5,9 +5,10 @@ import { useTranslation } from 'react-i18next';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { useChatStore, type ChatRuntime } from '../../stores/chatStore';
 import { webClient } from '../../services/webClient';
-import { getArchiveErrorCode, archivedTaskClient, findBatchSessionResult, parseProjectOperationFailure } from '../../features/workspace/archivedTaskClient';
+import { getArchiveErrorCode, getArchiveErrorFinishingCause, batchResultFinishingCause, archivedTaskClient, findBatchSessionResult } from '../../features/workspace/archivedTaskClient';
 import { requestSettingsModule } from '../../features/settings/settingsNavigation';
 import { DeleteDialog } from '../dialogs/Dialogs';
+import { ProjectArchiveDialog, resolveProjectArchiveSessionCount } from './ProjectArchiveDialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, toast } from '../../components/ui';
 import {
   PROJECT_SESSION_PAGE_SIZE,
@@ -85,6 +86,8 @@ export type NewConversationOptions = {
    * enterNewConversation / onUseExample。
    */
   metadata?: Record<string, unknown>;
+  /** 为 true 时用 replaceState 进入 /chat/new，避免浏览器后退回到已离开的会话 URL。 */
+  replaceHistory?: boolean;
 };
 
 function isDefaultProject(project: ProjectInfo): boolean {
@@ -763,7 +766,6 @@ function ProjectCreateDialog({
 
 function ProjectDeleteDialog({
   project,
-  action,
   error,
   notice,
   deleting,
@@ -771,7 +773,6 @@ function ProjectDeleteDialog({
   onDelete,
 }: {
   project: ProjectInfo;
-  action: 'delete' | 'archive';
   error?: string | null;
   notice?: string | null;
   deleting: boolean;
@@ -782,9 +783,9 @@ function ProjectDeleteDialog({
   return (
     <DeleteDialog
       title={project.name}
-      dialogTitle={t(`multiSession.project.${action === 'delete' ? 'deleteProject' : 'archiveSessions'}`)}
-      confirmLabel={t(action === 'archive' ? 'multiSession.project.confirm' : 'common.delete')}
-      descriptionKey={`multiSession.project.${action === 'delete' ? 'deleteProjectDescription' : 'archiveSessionsDescription'}`}
+      dialogTitle={t('multiSession.project.removeProject')}
+      confirmLabel={t('multiSession.project.removeProjectConfirm')}
+      descriptionKey="multiSession.project.removeProjectDescription"
       descriptionValues={{ projectName: project.name }}
       deleting={deleting}
       error={error ?? null}
@@ -874,13 +875,15 @@ export function ConversationSidebar({
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
   const [pinError, setPinError] = useState<string | null>(null);
-  // 既有「删除项目」流程状态：与归档并存，互不影响
+  // 既有「移除项目」流程状态：与归档并存，互不影响
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<ProjectInfo | null>(null);
   const [projectAction, setProjectAction] = useState<'delete' | 'archive'>('delete');
   const [deleteProjectBusy, setDeleteProjectBusy] = useState(false);
   const [deleteProjectError, setDeleteProjectError] = useState<string | null>(null);
-  // 运行中会话被略过时的提示：展示后点确定仅关闭对话框，不再重试归档
+  // 归档时运行中会话被略过时的提示：展示后点确定仅关闭对话框，不再重试归档
   const [deleteProjectNotice, setDeleteProjectNotice] = useState<string | null>(null);
+  /** 打开归档确认框时快照会话数，避免提交过程中标题随列表刷新变化 */
+  const [archiveDialogSessionCount, setArchiveDialogSessionCount] = useState<number | null>(null);
   const [projectAddMenuOpen, setProjectAddMenuOpen] = useState(false);
   const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
   const addMenuRef = useRef<HTMLDivElement>(null);
@@ -1173,22 +1176,55 @@ export function ConversationSidebar({
   // 归档错误码只用于分支判断，用户看到的是可翻译文案
   function archiveErrorKey(error: unknown): string {
     const code = getArchiveErrorCode(error);
-    if (code === 'SESSION_BUSY') return 'multiSession.project.errors.archiveSessionBusy';
+    if (code === 'SESSION_BUSY') {
+      // 会话会自行结束，引导稍后重试，而不是让用户先手动停止一个已经停过的
+      // 会话。成因不同文案不同：subagent 退出与 Team 回合收尾是两件事。
+      const cause = getArchiveErrorFinishingCause(error);
+      if (cause === 'subagent') {
+        return 'multiSession.project.errors.archiveSessionSubagentFinishing';
+      }
+      return cause === 'team'
+        ? 'multiSession.project.errors.archiveSessionFinishing'
+        : 'multiSession.project.errors.archiveSessionBusy';
+    }
     if (code === 'FORBIDDEN') return 'multiSession.project.errors.archiveForbidden';
     if (code === 'NOT_FOUND') return 'multiSession.project.errors.archiveNotFound';
     return 'multiSession.project.errors.archiveFailed';
   }
 
+  function openArchiveToastIcon() {
+    return <Archive aria-hidden size={16} strokeWidth={1.8} />;
+  }
+
+  // 移除/恢复项目失败时的可翻译文案；重名冲突、定时任务停止失败与会话运行中都给出可操作提示。
+  function projectActionErrorText(error: unknown): string {
+    const code = getArchiveErrorCode(error);
+    if (code === 'PROJECT_NAME_CONFLICT') {
+      return t('multiSession.project.errors.projectNameConflict');
+    }
+    if (code === 'CRON_STOP_FAILED') {
+      return t('multiSession.project.errors.cronStopFailed');
+    }
+    if (code === 'SESSION_BUSY') {
+      return t('multiSession.project.errors.removeSessionBusy');
+    }
+    return error instanceof Error ? error.message : String(error);
+  }
+
   function openArchiveSuccessToast(options: {
     content: string;
     onUndo: () => Promise<void>;
+    replaceExisting?: boolean;
   }) {
-    // 新的归档提示替换旧提示，避免多个「撤销」并发把列表刷乱
-    toast.closeAll();
+    // 单会话归档替换旧提示；批量归档可能与失败 toast 并存
+    if (options.replaceExisting !== false) {
+      toast.closeAll();
+    }
     toast.open({
       content: options.content,
-      icon: <Archive aria-hidden size={16} strokeWidth={1.8} />,
+      icon: openArchiveToastIcon(),
       duration: 5,
+      wide: true,
       actions: [
         {
           label: t('multiSession.project.archiveView'),
@@ -1201,12 +1237,21 @@ export function ConversationSidebar({
               try {
                 await options.onUndo();
               } catch (error) {
-                toast.open({ content: t(archiveErrorKey(error)), variant: 'error', wide: true });
+                openArchiveFailureToast(t(archiveErrorKey(error)));
               }
             })();
           },
         },
       ],
+    });
+  }
+
+  function openArchiveFailureToast(content: string) {
+    toast.open({
+      content,
+      variant: 'error',
+      duration: 5,
+      wide: true,
     });
   }
 
@@ -1225,15 +1270,22 @@ export function ConversationSidebar({
             const entry = findBatchSessionResult(response, session.session_id);
             if (!entry?.ok) {
               const error = new Error(entry?.error || 'Failed to unarchive session');
-              Object.assign(error, { code: entry?.code });
+              Object.assign(error, {
+                code: entry?.code,
+                finishing: entry?.finishing,
+                subagent_finishing: entry?.subagent_finishing,
+              });
               throw error;
             }
-            await useWorkspaceStore.getState().refreshWorkspaceData();
+            await useWorkspaceStore.getState().refreshWorkspaceAndCron();
           },
         });
+        if (activeSessionId === session.session_id) {
+          onNew({ replaceHistory: true });
+        }
       });
     } catch (error) {
-      toast.open({ content: t(archiveErrorKey(error)), variant: 'error', wide: true });
+      openArchiveFailureToast(t(archiveErrorKey(error)));
       await useWorkspaceStore.getState().refreshWorkspaceData();
     } finally {
       archiveInFlightRef.current.delete(opKey);
@@ -1254,72 +1306,76 @@ export function ConversationSidebar({
     try {
       const projectId = deleteProjectTarget.project_id;
       if (projectAction === 'delete') {
-        const result = await removeProject(projectId);
-        await loadCronJobs();
-        if (!result.deleted && result.skipped_running_session_ids?.length) {
-          setDeleteProjectNotice(t('multiSession.project.deleteSkippedRunning', {
-            count: result.skipped_running_session_ids.length,
-            sessions: result.deleted_conversation_sessions,
-            crons: result.deleted_cron_jobs,
-          }));
-          return;
-        }
-        toast.open({ content: t('multiSession.project.projectDeletedSummary', {
-          sessions: result.deleted_conversation_sessions,
-          crons: result.deleted_cron_jobs,
-        }), variant: 'success' });
+        const removed = await removeProject(projectId);
+        // 项目下没有定时任务时只提示“项目已移除”；字段缺失（旧网关）沿用原文案。
+        toast.open({
+          content: removed.stopped_cron_jobs === 0
+            ? t('multiSession.project.projectRemoved')
+            : t('multiSession.project.projectRemovedSummary'),
+          variant: 'success',
+          actions: [{
+            label: t('multiSession.project.archiveUndo'),
+            onClick: () => {
+              void useWorkspaceStore.getState().restoreProject(projectId).catch((error) => {
+                toast.open({ content: projectActionErrorText(error), variant: 'error' });
+              });
+            },
+          }],
+        });
       } else {
         const result = await projectRegistryClient.archiveSessions(projectId);
         const succeededIds = result.results.filter((item) => item.ok).map((item) => item.session_id);
+        const failedItems = result.results.filter((item) => !item.ok);
         const workspace = useWorkspaceStore.getState();
         workspace.removeSessions(succeededIds);
         await Promise.all([workspace.loadProjects(), workspace.loadProjectSessions(projectId), workspace.loadPinnedSessions()]);
-        if (result.failed_count) {
-          const failedItems = result.results.filter((item) => !item.ok);
-          const runningItems = failedItems.filter((item) => item.code === 'SESSION_BUSY');
-          // 失败项全部是运行中的会话：按需求略过，只给出提示，点确定即关闭对话框
-          if (runningItems.length > 0 && runningItems.length === failedItems.length) {
-            setDeleteProjectError(null);
-            setDeleteProjectNotice(
-              result.succeeded_count > 0
-                ? t('multiSession.project.archiveSkippedRunningWithSuccess', {
-                    succeeded: result.succeeded_count,
-                    count: runningItems.length,
-                  })
-                : t('multiSession.project.archiveSkippedRunning', { count: runningItems.length }),
-            );
-            return;
-          }
-          setDeleteProjectError(t('multiSession.project.batchPartialFailure', { succeeded: result.succeeded_count, failed: result.failed_count })
-            + ' ' + failedItems.map((item) => `${item.session_id}: ${item.error || item.code}`).join('; '));
-          return;
+        setDeleteProjectTarget(null);
+        setArchiveDialogSessionCount(null);
+        if (activeSessionId && succeededIds.includes(activeSessionId)) {
+          onNew({ replaceHistory: true });
         }
-        // 批量归档成功：复用单会话归档的 toast（查看归档页 + 撤销）。
-        // 撤销走批量恢复接口，把本次成功归档的会话原样恢复回活跃区。
-        openArchiveSuccessToast({
-          content: t('multiSession.project.sessionsArchived', { count: succeededIds.length }),
-          onUndo: async () => {
-            const response = await archivedTaskClient.unarchiveSessions(succeededIds);
-            const failed = response.results.filter((item) => !item.ok);
-            if (failed.length) {
-              const error = new Error(failed[0]?.error || 'Failed to unarchive sessions');
-              Object.assign(error, { code: failed[0]?.code });
-              throw error;
-            }
-            await useWorkspaceStore.getState().refreshWorkspaceData();
-          },
-        });
+        if (succeededIds.length > 0) {
+          openArchiveSuccessToast({
+            content: t('multiSession.project.sessionsArchived', { count: succeededIds.length }),
+            replaceExisting: failedItems.length === 0,
+            onUndo: async () => {
+              const response = await archivedTaskClient.unarchiveSessions(succeededIds);
+              const failed = response.results.filter((item) => !item.ok);
+              if (failed.length) {
+                const error = new Error(failed[0]?.error || 'Failed to unarchive sessions');
+                Object.assign(error, { code: failed[0]?.code });
+                throw error;
+              }
+              // 撤销归档若命中"项目已移除"的会话，会连带恢复项目，其定时任务
+              // 重新可见（默认停用），cron 列表要一起刷新。
+              await useWorkspaceStore.getState().refreshWorkspaceAndCron();
+            },
+          });
+        }
+        if (failedItems.length > 0) {
+          const busyItems = failedItems.filter((item) => item.code === 'SESSION_BUSY');
+          const finishingItems = busyItems.filter((item) => batchResultFinishingCause(item) !== null);
+          const subagentItems = busyItems.filter((item) => batchResultFinishingCause(item) === 'subagent');
+          const failureContent = subagentItems.length === failedItems.length
+            ? t('multiSession.project.archiveBatchFailedSubagentFinishing', { count: subagentItems.length })
+            : finishingItems.length === failedItems.length
+            ? t('multiSession.project.archiveBatchFailedFinishing', { count: finishingItems.length })
+            : busyItems.length === failedItems.length
+            ? t('multiSession.project.archiveBatchFailedRunning', { count: busyItems.length })
+            : t('multiSession.project.archiveBatchFailed', { count: failedItems.length });
+          openArchiveFailureToast(failureContent);
+        }
+        return;
       }
       setDeleteProjectTarget(null);
     } catch (error) {
-      // project.delete 的部分失败 payload 带有首个失败项的可读错误，优先展示
-      const partial = parseProjectOperationFailure(error);
-      setDeleteProjectError(partial
-        ? `${t('multiSession.project.deleteFailedSummary', {
-            sessions: partial.deletedConversations,
-            crons: partial.deletedCronJobs,
-          })}${partial.detail ? ` ${partial.detail}` : ''}`
-        : (error instanceof Error ? error.message : String(error)));
+      if (projectAction === 'archive') {
+        setDeleteProjectTarget(null);
+        setArchiveDialogSessionCount(null);
+        openArchiveFailureToast(t(archiveErrorKey(error)));
+        return;
+      }
+      setDeleteProjectError(projectActionErrorText(error));
     } finally {
       setDeleteProjectBusy(false);
     }
@@ -1348,7 +1404,11 @@ export function ConversationSidebar({
               removeSessionLocally(session.session_id);
               await useWorkspaceStore.getState().refreshWorkspaceData();
             } catch (error) {
-              toast.open({ content: error instanceof Error ? error.message : String(error), variant: 'error' });
+              const code = getArchiveErrorCode(error);
+              const message = code === 'SESSION_BUSY'
+                ? t('multiSession.project.errors.deleteSessionBusy')
+                : (error instanceof Error ? error.message : String(error));
+              toast.open({ content: message, variant: 'error' });
             }
           })();
         } : undefined}
@@ -1413,7 +1473,11 @@ export function ConversationSidebar({
                         removeSessionLocally(ts.session_id);
                         await loadCronSessions(projectId, job.id);
                       } catch (error) {
-                        toast.open({ content: error instanceof Error ? error.message : String(error), variant: 'error' });
+                        const code = getArchiveErrorCode(error);
+                        const message = code === 'SESSION_BUSY'
+                          ? t('multiSession.project.errors.deleteSessionBusy')
+                          : (error instanceof Error ? error.message : String(error));
+                        toast.open({ content: message, variant: 'error' });
                       }
                     })();
                   }}
@@ -1538,6 +1602,9 @@ export function ConversationSidebar({
             setProjectAction(action);
             setDeleteProjectError(null);
             setDeleteProjectNotice(null);
+            if (action === 'archive') {
+              setArchiveDialogSessionCount(resolveProjectArchiveSessionCount(project, projectSessionTotals, pinnedSessions));
+            }
             setDeleteProjectTarget(project);
           }}
         />
@@ -1769,10 +1836,22 @@ export function ConversationSidebar({
           onSubmit={(value) => void handleRenameSubmit(value)}
         />
       ) : null}
-      {deleteProjectTarget ? (
+      {deleteProjectTarget && projectAction === 'archive' ? (
+        <ProjectArchiveDialog
+          open
+          sessionCount={archiveDialogSessionCount}
+          archiving={deleteProjectBusy}
+          onCancel={() => {
+            if (deleteProjectBusy) return;
+            setArchiveDialogSessionCount(null);
+            setDeleteProjectTarget(null);
+          }}
+          onConfirm={() => { void handleRemoveProject(); }}
+        />
+      ) : null}
+      {deleteProjectTarget && projectAction === 'delete' ? (
         <ProjectDeleteDialog
           project={deleteProjectTarget}
-          action={projectAction}
           deleting={deleteProjectBusy}
           error={deleteProjectError}
           notice={deleteProjectNotice}

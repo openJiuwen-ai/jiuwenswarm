@@ -86,7 +86,8 @@ def test_symphony_evolution_switch_matches_full_parser(
     target["enabled"] = value
     parsed = symphony_config_module.symphony_config_from_dict(raw)
     assert get_symphony_evolution_enabled({"symphony": raw}) is expected
-    assert expected is (parsed.enabled and parsed.evolution.enabled)
+    # enabled 已移到 evolution.flow 下；evolution 层的旧位置靠回退兼容
+    assert expected is (parsed.enabled and parsed.evolution.flow.enabled)
 
 
 @pytest.mark.parametrize("value", [None, {}, [], "invalid", True, 1])
@@ -230,6 +231,72 @@ def test_reset_external_cli_agents_does_not_write_when_config_is_absent(
     )
 
     reset_external_cli_agents_in_config()
+
+
+def _write_team_config(path: Path, external_cli_agents: list[dict[str, Any]]) -> None:
+    """Write a config carrying one team with the given external CLI entries."""
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "modes": {
+                    "team": {
+                        "jiuwen_team": {
+                            "external_cli_agents": external_cli_agents,
+                            "external_transport": {
+                                "type": "hybrid",
+                                "params": {"external_publish_url": "ws://127.0.0.1:19000/ws"},
+                            },
+                        }
+                    }
+                }
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_external_cli_switch_keeps_the_configured_builtin_model_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+    temp_config_file: Path,
+) -> None:
+    """Toggling CLI agents must not drop a catalog the switch payload cannot carry."""
+    catalog = [
+        {"name": "sonnet", "description": "daily", "efforts": ["low", "high"], "default_effort": "high"},
+        {"name": "haiku"},
+    ]
+    _write_team_config(temp_config_file, [{"cli_agent": "claude", "builtin_models": catalog}])
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", temp_config_file)
+
+    update_external_cli_agents_in_config(["claude", "codex"], publish_url="ws://127.0.0.1:19000/ws")
+
+    saved = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
+    agents = {item["cli_agent"]: item for item in saved["modes"]["team"]["jiuwen_team"]["external_cli_agents"]}
+    assert agents["claude"]["builtin_models"] == catalog
+    assert "builtin_models" not in agents["codex"]
+
+
+def test_external_cli_builtin_models_are_normalized_and_validated(
+    monkeypatch: pytest.MonkeyPatch,
+    temp_config_file: Path,
+) -> None:
+    _write_team_config(temp_config_file, [])
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", temp_config_file)
+
+    update_external_cli_agents_in_config(
+        [{"cli_agent": "claude", "builtin_models": [{"name": " sonnet ", "efforts": ["low", " high "]}]}],
+    )
+    saved = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
+    entry = saved["modes"]["team"]["jiuwen_team"]["external_cli_agents"][0]
+    assert entry["builtin_models"] == [{"name": "sonnet", "efforts": ["low", "high"]}]
+
+    with pytest.raises(ValueError, match="default_effort"):
+        update_external_cli_agents_in_config(
+            [{"cli_agent": "claude", "builtin_models": [{"name": "haiku", "default_effort": "low"}]}],
+        )
+    with pytest.raises(ValueError, match="name must be a non-empty string"):
+        update_external_cli_agents_in_config([{"cli_agent": "claude", "builtin_models": [{"efforts": ["low"]}]}])
 
 
 def test_config_migration_preserves_explicit_image_policy(tmp_path: Path) -> None:
@@ -1648,6 +1715,42 @@ modes:
         assert set(registry) == {"agent_1", "agent_2"}
         assert registry["agent_1"]["model"]["model_request_config"]["model"] == "gpt-4.1"
         assert registry["agent_2"]["skills"] == ["coding"]
+
+    @staticmethod
+    def test_replace_teams_in_config_keeps_the_builtin_model_catalog(
+        monkeypatch: pytest.MonkeyPatch,
+        temp_config_file: Path,
+    ):
+        """The team editor payload carries no catalog, so the saved one survives."""
+        temp_config_file.write_text(
+            yaml.safe_dump(
+                {
+                    "modes": {
+                        "team": {
+                            "alpha_team": {
+                                "external_cli_agents": [
+                                    {"cli_agent": "claude", "builtin_models": [{"name": "sonnet"}]},
+                                ]
+                            }
+                        }
+                    }
+                },
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("jiuwenswarm.common.config._CONFIG_YAML_PATH", temp_config_file)
+        monkeypatch.setattr("jiuwenswarm.common.config.CONFIG_YAML_PATH", temp_config_file)
+        payload = TestTeamModesConfig._front_payload(["alpha_team"])
+        payload["team"][0]["external_cli_agents"] = [{"cli_agent": "claude", "cli_path": "/usr/bin/claude"}]
+
+        replace_teams_in_config(payload)
+
+        raw = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
+        entry = raw["modes"]["team"]["alpha_team"]["external_cli_agents"][0]
+        assert entry["cli_path"] == "/usr/bin/claude"
+        assert entry["builtin_models"] == [{"name": "sonnet"}]
 
     @staticmethod
     def test_replace_teams_in_config_only_writes_teammate_when_explicitly_provided(

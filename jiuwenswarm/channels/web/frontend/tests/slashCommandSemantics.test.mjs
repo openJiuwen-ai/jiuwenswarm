@@ -59,21 +59,10 @@ test('plan with arguments remains an ordinary chat message', () => {
   assert.equal(shouldExecuteRegisteredSlashCommand('plan', 'open', 'agent'), false);
 });
 
-test('new executes only as a standalone command', () => {
-  assert.equal(shouldExecuteRegisteredSlashCommand('new', '', 'agent'), true);
-  assert.equal(shouldExecuteRegisteredSlashCommand('NEW', '   ', 'agent'), true);
-  assert.equal(shouldExecuteRegisteredSlashCommand('new', 'keep this text', 'agent'), false);
-});
-
 test('fork executes only as a standalone command', () => {
   assert.equal(shouldExecuteRegisteredSlashCommand('fork', '', 'agent'), true);
   assert.equal(shouldExecuteRegisteredSlashCommand('FORK', '   ', 'agent'), true);
   assert.equal(shouldExecuteRegisteredSlashCommand('fork', 'custom title', 'agent'), false);
-});
-
-test('side executes with or without an initial prompt', () => {
-  assert.equal(shouldExecuteRegisteredSlashCommand('side', '', 'agent'), true);
-  assert.equal(shouldExecuteRegisteredSlashCommand('side', 'inspect the cache path', 'agent'), true);
 });
 
 test('goal executes with or without control arguments', () => {
@@ -87,19 +76,14 @@ test('other registered slash commands keep their existing argument behavior', ()
   assert.equal(shouldExecuteRegisteredSlashCommand('persist', '跟进发布', 'agent'), true);
 });
 
-test('team mode exposes and executes only the global new command', () => {
-  const commands = [{ name: 'new' }, { name: 'side' }, { name: 'compact' }, { name: 'plan' }, { name: 'goal' }, { name: 'persist' }];
+test('team mode exposes no slash commands', () => {
+  const commands = [{ name: 'fork' }, { name: 'compact' }, { name: 'plan' }, { name: 'goal' }, { name: 'persist' }];
 
   assert.equal(supportsWebSlashCommands('team'), false);
-  assert.deepEqual(getWebSlashCommandsForMode(commands, 'team'), [{ name: 'new' }]);
-  assert.equal(shouldExecuteRegisteredSlashCommand('new', '', 'team'), true);
-  assert.equal(shouldExecuteRegisteredSlashCommand('new', 'keep this text', 'team'), false);
-  assert.equal(shouldExecuteRegisteredSlashCommand('fork', '', 'team'), false);
-  assert.equal(shouldExecuteRegisteredSlashCommand('side', '', 'team'), false);
-  assert.equal(shouldExecuteRegisteredSlashCommand('compact', '', 'team'), false);
-  assert.equal(shouldExecuteRegisteredSlashCommand('plan', '', 'team'), false);
-  assert.equal(shouldExecuteRegisteredSlashCommand('goal', 'pause', 'team'), false);
-  assert.equal(shouldExecuteRegisteredSlashCommand('persist', '跟进发布', 'team'), false);
+  assert.deepEqual(getWebSlashCommandsForMode(commands, 'team'), []);
+  for (const command of commands) {
+    assert.equal(shouldExecuteRegisteredSlashCommand(command.name, '', 'team'), false);
+  }
 });
 
 test('single-agent mode keeps command visibility and execution', () => {

@@ -32,8 +32,16 @@ export type FetchRunState =
   | 'running'
   | 'stopping'
   | 'succeeded'
+  | 'partial_succeeded'
   | 'cancelled'
   | 'failed';
+
+export type FetchItemError = {
+  item_ref: string;
+  code: number;
+  message: string;
+  failed_at: string;
+};
 
 /** 单服务采集进度（后端 get_fetch_run_status / status.fetch_run_progress[id]）。 */
 export type FetchRunProgress = {
@@ -42,6 +50,10 @@ export type FetchRunProgress = {
   progress_percent: number;
   total_items: number;
   completed_items: number;
+  failed_items: number;
+  quarantined_items: number;
+  item_errors: FetchItemError[];
+  omitted_item_errors: number;
   last_error: string | null;
 };
 
@@ -107,6 +119,14 @@ export function isFetchTaskRunningError(error: unknown): boolean {
   return String((error as { code?: unknown })?.code ?? '') === String(FETCH_TASK_RUNNING_ERROR_CODE);
 }
 
+/** 是否存在尚未停完的采集任务（采集进度里 running/stopping）。 */
+export function hasRunningFetchTask(status: PersonalContextStatus | null | undefined): boolean {
+  if (!status) return false;
+  return Object.values(status.fetch_run_progress ?? {}).some(
+    (item) => item.run_state === 'running' || item.run_state === 'stopping',
+  );
+}
+
 // ── runtime.get_config / patch / select_model 返回的 stored config ─────────
 export type StrategyProfile = 'rules' | 'balanced' | 'agent';
 
@@ -155,6 +175,8 @@ export type FetchServicePatch = Partial<
 
 export type PersonalContextConfig = {
   configured: boolean;
+  /** 总开关（独立持久化）：控制两个子开关联动，子开关切换不影响它。 */
+  master_enabled: boolean;
   collection_enabled: boolean;
   agent_use_enabled: boolean;
   strategy_profile: StrategyProfile;
@@ -273,6 +295,13 @@ export const pcApi = {
     webRequest<PersonalContextConfig>(
       'personal_context.runtime.stop_collection',
       {},
+      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+    ),
+
+  setMasterEnabled: (enabled: boolean) =>
+    webRequest<PersonalContextConfig>(
+      'personal_context.runtime.set_master_enabled',
+      { enabled },
       { timeoutMs: FETCH_OP_TIMEOUT_MS },
     ),
 

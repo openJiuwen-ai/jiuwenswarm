@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """项目接口 handler 单元测试 — project.list / get_sessions / create /
-delete / pinned_sessions + session.pin + 兼容性(session.create / rename)。
+remove / restore / pinned_sessions + session.pin + 兼容性(session.create / rename)。
 
 复用 test_session_metadata.py 的 _FakeWebChannel 桩模式,自包含 fixtures。
 """
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -45,10 +46,21 @@ class _FakeSessionCreateAgentClient:
     def __init__(self) -> None:
         self.requests: list[object] = []
         self._sequence = 0
+        # project.remove 预检(project.lifecycle + running_sessions)的应答桩;
+        # 用例按需改写 has_running_sessions 模拟项目下有无会话在执行。
+        self.project_lifecycle: dict = {
+            "exists": True, "hidden": False, "has_running_sessions": False,
+        }
+        # AgentServer 侧 project.remove 权威 busy 扫描用的 runtime 桩;
+        # None 时等价于无 runtime(扫描跳过),与旧版行为一致。
+        self.project_runtime = None
 
     async def send_request(self, request):
         self.requests.append(request)
         params = dict(request.params or {})
+
+        if getattr(request, "method", None) == "project.lifecycle":
+            return SimpleNamespace(ok=True, payload=dict(self.project_lifecycle))
 
         # Phase 2: session.pin 走 E2A 转发到 AgentServer(SessionAdapter SESSION_PIN)。
         # fake 用生产 set_session_pinned 落盘,保持 Web handler 集成路径可验证。
@@ -62,7 +74,9 @@ class _FakeSessionCreateAgentClient:
             "project.list",
             "project.create",
             "project.rename",
-                    }:
+            "project.remove",
+            "project.restore",
+        }:
             from jiuwenswarm.common.schema.agent import AgentRequest
             from jiuwenswarm.common.schema.message import ReqMethod
             from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
@@ -78,8 +92,12 @@ class _FakeSessionCreateAgentClient:
                 "project.create": ReqMethod.PROJECT_CREATE,
                 "project.rename": ReqMethod.PROJECT_RENAME,
                 "project.pin": ReqMethod.PROJECT_PIN,
+                "project.remove": ReqMethod.PROJECT_REMOVE,
+                "project.restore": ReqMethod.PROJECT_RESTORE,
             }[request.method]
-            response = await ProjectAdapter().handle(
+            response = await ProjectAdapter(
+                runtime_probe=lambda: self.project_runtime
+            ).handle(
                 AgentRequest(
                     request_id=str(request.request_id or ""),
                     channel_id=str(request.channel or "web"),
@@ -167,6 +185,44 @@ class _FakeSessionCreateAgentClient:
         )
 
 
+class _FakeRemoveRuntime:
+    """project.remove busy 扫描的 AgentRuntime 桩。
+
+    ``running``/``parked`` 分别控制 ``is_session_running`` 与
+    ``has_parked_team_streams`` 的应答,模拟执行中会话与 parked 的
+    Team 常驻流。``heartbeats`` 是"仅因后台心跳在跑"的会话子集:
+    ``ignore_heartbeats`` 读时排除它们,``stop_heartbeat_runs`` 停掉它们。
+    """
+
+    def __init__(self, running=(), parked=(), heartbeats=(), stop_heartbeats=True):
+        self._running = set(running)
+        self._parked = set(parked)
+        self._heartbeats = set(heartbeats)
+        self._stop_heartbeats = stop_heartbeats
+        self.stopped_heartbeats: list[str] = []
+        # 心跳准入控制器桩:active_heartbeat_sessions 让移除先判断有没有心跳在跑,
+        # 没有就不必再扫一遍会话元数据。
+        self._admission_controller = SimpleNamespace(
+            active_heartbeat_sessions=lambda: set(self._heartbeats),
+        )
+
+    def is_session_running(self, session_id, *, ignore_heartbeats=False):
+        if ignore_heartbeats and session_id in self._heartbeats:
+            return False
+        return session_id in self._running
+
+    def has_parked_team_streams(self, session_id):
+        return session_id in self._parked
+
+    async def stop_heartbeat_runs(self, session_id):
+        if session_id not in self._heartbeats or not self._stop_heartbeats:
+            return False
+        self._heartbeats.discard(session_id)
+        self._running.discard(session_id)
+        self.stopped_heartbeats.append(session_id)
+        return True
+
+
 @pytest.fixture()
 def sessions_dir(tmp_path, monkeypatch):
     d = tmp_path / "sessions"
@@ -202,23 +258,29 @@ def project_store_dir(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def registered_channel(sessions_dir, project_store_dir):
-    from unittest.mock import AsyncMock
     from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
         WebHandlersBindParams,
         _register_web_handlers,
     )
     channel = _FakeWebChannel()
     channel.agent_client = _FakeSessionCreateAgentClient()
+    # 挂到 channel 上供用例断言(如 project.remove 前先停 cron 的调用参数)。
+    async def hide_jobs(project_id, *, commit=None):
+        if commit is not None:
+            await commit()
+        return {"stopped_cron_jobs": 0}
+
+    channel.cron_controller = SimpleNamespace(
+        store=SimpleNamespace(list_jobs=AsyncMock(return_value=[])),
+        scheduler=SimpleNamespace(
+            _lifecycle_owners=set(),
+            remember_lifecycle_owner=lambda owner: None,
+        ),
+        hide_project_jobs=AsyncMock(side_effect=hide_jobs),
+    )
     _register_web_handlers(
         WebHandlersBindParams(channel=channel, agent_client=channel.agent_client,
-                              cron_controller=SimpleNamespace(
-                                  store=SimpleNamespace(list_jobs=AsyncMock(return_value=[])),
-                                  scheduler=SimpleNamespace(
-                                      _lifecycle_owners=set(),
-                                      remember_lifecycle_owner=lambda owner: None,
-                                  ),
-                                  delete_project_jobs=AsyncMock(return_value={"deleted_cron_jobs": 0}),
-                              ))
+                              cron_controller=channel.cron_controller)
     )
     return channel
 
@@ -266,7 +328,6 @@ def _make_project(name, project_dir, *, pinned=False, pin_order=0, hidden=False)
                 if record["project_id"] == proj.project_id:
                     record["hidden"] = True
         project_store._mutate(legacy_record)
-        project_store.migrate_archived_projects()
     return proj
 
 
@@ -359,7 +420,7 @@ class TestProjectInfo:
     @staticmethod
     @pytest.mark.asyncio
     async def test_real_and_migrated_project_info(registered_channel, tmp_path):
-        """普通和迁移后的旧项目都可查询详情，不返回 hidden 字段。"""
+        """隐藏项目仅通过 include_hidden 查询。"""
         pa = _abspath(tmp_path, "app")
         proj = _make_project("应用", pa)
         _make_session("s1", project_id=proj.project_id, project_dir=pa, last_user_message_at=100.0)
@@ -382,12 +443,13 @@ class TestProjectInfo:
         assert p["session_count"] == 1
         assert p["last_user_message_at"] == 100.0
 
-        # 旧 hidden 项目迁移后可见。
+        # 隐藏项目默认不可见。
         ph = _abspath(tmp_path, "hidden")
         hidden_proj = _make_project("隐藏", ph, hidden=True)
         resp_h = await _call(registered_channel, "project.info", {"project_id": hidden_proj.project_id})
-        assert resp_h["ok"] is True
-        assert "hidden" not in resp_h["payload"]["project"]
+        assert resp_h["ok"] is False
+        resp_h = await _call(registered_channel, "project.info", {"project_id": hidden_proj.project_id, "include_hidden": True})
+        assert resp_h["payload"]["project"]["hidden"] is True
 
     @staticmethod
     @pytest.mark.asyncio
@@ -514,6 +576,168 @@ class TestProjectGetCronSessions:
         assert [item["session_id"] for item in response["payload"]["sessions"]] == [
             "cron-new"
         ]
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_name_convention_fallback_backfills_missing_cron_id(
+        registered_channel, sessions_dir
+    ):
+        """存量 team 执行会话：目录名符合 cron_<ts>_<jobid> 约定但元数据缺
+        cron_id（旧版隐式建链路被跳过）。按 cron_id 查询时兜底列出并回写
+        cron_id 自愈，回写后从普通会话列表退场。"""
+        _make_session("cron_1770000000000_job-legacy", last_user_message_at=250.0)
+
+        response = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": "default", "cron_id": "job-legacy"},
+        )
+
+        assert response["ok"] is True
+        assert [
+            item["session_id"] for item in response["payload"]["sessions"]
+        ] == ["cron_1770000000000_job-legacy"]
+        assert response["payload"]["sessions"][0]["cron_id"] == "job-legacy"
+
+        _drain()
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        meta = get_session_metadata(
+            "cron_1770000000000_job-legacy", cache_bust=True, enable_writeback=False
+        )
+        assert meta.get("cron_id") == "job-legacy"
+
+        normal = await _call(
+            registered_channel, "project.get_sessions", {"project_id": "default"}
+        )
+        assert "cron_1770000000000_job-legacy" not in [
+            item["session_id"] for item in normal["payload"]["sessions"]
+        ]
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_name_convention_fallback_bypasses_project_filter(
+        registered_channel, sessions_dir, tmp_path
+    ):
+        """兜底命中绕过项目归属过滤：任务挂在真实项目、存量会话 project_id
+        为空（归入默认项目）时，仍出现在该任务所属项目的触发的会话列表。"""
+        project_dir = _abspath(tmp_path, "team-app")
+        project = _make_project("TeamApp", project_dir)
+        _make_session("cron_177000000001_job-in-project", last_user_message_at=100.0)
+
+        response = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": project.project_id, "cron_id": "job-in-project"},
+        )
+
+        assert response["ok"] is True
+        assert [
+            item["session_id"] for item in response["payload"]["sessions"]
+        ] == ["cron_177000000001_job-in-project"]
+
+    @staticmethod
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("hidden", [False, True])
+    async def test_name_convention_fallback_preserves_existing_project(
+        registered_channel, sessions_dir, tmp_path, hidden
+    ):
+        """已有归属（包括隐藏项目）不得被查询迁移，正确项目的查询保持稳定。"""
+        owner = _make_project(
+            "Owner", _abspath(tmp_path, "owner"), hidden=hidden
+        )
+        other = _make_project("Other", _abspath(tmp_path, "other"))
+        session_id = "cron_177000000004_job-bound"
+        _make_session(session_id, project_id=owner.project_id)
+
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        for _ in range(2):
+            response = await _call(
+                registered_channel,
+                "project.get_cron_sessions",
+                {"project_id": other.project_id, "cron_id": "job-bound"},
+            )
+            assert response["ok"] is True
+            assert response["payload"]["sessions"] == []
+            _drain()
+            meta = get_session_metadata(
+                session_id, cache_bust=True, enable_writeback=False
+            )
+            assert meta["project_id"] == owner.project_id
+            assert not meta.get("cron_id")
+
+        if not hidden:
+            for _ in range(2):
+                response = await _call(
+                    registered_channel,
+                    "project.get_cron_sessions",
+                    {"project_id": owner.project_id, "cron_id": "job-bound"},
+                )
+                assert response["ok"] is True
+                assert [
+                    item["session_id"] for item in response["payload"]["sessions"]
+                ] == [session_id]
+                _drain()
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_name_convention_fallback_no_false_positive(
+        registered_channel, sessions_dir
+    ):
+        """目录名与查询 cron_id 不符、或不符合 cron_*_{jobid} 约定的会话不被
+        兜底误收。"""
+        _make_session("cron_177000000002_job-other", last_user_message_at=100.0)
+        _make_session("cron-session", last_user_message_at=200.0)
+
+        response = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": "default", "cron_id": "job-legacy"},
+        )
+
+        assert response["ok"] is True
+        assert response["payload"]["sessions"] == []
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_name_convention_fallback_survives_second_query(
+        registered_channel, sessions_dir, tmp_path
+    ):
+        """兜底回写需同时补齐 project_id：自愈后的第二次查询走正常路径并重新
+        应用项目归属过滤，若只回写 cron_id，存量会话 project_id 为空会被归到
+        默认项目，从真实项目任务的触发的会话列表二次消失。"""
+        project_dir = _abspath(tmp_path, "team-app2")
+        project = _make_project("TeamApp2", project_dir)
+        _make_session("cron_177000000003_job-twice", last_user_message_at=100.0)
+
+        for round_no in range(2):
+            response = await _call(
+                registered_channel,
+                "project.get_cron_sessions",
+                {"project_id": project.project_id, "cron_id": "job-twice"},
+            )
+            assert response["ok"] is True
+            assert [
+                item["session_id"] for item in response["payload"]["sessions"]
+            ] == ["cron_177000000003_job-twice"], f"round {round_no}"
+            # 强制异步写队列落盘：不落盘时第二轮会读到回写前的旧磁盘状态、
+            # 再次命中兜底，掩盖二次消失问题。
+            _drain()
+
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        meta = get_session_metadata(
+            "cron_177000000003_job-twice", cache_bust=True, enable_writeback=False
+        )
+        assert meta.get("cron_id") == "job-twice"
+        assert meta.get("project_id") == project.project_id
 
 
 # ===========================================================================
@@ -757,6 +981,32 @@ class TestProjectPin:
 class TestSessionPin:
     @staticmethod
     @pytest.mark.asyncio
+    async def test_pinned_cron_execution_session_appears_in_pinned_list(
+        registered_channel, sessions_dir,
+    ):
+        _make_session("cron-run", cron_id="job-1", channel_id="__cron__")
+        _make_session("other-channel", channel_id="tui", pinned=True, pin_order=2)
+
+        pin = await _call(
+            registered_channel, "session.pin", {"session_id": "cron-run", "pinned": True}
+        )
+        assert pin["ok"] is True
+
+        pinned = await _call(registered_channel, "project.pinned_sessions", {})
+        assert [session["session_id"] for session in pinned["payload"]["sessions"]] == [
+            "cron-run"
+        ]
+        assert pinned["payload"]["sessions"][0]["cron_id"] == "job-1"
+
+        cron = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": "default", "cron_id": "job-1"},
+        )
+        assert cron["payload"]["sessions"] == []
+
+    @staticmethod
+    @pytest.mark.asyncio
     async def test_pin_and_unpin_idempotent(registered_channel, sessions_dir):
         _make_session("s1", last_user_message_at=100.0)
         # 置顶
@@ -940,8 +1190,8 @@ class TestSessionCreateProjectIdValidation:
             pa = _abspath(tmp_path, "app")
             proj = _make_project("P", pa, hidden=True)
             target_id = proj.project_id
-            from jiuwenswarm.server.runtime.session.project_store import delete_project
-            delete_project(target_id)
+            from jiuwenswarm.server.runtime.session.project_store import hide_project
+            hide_project(target_id)
 
         resp = await _call(
             registered_channel, "session.create",
@@ -1015,3 +1265,463 @@ class TestSessionCreateProjectDirConsistency:
         assert resp["ok"] is False
         assert resp["code"] == "BAD_REQUEST"
         assert not any(sessions_dir.iterdir())
+
+
+class TestProjectRemoveRestore:
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_happy_and_idempotent(registered_channel, tmp_path):
+        """remove: 返回被隐藏的对话数(含置顶,不含 cron);已隐藏项目再 remove 幂等。"""
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        _make_session("s1", project_id=proj.project_id, project_dir=pa, last_user_message_at=100.0)
+        _make_session("s2", project_id=proj.project_id, project_dir=pa, last_user_message_at=200.0)
+        _make_session("s_pin", project_id=proj.project_id, project_dir=pa, pinned=True, pin_order=1, last_user_message_at=300.0)
+        _make_session("s_cron", project_id=proj.project_id, project_dir=pa, cron_id="cron_1")
+
+        # 第一次 remove: affected=3(置顶对话同样被隐藏;cron 执行会话不计)
+        resp = await _call(registered_channel, "project.remove", {"project_id": proj.project_id})
+        assert resp["ok"] is True
+        assert resp["payload"]["affected_sessions"] == 3
+
+        # 移除后 get_sessions 返回 NOT_FOUND
+        resp2 = await _call(
+            registered_channel, "project.get_sessions", {"project_id": proj.project_id}
+        )
+        assert resp2["code"] == "NOT_FOUND"
+
+        # 未归档会话随项目一起隐藏:不再回落到默认项目
+        resp3 = await _call(
+            registered_channel, "project.get_sessions", {"project_id": "default"}
+        )
+        ids = [s["session_id"] for s in resp3["payload"]["sessions"]]
+        assert ids == []
+
+        # 置顶会话一并隐藏,但置顶状态保留在会话元数据里
+        pinned_resp = await _call(registered_channel, "project.pinned_sessions", {})
+        assert pinned_resp["payload"]["sessions"] == []
+
+        # 默认项目统计同步排除被隐藏会话
+        resp4 = await _call(registered_channel, "project.list", {"filter": "all"})
+        default_info = next(
+            p for p in resp4["payload"]["projects"] if p["project_id"] == "default"
+        )
+        assert default_info["session_count"] == 0
+
+        # 已隐藏项目再 remove → affected=0(幂等)
+        pa2 = _abspath(tmp_path, "app2")
+        proj2 = _make_project("P2", pa2, hidden=True)
+        resp_idem = await _call(
+            registered_channel, "project.remove", {"project_id": proj2.project_id}
+        )
+        assert resp_idem["ok"] is True
+        assert resp_idem["payload"]["affected_sessions"] == 0
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_stops_cron_jobs(registered_channel, tmp_path):
+        """remove: 隐藏项目前先停止其下定时任务(停用 + 取消在途执行)。"""
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        cc = registered_channel.cron_controller
+
+        resp = await _call(
+            registered_channel, "project.remove", {"project_id": proj.project_id}
+        )
+        assert resp["ok"] is True
+        cc.hide_project_jobs.assert_awaited_once()
+        assert cc.hide_project_jobs.await_args.args == (proj.project_id,)
+        assert callable(cc.hide_project_jobs.await_args.kwargs["commit"])
+
+        # 任务总数随响应带回:0 表示项目下没有定时任务,前端据此只提示
+        # "项目已移除",不再附带"其定时任务已停止"。
+        assert resp["payload"]["stopped_cron_jobs"] == 0
+
+        # 项目下有任务时数量原样透传(含移除前已停用的),前端保持原文案
+        pa2 = _abspath(tmp_path, "app2")
+        proj2 = _make_project("P2", pa2)
+
+        async def hide_jobs_three(project_id, *, commit=None):
+            if commit is not None:
+                await commit()
+            return {"stopped_cron_jobs": 3}
+
+        cc.hide_project_jobs = AsyncMock(side_effect=hide_jobs_three)
+        resp2 = await _call(
+            registered_channel, "project.remove", {"project_id": proj2.project_id}
+        )
+        assert resp2["ok"] is True
+        assert resp2["payload"]["stopped_cron_jobs"] == 3
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_aborts_when_cron_stop_fails(registered_channel, tmp_path):
+        """cron 停止失败时终止移除:项目保持可见,不产生半隐藏状态。"""
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        cc = registered_channel.cron_controller
+        cc.hide_project_jobs = AsyncMock(
+            side_effect=RuntimeError("cron runs are still stopping")
+        )
+
+        resp = await _call(
+            registered_channel, "project.remove", {"project_id": proj.project_id}
+        )
+        assert resp["ok"] is False
+        assert resp["code"] == "CRON_STOP_FAILED"
+
+        # 项目未被隐藏:列表里仍然可见
+        listing = await _call(registered_channel, "project.list", {"filter": "all"})
+        assert any(
+            p["project_id"] == proj.project_id
+            for p in listing["payload"]["projects"]
+        )
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_rejected_by_precheck_when_session_running(registered_channel, tmp_path):
+        """预检发现项目下有会话在执行:SESSION_BUSY 拒绝,不触碰 cron 停用。"""
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        _make_session("s1", project_id=proj.project_id, project_dir=pa)
+        cc = registered_channel.cron_controller
+        registered_channel.agent_client.project_lifecycle["has_running_sessions"] = True
+
+        resp = await _call(
+            registered_channel, "project.remove", {"project_id": proj.project_id}
+        )
+        assert resp["ok"] is False
+        assert resp["code"] == "SESSION_BUSY"
+
+        # 定时任务停用流程完全未启动:移除被拒后任务不能已被停用
+        cc.hide_project_jobs.assert_not_awaited()
+        listing = await _call(registered_channel, "project.list", {"filter": "all"})
+        assert any(
+            p["project_id"] == proj.project_id
+            for p in listing["payload"]["projects"]
+        )
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_requires_precheck_support(registered_channel, tmp_path):
+        proj = _make_project("P", _abspath(tmp_path, "app"))
+        del registered_channel.agent_client.project_lifecycle["has_running_sessions"]
+
+        resp = await _call(
+            registered_channel, "project.remove", {"project_id": proj.project_id}
+        )
+        assert resp["ok"] is False
+        assert resp["code"] == "SERVICE_UNAVAILABLE"
+        registered_channel.cron_controller.hide_project_jobs.assert_not_awaited()
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_authoritative_busy_scan_blocks(registered_channel, tmp_path):
+        """commit 侧权威扫描兜底:预检漏报(竞态)时仍拒绝隐藏项目。"""
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        _make_session("s_run", project_id=proj.project_id, project_dir=pa)
+        # 预检应答保持默认 has_running_sessions=False,只让 AgentServer 侧
+        # runtime 桩报告 s_run 在执行,模拟预检与提交之间的竞态窗口。
+        registered_channel.agent_client.project_runtime = _FakeRemoveRuntime(
+            running={"s_run"}
+        )
+
+        resp = await _call(
+            registered_channel, "project.remove", {"project_id": proj.project_id}
+        )
+        assert resp["ok"] is False
+        assert resp["code"] == "SESSION_BUSY"
+
+        from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
+        assert get_project_by_id(proj.project_id, cache_bust=True).hidden is False
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_busy_scan_exemptions(registered_channel, tmp_path, monkeypatch):
+        """扫描豁免:parked Team 常驻流、cron 执行会话、其他项目的会话不阻塞。"""
+        from jiuwenswarm.common.schema.agent import AgentRequest
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
+            ProjectAdapter,
+        )
+
+        pa = _abspath(tmp_path, "app")
+        pb = _abspath(tmp_path, "other")
+        proj = _make_project("P", pa)
+        other = _make_project("Other", pb)
+        _make_session("s_idle", project_id=proj.project_id, project_dir=pa)
+        _make_session("s_park", project_id=proj.project_id, project_dir=pa)
+        _make_session("s_cron", project_id=proj.project_id, project_dir=pa, cron_id="cron_1")
+        _make_session("s_other", project_id=other.project_id, project_dir=pb)
+
+        runtime = _FakeRemoveRuntime(
+            running={"s_park", "s_cron", "s_other"},
+            parked={"s_park"},
+        )
+        from jiuwenswarm.server.runtime.gateway_adapter import project_adapter
+
+        collect = project_adapter.collect_all_sessions_metadata
+        scans = 0
+
+        def counted_collect():
+            nonlocal scans
+            scans += 1
+            return collect()
+
+        monkeypatch.setattr(project_adapter, "collect_all_sessions_metadata", counted_collect)
+        response = await ProjectAdapter(runtime_probe=lambda: runtime).handle(
+            AgentRequest(
+                request_id="req-busy-scan",
+                channel_id="web",
+                session_id="",
+                req_method=ReqMethod.PROJECT_REMOVE,
+                params={"project_id": proj.project_id},
+                user_id="",
+            )
+        )
+        assert response.ok is True
+        assert scans == 1
+        # s_idle + s_park 计入 affected(cron 执行会话与外部项目会话不计)
+        assert response.payload["affected_sessions"] == 2
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_stops_heartbeat_instead_of_reporting_busy(
+        sessions_dir, project_store_dir, tmp_path,
+    ):
+        """后台心跳不阻塞移除:移除停掉心跳,再读到已落定的会话。"""
+        from jiuwenswarm.common.schema.agent import AgentRequest
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
+            ProjectAdapter,
+            _project_busy_sessions,
+        )
+
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        _make_session("s_hb", project_id=proj.project_id, project_dir=pa)
+        runtime = _FakeRemoveRuntime(running={"s_hb"}, heartbeats={"s_hb"})
+
+        # 预检按"心跳已被停掉"读,不放行就会被心跳永久卡住。
+        assert _project_busy_sessions(proj.project_id, runtime) == []
+        response = await ProjectAdapter(runtime_probe=lambda: runtime).handle(
+            AgentRequest(
+                request_id="req-remove-heartbeat",
+                channel_id="web",
+                session_id="",
+                req_method=ReqMethod.PROJECT_REMOVE,
+                params={"project_id": proj.project_id},
+                user_id="",
+            )
+        )
+        assert response.ok is True
+        assert runtime.stopped_heartbeats == ["s_hb"]
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_keeps_heartbeat_when_real_work_also_runs(
+        sessions_dir, project_store_dir, tmp_path,
+    ):
+        """真实工作仍在跑时移除照旧被挡,且不为注定被拒的移除取消心跳。"""
+        from jiuwenswarm.common.schema.agent import AgentRequest
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
+            ProjectAdapter,
+        )
+
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        _make_session("s_work", project_id=proj.project_id, project_dir=pa)
+        _make_session("s_hb", project_id=proj.project_id, project_dir=pa)
+        runtime = _FakeRemoveRuntime(
+            running={"s_work", "s_hb"}, heartbeats={"s_hb"},
+        )
+
+        response = await ProjectAdapter(runtime_probe=lambda: runtime).handle(
+            AgentRequest(
+                request_id="req-remove-busy",
+                channel_id="web",
+                session_id="",
+                req_method=ReqMethod.PROJECT_REMOVE,
+                params={"project_id": proj.project_id},
+                user_id="",
+            )
+        )
+        assert response.ok is False
+        assert response.payload.get("code") == "SESSION_BUSY"
+        assert runtime.stopped_heartbeats == []
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_stays_busy_when_heartbeat_refuses_to_stop(
+        sessions_dir, project_store_dir, tmp_path,
+    ):
+        """心跳停不掉时移除仍报 SESSION_BUSY,不隐藏还在跑的工作。"""
+        from jiuwenswarm.common.schema.agent import AgentRequest
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
+            ProjectAdapter,
+        )
+
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        _make_session("s_hb", project_id=proj.project_id, project_dir=pa)
+        runtime = _FakeRemoveRuntime(
+            running={"s_hb"}, heartbeats={"s_hb"}, stop_heartbeats=False,
+        )
+
+        response = await ProjectAdapter(runtime_probe=lambda: runtime).handle(
+            AgentRequest(
+                request_id="req-remove-stubborn-heartbeat",
+                channel_id="web",
+                session_id="",
+                req_method=ReqMethod.PROJECT_REMOVE,
+                params={"project_id": proj.project_id},
+                user_id="",
+            )
+        )
+        assert response.ok is False
+        assert response.payload.get("code") == "SESSION_BUSY"
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_restore_returns_pinned_sessions_to_pinned_area(registered_channel, tmp_path):
+        """恢复项目时置顶会话回到置顶区,并保留原 pin_order。"""
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        _make_session("s_pin", project_id=proj.project_id, project_dir=pa, pinned=True, pin_order=3)
+
+        await _call(registered_channel, "project.remove", {"project_id": proj.project_id})
+        assert (await _call(registered_channel, "project.pinned_sessions", {}))["payload"]["sessions"] == []
+
+        restored = await _call(registered_channel, "project.restore", {"project_id": proj.project_id})
+        assert restored["ok"] is True
+        assert restored["payload"]["affected_sessions"] == 1
+
+        pinned = (await _call(registered_channel, "project.pinned_sessions", {}))["payload"]["sessions"]
+        assert [s["session_id"] for s in pinned] == ["s_pin"]
+        assert pinned[0]["pin_order"] == 3
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_hidden_project_sessions_excluded_from_cron_and_info(registered_channel, tmp_path):
+        """隐藏项目的 cron 执行会话同样不进默认项目;无关会话的统计不受影响。"""
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        _make_session("s_cron", project_id=proj.project_id, project_dir=pa, cron_id="cron_1")
+        # 空 project_dir 的会话不属于任何项目,始终留在默认项目
+        _make_session("s_ok", project_dir="", last_user_message_at=100.0)
+        await _call(registered_channel, "project.remove", {"project_id": proj.project_id})
+
+        resp = await _call(
+            registered_channel, "project.get_cron_sessions", {"project_id": "default"}
+        )
+        assert resp["payload"]["sessions"] == []
+
+        info = await _call(registered_channel, "project.info", {"project_id": "default"})
+        assert info["payload"]["project"]["session_count"] == 1  # 仅 s_ok
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_unknown_project_id_still_falls_back_to_default(registered_channel, tmp_path):
+        """项目记录不存在(存量数据)的会话仍归入默认项目,不因移除逻辑被误隐藏。"""
+        pa = _abspath(tmp_path, "app")
+        _make_session(
+            "s_orphan", project_id="proj_gone", project_dir=pa, last_user_message_at=100.0
+        )
+        resp = await _call(registered_channel, "project.list", {"filter": "all"})
+        default_info = next(
+            p for p in resp["payload"]["projects"] if p["project_id"] == "default"
+        )
+        assert default_info["session_count"] == 1
+        sessions = await _call(
+            registered_channel, "project.get_sessions", {"project_id": "default"}
+        )
+        assert [s["session_id"] for s in sessions["payload"]["sessions"]] == ["s_orphan"]
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_restore_happy_and_conflict(registered_channel, tmp_path):
+        """restore: 重新归属会话;冲突(可见项目 / 同名占用)时不恢复。"""
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        _make_session("s1", project_id=proj.project_id, project_dir=pa, last_user_message_at=100.0)
+        _make_session("s2", project_id=proj.project_id, project_dir=pa, last_user_message_at=200.0)
+        # 先移除
+        await _call(registered_channel, "project.remove", {"project_id": proj.project_id})
+        # 恢复:会话回归
+        resp = await _call(
+            registered_channel, "project.restore", {"project_id": proj.project_id}
+        )
+        assert resp["ok"] is True
+        assert resp["payload"]["affected_sessions"] == 2
+        resp2 = await _call(
+            registered_channel, "project.get_sessions", {"project_id": proj.project_id}
+        )
+        ids = [s["session_id"] for s in resp2["payload"]["sessions"]]
+        assert sorted(ids) == ["s1", "s2"]
+
+        # 冲突 1:可见项目 restore → CONFLICT
+        pa_v = _abspath(tmp_path, "visible")
+        proj_v = _make_project("Vis", pa_v)  # 可见
+        resp_v = await _call(
+            registered_channel, "project.restore", {"project_id": proj_v.project_id}
+        )
+        assert resp_v["code"] == "CONFLICT"
+
+        # 冲突 2:name 被其他可见项目占用 → PROJECT_NAME_CONFLICT
+        # (与撤销归档连带恢复同码,前端共用同一套"先重命名占用方"文案)
+        pa_c = _abspath(tmp_path, "a3")
+        pb_c = _abspath(tmp_path, "b3")
+        proj_c = _make_project("P3", pa_c)
+        await _call(registered_channel, "project.remove", {"project_id": proj_c.project_id})
+        # 隐藏期间,另一个可见项目占用同名 "P3"
+        _make_project("P3", pb_c)
+        resp_c = await _call(
+            registered_channel, "project.restore", {"project_id": proj_c.project_id}
+        )
+        assert resp_c["ok"] is False
+        assert resp_c["code"] == "PROJECT_NAME_CONFLICT"
+        # 仍处于隐藏状态(未恢复)
+        from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
+        assert get_project_by_id(proj_c.project_id, cache_bust=True).hidden is True
+
+
+# ===========================================================================
+# session.pin + project.pinned_sessions
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_project_soft_delete_contract(registered_channel, tmp_path):
+    from jiuwenswarm.server.runtime.session import project_store
+    assert "project.delete" not in registered_channel.methods
+    for method in ("project.remove", "project.restore"):
+        result = await _call(registered_channel, method, {"project_id": "default"})
+        assert result["code"] == "FORBIDDEN"
+    directory = _abspath(tmp_path, "restore-by-directory")
+    project = _make_project("RestoreMe", directory, pinned=True, pin_order=1)
+    await _call(registered_channel, "project.remove", {"project_id": project.project_id})
+    hidden = project_store.get_project_by_id(project.project_id, cache_bust=True)
+    assert hidden.hidden and not hidden.pinned
+    assert project.project_id not in {p.project_id for p in project_store.list_projects()}
+    restored, was_restored = project_store.create_project_checked("RestoreMe", directory)
+    assert was_restored and restored.project_id == project.project_id
+    assert not restored.hidden
+
+
+def test_project_busy_scan_covers_all_channels_and_legacy_cron(monkeypatch):
+    from jiuwenswarm.server.runtime.gateway_adapter import project_adapter
+
+    sessions = [
+        dict(session_id="web_idle", channel_id="web", project_id="p"),
+        dict(session_id="feishu_running", channel_id="feishu", project_id="p"),
+        dict(session_id="cron_legacy", channel_id="web", project_id="p"),
+        dict(session_id="cron_meta", channel_id="feishu", project_id="p", cron_id="job"),
+        dict(session_id="other_running", channel_id="feishu", project_id="other"),
+    ]
+    monkeypatch.setattr(project_adapter, "collect_all_sessions_metadata", lambda: sessions)
+    runtime = _FakeRemoveRuntime(running={s["session_id"] for s in sessions[1:]})
+    assert project_adapter._project_conversation_state("p", runtime) == (1, ["feishu_running"])
+    assert project_adapter._project_conversation_state("p") == (1, [])

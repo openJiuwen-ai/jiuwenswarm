@@ -516,6 +516,7 @@
 }
 
 .pc-services__status-text--stateCompleted { color: #5CB300; }
+.pc-services__status-text--statePartial { color: var(--color-feedback-warning); }
 .pc-services__status-text--stateStopped { color: #C2C2C2; }
 .pc-services__status-text--stateFailed { color: #F23030; }
 .pc-services__status-text--stateCollecting { color: #5CB300; }

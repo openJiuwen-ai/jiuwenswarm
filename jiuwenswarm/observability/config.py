@@ -24,6 +24,12 @@ DEFAULT_FLUSH_INTERVAL_MS = 500
 DEFAULT_RETENTION_DAYS = 7
 DEFAULT_DETAIL_MAX_BYTES = 4 * 1024 * 1024
 DEFAULT_SESSION_DATABASE_DIRECTORY = "sessions"
+# Stream frames stand in for a span's output only while that span is still
+# writing it. Once its record lands the record is authoritative and the frames
+# are read by nothing, so they are dropped as the record is committed. Turning
+# this off keeps every frame for the lifetime of its turn page, which is what a
+# reader replaying a finished answer frame by frame would need.
+DEFAULT_DISCARD_FINAL_SPAN_FRAMES = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +43,7 @@ class TrajectoryStoreSettings:
     batch_size: int
     flush_interval_ms: int
     detail_max_bytes: int = DEFAULT_DETAIL_MAX_BYTES
+    discard_final_span_frames: bool = DEFAULT_DISCARD_FINAL_SPAN_FRAMES
 
 
 def _as_bool(value: Any, default: bool) -> bool:
@@ -140,11 +147,16 @@ def load_trajectory_store_settings(
             DEFAULT_DETAIL_MAX_BYTES,
             minimum=64 * 1024,
         ),
+        discard_final_span_frames=_as_bool(
+            section.get("discard_final_span_frames"),
+            DEFAULT_DISCARD_FINAL_SPAN_FRAMES,
+        ),
     )
 
 
 __all__ = [
     "DEFAULT_DETAIL_MAX_BYTES",
+    "DEFAULT_DISCARD_FINAL_SPAN_FRAMES",
     "DEFAULT_SESSION_DATABASE_DIRECTORY",
     "TrajectoryStoreSettings",
     "database_files",

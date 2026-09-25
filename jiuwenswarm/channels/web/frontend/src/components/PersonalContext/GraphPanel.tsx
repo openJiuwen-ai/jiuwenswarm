@@ -8,6 +8,7 @@
  */
 
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -323,6 +324,11 @@ export function PersonalContextGraphPanel({
   const collapseBadgeHideTimerRef = useRef<number | null>(null);
   const autoFitRequestRef = useRef(0);
   const autoFitCancelledRef = useRef(false);
+  // 稳定回调：避免 GraphPanel 无关重渲染触发整棵文件树重渲染
+  const handleTreeSelect = useCallback((id: string) => {
+    autoFitCancelledRef.current = true;
+    setSelectedNodeId(id);
+  }, []);
   const layoutTicksRemainingRef = useRef(0);
   const transformInitializedRef = useRef(false);
   const [autoFitRequest, setAutoFitRequest] = useState(0);
@@ -366,8 +372,10 @@ export function PersonalContextGraphPanel({
 
   // 空态引导
   const hasRunningFetch = useMemo(() => {
-    const states = status?.fetch_service_states ?? {};
-    return Object.values(states).some((st) => st === 'STARTING' || st === 'RUNNING' || st === 'STOPPING');
+    const progress = status?.fetch_run_progress ?? {};
+    return Object.values(progress).some(
+      (item) => item.run_state === 'running' || item.run_state === 'stopping',
+    );
   }, [status]);
   const hasEnabledService = config.fetch_services.some((s) => s.enabled);
   const hasFetchServices = config.fetch_services.length > 0;
@@ -1327,7 +1335,7 @@ export function PersonalContextGraphPanel({
 
           {!treeCollapsed && (
           <>
-          {fileTree.length > 0 && (
+          {fileTree.length > 0 && !hasQuery && (
             <div className="pc-graph__tree-toggle-all">
               <button
                 type="button"
@@ -1396,7 +1404,7 @@ export function PersonalContextGraphPanel({
                 <FileTree
                   nodes={fileTree}
                   hits={searchHits}
-                  onSelect={(id) => { autoFitCancelledRef.current = true; setSelectedNodeId(id); }}
+                  onSelect={handleTreeSelect}
                   selectedId={selectedNodeId}
                   selectedAncestorPaths={selectedAncestorPaths}
                   initialExpanded={treeExpanded}
@@ -1422,7 +1430,12 @@ export function PersonalContextGraphPanel({
             onWheel={handleWheel}
           />
           {!contextReady && nodeCount === 0 && (
-            <div className="pc-graph__empty pc-graph__empty--overlay">{t(emptyHintKey)}</div>
+            <div
+              className="pc-graph__empty pc-graph__empty--overlay"
+              data-testid="personal-context-graph-empty-hint-canvas"
+            >
+              {t(emptyHintKey)}
+            </div>
           )}
         </div>
 
@@ -1533,7 +1546,7 @@ export function PersonalContextGraphPanel({
 }
 
 /** 文件树渲染（递归，可折叠）。 */
-function FileTree({
+function FileTreeInner({
   nodes,
   hits,
   onSelect,
@@ -1554,7 +1567,7 @@ function FileTree({
     <ul className="pc-graph__tree-list" style={{ paddingLeft: depth > 0 ? 12 : 0 }}>
       {nodes.map((n) => {
         const nodeId = n.node?.id;
-        const isHit = nodeId ? hits.has(nodeId) : false;
+        const isHit = nodeId ? (hits.size > 0 && hits.has(nodeId)) : false;
         const isSelected = nodeId === selectedId;
         return (
           <li key={n.path} className="pc-graph__tree-item">
@@ -1571,7 +1584,7 @@ function FileTree({
                 <span className="pc-graph__tree-name">{n.name}</span>
               </button>
             ) : (
-              <FolderRow name={n.name} path={n.path} isHit={isHit} selectedAncestorPaths={selectedAncestorPaths} initialExpanded={initialExpanded}>
+              <FolderRow name={n.name} isHit={isHit} isAncestor={selectedAncestorPaths.has(n.path)} initialExpanded={initialExpanded}>
                 {n.children.length > 0 && (
                   <FileTree nodes={n.children} hits={hits} onSelect={onSelect} selectedId={selectedId} selectedAncestorPaths={selectedAncestorPaths} initialExpanded={initialExpanded} depth={depth + 1} />
                 )}
@@ -1584,25 +1597,25 @@ function FileTree({
   );
 }
 
+const FileTree = memo(FileTreeInner);
+
 /** 文件夹行：文件夹图标 + 名称 + 右侧收起按钮（可折叠）。 */
-function FolderRow({
+function FolderRowInner({
   name,
-  path,
   isHit,
-  selectedAncestorPaths,
+  isAncestor,
   initialExpanded,
   children,
 }: {
   name: string;
-  path: string;
   isHit: boolean;
-  selectedAncestorPaths: Set<string>;
+  isAncestor: boolean;
   initialExpanded: boolean;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(initialExpanded);
   // 选中节点在该目录内时强制展开，保证目录树自动跳转可见
-  const isOpen = open || selectedAncestorPaths.has(path);
+  const isOpen = open || isAncestor;
   return (
     <>
       <div
@@ -1621,6 +1634,8 @@ function FolderRow({
     </>
   );
 }
+
+const FolderRow = memo(FolderRowInner);
 
 function FolderIcon({ open }: { open: boolean }) {
   return (

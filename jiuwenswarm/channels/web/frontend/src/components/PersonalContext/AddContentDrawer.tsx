@@ -45,6 +45,7 @@ import { requestSettingsModule } from '../../features/settings/settingsNavigatio
 import { selectProjectDirectory } from '../../features/workspace/projectDirectoryPicker';
 import { selectLocalFiles } from '../../features/workspace/localFilePicker';
 import { toast } from '../../components/ui/Toast/toastStore';
+import { parseEdgeBookmarkFolderPaths } from './edgeBookmarkFolders';
 import type { WebError } from '../../types/websocket';
 import localFilesIcon from '../../assets/settings/channels/local-files.svg';
 import edgeBookmarksIcon from '../../assets/settings/channels/edge-bookmarks.svg';
@@ -301,7 +302,7 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
       const s: Record<string, unknown> = { include_subfolders: true, fetch_page_content: true };
       if (edgeProfile.trim()) s.profile = edgeProfile.trim();
       if (edgeBookmarksPath.trim()) s.bookmarks_path = edgeBookmarksPath.trim();
-      const folders = edgeFolderList.map((f) => f.trim()).filter(Boolean);
+      const folders = parseEdgeBookmarkFolderPaths(edgeFolderList);
       if (folders.length) s.bookmark_folder_paths = folders;
       source = s;
     } else if (provider === 'github') {

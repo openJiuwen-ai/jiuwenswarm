@@ -75,7 +75,7 @@ def test_update_cannot_return_another_asset(payload):
         ("skill", "teamskills"),
         ("plugin", "agent-plugin"),
         ("agent_template", "agent-template"),
-        ("agent_group", "agent-template"),
+        ("agent_group", "agent-group"),
         ("mcp", "agent-mcp"),
     ],
 )
@@ -87,6 +87,14 @@ def test_matches_resource_type(payload, kind, hub_type):
         ).identity.kind
         == kind
     )
+
+
+def test_agent_group_rejects_expert_template_result(payload):
+    payload.update(asset_type="agent-template", plugin_type="agent-template")
+    with pytest.raises(PublishProtocolError):
+        parse_publish_result(
+            payload, PublishIdentity("agent_group", "sales-assistant", "1.0.0")
+        )
 
 
 @pytest.mark.parametrize(

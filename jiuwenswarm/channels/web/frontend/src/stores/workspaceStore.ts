@@ -1,11 +1,13 @@
 import { create } from 'zustand';
 import i18n from '../i18n';
-import { projectRegistryClient } from '../features/workspace/projectRegistryClient';
+import { projectRegistryClient, ProjectRemoveResult } from '../features/workspace/projectRegistryClient';
 import { archivedTaskClient, findBatchSessionResult } from '../features/workspace/archivedTaskClient';
 import { persistWorkMode, readStoredWorkMode } from '../features/workspace/workModeStorage';
 import type { ProjectInfo, Session, WorkMode } from '../types';
 import { useChatStore } from './chatStore';
 import { useSessionStore } from './sessionStore';
+import { useCronStore } from './cronStore';
+import { parseChatRoute } from '../multi-session/routing/route';
 
 export const PROJECT_SESSION_PAGE_SIZE = 10;
 const DEFAULT_PROJECT_ID = 'default';
@@ -56,12 +58,22 @@ interface WorkspaceState {
   createProject: (name: string, projectDir: string) => Promise<ProjectInfo>;
   renameProject: (projectId: string, name: string) => Promise<void>;
   pinProject: (projectId: string, pinned: boolean) => Promise<void>;
-  removeProject: (projectId: string) => Promise<{ deleted: boolean; deleted_conversation_sessions: number; deleted_cron_jobs: number; skipped_running_session_ids?: string[] }>;
+  removeProject: (projectId: string) => Promise<ProjectRemoveResult>;
+  hideProjectLocally: (projectId: string) => void;
+  restoreProject: (projectId: string) => Promise<void>;
   removeSessions: (sessionIds: string[]) => void;
   archiveSession: (sessionId: string) => Promise<void>;
   /** 归档成功后同步从侧边栏移除会话，供 toast 与列表同帧更新。 */
   removeSessionLocally: (sessionId: string) => void;
   refreshWorkspaceData: () => Promise<void>;
+  /**
+   * 刷新工作区并同步刷新定时任务列表。
+   *
+   * 项目隐藏会停用其下定时任务并把它们从 `cron.list` 中剔除；恢复（显式恢复、
+   * 同目录重建、撤销归档连带恢复项目）则让它们重新可见。只刷工作区会让
+   * 侧边栏的 cron 缓存停留在隐藏前的状态。
+   */
+  refreshWorkspaceAndCron: () => Promise<void>;
   upsertSession: (session: Session, options?: UpsertSessionOptions) => void;
   pinSession: (sessionId: string, pinned: boolean) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
@@ -88,6 +100,33 @@ export function getProjectDisplayName(project: ProjectInfo): string {
 function findDefaultProjectId(projects: ProjectInfo[]): string {
   return projects.find(isDefaultProject)?.project_id ?? DEFAULT_PROJECT_ID;
 }
+
+/**
+ * 收集项目在前端持有的会话 ID（项目会话列表 + 置顶区 + 已打开的会话）。
+ *
+ * 项目隐藏后其会话在后端完整保留，但前端一律不可见；侧边栏列表由
+ * `refreshWorkspaceData` 重新拉取即可消失，而 `sessionStore` 里已实例化的
+ * 会话（含聊天区正在展示的 `currentSession`）必须显式移除，否则出现
+ * “侧边栏节点消失了、聊天区内容还在”的割裂状态。
+ */
+function collectProjectSessionIds(state: WorkspaceState, projectId: string): string[] {
+  const ids = new Set<string>();
+  for (const session of state.projectSessions[projectId] || []) {
+    ids.add(session.session_id);
+  }
+  for (const session of state.pinnedSessions) {
+    if (session.project_id === projectId) ids.add(session.session_id);
+  }
+  const sessionState = useSessionStore.getState();
+  for (const session of sessionState.sessions) {
+    if (session.project_id === projectId) ids.add(session.session_id);
+  }
+  if (sessionState.currentSession?.project_id === projectId) {
+    ids.add(sessionState.currentSession.session_id);
+  }
+  return [...ids];
+}
+
 
 function findProjectIdForSession(projects: ProjectInfo[], session: Pick<Session, 'project_id'>): string {
   const projectId = session.project_id?.trim();
@@ -387,6 +426,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   createProject: async (name, projectDir) => {
     const projectId = (await projectRegistryClient.create(name, projectDir, get().workMode)).project_id;
     await get().loadProjects();
+    // 用同一目录 + work_mode 创建项目会恢复被隐藏的同名项目，其定时任务
+    // 重新回到 cron 列表（默认停用）；cron 缓存必须跟着刷一次。
+    await useCronStore.getState().loadJobs();
     const project = findProject(get().projects, projectId);
     if (!project) throw new Error('project.create returned a project that is missing from project.list');
     set((state) => ({
@@ -406,20 +448,35 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     await get().loadProjects();
   },
 
-  // 删除项目：后端先删除 cron 与已停止会话；运行中的普通会话会保留。
+  hideProjectLocally: (projectId) => {
+    const ids = collectProjectSessionIds(get(), projectId);
+    const route = parseChatRoute(window.location.pathname);
+    if (route?.kind === 'chat-session' && ids.includes(route.sessionId)) {
+      window.history.replaceState(null, '', '/chat/new');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }
+    get().removeSessions(ids);
+    set((state) => ({
+      projects: state.projects.filter((project) => project.project_id !== projectId),
+      selectedProject: state.selectedProject?.project_id === projectId ? null : state.selectedProject,
+    }));
+  },
+
   removeProject: async (projectId) => {
     const result = await projectRegistryClient.remove(projectId);
-    const sessionState = useSessionStore.getState();
-    const ids = new Set([
-      ...(get().projectSessions[projectId] || []).map((session) => session.session_id),
-      ...get().pinnedSessions.filter((session) => session.project_id === projectId).map((session) => session.session_id),
-      ...sessionState.sessions.filter((session) => session.project_id === projectId).map((session) => session.session_id),
-    ]);
-    if (sessionState.currentSession?.project_id === projectId) ids.add(sessionState.currentSession.session_id);
-    const retained = new Set(result.skipped_running_session_ids || []);
-    get().removeSessions([...ids].filter((id) => !retained.has(id)));
-    await get().refreshWorkspaceData();
+    get().hideProjectLocally(projectId);
+    await get().refreshWorkspaceAndCron();
+    // 隐藏的项目不能再作为新建会话的默认归属：后端会拒绝它的会话绑定。
+    if (get().selectedProject?.project_id === projectId) {
+      const fallback = findProject(get().projects, findDefaultProjectId(get().projects));
+      set({ selectedProject: fallback });
+    }
     return result;
+  },
+
+  restoreProject: async (projectId) => {
+    await projectRegistryClient.restore(projectId);
+    await get().refreshWorkspaceAndCron();
   },
 
   archiveSession: async (sessionId) => {
@@ -427,7 +484,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const result = findBatchSessionResult(response, sessionId);
     if (!result?.ok) {
       const error = new Error(result?.error || 'Failed to archive session');
-      Object.assign(error, { code: result?.code });
+      // finishing 透传给 UI：SESSION_BUSY 时区分「回合收尾中」与「运行中」文案。
+      Object.assign(error, { code: result?.code, finishing: result?.finishing === true });
       throw error;
     }
   },
@@ -476,6 +534,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     await Promise.all(state.projects
       .filter((project) => isDefaultProject(project) || Boolean(state.expandedProjectIds[project.project_id]))
       .map((project) => state.loadProjectSessions(project.project_id, undefined, epoch)));
+  },
+
+  refreshWorkspaceAndCron: async () => {
+    await get().refreshWorkspaceData();
+    await useCronStore.getState().loadJobs();
   },
 
   removeSessions: (sessionIds) => {

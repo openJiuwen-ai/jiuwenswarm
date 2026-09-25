@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react';
 
 import { useTranslation } from 'react-i18next';
 import { type AgentCatalogItem, type RequestStatus } from '../../features/agentManagement';
@@ -31,7 +31,7 @@ type CatalogPageProps = {
   category: string;
   status: RequestStatus;
   error: string | null;
-  busyId: string | null;
+  busyIds: ReadonlySet<string>;
   onCategoryChange: (value: string) => void;
   onRetry: () => void;
   onOpen: (id: string) => void;
@@ -51,7 +51,7 @@ export function CatalogPage({
   category,
   status,
   error,
-  busyId,
+  busyIds,
   onCategoryChange,
   onRetry,
   onOpen,
@@ -87,7 +87,17 @@ export function CatalogPage({
       ) : null}
 
       <div className="page-scroll min-h-0 flex-1 overflow-y-auto" data-testid="agent-management-catalog-content">
-        {status === 'loading' && totalItems === 0 ? null : status === 'error' && totalItems === 0 ? (
+        {status === 'loading' && totalItems === 0 ? (
+          <div
+            className="agent-management-state"
+            data-testid="agent-management-catalog-loading"
+            data-variant="loading"
+            role="status"
+          >
+            <LoaderCircle className="animate-spin" size={20} aria-hidden="true" />
+            <p>{t('common.loading')}</p>
+          </div>
+        ) : status === 'error' && totalItems === 0 ? (
           <div className="agent-management-state agent-management-state--error" role="alert">
             <p>{error || t('agentManagement.states.loadError')}</p>
             <button
@@ -119,7 +129,7 @@ export function CatalogPage({
           <>
             <div className="card-grid-auto">
               {pageItems.map((item) => {
-                const isBusy = busyId === item.id;
+                const isBusy = busyIds.has(item.id);
                 const avatarUrl = getAgentAvatarUrl(item);
                 const description = item.description || t('agentManagement.unknownDescription');
                 const needsConnection = item.installed && item.connectionState !== 'connected';

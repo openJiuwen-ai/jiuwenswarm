@@ -31,7 +31,7 @@ rsi:
   enabled: true
 
 symphony:
-  enabled: false
+  enabled: null  # null = 跟随程序默认；用户切换后保存 true/false
   paths:
     skills_root: ""
     graph_dir: ""
@@ -52,15 +52,12 @@ symphony:
     min_edge_confidence: 0.5
 
   evolution:
-    enabled: false  # true = 由 Core Graph-Evolution Rail 学习动态图并沉淀经验
-    # 以下 flow 参数仅供旧 Session-history 蒸馏接口兼容；Core 经验沉淀随 enabled 同步启停。
+    # Core Flow 沉淀：分组签名 = 轨迹全部成功边（确定性、不漂移），
+    # 一条新轨迹最多触发一个技能包的完整蒸馏；达标（成功次数 + 成功率）即 verified。
     flow:
-      enabled: false            # legacy 路径是否在任务结束后蒸馏 skill pack
-      min_edge_support: 1      # 边至少出现几次（调试=1，正式=2-3）
-      min_edge_success_rate: 0.5  # 边成功率阈值（调试=0.5，正式=0.8）
-      min_successes_candidate: 2  # 至少成功几次产出 candidate pack
-      min_successes_verified: 3   # 至少成功几次产出 verified pack
-      min_pack_success_rate_verified: 0.8
+      enabled: null              # null = 跟随程序默认；true = 由 Core Graph-Evolution Rail 学习动态图并沉淀经验
+      min_successes: 3           # 同一结构至少成功几次且成功率达标后才可安装
+      min_pack_success_rate: 0.8  # pack 成功率阈值
 
   orchestration:
     # fast is the default one-shot path; beam enables bidirectional search.
@@ -292,7 +289,8 @@ endpoint_profile_overrides:
 
 models:
   defaults:
-    - model_client_config:
+    - model_id: mdl_default_primary
+      model_client_config:
         api_base: ${API_BASE}
         api_key: ${API_KEY}
         model_name: ${MODEL_NAME}
@@ -415,6 +413,9 @@ models:
   #     model_config_obj:
   #       temperature: 0.95
   #       context_window: 262144
+  # Model groups reference models by stable model_id. Route order is the only
+  # primary/fallback order; routes[0] is primary.
+  groups: []
 
 # 外接 ACP Agent（stdio），供工具 acp_chat 使用。按需取消注释并填写；command/args 可指向任意兼容 ACP 的包（与 VS Code formulahendry.acp-client 预置列表一致）。
 acp_agents:
@@ -573,6 +574,11 @@ trajectory_ui:
   batch_size: 64                    # writer 单事务最大记录数
   flush_interval_ms: 200            # writer 最大合批等待时间
   detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
+  # 流式帧只在 Span 未结束期间充当"尚未写完的输出"；Span 终态记录落库后，
+  # 记录本身即权威输出，前端会丢弃帧、详情查询不读帧、归档导出也不含帧。
+  # 置 true 时随终态记录一并删除这些帧（实测可省约 20% 轨迹库体积）；
+  # 若将来要做"逐帧回放已完成回答"，改为 false 可让帧保留至所属 turn 页被淘汰。
+  discard_final_span_frames: true
 
 experimental:
   task_full_duplex_enabled: false    # 在任务对话空输入框中显示全双工入口
@@ -744,6 +750,8 @@ react:
     inject_enabled: true    # 是否注入系统 prompt
     # Auto-dream（经验库卫生：TTL 剪枝 / 近重合并 / TIP 清洗）
     dream_enabled: true     # 是否启用静默 Auto-dream
+    consult_top_k: 8        # ttse_consult 每轨（FACT/TIP）返回条数，改配置即可调
+    consult_retrieve_mode: hybrid  # hybrid | embed | bm25；池子不够仍 dump；embed/hybrid 向量不通时 BM25 兜底
     # 语义检索 / dedup；变量名与 embed.* 一致。三段解析非空时混合召回，否则 BM25 兜底
     embedding:
       api_key: ${EMBED_API_KEY}

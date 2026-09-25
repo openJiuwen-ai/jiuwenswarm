@@ -1,10 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  canShowAssetPublish,
   publishOutcome,
   validateMetadata,
   createCommitAttempt,
 } from '../node_modules/.cache/asset-publish/assetPublishState.js';
+
+test('publish action is visible only for explicitly installed assets', () => {
+  assert.equal(typeof canShowAssetPublish, 'function');
+  assert.equal(canShowAssetPublish(true), true);
+  assert.equal(canShowAssetPublish(false), false);
+  assert.equal(canShowAssetPublish(undefined), false);
+  assert.equal(canShowAssetPublish(true, true), true);
+  assert.equal(canShowAssetPublish(true, false), false);
+});
 test('completed upload does not imply published', () => {
   assert.equal(
     publishOutcome({ execution_status: 'completed', result: { publish_result: 'pending_moderation' } }),

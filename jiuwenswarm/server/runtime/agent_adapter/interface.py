@@ -310,6 +310,10 @@ def is_external_user_authored_dispatch(
     # Scheduled Heartbeats reuse the original channel, including web. Inspect
     # each ingress container separately so merging metadata cannot erase a marker.
     for container in (params, metadata, params.get("metadata")):
+        if isinstance(container, dict) and isinstance(
+            container.get(SESSION_MESSAGE_INTERNAL_KEY), dict
+        ):
+            return False
         automation = container.get("automation") if isinstance(container, dict) else None
         if isinstance(automation, dict) and str(automation.get("kind") or "").strip().lower() == "heartbeat":
             return False
@@ -338,6 +342,20 @@ def _should_record_user_history(params: Any) -> bool:
     if is_interrupt_resume_payload(params):
         return False
     return str(params.get("source") or "") != "proactive_recommendation"
+
+
+def _is_ask_user_answer_resume(params: Any) -> bool:
+    """问题澄清答案 resume：source=ask_user_interrupt 且带非空 answers 数组。
+
+    这类 resume 被 _should_record_user_history 排除（不写 user 消息），但答案需要
+    单独以 chat.ask_user_answer assistant 记录落盘，刷新后才能回显。
+    """
+    if not isinstance(params, dict):
+        return False
+    if str(params.get("source") or "").strip() != "ask_user_interrupt":
+        return False
+    answers = params.get("answers")
+    return isinstance(answers, list) and bool(answers)
 
 
 def _resolve_final_record_timestamp(
@@ -1659,6 +1677,13 @@ class JiuWenSwarm:
             channel=request_channel,
             skip_a2ui=skip_a2ui,
         )
+        # Only Host-authenticated provenance may select Agent/tool input. Never
+        # trust a client-supplied copy inside the SDK's extensible run context.
+        run_extra = inputs["run"]["context"]["extra"]
+        run_extra.pop(SESSION_MESSAGE_INTERNAL_KEY, None)
+        cross_session = metadata.get(SESSION_MESSAGE_INTERNAL_KEY)
+        if isinstance(cross_session, dict):
+            run_extra[SESSION_MESSAGE_INTERNAL_KEY] = dict(cross_session)
 
         # Per-request workspace_dir scopes one prompt's cwd to the given
         # directory; threaded into inputs["cwd"] which downstream init_cwd
@@ -2961,6 +2986,8 @@ class JiuWenSwarm:
                 channel_metadata=request.metadata,
                 mode=request.params.get("mode", "unknown"),
             )
+        # 注：ask_user_answer 的落盘在 deliver_control_input 里——ask_user_interrupt
+        # resume 走 control-input 路径，不经过本方法。
 
         logger.info(
             "[JiuWenSwarm] 处理请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
@@ -3148,9 +3175,266 @@ class JiuWenSwarm:
             model_name=params.get("model_name"),
             history_before_request_id=request.request_id,
         )
+        # 问题澄清答案 resume 走的是 control-input 路径（Runtime.session_work_kind 判定
+        # 为 CONTROL_INPUT → _deliver_control → 本方法），**不经过** process_message_stream，
+        # 所以 ask_user_answer 的落盘必须放在这里。否则刷新后 chat.ask_user_question 找不到
+        # 配对的 chat.ask_user_answer，已答问题又会弹成实时交互框（卡在确认位置）。
+        # request_id 必须用 params.request_id（原问题那一轮的 rid），而非本轮信封 id
+        # （request.request_id 是前端为这次 resume 新生成的 req_xxx）——否则前端按
+        # request_id 与 chat.ask_user_question 配对会失败。
+        if _is_ask_user_answer_resume(params):
+            answer_request_id = str(params.get("request_id") or "").strip()
+            if answer_request_id:
+                from .sensitive_answers import redact_sensitive_answers
+
+                await _run_history_io(
+                    append_history_record,
+                    session_id=session_id,
+                    request_id=answer_request_id,
+                    channel_id=request.channel_id,
+                    role="assistant",
+                    event_type="chat.ask_user_answer",
+                    content="",
+                    timestamp=time.time(),
+                    extra={
+                        "request_id": answer_request_id,
+                        "source": "ask_user_interrupt",
+                        "answers": redact_sensitive_answers(params.get("answers", [])),
+                    },
+                    mode=params.get("mode", "unknown"),
+                )
+        # rid 用于 chunk 落盘的 request_id——用本轮信封 id（request.request_id），
+        # 与 process_message_stream 一致：resume 这轮的 LLM 回复是新一轮产出，
+        # 前端按信封 id 跟踪。chat.ask_user_answer 已上面用原问题 rid 单独落盘。
+        rid = request.request_id
+        cid = request.channel_id
+        # chat.delta 累积器：对齐 process_message_stream 的 durable_pending_final_chunks
+        # ——delta 增量不落盘，只累积文本；空 chat.final / 中断边界 / 流结束时合并成一条
+        # chat.final 落盘。否则空 final 场景正文只在 delta 里，刷新后 delta 不在
+        # _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES 被过滤、空 final 又被空壳规则丢弃，
+        # 整段回复凭空消失。
+        pending_final_chunks: list[str] = []
+        # 首个非空 delta 到达时刻——对齐 pms 的 durable_pending_final_started_at，
+        # 合并落盘时作 segment_started_at 传给 _resolve_final_record_timestamp，
+        # 使 chat.final 记录的 timestamp=气泡起始时刻、extra.completed_at=收尾时刻
+        # （与 pms 路径时间语义一致）。
+        # 单元素 list 持有首个非空 delta 时刻——list 可变，让 _persist_control_chunk_to_history
+        # 能「读 + 重置」调用方闭包里的时刻（Python tuple 不可变，不能用 tuple）。
+        pending_final_started_at_holder: list[float | None] = [None]
         async with aclosing(adapter.process_message_stream_impl(request, inputs)) as stream:
             async for chunk in stream:
+                # 历史落盘：control-input 路径绕过了 process_message_stream 的落盘循环，
+                # 这里补上核心 event_type 的落盘，否则 resume 后 LLM 回复刷新后丢失。
+                try:
+                    await self._persist_control_chunk_to_history(
+                        chunk, request=request, session_id=session_id, rid=rid, cid=cid,
+                        pending_final_chunks=pending_final_chunks,
+                        pending_final_started_at_holder=pending_final_started_at_holder,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "[JiuWenSwarm] deliver_control_input chunk 落盘失败: rid=%s", rid,
+                    )
                 yield chunk
+            # 流结束兜底：若仍有未落盘的 delta（不发 chat.final 的场景，如 Goal 中间态），
+            # 补落一次——对齐 process_message_stream 收尾的 _persist_pending_final_text。
+            if pending_final_chunks:
+                try:
+                    await self._persist_pending_final_text_control(
+                        request=request, session_id=session_id, rid=rid, cid=cid,
+                        pending_final_chunks=pending_final_chunks,
+                        segment_started_at=pending_final_started_at_holder[0],
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "[JiuWenSwarm] deliver_control_input 流末 delta 兜底落盘失败: rid=%s", rid,
+                    )
+
+    async def _persist_control_chunk_to_history(
+        self,
+        chunk: Any,
+        *,
+        request: AgentRequest,
+        session_id: str,
+        rid: str,
+        cid: str,
+        pending_final_chunks: list[str],
+        pending_final_started_at_holder: list[float | None],
+    ) -> None:
+        """control-input 路径的 chunk 历史落盘（简化自 process_message_stream）。
+
+        process_message_stream 有完整的 a2ui / durable / dedup 落盘机制（~700 行），
+        control-input 路径不需要那些——resume 是简单 continuation，只需把核心
+        event_type 的 chunk 落盘即可。这样刷新后 LLM 回复（chat.final）、思考
+        （chat.reasoning）、工具调用（chat.tool_call）、用量（context.usage /
+        chat.usage_summary）、再次提问（chat.ask_user_question）都能回显。
+
+        chat.delta 增量与 process_message_stream 一致**不直接落盘**——只把文本
+        累积到 pending_final_chunks；遇到非空 chat.final 落盘正文并清空累积器，
+        遇到空 chat.final / chat.tool_call / chat.ask_user_question 边界时把累积的
+        delta 合并落盘成一条 chat.final（由调用方在流末再兜底一次）。否则空 final
+        场景正文只在 delta 里，刷新后整段回复凭空消失（#与 pms 同源问题）。
+
+        pending_final_started_at_holder 是单元素 list，持有首个非空 delta 到达时刻，
+        合并落盘时作 segment_started_at 传给 _resolve_final_record_timestamp，使
+        chat.final 记录 timestamp=气泡起始时刻、completed_at=收尾时刻（对齐 pms）。
+        用 list 容器是为了让本方法能「读 + 重置」调用方闭包里的时刻（Python tuple
+        不可变，故用 list）。
+        """
+        payload = getattr(chunk, "payload", None)
+        if not isinstance(payload, dict):
+            return
+        et = payload.get("event_type")
+        if not isinstance(et, str) or not et:
+            return
+        # should_record 判定（与 process_message_stream 一致）：
+        # chat.* 或 context.usage 落盘；其余不落盘。
+        should_record = et.startswith("chat.") or et == "context.usage"
+        if not should_record:
+            return
+        # chat.delta / chat.reasoning 增量不落盘（与 process_message_stream 一致）。
+        # chat.delta 文本累积到 pending_final_chunks，供空 final / 边界合并落盘。
+        if et == "chat.delta":
+            content = str(payload.get("content") or "")
+            if content:
+                if pending_final_started_at_holder[0] is None:
+                    pending_final_started_at_holder[0] = time.time()
+                pending_final_chunks.append(content)
+            return
+        if et == "chat.reasoning":
+            return
+        # 合并落盘累积 delta 时用的 segment_started_at（首个 delta 时刻），
+        # 取出并重置 holder——对齐 pms _reset_durable_pending_final。
+        segment_started_at = pending_final_started_at_holder[0]
+        # 非空 chat.final 落盘时用的气泡起始时刻——pms line 4092 在 reset 前
+        # 捕获 final_segment_started_at，使 final 记录 timestamp=起始时刻、
+        # completed_at=收尾时刻。这里同样在重置 holder 前捕获。
+        final_segment_started_at: float | None = None
+        # 中断边界（tool_call / ask_user_question）：先把累积的 delta 合并落盘，
+        # 否则中断前的正文没人收尾——对齐 pms line 3958-3966 的 _persist_pending_final_text。
+        if et in ("chat.tool_call", "chat.ask_user_question"):
+            if pending_final_chunks:
+                await self._persist_pending_final_text_control(
+                    request=request, session_id=session_id, rid=rid, cid=cid,
+                    pending_final_chunks=pending_final_chunks,
+                    segment_started_at=segment_started_at,
+                )
+                pending_final_started_at_holder[0] = None
+        # chat.final：非空正文直接落盘并清空累积器（正文已由 final 承载）；
+        # 空 final（仅收尾信号）则把累积的 delta 合并落盘——对齐 pms line 3989-3995。
+        if et == "chat.final":
+            final_content = str(payload.get("content") or "")
+            if final_content:
+                # 先捕获起始时刻再重置——pms line 4092-4094 同序。
+                final_segment_started_at = pending_final_started_at_holder[0]
+                pending_final_chunks.clear()
+                pending_final_started_at_holder[0] = None
+            elif pending_final_chunks:
+                await self._persist_pending_final_text_control(
+                    request=request, session_id=session_id, rid=rid, cid=cid,
+                    pending_final_chunks=pending_final_chunks,
+                    segment_started_at=segment_started_at,
+                )
+                pending_final_started_at_holder[0] = None
+                return
+        extra_fields = {k: v for k, v in payload.items() if k not in ("event_type", "content")}
+        if not isinstance(extra_fields, dict):
+            extra_fields = {}
+        extra_fields = _with_cross_session_history_metadata(
+            _with_heartbeat_history_metadata(
+                _with_web_agent_template_metadata(
+                    extra_fields,
+                    request.params,
+                    cid,
+                    event_type=et,
+                    payload=payload,
+                ),
+                request.params,
+            ),
+            request.params,
+        ) or {}
+        # chat.final 用气泡起始时刻（对齐 pms line 4142 传 final_segment_started_at）；
+        # 其余事件传 None（_resolve_final_record_timestamp 对非 final 事件忽略此参数）。
+        record_segment_started_at = final_segment_started_at if et == "chat.final" else None
+        record_timestamp = _resolve_final_record_timestamp(
+            event_type=et,
+            segment_started_at=record_segment_started_at,
+            extra_fields=extra_fields,
+        )
+        await _run_history_io(
+            append_history_record,
+            session_id=session_id,
+            request_id=rid,
+            channel_id=cid,
+            role="assistant",
+            event_type=et,
+            content=payload.get("content") or payload.get("error") or "",
+            timestamp=record_timestamp,
+            extra=extra_fields if extra_fields else None,
+            mode=request.params.get("mode", "unknown") if isinstance(request.params, dict) else "unknown",
+        )
+
+    async def _persist_pending_final_text_control(
+        self,
+        *,
+        request: AgentRequest,
+        session_id: str,
+        rid: str,
+        cid: str,
+        pending_final_chunks: list[str],
+        segment_started_at: float | None,
+    ) -> None:
+        """把累积的 chat.delta 文本合并成一条 chat.final 落盘（control-input 路径）。
+
+        对齐 process_message_stream 的 _persist_pending_final_text：delta 增量不落盘，
+        只累积；空 chat.final / 中断边界 / 流结束时调本方法把累积文本合并落盘。否则
+        空 final 场景正文只在 delta 里，刷新后 delta 被过滤、空 final 被空壳规则丢弃，
+        整段回复凭空消失。
+
+        segment_started_at 为首个非空 delta 到达时刻，传给 _resolve_final_record_timestamp
+        使记录 timestamp=气泡起始时刻、extra.completed_at=收尾时刻（对齐 pms）。
+
+        注意：不透传 request.params 里的 source/proactive_* 字段——control-input 路径
+        的 params 是 resume 信封参数（带 source=ask_user_interrupt），这些是中断答案的
+        语义标签，不应泄到 LLM 回复气泡的 chat.final 记录里（pms 的透传面向的是
+        proactive_recommendation 等正常 chat_send 来源，control 路径语义不同）。
+        """
+        if not pending_final_chunks:
+            return
+        pending_text = "".join(pending_final_chunks)
+        pending_final_chunks.clear()
+        if not pending_text:
+            return
+        extra_fields: dict[str, Any] = {}
+        extra_fields = _with_cross_session_history_metadata(
+            _with_heartbeat_history_metadata(
+                _with_web_agent_template_metadata(
+                    extra_fields,
+                    request.params,
+                    cid,
+                    event_type="chat.final",
+                ),
+                request.params,
+            ),
+            request.params,
+        ) or {}
+        record_timestamp = _resolve_final_record_timestamp(
+            event_type="chat.final",
+            segment_started_at=segment_started_at,
+            extra_fields=extra_fields,
+        )
+        await _run_history_io(
+            append_history_record,
+            session_id=session_id,
+            request_id=rid,
+            channel_id=cid,
+            role="assistant",
+            event_type="chat.final",
+            content=pending_text,
+            timestamp=record_timestamp,
+            extra=extra_fields if extra_fields else None,
+            mode=request.params.get("mode", "unknown") if isinstance(request.params, dict) else "unknown",
+        )
 
     async def process_message_stream(
             self, request: AgentRequest
@@ -3298,6 +3582,10 @@ class JiuWenSwarm:
                 channel_metadata=request.metadata,
                 mode=params_for_history.get("mode", "unknown"),
             )
+        # 注：ask_user_answer 的落盘在 deliver_control_input 里——ask_user_interrupt
+        # resume 被 Runtime 判定为 CONTROL_INPUT，走 _deliver_control →
+        # deliver_control_input，**不经过** process_message_stream，故此方法内不再
+        # 处理答案落盘（否则是永远命中不到的死分支）。
 
         logger.info(
             "[JiuWenSwarm] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
@@ -3537,6 +3825,11 @@ class JiuWenSwarm:
                 extra={
                     "output_order": payload.get("output_order"),
                     "is_supplemental_input": True,
+                    **{
+                        key: payload[key]
+                        for key in ("message_origin", "session_message_id", "cross_session")
+                        if key in payload
+                    },
                 },
                 mode=request.params.get("mode", "unknown"),
             )
@@ -3609,6 +3902,76 @@ class JiuWenSwarm:
 
         team_a2ui_tasks: dict[tuple[str, str], asyncio.Task] = {}
         team_a2ui_pending_finals: dict[tuple[str, str], dict[str, Any]] = {}
+
+        # proactive 请求：source 标记在 request.params 里，由外层 proactive_adapter
+        # 消费流时注入到 chunk。这里（生产端）收不到注入后的 source，只能自己按同一
+        # 规则判定"话术轮"：工具轮总结 final / 延续轮 final 不带 proactive 标记落盘，
+        # 只有最后一个非工具轮非空 final（=推荐话术）落盘带 source/rec_id——否则刷新
+        # 后 history 里每一条 chat.final 都带 rec_id，被渲染成多张推荐卡片（bug）。
+        # "最后一个"要等流结束才能确定，故缓存话术轮候选、流末补落。
+        is_proactive_request = bool(
+            request.params.get("source") == "proactive_recommendation"
+        )
+        proactive_pending_final: dict[str, Any] | None = None
+        # 自上一个 chat.final 以来是否出现过 chat.tool_call（用于识别工具轮总结 final）。
+        saw_proactive_tool_call_since_final = False
+
+        async def _persist_proactive_final_record(
+            *,
+            content: str,
+            payload: dict[str, Any],
+            marked: bool,
+        ) -> None:
+            """落盘 proactive 流的一条 chat.final 记录。
+
+            marked=True（话术轮/最后一个非工具轮非空 final）时带
+            source/proactive_rec_id，刷新后前端渲染成推荐卡片；否则为普通
+            气泡（工具轮总结、延续轮文本等不参与卡片渲染）。
+            """
+            extra_fields: dict[str, Any] = {
+                k: v for k, v in payload.items()
+                if k not in ("event_type", "event", "content")
+            }
+            if marked:
+                # 只给话术轮补 proactive 标记（请求级参数仅这一条记录消费）。
+                for pk in (
+                    "source",
+                    "proactive_type",
+                    "proactive_target",
+                    "automation",
+                    "proactive_rec_id",
+                ):
+                    if pk not in extra_fields and pk in request.params:
+                        extra_fields[pk] = request.params[pk]
+            extra_fields = _attach_reasoning_content(extra_fields) or {}
+            extra_fields = _with_cross_session_history_metadata(
+                _with_heartbeat_history_metadata(
+                    _with_web_agent_template_metadata(
+                        extra_fields,
+                        request.params,
+                        cid,
+                        event_type="chat.final",
+                    ),
+                    request.params,
+                ),
+                request.params,
+            ) or {}
+            await _run_history_io(
+                append_history_record,
+                session_id=session_id,
+                request_id=rid,
+                channel_id=cid,
+                role="assistant",
+                event_type="chat.final",
+                content=content,
+                timestamp=_resolve_final_record_timestamp(
+                    event_type="chat.final",
+                    segment_started_at=None,
+                    extra_fields=extra_fields,
+                ),
+                extra=extra_fields if extra_fields else None,
+                mode=request.params.get("mode", "unknown"),
+            )
 
         async def _finalize_team_a2ui_block(payload: dict[str, Any], decision: Any) -> None:
             try:
@@ -3932,6 +4295,8 @@ class JiuWenSwarm:
                                 "chat.ask_user_question",
                                 "harness.activate_interaction",
                             ):
+                                if is_proactive_request and et == "chat.tool_call":
+                                    saw_proactive_tool_call_since_final = True
                                 await _persist_pending_final_text()
                             elif et == "chat.final":
                                 if isinstance(data.payload, dict):
@@ -3953,6 +4318,56 @@ class JiuWenSwarm:
                                         final_answer_chunks.clear()
                                     _reset_durable_pending_final()
                                     continue
+                                if is_proactive_request and payload_content:
+                                    # proactive 话术轮判定（与 proactive_adapter 同规则）：
+                                    # - 工具轮总结 final（该轮有 tool_call）：立即按普通气泡
+                                    #   落盘，不带 proactive 标记；
+                                    # - 第一个非工具轮非空 final（=推荐话术）：缓存为话术轮
+                                    #   候选，等流结束才带 source/rec_id 落盘（否则工具轮
+                                    #   总结/延续轮文本会带着 rec_id 落盘，刷新后被渲染成
+                                    #   第二张推荐卡片——bug）；其后的非工具轮 final（如话术
+                                    #   后的纯文本延续）不是交付物，立即落盘为普通气泡。
+                                    _reset_durable_pending_final()
+                                    final_segment_started_at = None
+                                    final_answer_content = payload_content
+                                    final_answer_chunks.clear()
+                                    durable_final_content = payload_content
+                                    if saw_proactive_tool_call_since_final:
+                                        saw_proactive_tool_call_since_final = False
+                                        await _persist_proactive_final_record(
+                                            content=payload_content,
+                                            payload=(
+                                                dict(data.payload)
+                                                if isinstance(data.payload, dict)
+                                                else {}
+                                            ),
+                                            marked=False,
+                                        )
+                                    else:
+                                        # 第一个非工具轮非空 final = 话术轮候选，缓存等
+                                        # 流末带标记落盘；其后的非工具轮 final（如话术后的
+                                        # 纯文本延续）不是交付物，立即落盘为普通气泡，
+                                        # 不覆盖候选。
+                                        if proactive_pending_final is None:
+                                            proactive_pending_final = {
+                                                "content": payload_content,
+                                                "payload": (
+                                                    dict(data.payload)
+                                                    if isinstance(data.payload, dict)
+                                                    else {}
+                                                ),
+                                            }
+                                        else:
+                                            await _persist_proactive_final_record(
+                                                content=payload_content,
+                                                payload=(
+                                                    dict(data.payload)
+                                                    if isinstance(data.payload, dict)
+                                                    else {}
+                                                ),
+                                                marked=False,
+                                            )
+                                    should_record = False
                                 # 先记住本段起始时刻：下面的 reset/flush 会把它清掉。
                                 final_segment_started_at = durable_pending_final_started_at
                                 final_segment_order = durable_pending_final_order
@@ -4139,6 +4554,8 @@ class JiuWenSwarm:
                             "chat.ask_user_question",
                             "harness.activate_interaction",
                         ):
+                            if is_proactive_request and et == "chat.tool_call":
+                                saw_proactive_tool_call_since_final = True
                             await _persist_pending_final_text()
                         elif et == "chat.final":
                             if suppress_a2ui_stream or a2ui_split is not None:
@@ -4158,6 +4575,36 @@ class JiuWenSwarm:
                                     final_answer_chunks.clear()
                                 _reset_durable_pending_final()
                                 continue
+                            if is_proactive_request and payload_content:
+                                # 与第一分支（AgentResponseChunk）相同的 proactive
+                                # 话术轮判定与延迟落盘（见上）。
+                                _reset_durable_pending_final()
+                                final_segment_started_at = None
+                                final_answer_content = payload_content
+                                final_answer_chunks.clear()
+                                durable_final_content = payload_content
+                                if saw_proactive_tool_call_since_final:
+                                    saw_proactive_tool_call_since_final = False
+                                    await _persist_proactive_final_record(
+                                        content=payload_content,
+                                        payload=dict(data),
+                                        marked=False,
+                                    )
+                                else:
+                                    # 同第一分支：第一个非工具轮 final 缓存为话术轮候选，
+                                    # 其后的非工具轮 final 立即落盘为普通气泡，不覆盖。
+                                    if proactive_pending_final is None:
+                                        proactive_pending_final = {
+                                            "content": payload_content,
+                                            "payload": dict(data),
+                                        }
+                                    else:
+                                        await _persist_proactive_final_record(
+                                            content=payload_content,
+                                            payload=dict(data),
+                                            marked=False,
+                                        )
+                                should_record = False
                             final_segment_started_at = durable_pending_final_started_at
                             if payload_content:
                                 _reset_durable_pending_final()
@@ -4241,6 +4688,15 @@ class JiuWenSwarm:
             raise
         finally:
             try:
+                # proactive 请求：流结束时把缓存的话术轮 final 补落（带 source/rec_id）。
+                # 流里的非空 final 都被延迟到此刻按序落盘，只有最后一个非工具轮 final
+                # （=推荐话术）带 proactive 标记，其余（工具轮总结/延续轮）为普通气泡。
+                if is_proactive_request and proactive_pending_final is not None:
+                    await _persist_proactive_final_record(
+                        content=str(proactive_pending_final["content"]),
+                        payload=proactive_pending_final["payload"],
+                        marked=True,
+                    )
                 # Goal 还在跑时这条流不会收到收尾的 chat.final，气泡里已经展示的正文
                 # 也就没有任何一处落盘。补一次，否则重新打开历史记录时这段回答凭空
                 # 消失，和实时看到的不是一回事。非 Goal 流不进这里。
@@ -4752,6 +5208,11 @@ class JiuWenSwarm:
         if session_id is None:
             return bool(has_runtime())
         return bool(has_runtime(session_id))
+
+    def has_active_goal(self, session_id: str) -> bool:
+        """Inspect existing Goal work without creating or attaching a session."""
+        checker = getattr(self._adapter, "has_active_goal", None)
+        return bool(callable(checker) and checker(session_id))
 
     def has_auto_permission_session(self, session_id: str | None) -> bool:
         adapter = self._adapter

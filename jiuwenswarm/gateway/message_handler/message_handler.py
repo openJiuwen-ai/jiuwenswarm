@@ -23,6 +23,10 @@ from jiuwenswarm.runtime.host_services import (
 )
 from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
 from jiuwenswarm.gateway.channel_manager.base import ChannelType
+from jiuwenswarm.gateway.im_pipeline.im_session_input import (
+    prepare_im_session_input,
+    steer_busy_im_chat,
+)
 from jiuwenswarm.common.e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
@@ -446,6 +450,14 @@ class MessageHandler(ABC):
         """
         self._evolution_auto_save_enabled = get_evolution_auto_save_enabled(
             config_payload if isinstance(config_payload, dict) else {}
+        )
+
+    def auto_accepts_evolution_approval(self, payload: Any) -> bool:
+        """Whether this question is answered automatically by the gateway."""
+        return (
+            self._evolution_auto_save_enabled
+            and is_evolution_approval_payload(payload)
+            and not is_interrupt_evolution_approval_answer_payload(payload)
         )
 
     @classmethod
@@ -3284,10 +3296,23 @@ class MessageHandler(ABC):
             )
             return
         if self._is_terminal_stream_chunk(chunk):
-            logger.debug(
-                "[MessageHandler] 忽略 server_push 终止 chunk: request_id=%s",
-                chunk.request_id,
-            )
+            # AgentServer 通过 send_push 发来流的终止哨兵 chunk（例如
+            # session.delete 连带取消流时）。不能只丢弃——否则网关侧
+            # process_stream 协程仍挂在 queue.get() 上等待更多 chunk，形成
+            # 僵尸流，导致该会话被生命周期守卫永久锁定。取消对应的 Task，
+            # 触发 process_stream 的 CancelledError → finally 清理 _stream_modes。
+            task = self._stream_tasks.get(rid)
+            if task is not None and not task.done():
+                logger.info(
+                    "[MessageHandler] server_push 终止 chunk → 取消流式 Task: request_id=%s",
+                    rid,
+                )
+                task.cancel()
+            else:
+                logger.debug(
+                    "[MessageHandler] server_push 终止 chunk（无活跃 Task）: request_id=%s",
+                    rid,
+                )
             return
 
         # Track evolution state on the server_push path as well.
@@ -3686,78 +3711,43 @@ class MessageHandler(ABC):
         await self.publish_robot_messages(out)
         return True
 
-    async def _publish_stream_cancelled_final(
+    async def _publish_stream_error(
         self,
-        request_id: str,
-        channel_id: str,
+        env: "E2AEnvelope",
         session_id: str | None,
         request_metadata: dict[str, Any] | None,
+        error: Exception,
     ) -> None:
-        """流式任务被网关取消时补发 chat.final，带 is_complete（供飞书等通道合并缓冲）。"""
+        """Finish a failed stream with a visible error, preserving its routing."""
         from jiuwenswarm.common.schema.message import Message, EventType
 
-        group_digital_avatar = bool(request_metadata.get("group_digital_avatar", False)) if request_metadata else False
-        enable_memory = bool(request_metadata.get("enable_memory", True)) if request_metadata else True
-
+        request_id = env.request_id or ""
+        code = getattr(error, "code", None)
+        if not isinstance(code, str) or not code:
+            code = "AGENT_SERVER_ERROR"
+            if isinstance(error, TimeoutError):
+                code = "AGENT_SERVER_TIMEOUT"
+            elif "AgentServer WebSocket connection closed" in str(error):
+                code = "AGENT_SERVER_CONNECTION_CLOSED"
         out = Message(
             id=request_id,
             type="event",
-            channel_id=channel_id,
-            session_id=session_id,
-            params={},
-            timestamp=time.time(),
-            ok=True,
-            payload={
-                "event_type": EventType.CHAT_FINAL.value,
-                "content": "",
-                "is_complete": True,
-            },
-            event_type=EventType.CHAT_FINAL,
-            metadata=request_metadata,
-            group_digital_avatar=group_digital_avatar,
-            enable_memory=enable_memory,
-        )
-        await self.publish_robot_messages(out)
-        logger.info(
-            "[MessageHandler] 已发送流式取消结束帧: request_id=%s session_id=%s",
-            request_id,
-            session_id,
-        )
-
-    async def _publish_stream_connection_error(
-        self,
-        request_id: str,
-        channel_id: str,
-        session_id: str | None,
-        request_metadata: dict[str, Any] | None,
-        error: str,
-    ) -> None:
-        """Publish a visible stream error when the AgentServer connection drops."""
-        from jiuwenswarm.common.schema.message import Message, EventType
-
-        out = Message(
-            id=request_id,
-            type="event",
-            channel_id=channel_id,
+            channel_id=env.channel or "",
             session_id=session_id,
             params={},
             timestamp=time.time(),
             ok=False,
             payload={
                 "event_type": EventType.CHAT_ERROR.value,
-                "error": error,
-                "code": "AGENT_SERVER_CONNECTION_CLOSED",
+                "error": str(error) or type(error).__name__,
+                "code": code,
                 "is_complete": True,
             },
             event_type=EventType.CHAT_ERROR,
             metadata=request_metadata,
+            app_id=self._stream_app_ids.get(request_id, ""),
         )
         await self.publish_robot_messages(out)
-        logger.warning(
-            "[MessageHandler] Stream 因 AgentServer WebSocket 断开而结束: request_id=%s error=%s",
-            request_id,
-            error,
-        )
 
     @staticmethod
     def _non_stream_rpc_may_run_parallel(env: "E2AEnvelope") -> bool:
@@ -4057,14 +4047,9 @@ class MessageHandler(ABC):
         """
         payload = getattr(chunk, "payload", None)
         auto_save_enabled = (
-            self._evolution_auto_save_enabled
-            if (
-                isinstance(payload, dict)
-                and payload.get("event_type") == "chat.ask_user_question"
-                and self._is_evolution_approval_payload(payload)
-                and not self._is_interrupt_evolution_approval_answer_payload(payload)
-            )
-            else False
+            isinstance(payload, dict)
+            and payload.get("event_type") == "chat.ask_user_question"
+            and self.auto_accepts_evolution_approval(payload)
         )
         decision = self._evolution_approval.handle_chunk(
             chunk,
@@ -4264,8 +4249,19 @@ class MessageHandler(ABC):
                 msg = await self.consume_user_messages(timeout=None)
                 if msg is None:
                     continue
-                
-         
+
+                # Explicit steer/follow_up is normalized before slash commands.
+                # Busy-session chat.send is classified later, after the target
+                # Session id is known.
+                if prepare_im_session_input(msg):
+                    logger.info(
+                        "[MessageHandler] IM session input uses public delivery: "
+                        "id=%s channel_id=%s session_id=%s",
+                        msg.id,
+                        msg.channel_id,
+                        msg.session_id,
+                    )
+
                 # 先处理受控通道的 Channel 控制指令（如 /new_session、/mode、/skills list）
                 if not self._is_session_input_message(msg) and await self._handle_channel_control(msg):
                     # 该消息仅用于修改 session/mode，已给 Channel 回复提示，不再转发给 Agent
@@ -4281,6 +4277,19 @@ class MessageHandler(ABC):
                 ):
                     state = self.get_or_create_channel_state(msg)
                     msg.session_id = await self._allocate_channel_session(msg, state)
+
+                # IM chat.send has no steer control. A message that arrives
+                # while this Session is processing joins that turn instead of
+                # cancelling it and starting another.
+                session_busy = self._session_has_streams_blocking_processing_false(msg.session_id)
+                if session_busy and steer_busy_im_chat(msg):
+                    logger.info(
+                        "[MessageHandler] IM busy session chat.send uses steer: "
+                        "id=%s channel_id=%s session_id=%s",
+                        msg.id,
+                        msg.channel_id,
+                        msg.session_id,
+                    )
 
                 # Common to all channels, before optional avatar rewriting or
                 # pending-answer consumption. Explicit supplements remain text.
@@ -4870,7 +4879,8 @@ class MessageHandler(ABC):
                 "[MessageHandler] Stream 被取消: request_id=%s total_chunks=%s",
                 rid, _proc_count,
             )
-        except Exception as exc:
+        # Background stream failures must reach the client before per-request cleanup.
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             if resolve_session_input_mode(env.params) is not None:
                 from jiuwenswarm.common.schema.message import Message, ReqMethod
 
@@ -4881,21 +4891,13 @@ class MessageHandler(ABC):
                 )
                 await self.publish_robot_messages(self._build_error_out_message(request_message, exc))
                 return
-            if isinstance(exc, RuntimeError):
-                if "AgentServer WebSocket connection closed" not in str(exc):
-                    raise exc
-                await self._publish_stream_connection_error(
-                    rid, channel_id, session_id, request_metadata, str(exc),
-                )
-                return
             logger.exception(
                 "[MessageHandler] Stream 异常: request_id=%s total_chunks=%s error=%s",
                 rid, _proc_count, exc,
             )
-            await self._publish_stream_cancelled_final(
-                rid, channel_id, session_id, request_metadata,
+            await self._publish_stream_error(
+                env, session_id, request_metadata, exc,
             )
-            raise  # 重新抛出，让调用者知道任务被取消
         finally:
             if (
                 not cancelled

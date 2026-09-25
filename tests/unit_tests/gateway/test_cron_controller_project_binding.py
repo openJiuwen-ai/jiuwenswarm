@@ -46,6 +46,85 @@ async def test_delete_job_stops_runs_and_removes_sessions_before_job() -> None:
     assert calls == ["disable", "reload", "stop", "sessions", "job", "reload"]
 
 
+@pytest.mark.asyncio
+async def test_hide_project_jobs_disables_runs_and_keeps_records() -> None:
+    """hide_project_jobs: 停用项目下任务并取消在途执行,任务记录原样保留。
+
+    停用不按操作者 user_id 过滤:项目是共享资源,其他属主的任务也必须停用,
+    否则项目恢复后会带着 enabled=True 直接回到触发状态。
+    """
+    calls = []
+    jobs = [
+        SimpleNamespace(id="job_a", project_id="proj_1", user_id="alice", enabled=True),
+        SimpleNamespace(id="job_b", project_id="proj_1", user_id="alice", enabled=False),
+        SimpleNamespace(id="job_c", project_id="proj_2", user_id="alice", enabled=True),
+        SimpleNamespace(id="job_d", project_id="proj_1", user_id="bob", enabled=True),
+    ]
+
+    async def list_jobs():
+        return list(jobs)
+
+    async def update_job(job_id, patch):
+        calls.append(("update", job_id, patch))
+
+    async def reload():
+        calls.append(("reload",))
+
+    async def stop_project_runs(project_id):
+        calls.append(("stop", project_id))
+
+    store = SimpleNamespace(list_jobs=list_jobs, update_job=update_job)
+    scheduler = _FakeScheduler(reload=reload, stop_project_runs=stop_project_runs)
+    controller = CronController(store=store, scheduler=scheduler)
+
+    result = await controller.hide_project_jobs("proj_1")
+
+    # 该项目全部任务计入结果;已停用的不重复写,其他项目不受影响。
+    assert result == {"stopped_cron_jobs": 3}
+    assert ("update", "job_a", {"enabled": False}) in calls
+    assert ("update", "job_b", {"enabled": False}) not in calls
+    assert ("update", "job_c", {"enabled": False}) not in calls
+    # 其他属主(bob)的任务同样被停用。
+    assert ("update", "job_d", {"enabled": False}) in calls
+    # 停用 → reload → 取消在途执行(不限定属主);没有任何 delete_job 调用。
+    assert calls[-2:] == [("reload",), ("stop", "proj_1")]
+    assert not any(call[0] == "delete" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_checks_gate_once_per_project() -> None:
+    """list_jobs: 准入闸门按 (project_id, user_id) 去重,不逐任务串行 RPC。"""
+    jobs = [
+        SimpleNamespace(id="job_a", project_id="proj_1", user_id="alice", enabled=True,
+                        to_dict=lambda: {"id": "job_a"}),
+        SimpleNamespace(id="job_b", project_id="proj_1", user_id="alice", enabled=True,
+                        to_dict=lambda: {"id": "job_b"}),
+        SimpleNamespace(id="job_c", project_id="proj_1", user_id="bob", enabled=True,
+                        to_dict=lambda: {"id": "job_c"}),
+        SimpleNamespace(id="job_d", project_id="proj_2", user_id="alice", enabled=True,
+                        to_dict=lambda: {"id": "job_d"}),
+    ]
+    gate_calls: list[tuple[str | None, str | None]] = []
+
+    async def list_jobs():
+        return list(jobs)
+
+    async def project_execution_allowed(project_id, user_id=None):
+        gate_calls.append((project_id, user_id))
+        # proj_2 被隐藏:其任务不得进入列表。
+        return project_id != "proj_2"
+
+    store = SimpleNamespace(list_jobs=list_jobs)
+    scheduler = SimpleNamespace(project_execution_allowed=project_execution_allowed)
+    controller = CronController(store=store, scheduler=scheduler)
+
+    result = await controller.list_jobs()
+
+    # 4 个任务只查 3 次(同项目同属主共享判定),隐藏项目的任务被过滤。
+    assert sorted(job["id"] for job in result) == ["job_a", "job_b", "job_c"]
+    assert sorted(gate_calls) == [("proj_1", "alice"), ("proj_1", "bob"), ("proj_2", "alice")]
+
+
 class _RecordingStore:
     def __init__(self) -> None:
         self.create_calls: list[dict] = []
@@ -75,6 +154,19 @@ class _RecordingStore:
 
 
 class _FakeScheduler:
+    """CronController 依赖的调度器接口子集:准入闸门开合 + 生命周期调用。"""
+
+    def __init__(self, **methods) -> None:
+        self.hiding_projects: set[str] = set()
+        for name, func in methods.items():
+            setattr(self, name, func)
+
+    def close_project_admission(self, project_id: str) -> None:
+        self.hiding_projects.add(project_id)
+
+    def reopen_project_admission(self, project_id: str) -> None:
+        self.hiding_projects.discard(project_id)
+
     async def project_execution_allowed(self, project_id, user_id=None) -> bool:
         return True
 
@@ -275,3 +367,74 @@ async def test_update_job_normalizes_mcp_patch(monkeypatch) -> None:
     )
     _, patch = cc._store.update_calls[1]
     assert patch["mcp"] is None
+
+
+@pytest.mark.asyncio
+async def test_hide_holds_admission_until_commit():
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    scheduler = _FakeScheduler(reload=AsyncMock(), stop_project_runs=AsyncMock())
+    store = SimpleNamespace(list_jobs=AsyncMock(return_value=[]))
+    controller = CronController(store=store, scheduler=scheduler)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def commit():
+        assert "project" in scheduler.hiding_projects
+        assert controller.mutation_lock.locked()
+        entered.set()
+        await release.wait()
+
+    hiding = asyncio.create_task(controller.hide_project_jobs("project", commit=commit))
+    await entered.wait()
+    contender = asyncio.create_task(controller.mutation_lock.acquire())
+    await asyncio.sleep(0)
+    assert not contender.done()
+    release.set()
+    await hiding
+    await contender
+    controller.mutation_lock.release()
+    assert "project" not in scheduler.hiding_projects
+
+
+@pytest.mark.asyncio
+async def test_hide_stop_failure_never_commits():
+    from unittest.mock import AsyncMock
+
+    scheduler = _FakeScheduler(
+        reload=AsyncMock(), stop_project_runs=AsyncMock(side_effect=RuntimeError("stop failed"))
+    )
+    controller = CronController(store=SimpleNamespace(list_jobs=AsyncMock(return_value=[])), scheduler=scheduler)
+    commit = AsyncMock()
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await controller.hide_project_jobs("project", commit=commit)
+    commit.assert_not_awaited()
+    assert not scheduler.hiding_projects
+
+
+@pytest.mark.asyncio
+async def test_hide_commit_rejection_restores_original_enabled_jobs():
+    jobs = {
+        "enabled": SimpleNamespace(id="enabled", project_id="project", enabled=True),
+        "disabled": SimpleNamespace(id="disabled", project_id="project", enabled=False),
+    }
+
+    async def update_job(job_id, patch):
+        jobs[job_id].enabled = patch["enabled"]
+
+    scheduler = _FakeScheduler(reload=AsyncMock(), stop_project_runs=AsyncMock())
+    store = SimpleNamespace(list_jobs=AsyncMock(side_effect=lambda: list(jobs.values())), update_job=update_job)
+    controller = CronController(store=store, scheduler=scheduler)
+
+    async def reject_commit():
+        assert not jobs["enabled"].enabled
+        raise RuntimeError("SESSION_BUSY")
+
+    with pytest.raises(RuntimeError, match="SESSION_BUSY"):
+        await controller.hide_project_jobs("project", commit=reject_commit)
+
+    assert jobs["enabled"].enabled is True
+    assert jobs["disabled"].enabled is False
+    assert scheduler.reload.await_count == 2
+    assert "project" not in scheduler.hiding_projects

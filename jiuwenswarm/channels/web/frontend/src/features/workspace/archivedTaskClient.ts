@@ -1,5 +1,4 @@
 import { webRequest } from '../../services/webClient';
-import type { WebError } from '../../types';
 import type { WorkMode } from './projectTypes';
 
 /**
@@ -7,7 +6,7 @@ import type { WorkMode } from './projectTypes';
  *
  * 归档协议以《会话与项目归档删除设计》为准：项目不再有归档状态，
  * `project.archive` / `project.unarchive` / `project.archived.list` 已移除，
- * 禁止再调用；项目级操作只剩 `project.delete`（直接级联删除），
+ * 禁止再调用；项目隐藏/恢复使用 `project.remove` / `project.restore`，
  * 项目维度的批量会话操作由 projectRegistryClient 承担。
  * 请求通过注入的 request 函数发出（默认 `webRequest`），便于测试替换；
  * 请求失败由页面呈现错误态，不伪造空数据。
@@ -18,6 +17,8 @@ export interface ArchivedSession {
   title: string;
   project_id: string;
   project_name: string | null;
+  /** 会话所属项目已被移除：归档页仍展示，撤销归档会连带恢复该项目。 */
+  project_hidden?: boolean;
   work_mode: WorkMode;
   archived: true;
   archived_at: number;
@@ -67,6 +68,13 @@ export interface BatchSessionResultEntry {
   /** 失败项的可读错误信息。 */
   error?: string;
   stop_pending?: boolean;
+  /**
+   * SESSION_BUSY 的细分：会话只是还在收尾，会自行结束——提示稍后重试，
+   * 而不是让用户先手动停止一个已停过的会话。
+   */
+  finishing?: boolean;
+  /** finishing 为真时的成因：常驻 subagent 正在退出，而非 Team 回合收尾。 */
+  subagent_finishing?: boolean;
   warnings?: ArchiveWarning[];
 }
 
@@ -74,38 +82,6 @@ export interface BatchSessionArchiveResponse {
   succeeded_count: number;
   failed_count: number;
   results: BatchSessionResultEntry[];
-}
-
-/**
- * `project.delete` 的部分失败响应。
- * 后端可能已完成部分阶段（如 cron 删除成功、会话删除失败），
- * payload 会通过 WebError.payload 透传到这里；不能当“全部失败”处理。
- */
-export interface ProjectOperationFailurePayload {
-  operation_id?: string;
-  project_id?: string;
-  phase?: string;
-  retryable?: boolean;
-  completed_session_ids?: string[];
-  completed_conversation_session_ids?: string[];
-  completed_cron_job_ids?: string[];
-  failed_items?: Array<{
-    resource_type: 'session' | 'cron' | 'project';
-    resource_id: string;
-    code: string;
-    error: string;
-  }>;
-}
-
-export interface ProjectOperationFailure {
-  /** `PARTIAL_PROJECT_DELETE_FAILED` 错误码，仅用于分支判断。 */
-  code: string;
-  phase: string;
-  retryable: boolean;
-  /** 后端提供的安全错误文本，可作为辅助详情展示。 */
-  detail: string | null;
-  deletedConversations: number;
-  deletedCronJobs: number;
 }
 
 type ArchiveRequest = <T = unknown>(
@@ -120,35 +96,58 @@ export function getArchiveErrorCode(error: unknown): string | null {
   return typeof code === 'string' && code ? code : null;
 }
 
-function isArchiveErrorRetriable(error: unknown): boolean {
-  if (!error || typeof error !== 'object' || !('retriable' in error)) return false;
-  return (error as { retriable?: unknown }).retriable === true;
-}
-
-function getArchiveErrorDetail(error: unknown): string | null {
-  if (error instanceof Error && error.message) return error.message;
-  return null;
-}
-
-/** 解析 `project.delete` 的部分失败 payload；非部分失败返回 null。 */
-export function parseProjectOperationFailure(error: unknown): ProjectOperationFailure | null {
-  const code = getArchiveErrorCode(error);
-  if (code !== 'PARTIAL_PROJECT_DELETE_FAILED') {
-    return null;
+/**
+ * SESSION_BUSY 的收尾细分标记。兼容两种错误形态：workspaceStore 归档把
+ * 批量结果项的 finishing 挂到 Error 上；直接走 webRequest 的入口（删除）
+ * 由 WebError.payload 透传服务端平铺的 details。
+ */
+export function getArchiveErrorFinishing(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  if ('finishing' in error) {
+    return (error as { finishing?: unknown }).finishing === true;
   }
-  const webError = error as WebError;
-  const payload = webError.payload as ProjectOperationFailurePayload | undefined;
-  const detail = payload?.failed_items?.find((item) => typeof item?.error === 'string')?.error
-    || getArchiveErrorDetail(error)
-    || null;
-  return {
-    code,
-    phase: (payload && typeof payload.phase === 'string' && payload.phase) || '',
-    retryable: (payload && payload.retryable === true) || isArchiveErrorRetriable(error),
-    detail,
-    deletedConversations: payload?.completed_conversation_session_ids?.length ?? 0,
-    deletedCronJobs: payload?.completed_cron_job_ids?.length ?? 0,
-  };
+  const payload = (error as { payload?: unknown }).payload;
+  if (payload && typeof payload === 'object' && 'finishing' in payload) {
+    return (payload as { finishing?: unknown }).finishing === true;
+  }
+  return false;
+}
+
+/** 收尾成因：常驻 subagent 正在退出，或 swarm flow 已结束、Team 回合仍在收尾。 */
+export type ArchiveFinishingCause = 'subagent' | 'team';
+
+function readDetailFlag(source: unknown, key: string): boolean {
+  if (!source || typeof source !== 'object') return false;
+  return (source as Record<string, unknown>)[key] === true;
+}
+
+/** 找出承载 details 的对象：Error 自身（批量路径）或 WebError.payload（直连路径）。 */
+function finishingDetailSource(error: unknown): unknown {
+  if (!error || typeof error !== 'object') return null;
+  if ('finishing' in error) return error;
+  return (error as { payload?: unknown }).payload ?? null;
+}
+
+/**
+ * SESSION_BUSY 的收尾成因。同样是"会自行结束"，subagent 退出与 Team 回合
+ * 收尾对用户是两件事，文案也要分开。未标记收尾时返回 null。
+ */
+export function getArchiveErrorFinishingCause(
+  error: unknown,
+): ArchiveFinishingCause | null {
+  if (!error || typeof error !== 'object') return null;
+  if (!getArchiveErrorFinishing(error)) return null;
+  return readDetailFlag(finishingDetailSource(error), 'subagent_finishing')
+    ? 'subagent'
+    : 'team';
+}
+
+/** 批量结果项的收尾成因；非收尾项返回 null。 */
+export function batchResultFinishingCause(
+  entry: { finishing?: boolean; subagent_finishing?: boolean } | null | undefined,
+): ArchiveFinishingCause | null {
+  if (!entry || entry.finishing !== true) return null;
+  return entry.subagent_finishing === true ? 'subagent' : 'team';
 }
 
 /** 批量会话恢复/归档响应中取单个会话的结果；信封 ok 不代表该会话成功。 */

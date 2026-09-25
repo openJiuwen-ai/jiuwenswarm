@@ -340,3 +340,20 @@ async def test_goal_stream_end_does_not_reveal_unconsumed_steering_tail(monkeypa
     assert all("hidden" not in (r.get("extra") or {}).get("reasoning_content", "") for r in visible)
     hidden = [r for r in records if (r.get("extra") or {}).get("output_suppressed")]
     assert any(r.get("content") == "hidden tail" for r in hidden)
+
+@pytest.mark.asyncio
+async def test_cross_session_supplement_history_retains_agent_source(monkeypatch):
+    cross = {'message_id': 'sm-steer', 'source_session_id': 'source-1', 'source_title': 'Source Agent',
+             'chain_id': 'chain-1', 'parent_message_id': 'parent', 'hop_count': 2}
+    records = await _run_stream(monkeypatch, [
+        {'event_type': 'chat.delta', 'content': 'before input'},
+        {'event_type': 'chat.input_received', 'input_request_id': 'delivery-request', 'content': 'Agent adjustment',
+         'timestamp': 1800000000000, 'message_origin': 'cross_session_agent', 'session_message_id': 'sm-steer', 'cross_session': cross},
+        {'event_type': 'chat.final', 'content': 'after input'},
+    ], include_users=True)
+    message = next(row for row in records if row['request_id'] == 'delivery-request')
+    assert message['content'] == 'Agent adjustment'
+    assert message['extra']['cross_session'] == cross
+    assert message['extra']['message_origin'] == 'cross_session_agent'
+    assert message['extra']['session_message_id'] == 'sm-steer'
+    assert message['extra']['is_supplemental_input'] is True

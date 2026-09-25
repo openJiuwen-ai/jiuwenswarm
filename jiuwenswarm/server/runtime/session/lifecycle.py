@@ -250,44 +250,6 @@ def complete(
         save_locked(kind, resource_id, value)
 
 
-def checkpoint_project(resource_id: str, params: dict) -> dict:
-    """Validate the token and commit progress under one cross-process lock."""
-    with resource_lock("project", resource_id):
-        value = state("project", resource_id)
-        operation = value.get("operation") or {}
-        if (
-            params.get("operation_id") != operation.get("operation_id")
-            or params.get("generation") != operation.get("generation")
-            or operation.get("status") == "completed"
-        ):
-            raise LifecycleError("OPERATION_IN_PROGRESS", "stale operation")
-        if "completed_cron_job_ids" in params:
-            completed = dict(operation.get("completed_items", {}))
-            completed["cron"] = list(
-                dict.fromkeys(
-                    [*completed.get("cron", []), *params["completed_cron_job_ids"]]
-                )
-            )
-            operation["completed_items"] = completed
-        if "planned_cron_job_ids" in params:
-            operation["planned_cron_job_ids"] = list(
-                dict.fromkeys(
-                    [
-                        *operation.get("planned_cron_job_ids", []),
-                        *params["planned_cron_job_ids"],
-                    ]
-                )
-            )
-        if params.get("failed"):
-            operation.update(
-                status="failed",
-                phase=params.get("phase", "stop_cron"),
-                errors=[params.get("error", "cron stage failed")],
-            )
-        save_locked("project", resource_id, value)
-        return operation
-
-
 def session_paths(
     session_id: str, *, sessions_root: Path | None = None
 ) -> tuple[Path, Path]:
@@ -429,24 +391,32 @@ def guard(session_id: str = "", project_id: str = "") -> None:
         value = state("session", session_id)
         if value.get("blocked"):
             operation = value.get("operation", {})
-            code = (
-                "OPERATION_IN_PROGRESS"
-                if operation.get("status") != "completed"
-                else ("NOT_FOUND" if value.get("deleted") else "SESSION_ARCHIVED")
+            if operation.get("status") != "completed":
+                raise LifecycleError(
+                    "OPERATION_IN_PROGRESS",
+                    "session lifecycle operation in progress",
+                )
+            if value.get("deleted"):
+                raise LifecycleError(
+                    "NOT_FOUND",
+                    "session was permanently deleted",
+                )
+            raise LifecycleError(
+                "SESSION_ARCHIVED",
+                "session is archived",
             )
-            raise LifecycleError(code, "session lifecycle blocks this operation")
         if session_paths(session_id)[1].exists():
             raise LifecycleError("SESSION_ARCHIVED", "session is archived")
         project_id = project_id or project_id_for(raw_metadata(session_id))
     if project_id:
         value = state("project", project_id)
         if value.get("blocked"):
-            code = (
-                "OPERATION_IN_PROGRESS"
-                if value.get("operation", {}).get("status") != "completed"
-                else "NOT_FOUND"
-            )
-            raise LifecycleError(code, "project lifecycle blocks this operation")
+            if value.get("operation", {}).get("status") != "completed":
+                raise LifecycleError(
+                    "OPERATION_IN_PROGRESS",
+                    "project lifecycle operation in progress",
+                )
+            raise LifecycleError("NOT_FOUND", "project was permanently deleted")
 
 
 def fence_writes(kind: str, resource_id: str) -> None:
@@ -652,40 +622,3 @@ def event_snapshots() -> list[dict]:
             )
         )
     return result
-
-
-def migrate_project_archives() -> None:
-    """One-time upgrade; never enable cron or clear session/delete fences."""
-    from jiuwenswarm.server.runtime.session import project_store
-
-    marker = get_agent_root_dir() / "lifecycle" / "project_delete_v2.json"
-    with file_lock(marker):
-        if marker.exists():
-            return
-        resources = marker.parent / "resources"
-        for path in resources.glob("project_*.json") if resources.exists() else ():
-            try:
-                value = read_json(path)
-                operation = value.get("operation") or {}
-                if operation.get("kind") not in {"archive", "unarchive"}:
-                    continue
-                pid = operation["resource_id"]
-                with resource_lock("project", pid):
-                    value = state("project", pid)
-                    if (value.get("operation") or {}).get("kind") not in {
-                        "archive",
-                        "unarchive",
-                    }:
-                        continue
-                    value.update(blocked=False, write_blocked=False)
-                    value["operation"].update(
-                        status="completed", stop_pending=False, result={}, migrated=True
-                    )
-                    save_locked("project", pid, value)
-            except Exception:
-                # 单个损坏的生命周期文件不应阻断其余项目的迁移。
-                logger.warning(
-                    "project archive migration skipped %s", path.name, exc_info=True
-                )
-        project_store.migrate_archived_projects()
-        atomic_json(marker, {"version": 2, "completed_at": time.time()})

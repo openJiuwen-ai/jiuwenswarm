@@ -61,6 +61,7 @@ class HubCatalogItem:
     publisher_id: str
     publisher_name: str
     install_count: int
+    category_name: str = ""
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "HubCatalogItem":
@@ -87,6 +88,7 @@ class HubCatalogItem:
             publisher_id=_optional_string(payload, "publisher_id"),
             publisher_name=_optional_string(payload, "publisher_name"),
             install_count=install_count,
+            category_name=_optional_string(payload, "category_name"),
         )
 
 

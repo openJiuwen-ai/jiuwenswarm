@@ -1496,6 +1496,161 @@ async def test_pending_interaction_blocks_heartbeat_until_matching_answer() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("action", ["set", "resume"])
+async def test_goal_start_waits_for_active_session_message(streaming, action) -> None:
+    admission = SessionRunAdmission()
+    manager = FakeAgentManager()
+    entered = asyncio.Event()
+
+    class GoalAgent(FakeAgent):
+        async def process_message(self, request):
+            entered.set()
+            return await super().process_message(request)
+
+        async def process_message_stream(self, request):
+            entered.set()
+            async for chunk in super().process_message_stream(request):
+                yield chunk
+
+    manager.agent = GoalAgent()
+    runtime = AgentRuntime(
+        agent_manager=manager, initializer=AsyncMock(),
+        plan_controller=FakePlanController(), admission_controller=admission,
+    )
+    sid = f"goal-mailbox-{action}-{streaming}"
+    await admission.begin_session_message(sid, "mailbox-run")
+    request = AgentRequest(
+        request_id="goal", session_id=sid, channel_id="web",
+        req_method=ReqMethod.COMMAND_GOAL, is_stream=streaming,
+        params={"mode": "agent", "action": action, "objective": "finish"},
+    )
+    task = asyncio.create_task(
+        _collect_events(runtime.stream(request, trigger_hook=False))
+        if streaming else runtime.invoke(request, trigger_hook=False)
+    )
+    try:
+        # Wait until the runtime has either queued admission or called the agent.
+        async with asyncio.timeout(1):
+            while not admission.is_user_active(sid) and not entered.is_set():
+                await asyncio.sleep(0)
+        assert not entered.is_set()
+        await admission.end_session_message(sid, "mailbox-run")
+        await asyncio.wait_for(task, timeout=1)
+        assert entered.is_set()
+        assert not admission.is_user_active(sid)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await admission.end_session_message(sid, "mailbox-run")
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop", ["pause", "cancel"])
+async def test_goal_stop_releases_waiting_session_message(stop) -> None:
+    admission = SessionRunAdmission()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class GoalAgent(FakeAgent):
+        async def process_message_stream(self, request):
+            entered.set()
+            await release.wait()
+            async for chunk in super().process_message_stream(request):
+                yield chunk
+
+        async def process_message(self, request):
+            assert request.params["action"] == "pause"
+            release.set()
+            return await super().process_message(request)
+
+    manager = FakeAgentManager()
+    manager.agent = GoalAgent()
+    runtime = AgentRuntime(
+        agent_manager=manager, initializer=AsyncMock(),
+        plan_controller=FakePlanController(), admission_controller=admission,
+    )
+    sid = f"goal-stop-mailbox-{stop}"
+    request = AgentRequest(
+        request_id="goal", session_id=sid, channel_id="web",
+        req_method=ReqMethod.COMMAND_GOAL, is_stream=True,
+        params={"mode": "agent", "action": "set", "objective": "finish"},
+    )
+    task = asyncio.create_task(_collect_events(runtime.stream(request, trigger_hook=False)))
+    message = None
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        message = asyncio.create_task(admission.begin_session_message(sid, "run-1"))
+        await asyncio.sleep(0)
+        assert not message.done()
+        if stop == "cancel":
+            task.cancel()
+        else:
+            pause = AgentRequest(
+                request_id="pause", session_id=sid, channel_id="web",
+                req_method=ReqMethod.COMMAND_GOAL,
+                params={"mode": "agent", "action": "pause"},
+            )
+            await asyncio.wait_for(runtime.invoke(pause, trigger_hook=False), 1)
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.wait_for(message, 1)
+        assert not admission.is_user_active(sid)
+    finally:
+        task.cancel()
+        if message is not None:
+            message.cancel()
+            await asyncio.gather(message, return_exceptions=True)
+        await asyncio.gather(task, return_exceptions=True)
+        await admission.end_session_message(sid, "run-1")
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_session_message_waits_for_goal_after_output_stream_ends() -> None:
+    admission = SessionRunAdmission()
+
+    class GoalAgent(FakeAgent):
+        goal_active = True
+
+        def has_active_goal(self, session_id):
+            return self.goal_active
+
+    class GoalManager(FakeAgentManager):
+        def has_active_goal(self, channel_id, session_id):
+            return self.agent.has_active_goal(session_id)
+
+    manager = GoalManager()
+    manager.agent = GoalAgent()
+    runtime = AgentRuntime(
+        agent_manager=manager, initializer=AsyncMock(),
+        plan_controller=FakePlanController(), admission_controller=admission,
+    )
+    sid = "goal-background-mailbox"
+    request = AgentRequest(
+        request_id="goal", session_id=sid, channel_id="web",
+        req_method=ReqMethod.COMMAND_GOAL, is_stream=True,
+        params={"mode": "agent", "action": "set", "objective": "finish"},
+    )
+    await _collect_events(runtime.stream(request, trigger_hook=False))
+    assert not admission.is_user_active(sid)
+    message = asyncio.create_task(admission.begin_session_message(sid, "run-1"))
+    try:
+        await asyncio.sleep(0)
+        assert not message.done()
+        # A different session remains usable while this Goal runs.
+        await asyncio.wait_for(admission.begin_session_message("other", "run-2"), 1)
+        await admission.end_session_message("other", "run-2")
+        # No foreground event is required to wake the waiting mailbox.
+        manager.agent.goal_active = False
+        await asyncio.wait_for(message, timeout=1)
+    finally:
+        message.cancel()
+        await asyncio.gather(message, return_exceptions=True)
+        await admission.end_session_message(sid, "run-1")
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_stale_answer_does_not_clear_current_pending_interaction() -> None:
     admission = SessionRunAdmission()
     await admission.mark_interaction_pending("session-1", "current-question")
@@ -3300,7 +3455,7 @@ async def test_agent_server_start_restores_remote_service_after_stop(
     first_runtime.start = AsyncMock()
     first_runtime.close = AsyncMock(wraps=first_runtime.close)
 
-    await server.start()
+    await server.start(bind_transport=True)
     await server._checkpointer_warmup_task
     await server.stop()
 
@@ -3309,7 +3464,7 @@ async def test_agent_server_start_restores_remote_service_after_stop(
     recovered_runtime.start = AsyncMock()
     recovered_runtime.close = AsyncMock(wraps=recovered_runtime.close)
 
-    await server.start()
+    await server.start(bind_transport=True)
     await server._checkpointer_warmup_task
 
     assert len(listeners) == 2

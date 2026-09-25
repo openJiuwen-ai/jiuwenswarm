@@ -48,14 +48,23 @@ class ReqMethod(Enum):
     CONFIG_SAVE_ALL = "config.save_all"
     CONFIG_VALIDATE_MODEL = "config.validate_model"
     MODELS_LIST = "models.list"
+    MODELS_GET = "models.get"
     MODELS_REPLACE_ALL = "models.replace_all"
     MODELS_VALIDATE = "models.validate"
+    MODELS_UPSERT = "models.upsert"
+    MODELS_DELETE = "models.delete"
+    MODELS_REFERENCES = "models.references"
+    MODEL_GROUPS_LIST = "model_groups.list"
+    MODEL_GROUPS_UPSERT = "model_groups.upsert"
+    MODEL_GROUPS_DELETE = "model_groups.delete"
+    SESSION_SELECTION_SET = "session.selection.set"
     LOCALE_GET_CONF = "locale.get_conf"
     LOCALE_SET_CONF = "locale.set_conf"
     CHANNEL_GET = "channel.get"
 
     SESSION_LIST = "session.list"
     SESSION_GET_METADATA = "session.get_metadata"
+    SESSION_MESSAGE_CONTINUE_QUEUED = "session.message.continue_queued"
     SESSION_PLAN_STATUS = "session.plan_status"
     SESSION_PIN = "session.pin"
     SESSION_COLOR_SET = "session.color_set"
@@ -120,7 +129,8 @@ class ReqMethod(Enum):
     SESSION_UNARCHIVE = "session.unarchive"
     SESSION_ARCHIVED_LIST = "session.archived.list"
     CRON_SESSIONS_DELETE = "cron.sessions.delete"
-    PROJECT_DELETE = "project.delete"
+    PROJECT_REMOVE = "project.remove"
+    PROJECT_RESTORE = "project.restore"
     PROJECT_LIFECYCLE = "project.lifecycle"
     PROJECT_SESSIONS_ARCHIVE = "project.sessions.archive"
     PROJECT_SESSIONS_DELETE_ARCHIVED = "project.sessions.delete_archived"
@@ -147,6 +157,8 @@ class ReqMethod(Enum):
 
     # 媒体/文档附件（Phase 2 WorkspaceFileAdapter）
     MEDIA_PERSIST = "media.persist"
+    # 丢弃尚未发送的会话 uploads 副本。只删当前会话 uploads 内的普通文件。
+    MEDIA_DISCARD = "media.discard"
     DOCUMENT_PERSIST = "document.persist"
     DOCUMENT_FORMATS = "document.formats"
     # chat.send 上行外部 url 文件导入（Phase 2：AgentServer 下载落盘注入目录，Gateway 不落盘）
@@ -203,6 +215,7 @@ class ReqMethod(Enum):
     MCP_UNINSTALL = "mcp.uninstall"
     MCP_CONNECT = "mcp.connect"
     MCP_WAIT_AUTH = "mcp.wait_auth"
+    MCP_CANCEL_CONNECT = "mcp.cancel_connect"
     MCP_DISCONNECT = "mcp.disconnect"
     MCP_REGISTER_CUSTOM = "mcp.register_custom"
     MCP_DELETE_CUSTOM = "mcp.delete_custom"
@@ -281,6 +294,9 @@ class ReqMethod(Enum):
         "personal_context.runtime.start_agent_use"
     )
     PERSONAL_CONTEXT_RUNTIME_STOP_AGENT_USE = "personal_context.runtime.stop_agent_use"
+    PERSONAL_CONTEXT_RUNTIME_SET_MASTER_ENABLED = (
+        "personal_context.runtime.set_master_enabled"
+    )
     PERSONAL_CONTEXT_RUNTIME_GET_CONFIG = "personal_context.runtime.get_config"
     PERSONAL_CONTEXT_RUNTIME_PATCH_CONFIG = "personal_context.runtime.patch_config"
     PERSONAL_CONTEXT_RUNTIME_SELECT_MODEL = "personal_context.runtime.select_model"
@@ -454,9 +470,12 @@ class EventType(Enum):
     SESSION_ARCHIVED = "session.archived"
     SESSION_UNARCHIVED = "session.unarchived"
     SESSION_DELETED = "session.deleted"
-    PROJECT_DELETED = "project.deleted"
     SESSION_LIFECYCLE_UPDATED = "session.lifecycle.updated"
     PROJECT_LIFECYCLE_UPDATED = "project.lifecycle.updated"
+    # 项目移除(软删除)/恢复：其会话与定时任务的可见性随之变化，
+    # 其他端必须据此刷新工作区、归档页与定时任务列表。
+    PROJECT_REMOVED = "project.removed"
+    PROJECT_RESTORED = "project.restored"
     CONNECTION_ACK = "connection.ack"
     HELLO = "hello"
     CHAT_DELTA = "chat.delta"

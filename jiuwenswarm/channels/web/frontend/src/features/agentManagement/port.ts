@@ -56,6 +56,7 @@ export interface AgentCatalogListOptions {
   enrichTags?: boolean;
   filter?: 'builtin+hub' | 'mine';
   includeTeamCompatibility?: boolean;
+  query?: string;
 }
 
 export interface SkillListOptions {
@@ -83,6 +84,7 @@ export interface AgentManagementClient {
 export interface AgentGroupListOptions {
   filter?: 'builtin' | 'builtin+hub' | 'local' | 'all';
   cache_mode?: 'prefer_cache';
+  query?: string;
 }
 
 export interface AgentGroupManagementClient {
@@ -145,6 +147,28 @@ export function isAgentGroupAgentSelectable(
   return mode === 'leader'
     ? agent.teamCompatible?.leader !== false
     : agent.teamCompatible?.member !== false;
+}
+
+/** A selected/pending/bound Expert Team owns the Team skill slot for the session. */
+export function isAgentGroupSelected(
+  mode: string | undefined,
+  intent: AgentGroupSelectionIntent | undefined,
+  boundGroupId?: string | null,
+  pendingGroupId?: string | null,
+): boolean {
+  if (mode !== 'team') return false;
+  if (boundGroupId?.trim() || pendingGroupId?.trim()) return true;
+  return intent?.kind === 'select' && Boolean(intent.id.trim());
+}
+
+export function resolveSelectedSkillsForRequest(
+  mode: string | undefined,
+  selectedSkills: string[],
+  intent: AgentGroupSelectionIntent | undefined,
+  boundGroupId?: string | null,
+  pendingGroupId?: string | null,
+): string[] {
+  return isAgentGroupSelected(mode, intent, boundGroupId, pendingGroupId) ? [] : selectedSkills;
 }
 
 export function buildAgentGroupSelectionPayloadForMode(
