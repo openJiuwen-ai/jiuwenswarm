@@ -1519,7 +1519,8 @@
       "more": "更多",
       "history": "运行历史",
       "triggeredSessions": "执行记录",
-      "noTriggeredSessions": "暂无触发记录"
+      "noTriggeredSessions": "暂无触发记录",
+      "viewMore": "查看更多（剩余 {{count}} 条）"
     },
     "empty": {
       "createButton": "创建定时任务",

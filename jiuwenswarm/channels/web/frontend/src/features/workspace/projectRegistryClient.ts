@@ -28,10 +28,12 @@ export const projectRegistryClient = {
       project_id: projectId,
       ...(limit !== undefined ? { limit } : {}),
     }),
-  getCronSessions: (projectId: string, cronId?: string) =>
+  getCronSessions: (projectId: string, cronId?: string, limit?: number, offset?: number) =>
     webRequest<{ sessions: Session[]; total: number }>('project.get_cron_sessions', {
       project_id: projectId,
       ...(cronId ? { cron_id: cronId } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+      ...(offset !== undefined ? { offset } : {}),
     }),
   create: (name: string, projectDir: string, workMode: WorkMode) =>
     webRequest<{
