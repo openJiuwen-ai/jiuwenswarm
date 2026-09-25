@@ -168,19 +168,6 @@ def _uses_joyai_voice_channel() -> bool:
     return joyai_provider.uses_native_voice_channel(_video_live_mode())
 
 
-def _preferred_language() -> str:
-    """Read the same language setting used by Jiuwen's normal agent UI."""
-    try:
-        from jiuwenswarm.common.config import get_config
-
-        config = get_config()
-        return joyai_provider.normalize_response_language(
-            config.get("preferred_language") if isinstance(config, dict) else "zh"
-        )
-    except Exception:  # noqa: BLE001 - realtime config must remain available
-        return "zh"
-
-
 def video_duplex_enabled() -> bool:
     return (os.getenv("VIDEO_DUPLEX_ENABLED") or "true").strip().casefold() not in {
         "0",
@@ -213,7 +200,7 @@ def register_video_live_handler(
 
     async def _realtime_config(ws, req_id, params, session_id):
         del params, session_id
-        preferred_language = _preferred_language()
+        reply_language = settings.reply_language()
         if _video_live_mode() == "joyai":
             api_base, _, model = joyai_provider.model_config()
             if not api_base or not model:
@@ -225,7 +212,7 @@ def register_video_live_handler(
                 return
             await channel.send_response(
                 ws, req_id, ok=True,
-                payload={"provider": "joyai", "model": model, "preferred_language": preferred_language},
+                payload={"provider": "joyai", "model": model, "reply_language": reply_language},
             )
             return
         config = QwenOmniRealtimeConfig.from_environment()
@@ -249,9 +236,8 @@ def register_video_live_handler(
                 "url": QWEN_OMNI_PROXY_PATH,
                 "model": config.model,
                 "voice": config.voice,
-                "reply_language": settings.reply_language(),
                 "tools": qwen_omni_tools(),
-                "preferred_language": preferred_language,
+                "reply_language": reply_language,
             },
         )
 
@@ -265,7 +251,7 @@ def register_video_live_handler(
         tool_context = str(params.get("tool_context") or "").strip()
         frame_time_range = str(params.get("frame_time_range") or "").strip()
         preferred_language = joyai_provider.normalize_response_language(
-            params.get("preferred_language") or _preferred_language()
+            params.get("reply_language", settings.reply_language())
         )
         request_kind = str(params.get("request_kind") or "frame").strip().casefold()
         if not _is_allowed_image_data_url(frame_data_url):

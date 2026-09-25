@@ -33,7 +33,6 @@ from jiuwenswarm.server.runtime.attachments.media_attachments import (
 
 @pytest.fixture(autouse=True)
 def _isolate_video_mode_environment(monkeypatch) -> None:
-    monkeypatch.setattr(video_live, "_preferred_language", lambda: "zh")
     for name in (
         "VIDEO_LIVE_MODE",
         "VIDEO_DUPLEX_REPLY_LANGUAGE",
@@ -577,7 +576,7 @@ async def test_video_config_selects_joyai_without_realtime_reference_audio(
     assert channel.responses[-1][1]["payload"] == {
         "provider": "joyai",
         "model": "jdopensource/JoyAI-VL-Interaction",
-        "preferred_language": "zh",
+        "reply_language": "match",
     }
 
 
@@ -603,9 +602,8 @@ async def test_video_config_selects_qwen_gateway_without_reference_audio(
         "url": "/ws/video/qwen-omni",
         "model": "qwen3.5-omni-flash-realtime",
         "voice": "Ethan",
-        "reply_language": "match",
         "tools": video_live.qwen_omni_tools(),
-        "preferred_language": "zh",
+        "reply_language": "match",
     }
 
 
@@ -1305,7 +1303,7 @@ async def test_joyai_user_instruction_preserves_native_silence(monkeypatch) -> N
         (
             "每当画面出现瓶子时介绍它的样子。",
             "原问题：香港今天天气如何？\n最终结果：香港今日多云，局部地区有骤雨。",
-            "zh",
+            "match",
         )
     ]
     assert calls == [("grounded user instruction", "joyai-session-user")]
@@ -2382,7 +2380,7 @@ async def test_tts_stream_cancel_stops_background_generation(monkeypatch) -> Non
         "video.tts.cancelled",
         {"stream_id": "stream-cancel"},
     )
-@pytest.mark.parametrize("language, expected", [("en", "natural English"), ("en-US", "natural English"), ("zh", "简体中文")])
+@pytest.mark.parametrize("language, expected", [("en", "Speak to the user in English"), ("match", "same language as their latest utterance"), ("zh-CN", "Simplified Chinese")])
 def test_joyai_response_language_is_grounded(language, expected):
     assert expected in joyai_provider.ground_user_instruction("Read the screen", preferred_language=language)
 
@@ -2390,7 +2388,7 @@ def test_joyai_response_language_is_grounded(language, expected):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["joyai", "qwen_omni"])
 async def test_realtime_config_propagates_english(monkeypatch, provider):
-    monkeypatch.setattr(video_live, "_preferred_language", lambda: "en")
+    monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", "en")
     monkeypatch.setenv("VIDEO_LIVE_MODE", "joyai" if provider == "joyai" else "realtime")
     monkeypatch.setenv("VIDEO_REALTIME_PROVIDER", "qwen_omni")
     monkeypatch.setenv("JOYAI_API_BASE", "https://example.test/v1")
@@ -2402,13 +2400,13 @@ async def test_realtime_config_propagates_english(monkeypatch, provider):
     await channel.handlers["video.realtime.config"](object(), "language-config", {}, "web-session")
     response = channel.responses[-1][1]
     assert response["ok"] is True
-    assert response["payload"]["preferred_language"] == "en"
+    assert response["payload"]["reply_language"] == "en"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["frame", "user"])
 async def test_joyai_requests_apply_english_to_model_prompt(monkeypatch, kind):
-    monkeypatch.setattr(video_live, "_preferred_language", lambda: "en")
+    monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", "en")
     calls = []
     async def fake_request(frame_data_url, instruction, joyai_session_id):
         calls.append(instruction)
@@ -2423,7 +2421,7 @@ async def test_joyai_requests_apply_english_to_model_prompt(monkeypatch, kind):
     }, "web-session")
     assert channel.responses[-1][1]["ok"] is True
     assert len(calls) == 1
-    assert "natural English" in calls[0]
+    assert "Speak to the user in English" in calls[0]
     assert "Read the screen" in calls[0]
 
 
@@ -2623,3 +2621,42 @@ async def test_qwen_reply_language_config(monkeypatch, language, expected):
     await channel.handlers["video.realtime.config"](object(), "language-config", {}, "web-session")
     assert channel.responses[-1][1]["payload"]["reply_language"] == expected
     assert settings.settings_payload(enabled=True)["values"]["reply_language"] == expected
+
+
+@pytest.mark.parametrize("language,expected", [("en", "Speak to the user in English"), ("zh-CN", "Simplified Chinese"), ("match", "same language as their latest utterance"), ("invalid", "same language as their latest utterance")])
+@pytest.mark.parametrize("kind", ["user", "frame"])
+@pytest.mark.asyncio
+async def test_joyai_shared_reply_language(monkeypatch, language, expected, kind):
+    monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", "zh-CN")
+    calls = []
+    async def fake_request(frame, prompt, session):
+        calls.append(prompt)
+        return _joyai_result("silence", raw_content="</silence>")
+    monkeypatch.setattr(joyai_provider, "request_frame", fake_request)
+    monkeypatch.setattr(video_live, "_append_joyai_log", lambda event: None)
+    channel = _video_channel()
+    await channel.handlers["video.joyai.frame"](object(), "shared-language", {
+        "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==",
+        "instruction": "Read the screen" if kind == "user" else "",
+        "request_kind": kind,
+        "reply_language": language,
+        "joyai_session_id": "language-test",
+    }, "web-session")
+    assert channel.responses[-1][1]["ok"] is True
+    assert expected in calls[0]
+    if language in {"match", "invalid"}:
+        assert "not screen OCR language" in calls[0]
+
+
+@pytest.mark.parametrize("language,expected", [("en", "Speak to the user in English"), ("zh-CN", "Simplified Chinese"), ("match", "same language as their latest utterance")])
+def test_core_receipt_uses_shared_reply_language(monkeypatch, language, expected):
+    monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", language)
+    assert expected in video_search.core_agent_brief_protocol("test-nonce")
+    assert "[[JIUWEN_BRIEF_BEGIN:test-nonce]]" in video_search.core_agent_brief_protocol("test-nonce")
+
+
+@pytest.mark.parametrize("language,question", [("en", "生成文件"), ("match", "Generate a file")])
+def test_english_receipt_fallback_does_not_speak_chinese(monkeypatch, language, question):
+    monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", language)
+    result = video_search.present_core_agent_result("```python\nprint(1)\n```", nonce="missing", question=question)
+    assert result["realtime_brief"]["summary"] == "The task has finished. The full result is available in the interface."

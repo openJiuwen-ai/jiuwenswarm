@@ -274,11 +274,11 @@ export function VideoDuplexModelSettings() {
         </div>
       )}
 
-      {values.video_live_provider === 'qwen_omni' && <div className="video-duplex-model-settings__reply-language">
+      <div className="video-duplex-model-settings__reply-language">
         {replyLanguageSelect(values.reply_language, (value) => void saveReplyLanguage(value), {
           disabled: saving || deleting,
         })}
-      </div>}
+      </div>
 
       {draft ? (
         <FormDialog
@@ -295,7 +295,7 @@ export function VideoDuplexModelSettings() {
           }}
         >
           <div className="video-duplex-model-settings__dialog-fields">
-            {draft.video_live_provider === 'qwen_omni' && replyLanguageSelect(draft.reply_language, (value) => updateDraft('reply_language', value), {
+            {replyLanguageSelect(draft.reply_language, (value) => updateDraft('reply_language', value), {
               testId: 'settings-video-duplex-reply-language-draft',
             })}
             <label className="video-duplex-model-settings__field">

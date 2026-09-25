@@ -32,7 +32,6 @@ _TTS_INSTRUCTIONS = (
 _TTS_TEMPERATURE = 0.2
 _ACTION_TEMPERATURE = 0.0
 _SYSTEM_PROMPT_KEY = "DEFAULT_SYSTEM_PROMPT_EN"
-_SUPPORTED_RESPONSE_LANGUAGES = {"zh", "en"}
 _USER_KNOWLEDGE_GUARD = (
     "【本轮动作约束】你必须自行选择官方动作。只依据当前或近期清晰画面、用户明确提供的信息和已确认的工具结果回答。"
     "天气、新闻、价格、公司或品牌背景等外部或时效事实需要搜索核实，不得凭记忆猜测。"
@@ -54,24 +53,23 @@ class JoyAIRateLimitError(RuntimeError):
 
 
 def normalize_response_language(value: object) -> str:
-    """Normalize Jiuwen's preferred response language for realtime prompts."""
-    language = str(value or "zh").strip().lower().replace("_", "-")
-    if language.startswith("en"):
-        return "en"
-    return "zh" if language not in _SUPPORTED_RESPONSE_LANGUAGES else language
+    """Use the same reply language values as Qwen."""
+    from jiuwenswarm.extensions.video_duplex.backend.settings import ALLOWED_REPLY_LANGUAGES
+    language = str(value or "").strip()
+    return language if language in ALLOWED_REPLY_LANGUAGES else "match"
 
 
-def response_language_instruction(value: object = "zh") -> str:
-    """Return an explicit output-language rule shared by realtime providers."""
+def response_language_instruction(value: object = "match") -> str:
     language = normalize_response_language(value)
+    preserve = " Preserve user-provided data, task IDs and file paths exactly."
     if language == "en":
-        return (
-            "【输出语言】Follow Jiuwen's preferred language: answer and speak in natural English. "
-            "Do not switch to Chinese unless the user explicitly asks for Chinese."
-        )
+        return "Speak to the user in English." + preserve
+    if language == "zh-CN":
+        return "Speak to the user in Simplified Chinese." + preserve
     return (
-        "【输出语言】遵循九问的首选语言：请使用自然、简体中文回答和播报。"
-        "除非用户明确要求英语，不要切换为英语。"
+        "Speak to the user in the same language as their latest utterance (speech transcript or typed text). "
+        "If mixed, follow the latest user turn — not screen OCR language, not older assistant turns."
+        + preserve
     )
 
 
@@ -130,7 +128,7 @@ def parse_action(raw_content: str) -> dict[str, str]:
 
 
 def ground_user_instruction(
-    instruction: str, tool_context: str = "", preferred_language: object = "zh",
+    instruction: str, tool_context: str = "", preferred_language: object = "match",
 ) -> str:
     """Add per-turn grounding rules without changing frame-only or tool turns."""
     instruction = str(instruction or "").strip()
