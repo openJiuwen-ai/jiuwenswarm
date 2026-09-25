@@ -823,7 +823,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             url: config.url || '',
             voice: config.voice,
             tools: config.tools,
-            preferredLanguage: config.preferred_language,
+            replyLanguage: config.reply_language,
           },
           {
             getVideoFrame: () => {

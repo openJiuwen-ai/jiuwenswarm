@@ -19,6 +19,7 @@ SETTING_ENV_KEYS = {
     "qwen_omni_api_key": "QWEN_OMNI_API_KEY",
     "qwen_omni_model": "QWEN_OMNI_MODEL_NAME",
     "qwen_omni_voice": "QWEN_OMNI_VOICE",
+    "reply_language": "VIDEO_DUPLEX_REPLY_LANGUAGE",
     "voice_protocol": "VOICE_PROTOCOL",
     "voice_asr_endpoint": "VOICE_ASR_ENDPOINT",
     "voice_tts_endpoint": "VOICE_TTS_ENDPOINT",
@@ -28,6 +29,7 @@ SETTING_ENV_KEYS = {
     "voice_tts_voice": "VOICE_TTS_VOICE",
 }
 SECRET_SETTINGS = {"joyai_api_key", "qwen_omni_api_key", "voice_api_key"}
+ALLOWED_REPLY_LANGUAGES = frozenset({"match", "zh-CN", "en"})
 DEFAULTS = {
     "joyai_api_base": "",
     "joyai_api_key": "",
@@ -36,6 +38,7 @@ DEFAULTS = {
     "qwen_omni_api_key": "",
     "qwen_omni_model": "qwen3.5-omni-flash-realtime",
     "qwen_omni_voice": "Cherry",
+    "reply_language": "match",
     "voice_protocol": "native_ws",
     "voice_asr_endpoint": "ws://127.0.0.1:8994/ws/asr",
     "voice_tts_endpoint": "ws://127.0.0.1:8992/ws/tts",
@@ -99,6 +102,8 @@ def settings_payload(*, enabled: bool) -> dict[str, Any]:
             values[key] = ""
         else:
             values[key] = raw.strip()
+    if values.get("reply_language") not in ALLOWED_REPLY_LANGUAGES:
+        values["reply_language"] = DEFAULTS["reply_language"]
     return {
         "enabled": enabled,
         "values": values,
@@ -128,6 +133,12 @@ def _validated_values(values: Mapping[str, Any]) -> dict[str, str]:
     )
     if protocol not in {"native_ws", "openai_http"}:
         raise ValueError("voice_protocol must be native_ws or openai_http")
+    if "reply_language" in normalized:
+        reply_language = normalized["reply_language"]
+        if not reply_language:
+            normalized["reply_language"] = DEFAULTS["reply_language"]
+        elif reply_language not in ALLOWED_REPLY_LANGUAGES:
+            raise ValueError("reply_language must be match, zh-CN, or en")
     for key, value in normalized.items():
         if len(value) > 4096:
             raise ValueError(f"setting {key!r} is too long")
@@ -147,6 +158,12 @@ def update_settings(values: Mapping[str, Any], *, clear_secrets: bool = False) -
         updates[SETTING_ENV_KEYS[key]] = value
     os.environ.update(updates)
     _persist_env_updates(updates)
+
+
+def reply_language() -> str:
+    """Return the configured full-duplex reply language."""
+    raw = (os.getenv(SETTING_ENV_KEYS["reply_language"]) or "").strip()
+    return raw if raw in ALLOWED_REPLY_LANGUAGES else str(DEFAULTS["reply_language"])
 
 
 def set_enabled(enabled: bool) -> None:

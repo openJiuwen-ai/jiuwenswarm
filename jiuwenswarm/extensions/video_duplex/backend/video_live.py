@@ -16,6 +16,7 @@ from jiuwenswarm.server.runtime.session.history_io import run_history_io
 
 from jiuwenswarm.extensions.video_duplex.backend import (
     joyai_provider,
+    settings,
     video_search,
     video_voice,
 )
@@ -248,6 +249,7 @@ def register_video_live_handler(
                 "url": QWEN_OMNI_PROXY_PATH,
                 "model": config.model,
                 "voice": config.voice,
+                "reply_language": settings.reply_language(),
                 "tools": qwen_omni_tools(),
                 "preferred_language": preferred_language,
             },
@@ -619,6 +621,7 @@ def register_video_live_handler(
         **voice_handlers,
         "video.qwen.tool": search_manager.handle_qwen_tool,
         "video.search.status": search_manager.handle_status,
+        "video.search.answer": search_manager.handle_answer,
         "video.search.control": search_manager.handle_control,
     }
     for method, handler in handlers.items():

@@ -581,7 +581,7 @@ test('session update includes Gateway-provided tools', async () => {
   globalThis.window = globalThis;
   globalThis.WebSocket = StartupSocket;
   const session = new RealtimeDuplexSession(
-    { url: 'ws://example.test/realtime', tools, preferredLanguage: 'en' },
+    { url: 'ws://example.test/realtime', tools, replyLanguage: 'en' },
     {
       getVideoFrame: () => null,
       onAssistantText: () => undefined,
@@ -598,7 +598,7 @@ test('session update includes Gateway-provided tools', async () => {
   assert.deepEqual(socket.sent[0].session.tools, tools);
   assert.match(socket.sent[0].session.instructions, /MUST call jiuwen_delegate in the same turn/);
   assert.match(socket.sent[0].session.instructions, /brief, natural acknowledgement that you are handling the request/);
-  assert.match(socket.sent[0].session.instructions, /Answer and speak in natural English/);
+  assert.match(socket.sent[0].session.instructions, /Speak to the user in English/);
   assert.match(socket.sent[0].session.instructions, /acknowledgement describes work in progress only/);
   assert.match(
     socket.sent[0].session.instructions,

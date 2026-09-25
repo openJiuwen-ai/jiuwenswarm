@@ -36,6 +36,7 @@ def _isolate_video_mode_environment(monkeypatch) -> None:
     monkeypatch.setattr(video_live, "_preferred_language", lambda: "zh")
     for name in (
         "VIDEO_LIVE_MODE",
+        "VIDEO_DUPLEX_REPLY_LANGUAGE",
         "VIDEO_DUPLEX_ENABLED",
         "VIDEO_REALTIME_PROVIDER",
         "VOICE_PROTOCOL",
@@ -602,6 +603,7 @@ async def test_video_config_selects_qwen_gateway_without_reference_audio(
         "url": "/ws/video/qwen-omni",
         "model": "qwen3.5-omni-flash-realtime",
         "voice": "Ethan",
+        "reply_language": "match",
         "tools": video_live.qwen_omni_tools(),
         "preferred_language": "zh",
     }
@@ -1176,6 +1178,7 @@ def test_registers_only_realtime_support_methods() -> None:
         "video.qwen.tool",
         "video.search.status",
         "video.search.control",
+        "video.search.answer",
         "tts.synthesize",
         "tts.stream.start",
         "tts.stream.cancel",
@@ -2422,3 +2425,201 @@ async def test_joyai_requests_apply_english_to_model_prompt(monkeypatch, kind):
     assert len(calls) == 1
     assert "natural English" in calls[0]
     assert "Read the screen" in calls[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("choice", ["allow_once", "reject"])
+async def test_duplex_confirmation_resumes_same_core_session(choice):
+    calls = []
+    question = {
+        "event_type": "chat.ask_user_question",
+        "request_id": "permission-1",
+        "source": "permission_interrupt",
+        "questions": [{"question": "run command?"}],
+    }
+
+    class Client:
+        async def send_request_stream(self, envelope):
+            calls.append(envelope)
+            if len(calls) == 1:
+                yield SimpleNamespace(payload=question)
+                yield SimpleNamespace(
+                    payload={"event_type": "chat.final", "content": ""}
+                )
+            else:
+                yield SimpleNamespace(
+                    payload={"event_type": "chat.final", "content": "Done"}
+                )
+
+    answered = asyncio.Event()
+
+    async def confirm(payload):
+        assert payload == question
+        await answered.wait()
+        return [{"selected_options": [choice]}]
+
+    task = asyncio.create_task(
+        video_search.execute_core_agent(
+            Client(),
+            question="task",
+            query="task",
+            visual_context="",
+            search_session_id="task-duplex:web-test",
+            core_session_id="core-test",
+            on_question=confirm,
+        )
+    )
+    await asyncio.sleep(0)
+    assert not task.done()
+    assert len(calls) == 1
+    answered.set()
+    result = await task
+    assert result["answer"] == "Done"
+    assert len(calls) == 2
+    assert calls[1].session_id == calls[0].session_id == "core-test"
+    params = calls[1].params
+    assert params["query"] == ""
+    assert params["request_id"] == "permission-1"
+    assert params["answers"] == [{"selected_options": [choice]}]
+
+
+@pytest.mark.asyncio
+async def test_duplex_confirmation_routes_replays_and_rejects_wrong_owner():
+    class Channel:
+        def __init__(self):
+            self.events, self.responses = [], []
+
+        async def send_event(self, ws, event, payload):
+            self.events.append((event, payload))
+
+        async def send_response(self, ws, request_id, **response):
+            self.responses.append(response)
+
+    channel = Channel()
+    manager = video_search.VideoSearchManager(
+        channel, None, log_event=lambda _: None, qwen_active=lambda: False
+    )
+    manager._jobs["job"] = {
+        "job_id": "job",
+        "search_session_id": "task-duplex:web-test",
+        "status": "running",
+    }
+    question = {
+        "request_id": "permission-1",
+        "source": "permission_interrupt",
+        "questions": [{"question": "run?"}],
+    }
+    task = asyncio.create_task(manager._request_confirmation(None, "job", question))
+    await asyncio.sleep(0)
+    assert channel.events[-1][0] == "chat.ask_user_question"
+    assert channel.events[-1][1]["session_id"] == "web-test"
+    await manager.handle_status(None, "status", {"job_id": "job"}, "web-test")
+    assert channel.events[-1][0] == "chat.ask_user_question"
+    answer = {
+        "job_id": "job",
+        "session_id": "wrong",
+        "request_id": "permission-1",
+        "answers": [{"selected_options": ["reject"]}],
+    }
+    await manager.handle_answer(None, "answer", answer, "wrong")
+    assert not channel.responses[-1]["ok"] and not task.done()
+    answer["session_id"] = "web-test"
+    await manager.handle_answer(None, "answer", answer, "web-test")
+    assert await task == answer["answers"]
+    assert channel.events[-1][0] == "video.search.confirmation_closed"
+    assert "pending_question" not in manager._jobs["job"]
+    await manager.handle_answer(None, "duplicate", answer, "web-test")
+    assert not channel.responses[-1]["ok"]
+
+
+@pytest.mark.asyncio
+async def test_duplex_confirmation_cancel_closes_card():
+    events = []
+
+    class Channel:
+        async def send_event(self, ws, event, payload):
+            events.append(event)
+
+    manager = video_search.VideoSearchManager(
+        Channel(), None, log_event=lambda _: None, qwen_active=lambda: False
+    )
+    manager._jobs["job"] = {
+        "search_session_id": "task-duplex:web-test",
+        "status": "running",
+    }
+    task = asyncio.create_task(
+        manager._request_confirmation(
+            None,
+            "job",
+            {
+                "request_id": "permission-1",
+                "source": "permission_interrupt",
+                "questions": [{}],
+            },
+        )
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert events[-1] == "video.search.confirmation_closed"
+    assert not manager._confirmations
+    assert "pending_question" not in manager._jobs["job"]
+
+
+@pytest.mark.asyncio
+async def test_duplex_job_waits_for_two_confirmations_then_completes():
+    events = asyncio.Queue()
+    requests = []
+    class Channel:
+        async def send_event(self, ws, event, payload):
+            await events.put((event, payload))
+        async def send_response(self, ws, request_id, **response):
+            assert response["ok"]
+    class Client:
+        async def send_request_stream(self, envelope):
+            requests.append(envelope)
+            if len(requests) < 3:
+                yield SimpleNamespace(payload={
+                    "event_type": "chat.ask_user_question", "source": "permission_interrupt",
+                    "request_id": f"permission-{len(requests)}", "questions": [{"question": "run?"}]})
+                yield SimpleNamespace(payload={"event_type": "chat.final", "content": ""})
+            else:
+                yield SimpleNamespace(payload={"event_type": "chat.final", "content": "Task complete"})
+    manager = video_search.VideoSearchManager(Channel(), Client(), log_event=lambda _: None,
+                                               qwen_active=lambda: False)
+    job = manager.start(None, question="task", query="task", search_session_id="task-duplex:web-test")
+    async def next_event(name):
+        while True:
+            event, payload = await asyncio.wait_for(events.get(), timeout=3)
+            if event == name:
+                return payload
+    for number in (1, 2):
+        question = await next_event("chat.ask_user_question")
+        assert question["request_id"] == f"permission-{number}"
+        assert manager._jobs[job["id"]]["status"] == "running"
+        await manager.handle_answer(None, "answer", {
+            "session_id": "web-test", "job_id": job["id"],
+            "request_id": question["request_id"],
+            "answers": [{"selected_options": ["allow_once"]}],
+        }, "web-test")
+    completed = await next_event("video.search.completed")
+    assert completed["result"] == "Task complete"
+    assert len({request.session_id for request in requests}) == 1
+    assert [request.params.get("query") for request in requests[1:]] == ["", ""]
+    assert not manager._confirmations
+    await asyncio.gather(*manager._tasks)
+
+
+@pytest.mark.parametrize("language,expected", [("match", "match"), ("zh-CN", "zh-CN"), ("en", "en"), ("invalid", "match"), ("", "match")])
+@pytest.mark.asyncio
+async def test_qwen_reply_language_config(monkeypatch, language, expected):
+    from jiuwenswarm.extensions.video_duplex.backend import settings
+    monkeypatch.setenv("QWEN_OMNI_REALTIME_URL", "wss://example.test/realtime")
+    monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", language)
+    monkeypatch.setenv("VIDEO_LIVE_MODE", "realtime")
+    monkeypatch.setenv("QWEN_OMNI_API_KEY", "test-secret")
+    channel = _video_channel()
+    await channel.handlers["video.realtime.config"](object(), "language-config", {}, "web-session")
+    assert channel.responses[-1][1]["payload"]["reply_language"] == expected
+    assert settings.settings_payload(enabled=True)["values"]["reply_language"] == expected

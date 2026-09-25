@@ -367,6 +367,8 @@ async def execute_core_agent(
     normalize_media_attachments: Callable[[dict[str, Any], str | None], None]
     | None = None,
     on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    on_question: Callable[[dict[str, Any]], Awaitable[list[dict[str, Any]]]]
+    | None = None,
 ) -> dict[str, Any]:
     """Run one delegated video task through the standard, full Core Agent API."""
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
@@ -459,40 +461,72 @@ async def execute_core_agent(
     tools_used: list[str] = []
     emitted_once: set[str] = set()
     received_files = False
-    async for chunk in send_stream(env):
-        payload = chunk.payload if isinstance(chunk.payload, dict) else {}
-        event_type = str(payload.get("event_type") or "").strip()
-        if event_type == "chat.error":
-            raise RuntimeError(
-                str(
-                    payload.get("error")
-                    or payload.get("content")
-                    or "Jiuwen Core Agent failed"
+    while True:
+        pending_question = None
+        async for chunk in send_stream(env):
+            payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+            event_type = str(payload.get("event_type") or "").strip()
+            if event_type == "chat.ask_user_question":
+                pending_question = payload
+                continue
+            if event_type == "chat.error":
+                raise RuntimeError(
+                    str(
+                        payload.get("error")
+                        or payload.get("content")
+                        or "Jiuwen Core Agent failed"
+                    )
                 )
-            )
-        content = str(payload.get("content") or "")
-        if event_type == "chat.delta" and content:
-            delta_parts.append(content)
-        elif event_type == "chat.final":
-            final_payload = payload
-        progress = core_agent_progress(payload)
-        if progress is None:
-            continue
-        stage = str(progress.get("stage") or "")
-        received_files = received_files or stage == "file"
-        tool_key = str(progress.get("tool_call_id") or "")
-        dedupe_key = f"{stage}:{tool_key}" if tool_key else stage
-        # Reasoning is streamed as deltas. Suppressing repeated stages here used to
-        # discard every delta after the first one, so the task timeline could never
-        # reproduce the Core Agent's actual reasoning path.
-        if stage in {"answer", "plan"} and dedupe_key in emitted_once:
-            continue
-        emitted_once.add(dedupe_key)
-        tool_name = str(progress.get("tool_name") or "").strip()
-        if tool_name and tool_name not in tools_used:
-            tools_used.append(tool_name)
-        if on_progress is not None:
-            await on_progress(progress)
+            content = str(payload.get("content") or "")
+            if event_type == "chat.delta" and content:
+                delta_parts.append(content)
+            elif event_type == "chat.final":
+                final_payload = payload
+            progress = core_agent_progress(payload)
+            if progress is None:
+                continue
+            stage = str(progress.get("stage") or "")
+            received_files = received_files or stage == "file"
+            tool_key = str(progress.get("tool_call_id") or "")
+            dedupe_key = f"{stage}:{tool_key}" if tool_key else stage
+            # Reasoning is streamed as deltas. Suppressing repeated stages here used to
+            # discard every delta after the first one, so the task timeline could never
+            # reproduce the Core Agent's actual reasoning path.
+            if stage in {"answer", "plan"} and dedupe_key in emitted_once:
+                continue
+            emitted_once.add(dedupe_key)
+            tool_name = str(progress.get("tool_name") or "").strip()
+            if tool_name and tool_name not in tools_used:
+                tools_used.append(tool_name)
+            if on_progress is not None:
+                await on_progress(progress)
+        if pending_question is None:
+            break
+        if on_question is None:
+            raise RuntimeError("Core Agent is waiting for user confirmation")
+        # Drain the interrupted stream before resuming the same Core session.
+        answers = await on_question(pending_question)
+        env = e2a_from_agent_fields(
+            request_id=f"video-resume-{uuid.uuid4().hex}",
+            channel_id=VIDEO_TOOL_CHANNEL_ID,
+            session_id=core_session_id,
+            req_method=ReqMethod.CHAT_SEND,
+            params={
+                "query": "",
+                "content": "",
+                "mode": "agent",
+                "work_mode": "work",
+                "source": pending_question.get("source"),
+                "request_id": pending_question.get("request_id"),
+                "answers": answers,
+                "log_as_user": False,
+            },
+            is_stream=True,
+            timestamp=time.time(),
+        )
+        final_payload = {}
+        delta_parts = []
+        emitted_once.clear()
 
     raw_answer = (
         str(final_payload.get("content") or "").strip() or "".join(delta_parts).strip()
@@ -549,6 +583,7 @@ class VideoSearchManager:
         self._queue_versions: dict[str, int] = {}
         self._controls: dict[str, asyncio.Lock] = {}
         self._stopping: dict[str, asyncio.Event] = {}
+        self._confirmations: dict[str, tuple[dict[str, Any], asyncio.Future, Any]] = {}
 
     def _queue_snapshot(self, scope: str) -> dict[str, Any]:
         pending = self._queue.get(scope, [])
@@ -825,6 +860,82 @@ class VideoSearchManager:
                 )
             return False
 
+    async def _request_confirmation(
+        self, ws: Any, job_id: str, question: dict[str, Any]
+    ):
+        job = self._jobs[job_id]
+        scope = str(job["search_session_id"])
+        if not scope.startswith("task-duplex:"):
+            raise RuntimeError(
+                "Please open this task in a Jiuwen conversation to confirm"
+            )
+        if (
+            question.get("source")
+            not in {
+                "permission_interrupt",
+                "confirm_interrupt",
+                "ask_user_interrupt",
+            }
+            or not question.get("request_id")
+            or not question.get("questions")
+        ):
+            raise RuntimeError("Unsupported Core Agent confirmation event")
+        payload = {
+            **question,
+            "session_id": scope.removeprefix("task-duplex:"),
+            "duplex_job_id": job_id,
+        }
+        future = asyncio.get_running_loop().create_future()
+        self._confirmations[job_id] = (payload, future, ws)
+        job["pending_question"] = payload
+        try:
+            await self._send_event(ws, "chat.ask_user_question", payload)
+            return await future
+        finally:
+            pending = self._confirmations.pop(job_id, None)
+            delivery_ws = pending[2] if pending else ws
+            job.pop("pending_question", None)
+            await self._send_event(delivery_ws, "video.search.confirmation_closed", payload)
+
+    async def handle_answer(self, ws: Any, req_id: Any, params: Any, session_id: Any):
+        raw = params if isinstance(params, dict) else {}
+        job_id = str(raw.get("job_id") or "")
+        pending = self._confirmations.get(job_id)
+        if not pending:
+            await self._channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="Confirmation is no longer pending",
+                code="NOT_FOUND",
+            )
+            return
+        question, future, _ = pending
+        owner = str(raw.get("session_id") or session_id or "")
+        answers = raw.get("answers")
+        valid = (
+            owner == question["session_id"]
+            and raw.get("request_id") == question.get("request_id")
+            and isinstance(answers, list)
+            and bool(answers)
+            and all(isinstance(answer, dict) for answer in answers)
+        )
+        if not valid or future.done() or job_id in self._stopping:
+            await self._channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="Stale or mismatched confirmation",
+                code="INVALID_PARAMS",
+            )
+            return
+        # The Core permission gate remains authoritative; never grant by default.
+        self._confirmations[job_id] = (question, future, ws)
+        future.set_result(answers)
+        await self._channel.send_response(
+            ws, req_id, ok=True, payload={"accepted": True}
+        )
+
     async def _run_job(
         self,
         ws: Any,
@@ -907,6 +1018,25 @@ class VideoSearchManager:
         await asyncio.to_thread(
             self._log_event, {"stage": "search_started", **base_payload}
         )
+
+        async def confirm(payload: dict[str, Any]) -> list[dict[str, Any]]:
+            await emit_progress(
+                {
+                    "stage": "waiting_confirmation",
+                    "title": "等待用户确认",
+                    "status": "running",
+                }
+            )
+            answers = await self._request_confirmation(ws, job_id, payload)
+            await emit_progress(
+                {
+                    "stage": "started",
+                    "title": "Core Agent 继续处理",
+                    "status": "running",
+                }
+            )
+            return answers
+
         try:
             session_state = self._session_state(search_session_id)
             core_session_id = str(session_state["core_session_id"])
@@ -933,6 +1063,7 @@ class VideoSearchManager:
                         frame_data_url=frame_data_url,
                         normalize_media_attachments=self._normalize_media_attachments,
                         on_progress=emit_progress,
+                        on_question=confirm,
                     )
                     await self._wait_for_stop(job_id)
                     answer = core_result["answer"]
@@ -1264,6 +1395,13 @@ class VideoSearchManager:
                 "queue_version": self._queue_versions.get(scope, 0),
             },
         )
+        if job.get("pending_question"):
+            confirmation = self._confirmations.get(job_id)
+            if confirmation:
+                self._confirmations[job_id] = (*confirmation[:2], ws)
+            await self._send_event(
+                ws, "chat.ask_user_question", job["pending_question"]
+            )
         if job.get("delivery_pending"):
             job["delivery_pending"] = False
             await asyncio.to_thread(
