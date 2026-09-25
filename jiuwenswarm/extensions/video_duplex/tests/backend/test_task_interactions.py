@@ -9,7 +9,10 @@ from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support impor
 
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import InteractionPending
-from jiuwenswarm.extensions.video_duplex.backend.tasks.interactions import information_question, native_approval_question
+from jiuwenswarm.extensions.video_duplex.backend.tasks.interactions import (
+    information_question,
+    native_approval_question,
+)
 from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
 from jiuwenswarm.extensions.video_duplex.backend.task_adapter import AgentTaskExecutor
 from jiuwenswarm.extensions.video_duplex.backend.video_search import execute_core_agent
@@ -325,7 +328,7 @@ async def test_native_permission_card_replays_and_closes_on_resolution():
 
     manager = VideoSearchManager.__new__(VideoSearchManager)
     manager.channel = Channel()
-    manager._approval_cards = {}
+    manager._approval_cards = {}  # pylint: disable=protected-access
     task = {
         "id": "job", "session": "task-duplex:web-session", "status": "waiting_user",
         "interaction": {
@@ -338,17 +341,19 @@ async def test_native_permission_card_replays_and_closes_on_resolution():
     }
     ws = object()
     key = ("owner", task["session"], id(ws))
-    await manager._sync_approval_card(ws, task, key)
-    await manager._sync_approval_card(ws, task, key)
+    await manager._sync_approval_card(ws, task, key)  # pylint: disable=protected-access
+    await manager._sync_approval_card(ws, task, key)  # pylint: disable=protected-access
     assert [name for _, name, _ in events] == ["chat.ask_user_question"]
     assert events[0][2]["session_id"] == "web-session"
     assert events[0][2]["duplex_job_id"] == "job"
     task["interaction"]["state"] = "accepted"
-    await manager._sync_approval_card(ws, task, key)
+    await manager._sync_approval_card(ws, task, key)  # pylint: disable=protected-access
     assert events[-1][1] == "video.search.confirmation_closed"
     task["interaction"]["state"] = "pending"
     resumed_ws = object()
-    await manager._sync_approval_card(resumed_ws, task, ("owner", task["session"], id(resumed_ws)))
+    await manager._sync_approval_card(  # pylint: disable=protected-access
+        resumed_ws, task, ("owner", task["session"], id(resumed_ws))
+    )
     assert events[-1][0] is resumed_ws
     assert events[-1][1] == "chat.ask_user_question"
 

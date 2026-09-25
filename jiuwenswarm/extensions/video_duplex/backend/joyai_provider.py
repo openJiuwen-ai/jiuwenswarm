@@ -115,9 +115,14 @@ def normalize_response_language(value: object) -> str:
 
 def response_language_instruction(value: object = "match") -> str:
     language = normalize_response_language(value)
-    if language == "en": return "Speak to the user in English."
-    if language == "zh-CN": return "Speak to the user in Simplified Chinese."
-    return "Speak to the user in the same language as their latest utterance (speech transcript or typed text), not screen OCR language."
+    if language == "en":
+        return "Speak to the user in English."
+    if language == "zh-CN":
+        return "Speak to the user in Simplified Chinese."
+    return (
+        "Speak to the user in the same language as their latest utterance "
+        "(speech transcript or typed text), not screen OCR language."
+    )
 
 
 def ground_user_instruction(instruction: str, tool_context: str = "", reply_language: object = "match") -> str:

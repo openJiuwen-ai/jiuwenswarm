@@ -258,7 +258,9 @@ def register_video_live_handler(
         question = str(params.get("question") or "").strip()
         tool_context = str(params.get("tool_context") or "").strip()
         frame_time_range = str(params.get("frame_time_range") or "").strip()
-        reply_language = joyai_provider.normalize_response_language(params.get("reply_language", settings.reply_language()))
+        reply_language = joyai_provider.normalize_response_language(
+            params.get("reply_language", settings.reply_language())
+        )
         request_kind = str(params.get("request_kind") or "frame").strip().casefold()
         if not _is_allowed_image_data_url(frame_data_url):
             await channel.send_response(
