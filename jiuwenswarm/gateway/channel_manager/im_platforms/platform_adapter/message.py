@@ -129,7 +129,7 @@ class MessageStore:
             # 兼容旧逻辑：加载统一的feishu_memory.json
             logger.info(f"[调试] _load_memory: 统一记忆文件路径={self._memory_file}, exists={self._memory_file.exists()}")
             if not self._memory_file.exists():
-                logger.info(f"[调试] _load_memory: 统一记忆文件不存在，返回空字典")
+                logger.info("[调试] _load_memory: 统一记忆文件不存在，返回空字典")
                 return {}
             try:
                 with open(self._memory_file, "r", encoding="utf-8") as f:
