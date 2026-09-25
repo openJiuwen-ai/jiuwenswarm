@@ -269,7 +269,7 @@ def test_new_canonical_ignores_supplemented_work_mode(mode, work_mode, expected)
         ("agent", ("agent", None, "agent")),
         ("agent.plan", ("agent", "plan", "agent.plan")),
         ("agent.fast", ("agent", None, "agent")),
-        ("plan", ("agent", None, "agent")),
+        ("plan", ("agent", None, "agent.plan")),
         ("code.normal", ("code", "normal", "code.normal")),
         ("code.plan", ("code", "plan", "code.plan")),
         ("code.team", ("code", "team", "code.team")),
@@ -278,6 +278,9 @@ def test_new_canonical_ignores_supplemented_work_mode(mode, work_mode, expected)
         ("team.plan", ("team", "plan", "team.plan.normal")),
         ("team.plan.normal", ("team", "plan", "team.plan.normal")),
         ("team.plan.code", ("code", "team", "team.plan.code")),
+        ("auto", ("auto", None, "auto")),
+        ("agent.auto", ("auto", None, "auto")),
+        ("macro.auto", ("auto", None, "auto")),
         # issue #4168: shorthand names resolve like their full names.
         ("team.work", ("team", None, NEW_TEAM_WORK_NORMAL)),
         ("team.normal", ("team", None, NEW_TEAM_WORK_NORMAL)),

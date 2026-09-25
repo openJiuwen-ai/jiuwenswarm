@@ -40,6 +40,7 @@ parse_channel_control_text = _MOD.parse_channel_control_text
         ("/mode agent", ParsedControlAction.MODE_OK, ("agent", None), None, None),
         ("/mode code", ParsedControlAction.MODE_OK, ("code", None), None, None),
         ("/mode team", ParsedControlAction.MODE_OK, ("team", None), None, None),
+        ("/mode auto", ParsedControlAction.MODE_OK, ("auto", None), None, None),
         ("/mode agent.plan", ParsedControlAction.MODE_OK, ("agent.plan", None), None, None),
         ("/mode agent.fast", ParsedControlAction.MODE_OK, ("agent.fast", None), None, None),
         ("/mode code.plan", ParsedControlAction.MODE_OK, ("code.plan", None), None, None),
@@ -180,6 +181,7 @@ def test_control_message_texts_contains_mode_variants_and_skills() -> None:
     assert VALID_MODE_LINES <= CONTROL_MESSAGE_TEXTS
     assert VALID_SWITCH_LINES <= CONTROL_MESSAGE_TEXTS
     assert "/mode team" in CONTROL_MESSAGE_TEXTS
+    assert "/mode auto" in CONTROL_MESSAGE_TEXTS
     assert "/mode code" in CONTROL_MESSAGE_TEXTS
     assert "/mode agent.plan" in CONTROL_MESSAGE_TEXTS
     assert "/mode code.normal" in CONTROL_MESSAGE_TEXTS

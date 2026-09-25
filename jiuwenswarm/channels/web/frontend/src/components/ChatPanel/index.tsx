@@ -239,6 +239,11 @@ function ActiveTeamGroupEntry({
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
+  const lastMacroRoutedMode = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.lastMacroRoutedMode ?? null,
+  );
+  const effectiveMode =
+    mode === 'auto' && lastMacroRoutedMode ? lastMacroRoutedMode : mode;
   const teamHistoryMessages = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamHistoryMessages ?? []);
   const teamMemberExecutionEvents = useSessionStore(
     (s) => s.runtimes[activeSessionId ?? '']?.teamMemberExecutionEvents ?? [],
@@ -255,7 +260,7 @@ function ActiveTeamGroupEntry({
     (m) => m.member_id && m.member_id !== 'user' && !isTeamLeaderMember(m.member_id),
   );
 
-  if (mode !== 'team' || !hasVisibleMembers || teamAreaExpanded) {
+  if (effectiveMode !== 'team' || !hasVisibleMembers || teamAreaExpanded) {
     return null;
   }
 
@@ -295,7 +300,7 @@ export function AgentActivityCard({
   const setQueuePaused = useChatStore((s) => s.setQueuePaused);
   const setInputValue = useChatStore((s) => s.setInputValue);
 
-  const isAgentMode = mode === 'agent';
+  const isAgentMode = mode === 'agent' || mode === 'agent.plan' || mode === 'auto';
 
   // 有等待任务时自动展开
   useEffect(() => {
@@ -1088,6 +1093,11 @@ export const ChatPanel = React.memo(function ChatPanel({
   const contextCompressionRuntime = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionRuntime);
   const contextCompressionSummary = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionSummary);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
+  const lastMacroRoutedMode = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.lastMacroRoutedMode ?? null,
+  );
+  const effectiveMode =
+    mode === 'auto' && lastMacroRoutedMode ? lastMacroRoutedMode : mode;
   const [teamGroupIdentity, setTeamGroupIdentity] = useState<AgentGroupIdentity | null>(null);
   const [agentGroupDeletedNoticeOpen, setAgentGroupDeletedNoticeOpen] = useState(false);
   useEffect(() => {
@@ -1143,7 +1153,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     }),
   );
   const chatContentClassName = hasConversation
-    ? `chat-content${mode === 'team' ? ' chat-content--team' : ''}`
+    ? `chat-content${effectiveMode === 'team' ? ' chat-content--team' : ''}`
     : 'chat-content chat-content--welcome';
   const suggestions = [t('chat.welcomeSuggestions.journey'), t('chat.welcomeSuggestions.skills')];
   const shouldShowChatHeader = hasConversation;
@@ -1175,7 +1185,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   }, [composerCollapsed, composerDockVisible, onComposerHeightChange]);
   const shareExportTitle = getShareExportTitle(t, isExportingShare, canExportShare);
   const shouldShowShareExport = Boolean(onExportShare);
-  const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
+  const shouldShowHumanShare = effectiveMode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
   const [bubbleVisible, setBubbleVisible] = useState(false);
   const bubbleHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
