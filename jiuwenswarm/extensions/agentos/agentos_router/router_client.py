@@ -236,9 +236,8 @@ def _first_nonempty(*values: Any) -> str:
 def _extract_placement_ips(instance_info: Mapping[str, Any] | None) -> tuple[str, str]:
     """Read node / sandbox IP from YuanRong GET, including jiuwenbox aliases.
 
-    Register writes ``address=pending`` and leaves ``node`` empty because
-    the registry rejects empty address but not empty node. Placement must
-    be PATCHed once the actual IPs exist. YuanRong may use ``node_ip`` /
+    Register leaves ``address`` and ``node`` empty. Placement must be
+    PATCHed once the actual IPs exist. YuanRong may use ``node_ip`` /
     ``sandbox_ip`` or pass through jiuwenbox ``ip_address``.
     """
     if not isinstance(instance_info, Mapping):
@@ -2911,7 +2910,7 @@ class AgentOSRouterClient(AgentServerClient):
             ):
                 return
 
-            # create 返回时沙箱通常还在探针中：address=pending，node 留空。
+            # create 返回时沙箱通常还在探针中：address 与 node 都留空。
             # 等到 status=running 后再读 node_ip / sandbox_ip（含 jiuwenbox
             # ip_address），PATCH 注册中心 placement，供调度/路由使用。
             # 一直到不了 running（超时 / failed）时删沙箱并注销刚才写入的登记，

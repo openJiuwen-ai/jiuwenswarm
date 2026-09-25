@@ -28,8 +28,6 @@ logger = logging.getLogger(__name__)
 
 KIND_THIRD_PARTY = "三方"
 KIND_JIUWEN = "九问"
-# Registry rejects empty address; first POST uses this until placement PATCH.
-PENDING_INSTANCE_ADDRESS = "pending"
 _JIUWEN_FRAMEWORKS = frozenset({"jiuwenswarm", "jiuwen-report"})
 # Offline registry stub default list when no framework filter is given.
 _LOCAL_STUB_FRAMEWORKS = frozenset({BUILTIN_AGENT_TYPE})
@@ -712,13 +710,12 @@ class RegistryClient:
             or sandbox_meta.get("instance_id")
             or ""
         ).strip()
-        # Registry rejects empty address. Placement IP is patched after
-        # YuanRong get_agent_info; until then use a non-IP placeholder so
-        # address is not confused with instance_id.
+        # Placement IP is patched after YuanRong get_agent_info. The first
+        # POST leaves address empty, same as node, until that IP exists.
         address = str(
             info.metadata.get("address")
             or sandbox_meta.get("address")
-            or PENDING_INSTANCE_ADDRESS
+            or ""
         ).strip()
         kind = str(info.metadata.get("kind") or resolve_instance_kind(framework)).strip()
 
