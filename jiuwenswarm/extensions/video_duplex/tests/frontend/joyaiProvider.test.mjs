@@ -86,8 +86,23 @@ test('English survives callback refresh and is sent with subsequent user request
   provider.sessionId = 'language-session';
   provider.setPreferredLanguage(undefined);
   await provider.requestFrame('read screen', 'read screen', 'data:image/jpeg;base64,ZmFrZQ==');
-  assert.equal(calls[0][1].preferred_language, 'en');
-  provider.setPreferredLanguage('zh');
+  assert.equal(calls[0][1].reply_language, 'en');
+  provider.setPreferredLanguage('zh-CN');
   await provider.requestFrame('read screen', 'read screen', 'data:image/jpeg;base64,ZmFrZQ==');
-  assert.equal(calls[1][1].preferred_language, 'zh');
+  assert.equal(calls[1][1].reply_language, 'zh-CN');
 });
+
+
+for (const language of ['match', 'zh-CN', 'en']) {
+  test(`JoyAI sends shared language ${language} for frame-only requests`, async (t) => {
+    const calls = [];
+    globalThis.joyaiTestRequest = async (...args) => { calls.push(args); return { response: '', search_job: null }; };
+    t.after(() => { delete globalThis.joyaiTestRequest; });
+    const provider = new JoyAIProvider({ getSearchSessionId: () => 'scope', rememberSearchJob() {}, report() {} }, language);
+    provider.sessionId = 'shared-language';
+    provider.setPreferredLanguage(undefined);
+    await provider.requestFrame('', '', 'data:image/jpeg;base64,ZmFrZQ==');
+    assert.equal(calls[0][1].reply_language, language);
+    assert.equal(calls[0][1].request_kind, 'frame');
+  });
+}

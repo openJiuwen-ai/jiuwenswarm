@@ -157,6 +157,8 @@ export interface Question {
  * 用户问题请求 Payload（服务端 -> 客户端）
  */
 export interface AskUserQuestionPayload {
+  /** Resume a delegated duplex job through its owning Core session. */
+  duplexJobId?: string;
   request_id: string;
   questions: Question[];
   source?: string; // 来源标识，用于区分自进化确认和工具权限确认

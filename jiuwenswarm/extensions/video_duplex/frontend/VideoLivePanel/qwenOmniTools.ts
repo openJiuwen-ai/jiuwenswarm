@@ -1,3 +1,4 @@
+import { announceLanguageInstruction, normalizeReplyLanguage } from './replyLanguage.js';
 export const QWEN_OMNI_DELEGATE_TOOL_NAME = 'jiuwen_delegate';
 const QWEN_OMNI_LEGACY_RESEARCH_TOOL_NAME = 'jiuwen_research';
 export const QWEN_OMNI_TOOL_INSTRUCTIONS = [
@@ -114,6 +115,7 @@ export interface QwenOmniToolResultContext {
 export function createQwenOmniToolFollowupEvent(
   brief: RealtimeBrief,
   context?: QwenOmniToolResultContext,
+  replyLanguage?: string,
 ): Record<string, unknown> {
   return {
     type: 'conversation.item.create',
@@ -133,7 +135,8 @@ export function createQwenOmniToolFollowupEvent(
               status: brief.status,
               summary: brief.summary,
             }),
-            '遵循会话首选回应语言，用一到两句自然的话回应。先明确说出本次任务的动作或对象，再忠实转述上面 summary 的结果。任务名称以这份数据为依据，不能替换成最新一条用户指令。',
+            announceLanguageInstruction(normalizeReplyLanguage(replyLanguage)),
+            'Identify this task by its action or object, then faithfully convey the summary. Use this data for its identity, never the latest user request.',
             '本次 status 只属于本次任务。其他请求可能仍在排队或执行；没有收到它们各自的结果，就不能说它们已经完成。你之前说过“我会处理”也不代表处理成功。',
             '例如：本次结果是代码已生成，即使用户后来要求转换 PDF，也只能汇报代码结果，不能说 PDF 已转换、已保存或已打开。',
             '如果本次状态是失败或摘要表示无法完成，就如实说明，不能报成功。任务指代不明确时只复述摘要中的明确事实，不从较新的问题中猜测对象。',

@@ -814,7 +814,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         });
         setModel(config.model);
         if (config.provider === 'joyai') {
-          await getJoyAIProvider(config.preferred_language).start();
+          await getJoyAIProvider(config.reply_language).start();
           return;
         }
         const videoFrames = new RealtimeVideoFrameScheduler(1_000);
@@ -823,7 +823,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             url: config.url || '',
             voice: config.voice,
             tools: config.tools,
-            preferredLanguage: config.preferred_language,
+            replyLanguage: config.reply_language,
           },
           {
             getVideoFrame: () => {
