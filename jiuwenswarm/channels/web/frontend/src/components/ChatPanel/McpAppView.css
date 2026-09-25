@@ -1,0 +1,72 @@
+.mcp-app-view {
+  position: relative;
+  margin: 8px 0;
+  max-width: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.mcp-app-view[data-prefers-border='true'] {
+  border: 1px solid var(--color-border-default);
+}
+
+.mcp-app-view__frame {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+}
+
+.mcp-app-view__loading,
+.mcp-app-view--error {
+  padding: 12px 14px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.mcp-app-view--error {
+  color: var(--color-feedback-danger-text);
+}
+
+.mcp-app-view__approval {
+  position: absolute;
+  inset: auto 8px 8px 8px;
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 10px;
+  background: var(--color-surface-popover);
+  color: var(--color-text-primary);
+  font-size: 13px;
+}
+
+.mcp-app-view__approval pre {
+  max-height: 120px;
+  margin: 6px 0 0;
+  overflow: auto;
+  font-size: 12px;
+}
+
+.mcp-app-view__approval-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.mcp-app-view__approval-actions button {
+  padding: 4px 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.mcp-app-view__approval-actions button.is-primary {
+  border-color: transparent;
+  background: var(--color-action-primary);
+  color: var(--color-action-primary-text);
+}

@@ -130,7 +130,8 @@
     "test:trajectory-frames": "esbuild src/features/trajectory/trajectoryFrames.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/trajectory-frames/trajectoryFrames.mjs && node --test tests/trajectoryFrames.test.mjs",
     "test:trajectory-turn-gaps": "esbuild src/features/trajectory/trajectoryTurnGaps.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/trajectory-turn-gaps/trajectoryTurnGaps.mjs && node --test tests/trajectoryTurnGaps.test.mjs",
     "test:trajectory-sequences": "esbuild src/features/trajectory/trajectorySequences.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/trajectory-sequences/trajectorySequences.mjs && node --test tests/trajectorySequences.test.mjs",
-    "test:permission-text-i18n": "tsc src/components/InteractionSlot/permissionTextI18n.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/permission-text-i18n --skipLibCheck --noEmitOnError && node --test tests/permissionTextI18n.test.mjs"
+    "test:permission-text-i18n": "tsc src/components/InteractionSlot/permissionTextI18n.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/permission-text-i18n --skipLibCheck --noEmitOnError && node --test tests/permissionTextI18n.test.mjs",
+    "test:mcp-app-document": "esbuild src/features/mcpApps/mcpAppDocument.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/mcp-app-document/mcpAppDocument.mjs && node --test tests/mcpAppDocument.test.mjs"
   },
   "dependencies": {
     "@a2ui/react": "0.8.0",
@@ -152,6 +153,7 @@
     "@codemirror/state": "6.7.1",
     "@codemirror/view": "6.43.7",
     "@dagrejs/dagre": "^3.1.1",
+    "@modelcontextprotocol/ext-apps": "^2.0.0",
     "@ricky0123/vad-web": "0.0.30",
     "@shikijs/langs": "^4.3.1",
     "@tailwindcss/typography": "^0.5.19",

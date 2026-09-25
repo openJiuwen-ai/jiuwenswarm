@@ -711,7 +711,10 @@ export function messageHasDeliverable(message: Message): boolean {
 }
 
 export function filterDeliverableExecutions(executions: ToolExecution[]): ToolExecution[] {
-  return executions.filter((execution) => isDeliverableToolName(execution.toolCall.name));
+  // MCP App views stay visible when the turn is folded, like sent files.
+  return executions.filter(
+    (execution) => isDeliverableToolName(execution.toolCall.name) || Boolean(execution.result?.mcpApp)
+  );
 }
 
 function isExecutionRunning(execution: ToolExecution): boolean {

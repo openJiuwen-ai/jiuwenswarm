@@ -2102,6 +2102,7 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
       summary: n.summary,
       skillTree: n.skillTree,
       ...(n.mermaid ? { mermaid: n.mermaid } : {}),
+      ...(n.mcpApp ? { mcpApp: n.mcpApp } : {}),
       ...(n.timedOut ? { timedOut: true as const } : {}),
       ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
       reviewer: n.reviewer,
