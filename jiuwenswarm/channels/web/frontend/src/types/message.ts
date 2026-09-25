@@ -214,6 +214,21 @@ export interface ToolResult {
   /** 仅 symphony_compose_graph 的合法 planned_graph Mermaid 展示投影。 */
   mermaid?: string;
   reviewer?: AutoReviewerMetadata;
+  /** MCP Apps：工具声明了 ui:// 界面时，由后端附带的渲染所需信息。 */
+  mcpApp?: McpAppResult;
+}
+
+/** MCP Apps (io.modelcontextprotocol/ui) tool-result projection. */
+export interface McpAppResult {
+  /** MCP server name, used for mcp_app.* RPCs. */
+  server: string;
+  /** Tool name on that server (not the model-facing mcp_<server>_<tool>). */
+  tool: string;
+  /** ui:// resource holding the app HTML. */
+  resourceUri: string;
+  arguments: Record<string, unknown>;
+  /** Raw CallToolResult (content / structuredContent / _meta / isError). */
+  toolResult?: Record<string, unknown>;
 }
 
 export type ToolExecutionStatus = 'pending' | 'timeout' | 'completed' | 'error';

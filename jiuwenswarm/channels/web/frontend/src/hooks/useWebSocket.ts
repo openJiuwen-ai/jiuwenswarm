@@ -4193,6 +4193,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             skillTree: toolResult.skillTree,
             beamSearch: toolResult.beamSearch,
             ...(toolResult.mermaid ? { mermaid: toolResult.mermaid } : {}),
+            ...(toolResult.mcpApp ? { mcpApp: toolResult.mcpApp } : {}),
             ...(toolResult.timedOut ? { timedOut: true } : {}),
             reviewer: toolResult.reviewer,
           },

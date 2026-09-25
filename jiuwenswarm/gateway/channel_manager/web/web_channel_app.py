@@ -127,6 +127,12 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
     attach_trajectory_routes(app, channel)
     # register auth http routes for huawei account login
     register_auth_routes(app)
+    # MCP Apps sandbox proxy (separate origin from the UI for app iframes)
+    from jiuwenswarm.gateway.channel_manager.web.mcp_app_sandbox_http import (
+        register_mcp_app_sandbox_routes,
+    )
+
+    register_mcp_app_sandbox_routes(app)
 
 
 async def _serve_channel_websocket(channel: WebChannel, websocket: WebSocket) -> None:

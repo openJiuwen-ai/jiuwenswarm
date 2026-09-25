@@ -2266,6 +2266,21 @@ function registerIpcHandlers() {
       return false;
     }
   });
+  // MCP Apps ui/open-link: any plain http(s) URL, no embedded credentials.
+  // Kept separate from the OAuth-only desktop:open-external-url above.
+  registerHandler('desktop:open-app-link', async url => {
+    try {
+      const target = new URL(String(url));
+      if (!['http:', 'https:'].includes(target.protocol)
+          || !target.hostname || target.username || target.password) {
+        return false;
+      }
+      await shell.openExternal(target.href);
+      return true;
+    } catch {
+      return false;
+    }
+  });
   registerHandler('desktop:select-project-directory', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory', 'createDirectory'],
