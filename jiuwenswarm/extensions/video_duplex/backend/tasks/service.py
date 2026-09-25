@@ -471,10 +471,10 @@ class TaskService:
         task.update(status="queued", resume_answer=True)
 
     async def answer(
-        self, owner, session, task_id, command_id, interaction_id, *, answers
+        self, owner, session, task_id, command_id, interaction_id, *, answers, native_ui=False
     ):
-        """Answer only a server-observed information question; never an approval."""
-        from .interactions import validate_answers
+        """Bind an answer to the exact observed question and execution."""
+        from .interactions import validate_answers, validate_native_approval_answers, NATIVE_APPROVAL_SOURCES
 
         self.start()
         with self.store.transaction() as db:
@@ -495,11 +495,16 @@ class TaskService:
                 or interaction.get("id") != interaction_id
             ):
                 raise ValueError("Question is no longer pending for this task")
-            answers = validate_answers(interaction, answers)
+            if interaction.get("source") in NATIVE_APPROVAL_SOURCES:
+                if not native_ui:
+                    raise ValueError("Approval requires the native user interface")
+                answers = validate_native_approval_answers(interaction, answers)
+            else:
+                answers = validate_answers(interaction, answers)
             interaction.update(
                 state="accepted", answers=answers, operation_id=command_id
             )
-            suspended = interaction["source"] == "ask_user_interrupt"
+            suspended = interaction["source"] in {"ask_user_interrupt", *NATIVE_APPROVAL_SOURCES}
             if suspended and task["output_closed"] and task["execution_settled"]:
                 self._queue_answer(task)
             elif not suspended:

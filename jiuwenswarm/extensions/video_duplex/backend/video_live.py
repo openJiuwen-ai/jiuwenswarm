@@ -14,6 +14,7 @@ import uuid
 
 from jiuwenswarm.extensions.video_duplex.backend import (
     joyai_provider,
+    settings,
     video_search,
     video_voice,
 )
@@ -675,6 +676,7 @@ def register_video_live_handler(
         **voice_handlers,
         "video.qwen.tool": search_manager.handle_qwen_tool,
         "video.search.status": search_manager.handle_status,
+        "video.search.answer": search_manager.handle_answer,
         "video.search.list": search_manager.handle_list,
         "video.search.control": search_manager.handle_control,
     }

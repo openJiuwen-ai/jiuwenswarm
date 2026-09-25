@@ -103,7 +103,7 @@ afterEach(async () => {
 });
 
 async function start() {
-  await act(async () => document.querySelector('[aria-label="开启 Full-duplex 会话"]').click());
+  await act(async () => document.querySelector('[data-testid="video-live-session-toggle"]').click());
   assert.ok(session);
 }
 

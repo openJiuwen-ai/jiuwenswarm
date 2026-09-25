@@ -246,7 +246,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     setSearchStatus('');
   };
 
-  const getJoyAIProvider = (): JoyAIProvider => {
+  const getJoyAIProvider = (replyLanguage?: VideoSessionConfig['reply_language']): JoyAIProvider => {
     const callbacks = {
       getLatestFrameDataUrl: () => framesRef.current.at(-1)?.data_url || '',
       getFrameCount: () => framesRef.current.length,
@@ -279,9 +279,10 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       report: reportRealtimeEvent,
     };
     if (!joyaiProviderRef.current) {
-      joyaiProviderRef.current = new JoyAIProvider(callbacks);
+      joyaiProviderRef.current = new JoyAIProvider(callbacks, replyLanguage);
     } else {
       joyaiProviderRef.current.updateCallbacks(callbacks);
+      if (replyLanguage) joyaiProviderRef.current.setPreferredLanguage(replyLanguage);
     }
     return joyaiProviderRef.current;
   };
@@ -1384,6 +1385,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             <button
               type="button"
               className={`video-live__mic${isRecording ? ' is-recording' : ''}`}
+              data-testid="video-live-session-toggle"
               onClick={isRecording ? stopRealtime : () => void startRealtime()}
               disabled={isRealtimeStarting && !isRecording}
               aria-label={

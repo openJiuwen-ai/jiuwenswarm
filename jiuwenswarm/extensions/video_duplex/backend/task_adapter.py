@@ -277,6 +277,7 @@ class VideoSearchManager:
         self.path, self.authorize, self.concurrency = path, authorize, max_concurrency
         self._service = None
         self.subscribers = {}
+        self._approval_cards = {}
 
     @property
     def service(self):
@@ -433,6 +434,9 @@ class VideoSearchManager:
                     raise ValueError("Task subscription identity changed")
             except ValueError:
                 self.subscribers.pop(key, None)
+                for card_key in tuple(self._approval_cards):
+                    if card_key[:3] == key:
+                        self._approval_cards.pop(card_key, None)
                 return
             await asyncio.wait_for(self.channel.send_event(
                 ws, "video.search." + event, self.public(task)
@@ -440,6 +444,7 @@ class VideoSearchManager:
             await asyncio.wait_for(self.channel.send_event(
                 ws, "video.search.queue", self.snapshot(*key[:2])
             ), EVENT_SEND_TIMEOUT)
+            await self._sync_approval_card(ws, task, key)
 
         # One slow connection must not consume the budget of other subscribers.
         results = await asyncio.gather(*(
@@ -448,6 +453,40 @@ class VideoSearchManager:
         ), return_exceptions=True)
         if any(isinstance(result, Exception) for result in results):
             raise RuntimeError("Task notification delivery was incomplete")
+
+    async def _sync_approval_card(self, ws, task, key):
+        interaction = task.get("interaction") or {}
+        card_key = (*key, task["id"])
+        pending = (
+            task["session"].startswith("task-duplex:")
+            and task["status"] == "waiting_user"
+            and interaction.get("state") == "pending"
+            and interaction.get("source") in {"permission_interrupt", "confirm_interrupt"}
+        )
+        if pending:
+            if self._approval_cards.get(card_key) == interaction["id"]:
+                return
+            payload = {
+                "session_id": task["session"].removeprefix("task-duplex:"),
+                "duplex_job_id": task["id"],
+                "request_id": interaction["request_id"],
+                "source": interaction["source"],
+                "questions": interaction["questions"],
+            }
+            if interaction.get("approval_schema"):
+                payload["approval_schema"] = interaction["approval_schema"]
+            await asyncio.wait_for(
+                self.channel.send_event(ws, "chat.ask_user_question", payload),
+                EVENT_SEND_TIMEOUT,
+            )
+            self._approval_cards[card_key] = interaction["id"]
+        elif card_key in self._approval_cards:
+            await asyncio.wait_for(self.channel.send_event(ws, "video.search.confirmation_closed", {
+                "session_id": task["session"].removeprefix("task-duplex:"),
+                "duplex_job_id": task["id"],
+                "request_id": interaction.get("request_id", ""),
+            }), EVENT_SEND_TIMEOUT)
+            self._approval_cards.pop(card_key, None)
 
     async def start(
         self,
@@ -633,11 +672,34 @@ class VideoSearchManager:
             tasks, cursor = self.service.list(
                 owner, scope, offset=params.get("offset", 0)
             )
+            for task in tasks:
+                await self._sync_approval_card(ws, task, (owner, scope, id(ws)))
             return {
                 "jobs": [self.public(t) for t in tasks],
                 "next_offset": cursor,
                 "replay": True,
             }
+
+        await self._respond(ws, req_id, run)
+
+    async def handle_answer(self, ws, req_id, params, session_id):
+        async def run():
+            if not isinstance(params, dict):
+                raise ValueError("Invalid confirmation")
+            visible_session = params.get("session_id")
+            if not isinstance(visible_session, str) or not visible_session:
+                raise ValueError("Confirmation session is required")
+            owner, scope = await self.scope(ws, {
+                "search_session_id": "task-duplex:" + visible_session,
+            })
+            task = self.service.get(owner, scope, params.get("job_id"))
+            interaction = task.get("interaction") or {}
+            if interaction.get("request_id") != params.get("request_id"):
+                raise ValueError("Confirmation is no longer pending")
+            return await self.service.answer(
+                owner, scope, task["id"], str(req_id), interaction.get("id"),
+                answers=params.get("answers"), native_ui=True,
+            )
 
         await self._respond(ws, req_id, run)
 

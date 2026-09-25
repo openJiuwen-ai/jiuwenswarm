@@ -693,7 +693,7 @@ export class RealtimeDuplexSession {
         turn_id: toolResult.turnId,
         call_id: toolResult.callId,
         question: toolResult.question,
-      }, this.config.replyLanguage);
+      });
       return;
     }
   }

@@ -1,4 +1,3 @@
-import { normalizeReplyLanguage, announceLanguageInstruction } from './replyLanguage.js';
 import { TASK_OPERATION_INSTRUCTIONS, taskResultNotice } from './taskPrompts.js';
 export const QWEN_OMNI_DELEGATE_TOOL_NAME = 'jiuwen_delegate';
 const QWEN_OMNI_LEGACY_RESEARCH_TOOL_NAME = 'jiuwen_research';
@@ -110,7 +109,6 @@ export function createQwenOmniBriefOutputEvent(
   callId: string,
   brief: RealtimeBrief,
   context?: QwenOmniToolResultContext,
-  replyLanguage?: string,
 ): Record<string, unknown> {
   return createQwenOmniToolOutputEvent(
     callId,

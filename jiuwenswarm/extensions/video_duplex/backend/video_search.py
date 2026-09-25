@@ -40,7 +40,7 @@ def core_agent_brief_protocol(nonce: str) -> str:
     from . import settings, joyai_provider
     begin, end = _brief_markers(nonce)
     language_rule = joyai_provider.response_language_instruction(settings.reply_language())
-    return build_brief_prompt(begin, end)
+    return f"\n\n{language_rule}" + build_brief_prompt(begin, end, language_rule)
 
 
 def _result_kind(question: str, answer: str, tools_used: list[str]) -> str:
@@ -455,9 +455,15 @@ async def execute_core_agent(
         payload = chunk.payload if isinstance(chunk.payload, dict) else {}
         event_type = str(payload.get("event_type") or "").strip()
         if event_type == "chat.ask_user_question":
-            from jiuwenswarm.extensions.video_duplex.backend.tasks.interactions import information_question
+            from jiuwenswarm.extensions.video_duplex.backend.tasks.interactions import (
+                information_question, native_approval_question, NATIVE_APPROVAL_SOURCES,
+            )
             try:
-                pending_interaction = information_question(payload)
+                pending_interaction = (
+                    native_approval_question(payload)
+                    if payload.get("source") in NATIVE_APPROVAL_SOURCES
+                    else information_question(payload)
+                )
             except ValueError as exc:
                 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import ExecutionUncertain
                 raise ExecutionUncertain(str(exc)) from exc
@@ -498,7 +504,9 @@ async def execute_core_agent(
         if on_progress is not None:
             await on_progress(progress)
 
-    if pending_interaction is not None and pending_interaction["source"] == "ask_user_interrupt":
+    if pending_interaction is not None and pending_interaction["source"] in {
+        "ask_user_interrupt", "permission_interrupt", "confirm_interrupt",
+    }:
         from jiuwenswarm.extensions.video_duplex.backend.tasks.service import InteractionPending
         raise InteractionPending()
     if not final_payload:

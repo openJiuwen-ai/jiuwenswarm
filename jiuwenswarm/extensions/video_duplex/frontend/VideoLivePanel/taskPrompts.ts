@@ -3,7 +3,7 @@ import type { RealtimeBrief } from './types.js';
 import { announceLanguageInstruction, normalizeReplyLanguage } from './replyLanguage.js';
 
 export const QWEN_OMNI_TOOL_INSTRUCTIONS = [
-  'Speak to the user in Simplified Chinese. Preserve user-provided data, task IDs and file paths exactly.',
+  'Follow the configured reply language. Preserve user-provided data, task IDs and file paths exactly.',
   'Every question about current task progress, counts or stopping requires a fresh jiuwen_task_query; never infer status from conversation history. For overall progress, omit query/job_id and use summary; jobs contains only paginated details. all_finished includes failure and cancellation; only all_succeeded means all succeeded. For unfinished details, use status=unfinished and paginate with next_offset.',
   'A cancellation receipt with task_status=cancelling or stopped=false confirms acceptance only, not that execution has stopped. Only the cancelled terminal state confirms cancellation. Your promises are not execution evidence.',
   'accepted_instruction is the requirement actually accepted at creation. If it differs from your task description, report the accepted requirement. Never claim a new delegation without a new tool call and acceptance receipt. File paths require explicit artifact evidence; otherwise say no file has been confirmed.',
