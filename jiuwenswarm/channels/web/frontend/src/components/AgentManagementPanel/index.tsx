@@ -453,12 +453,12 @@ export function AgentManagementPanel({
         client.listCatalog({ filter: equipmentListFilter('agent', 'mine'), ...compatibilityOptions }),
       ]);
       if (requestScope !== catalogScope()) return;
-      scheduleCatalogRefresh('agent-catalog', marketplaceCatalog.cache, () => { void loadCatalog(options); }, () => catalogRevisionRef.current === revision);
+      const cache = scheduleCatalogRefresh('agent-catalog', marketplaceCatalog.cache, () => { void loadCatalog(options); }, () => catalogRevisionRef.current === revision);
       const catalog = Array.from(
         new Map([...mineCatalog, ...marketplaceCatalog].map((item) => [item.id, item])).values(),
       );
       if (revision !== catalogRevisionRef.current) return;
-      withCatalogCache(catalog, marketplaceCatalog.cache);
+      withCatalogCache(catalog, cache);
       catalogRef.current = catalog;
       if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loaded' });
       // 回填共享目录缓存：聊天输入区的专家 tag 依赖它首帧解析 displayName/头像。
@@ -1543,7 +1543,7 @@ export function AgentManagementPanel({
               query={isMine ? mineQuery : query}
               category={category}
               status={
-                !isMine && catalogAwaitingItems(catalogView.totalItems, catalogCacheOf(state.catalog))
+                !isMine && !state.catalogError && catalogAwaitingItems(catalogView.totalItems, catalogCacheOf(state.catalog))
                   ? 'loading'
                   : state.catalogStatus
               }
