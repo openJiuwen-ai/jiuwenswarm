@@ -18,6 +18,7 @@ export interface RealtimeDuplexConfig {
   url: string;
   voice?: string;
   tools?: Array<Record<string, unknown>>;
+  replyLanguage?: string;
 }
 
 export interface RealtimeToolResult {
@@ -456,6 +457,7 @@ export class RealtimeDuplexSession {
           createQwenOmniSessionUpdate({
             voice: this.config.voice,
             tools: this.config.tools,
+            replyLanguage: this.config.replyLanguage,
             inputRate: INPUT_RATE,
             outputRate: OUTPUT_RATE,
           }),
@@ -682,7 +684,7 @@ export class RealtimeDuplexSession {
         jobId: toolResult.jobId,
         turnId: toolResult.turnId,
         question: toolResult.question,
-      });
+      }, this.config.replyLanguage);
       // Accepted delegation closed the call; completion is a separate notification.
       if (!toolResult.callId || this.acceptedToolResultIds.has(`operation:${toolResult.callId}`)) events.shift();
       events.forEach((event) => this.send(event));
@@ -691,7 +693,7 @@ export class RealtimeDuplexSession {
         turn_id: toolResult.turnId,
         call_id: toolResult.callId,
         question: toolResult.question,
-      });
+      }, this.config.replyLanguage);
       return;
     }
   }

@@ -397,6 +397,11 @@
       "ttsVoiceLabel": "Speech synthesis voice",
       "qwenModelLabel": "Qwen model",
       "qwenVoiceLabel": "Qwen voice",
+      "replyLanguageLabel": "Reply language",
+      "replyLanguageDescription": "Controls the spoken and written reply language. Takes effect the next time Full-duplex starts.",
+      "replyLanguageMatch": "Match conversation",
+      "replyLanguageZhCN": "Simplified Chinese",
+      "replyLanguageEn": "English",
       "deleteTitle": "Delete full-duplex model settings",
       "deleteConfirm": "This clears the saved full-duplex endpoint, model, and API key."
     },

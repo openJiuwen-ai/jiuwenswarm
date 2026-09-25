@@ -397,6 +397,11 @@
       "ttsVoiceLabel": "语音播报音色",
       "qwenModelLabel": "Qwen 模型",
       "qwenVoiceLabel": "Qwen 音色",
+      "replyLanguageLabel": "回复语言",
+      "replyLanguageDescription": "控制语音与文字回复使用的语言。下次启动全双工后生效。",
+      "replyLanguageMatch": "跟随对话",
+      "replyLanguageZhCN": "简体中文",
+      "replyLanguageEn": "英语",
       "deleteTitle": "删除全双工模型配置",
       "deleteConfirm": "删除后将清除已保存的全双工模型地址、模型和密钥。"
     },
