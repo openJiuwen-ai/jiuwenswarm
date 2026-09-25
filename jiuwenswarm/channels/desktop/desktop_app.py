@@ -1118,8 +1118,16 @@ class DesktopRuntime:
             preferred_dir.mkdir(parents=True, exist_ok=True)
             self._startup_diagnostics_dir = preferred_dir
         except OSError:
-            fallback_dir = Path(tempfile.gettempdir()) / "jiuwenswarm-startup" / startup_id
-            fallback_dir.mkdir(parents=True, exist_ok=True)
+            # 回退目录只在本次启动内使用, 不需要跨进程稳定, 故不再保留
+            # jiuwenswarm-startup 这个固定父目录。它在共享临时目录下,
+            # mkdir(parents=True, exist_ok=True) 会跟随别的账号先放在该名字上的
+            # 符号链接, 于是每一次启动的诊断目录都建在那个账号控制的位置里;
+            # 该名字被别的账号占住时, 本账号连建目录都会失败。
+            # mkdtemp 直接建出 0700、名字不可预测的目录, 名字被占用时失败而不是
+            # 复用, 路径中也不再有任何固定的共享分量。
+            fallback_dir = Path(
+                tempfile.mkdtemp(prefix=f"jiuwenswarm-startup-{startup_id}-")
+            )
             self._startup_diagnostics_dir = fallback_dir
         self._doctor_output_path = self._startup_diagnostics_dir / "doctor.json"
 
@@ -2835,10 +2843,15 @@ wait_port_release() {{
 wait_port_release {backend_port} backend
 wait_port_release {frontend_port} frontend
 
-# Mount the DMG at a controlled mount point
-MOUNT_POINT="/tmp/jiuwenswarm_dmg_{parent_pid}"
-rm -rf "$MOUNT_POINT" 2>/dev/null || true
-mkdir -p "$MOUNT_POINT"
+# Mount the DMG at a private mount point created fresh for this run. A name
+# built from the pid is guessable, and pids are not unique across accounts, so
+# clearing such a path before mounting can remove a directory belonging to
+# another account and then mount onto one that account controls. mktemp -d
+# creates the directory 0700 and fails rather than reusing an existing name.
+if ! MOUNT_POINT=$(mktemp -d "${{TMPDIR:-/tmp}}/jiuwenswarm_dmg.XXXXXXXX"); then
+    echo "[helper] ERROR: failed to create a mount point"
+    exit 1
+fi
 echo "[helper] attaching DMG at $MOUNT_POINT"
 if ! hdiutil attach {q_target} -mountpoint "$MOUNT_POINT" -nobrowse -noautoopen -quiet; then
     echo "[helper] ERROR: hdiutil attach failed"

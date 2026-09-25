@@ -191,12 +191,21 @@ Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
 
     # 写本地临时文件后 copy_to_host 到目标主机（与 config 文件下发方式一致）
     info "Creating systemd unit ${svc_name} on ${master_host}..."
-    local tmp_unit="/tmp/${svc_name}.service.$$"
+    # 同一条理由：`>` 会跟随符号链接，而 ${svc_name} 与 $$ 都是可预测的，任何能写
+    # 共享临时目录的账号都可以先在这个名字上放一个链接，把 unit 内容写到别处。
+    # mktemp 以 0600 新建文件，名字被占用时失败而不是复用。
+    local tmp_unit
+    if ! tmp_unit=$(mktemp "${TMPDIR:-/tmp}/${svc_name}.service.XXXXXXXX"); then
+        error "Failed to create a temporary unit file"
+    fi
     printf '%s\n' "${unit_content}" > "${tmp_unit}"
     copy_to_host "${master_host}" "${tmp_unit}" "${unit_file}"
     rm -f "${tmp_unit}"
 
-    local tmp_dropin="/tmp/${svc_name}-env.conf.$$"
+    local tmp_dropin
+    if ! tmp_dropin=$(mktemp "${TMPDIR:-/tmp}/${svc_name}-env.conf.XXXXXXXX"); then
+        error "Failed to create a temporary drop-in file"
+    fi
     printf '%s\n' "${dropin_content}" > "${tmp_dropin}"
     exec_on_host "${master_host}" "mkdir -p '${dropin_dir}'"
     copy_to_host "${master_host}" "${tmp_dropin}" "${dropin_file}"
@@ -253,9 +262,14 @@ gateway_start_nohup() {
     exec_on_host "${master_host}" "mkdir -p '${gateway_log_dir}'" || true
     local log_dir_prefix="AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir} "
 
-    local start_cmd="${home_prefix}${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
+    # nohup 的 stdout/stderr 与进程自己写的 gateway.log 一起放在这个目录，不写共享
+    # 临时目录：`>` 会跟随符号链接，网关以 root 拉起，任何能写临时目录的账号都可以
+    # 事先在固定名字上放一个链接，把输出重定向到别处并覆盖任意文件。
+    local nohup_log="${gateway_log_dir}/gateway-nohup.log"
+
+    local start_cmd="${home_prefix}${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > ${nohup_log} 2>&1 &"
     if [ -n "${instance_name}" ]; then
-        start_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} ${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
+        start_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} ${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > ${nohup_log} 2>&1 &"
     fi
 
     info "Starting jiuwenswarm-gateway on ${master_host} (nohup)..."
@@ -283,7 +297,7 @@ gateway_start_nohup() {
 
     warning "netstat -ltn on ${master_host} (ports ${gw_port}/${web_port}):"
     exec_on_host "${master_host}" "netstat -ltn 2>/dev/null | grep -E ':(${gw_port}|${web_port})\\b' || true"
-    error "Gateway process failed to start on ${master_host} (proc=${gw_proc}, ports ${gw_port}=${gw_listen}/${web_port}=${web_listen}). Check: /tmp/jiuwenswarm-gateway.log"
+    error "Gateway process failed to start on ${master_host} (proc=${gw_proc}, ports ${gw_port}=${gw_listen}/${web_port}=${web_listen}). Check: ${nohup_log}"
 }
 
 # 本机是否属于 config.yaml 的 cluster.master_nodes；返回 0 表示属于。
