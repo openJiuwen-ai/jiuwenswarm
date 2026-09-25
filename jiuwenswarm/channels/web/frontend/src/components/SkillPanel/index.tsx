@@ -581,7 +581,11 @@ export function SkillPanel({
   const handleGoToChat = useCallback((skillName: string, skillType?: string) => {
     window.dispatchEvent(
       new CustomEvent('jiuwen:new-conversation', {
-        detail: { skillName, mode: skillType === 'swarm_skill' ? ('team' as const) : ('agent' as const) },
+        detail: {
+          skillName,
+          mode: skillType === 'swarm_skill' ? ('team' as const) : ('agent' as const),
+          preserveSelectedSkills: true,
+        },
       }),
     );
   }, []);

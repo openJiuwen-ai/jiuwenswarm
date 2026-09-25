@@ -68,6 +68,8 @@ export type NewConversationOptions = {
   initialInputValue?: string;
   /** 进入新对话时一次性预选的技能，随首条消息迁移到真实会话。 */
   initialSelectedSkills?: string[];
+  /** Keep skill chips already selected in an unsent draft while returning from a skill's "Try it" action. */
+  preserveSelectedSkills?: boolean;
   /** 扩展详情页"使用"按钮跳转——进入新对话时顺带打开这些插件/MCP 的会话内启用开关，
    * 见 App.tsx enterNewConversation。 */
   initialEnabledPlugins?: string[];

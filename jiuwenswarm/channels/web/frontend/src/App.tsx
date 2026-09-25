@@ -2627,7 +2627,12 @@ function AppContent({
       && pendingNewRuntime?.agentGroupSelectionIntent.kind === 'select'
       ? pendingNewRuntime.agentGroupSelectionIntent
       : null;
-    resetNewConversationRuntime({ mode: nextMode, selectedModelName, projectDir });
+    resetNewConversationRuntime({
+      mode: nextMode,
+      selectedModelName,
+      projectDir,
+      preserveSelectedSkills: options.preserveSelectedSkills,
+    });
     if (pendingAgentSelection) {
       useSessionStore.getState().setAgentSelectionIntent(NEW_CONVERSATION_ID, pendingAgentSelection);
     }
@@ -2674,8 +2679,16 @@ function AppContent({
   // 监听从 SkillPanel 发来的"新建会话并插入技能"事件
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { skillName: string; prefixText?: string; suffixText?: string; secondSkillName?: string; metadata?: Record<string, unknown>; mode?: AgentMode };
-      enterNewConversation(detail.mode);
+      const detail = (e as CustomEvent).detail as {
+        skillName: string;
+        prefixText?: string;
+        suffixText?: string;
+        secondSkillName?: string;
+        metadata?: Record<string, unknown>;
+        mode?: AgentMode;
+        preserveSelectedSkills?: boolean;
+      };
+      enterNewConversation(detail.mode, { preserveSelectedSkills: detail.preserveSelectedSkills });
       // 存储 metadata，sendMessage 时随 chat.send 发送后清除（skill-creator 统一入口等场景）
       if (detail.metadata) {
         useSessionStore.getState().ensureRuntime(NEW_CONVERSATION_ID);

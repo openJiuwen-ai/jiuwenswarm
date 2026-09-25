@@ -3002,21 +3002,36 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         )
       ) return;
 
-      // 清空输入框并插入前缀文本（如"帮我修改这个技能"）
-      inputRef.current.textContent = detail.prefixText || '';
+      // “Try it” does not provide a guided prompt. Preserve the unsent draft
+      // that was present before navigating to Skills, then append the selected
+      // skill chip. Guided flows (such as "edit this skill") intentionally
+      // replace the composer with their supplied prompt instead.
+      const replacesDraft =
+        detail.prefixText !== undefined ||
+        detail.suffixText !== undefined ||
+        detail.secondSkillName !== undefined;
+      inputRef.current.textContent = replacesDraft
+        ? detail.prefixText || ''
+        : useChatStore.getState().getRuntime(sid)?.inputValue ?? '';
       inputRef.current.focus();
 
-      // 将光标移到末尾，确保技能 chip 插入在前缀文本之后
+      // A direct "Try it" skill belongs before an existing draft. Guided
+      // prompts still place the chip after their supplied prefix text.
       const range = document.createRange();
       range.selectNodeContents(inputRef.current);
-      range.collapse(false);
+      range.collapse(!replacesDraft);
       const sel = window.getSelection();
       sel?.removeAllRanges();
       sel?.addRange(range);
 
-      // 先更新 store 中的 selectedSkills，再插入 chip DOM
-      useSessionStore.getState().addSelectedSkill(sid, detail.skillName);
-      insertSkillChip(detail.skillName);
+      // Returning via "Try it" has rebuilt the input DOM. Restore all skills
+      // already equipped on the unsent draft before adding the new one.
+      const existingSkills = replacesDraft ? [] : runtime?.selectedSkills ?? [];
+      existingSkills.forEach((skill) => insertSkillChip(skill));
+      if (!existingSkills.includes(detail.skillName)) {
+        useSessionStore.getState().addSelectedSkill(sid, detail.skillName);
+        insertSkillChip(detail.skillName);
+      }
 
       // 如果有后缀文本（如"帮我修改这个技能"），追加到 chip 之后
       if (detail.suffixText) {
