@@ -89,6 +89,22 @@ def _build_request(
     trusted_dirs = [str(Path(path).resolve()) for path in args.trusted_dir]
     if not trusted_dirs:
         trusted_dirs = [project_dir]
+    params = {
+        "query": args.prompt,
+        "content": args.prompt,
+        "mode": args.mode,
+        "work_mode": work_mode,
+        "cwd": cwd,
+        "project_dir": project_dir,
+        "trusted_dirs": trusted_dirs,
+        "supports_user_interaction": (
+            bool(getattr(args, "_interactive_worker", False))
+            or (args.output == "human" and sys.stdin.isatty())
+        ),
+    }
+    model_selection = str(getattr(args, "_model_selection", "") or "").strip()
+    if model_selection:
+        params["model_name"] = model_selection
     return AgentRequest(
         request_id=request_id,
         channel_id=CHANNEL_ID,
@@ -96,19 +112,7 @@ def _build_request(
         req_method=ReqMethod.CHAT_SEND,
         is_stream=True,
         timestamp=time.time(),
-        params={
-            "query": args.prompt,
-            "content": args.prompt,
-            "mode": args.mode,
-            "work_mode": work_mode,
-            "cwd": cwd,
-            "project_dir": project_dir,
-            "trusted_dirs": trusted_dirs,
-            "supports_user_interaction": (
-                bool(getattr(args, "_interactive_worker", False))
-                or (args.output == "human" and sys.stdin.isatty())
-            ),
-        },
+        params=params,
     )
 
 

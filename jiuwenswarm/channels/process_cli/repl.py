@@ -22,6 +22,14 @@ from jiuwenswarm.channels.process_cli.commands import (
     parse_slash_command,
     resolve_mode_target,
 )
+from jiuwenswarm.channels.process_cli.control_commands import (
+    ControlQueryError,
+    query_runtime,
+    show_models,
+    show_permissions,
+    show_sessions,
+    show_status,
+)
 from jiuwenswarm.channels.process_cli.display_context import (
     resolve_cli_work_mode as _resolve_cli_work_mode,
 )
@@ -83,6 +91,7 @@ class _ReplState:
     cwd: str
     model_name: str
     display_mode: str
+    model_selection: str = ""
 
 
 def _clear_current_task_cancellation() -> None:
@@ -122,6 +131,9 @@ def _worker_command(
         command.extend(("--_operation", operation))
     else:
         command.append("--_forwarded-live-input")
+        model_selection = str(getattr(args, "_model_selection", "") or "")
+        if model_selection:
+            command.extend(("--_model-selection", model_selection))
     if session_id:
         command.extend(("--session", session_id))
     if args.cwd:
@@ -595,6 +607,116 @@ async def _handle_delete_command(
         ui.notice("已中断当前指令，可以继续输入。")
 
 
+async def _handle_control_command(
+    args: argparse.Namespace,
+    command: ParsedSlashCommand,
+    ui: ProcessCliUI,
+    state: _ReplState,
+) -> bool:
+    """Handle the additional REPL controls without creating a chat worker."""
+
+    name = command.name
+    if name not in {"/sessions", "/model", "/plan", "/status", "/permissions"}:
+        return False
+    arguments = command.arguments
+    if name == "/plan":
+        requested = arguments.lower()
+        if requested not in {"", "on", "off", "status"}:
+            ui.notice("用法：/plan [on|off|status]")
+        elif not state.display_mode.startswith("agent."):
+            ui.notice("/plan 仅支持单 Agent 模式。")
+        elif requested == "status":
+            ui.notice(f"当前规划模式：{'开启' if state.display_mode.endswith('.plan') else '关闭'}")
+        else:
+            enabled = (
+                not state.display_mode.endswith(".plan")
+                if not requested
+                else requested == "on"
+            )
+            args.mode = f"agent.{args.work_mode}.{'plan' if enabled else 'normal'}"
+            state.display_mode = _resolve_display_mode(args.mode, args.work_mode)
+            ui.notice(f"已切换模式：{state.display_mode}")
+        return True
+
+    try:
+        timeout = args.timeout or 30.0
+        if name == "/sessions":
+            parts = arguments.split()
+            if len(parts) > 2 or any(not part.isdecimal() for part in parts):
+                ui.notice("用法：/sessions [limit] [offset]")
+                return True
+            limit = int(parts[0]) if parts else 20
+            offset = int(parts[1]) if len(parts) == 2 else 0
+            if not 1 <= limit <= 200:
+                ui.notice("limit 必须在 1 到 200 之间。")
+                return True
+            data = await query_runtime(
+                "session.list",
+                cwd=state.cwd,
+                params={"limit": limit, "offset": offset},
+                timeout=timeout,
+            )
+            show_sessions(ui, data, state.session_id)
+        elif name == "/model":
+            if not arguments or arguments.lower() == "list":
+                data = await query_runtime("model.list", cwd=state.cwd, timeout=timeout)
+                show_models(ui, data, state.model_selection)
+            else:
+                data = await query_runtime(
+                    "model.resolve",
+                    cwd=state.cwd,
+                    params={"requested": arguments},
+                    timeout=timeout,
+                )
+                key = data.get("selection_key")
+                if not isinstance(key, str) or not key:
+                    raise ControlQueryError("模型查询结果缺少选择键")
+                args._model_selection = key
+                state.model_selection = key
+                state.model_name = str(data.get("display_name") or data.get("model_name") or key)
+                ui.notice(f"下一轮将使用模型：{state.model_name} [{key}]")
+        elif name == "/status":
+            if arguments:
+                ui.notice("用法：/status")
+                return True
+            session = None
+            if state.session_id:
+                data = await query_runtime(
+                    "session.get",
+                    cwd=state.cwd,
+                    params={"session_id": state.session_id},
+                    timeout=timeout,
+                )
+                session = data.get("session")
+                if session is not None and not isinstance(session, dict):
+                    raise ControlQueryError("会话状态格式无效")
+                if session is None:
+                    ui.notice("当前会话未在 Runtime 中找到。")
+            show_status(
+                ui,
+                session_id=state.session_id,
+                session=session,
+                next_mode=state.display_mode,
+                next_model=state.model_name,
+                cwd=state.cwd,
+            )
+        else:
+            if arguments:
+                ui.notice("用法：/permissions")
+                return True
+            params = {"session_id": state.session_id} if state.session_id else {}
+            data = await query_runtime(
+                "permission.get", cwd=state.cwd, params=params, timeout=timeout
+            )
+            show_permissions(ui, data)
+    except asyncio.CancelledError:
+        _clear_current_task_cancellation()
+        ui.notice("已取消当前查询，可以继续输入。")
+    except (ControlQueryError, TimeoutError, OSError) as error:
+        ui.notice(str(error) or "Runtime 查询失败")
+    return True
+
+
 async def _handle_slash_command(
     args: argparse.Namespace,
     command: ParsedSlashCommand,
@@ -602,6 +724,8 @@ async def _handle_slash_command(
     state: _ReplState,
 ) -> bool:
     """Handle one recognized command and report whether the REPL should exit."""
+    if await _handle_control_command(args, command, ui, state):
+        return False
     if command.name == "/mode":
         state.display_mode = _handle_mode_command(
             args,
@@ -698,7 +822,8 @@ async def run_repl(args: argparse.Namespace) -> int:
         # These values are best-effort previews for the next fresh worker.
         # Refresh them every turn so configuration changes are not displayed
         # indefinitely after the worker would observe a newer configuration.
-        state.model_name = _resolve_configured_model_name()
+        if not state.model_selection:
+            state.model_name = _resolve_configured_model_name()
         state.display_mode = _resolve_display_mode(args.mode, args.work_mode)
         ui.status(
             model_name=state.model_name,
