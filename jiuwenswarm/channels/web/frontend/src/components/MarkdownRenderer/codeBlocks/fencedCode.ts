@@ -12,12 +12,20 @@ export interface PositionedMarkdownNode {
   };
 }
 
-function getCodeElement(children: ReactNode): ReactElement<HTMLAttributes<HTMLElement>> | null {
+function getCodeElement(
+  children: ReactNode,
+  acceptedCodeComponent?: unknown,
+): ReactElement<HTMLAttributes<HTMLElement>> | null {
   const childArray = Children.toArray(children);
   if (childArray.length !== 1) return null;
 
   const child = childArray[0];
-  if (!isValidElement<HTMLAttributes<HTMLElement>>(child) || child.type !== 'code') return null;
+  if (
+    !isValidElement<HTMLAttributes<HTMLElement>>(child) ||
+    (child.type !== 'code' && child.type !== acceptedCodeComponent)
+  ) {
+    return null;
+  }
   return child;
 }
 
@@ -46,8 +54,14 @@ export function isCompleteCodeFence(contentLines: string[], node?: PositionedMar
   return closePattern.test(closer);
 }
 
-export function getFencedCodeBlock(children: ReactNode, contentLines: string[], node?: PositionedMarkdownNode): FencedCodeBlock | null {
-  const codeElement = getCodeElement(children);
+export function getFencedCodeBlock(
+  children: ReactNode,
+  contentLines: string[],
+  node?: PositionedMarkdownNode,
+  /** MarkdownRenderer 的 code 组件覆盖（行内增强组件在 pre 内原样透传，此参数让它仍被识别为块级 code）。 */
+  acceptedCodeComponent?: unknown,
+): FencedCodeBlock | null {
+  const codeElement = getCodeElement(children, acceptedCodeComponent);
   if (!codeElement) return null;
 
   const language = getCodeLanguage(codeElement.props.className || '');

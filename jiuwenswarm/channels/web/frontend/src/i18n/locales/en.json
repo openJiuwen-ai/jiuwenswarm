@@ -3081,6 +3081,11 @@
     "fileMissingSuffix": "before editing.",
     "notPreviewable": "This file cannot be previewed. Only Markdown/JSON (.md/.mdx/.json) files are supported."
   },
+  "markdown": {
+    "copyInlineCode": "Copy",
+    "copiedInlineCode": "Copied",
+    "copyInlineCodeFailed": "Copy failed. Please copy manually"
+  },
   "chatUi": {
     "copyMessage": "Copy message",
     "copied": "Copied",
