@@ -36,6 +36,10 @@ from openjiuwen.harness.rails._multimodal import should_enable_read_image_multim
 from openjiuwen.harness.tools import TodoListTool
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
 
+from jiuwenswarm.agents.harness.common.provenance.artifact import (
+    extract_explicit_artifact_provenance,
+    prepare_artifact_provenance_for_external,
+)
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     build_verified_permission_ask_user_question,
     convert_interactions_to_ask_user_question,
@@ -1174,6 +1178,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     tool_result,
                     rendered_result=resolve_tool_result_text(ctx.inputs, ctx.exception),
                     reviewer_metadata=reviewer_metadata,
+                    context=ctx,
                 )
                 if projected:
                     setattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE, "projected")
@@ -1186,12 +1191,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 delattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE)
         if interrupt is None and not projected:
             return
-        if projected:
-            self._symphony_stream_handler.request_force_finish(
-                ctx,
-                tc,
-                tool_result,
-            )
         await self._emit_ask_user_question_if_interrupted(
             session,
             tc,
@@ -1264,6 +1263,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         *,
         rendered_result: str | None = None,
         reviewer_metadata: Mapping[str, Any] | None = None,
+        context: Any | None = None,
     ) -> bool:
         """Emit one ``tool_result`` event.
 
@@ -1291,6 +1291,34 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     tool_result_payload,
                     raw_output,
                 )
+            artifact_provenance = extract_explicit_artifact_provenance(
+                raw_output if raw_output is not None else result
+            )
+            if not artifact_provenance and context is not None:
+                for candidate in (
+                    getattr(context, "extra", None),
+                    getattr(getattr(context, "inputs", None), "metadata", None),
+                ):
+                    artifact_provenance = extract_explicit_artifact_provenance(
+                        candidate
+                    )
+                    if artifact_provenance:
+                        break
+            if artifact_provenance:
+                artifact_provenance = prepare_artifact_provenance_for_external(
+                    artifact_provenance
+                )
+                source_payload = raw_output if raw_output is not None else result
+                if (
+                    isinstance(source_payload, dict)
+                    and "artifact_provenance" in source_payload
+                ):
+                    safe_output = dict(source_payload)
+                    safe_output["artifact_provenance"] = artifact_provenance
+                    if raw_output is not None:
+                        tool_result_payload["raw_output"] = safe_output
+                    tool_result_payload["result"] = str(safe_output)[:60000]
+                tool_result_payload["artifact_provenance"] = artifact_provenance
             error_state = _infer_tool_result_error(raw_output if raw_output is not None else result)
             if error_state is not None:
                 tool_result_payload["success"] = not error_state
