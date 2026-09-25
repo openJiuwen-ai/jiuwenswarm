@@ -1,3 +1,4 @@
+import { normalizeReplyLanguage, type ReplyLanguage } from './replyLanguage';
 import { webClient, webRequest } from '../../../../channels/web/frontend/src/services/webClient';
 import { canPlayJoyAIResponse, JoyAITtsInterruptionState, JoyAIVoiceSession } from './joyaiVoice';
 import { assistantSpeechText } from './searchPresentation';
@@ -49,6 +50,7 @@ export interface JoyAIProviderCallbacks {
 
 export class JoyAIProvider {
   private callbacks: JoyAIProviderCallbacks;
+  private replyLanguage: ReplyLanguage = 'match';
   private voice: JoyAIVoiceSession | null = null;
   private sessionId = '';
   private framePollTimer: number | null = null;
@@ -69,9 +71,12 @@ export class JoyAIProvider {
   private framePollingPausedUntil = 0;
   private pendingToolContext: JoyAIToolContextEntry[] = [];
 
-  constructor(callbacks: JoyAIProviderCallbacks) {
+  constructor(callbacks: JoyAIProviderCallbacks, replyLanguage: ReplyLanguage = 'match') {
     this.callbacks = callbacks;
+    this.replyLanguage = normalizeReplyLanguage(replyLanguage);
   }
+
+  setPreferredLanguage(language: unknown): void { this.replyLanguage = normalizeReplyLanguage(typeof language === 'string' ? language : undefined); }
 
   updateCallbacks(callbacks: JoyAIProviderCallbacks): void {
     this.callbacks = callbacks;
@@ -364,6 +369,7 @@ export class JoyAIProvider {
             instruction: prompt,
             question: originalQuestion,
             request_kind: requestKind,
+            reply_language: this.replyLanguage,
             command_id: commandId,
             joyai_session_id: sessionId,
             search_session_id: searchSessionId,
@@ -392,6 +398,7 @@ export class JoyAIProvider {
             cooldown_ms: cooldownMs,
             rate_limit_strikes: this.rateLimitStrikes,
             request_kind: requestKind,
+            reply_language: this.replyLanguage,
           });
           this.callbacks.setStatus(`JoyAI 额度受限，${Math.ceil(cooldownMs / 1_000)} 秒后自动恢复`);
         }

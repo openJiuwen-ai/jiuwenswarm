@@ -37,7 +37,9 @@ def _brief_markers(nonce: str) -> tuple[str, str]:
 
 
 def core_agent_brief_protocol(nonce: str) -> str:
+    from . import settings, joyai_provider
     begin, end = _brief_markers(nonce)
+    language_rule = joyai_provider.response_language_instruction(settings.reply_language())
     return build_brief_prompt(begin, end)
 
 
