@@ -88,6 +88,7 @@ export interface QwenOmniToolResultContext {
 export function createQwenOmniToolFollowupEvent(
   brief: RealtimeBrief,
   context?: QwenOmniToolResultContext,
+  replyLanguage?: string,
 ): Record<string, unknown> {
   return {
     type: 'conversation.item.create',
@@ -97,7 +98,7 @@ export function createQwenOmniToolFollowupEvent(
       content: [
         {
           type: 'input_text',
-          text: taskResultNotice(brief, context?.question),
+          text: taskResultNotice(brief, context?.question, replyLanguage),
         },
       ],
     },

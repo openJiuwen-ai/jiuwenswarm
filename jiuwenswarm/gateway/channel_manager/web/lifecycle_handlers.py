@@ -154,7 +154,7 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                             send_event = getattr(channel, "send_event", None)
                             if callable(send_event):
                                 await send_event(ws, event, item)
-                elif "operation_id" not in payload:
+                elif "operation_id" not in payload and (method != "project.delete" or payload.get("deleted")):
                     send_event = getattr(channel, "send_event", None)
                     if callable(send_event):
                         await send_event(ws, event, payload)

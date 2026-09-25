@@ -2463,6 +2463,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           !pendingMatches || pendingQuestion?.source !== 'permission_interrupt' ||
           !pendingQuestionIdentity(pendingQuestion) || !permissionAnswers.length
         )) return false;
+        if (pendingMatches && pendingQuestion?.duplexJobId) {
+          await request('video.search.answer', {
+            session_id: sessionId,
+            job_id: pendingQuestion.duplexJobId,
+            request_id: requestId,
+            answers: permissionAnswers,
+          });
+          useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
+          return true;
+        }
         // 如果是需要走 interrupt/interact 的确认，发送 chat.send
         if (
           effectiveSource === 'permission_interrupt' ||
@@ -4887,6 +4897,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           pendingSubagentAssignmentRef.current.delete(event.activity.subagent_id);
         }
       }),
+      webClient.on('video.search.confirmation_closed', ({ payload }) => {
+        const sessionId = resolveEventSessionId(payload);
+        if (!sessionId) return;
+        const data = payload as Record<string, unknown>;
+        const store = useChatStore.getState();
+        for (const question of store.getRuntime(sessionId)?.pendingQuestions ?? []) {
+          if (question.duplexJobId === data.duplex_job_id && question.request_id === data.request_id) {
+            store.consumePendingQuestion(sessionId, question);
+          }
+        }
+      }),
       webClient.on('chat.ask_user_question', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
@@ -4918,6 +4939,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           request_id: typeof questionPayload.request_id === 'string' ? questionPayload.request_id : '',
           source: typeof questionPayload.source === 'string' ? questionPayload.source : undefined,
           questions,
+          ...(typeof questionPayload.duplex_job_id === 'string'
+            ? { duplexJobId: questionPayload.duplex_job_id } : {}),
           ...(approvalSchema ? { approvalSchema } : {}),
           ...(evolutionMeta ? { evolutionMeta } : {}),
           ...(planApprovalKind ? { planApprovalKind } : {}),
