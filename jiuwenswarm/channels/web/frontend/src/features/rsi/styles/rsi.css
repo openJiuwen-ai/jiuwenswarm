@@ -1514,7 +1514,9 @@
   color: #191919;
 }
 .rsi-intro__create {
+  flex-shrink: 0;
   height: 32px;
+  white-space: nowrap;
   border: none;
   border-radius: 8px;
   background: #000000;
