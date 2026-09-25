@@ -43,6 +43,11 @@ pnpm-debug.log*
 .env.*.local
 !.env.example
 
+# Work files of the multimodal capability migration. An import of an app module
+# in a checkout writes them beside the packaged .env.
+*.media-capability.lock
+*.media-capability.pending
+
 # Apple code signing & notarization secrets — NEVER commit (contains private keys!)
 *.p12
 *.cer
