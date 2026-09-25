@@ -10681,7 +10681,10 @@ class JiuWenSwarmDeepAdapter:
             reload=False,
             allow_general=(
                 sub_mode == "plan"
-                or (isinstance(mode, str) and mode.startswith("agent"))
+                or (
+                    isinstance(mode, str)
+                    and (mode.startswith("agent") or mode in ("team", "team.plan", "code.team"))
+                )
             ),
         )
         common_kwargs = dict(
