@@ -15,9 +15,19 @@
 ## 1. 克隆项目
 
 ```bash
-git clone <repository-url> jiuwenswarm
+git clone https://github.com/openJiuwen-ai/jiuwenswarm.git
 cd jiuwenswarm
 ```
+
+如果需要联调 agent-core，请在相邻目录克隆：
+
+```bash
+git clone https://github.com/openJiuwen-ai/agent-core.git ../agent-core
+```
+
+> **注意：** 相邻 clone 只用于阅读和联调，不会自动替换 `pyproject.toml` / `uv.lock` 固定的 agent-core。使用 editable install 或 source override 后，应执行 `uv run python -c "import openjiuwen; print(openjiuwen.__file__)"` 核对实际加载路径。
+>
+> **仅能访问 GitHub 的环境需要注意：** 当前 JiuwenSwarm 的 `pyproject.toml` 和 `uv.lock` 仍使用 GitCode URL 固定 agent-core。对应 commit 已确认存在于 GitHub，但直接执行 `uv sync` 仍可能因 GitCode 域名不可达而失败。临时 URL rewrite、适用范围和撤销方式见[新同学架构导览：GitHub 与 GitCode 的实际差异](新同学架构导览-Agent-Skill与Symphony.md#8-github-与-gitcode-的实际差异)。团队应优先提供 GitHub-only clean install，而不是让每位开发者长期维护个人补丁。
 
 ## 2. 使用 `uv` 搭建开发环境
 
