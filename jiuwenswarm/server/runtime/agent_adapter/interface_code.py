@@ -1261,7 +1261,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             for tool in getattr(rail, 'tools', []) or []:
                 if hasattr(tool, '_workspace_path'):
                     setattr(tool, '_workspace_path', self._agent_workspace_dir)
-        initial_workspace = self._project_dir or self._agent_workspace_dir
+        # Seed the session workspace before the scheduler starts.
+        initial_workspace = self._initial_runtime_workspace()
         if self._enable_auto_permission:
             paths = self._require_permission_workspace_binding()
             initial_workspace = str(paths.runtime_workspace_root)
@@ -2836,7 +2837,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             # project or automatically allocated projectless task workspace.
             deep_config.cwd = task_cwd
             deep_config.project_root = str(runtime_paths.project_root)
-        self._seed_runtime_cwd(task_cwd, workspace=project_workspace)
+        # Update the CwdState already held by the scheduler.
+        self._reseed_runtime_cwd(task_cwd, workspace=project_workspace)
         resolved_language = self._resolve_runtime_language()
         resolved_channel = str(runtime_config.channel_id or
                                self._resolve_prompt_channel(runtime_config.session_id) or "web").strip() or "web"
