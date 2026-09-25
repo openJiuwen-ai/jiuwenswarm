@@ -6893,8 +6893,8 @@ class JiuWenSwarmDeepAdapter:
         updated = dict(inputs)
         updated["_multimodal_image_files"] = image_files
         logger.info(
-            "[JiuWenSwarmDeepAdapter] Prepared %d image attachment(s) "
-            "for Core multimodal context-window injection",
+            "[JiuWenSwarmDeepAdapter] Extracted %d image attachment(s) from the "
+            "request; routing is decided further down",
             len(image_files),
         )
         return updated
@@ -6909,11 +6909,24 @@ class JiuWenSwarmDeepAdapter:
         image_input_status: str = "unknown",
     ) -> dict[str, Any]:
         """Expose image paths when native image input is unavailable."""
+        # Every caller reaches this function with the routing decision in hand,
+        # so the line naming the branch taken is emitted here rather than during
+        # extraction, which runs before the decision exists.
+        #
+        # A false ``enable_read_image_multimodal`` covers three separate
+        # findings: native input turned off by declaration or configuration, a
+        # probe that came back negative, and a capability that is not confirmed
+        # either way. The lines below therefore name ``image_input_status``
+        # instead of calling all three "disabled". A log line must not state a
+        # reason the code does not have.
         if enable_read_image_multimodal:
-            return inputs
-
-        query = inputs.get("query")
-        if not isinstance(query, str) or "jiuwenswarm_image_tool_context" in query:
+            pending = inputs.get("_multimodal_image_files")
+            if isinstance(pending, list) and pending:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] Native image input enabled: "
+                    "%d image attachment(s) routed to the model context window",
+                    len(pending),
+                )
             return inputs
 
         from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
@@ -6926,6 +6939,22 @@ class JiuWenSwarmDeepAdapter:
         if not image_files:
             return inputs
 
+        query = inputs.get("query")
+        if isinstance(query, str) and "jiuwenswarm_image_tool_context" in query:
+            # Already carries the tool context: a second pass over the same
+            # query, not a new routing decision.
+            return inputs
+        if not isinstance(query, str):
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] Native image input not in use "
+                "(image_input_status=%s) and the image-understanding tool prompt "
+                "could not be built (no text query): %d image attachment(s) not "
+                "routed to the model",
+                image_input_status,
+                len(image_files),
+            )
+            return inputs
+
         params = request.params if isinstance(request.params, dict) else {}
         raw_question = params.get("query")
         if not isinstance(raw_question, str) or not raw_question.strip():
@@ -6933,6 +6962,16 @@ class JiuWenSwarmDeepAdapter:
         question = raw_question.strip() if isinstance(raw_question, str) else ""
         first_path = str(image_files[0].get("path") or "").strip()
         if not first_path:
+            # Defensive: every record reaching here came through
+            # ``_normalize_image_file``, which drops entries with no path.
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] Native image input not in use "
+                "(image_input_status=%s) and the image-understanding tool prompt "
+                "could not be built (no file path): %d image attachment(s) not "
+                "routed to the model",
+                image_input_status,
+                len(image_files),
+            )
             return inputs
 
         media_items = []
@@ -6949,6 +6988,16 @@ class JiuWenSwarmDeepAdapter:
                 }
             )
         if not media_items:
+            # Defensive: the ``first_path`` guard above already established that
+            # ``image_files[0]`` yields an item, so the list cannot be empty.
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] Native image input not in use "
+                "(image_input_status=%s) and the image-understanding tool prompt "
+                "could not be built (no usable file path): %d image "
+                "attachment(s) not routed to the model",
+                image_input_status,
+                len(image_files),
+            )
             return inputs
 
         status_message = JiuWenSwarmDeepAdapter._image_input_status_message(image_input_status)
@@ -6984,6 +7033,35 @@ class JiuWenSwarmDeepAdapter:
             + "\n\n图片附件上下文（供 ReAct 选择图片理解工具使用）：\n"
             + json.dumps(tool_context, ensure_ascii=False)
         )
+        # ``media_items`` rather than ``image_files``: each routing line counts
+        # what the branch it names actually carried, which on the enabled route
+        # is the list handed to the context-window rail. The two are equal in
+        # practice, since every extracted record has a usable path.
+        #
+        # The tool context is built either way, but it only reaches a tool when
+        # one is configured: without a vision model the very same block carries
+        # a hint telling the model to say it cannot see images. Naming both
+        # outcomes "routed to the image-understanding tool prompt" would be the
+        # assumed outcome this function exists to stop reporting.
+        if vision_tool_available:
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] Native image input not in use "
+                "(image_input_status=%s): %d image attachment(s) routed to the "
+                "image-understanding tool prompt, not to the model context "
+                "window",
+                image_input_status,
+                len(media_items),
+            )
+        else:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] Native image input not in use "
+                "(image_input_status=%s) and no image-understanding tool is "
+                "configured: %d image attachment(s) reach the model as paths "
+                "only, and the prompt instructs it to state that it cannot read "
+                "them",
+                image_input_status,
+                len(media_items),
+            )
         return updated
 
     @staticmethod
