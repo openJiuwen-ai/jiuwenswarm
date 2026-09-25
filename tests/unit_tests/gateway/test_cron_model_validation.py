@@ -14,6 +14,7 @@ import pytest
 
 from jiuwenswarm.gateway.cron.models import (
     CronJob,
+    CronTargetChannel,
     normalize_cron_job_mcp,
     validate_cron_model,
 )
@@ -262,3 +263,71 @@ def test_cron_job_without_mcp_round_trip_keeps_none() -> None:
     legacy = {k: v for k, v in job.to_dict().items() if k != "mcp"}
     assert "mcp" not in legacy
     assert CronJob.from_dict(legacy).mcp is None
+
+
+# ---------------------------------------------------------------------------
+# targets 校验：未知推送频道必须报错，不得静默改写成 web
+# ---------------------------------------------------------------------------
+
+
+def _job_dict(targets: str) -> dict:
+    return {
+        "id": "job-targets-1",
+        "name": "daily",
+        "enabled": True,
+        "cron_expr": "0 0 9 * * ? *",
+        "timezone": "Asia/Shanghai",
+        "description": "hello",
+        "targets": targets,
+    }
+
+
+@pytest.mark.parametrize("targets", ["telegram", "slack", "discord", "no-such-channel"])
+def test_cron_job_from_dict_rejects_unknown_target(targets: str) -> None:
+    """未知频道之前被改写成 web：任务创建成功，结果却推到 Web 面板。"""
+    with pytest.raises(ValueError, match=f"Invalid targets '{targets}'"):
+        CronJob.from_dict(_job_dict(targets))
+
+
+def test_cron_job_from_dict_error_lists_accepted_targets() -> None:
+    with pytest.raises(ValueError) as exc:
+        CronJob.from_dict(_job_dict("telegram"))
+    message = str(exc.value)
+    for channel in CronTargetChannel:
+        assert channel.value in message
+    assert "feishu_enterprise:<app_id>" in message
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("web", "web"),
+        ("WEB", "web"),
+        ("dingtalk", "dingtalk"),
+        ("feishu_enterprise:cli_123", "feishu_enterprise:cli_123"),
+        ("feishu_enterprise:cli_123:chat:abc", "feishu_enterprise:cli_123"),
+    ],
+)
+def test_cron_job_from_dict_keeps_accepted_targets(raw: str, expected: str) -> None:
+    assert CronJob.from_dict(_job_dict(raw)).targets == expected
+
+
+def test_cron_job_store_create_rejects_unknown_target(tmp_path) -> None:
+    """store.create_job 经 build_job round-trip 校验，未知频道不得落盘。"""
+    import asyncio
+
+    from jiuwenswarm.runtime.cron.store import FileCronJobStore
+
+    path = tmp_path / "cron_jobs.json"
+    store = FileCronJobStore(path=path)
+    with pytest.raises(ValueError, match="Invalid targets 'telegram'"):
+        asyncio.run(
+            store.create_job(
+                name="daily",
+                cron_expr="0 0 9 * * ? *",
+                timezone="Asia/Shanghai",
+                description="hello",
+                targets="telegram",
+            )
+        )
+    assert not path.exists()

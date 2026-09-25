@@ -73,8 +73,21 @@ def normalize_target_channel_id(
 
 
 def _normalize_targets_str(raw: str) -> str:
-    """将 targets 字符串规范为 CronTargetChannel 枚举值，非法则默认 web。"""
-    return normalize_target_channel_id(raw, default=CronTargetChannel.WEB.value)
+    """将 targets 字符串规范为 CronTargetChannel 枚举值，非法则拒绝。
+
+    ``from_dict`` 是 create/update 的校验入口（``build_new_cron_job`` 与
+    ``apply_cron_job_patch`` 都 round-trip 一次）。此处若沿用 ``default=web``
+    兜底，校验对 targets 形同虚设：任务创建成功、推送却落到 Web 面板，
+    既无报错也无日志。其余调用方都先过 ``is_valid_target_channel_id``。
+    """
+    s = str(raw or "").strip()
+    if not is_valid_target_channel_id(s):
+        raise ValueError(
+            f"Invalid targets {raw!r}. Valid: "
+            f"{', '.join(c.value for c in CronTargetChannel)}"
+            " or feishu_enterprise:<app_id>"
+        )
+    return normalize_target_channel_id(s)
 
 
 # Cron job execution modes (passed to AgentServer as chat.send params["mode"]).
