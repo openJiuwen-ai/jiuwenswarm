@@ -5,13 +5,24 @@
 from __future__ import annotations
 
 from openjiuwen.harness.security import PermissionLevel
-from openjiuwen.harness.security.permission_engine.toolguard.tool_policy import (
+from openjiuwen.harness.security.tiered_policy import (
     evaluate_tiered_policy,
 )
 
 from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
     compose_host_effective_permissions,
 )
+
+
+def _package_builtin_yaml_present() -> bool:
+    """True when installed openjiuwen ships ``harness/resources/builtin_rules.yaml``."""
+    try:
+        from openjiuwen.harness.security.tiered_policy import (
+            get_package_builtin_rules_path,
+        )
+    except ImportError:
+        return False
+    return get_package_builtin_rules_path().is_file()
 
 
 def test_missing_user_and_session_are_empty() -> None:

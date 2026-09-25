@@ -218,7 +218,6 @@ def _fail_closed(reason: str, enabled: bool) -> dict[str, Any]:
     return {
         "enabled": enabled,
         "schema": "tiered_policy",
-        "permission_mode": "normal",
         "defaults": {"*": "ask"},
         "tools": {},
         "rules": [],

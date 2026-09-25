@@ -307,7 +307,6 @@ class TestAgentConfigService:
             "  - Read\n"
             "  - Bash\n"
             "color: blue\n"
-            "permission_mode: accept_edits\n"
             "memory_scope: project\n"
             "---\n\n"
             "完整的 system prompt 正文。\n",
@@ -320,7 +319,6 @@ class TestAgentConfigService:
         assert agent.model == "claude-sonnet"
         assert agent.tools == ["Read", "Bash"]
         assert agent.color == "blue"
-        assert agent.permission_mode == "accept_edits"
         assert agent.memory_scope == "project"
         assert agent.prompt == "完整的 system prompt 正文。"
 
