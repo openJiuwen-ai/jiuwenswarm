@@ -161,6 +161,12 @@ def test_resolve_connection_user_id_empty():
     assert uid is None
 
 
+def test_resolve_connection_user_id_does_not_fallback_after_authentication():
+    ws = type("Ws", (), {"authenticated_user_id": ""})()
+    uid = WebChannel._resolve_connection_user_id({"user_id": "other"}, ws)
+    assert uid is None
+
+
 def test_routing_key_user_id_fallback():
     assert WebChannel._routing_key_user_id("alice", ("127.0.0.1", 1)) == "alice"
     assert WebChannel._routing_key_user_id(None, ("127.0.0.1", 1)) == "('127.0.0.1', 1)"

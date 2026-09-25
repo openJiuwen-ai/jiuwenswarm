@@ -11588,6 +11588,9 @@ class JiuWenSwarmDeepAdapter:
             and not is_team_mode(deprecate_mode(self._last_mode))
             and getattr(runtime, "session_message_service", None) is not None
         )
+        messaging_rail = getattr(self, "_session_messaging_route_rail", None)
+        if messaging_rail is not None:
+            messaging_rail.set_service(runtime.session_message_service if eligible else None)
         if not eligible:
             if self._session_messaging_toolkit is not None:
                 registered_tools = [
@@ -11604,6 +11607,8 @@ class JiuWenSwarmDeepAdapter:
                 "session_send_message",
                 "session_message_list",
                 "session_message_resolve",
+                "session_continue_queued",
+                "session_read",
             } & registered_names:
                 self._instance.ability_manager.remove(name)
             return
@@ -11612,6 +11617,8 @@ class JiuWenSwarmDeepAdapter:
             "session_send_message",
             "session_message_list",
             "session_message_resolve",
+            "session_continue_queued",
+            "session_read",
         }
         if self._session_messaging_toolkit is None:
             # A restored adapter may still carry the retired multi-session
@@ -12368,6 +12375,16 @@ class JiuWenSwarmDeepAdapter:
             self._mcp_prewarm_task.cancel()
         self._mcp_prewarm_task = None
         await self._close_a2x_client()
+        # 释放本实例在全局 RailManager 中的 per-agent 注册状态，避免会话
+        # adapter 销毁后状态泄漏（issue #3711）。
+        if self._instance is not None:
+            try:
+                get_rail_manager().release_agent_state(self._instance)
+            except Exception:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] release rail manager state failed",
+                    exc_info=True,
+                )
 
     async def _cleanup_evolution_background_tasks(self) -> None:
         """Drain detached evolution work before adapter-owned state is released."""
@@ -12569,7 +12586,7 @@ class JiuWenSwarmDeepAdapter:
     def _goal_record_is_active(self) -> bool:
         """Whether GoalRecord is ACTIVE (persistent objective still running).
 
-        Unlike ``_has_active_goal_interaction``, this ignores an in-flight goal
+        Unlike ``has_active_goal_interaction``, this ignores an in-flight goal
         round.  Used when deciding whether to demote ``chat.final``: after user
         cancel/pause the record is no longer ACTIVE, so a terminal final must
         reach the frontend even while the aborted round is still unwinding.
@@ -12589,7 +12606,21 @@ class JiuWenSwarmDeepAdapter:
         status_value = getattr(status, "value", status)
         return status_value == "active"
 
-    def _has_active_goal_interaction(self) -> bool:
+    def has_active_goal(self, session_id: str) -> bool:
+        """Read the cached Goal owner, including between autonomous rounds."""
+        if (
+            self._is_session_scoped_adapter
+            and self._session_adapter_key(self._parent_session_id)
+            != self._session_adapter_key(session_id)
+        ):
+            return False
+        adapter = (
+            self if self._is_session_scoped_adapter
+            else self._get_cached_session_adapter(session_id)
+        )
+        return bool(adapter and adapter.has_active_goal_interaction())
+
+    def has_active_goal_interaction(self) -> bool:
         """Whether the shared DeepAgent still owns an active goal interaction."""
         if self._has_active_goal_round():
             return True
@@ -15481,6 +15512,8 @@ class JiuWenSwarmDeepAdapter:
 
     async def install_session_input_guard(self, *, reload: bool = False) -> None:
         """Register the input guard on this Adapter's current SDK instance."""
+        from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent
+
         from jiuwenswarm.server.runtime.agent_adapter.session_input import (
             SessionInputGuard,
         )
@@ -15495,10 +15528,49 @@ class JiuWenSwarmDeepAdapter:
         elif not reload:
             return
         else:
+            self._session_input_guard = None
             await instance.unregister_rail(guard)
+            await instance.unregister_rail(guard.boundary_guard)
         await instance.ensure_initialized()
-        await register(guard)
+        try:
+            await register(guard.boundary_guard)
+            await register(guard)
+            # DeepAgent routes BEFORE_INVOKE to the outer agent only. Resume
+            # queue binding must also run on the inner ReAct invocation.
+            event = AgentCallbackEvent.BEFORE_INVOKE
+            await instance.react_agent.register_callback(event, guard.before_invoke, guard.callback_priority(event))
+        except Exception as exc:
+            # DeepAgent unregisters all of this rail's callbacks on both agents.
+            await instance.unregister_rail(guard)
+            await instance.unregister_rail(guard.boundary_guard)
+            raise exc
         self._session_input_guard = guard
+
+    def _require_cross_session_task_admission(self, request: AgentRequest) -> None:
+        """Refuse protected-mode steering before any SDK submission."""
+        from jiuwenswarm.agents.harness.common.session_ops_service import resolve_live_agent_session
+        from jiuwenswarm.common.mode_matrix import is_plan_mode
+        from jiuwenswarm.runtime.context import get_current_runtime
+        from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
+
+        runtime = get_current_runtime()
+        checker = getattr(runtime, "session_message_requires_queue", None)
+        protected = (
+            is_plan_mode(self._last_mode)
+            or is_plan_mode(request.params.get("mode"))
+            or self.has_active_goal_interaction()
+            or bool(callable(checker) and checker(request.session_id))
+        )
+        if not protected and self._instance is not None:
+            session = resolve_live_agent_session(self._instance, request.session_id)
+            if session is not None:
+                # enter_plan_mode may run after the request mode was selected.
+                protected = self._instance.load_state(session).plan_mode.mode == "plan"
+        if protected:
+            raise SessionInputQueueRequiredError(
+                "cross-session messages must queue while a plan or goal is active; "
+                "supplemental input was not sent"
+            )
 
     async def deliver_active_session_input(
         self, request: AgentRequest, inputs: dict[str, Any]
@@ -15509,23 +15581,33 @@ class JiuWenSwarmDeepAdapter:
         Literal '/...' supplements remain text rather than slash commands.
         """
         from jiuwenswarm.server.runtime.agent_adapter.session_input import (
-            SessionInputDeliveryUnknown,
+            enqueue_bound_session_input,
             sdk_input_mode,
         )
 
+        from jiuwenswarm.runtime.session_input import SessionInputRejectedError
+
+        mode = sdk_input_mode(request.params)
+        cross_session_steer = mode is InputDispatchMode.STEER and isinstance(
+            request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict
+        )
+        if cross_session_steer:
+            self._require_cross_session_task_admission(request)
         instance = self._instance
         if instance is None or instance.active_round is None:
             return False
         if not instance.has_output_stream():
             return False
         if self._stream_completion_state(had_interaction=False) == "suspended":
-            raise RuntimeError(
+            raise SessionInputRejectedError(
                 "session is waiting for an interaction answer; "
                 "supplemental input was not sent"
             )
-        mode = sdk_input_mode(request.params)
+        bound_round = instance.active_round
 
         def require_open_input() -> None:
+            if cross_session_steer:
+                self._require_cross_session_task_admission(request)
             if mode is InputDispatchMode.STEER:
                 guard = self._session_input_guard
                 if guard is None or guard.owner is not instance:
@@ -15533,7 +15615,7 @@ class JiuWenSwarmDeepAdapter:
                 else:
                     accepting = guard.accepting
                 if not accepting:
-                    raise RuntimeError(
+                    raise SessionInputRejectedError(
                         "session is finishing or changing execution state; "
                         "supplemental input was not sent, "
                         "retry after it settles"
@@ -15547,19 +15629,11 @@ class JiuWenSwarmDeepAdapter:
 
             async def send(sdk_request: SendInputRequest) -> None:
                 require_open_input()
-                target_round = instance.active_round
+                if mode is InputDispatchMode.STEER:
+                    entry = enqueue_bound_session_input(instance, bound_round, request, sdk_request)
+                    await self._session_input_guard.publish_input_received(entry)
+                    return
                 await instance.send_input(sdk_request)
-                # A closing boundary during SDK admission makes delivery
-                # uncertain. Preserve that receipt; never retry automatically.
-                if mode is InputDispatchMode.STEER and (
-                    not self._session_input_guard.accepting
-                    or instance.active_round is not target_round
-                ):
-                    raise SessionInputDeliveryUnknown(
-                        "session changed while sending; "
-                        "supplemental delivery is unknown, "
-                        "do not retry automatically"
-                    )
 
             await self._send_input_with_permission_resume_guard(
                 SendInputRequest(
@@ -15579,6 +15653,8 @@ class JiuWenSwarmDeepAdapter:
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> AsyncIterator[AgentResponseChunk]:
         """Deliver to the cached owner without resetting its active run state."""
+        from jiuwenswarm.server.runtime.agent_adapter.session_input import sdk_input_mode
+
         session_id = self._session_adapter_key(request.session_id)
         if not self._is_session_scoped_adapter:
             adapter = self._get_cached_session_adapter(session_id)
@@ -15603,7 +15679,12 @@ class JiuWenSwarmDeepAdapter:
             if accepted:
                 yield AgentResponseChunk(
                     request_id=request.request_id, channel_id=request.channel_id,
-                    payload={"event_type": "runtime.accepted", "request_id": request.request_id},
+                    payload={
+                        "event_type": "runtime.accepted",
+                        "request_id": request.request_id,
+                        **({"input_boundary": "stream"}
+                           if sdk_input_mode(request.params) is InputDispatchMode.STEER else {}),
+                    },
                     is_complete=False,
                 )
                 yield AgentResponseChunk(
@@ -15613,6 +15694,21 @@ class JiuWenSwarmDeepAdapter:
                 return
             # The original execution can finish between Runtime routing and
             # SDK admission. Reuse normal output ownership for the idle case.
+            if isinstance(request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict):
+                from jiuwenswarm.runtime.session_input import SessionInputRejectedError
+
+                # Runtime selected an active parent. Let the durable mailbox
+                # reacquire task admission rather than starting an unbound turn
+                # while that parent is starting or releasing its output owner.
+                raise SessionInputRejectedError(
+                    "target execution changed before submission; queue the message"
+                )
+            if request.params.get("expected_execution_id"):
+                from jiuwenswarm.runtime.session_input import SessionInputTargetError
+
+                raise SessionInputTargetError(
+                    "the targeted execution has ended; supplemental input was not sent"
+                )
             if self._instance is not None and self._instance.has_output_stream():
                 raise RuntimeError(
                     "session output is finishing; supplemental input was not "
@@ -16015,6 +16111,9 @@ class JiuWenSwarmDeepAdapter:
         # deltas plus the terminal chat.final — see ``_assemble_run_answer``.
         run_answer_deltas: list[str] = []
         run_answer_final = ""
+        output_phase_id: str | None = None
+        pending_input_ids: set[str] = set()
+        output_sequence = 0
 
         def should_skip_duplicate_ask_user(parsed: dict | None) -> bool:
             if not isinstance(parsed, dict):
@@ -16029,19 +16128,37 @@ class JiuWenSwarmDeepAdapter:
             emitted_ask_user_events.add(identity)
             return False
 
-        async def note_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        async def note_chat_payload(
+            payload: dict[str, Any], *, stream_end: bool = False,
+        ) -> dict[str, Any]:
             nonlocal had_assistant_output, had_tool_output, emitted_terminal_chat_final
-            nonlocal run_answer_final
+            nonlocal run_answer_final, output_sequence
             event_type = payload.get("event_type")
+            if output_phase_id and isinstance(event_type, str) and event_type.startswith("chat."):
+                output_sequence += 1
+                payload = {**payload, "output_phase_id": output_phase_id,
+                           "output_order": {"request_id": rid, "sequence": output_sequence},
+                           "timestamp": time.time() * 1000}
+                if (
+                    pending_input_ids and not stream_end
+                    and event_type not in ("chat.input_received", "chat.output_phase")
+                ):
+                    payload["output_suppressed"] = True
             if event_type in ("chat.delta", "chat.reasoning", "chat.final"):
                 had_assistant_output = True
+            if event_type == "chat.delta" or (
+                event_type == "chat.final" and bool(payload.get("content"))
+            ):
+                guard = self._session_input_guard
+                if guard is not None and guard.consume_generation_boundary():
+                    payload["steering_generation_start"] = True
             if event_type in ("chat.tool_call", "chat.tool_update", "chat.tool_result"):
                 had_tool_output = True
             if event_type == "chat.delta":
                 # Single choke point for forwarded text: memo it so a demoted
                 # goal attempt final can skip text the bubble already shows.
                 self._note_round_visible_text(str(payload.get("content") or ""))
-            if event_type == "chat.final":
+            if event_type == "chat.final" and not payload.get("output_suppressed"):
                 emitted_terminal_chat_final = True
             # Assemble the run's final answer for the OTel trace output. This is
             # the one choke point every assistant-visible payload passes through,
@@ -16632,6 +16749,24 @@ class JiuWenSwarmDeepAdapter:
 
                 chunk_type = chunk.type
 
+                # Markers and model chunks share the SDK output queue. Read the
+                # phase here, never from the guard's mutable current model state:
+                # that model may already have advanced while old chunks waited.
+                if chunk_type in ("session_input_received", "session_output_phase"):
+                    if chunk_type == "session_input_received":
+                        pending_input_ids.add(chunk.payload["input_request_id"])
+                        event_type = "chat.input_received"
+                    else:
+                        output_phase_id = chunk.payload["output_phase_id"]
+                        pending_input_ids.difference_update(chunk.payload["applied_input_ids"])
+                        event_type = "chat.output_phase"
+                    yield AgentResponseChunk(
+                        request_id=rid, channel_id=cid,
+                        payload=await note_chat_payload({"event_type": event_type, **chunk.payload}),
+                        is_complete=False,
+                    )
+                    continue
+
                 if chunk_type == "llm_usage":
                     logger.info(f"[JiuWenSwarmDeepAdapter] llm_usage chunk: {chunk}")
                     usage_meta = (
@@ -16899,7 +17034,8 @@ class JiuWenSwarmDeepAdapter:
 
             # pause→clear (and similar): round cancelled, iterator ends without
             # a model chat.final. Synthesize a real final so the frontend can
-            # stopStreaming; do not demote.
+            # stopStreaming; do not demote or suppress this stream-end control
+            # when accepted steering remains unconsumed.
             if run_failure is None and self._should_emit_stream_end_chat_final(
                 had_assistant_output=had_assistant_output,
                 emitted_terminal_chat_final=emitted_terminal_chat_final,
@@ -16911,7 +17047,7 @@ class JiuWenSwarmDeepAdapter:
                     payload=await note_chat_payload({
                         "event_type": "chat.final",
                         "content": "",
-                    }),
+                    }, stream_end=True),
                     is_complete=False,
                     runtime_completion=self._stream_completion_state(
                         had_interaction=bool(emitted_ask_user_events),

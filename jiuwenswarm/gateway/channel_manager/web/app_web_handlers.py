@@ -4793,6 +4793,22 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             on_done=_attach_runtime_status,
         )
 
+    async def _session_message_continue_queued(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params,
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED,
+            label="session.message.continue_queued",
+        )
+
     async def _session_plan_status(ws, req_id, params, session_id, user_id=None):
         """查询会话当前是否处于计划模式（只读，刷新后恢复前端「计划」标签）。
 
@@ -7114,6 +7130,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("session.list", _session_list)
     channel.register_method("session.create", _session_create)
     channel.register_method("session.get_metadata", _session_get_metadata)
+    channel.register_method("session.message.continue_queued", _session_message_continue_queued)
     channel.register_method("session.plan_status", _session_plan_status)
     channel.register_method("session.rename", _session_rename)
     channel.register_method("session.pin", _session_pin)

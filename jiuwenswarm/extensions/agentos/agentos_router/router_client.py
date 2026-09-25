@@ -676,12 +676,22 @@ class AgentOSRouterClient(AgentServerClient):
         token_path = path if allow_query_token else urllib.parse.urlparse(path).path
         header_map = headers_to_dict(headers)
         token = extract_token_from_path_and_headers(token_path, header_map or headers)
-        return await self._verify_request_token(
+        result = await self._verify_request_token(
             token=token,
             headers=header_map,
             remote=remote,
             channel=channel,
         )
+        if channel == "web" and result.success:
+            if self.auth_enabled:
+                if not str(result.user_id or "").strip():
+                    return AuthResult(success=False, error="authenticated user identity is missing")
+            else:
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
+                query_user_id = str((query.get("user_id") or [""])[0] or "").strip()
+                if query_user_id:
+                    result.user_id = query_user_id
+        return result
 
     def set_key_issuer(
         self,

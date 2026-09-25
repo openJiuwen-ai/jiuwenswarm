@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import os
 import signal
@@ -29,6 +30,13 @@ from jiuwenswarm.channels.process_cli.display_context import (
 )
 from jiuwenswarm.channels.process_cli.display_context import (
     resolve_display_mode as _resolve_display_mode,
+)
+from jiuwenswarm.channels.process_cli.live_layout import (
+    FORWARDED_RECEIPT_PREFIX,
+    LiveTurnLayout,
+)
+from jiuwenswarm.channels.process_cli.prompt import (
+    create_live_prompt_session as _create_live_prompt_session,
 )
 from jiuwenswarm.channels.process_cli.prompt import (
     create_prompt_session as _create_prompt_session,
@@ -58,6 +66,15 @@ _STATEFUL_WORKER_OPERATIONS = frozenset(
         _SESSION_DELETE_OPERATION,
     }
 )
+
+
+def _worker_environment() -> dict[str, str]:
+    """Use one explicit wire encoding for the parent/worker stdio pipes."""
+
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
 
 
 @dataclass(slots=True)
@@ -103,6 +120,8 @@ def _worker_command(
         command.extend(("--_worker-result-file", worker_result_file))
     if operation != "chat":
         command.extend(("--_operation", operation))
+    else:
+        command.append("--_forwarded-live-input")
     if session_id:
         command.extend(("--session", session_id))
     if args.cwd:
@@ -120,7 +139,11 @@ def _worker_command(
     return command
 
 
-async def _drain_runtime_logs(reader: asyncio.StreamReader) -> deque[str]:
+async def _drain_runtime_logs(
+    reader: asyncio.StreamReader,
+    *,
+    on_receipt=None,
+) -> deque[str]:
     tail: deque[str] = deque(maxlen=20)
     pending = b""
     while True:
@@ -132,9 +155,96 @@ async def _drain_runtime_logs(reader: asyncio.StreamReader) -> deque[str]:
         pending += chunk
         while b"\n" in pending:
             line, pending = pending.split(b"\n", 1)
-            tail.append(line.decode(errors="replace").rstrip("\r"))
+            decoded = line.decode("utf-8", errors="replace").rstrip("\r")
+            if decoded.startswith(FORWARDED_RECEIPT_PREFIX):
+                try:
+                    prefix_length = len(FORWARDED_RECEIPT_PREFIX)
+                    receipt = json.loads(decoded[prefix_length:])
+                except json.JSONDecodeError:
+                    tail.append("工作进程返回了无效的补充输入回执")
+                else:
+                    if on_receipt is not None and isinstance(receipt, dict):
+                        on_receipt(str(receipt.get("status") or "unknown"))
+                continue
+            tail.append(decoded)
         if len(pending) > _LOG_LINE_TAIL_BYTES:
             pending = _TRUNCATED_LOG_MARKER + pending[-_LOG_LINE_TAIL_BYTES:]
+
+
+def _write_parent_output(text: str) -> None:
+    """Write worker text through the parent terminal stream."""
+
+    stream = sys.stdout
+    stream.write(text)
+    stream.flush()
+
+
+async def _relay_worker_output(
+    reader: asyncio.StreamReader,
+    *,
+    layout: LiveTurnLayout | None,
+) -> None:
+    """Append worker output to the model-output region of one live turn."""
+
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    while True:
+        chunk = await reader.read(64 * 1024)
+        if not chunk:
+            text = decoder.decode(b"", final=True)
+            if layout is not None:
+                layout.append_output(text)
+            elif text:
+                _write_parent_output(text)
+            return
+        text = decoder.decode(chunk)
+        if layout is not None:
+            layout.append_output(text)
+        elif text:
+            _write_parent_output(text)
+
+
+async def _read_live_prompt(
+    prompt_session,
+    layout: LiveTurnLayout,
+) -> str:
+    return await prompt_session.prompt_async(message=layout.message)
+
+
+async def _forward_live_input(
+    process: Process,
+    *,
+    prompt_session,
+    layout: LiveTurnLayout,
+) -> None:
+    """Forward terminal lines from the REPL process to its Runtime worker."""
+
+    writer = process.stdin
+    if writer is None:
+        raise RuntimeError("process CLI worker stdin pipe is unavailable")
+    try:
+        while process.returncode is None:
+            try:
+                text = await _read_live_prompt(prompt_session, layout)
+            except EOFError:
+                return
+            except KeyboardInterrupt:
+                await _interrupt_worker(process)
+                return
+            if process.returncode is not None:
+                return
+            layout.add_supplement(text)
+            writer.write((text + "\n").encode("utf-8"))
+            await writer.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        return
+    finally:
+        if not writer.is_closing():
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
 
 async def _wait_for_worker_exit(process: Process, *, timeout: float) -> bool:
@@ -189,7 +299,17 @@ async def _run_worker(
     prompt: str,
     session_id: str | None,
     operation: str = "chat",
+    prompt_session=None,
 ) -> tuple[int, str | None]:
+    live_layout = (
+        LiveTurnLayout(prompt)
+        if operation == "chat" and prompt_session is not None
+        else None
+    )
+    live_prompt_session = None
+    if live_layout is not None:
+        live_prompt_session = _create_live_prompt_session()
+        live_layout.bind(live_prompt_session)
     with tempfile.TemporaryDirectory(prefix="jiuwenswarm-process-repl-") as temp_dir:
         result_path = Path(temp_dir) / "session-id.txt"
         worker_result_path = Path(temp_dir) / "worker-result.json"
@@ -205,13 +325,46 @@ async def _run_worker(
                 worker_result_file=str(worker_result_path),
                 operation=operation,
             ),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             creationflags=creationflags,
+            env=_worker_environment(),
         )
+        process_stdout = getattr(process, "stdout", None)
         process_stderr = process.stderr
+        if process_stdout is None:
+            # Lightweight process doubles used by channel lifecycle tests do
+            # not expose a stdout reader.
+            process_stdout = asyncio.StreamReader()
+            process_stdout.feed_eof()
         if process_stderr is None:
             raise RuntimeError("process CLI worker stderr pipe is unavailable")
-        log_task = asyncio.create_task(_drain_runtime_logs(process_stderr))
+        log_task = asyncio.create_task(
+            _drain_runtime_logs(
+                process_stderr,
+                on_receipt=(
+                    live_layout.apply_receipt if live_layout is not None else None
+                ),
+            )
+        )
+        output_task = asyncio.create_task(
+            _relay_worker_output(
+                process_stdout,
+                layout=live_layout,
+            )
+        )
+        input_task = (
+            asyncio.create_task(
+                _forward_live_input(
+                    process,
+                    prompt_session=live_prompt_session,
+                    layout=live_layout,
+                )
+            )
+            if live_layout is not None and live_prompt_session is not None
+            else None
+        )
         try:
             return_code = await process.wait()
         except asyncio.CancelledError:
@@ -219,12 +372,33 @@ async def _run_worker(
             await _interrupt_worker(process)
             return_code = 130
         finally:
+            try:
+                await output_task
+            finally:
+                if input_task is not None:
+                    if (
+                        live_prompt_session is not None
+                        and live_prompt_session.app.is_running
+                    ):
+                        live_prompt_session.default_buffer.reset()
+                        live_prompt_session.app.erase_when_done = True
+                        live_prompt_session.app.exit(result="")
+                        await asyncio.gather(input_task, return_exceptions=True)
+                    else:
+                        input_task.cancel()
+                        await asyncio.gather(input_task, return_exceptions=True)
+                else:
+                    process_stdin = getattr(process, "stdin", None)
+                    if process_stdin is not None and not process_stdin.is_closing():
+                        process_stdin.close()
             if process.returncode is None:
                 log_task.cancel()
             try:
                 log_tail = await log_task
             except asyncio.CancelledError:
                 log_tail = deque()
+            if live_layout is not None:
+                _write_parent_output(live_layout.final_text())
 
         next_session = session_id
         worker_result: dict[str, object] | None = None
@@ -235,10 +409,7 @@ async def _run_worker(
             except (OSError, json.JSONDecodeError) as exc:
                 log_tail.append(f"工作进程结果无效：{exc}")
             else:
-                if (
-                    isinstance(loaded, dict)
-                    and loaded.get("operation") == operation
-                ):
+                if isinstance(loaded, dict) and loaded.get("operation") == operation:
                     worker_result = loaded
                     setattr(args, "_last_worker_result", dict(loaded))
                     value = loaded.get("session_id")
@@ -557,11 +728,13 @@ async def run_repl(args: argparse.Namespace) -> int:
             if await _handle_slash_command(args, slash_command, ui, state):
                 return 0
             continue
-        return_code, state.session_id = await _run_worker(
-            args,
-            prompt=prompt,
-            session_id=state.session_id,
-        )
+        worker_kwargs = {
+            "prompt": prompt,
+            "session_id": state.session_id,
+        }
+        if prompt_session is not None:
+            worker_kwargs["prompt_session"] = prompt_session
+        return_code, state.session_id = await _run_worker(args, **worker_kwargs)
         if return_code == 130:
             ui.notice("已中断当前指令，可以继续输入。")
 

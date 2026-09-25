@@ -30,6 +30,7 @@ import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '..
 import {
   AgentMode,
   MediaItem,
+  type ChatSendOptions,
   Message,
   UserAnswer,
   type MessageForkPoint,
@@ -95,14 +96,12 @@ export interface ChatHistoryPagerProps {
 }
 
 interface ChatPanelProps {
-  onSendMessage: (content: string, mediaItems?: MediaItem[]) => void;
+  onSendMessage: (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => void;
   onEnsureSession: (initialTitle?: string) => Promise<string | null>;
-  onNewSession: () => void;
   onForkSession: (
     sourceSessionId: string,
     forkPoint?: MessageForkPoint,
   ) => Promise<void>;
-  onStartSideConversation: (sourceSessionId: string, prompt?: string) => Promise<void>;
   continuedFromSessionId?: string | null;
   onOpenContinuedFromSession?: (sourceSessionId: string) => void;
   onInputIntent?: (sessionId: string) => void;
@@ -169,6 +168,7 @@ interface ChatPanelProps {
   onClearGoal?: (sessionId: string) => void | Promise<void>;
   /** 目标 active 但当前无处理中任务时，消息入队后主动排空一次，见 InputArea.tsx 对应调用点 */
   onDrainTaskQueueIfIdle?: (sessionId: string) => void;
+  onContinueQueuedSessionMessages?: (sessionId: string) => void | Promise<void>;
   /** 专家团「通过聊天创建」入口的 4.9 高保真欢迎态。 */
   welcomeVariant?: 'group-create' | null;
 }
@@ -255,12 +255,14 @@ function ActiveTeamGroupEntry({
 }
 
 /** 单 Agent 模式的消息队列卡片，展示在输入框上方 */
-function AgentActivityCard({
+export function AgentActivityCard({
   isProcessing: _isProcessing,
   onSendTask,
+  onContinueQueuedSessionMessages,
 }: {
   isProcessing: boolean;
-  onSendTask?: (content: string, mediaItems?: MediaItem[]) => void;
+  onSendTask?: (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => void;
+  onContinueQueuedSessionMessages?: (sessionId: string) => void | Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -269,6 +271,7 @@ function AgentActivityCard({
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const taskQueue = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.taskQueue ?? []);
+  const queuedSessionMessages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.queuedSessionMessages ?? []);
   const queuePaused = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.queuePaused ?? false);
   const removeFromTaskQueue = useChatStore((s) => s.removeFromTaskQueue);
   const reorderTaskQueue = useChatStore((s) => s.reorderTaskQueue);
@@ -279,10 +282,10 @@ function AgentActivityCard({
 
   // 有等待任务时自动展开
   useEffect(() => {
-    if (taskQueue.length > 0) {
+    if (taskQueue.length > 0 || queuedSessionMessages.length > 0) {
       setExpanded(true);
     }
-  }, [taskQueue.length]);
+  }, [taskQueue.length, queuedSessionMessages.length]);
 
   // While a queue reorder drag is active, preventDefault any dragover/drop that
   // lands outside the queue card so the page doesn't navigate to the drag image.
@@ -299,7 +302,7 @@ function AgentActivityCard({
     };
   }, [dragIndex]);
 
-  if (!isAgentMode || taskQueue.length === 0) {
+  if (!isAgentMode || (taskQueue.length === 0 && queuedSessionMessages.length === 0)) {
     return null;
   }
 
@@ -309,12 +312,16 @@ function AgentActivityCard({
     if (!sid) return;
     setQueuePaused(sid, false);
     // 触发下一条队列任务
-    const runtime = useChatStore.getState().getRuntime(sid);
-    const nextTask = runtime?.taskQueue[0];
+    const nextTask = onSendTask && useChatStore.getState().claimQueuedTask(sid);
     if (nextTask) {
-      removeFromTaskQueue(sid, nextTask.id);
       onSendTask?.(nextTask.content, nextTask.mediaItems);
     }
+  };
+
+  const handleContinueQueuedSessionMessages = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const sid = useChatStore.getState().activeSessionId;
+    if (sid) void onContinueQueuedSessionMessages?.(sid);
   };
 
   const handleRemoveTask = (e: React.MouseEvent, taskId: string) => {
@@ -329,6 +336,8 @@ function AgentActivityCard({
     e.stopPropagation();
     const sid = useChatStore.getState().activeSessionId;
     if (sid) {
+      const task = useChatStore.getState().getRuntime(sid)?.taskQueue.find((item) => item.id === taskId);
+      if (!task || task.status === 'sending') return;
       // Editing restores only the text into the input; attachments cannot follow
       // and will be removed together with the task — confirm first.
       if (mediaItemCount > 0 && !window.confirm(t('chat.editTaskDropAttachments', { count: mediaItemCount }))) {
@@ -343,10 +352,8 @@ function AgentActivityCard({
   const handleSendTask = (e: React.MouseEvent, taskId: string, content: string, mediaItems?: MediaItem[]) => {
     e.stopPropagation();
     const sid = useChatStore.getState().activeSessionId;
-    if (sid) {
-      removeFromTaskQueue(sid, taskId);
-    }
-    onSendTask?.(content, mediaItems);
+    if (!sid) return;
+    onSendTask?.(content, mediaItems, { queuedTaskId: taskId });
   };
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
@@ -406,7 +413,7 @@ function AgentActivityCard({
         >
           <span className="team-event-group-summary__main">
             <span className="team-event-group-summary__title">{t('chatUi.messageQueue')}</span>
-            {queuePaused && (
+            {queuePaused && queuedSessionMessages.length === 0 && (
               <span
                 data-testid="chat-panel-task-queue-paused-badge"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', marginLeft: '8px' }}
@@ -424,7 +431,7 @@ function AgentActivityCard({
               </span>
             )}
           </span>
-          {queuePaused && (
+          {queuePaused && queuedSessionMessages.length === 0 && (
             <span
               role="button"
               tabIndex={0}
@@ -454,6 +461,56 @@ function AgentActivityCard({
         </button>
         {expanded && (
           <div className="team-event-group-list team-event-group-list--activity">
+            {queuedSessionMessages.length > 0 && (
+              <div className="team-event-group-row team-event-group-row--activity" data-testid="chat-panel-cross-session-queue-section">
+                <span>{t('chatUi.crossSessionMessageQueue')}</span>
+                <button
+                  type="button"
+                  data-testid="chat-panel-cross-session-queue-resume"
+                  onClick={handleContinueQueuedSessionMessages}
+                  style={{ marginLeft: 'auto', border: 0, background: 'transparent', color: 'var(--color-text-primary)', cursor: 'pointer' }}
+                >
+                  {t('chat.resume')}
+                </button>
+              </div>
+            )}
+            {queuedSessionMessages.map((message) => (
+              <div
+                key={message.messageId}
+                className="team-event-group-row team-event-group-row--activity"
+                data-testid="chat-panel-cross-session-queue-item"
+                data-variant={message.messageId}
+              >
+                <div className="team-event-group-row__main" style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                  <div className="team-event-group-row__avatar">
+                    <img src={lineUpIcon} alt="" className="w-4 h-4" />
+                  </div>
+                  <span className="team-event-group-row__member" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {message.content}
+                  </span>
+                </div>
+                <span
+                  title={message.sourceSessionId}
+                  data-testid="chat-panel-cross-session-queue-source"
+                  style={{ flexShrink: 0, maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                >
+                  {t('crossSession.messageBadge', { title: message.sourceTitle || message.sourceSessionId })}
+                </span>
+              </div>
+            ))}
+            {queuedSessionMessages.length > 0 && taskQueue.length > 0 && (
+              <div className="team-event-group-row team-event-group-row--activity" data-testid="chat-panel-task-queue-local-section" style={{ alignItems: 'center' }}>
+                <span>{t('chatUi.localMessageQueue')}</span>
+                {queuePaused && (
+                  <span data-testid="chat-panel-task-queue-paused-badge" style={{ marginLeft: 'auto', color: 'var(--color-text-secondary)' }}>{t('chat.paused')}</span>
+                )}
+                {queuePaused && (
+                  <button type="button" data-testid="chat-panel-task-queue-resume" onClick={handleResume} style={{ border: 0, background: 'transparent', color: 'var(--color-text-primary)', cursor: 'pointer' }}>
+                    {t('chat.resume')}
+                  </button>
+                )}
+              </div>
+            )}
             {taskQueue.map((task, index) => (
               <div
                 key={task.id}
@@ -959,9 +1016,7 @@ function BeeBanner({
 export const ChatPanel = React.memo(function ChatPanel({
   onSendMessage,
   onEnsureSession,
-  onNewSession,
   onForkSession,
-  onStartSideConversation,
   continuedFromSessionId = null,
   onOpenContinuedFromSession,
   onInputIntent,
@@ -997,6 +1052,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   onRefreshGoal,
   onClearGoal,
   onDrainTaskQueueIfIdle,
+  onContinueQueuedSessionMessages,
   welcomeVariant = null,
 }: ChatPanelProps) {
   const { t } = useTranslation();
@@ -1536,9 +1592,9 @@ export const ChatPanel = React.memo(function ChatPanel({
 
   // 包装发送消息函数，添加滚动逻辑
   const handleSendMessage = useCallback(
-    (content: string, mediaItems?: MediaItem[]) => {
+    (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
       setIsSending(true);
-      onSendMessage(content, mediaItems);
+      onSendMessage(content, mediaItems, options);
     },
     [onSendMessage],
   );
@@ -1890,16 +1946,14 @@ export const ChatPanel = React.memo(function ChatPanel({
                   </>
                 )}
                 <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
-                <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
+                <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
                 <InterruptResultBubble />
                 <InteractionSlot onSubmit={onUserAnswer} />
                 <InputArea
                   ref={inputAreaRef}
                   onSubmit={handleSendMessage}
                   onEnsureSession={onEnsureSession}
-                  onNewSession={onNewSession}
                   onForkSession={onForkSession}
-                  onStartSideConversation={onStartSideConversation}
                   onInputIntent={onInputIntent}
                   onPersistMedia={onPersistMedia}
                   onPersistDocuments={onPersistDocuments}
@@ -1959,7 +2013,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       {hasConversation && (
         <div className="chat-compose" data-testid="chat-panel-compose">
           <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
-          <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
+          <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
           <InterruptResultBubble />
           <InteractionSlot onSubmit={onUserAnswer} />
           {onSetGoal && onPauseGoal && onResumeGoal && onClearGoal && (
@@ -1974,9 +2028,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             ref={inputAreaRef}
             onSubmit={handleSendMessage}
             onEnsureSession={onEnsureSession}
-            onNewSession={onNewSession}
             onForkSession={onForkSession}
-            onStartSideConversation={onStartSideConversation}
             onInputIntent={onInputIntent}
             onPersistMedia={onPersistMedia}
             onPersistDocuments={onPersistDocuments}

@@ -24,6 +24,7 @@ from jiuwenswarm.runtime.session.model import (
     SessionWorkKind,
 )
 from jiuwenswarm.runtime.session.work_scheduler import SessionWorkScheduler
+from jiuwenswarm.runtime.session_input import SessionInputRejectedError, SessionInputTargetError
 
 T = TypeVar("T")
 
@@ -501,19 +502,22 @@ class RuntimeSessionCoordinator:
         idle_operation: Callable[[], AsyncIterator[T]],
         *,
         suspension_key: Callable[[T], str | None] | None = None,
+        expected_execution_id: str | None = None,
     ) -> AsyncIterator[T]:
         """Track an input without acquiring the active task's scheduling lane.
 
         An input does not resume, complete, or replace a waiting interaction.
-        The parent link exists for cancellation/close, not round binding: if
-        the SDK has become idle it can give this input its own output stream.
+        Unbound inputs retain idle fallback. With expected_execution_id the
+        parent must still match: this input cannot start its own chat turn.
         """
         record = self._require_open_session(session_id)
         active = self._registry.select(
             session_id=session_id, generation=record.generation, active_only=True,
         )
         if any(handle.waiting_control_id for handle in active):
-            raise RuntimeError("session is waiting for an interaction answer; supplemental input was not sent")
+            raise SessionInputRejectedError(
+                "session is waiting for an interaction answer; supplemental input was not sent"
+            )
         parents = []
         for handle in active:
             if handle.state is not SessionExecutionState.RUNNING:
@@ -525,8 +529,14 @@ class RuntimeSessionCoordinator:
                 continue
             parents.append(handle)
         if any(handle.cancellation_requested for handle in parents):
-            raise RuntimeError("session execution is being cancelled")
+            raise SessionInputRejectedError("session execution is being cancelled")
         parent = parents[-1] if parents else None
+        if expected_execution_id is not None and (
+            parent is None or parent.execution_id != expected_execution_id
+        ):
+            raise SessionInputTargetError(
+                "the targeted execution has ended or changed; supplemental input was not sent"
+            )
         stream = self.run_stream(
             session_id, request_id,
             SessionWorkKind.SESSION_INPUT if parent else SessionWorkKind.CHAT_STREAM,
@@ -603,12 +613,14 @@ class RuntimeSessionCoordinator:
                 if terminal_item is not None:
                     await queue.put(terminal_item)
 
+        # Streamed mailbox work already owns host admission. Scheduling it in
+        # the chat lane can deadlock behind a user turn waiting for that admission.
+        use_lane = work_kind.scheduled and work_kind is not SessionWorkKind.SESSION_MESSAGE
         scheduled = asyncio.create_task(
             self._scheduler.submit_and_wait(handle, produce)
-            if work_kind.scheduled
-            else produce()
+            if use_lane else produce()
         )
-        if not work_kind.scheduled:
+        if not use_lane:
             handle.task = scheduled
         completed_normally = False
         try:
@@ -822,6 +834,7 @@ class RuntimeSessionCoordinator:
                     self._registry.mark_terminal(
                         previous, SessionExecutionState.CANCELLED
                     )
+        parent = self._registry.get(parent_execution_id) if parent_execution_id else None
         handle = SessionExecutionHandle(
             execution_id=uuid.uuid4().hex,
             session_id=record.session_id,
@@ -829,6 +842,8 @@ class RuntimeSessionCoordinator:
             generation=record.generation,
             work_kind=work_kind,
             parent_execution_id=parent_execution_id,
+            root_work_kind=(parent.root_work_kind or parent.work_kind) if parent else None,
+            root_request_id=(parent.root_request_id or parent.request_id) if parent else None,
         )
         self._registry.register(handle)
         record.state = RuntimeSessionState.ACTIVE

@@ -23,6 +23,10 @@ from jiuwenswarm.runtime.host_services import (
 )
 from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
 from jiuwenswarm.gateway.channel_manager.base import ChannelType
+from jiuwenswarm.gateway.im_pipeline.im_session_input import (
+    prepare_im_session_input,
+    steer_busy_im_chat,
+)
 from jiuwenswarm.common.e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
@@ -4181,8 +4185,19 @@ class MessageHandler(ABC):
                 msg = await self.consume_user_messages(timeout=None)
                 if msg is None:
                     continue
-                
-         
+
+                # Explicit steer/follow_up is normalized before slash commands.
+                # Busy-session chat.send is classified later, after the target
+                # Session id is known.
+                if prepare_im_session_input(msg):
+                    logger.info(
+                        "[MessageHandler] IM session input uses public delivery: "
+                        "id=%s channel_id=%s session_id=%s",
+                        msg.id,
+                        msg.channel_id,
+                        msg.session_id,
+                    )
+
                 # 先处理受控通道的 Channel 控制指令（如 /new_session、/mode、/skills list）
                 if not self._is_session_input_message(msg) and await self._handle_channel_control(msg):
                     # 该消息仅用于修改 session/mode，已给 Channel 回复提示，不再转发给 Agent
@@ -4198,6 +4213,19 @@ class MessageHandler(ABC):
                 ):
                     state = self.get_or_create_channel_state(msg)
                     msg.session_id = await self._allocate_channel_session(msg, state)
+
+                # IM chat.send has no steer control. A message that arrives
+                # while this Session is processing joins that turn instead of
+                # cancelling it and starting another.
+                session_busy = self._session_has_streams_blocking_processing_false(msg.session_id)
+                if session_busy and steer_busy_im_chat(msg):
+                    logger.info(
+                        "[MessageHandler] IM busy session chat.send uses steer: "
+                        "id=%s channel_id=%s session_id=%s",
+                        msg.id,
+                        msg.channel_id,
+                        msg.session_id,
+                    )
 
                 # Common to all channels, before optional avatar rewriting or
                 # pending-answer consumption. Explicit supplements remain text.
