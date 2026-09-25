@@ -76,6 +76,7 @@ SLASH_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/branch", "从当前会话创建分支", aliases=("/fork",)),
     SlashCommand("/delete", "删除指定会话"),
     SlashCommand("/session", "查看当前会话"),
+    SlashCommand("/cancel", "中断当前任务"),
     SlashCommand("/exit", "退出 JiuwenSwarm", aliases=("/quit",)),
 )
 

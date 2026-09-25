@@ -46,6 +46,7 @@ def test_slash_command_registry_has_unique_canonical_names() -> None:
         "/branch",
         "/delete",
         "/session",
+        "/cancel",
         "/exit",
     ]
     assert len(names) == len(set(names))
@@ -125,9 +126,10 @@ def test_completer_displays_all_commands_and_chinese_descriptions_for_slash() ->
         "/branch",
         "/delete",
         "/session",
+        "/cancel",
         "/exit",
     ]
-    assert [completion.start_position for completion in completions] == [-1] * 10
+    assert [completion.start_position for completion in completions] == [-1] * len(SLASH_COMMANDS)
     assert all(len(completion.display_text) == 22 for completion in completions)
     assert completions[0].display_text.startswith("/help")
     assert [completion.display_meta_text for completion in completions] == [
@@ -140,6 +142,7 @@ def test_completer_displays_all_commands_and_chinese_descriptions_for_slash() ->
         "从当前会话创建分支",
         "删除指定会话",
         "查看当前会话",
+        "中断当前任务",
         "退出 JiuwenSwarm",
     ]
 
