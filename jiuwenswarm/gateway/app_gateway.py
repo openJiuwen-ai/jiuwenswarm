@@ -77,7 +77,11 @@ from jiuwenswarm.common.security.ws_origin import (
     get_header_value,
 )
 from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
-from jiuwenswarm.common.debug_dump import install_async_dump_handler
+from jiuwenswarm.common.debug_dump import (
+    install_async_dump_handler,
+    install_crash_exit_handler,
+)
+from jiuwenswarm.common.process_supervision import GATEWAY_RESTART_EXIT_CODE, SUPERVISOR_PID_ENV
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
     get_env_file,
@@ -509,7 +513,34 @@ async def _wait_for_web_channel_listening(
     raise TimeoutError("WebChannel did not bind its listening socket within 5s")
 
 
+def _running_under_supervisor() -> bool:
+    """Whether our jiuwenswarm.app supervisor is alive right now and really is our parent.
+
+    On Windows os.getppid() keeps reporting the original PID even after the
+    supervisor dies (no reparenting), so a stale env match alone would make us
+    os._exit(GATEWAY_RESTART_EXIT_CODE) with nobody left to respawn. A recycled
+    PID necessarily belongs to a process younger than us, so requiring the
+    parent to be live and not created after us rejects both cases.
+    """
+    if os.environ.get(SUPERVISOR_PID_ENV) != str(os.getppid()):
+        return False
+    import psutil
+
+    try:
+        return psutil.Process(os.getppid()).create_time() <= psutil.Process().create_time()
+    except psutil.Error:
+        return False
+
+
 def _exec_gateway_restart() -> None:
+    if _running_under_supervisor():
+        # Under jiuwenswarm.app, let the supervisor respawn us. os.execv on
+        # Windows starts a new PID and exits this one with 0, which the
+        # supervisor reads as the Gateway stopping and tears the service down.
+        # os._exit keeps execv's no-cleanup semantics; the OS frees the ports
+        # and the gateway lock.
+        logger.info("[App] requesting Gateway restart from supervisor")
+        os._exit(GATEWAY_RESTART_EXIT_CODE)  # pylint: disable=protected-access  # public API; underscore is historical
     logger.info("[App] .env updated, restarting Gateway...")
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
@@ -3510,6 +3541,7 @@ def main() -> None:
     web_port = args.port or int(os.getenv("WEB_PORT", "19000"))
     web_path = args.web_path or os.getenv("WEB_PATH", "/ws")
 
+    install_crash_exit_handler("gateway")
     install_async_dump_handler("gateway")
 
     # Per-workspace singleton lock: prevents a second Gateway process from
