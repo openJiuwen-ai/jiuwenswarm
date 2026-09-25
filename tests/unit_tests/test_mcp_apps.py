@@ -247,3 +247,43 @@ async def test_raw_session_calls_reconnect_after_transport_error(monkeypatch):
     tools = await apps.list_app_tools("store")
     assert tools[0]["name"] == "browse"
     assert client._session is fresh
+
+
+@pytest.mark.asyncio
+async def test_ui_resource_cache_expires_and_clears_on_reconnect(monkeypatch):
+    from openjiuwen.core.foundation.tool.mcp.client import reconnect as reconnect_mod
+
+    monkeypatch.setattr(apps, "_ui_resource_cache", {})
+    client = SimpleNamespace(_session=_FakeSession(), _name="store")
+    assert (await apps._ui_resource_uris(client)) == {"browse": UI_URI, "secret": UI_URI}
+
+    # Server changes its tools: the cached map is served until the TTL passes.
+    class _Renamed(_FakeSession):
+        async def list_tools(self):
+            result = await super().list_tools()
+            result.tools[0].name = "browse-v2"
+            return result
+
+    client._session = _Renamed()
+    assert "browse" in await apps._ui_resource_uris(client)
+    clock = [apps.time.monotonic()]
+    monkeypatch.setattr(apps.time, "monotonic", lambda: clock[0])
+    clock[0] += apps._UI_RESOURCE_CACHE_TTL_S + 1
+    assert "browse-v2" in await apps._ui_resource_uris(client)
+
+    # A reconnect drops the server's entry immediately.
+    async def fake_reconnect(target, timeout=-1):
+        return True
+
+    monkeypatch.setattr(reconnect_mod, "reconnect", fake_reconnect)
+    calls = {"n": 0}
+
+    async def flaky(session):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            import anyio
+            raise anyio.ClosedResourceError()
+        return "ok"
+
+    assert await apps._with_session(client, flaky) == "ok"
+    assert "store" not in apps._ui_resource_cache

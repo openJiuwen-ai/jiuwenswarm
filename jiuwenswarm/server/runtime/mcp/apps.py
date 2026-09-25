@@ -20,6 +20,7 @@ depend on. The live connection is shared with the agent via the process-wide
 from __future__ import annotations
 
 import logging
+import time
 from contextvars import ContextVar
 from typing import Any, Awaitable, Callable, TypeVar
 
@@ -98,6 +99,8 @@ async def _with_session(client: Any, operation: Callable[[Any], Awaitable[T]]) -
         logger.warning("[mcp.apps] transport error on %s, reconnecting: %r", getattr(client, "_name", "?"), exc)
         if not await reconnect(client):
             raise
+        # The server may come back with a different tool list.
+        _ui_resource_cache.pop(str(getattr(client, "_name", "") or ""), None)
         return await operation(client._session)
 
 
@@ -161,8 +164,11 @@ async def call_app_tool(name: str, tool: str, arguments: dict[str, Any] | None) 
 # ``output["result"]``, so the model-facing text is unchanged.
 
 _raw_call_result: ContextVar[Any] = ContextVar("jws_mcp_raw_call_result", default=None)
-# server name -> {tool name -> ui resourceUri}; filled lazily per server.
-_ui_resource_cache: dict[str, dict[str, str]] = {}
+# server name -> (fetched_at, {tool name -> ui resourceUri}); filled lazily per
+# server, dropped on reconnect and refreshed after _UI_RESOURCE_CACHE_TTL_S so
+# tools added/removed/re-linked at runtime are picked up.
+_UI_RESOURCE_CACHE_TTL_S = 60.0
+_ui_resource_cache: dict[str, tuple[float, dict[str, str]]] = {}
 _PATCHED = False
 
 
@@ -176,8 +182,8 @@ def _resource_uri_of(tool: dict[str, Any]) -> str | None:
 async def _ui_resource_uris(client: Any) -> dict[str, str]:
     name = str(getattr(client, "_name", "") or "")
     cached = _ui_resource_cache.get(name)
-    if cached is not None:
-        return cached
+    if cached is not None and time.monotonic() - cached[0] < _UI_RESOURCE_CACHE_TTL_S:
+        return cached[1]
     if getattr(client, "_session", None) is None:
         return {}
     result = await _with_session(client, lambda session: session.list_tools())
@@ -186,7 +192,7 @@ async def _ui_resource_uris(client: Any) -> dict[str, str]:
         uri = _resource_uri_of(_dump(tool))
         if uri:
             uris[tool.name] = uri
-    _ui_resource_cache[name] = uris
+    _ui_resource_cache[name] = (time.monotonic(), uris)
     return uris
 
 
