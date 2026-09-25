@@ -297,6 +297,9 @@ from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import ( 
     with_session_messaging_route,
 )
 from jiuwenswarm.agents.harness.code.rails.heartbeat_rail import HeartbeatRail
+from jiuwenswarm.agents.harness.common.rails.research_pipeline_rail import (
+    ResearchPipelineRail,
+)
 from jiuwenswarm.agents.harness.common.auto_harness import (
     AutoHarnessService,
     validate_harness_config,
@@ -2201,6 +2204,11 @@ class JiuWenSwarmDeepAdapter:
             service=self._heartbeat_service,
             context=self._runtime_cron_tool_context,
         )
+
+    def _build_research_pipeline_rail(self) -> ResearchPipelineRail | None:
+        # Inert unless the session's project dir contains stage.json, so it is
+        # safe to register unconditionally for every agent session.
+        return ResearchPipelineRail()
 
     def _schedule_runtime_state_write(
         self,
@@ -9354,6 +9362,7 @@ class JiuWenSwarmDeepAdapter:
                 {"config_base": config_base},
             ),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
+            _RailBuildInfo("_research_pipeline_rail", self._build_research_pipeline_rail),
             _RailBuildInfo(
                 "_session_messaging_route_rail",
                 self._build_session_messaging_route_rail,
