@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { toast } from '../../../channels/web/frontend/src/components/ui/Toast/toastStore';
 
 import type { VideoLivePanelHandle } from './VideoLivePanel';
 
@@ -13,10 +14,15 @@ let controller: VideoLivePanelHandle | null = null;
 let bindSession: ((sessionId: string) => string) | null = null;
 let snapshot: TaskFullDuplexRuntimeSnapshot = { state: 'idle', error: '' };
 const listeners = new Set<() => void>();
+let errorToast: number | null = null;
 
 function publish(update: Partial<TaskFullDuplexRuntimeSnapshot>): void {
   const next = { ...snapshot, ...update };
   if (next.state === snapshot.state && next.error === snapshot.error) return;
+  if (next.error && next.error !== snapshot.error) {
+    if (errorToast !== null) toast.close(errorToast);
+    errorToast = toast.open({ content: next.error, variant: 'error', duration: 0, wide: true });
+  }
   snapshot = next;
   listeners.forEach((listener) => listener());
 }

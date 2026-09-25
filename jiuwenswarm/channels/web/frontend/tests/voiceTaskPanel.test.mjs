@@ -29,7 +29,10 @@ await build({
       setup(builder) {
         builder.onResolve({ filter: /services\/webClient$/ }, () => ({ path: 'rpc', namespace: 'test' }));
         builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-          contents: `export const webClient = { on: (...args) => globalThis.__panel.on(...args) };
+          contents: `export const webClient = {
+            on: (...args) => globalThis.__panel.on(...args),
+            onStateChange: (...args) => globalThis.__panel.onStateChange(...args),
+          };
           export const webRequest = (...args) => globalThis.__panel.request(...args);`,
           loader: 'js',
         }));
@@ -68,6 +71,10 @@ beforeEach(async () => {
     on(name, callback) {
       listeners.set(name, callback);
       return () => listeners.delete(name);
+    },
+    onStateChange(callback) {
+      listeners.set('connection-state', callback);
+      return () => listeners.delete('connection-state');
     },
     async request(method, args) {
       requests.push({ method, args });

@@ -1029,6 +1029,15 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   }, [headless, screens.length]);
 
   useEffect(() => {
+    if (!isRecording && !isRealtimeStarting) return;
+    return webClient.onStateChange((state) => {
+      if (state !== 'closed' && state !== 'reconnecting') return;
+      setError((previous) => previous || 'Jiuwen 服务连接已断开，未提供具体原因。请检查网络或本地服务后重新启动全双工。');
+      stopRealtime();
+    });
+  }, [isRecording, isRealtimeStarting]);
+
+  useEffect(() => {
     onRuntimeState?.(isRealtimeStarting ? 'starting' : isRecording ? 'active' : 'idle');
   }, [isRealtimeStarting, isRecording, onRuntimeState]);
 
