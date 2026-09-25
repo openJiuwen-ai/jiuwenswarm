@@ -32,6 +32,8 @@ def application_plugin_manifest(registry: ExtensionRegistry | None) -> dict[str,
                 "plugin_id": plugin_id,
                 "plugin_version": metadata.version,
                 "description": metadata.description,
+                "description_i18n_key": "",
+                "name_i18n_key": "",
                 "permissions": list(metadata.permissions),
                 "enabled": plugin.is_enabled(),
                 "id": f"{plugin_id}:management",
@@ -47,6 +49,8 @@ def application_plugin_manifest(registry: ExtensionRegistry | None) -> dict[str,
                 "plugin_id": plugin_id,
                 "plugin_version": metadata.version,
                 "description": metadata.description,
+                "description_i18n_key": contribution.description_i18n_key,
+                "name_i18n_key": contribution.name_i18n_key,
                 "permissions": list(metadata.permissions),
                 "enabled": plugin.is_enabled(),
                 "id": contribution.id,
@@ -57,6 +61,15 @@ def application_plugin_manifest(registry: ExtensionRegistry | None) -> dict[str,
                 "component": contribution.component,
                 "position": contribution.position,
             }
+            # A plugin's own directory is not on any static route, so identity
+            # travels inline: the card gets the bytes with the entry it already
+            # fetches, and a plugin that declares none simply omits the key.
+            icon = plugin.resolve_icon(contribution.icon)
+            if icon:
+                item["icon"] = icon
+            logo = plugin.resolve_icon(contribution.logo)
+            if logo:
+                item["logo"] = logo
             if contribution.entrypoint:
                 item["entry_url"] = (
                     f"{APPLICATION_PLUGIN_API_PREFIX}/{plugin_id}/assets/"

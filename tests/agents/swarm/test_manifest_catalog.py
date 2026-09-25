@@ -203,6 +203,13 @@ def test_attribute_fields_are_params_env_fields_are_context() -> None:
             "workspace_root": "context",
         },
         registry.SEND_FILE: {"channels_config": "params", "channel_id": "context"},
+        registry.CLOUDDOC_TOOLS: {
+            "clouddoc_config": "params",
+            "session_id": "context",
+            # Context, not params: an unattended turn is a property of the request, and
+            # this factory refuses one rather than serving it.
+            "channel_id": "context",
+        },
         registry.CONTEXT_PROCESSOR: {
             "context_engine_enabled": "params",
             "context_engine_config": "params",

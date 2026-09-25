@@ -11,6 +11,9 @@ import { DetailPromptChip, DetailSection, EntityHeader, PageCard } from '../ui';
 import { IconAvatar, PillButton, DetailLinkButton } from './Buttons';
 import { ConfirmDialog } from './ConfirmDialog';
 import { usePendingConnectorFlow, PendingConnectorModals } from './usePendingConnectorFlow';
+import { webRequest } from '../../services/webClient';
+import { MarkdownRenderer } from '../MarkdownRenderer/MarkdownRenderer';
+import './pluginAbout.css';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 
 interface PluginDetailPageProps {
@@ -74,6 +77,21 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   const [uninstalling, setUninstalling] = useState(false);
   const [detailLoading, setDetailLoading] = useState(!detail);
   const [detailLoadFailed, setDetailLoadFailed] = useState(false);
+  // Click-to-read for a plugin's skills: the card only summarises them, and there
+  // was no way to see the actual SKILL.md a plugin mounts.
+  const [skillFile, setSkillFile] = useState<{ title: string; content: string } | null>(null);
+  const openSkillFile = async (skillId: string) => {
+    if (!detail) return;
+    try {
+      const out = await webRequest<{ path: string; content: string }>(
+        'plugin_packages.file.read',
+        { name: detail.id, path: `skills/${skillId}/SKILL.md` },
+      );
+      setSkillFile({ title: skillId, content: out?.content ?? '' });
+    } catch (e) {
+      setSkillFile({ title: skillId, content: String(e) });
+    }
+  };
 
   const requestDetail = () => {
     setDetailLoading(true);
@@ -295,12 +313,41 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
           />
         )}
 
+        {skillFile && (
+          <div
+            className="fixed inset-0 z-40 flex items-center justify-center bg-black/30"
+            onClick={() => setSkillFile(null)}
+            data-testid="plugin-skill-file"
+          >
+            <div
+              className="max-h-[80vh] w-[min(720px,92vw)] overflow-auto rounded-lg border border-border bg-card p-5 shadow-xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mb-3 flex items-start justify-between gap-4">
+                <h3 className="text-sm font-semibold text-text-strong">{skillFile.title}</h3>
+                <button onClick={() => setSkillFile(null)} className="rounded-md px-2 py-1 text-text-muted hover:bg-bg-hover">✕</button>
+              </div>
+              <pre className="whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-text">{skillFile.content}</pre>
+            </div>
+          </div>
+        )}
+
         <DetailSection
           titleTestId="connector-market-plugin-detail-basic-info-title"
           title={t('connectorMarket.detail.sections.basicInfo')}
         >
           <p>{localizedText(detail.displayDescription, i18n.language)}</p>
         </DetailSection>
+
+        {(detail.details || detail.detailsEn) && (
+          <DetailSection title={t('connectorMarket.detail.sections.about')}>
+            <div className="plugin-about-md rounded-xl border border-border bg-card p-4">
+              <MarkdownRenderer
+                content={(i18n.language.startsWith('en') ? detail.detailsEn : detail.details) || detail.details || detail.detailsEn || ''}
+              />
+            </div>
+          </DetailSection>
+        )}
 
         {/* "试试这样用"——照抄 McpDetailPage.tsx 同款示例区，2026-08-21 后端 show 接口新增
           quickInputs（双语对象数组，跟 MCP 的 examples: string[] 不同，要过 localizedText()）。
@@ -353,6 +400,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
                     avatar={{ name: title }}
                     title={title}
                     description={localizedText(skill.displayDescription, i18n.language)}
+                    onClick={() => void openSkillFile(skill.id)}
                   />
                 );
               })}

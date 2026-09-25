@@ -1,0 +1,65 @@
+.co-scribe-settings {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.co-scribe-settings > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.co-scribe-settings p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.co-scribe-settings small {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.co-scribe-settings small.is-error {
+  color: var(--color-feedback-danger);
+}
+
+.co-scribe-settings button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  flex: 0 0 auto;
+  padding: 0 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  color: inherit;
+  background: var(--color-surface-card);
+  cursor: pointer;
+}
+
+.co-scribe-settings button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.co-scribe-settings button.is-danger {
+  color: var(--color-feedback-danger);
+}
+
+.co-scribe-settings button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.co-scribe-settings .is-spinning {
+  animation: co-scribe-settings-spin 0.8s linear infinite;
+}
+
+@keyframes co-scribe-settings-spin {
+  to { transform: rotate(360deg); }
+}

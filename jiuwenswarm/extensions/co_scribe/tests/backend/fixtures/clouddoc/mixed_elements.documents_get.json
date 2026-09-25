@@ -1,0 +1,809 @@
+{
+ "body": {
+  "content": [
+   {
+    "endIndex": 1,
+    "sectionBreak": {
+     "sectionStyle": {
+      "columnSeparatorStyle": "NONE",
+      "contentDirection": "LEFT_TO_RIGHT",
+      "sectionType": "CONTINUOUS"
+     }
+    }
+   },
+   {
+    "startIndex": 1,
+    "endIndex": 18,
+    "paragraph": {
+     "elements": [
+      {
+       "startIndex": 1,
+       "endIndex": 7,
+       "textRun": {
+        "content": "A 普通段落",
+        "textStyle": {}
+       }
+      },
+      {
+       "startIndex": 7,
+       "endIndex": 8,
+       "inlineObjectElement": {
+        "inlineObjectId": "kix.iocqskob8n5e",
+        "textStyle": {}
+       }
+      },
+      {
+       "startIndex": 8,
+       "endIndex": 18,
+       "textRun": {
+        "content": " with 中文.\n",
+        "textStyle": {}
+       }
+      }
+     ],
+     "paragraphStyle": {
+      "namedStyleType": "NORMAL_TEXT",
+      "direction": "LEFT_TO_RIGHT"
+     }
+    }
+   },
+   {
+    "startIndex": 18,
+    "endIndex": 34,
+    "paragraph": {
+     "elements": [
+      {
+       "startIndex": 18,
+       "endIndex": 25,
+       "textRun": {
+        "content": "B 这句里的 ",
+        "textStyle": {}
+       }
+      },
+      {
+       "startIndex": 25,
+       "endIndex": 28,
+       "textRun": {
+        "content": "加粗词",
+        "textStyle": {
+         "bold": true
+        }
+       }
+      },
+      {
+       "startIndex": 28,
+       "endIndex": 34,
+       "textRun": {
+        "content": " 是粗体。\n",
+        "textStyle": {}
+       }
+      }
+     ],
+     "paragraphStyle": {
+      "namedStyleType": "NORMAL_TEXT",
+      "direction": "LEFT_TO_RIGHT"
+     }
+    }
+   },
+   {
+    "startIndex": 34,
+    "endIndex": 41,
+    "paragraph": {
+     "elements": [
+      {
+       "startIndex": 34,
+       "endIndex": 41,
+       "textRun": {
+        "content": "C 列表项甲\n",
+        "textStyle": {}
+       }
+      }
+     ],
+     "paragraphStyle": {
+      "namedStyleType": "NORMAL_TEXT",
+      "direction": "LEFT_TO_RIGHT",
+      "indentFirstLine": {
+       "magnitude": 18,
+       "unit": "PT"
+      },
+      "indentStart": {
+       "magnitude": 36,
+       "unit": "PT"
+      }
+     },
+     "bullet": {
+      "listId": "kix.gk23y650vgju",
+      "textStyle": {
+       "underline": false
+      }
+     }
+    }
+   },
+   {
+    "startIndex": 41,
+    "endIndex": 48,
+    "paragraph": {
+     "elements": [
+      {
+       "startIndex": 41,
+       "endIndex": 48,
+       "textRun": {
+        "content": "D 列表项乙\n",
+        "textStyle": {}
+       }
+      }
+     ],
+     "paragraphStyle": {
+      "namedStyleType": "NORMAL_TEXT",
+      "direction": "LEFT_TO_RIGHT",
+      "indentFirstLine": {
+       "magnitude": 18,
+       "unit": "PT"
+      },
+      "indentStart": {
+       "magnitude": 36,
+       "unit": "PT"
+      }
+     },
+     "bullet": {
+      "listId": "kix.gk23y650vgju",
+      "textStyle": {
+       "underline": false
+      }
+     }
+    }
+   },
+   {
+    "startIndex": 48,
+    "endIndex": 66,
+    "paragraph": {
+     "elements": [
+      {
+       "startIndex": 48,
+       "endIndex": 66,
+       "textRun": {
+        "content": "E 含 emoji 🎯 代理对。\n",
+        "textStyle": {}
+       }
+      }
+     ],
+     "paragraphStyle": {
+      "namedStyleType": "NORMAL_TEXT",
+      "direction": "LEFT_TO_RIGHT"
+     }
+    }
+   },
+   {
+    "startIndex": 66,
+    "endIndex": 76,
+    "paragraph": {
+     "elements": [
+      {
+       "startIndex": 66,
+       "endIndex": 72,
+       "textRun": {
+        "content": "F 脚注宿主",
+        "textStyle": {}
+       }
+      },
+      {
+       "startIndex": 72,
+       "endIndex": 73,
+       "footnoteReference": {
+        "footnoteId": "kix.8lywvprvvd7s",
+        "footnoteNumber": "1",
+        "textStyle": {}
+       }
+      },
+      {
+       "startIndex": 73,
+       "endIndex": 76,
+       "textRun": {
+        "content": "句。\n",
+        "textStyle": {}
+       }
+      }
+     ],
+     "paragraphStyle": {
+      "namedStyleType": "NORMAL_TEXT",
+      "direction": "LEFT_TO_RIGHT"
+     }
+    }
+   },
+   {
+    "startIndex": 76,
+    "endIndex": 84,
+    "paragraph": {
+     "elements": [
+      {
+       "startIndex": 76,
+       "endIndex": 84,
+       "textRun": {
+        "content": "G 表格前段落\n",
+        "textStyle": {}
+       }
+      }
+     ],
+     "paragraphStyle": {
+      "namedStyleType": "NORMAL_TEXT",
+      "direction": "LEFT_TO_RIGHT"
+     }
+    }
+   },
+   {
+    "startIndex": 84,
+    "endIndex": 104,
+    "table": {
+     "rows": 2,
+     "columns": 2,
+     "tableRows": [
+      {
+       "startIndex": 85,
+       "endIndex": 94,
+       "tableCells": [
+        {
+         "startIndex": 86,
+         "endIndex": 90,
+         "content": [
+          {
+           "startIndex": 87,
+           "endIndex": 90,
+           "paragraph": {
+            "elements": [
+             {
+              "startIndex": 87,
+              "endIndex": 90,
+              "textRun": {
+               "content": "TA\n",
+               "textStyle": {}
+              }
+             }
+            ],
+            "paragraphStyle": {
+             "namedStyleType": "NORMAL_TEXT",
+             "alignment": "START",
+             "lineSpacing": 100,
+             "direction": "LEFT_TO_RIGHT",
+             "spacingMode": "COLLAPSE_LISTS",
+             "spaceAbove": {
+              "unit": "PT"
+             },
+             "spaceBelow": {
+              "unit": "PT"
+             },
+             "borderBetween": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderTop": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderBottom": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderLeft": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderRight": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "indentFirstLine": {
+              "unit": "PT"
+             },
+             "indentStart": {
+              "unit": "PT"
+             },
+             "indentEnd": {
+              "unit": "PT"
+             },
+             "keepLinesTogether": false,
+             "keepWithNext": false,
+             "avoidWidowAndOrphan": false,
+             "shading": {
+              "backgroundColor": {}
+             },
+             "pageBreakBefore": false
+            }
+           }
+          }
+         ],
+         "tableCellStyle": {
+          "rowSpan": 1,
+          "columnSpan": 1,
+          "backgroundColor": {},
+          "paddingLeft": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "paddingRight": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "paddingTop": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "paddingBottom": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "contentAlignment": "TOP"
+         }
+        },
+        {
+         "startIndex": 90,
+         "endIndex": 94,
+         "content": [
+          {
+           "startIndex": 91,
+           "endIndex": 94,
+           "paragraph": {
+            "elements": [
+             {
+              "startIndex": 91,
+              "endIndex": 94,
+              "textRun": {
+               "content": "TB\n",
+               "textStyle": {}
+              }
+             }
+            ],
+            "paragraphStyle": {
+             "namedStyleType": "NORMAL_TEXT",
+             "alignment": "START",
+             "lineSpacing": 100,
+             "direction": "LEFT_TO_RIGHT",
+             "spacingMode": "COLLAPSE_LISTS",
+             "spaceAbove": {
+              "unit": "PT"
+             },
+             "spaceBelow": {
+              "unit": "PT"
+             },
+             "borderBetween": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderTop": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderBottom": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderLeft": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderRight": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "indentFirstLine": {
+              "unit": "PT"
+             },
+             "indentStart": {
+              "unit": "PT"
+             },
+             "indentEnd": {
+              "unit": "PT"
+             },
+             "keepLinesTogether": false,
+             "keepWithNext": false,
+             "avoidWidowAndOrphan": false,
+             "shading": {
+              "backgroundColor": {}
+             },
+             "pageBreakBefore": false
+            }
+           }
+          }
+         ],
+         "tableCellStyle": {
+          "rowSpan": 1,
+          "columnSpan": 1,
+          "backgroundColor": {},
+          "paddingLeft": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "paddingRight": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "paddingTop": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "paddingBottom": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "contentAlignment": "TOP"
+         }
+        }
+       ],
+       "tableRowStyle": {
+        "minRowHeight": {
+         "unit": "PT"
+        }
+       }
+      },
+      {
+       "startIndex": 94,
+       "endIndex": 103,
+       "tableCells": [
+        {
+         "startIndex": 95,
+         "endIndex": 99,
+         "content": [
+          {
+           "startIndex": 96,
+           "endIndex": 99,
+           "paragraph": {
+            "elements": [
+             {
+              "startIndex": 96,
+              "endIndex": 99,
+              "textRun": {
+               "content": "TC\n",
+               "textStyle": {}
+              }
+             }
+            ],
+            "paragraphStyle": {
+             "namedStyleType": "NORMAL_TEXT",
+             "alignment": "START",
+             "lineSpacing": 100,
+             "direction": "LEFT_TO_RIGHT",
+             "spacingMode": "COLLAPSE_LISTS",
+             "spaceAbove": {
+              "unit": "PT"
+             },
+             "spaceBelow": {
+              "unit": "PT"
+             },
+             "borderBetween": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderTop": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderBottom": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderLeft": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderRight": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "indentFirstLine": {
+              "unit": "PT"
+             },
+             "indentStart": {
+              "unit": "PT"
+             },
+             "indentEnd": {
+              "unit": "PT"
+             },
+             "keepLinesTogether": false,
+             "keepWithNext": false,
+             "avoidWidowAndOrphan": false,
+             "shading": {
+              "backgroundColor": {}
+             },
+             "pageBreakBefore": false
+            }
+           }
+          }
+         ],
+         "tableCellStyle": {
+          "rowSpan": 1,
+          "columnSpan": 1,
+          "backgroundColor": {},
+          "paddingLeft": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "paddingRight": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "paddingTop": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "paddingBottom": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "contentAlignment": "TOP"
+         }
+        },
+        {
+         "startIndex": 99,
+         "endIndex": 103,
+         "content": [
+          {
+           "startIndex": 100,
+           "endIndex": 103,
+           "paragraph": {
+            "elements": [
+             {
+              "startIndex": 100,
+              "endIndex": 103,
+              "textRun": {
+               "content": "TD\n",
+               "textStyle": {}
+              }
+             }
+            ],
+            "paragraphStyle": {
+             "namedStyleType": "NORMAL_TEXT",
+             "alignment": "START",
+             "lineSpacing": 100,
+             "direction": "LEFT_TO_RIGHT",
+             "spacingMode": "COLLAPSE_LISTS",
+             "spaceAbove": {
+              "unit": "PT"
+             },
+             "spaceBelow": {
+              "unit": "PT"
+             },
+             "borderBetween": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderTop": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderBottom": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderLeft": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "borderRight": {
+              "color": {},
+              "width": {
+               "unit": "PT"
+              },
+              "padding": {
+               "unit": "PT"
+              },
+              "dashStyle": "SOLID"
+             },
+             "indentFirstLine": {
+              "unit": "PT"
+             },
+             "indentStart": {
+              "unit": "PT"
+             },
+             "indentEnd": {
+              "unit": "PT"
+             },
+             "keepLinesTogether": false,
+             "keepWithNext": false,
+             "avoidWidowAndOrphan": false,
+             "shading": {
+              "backgroundColor": {}
+             },
+             "pageBreakBefore": false
+            }
+           }
+          }
+         ],
+         "tableCellStyle": {
+          "rowSpan": 1,
+          "columnSpan": 1,
+          "backgroundColor": {},
+          "paddingLeft": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "paddingRight": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "paddingTop": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "paddingBottom": {
+           "magnitude": 5,
+           "unit": "PT"
+          },
+          "contentAlignment": "TOP"
+         }
+        }
+       ],
+       "tableRowStyle": {
+        "minRowHeight": {
+         "unit": "PT"
+        }
+       }
+      }
+     ],
+     "tableStyle": {
+      "tableColumnProperties": [
+       {
+        "widthType": "EVENLY_DISTRIBUTED"
+       },
+       {
+        "widthType": "EVENLY_DISTRIBUTED"
+       }
+      ]
+     }
+    }
+   },
+   {
+    "startIndex": 104,
+    "endIndex": 106,
+    "paragraph": {
+     "elements": [
+      {
+       "startIndex": 104,
+       "endIndex": 106,
+       "textRun": {
+        "content": "。\n",
+        "textStyle": {}
+       }
+      }
+     ],
+     "paragraphStyle": {
+      "namedStyleType": "NORMAL_TEXT",
+      "direction": "LEFT_TO_RIGHT"
+     }
+    }
+   },
+   {
+    "startIndex": 106,
+    "endIndex": 107,
+    "paragraph": {
+     "elements": [
+      {
+       "startIndex": 106,
+       "endIndex": 107,
+       "textRun": {
+        "content": "\n",
+        "textStyle": {}
+       }
+      }
+     ],
+     "paragraphStyle": {
+      "namedStyleType": "NORMAL_TEXT",
+      "direction": "LEFT_TO_RIGHT"
+     }
+    }
+   }
+  ]
+ }
+}

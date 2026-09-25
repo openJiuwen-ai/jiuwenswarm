@@ -1,8 +1,314 @@
 {
+  "docs": {
+    "title": "Cloud Docs",
+    "subtitle": "Co-scribe — let your agent collaborate inside shared cloud documents",
+    "copy": "Copy",
+    "copied": "Copied",
+    "watch": {
+      "watchOff": "Off",
+      "watchApply": "On",
+      "watchApplyConfirm": "Turn the watch on? A collaborator @-mentioning me in a comment edits inside the selection they marked; every edit is highlighted and leaves a receipt for you to audit afterwards",
+      "watchExpired": "Expired",
+      "enableSelected": "Turn on selected ({{count}})",
+      "disableSelected": "Turn off selected ({{count}})",
+      "enableSelectedConfirm": "Click again to confirm: turn the watch on for the {{count}} selected. A collaborator @-ing me edits inside the selection they marked, and every edit leaves a receipt. Documents already on are skipped, and their term is not restarted",
+      "disableSelectedConfirm": "Click again to confirm: turn the watch off for the {{count}} selected. Each must be turned on again by hand, with its term starting over",
+      "bulkEnabled": "Watch turned on for {{count}} document(s).",
+      "bulkEnabledWithSkips": "Watch turned on for {{count}} document(s); {{skipped}} were already on and were left unchanged.",
+      "bulkEnabledAllSkipped": "All {{skipped}} selected document(s) were already on; nothing changed.",
+      "bulkDisabled": "The watch is off on {{count}} document(s).",
+      "bulkFailed": "{{count}} document(s) could not be changed."
+    },
+    "addPlaceholder": "Not seeing a document? Paste its link to adopt it; if it cannot be, you are told why",
+    "addAdopt": "Adopt",
+    "discoveryHint": "Documents shared with this account arrive on their own, within five minutes. Refresh pulls them in now.",
+    "retired": "{{count}} retired -- deleted on the platform or no longer shared; their watch grants were revoked with them",
+    "noDiscoveryReason": "{{address}}: {{reason}}",
+    "noDiscovery": "{{address}} runs on a platform whose API does not currently list the files shared with an app, so this connection does not discover on its own and Refresh will not find them either. After sharing, paste the document link in the box above.",
+    "status": {
+      "ok": "OK",
+      "comment_only": "Comment-only",
+      "frozen": "Frozen",
+      "backoff": "Backing off",
+      "commentOnlyHint": "The agent can read and propose, but proposals can never be applied. Grant Editor access.",
+      "frozenHint": "Paused after repeated failures. Refresh re-checks now; it also retries on its own."
+    },
+    "add": {
+      "ok": {
+        "title": "Adopted",
+        "detailOff": "It is on this connection's polling list and in the config. Its watch is off (the deployment policy's default): the agent reads and replies, and an @-mention does not edit. Turn the watch on in the row to allow that.",
+        "detailOn": "It is on this connection's polling list and in the config. Its watch was turned on by the deployment policy auto_watch_on_adopt: an @-mention edits within its passage. Turn it off in the row if that is not wanted."
+      },
+      "exists": {
+        "title": "Already adopted",
+        "detail": "This document is already adopted (its watch may still be off; see the row's switch)."
+      },
+      "comment_only": {
+        "title": "Comment-only access",
+        "detail": "The agent can read and propose, but without edit access no proposal can ever be applied. Change its role from Commenter to Editor in the document's Share dialog, then re-check."
+      },
+      "not_shared": {
+        "title": "Cannot access this document",
+        "detail": "It does not exist, or has not been shared with the agent's address yet."
+      },
+      "unknown": {
+        "title": "Could not check right now",
+        "detail": "Network or quota issue — try again shortly."
+      },
+      "invalid": {
+        "title": "Unparseable link",
+        "detail": "Paste a full cloud-document link (Google or Feishu), or a bare document id."
+      },
+      "no_connection": {
+        "title": "No connection available",
+        "detail": "Add a connection on the left first."
+      }
+    },
+    "recheck": "Re-check",
+    "copyAddress": "Copy agent address",
+    "footCount": "{{count}} document(s)",
+    "refresh": "Refresh",
+    "refreshing": "Checking…",
+    "notEnabled": "Add a service-account key in the column on the left to get started.",
+    "connDocs": "{{count}} docs",
+    "noConn": "No connections yet",
+    "refreshedAt": "refreshed at: {{time}}",
+    "adding": "Checking…",
+    "sub": {
+      "commentOnly": "Needs Editor access — proposals cannot apply",
+      "frozen": "Polling stopped · refresh to retry",
+      "backoff": "Backing off",
+      "backoffAt": "retrying after {{time}}",
+      "checkedAt": "checked {{time}}"
+    },
+    "providerFeishu": "Feishu Docs",
+    "providerGoogle": "Google Docs",
+    "connChooseFile": "Choose key file…",
+    "connUploadHint": "Saved under the config directory with 0600; the private key never enters config.yaml.",
+    "connErr": {
+      "invalid_key": "Invalid key: {{detail}}",
+      "duplicate": "This account already has a connection — one identity, one watcher (two would answer every mention twice)",
+      "unknown": "Could not add the connection; check the server log. {{detail}}"
+    },
+    "removeConn": "Remove connection",
+    "removeConnConfirm": "Disconnect {{address}}? Its {{count}} documents stop being watched and every watch granted under it lapses; receipts already on the ledger remain readable. The documents themselves and their sharing are untouched.",
+    "adopted": "Adopted {{count}} newly shared document(s)",
+    "unsupported": "{{count}} shared file(s) can't be co-edited — only documents, spreadsheets and slide decks are supported",
+    "needsEditor": "{{count}} document(s) are shared comment-only -- change them to Editor in the document's sharing settings, then Refresh",
+    "kind": {
+      "spreadsheet": "Sheets",
+      "presentation": "Slides",
+      "form": "Form",
+      "file": "File",
+      "document": "Document",
+      "markdown": "Markdown"
+    },
+    "keyInUse": "In use",
+    "keyDelete": "Delete file",
+    "keyDeleteConfirm": "Confirm?",
+    "keyDeleteHint": "Deleting removes the local file only; revoke the credential in the console that issued it to invalidate it.",
+    "keyDeleteHintGoogle": "Deleting removes the local file only; revoke the credential in the GCP console to invalidate it.",
+    "keyDeleteHintFeishu": "Deleting removes the local file only; revoke the credential in the Feishu open platform to invalidate it.",
+    "keyDeleteBlocked": "Disconnect first; only then can the local key file be deleted.",
+    "history": {
+      "loading": "Loading…",
+      "empty": "No agent edits recorded for this document yet.",
+      "unhighlight": "Clear highlight",
+      "highlighted": "highlighted",
+      "failed": "The action did not succeed",
+      "more": "and {{n}} more edits",
+      "statusUnknown": "outcome unknown",
+      "statusAppliedUnverified": "applied (read-back differs)",
+      "unknownNote": "The process ended mid-write; whether this change landed cannot be determined. Please check the document.",
+      "statusReverted": "reverted",
+      "statusPending": "in flight",
+      "statusApplied": "applied",
+      "statusAborted": "not written",
+      "actionUnconfirmed": "The request did not return in time. The action may still have completed; the list below now shows the true status.",
+      "opCreate": "created",
+      "opShare": "shared with",
+      "opTrash": "moved to trash",
+      "opRestore": "restored from trash",
+      "opUnshare": "unshared from",
+      "undoHint": "This is a record, not an undo. To undo a change, use the platform's version history."
+    },
+    "detail": {
+      "open": "Document record",
+      "title": "Document record",
+      "filterAll": "All",
+      "filterWrites": "Writes only",
+      "filterAuthority": "Authority only",
+      "empty": "No authority or write records for this document yet.",
+      "emptyFiltered": "Nothing under this filter.",
+      "expand": "Show full text",
+      "collapse": "Collapse",
+      "locate": "Locate",
+      "export": "Export CSV",
+      "exportHint": "The export is a snapshot of this view under the current filter; the complete record lives in this deployment's audit journal and receipt ledger.",
+      "catAuthority": "authority",
+      "catDispatch": "dispatch",
+      "catWrite": "write",
+      "colDocId": "doc_id",
+      "colTitle": "title",
+      "colTime": "time_iso",
+      "colCategory": "category",
+      "colEvent": "event",
+      "colReceiptId": "receipt_id",
+      "colStatus": "status",
+      "colExecutor": "executor",
+      "colSource": "source",
+      "colReason": "reason",
+      "colOldText": "old_text",
+      "colNewText": "new_text"
+    },
+    "usage": {
+      "unavailable": "Failed to read the audit",
+      "granted": "Granted",
+      "used": "Used",
+      "since": "since",
+      "until": "until",
+      "permanent": "permanent",
+      "summaryLine": "{{dispatches}} dispatches · {{denied}} refusals · {{writes}} write batches",
+      "lastWrite": "Last write:",
+      "executors": "Executors:",
+      "regions": "Regions envelope:",
+      "hintIdle": "This grant has sat idle for over two weeks with no writes — consider turning it off.",
+      "hintFriction": "Several recent dispatches were refused — consider renewing (your call).",
+      "renew30": "Renew 30 days",
+      "makePermanent": "Make permanent"
+    },
+    "mode": {
+      "directBanner": "Co-scribe safeguards are OFF (direct mode): no receipts, no unattended handling — errors leave no trace and comments that @-mention me will not be processed.",
+      "noAskChannel": "The permission system is off (Full Access): sharing, trashing, and any write whose receipt ledger is unavailable need a question channel and will be refused. Switch the session's permission selector to the default mode.",
+      "restoreMandate": "Turn safeguards back on",
+      "mandateNote": "Co-scribe safeguards: ON — writes leave receipts you can audit, comments that @-mention me can run unattended.",
+      "goDirect": "Turn off safeguards (direct)",
+      "confirmDirect": "Click again to confirm: drop every safeguard"
+    },
+    "conn": {
+      "title": "Cloud-doc connections",
+      "none": "No cloud-doc platform connected yet",
+      "remove": "Disconnect",
+      "addTitle": "Add a connection (Google service account / Feishu app)",
+      "addHint": "Give the path to a key file on this machine, or paste the JSON directly: a Google service-account key, or a Feishu custom app's app_id / app_secret (optional brand). It is stored locally only (mode 600), never uploaded.",
+      "keyPlaceholder": "/path/to/service-account.json  or  {\"type\": \"service_account\", ...}",
+      "add": "Connect",
+      "added": "Connected.",
+      "listTitle": "Accounts & keys",
+      "notConnected": "Not connected",
+      "keyFile": "Key file",
+      "keyExternal": "External path"
+    },
+    "poll": {
+      "title": "How often to look for a summons",
+      "hint": "The watch polls: an @-mention waits for the next tick to be seen. After that the agent needs about six more seconds -- admission, reading the comments, posting the \"working on it\" placeholder, each one a round trip. A shorter interval costs proportionally more: every managed document is at least one comment query per tick, whether or not anything happened.",
+      "every": "Every {{n}}s",
+      "expectation": "first reply in about {{avg}}s",
+      "clamped": "Using the nearest value the deployment will run: {{n}}s (allowed {{min}}-{{max}}s)"
+    },
+    "model": {
+      "title": "Model for unattended turns",
+      "hint": "The deployment default: every turn dispatched from a document comment runs on it, unless a document picks its own in its record dialog. Leave unset to use the agentserver's default model.",
+      "default": "Using the agentserver's default model",
+      "useDefault": "Use default"
+    },
+    "docModel": {
+      "title": "Model for this document",
+      "useDefault": "Follow the deployment default",
+      "inherit": "Not set for this document — following the deployment default: {{model}}",
+      "inheritAgentDefault": "Not set for this document, and no deployment default — using the agentserver's default model"
+    },
+    "table": {
+      "allConns": "All connections",
+      "allTiers": "All watch",
+      "colDoc": "Document",
+      "colConn": "Connection",
+      "colStatus": "Status",
+      "colTier": "Watch",
+      "colActivity": "Checked",
+      "daysLeft": "{{count}}d left",
+      "allKinds": "All types",
+      "colKind": "Type",
+      "colSelect": "Select",
+      "selectAll": "Select every row currently listed",
+      "tierToggleHint": "Click to switch on / off",
+      "filterOn": "Showing documents the agent watches ({{count}})",
+      "filterOff": "Showing documents the agent does not watch ({{count}})",
+      "filterAll": "Showing all documents ({{count}})",
+      "offCount": "Off ({{count}})"
+    },
+    "audit": {
+      "evGrant": "granted",
+      "evModify": "changed",
+      "evRevoke": "revoked",
+      "evExpire": "expired",
+      "evDispatch": "dispatched",
+      "evDeny": "dispatch refused",
+      "evSuspend": "paused (retired operation)",
+      "evResume": "resumed (retired operation)",
+      "evUnadopt": "removed (retired operation)",
+      "evReadopt": "re-registered (retired operation)",
+      "reason": "reason: {{reason}}",
+      "byLine": "by {{by}}",
+      "reasonDocumentRemoved": "the document was removed from management",
+      "reasonConnectionRemoved": "the connection was removed",
+      "reasonRetiredTier": "its tier was retired",
+      "reasonSuspendRetired": "the paused state was retired; it reads as off",
+      "reasonKillSwitch": "turn-all-off",
+      "reasonManual": "by hand"
+    },
+    "linkUnknown": "Link unknown — paste the document's link again to restore it",
+    "workbench": {
+      "openHere": "Open in workbench",
+      "openExternal": "Open in new tab",
+      "reload": "Reload",
+      "toggleChat": "Chat strip",
+      "toggleRail": "Side rail",
+      "exit": "Exit editing",
+      "closeTab": "Close tab",
+      "newReceipts": "{{n}} new receipts",
+      "launcherTitle": "This document opens in a new tab, as you set",
+      "embedAgain": "Show it here again",
+      "loginTitle": "Blank here? {{platform}} needs you signed in",
+      "loginBody": "The browser treats this frame as a third-party site. Without your {{platform}} session the platform redirects to its login page, which refuses to render in a frame, so the frame stays blank. Sign in once in a new tab, then come back and retry.",
+      "loginOpen": "Sign in and open in a new tab",
+      "loginRetry": "Signed in, retry",
+      "alwaysExternal": "Always open in a new tab",
+      "cantSee": "Can't see the document?",
+      "reloadsOnReceipt": "Reloads when a new receipt arrives",
+      "chat": "Chat",
+      "noReplyYet": "No reply yet",
+      "receipt": "receipt",
+      "locate": "Locate",
+      "history": "History",
+      "hideChat": "Hide chat",
+      "thisTab": "This tab",
+      "elsewhere": "{{n}} new receipts on other tabs",
+      "historyNote": "Every message of this session, across documents",
+      "rail": {
+        "receipts": "Document record",
+        "history": "Chat history"
+      },
+      "mdView": {
+        "edit": "Edit",
+        "preview": "Preview",
+        "split": "Split"
+      },
+      "editingDoc": "Editing: "
+    },
+    "plugin": {
+      "name": "Co-scribe for Cloud Docs",
+      "summary": "Co-edit cloud files on Google and Feishu: documents, sheets and slides. Each document's watch is turned on and off by its owner; while it is on, anyone who can comment summons it by @-mentioning it and it handles that comment unattended, and every write leaves a receipt the owner can audit.",
+      "manageHint": "Connections, keys and managed documents are all handled on the Cloud Docs page.",
+      "enable": "Enable",
+      "disable": "Disable",
+      "loadFailed": "Could not read the Co-scribe state",
+      "toggleFailed": "Could not update the plugin state"
+    }
+  },
   "common": {
     "noData": "No data",
     "confirm": "Confirm",
-    "cancel": "Cancel",
     "close": "Close",
     "clear": "Clear",
     "refresh": "Refresh",
@@ -39,6 +345,7 @@
     "unsupportedProtocol": "Unsupported A2UI protocol version: {{version}}"
   },
   "nav": {
+    "docs": "Cloud Docs",
     "chat": "Chat",
     "work": "Tasks",
     "agent": "Experts",
@@ -61,6 +368,8 @@
     "enabled": "Enabled",
     "disabled": "Disabled",
     "empty": "No application plugins were found",
+    "showDescription": "Show plugin description",
+    "hideDescription": "Hide plugin description",
     "noSettings": "This plugin does not provide a settings page."
   },
   "videoLive": {
@@ -804,6 +1113,10 @@
       "noMatchingSkills": "No matching skills",
       "noMatchingCommandsOrSkills": "No matching commands or skills"
     },
+    "docRefs": {
+      "label": "Docs in this session",
+      "hint": "Open this document's editor"
+    },
     "placeholder": "What can I do for you? Type \"/\" to quickly reference skills and commands",
     "placeholderCompacting": "Context compression in progress. Messages are temporarily disabled",
     "modelNotConfigured": "No model is configured yet. Configure one in Settings → Models, or sign in to get the limited-time free models.",
@@ -882,7 +1195,8 @@
       "getFreeModels": "Get limited-time free models",
       "addModel": "Add Custom Model",
       "empty": "No models available. Add a model in Settings first.",
-      "placeholder": "Select Model"
+      "placeholder": "Select Model",
+      "unresolved": "Set to {{name}}, which no longer resolves; using the default"
     },
     "contextUsage": {
       "title": "Context usage",
@@ -3387,7 +3701,6 @@
     "downloadProgress": "Download progress",
     "readyToInstall": "The installer is ready. Click “Install and restart” to close the app and begin the upgrade.",
     "restartPendingHint": "Upgrade complete. Click “Restart now” to restart the service.",
-    "unsupported": "This update flow is not supported on the current platform.",
     "noReleaseNotes": "No release notes available.",
     "states": {
       "idle": "Not checked",
@@ -3402,7 +3715,6 @@
       "installing": "Installing",
       "connect": "Connect",
       "error": "Check failed",
-      "unsupported": "Unsupported platform",
       "disabled": "Updater disabled"
     },
     "errors": {
@@ -3679,7 +3991,6 @@
     "title": "Please answer",
     "prev": "Previous",
     "next": "Next",
-    "cancel": "Cancel",
     "replyLater": "Reply Later",
     "skip": "Skip",
     "nextStep": "Next",
@@ -3787,6 +4098,7 @@
       "mcpDisconnectedBannerSelf": "Not connected yet. Connect to start using it",
       "connectMcp": "Connect",
       "sections": {
+        "about": "About",
         "basicInfo": "Basic info",
         "skills": "Skills",
         "tools": "Tools",

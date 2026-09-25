@@ -60,6 +60,8 @@ export interface PluginCapabilityRef {
 export interface PluginPackageDetail extends PluginPackageSummary {
   version?: string;
   details?: string;
+  /** 英文版 README（README_EN.md）；缺省时 UI 回退中文 details。 */
+  detailsEn?: string;
   tags: LocalizedText[];
   skills: PluginCapabilityRef[];
   tools: PluginCapabilityRef[];
