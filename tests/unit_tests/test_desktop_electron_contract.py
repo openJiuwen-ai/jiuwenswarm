@@ -303,8 +303,17 @@ def _frontend_direct_usages() -> set[str]:
 
 # Python 桌面独有的 pywebview API: get_startup_status 由 Python 桌面自渲染的
 # loading/诊断 HTML 轮询使用(前端 SPA 不调用, 已核实); Electron 的 loading/
-# 失败页由主进程渲染, 不需要该桥接。新增豁免必须在此给出理由。
-PYWEBVIEW_API_PYTHON_ONLY = {"get_startup_status"}
+# 失败页由主进程渲染, 不需要该桥接。
+#
+# report_tray_state 驱动 Python 侧 pystray 托盘的状态着色与原生通知
+# (channels/desktop/tray.py); Electron 侧托盘(main.cjs ensureTray)目前只有
+# 关闭时惰性创建的静态图标/菜单, 无状态着色与通知能力, 补齐是后续工作。
+# 前端调用点(desktopTrayBridge.ts)已对 window.pywebview 缺失做了防御性判空,
+# 在 Electron 下静默不生效, 不会报错。新增豁免必须在此给出理由。
+PYWEBVIEW_API_PYTHON_ONLY = {"get_startup_status", "report_tray_state"}
+
+# 前端共享代码里已知只在 pywebview 侧生效的直接调用点, 与上面的 API 豁免一一对应。
+FRONTEND_USAGE_PYTHON_ONLY = {"report_tray_state"}
 
 
 def test_pywebview_api_surface_matches_electron_preload() -> None:
@@ -329,7 +338,7 @@ def test_preload_pywebview_values_reference_existing_desktop_api() -> None:
 def test_frontend_used_api_available_on_both_desktops() -> None:
     python_api = _window_api_methods()
     electron_api = _preload_pywebview_api()[0]
-    shared = python_api & electron_api
+    shared = (python_api & electron_api) | FRONTEND_USAGE_PYTHON_ONLY
     declared = _frontend_declared_api_keys()
     assert declared <= shared, (
         f"vite-env.d.ts 声明了某侧桌面缺失的 API: {sorted(declared - shared)}"

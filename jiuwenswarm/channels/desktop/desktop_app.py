@@ -32,6 +32,7 @@ from logging.handlers import RotatingFileHandler
 
 import webview
 
+from jiuwenswarm.channels.desktop.tray import TrayController
 from jiuwenswarm.common._build_config import (
     APP_BUNDLE_NAME,
     BUNDLE_IDENTIFIER,
@@ -763,6 +764,10 @@ class _WindowApi:
     def install_update(self, installer_path: str) -> bool:
         return self._runtime.install_update(installer_path)
 
+    def report_tray_state(self, state: str, title: str = "", body: str = "", job_id: str = "") -> None:
+        """前端心跳/定时任务状态变化时上报，驱动系统托盘图标与原生通知。"""
+        self._runtime.report_tray_state(state, title, body, job_id)
+
     def download_file(self, url: str, filename: str) -> DesktopSaveResult:
         """通过 webview 下载文件，解决桌面端无法使用 <a> 标签下载的问题。"""
         # 如果是相对路径，拼接完整的 URL（使用前端 web server 端口）
@@ -1076,6 +1081,17 @@ def _clipboard_image_pick() -> dict[str, Any] | None:
     }
 
 
+def _resolve_app_icon_path() -> Path | None:
+    pkg_dir = Path(__file__).resolve().parent
+    for candidate in (
+        pkg_dir.parent / "web" / "frontend" / "dist" / "logo.ico",
+        pkg_dir.parent / "web" / "frontend" / "public" / "logo.ico",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 class DesktopRuntime:
     def __init__(
         self, frontend_host: str, ports: dict[str, int]
@@ -1099,6 +1115,8 @@ class DesktopRuntime:
         self._tray_menu = None
         self._desktop_dnd_bound = False
         self._startup_cancelled = threading.Event()
+        self._tray: TrayController | None = None
+        self._quit_requested = threading.Event()
         # 先行导航(web 静态页就绪即跳转前端)后, 若后端随后启动失败, 需把
         # 失败诊断页重新载入窗口; 此 Event 标记是否已先行导航。
         self._startup_navigated = threading.Event()
@@ -1543,6 +1561,49 @@ class DesktopRuntime:
             self.window.maximize()
         return True
 
+    def hide_window(self) -> bool:
+        if self.window is None or not hasattr(self.window, "hide"):
+            return False
+        self.window.hide()
+        return True
+
+    def show_window(self) -> bool:
+        if self.window is None or not hasattr(self.window, "show"):
+            return False
+        self.window.show()
+        if hasattr(self.window, "restore"):
+            self.window.restore()
+        return True
+
+    def _start_tray(self) -> None:
+        # Must run on the main thread, before webview.start() below enters pywebview's
+        # own native event loop -- see TrayController's docstring for why.
+        try:
+            tray = TrayController(
+                DISPLAY_NAME,
+                _resolve_app_icon_path(),
+                on_open=self.show_window,
+                on_quit=self._quit_from_tray,
+            )
+            tray.start()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[desktop] tray icon unavailable, continuing without it: %s", exc)
+            return
+        self._tray = tray
+        logger.info("[desktop] tray icon started")
+
+    def _quit_from_tray(self) -> None:
+        self._quit_requested.set()
+        self.close_window()
+
+    def report_tray_state(self, state: str, title: str = "", body: str = "", job_id: str = "") -> None:
+        if self._tray is None:
+            return
+        try:
+            self._tray.update_state(str(state), str(title), str(body), str(job_id))
+        except Exception:  # noqa: BLE001
+            logger.warning("[desktop] failed to update tray state")
+
     def toggle_fullscreen_window(self) -> bool:
         if self.window is None:
             return False
@@ -1817,8 +1878,18 @@ class DesktopRuntime:
             logger.warning("[desktop] failed to dispose Windows tray icon: %s", exc)
 
     def _on_closing(self) -> bool | None:
-        if not _is_windows_desktop() or self._allow_window_close:
+        # Fires for both the user clicking the window's close button and our own
+        # programmatic close_window()/destroy() (tray Quit, update-install restart,
+        # etc.) -- _allow_window_close/_quit_requested is how we tell those apart.
+        if self._allow_window_close or self._quit_requested.is_set():
             return None
+        if not _is_windows_desktop():
+            # No native ask/hide dialog outside Windows; fall back to our
+            # cross-platform tray if one is running, otherwise let it close.
+            if self._tray is None:
+                return None
+            self.hide_window()
+            return False
         action = _load_close_action()
         remember = False
         if action in (None, CLOSE_ACTION_ASK):
@@ -2762,6 +2833,9 @@ class DesktopRuntime:
             return False
 
         logger.info("[desktop] launched update helper for %s, parent pid=%d", sys.platform, os.getpid())
+        # The helper waits for this process to actually exit before installing;
+        # hiding to tray instead of quitting would leave it waiting forever.
+        self._quit_requested.set()
         self.close_window()
         return True
 
@@ -3013,6 +3087,10 @@ nohup {q_executable} >/dev/null 2>&1 &
             self._startup_cancelled.set()
             processes = list(self.processes.values())
 
+        if self._tray is not None:
+            self._tray.stop()
+            self._tray = None
+
         self._abort_all_blob_saves()
         deadline = time.monotonic() + 8.0
         logger.info("[desktop] shutting down child processes")
@@ -3188,6 +3266,12 @@ nohup {q_executable} >/dev/null 2>&1 &
             name="desktop-service-startup",
             daemon=True,
         ).start()
+
+        # Must happen here, on the main thread, before webview.start() below
+        # hands this thread to pywebview's own native event loop -- see
+        # TrayController's docstring. The tray shows "idle" through startup;
+        # report_tray_state() only starts driving it once the frontend is up.
+        self._start_tray()
 
         gui = "edgechromium" if os.name == "nt" else None
         logger.info("[desktop] opening window with loading screen")

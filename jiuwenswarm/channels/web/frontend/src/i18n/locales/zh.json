@@ -3334,6 +3334,13 @@
     "unknownError": "未知错误",
     "errorPrefix": "错误: {{message}}"
   },
+  "desktopTray": {
+    "heartbeatFinishedTitle": "心跳任务已完成",
+    "heartbeatFailedTitle": "心跳任务失败",
+    "cronFinishedTitle": "定时任务已完成",
+    "cronFailedTitle": "定时任务失败",
+    "needsApprovalTitle": "任务需要您的确认"
+  },
   "speech": {
     "recognitionUnsupported": "浏览器不支持语音识别",
     "recordingUnsupported": "浏览器不支持麦克风录音",
