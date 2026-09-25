@@ -32,6 +32,7 @@ _TTS_INSTRUCTIONS = (
 _TTS_TEMPERATURE = 0.2
 _ACTION_TEMPERATURE = 0.0
 _SYSTEM_PROMPT_KEY = "DEFAULT_SYSTEM_PROMPT_EN"
+_SUPPORTED_RESPONSE_LANGUAGES = {"zh", "en"}
 _USER_KNOWLEDGE_GUARD = (
     "【本轮动作约束】你必须自行选择官方动作。只依据当前或近期清晰画面、用户明确提供的信息和已确认的工具结果回答。"
     "天气、新闻、价格、公司或品牌背景等外部或时效事实需要搜索核实，不得凭记忆猜测。"
@@ -50,6 +51,28 @@ _DELEGATION_MARKER = re.compile(r"</?delegation>", flags=re.IGNORECASE)
 
 class JoyAIRateLimitError(RuntimeError):
     """JoyAI rejected a request because its rolling token quota was exhausted."""
+
+
+def normalize_response_language(value: object) -> str:
+    """Normalize Jiuwen's preferred response language for realtime prompts."""
+    language = str(value or "zh").strip().lower().replace("_", "-")
+    if language.startswith("en"):
+        return "en"
+    return "zh" if language not in _SUPPORTED_RESPONSE_LANGUAGES else language
+
+
+def response_language_instruction(value: object = "zh") -> str:
+    """Return an explicit output-language rule shared by realtime providers."""
+    language = normalize_response_language(value)
+    if language == "en":
+        return (
+            "【输出语言】Follow Jiuwen's preferred language: answer and speak in natural English. "
+            "Do not switch to Chinese unless the user explicitly asks for Chinese."
+        )
+    return (
+        "【输出语言】遵循九问的首选语言：请使用自然、简体中文回答和播报。"
+        "除非用户明确要求英语，不要切换为英语。"
+    )
 
 
 def model_config() -> tuple[str, str, str]:
@@ -106,7 +129,9 @@ def parse_action(raw_content: str) -> dict[str, str]:
     return {"decision": "response", "response": raw, "delegation": ""}
 
 
-def ground_user_instruction(instruction: str, tool_context: str = "") -> str:
+def ground_user_instruction(
+    instruction: str, tool_context: str = "", preferred_language: object = "zh",
+) -> str:
     """Add per-turn grounding rules without changing frame-only or tool turns."""
     instruction = str(instruction or "").strip()
     if not instruction:
@@ -122,6 +147,7 @@ def ground_user_instruction(instruction: str, tool_context: str = "") -> str:
         )
     return (
         f"{confirmed_context}【用户原话】{instruction}\n\n"
+        f"{response_language_instruction(preferred_language)}\n"
         f"{_USER_KNOWLEDGE_GUARD}"
     )
 

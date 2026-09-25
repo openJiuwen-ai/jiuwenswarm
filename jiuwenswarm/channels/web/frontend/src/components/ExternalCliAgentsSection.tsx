@@ -270,7 +270,11 @@ export function ExternalCliAgentsSection({
       try {
         const selectedPath = await onSelectFile(cliAgent, draftValues[cliPathKey] || '');
         if (!selectedPath) return;
+        const currentPath = draftValues[cliPathKey] || '';
         changeCliPath(cliAgent, cliPathKey, selectedPath);
+        if (selectedPath === currentPath) {
+          await detect(cliAgent, selectedPath);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setResults((prev) => ({
@@ -285,7 +289,7 @@ export function ExternalCliAgentsSection({
         setSelecting((prev) => ({ ...prev, [cliAgent]: false }));
       }
     },
-    [changeCliPath, draftValues, onSelectFile, t],
+    [changeCliPath, detect, draftValues, onSelectFile, t],
   );
 
   const claudeCliPath = draftValues[externalCliKey('claude', 'cli_path')] || '';

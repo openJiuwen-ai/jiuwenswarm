@@ -68,12 +68,7 @@ symphony:
     min_edge_confidence: 0.5
 
   skill_retrieval:
-    enabled: false
-    # Controls taxonomy construction and consumption independently of discovery.
-    # Enabling it never changes a live session's frozen directory strategy.
-    index:
-      enabled: false
-      recommendation_shown: false
+    enabled: true
     artifact_root: ${SYMPHONY_SKILL_RETRIEVAL_ROOT:-}
     discovery:
       # Strictly below the fixed 1% context threshold, a new session receives
@@ -539,6 +534,7 @@ trajectory_ui:
 
 experimental:
   task_full_duplex_enabled: false    # 在任务对话空输入框中显示全双工入口
+  task_asr_enabled: false            # 默认关闭普通任务对话中的语音转写入口
 
 # ============================================================
 # Agent / Code 调试链路追踪（Debug Trace）配置

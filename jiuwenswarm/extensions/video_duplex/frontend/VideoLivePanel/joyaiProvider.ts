@@ -47,6 +47,12 @@ export interface JoyAIProviderCallbacks {
   report: (event: string, details?: Record<string, unknown>) => void;
 }
 
+export type JoyAIResponseLanguage = 'zh' | 'en';
+
+export function normalizeJoyAIResponseLanguage(value: unknown): JoyAIResponseLanguage {
+  return String(value || '').trim().toLowerCase().startsWith('en') ? 'en' : 'zh';
+}
+
 export class JoyAIProvider {
   private callbacks: JoyAIProviderCallbacks;
   private voice: JoyAIVoiceSession | null = null;
@@ -69,12 +75,24 @@ export class JoyAIProvider {
   private framePollingPausedUntil = 0;
   private pendingToolContext: JoyAIToolContextEntry[] = [];
 
-  constructor(callbacks: JoyAIProviderCallbacks) {
+  private preferredLanguage: JoyAIResponseLanguage;
+
+  constructor(
+    callbacks: JoyAIProviderCallbacks,
+    preferredLanguage: JoyAIResponseLanguage = 'zh',
+  ) {
     this.callbacks = callbacks;
+    this.preferredLanguage = preferredLanguage;
   }
+
+
 
   updateCallbacks(callbacks: JoyAIProviderCallbacks): void {
     this.callbacks = callbacks;
+  }
+
+  setPreferredLanguage(language: unknown): void {
+    if (language !== undefined) this.preferredLanguage = normalizeJoyAIResponseLanguage(language);
   }
 
   get active(): boolean {
@@ -363,6 +381,7 @@ export class JoyAIProvider {
             instruction: prompt.slice(0, 2_000),
             question: originalQuestion.slice(0, 500),
             request_kind: requestKind,
+            preferred_language: this.preferredLanguage,
             joyai_session_id: sessionId,
             search_session_id: searchSessionId,
             frame_time_range: frameTimeRange,
@@ -390,6 +409,7 @@ export class JoyAIProvider {
             cooldown_ms: cooldownMs,
             rate_limit_strikes: this.rateLimitStrikes,
             request_kind: requestKind,
+            preferred_language: this.preferredLanguage,
           });
           this.callbacks.setStatus(`JoyAI 额度受限，${Math.ceil(cooldownMs / 1_000)} 秒后自动恢复`);
         }

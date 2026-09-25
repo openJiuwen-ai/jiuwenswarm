@@ -63,6 +63,21 @@
     "empty": "No application plugins were found",
     "noSettings": "This plugin does not provide a settings page."
   },
+  "videoLive": {
+    "modelFallback": "Video model",
+    "subtitle": "Real-time multi-screen audio and video Q&A",
+    "status": { "connecting": "Connecting to the Full-duplex model and requesting microphone access…", "speaking": "The model is responding…" },
+    "coreAgent": { "startFailed": "Jiuwen Core Agent could not start the task: {{message}}", "startFailedSummary": "The task could not start. The error is shown in the interface." },
+    "errors": { "startFailed": "Failed to start the Full-duplex session.", "joyaiTextNotAccepted": "The text input was not accepted by the JoyAI session.", "qwenTextNotAccepted": "The text input was not accepted by the Qwen Realtime session.", "textSendFailed": "Failed to send the text input." },
+    "empty": { "title": "Open a real-time view", "description": "Use a camera, local video, or add multiple screens", "listening": "Listening continuously", "waiting": "Waiting to start Full-duplex", "hint": "Speak after starting; no need to click for each sentence" },
+    "sources": { "camera": "Camera", "localVideo": "Local video", "addScreen": "Add screen", "shareScreen": "Share screen", "stopCamera": "Stop camera", "stopScreens": "Stop all screens" },
+    "actions": { "closeVideo": "Close video", "starting": "Starting Full-duplex session", "stopSession": "End Full-duplex session", "startSession": "Start Full-duplex session" },
+    "frameWindow": "Rolling window: {{count}}/{{max}} frames",
+    "audioOnly": "Audio only; no video frames sent",
+    "chat": { "coreResult": "Tool result · Jiuwen Core Agent", "user": "You", "search": "Jiuwen Search", "assistant": "Assistant", "searchCompleted": "Jiuwen Search Agent completed" },
+    "search": { "ready": "Preparing search", "selectHistory": "Select search history", "latest": "Latest search (automatic)" },
+    "input": { "activePlaceholder": "You can also type in this session…", "inactivePlaceholder": "Start Full-duplex first…", "send": "Send question" }
+  },
   "settingsPanel": {
     "title": "Settings",
     "freeModels": {
@@ -339,7 +354,7 @@
       "chromePathPlaceholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     },
     "experimental": {
-      "taskAsr": "ASR model configuration",
+      "taskAsr": "Speech transcription",
       "taskFullDuplex": "Task chat full duplex",
       "externalCliAgents": "Third-Party Agents",
       "externalCliAgentsDescription": "For Team mode only.",
@@ -352,6 +367,41 @@
       "proactiveLimits": "Recommendation limits",
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check."
+    },
+    "taskAsr": {
+      "dialogTitle": "Configure speech transcription model",
+      "validationRequired": "Enter the speech transcription URL, API key, and model.",
+      "notConfigured": "Speech transcription model is not configured."
+    },
+    "videoDuplex": {
+      "loading": "Loading full-duplex model settings…",
+      "description": "Configure the vision model and its speech recognition and synthesis channels.",
+      "enabled": "Full duplex enabled",
+      "disabled": "Full duplex disabled",
+      "enable": "Enable",
+      "disable": "Disable",
+      "toggleError": "Unable to update the plugin status",
+      "saved": "Settings saved; new requests will use the latest configuration",
+      "videoSectionTitle": "Video model",
+      "saveSettings": "Save settings",
+      "loadError": "Unable to load full-duplex model settings",
+      "saveError": "Unable to save full-duplex model settings",
+      "notConfigured": "Full-duplex model is not configured",
+      "dialogTitle": "Configure full-duplex model",
+      "providerLabel": "Model channel",
+      "joyaiModelLabel": "JoyAI model",
+      "voiceSectionTitle": "Speech transcription and synthesis",
+      "voiceProtocolLabel": "Voice channel",
+      "voiceApiKeyLabel": "Voice API key",
+      "asrEndpointLabel": "Speech transcription endpoint",
+      "ttsEndpointLabel": "Speech synthesis endpoint",
+      "asrModelLabel": "Speech transcription model",
+      "ttsModelLabel": "Speech synthesis model",
+      "ttsVoiceLabel": "Speech synthesis voice",
+      "qwenModelLabel": "Qwen model",
+      "qwenVoiceLabel": "Qwen voice",
+      "deleteTitle": "Delete full-duplex model settings",
+      "deleteConfirm": "This clears the saved full-duplex endpoint, model, and API key."
     },
     "fields": {
       "preferred_language": {
@@ -377,17 +427,17 @@
       "embed_api_key": { "title": "API key" },
       "embed_model": { "title": "Model name" },
       "asr_api_base": {
-        "title": "ASR API URL",
+        "title": "Speech transcription API URL",
         "description": "Enter an OpenAI-compatible base URL or the full /audio/transcriptions URL.",
         "placeholder": "e.g. https://api.example.com/v1"
       },
       "asr_api_key": {
-        "title": "ASR API key",
+        "title": "Speech transcription API key",
         "description": "Used for general speech transcription; JoyAI has separate settings.",
         "placeholder": "e.g. sk-..."
       },
       "asr_model": {
-        "title": "ASR model",
+        "title": "Speech transcription model",
         "description": "Model used for general speech transcription.",
         "placeholder": "e.g. FunAudioLLM/SenseVoiceSmall"
       },
@@ -402,10 +452,6 @@
       "skill_retrieval_enabled": {
         "title": "Automatic Skill Retrieval",
         "description": "Dynamically select the agent's skill discovery strategy based on the number of installed Skills."
-      },
-      "skill_retrieval_index_enabled": {
-        "title": "Skill Index",
-        "description": "Enable a tree-structured catalog of installed Skills to enhance the agent's structured skill discovery capabilities (*may consume additional tokens)."
       },
       "ttse_enabled": {
         "title": "Local environment facts and task experience auto-evolution",
@@ -467,6 +513,10 @@
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
         "description": "Show a Full-duplex action when the composer is empty; it shares the entire screen and continuously listens to the microphone."
+      },
+      "task_asr_enabled": {
+        "title": "Enable speech transcription in task chat",
+        "description": "When disabled, hide the microphone button in task chat without deleting the saved transcription settings."
       },
       "kv_cache_affinity_enabled": {
         "title": "Enable compute affinity",
@@ -789,7 +839,7 @@
     "modeAutoHarnessDesc": "Automatically analyze and optimize target repository",
     "recording": "Recording... (click the microphone again to finish)",
     "transcribing": "Transcribing speech...",
-    "startRecording": "Voice input",
+    "startRecording": "Speech transcription",
     "stopRecording": "Stop recording and transcribe",
     "messageQueue": "Message queue",
     "waitingTasks": "Waiting tasks",
@@ -1767,6 +1817,7 @@
       "enable": "Collect Personal Context",
       "enableHint": "Periodic context harvesting & graph building.",
       "strategyProfile": "Context strategy",
+      "strategyLockedByFetch": "A fetch task is running or stopping. You can change the strategy when it finishes.",
       "strategy_agent": "Agent",
       "strategy_balanced": "LLM",
       "strategy_rules": "Rules",
@@ -1776,7 +1827,9 @@
       "modelHint": "Select a model configured in JiuwenSwarm.",
       "collectionStopPending": "A fetch task is running; the setting takes effect shortly.",
       "collectionStoppingRetry": "A fetch task is still running or stopping. Please try again in a moment.",
-      "operationTimeout": "Request timed out. Please try again in a moment."
+      "operationTimeout": "Request timed out. Please try again in a moment.",
+      "collectionTimeoutReconciling": "Request timed out. Checking the actual collection state.",
+      "collectionReconciling": "Request result is still unknown. Checking the actual collection state."
     },
     "authorization": {
       "title": "Content source authorization",
@@ -1876,6 +1929,7 @@
       "colActions": "Actions",
       "stateCollecting": "Fetching",
       "stateCompleted": "Completed",
+      "statePartial": "Partially completed: {{completed}}/{{total}}, {{failed}} failed",
       "stateFailed": "Failed",
       "stateWaiting": "Waiting",
       "stateStopped": "Stopped",
@@ -1901,10 +1955,10 @@
       "collectAll": "Collect All",
       "statSources": "Sources",
       "statKnowledge": "Context Nodes",
-      "statCollecting": "Collecting",
+      "statCollecting": "Active fetch tasks",
       "knowledgeSource": "Context Source",
       "lastRun": "Last Run",
-      "fetchTaskRunning": "A fetch task is currently running. Please wait for it to complete before changing settings."
+      "fetchTaskRunning": "A fetch task is running or stopping. Please wait for it to finish before changing settings."
     },
     "addContent": {
       "title": "Add content",
@@ -2310,9 +2364,6 @@
       "description": "When Skill discovery is enabled, the 1% threshold selects a complete snapshot or live skill_index retrieval for new sessions. Taxonomy construction is controlled independently by the index switch. Existing sessions keep the strategy frozen at creation.",
       "globalDisabledHint": "The global discovery switch is off. Agents use the original JiuwenSwarm Skill logic; any existing taxonomy files remain stored and unused.",
       "indexNotNeeded": "A taxonomy is not needed while the complete candidate snapshot fits below the 1% threshold. No taxonomy build is started, even if the saved index preference is on.",
-      "indexRecommended": "Many Skills are currently installed. You can build a Skill graph index to enhance how installed Skills are used.\n\nThe Skill graph index provides the following enhancements:\n\n- Maintains a hierarchical classification of Skills;\n- Explores structural dependencies between Skills, including inputs, outputs, and prerequisites;\n- Provides stronger runtime progressive discovery, retrieval, and orchestration for Skills.*\n\n*Building or refreshing the Skill graph index calls a model to analyze installed Skills and therefore consumes additional tokens.",
-      "recommendationBuild": "Build now",
-      "recommendationDismiss": "Not now",
       "indexDisabled": "The taxonomy switch is off. Live flat retrieval remains available, and existing taxonomy files are retained.",
       "indexBuildRunning": "The taxonomy is building in the background. Retrieval remains available during the build, which consumes model tokens.",
       "indexActive": "The taxonomy switch is on and the current taxonomy is active. Refreshing it consumes model tokens.",
@@ -3506,7 +3557,7 @@
       "archiveConfirmAll": "Archive all",
       "sessionsArchived": "Archived {{count}} conversations",
       "archiveBatchFailedRunning": "{{count}} conversation(s) are running and could not be archived",
-      "archiveBatchFailedFinishing": "The swarm flow has ended and {{count}} conversation(s) are wrapping up. Please try again shortly.",
+      "archiveBatchFailedFinishing": "{{count}} conversation(s) are wrapping up and will finish on their own. Please try again shortly.",
       "archiveBatchFailed": "{{count}} conversation(s) failed to archive",
       "defaultProjectName": "Default Project",
       "absolutePathError": "Enter an absolute path, for example /Users/name/work/project",
@@ -3516,9 +3567,9 @@
         "pathMissing": "Project directory does not exist. Choose an existing directory.",
         "projectUnavailable": "Project unavailable. Refresh and retry.",
         "archiveSessionBusy": "This conversation is running and cannot be archived. Stop it manually, then try again.",
-        "archiveSessionFinishing": "The swarm flow has ended and the conversation is wrapping up. Please try archiving again shortly.",
+        "archiveSessionFinishing": "This conversation is wrapping up and will finish on its own. Please try archiving again shortly.",
         "deleteSessionBusy": "This conversation is running and cannot be deleted. Stop it manually, then try again.",
-        "deleteSessionFinishing": "The swarm flow has ended and the conversation is wrapping up. Please try deleting again shortly.",
+        "deleteSessionFinishing": "This conversation is wrapping up and will finish on its own. Please try deleting again shortly.",
         "archiveForbidden": "This task does not support archiving.",
         "archiveNotFound": "The resource no longer exists or has changed. Refresh and try again.",
         "archiveFailed": "The archive operation failed. Please try again later.",
@@ -3865,19 +3916,6 @@
     }
   },
   "auth": {
-    "title": "Sign in to JiuwenSwarm",
-    "subtitle": "Enter your account and password to continue",
-    "username": "Account",
-    "usernamePlaceholder": "Enter account",
-    "password": "Password",
-    "passwordPlaceholder": "Enter password",
-    "login": "Sign in",
-    "loggingIn": "Signing in…",
-    "invalidCredentials": "Invalid account or password",
-    "loginFailed": "Sign-in failed, please retry later",
-    "authRequired": "Sign-in required to access",
-    "secureHint": "You'll stay signed in after login",
-    "logout": "Sign out",
     "huawei": {
       "title": "Sign in with HUAWEI ID",
       "subtitle": "Sign in to use the models your account provides — no API key needed.",

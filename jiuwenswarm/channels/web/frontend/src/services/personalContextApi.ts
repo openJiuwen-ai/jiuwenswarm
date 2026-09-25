@@ -32,8 +32,16 @@ export type FetchRunState =
   | 'running'
   | 'stopping'
   | 'succeeded'
+  | 'partial_succeeded'
   | 'cancelled'
   | 'failed';
+
+export type FetchItemError = {
+  item_ref: string;
+  code: number;
+  message: string;
+  failed_at: string;
+};
 
 /** 单服务采集进度（后端 get_fetch_run_status / status.fetch_run_progress[id]）。 */
 export type FetchRunProgress = {
@@ -42,6 +50,10 @@ export type FetchRunProgress = {
   progress_percent: number;
   total_items: number;
   completed_items: number;
+  failed_items: number;
+  quarantined_items: number;
+  item_errors: FetchItemError[];
+  omitted_item_errors: number;
   last_error: string | null;
 };
 

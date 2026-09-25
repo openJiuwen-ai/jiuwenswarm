@@ -69,8 +69,9 @@ export interface BatchSessionResultEntry {
   error?: string;
   stop_pending?: boolean;
   /**
-   * SESSION_BUSY 的细分：swarm flow 已结束、Team 回合仍在收尾（leader 汇报
-   * 中），会话会自行结束——提示稍后重试，而不是让用户先手动停止。
+   * SESSION_BUSY 的细分：会话正在自行收尾（swarm flow 已结束、Team 回合
+   * 汇报中，或常驻 subagent 正在退出），稍后自动结束——提示稍后重试，
+   * 而不是让用户先手动停止。
    */
   finishing?: boolean;
   warnings?: ArchiveWarning[];

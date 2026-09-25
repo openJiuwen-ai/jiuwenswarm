@@ -1444,6 +1444,7 @@ export default defineConfig({
       'lucide-react': path.resolve(__dirname, './node_modules/lucide-react'),
       react: path.resolve(__dirname, './node_modules/react'),
       'react-dom': path.resolve(__dirname, './node_modules/react-dom'),
+      'react-i18next': path.resolve(__dirname, './node_modules/react-i18next'),
     },
   },
   server: {

@@ -398,6 +398,23 @@ class SessionRunAdmission:
             self._drop_idle_state(session_id, state)
             self._condition.notify_all()
 
+    async def stop_active_heartbeat(self, session_id: str) -> bool:
+        """Cancel the Session's active Heartbeat run and await its marker.
+
+        Lifecycle actions (archive, delete) must not wait out a background
+        Heartbeat, and must not force a Session past a live run either: the
+        caller stops the run first and then reads a settled Session.  Returns
+        False when no Heartbeat owns the Session.  A run that cannot be
+        cancelled raises, so the caller keeps its busy fallback.
+        """
+        async with self._condition:
+            state = self._states.get(session_id)
+            run_id = state.heartbeat_run_id if state is not None else None
+        if not run_id:
+            return False
+        await self._preempt_heartbeat_for_user(session_id, run_id)
+        return True
+
     def _drop_idle_state(
         self, session_id: str, state: _SessionAdmissionState
     ) -> None:

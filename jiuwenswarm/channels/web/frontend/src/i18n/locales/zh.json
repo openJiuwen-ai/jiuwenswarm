@@ -63,6 +63,21 @@
     "empty": "尚未发现应用插件",
     "noSettings": "此插件未提供设置页面。"
   },
+  "videoLive": {
+    "modelFallback": "视频模型",
+    "subtitle": "实时多屏音视频问答",
+    "status": { "connecting": "正在连接 Full-duplex 模型并申请麦克风权限…", "speaking": "模型正在回答…" },
+    "coreAgent": { "startFailed": "Jiuwen Core Agent 未能启动任务：{{message}}", "startFailedSummary": "任务未能启动，错误信息已经显示在界面中。" },
+    "errors": { "startFailed": "Full-duplex 会话启动失败。", "joyaiTextNotAccepted": "文字输入未进入 JoyAI 会话", "qwenTextNotAccepted": "文字输入未进入千问 Realtime 会话", "textSendFailed": "文字输入发送失败" },
+    "empty": { "title": "打开一个实时画面", "description": "使用摄像头、本地视频，或添加多个屏幕", "listening": "正在持续听取", "waiting": "等待开启 Full-duplex", "hint": "开启后直接说话，无需逐句点击" },
+    "sources": { "camera": "摄像头", "localVideo": "本地视频", "addScreen": "添加屏幕", "shareScreen": "共享屏幕", "stopCamera": "停止摄像头", "stopScreens": "停止全部屏幕" },
+    "actions": { "closeVideo": "关闭视频", "starting": "正在启动 Full-duplex 会话", "stopSession": "结束 Full-duplex 会话", "startSession": "开启 Full-duplex 会话" },
+    "frameWindow": "滚动窗口：{{count}}/{{max}} 帧",
+    "audioOnly": "纯语音不发送画面",
+    "chat": { "coreResult": "工具结果 · Jiuwen Core Agent", "user": "你", "search": "九问搜索", "assistant": "助手", "searchCompleted": "九问搜索 Agent 搜索完成" },
+    "search": { "ready": "准备搜索", "selectHistory": "选择搜索记录", "latest": "最新搜索（自动）" },
+    "input": { "activePlaceholder": "也可以在当前会话中输入文字……", "inactivePlaceholder": "先开启 Full-duplex……", "send": "发送问题" }
+  },
   "settingsPanel": {
     "title": "设置",
     "freeModels": {
@@ -339,7 +354,7 @@
       "chromePathPlaceholder": "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     },
     "experimental": {
-      "taskAsr": "ASR 模型配置",
+      "taskAsr": "语音转写",
       "taskFullDuplex": "任务对话全双工",
       "externalCliAgents": "三方 Agent",
       "externalCliAgentsDescription": "仅用于集群模式。",
@@ -352,6 +367,41 @@
       "proactiveLimits": "推荐频率限制",
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。"
+    },
+    "taskAsr": {
+      "dialogTitle": "配置语音转写模型",
+      "validationRequired": "请完整填写语音转写地址、密钥和模型。",
+      "notConfigured": "尚未配置语音转写模型"
+    },
+    "videoDuplex": {
+      "loading": "正在读取全双工模型配置…",
+      "description": "配置视觉模型以及配套的语音识别与语音合成通道。",
+      "enabled": "全双工已启用",
+      "disabled": "全双工已禁用",
+      "enable": "启用",
+      "disable": "禁用",
+      "toggleError": "无法更新插件状态",
+      "saved": "设置已保存，新请求将使用最新配置",
+      "videoSectionTitle": "视频模型",
+      "saveSettings": "保存设置",
+      "loadError": "无法读取全双工模型配置",
+      "saveError": "无法保存全双工模型配置",
+      "notConfigured": "尚未配置全双工模型",
+      "dialogTitle": "配置全双工模型",
+      "providerLabel": "模型通道",
+      "joyaiModelLabel": "JoyAI 模型",
+      "voiceSectionTitle": "语音转写与语音播报",
+      "voiceProtocolLabel": "语音通道",
+      "voiceApiKeyLabel": "语音 API 密钥",
+      "asrEndpointLabel": "语音转写完整接口",
+      "ttsEndpointLabel": "语音播报完整接口",
+      "asrModelLabel": "语音转写模型",
+      "ttsModelLabel": "语音播报模型",
+      "ttsVoiceLabel": "语音播报音色",
+      "qwenModelLabel": "Qwen 模型",
+      "qwenVoiceLabel": "Qwen 音色",
+      "deleteTitle": "删除全双工模型配置",
+      "deleteConfirm": "删除后将清除已保存的全双工模型地址、模型和密钥。"
     },
     "fields": {
       "preferred_language": {
@@ -377,17 +427,17 @@
       "embed_api_key": { "title": "API 密钥" },
       "embed_model": { "title": "模型名称" },
       "asr_api_base": {
-        "title": "ASR API 地址",
+        "title": "语音转写 API 地址",
         "description": "填写 OpenAI 兼容 Base URL 或完整的 /audio/transcriptions 地址。",
         "placeholder": "例如：https://api.example.com/v1"
       },
       "asr_api_key": {
-        "title": "ASR API 密钥",
+        "title": "语音转写 API 密钥",
         "description": "用于通用语音转写；JoyAI 使用独立配置。",
         "placeholder": "例如：sk-..."
       },
       "asr_model": {
-        "title": "ASR 模型",
+        "title": "语音转写模型",
         "description": "用于通用语音转写的模型名称。",
         "placeholder": "例如：FunAudioLLM/SenseVoiceSmall"
       },
@@ -399,10 +449,6 @@
       "skill_retrieval_enabled": {
         "title": "技能自动检索",
         "description": "基于已安装技能数量，动态选择智能体的技能发现策略"
-      },
-      "skill_retrieval_index_enabled": {
-        "title": "技能索引",
-        "description": "启用已安装技能的树状目录，增强智能体的结构化技能发现能力（*可能消耗额外 Token）"
       },
       "ttse_enabled": {
         "title": "本地环境事实与任务经验自动演进",
@@ -458,6 +504,10 @@
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
         "description": "输入框为空时显示全双工按钮；点击后共享整个屏幕并持续使用麦克风。"
+      },
+      "task_asr_enabled": {
+        "title": "启用任务对话语音转写",
+        "description": "关闭后隐藏任务对话输入框中的麦克风按钮；不会删除已保存的语音转写配置。"
       },
       "kv_cache_affinity_enabled": {
         "title": "启用算力亲和",
@@ -780,7 +830,7 @@
     "modeAutoHarnessDesc": "自动分析并优化目标仓库",
     "recording": "正在录音...（再次点击麦克风结束）",
     "transcribing": "正在转写语音...",
-    "startRecording": "语音输入",
+    "startRecording": "语音转写",
     "stopRecording": "结束录音并转写",
     "waitingTasks": "等待任务",
     "messageQueue": "消息队列",
@@ -1757,6 +1807,7 @@
       "enable": "采集个人上下文内容",
       "enableHint": "支持自动周期性采集上下文内容并自动构建图谱。",
       "strategyProfile": "上下文采集模式",
+      "strategyLockedByFetch": "采集任务正在运行或停止中，结束后可切换模式。",
       "strategy_agent": "智能体处理",
       "strategy_balanced": "大模型处理",
       "strategy_rules": "规则处理",
@@ -1767,7 +1818,9 @@
       "modelHint": "选择已在 JiuwenSwarm 中配置的模型。",
       "collectionStopPending": "采集任务运行中，稍后生效",
       "collectionStoppingRetry": "采集任务仍在运行或停止中，请稍后再试",
-      "operationTimeout": "请求超时，请稍后重试"
+      "operationTimeout": "请求超时，请稍后重试",
+      "collectionTimeoutReconciling": "请求超时，正在核对实际采集状态",
+      "collectionReconciling": "请求结果尚未确认，正在核对实际采集状态"
     },
     "authorization": {
       "title": "内容采集授权",
@@ -1867,6 +1920,7 @@
       "colActions": "操作",
       "stateCollecting": "正在采集",
       "stateCompleted": "采集完成",
+      "statePartial": "部分成功：{{completed}}/{{total}}，{{failed}} 项失败",
       "stateFailed": "采集失败",
       "stateWaiting": "等待采集",
       "stateStopped": "已停止",
@@ -1892,10 +1946,10 @@
       "collectAll": "全部开始采集",
       "statSources": "来源",
       "statKnowledge": "上下文节点数",
-      "statCollecting": "正在采集",
+      "statCollecting": "进行中的采集任务",
       "knowledgeSource": "上下文来源",
       "lastRun": "上次采集",
-      "fetchTaskRunning": "当前有采集任务正在运行，请等待完成后再修改配置"
+      "fetchTaskRunning": "当前有采集任务正在运行或停止中，请等待结束后再修改配置"
     },
     "addContent": {
       "title": "添加内容",
@@ -1957,7 +2011,7 @@
         "bookmarksPathLabel": "书签文件路径",
         "bookmarksPathPlaceholder": "留空使用 Edge 默认 Bookmarks 路径",
         "foldersLabel": "需采集的书签文件夹",
-        "foldersPlaceholder": "如 收藏栏/技术，多个用逗号分隔",
+        "foldersPlaceholder": "如 收藏夹栏/技术，多个用逗号分隔",
         "foldersHint": "可选，留空采集全部"
       },
       "github": {
@@ -2300,9 +2354,6 @@
       "description": "开启 Skill 发现后，系统按 1% 阈值为新会话选择完整候选快照或实时 skill_index 检索；分类索引是否构建由单独的索引开关控制。已有会话保持创建时冻结的策略。",
       "globalDisabledHint": "全局发现开关已关闭。Agent 使用 JiuwenSwarm 原有 Skill 逻辑；已有分类索引文件会保留但不使用。",
       "indexNotNeeded": "完整候选快照低于 1% 阈值时无需分类索引；即使已保存索引偏好，也不会启动构建。",
-      "indexRecommended": "当前已安装 Skills 较多。您可以构建 Skill 索引，以增强对已安装 Skills 的调用能力。\n\nSkill 索引主要提供以下增强：\n\n- 维护 Skills 的分层目录结构；\n- 探查 Skills 之间的结构性依赖关系；\n- 提供更强的 Skills 运行时渐进式发现、检索与编排能力。*\n\n*构建或刷新 Skill 索引需要调用 LLM 分析已安装 Skills，因此会额外消耗 token。",
-      "recommendationBuild": "立即构建",
-      "recommendationDismiss": "暂不构建",
       "indexDisabled": "分类索引开关已关闭。实时平铺检索仍可用，已有索引文件会保留。",
       "indexBuildRunning": "分类索引正在后台构建。构建期间检索仍可用；构建会消耗模型 token。",
       "indexActive": "分类索引开关已开启，当前分类目录正在使用；刷新会消耗模型 token。",
@@ -3492,7 +3543,7 @@
       "archiveConfirmAll": "全部归档",
       "sessionsArchived": "已归档 {{count}} 个会话",
       "archiveBatchFailedRunning": "有 {{count}} 个聊天正在运行，无法归档",
-      "archiveBatchFailedFinishing": "有 {{count}} 个聊天的 swarm flow 已结束，回合收尾中，请稍后重试",
+      "archiveBatchFailedFinishing": "有 {{count}} 个聊天正在收尾，稍后自动结束，请稍后重试",
       "archiveBatchFailed": "有 {{count}} 个聊天归档失败",
       "defaultProjectName": "默认项目",
       "absolutePathError": "请输入绝对路径，例如 /Users/name/work/project",
@@ -3502,9 +3553,9 @@
         "pathMissing": "项目目录不存在，请选择已存在的目录",
         "projectUnavailable": "项目不可用，请刷新后重试",
         "archiveSessionBusy": "对话正在运行，无法归档。请先手动停止，再重试归档。",
-        "archiveSessionFinishing": "swarm flow 已结束，会话回合收尾中，请稍后重试归档。",
+        "archiveSessionFinishing": "会话正在收尾，稍后自动结束，请稍后重试归档。",
         "deleteSessionBusy": "对话正在运行，无法删除。请先手动停止，再重试删除。",
-        "deleteSessionFinishing": "swarm flow 已结束，会话回合收尾中，请稍后重试删除。",
+        "deleteSessionFinishing": "会话正在收尾，稍后自动结束，请稍后重试删除。",
         "archiveForbidden": "该任务不支持归档",
         "archiveNotFound": "资源不存在或已发生变化，请刷新后重试",
         "archiveFailed": "归档操作失败，请稍后重试",
@@ -3851,19 +3902,6 @@
     }
   },
   "auth": {
-    "title": "登录 JiuwenSwarm",
-    "subtitle": "输入你的账号与密码以继续",
-    "username": "账号",
-    "usernamePlaceholder": "输入账号",
-    "password": "密码",
-    "passwordPlaceholder": "输入密码",
-    "login": "登录",
-    "loggingIn": "登录中…",
-    "invalidCredentials": "账号或密码错误",
-    "loginFailed": "登录失败,请稍后重试",
-    "authRequired": "需要登录后才能访问",
-    "secureHint": "登录后将自动保持登录状态",
-    "logout": "登出",
     "huawei": {
       "title": "登录华为账号",
       "subtitle": "登录后即可使用账号提供的模型，无需配置 API Key。",

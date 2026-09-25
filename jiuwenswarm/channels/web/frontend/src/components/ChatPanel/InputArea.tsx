@@ -171,6 +171,7 @@ import {
 } from '../../features/agentManagement';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { isImeCompositionKey } from './imeComposition';
+import { useTaskAsrEnabled } from '../../features/taskAsr/featureFlag';
 import { useTaskAsr } from '../../features/taskAsr/useTaskAsr';
 import { ApplicationPluginTaskInputActions } from '../../applicationPlugins/ApplicationPluginOutlet';
 
@@ -712,6 +713,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   },
   ref,
 ) {
+  const taskAsrEnabled = useTaskAsrEnabled();
   const [speechError, setSpeechError] = useState('');
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
   const [attachments, setAttachments] = useState<AttachmentDraft[]>([]);
@@ -4441,7 +4443,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   }
                 />
 
-                <button
+                {taskAsrEnabled && <button
                   type="button"
                   onClick={toggleRecording}
                   disabled={composerDisabled || isTranscribing || !taskAsrSupported}
@@ -4473,7 +4475,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   ) : (
                     <Mic className="chat-input-btn-icon" strokeWidth={1.8} aria-hidden="true" />
                   )}
-                </button>
+                </button>}
                 {micTooltipNode}
 
                 <ApplicationPluginTaskInputActions

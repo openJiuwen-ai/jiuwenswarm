@@ -83,6 +83,7 @@ from jiuwenswarm.common.config import (
     update_proactive_recommendation_in_config,
     update_trajectory_ui_in_config,
     update_task_full_duplex_in_config,
+    update_task_asr_in_config,
     update_skill_evolution_enabled_in_config,
     update_ttse_enabled_in_config,
 )
@@ -229,9 +230,7 @@ class _ConfigChangeSet:
             scopes.add("search")
         for key in self.yaml_updated:
             key_text = str(key)
-            if key_text == "skill_retrieval_index_recommendation_shown":
-                scopes.add("web_ui")
-            elif key_text in {"models.defaults"} or key_text.startswith("models."):
+            if key_text in {"models.defaults"} or key_text.startswith("models."):
                 scopes.add("model")
             elif key_text in {"modes.team", "agents", "team"}:
                 scopes.add("team")
@@ -1192,6 +1191,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "rsi_enabled",
     "trajectory_ui_enabled",
     "task_full_duplex_enabled",
+    "task_asr_enabled",
     "proactive_recommendation_enabled",
     "proactive_recommendation_max_recommend_per_day",
     "proactive_recommendation_max_rounds_per_tick",
@@ -1291,12 +1291,6 @@ _SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
 _SYMPHONY_CONFIG_KEYS = tuple(_SYMPHONY_CONFIG_SPECS.keys())
 _SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "skill_retrieval_enabled": (("enabled",), "bool", False),
-    "skill_retrieval_index_enabled": (("index", "enabled"), "bool", False),
-    "skill_retrieval_index_recommendation_shown": (
-        ("index", "recommendation_shown"),
-        "bool",
-        False,
-    ),
     "skill_retrieval_max_results": (("discovery", "max_results"), "int", 10),
     "skill_retrieval_max_output_chars": (
         ("discovery", "max_output_chars"),
@@ -3235,6 +3229,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["task_full_duplex_enabled"] = (
                 "true" if experimental_cfg.get("task_full_duplex_enabled", False) else "false"
             )
+            payload["task_asr_enabled"] = (
+                "true" if experimental_cfg.get("task_asr_enabled", False) else "false"
+            )
             payload.update(_flatten_swarmflow_for_config_panel(raw))
             payload.update(_flatten_external_cli_agents_for_config_panel(raw))
             payload.update(_flatten_symphony_for_config_panel(raw))
@@ -3269,6 +3266,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 payload.setdefault(key, value)
             payload.setdefault("trajectory_ui_enabled", "false")
             payload.setdefault("task_full_duplex_enabled", "false")
+            payload.setdefault("task_asr_enabled", "false")
             for key, (_, value_type, default) in {
                 **_SYMPHONY_CONFIG_SPECS,
                 **_SKILL_RETRIEVAL_CONFIG_SPECS,
@@ -3570,6 +3568,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     update_trajectory_ui_in_config(parsed)
                 elif param_key == "task_full_duplex_enabled":
                     update_task_full_duplex_in_config(parsed)
+                elif param_key == "task_asr_enabled":
+                    update_task_asr_in_config(parsed)
                 elif param_key == "proactive_recommendation_enabled":
                     update_proactive_recommendation_in_config({"enabled": parsed})
                 elif param_key == "proactive_recommendation_max_recommend_per_day":

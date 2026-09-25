@@ -203,15 +203,6 @@ class WebClient {
           this.updateState('closed');
           return;
         }
-        // 1008 Policy Violation: gateway 鉴权失败 (token 失效/缺失)。
-        // 重载页面, AppWithAuth 会探测 cookie 失效 -> 回到登录页。
-        if (closeEvent.code === 1008) {
-          this.updateState('closed');
-          if (typeof window !== 'undefined') {
-            window.location.reload();
-          }
-          return;
-        }
         this.scheduleReconnect();
       };
     });
@@ -515,7 +506,9 @@ class WebClient {
         ? message.payload.error
         : i18n.t('network.requestFailed');
     const code = typeof message.payload.code === 'string' ? message.payload.code : undefined;
-    pending.reject(this.createWebError(error, code, requestId, true));
+    // 服务端平铺在 payload 上的 details（如 SESSION_BUSY 的 finishing 细分）
+    // 要带到错误对象上，界面才能按成因选择文案。
+    pending.reject(this.createWebError(error, code, requestId, true, message.payload));
   }
 
   private dispatchEvent(event: WsEvent): void {

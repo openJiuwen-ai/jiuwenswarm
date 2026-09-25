@@ -65,6 +65,7 @@
 .archiveError {
   margin: 0;
   border-bottom: 1px solid var(--color-border-default);
+  background: var(--color-feedback-danger-banner);
   padding: 0.375rem 0.75rem;
   font-size: 0.75rem;
   line-height: 1.25rem;
@@ -232,7 +233,7 @@
 }
 
 .errorText {
-  color: var(--color-feedback-danger-text);
+  color: var(--color-feedback-danger);
 }
 
 .retry {

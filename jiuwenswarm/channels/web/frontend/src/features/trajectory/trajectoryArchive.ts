@@ -10,6 +10,7 @@
  */
 
 import type { WebConnectionState } from '../../types';
+import { isTeamAgentMode } from '../planMode/wireMode';
 import type { OtlpExportTraceServiceRequest } from './shared/otlp';
 import type { TrajectoryDetailRecord } from './trajectoryClient';
 import {
@@ -38,8 +39,13 @@ export type TrajectoryArchiveRecord = Omit<TrajectoryDetailRecord, 'ingest_seq' 
   observed_time_unix_nano: string;
   trace_id: string;
   span_id: string;
+  /** Canonical mode the record ran in; null when the store never learned it. */
+  agent_mode?: string | null;
   raw_json_base64: string;
 };
+
+/** Base mode of the session an archive was exported from. */
+export type TrajectoryArchiveMode = 'agent' | 'team';
 
 export interface TrajectoryArchive {
   format: typeof TRAJECTORY_ARCHIVE_FORMAT;
@@ -66,6 +72,22 @@ export interface TrajectoryArchiveView {
 export interface TrajectoryReplayExit {
   archive: null;
   catchUpLiveRevision: boolean;
+}
+
+/**
+ * The imported file is not a trajectory archive this reader can replay: not
+ * JSON, an unsupported header, a malformed record or a duplicated one. Its
+ * message names the first defect found.
+ */
+export class TrajectoryArchiveFormatError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TrajectoryArchiveFormatError';
+  }
+}
+
+export function isTrajectoryArchiveFormatError(error: unknown): error is TrajectoryArchiveFormatError {
+  return error instanceof TrajectoryArchiveFormatError;
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -112,11 +134,11 @@ function parseRecord(value: unknown): TrajectoryArchiveRecord {
     || !validBase64(value.raw_json_base64)
     || typeof value.raw_valid !== 'boolean'
     || (value.otlp !== null && !validOtlp(value.otlp))) {
-    throw new Error('Trajectory archive contains an invalid record');
+    throw new TrajectoryArchiveFormatError('Trajectory archive contains an invalid record');
   }
   const record = value as unknown as TrajectoryArchiveRecord;
   if (record.otlp !== null && recordIdentity(record.otlp) !== record.record_id) {
-    throw new Error('Trajectory archive record identity does not match its OTLP span');
+    throw new TrajectoryArchiveFormatError('Trajectory archive record identity does not match its OTLP span');
   }
   return record;
 }
@@ -126,13 +148,13 @@ export function parseTrajectoryArchive(text: string): TrajectoryArchive {
   try {
     value = JSON.parse(text);
   } catch {
-    throw new Error('Trajectory archive is not valid JSON');
+    throw new TrajectoryArchiveFormatError('Trajectory archive is not valid JSON');
   }
   if (object(value)
     && value.format === TRAJECTORY_ARCHIVE_FORMAT
     && typeof value.archive_version === 'number'
     && value.archive_version !== TRAJECTORY_ARCHIVE_VERSION) {
-    throw new Error(
+    throw new TrajectoryArchiveFormatError(
       `Trajectory archive version ${value.archive_version} is no longer supported; `
       + 'export the session again to replay it',
     );
@@ -153,11 +175,11 @@ export function parseTrajectoryArchive(text: string): TrajectoryArchive {
     || !Number.isFinite(Date.parse(value.exported_at))
     || !Array.isArray(value.records)
     || value.records.length > MAX_TRAJECTORY_ARCHIVE_RECORDS) {
-    throw new Error('Trajectory archive format or version is not supported');
+    throw new TrajectoryArchiveFormatError('Trajectory archive format or version is not supported');
   }
   const records = value.records.map(parseRecord);
   if (new Set(records.map(record => record.record_id)).size !== records.length) {
-    throw new Error('Trajectory archive contains duplicate record identities');
+    throw new TrajectoryArchiveFormatError('Trajectory archive contains duplicate record identities');
   }
   const cache = createSequenceCache();
   absorbSequencePage(cache, {
@@ -255,6 +277,44 @@ export function shouldCatchUpTrajectory(
   next: WebConnectionState,
 ): boolean {
   return next === 'ready' && (previous === 'reconnecting' || previous === 'closed');
+}
+
+/**
+ * Mode of the session an archive was exported from.
+ *
+ * Read from the `agent_mode` its records carry: `team` once any record ran in
+ * a Team mode.
+ *
+ * @param archive The parsed archive.
+ * @returns The exporting session's mode, or `null` when no record states one.
+ */
+export function trajectoryArchiveMode(archive: TrajectoryArchive): TrajectoryArchiveMode | null {
+  let agentRecordSeen = false;
+  for (const record of archive.records) {
+    if (typeof record.agent_mode !== 'string' || record.agent_mode.length === 0) continue;
+    if (isTeamAgentMode(record.agent_mode)) return 'team';
+    agentRecordSeen = true;
+  }
+  return agentRecordSeen ? 'agent' : null;
+}
+
+/**
+ * Whether a replay renders as a Team.
+ *
+ * An archive keeps the mode it was exported in: a single-Agent file opened in
+ * a Team session still shows one Agent, and a Team file opened in a
+ * single-Agent session still shows its lanes. Only an archive whose records
+ * state no mode follows the session hosting the replay.
+ *
+ * @param archiveMode The mode the archive's records state.
+ * @param sessionTeamMode Whether the hosting session runs as a Team.
+ * @returns True when the replay renders as a Team.
+ */
+export function trajectoryReplayTeamMode(
+  archiveMode: TrajectoryArchiveMode | null,
+  sessionTeamMode: boolean,
+): boolean {
+  return archiveMode === null ? sessionTeamMode : archiveMode === 'team';
 }
 
 export function exitTrajectoryReplay(archive: TrajectoryArchive | null): TrajectoryReplayExit {
