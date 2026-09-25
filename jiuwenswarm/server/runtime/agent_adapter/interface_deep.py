@@ -110,6 +110,7 @@ except ImportError:
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
+from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.research_agent import build_research_agent_config
 from openjiuwen.harness.subagent_runtime import (
     SUBAGENT_ACTIVITY_EVENT_TYPE,
@@ -4668,7 +4669,7 @@ class JiuWenSwarmDeepAdapter:
         config: dict[str, Any],
         config_base: dict[str, Any] | None = None,
     ) -> tuple[list[Any] | None, bool]:
-        """Build configured research + browser subagents (agent 模式).
+        """Build configured code, research and browser subagents (agent 模式).
 
         每个 spec 都带上主 Agent 的 ``sys_operation``，让子 Agent 与父 Agent 共享同一
         个文件系统边界；留空时 ``DeepAgent.create_subagent`` 会另建一个受
@@ -4710,6 +4711,30 @@ class JiuWenSwarmDeepAdapter:
             general_agent_cfg = subagents_cfg.get("general_agent")
             if self._is_subagent_enabled(general_agent_cfg):
                 should_add_general_purpose = True
+
+            code_agent_cfg = subagents_cfg.get("code_agent")
+            if self._is_subagent_enabled(code_agent_cfg):
+                # The SDK accepts this AskUserRail subclass in place of the
+                # plain rail, so the code agent asks structured questions.
+                code_spec = build_code_agent_config(
+                    model,
+                    workspace=workspace,
+                    sys_operation=sys_operation,
+                    language=resolved_language,
+                    rails=[
+                        SysOperationRail(),
+                        StructuredAskUserRail(language=resolved_language),
+                    ],
+                    max_iterations=parse_int(
+                        code_agent_cfg.get("max_iterations"),
+                        parse_int(react_cfg.get("max_iterations"), 100),
+                    ),
+                )
+                code_spec.factory_kwargs = {
+                    **(code_spec.factory_kwargs or {}),
+                    "auto_create_workspace": False,
+                }
+                subagents.append(code_spec)
 
             research_agent_cfg = subagents_cfg.get("research_agent")
             if self._is_subagent_enabled(research_agent_cfg):
