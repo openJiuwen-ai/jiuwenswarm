@@ -33,7 +33,7 @@ Thank you for your interest in JiuwenSwarm! Whether it's filing bugs, developing
 
 ### Filing Issues
 
-Submit on [GitCode Issues](https://gitcode.com/openJiuwen/jiuwenswarm/issues) with the appropriate type:
+Submit on [GitHub Issues](https://github.com/openJiuwen-ai/jiuwenswarm/issues) with the appropriate type:
 
 | Type | Template | Description |
 |------|----------|-------------|
@@ -51,7 +51,7 @@ Submit on [GitCode Issues](https://gitcode.com/openJiuwen/jiuwenswarm/issues) wi
 
 ### Submitting Pull Requests
 
-1. **Fork the repo**: Fork [openJiuwen/jiuwenswarm](https://gitcode.com/openJiuwen/jiuwenswarm) on GitCode
+1. **Fork the repo**: Fork [openJiuwen/jiuwenswarm](https://github.com/openJiuwen-ai/jiuwenswarm) on GitHub
 
 2. **Create a branch**:
 
@@ -80,7 +80,7 @@ git commit -m "feat: add XXX feature"
 git push origin feature/your-feature-name
 ```
 
-Create a Pull Request on GitCode targeting the `develop` branch.
+Create a Pull Request on GitHub targeting the `develop` branch.
 
 **PR description should include:**
 
@@ -101,7 +101,7 @@ For detailed setup instructions, see the [Developer Guide](developer_guide.md). 
 
 ```bash
 # Clone the repository
-git clone https://gitcode.com/openJiuwen/jiuwenswarm.git
+git clone https://github.com/openJiuwen-ai/jiuwenswarm.git
 cd jiuwenswarm
 
 # Create virtual environment
@@ -184,12 +184,12 @@ docs: update Python version requirement in install guide
 - Development branch: `develop`
 - Release branches: created from `develop` as `release/vX.Y.Z`
 - Version numbers follow [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`
-- After release, create Release Notes on [GitCode Releases](https://gitcode.com/openJiuwen/jiuwenswarm/releases)
+- After release, create Release Notes on [GitHub Releases](https://github.com/openJiuwen-ai/jiuwenswarm/releases)
 
 ---
 
 ## Contact
 
-- **Issues**: [GitCode Issues](https://gitcode.com/openJiuwen/jiuwenswarm/issues)
-- **Pull Requests**: [GitCode Pull Requests](https://gitcode.com/openJiuwen/jiuwenswarm/pulls)
+- **Issues**: [GitHub Issues](https://github.com/openJiuwen-ai/jiuwenswarm/issues)
+- **Pull Requests**: [GitHub Pull Requests](https://github.com/openJiuwen-ai/jiuwenswarm/pulls)
 - **Community**: Follow openJiuwen community events
