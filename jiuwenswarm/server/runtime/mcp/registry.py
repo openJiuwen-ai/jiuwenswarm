@@ -721,7 +721,40 @@ def build_config_entry(name: str) -> dict[str, Any] | None:
         entry["timeout_s"] = int(cfg["timeout"])
     entry["enabled"] = True
     entry["server_id_scope"] = f"mcp:{n}"
+    from jiuwenswarm.server.runtime.mcp.remote_oauth import OAuthError, oauth_manager, supports_oauth
+    if supports_oauth(n, entry):
+        entry["oauth_provider"] = None  # clear a previous OAuth mode on API Key switch
+        try:
+            grant = oauth_manager().grant(n)
+        except OAuthError:
+            grant = {}
+        if grant and not grant.get("invalid"):
+            entry["oauth_provider"] = "qcc"
+            entry.pop("headers", None)
     return entry
+
+
+def cancel_remote_oauth(name: str, session: str) -> None:
+    """Discard only this unfinished flow's state; preserve a newer connection."""
+    from jiuwenswarm.server.runtime.mcp.remote_oauth import oauth_manager
+    from jiuwenswarm.server.runtime.mcp.state_store import remove_mcp_record
+
+    manager = oauth_manager()
+    with manager.lock:
+        pending = manager.pending.get(name)
+        if not pending or pending.id != session or pending.finalized:
+            return
+        manager.cancel(name, session)
+        remove_mcp_record(name)
+
+
+def supports_remote_oauth(name: str) -> bool:
+    from jiuwenswarm.server.runtime.mcp.remote_oauth import supports_oauth
+    # Validate the installed package's actual destination, not only its name.
+    cfg = _marketplace_mcp_cfg(name)
+    return supports_oauth(name, {
+        "url": cfg.get("url"), "transport": _normalize_transport(cfg.get("type", ""), cfg),
+    } if cfg else None)
 
 
 def cancel_connect(name: str) -> dict[str, Any]:
@@ -737,6 +770,13 @@ def cancel_connect(name: str) -> dict[str, Any]:
     if not n:
         raise ValueError("mcp name is required")
     _CONNECT_CANCELLED.add(n)
+    if n == "qcc-company":
+        from jiuwenswarm.server.runtime.mcp.remote_oauth import oauth_manager
+        manager = oauth_manager()
+        with manager.lock:
+            pending = manager.pending.get(n)
+            if pending:
+                cancel_remote_oauth(n, pending.id)
     try:
         from jiuwenswarm.server.runtime.mcp.cli_driver import (
             cancel_pending_auth_proc,
@@ -897,7 +937,7 @@ def connect_mcp(name: str, *, install_only: bool = False) -> dict[str, Any]:
             }
         # Form B (mcp.json with ${VAR}): resolve placeholders from the store; if
         # any token is not yet provisioned, return credentials_required.
-        if kind == "token":
+        if kind == "token" and not entry.get("oauth_provider"):
             store = CredentialStore()
             placeholders_missing = _entry_missing_tokens(entry, store)
             if placeholders_missing:
@@ -908,6 +948,7 @@ def connect_mcp(name: str, *, install_only: bool = False) -> dict[str, Any]:
                     "name": n,
                     "integration_type": itype,
                     **build_credentials_prompt(n, sorted(placeholders_missing)),
+                    "oauth_available": supports_remote_oauth(n),
                 }
             # state.json stores ${VAR} placeholders (no plaintext tokens).
             # Resolution happens at McpServerConfig build time
@@ -1273,6 +1314,10 @@ def disconnect_mcp(name: str) -> dict[str, Any]:
     n = str(name or "").strip()
     if not n:
         raise ValueError("mcp name is required")
+    if n == "qcc-company":
+        from jiuwenswarm.server.runtime.mcp.remote_oauth import oauth_manager
+        if not oauth_manager().disconnect(n):
+            logger.warning("[mcp] OAuth revoked locally; remote revocation unavailable for %s", n)
     from jiuwenswarm.server.runtime.mcp.state_store import (
         remove_mcp_record,
     )
@@ -1452,11 +1497,18 @@ def save_mcp_credentials(name: str, tokens: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("mcp name is required")
     if not isinstance(tokens, dict) or not tokens:
         raise ValueError("tokens (non-empty dict) is required")
+    if n == "qcc-company" and not str(tokens.get("QICHACHA_API_KEY") or "").strip():
+        raise ValueError("QICHACHA_API_KEY is required")
     store = CredentialStore()
     for key, value in tokens.items():
         if value is None:
             continue
         store.save_token(n, str(key), str(value))
+    if n == "qcc-company":
+        from jiuwenswarm.server.runtime.mcp.remote_oauth import OAuthError, oauth_manager
+        if store.get_token(n, "QICHACHA_API_KEY") != str(tokens["QICHACHA_API_KEY"]):
+            raise OAuthError("Could not save API Key. Existing authorization retained.")
+        oauth_manager().disconnect(n)
     return {"name": n, "saved_keys": sorted(str(k) for k in tokens.keys() if tokens[k] is not None)}
 
 __all__ = [

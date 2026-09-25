@@ -3695,6 +3695,12 @@
     "title": "Clarifications"
   },
   "connectorMarket": {
+    "remoteOAuth": {
+      "description": "Sign in to Qichacha in your browser and authorize access without copying an API Key.",
+      "connect": "Connect with OAuth (recommended)",
+      "useApiKey": "Connect with API Key",
+      "useOAuth": "Back to OAuth authorization"
+    },
     "title": "Extensions",
     "subtitle": "Create and manage plugins and connectors",
     "tabs": {

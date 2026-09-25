@@ -3681,6 +3681,12 @@
     "title": "问题澄清"
   },
   "connectorMarket": {
+    "remoteOAuth": {
+      "description": "在浏览器中登录企查查并授权，无需复制 API Key。",
+      "connect": "OAuth 授权连接（推荐）",
+      "useApiKey": "使用 API Key 连接",
+      "useOAuth": "返回 OAuth 授权"
+    },
     "title": "扩展",
     "subtitle": "创建并管理插件、连接器",
     "tabs": {

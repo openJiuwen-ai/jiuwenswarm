@@ -128,6 +128,8 @@ interface RawConnectResponse {
   error?: string;
   installed_skills?: string[];
   server_id_scope?: string;
+  oauth_available?: boolean;
+  oauth_session?: string;
   credentials_required?: boolean;
   required_tokens?: string[];
   credential_kind?: ConnectorConnectResponse['credentialKind'];
@@ -152,6 +154,8 @@ function fromRawConnect(raw: RawConnectResponse): ConnectorConnectResponse {
     error: raw.error,
     installedSkills: raw.installed_skills,
     serverIdScope: raw.server_id_scope,
+    oauthAvailable: raw.oauth_available,
+    oauthSession: raw.oauth_session,
     credentialsRequired: raw.credentials_required,
     requiredTokens: raw.required_tokens,
     credentialKind: raw.credential_kind,
@@ -210,21 +214,23 @@ export const connectorApi = {
   },
   uninstall: (id: string): Promise<ConnectorUninstallResponse> =>
     webRequest<ConnectorUninstallResponse>('mcp.uninstall', { id }),
-  connect: async (name: string): Promise<ConnectorConnectResponse> => {
-    const payload = await webRequest<RawConnectResponse>('mcp.connect', { name }, { timeoutMs: CONNECT_TIMEOUT_MS });
+  connect: async (name: string, authMethod?: 'oauth'): Promise<ConnectorConnectResponse> => {
+    const payload = await webRequest<RawConnectResponse>('mcp.connect', { name, ...(authMethod ? { auth_method: authMethod } : {}) }, { timeoutMs: CONNECT_TIMEOUT_MS });
     return fromRawConnect(payload);
   },
   // 后端把"轮询直到 CLI OAuth 完成"整个收进这一个 hold-open 请求，前端只发一次，最长等 10 分钟，
   // 直接拿到最终的 connected/connect_failed——不再需要自己维护 setTimeout 轮询循环
   // （CliAuthModal.tsx 旧版 authComplete 那套）。多步授权时每一步都要再调一次，带上新的 stepIndex。
-  waitAuth: async (name: string, stepIndex: number): Promise<ConnectorConnectResponse> => {
+  waitAuth: async (name: string, stepIndex: number, oauthSession?: string): Promise<ConnectorConnectResponse> => {
     const payload = await webRequest<RawConnectResponse>(
       'mcp.wait_auth',
-      { name, step_index: stepIndex },
+      { name, step_index: stepIndex, ...(oauthSession ? { oauth_session: oauthSession } : {}) },
       { timeoutMs: WAIT_AUTH_TIMEOUT_MS },
     );
     return fromRawConnect(payload);
   },
+  cancelOAuth: (name: string, oauthSession: string) =>
+    webRequest('mcp.connect', { name, auth_method: 'oauth_cancel', oauth_session: oauthSession }),
   // 用户在中途放弃连接/授权（误操作想重新走一遍 OAuth，或等太久了）。后端把正在 hold-open 的
   // mcp.connect/mcp.wait_auth 收尾成 cancelled，杀掉挂起的 CLI 授权进程并回滚 connecting 记录。
   // 幂等，连接没在进行中时调用也无副作用。
