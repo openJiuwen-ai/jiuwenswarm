@@ -1329,6 +1329,8 @@ function parseHistoryTimelineEntry(
       if (typeof rawUsage.input_cost === 'number') usage.input_cost = rawUsage.input_cost;
       if (typeof rawUsage.output_cost === 'number') usage.output_cost = rawUsage.output_cost;
       if (typeof rawUsage.total_cost === 'number') usage.total_cost = rawUsage.total_cost;
+      if (typeof rawUsage.cache_tokens === 'number') usage.cache_tokens = rawUsage.cache_tokens;
+      if (typeof rawUsage.cache_hit_rate === 'string') usage.cache_hit_rate = rawUsage.cache_hit_rate;
       return { kind: 'usage_summary', at, usage };
     }
     return null;

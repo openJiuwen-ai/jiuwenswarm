@@ -23,12 +23,14 @@ import {
   Loader2,
   Pause,
   RefreshCw,
+  GitBranch,
 } from 'lucide-react';
 import {
   type WorkflowRun,
   type WorkflowPhase,
   type WorkflowAgent,
   type WorkflowStatus,
+  type WorkflowVerifyGroup,
   type PhaseLoopGroup,
   type AgentLoopGroup,
   formatBudgetK,
@@ -40,6 +42,10 @@ import {
   computeLoopStatus,
   computeSessionStatus,
   findActiveIterationIndex,
+  summarizeVerifyVotes,
+  isForkSessionNode,
+  forkParentDisplay,
+  parseVerifyOutcome,
 } from './workflowTypes';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
@@ -225,10 +231,11 @@ const AgentGraphNode = ({ data }: NodeProps) => {
   const agent = data.agent as WorkflowAgent;
   const hasDetail = !!(agent.prompt || agent.human_prompt || agent.human_reply || agent.outcome || agent.error);
   const interactive = hasDetail || agent.status === 'waiting_for_human';
+  const verdict = parseVerifyOutcome(agent.outcome);
 
   return (
     <div
-      className={`px-2.5 py-1 rounded-md border bg-card shadow-sm min-w-[90px] ${statusBorder(agent.status)} ${interactive ? 'cursor-pointer' : ''} ${agent.status === 'waiting_for_human' ? 'ring-1 ring-amber-500/40' : ''}`}
+      className={`px-2.5 py-1 rounded-md border bg-card shadow-sm min-w-[90px] ${statusBorder(agent.status)} ${interactive ? 'cursor-pointer' : ''} ${agent.status === 'waiting_for_human' ? 'ring-1 ring-amber-500/40' : ''} ${verdict?.type === 'pass' ? 'bg-emerald-50 dark:bg-emerald-900/10' : ''} ${verdict?.type === 'fail' ? 'bg-red-50 dark:bg-red-900/10' : ''}`}
       title={interactive ? '点击查看详情' : undefined}
       data-testid="team-area-swarmflow-graph-node"
       data-variant="agentNode"
@@ -240,6 +247,15 @@ const AgentGraphNode = ({ data }: NodeProps) => {
       <div className="flex items-start gap-1">
         <StatusIcon status={agent.status} className="w-3.5 h-3.5 shrink-0 mt-0.5" />
         <span className="text-xs text-text break-words min-w-0">{agent.name}</span>
+        {verdict && (
+          <span className={`shrink-0 text-[10px] font-medium mt-0.5 ${
+            verdict.type === 'pass' ? 'text-emerald-600 dark:text-emerald-400'
+            : verdict.type === 'fail' ? 'text-red-600 dark:text-red-400'
+            : 'text-amber-600 dark:text-amber-400'
+          }`}>
+            {verdict.text}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -274,16 +290,132 @@ const LoopGraphNode = ({ data }: NodeProps) => {
 const SessionGraphNode = ({ data }: NodeProps) => {
   const agent = data.agent as WorkflowAgent;
   const members = data.members as WorkflowAgent[];
+  const isFork = isForkSessionNode(agent);
 
   return (
-    <div className="px-2.5 py-1 rounded-md border-2 border-indigo-500/40 bg-indigo-500/5 shadow-sm min-w-[90px]" data-testid="team-area-swarmflow-graph-node" data-variant="sessionNode">
+    <div
+      className={`px-2.5 py-1 rounded-md border-2 shadow-sm min-w-[90px] ${
+        isFork
+          ? 'border-purple-500/40 bg-purple-500/5'
+          : 'border-indigo-500/40 bg-indigo-500/5'
+      }`}
+      title={isFork && agent.parent_session_id
+        ? `fork 自会话「${forkParentDisplay(agent.parent_session_id)}」`
+        : undefined}
+      data-testid="team-area-swarmflow-graph-node"
+      data-variant={isFork ? 'forkSessionNode' : 'sessionNode'}
+    >
       <Handle type="target" position={Position.Left} className="!bg-border" />
       <Handle type="source" position={Position.Right} className="!bg-border" />
       <div className="flex items-start gap-1">
-        <StatusIcon status={agent.status} className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+        {isFork ? (
+          <GitBranch className="w-3.5 h-3.5 text-purple-500 shrink-0 mt-0.5" />
+        ) : (
+          <StatusIcon status={agent.status} className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+        )}
         <span className="text-xs font-medium text-text break-words min-w-0">{agent.name}</span>
+        {isFork && (
+          <span
+            className="shrink-0 text-[9px] text-purple-500 mt-0.5"
+            title={agent.parent_session_id ? `fork 自会话「${forkParentDisplay(agent.parent_session_id)}」` : undefined}
+          >
+            fork{agent.parent_session_id ? `(${forkParentDisplay(agent.parent_session_id)})` : ''}
+          </span>
+        )}
       </div>
       <span className="text-[10px] text-text-muted">T{members.length}</span>
+    </div>
+  );
+};
+
+const VerifyGroupGraphNode = ({ data }: NodeProps) => {
+  const group = data.group as WorkflowVerifyGroup;
+  const { pass, fail, undecided } = summarizeVerifyVotes(group);
+  const settled = group.status === 'settled';
+  const verdictBorder = !settled
+    ? 'border-cyan-500/40'
+    : group.verdict === 'pass'
+      ? 'border-emerald-500/50'
+      : group.verdict === 'fail'
+        ? 'border-red-500/50'
+        : 'border-amber-500/60';
+  const chips = (group.votes ?? []).slice(0, 4);
+
+  return (
+    <div
+      className={`px-2.5 py-1.5 rounded-md border-2 ${verdictBorder} shadow-sm min-w-[150px]`}
+      title={settled && group.verdict == null
+        ? '有 reviewer 未投票（undecided），建议重试'
+        : `verify 组 · ${group.label}`}
+      data-testid="team-area-swarmflow-graph-node"
+      data-variant="verifyGroupNode"
+    >
+      <Handle type="target" position={Position.Left} className="!bg-border" />
+      <Handle type="source" position={Position.Right} className="!bg-border" />
+      <div className="flex items-start gap-1">
+        {settled ? (
+          group.verdict === 'pass' ? (
+            <CircleCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0 mt-0.5" />
+          ) : group.verdict === 'fail' ? (
+            <CircleX className="w-3.5 h-3.5 text-red-500 shrink-0 mt-0.5" />
+          ) : (
+            <CircleDot className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+          )
+        ) : (
+          <Loader2 className="w-3.5 h-3.5 text-cyan-500 shrink-0 mt-0.5 animate-spin" />
+        )}
+        <span className="text-xs font-medium text-text break-words min-w-0">{group.label}</span>
+        {group.threshold != null && (
+          <span className="shrink-0 text-[9px] text-cyan-600 dark:text-cyan-300 border border-cyan-500/40 rounded-full px-1 mt-0.5">
+            阈值 {group.threshold}
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-1.5 mt-0.5">
+        <span
+          className={`text-[10px] font-semibold ${
+            !settled
+              ? 'text-text-muted'
+              : group.verdict === 'pass'
+                ? 'text-emerald-600 dark:text-emerald-300'
+                : group.verdict === 'fail'
+                  ? 'text-red-600 dark:text-red-300'
+                  : 'text-amber-600 dark:text-amber-300'
+          }`}
+        >
+          {!settled ? '评审中…' : group.verdict === 'pass' ? '✓ 通过' : group.verdict === 'fail' ? '✗ 不通过' : '? 未裁决'}
+        </span>
+        <span className="text-[10px] text-text-muted tabular-nums">
+          ✓{pass} ✗{fail} ?{undecided}
+        </span>
+      </div>
+      {chips.length > 0 && (
+        <div className="flex flex-wrap gap-0.5 mt-1 border-t border-border/40 pt-1">
+          {chips.map((vote) => (
+            <span
+              key={vote.name}
+              className="text-[9px] px-1 rounded border border-border/60 bg-card text-text-muted truncate max-w-[80px]"
+              title={vote.feedback || vote.name}
+            >
+              {vote.kind === 'verdict'
+                ? vote.decision === 'pass'
+                  ? '✓'
+                  : vote.decision === 'fail'
+                    ? '✗'
+                    : '?'
+                : typeof vote.score === 'number'
+                  ? vote.score.toFixed(2)
+                  : '?'}{' '}
+              {vote.name}
+            </span>
+          ))}
+          {(group.votes?.length ?? 0) > chips.length && (
+            <span className="text-[9px] text-text-muted px-1">
+              +{(group.votes?.length ?? 0) - chips.length}…
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -294,6 +426,7 @@ const nodeTypes = {
   agentNode: AgentGraphNode,
   loopNode: LoopGraphNode,
   sessionNode: SessionGraphNode,
+  verifyGroupNode: VerifyGroupGraphNode,
 };
 
 // ── 数据转换：WorkflowRun[] → React Flow nodes/edges ──────
@@ -313,6 +446,12 @@ function workflowToGraph(
       data: { run, sessionId },
       position: { x: 0, y: 0 },
     });
+
+    // fork 分叉边簿记：每张 session 卡（含 fork 子卡——链式 fork 的中间层
+    // 也是别人的父）按 avatar member_name 登记（每会话唯一）；旧快照无
+    // member_name 时退回 label（行为等同旧版，仅退化匹配）。
+    const forkTargets: Array<{ nodeId: string; parent: string | undefined }> = [];
+    const sessionNodeByMember = new Map<string, string>();
 
     const topLevel = sortPhasesByExecution(run.phases ?? []).filter(
       (p) => p.phase_type !== 'child',
@@ -367,7 +506,7 @@ function workflowToGraph(
             type: 'default',
             animated: activePhase.status === 'running',
           });
-          addPhaseChildren(nodes, edges, activePhase, phaseId, run, sessionId);
+          addPhaseChildren(nodes, edges, activePhase, phaseId, run, sessionId, forkTargets, sessionNodeByMember);
         }
         continue;
       }
@@ -386,7 +525,21 @@ function workflowToGraph(
         target: phaseId,
         type: 'default',
       });
-      addPhaseChildren(nodes, edges, phase, phaseId, run, sessionId);
+      addPhaseChildren(nodes, edges, phase, phaseId, run, sessionId, forkTargets, sessionNodeByMember);
+    }
+
+    // fork 分叉虚线边：父 session 卡 → fork 子卡（同 run 跨 phase）。
+    // parent 是父的 avatar member_name（唯一），链式/同名 fork 均可精确定位。
+    for (const target of forkTargets) {
+      const source = target.parent ? sessionNodeByMember.get(target.parent) : undefined;
+      if (!source) continue;
+      edges.push({
+        id: `e:fork:${target.nodeId}`,
+        source,
+        target: target.nodeId,
+        type: 'default',
+        style: { strokeDasharray: '4 3', stroke: '#a855f7' },
+      });
     }
   }
 
@@ -400,10 +553,23 @@ function addPhaseChildren(
   phaseId: string,
   run: WorkflowRun,
   sessionId: string,
+  forkTargets: Array<{ nodeId: string; parent: string | undefined }>,
+  sessionNodeByMember: Map<string, string>,
 ) {
   const { sessions } = groupWorkflowAgentsByName(phase.agents ?? []);
   const { loops: agentLoops } = detectAgentLoops(phase.agents ?? []);
   const childPhases = childPhasesOf(run, phase);
+
+  // Reviewers already folded into a verify group card — skip their standalone
+  // agent/loop nodes so the graph shows the aggregated round instead. Same
+  // roster-first rule as partitionAgentsByVerifyGroups: a running group has no
+  // votes yet, so the reviewer_labels roster is what folds its nodes.
+  const verifyReviewerNames = new Set<string>(
+    (phase.verify_groups ?? []).flatMap((group) => [
+      ...(group.votes ?? []).map((vote) => vote.name),
+      ...(group.reviewer_labels ?? []),
+    ]),
+  );
 
   // 建立 agent.id → 所属 agent loop 的映射
   const agentLoopByMemberId = new Map<string, AgentLoopGroup>();
@@ -445,12 +611,23 @@ function addPhaseChildren(
         type: 'default',
         animated: status === 'running',
       });
+      // Fork lineage bookkeeping: EVERY session card registers under its
+      // avatar member_name — unique per session, so a fork child's
+      // parent_session_id resolves to the exact parent card even when labels
+      // collide (fork inherits the parent label by default; chained forks
+      // make a middle fork card someone's parent). Old snapshots without
+      // member_name fall back to the label key.
+      const memberKey = representative.member_name ?? session.label;
+      sessionNodeByMember.set(memberKey, nodeId);
+      if (isForkSessionNode(representative)) {
+        forkTargets.push({ nodeId, parent: representative.parent_session_id });
+      }
       continue;
     }
 
     // loop 成员
     const loop = agentLoopByMemberId.get(agent.id);
-    if (loop) {
+    if (loop && !verifyReviewerNames.has(agent.name)) {
       if (drawnAgentLoops.has(loop.name)) continue;
       drawnAgentLoops.add(loop.name);
       const loopId = `${phaseId}:loop:${loop.name}`;
@@ -489,7 +666,8 @@ function addPhaseChildren(
       continue;
     }
 
-    // 普通 agent
+    // 普通 agent（verify reviewer 已折叠进组卡，不再单独画）
+    if (verifyReviewerNames.has(agent.name)) continue;
     const agentId = `${phaseId}:${agent.id}`;
     nodes.push({
       id: agentId,
@@ -503,6 +681,24 @@ function addPhaseChildren(
       target: agentId,
       type: 'default',
       animated: agent.status === 'running',
+    });
+  }
+
+  // verify 组卡：一轮 verify 折叠为一张卡（verdict + 投票统计 + chips）
+  for (const group of phase.verify_groups ?? []) {
+    const groupId = `${phaseId}:verify:${group.id}`;
+    nodes.push({
+      id: groupId,
+      type: 'verifyGroupNode',
+      data: { group, run, sessionId },
+      position: { x: 0, y: 0 },
+    });
+    edges.push({
+      id: `e:${phaseId}:${groupId}`,
+      source: phaseId,
+      target: groupId,
+      type: 'default',
+      animated: group.status === 'running',
     });
   }
 
@@ -522,7 +718,7 @@ function addPhaseChildren(
       type: 'default',
       style: { strokeDasharray: '5 3' },
     });
-    addPhaseChildren(nodes, edges, child, childId, run, sessionId);
+    addPhaseChildren(nodes, edges, child, childId, run, sessionId, forkTargets, sessionNodeByMember);
   }
 }
 
@@ -545,6 +741,7 @@ function layoutWithDagre(nodes: Node[], edges: Edge[]): Node[] {
     agentNode: 170,
     loopNode: 170,
     sessionNode: 170,
+    verifyGroupNode: 210,
   };
 
   for (const node of nodes) {
