@@ -48,7 +48,7 @@ def _print_final(images: list[dict]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("slug")
+    parser.add_argument("run_id")
     parser.add_argument(
         "--first-pass",
         nargs="+",
@@ -57,7 +57,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    stage02 = common.work_path(args.slug, "stage02.json")
+    stage02 = common.work_path(args.run_id, "stage02.json")
     if not stage02.exists():
         logger.error("[image_review] ERROR: current stage02.json is missing; run prepare_images.py first")
         raise SystemExit(1)
@@ -84,7 +84,7 @@ def main() -> None:
         raise SystemExit(2)
 
     for block, decision in zip(images, normalized):
-        _safe_current_path(args.slug, block)
+        _safe_current_path(args.run_id, block)
         block["review_status"] = decision
 
     common.write_json(stage02, data)

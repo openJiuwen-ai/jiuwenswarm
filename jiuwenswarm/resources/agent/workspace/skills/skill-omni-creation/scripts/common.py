@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-import base64
 import hashlib
 import json
+import locale
 import logging
 import os
 import pathlib
@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
+import uuid
 from functools import reduce
 from urllib.parse import urlparse
 
@@ -29,14 +30,33 @@ MIME_TO_EXT = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "
 MIN_DIMENSION = 80
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 FETCH_WORKERS = 10
-FILTER_BATCH = 3
-FILTER_WORKERS = 3
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
-WORK_ROOT = SCRIPT_DIR / "work"
+SKILLS_ROOT = SCRIPT_DIR.parent.parent
 OPERATION_TIMEOUT_SECONDS = 600
 BILIBILI_DOWNLOAD_ATTEMPTS = 3
 BILIBILI_CHUNK_SIZE = 64 * 1024
+
+
+def utf8_subprocess_env() -> dict[str, str]:
+    """Force Python child processes (notably yt-dlp) to use UTF-8 stdio on every OS."""
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+def configure_console_output() -> str:
+    """Match CLI stdout to the host console codec without changing UTF-8 file/subprocess protocols."""
+    if os.name == "nt":
+        getencoding = getattr(locale, "getencoding", None)
+        encoding = getencoding() if getencoding else locale.getpreferredencoding(False)
+    else:
+        encoding = getattr(sys.stdout, "encoding", None) or locale.getpreferredencoding(False)
+    encoding = encoding or "utf-8"
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding=encoding, errors="backslashreplace")
+    return encoding
 
 
 # ── JSON helpers ─────────────────────────────────────────────────────────────
@@ -53,72 +73,120 @@ def write_json(path: pathlib.Path, data: dict) -> None:
     os.replace(tmp_path, path)
 
 
-def strip_json_fence(text: str) -> str:
-    text = text.strip()
-    text = re.sub(r"^```[a-z]*\n?", "", text)
-    text = re.sub(r"\n?```$", "", text)
-    return text.strip()
+# ── Runtime / package / final Skill paths ────────────────────────────────────
+
+RUNTIME_ROOT = SKILLS_ROOT / ".skill-omni-creation"
+KEBAB_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
-def encode_b64(data: bytes, mime: str) -> str:
-    return f"data:{mime};base64,{base64.standard_b64encode(data).decode()}"
+def skill_dir(name: str) -> pathlib.Path:
+    """Return the final generated Skill directory. Final folder == SKILL.md name."""
+    return SKILLS_ROOT / name
 
 
-# ── Path / slug helpers ───────────────────────────────────────────────────────
-
-def slugify(text: str) -> str:
-    text = text.lower().strip()
-    text = re.sub(r"[^\w\s-]", "", text)
-    text = re.sub(r"[\s_-]+", "_", text)
-    return text[:80]
+def run_dir(run_id: str) -> pathlib.Path:
+    """Return one UUID-scoped temporary run directory."""
+    return RUNTIME_ROOT / run_id
 
 
-def url_to_slug(url: str) -> str:
-    parsed = urlparse(url)
-    raw = (parsed.netloc + parsed.path).strip("/")
-    if parsed.netloc in ("www.youtube.com", "youtube.com") and parsed.path == "/watch":
-        qs = dict(p.split("=", 1) for p in parsed.query.split("&") if "=" in p)
-        if "v" in qs:
-            raw = raw + "_" + qs["v"]
-    return slugify(raw)
+def runtime_path(run_id: str, filename: str) -> pathlib.Path:
+    """Return runtime-only state under <skills>/.skill-omni-creation/<run_id>/runtime/."""
+    return run_dir(run_id) / "runtime" / filename
 
 
-def work_path(slug: str, filename: str) -> pathlib.Path:
-    """Return a work path anchored to this skill, independent of shell cwd."""
-    return WORK_ROOT / slug / filename
+def package_dir(run_id: str) -> pathlib.Path:
+    """Return the final-package staging directory for one run."""
+    return run_dir(run_id) / "package"
 
 
-def resolve_work_slug_for_url(url: str) -> str:
-    """Reuse the newest stage01 slug associated with url; otherwise derive one."""
+def work_path(run_id: str, filename: str) -> pathlib.Path:
+    """Compatibility alias used by existing stage scripts; the identifier is a run_id, not a final Skill name."""
+    return runtime_path(run_id, filename)
+
+
+def _run_matches_url(run_id: str, url: str) -> bool:
     normalized = url.rstrip("/")
+    for filename in ("run.json", "stage01.json"):
+        path = runtime_path(run_id, filename)
+        if not path.is_file():
+            continue
+        try:
+            data = load_json(path)
+        except (OSError, ValueError, TypeError):
+            continue
+        candidates = [data.get("url", ""), *(data.get("video_urls") or [])]
+        if any(str(candidate).rstrip("/") == normalized for candidate in candidates):
+            return True
+    return False
+
+
+def find_run_id_for_url(url: str) -> str | None:
+    """Return the newest unfinished UUID workspace for this URL, if any."""
     matches: list[tuple[float, str]] = []
-    if WORK_ROOT.exists():
-        for stage01_path in WORK_ROOT.glob("*/stage01.json"):
-            try:
-                data = load_json(stage01_path)
-            except (OSError, ValueError, TypeError):
+    if RUNTIME_ROOT.exists():
+        for candidate in RUNTIME_ROOT.iterdir():
+            if not candidate.is_dir() or not _run_matches_url(candidate.name, url):
                 continue
-            candidates = [data.get("url", ""), *(data.get("video_urls") or [])]
-            if any(str(candidate).rstrip("/") == normalized for candidate in candidates):
-                slug = str(data.get("slug") or stage01_path.parent.name)
-                try:
-                    modified = stage01_path.stat().st_mtime
-                except OSError:
-                    modified = 0.0
-                matches.append((modified, slug))
-    if matches:
-        return max(matches)[1]
-    return url_to_slug(url)
+            marker = runtime_path(candidate.name, "stage01.json")
+            if not marker.exists():
+                marker = runtime_path(candidate.name, "run.json")
+            try:
+                modified = marker.stat().st_mtime
+            except OSError:
+                modified = 0.0
+            matches.append((modified, candidate.name))
+    return max(matches)[1] if matches else None
 
 
-def image_ext(url: str, mime: str) -> str:
-    ext = pathlib.Path(urlparse(url).path).suffix.lower()
-    if ext not in SUPPORTED_EXTS:
-        ext = MIME_TO_EXT.get(mime, ".png")
-    return ext
+def resolve_run_id(url: str, requested_run_id: str | None = None) -> str:
+    """Reuse an unfinished run for the URL, otherwise allocate a new UUID."""
+    if requested_run_id:
+        if not re.fullmatch(r"[0-9a-fA-F-]{8,64}", requested_run_id):
+            raise ValueError("run_id must be a UUID-like identifier")
+        return requested_run_id.lower()
+    return find_run_id_for_url(url) or uuid.uuid4().hex
+
+
+def ensure_run_metadata(run_id: str, url: str) -> pathlib.Path:
+    """Persist minimal recovery metadata before content extraction starts."""
+    path = runtime_path(run_id, "run.json")
+    if not path.exists():
+        write_json(path, {"run_id": run_id, "url": url, "status": "running"})
+    return path
+
+
+def resolve_run_id_for_url(url: str) -> str:
+    run_id = find_run_id_for_url(url)
+    if not run_id:
+        raise FileNotFoundError(f"no unfinished run found for URL: {url}")
+    return run_id
+
+
+def validate_skill_name(name: str) -> str:
+    """Validate the one authoritative final identity from SKILL.md frontmatter."""
+    value = name.strip()
+    if not value or len(value) > 80 or not KEBAB_NAME_RE.fullmatch(value):
+        raise ValueError(
+            "SKILL.md name must be lowercase kebab-case: [a-z0-9]+(?:-[a-z0-9]+)*"
+        )
+    if value in {"skill-omni-creation", ".skill-omni-creation"}:
+        raise ValueError(f"reserved Skill name: {value}")
+    return value
 
 
 # ── Asset helpers ─────────────────────────────────────────────────────────────
+
+def image_ext(url: str, mime: str) -> str:
+    """Return a safe image suffix, preferring the validated MIME type."""
+    normalized_mime = (mime or "").split(";", 1)[0].strip().lower()
+    if normalized_mime in MIME_TO_EXT:
+        return MIME_TO_EXT[normalized_mime]
+
+    suffix = pathlib.Path(urlparse(url).path).suffix.lower()
+    if suffix in SUPPORTED_EXTS:
+        return suffix
+    return ".jpg"
+
 
 def save_fetched_assets(
     fetched: dict[str, tuple[bytes, str]],
@@ -133,52 +201,6 @@ def save_fetched_assets(
         out_path.write_bytes(data)
         manifest[url] = {"path": rel_path.as_posix(), "mime": mime}
     return manifest
-
-
-def load_fetched_assets(asset_dir: pathlib.Path, manifest: dict[str, dict]) -> dict[str, tuple[bytes, str]]:
-    fetched: dict[str, tuple[bytes, str]] = {}
-    for url, meta in manifest.items():
-        path = asset_dir / meta["path"]
-        fetched[url] = (path.read_bytes(), meta["mime"])
-    return fetched
-
-
-# ── Blocks helpers ────────────────────────────────────────────────────────────
-
-def blocks_with_paths_as_str(blocks: list[dict]) -> list[dict]:
-    result = []
-    for b in blocks:
-        if b.get("type") == "image" and b.get("path") is not None:
-            result.append({**b, "path": str(b["path"])})
-        else:
-            result.append(b)
-    return result
-
-
-def blocks_with_paths_as_path(blocks: list[dict]) -> list[dict]:
-    result = []
-    for b in blocks:
-        if b.get("type") == "image" and b.get("path") is not None:
-            result.append({**b, "path": pathlib.Path(str(b["path"]))})
-        else:
-            result.append(b)
-    return result
-
-
-def strip_hallucinated_images(md: str, valid_paths: set[str]) -> str:
-    """Remove any ![...](path) lines where path is not in valid_paths."""
-    def _check(match: re.Match) -> str:
-        path = match.group(2).strip()
-        return match.group(0) if path in valid_paths else ""
-
-    cleaned = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", _check, md)
-    lines = []
-    for line in cleaned.splitlines():
-        if line.strip():
-            lines.append(line)
-        elif lines and lines[-1].strip():
-            lines.append(line)
-    return "\n".join(lines).strip()
 
 
 # ── Video download ────────────────────────────────────────────────────────────
@@ -403,6 +425,7 @@ def download_video(url: str, tmp_dir: pathlib.Path, max_minutes: int | None = No
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                env=utf8_subprocess_env(),
                 timeout=OPERATION_TIMEOUT_SECONDS,
             )
             if result.returncode == 0:
@@ -427,6 +450,7 @@ def download_video(url: str, tmp_dir: pathlib.Path, max_minutes: int | None = No
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=utf8_subprocess_env(),
             timeout=OPERATION_TIMEOUT_SECONDS,
         )
         if result.returncode == 0:
