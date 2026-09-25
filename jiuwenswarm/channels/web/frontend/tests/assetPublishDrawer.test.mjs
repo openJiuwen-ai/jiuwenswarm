@@ -173,6 +173,7 @@ test('all four kinds open the shared review, retain moderation result, and never
     );
     await tick();
     assert.ok(find('asset-publish-review'));
+    assert.equal(find('asset-publish-notice'), null);
     assert.equal(submits.at(-1)[2], '');
     assert.equal(submits.at(-1)[3], false);
     await act(async () => find('asset-publish-commit').click());
@@ -185,10 +186,7 @@ test('all four kinds open the shared review, retain moderation result, and never
     assert.ok(find('asset-publish-result-footer'));
     assert.equal(find('asset-publish-new-version').closest('[data-testid="asset-publish-result-footer"]') !== null, true);
     assert.equal(find('asset-publish-notice'), null);
-    const visibilityNotice = find('asset-publish-visibility-unconfirmed').textContent;
-    assert.match(visibilityNotice, /Hub accepted the submission/);
-    assert.match(visibilityNotice, /Final visibility/);
-    assert.doesNotMatch(visibilityNotice, /not yet confirmed/);
+    assert.equal(find('asset-publish-visibility-unconfirmed'), null);
     await act(async () => find('asset-publish-close').click());
   }
   assert.deepEqual(

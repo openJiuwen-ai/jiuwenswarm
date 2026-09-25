@@ -1473,6 +1473,7 @@ export function SkillPanel({
       <>
         <CatalogCacheNotice cache={hubCache} />
         <MarketplaceView
+          hubCache={hubCache}
           marketplaceSubView={marketplaceSubView}
           teamSkills={teamSkills}
           featuredSkills={featuredSkills}

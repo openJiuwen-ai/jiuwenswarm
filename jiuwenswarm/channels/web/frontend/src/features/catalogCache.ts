@@ -82,3 +82,10 @@ export function scheduleCatalogRefresh(
 export function catalogCacheOf(items: unknown): CatalogCacheMetadata | undefined {
   return (items as { cache?: CatalogCacheMetadata } | null)?.cache;
 }
+
+/** An empty cache snapshot is not a final empty result while Hub is refreshing it. */
+export function catalogAwaitingItems(count: number, cache?: CatalogCacheMetadata): boolean {
+  return (
+    count === 0 && cache?.refreshing === true && cache.state !== 'error' && !cache.error && !cache.last_refresh_error
+  );
+}
