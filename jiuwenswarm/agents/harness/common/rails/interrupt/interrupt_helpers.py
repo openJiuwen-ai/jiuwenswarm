@@ -1159,14 +1159,14 @@ def _resolve_question_text(question: Mapping[str, Any], fallback_query: str) -> 
     """The prompt to show for one question.
 
     Three sources in order: the question's own ``question``, its ``header``,
-    then the call's top-level ``query``. A call that satisfied the ask_user rail
-    never reaches past the first, because that rail rejects a question carrying
-    no text. The fallbacks are for questions that did not come through it -- the
-    same class of input the non-array ``options`` guard in
-    ``_build_multi_questions`` already accounts for. There a malformed value
-    built a question out of single characters; here a missing one raised
-    ``KeyError``, losing the whole conversion and every question in the call
-    with it.
+    then the call's top-level ``query``. A question that offers ``options`` is
+    required by the ask_user rail to carry ``question`` and so never reaches
+    past the first. The fallbacks are the declared behaviour for a question that
+    declares ``inputs``, where the fields carry their own labels and a
+    per-question sentence would restate either the header or the query; they
+    also still cover a question that did not come through the rail at all, which
+    is where a missing ``question`` used to raise ``KeyError`` and lose every
+    question in the call with it.
     """
     for candidate in (
         question.get("question"),

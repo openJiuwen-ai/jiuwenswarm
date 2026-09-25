@@ -12,6 +12,7 @@ Tests the integration of:
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -23,6 +24,9 @@ from openjiuwen.core.single_agent.interrupt.response import (
 )
 from openjiuwen.harness.rails.interrupt.ask_user_rail import AskUserPayload
 
+from jiuwenswarm.agents.harness.common.rails.ask_user_rail import (
+    logger as ask_user_rail_logger,
+)
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import (
     EXTENDED_INPUT_PARAMS_CN,
     EXTENDED_INPUT_PARAMS_EN,
@@ -126,20 +130,36 @@ class TestStructuredAskUserToolSchema:
         )
 
     @staticmethod
-    def test_questions_item_schema_structure():
-        """Each question item must have `question` (required) and optional
-        `header`, `options`, `multi_select`.
+    @pytest.mark.parametrize("language", ["en", "cn"])
+    def test_questions_item_schema_structure(language):
+        """Each question item must offer `question`, `header`, `options`,
+        `multi_select` and `inputs`.
+
+        Both languages, because the two schemas are separate objects and a
+        property added to one alone is a capability half the deployments never
+        hear about.
         """
 
         from jiuwenswarm.agents.harness.common.rails.ask_user_rail import (
-            _QUESTIONS_ITEM_SCHEMA,
+            _QUESTIONS_ITEM_SCHEMA_CN,
+            _QUESTIONS_ITEM_SCHEMA_EN,
         )
-        props = _QUESTIONS_ITEM_SCHEMA["properties"]
+        schema = (
+            _QUESTIONS_ITEM_SCHEMA_EN if language == "en" else _QUESTIONS_ITEM_SCHEMA_CN
+        )
+        # The item schema states the `question`-or-`inputs` rule, so it carries
+        # `anyOf`, and may carry no `type` beside it -- see
+        # test_no_schema_object_puts_type_beside_anyof. The properties are
+        # written once, on this parent, and apply to both branches.
+        assert set(schema) == {"properties", "anyOf"}
+        props = schema["properties"]
         assert "question" in props
         assert "header" in props
         assert "options" in props
         assert "multi_select" in props
-        assert _QUESTIONS_ITEM_SCHEMA["required"] == ["question"]
+        assert "inputs" in props
+        assert "inputs" in props["question"]["description"]
+        assert "question" in props["inputs"]["description"]
         assert props["question"]["minLength"] == 1
         options_schema = props["options"]
         # Moonshot/Kimi requires type within each anyOf branch. Gemini also
@@ -158,6 +178,159 @@ class TestStructuredAskUserToolSchema:
             option_schema = branch["items"]
             assert option_schema["required"] == ["label"]
             assert option_schema["properties"]["label"]["minLength"] == 1
+
+    @staticmethod
+    @pytest.mark.parametrize("language", ["en", "cn"])
+    def test_the_question_or_inputs_rule_is_in_the_schema(language):
+        """The rule is declared, not only described.
+
+        A question carries `question` -- the sentence the user answers -- or
+        `inputs`, whose fields carry their own labels, or both. The two
+        property descriptions and the tool description say so, and
+        `resolve_interrupt` enforces it. Prose is what a rebase drops with
+        nothing failing; this is the assertion that fails instead.
+        """
+        params = (
+            EXTENDED_INPUT_PARAMS_EN if language == "en" else EXTENDED_INPUT_PARAMS_CN
+        )
+        item = params["properties"]["questions"]["items"]
+        assert item["anyOf"] == [
+            {"type": "object", "required": ["question"]},
+            {"type": "object", "required": ["inputs"]},
+        ]
+        # Which of the two keys is present is the whole of the difference. The
+        # branches constrain nothing else, so the `properties` on the parent
+        # apply to both and are written once.
+        assert "properties" in item
+
+    @staticmethod
+    @pytest.mark.parametrize("language", ["en", "cn"])
+    def test_every_anyof_branch_declares_what_it_constrains(language):
+        """Gemini's rule, over the whole tree.
+
+        A branch declares its own `type`, and an array branch declares its own
+        `items` rather than inheriting it from the parent -- which is the rule
+        upstream hit on `options`. An object branch has no such second key to
+        repeat: `properties` are a constraint the parent applies alongside the
+        `anyOf`, not something a branch inherits through it. Walked over the
+        built schema rather than over the branches somebody remembered to name.
+        """
+        params = (
+            EXTENDED_INPUT_PARAMS_EN if language == "en" else EXTENDED_INPUT_PARAMS_CN
+        )
+
+        def walk(node, path):
+            if isinstance(node, dict):
+                for index, branch in enumerate(node.get("anyOf", ())):
+                    where = f"{path}.anyOf[{index}]"
+                    assert isinstance(branch, dict), where
+                    assert "type" in branch, where
+                    if branch["type"] == "array":
+                        assert "items" in branch, where
+                for key, value in node.items():
+                    walk(value, f"{path}.{key}")
+            elif isinstance(node, list):
+                for index, item in enumerate(node):
+                    walk(item, f"{path}[{index}]")
+
+        walk(params, "params")
+        # A walk that finds nothing passes, so count what it must find: the
+        # per-question `anyOf` and the `options` one under it.
+        assert json.dumps(params).count('"anyOf"') == 2
+
+    @staticmethod
+    @pytest.mark.parametrize("language", ["en", "cn"])
+    def test_no_schema_object_puts_type_beside_anyof(language):
+        """The rule the flavored validators enforce, over the whole tree.
+
+        Moonshot/Kimi refuses a parent holding both `type` and `anyOf` -- "type
+        should be defined in anyOf items instead of the parent schema" -- and
+        the rule is about the parent, not about `options`. The per-question
+        schema states its `question`-or-`inputs` rule as an object-level
+        `anyOf`, so it carries `anyOf` without a `type` of its own and each of
+        its branches carries one. This is what keeps it that way.
+        """
+        params = (
+            EXTENDED_INPUT_PARAMS_EN if language == "en" else EXTENDED_INPUT_PARAMS_CN
+        )
+
+        def walk(node, path):
+            if isinstance(node, dict):
+                assert not ("type" in node and "anyOf" in node), path
+                for key, value in node.items():
+                    walk(value, f"{path}.{key}")
+            elif isinstance(node, list):
+                for index, item in enumerate(node):
+                    walk(item, f"{path}[{index}]")
+
+        walk(params, "params")
+
+    @staticmethod
+    @pytest.mark.parametrize("language", ["en", "cn"])
+    def test_inputs_declares_exactly_the_seven_shared_types(language):
+        """The vocabulary, stated once per language and identical in both.
+
+        Pinned as a literal rather than compared against the constant: this is
+        the list that is expensive to withdraw, so widening it should be a
+        decision somebody makes, not a test that follows along.
+        """
+        from jiuwenswarm.agents.harness.common.rails.ask_user_rail import (
+            DECLARED_INPUT_TYPES,
+        )
+
+        params = (
+            EXTENDED_INPUT_PARAMS_EN if language == "en" else EXTENDED_INPUT_PARAMS_CN
+        )
+        inputs = params["properties"]["questions"]["items"]["properties"]["inputs"]
+        assert inputs["items"]["required"] == ["type"]
+        assert inputs["items"]["properties"]["type"]["enum"] == [
+            "text",
+            "number",
+            "date",
+            "time",
+            "datetime",
+            "select",
+            "multi_select",
+        ]
+        assert list(DECLARED_INPUT_TYPES) == inputs["items"]["properties"]["type"][
+            "enum"
+        ]
+
+    @staticmethod
+    def test_the_two_languages_declare_the_same_shape():
+        """Only the prose may differ. A property in one schema and not the
+        other is the failure a duplicated schema pair invites.
+        """
+
+        def shape(node):
+            if isinstance(node, dict):
+                return {
+                    key: shape(value)
+                    for key, value in sorted(node.items())
+                    if key != "description"
+                }
+            if isinstance(node, list):
+                return [shape(item) for item in node]
+            return node
+
+        assert shape(EXTENDED_INPUT_PARAMS_EN) == shape(EXTENDED_INPUT_PARAMS_CN)
+
+    @staticmethod
+    def test_the_declared_input_cap_is_stated_in_both_schemas():
+        """The schema must not invite a question a channel cannot post.
+
+        Ten is the tightest ceiling a renderer enforces; a channel that refuses
+        a longer question refuses it after the model has written it, so the
+        number belongs in the schema as well.
+        """
+        from jiuwenswarm.agents.harness.common.rails.ask_user_rail import (
+            MAX_QUESTION_INPUTS,
+        )
+
+        assert MAX_QUESTION_INPUTS == 10
+        for params in (EXTENDED_INPUT_PARAMS_EN, EXTENDED_INPUT_PARAMS_CN):
+            inputs = params["properties"]["questions"]["items"]["properties"]["inputs"]
+            assert inputs["maxItems"] == MAX_QUESTION_INPUTS
 
     @staticmethod
     def test_tool_card_name_is_ask_user():
@@ -726,7 +899,7 @@ class TestStructuredAskUserRailResolveInterrupt:
     )
     @pytest.mark.asyncio
     async def test_invalid_question_text_is_rejected(question):
-        """Question text must be a non-empty string."""
+        """A question offering no inputs must carry non-empty question text."""
         rail = StructuredAskUserRail()
         tc = _make_tool_call(arguments={
             "query": "Choose",
@@ -737,7 +910,12 @@ class TestStructuredAskUserRailResolveInterrupt:
 
         from openjiuwen.harness.rails.interrupt.interrupt_base import RejectResult
         assert isinstance(decision, RejectResult)
-        assert "questions[0].question" in decision.tool_result
+        assert "questions[0]" in decision.tool_result
+        # The rejection names both ways out, not just the fault: a rejection the
+        # model cannot act on is retried byte-identically until the tool-loop
+        # detector aborts the run.
+        assert "question" in decision.tool_result
+        assert "inputs" in decision.tool_result
 
     @staticmethod
     @pytest.mark.parametrize("header", [None, {}, 123])
@@ -953,6 +1131,136 @@ class TestStructuredAskUserRailResolveInterrupt:
         assert "feature/*" in decision.tool_result
         assert "Test runner?" in decision.tool_result
         assert "pytest" in decision.tool_result
+
+    # Questions that never reached the user
+    #
+    # Some channels post only the first question of a call. Feishu and the CLI
+    # each read ``questions[0]`` and discard the rest, while Web and the TUI
+    # render every one. The rail cannot tell which channel answered it, and it
+    # does not have to. It knows what it asked, and it can count what came back.
+    # Without this the call reads as fully answered and the model tells the user
+    # that every question was put to them.
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_questions_that_came_back_unanswered_are_named():
+        rail = StructuredAskUserRail()
+        tc = _make_tool_call(arguments={
+            "query": "Book it",
+            "questions": [
+                {"question": "Pick a date", "header": "Date",
+                 "inputs": [{"type": "date", "label": "Date"}]},
+                {"question": "Pick a time", "header": "Time",
+                 "inputs": [{"type": "time", "label": "Time"}]},
+                {"question": "How many people?", "header": "People",
+                 "inputs": [{"type": "number", "label": "People"}]},
+            ],
+        })
+
+        decision = await rail.resolve_interrupt(
+            MagicMock(), tc, {"answers": {"Pick a date": "2026-09-25"}}
+        )
+
+        from openjiuwen.harness.rails.interrupt.interrupt_base import RejectResult
+        assert isinstance(decision, RejectResult)
+        # The answer that did arrive is still the answer.
+        assert "2026-09-25" in decision.tool_result
+        assert "[NOT_DELIVERED]" in decision.tool_result
+        assert "Pick a time" in decision.tool_result
+        assert "How many people?" in decision.tool_result
+        # Named by position as well as by text, so the model can point at the
+        # entries it sent rather than match prose.
+        assert "questions[1]" in decision.tool_result
+        assert "questions[2]" in decision.tool_result
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_the_unanswered_report_says_what_to_send_instead():
+        """A rejection that names no remedy is retried byte-identically."""
+        rail = StructuredAskUserRail()
+        tc = _make_tool_call(arguments={
+            "questions": [
+                {"question": "One?", "header": "A"},
+                {"question": "Two?", "header": "B"},
+            ],
+        })
+
+        decision = await rail.resolve_interrupt(
+            MagicMock(), tc, {"answers": {"One?": "yes"}}
+        )
+
+        # Names the tool to call again, which is the part the model acts on.
+        # The sentence around it is free to change.
+        assert "[NOT_DELIVERED]" in decision.tool_result
+        assert "ask_user" in decision.tool_result.split("[NOT_DELIVERED]")[1]
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_every_question_answered_adds_no_report():
+        rail = StructuredAskUserRail()
+        tc = _make_tool_call(arguments={
+            "questions": [
+                {"question": "One?", "header": "A"},
+                {"question": "Two?", "header": "B"},
+            ],
+        })
+
+        decision = await rail.resolve_interrupt(
+            MagicMock(), tc, {"answers": {"One?": "yes", "Two?": "no"}}
+        )
+
+        assert "NOT_DELIVERED" not in decision.tool_result
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_a_single_question_answered_adds_no_report():
+        rail = StructuredAskUserRail()
+        tc = _make_tool_call(arguments={
+            "query": "Which?",
+            "questions": [{"question": "Which?", "header": "Pick"}],
+        })
+
+        decision = await rail.resolve_interrupt(MagicMock(), tc, "the second one")
+
+        assert "NOT_DELIVERED" not in decision.tool_result
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_a_free_text_resume_reports_the_shortfall_without_naming_it():
+        """``__free_text__`` matches no question, so naming any would be a guess."""
+        rail = StructuredAskUserRail()
+        tc = _make_tool_call(arguments={
+            "questions": [
+                {"question": "One?", "header": "A"},
+                {"question": "Two?", "header": "B"},
+                {"question": "Three?", "header": "C"},
+            ],
+        })
+
+        decision = await rail.resolve_interrupt(MagicMock(), tc, "just the one")
+
+        assert "[NOT_DELIVERED]" in decision.tool_result
+        assert "questions[" not in decision.tool_result
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_the_shortfall_is_logged_for_an_operator(caplog):
+        rail = StructuredAskUserRail()
+        tc = _make_tool_call(arguments={
+            "questions": [
+                {"question": "Pick a date", "header": "Date"},
+                {"question": "Pick a time", "header": "Time"},
+            ],
+        })
+
+        with caplog.at_level(logging.WARNING, logger=ask_user_rail_logger.name):
+            await rail.resolve_interrupt(
+                MagicMock(), tc, {"answers": {"Pick a date": "2026-09-25"}}
+            )
+
+        assert "Pick a time" in caplog.text
+        assert "[NOT_DELIVERED]" in caplog.text
+        assert [record.levelname for record in caplog.records] == ["WARNING"]
 
 
 # =====================================================================
