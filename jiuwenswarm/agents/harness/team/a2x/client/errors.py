@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from jiuwenswarm.common.errors import JiuwenError
 
-class A2XError(Exception):
+
+class A2XError(JiuwenError):
     """Base class for all SDK errors."""
 
     def __init__(
