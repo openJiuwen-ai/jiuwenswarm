@@ -266,7 +266,7 @@ export function SkillPanel({
     openHubAllPacks,
     invalidateHubFetch,
     pauseHubFetching,
-  } = useHubMarketplace({ activeTab, searchKeyword, marketplaceCategory, setMarketplaceSubView, withSession });
+  } = useHubMarketplace({ activeTab, searchKeyword, marketplaceCategory, marketplaceSubView, setMarketplaceSubView, withSession });
 
   const {
     skillGraphPanelRef,

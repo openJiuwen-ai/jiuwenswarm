@@ -70,7 +70,9 @@ export function scheduleCatalogRefresh(
   if (previous) clearTimeout(previous.timer);
   if (!cache?.refreshing || (previous?.count || 0) >= 30) {
     refreshes.delete(key);
-    return;
+    return cache?.refreshing
+      ? { ...cache, state: 'error' as const, refreshing: false, error: 'refresh_timeout' }
+      : cache;
   }
   const scope = catalogScope();
   const timer = setTimeout(() => {
@@ -78,6 +80,7 @@ export function scheduleCatalogRefresh(
     else refreshes.delete(key);
   }, 4000);
   refreshes.set(key, { timer, count: (previous?.count || 0) + 1 });
+  return cache;
 }
 export function catalogCacheOf(items: unknown): CatalogCacheMetadata | undefined {
   return (items as { cache?: CatalogCacheMetadata } | null)?.cache;
