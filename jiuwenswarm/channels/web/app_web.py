@@ -505,6 +505,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     def _is_share_api_route(self) -> bool:
         return urlparse(self.path).path.startswith("/share-api/")
 
+    def _is_skill_sync_route(self) -> bool:
+        return urlparse(self.path).path.startswith("/skill-sync/")
+
     def _is_websocket_upgrade(self) -> bool:
         upgrade = self.headers.get("Upgrade", "")
         connection = self.headers.get("Connection", "")
@@ -1747,6 +1750,112 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(raw)
 
+    def _handle_skill_sync_post(self, parsed) -> None:
+        """POST /skill-sync/{diff,package,apply}：Server/Client 分离部署技能同步."""
+        try:
+            from jiuwenswarm.server.runtime.skill import skill_sync_http
+            from jiuwenswarm.server.runtime.skill.skill_manager import SkillRpcError
+        except ImportError as exc:
+            self.log_error("skill sync module unavailable: %s", exc)
+            self._write_json(
+                500,
+                {
+                    "code": "SKILL_SYNC_PACKAGE_FAILED",
+                    "message": "skill-sync 模块不可用",
+                    "error": "skill-sync 模块不可用",
+                },
+            )
+            return
+
+        authorization = self.headers.get("Authorization", "")
+        # 读 body 前完成鉴权与 Content-Length 预检（未鉴权连接不得
+        # 强制服务器读入任意大小的 body；apply 超限直接 413）
+        content_length_raw = self.headers.get("Content-Length", "")
+        try:
+            content_length = int(content_length_raw) if content_length_raw else 0
+        except ValueError:
+            # 与 skill_sync_http_error_body 一致的三字段结构（code/message/
+            # error），按 code 解析的客户端不失配
+            self._write_json(
+                400,
+                skill_sync_http.skill_sync_http_error_body(
+                    "SKILL_SYNC_INVALID_PAYLOAD", "Content-Length 不是有效整数"
+                ),
+            )
+            return
+        try:
+            skill_sync_http.precheck_skill_sync_request(
+                authorization=authorization,
+                path=parsed.path,
+                content_length=content_length,
+            )
+        except SkillRpcError as exc:
+            status = skill_sync_http.skill_sync_http_error_status(exc.code)
+            self._write_json(
+                status, skill_sync_http.skill_sync_http_error_body(exc.code, exc.message)
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            # 预检兜底：任何未预期异常（如畸形 header 触发的解析错误）
+            # 都不得冒泡到 BaseHTTPRequestHandler 打印 traceback 断连
+            self.log_error("skill-sync precheck failed: %s", exc)
+            self._write_json(
+                400,
+                skill_sync_http.skill_sync_http_error_body(
+                    "SKILL_SYNC_INVALID_PAYLOAD", "请求预检失败"
+                ),
+            )
+            return
+
+        if parsed.path == "/skill-sync/diff":
+            status, payload = skill_sync_http.handle_sync_diff_http(
+                authorization=authorization,
+                body=self._read_request_body(),
+            )
+            self._write_json(status, payload)
+            return
+
+        if parsed.path == "/skill-sync/package":
+            status, payload = skill_sync_http.handle_sync_package_http(
+                authorization=authorization,
+                body=self._read_request_body(),
+                send_file=self._send_skill_sync_zip,
+            )
+            if payload is not None:
+                self._write_json(status, payload)
+            return
+
+        if parsed.path == "/skill-sync/apply":
+            status, payload = skill_sync_http.handle_sync_apply_http(
+                authorization=authorization,
+                content_type=self.headers.get("Content-Type", ""),
+                body=self._read_request_body(),
+                content_length=content_length,
+            )
+            self._write_json(status, payload)
+            return
+
+        self._write_json(404, {"error": "not_found"})
+
+    def _send_skill_sync_zip(
+        self, zip_path: Path, filename: str, sha256: str, size: int
+    ) -> None:
+        """整包临时文件回写响应头后流式发送（X-Package-Sha256 覆盖整个 body）."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header(
+            "Content-Disposition", f'attachment; filename="{filename}"'
+        )
+        self.send_header("X-Package-Sha256", sha256)
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if self.command == "HEAD":
+            return
+        with zip_path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                self.wfile.write(chunk)
+
     def _handle_file_api_post(self, parsed) -> None:
         if parsed.path == "/file-api/skills/upload-temp":
             self._handle_skills_upload_temp()
@@ -1964,6 +2073,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return
         if self._is_share_api_route():
             self._handle_share_api_post(parsed)
+            return
+        # 技能同步接口为独立 /skill-sync/* 路径（不属 /file-api 命名空间），
+        # 必须在 do_POST 顶层接入而非 _handle_file_api_post（设计文档第 7 节）。
+        if self._is_skill_sync_route():
+            self._handle_skill_sync_post(parsed)
             return
         if self._is_file_api_route():
             self._handle_file_api_post(parsed)
