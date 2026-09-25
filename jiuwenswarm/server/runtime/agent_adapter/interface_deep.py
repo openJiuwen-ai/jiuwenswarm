@@ -5658,16 +5658,21 @@ class JiuWenSwarmDeepAdapter:
                 self._prune_tool_cards({t.card.name for t in current_tools})
             return [], False
         if not registered:
+            attempted_tools: list[Any] = []
             try:
                 new_tools = create_fn()
                 owner_id = self._tool_owner_id()
                 for tool in new_tools:
+                    # Registration may partially succeed before raising.
+                    attempted_tools.append(tool)
                     register_tool(tool, owner_id)
                     self._append_tool_card(tool.card)
                     if self._instance is not None and hasattr(self._instance, "ability_manager"):
                         self._instance.ability_manager.add(tool.card)
                 return new_tools, bool(new_tools)
             except Exception as exc:
+                self._remove_registered_tools(attempted_tools)
+                self._prune_tool_cards({tool.card.name for tool in attempted_tools})
                 logger.warning("[JiuWenSwarmDeepAdapter] %s reload failed: %s", warn_label, exc)
                 return [], False
         return current_tools, registered
