@@ -4211,7 +4211,7 @@
       "nodeHint": "Nodes show each candidate, stage, and evaluation result; select one for details",
       "harnessNodeHint": "Each node is a Harness combination; select one to inspect changes and evaluation",
       "paperNodeHint": "Each node is a paper version; select one to inspect changes and rejection reasons",
-      "programNodeHint": "Each node is a program candidate; parallel candidates show their attempt number",
+      "programNodeHint": "Parallel candidates appear as they finish. Search stops when a candidate reaches the target; evaluations already in progress may finish later.",
       "estimatedCost": "Estimated cost: ¥ {{cost}}",
       "selectedNode": "Selected",
       "inherit": "inherits",
