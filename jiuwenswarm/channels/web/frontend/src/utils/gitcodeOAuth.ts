@@ -4,6 +4,7 @@
 const TOKEN_KEY = 'marketplace_oauth_access_token';
 const PROVIDER_KEY = 'marketplace_oauth_provider';
 const USER_KEY = 'marketplace_oauth_user';
+const AUTHORIZATION_CLOSE_GRACE_MS = 5000;
 
 // ── 类型 ──
 export type OAuthProvider = 'gitcode' | 'github';
@@ -75,9 +76,11 @@ export async function waitForHubOAuth(
   signal?: AbortSignal,
   authorizationWindowClosed?: () => boolean,
 ): Promise<void> {
+  let windowClosedAt: number | undefined;
   while (!signal?.aborted) {
     await new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
     if (signal?.aborted) break;
+    if (windowClosedAt === undefined && authorizationWindowClosed?.()) windowClosedAt = Date.now();
     const response = await fetch('/marketplace-oauth/hub/result', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -87,7 +90,9 @@ export async function waitForHubOAuth(
     const result = await responseJson(response);
     if (!response.ok) throw new Error('授权请求已过期，请重新登录。');
     if (result.status === 'pending') {
-      if (authorizationWindowClosed?.()) throw new Error('授权窗口已关闭，请重新登录。');
+      // A closed popup can precede the completed Hub handoff; allow it to settle.
+      if (windowClosedAt !== undefined && Date.now() - windowClosedAt >= AUTHORIZATION_CLOSE_GRACE_MS)
+        throw new Error('授权窗口已关闭，请重新登录。');
       continue;
     }
     if (result.status !== 'complete' || !result.access_token) {
