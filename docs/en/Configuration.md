@@ -488,6 +488,33 @@ Generally, from highest to lowest: **values you save in the web Configuration UI
 
 > 💡 **Tip**: If changes do not seem to apply immediately, wait briefly or ask an admin whether services have reloaded.
 
+### 10.4 Teammate file-path recovery (opt-in)
+
+In the main configuration, enable automatic path requests for native teammates
+in Team and Code Team modes:
+
+```yaml
+file_path_recovery:
+  enabled: true  # default: false
+```
+
+After `read_file` reports `File not found:`, the teammate queues a message to the
+actual leader with the attempted path, resolved path, and working directory. It
+asks for an accessible absolute path and ends its current invocation without
+marking the task complete. A later leader message can start a fresh invocation
+that retries the read. Detection and request generation do not call a model.
+
+Repeated failures at the same resolved path share one pending request in session
+state, including after rail reconstruction. Only a successful read of that exact
+path clears the request; reading another path with the same filename does not.
+A successful read at a new path is still allowed to continue normally.
+
+This does not search, copy files, change permissions, intercept other tools, or
+repair PDF parsing errors. The leader must supply a usable path. A queued message
+ID does not guarantee delivery, and calls already executing concurrently cannot
+be cancelled by this rail. Missing leader or queue failures return a blocked
+result. Configure the option before starting a fresh conversation.
+
 ---
 
 ## FAQ

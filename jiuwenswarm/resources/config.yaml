@@ -897,6 +897,10 @@ gateway:
     # Web/TUI token 鉴权总开关；默认关闭。true 时创建 AgentOSAuthenticator 校验连接。
     auth_enabled: false
 
+# Opt-in: teammates request an accessible absolute path after read_file reports a missing file.
+file_path_recovery:
+  enabled: false
+
 heartbeat:
   jobs:
     min_interval_seconds: 60
