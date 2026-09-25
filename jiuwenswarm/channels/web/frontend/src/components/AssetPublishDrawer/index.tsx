@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { HelpCircle, CircleCheck, Clock3, CircleAlert, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import tipIcon from '../../assets/tip.svg';
 import { FormDrawer, Input, Textarea } from '../ui';
 import {
   beginHubOAuth,
@@ -120,7 +119,6 @@ const messages = {
     unavailable: '此资源暂时无法发布，请查看检查原因。',
     empty: '无',
     draftExpiry: '检查结果有效期',
-    review: '请核对可见范围与内容，确认后由后台上传。',
     localSource: '本地资源',
     basicInfo: '基本信息',
     publishSettings: '发布设置',
@@ -212,7 +210,6 @@ const messages = {
     unavailable: 'This resource cannot be published yet. Review the reasons below.',
     empty: 'None',
     draftExpiry: 'Review expires',
-    review: 'Check visibility and package contents. Confirming starts the backend upload.',
     localSource: 'Local resource',
     basicInfo: 'Basic information',
     publishSettings: 'Publishing settings',
@@ -461,12 +458,6 @@ function AssetPublishDrawer({
       className="asset-publish-drawer"
       panelRef={panel}
       closeTestId="asset-publish-close"
-      notice={review && !state.record ? (
-        <div className="asset-publish-notice" data-testid="asset-publish-notice">
-          <img src={tipIcon} alt="" aria-hidden="true" className="w-4 h-4" />
-          <span>{text('review')}</span>
-        </div>
-      ) : undefined}
       footer={
         <>
           {!review && !state.record && invalid && (
@@ -748,7 +739,6 @@ function AssetPublishDrawer({
           <p data-testid="asset-publish-review-visibility">
             {text('visibility')}: {text(state.metadata.visibility)}
           </p>
-          <p>{text('review')}</p>
           {state.draft && (
             <>
               <p data-testid="asset-publish-package-summary">
@@ -795,13 +785,6 @@ function AssetPublishDrawer({
             </span>
             <h3>{text(outcome as MessageKey)}</h3>
           </header>
-          {state.record.result?.visibility === null && (
-            <p role="status" className="asset-publish-result-notice" data-testid="asset-publish-visibility-unconfirmed">
-              {i18n.language.startsWith('zh')
-                ? `Hub 已接收发布请求，并已按“${text(state.metadata.visibility)}”范围提交；最终可见状态将在 Hub 处理后确认。`
-                : `Hub accepted the submission with ${text(state.metadata.visibility)} visibility requested. Final visibility will be confirmed after Hub processing.`}
-            </p>
-          )}
           <dl className="asset-publish-result-metadata" data-testid="asset-publish-result-metadata">
             {state.record.result?.asset_id && (
               <div>

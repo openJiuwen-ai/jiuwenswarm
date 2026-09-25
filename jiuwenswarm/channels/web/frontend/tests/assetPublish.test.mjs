@@ -126,3 +126,12 @@ test('timestamps support backend Unix seconds and ISO dates', async () => {
   assert.equal(publishTimestamp(1700000000), 1700000000000);
   assert.equal(publishTimestamp('2023-11-14T22:13:20Z'), 1700000000000);
 });
+
+ test('empty catalog waits for background refresh but settled and failed lists stop loading', async () => {
+  const { catalogAwaitingItems } = await import('../node_modules/.cache/asset-publish/catalogCache.js');
+  assert.equal(catalogAwaitingItems(0, { state: 'miss', refreshing: true }), true);
+  assert.equal(catalogAwaitingItems(0, { state: 'fresh', refreshing: false }), false);
+  assert.equal(catalogAwaitingItems(1, { state: 'stale', refreshing: true }), false);
+  assert.equal(catalogAwaitingItems(0, { state: 'error', refreshing: true }), false);
+  assert.equal(catalogAwaitingItems(0, undefined), false);
+});

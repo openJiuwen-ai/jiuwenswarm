@@ -11,24 +11,6 @@
   line-height: 20px;
 }
 
-.asset-publish-notice {
-  margin: 0 24px 8px;
-  padding: 8px 12px;
-  min-height: 34px;
-  border-radius: 8px;
-  background: var(--color-skill-notice-surface);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  line-height: 18px;
-  flex-shrink: 0;
-}
-
-.asset-publish-notice svg {
-  flex-shrink: 0;
-}
-
 .asset-publish-drawer button:not([data-testid='asset-publish-close']) {
   padding: 0 16px;
   min-height: 32px;
@@ -320,13 +302,6 @@
 .asset-publish-result-card[data-variant='failed'] .asset-publish-result-icon {
   background: var(--color-feedback-danger-subtle);
   color: var(--color-feedback-danger);
-}
-.asset-publish-result-card .asset-publish-result-notice {
-  margin: 14px 0 0;
-  padding: 9px 10px;
-  border-radius: 6px;
-  background: var(--color-feedback-warning-subtle, #fff7e6);
-  color: var(--color-feedback-warning, #8a5a00);
 }
 .asset-publish-result-metadata {
   display: grid;

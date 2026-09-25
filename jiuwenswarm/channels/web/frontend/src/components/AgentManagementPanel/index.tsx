@@ -1,6 +1,6 @@
 import { InstallationFilterSelect, matchesInstallation, type InstallationFilter } from '../marketplace/InstallationFilterSelect';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
-import { scheduleCatalogRefresh, catalogScope, withCatalogCache, catalogCacheOf } from '../../features/catalogCache';
+import { catalogAwaitingItems, scheduleCatalogRefresh, catalogScope, withCatalogCache, catalogCacheOf } from '../../features/catalogCache';
 import { ChevronDown } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -1542,7 +1542,11 @@ export function AgentManagementPanel({
               totalItems={isMine ? mineView.totalItems : catalogView.totalItems}
               query={isMine ? mineQuery : query}
               category={category}
-              status={state.catalogStatus}
+              status={
+                !isMine && catalogAwaitingItems(catalogView.totalItems, catalogCacheOf(state.catalog))
+                  ? 'loading'
+                  : state.catalogStatus
+              }
               error={state.catalogError}
               busyIds={busyIds}
               onCategoryChange={value => { setCategory(value); setCatalogPage(1); }}
