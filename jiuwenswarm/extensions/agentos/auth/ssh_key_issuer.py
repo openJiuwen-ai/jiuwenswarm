@@ -61,7 +61,7 @@ class AgentOSSshKeyIssuer:
             raise RuntimeError(
                 "SSH ephemeral key issuance requires optional dependency "
                 "`asyncssh>=2.14.0,<2.24`. Install with "
-                '`uv sync --extra ssh` / `pip install "jiuwenswarm[ssh]"`.'
+                '`uv sync --extra ssh` / `pip install "workswarm[ssh]"`.'
             ) from exc
 
         key = asyncssh.generate_private_key(self._key_type)

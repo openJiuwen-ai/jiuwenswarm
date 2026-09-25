@@ -71,7 +71,7 @@ dependencies = [
 [project.optional-dependencies]
 # HarmonyOS-compatible reduced dependencies;
 # excludes packages with C extensions or system deps unavailable on HarmonyOS.
-# Usage: pip install jiuwenswarm --no-deps, then install each dep in this group manually,
+# Usage: pip install workswarm --no-deps, then install each dep in this group manually,
 # or reference this list in a deployment script / requirements-harmony.txt.
 harmony = [
     "a2ui-agent-sdk==0.2.1",
