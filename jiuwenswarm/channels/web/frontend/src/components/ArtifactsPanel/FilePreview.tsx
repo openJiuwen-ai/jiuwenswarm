@@ -6,7 +6,13 @@ import { CodePreview } from './CodePreview';
 import { DocxPreview } from './DocxPreview';
 import { PresentationPreview } from './PresentationPreview';
 import { SpreadsheetPreview } from './SpreadsheetPreview';
-import { artifactBinaryPreviewUrl, artifactTextPreviewUrl, previewKind, type PreviewKind } from './filePreviewModel';
+import {
+  artifactBinaryPreviewUrl,
+  artifactTextPreviewUrl,
+  formatArtifactPreviewText,
+  previewKind,
+  type PreviewKind,
+} from './filePreviewModel';
 
 export type PreviewArtifact = {
   id: string;
@@ -69,22 +75,13 @@ function TextPreview({ artifact, kind }: { artifact: PreviewArtifact; kind: Text
     return <MarkdownRenderer content={state.content} className="chat-text chat-markdown h-full max-w-none overflow-auto" testId="artifact-markdown-preview" />;
   if (kind === 'code') return <CodePreview content={state.content} name={artifact.name} mimeType={artifact.mimeType} />;
   if (kind === 'json' || kind === 'jsonl') {
-    try {
-      const value =
-        kind === 'json'
-          ? JSON.parse(state.content)
-          : state.content
-              .split(/\r?\n/)
-              .filter(Boolean)
-              .map(line => JSON.parse(line));
-      return (
-        <pre className="m-0 h-full w-full max-w-full overflow-auto bg-transparent text-xs text-text" data-testid="artifact-json-preview">
-          {JSON.stringify(value, null, 2)}
-        </pre>
-      );
-    } catch {
-      return <Notice>{t('artifacts.invalidJson')}</Notice>;
-    }
+    const pretty = formatArtifactPreviewText(kind, state.content);
+    if (pretty === null) return <Notice>{t('artifacts.invalidJson')}</Notice>;
+    return (
+      <pre className="m-0 h-full w-full max-w-full overflow-auto bg-transparent text-xs text-text" data-testid="artifact-json-preview">
+        {pretty}
+      </pre>
+    );
   }
   return (
     <pre className="m-0 h-full w-full max-w-full overflow-auto bg-transparent text-xs text-text" data-testid="artifact-text-preview">

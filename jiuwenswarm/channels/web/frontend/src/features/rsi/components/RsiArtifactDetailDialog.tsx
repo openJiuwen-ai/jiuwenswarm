@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronRight, Copy, Download, File as FileIcon, Folder, LoaderCircle, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { FilePreview } from '../../../components/ArtifactsPanel/FilePreview';
-import { previewKind } from '../../../components/ArtifactsPanel/filePreviewModel';
+import { getArtifactCopyText, previewKind } from '../../../components/ArtifactsPanel/filePreviewModel';
+import { writeClipboard } from '../../../utils/writeClipboard';
 import { RsiLatexPreview } from './RsiLatexPreview';
 import {
   artifactMimeType,
@@ -238,16 +239,10 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
 
   const handleCopy = useCallback(async () => {
     if (!selectedEntry) return;
-    try {
-      const kind = previewKind({ name: selectedEntry.name, mimeType: artifactMimeType(selectedEntry) });
-      const text = kind === 'markdown' || kind === 'text' || kind === 'code' || kind === 'json' || kind === 'jsonl'
-        ? fileContent
-        : selectedEntry.path;
-      await navigator.clipboard.writeText(text);
-      setCopyState('copied');
-    } catch {
-      setCopyState('failed');
-    }
+    const kind = previewKind({ name: selectedEntry.name, mimeType: artifactMimeType(selectedEntry) });
+    const text = getArtifactCopyText(kind, fileContent, selectedEntry.path);
+    const ok = await writeClipboard(text);
+    setCopyState(ok ? 'copied' : 'failed');
   }, [fileContent, selectedEntry]);
 
   const handleDownload = useCallback(() => {

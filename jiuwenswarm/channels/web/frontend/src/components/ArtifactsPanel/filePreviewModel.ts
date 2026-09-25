@@ -97,3 +97,39 @@ export function previewKind(file: PreviewFile): PreviewKind {
   if (mime.startsWith('text/') || TEXT_EXTENSIONS.has(ext)) return 'text';
   return 'unsupported';
 }
+
+/**
+ * Pretty-printed JSON / JSONL as shown in the artifact preview pane.
+ * Returns null when the source is not valid JSON (the preview shows an error).
+ */
+export function formatArtifactPreviewText(kind: PreviewKind, content: string): string | null {
+  try {
+    if (kind === 'json') {
+      return JSON.stringify(JSON.parse(content), null, 2);
+    }
+    if (kind === 'jsonl') {
+      const value = content
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      return JSON.stringify(value, null, 2);
+    }
+  } catch {
+    return null;
+  }
+  if (kind === 'markdown' || kind === 'text' || kind === 'code') return content;
+  return null;
+}
+
+/**
+ * Clipboard text for the artifact-dialog Copy button.
+ * JSON / JSONL copy the pretty-printed preview; invalid JSON keeps the source.
+ * Non-text files copy the path (same as today).
+ */
+export function getArtifactCopyText(kind: PreviewKind, content: string, fallbackPath: string): string {
+  if (kind === 'json' || kind === 'jsonl') {
+    return formatArtifactPreviewText(kind, content) ?? content;
+  }
+  if (kind === 'markdown' || kind === 'text' || kind === 'code') return content;
+  return fallbackPath;
+}
