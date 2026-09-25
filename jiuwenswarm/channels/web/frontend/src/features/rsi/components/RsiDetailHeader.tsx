@@ -239,6 +239,15 @@ export function RsiDetailHeader({
     await runAction(action);
   }, [confirmAction, runAction]);
 
+  useEffect(() => {
+    if (!confirmAction) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setConfirmAction(null);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [confirmAction]);
+
   const actions = actionsForStatus(task.status, task.scenario, installed, tree, task.artifact_type);
   const orderedActions = [...actions];
   const deleteIndex = orderedActions.indexOf('delete');
