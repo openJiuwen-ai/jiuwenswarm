@@ -20,6 +20,7 @@ Blocking convention follows ``memory_forbidden_rail.py``: set
 ``ctx.extra["_skip_tool"] = True`` and provide ``ctx.inputs["tool_result"]``
 / ``ctx.inputs["tool_msg"]``.
 """
+
 from __future__ import annotations
 
 import json
@@ -27,6 +28,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
 
@@ -85,7 +87,9 @@ class ResearchPipelineRail(DeepAgentRail):
                 projects_rel = workspace.get_directory("projects") or projects_rel
             self._workspace = Path(root) / projects_rel
         except (TypeError, ValueError) as exc:
-            logger.warning("[ResearchPipelineRail] workspace resolution failed: %s", exc)
+            logger.warning(
+                "[ResearchPipelineRail] workspace resolution failed: %s", exc
+            )
             self._workspace = None
 
     # ------------------------------------------------------------------ #
@@ -127,22 +131,45 @@ class ResearchPipelineRail(DeepAgentRail):
         if not target:
             return
         target_path = Path(str(target))
+        # lexical path first, so `resolved` is always bound even if resolve() fails
+        lexical = (
+            target_path if target_path.is_absolute() else project_dir / target_path
+        )
         try:
-            resolved = target_path.resolve() if target_path.is_absolute() else (project_dir / target_path).resolve()
+            resolved = lexical.resolve()
+        except (OSError, ValueError):
+            resolved = lexical
+        try:
             inside = resolved.is_relative_to(project_dir.resolve())
         except (OSError, ValueError):
             inside = str(resolved).startswith(str(project_dir.resolve()))
         if not inside:
             ctx.extra["_skip_tool"] = True
-            ctx.inputs["tool_result"] = (
+            inputs = ctx.inputs
+            tool_call = (
+                inputs.get("tool_call")
+                if isinstance(inputs, dict)
+                else getattr(inputs, "tool_call", None)
+            )
+            tool_call_id = getattr(tool_call, "id", "") if tool_call else ""
+            denial = (
                 f"BLOCKED by ResearchPipelineRail: stage {stage.get('stage')} "
                 f"({stage.get('name', '?')}) forbids writing outside the pipeline "
                 f"project directory {project_dir}."
             )
-            ctx.inputs["tool_msg"] = "blocked_by_research_pipeline_rail"
+            if isinstance(inputs, dict):
+                inputs["tool_result"] = denial
+                inputs["tool_msg"] = ToolMessage(
+                    content=denial, tool_call_id=tool_call_id
+                )
+            else:
+                inputs.tool_result = denial
+                inputs.tool_msg = ToolMessage(content=denial, tool_call_id=tool_call_id)
             logger.info(
                 "[ResearchPipelineRail] blocked %s on %s (stage %s)",
-                tool_name, str(resolved), stage.get("stage"),
+                tool_name,
+                str(resolved),
+                stage.get("stage"),
             )
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
@@ -154,12 +181,14 @@ class ResearchPipelineRail(DeepAgentRail):
         if stage is None:
             return
         tool_name, args = _tool_call_data(ctx)
+        blocked = bool(ctx.extra.get("_skip_tool"))
         record = {
             "ts": time.time(),
             "stage": stage.get("stage"),
             "stage_name": stage.get("name"),
             "tool": tool_name,
             "path": args.get("path") or args.get("file_path") or args.get("file"),
+            "outcome": "blocked" if blocked else "ok",
         }
         journal = project_dir / "pipeline_trace.jsonl"
         try:
