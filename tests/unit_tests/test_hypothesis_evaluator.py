@@ -70,7 +70,9 @@ def test_llm_callback_is_averaged_with_rule_score():
     def llm_callback(_hypothesis):
         return {"feasibility": 10, "novelty": 10, "impact": 10, "reasoning": "deep"}
 
-    score = evaluate_hypothesis({"title": "novel experiment"}, llm_callback=llm_callback)
+    score = evaluate_hypothesis(
+        {"title": "novel experiment"}, llm_callback=llm_callback
+    )
     # rule scores for this input are feasibility=6, novelty=6, impact=5
     assert (score.feasibility, score.novelty, score.impact) == (8, 8, 7)
     assert "LLM" in score.reasoning
@@ -99,6 +101,19 @@ def test_batch_ranking_and_select_best():
     chosen = evaluator.select_best([weak, strong])
     assert chosen is not None
     assert chosen["_score"]["recommendation"] == "strong_recommend"
+
+
+def test_select_best_does_not_mutate_the_input_hypothesis():
+    evaluator = HypothesisEvaluator()
+    strong = dict(_MAXED_HYPOTHESIS)
+
+    chosen = evaluator.select_best([strong])
+
+    assert chosen is not None
+    assert chosen["_score"]["recommendation"] == "strong_recommend"
+    # copy-on-score: the caller's dict must be left untouched
+    assert chosen is not strong
+    assert "_score" not in strong
 
 
 def test_history_records_each_evaluation():

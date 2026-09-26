@@ -13,14 +13,15 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, ClassVar
 
 LOGGER = logging.getLogger(__name__)
 
 # Optional LLM refinement callback: it receives the hypothesis mapping and
 # returns a mapping with ``feasibility``/``novelty``/``impact``/``reasoning``.
-LLMCallback = Callable[[Mapping[str, Any]], Optional[Mapping[str, Any]]]
+LLMCallback = Callable[[Mapping[str, Any]], Mapping[str, Any] | None]
 
 # 评分维度
 DIM_FEASIBILITY = "feasibility"
@@ -29,16 +30,17 @@ DIM_IMPACT = "impact"
 
 # 评分阈值
 RECOMMEND_THRESHOLD = 21  # 7+7+7，总分≥21推荐执行
-MIN_THRESHOLD = 15        # 总分<15则丢弃
+MIN_THRESHOLD = 15  # 总分<15则丢弃
 
 
 @dataclass
 class HypothesisScore:
     """假设评分结果"""
-    feasibility: int = 5    # 1-10
+
+    feasibility: int = 5  # 1-10
     novelty: int = 5
     impact: int = 5
-    reasoning: str = ""     # 评分理由
+    reasoning: str = ""  # 评分理由
 
     @property
     def total(self) -> int:
@@ -72,21 +74,45 @@ class HypothesisEvaluator:
     """
 
     # 创新性关键词
-    NOVEL_KEYWORDS = [
-        "novel", "new", "first", "unique", "unprecedented",
-        "新", "首次", "独特", "创新", "突破",
+    NOVEL_KEYWORDS: ClassVar[list[str]] = [
+        "novel",
+        "new",
+        "first",
+        "unique",
+        "unprecedented",
+        "新",
+        "首次",
+        "独特",
+        "创新",
+        "突破",
     ]
 
     # 可行性关键词
-    FEASIBLE_KEYWORDS = [
-        "experiment", "implement", "evaluate", "benchmark", "validate",
-        "实验", "实现", "评估", "验证", "对比",
+    FEASIBLE_KEYWORDS: ClassVar[list[str]] = [
+        "experiment",
+        "implement",
+        "evaluate",
+        "benchmark",
+        "validate",
+        "实验",
+        "实现",
+        "评估",
+        "验证",
+        "对比",
     ]
 
     # 影响力关键词
-    IMPACT_KEYWORDS = [
-        "significant", "important", "practical", "real-world", "deployment",
-        "重要", "实际", "部署", "应用", "产业",
+    IMPACT_KEYWORDS: ClassVar[list[str]] = [
+        "significant",
+        "important",
+        "practical",
+        "real-world",
+        "deployment",
+        "重要",
+        "实际",
+        "部署",
+        "应用",
+        "产业",
     ]
 
     def __init__(self, llm_callback=None):
@@ -126,7 +152,9 @@ class HypothesisEvaluator:
 
         return score
 
-    def evaluate_batch(self, hypotheses: list[dict]) -> list[tuple[dict, HypothesisScore]]:
+    def evaluate_batch(
+        self, hypotheses: list[dict]
+    ) -> list[tuple[dict, HypothesisScore]]:
         """批量评估并按总分排序"""
         scored = []
         for h in hypotheses:
@@ -136,13 +164,17 @@ class HypothesisEvaluator:
         scored.sort(key=lambda x: x[1].total, reverse=True)
         return scored
 
-    def select_best(self, hypotheses: list[dict], min_score: int = MIN_THRESHOLD) -> Optional[dict]:
+    def select_best(
+        self, hypotheses: list[dict], min_score: int = MIN_THRESHOLD
+    ) -> dict | None:
         """从假设列表中选择评分最高的"""
         scored = self.evaluate_batch(hypotheses)
         for h, s in scored:
             if s.total >= min_score:
-                h["_score"] = s.to_dict()
-                return h
+                # Copy-on-score: never mutate the caller's dict in place.
+                best = dict(h)
+                best["_score"] = s.to_dict()
+                return best
         return None
 
     def _rule_based_score(self, hypothesis: dict) -> HypothesisScore:
@@ -189,7 +221,7 @@ class HypothesisEvaluator:
             reasoning=f"规则评分：可行性={feasibility}(关键词匹配), 创新性={novelty}, 影响力={impact}",
         )
 
-    def _llm_based_score(self, hypothesis: dict) -> Optional[HypothesisScore]:
+    def _llm_based_score(self, hypothesis: dict) -> HypothesisScore | None:
         """使用 LLM 进行深度评估"""
         if not self._llm_callback:
             return None
@@ -202,7 +234,7 @@ class HypothesisEvaluator:
                     impact=result.get("impact", 5),
                     reasoning=result.get("reasoning", ""),
                 )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - a bad LLM callback must not break scoring
             LOGGER.warning("LLM evaluation failed: %s", e)
         return None
 
@@ -238,13 +270,13 @@ def evaluate_hypothesis(
 
 
 __all__ = [
+    "DIM_FEASIBILITY",
+    "DIM_IMPACT",
+    "DIM_NOVELTY",
+    "MIN_THRESHOLD",
+    "RECOMMEND_THRESHOLD",
     "HypothesisEvaluator",
     "HypothesisScore",
-    "evaluate_hypothesis",
     "LLMCallback",
-    "RECOMMEND_THRESHOLD",
-    "MIN_THRESHOLD",
-    "DIM_FEASIBILITY",
-    "DIM_NOVELTY",
-    "DIM_IMPACT",
+    "evaluate_hypothesis",
 ]
