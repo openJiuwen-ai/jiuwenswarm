@@ -23,17 +23,17 @@ from jiuwenswarm.symphony.evolution.trajectory_compressor import (
 )
 
 __all__ = [
-    "build_overlay_from_events",
-    "evolution_status",
-    "load_dynamic_overlay",
+    "CompressedSegment",
+    "CompressionResult",
     "HypothesisEvaluator",
     "HypothesisScore",
-    "evaluate_hypothesis",
     "TieredEvolutionStore",
     "TieredRecord",
     "TrajectoryCompressor",
     "TrajectoryPoint",
-    "CompressionResult",
-    "CompressedSegment",
+    "build_overlay_from_events",
+    "evaluate_hypothesis",
+    "evolution_status",
+    "load_dynamic_overlay",
     "points_from_otlp",
 ]

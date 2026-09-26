@@ -30,14 +30,15 @@ nor any Core helper and stays standard-library only.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 LOGGER = logging.getLogger(__name__)
 
 # Default compression parameters
-DEFAULT_TURNING_THRESHOLD = 0.5      # metric delta above this is a turning point
-DEFAULT_MIN_SEGMENT_LEN = 3          # runs this short are never compressed
+DEFAULT_TURNING_THRESHOLD = 0.5  # metric delta above this is a turning point
+DEFAULT_MIN_SEGMENT_LEN = 3  # runs this short are never compressed
 DEFAULT_MAX_COMPRESSION_RATIO = 0.3  # keep at least 30% of the points
 
 # OpenTelemetry semantic-convention keys mirrored from openjiuwen's semconv.
@@ -206,7 +207,9 @@ class TrajectoryCompressor:
                     )
                 )
             else:
-                raise TypeError(f"unsupported trajectory point at index {index}: {type(item)!r}")
+                raise TypeError(
+                    f"unsupported trajectory point at index {index}: {type(item)!r}"
+                )
         return points
 
     # -- core algorithm (unchanged) ----------------------------------------
@@ -225,11 +228,13 @@ class TrajectoryCompressor:
             delta_next = abs(next_score - curr_score)
 
             # trend reversal or large delta
-            is_reversal = (
-                (curr_score > prev_score and curr_score > next_score) or
-                (curr_score < prev_score and curr_score < next_score)
+            is_reversal = (curr_score > prev_score and curr_score > next_score) or (
+                curr_score < prev_score and curr_score < next_score
             )
-            is_large_delta = delta_prev >= self._turning_threshold or delta_next >= self._turning_threshold
+            is_large_delta = (
+                delta_prev >= self._turning_threshold
+                or delta_next >= self._turning_threshold
+            )
 
             if is_reversal or is_large_delta:
                 turning.append(i)
@@ -240,9 +245,9 @@ class TrajectoryCompressor:
         """Select the indices to keep: first + last + turning points."""
 
         key = set()
-        key.add(0)              # first
-        key.add(total - 1)      # last
-        key.update(turning)     # turning points
+        key.add(0)  # first
+        key.add(total - 1)  # last
+        key.update(turning)  # turning points
 
         # backfill evenly if too few points would be kept
         min_points = max(int(total * self._max_ratio), 3)
@@ -265,23 +270,29 @@ class TrajectoryCompressor:
             # determine the segment range
             start = key_indices[i - 1] + 1 if i > 0 else 0
             end = idx
-            seg_points = trajectory[start:end + 1]
+            seg_points = trajectory[start : end + 1]
 
             if not seg_points:
                 continue
 
             scores = [p.score for p in seg_points]
             avg = sum(scores) / len(scores)
-            var = sum((s - avg) ** 2 for s in scores) / len(scores) if len(scores) > 1 else 0
+            var = (
+                sum((s - avg) ** 2 for s in scores) / len(scores)
+                if len(scores) > 1
+                else 0
+            )
 
-            segments.append(CompressedSegment(
-                start_step=seg_points[0].step,
-                end_step=seg_points[-1].step,
-                representative=trajectory[idx],
-                point_count=len(seg_points),
-                avg_score=avg,
-                score_variance=var,
-            ))
+            segments.append(
+                CompressedSegment(
+                    start_step=seg_points[0].step,
+                    end_step=seg_points[-1].step,
+                    representative=trajectory[idx],
+                    point_count=len(seg_points),
+                    avg_score=avg,
+                    score_variance=var,
+                )
+            )
 
         return segments
 
@@ -290,7 +301,9 @@ class TrajectoryCompressor:
 
         scores = [p.score for p in trajectory]
         avg = sum(scores) / len(scores) if scores else 0
-        var = sum((s - avg) ** 2 for s in scores) / len(scores) if len(scores) > 1 else 0
+        var = (
+            sum((s - avg) ** 2 for s in scores) / len(scores) if len(scores) > 1 else 0
+        )
         return CompressedSegment(
             start_step=trajectory[0].step if trajectory else 0,
             end_step=trajectory[-1].step if trajectory else 0,
@@ -420,12 +433,12 @@ def _coerce_int(value: Any) -> int | None:
 
 
 __all__ = [
+    "DEFAULT_MAX_COMPRESSION_RATIO",
+    "DEFAULT_MIN_SEGMENT_LEN",
+    "DEFAULT_TURNING_THRESHOLD",
+    "CompressedSegment",
+    "CompressionResult",
     "TrajectoryCompressor",
     "TrajectoryPoint",
-    "CompressionResult",
-    "CompressedSegment",
     "points_from_otlp",
-    "DEFAULT_TURNING_THRESHOLD",
-    "DEFAULT_MIN_SEGMENT_LEN",
-    "DEFAULT_MAX_COMPRESSION_RATIO",
 ]

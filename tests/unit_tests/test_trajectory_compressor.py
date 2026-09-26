@@ -29,7 +29,10 @@ def _otlp_payload(scores):
                 "startTimeUnixNano": str(index * 1_000_000_000),
                 "endTimeUnixNano": str(index * 1_000_000_000 + 500_000_000),
                 "attributes": [
-                    {"key": "gen_ai.evaluation.score.value", "value": {"doubleValue": float(score)}},
+                    {
+                        "key": "gen_ai.evaluation.score.value",
+                        "value": {"doubleValue": float(score)},
+                    },
                 ],
             }
         )
@@ -108,10 +111,22 @@ def test_points_from_otlp_reads_score_tokens_and_duration():
                                 "startTimeUnixNano": "1000000000",
                                 "endTimeUnixNano": "1500000000",
                                 "attributes": [
-                                    {"key": "gen_ai.evaluation.score.value", "value": {"doubleValue": 7.5}},
-                                    {"key": "gen_ai.usage.input_tokens", "value": {"intValue": 10}},
-                                    {"key": "gen_ai.usage.output_tokens", "value": {"intValue": 5}},
-                                    {"key": "gen_ai.operation.name", "value": {"stringValue": "invoke_agent"}},
+                                    {
+                                        "key": "gen_ai.evaluation.score.value",
+                                        "value": {"doubleValue": 7.5},
+                                    },
+                                    {
+                                        "key": "gen_ai.usage.input_tokens",
+                                        "value": {"intValue": 10},
+                                    },
+                                    {
+                                        "key": "gen_ai.usage.output_tokens",
+                                        "value": {"intValue": 5},
+                                    },
+                                    {
+                                        "key": "gen_ai.operation.name",
+                                        "value": {"stringValue": "invoke_agent"},
+                                    },
                                 ],
                             },
                             # no score attribute -> duration fallback (500 ms)
