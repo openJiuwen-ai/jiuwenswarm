@@ -26,6 +26,9 @@ _MEMORY_WRITE_TOOLS = frozenset({
     "experience_learn",
 })
 
+# 提示文案中展示的被拦截工具名单（与 _MEMORY_WRITE_TOOLS 保持一致）
+_MEMORY_WRITE_TOOLS_DISPLAY = "write_memory/edit_memory/coding_memory_write/coding_memory_edit/experience_learn"
+
 # 与 memory_forbidden_rail._MEMORY_WRITE_TOOLS 保持一致：若只拦截
 # write_memory/edit_memory，群聊数字分身可通过编码记忆/经验学习工具
 # 绕过"禁止写入记忆"约束。读取工具单独列出，供"记忆完全禁用"场景使用。
@@ -94,9 +97,9 @@ class AvatarPromptRail(DeepAgentRail):
         # 群聊数字分身模式：禁止写入记忆
         if is_group_digital_avatar:
             notice = (
-                "\n[群聊模式：禁止调用 write_memory/edit_memory/coding_memory_write/coding_memory_edit/experience_learn]\n"
+                f"\n[群聊模式：禁止调用 {_MEMORY_WRITE_TOOLS_DISPLAY}]\n"
                 if language == "cn"
-                else "\n[Group chat mode: write_memory/edit_memory/coding_memory_write/coding_memory_edit/experience_learn calls are prohibited]\n"
+                else f"\n[Group chat mode: {_MEMORY_WRITE_TOOLS_DISPLAY} calls are prohibited]\n"
             )
             section = PromptSection(
                 name="group_chat_memory_notice",
