@@ -28,23 +28,25 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Self
 
 LOGGER = logging.getLogger(__name__)
 
 # -- tiers ------------------------------------------------------------------
 TIER_SHORT = "short"  # session-scoped, TTL < 1h
-TIER_MID = "mid"      # task-scoped, TTL < 7d
-TIER_LONG = "long"    # cross-task durable
+TIER_MID = "mid"  # task-scoped, TTL < 7d
+TIER_LONG = "long"  # cross-task durable
 TIERS: tuple[str, ...] = (TIER_SHORT, TIER_MID, TIER_LONG)
 
 # -- defaults ---------------------------------------------------------------
-SHORT_TTL_SEC = 3600            # 1 hour
-MID_TTL_SEC = 7 * 86400         # 7 days
-PROMOTION_HIT_THRESHOLD = 3     # mid records retrieved this often become long
+SHORT_TTL_SEC = 3600  # 1 hour
+MID_TTL_SEC = 7 * 86400  # 7 days
+PROMOTION_HIT_THRESHOLD = 3  # mid records retrieved this often become long
 DEFAULT_TASK_TYPE = "default"
 
 # Text keys consulted (in order) when matching a record against a query.
@@ -157,6 +159,11 @@ class TieredEvolutionStore:
         self._total_deposits = 0
         self._total_hits = 0
 
+        # The agent framework touches the store from multiple worker threads, so
+        # every public operation is serialised by a single lock (the SQLite
+        # connection is opened with ``check_same_thread=False`` to match).
+        self._lock = threading.Lock()
+
         self._sqlite_path = Path(sqlite_path) if sqlite_path is not None else None
         self._conn: sqlite3.Connection | None = None
         if self._sqlite_path is not None:
@@ -190,22 +197,23 @@ class TieredEvolutionStore:
         if tier not in TIERS:
             raise ValueError(f"unknown tier: {tier!r}")
 
-        now = self._clock()
-        record = TieredRecord(
-            record_id=str(record_id),
-            payload=dict(payload),
-            tier=tier,
-            task_type=str(task_type or DEFAULT_TASK_TYPE),
-            hit_count=0,
-            deposited_at=now,
-            last_hit_at=now,
-        )
-        self._remove(record.record_id)
-        self._tiers[tier][record.record_id] = record
-        self._total_deposits += 1
-        if tier == TIER_LONG:
-            self._persist_long(record)
-        return record
+        with self._lock:
+            now = self._clock()
+            record = TieredRecord(
+                record_id=str(record_id),
+                payload=dict(payload),
+                tier=tier,
+                task_type=str(task_type or DEFAULT_TASK_TYPE),
+                hit_count=0,
+                deposited_at=now,
+                last_hit_at=now,
+            )
+            self._remove(record.record_id)
+            self._tiers[tier][record.record_id] = record
+            self._total_deposits += 1
+            if tier == TIER_LONG:
+                self._persist_long(record)
+            return record
 
     def query(
         self,
@@ -232,22 +240,27 @@ class TieredEvolutionStore:
         if top_k <= 0 or not (query_text or "").strip():
             return []
 
-        now = self._clock()
-        results: list[TieredRecord] = []
-        for tier in (TIER_SHORT, TIER_MID, TIER_LONG):
-            for record in self._tiers[tier].values():
-                if task_type is not None and tier == TIER_MID and record.task_type != task_type:
-                    continue
-                if not record.matches(query_text):
-                    continue
-                record.touch(now)
-                self._total_hits += 1
-                if record.tier == TIER_LONG:
-                    self._persist_long(record)
-                results.append(record)
-                if len(results) >= top_k:
-                    return results
-        return results
+        with self._lock:
+            now = self._clock()
+            results: list[TieredRecord] = []
+            for tier in (TIER_SHORT, TIER_MID, TIER_LONG):
+                for record in self._tiers[tier].values():
+                    if (
+                        task_type is not None
+                        and tier == TIER_MID
+                        and record.task_type != task_type
+                    ):
+                        continue
+                    if not record.matches(query_text):
+                        continue
+                    record.touch(now)
+                    self._total_hits += 1
+                    if record.tier == TIER_LONG:
+                        self._persist_long(record)
+                    results.append(record)
+                    if len(results) >= top_k:
+                        return results
+            return results
 
     def promote(self) -> list[str]:
         """Move every promotable ``mid`` record into the ``long`` tier.
@@ -255,6 +268,12 @@ class TieredEvolutionStore:
         Returns:
             The ids that were promoted.
         """
+
+        with self._lock:
+            return self._promote_locked()
+
+    def _promote_locked(self) -> list[str]:
+        """``promote`` body; the caller must already hold :attr:`_lock`."""
 
         promoted: list[str] = []
         for record_id, record in list(self._tiers[TIER_MID].items()):
@@ -278,50 +297,53 @@ class TieredEvolutionStore:
             long) and ``dropped`` (expired mid) id lists.
         """
 
-        now = self._clock()
-        degraded: list[str] = []
-        dropped: list[str] = []
+        with self._lock:
+            now = self._clock()
+            degraded: list[str] = []
+            dropped: list[str] = []
 
-        for record_id, record in list(self._tiers[TIER_SHORT].items()):
-            if record.age_sec(now) > self._short_ttl_sec:
-                del self._tiers[TIER_SHORT][record_id]
-                record.tier = TIER_MID
-                self._tiers[TIER_MID][record_id] = record
-                degraded.append(record_id)
+            for record_id, record in list(self._tiers[TIER_SHORT].items()):
+                if record.age_sec(now) > self._short_ttl_sec:
+                    del self._tiers[TIER_SHORT][record_id]
+                    record.tier = TIER_MID
+                    self._tiers[TIER_MID][record_id] = record
+                    degraded.append(record_id)
 
-        for record_id, record in list(self._tiers[TIER_MID].items()):
-            if record.age_sec(now) <= self._mid_ttl_sec:
-                continue
-            if record.is_promotable(self._promotion_hit_threshold):
-                continue  # handled by promote() below
-            del self._tiers[TIER_MID][record_id]
-            dropped.append(record_id)
+            for record_id, record in list(self._tiers[TIER_MID].items()):
+                if record.age_sec(now) <= self._mid_ttl_sec:
+                    continue
+                if record.is_promotable(self._promotion_hit_threshold):
+                    continue  # handled by the promotion pass below
+                del self._tiers[TIER_MID][record_id]
+                dropped.append(record_id)
 
-        promoted = self.promote()
-        return {"degraded": degraded, "promoted": promoted, "dropped": dropped}
+            promoted = self._promote_locked()
+            return {"degraded": degraded, "promoted": promoted, "dropped": dropped}
 
     # -- introspection ------------------------------------------------------
 
     def stats(self) -> dict[str, Any]:
         """Return per-tier counts and deposit/hit totals."""
 
-        return {
-            "short_term_count": len(self._tiers[TIER_SHORT]),
-            "mid_term_count": len(self._tiers[TIER_MID]),
-            "long_term_count": len(self._tiers[TIER_LONG]),
-            "total_deposits": self._total_deposits,
-            "total_hits": self._total_hits,
-            "promotion_threshold": self._promotion_hit_threshold,
-        }
+        with self._lock:
+            return {
+                "short_term_count": len(self._tiers[TIER_SHORT]),
+                "mid_term_count": len(self._tiers[TIER_MID]),
+                "long_term_count": len(self._tiers[TIER_LONG]),
+                "total_deposits": self._total_deposits,
+                "total_hits": self._total_hits,
+                "promotion_threshold": self._promotion_hit_threshold,
+            }
 
     def get(self, record_id: str) -> TieredRecord | None:
         """Return a record by id from any tier, or ``None``."""
 
-        for tier in TIERS:
-            record = self._tiers[tier].get(str(record_id))
-            if record is not None:
-                return record
-        return None
+        with self._lock:
+            for tier in TIERS:
+                record = self._tiers[tier].get(str(record_id))
+                if record is not None:
+                    return record
+            return None
 
     # -- internals ----------------------------------------------------------
 
@@ -337,7 +359,13 @@ class TieredEvolutionStore:
     def _open_sqlite(self) -> None:
         assert self._sqlite_path is not None
         self._sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self._sqlite_path))
+        # check_same_thread=False lets the connection be shared across the
+        # agent framework's worker threads; concurrent access is serialised by
+        # ``self._lock`` instead of SQLite's per-thread guard.  WAL mode gives
+        # better cross-thread read/write concurrency than the default rollback
+        # journal.
+        self._conn = sqlite3.connect(str(self._sqlite_path), check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(_SQLITE_SCHEMA)
         self._conn.commit()
         self._load_long()
@@ -364,7 +392,9 @@ class TieredEvolutionStore:
     def _delete_long(self, record_id: str) -> None:
         if self._conn is None:
             return
-        self._conn.execute("DELETE FROM tiered_records WHERE record_id = ?", (record_id,))
+        self._conn.execute(
+            "DELETE FROM tiered_records WHERE record_id = ?", (record_id,)
+        )
         self._conn.commit()
 
     def _load_long(self) -> None:
@@ -392,25 +422,26 @@ class TieredEvolutionStore:
     def close(self) -> None:
         """Close the SQLite mirror if one is open."""
 
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
 
-    def __enter__(self) -> "TieredEvolutionStore":
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *exc_info: Any) -> None:
+    def __exit__(self, *exc_info: object) -> None:
         self.close()
 
 
 __all__ = [
-    "TieredEvolutionStore",
-    "TieredRecord",
-    "TIER_SHORT",
-    "TIER_MID",
-    "TIER_LONG",
-    "TIERS",
-    "SHORT_TTL_SEC",
     "MID_TTL_SEC",
     "PROMOTION_HIT_THRESHOLD",
+    "SHORT_TTL_SEC",
+    "TIERS",
+    "TIER_LONG",
+    "TIER_MID",
+    "TIER_SHORT",
+    "TieredEvolutionStore",
+    "TieredRecord",
 ]

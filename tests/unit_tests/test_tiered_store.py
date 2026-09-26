@@ -7,6 +7,8 @@ mirror.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from jiuwenswarm.symphony.evolution.tiered_store import (
@@ -178,3 +180,31 @@ def test_sqlite_mirror_round_trips_long_tier(tmp_path):
         assert [r.record_id for r in reopened.query("zeta")] == ["l"]
     finally:
         reopened.close()
+
+
+def test_cross_thread_access_does_not_raise(tmp_path):
+    # The agent framework touches the store from worker threads; the SQLite
+    # connection is opened with check_same_thread=False and every operation is
+    # serialised by a lock, so concurrent upsert/query must not raise.
+    store = TieredEvolutionStore(sqlite_path=tmp_path / "threaded.sqlite3")
+    errors: list[BaseException] = []
+
+    def worker(worker_id: int) -> None:
+        try:
+            for i in range(20):
+                store.upsert(f"r{worker_id}-{i}", _record("paper"), tier=TIER_LONG)
+                store.query("paper")
+        except Exception as exc:  # noqa: BLE001 - collect any thread failure
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    try:
+        assert errors == []
+        assert store.stats()["long_term_count"] == 80
+    finally:
+        store.close()
