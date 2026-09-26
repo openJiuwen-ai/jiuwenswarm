@@ -62,11 +62,47 @@ def _current_config_yaml_path() -> Path:
     return get_config_file()
 
 
+_MERGED_CONFIG_CACHE: dict[str, Any] | None = None
+_MERGED_CONFIG_CACHE_KEY: tuple | None = None
+
+
+def invalidate_merged_config_cache() -> None:
+    """[PERF] 配置写入/失效路径调用:清合并配置缓存。"""
+    global _MERGED_CONFIG_CACHE, _MERGED_CONFIG_CACHE_KEY
+    _MERGED_CONFIG_CACHE = None
+    _MERGED_CONFIG_CACHE_KEY = None
+
+
 def get_merged_config_dict() -> dict[str, Any]:
-    """模板与用户 override 合并后的字典（不解析环境变量）。"""
-    template = load_yaml_dict(resolve_shipped_template_config_path())
-    override = load_yaml_dict(_current_config_yaml_path())
-    return merge_template_with_override(template, override)
+    """模板与用户 override 合并后的字典（不解析环境变量）。
+
+    [PERF] 实测双 YAML 重读+合并 ~150ms,且经 RuntimePromptRail 的
+    模型名兜底路径被**每次模型调用**触发(每次聊天多付 ~150ms)。按
+    (路径, mtime_ns) 缓存合并结果:文件未变直接复用;配置写入方走
+    invalidate_merged_config_cache() 主动失效(写文件本身也会变 mtime,
+    双保险)。注意:调用方不应修改返回的 dict(共享缓存对象)。
+    """
+    global _MERGED_CONFIG_CACHE, _MERGED_CONFIG_CACHE_KEY
+    tpl_path = resolve_shipped_template_config_path()
+    usr_path = _current_config_yaml_path()
+    try:
+        key = (
+            str(tpl_path),
+            tpl_path.stat().st_mtime_ns if tpl_path.exists() else None,
+            str(usr_path),
+            usr_path.stat().st_mtime_ns if usr_path.exists() else None,
+        )
+    except OSError:
+        key = None
+    if key is not None and key == _MERGED_CONFIG_CACHE_KEY and _MERGED_CONFIG_CACHE is not None:
+        return _MERGED_CONFIG_CACHE
+    template = load_yaml_dict(tpl_path)
+    override = load_yaml_dict(usr_path)
+    merged = merge_template_with_override(template, override)
+    if key is not None:
+        _MERGED_CONFIG_CACHE_KEY = key
+        _MERGED_CONFIG_CACHE = merged
+    return merged
 
 
 def resolve_env_vars(value: Any) -> Any:
@@ -376,6 +412,7 @@ def clear_config_cache(
         ]
         for key in keys_to_remove:
             _resolved_config_by_ns.pop(key, None)
+        invalidate_merged_config_cache()
         if sid == "default" and aid == "default":
             _resolved_config_by_ns.pop(None, None)
             unbound_overlay_keys = [
