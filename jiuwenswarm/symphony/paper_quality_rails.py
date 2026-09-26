@@ -24,8 +24,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any
 
 LOGGER = logging.getLogger(__name__)
 
@@ -34,7 +35,9 @@ LOGGER = logging.getLogger(__name__)
 # defensively so the module degrades to the standalone evaluator when the Core
 # package is not installed.
 try:  # pragma: no cover - exercised implicitly by the installed/uninstalled env
-    from openjiuwen.harness.rails.base import AgentRail as _AgentRail  # type: ignore[import-untyped]
+    from openjiuwen.harness.rails.base import (
+        AgentRail as _AgentRail,  # type: ignore[import-untyped]
+    )
 except Exception:  # noqa: BLE001 - any import failure means "run standalone"
     _AgentRail = None  # type: ignore[assignment]
 
@@ -42,6 +45,21 @@ except Exception:  # noqa: BLE001 - any import failure means "run standalone"
 DEFAULT_MIN_SCORE = 60
 # A produced result is only treated as a paper above this length / with headings.
 _MIN_PAPER_CHARS = 500
+
+# Length thresholds.  The target artifact is an English ICLR-style paper, but
+# ``REQUIRED_SECTIONS`` also matches Chinese headings, so the evaluator must
+# accept Chinese papers too.  English length is measured in words
+# (``MIN_PAPER_WORDS``) and Chinese length in characters
+# (``MIN_PAPER_CJK_CHARS``).  A Chinese character carries roughly twice the
+# information of an English word, so ``MIN_PAPER_CJK_CHARS`` (4000) Chinese
+# characters is treated as equivalent to ``MIN_PAPER_WORDS`` (2000) English
+# words -- a 2:1 character:word ratio.  ``word_count`` reports the *raw* count
+# (CJK characters + English words); the *effective* length (:func:`_count_length`)
+# normalises the CJK part to English-word units so a single threshold covers
+# both languages.
+MIN_PAPER_WORDS = 2000
+MIN_PAPER_CJK_CHARS = 4000
+_CJK_PER_ENGLISH_WORD = MIN_PAPER_CJK_CHARS / MIN_PAPER_WORDS  # 2.0
 
 # Required paper sections: (name, heading pattern).
 REQUIRED_SECTIONS = [
@@ -107,8 +125,8 @@ def evaluate_paper_quality(paper_text: str) -> PaperQualityReport:
         else:
             missing.append(section_name)
 
-    # 2. word count
-    word_count = len(text.split())
+    # 2. word count (CJK-aware: whitespace splitting is meaningless for Chinese)
+    word_count, effective_word_count = _count_length(text)
 
     # 3. references
     reference_count = len(re.findall(r"^\[\d+\]", text, re.MULTILINE))
@@ -117,8 +135,11 @@ def evaluate_paper_quality(paper_text: str) -> PaperQualityReport:
     has_latex = bool(re.search(r"\$.*?\$", text))
 
     # 5. quality problems
-    if word_count < 2000:
-        issues.append(f"论文字数不足（{word_count}字，建议≥2000字）")
+    if effective_word_count < MIN_PAPER_WORDS:
+        issues.append(
+            f"论文字数不足（{word_count}字/词，建议≥{MIN_PAPER_WORDS}英文词"
+            f"或≥{MIN_PAPER_CJK_CHARS}中文字）"
+        )
     if reference_count < 5:
         issues.append(f"参考文献不足（{reference_count}条，建议≥5条）")
     if not has_latex:
@@ -129,9 +150,9 @@ def evaluate_paper_quality(paper_text: str) -> PaperQualityReport:
     # 6. quality score
     score = 0.0
     score += (found_sections / len(REQUIRED_SECTIONS)) * 30  # completeness: 30
-    score += min(word_count / 3000, 1.0) * 20                # length: 20
-    score += min(reference_count / 10, 1.0) * 20             # references: 20
-    score += 10 if has_latex else 0                          # formulas: 10
+    score += min(effective_word_count / 3000, 1.0) * 20  # length: 20
+    score += min(reference_count / 10, 1.0) * 20  # references: 20
+    score += 10 if has_latex else 0  # formulas: 10
     score += 20 if not issues else max(0, 20 - len(issues) * 5)  # cleanliness: 20
     score_int = int(min(score, 100))
 
@@ -154,7 +175,7 @@ class _FallbackRail:
 
     priority = 50
 
-    def init(self, agent: Any) -> None:  # noqa: D401 - matches Core signature
+    def init(self, agent: Any) -> None:
         """No-op init mirroring the Core rail lifecycle."""
 
     def uninit(self, agent: Any) -> None:
@@ -215,7 +236,7 @@ class PaperQualityRail(_RailBase):
         if self._on_issues is not None:
             try:
                 self._on_issues(report)
-            except Exception:  # noqa: BLE001 - a rail must never break the agent
+            except Exception:
                 LOGGER.warning("paper quality on_issues callback failed", exc_info=True)
 
     def _capture_quality_issues(
@@ -290,6 +311,24 @@ def register_paper_quality_rail(harness: Any, **kwargs: Any) -> PaperQualityRail
 
 
 # -- helpers ----------------------------------------------------------------
+
+
+def _count_length(text: str) -> tuple[int, float]:
+    """Return ``(raw_word_count, effective_english_word_count)`` for a paper.
+
+    ``raw_word_count`` is the official mixed-language metric: CJK characters
+    plus English words (``len(text.split())`` is useless for Chinese, which has
+    no inter-word spaces).  ``effective`` normalises the CJK part to
+    English-word units using the 2:1 character:word ratio described next to the
+    ``MIN_PAPER_*`` constants, so a single ``MIN_PAPER_WORDS`` threshold applies
+    to both languages.
+    """
+
+    chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
+    english_words = len(re.findall(r"[a-zA-Z]+", text))
+    raw = chinese_chars + english_words
+    effective = english_words + chinese_chars / _CJK_PER_ENGLISH_WORD
+    return raw, effective
 
 
 def _extract_paper_text(inputs: Any) -> str | None:
@@ -397,11 +436,13 @@ def _as_mapping_list(value: Any) -> list[Mapping[str, Any]]:
 
 
 __all__ = [
-    "evaluate_paper_quality",
-    "register_paper_quality_rail",
-    "build_paper_quality_rail",
+    "DEFAULT_MIN_SCORE",
+    "MIN_PAPER_CJK_CHARS",
+    "MIN_PAPER_WORDS",
+    "REQUIRED_SECTIONS",
     "PaperQualityRail",
     "PaperQualityReport",
-    "REQUIRED_SECTIONS",
-    "DEFAULT_MIN_SCORE",
+    "build_paper_quality_rail",
+    "evaluate_paper_quality",
+    "register_paper_quality_rail",
 ]

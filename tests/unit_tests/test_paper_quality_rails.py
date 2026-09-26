@@ -47,6 +47,23 @@ def _incomplete_paper() -> str:
     return "## Abstract\n" + "word " * 120
 
 
+def _chinese_paper(chars_per_section: int = 1200) -> str:
+    """A Chinese paper with enough CJK characters to clear the length check."""
+
+    sentence = "本文提出了一种新颖的方法来解决重要问题并进行了充分的实验验证。"
+    block = sentence * (chars_per_section // len(sentence) + 1)
+    return "\n\n".join(
+        [
+            "## 摘要\n" + block,
+            "## 引言\n" + block,
+            "## 方法\n" + block + "\n$E = mc^2$",
+            "## 实验\n" + block,
+            "## 结论\n" + block,
+            "## 参考文献\n" + "\n".join(f"[{i}] 参考文献 {i}" for i in range(1, 7)),
+        ]
+    )
+
+
 def _trajectory_with_text(text: str) -> dict:
     return {
         "resourceSpans": [
@@ -123,6 +140,22 @@ def test_short_paper_flags_length_references_and_formula():
     assert "论文字数不足" in joined
     assert "参考文献不足" in joined
     assert "未检测到数学公式" in joined
+
+
+def test_chinese_paper_passes_length_check():
+    # A whitespace split would return a handful of tokens for Chinese text;
+    # the CJK-aware count must recognise a normal Chinese paper as long enough.
+    report = evaluate_paper_quality(_chinese_paper())
+    assert "论文字数不足" not in " ".join(report.issues)
+    assert report.word_count >= 4000  # 5 sections * 1200 CJK chars
+    assert report.missing_sections == []
+    assert report.is_complete is True
+
+
+def test_short_chinese_paper_flags_length():
+    report = evaluate_paper_quality("## 摘要\n这是一篇很短的论文。")
+    assert any("论文字数不足" in issue for issue in report.issues)
+    assert report.word_count > 0  # CJK characters are counted, not split on spaces
 
 
 def test_empty_text_scores_low_and_misses_everything():
