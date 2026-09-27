@@ -815,6 +815,7 @@ export function ChatTimelineList({
             <ToolGroupDisplay
               key={`${timelineScope}/${item.key}-deliverable`}
               executions={deliverables}
+              sessionId={sessionId}
               notices={[]}
               showAvatar={false}
               teamLayout={isTeamMode}
@@ -844,6 +845,7 @@ export function ChatTimelineList({
         ) : (
           <ToolGroupDisplay
             executions={item.executions}
+            sessionId={sessionId}
             notices={item.notices}
             showAvatar={hideAvatar ? false : item.showAvatar}
             teamLayout={isTeamMode}

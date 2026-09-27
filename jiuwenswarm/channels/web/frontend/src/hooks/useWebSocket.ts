@@ -155,6 +155,7 @@ import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
 import { isDepartedTeamMemberStatus, reconcileSnapshotRoster } from '../features/teamMemberDeparture';
 import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifecycle';
 import { toTaskTimelineEntry } from '../components/teamArea/groupChatTimeline';
+import { getMcpAppContexts } from '../features/mcpApps/mcpAppContext';
 
 const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
 const TEAM_CONNECTION_GRACE_MS = 5000;
@@ -2257,6 +2258,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const inputMode = activeGoal?.status === 'active' ? 'steer' : undefined;
         const outgoingMode = resolveOutgoingMode(sessionId, currentMode);
         const sessionMetadata = useSessionStore.getState().getRuntime(sessionId)?.metadata;
+        const mcpAppContexts = getMcpAppContexts(sessionId);
+        const requestMetadata = sessionMetadata || mcpAppContexts.length > 0
+          ? {
+              ...(sessionMetadata ?? {}),
+              ...(mcpAppContexts.length > 0 ? { mcp_app_contexts: mcpAppContexts } : {}),
+            }
+          : undefined;
         const sessionRt = useSessionStore.getState().getRuntime(sessionId);
         await request('chat.send', {
           session_id: sessionId,
@@ -2278,7 +2286,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(provenance.prompt_suggestion ? { prompt_suggestion: provenance.prompt_suggestion } : {}),
           ...(inputMode ? { input_mode: inputMode } : {}),
           ...resolvePlanEntryPayload(sessionId, outgoingMode),
-          ...(sessionMetadata ? { metadata: sessionMetadata } : {}),
+          ...(requestMetadata ? { metadata: requestMetadata } : {}),
           enable_swarmflow: Boolean(sessionRt?.enableSwarmflow),
           ...(sessionRt?.enableSwarmflow && sessionRt.swarmflowBudget != null
             ? { swarmflow_budget: sessionRt.swarmflowBudget }

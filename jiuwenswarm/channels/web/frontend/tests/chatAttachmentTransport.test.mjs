@@ -44,6 +44,8 @@ const { useWebSocket } = await import('../node_modules/.cache/permission-answer-
 const { useChatStore, useSessionStore } = await import('../node_modules/.cache/permission-answer-transport/stores/index.js');
 const { default: i18n } = await import('../node_modules/.cache/permission-answer-transport/i18n/index.js');
 const { webClient } = await import('../node_modules/.cache/permission-answer-transport/services/webClient.js');
+const { registerMcpAppInstance, updateMcpAppContext } =
+  await import('../node_modules/.cache/permission-answer-transport/features/mcpApps/mcpAppContext.js');
 const { setMultiModelCollaborationEnabled } = await import('../node_modules/.cache/permission-answer-transport/features/multiModelCollaboration/featureConfig.js');
 const sessionId = 'attachment-transport';
 async function mounted(run) {
@@ -84,6 +86,29 @@ function persisted(request) {
     path: `/uploads/${source.filename}`, size_bytes: source.size_bytes ?? source.sizeBytes,
   })) };
 }
+test('chat.send attaches only the target session MCP App snapshot and retains other metadata', async () => mounted(async ({ observed, socket }) => {
+  const identity = { sessionId, appInstanceId: 'map-call', server: 'map', tool: 'show_map', resourceUri: 'ui://map/app.html' };
+  const other = { ...identity, sessionId: 'other-session' };
+  const dispose = registerMcpAppInstance(identity);
+  const disposeOther = registerMcpAppInstance(other);
+  try {
+    updateMcpAppContext(identity, { structuredContent: { place: 'Paris' } });
+    updateMcpAppContext(other, { structuredContent: { place: 'London' } });
+    useSessionStore.getState().setSessionMetadata(sessionId, { skip_a2ui: true });
+    let result;
+    await act(async () => { result = observed.api.sendMessage('use the selected place', sessionId); });
+    const send = socket.requests.at(-1);
+    assert.equal(send.method, 'chat.send');
+    assert.equal(send.params.metadata.skip_a2ui, true);
+    assert.equal(send.params.metadata.mcp_app_contexts.length, 1);
+    assert.deepEqual(send.params.metadata.mcp_app_contexts[0].structured_content, { place: 'Paris' });
+    await respond(socket, send, { accepted: true });
+    assert.equal(await result, true);
+  } finally {
+    dispose();
+    disposeOther();
+  }
+}));
 for (const kinds of [Array(20).fill('image'), Array(20).fill('document'), ['image', ...Array(19).fill('document')]]) {
   test(`new session preserves ${kinds.filter(k => k === 'image').length} images and ${kinds.filter(k => k === 'document').length} documents`, async () => mounted(async ({ observed, socket }) => {
     const items = kinds.map((kind, i) => item(kind, i));

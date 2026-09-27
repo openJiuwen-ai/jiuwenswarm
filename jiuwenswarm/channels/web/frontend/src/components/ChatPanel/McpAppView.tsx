@@ -14,7 +14,7 @@
  * approval: tool annotations such as readOnlyHint are untrusted server hints.
  * "Always allow" is remembered per app view and tool only.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   AppBridge,
@@ -31,6 +31,14 @@ import {
   openAppLink,
   type McpAppResource,
 } from '../../features/mcpApps/mcpAppHost';
+import {
+  beginMcpAppMessageRequest,
+  dispatchMcpAppMessage,
+  normalizeMcpAppMessage,
+  registerMcpAppInstance,
+  updateMcpAppContext,
+  type McpAppInstanceIdentity,
+} from '../../features/mcpApps/mcpAppContext';
 import './McpAppView.css';
 
 const HOST_INFO = { name: 'WorkSwarm', version: '0.2.5' };
@@ -48,11 +56,25 @@ interface PendingApproval {
   resolve: (decision: ApprovalDecision) => void;
 }
 
+interface PendingMessage {
+  text: string;
+  resolve: (approved: boolean) => void;
+  release: () => void;
+}
+
 function colorMode(): 'light' | 'dark' {
   return document.documentElement.dataset.colorMode === 'dark' ? 'dark' : 'light';
 }
 
-export function McpAppView({ app }: { app: McpAppResult }) {
+export function McpAppView({
+  app,
+  sessionId,
+  appInstanceId,
+}: {
+  app: McpAppResult;
+  sessionId: string | null;
+  appInstanceId: string;
+}) {
   const { t } = useTranslation();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [resource, setResource] = useState<McpAppResource | null>(null);
@@ -61,15 +83,32 @@ export function McpAppView({ app }: { app: McpAppResult }) {
   const [error, setError] = useState<string | null>(null);
   const [height, setHeight] = useState(360);
   const [approval, setApproval] = useState<PendingApproval | null>(null);
+  const [pendingMessage, setPendingMessage] = useState<PendingMessage | null>(null);
+  const pendingMessageRef = useRef<PendingMessage | null>(null);
   // Latest tool input/result, read when the app initializes. Store updates can
   // hand us an equal-but-new object; that must not remount the app.
   const appRef = useRef(app);
   appRef.current = app;
-  // Latest ui/update-model-context payload from the app. Kept per view; not
-  // yet forwarded to the agent's context.
-  const modelContextRef = useRef<unknown>(null);
   // Tools the user chose to always allow for this app view (not persisted).
   const alwaysAllowedRef = useRef<Set<string>>(new Set());
+  const identity = useMemo<McpAppInstanceIdentity | null>(() => sessionId ? ({
+    sessionId,
+    appInstanceId,
+    server: app.server,
+    tool: app.tool,
+    resourceUri: app.resourceUri,
+  }) : null, [sessionId, appInstanceId, app.server, app.tool, app.resourceUri]);
+
+  useEffect(() => identity ? registerMcpAppInstance(identity) : undefined, [identity]);
+
+  useEffect(() => () => {
+    const pending = pendingMessageRef.current;
+    if (pending) {
+      pending.release();
+      pending.resolve(false);
+      pendingMessageRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,6 +138,7 @@ export function McpAppView({ app }: { app: McpAppResult }) {
       {
         openLinks: {},
         serverTools: {},
+        message: { text: {} },
         updateModelContext: { text: {} },
         sandbox: { csp: resource.csp },
       },
@@ -139,8 +179,33 @@ export function McpAppView({ app }: { app: McpAppResult }) {
       }
     };
     bridge.onupdatemodelcontext = async (params) => {
-      modelContextRef.current = params;
+      if (!identity) throw new Error('The MCP App view is not interactive.');
+      const result = updateMcpAppContext(identity, params);
+      if (result.error) throw new Error(result.error);
       return {};
+    };
+    bridge.onmessage = async (params) => {
+      if (!identity) return { isError: true };
+      const normalized = normalizeMcpAppMessage(params);
+      if (!normalized.value) return { isError: true, error: normalized.error };
+      const request = beginMcpAppMessageRequest(identity);
+      if (!request.value) return { isError: true, error: request.error };
+      const approved = await new Promise<boolean>((resolve) => {
+        const pending = { text: normalized.value!, resolve, release: request.value! };
+        pendingMessageRef.current = pending;
+        setPendingMessage(pending);
+      });
+      const pending = pendingMessageRef.current;
+      pending?.release();
+      pendingMessageRef.current = null;
+      setPendingMessage(null);
+      if (!approved) return { isError: true };
+      try {
+        const sent = await dispatchMcpAppMessage(identity.sessionId, normalized.value);
+        return sent ? {} : { isError: true };
+      } catch {
+        return { isError: true };
+      }
     };
     bridge.onopenlink = async ({ url }) => {
       const opened = await openAppLink(url);
@@ -184,7 +249,7 @@ export function McpAppView({ app }: { app: McpAppResult }) {
       disposed = true;
       void bridge.teardownResource({}).catch(() => undefined).finally(() => bridge.close());
     };
-  }, [resource, sandboxUrl, app.server, app.tool]);
+  }, [resource, sandboxUrl, app.server, app.tool, identity]);
 
   if (error) {
     return (
@@ -252,6 +317,35 @@ export function McpAppView({ app }: { app: McpAppResult }) {
               onClick={() => approval.resolve('once')}
             >
               {t('mcpApp.allow')}
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {pendingMessage ? (
+        <div
+          className="mcp-app-view__approval mcp-app-view__message-confirmation"
+          role="alertdialog"
+          data-testid="chat-panel-mcp-app-view-message-confirmation"
+        >
+          <div className="mcp-app-view__approval-text" data-testid="chat-panel-mcp-app-view-message-text">
+            <strong>{t('mcpApp.messagePrompt', { app: `${app.server} · ${app.tool}` })}</strong>
+            <pre>{pendingMessage.text}</pre>
+          </div>
+          <div className="mcp-app-view__approval-actions">
+            <button
+              type="button"
+              data-testid="chat-panel-mcp-app-view-message-cancel-btn"
+              onClick={() => pendingMessage.resolve(false)}
+            >
+              {t('mcpApp.cancelMessage')}
+            </button>
+            <button
+              type="button"
+              className="is-primary"
+              data-testid="chat-panel-mcp-app-view-message-send-btn"
+              onClick={() => pendingMessage.resolve(true)}
+            >
+              {t('mcpApp.sendMessage')}
             </button>
           </div>
         </div>

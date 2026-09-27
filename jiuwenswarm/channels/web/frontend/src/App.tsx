@@ -173,6 +173,7 @@ import {
   buildA2UIClientEventContent,
   setA2UIActionHandler,
 } from './features/a2ui/actionBridge';
+import { setMcpAppMessageHandler } from './features/mcpApps/mcpAppContext';
 import { executeDesktopSave } from './utils/desktopSave';
 import { restoreSessionEquipment } from './utils/enabledExtensions';
 import { generateUuidV4 } from './utils/uuid';
@@ -3694,6 +3695,13 @@ function AppContent({
       );
     });
   }, [sendStructuredChatContent]);
+
+  useEffect(() => setMcpAppMessageHandler(async (targetSessionId, content) => {
+    if (!targetSessionId || targetSessionId === NEW_CONVERSATION_ID) return false;
+    const runtime = useChatStore.getState().getRuntime(targetSessionId);
+    if (runtime?.isProcessing || runtime?.queuePaused) return false;
+    return sendMessage(content, targetSessionId);
+  }), [sendMessage]);
 
   const handleInterrupt = useCallback((newInput?: string) => {
     const currentSessionId = sessionIdRef.current;
