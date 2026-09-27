@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Paper-quality Rail — grade a generated paper after the agent finishes a task.
 
 This adapts the pre-refactor ``symphony/experience/paper_quality_rails.py`` to

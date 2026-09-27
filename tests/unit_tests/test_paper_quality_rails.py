@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Unit tests for the paper-quality evaluator and rail.
 
 Covers the dependency-free evaluator (structure/length/reference/formula

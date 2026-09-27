@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Tiered evolution store for Symphony experience reuse.
 
 Before the September refactor the repository kept reusable experience in

@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Runtime evolution layer for Symphony skill graphs."""
 
 from jiuwenswarm.symphony.evolution.aggregate import build_overlay_from_events

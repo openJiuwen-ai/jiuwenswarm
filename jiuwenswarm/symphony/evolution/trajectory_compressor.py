@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Evolution-trajectory aware compressor for Symphony self-evolution runs.
 
 The upstream evolution layer records one canonical OTLP trajectory per agent

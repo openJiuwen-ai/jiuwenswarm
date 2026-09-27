@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Unit tests for the multi-dimensional hypothesis evaluator.
 
 Exercises the pure-function entry point and the stateful evaluator: keyword

@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Unit tests for the tiered evolution store.
 
 Covers the four core operations (upsert/query/promote/decay), tier priority,

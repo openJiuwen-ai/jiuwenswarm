@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """多维度假设评估器 — 在 Agent 自演进过程中对研究假设进行多维度评分
 
 原始 JiuwenSwarm 的演进模块（symphony/evolution/）只做简单的可行性判断，

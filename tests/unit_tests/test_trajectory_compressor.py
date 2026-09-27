@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Unit tests for the evolution-trajectory compressor.
 
 Covers the native point-list path, the OTLP/``Trajectory`` adaptation path,
