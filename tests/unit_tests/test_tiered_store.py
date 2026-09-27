@@ -52,7 +52,9 @@ def test_upsert_and_query_increments_hit_count():
     assert hits[0].hit_count == 1
 
     store.query("PAPER")  # case-insensitive
-    assert store.get("a").hit_count == 2
+    stored = store.get("a")
+    assert stored is not None
+    assert stored.hit_count == 2
 
 
 def test_query_returns_tier_priority_order_and_respects_top_k():
@@ -102,9 +104,11 @@ def test_promote_moves_hot_mid_records_to_long():
     for _ in range(PROMOTION_HIT_THRESHOLD):
         store.query("beta")
 
-    assert store.get("m").is_promotable(PROMOTION_HIT_THRESHOLD)
+    stored = store.get("m")
+    assert stored is not None
+    assert stored.is_promotable(PROMOTION_HIT_THRESHOLD)
     assert store.promote() == ["m"]
-    assert store.get("m").tier == TIER_LONG
+    assert stored.tier == TIER_LONG
     # a second promote is a no-op
     assert store.promote() == []
 
@@ -118,7 +122,9 @@ def test_decay_degrades_expired_short_to_mid():
     result = store.decay()
 
     assert result["degraded"] == ["s"]
-    assert store.get("s").tier == TIER_MID
+    degraded = store.get("s")
+    assert degraded is not None
+    assert degraded.tier == TIER_MID
 
 
 def test_decay_drops_expired_cold_mid_records():
@@ -146,7 +152,9 @@ def test_decay_promotes_expired_but_hot_mid_records():
 
     assert result["promoted"] == ["m"]
     assert result["dropped"] == []
-    assert store.get("m").tier == TIER_LONG
+    promoted = store.get("m")
+    assert promoted is not None
+    assert promoted.tier == TIER_LONG
 
 
 def test_stats_reports_tier_counts():
