@@ -1684,7 +1684,9 @@ async def test_repository_authorization_status_is_live_bounded_and_credential_fr
     failed = await host.get_authorization_status("gitcode")
     assert failed["state"] == "authorization_failed"
     assert failed["account"] is None
-    assert failed["error"] == "credential verification failed"
+    assert failed["error"] == host_module.localize_error(
+        None, host.error_language, reason="authorization_failed"
+    )
     assert "sensitive" not in repr(failed)
 
 
@@ -2204,7 +2206,7 @@ async def test_set_collection_enabled_persists_and_applies_switch(
     assert saved["collection_enabled"] is False
     assert core.calls == [
         ("start_collection", None),
-        ("stop_collection", 30.0),
+        ("stop_collection", 60.0),
     ]
 
 
@@ -2261,7 +2263,7 @@ async def test_same_disabled_candidate_stops_unexpected_active_runtime_before_pu
     assert result["collection_enabled"] is False
     assert core.active is False
     assert active_at_replace == [True]
-    assert core.calls == [("stop_collection", 30.0)]
+    assert core.calls == [("stop_collection", 60.0)]
 
 
 @pytest.mark.asyncio
@@ -2286,7 +2288,7 @@ async def test_collection_hot_switch_does_not_depend_on_snapshot(
     result = await host.set_collection_enabled(False)
 
     assert result["collection_enabled"] is False
-    assert core.calls == [("stop_collection", 30.0)]
+    assert core.calls == [("stop_collection", 60.0)]
     assert core.active is False
     assert len(stage_calls) == 1
     assert host._config is not None
@@ -2313,7 +2315,7 @@ async def test_disable_publishes_false_before_waiting_for_core_stop(
         )
         assert saved_while_waiting["collection_enabled"] is False
         assert host._stored_config is not None
-        assert host._stored_config["collection_enabled"] is True
+        assert host._stored_config["collection_enabled"] is False
 
         core.deactivate_release.set()
         stopped = await task
@@ -2328,16 +2330,13 @@ async def test_disable_publishes_false_before_waiting_for_core_stop(
 
 
 @pytest.mark.asyncio
-async def test_disable_failure_restores_enabled_yaml_memory_and_runtime(
+async def test_disable_failure_preserves_disabled_yaml_memory_without_restart(
     fake_host: tuple[PersonalContextHostAPI, FakeCore],
     tmp_path: Path,
 ) -> None:
     host, core = fake_host
     await host.configure(_config(enabled=True, root_dir=tmp_path))
     core.snapshot_result = _FakeStatus()
-    old_yaml = host._config_path.read_bytes()
-    old_config = host._config
-    old_stored = deepcopy(host._stored_config)
     core.calls.clear()
     core.deactivate_changes_active_before_error = True
     core.deactivate_error = RuntimeError("collection stop failed")
@@ -2345,29 +2344,22 @@ async def test_disable_failure_restores_enabled_yaml_memory_and_runtime(
     with pytest.raises(PersonalContext.Error):
         await host.set_collection_enabled(False)
 
-    assert host._config == old_config
-    assert host._stored_config == old_stored
-    assert host._config_path.read_bytes() == old_yaml
-    assert yaml.safe_load(old_yaml)["collection_enabled"] is True
-    assert core.calls == [
-        ("stop_collection", 30.0),
-        ("start_collection", None),
-    ]
-    assert core.active is True
+    assert host._config.collection_enabled is False
+    assert host._stored_config["collection_enabled"] is False
+    assert yaml.safe_load(host._config_path.read_bytes())["collection_enabled"] is False
+    assert core.calls == [("stop_collection", 60.0)]
+    assert core.active is False
     assert list(host._home.glob(".*.tmp")) == []
 
 
 @pytest.mark.asyncio
-async def test_disable_cancellation_restores_enabled_yaml_memory_and_runtime(
+async def test_disable_cancellation_preserves_disabled_intent_without_restart(
     fake_host: tuple[PersonalContextHostAPI, FakeCore],
     tmp_path: Path,
 ) -> None:
     host, core = fake_host
     await host.configure(_config(enabled=True, root_dir=tmp_path))
     core.snapshot_result = _FakeStatus()
-    old_yaml = host._config_path.read_bytes()
-    old_config = host._config
-    old_stored = deepcopy(host._stored_config)
     core.calls.clear()
     core.deactivate_started = asyncio.Event()
     core.deactivate_release = asyncio.Event()
@@ -2393,10 +2385,10 @@ async def test_disable_cancellation_restores_enabled_yaml_memory_and_runtime(
             await task
 
     assert task.cancelled()
-    assert host._config == old_config
-    assert host._stored_config == old_stored
-    assert host._config_path.read_bytes() == old_yaml
-    assert core.active is True
+    assert host._config.collection_enabled is False
+    assert host._stored_config["collection_enabled"] is False
+    assert yaml.safe_load(host._config_path.read_bytes())["collection_enabled"] is False
+    assert core.calls == [("stop_collection", 60.0)]
     assert list(host._home.glob(".*.tmp")) == []
 
 
@@ -3688,3 +3680,243 @@ async def test_concurrent_operations_are_serialized(
             with contextlib.suppress(asyncio.CancelledError):
                 await pending_task
     assert [name for name, _ in core.calls].count("deactivate_runtime") == 2
+
+
+@pytest.mark.asyncio
+async def test_master_stop_timeout_preserves_off_switches_and_real_state(
+    fake_host, tmp_path
+):
+    host, core = fake_host
+    await host.configure(_config(enabled=True, root_dir=tmp_path))
+    core.calls.clear()
+    core.snapshot_result = SimpleNamespace(state="STOPPING")
+    core.deactivate_error = host_module._host_error(
+        "stop deadline exceeded", status_name="CONTEXT_PROACTIVE_RUNTIME_TIMEOUT"
+    )
+    with pytest.raises(PersonalContext.Error):
+        await host.set_master_enabled(False)
+    assert core.calls == [("stop_agent_use", None), ("stop_collection", 60.0)]
+    saved = yaml.safe_load(host._config_path.read_bytes())
+    assert all(
+        saved[key] is False
+        for key in ("master_enabled", "collection_enabled", "agent_use_enabled")
+    )
+    assert (await host.get_runtime_config())["master_enabled"] is False
+    assert await host.is_runtime_enabled() is False
+    assert (await host.get_status()).state == "STOPPING"
+
+
+@pytest.mark.asyncio
+async def test_host_shutdown_uses_sixty_second_budget(fake_host):
+    host, core = fake_host
+    await host.stop()
+    assert core.calls == [("deactivate_runtime", 60.0)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["interval_seconds", "max_items_per_run"])
+@pytest.mark.parametrize("operation", ["create", "patch"])
+async def test_user_service_rejects_fractional_values(
+    fake_host, tmp_path, field, operation
+):
+    host, core = fake_host
+    await host.configure(_config(enabled=False, root_dir=tmp_path))
+    service = _local_service("another", tmp_path)
+    service[field] = 1.5
+    with pytest.raises(PersonalContext.Error):
+        if operation == "create":
+            await host.create_fetch_service(service)
+        else:
+            await host.patch_fetch_service("local-notes", {field: 1.5})
+
+
+@pytest.mark.asyncio
+async def test_error_language_cached_until_master_reenabled(fake_host, monkeypatch):
+    host, core = fake_host
+    language = {"preferred_language": "en"}
+    monkeypatch.setattr(host_module, "get_config", lambda: dict(language))
+    await host.set_master_enabled(True)
+    assert host.error_language == "en"
+    language["preferred_language"] = "zh"
+    await host.get_status()
+    assert host.error_language == "en"
+    await host.set_master_enabled(True)
+    assert host.error_language == "en"
+    await host.set_master_enabled(False)
+    await host.set_master_enabled(True)
+    assert host.error_language == "zh"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "language,expected", [("zh", "名称已存在"), ("en", "already exists")]
+)
+async def test_duplicate_service_error_has_localized_reason(
+    fake_host, tmp_path, language, expected
+):
+    host, core = fake_host
+    host._error_language = language
+    await host.configure(_config(enabled=False, root_dir=tmp_path))
+    with pytest.raises(PersonalContext.Error) as caught:
+        await host.create_fetch_service(_local_service("local-notes", tmp_path))
+    assert expected in host.localize_error(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_run_history_errors_are_localized_without_changing_contract(fake_host):
+    host, core = fake_host
+    host._error_language = "zh"
+    record = {
+        "run_id": "r1",
+        "last_error": "credential=hidden",
+        "item_errors": [
+            {"item_ref": "doc", "code": 154002, "message": "raw IO", "failed_at": "now"}
+        ],
+    }
+
+    async def run_status(*args, **kwargs):
+        return {"services": {"s1": {"runs": [record]}}}
+
+    core.get_fetch_run_status = run_status
+    result = await host.get_fetch_run_status()
+    translated = result["services"]["s1"]["runs"][0]
+    assert "重试" in translated["last_error"]
+    assert "文件" in translated["item_errors"][0]["message"]
+    assert set(translated) == set(record)
+    assert record["last_error"] == "credential=hidden"
+
+
+@pytest.mark.asyncio
+async def test_authorization_result_error_is_localized(fake_host, tmp_path):
+    host, core = fake_host
+    host._error_language = "zh"
+    await host.configure(_config(enabled=False, root_dir=tmp_path))
+    core.authorization_status_result["error"] = "[154003] network token=private"
+    result = await host.get_authorization_status("feishu")
+    assert "数据来源" in result["error"]
+    assert "private" not in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_errors_localized_without_mutating_core(fake_host):
+    host, core = fake_host
+    host._error_language = "zh"
+    core.snapshot_result = PersonalContext.Status(
+        configured=True,
+        collection_enabled=False,
+        agent_use_enabled=False,
+        state="FAILED",
+        pipeline_running=False,
+        pipeline_queue_size=0,
+        fetch_service_states={"source": "FAILED"},
+        fetch_service_errors={"source": "[154003] raw provider error"},
+        context_root="context",
+        context_ready=False,
+        last_error={
+            "code": 154006,
+            "status": "CONTEXT_PROACTIVE_RUNTIME_TIMEOUT",
+            "message": "raw stop error",
+            "operation": "stop",
+        },
+    )
+    status = await host.get_status()
+    assert status.state == "FAILED"
+    assert status.collection_enabled is False
+    assert "超时" in status.last_error["message"]
+    assert "数据来源" in status.fetch_service_errors["source"]
+    assert core.snapshot_result.last_error["message"] == "raw stop error"
+
+
+@pytest.mark.parametrize(
+    "config,expected",
+    [
+        ({}, "zh"),
+        ({"preferred_language": "en"}, "en"),
+        ({"preferred_language": "de"}, "zh"),
+    ],
+)
+def test_host_initial_language_uses_host_default(
+    tmp_path, monkeypatch, config, expected
+):
+    monkeypatch.setattr(host_module, "get_config", lambda: dict(config))
+    assert PersonalContextHostAPI(home=tmp_path).error_language == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run_state", ["idle", "running", "stopping"])
+async def test_runtime_patch_stop_failure_preserves_disabled_intent(
+    fake_host, tmp_path, run_state
+):
+    host, core = fake_host
+    await host.configure(_config(enabled=True, root_dir=tmp_path))
+    core.snapshot_result = SimpleNamespace(
+        state="RUNNING", fetch_run_progress={"local-notes": {"run_state": run_state}}
+    )
+    core.calls.clear()
+    core.deactivate_error = host_module._host_error(
+        "timeout", status_name="CONTEXT_PROACTIVE_RUNTIME_TIMEOUT"
+    )
+    with pytest.raises(PersonalContext.Error):
+        await host.patch_runtime_config({"collection_enabled": False})
+    assert host._stored_config["collection_enabled"] is False
+    assert host._config.collection_enabled is False
+    assert yaml.safe_load(host._config_path.read_bytes())["collection_enabled"] is False
+    assert "activate_runtime" not in [name for name, _ in core.calls]
+    assert "start_collection" not in [name for name, _ in core.calls]
+
+
+@pytest.mark.asyncio
+async def test_runtime_patch_stop_failure_does_not_claim_other_fields_applied(fake_host, tmp_path, monkeypatch):
+    host, core = fake_host
+    _pin_models(monkeypatch, [_model_entry("test-model")])
+    await host.configure(_config(enabled=True, root_dir=tmp_path))
+    core.snapshot_result = SimpleNamespace(state="RUNNING")
+    core.deactivate_error = host_module._host_error(
+        "timeout", status_name="CONTEXT_PROACTIVE_RUNTIME_TIMEOUT"
+    )
+    with pytest.raises(PersonalContext.Error):
+        await host.patch_runtime_config({"collection_enabled": False, "strategy_profile": "balanced"})
+    assert host._stored_config["strategy_profile"] == "rules"
+    assert host._config.strategy_profile == core.configured.strategy_profile == "rules"
+    assert yaml.safe_load(host._config_path.read_bytes())["strategy_profile"] == "rules"
+    assert host._stored_config["collection_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_repeated_disabled_patch_retries_unfinished_stop(fake_host, tmp_path):
+    host, core = fake_host
+    await host.configure(_config(enabled=True, root_dir=tmp_path))
+    core.snapshot_result = SimpleNamespace(state="RUNNING")
+    core.deactivate_error = host_module._host_error(
+        "timeout", status_name="CONTEXT_PROACTIVE_RUNTIME_TIMEOUT"
+    )
+    with pytest.raises(PersonalContext.Error):
+        await host.patch_runtime_config({"collection_enabled": False})
+    core.snapshot_result = SimpleNamespace(state="FAILED", pipeline_running=True)
+    core.calls.clear()
+    await host.patch_runtime_config({"collection_enabled": False})
+    assert ("stop_collection", 60.0) in core.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "language,expected", [("zh", "采集已关闭"), ("en", "collection is disabled")]
+)
+async def test_disabled_collection_error_uses_explicit_reason(
+    fake_host, tmp_path, language, expected
+):
+    host, core = fake_host
+    host._error_language = language
+    await host.configure(_config(enabled=False, root_dir=tmp_path))
+    error = host_module._host_error(
+        "deliberately unrelated text", status_name="CONTEXT_PROACTIVE_STATE_INVALID"
+    )
+
+    async def reject_run(**kwargs):
+        raise error
+
+    core.run_fetch = reject_run
+    with pytest.raises(PersonalContext.Error) as caught:
+        await host.run_fetch()
+    assert expected in host.localize_error(caught.value)
+    assert caught.value.code == 154001
