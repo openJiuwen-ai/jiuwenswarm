@@ -18,7 +18,9 @@ from jiuwenswarm.symphony.paper_quality_rails import (
 )
 
 try:  # pragma: no cover - depends on the installed Core package
-    from openjiuwen.harness.rails.base import AgentRail as _AgentRail
+    from openjiuwen.harness.rails.base import (  # type: ignore[import-untyped]
+        AgentRail as _AgentRail,
+    )
 except Exception:  # noqa: BLE001
     _AgentRail = None
 
@@ -219,7 +221,7 @@ async def test_after_task_iteration_ignores_non_paper_results():
 def test_register_paper_quality_rail_registers_or_returns():
     class _Harness:
         def __init__(self) -> None:
-            self.rails = []
+            self.rails: list = []
 
         def register_rail(self, rail) -> None:
             self.rails.append(rail)

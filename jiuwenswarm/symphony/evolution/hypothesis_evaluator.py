@@ -115,7 +115,7 @@ class HypothesisEvaluator:
         "产业",
     ]
 
-    def __init__(self, llm_callback=None):
+    def __init__(self, llm_callback: LLMCallback | None = None) -> None:
         """
         Args:
             llm_callback: 可选的 LLM 评估回调，签名为 (hypothesis_text) -> dict
@@ -124,7 +124,7 @@ class HypothesisEvaluator:
         self._llm_callback = llm_callback
         self._history: list[dict] = []  # 评估历史
 
-    def evaluate(self, hypothesis: dict) -> HypothesisScore:
+    def evaluate(self, hypothesis: Mapping[str, Any]) -> HypothesisScore:
         """评估单个假设
 
         Args:
@@ -177,7 +177,7 @@ class HypothesisEvaluator:
                 return best
         return None
 
-    def _rule_based_score(self, hypothesis: dict) -> HypothesisScore:
+    def _rule_based_score(self, hypothesis: Mapping[str, Any]) -> HypothesisScore:
         """基于规则的评分"""
         title = hypothesis.get("title", "")
         problem = hypothesis.get("problem", "")
@@ -221,7 +221,7 @@ class HypothesisEvaluator:
             reasoning=f"规则评分：可行性={feasibility}(关键词匹配), 创新性={novelty}, 影响力={impact}",
         )
 
-    def _llm_based_score(self, hypothesis: dict) -> HypothesisScore | None:
+    def _llm_based_score(self, hypothesis: Mapping[str, Any]) -> HypothesisScore | None:
         """使用 LLM 进行深度评估"""
         if not self._llm_callback:
             return None

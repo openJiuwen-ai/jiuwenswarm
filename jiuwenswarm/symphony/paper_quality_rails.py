@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,8 +35,8 @@ LOGGER = logging.getLogger(__name__)
 # defensively so the module degrades to the standalone evaluator when the Core
 # package is not installed.
 try:  # pragma: no cover - exercised implicitly by the installed/uninstalled env
-    from openjiuwen.harness.rails.base import (
-        AgentRail as _AgentRail,  # type: ignore[import-untyped]
+    from openjiuwen.harness.rails.base import (  # type: ignore[import-untyped]
+        AgentRail as _AgentRail,
     )
 except Exception:  # noqa: BLE001 - any import failure means "run standalone"
     _AgentRail = None  # type: ignore[assignment]
@@ -403,6 +403,7 @@ def _iter_spans(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 def _iter_span_strings(span: Mapping[str, Any]) -> list[str]:
     attributes = span.get("attributes")
     values: list[str] = []
+    items: Iterable[tuple[Any, Any]]
     if isinstance(attributes, Mapping):
         items = attributes.items()
     elif isinstance(attributes, list):
