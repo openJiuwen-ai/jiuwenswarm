@@ -57,7 +57,7 @@ class TrajectoryPoint:
     step: int
     score: float
     tokens: int = 0
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -82,7 +82,7 @@ class CompressionResult:
     compression_ratio: float
     key_turning_points: list[int]  # step indices of the turning points
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "segments": [
                 {

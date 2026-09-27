@@ -39,7 +39,7 @@ try:  # pragma: no cover - exercised implicitly by the installed/uninstalled env
         AgentRail as _AgentRail,
     )
 except Exception:  # noqa: BLE001 - any import failure means "run standalone"
-    _AgentRail = None  # type: ignore[assignment]
+    _AgentRail = None
 
 # Minimum score (0-100) for the rail to treat a paper as accepted.
 DEFAULT_MIN_SCORE = 60
@@ -85,7 +85,7 @@ class PaperQualityReport:
     issues: list[str]
     score: int  # 0-100
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "is_complete": self.is_complete,
             "missing_sections": self.missing_sections,
@@ -182,10 +182,10 @@ class _FallbackRail:
         """No-op uninit mirroring the Core rail lifecycle."""
 
 
-_RailBase: type = _AgentRail if _AgentRail is not None else _FallbackRail
+_RailBase: type[Any] = _AgentRail if _AgentRail is not None else _FallbackRail
 
 
-class PaperQualityRail(_RailBase):
+class PaperQualityRail(_RailBase):  # type: ignore[misc]  # dynamic base: AgentRail or fallback
     """Rail that grades a paper artifact after each task iteration.
 
     Args:

@@ -55,7 +55,7 @@ class HypothesisScore:
         else:
             return "reject"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "feasibility": self.feasibility,
             "novelty": self.novelty,
@@ -122,7 +122,7 @@ class HypothesisEvaluator:
                           如果提供，将使用 LLM 进行深度评估
         """
         self._llm_callback = llm_callback
-        self._history: list[dict] = []  # 评估历史
+        self._history: list[dict[str, Any]] = []  # 评估历史
 
     def evaluate(self, hypothesis: Mapping[str, Any]) -> HypothesisScore:
         """评估单个假设
@@ -153,8 +153,8 @@ class HypothesisEvaluator:
         return score
 
     def evaluate_batch(
-        self, hypotheses: list[dict]
-    ) -> list[tuple[dict, HypothesisScore]]:
+        self, hypotheses: list[dict[str, Any]]
+    ) -> list[tuple[dict[str, Any], HypothesisScore]]:
         """批量评估并按总分排序"""
         scored = []
         for h in hypotheses:
@@ -165,8 +165,8 @@ class HypothesisEvaluator:
         return scored
 
     def select_best(
-        self, hypotheses: list[dict], min_score: int = MIN_THRESHOLD
-    ) -> dict | None:
+        self, hypotheses: list[dict[str, Any]], min_score: int = MIN_THRESHOLD
+    ) -> dict[str, Any] | None:
         """从假设列表中选择评分最高的"""
         scored = self.evaluate_batch(hypotheses)
         for h, s in scored:
@@ -239,7 +239,7 @@ class HypothesisEvaluator:
         return None
 
     @property
-    def history(self) -> list[dict]:
+    def history(self) -> list[dict[str, Any]]:
         return self._history
 
 
