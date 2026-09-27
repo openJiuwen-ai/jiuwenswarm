@@ -97,6 +97,7 @@ export function PersonalContextServicesPanel({
     runHistories,
     loadingServices,
     pendingWrites,
+    configNeedsReconciliation,
     batchRefresh,
     loadGraph,
     setServiceEnabled,
@@ -146,6 +147,14 @@ export function PersonalContextServicesPanel({
   }, [isConnected, isActive, batchRefresh, loadGraph, loadAuthStatus]);
 
   const services = config.fetch_services;
+  const collectionStopping = status?.state === 'STOPPING';
+  const runBlockedReason = collectionStopping
+    ? t('personalContext.services.collectionStoppingHint')
+    : configNeedsReconciliation
+      ? t('personalContext.settings.collectionReconciling')
+      : !(config.master_enabled ?? (config.collection_enabled || config.agent_use_enabled)) || !config.collection_enabled
+        ? t('personalContext.services.collectionDisabledHint')
+        : null;
 
   // 默认选中首个有内容的分类；用户手动选过则不再自动切换。
   useEffect(() => {
@@ -401,6 +410,8 @@ export function PersonalContextServicesPanel({
                     }
                     runPending={!!pendingWrites[`run:${s.service_id}`]}
                     stopping={!!pendingWrites[`stop:${s.service_id}`]}
+                    runBlockedReason={runBlockedReason}
+                    isConnected={isConnected}
                     onRun={handleRun}
                     onStop={handleStop}
                     onToggle={handleToggle}
@@ -472,6 +483,7 @@ const STATUS_RING_COLORS: Record<string, string> = {
   stateFailed: '#F23030',
   stateCollecting: '#5CB300',
   stateStopping: '#808080',
+  stateCancelled: 'var(--color-text-secondary)',
 };
 
 function StatusIcon({ statusKey }: { statusKey: string }) {
@@ -502,6 +514,8 @@ function ServiceCard({
   pending,
   runPending,
   stopping,
+  runBlockedReason,
+  isConnected,
   onRun,
   onStop,
   onToggle,
@@ -516,6 +530,8 @@ function ServiceCard({
   pending: boolean;
   runPending: boolean;
   stopping: boolean;
+  runBlockedReason: string | null;
+  isConnected: boolean;
   onRun: (id: string) => void;
   onStop: (id: string) => void;
   onToggle: (id: string, enabled: boolean) => void;
@@ -532,15 +548,20 @@ function ServiceCard({
     : serviceRunning;
   const isCollecting = runPending || activeRun;
   const isStopping = state === 'STOPPING' || stopping || runState === 'stopping';
+  const manualRunBlockedReason = isStopping ? t('personalContext.services.collectionStoppingHint') : runBlockedReason;
+  const runHintId = `personal-context-run-hint-${encodeURIComponent(service.service_id)}`;
 
-  // 最近一次运行结果（历史记录，持久）：成功/失败以此为准，
-  // 不依赖 fetch_run_progress 终态残留，快照缺失/重置/重启不会闪变状态。
-  const lastRunState = lastRun?.run_state;
+  // 当前终态优先；历史请求失败时不能展示上一轮成果。进度重置/重启后回退到持久历史。
+  const resultRun = progress && ['succeeded', 'partial_succeeded', 'failed', 'cancelled'].includes(progress.run_state)
+    ? progress
+    : lastRun;
+  const lastRunState = resultRun?.run_state;
   const lastRunFailed =
     lastRunState === 'failed' || state === 'FAILED' || (!!lastError && state === 'STOPPED');
   const lastRunCompleted = lastRunState === 'succeeded';
   const lastRunPartial = lastRunState === 'partial_succeeded';
-  const errorText = lastRun?.last_error ?? lastError;
+  const lastRunCancelled = lastRunState === 'cancelled';
+  const errorText = resultRun?.last_error ?? lastError;
   // 失败提示只在非采集/非停止时展示：采集中旧失败标记不应残留（与 statusKey 优先级一致）
   const showFailedHint = !isStopping && !isCollecting && lastRunFailed && !!errorText;
 
@@ -554,9 +575,30 @@ function ServiceCard({
           ? 'statePartial'
           : lastRunCompleted
             ? 'stateCompleted'
-            : !service.enabled
-              ? 'stateStopped'
-              : 'stateWaiting';
+            : lastRunCancelled
+              ? 'stateCancelled'
+              : !service.enabled
+                ? 'stateStopped'
+                : 'stateWaiting';
+
+  const terminalRun = !isCollecting && !isStopping && resultRun &&
+    ['succeeded', 'partial_succeeded', 'failed', 'cancelled'].includes(resultRun.run_state) &&
+    (!lastRunFailed || resultRun.run_state === 'failed');
+  const resultText = terminalRun
+    ? lastRunCompleted && resultRun.no_new_content === true
+      ? t('personalContext.services.noNewContent')
+      : [
+          resultRun.created_node_count != null
+            ? t('personalContext.services.createdNodes', {
+                nodes: resultRun.created_node_count,
+                files: resultRun.created_node_count,
+              })
+            : null,
+          resultRun.updated_node_count != null && resultRun.updated_node_count > 0
+            ? t('personalContext.services.updatedNodes', { count: resultRun.updated_node_count })
+            : null,
+        ].filter(Boolean).join(' · ')
+    : '';
 
   const percent = progress?.progress_percent;
   // 采集中即展示进度条（含 0%），避免后端尚未上报总量时进度条消失，让用户看到"采集中"进度占位。
@@ -581,7 +623,7 @@ function ServiceCard({
     : undefined;
 
   return (
-    <div className="pc-services__card">
+    <div className="pc-services__card" data-testid="personal-context-service-card" data-variant={service.service_id}>
       <div className="pc-services__card-head" title={service.service_id}>
         {service.service_id}
       </div>
@@ -616,9 +658,9 @@ function ServiceCard({
           >
             {statusKey === 'statePartial'
               ? t('personalContext.services.statePartial', {
-                completed: lastRun?.completed_items ?? 0,
-                total: lastRun?.total_items ?? 0,
-                failed: lastRun?.failed_items ?? 0,
+                completed: resultRun?.completed_items ?? 0,
+                total: resultRun?.total_items ?? 0,
+                failed: resultRun?.failed_items ?? 0,
               })
               : t(`personalContext.services.${statusKey}`)}
           </span>
@@ -646,11 +688,19 @@ function ServiceCard({
         {/* 右：操作按钮 + 开关 */}
         <div className="pc-services__card-actions">
           {activeRun ? (
-            <button type="button" className="pc-services__action-link" onClick={() => onStop(service.service_id)} disabled={pending}>
+            <button type="button" className="pc-services__action-link" data-testid="personal-context-service-stop" onClick={() => onStop(service.service_id)} disabled={pending || isStopping}>
               {t('personalContext.services.actionStop')}
             </button>
           ) : (
-            <button type="button" className="pc-services__action-link" onClick={() => onRun(service.service_id)} disabled={pending}>
+            <button
+              type="button"
+              className="pc-services__action-link"
+              data-testid="personal-context-service-run"
+              onClick={() => onRun(service.service_id)}
+              disabled={pending || !isConnected || !!manualRunBlockedReason}
+              title={manualRunBlockedReason ?? undefined}
+              aria-describedby={manualRunBlockedReason ? runHintId : undefined}
+            >
               {t('personalContext.services.actionRunNow')}
             </button>
           )}
@@ -668,6 +718,18 @@ function ServiceCard({
           />
         </div>
       </div>
+      {resultText && (
+        <div className="pc-services__result" data-testid="personal-context-service-result">{resultText}</div>
+      )}
+      {manualRunBlockedReason && !activeRun && (
+        <div
+          className="pc-services__run-hint"
+          id={runHintId}
+          data-testid="personal-context-service-run-hint"
+        >
+          {manualRunBlockedReason}
+        </div>
+      )}
     </div>
   );
 }
