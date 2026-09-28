@@ -91,6 +91,41 @@ def test_phase_boundary_and_order_survive_both_wire_conversions(event_type):
     assert {key: payload.get(key) for key in fields} == fields
 
 
+def test_proactive_markers_survive_chat_delta_wire_and_web_payload():
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+
+    fields = {
+        "source": "proactive_recommendation",
+        "proactive_type": "skill_recommend",
+        "proactive_target": "docx-pro",
+        "proactive_rec_id": "rec_1790593225843_671157ce",
+    }
+    chunk = AgentResponseChunk(
+        request_id="proactive-A",
+        channel_id="web",
+        is_complete=False,
+        payload={"event_type": "chat.delta", "content": "推荐正文", **fields},
+    )
+    restored = e2a_response_to_agent_chunk(
+        e2a_response_from_agent_chunk(chunk, response_id="proactive-A", sequence=1)
+    )
+    message = Message(
+        id=restored.request_id,
+        type="event",
+        channel_id="web",
+        session_id="session-A",
+        params={},
+        timestamp=1,
+        ok=True,
+        payload=restored.payload,
+    )
+    payload = WebChannel._build_event_payload(message, "chat.delta")
+    assert {key: payload.get(key) for key in fields} == fields
+    assert payload["content"] == "推荐正文"
+
+
 def test_message_to_e2a_or_fallback_basic():
     msg = Message(
         id="r1",
