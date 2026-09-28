@@ -22,6 +22,7 @@ from openjiuwen.agent_teams import observability as team_observability
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger
 from openjiuwen.harness import DeepAgent
+from openjiuwen.harness_protocol.state import HarnessState
 from openjiuwen.harness.rails import (
     EvolutionInterruptRail,
     SkillEvolutionRail,
@@ -905,6 +906,16 @@ class TeamManager:
             controller = BackgroundTaskController()
             self._background_task_controllers[session_id] = controller
         return controller
+
+    def find_background_task_controller(
+        self, session_id: str
+    ) -> BackgroundTaskController | None:
+        """The session's controller when one already exists, else None.
+
+        Read-only companion of :meth:`get_background_task_controller`: state
+        checks must not lazily seed the registry with an empty controller.
+        """
+        return self._background_task_controllers.get(session_id)
 
     def has_swarmflow_runs(self, session_id: str) -> bool:
         """Whether the session's controller still holds active or paused runs.
@@ -2197,12 +2208,13 @@ class TeamManager:
         session_id: str,
         channel_id: str | None = None,
     ) -> bool:
-        """Attach distributed bootstrap hooks to Runner-owned TeamAgent.
+        """Track Runner-owned TeamAgent, then attach hooks in distributed mode.
 
         When team streaming uses Runner.run_agent_team_streaming(), the actual
         TeamAgent is created and cached by openjiuwen TeamRuntimeManager pool,
         not by TeamManager.create_team(). This method retrieves the Runner-owned
-        TeamAgent from GLOBAL_RUNNER's pool and attaches distributed hooks.
+        TeamAgent from GLOBAL_RUNNER's pool for execution checks in every mode.
+        Distributed bootstrap hooks are attached only in distributed mode.
 
         Args:
             team_name: Team name to look up in Runner pool.
@@ -2212,21 +2224,11 @@ class TeamManager:
         Returns:
             True if hooks attached successfully, False otherwise.
         """
-        config_base = get_config()
-        if not self._is_distributed_mode(config_base):
-            logger.debug(
-                "[TeamManager] non-distributed mode; skip Runner runtime hooks "
-                "team_name=%s session_id=%s",
-                team_name,
-                session_id,
-            )
-            return False
-
         from openjiuwen.core.runner.runner import GLOBAL_RUNNER
 
         runtime_mgr = _runner_team_runtime_manager(GLOBAL_RUNNER)
         active_team = await runtime_mgr.pool.get(team_name)
-        if active_team is None:
+        if active_team is None or active_team.current_session_id != session_id:
             logger.warning(
                 "[TeamManager] Runner pool has no active team for distributed hooks "
                 "team_name=%s session_id=%s",
@@ -2246,6 +2248,9 @@ class TeamManager:
             return False
 
         self._runner_team_agents[session_id] = team_agent
+
+        if not self._is_distributed_mode(get_config()):
+            return False
 
         try:
             from jiuwenswarm.agents.harness.team.remote_member_bootstrap import (
@@ -3188,19 +3193,42 @@ _team_manager: TeamManager | None = None
 
 
 def is_team_session_running(session_id: str) -> bool:
-    """Inspect existing team state without creating or stopping a runtime.
+    """Read executing members and workflow agents, without counting ownership.
 
-    Only an admitted turn counts: an in-flight request still preparing, or an
-    active interaction round.  The persistent stream task and the pooled
-    runtime deliberately outlive the round, so keying on them kept a finished
-    Session "running" until the runtime was torn down.
+    Request, round, stream and runtime registrations may all survive execution.
+    They are not evidence that the Session is busy.
     """
     manager = _team_manager
     if manager is None:
         return False
-    return bool(
-        manager.has_inflight_request(session_id)
-        or manager.is_round_active(session_id)
+    team_agent = manager.get_team_agent(session_id)
+    if team_agent is not None:
+        # Cooperative pause waits for the executing tool to reach a boundary.
+        # PAUSING still executes; only the acknowledged PAUSED state is idle.
+        if team_agent.is_agent_running() or getattr(
+            getattr(team_agent, "harness", None), "state", None
+        ) is HarnessState.PAUSING:
+            return True
+        # The leader keeps the current member statuses from core transitions.
+        # Read peers only: its own harness above is the direct execution state.
+        registry = getattr(getattr(team_agent, "_state", None), "member_registry", None)
+        if registry is not None and any(
+            status == "busy" and name != registry.self_member_name
+            for name, status in registry.snapshot().items()
+        ):
+            return True
+    controller = manager.find_background_task_controller(session_id)
+    handler = manager.get_workflow_handler(session_id)
+    if controller is None or handler is None:
+        return False
+    # Paused/stopped runs leave resumable cards and monitor state behind.
+    # Only live runs with an agent actually running count; human waits do not.
+    active_runs = getattr(controller, "_active", {})
+    return any(
+        run_id in active_runs
+        and run.status == "running"
+        and any(agent.status == "running" for phase in run.phases for agent in phase.agents)
+        for run_id, run in handler.get_run_states().items()
     )
 
 

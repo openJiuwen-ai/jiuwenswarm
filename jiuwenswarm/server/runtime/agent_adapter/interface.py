@@ -5183,6 +5183,12 @@ class JiuWenSwarm:
 
     # ---------- 资源清理 ----------
 
+    async def cancel_session_tasks(self, session_id: str) -> None:
+        """Cancel and join request tasks without treating idle caches as work."""
+        cancel = getattr(self._adapter, "cancel_session_tasks", None)
+        if callable(cancel):
+            await cancel(session_id)
+
     async def cleanup_session_runtime(self, session_id: str) -> bool:
         """Release in-memory runtime owned by one session while keeping persisted history."""
         processor_cleaned = await self._session_manager.close_session(session_id)
