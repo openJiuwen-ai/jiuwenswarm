@@ -3431,6 +3431,19 @@ class MessageHandler(ABC):
         params = payload.get("data") or {}
         if not isinstance(params, dict):
             params = {}
+        # 对话里的 cron 工具也使用原始请求的华为登录会话。只读 Gateway
+        # 保存的请求上下文，不信任工具参数或响应 metadata 里的登录身份。
+        request_metadata = self._stream_metadata.get(request_id)
+        if not isinstance(request_metadata, dict):
+            original_message = getattr(
+                self, "_non_stream_chat_messages", {}
+            ).get(request_id)
+            request_metadata = getattr(original_message, "metadata", None)
+        auth_session = (
+            str(request_metadata.get("auth_session") or "").strip()
+            if isinstance(request_metadata, dict)
+            else ""
+        )
         from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
 
         is_agentos = is_agentos_routing_client(self.agent_client)
@@ -3463,6 +3476,10 @@ class MessageHandler(ABC):
                 if data is None:
                     raise KeyError("job not found")
             elif action == "create":
+                params = dict(params)
+                params.pop("_auth_session", None)
+                if auth_session:
+                    params["_auth_session"] = auth_session
                 # Gateway, rather than an AgentServer payload, is authoritative
                 # for the authenticated owner in AgentOS.
                 if owner_user_id:
@@ -3481,6 +3498,9 @@ class MessageHandler(ABC):
                 if await _get_owned_job(job_id) is None:
                     raise KeyError("job not found")
                 patch = dict(params.get("patch") or {})
+                patch.pop("_auth_session", None)
+                if auth_session:
+                    patch["_auth_session"] = auth_session
                 if is_agentos:
                     patch["_agentos_project_binding_verified"] = True
                 data = await cc.update_job(job_id, patch)
