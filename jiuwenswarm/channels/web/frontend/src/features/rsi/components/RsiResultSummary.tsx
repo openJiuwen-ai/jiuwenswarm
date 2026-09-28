@@ -54,6 +54,19 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
     bestPresentation?.title ??
     (bestArtifactId ? `${typeDisplayLabel(task.scenario, task.artifact_type)} · 当前最优版本` : null) ??
     null;
+  const publishedProvenance = task.harness_provenance?.published;
+  const installedProvenance = task.harness_provenance?.installed;
+  const provenance = publishedProvenance || installedProvenance
+    ? { ...publishedProvenance, ...installedProvenance }
+    : null;
+  const provenanceText = provenance
+    ? [
+        provenance.optimization_id ? `优化 ${provenance.optimization_id}` : null,
+        provenance.epoch != null ? `第 ${provenance.epoch} 轮` : null,
+        provenance.node_id ? `节点 ${provenance.node_id}` : null,
+        provenance.installation_id ? `版本 ${provenance.installation_id}` : null,
+      ].filter(Boolean).join(' · ')
+    : null;
   const queued = task.status === 'CREATED' || task.status === 'QUEUED';
 
   const evalPassed = queued ? null : (report?.metrics.eval_passed ?? null);
@@ -125,6 +138,7 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
               </button>
             )}
           </div>
+          {provenanceText && <div className="rsi-provenance">{provenanceText}</div>}
         </div>
         {metrics.map((m) => (
           <div key={m.key} className={'rsi-result__metric' + (m.key === 'usage' ? ' rsi-result__metric--usage' : '')}>
