@@ -62,11 +62,47 @@ def _current_config_yaml_path() -> Path:
     return get_config_file()
 
 
+_MERGED_CONFIG_CACHE: dict[str, Any] | None = None
+_MERGED_CONFIG_CACHE_KEY: tuple | None = None
+
+
+def invalidate_merged_config_cache() -> None:
+    """[PERF] 配置写入/失效路径调用:清合并配置缓存。"""
+    global _MERGED_CONFIG_CACHE, _MERGED_CONFIG_CACHE_KEY
+    _MERGED_CONFIG_CACHE = None
+    _MERGED_CONFIG_CACHE_KEY = None
+
+
 def get_merged_config_dict() -> dict[str, Any]:
-    """模板与用户 override 合并后的字典（不解析环境变量）。"""
-    template = load_yaml_dict(resolve_shipped_template_config_path())
-    override = load_yaml_dict(_current_config_yaml_path())
-    return merge_template_with_override(template, override)
+    """模板与用户 override 合并后的字典（不解析环境变量）。
+
+    [PERF] 实测双 YAML 重读+合并 ~150ms,且经 RuntimePromptRail 的
+    模型名兜底路径被**每次模型调用**触发(每次聊天多付 ~150ms)。按
+    (路径, mtime_ns) 缓存合并结果:文件未变直接复用;配置写入方走
+    invalidate_merged_config_cache() 主动失效(写文件本身也会变 mtime,
+    双保险)。注意:调用方不应修改返回的 dict(共享缓存对象)。
+    """
+    global _MERGED_CONFIG_CACHE, _MERGED_CONFIG_CACHE_KEY
+    tpl_path = resolve_shipped_template_config_path()
+    usr_path = _current_config_yaml_path()
+    try:
+        key = (
+            str(tpl_path),
+            tpl_path.stat().st_mtime_ns if tpl_path.exists() else None,
+            str(usr_path),
+            usr_path.stat().st_mtime_ns if usr_path.exists() else None,
+        )
+    except OSError:
+        key = None
+    if key is not None and key == _MERGED_CONFIG_CACHE_KEY and _MERGED_CONFIG_CACHE is not None:
+        return _MERGED_CONFIG_CACHE
+    template = load_yaml_dict(tpl_path)
+    override = load_yaml_dict(usr_path)
+    merged = merge_template_with_override(template, override)
+    if key is not None:
+        _MERGED_CONFIG_CACHE_KEY = key
+        _MERGED_CONFIG_CACHE = merged
+    return merged
 
 
 def resolve_env_vars(value: Any) -> Any:
@@ -362,6 +398,7 @@ def clear_config_cache(
         _config_version += 1
         if service_id is None and agent_id is None:
             _resolved_config_by_ns.clear()
+            invalidate_merged_config_cache()
             return
         from jiuwenswarm.common.local_env_config import normalize_env_ns_id
 
@@ -376,6 +413,7 @@ def clear_config_cache(
         ]
         for key in keys_to_remove:
             _resolved_config_by_ns.pop(key, None)
+        invalidate_merged_config_cache()
         if sid == "default" and aid == "default":
             _resolved_config_by_ns.pop(None, None)
             unbound_overlay_keys = [
@@ -392,8 +430,14 @@ def get_config_raw():
 
     磁盘上的用户文件可能仅为稀疏 override；本函数返回有效配置树。
     局部写回 override 请使用 ``_load_yaml_round_trip(get_config_file())``。
+
+    返回防御性深拷贝(实测 ~0.8ms,对比每次重读+合并 ~100ms):底层
+    get_merged_config_dict() 为 mtime 缓存的共享对象,调用方就地修改
+    (如 owner_scopes 的 setdefault 写回)会污染缓存并造成跨线程脏读。
+    只读热路径(如 get_model_names)请直接使用 get_merged_config_dict()
+    并保证不修改返回值。
     """
-    return get_merged_config_dict()
+    return deepcopy(get_merged_config_dict())
 
 
 def get_default_model_provider(config: dict[str, Any] | None) -> str:
@@ -2629,7 +2673,8 @@ def get_model_names() -> list[str]:
 
     与web端一致：允许同名 model_name 多次出现（不同 api_key/api_base 即为不同配置）。
     """
-    data = get_config_raw()
+    # 只读热路径(RuntimePromptRail 每次模型调用经此):直读共享缓存,零拷贝。
+    data = get_merged_config_dict()
     models = data.get("models", {})
     defaults_list = models.get("defaults")
     if isinstance(defaults_list, list) and defaults_list:

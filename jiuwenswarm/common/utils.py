@@ -681,6 +681,37 @@ def _find_package_root() -> Path | None:
     return current
 
 
+# 播种在冷启动时按租户逐次调用，每次都要重解析出厂模板，故按文件 mtime/size 缓存语言解析结果。
+_PREFERRED_LANGUAGE_CACHE: dict[str, tuple[tuple[int, int], str | None]] = {}
+
+
+def _read_preferred_language_cached(cfg_path: Path) -> str | None:
+    """读取该路径声明的 zh/en；文件缺失、解析异常或值非法时返回 None。"""
+    try:
+        st = cfg_path.stat()
+    except OSError:
+        return None
+    cache_key = str(cfg_path)
+    stamp = (st.st_mtime_ns, st.st_size)
+    cached = _PREFERRED_LANGUAGE_CACHE.get(cache_key)
+    if cached is not None and cached[0] == stamp:
+        # 缓存也记住“该路径无有效语言”，但解析异常不缓存，保持每次报错可见。
+        return cached[1]
+    value: str | None = None
+    try:
+        rt = YAML()
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            data = rt.load(f) or {}
+        lang = str(data.get("preferred_language") or "").strip().lower()
+        if lang in ("zh", "en"):
+            value = lang
+    except Exception as e:
+        logger.error(f"Failed to load config.yaml: {e}")
+        return None
+    _PREFERRED_LANGUAGE_CACHE[cache_key] = (stamp, value)
+    return value
+
+
 def _resolve_preferred_language(
     config_yaml_dest: Path, explicit: Optional[str]
 ) -> str:
@@ -690,16 +721,9 @@ def _resolve_preferred_language(
         return lang if lang in ("zh", "en") else "zh"
     # 稀疏 override 模式：先读 override，再读模板
     for cfg_path in (config_yaml_dest, resolve_shipped_template_config_path()):
-        if cfg_path.exists():
-            try:
-                rt = YAML()
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    data = rt.load(f) or {}
-                lang = str(data.get("preferred_language") or "").strip().lower()
-                if lang in ("zh", "en"):
-                    return lang
-            except Exception as e:
-                logger.error(f"Failed to load config.yaml: {e}")
+        lang = _read_preferred_language_cached(cfg_path)
+        if lang is not None:
+            return lang
     return "zh"
 
 
@@ -3488,7 +3512,11 @@ def update_log_levels(
     agent_server: Optional[str] = None,
     full: Optional[str] = None,
 ) -> logging.Logger:
-    """运行时动态更新 ``jiuwenswarm`` 根日志及各 handler 的级别，无需重建 handler。"""
+    """运行时动态更新 ``jiuwenswarm`` 根日志及各 handler 的级别。
+
+    企业版同时把解析后的 ``agent_server`` 级别写到 openjiuwen core。单机版不改
+    core，避免覆盖 ``logging.yaml`` 或启动时的 INFO 默认。
+    """
     levels = _resolve_logging_levels(log_level)
 
     if console_level is not None:
@@ -3518,7 +3546,22 @@ def update_log_levels(
         elif isinstance(h, logging.StreamHandler):
             h.setLevel(levels.console)
 
+    if is_enterprise():
+        _sync_openjiuwen_log_level(levels.agent_server)
     return root
+
+
+def _sync_openjiuwen_log_level(level: int) -> None:
+    """Push the managed AgentServer level onto openjiuwen core loggers."""
+    try:
+        from jiuwenswarm.common.openjiuwen_logging import apply_openjiuwen_log_level
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[logging_config] openjiuwen level sync import failed: %s", exc)
+        return
+    try:
+        apply_openjiuwen_log_level(level)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[logging_config] openjiuwen level sync failed: %s", exc)
 
 
 _LOGGING_CONFIG_TABLE = "logging_config"

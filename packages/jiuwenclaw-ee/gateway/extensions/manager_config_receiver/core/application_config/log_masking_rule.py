@@ -18,7 +18,37 @@ from ...schemas.application_config_schemas import (
 )
 
 _TABLE = LOG_MASKING_RULE_TABLE_DEF.table_name
+_LIST_ALL_CAP = 10_000
 logger = logging.getLogger(__name__)
+
+
+def _as_bool(value: Any, default: bool = True) -> bool:
+    if isinstance(value, int):
+        return bool(value)
+    if value is None:
+        return default
+    return bool(value)
+
+
+async def _assert_unique_enabled_priority(
+    repo: EnterpriseRecordRepository,
+    *,
+    priority: int,
+    enabled: bool,
+    exclude_rule_id: str | None = None,
+) -> None:
+    """同一集群内，启用中的规则 priority 不可重复。"""
+    if not enabled:
+        return
+    rows = await repo.list(filters={"enabled": True}, limit=_LIST_ALL_CAP)
+    for row in rows:
+        rid = str(row.get("rule_id") or "")
+        if exclude_rule_id and rid == exclude_rule_id:
+            continue
+        if int(row.get("priority") or 0) == int(priority):
+            raise ValueError(
+                "priority already used by an enabled rule in this cluster"
+            )
 
 
 def _rule_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
@@ -74,6 +104,12 @@ async def _upsert_log_masking_rule_from_sync(
     }
 
     existing = await repo.get(rule_id=rule_id)
+    await _assert_unique_enabled_priority(
+        repo,
+        priority=int(row_data["priority"]),
+        enabled=bool(row_data["enabled"]),
+        exclude_rule_id=rule_id if existing is not None else None,
+    )
     if existing is None:
         record = await repo.create(row_data)
         return _rule_row_to_dict(record)
@@ -129,6 +165,23 @@ async def _update_log_masking_rule_record(
         updates["priority"] = int(updates["priority"])
     if "with_fingerprint" in updates and updates["with_fingerprint"] is not None:
         updates["with_fingerprint"] = bool(updates["with_fingerprint"])
+
+    merged_priority = (
+        int(updates["priority"])
+        if "priority" in updates and updates["priority"] is not None
+        else int(existing.get("priority") or 0)
+    )
+    merged_enabled = (
+        _as_bool(updates["enabled"])
+        if "enabled" in updates
+        else _as_bool(existing.get("enabled"), True)
+    )
+    await _assert_unique_enabled_priority(
+        repo,
+        priority=merged_priority,
+        enabled=merged_enabled,
+        exclude_rule_id=rid,
+    )
 
     updates["updated_at"] = utc_now()
     updated = await repo.update({"rule_id": rid}, updates)

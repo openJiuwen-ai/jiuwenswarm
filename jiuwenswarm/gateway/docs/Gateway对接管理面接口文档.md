@@ -1645,7 +1645,7 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 | `description`      | VARCHAR(512)          | 否   | 描述。                     |
 | `pattern`          | VARCHAR(512)          | 是   | 正则。                     |
 | `replacement`      | VARCHAR(64)           | 是   | 替换串，默认 `******`。        |
-| `priority`         | INT                   | 是   | 优先级。                    |
+| `priority`         | INT                   | 是   | 优先级（越小越先执行；启用中的规则不可重复；同优先级时最近更新的优先）。 |
 | `with_fingerprint` | BOOLEAN DEFAULT false | 是   | 是否在脱敏替换结果中附带指纹。         |
 | `source`           | VARCHAR(16)           | 是   | 如 `custom` / `builtin`。 |
 | `enabled`          | BOOLEAN DEFAULT true  | 是   | 是否启用。                   |
@@ -1671,7 +1671,7 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 | `pattern`          | string | 是   | 正则              |
 | `description`      | string | 否   | 描述              |
 | `replacement`      | string | 否   | 替换串；默认 `******` |
-| `priority`         | int    | 否   | 默认 `0`          |
+| `priority`         | int    | 否   | 默认 `0`；启用中不可重复 |
 | `with_fingerprint` | bool   | 否   | 默认 `false`      |
 | `source`           | string | 否   | 默认 `custom`     |
 | `enabled`          | bool   | 否   | 默认 `true`       |

@@ -482,6 +482,7 @@ class AgentWebSocketServer:
                     ping_interval=self._ping_interval,
                     ping_timeout=self._ping_timeout,
                     max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+                    max_queue=None,
                 )
             except ImportError:
                 import websockets

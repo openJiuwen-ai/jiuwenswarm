@@ -27,7 +27,7 @@ def _enabled_log_masking_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]
         if enabled:
             enabled_rows.append(row)
     enabled_rows.sort(
-        key=lambda item: (-int(item.get("priority") or 0), int(item.get("id") or 0)),
+        key=lambda item: (int(item.get("priority") or 0), int(item.get("id") or 0)),
     )
     return enabled_rows
 

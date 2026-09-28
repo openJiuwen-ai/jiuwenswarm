@@ -202,7 +202,9 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         self._connected = False
         self._on_server_push: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._pod_clients: dict[str, HttpSseAgentServerClient] = {}
-        self._pod_connect_lock = asyncio.Lock()
+        # [PERF] 全局连接锁改 per-pod:10 个冷 Pod 首波建连由串行 ~0.3s×N 变并行 ~0.3s
+        self._pod_connect_locks: dict[str, asyncio.Lock] = {}
+        self._pod_locks_guard = asyncio.Lock()
         self._rpc_origins: dict[tuple[str, str], str] = {}
         self._drop_tasks: set[asyncio.Task[None]] = set()
         self._last_rebind_warn = 0.0   # rebind 降级告警节流（滚动期旧 runtime 404 防刷屏）
@@ -232,11 +234,19 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 self._rpc_origins.pop(key, None)
             raise
 
+    async def _pod_lock_for(self, base_url: str) -> asyncio.Lock:
+        """[PERF] 按 Pod 取连接锁:不同 Pod 的建连互不阻塞。"""
+        async with self._pod_locks_guard:
+            lock = self._pod_connect_locks.get(base_url)
+            if lock is None:
+                lock = self._pod_connect_locks[base_url] = asyncio.Lock()
+            return lock
+
     async def _ensure_pod_push(self, base_url: str) -> None:
         if self._on_server_push is None:
             return
         stale: HttpSseAgentServerClient | None = None
-        async with self._pod_connect_lock:
+        async with await self._pod_lock_for(base_url):
             self._ensure_connected()
             client = self._pod_clients.get(base_url)
             # Fallback if push-done drop hasn't run yet (same IP reused).
@@ -289,7 +299,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
     async def _drop_pod_client(
         self, base_url: str, client: HttpSseAgentServerClient
     ) -> None:
-        async with self._pod_connect_lock:
+        async with await self._pod_lock_for(base_url):
             if self._pod_clients.get(base_url) is not client:
                 return
             self._pod_clients.pop(base_url, None)
@@ -306,6 +316,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 exc,
             )
 
+
     async def connect(self, uri: str) -> None:
         _ = uri
         self._connected = True
@@ -317,9 +328,10 @@ class RuntimeRoutedAgentClient(AgentServerClient):
 
     async def disconnect(self) -> None:
         self._connected = False
-        async with self._pod_connect_lock:
+        async with self._pod_locks_guard:
             clients = list(self._pod_clients.values())
             self._pod_clients.clear()
+            self._pod_connect_locks.clear()
         drop_tasks = list(self._drop_tasks)
         self._drop_tasks.clear()
         if drop_tasks:

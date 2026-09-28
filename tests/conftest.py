@@ -52,17 +52,49 @@ install_evolution_rail_kwargs_compat = import_module(
 ).install_evolution_rail_kwargs_compat
 
 
+def _stub_env_warning(dotted: str, exc: BaseException) -> None:
+    """Make CI dependency drift visible instead of silently swallowing it."""
+    print(
+        f"[conftest] {dotted} 不可导入({exc!r})，回退 stub/compat；"
+        "若为 CI 节点依赖版本错配请修复流水线环境",
+        file=sys.stderr,
+    )
+
+
 def _install_missing_trajectory_processor_stub() -> None:
-    """CI openjiuwen may lack TrajectorySpanProcessor; stub it for collection/runtime."""
+    """CI openjiuwen may lack TrajectorySpanProcessor; stub it for collection/runtime.
+
+    除未安装(ModuleNotFoundError)外，openjiuwen 链式 import opentelemetry 时还可能
+    因 CI 节点 venv/系统 site-packages 版本错配抛普通 ImportError(如旧
+    opentelemetry.util.types 缺 _ExtendedAttributes)。两者都回退 stub，避免
+    pytest_configure 阶段 INTERNALERROR(exit 3，零用例执行、无报告)。
+    """
     try:
         import_module("openjiuwen.agent_evolving.trajectory.processor")
         return
-    except ModuleNotFoundError:
-        pass
+    except ImportError as exc:
+        _stub_env_warning("openjiuwen.agent_evolving.trajectory.processor", exc)
 
-    from opentelemetry.sdk.trace import SpanProcessor
+    try:
+        from opentelemetry.sdk.trace import SpanProcessor
+    except ImportError as exc:
+        _stub_env_warning("opentelemetry.sdk.trace", exc)
 
-    module = ModuleType("openjiuwen.agent_evolving.trajectory.processor")
+        class SpanProcessor:  # type: ignore[no-redef]
+            def on_start(self, span, parent_context=None):
+                return None
+
+            def on_end(self, span):
+                return None
+
+            def shutdown(self):
+                return None
+
+            def force_flush(self, timeout_millis: int = 30000) -> bool:
+                del timeout_millis
+                return True
+
+    module = _ensure_module("openjiuwen.agent_evolving.trajectory.processor")
 
     class TrajectorySpanProcessor(SpanProcessor):
         def on_start(self, span, parent_context=None):
@@ -120,8 +152,8 @@ def _install_missing_extensions_observability_stub() -> None:
         import_module("openjiuwen.extensions.observability.semconv")
         import_module("openjiuwen.extensions.observability.span_context")
         return
-    except ModuleNotFoundError:
-        pass
+    except ImportError as exc:
+        _stub_env_warning("openjiuwen.extensions.observability", exc)
 
     _ensure_module("openjiuwen.extensions")
     package = _ensure_module("openjiuwen.extensions.observability")
@@ -164,8 +196,8 @@ def _install_missing_openjiuwen_runtime_db_utils_stub() -> None:
     try:
         import_module("openjiuwen_runtime.foundation.db.utils")
         return
-    except ModuleNotFoundError:
-        pass
+    except ImportError as exc:
+        _stub_env_warning("openjiuwen_runtime.foundation.db.utils", exc)
 
     utils = _ensure_module("openjiuwen_runtime.foundation.db.utils")
     # 标记父包，避免后续 ``from ...db.handler import ...`` 报
@@ -202,7 +234,8 @@ def _install_span_context_session_compat() -> None:
     """Older agent-core set_root_span has no session_id; keep telemetry tests working."""
     try:
         span_context = import_module("openjiuwen.extensions.observability.span_context")
-    except ModuleNotFoundError:
+    except ImportError as exc:
+        _stub_env_warning("openjiuwen.extensions.observability.span_context", exc)
         return
 
     if not hasattr(span_context, "set_current_session_id"):
@@ -241,7 +274,8 @@ def _install_init_observability_kwargs_compat() -> None:
     """Older openjiuwen init_observability rejects additional_span_processors."""
     try:
         observability = import_module("openjiuwen.agent_teams.observability")
-    except ModuleNotFoundError:
+    except ImportError as exc:
+        _stub_env_warning("openjiuwen.agent_teams.observability", exc)
         return
 
     original = getattr(observability, "init_observability", None)

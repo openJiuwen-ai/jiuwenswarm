@@ -1,9 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""日志脱敏引擎：内置规则、按 priority DESC 顺序应用已编译规则。"""
+"""日志脱敏引擎：内置规则、按 priority ASC（同优先级按 updated_at DESC）顺序应用已编译规则。"""
 
 from __future__ import annotations
-from jiuwenswarm.edition import is_enterprise
-from jiuwenswarm.infrastructure.config import settings
 
 import logging
 import os
@@ -11,8 +9,10 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, ClassVar
 
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.infrastructure.config import settings
 from jiuwenswarm.infrastructure.utils import is_already_masked, masked_with_fp
 
@@ -106,6 +106,37 @@ _UNSAFE_WILDCARD_QUANTIFIER_RE = re.compile(
 )
 
 
+def _updated_at_epoch(value: Any) -> float:
+    """把 updated_at 转成 epoch 秒；解析失败视为 0（更旧）。"""
+    if value is None:
+        return 0.0
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def _masking_rule_sort_key(row: dict[str, Any], *, order_asc: bool = True) -> tuple:
+    """priority 主序；同 priority 时 updated_at 降序（最近更新优先）；再按 id。"""
+    priority = int(row.get("priority") or 0)
+    return (
+        priority if order_asc else -priority,
+        -_updated_at_epoch(row.get("updated_at")),
+        int(row.get("id") or 0),
+    )
+
+
 @dataclass(frozen=True)
 class CompiledMaskingRule:
     rule_id: str
@@ -117,14 +148,14 @@ class CompiledMaskingRule:
     with_fingerprint: bool = False
 
 
-# priority 越大越先执行。顺序：大体积 data-uri → PII（无指纹）→ 敏感 KV（有指纹）。
+# priority 越小越先执行。顺序：大体积 data-uri → PII（无指纹）→ 敏感 KV（有指纹）。
 _BUILTIN_RULES: list[CompiledMaskingRule] = [
     CompiledMaskingRule(
         "builtin_data_image",
         re.compile(r"data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+"),
         "data:image/*;base64,******",
         name="DataURI图片",
-        priority=50,
+        priority=10,
     ),
     # --- PII（邮箱 / 手机 / 身份证）：纯掩码，不附指纹 ---
     CompiledMaskingRule(
@@ -132,7 +163,7 @@ _BUILTIN_RULES: list[CompiledMaskingRule] = [
         re.compile(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b"),
         DEFAULT_REPLACEMENT,
         name="邮箱",
-        priority=40,
+        priority=20,
     ),
     CompiledMaskingRule(
         "builtin_cn_mobile",
@@ -146,14 +177,14 @@ _BUILTIN_RULES: list[CompiledMaskingRule] = [
         re.compile(r"(?<!\d)\d{17}[\dXx](?!\d)"),
         DEFAULT_REPLACEMENT,
         name="身份证号",
-        priority=20,
+        priority=40,
     ),
     CompiledMaskingRule(
         "builtin_kv_sensitive",
         _KV_SENSITIVE_PATTERN,
         _KV_SENSITIVE_REPLACEMENT,
         name="敏感KV",
-        priority=10,
+        priority=50,
         with_fingerprint=True,
     ),
 ]
@@ -240,7 +271,7 @@ class LogMaskingEngine:
 
     @staticmethod
     def compiled_default_rules() -> list[CompiledMaskingRule]:
-        """返回内置规则列表（priority 越大越先执行）。"""
+        """返回内置规则列表（priority 越小越先执行）。"""
         return list(_BUILTIN_RULES)
 
     def __init__(self, rules: list[CompiledMaskingRule] | None = None) -> None:
@@ -362,22 +393,20 @@ class LogMaskingEngine:
         *,
         table_name: str = _LOG_MASKING_RULE_TABLE,
     ) -> list[dict[str, Any]]:
-        """返回 ``enabled=true`` 的规则行（priority DESC）。"""
+        """返回 ``enabled=true`` 的规则行（priority ASC，同优先级 updated_at DESC）。"""
         from jiuwenswarm.server.runtime.enterprise_config import db_queries
 
         rows = await db_queries.list_records(
             table_name,
             filters={"enabled": True},
-            order_by="priority DESC",
+            order_by="priority ASC",
         )
         result: list[dict[str, Any]] = []
         for row in rows:
             record = cls._masking_rule_row_to_dict(row)
             if record.get("enabled"):
                 result.append(record)
-        result.sort(
-            key=lambda r: (-int(r.get("priority") or 0), int(r.get("id") or 0)),
-        )
+        result.sort(key=lambda r: _masking_rule_sort_key(r, order_asc=True))
         return result
 
     @staticmethod
@@ -425,11 +454,12 @@ class LogMaskingEngine:
     def compile_masking_rows(
         rows: list[dict[str, Any]] | None,
         *,
-        order_desc: bool = True,
+        order_asc: bool = True,
     ) -> list[CompiledMaskingRule]:
         """将 DB/WS 行编译为规则列表；编译失败的行跳过。
 
         ``rows`` 为 ``None`` 或空列表时直接返回 ``[]``。
+        默认按 priority 升序（越小越先执行）；同优先级按 updated_at 降序。
         """
         normalized_rows = list(rows or [])
         if not normalized_rows:
@@ -437,12 +467,7 @@ class LogMaskingEngine:
 
         sorted_rows = sorted(
             normalized_rows,
-            key=lambda r: (
-                -int(r.get("priority") or 0)
-                if order_desc
-                else int(r.get("priority") or 0),
-                int(r.get("id") or 0),
-            ),
+            key=lambda r: _masking_rule_sort_key(r, order_asc=order_asc),
         )
         compiled: list[CompiledMaskingRule] = []
         for row in sorted_rows:
