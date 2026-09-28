@@ -408,6 +408,7 @@ def request_wire(
     session_id: str,
     params: dict[str, Any],
     metadata: dict[str, Any] | None = None,
+    is_stream: bool = False,
 ) -> str:
     envelope = e2a_from_agent_fields(
         request_id=request_id,
@@ -415,7 +416,7 @@ def request_wire(
         session_id=session_id,
         req_method=method,
         params=params,
-        is_stream=False,
+        is_stream=is_stream,
         timestamp=0.0,
         metadata=metadata,
     )
@@ -755,6 +756,76 @@ async def test_manual_cancel_sends_result_without_cleaning_session(
     response = parse_agent_server_wire_unary(ws.sent[0])
     assert response.ok is True
     assert response.payload == {
+        "event_type": "chat.interrupt_result",
+        "success": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_pause_cancels_team_stream_during_auto_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A team Stop must win even before the runtime has emitted its first event."""
+    trace: list[str] = []
+    agent = RecordingAgent(trace)
+    server, _, _ = make_server(trace, agent=agent)
+    configure_message_path(monkeypatch, server, trace, agent)
+    binding_started = asyncio.Event()
+    binding_cancelled = asyncio.Event()
+
+    async def blocking_binding(_request: AgentRequest) -> None:
+        binding_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            binding_cancelled.set()
+
+    async def unexpected_stream(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("cancelled team bootstrap must not start the stream")
+
+    monkeypatch.setattr(server, "_ensure_auto_team_binding_for_chat", blocking_binding)
+    monkeypatch.setattr(server, "_handle_stream", unexpected_stream)
+
+    stream_task = asyncio.create_task(
+        server.handle_message_for_test(
+            RecordingWebSocket(trace),
+            request_wire(
+                request_id="team-bootstrap",
+                method=ReqMethod.CHAT_SEND,
+                session_id="team-session",
+                params={
+                    "session_id": "team-session",
+                    "mode": "team.work.normal",
+                    "query": "hello",
+                },
+                is_stream=True,
+            ),
+            asyncio.Lock(),
+        )
+    )
+    await binding_started.wait()
+
+    cancel_ws = RecordingWebSocket(trace)
+    await server.handle_message_for_test(
+        cancel_ws,
+        request_wire(
+            request_id="pause-team-bootstrap",
+            method=ReqMethod.CHAT_CANCEL,
+            session_id="team-session",
+            params={
+                "intent": "pause",
+                "session_id": "team-session",
+                "mode": "team.work.normal",
+            },
+        ),
+        asyncio.Lock(),
+    )
+    await stream_task
+
+    assert binding_cancelled.is_set()
+    assert server._session_stream_tasks == {}
+    assert server._session_starting_stream_tasks == set()
+    assert parse_agent_server_wire_unary(cancel_ws.sent[0]).payload == {
         "event_type": "chat.interrupt_result",
         "success": True,
     }

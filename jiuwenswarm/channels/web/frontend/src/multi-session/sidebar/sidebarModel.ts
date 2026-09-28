@@ -46,7 +46,7 @@ export function getSessionIndicator(
 ): SessionIndicator {
   if (sessionError) return 'error';
   if (runtime?.pendingQuestions?.[0]) return 'waiting';
-  if (runtime?.isProcessing || sessionProcessing) return 'processing';
+  if ((runtime?.isProcessing ?? sessionProcessing)) return 'processing';
   if (unread) return 'unread';
   return 'time';
 }

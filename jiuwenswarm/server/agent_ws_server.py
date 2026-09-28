@@ -1151,6 +1151,10 @@ class AgentWebSocketServer:
         # for interrupt/connection cleanup only; it never decides interaction
         # output ownership.
         self._session_stream_tasks: dict[str, dict[asyncio.Task, asyncio.Event]] = {}
+        # Stream handlers that have been accepted but have not yielded their
+        # first Runtime event yet.  Team setup happens before _handle_stream_impl,
+        # so these tasks must already be interruptible during that setup window.
+        self._session_starting_stream_tasks: set[asyncio.Task] = set()
         # Scheduler service instance (for scheduled auto_harness tasks)
         self._scheduler_service: Optional[AutoHarnessService] = None
         self._scheduler_agent: Any = None
@@ -2105,6 +2109,7 @@ class AgentWebSocketServer:
                 await asyncio.gather(*connection_tasks, return_exceptions=True)
             if owns_current_connection:
                 self._session_stream_tasks.clear()
+                getattr(self, "_session_starting_stream_tasks", set()).clear()
 
     async def _dispatch_gateway_adapter_request(
         self,
@@ -2291,6 +2296,7 @@ class AgentWebSocketServer:
             )
 
         pending_chat_request: tuple[AgentRuntime, str, str] | None = None
+        starting_stream_task: tuple[str, asyncio.Task] | None = None
         try:
             if request.req_method is not None and request.req_method.value.startswith("assets.publish."):
                 await self._handle_asset_publish(ws, request, send_lock)
@@ -2357,6 +2363,22 @@ class AgentWebSocketServer:
                 runtime = self._execution_runtime()
                 runtime.begin_chat_request(request.session_id, request.request_id)
                 pending_chat_request = (runtime, request.session_id, request.request_id)
+                current_task = asyncio.current_task()
+                if (
+                    request.is_stream
+                    and current_task is not None
+                    and not AgentRuntime.uses_session_runtime(request)
+                ):
+                    self._session_stream_tasks.setdefault(request.session_id, {}).setdefault(
+                        current_task, asyncio.Event()
+                    )
+                    starting_tasks = getattr(
+                        self, "_session_starting_stream_tasks", None
+                    )
+                    if starting_tasks is None:
+                        starting_tasks = self._session_starting_stream_tasks = set()
+                    starting_tasks.add(current_task)
+                    starting_stream_task = (request.session_id, current_task)
 
             # Extensions must observe and may normalize chat input before
             # automatic team binding or any other request-side effect. Runtime
@@ -2680,16 +2702,24 @@ class AgentWebSocketServer:
                 intent = request.params.get("intent", "cancel") if isinstance(request.params, dict) else "cancel"
                 cleanup_after_cancel = self._is_client_disconnect_cancel_request(request)
 
-                # 只有 cancel/supplement 才取消流式任务
-                # pause/resume 不取消，因为任务仍在运行（pause 在 checkpoint 阻塞，resume 解除阻塞）
+                # cancel/supplement 取消流式任务。pause 通常由 runtime
+                # 停在 checkpoint；但团队初始化期还没有 runtime/checkpoint，必须
+                # 取消这条启动任务，否则它会在“暂停成功”后继续启动。
                 stream_tasks: list[asyncio.Task] = []
-                if intent in ("cancel", "supplement"):
+                if intent in ("cancel", "supplement", "pause"):
                     entries = self._session_stream_tasks.get(sid, {})
                     for stream_task, stream_stop_event in list(entries.items()):
                         if stream_task.done():
                             continue
+                        if (
+                            intent == "pause"
+                            and stream_task not in getattr(
+                                self, "_session_starting_stream_tasks", ()
+                            )
+                        ):
+                            continue
                         logger.info(
-                            "[AgentWebSocketServer] cancel: 终止 session 流式任务: session_id=%s intent=%s",
+                            "[AgentWebSocketServer] interrupt: 终止 session 启动/流式任务: session_id=%s intent=%s",
                             sid,
                             intent,
                         )
@@ -2828,6 +2858,16 @@ class AgentWebSocketServer:
                 async with send_lock:
                     await send_wire_payload(ws, wire)
         finally:
+            if starting_stream_task is not None:
+                session_id, stream_task = starting_stream_task
+                getattr(self, "_session_starting_stream_tasks", set()).discard(
+                    stream_task
+                )
+                entries = self._session_stream_tasks.get(session_id)
+                if entries is not None:
+                    entries.pop(stream_task, None)
+                    if not entries:
+                        self._session_stream_tasks.pop(session_id, None)
             if pending_chat_request is not None:
                 runtime, session_id, request_id = pending_chat_request
                 runtime.end_chat_request(session_id, request_id)
@@ -3964,7 +4004,8 @@ class AgentWebSocketServer:
         stream_stop_event = asyncio.Event()
         uses_session_runtime = AgentRuntime.uses_session_runtime(request)
         if current_task is not None and not uses_session_runtime:
-            self._session_stream_tasks.setdefault(session_id, {})[current_task] = stream_stop_event
+            entries = self._session_stream_tasks.setdefault(session_id, {})
+            stream_stop_event = entries.setdefault(current_task, stream_stop_event)
 
         chunk_count = 0
         outcome_tracker = _TurnOutcomeTracker()
@@ -3992,6 +4033,10 @@ class AgentWebSocketServer:
             )
             keepalive.start()
             async for event in runtime_stream:
+                if current_task is not None:
+                    getattr(self, "_session_starting_stream_tasks", set()).discard(
+                        current_task
+                    )
                 # Runtime control events normally use the callback above. Keep
                 # compatibility with custom Runtime implementations without
                 # consuming a wire sequence number or resetting the keepalive timer.
@@ -4064,6 +4109,10 @@ class AgentWebSocketServer:
                             entries.pop(current_task, None)
                             if not entries:
                                 self._session_stream_tasks.pop(session_id, None)
+                        if current_task is not None:
+                            getattr(
+                                self, "_session_starting_stream_tasks", set()
+                            ).discard(current_task)
             finally:
                 try:
                     await self._finalize_session_message_resume(

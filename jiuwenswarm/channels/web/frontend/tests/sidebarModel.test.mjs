@@ -5,9 +5,16 @@ import {
   getProjectMenuItems,
   getSessionMenuItems,
 } from '../node_modules/.cache/sidebar-model/multi-session/sidebar/sidebarMenuSchema.js';
+import { getSessionIndicator } from '../node_modules/.cache/sidebar-model/multi-session/sidebar/sidebarModel.js';
 
 const t = (key) => key;
 const findItem = (items, key) => items.find((item) => item.key === key);
+
+test('live processing state wins over stale session metadata', () => {
+  assert.equal(getSessionIndicator({ isProcessing: false }, false, true), 'time');
+  assert.equal(getSessionIndicator({ isProcessing: true }, false, false), 'processing');
+  assert.equal(getSessionIndicator(undefined, false, true), 'processing');
+});
 
 test('ordinary project menu shows pin, rename, delete and archive-sessions', () => {
   const items = getProjectMenuItems(false, t);

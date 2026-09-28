@@ -2419,6 +2419,17 @@ class TeamManager:
         # must survive. Every other teardown is final.
         if finalize_workflows:
             self._background_task_controllers.pop(session_id, None)
+        monitor_handler = self._team_monitors.pop(session_id, None)
+        if monitor_handler is not None:
+            try:
+                await monitor_handler.stop()
+            except Exception as exc:
+                logger.warning(
+                    "[TeamManager] monitor stop failed: session_id=%s error=%s",
+                    session_id,
+                    exc,
+                )
+
         if stream_task and not stream_task.done():
             stream_task.cancel()
             try:
@@ -2428,17 +2439,6 @@ class TeamManager:
             except Exception as exc:
                 logger.warning(
                     "[TeamManager] stream stop failed: session_id=%s error=%s",
-                    session_id,
-                    exc,
-                )
-
-        monitor_handler = self._team_monitors.pop(session_id, None)
-        if monitor_handler is not None:
-            try:
-                await monitor_handler.stop()
-            except Exception as exc:
-                logger.warning(
-                    "[TeamManager] monitor stop failed: session_id=%s error=%s",
                     session_id,
                     exc,
                 )
@@ -3110,6 +3110,20 @@ class TeamManager:
                     )
 
             if runner_paused:
+                # The stream consumes monitor events. Close that producer first so
+                # it can drain and exit before the grace wait (and before the
+                # interrupt_result is sent back to the client).
+                monitor_handler = self._team_monitors.get(session_id)
+                if monitor_handler is not None:
+                    try:
+                        await monitor_handler.stop()
+                    except Exception as exc:
+                        logger.warning(
+                            "[TeamManager] monitor stop before stream exit failed: "
+                            "session_id=%s error=%s",
+                            session_id,
+                            exc,
+                        )
                 await self._wait_for_stream_task_exit(session_id)
 
             # Pause parks the runtime in place (resumable via a later chat.send),

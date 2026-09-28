@@ -1615,8 +1615,12 @@ function AppContent({
       // 明确状态恢复停止按钮；之后同一 WebSocket 上的 processing_status 事件
       // 继续按发送顺序推进状态机。
       if (typeof session.is_processing === 'boolean') {
-        setProcessing(targetSessionId, session.is_processing);
-        if (!session.is_processing) {
+        // pause 的 interrupt_result 会先于后端清理完成；紧随其后的 metadata
+        // 可能仍是旧的 true，不能把刚暂停的 UI 重新拉回“任务执行中”。
+        const isProcessingNow = session.is_processing
+          && !useChatStore.getState().getRuntime(targetSessionId)?.isPaused;
+        setProcessing(targetSessionId, isProcessingNow);
+        if (!isProcessingNow) {
           setThinking(targetSessionId, false);
         }
       }
@@ -3016,10 +3020,20 @@ function AppContent({
           queueOrAddGoalObjectiveMessage(newSid, messageContent);
           setGoalObjective(newSid, messageContent);
         } else {
-          const sent = await sendMessage(messageContent, newSid, mediaItems);
-          if (!sent) {
-            useChatStore.getState().setInputValue(newSid, messageContent);
-          }
+          // chat.send resolves when the stream ends, which may take time after
+          // a team stop. Session creation is already complete: do not keep the
+          // shared 'new' creation gate locked for the lifetime of that stream.
+          void sendMessage(messageContent, newSid, mediaItems).then(
+            (sent) => {
+              if (!sent) useChatStore.getState().setInputValue(newSid, messageContent);
+            },
+            (error) => {
+              console.error('Failed to send new conversation message:', error);
+              useChatStore.getState().setProcessing(newSid, false);
+              useChatStore.getState().setThinking(newSid, false);
+              useChatStore.getState().setInputValue(newSid, messageContent);
+            },
+          );
         }
         newConversationProjectRef.current = null;
         newConversationPreviousSessionRef.current = null;

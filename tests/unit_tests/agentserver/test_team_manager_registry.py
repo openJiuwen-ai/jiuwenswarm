@@ -48,6 +48,32 @@ class _TeamManagerHarness(TeamManager):
         return self._get_lifecycle_lock(session_id)
 
 
+@pytest.mark.asyncio
+async def test_cleanup_stops_monitor_before_waiting_for_cancelled_stream() -> None:
+    manager = _TeamManagerHarness()
+    started = asyncio.Event()
+    monitor_stopped = asyncio.Event()
+
+    async def stream() -> None:
+        started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            await monitor_stopped.wait()
+
+    async def stop_monitor() -> None:
+        monitor_stopped.set()
+
+    stream_task = asyncio.create_task(stream())
+    await started.wait()
+    manager.register_stream_task_for_test("sess-1", stream_task)
+    manager._team_monitors["sess-1"] = SimpleNamespace(stop=stop_monitor)
+
+    await asyncio.wait_for(manager._cleanup_runtime_locals("sess-1"), timeout=0.5)
+    assert monitor_stopped.is_set()
+    assert stream_task.done()
+
+
 class _FakeRail:
     pass
 
@@ -1474,6 +1500,40 @@ async def test_pause_session_runtime_waits_for_stream_task_graceful_exit(
     assert stream_task.done()
     assert not stream_task.cancelled()
     assert manager.has_stream_task("sess-1") is False
+
+
+@pytest.mark.asyncio
+async def test_pause_session_runtime_stops_monitor_before_waiting_for_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _TeamManagerHarness()
+    manager.set_active_runtime_for_test("sess-1", "demo-team")
+    monitor_stopped = asyncio.Event()
+
+    async def stream_task_body() -> None:
+        await monitor_stopped.wait()
+
+    async def stop_monitor() -> None:
+        monitor_stopped.set()
+
+    stream_task = asyncio.create_task(stream_task_body())
+    manager.register_stream_task_for_test("sess-1", stream_task)
+    manager._team_monitors["sess-1"] = SimpleNamespace(stop=stop_monitor)
+
+    async def fake_pause_agent_team(*, team_name: str, session_id: str) -> bool:
+        assert (team_name, session_id) == ("demo-team", "sess-1")
+        assert not monitor_stopped.is_set()
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner.pause_agent_team",
+        fake_pause_agent_team,
+    )
+
+    paused = await asyncio.wait_for(manager.pause_session_runtime("sess-1"), timeout=0.5)
+
+    assert paused is True
+    assert stream_task.done() and not stream_task.cancelled()
 
 
 @pytest.mark.asyncio

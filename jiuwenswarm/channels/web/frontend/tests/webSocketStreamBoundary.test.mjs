@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test, { before } from 'node:test';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
@@ -16,6 +16,24 @@ let useWebSocket;
 let useChatStore;
 let useSessionStore;
 let webClient;
+
+test('paused session ignores stale metadata processing state', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  assert.match(
+    appSource,
+    /const isProcessingNow = session\.is_processing\s*&& !useChatStore\.getState\(\)\.getRuntime\(targetSessionId\)\?\.isPaused;/,
+  );
+});
+
+test('creating a conversation releases the new-session gate before its chat stream finishes', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const newSessionSend = appSource.slice(
+    appSource.indexOf('const goalArmedOnNew ='),
+    appSource.indexOf('newConversationProjectRef.current = null;', appSource.indexOf('const goalArmedOnNew =')),
+  );
+  assert.match(newSessionSend, /void sendMessage\(messageContent, newSid, mediaItems\)\.then/);
+  assert.doesNotMatch(newSessionSend, /await sendMessage\(/);
+});
 
 before(async () => {
   const cacheDir = fileURLToPath(new URL('node_modules/.cache/websocket-stream-boundary/', frontendRoot));
