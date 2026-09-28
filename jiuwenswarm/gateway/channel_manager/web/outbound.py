@@ -237,6 +237,19 @@ class HttpJsonOutbound(_HttpOutboundBase):
                 }
             if frame.get("type") == "res" and frame.get("id") == req_id:
                 return frame
+            # 单次请求若被收成 chat.error 事件，不能继续空等 res。
+            if frame.get("type") == "event" and frame.get("event") == "chat.error":
+                payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+                frame_rid = str(payload.get("request_id") or frame.get("id") or "")
+                if frame_rid == req_id:
+                    return {
+                        "type": "res",
+                        "id": req_id,
+                        "ok": False,
+                        "error": payload.get("error") or payload.get("message") or "request failed",
+                        "code": payload.get("code") or "INTERNAL_ERROR",
+                        "payload": payload,
+                    }
 
     async def close(self) -> None:
         if self.closed:

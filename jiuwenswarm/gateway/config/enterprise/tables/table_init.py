@@ -21,6 +21,7 @@ from .application_config_models import (
     MEMORY_CONFIG_TABLE_DEF,
     TASK_MEMORY_CONFIG_TABLE_DEF,
 )
+from .quota_models import QUOTA_TABLE_DEFINITIONS
 from .cron_job_models import CRON_JOB_TABLE_DEF
 from .instance_resource_models import INSTANCE_AGENT_RESOURCE_TABLE_DEF
 from .key_models import (
@@ -64,6 +65,7 @@ ALL_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
     TASK_MEMORY_CONFIG_TABLE_DEF,
     MEMORY_CONFIG_TABLE_DEF,
     AUDIT_LOG_CONFIG_TABLE_DEF,
+    *QUOTA_TABLE_DEFINITIONS,
     CRON_JOB_TABLE_DEF,
     SESSION_MAP_TABLE_DEF,
     LINK_BINDING_STATE_TABLE_DEF,

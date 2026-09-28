@@ -356,6 +356,22 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
         except Exception:  # noqa: BLE001
             logger.warning("[AgentServer] permissions config cold load skipped", exc_info=True)
 
+    if is_enterprise():
+        try:
+            from jiuwenswarm.server.runtime.workspace.policy_reload import (
+                reload_quota_policies_from_gateway_db,
+            )
+
+            await reload_quota_policies_from_gateway_db(force=True)
+            logger.info(
+                "[AgentServer] workspace_quota_policy loaded from Gateway DB (if any)"
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[AgentServer] workspace_quota_policy cold load skipped",
+                exc_info=True,
+            )
+
     # 会话 metadata 的字段补全已改为惰性迁移:读取时按需推断并写回磁盘
     # (见 session_metadata._apply_metadata_defaults_with_inference),无需启动全量扫描。
 

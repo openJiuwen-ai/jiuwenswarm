@@ -98,6 +98,7 @@ ERROR_CODE_STATUS: dict[str, int] = {
     "SERVICE_UNAVAILABLE": 503,
     "SANDBOX_BAD_REQUEST": 503,
     "INTERNAL_ERROR": 500,
+    "WORKSPACE_QUOTA_EXCEEDED": 403,
 }
 
 #: 不携带语义的通用错误码 —— 业务层用它包装各类失败，
@@ -117,6 +118,7 @@ MESSAGE_STATUS_HINTS: tuple[tuple[str, int], ...] = (
     ("is required", 400),
     ("缺少参数", 400),
     ("invalid", 400),
+    ("workspace_quota_exceeded", 403),
 )
 
 

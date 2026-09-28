@@ -221,6 +221,11 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("updater.set_conf", "PUT", "/updater/config"),
     ("heartbeat.get_conf", "GET", "/heartbeat/config"),
     ("heartbeat.set_conf", "PUT", "/heartbeat/config"),
+    ("workspace.tree", "GET", "/workspace/tree"),
+    ("workspace.usage", "GET", "/workspace/usage"),
+    ("workspace.entries.delete", "DELETE", "/workspace/entries"),
+    ("workspace.preview", "GET", "/workspace/preview"),
+    ("workspace.download", "GET", "/workspace/download"),
 )
 
 REST_ROUTES: dict[str, tuple[str, str]] = {method: (verb, path) for method, verb, path in _ROUTE_ROWS}

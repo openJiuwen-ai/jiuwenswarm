@@ -357,6 +357,12 @@ ROUTES: list[RouteSpec] = [
         ReqMethod.HARNESS_PACKAGES_DEACTIVATE.value,
     ),
     RouteSpec("DELETE", "/harness/packages/{name}", ReqMethod.HARNESS_PACKAGES_DELETE.value),
+    # --- 用户工作区 ---
+    RouteSpec("GET", "/workspace/tree", ReqMethod.WORKSPACE_TREE.value),
+    RouteSpec("GET", "/workspace/usage", ReqMethod.WORKSPACE_USAGE.value),
+    RouteSpec("DELETE", "/workspace/entries", ReqMethod.WORKSPACE_ENTRIES_DELETE.value),
+    RouteSpec("GET", "/workspace/preview", ReqMethod.WORKSPACE_PREVIEW.value),
+    RouteSpec("GET", "/workspace/download", ReqMethod.WORKSPACE_DOWNLOAD.value),
     # --- 权限 ---
     RouteSpec("GET", "/permissions/enabled", ReqMethod.PERMISSIONS_ENABLED_GET.value),
     RouteSpec("PUT", "/permissions/enabled", ReqMethod.PERMISSIONS_ENABLED_SET.value),

@@ -7525,8 +7525,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("cron.job.preview", _cron_job_preview)
     channel.register_method("cron.job.run_now", _cron_job_run_now)
 
-    from jiuwenswarm.gateway.channel_manager.web.long_horizon_web_rpc import (
-        register_long_horizon_web_methods,
+    from jiuwenswarm.gateway.channel_manager.web.web_method_register import (
+        register_modular_web_methods,
     )
 
     channel.cron_controller = cron_controller
@@ -7540,7 +7540,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     except Exception as exc:
         logger.warning("[WebChannel] resolve message_handler failed: %s", exc)
         channel.message_handler = message_handler
-    register_long_horizon_web_methods(channel)
+    register_modular_web_methods(channel, agent_client=agent_client)
 
     # 数字分身 — permissions.owner_scopes：仅 Web 网关直连 config（不经 E2A / config_rpc）。
     # 其余 permissions.*（tools / rules / approval_overrides）走 _forward_permissions_to_agent。

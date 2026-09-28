@@ -308,6 +308,13 @@ class ReqMethod(Enum):
     # Long-horizon control (Gateway → AgentServer). Agent owns task JSON.
     LONG_HORIZON = "long_horizon"
 
+    # 用户工作区空间管理（Gateway Web → Agent 真实盘）
+    WORKSPACE_TREE = "workspace.tree"
+    WORKSPACE_USAGE = "workspace.usage"
+    WORKSPACE_ENTRIES_DELETE = "workspace.entries.delete"
+    WORKSPACE_PREVIEW = "workspace.preview"
+    WORKSPACE_DOWNLOAD = "workspace.download"
+
 
 class EventType(Enum):
     CONNECTION_ACK = "connection.ack"

@@ -3,7 +3,6 @@
 """Mount legacy ``/file-api/*`` and ``/share-api/*`` on Gateway Web HTTP."""
 
 from __future__ import annotations
-from jiuwenswarm.edition import is_enterprise
 
 import logging
 import os
@@ -13,6 +12,7 @@ from typing import Any, Iterator
 from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.gateway.channel_manager.web.file_http import (
     FileHttpRoots,
     build_share_snapshot,

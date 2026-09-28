@@ -7,7 +7,6 @@ Reads the same ``ChatHistoryStore`` written by Gateway ``WebChannel`` Listen
 """
 
 from __future__ import annotations
-from jiuwenswarm.edition import is_enterprise
 
 import asyncio
 import logging
@@ -16,6 +15,8 @@ from typing import Any
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
+
+from jiuwenswarm.edition import is_enterprise
 
 logger = logging.getLogger(__name__)
 

@@ -16,26 +16,23 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from jiuwenswarm.edition import is_enterprise
-from jiuwenswarm.gateway.channel_manager.web.web_http_dispatch import dispatch_http_request
-from jiuwenswarm.gateway.channel_manager.web.web_http_routes import (
+from jiuwenswarm.gateway.channel_manager.web.http_routes import (
+    catalog_file_compat_entries,
+    catalog_sessions_compat_entries,
+    register_special_http_routes,
+)
+from jiuwenswarm.gateway.channel_manager.web.http_routes.mapped import (
     WebHttpMappedRoute,
     catalog_entries,
     mapped_routes_for_edition,
 )
-from jiuwenswarm.gateway.channel_manager.web.web_http_file_compat import (
-    catalog_file_compat_entries,
-    register_file_compat_routes,
-)
+from jiuwenswarm.gateway.channel_manager.web.web_http_dispatch import dispatch_http_request
 from jiuwenswarm.gateway.channel_manager.web.web_http_server import (
     resolve_web_http_history_timeout,
     resolve_web_http_sse_idle_timeout,
     resolve_web_http_sse_keepalive,
     resolve_web_http_sse_timeout,
     resolve_web_http_unary_timeout,
-)
-from jiuwenswarm.gateway.channel_manager.web.web_http_sessions_compat import (
-    catalog_sessions_compat_entries,
-    register_sessions_compat_routes,
 )
 from jiuwenswarm.gateway.channel_manager.web.trajectory_http import (
     attach_trajectory_routes,
@@ -349,6 +346,7 @@ def _envelope_from_res(
         "CONFLICT": 409,
         "TIMEOUT": 504,
         "SERVICE_UNAVAILABLE": 503,
+        "WORKSPACE_QUOTA_EXCEEDED": 403,
     }.get(err_code, 500)
     return body, status
 
@@ -614,8 +612,7 @@ def create_web_http_app(channel: Any) -> FastAPI:
         )
 
     _register_mapped_routes(app, channel, mapped_routes)
-    register_sessions_compat_routes(app)
-    register_file_compat_routes(app)
+    register_special_http_routes(app, channel)
     attach_trajectory_routes(app, channel)
     return app
 

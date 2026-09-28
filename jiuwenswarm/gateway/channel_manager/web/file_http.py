@@ -359,6 +359,20 @@ def write_markdown_content(
     if not full_path.exists():
         return 404, {"error": "file_not_found"}
     try:
+        from jiuwenswarm.common.workspace.quota import (
+            WorkspaceQuotaExceeded,
+            check_path_write,
+        )
+
+        check_path_write(full_path, request_content, encoding="utf-8")
+    except WorkspaceQuotaExceeded:
+        return 403, {"error": "WORKSPACE_QUOTA_EXCEEDED", "detail": "WORKSPACE_QUOTA_EXCEEDED"}
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[quota] write_markdown_content quota check failed, allowing write",
+            exc_info=True,
+        )
+    try:
         full_path.write_text(request_content, encoding="utf-8")
     except OSError as exc:
         return 500, {"error": str(exc)}
@@ -433,6 +447,20 @@ def save_pushed_file(
             **audit_uid,
         )
         raise ValueError("invalid_filename")
+    try:
+        from jiuwenswarm.common.workspace.quota import (
+            WorkspaceQuotaExceeded,
+            check_workspace_write,
+        )
+
+        check_workspace_write(additional_bytes=len(file_bytes))
+    except WorkspaceQuotaExceeded as exc:
+        raise PermissionError(exc.detail) from exc
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[quota] save_pushed_file quota check failed, allowing write",
+            exc_info=True,
+        )
     local_path.write_bytes(file_bytes)
     download_info = build_file_download_info(
         file_path=str(local_path),

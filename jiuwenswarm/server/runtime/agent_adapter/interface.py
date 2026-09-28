@@ -1188,6 +1188,30 @@ class JiuWenSwarm:
                 from jiuwenswarm.server.handlers._shared import _sessions_dir_for_request
 
                 kwargs["sessions_root"] = _sessions_dir_for_request(request)
+        # 配额门禁：会话元数据写盘前检查（§2.3）
+        try:
+            from jiuwenswarm.common.workspace.quota import check_workspace_write
+
+            # 粗估本条记录落盘增量（JSONL 一行）
+            approx = len(
+                json.dumps(
+                    {
+                        "content": kwargs.get("content"),
+                        "extra": kwargs.get("extra"),
+                        "event_type": kwargs.get("event_type"),
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                ).encode("utf-8")
+            )
+            check_workspace_write(additional_bytes=max(64, approx))
+        except Exception as exc:
+            from jiuwenswarm.common.workspace.quota import WorkspaceQuotaExceeded
+
+            if isinstance(exc, WorkspaceQuotaExceeded):
+                raise
+            # 门禁依赖不可用时不阻断历史（避免个人版无策略快照误伤）
+            logger.debug("[workspace.quota] history precheck skipped: %s", exc)
         append_history_record(**kwargs)
 
     def _append_ask_user_answered_history(
@@ -1329,6 +1353,13 @@ class JiuWenSwarm:
         if isinstance(param_project_dir, str) and param_project_dir.strip():
             workspace_dir = param_project_dir.strip()
 
+        from jiuwenswarm.agents.harness.common.rails.workspace_quota_rail import (
+            check_workspace_command_tool,
+        )
+
+        # 下载体积未知：已 block 则直接拒绝；否则放行后由后续写文件门禁兜底。
+        check_workspace_command_tool()
+
         materialized = await materialize_url_attachments(
             files if isinstance(files, (list, dict)) else [],
             workspace_dir,
@@ -1344,13 +1375,18 @@ class JiuWenSwarm:
                 session_id,
             )
 
-    def _bind_tenant_request_context(self) -> tuple[Any, Any]:
+    def _bind_tenant_request_context(
+        self,
+        request: AgentRequest | None = None,
+    ) -> tuple[Any, Any]:
         from jiuwenswarm.server.runtime.tenant_context import bind_tenant_workspace_dirs
         from jiuwenswarm.agents.harness.common.tools.memory_tools import (
             bind_memory_agent_id,
             bind_memory_workspace_dir,
         )
         from jiuwenswarm.common.local_env_config import bind_agent_env_ns
+        from jiuwenswarm.common.request_identity import web_routing_identity
+        from jiuwenswarm.common.workspace.quota import bind_quota_identity
         from jiuwenswarm.server.runtime.tenant_context import bind_workspace_key
 
         ws = Path(self._resolve_workspace_dir())
@@ -1376,7 +1412,22 @@ class JiuWenSwarm:
         mem_aid_token = bind_memory_agent_id(str(mem_aid))
         env_ns_token = bind_agent_env_ns(str(mem_sid), str(mem_aid))
         wk_token = bind_workspace_key(str(mem_wk))
-        return tenant_tokens, (mem_ws_token, mem_aid_token, env_ns_token, wk_token)
+
+        identity = web_routing_identity(
+            request.metadata if request is not None and isinstance(request.metadata, dict) else None
+        )
+        quota_tokens = bind_quota_identity(
+            user_id=identity.get("user_id", ""),
+            group_id=identity.get("group_id", ""),
+            bot_id=identity.get("bot_id", ""),
+        )
+        return tenant_tokens, (
+            mem_ws_token,
+            mem_aid_token,
+            env_ns_token,
+            wk_token,
+            quota_tokens,
+        )
 
     def set_personal_context_runtime_enabled(self, enabled: bool) -> None:
         """Store and forward the PersonalContext Host runtime switch."""
@@ -1414,9 +1465,23 @@ class JiuWenSwarm:
             reset_memory_workspace_dir,
         )
         from jiuwenswarm.common.local_env_config import reset_agent_env_ns
+        from jiuwenswarm.common.workspace.quota import (
+            reset_quota_identity,
+        )
 
         if isinstance(mem_token, tuple):
-            if len(mem_token) == 4:
+            if len(mem_token) >= 5:
+                mem_ws_token, mem_aid_token, env_ns_token, wk_token, quota_tokens = (
+                    mem_token[0],
+                    mem_token[1],
+                    mem_token[2],
+                    mem_token[3],
+                    mem_token[4],
+                )
+                reset_quota_identity(quota_tokens)
+                reset_workspace_key(wk_token)
+                reset_agent_env_ns(env_ns_token)
+            elif len(mem_token) == 4:
                 mem_ws_token, mem_aid_token, env_ns_token, wk_token = mem_token
                 reset_workspace_key(wk_token)
                 reset_agent_env_ns(env_ns_token)
@@ -2725,32 +2790,79 @@ class JiuWenSwarm:
 
         session_id = self._session_manager.get_session_id(request.session_id)
         query = request.params.get("query", "")
-        # proactive_recommendation 是系统触发的推荐指令（不是用户说的话），不写 user
-        # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
-        if _should_record_user_history(request.params):
-            self._append_history_record(
-                request=request,
-                session_id=session_id,
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                role="user",
-                content=_history_user_content(request.params, query),
-                timestamp=time.time(),
-                extra=_history_user_extra(request.params),
-                channel_metadata=request.metadata,
-                mode=request.params.get("mode", "unknown"),
-            )
-        else:
-            self._append_ask_user_answered_history(request=request, session_id=session_id)
 
         logger.info(
             "[JiuWenSwarm] 处理请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
             request.request_id, request.channel_id, session_id, self._sdk_name,
         )
 
-        tenant_tokens, mem_token = self._bind_tenant_request_context()
+        from jiuwenswarm.server.runtime.workspace.policy_reload import (
+            reload_quota_policies_from_gateway_db,
+        )
+
+        await reload_quota_policies_from_gateway_db()
+        tenant_tokens, mem_token = self._bind_tenant_request_context(request)
         try:
-            await self._materialize_enterprise_attachments(request, session_id)
+            # proactive_recommendation 是系统触发的推荐指令（不是用户说的话），不写 user
+            # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
+            # 写 history 前已 bind 配额身份；满额拒绝本轮对话（§2.3）。
+            try:
+                if _should_record_user_history(request.params):
+                    self._append_history_record(
+                        request=request,
+                        session_id=session_id,
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        role="user",
+                        content=_history_user_content(request.params, query),
+                        timestamp=time.time(),
+                        extra=_history_user_extra(request.params),
+                        channel_metadata=request.metadata,
+                        mode=request.params.get("mode", "unknown"),
+                    )
+                else:
+                    self._append_ask_user_answered_history(
+                        request=request, session_id=session_id
+                    )
+            except Exception as exc:
+                from jiuwenswarm.common.workspace.quota import (
+                    WorkspaceQuotaExceeded,
+                )
+
+                if isinstance(exc, WorkspaceQuotaExceeded):
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=False,
+                        payload={
+                            "error": "WORKSPACE_QUOTA_EXCEEDED",
+                            "code": "WORKSPACE_QUOTA_EXCEEDED",
+                            "detail": "WORKSPACE_QUOTA_EXCEEDED",
+                        },
+                        metadata=request.metadata,
+                    )
+                raise
+
+            try:
+                await self._materialize_enterprise_attachments(request, session_id)
+            except Exception as exc:
+                from jiuwenswarm.common.workspace.quota import (
+                    WorkspaceQuotaExceeded,
+                )
+
+                if isinstance(exc, WorkspaceQuotaExceeded):
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=False,
+                        payload={
+                            "error": "WORKSPACE_QUOTA_EXCEEDED",
+                            "code": "WORKSPACE_QUOTA_EXCEEDED",
+                            "detail": "WORKSPACE_QUOTA_EXCEEDED",
+                        },
+                        metadata=request.metadata,
+                    )
+                raise
             # 中断恢复 prepare hook 链
             permission_key = _permission_response_key(request)
             hook_adapter = adapter
@@ -3134,6 +3246,14 @@ class JiuWenSwarm:
         # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
         # command.goal set history is written only after a successful set inside
         # the DeepAdapter stream path (same success gate as unary process_message).
+        #
+        # 必须在写 user history 前刷新策略缓存：run_stream_task 内的 reload 太晚，
+        # Manager 刚改完限额时否则仍会命中上一轮缓存（例如 limit=0）而误拦。
+        from jiuwenswarm.server.runtime.workspace.policy_reload import (
+            reload_quota_policies_from_gateway_db,
+        )
+
+        await reload_quota_policies_from_gateway_db()
         params_for_history = request.params if isinstance(request.params, dict) else {}
         if (
             request.req_method != ReqMethod.COMMAND_GOAL
@@ -3413,7 +3533,12 @@ class JiuWenSwarm:
             durable_final_content = pending_text
 
         async def run_stream_task():
-            tenant_tokens, mem_token = self._bind_tenant_request_context()
+            from jiuwenswarm.server.runtime.workspace.policy_reload import (
+                reload_quota_policies_from_gateway_db,
+            )
+
+            await reload_quota_policies_from_gateway_db()
+            tenant_tokens, mem_token = self._bind_tenant_request_context(request)
             logger.info("[JiuWenSwarm] run_stream_task started: request_id=%s session_id=%s", rid, session_id)
             _put_count = 0
             try:

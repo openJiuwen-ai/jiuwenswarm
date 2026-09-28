@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Web RPC for long-horizon toast actions. Forwards to AgentServer (I2c)."""
+"""Gateway Web RPC：long-horizon toast actions（转发 AgentServer）。"""
 
 from __future__ import annotations
 

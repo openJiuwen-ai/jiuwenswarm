@@ -6849,6 +6849,17 @@ class JiuWenSwarmDeepAdapter:
         sys_operation = self._resolve_sys_operation()
         if sys_operation is not None:
             self._retain_sys_operation(str(sys_operation.id))
+            try:
+                from jiuwenswarm.server.runtime.workspace.fs_quota_guard import (
+                    install_write_quota_guard,
+                )
+
+                install_write_quota_guard(sys_operation)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] install write quota guard failed",
+                    exc_info=True,
+                )
 
         to_release = [sid for sid in previously_retained if sid != local_keep_id]
         # agent 与 local 共用同一张卡时：新 retain 已加上，只丢掉上一轮那一票。
@@ -7143,6 +7154,18 @@ class JiuWenSwarmDeepAdapter:
             if sysop_obj is not None:
                 self._retain_sys_operation(str(sysop_obj.id))
             self._local_sys_operation = sysop_obj
+            if sysop_obj is not None:
+                try:
+                    from jiuwenswarm.server.runtime.workspace.fs_quota_guard import (
+                        install_write_quota_guard,
+                    )
+
+                    install_write_quota_guard(sysop_obj)
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "[JiuWenSwarmDeepAdapter] install local write quota guard failed",
+                        exc_info=True,
+                    )
             logger.info(
                 "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=%s "
                 "elapsed_ms=%.1f",
@@ -7409,6 +7432,14 @@ class JiuWenSwarmDeepAdapter:
                     (time.monotonic() - _t0) * 1000,
                 )
                 return
+            if status == "quota_exceeded":
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] init_workspace_on_host blocked by quota: "
+                    "agent_id=%s path=%s",
+                    self._agent_id,
+                    root_path,
+                )
+                raise RuntimeError("WORKSPACE_QUOTA_EXCEEDED")
             logger.info(
                 "[SandboxPerf] init_workspace_on_host: agent_id=%s backend=%s ok=1 "
                 "mode=%s dirs=%d elapsed_ms=%.1f path=%s",

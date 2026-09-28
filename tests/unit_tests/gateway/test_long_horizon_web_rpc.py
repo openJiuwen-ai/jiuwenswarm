@@ -15,7 +15,7 @@ from jiuwenswarm.agents.harness.common.long_horizon.models import (
 from jiuwenswarm.agents.harness.common.long_horizon.runtime import mark_stage_due
 from jiuwenswarm.agents.harness.common.long_horizon.tools import LongHorizonActions
 from jiuwenswarm.common.schema.agent import AgentResponse
-from jiuwenswarm.gateway.channel_manager.web.long_horizon_web_rpc import (
+from jiuwenswarm.gateway.channel_manager.web.web_method_register.long_horizon import (
     register_long_horizon_web_methods,
     run_long_horizon_inbox,
     run_long_horizon_list,

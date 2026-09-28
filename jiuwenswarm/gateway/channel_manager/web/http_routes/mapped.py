@@ -784,11 +784,40 @@ _PROJECT_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
 )
 
+WORKSPACE_FILE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
+    WebHttpMappedRoute(
+        "GET", "/workspace/tree", "workspace.tree", "workspace",
+        "列工作区目录（相对租户根；含 zone / deletable）",
+        query_keys=("relative_path",) + _TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/workspace/usage", "workspace.usage", "workspace",
+        "查询本人工作区用量与配额状态", query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "DELETE", "/workspace/entries", "workspace.entries.delete", "workspace",
+        "删除可清理文件或目录（body.relative_paths）",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/workspace/preview", "workspace.preview", "workspace",
+        "预览文件正文（二进制 content=null；目录 400）",
+        query_keys=("relative_path", "max_bytes") + _TENANT_QUERY,
+    ),
+)
+
+# Hand-written in http_routes/workspace.py: success = octet stream, not unary JSON.
+WORKSPACE_DOWNLOAD_CATALOG: tuple[tuple[str, str, str, str], ...] = (
+    ("GET", "/workspace/download", "workspace.download",
+     "下载文件或目录 zip（成功为文件流；失败仍为一元 JSON）"),
+)
+
 WORKSPACE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *_PERMISSIONS_ROUTES,
     *_PROJECT_ROUTES,
     *_SKILLS_ROUTES,
     *_HARNESS_ROUTES,
+    *WORKSPACE_FILE_ROUTES,
 )
 
 # All table-driven routes. Core chat/session routes stay hand-written in web_http_app.py.
@@ -896,6 +925,14 @@ def catalog_entries(
         for route in WORKSPACE_ROUTES:
             if enabled(route):
                 rows.append(_catalog_row_from_route(route, group="workspace"))
+        for http_method, path, rpc_method, note in WORKSPACE_DOWNLOAD_CATALOG:
+            rows.append({
+                "http_method": http_method,
+                "path": f"/api/v1{path}",
+                "rpc_method": rpc_method,
+                "group": "workspace",
+                "note": note,
+            })
     rows.append({
         "http_method": "POST",
         "path": "/api/v1/harness/packages/actions/import-file",

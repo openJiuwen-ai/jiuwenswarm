@@ -936,6 +936,18 @@ def init_session_metadata(
     if isinstance(channel_metadata, dict) and channel_metadata:
         metadata["channel_metadata"] = channel_metadata
     root_s = _normalize_sessions_root_s(sessions_root)
+    try:
+        from jiuwenswarm.common.workspace.quota import (
+            WorkspaceQuotaExceeded,
+            check_workspace_write,
+        )
+
+        approx = len(json.dumps(metadata, ensure_ascii=False, default=str).encode("utf-8"))
+        check_workspace_write(additional_bytes=max(64, approx))
+    except WorkspaceQuotaExceeded:
+        raise
+    except Exception:  # noqa: BLE001
+        pass
     _write_metadata_sync(session_id, metadata, sessions_root=root_s)
 
 
