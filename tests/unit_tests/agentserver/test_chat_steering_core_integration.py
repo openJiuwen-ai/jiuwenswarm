@@ -42,6 +42,23 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 _CORE_HAS_STEERING = find_spec("openjiuwen.core.single_agent.schema.steering") is not None
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _warm_tiktoken_encoding():
+    """Prime the tiktoken vocab once per worker, outside timed paths.
+
+    The context engine builds a TiktokenCounter synchronously during the
+    first invoke; on a cold CI worker that downloads the cl100k_base
+    vocab over the network (~38s observed), which exceeds the 10s
+    steering budget asserted below. Fail-open mirrors TiktokenCounter.
+    """
+    try:
+        import tiktoken
+
+        tiktoken.get_encoding("cl100k_base")
+    except Exception:  # noqa: BLE001 - degrade to len//4 like TiktokenCounter
+        pass
+
+
 class _BlockingTool(Tool):
     def __init__(self):
         super().__init__(ToolCard(name="blocked_tool", description="Wait for test"))
