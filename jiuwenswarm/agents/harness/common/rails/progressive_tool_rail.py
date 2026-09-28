@@ -107,12 +107,9 @@ def _required_skill_requirement(tool: Any) -> tuple[bool, str | None]:
     if not isinstance(value, str):
         return True, None
     skill_name = value.strip()
-    if (
-        not skill_name
-        or skill_name in {".", ".."}
-        or "/" in skill_name
-        or "\\" in skill_name
-    ):
+    if not skill_name or skill_name in {".", ".."}:
+        return True, None
+    if "/" in skill_name or "\\" in skill_name:
         return True, None
     return True, skill_name
 
