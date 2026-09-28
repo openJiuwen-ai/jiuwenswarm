@@ -16,10 +16,10 @@ from jiuwenswarm.server.im.im_hosting.reply_bridge import resolve_target_persona
 def test_select_auto_host_skips_hosted_self_and_caps():
     convs = [
         ChannelTarget(kind="user", external_id="me", title="自己"),
-        ChannelTarget(kind="user", external_id="ou_1", title="许康"),
+        ChannelTarget(kind="user", external_id="ou_1", title="用户甲"),
         ChannelTarget(kind="group", external_id="oc_old", title="已托管群"),
         ChannelTarget(kind="group", external_id="oc_new", title="新群"),
-        ChannelTarget(kind="user", external_id="ou_2", title="李华"),
+        ChannelTarget(kind="user", external_id="ou_2", title="用户丙"),
     ]
     picked = select_auto_host_candidates(
         convs,
@@ -37,7 +37,7 @@ def test_select_auto_host_skips_hosted_self_and_caps():
 
 def test_select_auto_host_respects_kind_switches():
     convs = [
-        ChannelTarget(kind="user", external_id="ou_1", title="许康"),
+        ChannelTarget(kind="user", external_id="ou_1", title="用户甲"),
         ChannelTarget(kind="group", external_id="oc_1", title="群"),
     ]
     users = select_auto_host_candidates(
@@ -83,7 +83,7 @@ async def test_apply_policy_off_drops_auto_keeps_manual(tmp_path: Path):
         channel_id="dingtalk",
         target_kind="group",
         external_id="cid_auto",
-        title="吃饭群",
+        title="测试群",
         source="auto",
     )
     manual = store.add_target(
@@ -121,7 +121,7 @@ async def test_discover_does_not_auto_enroll(tmp_path: Path):
     store = HostingStore(tmp_path / "hosting.db")
     policy = HostingPolicyStore(store=store)
     policy.patch_channel("dingtalk", {"auto_host_groups": True, "auto_host_users": True})
-    convs = [ChannelTarget(kind="group", external_id="cid_eat", title="吃饭群")]
+    convs = [ChannelTarget(kind="group", external_id="cid_group", title="测试群")]
     svc = HostingPollService(
         store=store,
         policy=policy,
@@ -144,12 +144,12 @@ async def test_register_auto_skips_released_target(tmp_path: Path):
     target = store.add_target(
         channel_id="dingtalk",
         target_kind="group",
-        external_id="cid_eat",
-        title="吃饭群",
+        external_id="cid_group",
+        title="测试群",
         source="auto",
     )
     store.release_target(target["id"])
-    convs = [ChannelTarget(kind="group", external_id="cid_eat", title="吃饭群")]
+    convs = [ChannelTarget(kind="group", external_id="cid_group", title="测试群")]
     svc = HostingPollService(
         store=store,
         policy=policy,

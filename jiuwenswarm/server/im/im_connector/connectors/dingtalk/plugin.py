@@ -15,7 +15,7 @@ from jiuwenswarm.server.im.im_connector.connectors.dingtalk.parser import (
 )
 from jiuwenswarm.server.im.im_connector.types import Identity
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class DingTalkConnector(CliBackedConnector):
@@ -53,7 +53,7 @@ class DingTalkConnector(CliBackedConnector):
     async def resolve_identity(self) -> Optional[Identity]:
         auth = await self._cli.auth_status()
         if auth.exit_code != 0:
-            LOGGER.warning("dws get-self failed: %s", auth.stderr)
+            logger.warning("dws get-self failed: %s", auth.stderr)
             return None
         parsed = parse_identity(auth.stdout)
         if parsed is None:

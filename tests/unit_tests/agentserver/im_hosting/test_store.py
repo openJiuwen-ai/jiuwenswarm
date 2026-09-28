@@ -44,7 +44,7 @@ def test_add_target_stores_expert(tmp_path: Path):
         channel_id="feishu",
         target_kind="user",
         external_id="ou_exp",
-        title="许康",
+        title="用户甲",
         expert_service_id="service_default",
         expert_agent_id="agent_default",
     )
@@ -60,7 +60,7 @@ def test_add_target_stores_expert(tmp_path: Path):
         channel_id="feishu",
         target_kind="user",
         external_id="ou_persona",
-        title="许康",
+        title="用户甲",
         expert_persona="## 人设\n- 语气：简短\n\n## 职责\n- 代回事务咨询",
     )
     assert named["expert_persona"] == "## 人设\n- 语气：简短\n\n## 职责\n- 代回事务咨询"
@@ -78,7 +78,7 @@ def test_reenable_clears_watermark(tmp_path: Path):
         channel_id="feishu",
         target_kind="user",
         external_id="ou_1",
-        title="许康",
+        title="用户甲",
     )
     store.set_watermark("feishu", "user", "ou_1", last_processed_at_ms=100, last_processed_msg_id="m1")
     store.patch_target(target["id"], {"enabled": False})
@@ -95,14 +95,14 @@ def test_drop_auto_targets_keeps_manual(tmp_path: Path):
         channel_id="dingtalk",
         target_kind="group",
         external_id="cid_auto",
-        title="吃饭群",
+        title="测试群",
         source="auto",
     )
     auto_user = store.add_target(
         channel_id="dingtalk",
         target_kind="user",
         external_id="ou_auto",
-        title="许康",
+        title="用户甲",
         source="auto",
     )
     manual = store.add_target(
@@ -125,20 +125,20 @@ def test_release_target_stays_in_hosted_keys_until_manual_add(tmp_path: Path):
     target = store.add_target(
         channel_id="dingtalk",
         target_kind="group",
-        external_id="cid_eat",
-        title="吃饭群",
+        external_id="cid_group",
+        title="测试群",
         source="auto",
     )
     assert store.release_target(target["id"]) is True
     released = store.get_target(target["id"])
     assert released is not None
     assert released["enabled"] is False
-    assert ("group", "cid_eat") in store.hosted_keys("dingtalk")
+    assert ("group", "cid_group") in store.hosted_keys("dingtalk")
     revived = store.add_target(
         channel_id="dingtalk",
         target_kind="group",
-        external_id="cid_eat",
-        title="吃饭群",
+        external_id="cid_group",
+        title="测试群",
         source="manual",
     )
     assert revived["id"] == target["id"]
@@ -151,8 +151,8 @@ def test_bump_inbound_total_only_increases(tmp_path: Path):
     target = store.add_target(
         channel_id="dingtalk",
         target_kind="user",
-        external_id="ou_xk",
-        title="许康",
+        external_id="ou_user",
+        title="用户甲",
     )
     assert target["inbound_total"] == 0
     store.bump_inbound_total(target["id"])

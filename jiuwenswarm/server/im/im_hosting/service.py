@@ -20,7 +20,7 @@ from jiuwenswarm.server.im.im_hosting.poller import run_poll_once
 from jiuwenswarm.server.im.im_hosting.reply_bridge import AgentManagerLike
 from jiuwenswarm.server.im.im_hosting.store import HostingStore
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 _TICK_SECONDS = 5.0
 
@@ -91,7 +91,7 @@ class HostingPollService:
             try:
                 await self.poll_due()
             except Exception:
-                LOGGER.exception("[im_hosting] poll round failed")
+                logger.exception("[im_hosting] poll round failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=_TICK_SECONDS)
             except asyncio.TimeoutError:
@@ -174,7 +174,7 @@ class HostingPollService:
             return 0
         dropped = self.store.drop_auto_targets(channel_id, kinds=drop_kinds)
         if dropped:
-            LOGGER.info(
+            logger.info(
                 "[im_hosting] auto-host off %s dropped=%s kinds=%s",
                 channel_id,
                 dropped,
@@ -191,7 +191,7 @@ class HostingPollService:
             summary = await self.register_auto_targets(channel_id)
             added = summary.get("added") or []
             if added:
-                LOGGER.info("[im_hosting] policy auto-host %s added=%s", channel_id, len(added))
+                logger.info("[im_hosting] policy auto-host %s added=%s", channel_id, len(added))
         return policy
 
     async def register_auto_targets(
@@ -212,7 +212,7 @@ class HostingPollService:
             identity = await plugin.resolve_identity()
             convs = conversations if conversations is not None else await plugin.discover_conversations(query_count=count)
         except Exception as exc:  # noqa: BLE001
-            LOGGER.warning("[im_hosting] auto discover %s failed: %s", channel_id, exc)
+            logger.warning("[im_hosting] auto discover %s failed: %s", channel_id, exc)
             return {"channel_id": channel_id, "added": [], "error": str(exc)}
         candidates = select_auto_host_candidates(
             convs,
@@ -247,7 +247,7 @@ class HostingPollService:
             self._last_discover_at_ms[cid] = now_ms
             added = summary.get("added") or []
             if added:
-                LOGGER.info("[im_hosting] auto-host %s added=%s", cid, len(added))
+                logger.info("[im_hosting] auto-host %s added=%s", cid, len(added))
 
     async def poll_due(self) -> list[dict[str, Any]]:
         now_ms = int(time.time() * 1000)
@@ -306,6 +306,6 @@ class HostingPollService:
             summary["ok"] = True
             return summary
         except Exception as exc:  # noqa: BLE001
-            LOGGER.warning("[im_hosting] poll %s failed: %s", target.get("id"), exc)
+            logger.warning("[im_hosting] poll %s failed: %s", target.get("id"), exc)
             self.store.record_poll(str(target["id"]), preview=target.get("last_preview"), error=str(exc))
             return {"target_id": target["id"], "ok": False, "error": str(exc)}

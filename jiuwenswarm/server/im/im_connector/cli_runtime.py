@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional, Protocol
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 DEFAULT_FETCH_TIMEOUT_MS = 30_000
 DEFAULT_SEND_TIMEOUT_MS = 15_000
@@ -191,7 +191,7 @@ class ChannelCli:
     def _on_throttled(self) -> None:
         self._pace = min(float(self._max_interval_ms), max(self._pace * 2.0, 1000.0))
         self._total_throttled += 1
-        LOGGER.warning(
+        logger.warning(
             "%s.rate_limited pace→%.0fms (total_throttled=%d)",
             self.CLI_NAME,
             self._pace,
@@ -223,7 +223,7 @@ class ChannelCli:
                     self._backoff_max_ms,
                     self._backoff_base_ms * (2 ** (attempt - 1)),
                 )
-                LOGGER.warning(
+                logger.warning(
                     "%s.retry attempt=%d/%d backoff=%dms exit=%d err=%.200s",
                     self.CLI_NAME,
                     attempt,

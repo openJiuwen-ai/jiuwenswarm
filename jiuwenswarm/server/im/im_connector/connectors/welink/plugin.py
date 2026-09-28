@@ -15,7 +15,7 @@ from jiuwenswarm.server.im.im_connector.connectors.welink.parser import (
 from jiuwenswarm.server.im.im_connector.reply import format_outgoing_reply_text
 from jiuwenswarm.server.im.im_connector.types import Identity
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class WeLinkConnector(CliBackedConnector):
@@ -38,14 +38,14 @@ class WeLinkConnector(CliBackedConnector):
     async def resolve_identity(self) -> Optional[Identity]:
         auth = await self._cli.auth_status()
         if auth.exit_code != 0:
-            LOGGER.warning("welink-cli auth status failed: %s", auth.stderr)
+            logger.warning("welink-cli auth status failed: %s", auth.stderr)
             return None
         uid = parse_auth_status_uid(auth.stdout)
         if not uid:
             return None
         search = await self._cli.search_persons(text=uid)
         if search.exit_code != 0:
-            LOGGER.warning("welink-cli search person failed: %s", search.stderr)
+            logger.warning("welink-cli search person failed: %s", search.stderr)
             return Identity(account=None, display_name=uid, extra={"uid": uid})
         persons = parse_person_search_results(search.stdout)
         match = next((p for p in persons if p.get("welink_id") == uid), None)

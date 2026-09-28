@@ -23,7 +23,7 @@ from jiuwenswarm.server.im.im_connector.types import (
     TestResult,
 )
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class CliBackedConnector(ChannelPlugin):
@@ -254,7 +254,7 @@ class CliBackedConnector(ChannelPlugin):
     async def discover_conversations(self, *, query_count: int) -> list[ChannelTarget]:
         result = await self._cli.query_recent_conversations(query_count=query_count)
         if result.exit_code != 0:
-            LOGGER.warning(
+            logger.warning(
                 "%s recent conversations failed: %s",
                 self.CLI_NAME,
                 result.stderr or result.error,

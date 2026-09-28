@@ -16,7 +16,7 @@ from jiuwenswarm.server.im.im_connector.connectors.feishu.parser import (
 )
 from jiuwenswarm.server.im.im_connector.types import Identity
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class FeishuConnector(CliBackedConnector):
@@ -54,7 +54,7 @@ class FeishuConnector(CliBackedConnector):
     async def resolve_identity(self) -> Optional[Identity]:
         auth = await self._cli.auth_status()
         if auth.exit_code != 0:
-            LOGGER.warning("lark-cli auth status failed: %s", auth.stderr)
+            logger.warning("lark-cli auth status failed: %s", auth.stderr)
             return None
         parsed = parse_identity(auth.stdout)
         if parsed is None:
@@ -67,7 +67,7 @@ class FeishuConnector(CliBackedConnector):
             if nick:
                 name = nick
         else:
-            LOGGER.warning("lark-cli self person lookup failed: %s", lookup.stderr)
+            logger.warning("lark-cli self person lookup failed: %s", lookup.stderr)
         self.apply_self_ids(account, parsed.get("open_id"), primary=account, display_name=name)
         return Identity(
             account=account,

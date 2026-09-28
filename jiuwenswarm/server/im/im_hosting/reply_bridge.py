@@ -18,7 +18,7 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import resolve_tenant_agent_workspace_dir, resolve_tenant_sessions_dir
 from jiuwenswarm.server.im.im_connector.types import ImMessage
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 HOSTING_AGENT_CHANNEL_ID = "im_hosting"
 
@@ -152,7 +152,7 @@ def _reply_from_session_history(request: AgentRequest) -> str:
         )
         records = load_history_records(str(request.session_id), sessions_root=sessions_root)
     except Exception:
-        LOGGER.debug("[im_hosting] read session history for reply failed", exc_info=True)
+        logger.debug("[im_hosting] read session history for reply failed", exc_info=True)
         return ""
     rid = str(request.request_id or "")
     for record in reversed(records):
@@ -242,7 +242,7 @@ async def generate_reply_via_expert(
     )
     text = await _invoke_expert(resolve_reply_runtime(runtime), request)
     if not text:
-        LOGGER.warning(
+        logger.warning(
             "[im_hosting] expert %s/%s returned empty reply target=%s msg=%s",
             service_id,
             agent_id,

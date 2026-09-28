@@ -92,14 +92,14 @@ async def test_feishu_send_uses_user_identity(feishu):
 @pytest.mark.asyncio
 async def test_feishu_send_mentions_open_id_in_markdown(feishu):
     connector, runner = feishu
-    connector._self_display_name = "用户023770"
+    connector._self_display_name = "用户丙"
     runner.enqueue_send(ok=True)
     source = ImMessage(
         channel_id="feishu",
         msg_id="src",
         conversation_external_id="oc_g",
-        sender_account="ou_xk",
-        sender_name="许康",
+        sender_account="ou_user",
+        sender_name="用户甲",
         content_text="hi",
         sent_at=1,
     )
@@ -112,8 +112,8 @@ async def test_feishu_send_mentions_open_id_in_markdown(feishu):
     args = runner.calls[0][0]
     assert "--markdown" in args
     text = args[args.index("--markdown") + 1]
-    assert '<at user_id="ou_xk"></at>' in text
-    assert "来自 用户023770 的数字分身：欢迎" in text
+    assert '<at user_id="ou_user"></at>' in text
+    assert "来自 用户丙 的数字分身：欢迎" in text
 
 
 @pytest.mark.asyncio
@@ -134,7 +134,7 @@ async def test_feishu_resolve_identity_from_lark_cli_camel_case(feishu):
         "identities": {
             "user": {
                 "openId": "ou_live",
-                "userName": "用户023770",
+                "userName": "用户丙",
                 "available": True,
                 "verified": True,
             }
@@ -143,7 +143,7 @@ async def test_feishu_resolve_identity_from_lark_cli_camel_case(feishu):
     identity = await connector.resolve_identity()
     assert identity is not None
     assert identity.account == "ou_live"
-    assert identity.display_name == "用户023770"
+    assert identity.display_name == "用户丙"
 
 
 @pytest.mark.asyncio
@@ -153,7 +153,7 @@ async def test_feishu_resolve_identity_prefers_localized_name(feishu):
         "identities": {
             "user": {
                 "openId": "ou_live",
-                "userName": "用户023770",
+                "userName": "用户丙",
                 "available": True,
             }
         }
@@ -163,13 +163,13 @@ async def test_feishu_resolve_identity_prefers_localized_name(feishu):
         "data": {
             "users": [{
                 "open_id": "ou_live",
-                "localized_name": "小蚊子哈哈哈",
+                "localized_name": "用户乙",
             }]
         },
     }))
     identity = await connector.resolve_identity()
     assert identity is not None
-    assert identity.display_name == "小蚊子哈哈哈"
+    assert identity.display_name == "用户乙"
     args = runner.calls[1][0]
     assert args[:2] == ["contact", "+search-user"]
     assert "--user-ids" in args and "me" in args
@@ -187,13 +187,13 @@ async def test_feishu_discover_conversations_reads_data_chats(feishu):
                 {
                     "chat_id": "oc_group",
                     "chat_mode": "group",
-                    "name": "数字分身",
+                    "name": "测试群",
                 },
                 {
                     "chat_id": "oc_dm",
                     "chat_mode": "p2p",
-                    "name": "许康",
-                    "p2p_target_id": "ou_xk",
+                    "name": "用户甲",
+                    "p2p_target_id": "ou_user",
                 },
             ],
             "has_more": False,
@@ -202,7 +202,7 @@ async def test_feishu_discover_conversations_reads_data_chats(feishu):
     rows = await connector.discover_conversations(query_count=20)
     assert [row.kind for row in rows] == ["group", "user"]
     assert rows[0].external_id == "oc_group"
-    assert rows[1].external_id == "ou_xk"
+    assert rows[1].external_id == "ou_user"
     assert runner.calls[0][0][:2] == ["im", "+chat-list"]
 
 
@@ -210,11 +210,11 @@ async def test_feishu_discover_conversations_reads_data_chats(feishu):
 async def test_feishu_search_persons_uses_search_user_shortcut(feishu):
     connector, runner = feishu
     runner.enqueue_search_persons(json.dumps({
-        "data": {"users": [{"open_id": "ou_xk", "localized_name": "许康"}]}
+        "data": {"users": [{"open_id": "ou_user", "localized_name": "用户甲"}]}
     }))
-    people = await connector.search_persons("许康")
-    assert people[0].account == "ou_xk"
-    assert people[0].display_name == "许康"
+    people = await connector.search_persons("用户甲")
+    assert people[0].account == "ou_user"
+    assert people[0].display_name == "用户甲"
     args = runner.calls[0][0]
     assert args[:2] == ["contact", "+search-user"]
     assert "--query" in args

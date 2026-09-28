@@ -20,7 +20,7 @@ def test_build_inbound_prompt_contains_sender_and_body():
         channel_id="feishu",
         msg_id="m1",
         conversation_external_id="oc_x",
-        sender_name="许康",
+        sender_name="用户甲",
         content_text="入职流程？",
         sent_at=1,
     )
@@ -30,7 +30,7 @@ def test_build_inbound_prompt_contains_sender_and_body():
         target_kind="group",
         persona="## 人设\n- 语气：简短\n\n## 职责\n- 代回入职",
     )
-    assert "许康" in text
+    assert "用户甲" in text
     assert "入职流程" in text
     assert "测试群" in text
     assert "## 人设" in text
@@ -68,11 +68,11 @@ def test_inbound_display_text_prefers_original_message():
         channel_id="feishu",
         msg_id="m1",
         conversation_external_id="oc_x",
-        sender_name="许康",
+        sender_name="用户甲",
         content_text="入职流程？",
         sent_at=1,
     )
-    assert inbound_display_text(msg) == "许康: 入职流程？"
+    assert inbound_display_text(msg) == "用户甲: 入职流程？"
 
 
 @pytest.mark.asyncio
@@ -95,7 +95,7 @@ async def test_generate_reply_uses_target_expert_on_runtime():
         channel_id="feishu",
         msg_id="m1",
         conversation_external_id="oc_x",
-        sender_name="许康",
+        sender_name="用户甲",
         content_text="入职流程？",
         sent_at=1,
     )
@@ -142,7 +142,7 @@ async def test_generate_reply_uses_history_final_after_stream(tmp_path, monkeypa
             session_dir.mkdir(parents=True, exist_ok=True)
             (session_dir / "history.json").write_text(
                 (
-                    '{"role":"user","request_id":"%s","content":"许康: 中秋干什么"}\n'
+                    '{"role":"user","request_id":"%s","content":"用户甲: 中秋干什么"}\n'
                     '{"role":"assistant","request_id":"%s","event_type":"chat.final",'
                     '"content":"还没定呢，赏月吧"}\n'
                 )
@@ -168,7 +168,7 @@ async def test_generate_reply_uses_history_final_after_stream(tmp_path, monkeypa
             channel_id="dingtalk",
             msg_id="m1",
             conversation_external_id="cid",
-            sender_name="许康",
+            sender_name="用户甲",
             content_text="中秋干什么",
             sent_at=1,
         ),

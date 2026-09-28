@@ -11,7 +11,7 @@ from jiuwenswarm.server.im.im_hosting.gate import RelevanceJudge, message_passes
 from jiuwenswarm.server.im.im_hosting.reply_bridge import AgentManagerLike, generate_reply_via_expert
 from jiuwenswarm.server.im.im_hosting.store import HostingStore
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 PREVIEW_LIMIT = 20
 MAX_RELEVANT_JUDGEMENTS = 8
@@ -107,7 +107,7 @@ async def _try_auto_reply(
                 channel_policy=channel_policy,
             )
         except ValueError as exc:
-            LOGGER.warning("[im_hosting] skip reply target=%s: %s", target.get("id"), exc)
+            logger.warning("[im_hosting] skip reply target=%s: %s", target.get("id"), exc)
             return False
         if not reply_text.strip():
             return False
@@ -121,7 +121,7 @@ async def _try_auto_reply(
             ),
         )
         if not send.ok:
-            LOGGER.warning(
+            logger.warning(
                 "[im_hosting] send failed target=%s msg=%s err=%s",
                 target.get("id"),
                 msg_id,
@@ -130,7 +130,7 @@ async def _try_auto_reply(
             return False
         return True
     except Exception:
-        LOGGER.exception(
+        logger.exception(
             "[im_hosting] auto-reply failed target=%s msg=%s",
             target.get("id"),
             msg_id,

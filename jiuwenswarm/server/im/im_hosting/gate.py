@@ -7,7 +7,7 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Optional
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 MATCH_MODES = ("keyword", "relevant")
 BUILTIN_GROUP_RULE = {"match_mode": "keyword", "keywords": [], "strip_keywords": False}
@@ -166,7 +166,7 @@ async def _ask_llm_yes_no(text: str, keywords: Sequence[str]) -> Optional[bool]:
             return True
         return False
     except Exception:
-        LOGGER.debug("[im_hosting] relevance llm unavailable", exc_info=True)
+        logger.debug("[im_hosting] relevance llm unavailable", exc_info=True)
         return None
 
 

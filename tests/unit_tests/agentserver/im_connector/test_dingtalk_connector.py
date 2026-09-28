@@ -9,7 +9,7 @@ from jiuwenswarm.server.im.im_connector.connectors.dingtalk import DingTalkCli, 
 from jiuwenswarm.server.im.im_connector.types import ChannelTarget, FetchOptions, ImMessage, SendOptions
 
 _SELF_OPEN_ID = "DGUselfOpenId"
-_SELF_USER_ID = "431651395023738965"
+_SELF_USER_ID = "100000000000000001"
 
 
 @pytest.fixture
@@ -30,7 +30,7 @@ async def test_dingtalk_fetch_maps_dws_messages(dingtalk):
                 "conversationId": "cidxxx",
                 "createTime": "2026-09-20 15:32:02",
                 "messageId": "msg1==",
-                "sender": "小蚊子",
+                "sender": "用户乙",
                 "senderId": _SELF_OPEN_ID,
                 "text": "connector probe",
             },
@@ -54,7 +54,7 @@ async def test_dingtalk_fetch_maps_dws_messages(dingtalk):
     assert [item.msg_id for item in msgs] == ["msg1==", "msg2=="]
     assert msgs[0].is_self is True
     assert msgs[0].content_text == "connector probe"
-    assert msgs[0].sender_name == "小蚊子"
+    assert msgs[0].sender_name == "用户乙"
     assert msgs[1].is_self is False
     assert page.next_page_token == "dws-chat-v1.token"
     assert page.has_more is True
@@ -80,7 +80,7 @@ async def test_dingtalk_fetch_passes_page_token_not_message_id(dingtalk):
 @pytest.mark.asyncio
 async def test_dingtalk_send_uses_user_identity(dingtalk):
     connector, runner = dingtalk
-    connector._self_display_name = "小蚊子"
+    connector._self_display_name = "用户乙"
     runner.enqueue_send(ok=True)
     result = await connector.send_message(ChannelTarget(kind="group", external_id="cid_g"), "hello")
     assert result.ok is True
@@ -92,7 +92,7 @@ async def test_dingtalk_send_uses_user_identity(dingtalk):
     assert "--content" not in args
     assert "--as" in args and "user" in args
     text = args[args.index("--text") + 1]
-    assert text == "来自 小蚊子 的数字分身：hello"
+    assert text == "来自 用户乙 的数字分身：hello"
     assert _SELF_OPEN_ID not in text
 
 
@@ -101,12 +101,12 @@ async def test_dingtalk_resolve_identity_uses_open_dingtalk_id(dingtalk):
     connector, runner = dingtalk
     runner.enqueue_auth_status(json.dumps({
         "success": True,
-        "result": [{"orgEmployeeModel": {"userId": _SELF_USER_ID, "orgUserName": "小蚊子"}}],
+        "result": [{"orgEmployeeModel": {"userId": _SELF_USER_ID, "orgUserName": "用户乙"}}],
     }))
     runner.enqueue_search_persons(json.dumps({
         "success": True,
         "result": [{
-            "name": "小蚊子",
+            "name": "用户乙",
             "openDingTalkId": _SELF_OPEN_ID,
             "userId": _SELF_USER_ID,
         }],
@@ -114,7 +114,7 @@ async def test_dingtalk_resolve_identity_uses_open_dingtalk_id(dingtalk):
     identity = await connector.resolve_identity()
     assert identity is not None
     assert identity.account == _SELF_OPEN_ID
-    assert identity.display_name == "小蚊子"
+    assert identity.display_name == "用户乙"
     assert identity.extra["user_id"] == _SELF_USER_ID
     assert identity.extra["open_dingtalk_id"] == _SELF_OPEN_ID
     assert _SELF_OPEN_ID in identity.extra["open_ids"]
@@ -127,12 +127,12 @@ async def test_dingtalk_resolve_identity_ignores_same_display_name(dingtalk):
     connector, runner = dingtalk
     runner.enqueue_auth_status(json.dumps({
         "success": True,
-        "result": [{"orgEmployeeModel": {"userId": _SELF_USER_ID, "orgUserName": "小蚊子"}}],
+        "result": [{"orgEmployeeModel": {"userId": _SELF_USER_ID, "orgUserName": "用户乙"}}],
     }))
     runner.enqueue_search_persons(json.dumps({
         "success": True,
         "result": [{
-            "name": "小蚊子",
+            "name": "用户乙",
             "openDingTalkId": "DGUsomeoneElse",
             "userId": "999",
         }],
@@ -206,13 +206,13 @@ async def test_dingtalk_discover_conversations_uses_chat_list(dingtalk):
             {
                 "chatMode": "group",
                 "conversationType": "group",
-                "name": "数字分身讨论",
-                "openConversationId": "cidloxMLX2bSKUQPGOoXsE+Bg==",
+                "name": "测试群",
+                "openConversationId": "cid_group_1",
             },
             {
                 "chatMode": "p2p",
                 "conversationType": "direct",
-                "name": "许康",
+                "name": "用户甲",
                 "openConversationId": "cid_dm_1",
                 "openDingTalkId": "DGUother",
             },
@@ -231,8 +231,8 @@ async def test_dingtalk_discover_conversations_uses_chat_list(dingtalk):
     assert "--query" not in args
     assert "+chat-search" not in args
     assert rows[0].kind == "group"
-    assert rows[0].external_id == "cidloxMLX2bSKUQPGOoXsE+Bg=="
-    assert rows[0].title == "数字分身讨论"
+    assert rows[0].external_id == "cid_group_1"
+    assert rows[0].title == "测试群"
     assert rows[1].kind == "user"
     assert rows[1].external_id == "cid_dm_1"
-    assert rows[1].title == "许康"
+    assert rows[1].title == "用户甲"

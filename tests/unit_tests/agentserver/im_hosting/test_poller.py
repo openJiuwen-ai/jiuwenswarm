@@ -38,7 +38,7 @@ class _FakePlugin(ChannelPlugin):
         return SendResult(ok=True)
 
     async def resolve_identity(self) -> Identity | None:
-        return Identity(account="me", display_name="小蚊子")
+        return Identity(account="me", display_name="用户乙")
 
     async def test_connection(self) -> TestResult:
         return ChannelTestResult(ok=True, message="ok")
@@ -58,7 +58,7 @@ async def test_first_poll_bootstraps_watermark_and_preview(tmp_path: Path):
             channel_id="feishu",
             msg_id="m1",
             conversation_external_id="oc_test",
-            sender_name="许康",
+            sender_name="用户甲",
             content_text="你好",
             sent_at=1_000,
         ),
@@ -66,7 +66,7 @@ async def test_first_poll_bootstraps_watermark_and_preview(tmp_path: Path):
             channel_id="feishu",
             msg_id="m2",
             conversation_external_id="oc_test",
-            sender_name="小蚊子",
+            sender_name="用户乙",
             content_text="在的",
             sent_at=2_000,
             is_self=True,
@@ -92,7 +92,7 @@ async def test_first_poll_bootstraps_watermark_and_preview(tmp_path: Path):
             channel_id="feishu",
             msg_id="m3",
             conversation_external_id="oc_test",
-            sender_name="许康",
+            sender_name="用户甲",
             content_text="入职流程怎么走",
             sent_at=later_base,
         ),
@@ -100,7 +100,7 @@ async def test_first_poll_bootstraps_watermark_and_preview(tmp_path: Path):
             channel_id="feishu",
             msg_id="m4",
             conversation_external_id="oc_test",
-            sender_name="许康",
+            sender_name="用户甲",
             content_text="今晚吃饭吗",
             sent_at=later_base + 1,
         ),
@@ -133,8 +133,8 @@ async def test_auto_host_first_poll_replies_recent_trigger_messages(tmp_path: Pa
     target = store.add_target(
         channel_id="dingtalk",
         target_kind="group",
-        external_id="cid_no_ot",
-        title="今天不加班",
+        external_id="cid_group",
+        title="测试群",
         source="auto",
     )
     now = int(target["hosting_since_ms"])
@@ -142,24 +142,24 @@ async def test_auto_host_first_poll_replies_recent_trigger_messages(tmp_path: Pa
         ImMessage(
             channel_id="dingtalk",
             msg_id="old",
-            conversation_external_id="cid_no_ot",
-            sender_name="许康",
+            conversation_external_id="cid_group",
+            sender_name="用户甲",
             content_text="嗨 很久以前",
             sent_at=now - 6 * 60 * 1000,
         ),
         ImMessage(
             channel_id="dingtalk",
             msg_id="hi1",
-            conversation_external_id="cid_no_ot",
-            sender_name="许康",
+            conversation_external_id="cid_group",
+            sender_name="用户甲",
             content_text="嗨",
             sent_at=now - 8_000,
         ),
         ImMessage(
             channel_id="dingtalk",
             msg_id="hi2",
-            conversation_external_id="cid_no_ot",
-            sender_name="许康",
+            conversation_external_id="cid_group",
+            sender_name="用户甲",
             content_text="嗨",
             sent_at=now - 3_000,
         ),
