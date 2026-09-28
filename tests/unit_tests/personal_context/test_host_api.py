@@ -974,6 +974,43 @@ async def test_get_authorization_status_safely_converts_core_failure(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["feishu", "github", "gitcode"])
+async def test_slow_authorization_status_does_not_block_switches_or_source_creation(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+) -> None:
+    host, core = fake_host
+    await host.configure(_repository_config())
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_validate(_provider: str, _secret: str) -> dict[str, str]:
+        started.set()
+        await release.wait()
+        return {"login": "account", "display_name": "Account"}
+
+    monkeypatch.setattr(host_module, "_validate_repository_pat", slow_validate)
+    core.authorization_status_started = started
+    core.authorization_status_release = release
+    query = asyncio.create_task(host.get_authorization_status(provider))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        await asyncio.wait_for(host.get_runtime_config(), timeout=0.1)
+        await asyncio.wait_for(host.set_master_enabled(True), timeout=0.1)
+        await asyncio.wait_for(host.create_fetch_service(_local_service("new-source", tmp_path)), timeout=0.1)
+        await asyncio.wait_for(host.set_master_enabled(False), timeout=0.1)
+        await asyncio.wait_for(host.set_master_enabled(True), timeout=0.1)
+        assert not query.done()
+        release.set()
+        assert (await asyncio.wait_for(query, timeout=1.0))["state"] == "authorized"
+    finally:
+        release.set()
+        await asyncio.gather(query, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_get_authorization_status_uses_operation_lock_and_propagates_cancellation(
     fake_host: tuple[PersonalContextHostAPI, FakeCore], tmp_path: Path
 ) -> None:
