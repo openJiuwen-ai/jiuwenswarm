@@ -25,8 +25,21 @@ from jiuwenswarm.extensions.yuanrong_frontend_client import (
 )
 
 DEFAULT_AGENT_WORKSPACE_ROOT = "/home/agentos/users"
-# Env fallback for gateway.agentos.sandbox_idle_timeout_seconds.
+# Env override for the startup seed of the Agent Sandbox idle timeout. At runtime the management-plane
+# (etcd) value applied by ConfigUpdater outranks this.
 SANDBOX_IDLE_TIMEOUT_ENV = "SANDBOX_IDLE_TIMEOUT_SECONDS"
+# Env seeds for the builtin Agent Sandbox CPU/memory. The
+# management-plane (etcd) values applied by ConfigUpdater outrank these.
+BUILTIN_AGENT_CPU_ENV = "AGENTOS_BUILTIN_AGENT_CPU"
+BUILTIN_AGENT_MEMORY_ENV = "AGENTOS_BUILTIN_AGENT_MEMORY"
+# Env seeds for the Tool Sandbox. These names must match what AgentServer reads
+# when it builds the yuanrong tool sandbox (``sysop_builder._TOOL_SANDBOX_ENV_OVERRIDES``);
+# the same constants are re-emitted into a newly created AgentServer sandbox.
+# Tool Sandbox idle timeout is integer seconds: the tool-sandbox provider
+# (yuanrong/jiuwenbox) coerces ``extra_params["idle_timeout"]`` with ``int()``.
+TOOL_SANDBOX_IDLE_TIMEOUT_ENV = "TOOL_SANDBOX_IDLE_TIMEOUT"
+TOOL_SANDBOX_CPU_ENV = "TOOL_SANDBOX_CPU"
+TOOL_SANDBOX_MEMORY_ENV = "TOOL_SANDBOX_MEMORY"
 # Env override for gateway.agentos.disconnect_cleanup_timeout_seconds.
 DISCONNECT_CLEANUP_TIMEOUT_ENV = "DISCONNECT_CLEANUP_TIMEOUT_SECONDS"
 # Env overrides for YuanRong TCP probes / GET wait (win over yaml).
@@ -65,6 +78,19 @@ class RouterConfig:
     # Idle sandbox reclamation: delete the YuanRong instance once an agent
     # has no held tasks (chat/SSH) for this long. <= 0 disables reclamation.
     sandbox_idle_timeout_seconds: float = 600.0
+    # Builtin jiuwenswarm agent sandbox resources, passed to the YuanRong
+    # ``/api/agent`` create call as ``runtime_spec.cpu`` / ``memory``. Only
+    # affect sandboxes created after the value changes.
+    agent_sandbox_cpu: int = 2000
+    agent_sandbox_memory: int = 4096
+    # Tool Sandbox settings are not consumed by Gateway. They are forwarded to
+    # each newly created AgentServer instance as environment values; the
+    # AgentServer/tool provider decides how to use them.
+    # idle_timeout is integer seconds: the tool-sandbox provider coerces it
+    # with ``int()`` (yuanrong/jiuwenbox sandbox providers).
+    tool_sandbox_idle_timeout_seconds: int = 600
+    tool_sandbox_cpu: int = 2000
+    tool_sandbox_memory: int = 4096
     sandbox_idle_check_interval_seconds: float = 30.0
     # Channel-disconnect cleanup: when a user has zero live channels, wait this
     # long before deleting their jiuwenswarm agent (gives a chance to reconnect
@@ -132,6 +158,15 @@ def read_optional_float(section: Any, key: str) -> float | None:
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return None
     return float(raw)
+
+
+def read_optional_int(section: Any, key: str) -> int | None:
+    """Read an optional int from a mapping; missing or blank returns None."""
+    mapping = section if isinstance(section, Mapping) else {}
+    raw = mapping.get(key)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    return int(raw)
 
 
 def _read_float(section: Mapping[str, Any], key: str, default: float) -> float:
@@ -359,13 +394,26 @@ def load_router_config(config: dict[str, Any]) -> RouterConfig:
     timeout = float(agentos.get("timeout") or 10)
     auth_enabled = str(agentos.get("auth_enabled", "false")).strip().lower() in ("true", "1", "yes")
 
-    # Persisted management-plane config wins; env is a startup fallback only.
+    # Local config seed path is unchanged; the etcd management-plane contract
+    # uses the separate ``agent_sandbox.idle_timeout`` path and outranks it.
     sandbox_idle_timeout_seconds = resolve_float_setting(
         agentos,
         "sandbox_idle_timeout_seconds",
         SANDBOX_IDLE_TIMEOUT_ENV,
         600.0,
     )
+    # Agent Sandbox CPU/memory are not stored in config.yaml; env seeds the
+    # startup value and the management plane overrides it at runtime.
+    agent_sandbox_cpu = _overlay_int_env(2000, BUILTIN_AGENT_CPU_ENV)
+    agent_sandbox_memory = _overlay_int_env(4096, BUILTIN_AGENT_MEMORY_ENV)
+    tool_sandbox_idle_timeout_env = _read_int_env(TOOL_SANDBOX_IDLE_TIMEOUT_ENV)
+    tool_sandbox_idle_timeout_seconds = (
+        600
+        if tool_sandbox_idle_timeout_env is None
+        else tool_sandbox_idle_timeout_env
+    )
+    tool_sandbox_cpu = _overlay_int_env(2000, TOOL_SANDBOX_CPU_ENV)
+    tool_sandbox_memory = _overlay_int_env(4096, TOOL_SANDBOX_MEMORY_ENV)
 
     disconnect_cleanup_env = _read_float_env(DISCONNECT_CLEANUP_TIMEOUT_ENV)
     disconnect_cleanup_timeout_seconds = (
@@ -397,6 +445,11 @@ def load_router_config(config: dict[str, Any]) -> RouterConfig:
         ).strip()
         or DEFAULT_AGENT_WORKSPACE_ROOT,
         sandbox_idle_timeout_seconds=sandbox_idle_timeout_seconds,
+        agent_sandbox_cpu=agent_sandbox_cpu,
+        agent_sandbox_memory=agent_sandbox_memory,
+        tool_sandbox_idle_timeout_seconds=tool_sandbox_idle_timeout_seconds,
+        tool_sandbox_cpu=tool_sandbox_cpu,
+        tool_sandbox_memory=tool_sandbox_memory,
         sandbox_idle_check_interval_seconds=_read_float(
             agentos, "sandbox_idle_check_interval_seconds", 30.0
         ),
