@@ -2325,8 +2325,9 @@ async def ensure_persistent_checkpointer() -> None:
 
 _MODE_DISPLAY_MAP: dict[str, dict[str, str]] = {
     "agent": {"cn": "智能体模式", "en": "Agent Mode"},
+    # Web 的 work 单 agent 计划模式（mode=agent.plan + work_mode=work）。
+    "agent.plan": {"cn": "计划模式", "en": "Plan Mode"},
     # 历史 token 归一到合并后的 agent 显示名（兼容旧会话 / 旧请求）。
-    "agent.plan": {"cn": "智能体模式", "en": "Agent Mode"},
     "agent.fast": {"cn": "智能体模式", "en": "Agent Mode"},
     "team": {"cn": "集群模式", "en": "Cluster Mode"},
     "team.plan": {"cn": "集群计划模式", "en": "Cluster Plan Mode"},
@@ -10087,8 +10088,44 @@ class JiuWenSwarmDeepAdapter:
         )
         return rails_list
 
+    def _build_work_agent_mode_rail(self) -> Any | None:
+        """构建 work profile 的 plan rail（只读白名单 + 通用工作计划提示词）。
+
+        与 code 侧的区别只在构造参数：work 不引用 explore_agent / plan_agent，
+        白名单只放调研与计划文件写入，其余会产生业务副作用的工具在 plan 期间
+        一律被拦截。
+        """
+        try:
+            from jiuwenswarm.agents.harness.work.rails.work_agent_mode_rail import (
+                WorkAgentModeRail,
+            )
+
+            return WorkAgentModeRail(language=self._resolve_runtime_language())
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] WorkAgentModeRail create failed: %s", exc)
+            return None
+
+    @staticmethod
+    def _build_work_plan_approval_rail() -> Any | None:
+        """构建 work plan 的审批 rail（``exit_plan_mode`` 即时弹窗）。"""
+        try:
+            from jiuwenswarm.agents.harness.code.rails.code_plan_approval_interrupt_rail import (
+                PlanApprovalInterruptRail,
+            )
+
+            return PlanApprovalInterruptRail()
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] PlanApprovalInterruptRail create failed: %s", exc
+            )
+            return None
+
     def _build_agent_rails(
-        self, config: dict[str, Any], config_base: dict[str, Any], *, mode: str = "agent"
+        self,
+        config: dict[str, Any],
+        config_base: dict[str, Any],
+        *,
+        mode: str = "agent",
     ) -> list[Any]:
         """Build DeepAgent rails consistently for cold start and hot reload."""
         rail_infos = [
@@ -10271,6 +10308,20 @@ class JiuWenSwarmDeepAdapter:
                 self._build_disabled_tools_rail,
                 {"config": config},
             )
+        )
+
+        # work 单 agent 常挂 plan rails，与 code 侧一致：plan 是会话运行期状态，
+        # 不是另一种 agent 装配，所以不能按 sub_mode 决定挂不挂——否则开关 Plan
+        # 就得换 agent 实例，内存里的对话上下文会跟着一起丢。
+        #
+        # 非 plan 态它们几乎不做事：``AgentModeRail.before_model_call`` 会把
+        # enter/exit_plan_mode 从模型可见工具里滤掉（``WorkAgentModeRail`` 再补上
+        # switch_mode），审批 rail 只拦 ``exit_plan_mode``，普通模式下不会触发。
+        rail_infos.append(
+            _RailBuildInfo("_work_agent_mode_rail", self._build_work_agent_mode_rail)
+        )
+        rail_infos.append(
+            _RailBuildInfo("_work_plan_approval_rail", self._build_work_plan_approval_rail)
         )
 
         return self._instantiate_rails(rail_infos, config_base)
@@ -11146,6 +11197,30 @@ class JiuWenSwarmDeepAdapter:
             True when ``create_instance`` should leave ``self._instance`` unset.
         """
         return not self._is_session_scoped_adapter and not self._root_instance_requested
+
+    def get_live_session_instance(self, session_id: str | None) -> Any | None:
+        """Return the already-running DeepAgent that owns ``session_id``.
+
+        Chat turns run on a session-scoped child adapter, and
+        ``DeepAgent.load_state`` caches its snapshot on the bound Session object.
+        Callers that mutate session state outside a chat turn (plan mode sync)
+        must therefore reach that instance instead of a throwaway session, or
+        the running conversation keeps reading the pre-change snapshot.
+
+        Returns:
+            The live DeepAgent, or None when this session has not started one yet
+            (first turn of a session) — the caller should then fall back to the
+            checkpointer, which ``start_interaction`` reads on creation.
+        """
+        if self._is_session_scoped_adapter:
+            return self._instance
+        adapter = self._get_cached_session_adapter(session_id)
+        if adapter is None:
+            return None
+        # 子适配器一定是 session 级的（``_new_session_scoped_adapter`` 建完就
+        # ``mark_as_session_scoped``），所以这一跳递归只会走上面那个分支返回它自己的
+        # 实例，不会再往下递归。
+        return adapter.get_live_session_instance(session_id)
 
     async def ensure_instance(self) -> Any:
         """Return this adapter's own DeepAgent, building it on first use.

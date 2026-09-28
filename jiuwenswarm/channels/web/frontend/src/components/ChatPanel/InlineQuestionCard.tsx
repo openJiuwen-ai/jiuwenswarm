@@ -35,6 +35,94 @@ function ApprovalQuestionContent({ question }: { question: Question }) {
   );
 }
 
+/**
+ * 计划审批的操作区：一个「执行」按钮，加一个修改框 + 动态按钮。
+ *
+ * 三个动作都复用后端已有的 approve / reject 通道，不引入新的审批语义：
+ * - 执行：`plan_execute`，批准并退出计划模式，本轮到此结束；随后由前端补发的
+ *   普通消息开启新一轮真正执行。
+ * - 修改框留空 + 跳过：`plan_skip`，留在计划模式并结束本轮。
+ * - 修改框有内容 + 下一步：`reject` + `custom_input`，继续完善同一份计划。
+ */
+function PlanApprovalActions({
+  disabled,
+  onAct,
+}: {
+  disabled: boolean;
+  onAct: (value: string, customInput: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [revision, setRevision] = useState('');
+  const hasRevision = revision.trim().length > 0;
+
+  return (
+    <div className="px-4 pb-3 flex flex-col gap-2">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => onAct('plan_execute', '')}
+        className="w-full px-4 py-2.5 text-sm font-medium rounded-lg text-white"
+        style={{
+          background: 'linear-gradient(135deg, var(--color-feedback-success), var(--color-action-primary))',
+          opacity: disabled ? 0.6 : 1,
+          cursor: disabled ? 'default' : 'pointer',
+        }}
+      >
+        {t('plan.approvalExecute')}
+      </button>
+
+      <div className="flex items-end gap-2">
+        <textarea
+          value={revision}
+          onChange={(e) => setRevision(e.target.value)}
+          placeholder={t('plan.approvalInputPlaceholder')}
+          disabled={disabled}
+          rows={2}
+          className="flex-1 px-3 py-2 text-sm rounded-lg resize-none focus:outline-none"
+          style={{
+            backgroundColor: 'var(--color-surface-elevated)',
+            border: '1px solid var(--color-border-default)',
+            color: 'var(--color-text-primary)',
+          }}
+          onFocus={(e) => {
+            e.currentTarget.style.borderColor = 'var(--color-border-focus)';
+          }}
+          onBlur={(e) => {
+            e.currentTarget.style.borderColor = 'var(--color-border-default)';
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && hasRevision) {
+              e.preventDefault();
+              onAct('reject', revision.trim());
+            }
+          }}
+        />
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() =>
+            hasRevision ? onAct('reject', revision.trim()) : onAct('plan_skip', '')
+          }
+          className="px-4 py-2 text-sm font-medium rounded-lg whitespace-nowrap"
+          style={{
+            backgroundColor: hasRevision
+              ? 'var(--color-action-primary-subtle)'
+              : 'var(--color-surface-elevated)',
+            border: `1px solid ${
+              hasRevision ? 'var(--color-action-primary)' : 'var(--color-border-default)'
+            }`,
+            color: hasRevision ? 'var(--color-action-primary)' : 'var(--color-text-primary)',
+            opacity: disabled ? 0.6 : 1,
+            cursor: disabled ? 'default' : 'pointer',
+          }}
+        >
+          {hasRevision ? t('plan.approvalNext') : t('plan.approvalSkip')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
@@ -149,6 +237,34 @@ export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
     if (!allAnswered || submitted) return;
     doSubmit(selections);
   }, [allAnswered, submitted, selections, doSubmit]);
+
+  // 计划审批：执行 / 跳过 / 下一步。三者都通过既有 answers 通道回传，
+  // 后端按 selected_options 与 custom_input 区分。
+  const isPlanApproval = pendingQuestion?.planApprovalKind === 'plan_approval';
+
+  const handlePlanAction = useCallback(
+    (value: string, customInput: string) => {
+      if (!pendingQuestion || submitted) return;
+      setSubmitted(true);
+      const question = pendingQuestion.questions[0];
+      onSubmit(
+        pendingQuestion.request_id,
+        [
+          {
+            question: question?.question ?? '',
+            selected_options: [value],
+            custom_input: customInput,
+          },
+        ],
+        pendingQuestion.source
+      );
+      const sid = useChatStore.getState().activeSessionId;
+      if (sid) {
+        useChatStore.getState().setPendingQuestion(sid, null);
+      }
+    },
+    [pendingQuestion, submitted, onSubmit]
+  );
 
   // Support skill evolution, team skill evolution, and new skill creation flows.
   const isEvolution = (
@@ -270,15 +386,25 @@ export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
                     : undefined
                 }
               >
-                {/* 问题正文 */}
+                {/* 问题正文。计划审批的正文已作为对话气泡展示，这里只留一行提示 */}
                 <div
                   className="px-4 pt-3 pb-2 text-sm prose prose-sm max-w-none prose-headings:font-semibold prose-headings:text-sm prose-ul:my-1 prose-li:my-0 prose-li:pl-1"
                   style={{ color: 'var(--color-text-primary)' }}
                 >
-                  <ApprovalQuestionContent question={question} />
+                  {isPlanApproval ? (
+                    <p className="m-0">{t('plan.approvalPrompt')}</p>
+                  ) : (
+                    <ApprovalQuestionContent question={question} />
+                  )}
                 </div>
 
-                {/* 选项按钮 */}
+                {/* 计划审批用专用操作区；其余审批保持原有选项按钮 */}
+                {isPlanApproval ? (
+                  <PlanApprovalActions
+                    disabled={submitted}
+                    onAct={handlePlanAction}
+                  />
+                ) : (
                 <div className="px-4 pb-3 flex flex-col gap-2">
                   {question.options.map((option) => {
                     const optionValue = isOtherOption(option) ? OTHER_VALUE : (option.value || option.label);
@@ -414,6 +540,7 @@ export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
                     </div>
                   )}
                 </div>
+                )}
               </div>
             );
           })}
