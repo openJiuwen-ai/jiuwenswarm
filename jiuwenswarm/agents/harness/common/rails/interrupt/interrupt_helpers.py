@@ -13,6 +13,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
+    build_plan_approval_actions,
+)
 from jiuwenswarm.agents.harness.code.rails.code_plan_approval_interrupt_rail import (
     build_plan_approval_options_from_message,
     extract_plan_approval_content,
@@ -1051,9 +1054,13 @@ def convert_interactions_to_ask_user_question(state_outputs: list) -> dict | Non
             and is_plan_approval_message(message)
         ):
             plan_content, plan_language = extract_plan_approval_content(message)
+            resolved_plan_language = "en" if plan_language == "en" else "cn"
             payload["plan_content"] = plan_content
-            payload["plan_language"] = "en" if plan_language == "en" else "cn"
+            payload["plan_language"] = resolved_plan_language
             payload["plan_approval_kind"] = "plan_approval"
+            # Web 用的动作说明。TUI 忽略该字段，继续使用 questions[].options 的
+            # approve / reject，因此两端行为互不影响。
+            payload["plan_actions"] = build_plan_approval_actions(resolved_plan_language)
         plan_path = str(question_data.get("plan_path") or "").strip()
         plan_slug = str(question_data.get("plan_slug") or "").strip()
         if plan_path:

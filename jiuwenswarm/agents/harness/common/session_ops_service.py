@@ -1028,12 +1028,13 @@ async def rewind_session_context(
     )
 
 
-def _resolve_live_agent_session(deep_agent: "DeepAgent", session_id: str) -> Any | None:
+def resolve_live_agent_session(deep_agent: "DeepAgent", session_id: str) -> Any | None:
     """Return DeepAgent's long-lived Session if it matches ``session_id``.
 
-    Chat rounds reuse ``_interaction_session`` (pre_run once). Rewinding via a
-    fresh Session only updates checkpointer; the next turn still loads stale
-    in-memory context from the bound session.
+    Chat rounds reuse ``_interaction_session`` (pre_run once). Writing through a
+    fresh Session only updates the checkpointer; the next turn still reads the
+    stale in-memory snapshot cached on the bound session — this bites both the
+    rewound context and ``DeepAgentState.plan_mode``.
     """
     for attr in ("_interaction_session", "_loop_session"):
         session_obj = getattr(deep_agent, attr, None)
@@ -1047,9 +1048,9 @@ def _resolve_live_agent_session(deep_agent: "DeepAgent", session_id: str) -> Any
                 return session_obj
         except Exception as exc:
             # Skip this candidate and try the next attr / fall back to a temp
-            # Session; a broken get_session_id must not abort rewind.
+            # Session; a broken get_session_id must not abort the caller.
             logger.warning(
-                "rewind_session_context: get_session_id failed on %s for %s: %s",
+                "resolve_live_agent_session: get_session_id failed on %s for %s: %s",
                 attr, session_id, exc,
             )
             continue
@@ -1151,7 +1152,7 @@ async def _apply_rewound_context(
         )
     await context_engine.clear_context(session_id=session_id)
 
-    live_session = _resolve_live_agent_session(deep_agent, session_id)
+    live_session = resolve_live_agent_session(deep_agent, session_id)
     is_live_session = live_session is not None
     if is_live_session:
         session = live_session

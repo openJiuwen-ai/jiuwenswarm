@@ -463,6 +463,16 @@
     "pending": "待处理",
     "completed": "已完成"
   },
+  "plan": {
+    "toolbarTag": "计划",
+    "closeTag": "退出计划模式",
+    "approvalPrompt": "计划已生成，请选择下一步。",
+    "executePrompt": "计划已批准，请按计划开始执行。",
+    "approvalExecute": "执行",
+    "approvalSkip": "跳过",
+    "approvalNext": "下一步",
+    "approvalInputPlaceholder": "填写修改意见后点击「下一步」；留空点击「跳过」"
+  },
   "goal": {
     "formSubmit": "确定",
     "formCancel": "取消",

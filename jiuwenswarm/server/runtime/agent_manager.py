@@ -98,9 +98,37 @@ def _normalize_project_dir(project_dir: str | None) -> str:
         return raw
 
 
+# 单 agent 的 plan 是**会话运行期状态**（``DeepAgentState.plan_mode``），不是另一种
+# agent 装配：plan 与非 plan 用的是同一套 rails 和工具，差别只在模型这一轮能看到
+# 哪些工具。所以这里把 plan 子模式并回它的普通形态，用户开关 Plan 时命中同一个
+# 实例——否则换实例就等于换掉 ``context_engine``，整段对话历史会凭空消失。
+#
+# 集群不在此列：``team.plan`` 解析出的子模式是 ``team``，本来就不带 plan。
+_PLAN_SUB_MODE_ALIASES: dict[str, str] = {
+    "agent": "",
+    "code": "normal",
+}
+
+
+def collapse_plan_sub_mode(mode: str | None, sub_mode: str | None) -> str:
+    """把单 agent 的 ``plan`` 子模式并回普通子模式。
+
+    Args:
+        mode: 归一化前后的 manager mode。
+        sub_mode: 归一化前后的子模式。
+
+    Returns:
+        并轨后的子模式；非单 agent plan 时原样返回。
+    """
+    sub_mode_key = _normalize_sub_mode(sub_mode)
+    if sub_mode_key != "plan":
+        return sub_mode_key
+    return _PLAN_SUB_MODE_ALIASES.get(_normalize_mode(mode), sub_mode_key)
+
+
 def _make_agent_cache_key(mode: str | None, sub_mode: str | None, project_dir: str | None) -> str:
     mode_key = _normalize_mode(mode)
-    sub_mode_key = _normalize_sub_mode(sub_mode)
+    sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
     project_key = _normalize_project_dir(project_dir)
     return f"{mode_key}:{sub_mode_key}:{project_key}"
 
@@ -568,7 +596,8 @@ class AgentManager:
                 overlay_token = bind_task_env_overlay(effective_overlay)
             channel_key = _normalize_channel_id(agent_key)
             mode_key = _normalize_mode(mode)
-            sub_mode_key = _normalize_sub_mode(sub_mode)
+            # 用并轨后的子模式装配实例，和缓存键保持同一套语义。
+            sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
             project_dir = _normalize_project_dir((config or {}).get("project_dir"))
             if project_dir:
                 config = dict(config or {})
@@ -934,7 +963,7 @@ class AgentManager:
         """
         channel_key = _normalize_channel_id(channel_id)
         mode_key = _normalize_mode(mode)
-        sub_mode_key = _normalize_sub_mode(sub_mode)
+        sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
         project_key = _normalize_project_dir(project_dir)
         cache_key = _make_agent_cache_key(mode_key, sub_mode_key, project_key)
         channel_agents = self.agents.get(channel_key, {})
@@ -1026,7 +1055,9 @@ class AgentManager:
                 return self._borrow_agent(agent)
 
         requested_mode = _normalize_mode(mode) if mode is not None else ""
-        requested_sub_mode = _normalize_sub_mode(sub_mode) if sub_mode is not None else ""
+        requested_sub_mode = (
+            collapse_plan_sub_mode(mode, sub_mode) if sub_mode is not None else ""
+        )
         requested_project_dir = _normalize_project_dir(project_dir) if project_dir is not None else ""
         for agent in channel_agents.values():
             if requested_mode and getattr(agent, "_jiuwenswarm_agent_mode", "") != requested_mode:
