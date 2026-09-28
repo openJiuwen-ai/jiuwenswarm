@@ -74,7 +74,7 @@ _PLAN_ARGUMENTS: tuple[SlashCommandArgument, ...] = (
 
 SLASH_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/help", "查看所有命令"),
-    SlashCommand("/sessions", "列出进程式 CLI 会话"),
+    SlashCommand("/sessions", "搜索并选择进程式 CLI 会话"),
     SlashCommand("/mode", "查看或切换运行模式"),
     SlashCommand("/model", "查看或选择下一轮模型"),
     SlashCommand("/plan", "切换单 Agent 规划模式"),
@@ -82,7 +82,7 @@ SLASH_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/skills", "查看可用技能"),
     SlashCommand("/permissions", "查看有效权限（只读）"),
     SlashCommand("/new", "创建并切换到新会话"),
-    SlashCommand("/resume", "按 ID 恢复会话", aliases=("/continue",)),
+    SlashCommand("/resume", "选择会话或按 ID 恢复", aliases=("/continue",)),
     SlashCommand("/branch", "从当前会话创建分支", aliases=("/fork",)),
     SlashCommand("/delete", "删除指定会话"),
     SlashCommand("/session", "查看当前会话"),

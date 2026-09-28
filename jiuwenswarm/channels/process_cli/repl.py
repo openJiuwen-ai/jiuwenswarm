@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from prompt_toolkit import PromptSession
+
 from jiuwenswarm.channels.process_cli.commands import (
     ParsedSlashCommand,
     parse_slash_command,
@@ -252,7 +254,9 @@ async def _forward_live_input(
             if stripped.startswith("/"):
                 command = parse_slash_command(stripped)
                 if command is None:
-                    layout.add_notice(f"未知命令：{stripped.split(maxsplit=1)[0]}。输入 /help 查看可用命令。")
+                    layout.add_notice(
+                        f"未知命令：{stripped.split(maxsplit=1)[0]}。输入 /help 查看可用命令。"
+                    )
                 elif command.name == "/cancel" and not command.arguments:
                     if cancel_requested is not None:
                         cancel_requested.set()
@@ -262,7 +266,9 @@ async def _forward_live_input(
                 elif command.name == "/cancel":
                     layout.add_notice("用法：/cancel")
                 else:
-                    layout.add_notice(f"当前任务运行中，暂不能执行 {command.name}；可使用 /cancel 中断任务。")
+                    layout.add_notice(
+                        f"当前任务运行中，暂不能执行 {command.name}；可使用 /cancel 中断任务。"
+                    )
                 continue
             layout.add_supplement(text)
             writer.write((text + "\n").encode("utf-8"))
@@ -549,20 +555,83 @@ async def _handle_new_command(
         ui.notice("已中断当前指令，可以继续输入。")
 
 
-async def _handle_resume_command(
+async def _choose_session(
     args: argparse.Namespace,
     *,
-    arguments: str,
+    state: _ReplState,
+    ui: ProcessCliUI,
+    prompt_session: PromptSession[str] | None,
+    search: str = "",
+    limit: int = 20,
+    offset: int = 0,
+) -> str | None:
+    """Browse owned sessions; return an ID only after an explicit selection."""
+    while True:
+        try:
+            data = await query_runtime(
+                "session.list",
+                cwd=state.cwd,
+                params={"limit": limit, "offset": offset, "search": search},
+                timeout=args.timeout or 30.0,
+            )
+            session_ids = show_sessions(ui, data, state.session_id, search=search)
+            total = data.get("total")
+            if not isinstance(total, int) or total < 0:
+                raise ControlQueryError("会话列表总数无效")
+            choice = (
+                await _read_prompt(
+                    prompt_session,
+                    "选择序号；s <关键词> 搜索；n/p 翻页；回车取消> ",
+                )
+            ).strip()
+        except asyncio.CancelledError:
+            _clear_current_task_cancellation()
+            ui.notice("已取消会话选择。")
+            return None
+        except (EOFError, KeyboardInterrupt):
+            ui.notice("已取消会话选择。")
+            return None
+        except (ControlQueryError, OSError, TimeoutError) as error:
+            ui.notice(str(error) or "会话查询失败")
+            return None
+
+        if not choice or choice.lower() in {"q", "quit"}:
+            return None
+        if choice.isdecimal():
+            index = int(choice)
+            if 1 <= index <= len(session_ids):
+                return session_ids[index - 1]
+            ui.notice("请输入当前页显示的会话序号。")
+        elif choice.lower() in {"n", "next"}:
+            if offset + limit < total:
+                offset += limit
+            else:
+                ui.notice("已经是最后一页。")
+        elif choice.lower() in {"p", "prev"}:
+            if offset:
+                offset = max(0, offset - limit)
+            else:
+                ui.notice("已经是第一页。")
+        elif choice.lower() == "s" or choice.lower().startswith(("s ", "search ")):
+            search = choice.partition(" ")[2].strip()
+            if len(search) > 200:
+                ui.notice("搜索词不能超过 200 个字符。")
+                continue
+            offset = 0
+        else:
+            ui.notice("请输入序号、s <关键词>、n、p，或回车取消。")
+
+
+async def _resume_session_by_id(
+    args: argparse.Namespace,
+    *,
+    session_id: str,
     state: _ReplState,
     ui: ProcessCliUI,
 ) -> None:
-    parts = arguments.split()
-    if len(parts) != 1:
-        ui.notice("用法：/resume <session-id>")
-        return
     return_code, next_session = await _run_worker(
         args,
-        prompt=parts[0],
+        prompt=session_id,
         session_id=state.session_id,
         operation=_SESSION_SWITCH_OPERATION,
     )
@@ -570,6 +639,70 @@ async def _handle_resume_command(
         state.session_id = next_session
     if return_code == 130:
         ui.notice("已中断当前指令，可以继续输入。")
+
+
+async def _handle_resume_command(
+    args: argparse.Namespace,
+    *,
+    arguments: str,
+    state: _ReplState,
+    ui: ProcessCliUI,
+    prompt_session: PromptSession[str] | None = None,
+) -> None:
+    parts = arguments.split()
+    if len(parts) > 1:
+        ui.notice("用法：/resume [session-id]")
+        return
+    session_id = (
+        parts[0]
+        if parts
+        else await _choose_session(
+            args, state=state, ui=ui, prompt_session=prompt_session
+        )
+    )
+    if session_id:
+        await _resume_session_by_id(args, session_id=session_id, state=state, ui=ui)
+
+
+async def _handle_sessions_command(
+    args: argparse.Namespace,
+    *,
+    arguments: str,
+    state: _ReplState,
+    ui: ProcessCliUI,
+    prompt_session: PromptSession[str] | None = None,
+) -> None:
+    parts = arguments.split()
+    limit, offset, search = 20, 0, ""
+    if parts and parts[0].isdecimal():
+        if len(parts) > 2 or any(not part.isdecimal() for part in parts):
+            ui.notice("用法：/sessions [limit] [offset] 或 /sessions <关键词>")
+            return
+        limit = int(parts[0])
+        offset = int(parts[1]) if len(parts) == 2 else 0
+        if not 1 <= limit <= 200:
+            ui.notice("limit 必须在 1 到 200 之间。")
+            return
+    elif arguments:
+        search = (
+            arguments[7:].strip()
+            if arguments.lower().startswith("search ")
+            else arguments
+        )
+        if len(search) > 200:
+            ui.notice("搜索词不能超过 200 个字符。")
+            return
+    session_id = await _choose_session(
+        args,
+        state=state,
+        ui=ui,
+        prompt_session=prompt_session,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    if session_id:
+        await _resume_session_by_id(args, session_id=session_id, state=state, ui=ui)
 
 
 async def _handle_branch_command(
@@ -639,7 +772,7 @@ async def _handle_control_command(
     """Handle the additional REPL controls without creating a chat worker."""
 
     name = command.name
-    if name not in {"/sessions", "/model", "/plan", "/status", "/permissions"}:
+    if name not in {"/model", "/plan", "/status", "/permissions"}:
         return False
     arguments = command.arguments
     if name == "/plan":
@@ -649,7 +782,9 @@ async def _handle_control_command(
         elif not state.display_mode.startswith("agent."):
             ui.notice("/plan 仅支持单 Agent 模式。")
         elif requested == "status":
-            ui.notice(f"当前规划模式：{'开启' if state.display_mode.endswith('.plan') else '关闭'}")
+            ui.notice(
+                f"当前规划模式：{'开启' if state.display_mode.endswith('.plan') else '关闭'}"
+            )
         else:
             enabled = (
                 not state.display_mode.endswith(".plan")
@@ -663,24 +798,7 @@ async def _handle_control_command(
 
     try:
         timeout = args.timeout or 30.0
-        if name == "/sessions":
-            parts = arguments.split()
-            if len(parts) > 2 or any(not part.isdecimal() for part in parts):
-                ui.notice("用法：/sessions [limit] [offset]")
-                return True
-            limit = int(parts[0]) if parts else 20
-            offset = int(parts[1]) if len(parts) == 2 else 0
-            if not 1 <= limit <= 200:
-                ui.notice("limit 必须在 1 到 200 之间。")
-                return True
-            data = await query_runtime(
-                "session.list",
-                cwd=state.cwd,
-                params={"limit": limit, "offset": offset},
-                timeout=timeout,
-            )
-            show_sessions(ui, data, state.session_id)
-        elif name == "/model":
+        if name == "/model":
             if not arguments or arguments.lower() == "list":
                 data = await query_runtime("model.list", cwd=state.cwd, timeout=timeout)
                 show_models(ui, data, state.model_selection)
@@ -696,7 +814,9 @@ async def _handle_control_command(
                     raise ControlQueryError("模型查询结果缺少选择键")
                 args.model_selection = key
                 state.model_selection = key
-                state.model_name = str(data.get("display_name") or data.get("model_name") or key)
+                state.model_name = str(
+                    data.get("display_name") or data.get("model_name") or key
+                )
                 ui.notice(f"下一轮将使用模型：{state.model_name} [{key}]")
         elif name == "/status":
             if arguments:
@@ -745,9 +865,19 @@ async def _handle_slash_command(
     command: ParsedSlashCommand,
     ui: ProcessCliUI,
     state: _ReplState,
+    prompt_session: PromptSession[str] | None = None,
 ) -> bool:
     """Handle one recognized command and report whether the REPL should exit."""
     if await _handle_control_command(args, command, ui, state):
+        return False
+    if command.name == "/sessions":
+        await _handle_sessions_command(
+            args,
+            arguments=command.arguments,
+            state=state,
+            ui=ui,
+            prompt_session=prompt_session,
+        )
         return False
     if command.name == "/mode":
         state.display_mode = _handle_mode_command(
@@ -779,6 +909,7 @@ async def _handle_slash_command(
             arguments=command.arguments,
             state=state,
             ui=ui,
+            prompt_session=prompt_session,
         )
         return False
     if command.name == "/branch":
@@ -876,11 +1007,15 @@ async def run_repl(args: argparse.Namespace) -> int:
         if lowered in _EXIT_COMMANDS:
             return 0
         if slash_command is not None:
-            if await _handle_slash_command(args, slash_command, ui, state):
+            if await _handle_slash_command(
+                args, slash_command, ui, state, prompt_session
+            ):
                 return 0
             continue
         if prompt.startswith("/"):
-            ui.notice(f"未知命令：{prompt.split(maxsplit=1)[0]}。输入 /help 查看可用命令。")
+            ui.notice(
+                f"未知命令：{prompt.split(maxsplit=1)[0]}。输入 /help 查看可用命令。"
+            )
             continue
         worker_kwargs = {
             "prompt": prompt,

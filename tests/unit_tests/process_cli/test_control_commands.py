@@ -91,6 +91,11 @@ async def test_sessions_status_and_permissions_query_current_runtime_state(
         }[operation]
 
     monkeypatch.setattr(repl, "query_runtime", fake_query)
+
+    async def cancel_selection(_session, _prompt_text):
+        return ""
+
+    monkeypatch.setattr(repl, "_read_prompt", cancel_selection)
     output = StringIO()
     ui = ProcessCliUI(output, columns=100)
     state = _state()
@@ -105,7 +110,7 @@ async def test_sessions_status_and_permissions_query_current_runtime_state(
         "session.get",
         "permission.get",
     ]
-    assert calls[0][2] == {"limit": 20, "offset": 0}
+    assert calls[0][2] == {"limit": 20, "offset": 0, "search": ""}
     assert calls[1][2] == {"session_id": "process_cli_current"}
     assert calls[2][2] == {"session_id": "process_cli_current"}
     text = output.getvalue()
@@ -113,6 +118,98 @@ async def test_sessions_status_and_permissions_query_current_runtime_state(
     assert "会话模型：applied-model" in text
     assert "下一轮模型：default-model" in text
     assert "shell: ask" in text
+
+
+@pytest.mark.asyncio
+async def test_sessions_search_and_selection_restore_owned_session(monkeypatch) -> None:
+    calls = []
+    choices = iter(("s project beta", "n", "1"))
+
+    async def fake_query(operation, *, cwd, params=None, timeout=30.0):
+        calls.append(params)
+        assert operation == "session.list"
+        assert cwd == "D:/workspace"
+        if not params["search"]:
+            return {"total": 1, "offset": 0, "sessions": [_session("old")]}
+        if params["offset"] == 0:
+            return {"total": 3, "offset": 0, "sessions": [_session("one")]}
+        return {
+            "total": 3,
+            "offset": 1,
+            "sessions": [_session("chosen")],
+        }
+
+    async def fake_read_prompt(_session, _prompt_text):
+        return next(choices)
+
+    async def fake_run_worker(args, *, prompt, session_id, operation):
+        assert (prompt, session_id, operation) == (
+            "chosen",
+            "process_cli_current",
+            "session.switch",
+        )
+        args._last_worker_result = {"operation": operation, "session_id": prompt}
+        return 0, prompt
+
+    monkeypatch.setattr(repl, "query_runtime", fake_query)
+    monkeypatch.setattr(repl, "_read_prompt", fake_read_prompt)
+    monkeypatch.setattr(repl, "_run_worker", fake_run_worker)
+    state = _state()
+    output = StringIO()
+
+    await _command("/sessions 1", _args(), state, ProcessCliUI(output))
+
+    assert state.session_id == "chosen"
+    assert calls == [
+        {"limit": 1, "offset": 0, "search": ""},
+        {"limit": 1, "offset": 0, "search": "project beta"},
+        {"limit": 1, "offset": 1, "search": "project beta"},
+    ]
+    assert "项目：D:/project" in output.getvalue()
+
+
+def _session(session_id: str) -> dict:
+    return {
+        "session_id": session_id,
+        "title": f"title-{session_id}",
+        "mode": "agent.code.normal",
+        "project_dir": "D:/project",
+        "last_message_at": 1700000000.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_resume_without_id_reuses_picker_and_cancel_preserves_session(
+    monkeypatch,
+):
+    choices = iter(("", "1"))
+    worker_calls = []
+
+    async def fake_query(operation, *, cwd, params=None, timeout=30.0):
+        assert operation == "session.list"
+        return {"total": 1, "offset": 0, "sessions": [_session("selected")]}
+
+    async def fake_read_prompt(_session, _prompt_text):
+        return next(choices)
+
+    async def fake_run_worker(args, *, prompt, session_id, operation):
+        worker_calls.append((prompt, session_id, operation))
+        args._last_worker_result = {"operation": operation, "session_id": prompt}
+        return 0, prompt
+
+    monkeypatch.setattr(repl, "query_runtime", fake_query)
+    monkeypatch.setattr(repl, "_read_prompt", fake_read_prompt)
+    monkeypatch.setattr(repl, "_run_worker", fake_run_worker)
+    state = _state()
+    args = _args()
+    ui = ProcessCliUI(StringIO())
+
+    await _command("/resume", args, state, ui)
+    assert state.session_id == "process_cli_current"
+    assert worker_calls == []
+    await _command("/resume", args, state, ui)
+    assert state.session_id == "selected"
+    assert worker_calls == [("selected", "process_cli_current", "session.switch")]
 
 
 @pytest.mark.asyncio

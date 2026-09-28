@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import sys
+from datetime import datetime
 from typing import Any
 
 from jiuwenswarm.channels.process_cli.protocol.version import CURRENT_SCHEMA_VERSION
@@ -76,24 +77,55 @@ async def query_runtime(
     return data
 
 
-def show_sessions(ui: ProcessCliUI, data: dict[str, Any], current: str | None) -> None:
+def show_sessions(
+    ui: ProcessCliUI,
+    data: dict[str, Any],
+    current: str | None,
+    *,
+    search: str = "",
+) -> tuple[str, ...]:
     """Render only Process CLI sessions returned by the Runtime boundary."""
 
     sessions = data.get("sessions")
     if not isinstance(sessions, list):
         raise ControlQueryError("会话列表格式无效")
-    lines = [f"共 {data.get('total', 0)} 个会话；当前页偏移 {data.get('offset', 0)}"]
+    heading = f"共 {data.get('total', 0)} 个会话；当前页偏移 {data.get('offset', 0)}"
+    if search:
+        heading += f"；搜索：{search}"
+    lines = [heading]
+    session_ids: list[str] = []
     for item in sessions:
         if not isinstance(item, dict):
             continue
         session_id = str(item.get("session_id") or "")
+        if not session_id:
+            continue
+        session_ids.append(session_id)
         marker = "*" if session_id == current else " "
         title = str(item.get("title") or "未命名")
         mode = str(item.get("mode") or "未知模式")
-        lines.append(f"{marker} {session_id} · {title} · {mode}")
-    if not sessions:
-        lines.append("暂无进程式 CLI 会话")
+        project = str(item.get("project_dir") or item.get("project_id") or "未记录")
+        activity = "未知"
+        timestamp = item.get("last_message_at")
+        if (
+            isinstance(timestamp, (int, float))
+            and not isinstance(timestamp, bool)
+            and timestamp > 0
+        ):
+            try:
+                activity = (
+                    datetime.fromtimestamp(timestamp)
+                    .astimezone()
+                    .strftime("%Y-%m-%d %H:%M")
+                )
+            except (OverflowError, OSError, ValueError):
+                pass
+        lines.append(f"{len(session_ids)}. {marker} {session_id} · {title} · {mode}")
+        lines.append(f"   项目：{project} · 最近活动：{activity}")
+    if not session_ids:
+        lines.append("没有匹配的进程式 CLI 会话" if search else "暂无进程式 CLI 会话")
     ui.details("会话", lines)
+    return tuple(session_ids)
 
 
 def show_models(ui: ProcessCliUI, data: dict[str, Any], selected: str = "") -> None:
