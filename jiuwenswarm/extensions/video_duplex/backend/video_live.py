@@ -343,6 +343,10 @@ def register_video_live_handler(
             if frame_time_range:
                 request_args.append(frame_time_range)
             result = await joyai_provider.request_frame(*request_args)
+            if request_kind == "user":
+                result = joyai_provider.recover_unissued_delegation(
+                    result, question or instruction
+                )
         except Exception as exc:  # noqa: BLE001
             error = str(exc) or "JoyAI frame request failed"
             error_code = (
@@ -363,6 +367,7 @@ def register_video_live_handler(
 
         search_job = None
         tools_used: list[str] = []
+        user_response = str(result.get("response") or "")
         delegation = str(result.get("delegation") or "").strip()[:500]
         if (
             result.get("decision") == "delegation"
@@ -383,6 +388,9 @@ def register_video_live_handler(
                     frame_data_url=frame_data_url,
                 )
             tools_used.append("jiuwen_research")
+            user_response = joyai_provider.delegation_announcement(
+                delegation, preferred_language, question or instruction
+            )
         await asyncio.to_thread(_append_joyai_log, {
             **request_log,
             "stage": "completed",
@@ -395,13 +403,14 @@ def register_video_live_handler(
             "timing": result["timing"],
             "tools_used": tools_used,
             "search_job": search_job,
+            "recovered_delegation": bool(result.get("recovered_delegation")),
         })
         await channel.send_response(
             ws,
             req_id,
             ok=True,
             payload={
-                "response": result["response"],
+                "response": user_response,
                 "search_job": search_job,
             },
         )
