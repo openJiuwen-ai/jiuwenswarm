@@ -238,7 +238,9 @@ async def test_chat_pipeline_steers_real_core_during_tool_without_replacing_orig
         main_task = asyncio.create_task(
             pipeline.dispatch_parsed_request(original_context, original)
         )
-        await asyncio.wait_for(tool.entered.wait(), 10)
+        # Cold CI context init is about 34s (InvokePrep context≈33587ms).
+        # The tool is entered right after that; 10s cancels the round first.
+        await asyncio.wait_for(tool.entered.wait(), 60)
         active_task = core.active_round.task_id
         owner = core._interaction_output.current_lease()
 
