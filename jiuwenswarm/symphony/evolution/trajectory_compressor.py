@@ -260,8 +260,8 @@ class TrajectoryCompressor:
 
         return sorted(key)
 
+    @staticmethod
     def _build_segments(
-        self,
         trajectory: list[TrajectoryPoint],
         key_indices: list[int],
     ) -> list[CompressedSegment]:
@@ -298,7 +298,8 @@ class TrajectoryCompressor:
 
         return segments
 
-    def _make_segment(self, trajectory: list[TrajectoryPoint]) -> CompressedSegment:
+    @staticmethod
+    def _make_segment(trajectory: list[TrajectoryPoint]) -> CompressedSegment:
         """Create a single segment for a short trajectory."""
 
         scores = [p.score for p in trajectory]

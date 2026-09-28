@@ -177,10 +177,12 @@ class _FallbackRail:
 
     priority = 50
 
-    def init(self, agent: Any) -> None:
+    @staticmethod
+    def init(agent: Any) -> None:
         """No-op init mirroring the Core rail lifecycle."""
 
-    def uninit(self, agent: Any) -> None:
+    @staticmethod
+    def uninit(agent: Any) -> None:
         """No-op uninit mirroring the Core rail lifecycle."""
 
 
@@ -241,8 +243,8 @@ class PaperQualityRail(_RailBase):  # type: ignore[misc]  # dynamic base: AgentR
             except Exception:
                 LOGGER.warning("paper quality on_issues callback failed", exc_info=True)
 
+    @staticmethod
     def _capture_quality_issues(
-        self,
         trajectory: Any,
     ) -> tuple[Mapping[str, object], ...]:
         """Override example: derive paper-quality issues from a trajectory.
