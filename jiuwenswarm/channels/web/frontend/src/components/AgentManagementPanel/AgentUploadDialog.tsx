@@ -116,7 +116,7 @@ export function AgentUploadDialog({ error, onCancel, onConfirm }: AgentUploadDia
     const rejectDirectory = () => {
       setDragActive(false);
       setFilePick(null);
-      setPickerError(t('agentManagement.form.uploadVirtualFileUnsupported'));
+      setPickerError(t('agentManagement.form.uploadDirectoryUnsupported'));
     };
     window.addEventListener(DESKTOP_DIRECTORY_DROP_REJECTED_EVENT, rejectDirectory);
     return () => window.removeEventListener(DESKTOP_DIRECTORY_DROP_REJECTED_EVENT, rejectDirectory);
