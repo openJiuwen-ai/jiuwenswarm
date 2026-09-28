@@ -631,6 +631,11 @@ body.workspace-resize-active iframe {
     line-height: 22px;
   }
 
+  /* 弱化变体：文案与右侧 currentColor 图标统一用次级灰，hover 仍走 --link 的 accent 反馈 */
+  .detail-chip--weak {
+    color: var(--color-text-weak);
+  }
+
   /* 可点变体（扩展示例药丸等）：hover 复刻扩展模块原药丸的 accent 蓝反馈——
      底样式无边框，用 inset 描边等价原 border 变色 */
   .detail-chip--link {
@@ -1857,42 +1862,10 @@ body.workspace-resize-active iframe {
     width: fit-content;
   }
 
-  .turn-elapsed {
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 6px;
-    margin: 0;
-    font-size: var(--font-size-2xs, 11px);
-    color: rgba(var(--color-text-secondary-rgb), 0.72);
-  }
-
-  /* 不带头像的独立时间行（成员消息轮次）：team 模式与 920px 居中栅格对齐。 */
+  /* 轮次耗时行复用 completed-work-chip 样式；此处仅保留不带头像独立行的 team 栅格对齐。 */
   .turn-elapsed--team {
     width: min(100%, 920px);
     margin: 0 auto;
-  }
-
-  .turn-elapsed__spinner {
-    flex-shrink: 0;
-    color: var(--color-text-secondary);
-    animation: turn-elapsed-spin 0.8s linear infinite;
-  }
-
-  .turn-elapsed.is-active .turn-elapsed__label,
-  .turn-elapsed.is-active .turn-elapsed__value {
-    color: var(--color-text-secondary);
-  }
-
-  .turn-elapsed__value {
-    font-variant-numeric: tabular-nums;
-    color: var(--color-text-secondary);
-  }
-
-  @keyframes turn-elapsed-spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
 
   .completed-work-col {

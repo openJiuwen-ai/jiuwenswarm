@@ -13,20 +13,25 @@
   pointer-events: none;
 }
 
+/* 右上角变体（调用方传 position: 'right'）：右侧留 24px 间距，条目右对齐堆叠 */
+.ui-toast-stack--right {
+  right: 24px;
+  left: auto;
+  align-items: flex-end;
+}
+
 .ui-toast {
   display: flex;
   align-items: center;
   gap: 12px;
   width: min(300px, calc(100vw - 32px));
-  min-height: 52px;
-  height: auto;
-  padding: 10px 12px 10px 16px;
+  padding: 8px 16px;
   box-sizing: border-box;
   color: var(--color-text-primary);
-  font-size: 13px;
-  line-height: 20px;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  font-size: 12px;
+  line-height: 18px;
+  border: 1px solid var(--color-toast-border);
+  border-radius: var(--radius-md);
   background: var(--color-surface-elevated);
   box-shadow: var(--effect-shadow-lg);
   pointer-events: auto;
@@ -41,7 +46,7 @@
 
 /* 长文案提示按条加宽（调用方传 wide: true），不影响其他 toast 的默认宽度 */
 .ui-toast--wide {
-  width: min(420px, calc(100vw - 32px));
+  width: min(400px, calc(100vw - 32px));
 }
 
 /* 加宽后仍放不下时换行兜底，保证「请先手动停止」这类操作指引能读完 */
@@ -55,6 +60,7 @@
     opacity: 0;
     transform: translateY(-6px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -72,10 +78,18 @@
     opacity: 1;
     transform: translateY(0);
   }
+
   to {
     opacity: 0;
     transform: translateY(-6px);
   }
+}
+
+/* 信息/常驻状态变体（连接状态、目录缓存提示等）：toast 专用底色 + 同色光晕阴影。
+   背景沉淀在组件内（原 App.tsx 连接 toast 的内联 style），调用方传 variant: 'info' 即可。 */
+.ui-toast--info {
+  background: var(--color-toast-surface);
+  box-shadow: var(--effect-toast-shadow);
 }
 
 /* 状态变体：语义色描边 + 状态图标，正文保持主色；用于成功/警告/失败提示 */
@@ -115,6 +129,15 @@
   align-items: center;
   justify-content: center;
   color: var(--color-text-primary);
+}
+
+/* 图标与正文同组：flex + 8px 间距；无图标时组内没有间距，正文直接贴左 */
+.ui-toast__body {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .ui-toast__content {
@@ -157,14 +180,20 @@
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 16px;
+  height: 16px;
   padding: 0;
   color: var(--color-settings-text-secondary);
   border: 0;
   border-radius: 4px;
   background: transparent;
   cursor: pointer;
+}
+
+/* svg 跟随按钮尺寸，避免尺寸属性与按钮大小脱节 */
+.ui-toast__close svg {
+  width: 100%;
+  height: 100%;
 }
 
 .ui-toast__close:hover {
@@ -181,6 +210,10 @@
   .ui-toast-stack {
     top: 8px;
     gap: 6px;
+  }
+
+  .ui-toast-stack--right {
+    right: 12px;
   }
 
   .ui-toast {

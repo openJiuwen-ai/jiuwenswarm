@@ -23,7 +23,7 @@ import {
 } from './mcpState';
 import { useClickOutside } from './useClickOutside';
 import { usePendingConnectorFlow, PendingConnectorModals } from './usePendingConnectorFlow';
-import { PageToolbarSearch, PageHeader, CategoryTabs, Tabs } from '../ui';
+import { PageToolbarSearch, PageHeader, CategoryTabs, Tabs, EmptyState } from '../ui';
 
 export type MarketKind = 'plugin' | 'mcp';
 export type TopTab = MarketKind | 'my';
@@ -776,24 +776,24 @@ export function MarketplacePage({
                 );
               })}
         {isEmpty && (
-          <div
-            className="col-span-full flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border py-16 text-[13px] text-text-muted"
-            data-testid="connector-market-empty"
-          >
-            {activeIsLoading
-              ? t(
-                  topTab === 'my'
-                    ? myKind === 'mcp'
-                      ? 'connectorMarket.empty.loadingMyMcp'
-                      : 'connectorMarket.empty.loadingMyPlugin'
-                    : topTab === 'mcp'
-                      ? 'connectorMarket.empty.loadingMcp'
-                      : 'connectorMarket.empty.loadingPlugin',
-                )
-              : topTab === 'my'
-                ? t(myKind === 'mcp' ? 'connectorMarket.empty.myMcp' : 'connectorMarket.empty.myPlugin')
-                : t('connectorMarket.empty.searchNoResult')}
-          </div>
+          <EmptyState
+            id="connector-market-empty"
+            className="col-span-full"
+            text={
+                activeIsLoading
+                  ? t(
+                      topTab === 'my'
+                        ? myKind === 'mcp'
+                          ? 'connectorMarket.empty.loadingMyMcp'
+                          : 'connectorMarket.empty.loadingMyPlugin'
+                        : topTab === 'mcp'
+                          ? 'connectorMarket.empty.loadingMcp'
+                          : 'connectorMarket.empty.loadingPlugin',
+                    )
+                  : topTab === 'my'
+                    ? t(myKind === 'mcp' ? 'connectorMarket.empty.myMcp' : 'connectorMarket.empty.myPlugin')
+                    : t('connectorMarket.empty.searchNoResult')}
+          />
         )}
         </div>
       </div>

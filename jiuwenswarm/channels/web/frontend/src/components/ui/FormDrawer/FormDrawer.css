@@ -60,6 +60,10 @@
   justify-content: flex-end;
 }
 
+.form-drawer__footer-leading {
+  margin-right: auto;
+}
+
 .form-drawer__btn {
   width: 84px;
   padding: 0 16px;

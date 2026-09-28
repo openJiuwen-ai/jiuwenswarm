@@ -1,7 +1,9 @@
-import { Check, ChevronDown, ChevronUp, Minus, Plus, Trash2 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { ChevronDown, ChevronUp, Minus, Plus, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import SearchIcon from '../../assets/agent-management/agent-search.svg?react';
+import EntityAddIcon from '../../assets/agent-management/add.svg?react';
+import EntityRemoveIcon from '../../assets/agent-management/remove.svg?react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -18,8 +20,14 @@ import {
 import { AGENT_DESCRIPTION_MAX_LENGTH, AGENT_NAME_MAX_LENGTH } from '../../features/agentManagement/limits';
 import { AgentTagPicker } from './AgentTagPicker';
 import { PageCard, Tabs, Input, Textarea, FormDrawer } from '../ui';
-import { SelectionPagination, useSelectionPagination } from './SelectionPagination';
+// 深引入而非 ../ui barrel：本组件经 esbuild 独立打包进测试
+import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import { FormPageLayout } from '../ConnectorMarket/FormPageLayout';
+
+/** 技能选择列表首批渲染数量；触底后每批追加同数量。 */
+const SKILL_PICKER_BATCH_SIZE = 30;
+/** 触底判定余量：距滚动底部不足该像素即视为到底。 */
+const LOAD_MORE_THRESHOLD_PX = 40;
 
 type AgentEditorProps = {
   draft: AgentDraft;
@@ -114,12 +122,28 @@ export function AgentEditor({
         .includes(mcpQuery.trim().toLocaleLowerCase());
     }),
   );
-  const {
-    pageItems: pageSkills,
-    page: skillPage,
-    totalPages: skillTotalPages,
-    setPage: setSkillPage,
-  } = useSelectionPagination(filteredSkills, `${skillSourceTab}\0${skillQuery}`);
+  const skillListScrollRef = useRef<HTMLDivElement | null>(null);
+  const [skillVisibleCount, setSkillVisibleCount] = useState(SKILL_PICKER_BATCH_SIZE);
+  const skillHasMore = skillVisibleCount < filteredSkills.length;
+  const visibleSkills = filteredSkills.slice(0, skillVisibleCount);
+
+  // 切换来源页签/搜索词后回到首批，对齐原分页的重置行为
+  useEffect(() => {
+    setSkillVisibleCount(SKILL_PICKER_BATCH_SIZE);
+  }, [skillSourceTab, skillQuery]);
+
+  const appendNextSkillBatch = useCallback(() => {
+    setSkillVisibleCount((count) =>
+      count < filteredSkills.length ? Math.min(count + SKILL_PICKER_BATCH_SIZE, filteredSkills.length) : count,
+    );
+  }, [filteredSkills.length]);
+
+  // 滚动触底：底部加载组件已可见，追加下一批（技能列表在内存中，追加为同步展示）
+  const handleSkillListScroll = useCallback(() => {
+    const el = skillListScrollRef.current;
+    if (!el || !skillHasMore) return;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - LOAD_MORE_THRESHOLD_PX) appendNextSkillBatch();
+  }, [appendNextSkillBatch, skillHasMore]);
 
   useEffect(() => {
     if (!personaEditing) return;
@@ -476,6 +500,14 @@ export function AgentEditor({
           }}
           testId="agent-editor-skill-picker"
           width={900}
+          footerLeading={
+            <span
+              className="text-[13px] text-text-muted"
+              data-testid="agent-editor-skill-picker-selected-count"
+            >
+              {t('agentManagement.form.selectedCount', { count: skillDraft.length })}
+            </span>
+          }
         >
           <div className="relative mb-4 shrink-0">
             <SearchIcon
@@ -515,7 +547,7 @@ export function AgentEditor({
               {selectionError}
             </div>
           ) : null}
-          <div className="flex-1 overflow-y-auto">
+          <div className="flex-1 min-h-0 overflow-y-auto" ref={skillListScrollRef} onScroll={handleSkillListScroll}>
             {skillsStatus === 'loading' ? (
               <p className="py-10 text-center text-[13px] text-text-muted">{t('common.loading')}</p>
             ) : skillsStatus === 'error' ? (
@@ -532,7 +564,7 @@ export function AgentEditor({
             ) : skillsStatus === 'success' && filteredSkills.length > 0 ? (
               <>
                 <div className="grid grid-cols-2 gap-4" data-testid="agent-editor-skill-picker-list">
-                  {pageSkills.map((skill) => {
+                  {visibleSkills.map((skill) => {
                     const selected = skillDraft.includes(skill.id);
                     const installed = skill.installed === true;
                     const installing = installingSkillId === skill.id;
@@ -576,9 +608,9 @@ export function AgentEditor({
                           ) : (
                             <span className="shrink-0" aria-hidden="true">
                               {selected ? (
-                                <Check size={14} className="text-[color:var(--color-chat-accent)]" />
+                                <EntityRemoveIcon className="text-[color:var(--color-chat-accent)]" />
                               ) : (
-                                <Plus size={14} className="text-text-muted" />
+                                <EntityAddIcon className="text-text-muted" />
                               )}
                             </span>
                           )
@@ -587,20 +619,19 @@ export function AgentEditor({
                     );
                   })}
                 </div>
-                <SelectionPagination
-                  page={skillPage}
-                  totalPages={skillTotalPages}
-                  totalItems={filteredSkills.length}
-                  onPageChange={setSkillPage}
-                  testId="agent-editor-skill-picker-pagination"
-                />
+                {skillHasMore ? (
+                  <div
+                    className="flex items-center justify-center gap-2 py-4"
+                    role="status"
+                    aria-label={t('agentManagement.loadMore')}
+                    data-testid="agent-editor-skill-picker-load-more"
+                  >
+                    <LoadingSpinner size={16} testId="agent-editor-skill-picker-load-more-spinner" />
+                    <span className="text-sm text-text-muted">{t('agentManagement.loadMore')}</span>
+                  </div>
+                ) : null}
               </>
             ) : null}
-          </div>
-          <div className="mt-4 flex items-center justify-between border-t border-border pt-4">
-            <span className="text-[13px] text-text-muted">
-              {t('agentManagement.form.selectedCount', { count: skillDraft.length })}
-            </span>
           </div>
         </FormDrawer>
       )}
@@ -735,9 +766,9 @@ export function AgentEditor({
                           ) : (
                             <span className="shrink-0" aria-hidden="true">
                               {selected ? (
-                                <Check size={14} className="text-[color:var(--color-chat-accent)]" />
+                                <EntityRemoveIcon className="text-[color:var(--color-chat-accent)]" />
                               ) : (
-                                <Plus size={14} className="text-text-muted" />
+                                <EntityAddIcon className="text-text-muted" />
                               )}
                             </span>
                           )

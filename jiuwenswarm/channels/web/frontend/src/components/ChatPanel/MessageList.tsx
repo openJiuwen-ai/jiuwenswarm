@@ -1,6 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import clsx from 'clsx';
-import { LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Message, ToolExecution } from '../../types';
 import { MessageItem } from './MessageItem';
@@ -216,18 +215,23 @@ export function TurnElapsed({
     return null;
   }
   // 不带头像的独立时间行（如成员消息轮次）：team 模式下与 920px 栅格对齐。
+  // 与 CompletedWorkChip 同构（is-success 时钟图标），只是不可展开、无 disclosure 箭头。
   const timeLine = (
     <div
-      className={clsx('turn-elapsed', !showAvatar && teamLayout && 'turn-elapsed--team', showActive && 'is-active')}
+      className={clsx('completed-work-chip', !showAvatar && teamLayout && 'turn-elapsed--team')}
       data-testid="chat-panel-turn-elapsed"
       data-variant={showActive ? 'active' : 'finished'}
     >
-      {showActive && <LoaderCircle className="turn-elapsed__spinner" size={12} strokeWidth={2.2} aria-hidden="true" />}
-      <span className="turn-elapsed__label" data-testid="chat-panel-turn-elapsed-label">
-        {showActive ? t('chatUi.turnRunning') : t('chatUi.turnElapsed')}
+      <span className="completed-work-chip__icon is-success" aria-hidden="true">
+        <WaitingStatusIcon />
       </span>
-      <span className="turn-elapsed__value" data-testid="chat-panel-turn-elapsed-value">
-        {showActive ? formatElapsedCoarse(elapsed) : formatDurationPrecise(elapsed)}
+      <span className="completed-work-chip__label">
+        <span data-testid="chat-panel-turn-elapsed-label">
+          {showActive ? t('chatUi.turnRunning') : t('chatUi.turnElapsed')}
+        </span>{' '}
+        <span data-testid="chat-panel-turn-elapsed-value">
+          {showActive ? formatElapsedCoarse(elapsed) : formatDurationPrecise(elapsed)}
+        </span>
       </span>
     </div>
   );

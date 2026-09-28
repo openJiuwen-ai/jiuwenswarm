@@ -219,24 +219,26 @@ const EXTENSION_GROUPS: ReadonlyArray<readonly [FilePreviewIconType, readonly st
   ],
 ];
 
-const EXTENSION_TO_ICON: Readonly<Record<string, FilePreviewIconType>> = Object.freeze(
-  Object.fromEntries(EXTENSION_GROUPS.flatMap(([iconType, extensions]) => extensions.map((extension) => [extension, iconType]))) as Record<string, FilePreviewIconType>,
+// 使用 Map 而非普通对象：文件名/扩展名来自外部输入，普通对象索引会命中 Object.prototype
+// 上的属性（如 constructor / toString），导致返回非图标类型引发渲染异常
+const EXTENSION_TO_ICON: ReadonlyMap<string, FilePreviewIconType> = new Map(
+  EXTENSION_GROUPS.flatMap(([iconType, extensions]) => extensions.map((extension) => [extension, iconType] as const)),
 );
 
 // 无扩展名或特殊命名（Dockerfile / 各类 dotfile）按整名匹配
-const FILE_NAME_TO_ICON: Readonly<Record<string, FilePreviewIconType>> = Object.freeze({
-  dockerfile: 'code',
-  makefile: 'code',
-  'cmakelists.txt': 'code',
-  '.gitignore': 'data',
-  '.gitattributes': 'data',
-  '.dockerignore': 'data',
-  '.editorconfig': 'data',
-  '.npmrc': 'data',
-  '.prettierrc': 'data',
-  '.eslintrc': 'data',
-  '.babelrc': 'data',
-});
+const FILE_NAME_TO_ICON: ReadonlyMap<string, FilePreviewIconType> = new Map<string, FilePreviewIconType>([
+  ['dockerfile', 'code'],
+  ['makefile', 'code'],
+  ['cmakelists.txt', 'code'],
+  ['.gitignore', 'data'],
+  ['.gitattributes', 'data'],
+  ['.dockerignore', 'data'],
+  ['.editorconfig', 'data'],
+  ['.npmrc', 'data'],
+  ['.prettierrc', 'data'],
+  ['.eslintrc', 'data'],
+  ['.babelrc', 'data'],
+]);
 
 /**
  * 由文件名解析文件类型图标。仅看文件名/扩展名，不读取内容或 MIME。
@@ -250,12 +252,12 @@ export function resolveFilePreviewIconType(fileName: string): FilePreviewIconTyp
     if (name.endsWith(extension)) return iconType;
   }
 
-  const special = FILE_NAME_TO_ICON[name];
+  const special = FILE_NAME_TO_ICON.get(name);
   if (special) return special;
 
   const dotIndex = name.lastIndexOf('.');
   if (dotIndex >= 0 && dotIndex < name.length - 1) {
-    const iconType = EXTENSION_TO_ICON[name.slice(dotIndex + 1)];
+    const iconType = EXTENSION_TO_ICON.get(name.slice(dotIndex + 1));
     if (iconType) return iconType;
   }
 

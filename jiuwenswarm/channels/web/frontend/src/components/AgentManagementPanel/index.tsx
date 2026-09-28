@@ -252,8 +252,6 @@ export function AgentManagementPanel({
   const [mineKind, setMineKind] = useState<'agent' | 'group'>('agent');
   const [detailTab, setDetailTab] = useState<'content' | 'files'>('content');
   const [query, setQuery] = useState('');
-  const [catalogPage, setCatalogPage] = useState(1);
-  const [minePage, setMinePage] = useState(1);
   const [mineQuery, setMineQuery] = useState('');
   const [category, setCategory] = useState('');
   const [groupCategory, setGroupCategory] = useState('');
@@ -344,7 +342,6 @@ export function AgentManagementPanel({
       setGroupMinePage(1);
     } else {
       setMineQuery('');
-      setMinePage(1);
     }
   }, [navigationRequest]);
   const formatActionError = useCallback(
@@ -1173,7 +1170,6 @@ export function AgentManagementPanel({
       await loadCatalog();
       setEditingId(null);
       setMineQuery('');
-        setMinePage(1);
       setView('mine');
     } catch (error) {
       setCreateError(formatActionError(error, t('agentManagement.form.saveError')));
@@ -1269,7 +1265,6 @@ export function AgentManagementPanel({
         await loadCatalog();
         setMineKind('agent');
         setMineQuery('');
-        setMinePage(1);
       }
       setUploadDialogOpen(false);
       setUploadError(null);
@@ -1407,7 +1402,7 @@ export function AgentManagementPanel({
               />
             ) : null}
             <div className="agent-management-primary-actions" data-testid="agent-management-primary-actions">
-              {!isGroupView && <InstallationFilterSelect value={installationFilter} onChange={value => { setInstallationFilter(value); setCatalogPage(1); setMinePage(1); }} />}
+              {!isGroupView && <InstallationFilterSelect value={installationFilter} onChange={value => setInstallationFilter(value)} />}
               {isGroupView && <InstallationFilterSelect value={groupInstallationFilter} onChange={value => { setGroupInstallationFilter(value); setGroupCatalogPage(1); setGroupMinePage(1); }} />}
               <PageToolbarSearch
                 wrapperTestId="agent-management-search"
@@ -1427,10 +1422,8 @@ export function AgentManagementPanel({
                     setGroupMinePage(1);
                   } else if (isMine) {
                     setMineQuery(nextValue);
-                    setMinePage(1);
                   } else {
                     setQuery(nextValue);
-                    setCatalogPage(1);
                   }
                 }}
                 onClear={() => {
@@ -1442,10 +1435,8 @@ export function AgentManagementPanel({
                     setGroupMinePage(1);
                   } else if (isMine) {
                     setMineQuery('');
-                    setMinePage(1);
                   } else {
                     setQuery('');
-                    setCatalogPage(1);
                   }
                 }}
                 placeholder={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView ? 'agentManagement.searchMineGroup' : isMine ? 'agentManagement.searchMine' : 'agentManagement.searchCatalog')}
@@ -1536,8 +1527,6 @@ export function AgentManagementPanel({
           ) : (
             <CatalogPage
               scope={isMine ? 'mine' : 'catalog'}
-              page={isMine ? minePage : catalogPage}
-              onPageChange={isMine ? setMinePage : setCatalogPage}
               items={isMine ? mineView.items : catalogView.items}
               totalItems={isMine ? mineView.totalItems : catalogView.totalItems}
               query={isMine ? mineQuery : query}
@@ -1549,7 +1538,7 @@ export function AgentManagementPanel({
               }
               error={state.catalogError}
               busyIds={busyIds}
-              onCategoryChange={value => { setCategory(value); setCatalogPage(1); }}
+              onCategoryChange={setCategory}
               onRetry={() => void loadCatalog(
                 !isMine && query.trim() ? { query: query.trim() } : {},
               )}

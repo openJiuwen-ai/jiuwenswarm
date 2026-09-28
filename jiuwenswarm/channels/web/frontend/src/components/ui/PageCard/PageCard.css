@@ -18,8 +18,9 @@
     border-color var(--duration-fast) ease;
 }
 
+/* hover 与键盘聚焦（:focus-visible）才提亮；不用 :focus-within——鼠标点击后卡片持有焦点会让样式滞留 */
 .page-card:hover,
-.page-card:focus-within {
+.page-card:focus-visible {
   border-color: transparent;
   box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.08);
 }
@@ -34,7 +35,7 @@
 }
 
 .page-card--disabled:hover,
-.page-card--disabled:focus-within {
+.page-card--disabled:focus-visible {
   box-shadow: none;
 }
 
@@ -44,7 +45,7 @@
 }
 
 .page-card--selected:hover,
-.page-card--selected:focus-within {
+.page-card--selected:focus-visible {
   border-color: var(--color-chat-accent);
   box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.08);
 }

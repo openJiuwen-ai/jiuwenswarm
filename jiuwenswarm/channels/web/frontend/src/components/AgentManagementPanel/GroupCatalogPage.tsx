@@ -1,7 +1,7 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AgentGroupCatalogItem, RequestStatus } from '../../features/agentManagement';
-import { CategoryTabs } from '../ui';
+import { CategoryTabs, EmptyState } from '../ui';
 import { GroupCard } from './GroupCard';
 
 const GROUP_CATEGORIES = [
@@ -97,23 +97,25 @@ export function GroupCatalogPage({
             </button>
           </div>
         ) : isEmpty ? (
-          <div className="agent-management-state" data-testid="agent-management-empty-state" data-kind="group">
-            <p>
-              {hasQuery
+          <EmptyState
+            id="agent-management-empty-state"
+            text={
+              hasQuery
                 ? t('agentManagement.group.states.noMatch')
-                : t(isMine ? 'agentManagement.group.states.mineEmpty' : 'agentManagement.group.states.catalogEmpty')}
-            </p>
+                : t(isMine ? 'agentManagement.group.states.mineEmpty' : 'agentManagement.group.states.catalogEmpty')
+            }
+          >
             {isMine && !hasQuery ? (
               <button
                 type="button"
-                className="agent-management-button agent-management-button--primary"
+                className="h-[28px] w-[96px] rounded-full border border-[var(--color-button-border)] bg-card text-[12px] text-text"
                 data-testid="agent-group-catalog-create-first"
                 onClick={onCreate}
               >
                 {t('agentManagement.group.actions.createFirst')}
               </button>
             ) : null}
-          </div>
+          </EmptyState>
         ) : (
           <>
             <div className="card-grid-auto">

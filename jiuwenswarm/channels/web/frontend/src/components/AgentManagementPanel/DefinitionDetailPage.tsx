@@ -151,7 +151,7 @@ export function DefinitionDetailPage({
               {canShowAssetPublish(detail.installed) && (
                 <button
                   type="button"
-                  className="agent-management-button agent-management-button--secondary"
+                  className="agent-management-detail-action agent-management-detail-action--publish"
                   data-testid="agent-management-agent-template-publish"
                   onClick={() =>
                     openAssetPublish({
@@ -161,6 +161,7 @@ export function DefinitionDetailPage({
                     })
                   }
                 >
+                  <PromptSendIcon aria-hidden="true" />
                   {t('skills.actions.publish')}
                 </button>
               )}
@@ -310,7 +311,6 @@ export function DefinitionDetailPage({
                 <DetailPromptChip
                   key={prompt}
                   text={prompt}
-                  icon={<PromptSendIcon width={16} height={16} />}
                   disabled={!canUse || busy || !onUsePrompt}
                   onClick={() => onUsePrompt?.(detail.runtimePackageName, prompt)}
                   testId="agent-management-detail-prompt-send"
