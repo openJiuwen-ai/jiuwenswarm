@@ -6117,7 +6117,6 @@ class JiuWenSwarmDeepAdapter:
         # model_ref 哈希与注入后的一致。
         if not str(mcc.get("api_base") or "").strip():
             try:
-                from jiuwenswarm.common.local_env_config import read_env
                 from jiuwenswarm.llm_sse_patch import _is_huawei_maas_api_base
 
                 for _base_key in (
