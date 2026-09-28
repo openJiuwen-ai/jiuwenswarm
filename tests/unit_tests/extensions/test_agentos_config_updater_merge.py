@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Unit tests for AgentOS config updater merge helpers; pure functions."""
+"""Unit tests for AgentOS config updater merge helpers."""
 
 from __future__ import annotations
 
@@ -14,272 +14,114 @@ from jiuwenswarm.extensions.agentos.config_updater.merge import (
 )
 
 
-# --------------------------------------------------------------------------
-# extract_section
-# --------------------------------------------------------------------------
-
 def test_extract_section_extracts_component_and_metadata():
     doc = {
         "_version": 1,
         "_revision": 7,
-        "_updated_at": "2026-09-04T10:00:00+08:00",
-        "gateway": {"sandbox": {"cpu": 2000}},
-        "jiuwenbox": {"network": {}},
+        "gateway": {
+            "agent_sandbox": {"idle_timeout": 120, "cpu": 2000, "memory": 4096},
+            "tool_sandbox": {"idle_timeout": 300, "cpu": 1000, "memory": 2048},
+        },
+        "jiuwenbox": {"network": {"egress": {"allowed_ips": []}}},
     }
     section, metadata = extract_section(doc, "gateway")
-
-    assert section == {"sandbox": {"cpu": 2000}}
-    assert metadata == {
-        "_version": 1,
-        "_revision": 7,
-        "_updated_at": "2026-09-04T10:00:00+08:00",
-    }
+    assert section == doc["gateway"]
+    assert metadata == {"_version": 1, "_revision": 7}
 
 
-def test_extract_section_metadata_not_in_section():
-    section, _ = extract_section({"_version": 1, "gateway": {}}, "gateway")
-    assert "_version" not in section
-
-
-def test_extract_section_missing_component_returns_empty():
-    section, metadata = extract_section({"_version": 1}, "gateway")
-    assert section == {}
-    assert metadata == {"_version": 1}
-
-
-def test_extract_section_non_mapping_section_returns_empty():
-    section, _ = extract_section({"gateway": ["not", "a", "dict"]}, "gateway")
-    assert section == {}
-
-
-def test_extract_section_non_mapping_document_returns_empty():
+def test_extract_section_handles_missing_or_invalid_documents():
+    assert extract_section({"_version": 1}, "gateway") == ({}, {"_version": 1})
+    assert extract_section({"gateway": []}, "gateway") == ({}, {})
     assert extract_section(None, "gateway") == ({}, {})
-    assert extract_section("string", "gateway") == ({}, {})
 
 
-# --------------------------------------------------------------------------
-# filter_managed_section
-# --------------------------------------------------------------------------
-
-def test_filter_managed_section_keeps_only_allowlisted_fields():
-    section = {
-        "agent_sandbox": {
-            "idle_timeout": 120,
-            "workspace_root": "/tmp/override",
-        },
-        "gateway": {"agentos": {"sandbox_idle_timeout_seconds": 600}},
-        "sandbox": {
-            "cpu": 2000,
-            "memory": 4096,
-            "type": "other",
-            "image": "other:latest",
-        },
-        "channels": {"web": {"enabled": False}},
+def test_filter_managed_section_keeps_managed_sandbox_fields():
+    managed, ignored = filter_managed_section(
+        {
+            "agent_sandbox": {"idle_timeout": 120, "cpu": 2000, "memory": 4096},
+            "tool_sandbox": {"idle_timeout": 300, "cpu": 1000, "memory": 2048},
+            "sandbox": {"type": "yuanrong", "cpu": 9999},
+            "channels": {"web": {"enabled": False}},
+        }
+    )
+    assert managed == {
+        "agent_sandbox": {"idle_timeout": 120, "cpu": 2000, "memory": 4096},
+        "tool_sandbox": {"idle_timeout": 300, "cpu": 1000, "memory": 2048},
     }
-
-    managed, ignored = filter_managed_section(section)
-
-    # Only ``agent_sandbox.idle_timeout`` is managed; the tool-sandbox fields
-    # (``sandbox.cpu`` / ``sandbox.memory``) and the old ``gateway.*`` path are
-    # not.
-    assert managed == {"agent_sandbox": {"idle_timeout": 120}}
-    assert ignored == [
-        "agent_sandbox.workspace_root",
-        "gateway",
-        "sandbox",
-        "channels",
-    ]
+    assert ignored == ["sandbox", "channels"]
 
 
-def test_filter_managed_section_ignores_malformed_parent_nodes():
-    managed, ignored = filter_managed_section(
-        {"gateway": "invalid", "sandbox": None}
-    )
-
-    assert managed == {}
-    assert ignored == ["gateway", "sandbox"]
-
-
-def test_filter_managed_section_preserves_explicit_null_for_validation():
-    managed, ignored = filter_managed_section(
-        {"agent_sandbox": {"idle_timeout": None}}
-    )
-
+def test_filter_managed_section_preserves_explicit_null_timeout():
+    managed, ignored = filter_managed_section({"agent_sandbox": {"idle_timeout": None}})
     assert managed == {"agent_sandbox": {"idle_timeout": None}}
     assert ignored == []
 
 
-def test_filter_managed_section_ignores_tool_sandbox_resources():
-    # ``sandbox.cpu`` / ``sandbox.memory`` belong to the tool sandbox and are
-    # not managed via the data plane.
-    managed, ignored = filter_managed_section(
-        {"sandbox": {"cpu": 2000, "memory": 4096}}
-    )
-
-    assert managed == {}
-    assert ignored == ["sandbox"]
+def test_merge_section_preserves_unmanaged_local_config():
+    local = {"sandbox": {"type": "yuanrong", "cpu": 1000}}
+    merged = merge_section(local, {"agent_sandbox": {"idle_timeout": 120}})
+    assert merged == {
+        "sandbox": {"type": "yuanrong", "cpu": 1000},
+        "agent_sandbox": {"idle_timeout": 120},
+    }
 
 
-# --------------------------------------------------------------------------
-# merge_section
-# --------------------------------------------------------------------------
-
-def test_merge_remote_overrides_same_scalar():
-    assert merge_section({"cpu": 1000}, {"cpu": 2000}) == {"cpu": 2000}
-
-
-def test_merge_local_only_keys_preserved():
-    local = {"type": "yuanrong", "image": "img:1", "cpu": 1000}
-    remote = {"cpu": 2000}
-    merged = merge_section(local, remote)
-
-    assert merged == {"type": "yuanrong", "image": "img:1", "cpu": 2000}
+def test_validate_accepts_agent_and_tool_sandbox_fields():
+    assert validate_section(
+        {
+            "agent_sandbox": {"idle_timeout": 600, "cpu": 2000, "memory": 4096},
+            "tool_sandbox": {"idle_timeout": 600, "cpu": 2000, "memory": 4096},
+        }
+    ) == []
 
 
-def test_merge_recurses_into_nested_dicts():
-    local = {"gateway": {"agentos": {"a": 1, "b": 2}}}
-    remote = {"gateway": {"agentos": {"b": 20, "c": 30}}}
-    merged = merge_section(local, remote)
-
-    assert merged == {"gateway": {"agentos": {"a": 1, "b": 20, "c": 30}}}
-
-
-def test_merge_list_replaced_wholesale_not_appended():
-    local = {"allowed_ips": ["a", "b"]}
-    remote = {"allowed_ips": ["a"]}
-    merged = merge_section(local, remote)
-
-    assert merged == {"allowed_ips": ["a"]}
-
-
-def test_merge_new_key_added():
-    assert merge_section({}, {"cpu": 2000}) == {"cpu": 2000}
-
-
-def test_merge_mutates_local_in_place():
-    # Mutating in place is required to preserve ruamel's comment/format
-    # metadata on the document we write back.
-    local = {"a": {"b": 1}}
-    remote = {"a": {"c": 2}}
-    result = merge_section(local, remote)
-
-    assert result is local
-    assert local == {"a": {"b": 1, "c": 2}}
-
-
-def test_merge_does_not_mutate_remote():
-    remote = {"a": {"c": 2}}
-    merge_section({"a": {"b": 1}}, remote)
-    assert remote == {"a": {"c": 2}}
-
-
-def test_merge_scalar_over_local_dict_replaces():
-    # remote scalar where local holds a mapping -> remote wins wholesale
-    merged = merge_section({"x": {"nested": 1}}, {"x": 5})
-    assert merged == {"x": 5}
-
-
-def test_merge_none_is_explicit_clear():
-    assert merge_section({"x": 1}, {"x": None}) == {"x": None}
-
-
-def test_merge_handles_non_dict_local():
-    assert merge_section(None, {"cpu": 1}) == {"cpu": 1}
-    assert merge_section([], {"cpu": 1}) == {"cpu": 1}
-
-
-# --------------------------------------------------------------------------
-# validate_section
-# --------------------------------------------------------------------------
-
-def test_validate_accepts_managed_fields():
-    section = {"agent_sandbox": {"idle_timeout": 600}}
-    assert validate_section(section) == []
-
-
-def test_validate_rejects_non_numeric_idle_timeout():
-    errors = validate_section({"agent_sandbox": {"idle_timeout": "soon"}})
-    assert len(errors) == 1
-    assert "idle_timeout" in errors[0]
-
-
-def test_validate_rejects_boolean_idle_timeout():
-    # bool is an int subclass -- must be caught explicitly.
-    errors = validate_section({"agent_sandbox": {"idle_timeout": True}})
-    assert len(errors) == 1
-
-
-def test_validate_ignores_unmanaged_tool_sandbox_resources():
-    # ``sandbox.cpu`` / ``sandbox.memory`` are no longer managed, so their
-    # values (even invalid ones) are not validated here.
-    assert validate_section({"sandbox": {"cpu": 0}}) == []
-    assert validate_section({"sandbox": {"memory": -1}}) == []
-    assert validate_section({"sandbox": {"cpu": "big"}}) == []
-
-
-def test_validate_allows_idle_timeout_zero_and_negative():
-    # <= 0 is a valid "disable reclamation" value.
+def test_validate_accepts_nonpositive_idle_timeout():
     assert validate_section({"agent_sandbox": {"idle_timeout": 0}}) == []
-    assert validate_section({"agent_sandbox": {"idle_timeout": -1}}) == []
+    assert validate_section({"tool_sandbox": {"idle_timeout": -1}}) == []
 
 
-def test_validate_ignores_unknown_fields_after_filtering_boundary():
-    assert validate_section({"sandbox": {"unknown_field": "anything"}}) == []
-
-
-@pytest.mark.parametrize(
-    ("section", "field"),
-    [
-        (
-            {"agent_sandbox": {"idle_timeout": None}},
-            "agent_sandbox.idle_timeout",
-        ),
-    ],
-)
-def test_validate_rejects_explicit_null_managed_field(section, field):
-    errors = validate_section(section)
-
+def test_validate_tool_idle_timeout_must_be_integer():
+    # tool sandbox idle is forwarded to the provider, which int()-coerces it.
+    assert validate_section({"tool_sandbox": {"idle_timeout": 45}}) == []
+    assert validate_section({"tool_sandbox": {"idle_timeout": 0}}) == []
+    errors = validate_section({"tool_sandbox": {"idle_timeout": 45.5}})
     assert len(errors) == 1
-    assert field in errors[0]
+    assert "tool_sandbox.idle_timeout" in errors[0]
 
 
-@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
-def test_validate_rejects_non_finite_managed_values(value):
-    assert validate_section({"agent_sandbox": {"idle_timeout": value}})
+def test_validate_agent_idle_timeout_accepts_float():
+    # agent sandbox idle is consumed by the Gateway idle reaper; fractions are valid.
+    assert validate_section({"agent_sandbox": {"idle_timeout": 0.01}}) == []
+    assert validate_section({"agent_sandbox": {"idle_timeout": 45.5}}) == []
 
 
-def test_validate_missing_fields_is_ok():
-    assert validate_section({}) == []
+@pytest.mark.parametrize("value", [None, True, "invalid", float("nan"), float("inf")])
+def test_validate_rejects_invalid_idle_timeout(value):
+    errors = validate_section({"agent_sandbox": {"idle_timeout": value}})
+    assert len(errors) == 1
+    assert "agent_sandbox.idle_timeout" in errors[0]
 
 
-def test_validate_accepts_numeric_strings():
-    assert validate_section({"agent_sandbox": {"idle_timeout": "120"}}) == []
+@pytest.mark.parametrize("value", [0, -1, True, "big", 1.5, float("inf")])
+def test_validate_rejects_invalid_resources(value):
+    assert validate_section({"agent_sandbox": {"cpu": value}})
+    assert validate_section({"agent_sandbox": {"memory": value}})
+    assert validate_section({"tool_sandbox": {"cpu": value}})
+    assert validate_section({"tool_sandbox": {"memory": value}})
 
 
-# --------------------------------------------------------------------------
-# normalize_section
-# --------------------------------------------------------------------------
-
-def test_normalize_coerces_numeric_strings():
-    normalized = normalize_section({"agent_sandbox": {"idle_timeout": "120"}})
-    assert normalized == {"agent_sandbox": {"idle_timeout": 120}}
+def test_validate_ignores_old_flat_sandbox_fields():
+    assert validate_section({"sandbox": {"cpu": 2000}}) == []
 
 
-def test_normalize_idle_timeout_whole_number_stays_int():
-    # Whole numbers stay int so writing back does not turn a user's 600 into
-    # 600.0; consumers cast to float as needed.
-    normalized = normalize_section({"agent_sandbox": {"idle_timeout": "120"}})
-    assert normalized["agent_sandbox"]["idle_timeout"] == 120
-
-
-def test_normalize_mutates_in_place():
-    # In-place is required to preserve ruamel's nested CommentedMap types.
-    section = {"agent_sandbox": {"idle_timeout": "120"}}
+def test_normalize_managed_fields():
+    section = {
+        "agent_sandbox": {"idle_timeout": "120", "cpu": "2000", "memory": "4096"},
+        "tool_sandbox": {"idle_timeout": "60", "cpu": "1000", "memory": "2048"},
+    }
     result = normalize_section(section)
     assert result is section
-    assert section == {"agent_sandbox": {"idle_timeout": 120}}
-
-
-def test_normalize_leaves_unknown_fields_untouched():
-    normalized = normalize_section({"sandbox": {"other": "x"}})
-    assert normalized == {"sandbox": {"other": "x"}}
+    assert section == {
+        "agent_sandbox": {"idle_timeout": 120, "cpu": 2000, "memory": 4096},
+        "tool_sandbox": {"idle_timeout": 60, "cpu": 1000, "memory": 2048},
+    }

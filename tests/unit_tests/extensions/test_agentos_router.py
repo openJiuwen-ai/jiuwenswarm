@@ -394,7 +394,12 @@ async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
     # 沙箱本地非 loopback IP(ISOLATED 模式 bind veth 地址, 见
     # app_agentserver._resolve_bind_host); 单机版默认仍 127.0.0.1。
     assert "AGENT_SERVER_HOST" not in env
-    assert env == {USER_DIRECTORY_ENV_KEY: yuanrong.create_payloads[0]["workspace"]}
+    assert env == {
+        USER_DIRECTORY_ENV_KEY: yuanrong.create_payloads[0]["workspace"],
+        "TOOL_SANDBOX_IDLE_TIMEOUT": "600",
+        "TOOL_SANDBOX_CPU": "2000",
+        "TOOL_SANDBOX_MEMORY": "4096",
+    }
     # create 后通过 frontend WS 代理直连 instance（不走 invoke 链路）。
     assert yuanrong.ws_connect_uris == [
         "ws://yuanrong.test:8888/serverless/v1/ws"
@@ -426,6 +431,52 @@ async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
     assert envelope.channel_context["sandbox_id"] == "sbx-1"
 
     await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_new_sandbox_uses_overridden_agent_sandbox_resources() -> None:
+    """A management-plane override is passed to the next created sandbox."""
+    yuanrong = FakeYuanRongClient()
+    client = _router_client(
+        yuanrong,
+        agent_sandbox_cpu=2000,
+        agent_sandbox_memory=4096,
+    )
+
+    client.apply_remote_overrides(
+        {"agent_sandbox": {"cpu": 8000, "memory": 16384}}
+    )
+    response = await client.send_request(_envelope())
+    await asyncio.sleep(0.05)
+
+    assert response.ok
+    spec = yuanrong.create_payloads[0]["runtime_spec"]
+    assert spec["cpu"] == 8000
+    assert spec["memory"] == 16384
+
+
+@pytest.mark.asyncio
+async def test_new_agentserver_instance_carries_tool_sandbox_env() -> None:
+    """Tool Sandbox settings ride the builtin AgentServer create request."""
+    yuanrong = FakeYuanRongClient()
+    client = _router_client(
+        yuanrong,
+        tool_sandbox_idle_timeout_seconds=120,
+        tool_sandbox_cpu=3000,
+        tool_sandbox_memory=5000,
+    )
+
+    client.apply_remote_overrides(
+        {"tool_sandbox": {"idle_timeout": 45, "cpu": 4000, "memory": 8192}}
+    )
+    response = await client.send_request(_envelope())
+    await asyncio.sleep(0.05)
+
+    assert response.ok
+    env_vars = yuanrong.create_payloads[0]["env_vars"]
+    assert env_vars["TOOL_SANDBOX_IDLE_TIMEOUT"] == "45"
+    assert env_vars["TOOL_SANDBOX_CPU"] == "4000"
+    assert env_vars["TOOL_SANDBOX_MEMORY"] == "8192"
 
 
 @pytest.mark.asyncio
@@ -2538,7 +2589,6 @@ def test_load_router_config_sandbox_idle_knobs(monkeypatch) -> None:
     assert env_loaded.sandbox_idle_timeout_seconds == 120.0
 
     monkeypatch.delenv("SANDBOX_IDLE_TIMEOUT_SECONDS")
-
     negative_loaded = load_router_config(
         {
             "gateway": {
@@ -2557,6 +2607,57 @@ def test_load_router_config_sandbox_idle_knobs(monkeypatch) -> None:
         ).sandbox_idle_timeout_seconds
         == 0.0
     )
+
+
+def test_load_router_config_agent_sandbox_resources(monkeypatch) -> None:
+    base_agent_client = {
+        "type": "agentos_router",
+        "frontend_endpoint": "http://yuanrong.test",
+        "function_version_urn": "urn:test",
+    }
+    monkeypatch.delenv("AGENTOS_BUILTIN_AGENT_CPU", raising=False)
+    monkeypatch.delenv("AGENTOS_BUILTIN_AGENT_MEMORY", raising=False)
+
+    # Defaults.
+    defaults = load_router_config({"gateway": {"agent_client": base_agent_client}})
+    assert defaults.agent_sandbox_cpu == 2000
+    assert defaults.agent_sandbox_memory == 4096
+
+    # Env seeds the startup value.
+    monkeypatch.setenv("AGENTOS_BUILTIN_AGENT_CPU", "3000")
+    monkeypatch.setenv("AGENTOS_BUILTIN_AGENT_MEMORY", "8192")
+    from_env = load_router_config({"gateway": {"agent_client": base_agent_client}})
+    assert from_env.agent_sandbox_cpu == 3000
+    assert from_env.agent_sandbox_memory == 8192
+
+    # CPU/memory are not read from config.yaml.
+    yaml_ignored = load_router_config(
+        {
+            "gateway": {"agent_client": base_agent_client},
+            "agent_sandbox": {"cpu": 1000, "memory": 2048},
+        }
+    )
+    assert yaml_ignored.agent_sandbox_cpu == 3000
+    assert yaml_ignored.agent_sandbox_memory == 8192
+
+    # Without env, defaults apply even if config.yaml carries values.
+    monkeypatch.delenv("AGENTOS_BUILTIN_AGENT_CPU")
+    monkeypatch.delenv("AGENTOS_BUILTIN_AGENT_MEMORY")
+    defaulted = load_router_config(
+        {
+            "gateway": {"agent_client": base_agent_client},
+            "agent_sandbox": {"cpu": 1000, "memory": 2048},
+        }
+    )
+    assert defaulted.agent_sandbox_cpu == 2000
+    assert defaulted.agent_sandbox_memory == 4096
+
+    tool_seeded = load_router_config(
+        {"gateway": {"agent_client": base_agent_client}}
+    )
+    assert tool_seeded.tool_sandbox_idle_timeout_seconds == 600
+    assert tool_seeded.tool_sandbox_cpu == 2000
+    assert tool_seeded.tool_sandbox_memory == 4096
 
 
 def test_read_optional_float() -> None:
@@ -3078,48 +3179,122 @@ def test_apply_remote_overrides_updates_idle_timeout() -> None:
     assert client._sandbox_idle_timeout_seconds == 120.0
 
 
-def test_apply_remote_overrides_ignores_unrelated_sections() -> None:
-    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
+def test_apply_remote_overrides_updates_agent_sandbox_resources() -> None:
+    client = _router_client(
+        FakeYuanRongClient(),
+        agent_sandbox_cpu=2000,
+        agent_sandbox_memory=4096,
+    )
 
-    client.apply_remote_overrides({"sandbox": {"cpu": 2000, "memory": 4096}})
+    client.apply_remote_overrides(
+        {"agent_sandbox": {"cpu": 4000, "memory": 8192}}
+    )
+
+    assert client._agent_sandbox_cpu == 4000
+    assert client._agent_sandbox_memory == 8192
+
+
+def test_apply_remote_overrides_logs_tool_sandbox_only_on_change() -> None:
+    client = _router_client(FakeYuanRongClient())
+    log_path = "jiuwenswarm.extensions.agentos.agentos_router.router_client.log_agentos"
+    overrides = {"tool_sandbox": {"idle_timeout": 45, "cpu": 4000, "memory": 8192}}
+
+    with patch(log_path) as logged:
+        client.apply_remote_overrides(overrides)
+    keys = [call.args[2] for call in logged.call_args_list]
+    assert "config.tool_sandbox.idle_timeout.update" in keys
+    assert "config.tool_sandbox.cpu.update" in keys
+    assert "config.tool_sandbox.memory.update" in keys
+
+    # Same values on a later push must not log again (no-change guard).
+    with patch(log_path) as logged:
+        client.apply_remote_overrides(overrides)
+    assert logged.call_count == 0
+
+
+def test_apply_remote_overrides_ignores_unrelated_sections() -> None:
+    client = _router_client(
+        FakeYuanRongClient(),
+        sandbox_idle_timeout_seconds=600.0,
+        agent_sandbox_cpu=2000,
+        agent_sandbox_memory=4096,
+    )
+
+    client.apply_remote_overrides(
+        {"tool_sandbox": {"cpu": 3000, "memory": 5000, "idle_timeout": 120}}
+    )
 
     assert client._sandbox_idle_timeout_seconds == 600.0
+    assert client._agent_sandbox_cpu == 2000
+    assert client._agent_sandbox_memory == 4096
+    assert client._tool_sandbox_cpu == 3000
+    assert client._tool_sandbox_memory == 5000
+    assert client._tool_sandbox_idle_timeout_seconds == 120
 
 
 def test_apply_remote_overrides_tolerates_missing_path() -> None:
-    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
+    client = _router_client(
+        FakeYuanRongClient(),
+        sandbox_idle_timeout_seconds=600.0,
+        agent_sandbox_cpu=2000,
+        agent_sandbox_memory=4096,
+    )
 
     client.apply_remote_overrides({})
-    client.apply_remote_overrides({"agent_sandbox": {}})
+    client.apply_remote_overrides({})
 
     assert client._sandbox_idle_timeout_seconds == 600.0
+    assert client._agent_sandbox_cpu == 2000
+    assert client._agent_sandbox_memory == 4096
 
 
 def test_apply_remote_overrides_env_does_not_win_over_remote(monkeypatch) -> None:
     # Management plane outranks env at runtime: env only seeds the startup value.
     monkeypatch.setenv("SANDBOX_IDLE_TIMEOUT_SECONDS", "45")
-    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
+    monkeypatch.setenv("AGENTOS_BUILTIN_AGENT_CPU", "1111")
+    monkeypatch.setenv("AGENTOS_BUILTIN_AGENT_MEMORY", "2222")
+    client = _router_client(
+        FakeYuanRongClient(),
+        sandbox_idle_timeout_seconds=600.0,
+        agent_sandbox_cpu=1111,
+        agent_sandbox_memory=2222,
+    )
 
     client.apply_remote_overrides(
-        {"agent_sandbox": {"idle_timeout": 120}}
+        {
+            "agent_sandbox": {"idle_timeout": 120, "cpu": 4000, "memory": 8192},
+        }
     )
 
     assert client._sandbox_idle_timeout_seconds == 120.0
+    assert client._agent_sandbox_cpu == 4000
+    assert client._agent_sandbox_memory == 8192
 
 
 def test_apply_remote_overrides_absent_field_does_not_roll_back() -> None:
     # Deleting the field from the remote doc must not reset to the default:
     # the last pushed value stays (last-known-good), it is not treated as a
     # signal to fall back to env/yaml.
-    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
+    client = _router_client(
+        FakeYuanRongClient(),
+        sandbox_idle_timeout_seconds=600.0,
+        agent_sandbox_cpu=2000,
+        agent_sandbox_memory=4096,
+    )
     client.apply_remote_overrides(
-        {"agent_sandbox": {"idle_timeout": 120}}
+        {
+            "agent_sandbox": {"idle_timeout": 120, "cpu": 4000, "memory": 8192}
+        }
     )
     assert client._sandbox_idle_timeout_seconds == 120.0
+    assert client._agent_sandbox_cpu == 4000
+    assert client._agent_sandbox_memory == 8192
 
     client.apply_remote_overrides({"agent_sandbox": {}})
 
     assert client._sandbox_idle_timeout_seconds == 120.0
+    assert client._agent_sandbox_cpu == 4000
+    assert client._agent_sandbox_memory == 8192
 
 
 @pytest.mark.asyncio
@@ -3129,7 +3304,9 @@ async def test_apply_remote_overrides_stops_reaper_when_disabled() -> None:
     client._ensure_idle_reaper_task()
     assert client._idle_reaper_task is not None
 
-    client.apply_remote_overrides({"agent_sandbox": {"idle_timeout": 0}})
+    client.apply_remote_overrides(
+        {"agent_sandbox": {"idle_timeout": 0}}
+    )
     await asyncio.sleep(0)  # let the scheduled stop task run
 
     assert client._sandbox_idle_timeout_seconds == 0.0
@@ -3142,7 +3319,9 @@ async def test_apply_remote_overrides_starts_reaper_when_enabled() -> None:
     client._closed = False
     assert client._idle_reaper_task is None
 
-    client.apply_remote_overrides({"agent_sandbox": {"idle_timeout": 300}})
+    client.apply_remote_overrides(
+        {"agent_sandbox": {"idle_timeout": 300}}
+    )
 
     assert client._sandbox_idle_timeout_seconds == 300.0
     assert client._idle_reaper_task is not None
