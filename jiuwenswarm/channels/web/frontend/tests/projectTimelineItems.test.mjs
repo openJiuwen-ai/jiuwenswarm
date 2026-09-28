@@ -80,21 +80,25 @@ test('a long folded turn retains every message and its work header without mount
     ['user', 'progress', 'answer'],
   );
   assert.equal(rows.length, 4);
-  assert.equal(rows.filter((row) => row.isTurnAnchor).length, 1);
+  assert.equal(rows.filter((row) => row.item.type === 'turnSummary').length, 1);
   assert.ok(rows.every((row) => row.item.type === 'message' || !row.contentOpen));
 });
 
 test('turn and streak expansion exposes all work, with stable header and message identities', () => {
   const input = longTurn();
   const folded = project(input);
-  const header = folded.rows.find((row) => row.isTurnAnchor);
+  const header = folded.rows.find((row) => row.item.type === 'turnSummary');
   const expandedTurns = { [header.turnKey]: true };
   const turnOpen = project(input, expandedTurns);
   assert.equal(turnOpen.rows.filter((row) => row.streak?.firstKey === row.item.key).length, folded.streaks.size);
-  assert.equal(turnOpen.rows.find((row) => row.isTurnAnchor).key, header.key);
+  assert.equal(turnOpen.rows.find((row) => row.item.type === 'turnSummary').key, header.key);
   const expandedStreaks = Object.fromEntries([...folded.streaks.values()].map((streak) => [streak.id, true]));
   const allOpen = project(input, expandedTurns, expandedStreaks);
-  assert.equal(allOpen.rows.filter((row) => row.contentOpen && row.item.type !== 'message').length, 480);
+  assert.equal(
+    allOpen.rows.filter((row) => row.contentOpen && (row.item.type === 'reasoning' || row.item.type === 'toolGroup'))
+      .length,
+    480,
+  );
   assert.equal(new Set(allOpen.rows.map((row) => row.key)).size, allOpen.rows.length);
   assert.deepEqual(
     allOpen.rows.filter((row) => row.item.type === 'message').map((row) => row.key),
@@ -115,7 +119,7 @@ test('deliverables remain mounted outside folded work', () => {
 test('prepending complete turns does not change existing row keys or lose expanded state', () => {
   const input = longTurn();
   const before = project(input);
-  const header = before.rows.find((row) => row.isTurnAnchor);
+  const header = before.rows.find((row) => row.item.type === 'turnSummary');
   const expanded = { [header.turnKey]: true };
   const openBefore = project(input, expanded);
   const after = project(
@@ -143,11 +147,11 @@ test('live work and newly appended messages remain visible', () => {
 test('prepending the start of a partially loaded turn preserves its folded header and final answer', () => {
   const input = longTurn();
   const tail = project(input.slice(100));
-  const header = tail.rows.find((row) => row.isTurnAnchor);
+  const header = tail.rows.find((row) => row.item.type === 'turnSummary');
   const expanded = { [header.turnKey]: true };
   const full = project(input, expanded);
-  assert.equal(full.rows.find((row) => row.isTurnAnchor).key, header.key);
-  assert.equal(full.rows.find((row) => row.isTurnAnchor).turnOpen, true);
+  assert.equal(full.rows.find((row) => row.item.type === 'turnSummary').key, header.key);
+  assert.equal(full.rows.find((row) => row.item.type === 'turnSummary').turnOpen, true);
   assert.equal(full.rows.at(-1).key, tail.rows.at(-1).key);
   assert.equal(full.rows.at(-1).item.message.id, 'answer');
 });

@@ -3214,7 +3214,8 @@ def test_config_panel_flatten_reads_symphony_enabled_and_skill_retrieval():
     assert "symphony_dynamic_graph_enabled" not in flat
     assert "symphony_orchestration_mode" not in flat
     assert flat["skill_retrieval_enabled"] == "true"
-    assert flat["skill_retrieval_index_enabled"] == "true"
+    assert "skill_retrieval_index_enabled" not in flat
+    assert "skill_retrieval_index_recommendation_shown" not in flat
     assert flat["skill_retrieval_max_results"] == "17"
     assert "skill_retrieval_build_branching_factor" not in flat
 
@@ -3263,9 +3264,7 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
     )
 
     assert recorded_symphony == [{"enabled": True, "evolution": {"enabled": True}}]
-    assert recorded_skill_retrieval == [
-        {"enabled": False, "index": {"enabled": True}}
-    ]
+    assert recorded_skill_retrieval == [{"enabled": False}]
     assert channel.responses[-1] == {
         "id": "req-3",
         "ok": True,
@@ -3274,7 +3273,6 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
                 "symphony_enabled",
                 "symphony_evolution_enabled",
                 "skill_retrieval_enabled",
-                "skill_retrieval_index_enabled",
             ],
             "applied_without_restart": True,
         },

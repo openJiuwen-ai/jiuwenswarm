@@ -19,6 +19,7 @@ from jiuwenswarm.runtime.session.model import (
     SessionExecutionHandle,
     SessionExecutionState,
 )
+from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import SessionRunAdmission
 
 pytestmark = pytest.mark.unit
 
@@ -108,6 +109,51 @@ async def test_submitted_session_message_starts_without_active_execution() -> No
     assert finished is not None
     assert finished.state is SessionExecutionState.SUCCEEDED
     await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_admitted_session_message_stream_bypasses_user_waiting_in_lane() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    admission = SessionRunAdmission()
+    await admission.begin_session_message("session-a", "mailbox-1")
+    user_entered = asyncio.Event()
+    message_entered = asyncio.Event()
+
+    async def user():
+        user_entered.set()
+        await admission.begin_user("session-a")
+        try:
+            yield "user"
+        finally:
+            await admission.end_user("session-a")
+
+    async def message():
+        message_entered.set()
+        yield "message"
+
+    async def collect(kind, operation):
+        return [
+            item async for item in coordinator.run_stream(
+                "session-a", kind.value, kind, operation
+            )
+        ]
+
+    user_task = asyncio.create_task(collect(SessionWorkKind.CHAT_STREAM, user))
+    message_task = None
+    try:
+        await asyncio.wait_for(user_entered.wait(), timeout=1)
+        message_task = asyncio.create_task(
+            collect(SessionWorkKind.SESSION_MESSAGE, message)
+        )
+        await asyncio.wait_for(message_entered.wait(), timeout=1)
+        assert await message_task == ["message"]
+    finally:
+        await admission.end_session_message("session-a", "mailbox-1")
+        assert await asyncio.wait_for(user_task, timeout=1) == ["user"]
+        if message_task is not None:
+            await asyncio.wait_for(message_task, timeout=1)
+        await coordinator.close()
 
 
 @pytest.mark.asyncio

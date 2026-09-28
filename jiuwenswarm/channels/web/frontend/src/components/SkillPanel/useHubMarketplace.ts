@@ -72,6 +72,7 @@ interface UseHubMarketplaceParams {
   activeTab: SkillPanelTab;
   searchKeyword: string;
   marketplaceCategory: string;
+  marketplaceSubView: MarketplaceSubView;
   setMarketplaceSubView: (view: MarketplaceSubView) => void;
   withSession: WithSessionFn;
 }
@@ -80,12 +81,23 @@ export function useHubMarketplace({
   activeTab,
   searchKeyword,
   marketplaceCategory,
+  marketplaceSubView,
   setMarketplaceSubView,
   withSession,
 }: UseHubMarketplaceParams) {
   /** 搜索结果（online_search） */
   const [hubSkills, setHubSkills] = useState<MarketplacePluginItem[]>([]);
-  const [hubCache, setHubCache] = useState<CatalogCacheMetadata>();
+  const [homeCache, setHomeCache] = useState<CatalogCacheMetadata>();
+  const [searchCache, setSearchCache] = useState<CatalogCacheMetadata>();
+  const [moreCaches, setMoreCaches] = useState<Partial<Record<'swarmskill' | 'skill', CatalogCacheMetadata>>>({});
+  const hubCache =
+    marketplaceSubView === 'team'
+      ? moreCaches.swarmskill
+      : marketplaceSubView === 'skill'
+        ? moreCaches.skill
+        : searchKeyword
+          ? searchCache
+          : homeCache;
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -157,6 +169,7 @@ export function useHubMarketplace({
         setHubTeamMore([]);
         setHubSkillMore([]);
         setHubMoreLoadedFor(null);
+        setMoreCaches({});
       }
       let pending = 2;
       let revealed = silent;
@@ -221,9 +234,8 @@ export function useHubMarketplace({
           .filter((items): items is CatalogItems<MarketplacePluginItem> => items != null)
           .flatMap((items) => (items.cache ? [items.cache] : []));
         const cache = caches.find((value) => value.refreshing) || caches[0];
-        setHubCache(cache);
         // 静默轮询：后台填库/刷新后更新列表（不打断已有卡片）。
-        scheduleCatalogRefresh(
+        const nextCache = scheduleCatalogRefresh(
           'skill-recommend',
           cache,
           () => {
@@ -231,6 +243,7 @@ export function useHubMarketplace({
           },
           () => mountedRef.current && seq === hubFetchSeqRef.current,
         );
+        setHomeCache(!teamItems && !skillItems ? { state: 'error', refreshing: false } : nextCache);
 
         // 同分类 silent miss（未覆盖旧卡）不改 ref；其余成功返回则标记已加载。
         const onlySilentMiss =
@@ -271,8 +284,7 @@ export function useHubMarketplace({
 
         const coldMiss = isCatalogMissRefreshing(items.cache) && items.length === 0;
         if (coldMiss && silent) {
-          setHubCache(items.cache);
-          scheduleCatalogRefresh(
+          const nextCache = scheduleCatalogRefresh(
             'skill-more',
             items.cache,
             () => {
@@ -280,6 +292,7 @@ export function useHubMarketplace({
             },
             () => mountedRef.current && seq === hubMoreFetchSeqRef.current,
           );
+          setMoreCaches((previous) => ({ ...previous, [kind]: nextCache }));
           return;
         }
         if (coldMiss) {
@@ -289,8 +302,7 @@ export function useHubMarketplace({
           if (requestScope !== catalogScope() || seq !== hubMoreFetchSeqRef.current) return;
         }
 
-        setHubCache(items.cache);
-        scheduleCatalogRefresh(
+        const nextCache = scheduleCatalogRefresh(
           'skill-more',
           items.cache,
           () => {
@@ -298,6 +310,7 @@ export function useHubMarketplace({
           },
           () => mountedRef.current && seq === hubMoreFetchSeqRef.current,
         );
+        setMoreCaches((previous) => ({ ...previous, [kind]: nextCache }));
         if (kind === 'swarmskill') {
           setHubTeamMore(items);
           setHubMoreLoadedFor((prev) =>
@@ -312,8 +325,10 @@ export function useHubMarketplace({
       } catch (error) {
         console.error(`Failed to fetch more ${kind} SkillHub recommend:`, error);
         if (requestScope !== catalogScope() || seq !== hubMoreFetchSeqRef.current) return;
-        if (kind === 'swarmskill') setHubTeamMore([]);
-        else setHubSkillMore([]);
+        setMoreCaches((previous) => ({
+          ...previous,
+          [kind]: { ...previous[kind], state: 'error', refreshing: false },
+        }));
       } finally {
         if (seq === hubMoreFetchSeqRef.current) {
           setHubMoreLoading(false);
@@ -327,6 +342,7 @@ export function useHubMarketplace({
     (kind: 'swarmskill' | 'skill') => {
       setMarketplaceSubView(kind === 'swarmskill' ? 'team' : 'skill');
       const needFetch =
+        moreCaches[kind]?.refreshing ||
         !hubMoreLoadedFor ||
         hubMoreLoadedFor.category !== marketplaceCategory ||
         (kind === 'swarmskill' ? !hubMoreLoadedFor.team : !hubMoreLoadedFor.skill);
@@ -334,7 +350,7 @@ export function useHubMarketplace({
         void fetchHubMoreSkills(kind, marketplaceCategory);
       }
     },
-    [fetchHubMoreSkills, hubMoreLoadedFor, marketplaceCategory, setMarketplaceSubView],
+    [fetchHubMoreSkills, hubMoreLoadedFor, moreCaches, marketplaceCategory, setMarketplaceSubView],
   );
 
   /** 进入"全部技能包"专页：不再单独请求技能包推荐，仅展示已有数据（首页两路推荐捎带 / 搜索结果） */
@@ -399,9 +415,8 @@ export function useHubMarketplace({
         );
 
         if (requestScope !== catalogScope() || seq !== hubFetchSeqRef.current) return;
-        setHubCache(data.cache);
         // 广场搜索已不传 prefer_cache；若后端仍带回 cache.refreshing，静默刷新且不打断 UI
-        scheduleCatalogRefresh(
+        const nextCache = scheduleCatalogRefresh(
           'skill-search',
           data.cache,
           () => {
@@ -409,6 +424,7 @@ export function useHubMarketplace({
           },
           () => mountedRef.current && seq === hubFetchSeqRef.current,
         );
+        setSearchCache(nextCache);
         // success=false: 参数非法或所有来源均失败
         if (!data.success) {
           throw new Error(data.detail || 'Search failed');
@@ -446,7 +462,8 @@ export function useHubMarketplace({
         setHubSkills(items);
       } catch (error) {
         console.error('Failed to fetch online search:', error);
-        if (seq !== hubFetchSeqRef.current) return;
+        if (requestScope !== catalogScope() || seq !== hubFetchSeqRef.current) return;
+        setSearchCache({ state: 'error', refreshing: false });
       } finally {
         if (seq === hubFetchSeqRef.current) {
           setHubLoading(false);

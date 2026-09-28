@@ -180,6 +180,7 @@ async def _create_adapter_and_run_chat(config_base: dict) -> SimpleNamespace:
         start=AsyncMock(),
         register_rail=AsyncMock(),
         unregister_rail=AsyncMock(),
+        react_agent=SimpleNamespace(register_callback=AsyncMock()),
         attach_output=AsyncMock(return_value=_FakeInteractionStream()),
         send_input=AsyncMock(),
         goal_manager=None,
@@ -214,6 +215,7 @@ async def _create_adapter_and_run_chat(config_base: dict) -> SimpleNamespace:
     assert response.ok is True
     assert response.payload.get("content") == "PONG"
     created_agent.send_input.assert_awaited()
+    created_agent.react_agent.register_callback.assert_awaited()
     return created_agent
 
 

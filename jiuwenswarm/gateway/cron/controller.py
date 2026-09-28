@@ -15,6 +15,7 @@ from jiuwenswarm.gateway.cron.cron_expr import normalize_cron_expr
 from jiuwenswarm.gateway.cron.models import (
     CRON_JOB_DESCRIPTION_MAX_LENGTH,
     CRON_JOB_NAME_MAX_LENGTH,
+    CRON_MODEL_SOURCE_LOGIN,
     CronTargetChannel,
     cron_job_metadata,
     cron_job_modes_for_tools,
@@ -22,6 +23,7 @@ from jiuwenswarm.gateway.cron.models import (
     normalize_cron_job_mcp,
     normalize_cron_job_mode,
     normalize_target_channel_id,
+    resolve_cron_model,
     validate_cron_model,
 )
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService, _cron_next_push_dt
@@ -30,6 +32,26 @@ from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 
 # 列表/调度等批量路径查询"项目准入"闸门时的最大并发数。
 _GATE_QUERY_CONCURRENCY = 8
+
+
+def _login_credential_ref_from_session(auth_session: str) -> str:
+    """从服务端登录会话取华为账号身份，派生登录免费模型的凭据句柄绑定。
+
+    项目自身的路由 user_id（Web URL/localStorage）与华为账号登录是两套独立
+    用户体系，登录凭据按华为账号 openid 登记、两者没有映射——绑定只能来自
+    创建请求连接上的登录会话（``_auth_session``，由 web handler 注入）。
+    没有可用会话时明确拒绝，不留一个到点必失败的任务。
+    """
+    from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user
+    from jiuwenswarm.common.auth.service import ModelAuthRequired, live_session
+
+    try:
+        session = live_session(auth_session or None, allow_refresh=False)
+    except ModelAuthRequired as exc:
+        raise ValueError(
+            "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
+        ) from exc
+    return credential_ref_for_user(session.user_id)
 
 
 def _serialize_mutation(method):
@@ -257,6 +279,9 @@ class CronController:
         allow_unresolved_project_id = bool(
             params.pop("_agentos_project_binding_verified", False)
         )
+        # 登录会话 id：web handler 从创建连接上注入的服务端专有键（客户端传的
+        # 会被无条件覆盖），仅用于登录免费模型的凭据绑定捕获，不落任务数据。
+        auth_session = str(params.pop("_auth_session", "") or "").strip()
         name = str(params.get("name") or "").strip()
         cron_expr = normalize_cron_expr(str(params.get("cron_expr") or "").strip())
         timezone = (
@@ -271,7 +296,16 @@ class CronController:
             mode = normalize_cron_job_mode(mode)
         else:
             mode = None
-        model_name = validate_cron_model(params.get("model_name"))
+        model_name, model_source = resolve_cron_model(params.get("model_name"))
+        # 登录免费模型：把创建连接上的华为账号绑定到任务（凭据句柄）。路由
+        # user_id 与登录账号是两套独立体系，不能互相推导；没有可用登录会话就
+        # 明确拒绝（400），不留一个到点必失败的任务。自配模型（即使与登录模型
+        # 同名）不绑定，执行侧凭据注入只认绑定，不会误切到登录模型计费。
+        credential_ref = (
+            _login_credential_ref_from_session(auth_session)
+            if model_source == CRON_MODEL_SOURCE_LOGIN
+            else ""
+        )
         # mcp：会话级 MCP 选择，随 job 落库；调度执行时注入 chat.send 的
         # ``mcp`` 字段走 AgentServer 的 reconcile_session_mcp。只做类型
         # 规范化（strip/去空/去重），不校验存在性（断连后 job 应降级运行）。
@@ -364,6 +398,7 @@ class CronController:
             app_id=app_id,
             work_mode=work_mode,
             user_id=user_id,
+            credential_ref=credential_ref,
         )
         await self._scheduler.reload()
         return job.to_dict()
@@ -374,10 +409,22 @@ class CronController:
         allow_unresolved_project_id = bool(
             patch.pop("_agentos_project_binding_verified", False)
         )
+        # 登录会话 id（服务端专有键，见 create_job）——改选登录模型时重绑凭据。
+        auth_session = str(patch.pop("_auth_session", "") or "").strip()
         if "mode" in patch:
             patch["mode"] = normalize_cron_job_mode(patch.get("mode"))
         if "model_name" in patch:
-            patch["model_name"] = validate_cron_model(patch.get("model_name"))
+            canonical, model_source = resolve_cron_model(patch.get("model_name"))
+            patch["model_name"] = canonical
+            # 模型来源变化时同步重算绑定：改选登录模型 → 绑定当前连接的华为
+            # 账号；换回自配模型/清除模型 → 解绑，否则执行侧仍会注入登录凭据，
+            # 同名自配模型会被切到登录模型计费。
+            if model_source == CRON_MODEL_SOURCE_LOGIN:
+                patch["credential_ref"] = _login_credential_ref_from_session(
+                    auth_session
+                )
+            else:
+                patch["credential_ref"] = ""
         if "mcp" in patch:
             # 显式传 null/[] 归 None（清除选择，执行时回到全局默认集）。
             patch["mcp"] = normalize_cron_job_mcp(patch.get("mcp"))

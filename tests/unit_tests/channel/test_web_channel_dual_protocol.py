@@ -229,3 +229,33 @@ async def test_serve_ws_does_not_accept_when_unauthorized() -> None:
     websocket.accept.assert_not_called()
     websocket.send_denial_response.assert_awaited_once()
     assert websocket.send_denial_response.await_args.args[0].status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_serve_ws_uses_authenticated_identity_over_query() -> None:
+    channel = _make_channel()
+    calls = []
+
+    async def authenticate(**_kwargs: Any) -> AuthResult:
+        calls.append("auth")
+        return AuthResult(success=True, user_id="owner")
+
+    async def handle_connection(adapter, *, path):
+        calls.append("connect")
+        assert path == "/ws?user_id=other"
+        assert channel._resolve_connection_user_id({"user_id": "other"}, adapter) == "owner"
+
+    channel.set_handshake_auth(authenticate)
+    channel.handle_connection = handle_connection
+    websocket = MagicMock()
+    websocket.headers = {}
+    websocket.url.path = "/ws"
+    websocket.url.query = "user_id=other"
+    websocket.client = MagicMock(host="127.0.0.1", port=9)
+    websocket.scope = {}
+    websocket.accept = AsyncMock()
+
+    await _serve_channel_websocket(channel, websocket)
+
+    assert calls == ["auth", "connect"]
+    websocket.accept.assert_awaited_once()

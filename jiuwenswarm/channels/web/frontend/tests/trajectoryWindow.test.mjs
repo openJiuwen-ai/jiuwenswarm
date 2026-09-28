@@ -146,9 +146,12 @@ import {
 } from '../node_modules/.cache/trajectory-window/trajectoryClient.mjs';
 import {
   exitTrajectoryReplay,
+  isTrajectoryArchiveFormatError,
   parseTrajectoryArchive,
   shouldCatchUpTrajectory,
+  trajectoryArchiveMode,
   trajectoryArchiveView,
+  trajectoryReplayTeamMode,
 } from '../node_modules/.cache/trajectory-window/trajectoryArchive.mjs';
 import {
   formatTokenCount,
@@ -331,6 +334,43 @@ test('archive parser refuses version 1 and archives that are not content-address
     /version 1 is no longer supported/,
   );
   assert.throws(() => parseTrajectoryArchive(JSON.stringify(inline)), /not supported/);
+});
+
+test('archive parser reports files that are not trajectory archives as format errors', () => {
+  const record = backendArchiveRecord();
+  const invalidFiles = [
+    '{"broken": \n',
+    'plain text notes\nsecond line\n',
+    '',
+    JSON.stringify({ hello: 'world' }),
+    JSON.stringify({ ...backendArchive([record]), archive_version: 1 }),
+    JSON.stringify(backendArchive([{ ...record, change_seq: 42 }])),
+    JSON.stringify(backendArchive([record, record])),
+  ];
+
+  for (const text of invalidFiles) {
+    assert.throws(() => parseTrajectoryArchive(text), isTrajectoryArchiveFormatError);
+  }
+});
+
+test('archive replay keeps the mode its records were exported in', () => {
+  const read = records => trajectoryArchiveMode(parseTrajectoryArchive(JSON.stringify(backendArchive(records))));
+  const leader = backendArchiveRecord();
+  const member = backendArchiveRecord({ spanId: hexId(2, 16) });
+  const withMode = (record, agentMode) => ({ ...record, agent_mode: agentMode });
+
+  assert.equal(read([withMode(leader, 'agent.code.normal')]), 'agent');
+  assert.equal(read([withMode(leader, 'team'), withMode(member, 'team')]), 'team');
+  assert.equal(read([withMode(leader, 'team.work.plan')]), 'team');
+  assert.equal(read([withMode(leader, 'agent.work.normal'), withMode(member, 'team')]), 'team');
+  assert.equal(read([withMode(leader, null)]), null);
+  assert.equal(read([]), null);
+
+  // A stated mode wins over the hosting session; only an unstated one follows it.
+  assert.equal(trajectoryReplayTeamMode('agent', true), false);
+  assert.equal(trajectoryReplayTeamMode('team', false), true);
+  assert.equal(trajectoryReplayTeamMode(null, true), true);
+  assert.equal(trajectoryReplayTeamMode(null, false), false);
 });
 
 test('an addressed archive rebuilds its references from its own dictionaries', () => {
