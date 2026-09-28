@@ -6128,13 +6128,16 @@ class JiuWenSwarmDeepAdapter:
                     _base_val = read_env(_base_key, "").strip()
                     if _base_val and _is_huawei_maas_api_base(_base_val):
                         mcc["api_base"] = _base_val
+                        # 仅「候选 base 命中 maas 端点标记」时才回填 api_key，与注释承诺一致；
+                        # 避免把 OPENAI_API_KEY/API_KEY/huawei-maas-session 假凭证写进
+                        # 任意 api_base 为空的非 maas 条目（本方法被全部模型缓存构建复用）。
+                        if not str(mcc.get("api_key") or "").strip():
+                            mcc["api_key"] = (
+                                read_env("OPENAI_API_KEY", "").strip()
+                                or read_env("API_KEY", "").strip()
+                                or "huawei-maas-session"
+                            )
                         break
-                if not str(mcc.get("api_key") or "").strip():
-                    mcc["api_key"] = (
-                        read_env("OPENAI_API_KEY", "").strip()
-                        or read_env("API_KEY", "").strip()
-                        or "huawei-maas-session"
-                    )
             except Exception as exc:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] MaaS credential backfill skipped: %s", exc
@@ -9455,6 +9458,7 @@ class JiuWenSwarmDeepAdapter:
         """Build DeepAgent rails consistently for cold start and hot reload."""
         rail_infos = [
             _RailBuildInfo("_request_summary_rail", self._build_request_summary_rail),
+            _RailBuildInfo("_model_routing_rail", self._build_model_routing, {"config": config_base}),
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
             _RailBuildInfo(

@@ -4,10 +4,10 @@
 
 Covers the written-down four-tier contract:
 
-    fast     -> deepseek-v4-flash  思考 off
-    balanced -> deepseek-v4-flash  思考 medium
-    extreme  -> glm-5.2                 思考 deep
-    auto     -> deepseek-v4-flash  思考 medium
+    fast     -> deepseek-v4-flash-0731  思考 off
+    balanced -> deepseek-v4-flash-0731  思考 medium
+    extreme  -> glm-5.2                  思考 deep
+    auto     -> deepseek-v4-flash-0731  思考 medium
 
 and the skip branch: a concrete model name / empty selection keeps the
 adapter-applied model and never injects thinking kwargs.
@@ -62,9 +62,9 @@ def _ctx(selection: str = "", agent: _FakeAgent | None = None) -> SimpleNamespac
 
 def _rail() -> ModelRoutingRail:
     flash_cap = ModelCapability(
-        model_name="deepseek-v4-flash",
+        model_name="deepseek-v4-flash-0731",
         model_id="flash-0731",
-        model=_FakeModel("deepseek-v4-flash"),
+        model=_FakeModel("deepseek-v4-flash-0731"),
     )
     glm_cap = ModelCapability(
         model_name="glm-5.2",
@@ -144,7 +144,7 @@ async def test_injected_kwargs_are_isolated_from_class_constant():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("selection", ["", "gpt-5.4", "deepseek-v4-flash"])
+@pytest.mark.parametrize("selection", ["", "gpt-5.4", "deepseek-v4-flash-0731"])
 async def test_concrete_or_empty_selection_skips(selection):
     rail = _rail()
     agent = _FakeAgent("gpt-5.4")
@@ -167,8 +167,8 @@ async def test_mode_switch_applies_set_llm():
     agent = _FakeAgent("gpt-5.4")
     ctx = _ctx("balanced", agent=agent)
     await rail.before_invoke(ctx)
-    assert agent.model_name == "deepseek-v4-flash"
-    assert ctx.extra["_model_routing_used_cap"].model_name == "deepseek-v4-flash"
+    assert agent.model_name == "deepseek-v4-flash-0731"
+    assert ctx.extra["_model_routing_used_cap"].model_name == "deepseek-v4-flash-0731"
 
 
 @pytest.mark.asyncio
@@ -181,13 +181,20 @@ async def test_extreme_switches_to_glm():
 
 
 @pytest.mark.asyncio
-async def test_mode_model_missing_keeps_current_but_sets_thinking():
+async def test_mode_model_missing_keeps_current_without_thinking_injection():
+    """档位目标模型不在能力表 → keep current，且不注入档位 thinking kwargs。
+
+    CR-2：keep-current 路径当前模型 vendor 未知，DeepSeek/GLM 风格 extra_body.thinking
+    对 OpenAI 官方端点会 400，故 _request_thinking 保持 "default"、before_model_call no-op。
+    """
     rail = ModelRoutingRail(capability_table=[])
     agent = _FakeAgent("gpt-5.4")
     ctx = _ctx("fast", agent=agent)
     await rail.before_invoke(ctx)
     assert agent.model_name == "gpt-5.4"
-    assert rail._request_thinking == "off"
+    assert rail._request_thinking == "default"
+    await rail.before_model_call(ctx)
+    assert "llm_call_kwargs" not in ctx.extra
 
 
 # ---- 优先 maas 官方模型（避免撞用户自定义同名模型）---- #
@@ -197,11 +204,11 @@ def test_find_cap_prefers_marked_provider():
     """同名 cap 里带 maas 标的（即使排后面）优先命中，不撞用户自定义同名模型。"""
     rail = ModelRoutingRail(
         capability_table=[
-            ModelCapability(model_name="deepseek-v4-flash", model_id="custom", model_provider="openai"),
-            ModelCapability(model_name="deepseek-v4-flash", model_id="maas", model_provider="huawei_maas"),
+            ModelCapability(model_name="deepseek-v4-flash-0731", model_id="custom", model_provider="openai"),
+            ModelCapability(model_name="deepseek-v4-flash-0731", model_id="maas", model_provider="huawei_maas"),
         ],
     )
-    cap = rail._find_cap_by_name("deepseek-v4-flash", prefer_provider="huawei_maas")
+    cap = rail._find_cap_by_name("deepseek-v4-flash-0731", prefer_provider="huawei_maas")
     assert cap is not None
     assert cap.model_id == "maas"
 
@@ -210,11 +217,11 @@ def test_find_cap_falls_back_to_first_when_no_mark():
     """无标能力表（现状/向后兼容）：退回第一个同名，行为与旧实现一致。"""
     rail = ModelRoutingRail(
         capability_table=[
-            ModelCapability(model_name="deepseek-v4-flash", model_id="first"),
-            ModelCapability(model_name="deepseek-v4-flash", model_id="second"),
+            ModelCapability(model_name="deepseek-v4-flash-0731", model_id="first"),
+            ModelCapability(model_name="deepseek-v4-flash-0731", model_id="second"),
         ],
     )
-    cap = rail._find_cap_by_name("deepseek-v4-flash", prefer_provider="huawei_maas")
+    cap = rail._find_cap_by_name("deepseek-v4-flash-0731", prefer_provider="huawei_maas")
     assert cap is not None
     assert cap.model_id == "first"
 
@@ -225,15 +232,15 @@ async def test_mode_switch_prefers_marked_model_even_when_later():
     rail = ModelRoutingRail(
         capability_table=[
             ModelCapability(
-                model_name="deepseek-v4-flash",
+                model_name="deepseek-v4-flash-0731",
                 model_id="custom",
-                model=_FakeModel("deepseek-v4-flash"),
+                model=_FakeModel("deepseek-v4-flash-0731"),
                 model_provider="openai",
             ),
             ModelCapability(
-                model_name="deepseek-v4-flash",
+                model_name="deepseek-v4-flash-0731",
                 model_id="maas",
-                model=_FakeModel("deepseek-v4-flash"),
+                model=_FakeModel("deepseek-v4-flash-0731"),
                 model_provider="huawei_maas",
             ),
         ],

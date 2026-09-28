@@ -3,12 +3,12 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 from openjiuwen.core.context_engine import TiktokenCounter
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.common.utils import logger
-from .capability import ModelCapability, build_capability_table_from_config
+from .capability import ModelCapability
 from .types import (
     PriorModelCall, TaskAnalysis, RoutingDecision,
     _agent_model_name, _extract_agent_info, _new_trace_id,
@@ -17,16 +17,17 @@ from .types import (
 
 
 # 四档模式（先写死）：模式名 → 固定 (模型名, 思考深度)。
-#   fast      → deepseek-v4-flash 关闭思考
-#   balanced  → deepseek-v4-flash 中等思考
-#   extreme   → glm-5.2           深度思考
-#   auto      → deepseek-v4-flash 中等思考
+#   fast      → deepseek-v4-flash-0731 关闭思考
+#   balanced  → deepseek-v4-flash-0731 中等思考
+#   extreme   → glm-5.2                深度思考
+#   auto      → deepseek-v4-flash-0731 中等思考
 # 具体模型名不在此表内（走 skip 分支，保留 adapter 已应用的具体/默认模型）。
+# 与 relay 前端 GEAR_MODEL_MAP 对齐市场 id（-0731）。
 _MODE_MODEL_MAP: dict[str, str] = {
-    "fast": "deepseek-v4-flash",
-    "balanced": "deepseek-v4-flash",
+    "fast": "deepseek-v4-flash-0731",
+    "balanced": "deepseek-v4-flash-0731",
     "extreme": "glm-5.2",
-    "auto": "deepseek-v4-flash",
+    "auto": "deepseek-v4-flash-0731",
 }
 
 _MODE_THINKING_MAP: dict[str, str] = {
@@ -146,6 +147,9 @@ class ModelRoutingRail(DeepAgentRail):
                 self._request_mode = selection
                 cap = self._find_cap_by_name(mode_model, prefer_provider=_MODE_PREFERRED_PROVIDER)
                 if cap is None:
+                    # keep current：不注入档位 thinking kwargs（当前模型 vendor 未知，
+                    # DeepSeek/GLM 风格 extra_body.thinking 对 OpenAI 官方端点会 400）
+                    self._request_thinking = "default"
                     logger.warning(
                         "[ModelRouting] mode=%s model=%s not in capability table (%d models); "
                         "keep current model, thinking=%s",
@@ -165,6 +169,8 @@ class ModelRoutingRail(DeepAgentRail):
                     )
                     return
                 if cap.model is None:
+                    # keep current（无 Model 对象可切）：同上，不注入 thinking kwargs
+                    self._request_thinking = "default"
                     logger.warning(
                         "[ModelRouting] mode=%s model=%s has no Model object (builder missing); "
                         "cannot switch, thinking=%s",
@@ -358,25 +364,6 @@ class ModelRoutingRail(DeepAgentRail):
             return int(self._token_counter.count(text))
         except Exception:
             return max(0, len(text) // 4)
-
-    def reload_capability_table(
-        self,
-        config: dict[str, Any] | None,
-        *,
-        model_builder: Optional[Callable[[dict, dict], Any]] = None,
-    ) -> None:
-        """从 config 重新加载能力表（配置/env 更新时调用，无需重建整个 rail）。
-
-        启动时由 ``_build_model_routing_rail`` 构建；热重载若走整 rail 重建则自动刷新，
-        否则可显式调本方法。model_builder 传 ``JiuWenClawDeepAdapter._build_model_from_entry``。
-        """
-        self._capability_table = build_capability_table_from_config(
-            config, model_builder=model_builder
-        )
-        logger.info(
-            "[ModelRouting] capability table reloaded: %d models",
-            len(self._capability_table),
-        )
 
 
 # ---- Helpers ---- #

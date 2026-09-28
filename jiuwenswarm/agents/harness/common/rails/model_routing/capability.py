@@ -107,7 +107,14 @@ def _build_cap_from_entry(
 def _load_models_json() -> dict | None:
     """加载 sidecar 模式落盘的 models.json（relay spawn 前写入）。
 
-    路径：``get_config_dir()/routing_state/models.json``。结构对齐 config.yaml::models::
+    路径：有当前身份（``OFFICE_CLAW_USER_ID``，relay 经 tip 下发、read_env_if_set 读取）
+    → ``get_config_dir()/routing_state/users/<encoded>/models.json``（per-user 隔离，
+    review #12）；匿名 → 根 ``get_config_dir()/routing_state/models.json``（兼容升级前落盘）。
+    目录段编码与 relay ``encodeModelConfigUserPathSegment`` 对齐：
+    ``urllib.parse.quote(userId, safe="!~'()")``（`*` 强制编码为 %2A，与 Node
+    ``encodeURIComponent(userId).replace(/\\*/g, '%2A')`` 逐字节一致）。
+
+    结构对齐 config.yaml::models::
 
         {"defaults": [<entry>, ...], "vision": {<entry>}}
 
@@ -116,19 +123,48 @@ def _load_models_json() -> dict | None:
 
     sidecar 链路识别信号：文件存在 → sidecar 模式（读文件）；缺失 → stock 模式（读 config.yaml）。
     缺失/解析失败 → 返回 None（调用方回退 config.yaml）。
+
+    owner 校验（兜底）：per-user 文件若带 ``_meta.owner.userId`` 且与当前身份不符
+    （结构上不应发生）→ 拒绝读取并回退 stock，避免跨身份串读他人密钥表。
     """
     try:
         from jiuwenswarm.common.utils import get_config_dir
-        path = get_config_dir() / "routing_state" / "models.json"
+        config_dir = get_config_dir()
     except Exception as exc:
         logger.debug("[ModelRouting] get_config_dir failed in _load_models_json: %s", exc)
         return None
+    # 当前身份：read_env_if_set 只读 tip（无 os.environ 回落），relay 已把 OFFICE_CLAW_USER_ID
+    # 放进 sync env → tip；匿名请求 tip 无此键 → user_id 空 → 读根路径。
+    user_id = ""
+    try:
+        from jiuwenswarm.common.local_env_config import read_env_if_set
+        user_id = (read_env_if_set("OFFICE_CLAW_USER_ID") or "").strip()
+    except Exception as exc:
+        logger.debug("[ModelRouting] read_env_if_set failed in _load_models_json: %s", exc)
+    if user_id:
+        try:
+            from urllib.parse import quote
+            segment = quote(user_id, safe="!~'()")
+        except Exception:
+            segment = user_id
+        path = config_dir / "routing_state" / "users" / segment / "models.json"
+    else:
+        path = config_dir / "routing_state" / "models.json"
     if not path.exists():
         return None
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
+            owner_user_id = str(((data.get("_meta") or {}).get("owner") or {}).get("userId") or "").strip()
+            if user_id and owner_user_id and owner_user_id != user_id:
+                logger.warning(
+                    "[ModelRouting] models.json owner mismatch (%s != %s) at %s — ignored, fall back to stock",
+                    owner_user_id,
+                    user_id,
+                    path,
+                )
+                return None
             logger.info("[ModelRouting] models.json loaded from %s", path)
             return data
         logger.warning("[ModelRouting] models.json not a dict at %s, ignored", path)

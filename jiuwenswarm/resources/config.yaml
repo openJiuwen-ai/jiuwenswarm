@@ -1675,6 +1675,8 @@ flash:
 # ── 模型路由（model_routing rail）──────────────────────────────
 model_routing:
   enabled: false
+  # ⚠️ health_check 段为后续迭代预留（当前 model_routing 模块零消费，
+  # 调参无效果；PR 检视 CR-6）。能力表健康检查落地后再启用这些键。
   health_check:
     enabled: true
     interval_seconds: 180
