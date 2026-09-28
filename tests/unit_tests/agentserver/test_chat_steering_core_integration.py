@@ -40,6 +40,9 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 # The locked official SDK predates steering. Check the independent schema
 # marker so a broken capability implementation in a newer SDK still fails.
 _CORE_HAS_STEERING = find_spec("openjiuwen.core.single_agent.schema.steering") is not None
+# Full-suite xdist load can keep real Core prompt preparation on the event loop
+# for tens of seconds; keep the safety bound above that setup latency.
+_REAL_CORE_TIMEOUT_SECONDS = 60
 
 
 class _BlockingTool(Tool):
@@ -238,7 +241,7 @@ async def test_chat_pipeline_steers_real_core_during_tool_without_replacing_orig
         main_task = asyncio.create_task(
             pipeline.dispatch_parsed_request(original_context, original)
         )
-        await asyncio.wait_for(tool.entered.wait(), 10)
+        await asyncio.wait_for(tool.entered.wait(), _REAL_CORE_TIMEOUT_SECONDS)
         active_task = core.active_round.task_id
         owner = core._interaction_output.current_lease()
 
@@ -286,7 +289,7 @@ async def test_chat_pipeline_steers_real_core_during_tool_without_replacing_orig
             assert core._interaction_output.current_lease() is owner
             assert len(model.calls) == tool.calls == 1
             tool.release.set()
-            await asyncio.wait_for(main_task, 15)
+            await asyncio.wait_for(main_task, _REAL_CORE_TIMEOUT_SECONDS)
             assert len(model.calls) == 2 and tool.calls == 1
             assert original_sink.chunks and not original_sink.wires
             assert all(chunk.request_id == original.request_id for chunk in original_sink.chunks)
@@ -313,7 +316,7 @@ async def test_chat_pipeline_steers_real_core_during_tool_without_replacing_orig
         assert core._interaction_output.current_lease() is owner
         assert len(model.calls) == tool.calls == 1
         tool.release.set()
-        await asyncio.wait_for(main_task, 15)
+        await asyncio.wait_for(main_task, _REAL_CORE_TIMEOUT_SECONDS)
         assert len(model.calls) == 2
         assert tool.calls == 1
         assert all(
