@@ -14,13 +14,11 @@ from typing import Any
 METADATA_PREFIX = "_"
 
 # Managed field paths, relative to the *extracted section* (not the raw etcd
-# document). That section's keys mirror config.yaml's top-level keys -- e.g. the
-# section is ``{"gateway": {"agentos": ...}, "sandbox": {...}}`` -- so a
-# managed path reads like config.yaml itself. kind is "float" or "positive_int".
+# document). For the ``gateway`` component the section looks like
+# ``{"agent_sandbox": {"idle_timeout": 600}}``. kind is "float" or
+# "positive_int".
 _MANAGED_FIELDS: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("gateway", "agentos", "sandbox_idle_timeout_seconds"), "float"),
-    (("sandbox", "cpu"), "positive_int"),
-    (("sandbox", "memory"), "positive_int"),
+    (("agent_sandbox", "idle_timeout"), "float"),
 )
 
 _MISSING = object()

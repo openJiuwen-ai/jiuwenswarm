@@ -16,31 +16,28 @@ from jiuwenswarm.extensions.agentos.config_updater.service import ConfigUpdaterA
 
 class ConfigUpdaterTest(unittest.IsolatedAsyncioTestCase):
     async def test_partial_update_preserves_local_settings_and_remote_overrides(self):
-        baseline = {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 60, "auth_enabled": True}},
-                    "sandbox": {"cpu": 2000, "memory": 4096}, "model": {"api_key": "local"}}
+        baseline = {"agent_sandbox": {"idle_timeout": 60}, "model": {"api_key": "local"}}
         original = copy.deepcopy(baseline)
         applied = []
         applier = ConfigUpdaterApplier(baseline, overrides_handler=applied.append)
         # Equal to the YAML baseline still needs to override a startup env value.
         result = await applier.apply(FetchResult(
-            {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 60, "auth_enabled": False}},
-             "model": {"api_key": "remote"}}, {}, 1))
+            {"agent_sandbox": {"idle_timeout": 60}, "model": {"api_key": "remote"}}, {}, 1))
         self.assertTrue(result.applied)
-        self.assertEqual(applied[-1], {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 60.0}}})
-        self.assertTrue((await applier.apply(FetchResult({"sandbox": {"cpu": 3000}}, {}, 2))).applied)
-        self.assertEqual(applied[-1]["sandbox"], {"cpu": 3000})
-        self.assertEqual(applied[-1]["gateway"]["agentos"]["sandbox_idle_timeout_seconds"], 60)
+        self.assertEqual(applied[-1], {"agent_sandbox": {"idle_timeout": 60.0}})
+        self.assertTrue((await applier.apply(FetchResult({"agent_sandbox": {"idle_timeout": 300}}, {}, 2))).applied)
+        self.assertEqual(applied[-1], {"agent_sandbox": {"idle_timeout": 300.0}})
         self.assertEqual(baseline, original)
-        self.assertEqual((await applier.apply(FetchResult({"sandbox": {"memory": None}}, {}, 3))).skipped_reason,
+        self.assertEqual((await applier.apply(FetchResult({"agent_sandbox": {"idle_timeout": None}}, {}, 3))).skipped_reason,
                          "validation-failed")
-        self.assertEqual((await applier.apply(FetchResult({"sandbox": {"cpu": 9000}}, {}, 2))).skipped_reason,
+        self.assertEqual((await applier.apply(FetchResult({"agent_sandbox": {"idle_timeout": 9000}}, {}, 2))).skipped_reason,
                          "revision-unchanged")
         self.assertEqual(len(applied), 2)
 
     async def test_failed_refresh_can_be_retried_without_advancing_revision(self):
         refresh = AsyncMock(side_effect=[False, True])
         applier = ConfigUpdaterApplier({}, refresh_handler=refresh)
-        fetched = FetchResult({"sandbox": {"memory": 8192}}, {}, 12)
+        fetched = FetchResult({"agent_sandbox": {"idle_timeout": 8192}}, {}, 12)
         self.assertTrue((await applier.apply(fetched)).retryable)
         self.assertEqual(applier.last_applied_mod_revision, 0)
         self.assertTrue((await applier.apply(fetched)).applied)
@@ -51,7 +48,7 @@ class ConfigUpdaterTest(unittest.IsolatedAsyncioTestCase):
         completed = asyncio.Event()
 
         def apply(overrides):
-            if overrides["sandbox"]["cpu"] == 1000:
+            if overrides["agent_sandbox"]["idle_timeout"] == 1000:
                 failed.set()
                 raise RuntimeError("transient apply failure")
             completed.set()
@@ -60,9 +57,9 @@ class ConfigUpdaterTest(unittest.IsolatedAsyncioTestCase):
             closed = False
 
             async def watch_loop(self, receive):
-                await receive(FetchResult({"sandbox": {"cpu": 1000}}, {}, 1))
+                await receive(FetchResult({"agent_sandbox": {"idle_timeout": 1000}}, {}, 1))
                 await failed.wait()
-                await receive(FetchResult({"sandbox": {"cpu": 2000}}, {}, 2))
+                await receive(FetchResult({"agent_sandbox": {"idle_timeout": 2000}}, {}, 2))
                 await asyncio.Event().wait()
 
             async def aclose(self):

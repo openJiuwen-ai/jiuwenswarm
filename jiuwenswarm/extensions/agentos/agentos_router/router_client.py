@@ -548,12 +548,17 @@ class AgentOSRouterClient(AgentServerClient):
     def apply_remote_overrides(self, overrides: Mapping[str, Any]) -> None:
         """Apply managed settings without creating/reconnecting user instances.
 
-        Idle timeout affects the running reaper; cpu/memory are creation settings
-        for future built-in sandboxes, not live resize commands.
+        The data-plane contract is a single field: ``agent_sandbox.idle_timeout``
+        (float seconds; ``<= 0`` disables reclamation). It only affects the
+        running reaper; a field that is not pushed leaves the current value
+        untouched.
         """
-        gateway = overrides.get("gateway", {})
-        agentos = gateway.get("agentos", {}) if isinstance(gateway, Mapping) else {}
-        timeout = agentos.get("sandbox_idle_timeout_seconds") if isinstance(agentos, Mapping) else None
+        agent_sandbox = overrides.get("agent_sandbox", {})
+        timeout = (
+            agent_sandbox.get("idle_timeout")
+            if isinstance(agent_sandbox, Mapping)
+            else None
+        )
         if timeout is not None:
             previous = self._sandbox_idle_timeout_seconds
             self._sandbox_idle_timeout_seconds = float(timeout)
@@ -564,13 +569,8 @@ class AgentOSRouterClient(AgentServerClient):
                     task.cancel()
             elif previous <= 0:
                 self._ensure_idle_reaper_task()
-        sandbox = overrides.get("sandbox", {})
-        if isinstance(sandbox, Mapping):
-            for key in ("cpu", "memory"):
-                if key in sandbox:
-                    self._remote_resources[key] = int(sandbox[key])
-        logger.info("[AgentOSRouter] managed config applied idle_timeout=%s resources=%s (new sandboxes)",
-                    self._sandbox_idle_timeout_seconds, self._remote_resources)
+        logger.info("[AgentOSRouter] managed config applied idle_timeout=%s (new sandboxes)",
+                    self._sandbox_idle_timeout_seconds)
 
 
     def set_channel_manager(self, channel_manager: ChannelManager) -> None:
