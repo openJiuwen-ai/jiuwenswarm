@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 import stat
 import time
@@ -35,8 +34,12 @@ from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthCon
 from jiuwenswarm.extensions.agentos.agentos_router.config import (
     DEFAULT_AGENT_WORKSPACE_ROOT,
     SshChannelEndpoint,
+    TOOL_SANDBOX_CPU_ENV,
+    TOOL_SANDBOX_IDLE_TIMEOUT_ENV,
+    TOOL_SANDBOX_MEMORY_ENV,
     read_mapping_path,
     read_optional_float,
+    read_optional_int,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.logutil import (
     agentos_extra,
@@ -491,6 +494,11 @@ class AgentOSRouterClient(AgentServerClient):
         ephemeral_key_ttl_sec: float = 300.0,
         workspace_root: str | None = None,
         sandbox_idle_timeout_seconds: float = 600.0,
+        agent_sandbox_cpu: int = 2000,
+        agent_sandbox_memory: int = 4096,
+        tool_sandbox_idle_timeout_seconds: float = 600.0,
+        tool_sandbox_cpu: int = 2000,
+        tool_sandbox_memory: int = 4096,
         sandbox_idle_check_interval_seconds: float = 30.0,
         disconnect_cleanup_timeout_seconds: float = 60.0,
         connect_warmup_enabled: bool = True,
@@ -510,6 +518,15 @@ class AgentOSRouterClient(AgentServerClient):
         )
         # <= 0 disables idle sandbox reclamation entirely.
         self._sandbox_idle_timeout_seconds = float(sandbox_idle_timeout_seconds)
+        # Builtin jiuwenswarm agent sandbox resources; overridden at runtime by
+        # the management-plane (etcd) values.
+        self._agent_sandbox_cpu = int(agent_sandbox_cpu)
+        self._agent_sandbox_memory = int(agent_sandbox_memory)
+        self._tool_sandbox_idle_timeout_seconds = float(
+            tool_sandbox_idle_timeout_seconds
+        )
+        self._tool_sandbox_cpu = int(tool_sandbox_cpu)
+        self._tool_sandbox_memory = int(tool_sandbox_memory)
         self._sandbox_idle_check_interval_seconds = max(
             1.0, float(sandbox_idle_check_interval_seconds)
         )
@@ -2223,23 +2240,36 @@ class AgentOSRouterClient(AgentServerClient):
     def apply_remote_overrides(self, overrides: Mapping[str, Any]) -> None:
         """Apply remotely-managed fields to the running process.
 
-        Narrow interface, no reconnect. Handles the data-plane
-        ``agent_sandbox.idle_timeout``, which is otherwise frozen at
-        construction -- this is its only runtime update path.
+        Narrow interface, no reconnect. Handles the management-plane
+        ``agent_sandbox`` and ``tool_sandbox`` settings, which are otherwise
+        frozen at construction.
 
-        The management plane outranks env here: the remote value wins even when
-        ``SANDBOX_IDLE_TIMEOUT_SECONDS`` is set (env is only a startup fallback).
-        A remote document that omits the field leaves the current value untouched
-        -- it must not fall back to env/yaml, so deleting the field does not roll
-        anything back.
+        The management plane outranks env here; env only seeds startup.
+        A remote document that omits a field leaves the current value untouched
+        -- it must not fall back to env/yaml, so deleting the field does not
+        roll anything back.
 
-        Starts/stops the reaper in both directions (0 disables reclamation).
+        Agent Sandbox idle timeout starts/stops the reaper. Agent Sandbox CPU/
+        memory affect future Agent Sandbox creates. Tool Sandbox values are
+        passed to newly created AgentServer instances; Gateway does not create
+        the Tool Sandbox itself.
         """
-        agent_sandbox_section = read_mapping_path(overrides, "agent_sandbox")
-        new_timeout = read_optional_float(
-            agent_sandbox_section,
-            "idle_timeout",
+        agent_sandbox = read_mapping_path(overrides, "agent_sandbox")
+        self._apply_idle_timeout(
+            read_optional_float(agent_sandbox, "idle_timeout")
         )
+        self._apply_agent_sandbox_resources(
+            cpu=read_optional_int(agent_sandbox, "cpu"),
+            memory=read_optional_int(agent_sandbox, "memory"),
+        )
+        tool_sandbox = read_mapping_path(overrides, "tool_sandbox")
+        self._apply_tool_sandbox_config(
+            idle_timeout=read_optional_float(tool_sandbox, "idle_timeout"),
+            cpu=read_optional_int(tool_sandbox, "cpu"),
+            memory=read_optional_int(tool_sandbox, "memory"),
+        )
+
+    def _apply_idle_timeout(self, new_timeout: float | None) -> None:
         if new_timeout is None:
             # Field not pushed (or deleted): keep the current value.
             return
@@ -2264,6 +2294,63 @@ class AgentOSRouterClient(AgentServerClient):
             # positive the running loop already reads the new value, and
             # ``create_task`` would need a running event loop we may not have.
             self._ensure_idle_reaper_task()
+
+    def _apply_agent_sandbox_resources(
+        self,
+        *,
+        cpu: int | None,
+        memory: int | None,
+    ) -> None:
+        """Update builtin Agent Sandbox CPU/memory for future creates only."""
+        if cpu is not None and cpu != self._agent_sandbox_cpu:
+            previous_cpu = self._agent_sandbox_cpu
+            self._agent_sandbox_cpu = cpu
+            log_agentos(
+                logger,
+                logging.INFO,
+                "config.agent_sandbox.cpu.update",
+                previous=previous_cpu,
+                current=cpu,
+            )
+        if memory is not None and memory != self._agent_sandbox_memory:
+            previous_memory = self._agent_sandbox_memory
+            self._agent_sandbox_memory = memory
+            log_agentos(
+                logger,
+                logging.INFO,
+                "config.agent_sandbox.memory.update",
+                previous=previous_memory,
+                current=memory,
+            )
+
+    def _apply_tool_sandbox_config(
+        self,
+        *,
+        idle_timeout: float | None,
+        cpu: int | None,
+        memory: int | None,
+    ) -> None:
+        """Store Tool Sandbox settings for future AgentServer instances."""
+        if idle_timeout is not None:
+            self._tool_sandbox_idle_timeout_seconds = idle_timeout
+        if cpu is not None:
+            self._tool_sandbox_cpu = cpu
+        if memory is not None:
+            self._tool_sandbox_memory = memory
+
+    def _tool_sandbox_env(self) -> dict[str, str]:
+        """Tool Sandbox settings carried into a new AgentServer instance.
+
+        Gateway only forwards these values. The AgentServer/tool provider owns
+        how (and whether) they are used to create the Tool Sandbox.
+        """
+        return {
+            TOOL_SANDBOX_IDLE_TIMEOUT_ENV: str(
+                self._tool_sandbox_idle_timeout_seconds
+            ),
+            TOOL_SANDBOX_CPU_ENV: str(self._tool_sandbox_cpu),
+            TOOL_SANDBOX_MEMORY_ENV: str(self._tool_sandbox_memory),
+        }
 
     def _cancel_idle_reaper(self) -> None:
         """Cancel the reaper from a sync context (does not join the task).
@@ -2399,14 +2486,15 @@ class AgentOSRouterClient(AgentServerClient):
                 },
                 "cmds": [["sh", "-c", f"exec jiuwenswarm-agentserver --port {port}"]],
                 "probes": self._probe_settings.tcp_probes(port, with_liveness=True),
-                "cpu": int(os.environ.get("AGENTOS_BUILTIN_AGENT_CPU", "2000")),
-                "memory": int(os.environ.get("AGENTOS_BUILTIN_AGENT_MEMORY", "4096"))
+                "cpu": self._agent_sandbox_cpu,
+                "memory": self._agent_sandbox_memory,
             }
             # 不注入 AGENT_SERVER_HOST: 留空让沙箱内 agentserver 自行检测沙箱本地
             # 非 loopback IP(ISOLATED 模式 bind veth 地址,外部可达;见
             # app_agentserver._resolve_bind_host)。单机版默认仍 127.0.0.1。
             env_vars = {
                 USER_DIRECTORY_ENV_KEY: workspace,
+                **self._tool_sandbox_env(),
             }
             # create 后 Gateway 通过 frontend WS 代理直连该端口（不走 invoke）。
             extra_metadata: dict[str, Any] = {"agent_port": port}
@@ -2483,6 +2571,9 @@ class AgentOSRouterClient(AgentServerClient):
             instance=instance_id,
             latency_ms=latency_ms,
             trace_id=str(sandbox.metadata.get("trace_id") or ""),
+            # Resources actually sent in runtime_spec (builtin: env/etcd; 3rd: registry).
+            cpu=runtime_spec.get("cpu"),
+            memory=runtime_spec.get("memory"),
         )
 
         task = asyncio.create_task(
