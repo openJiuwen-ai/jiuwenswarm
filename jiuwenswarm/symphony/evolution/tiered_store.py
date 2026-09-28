@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """Tiered evolution store for Symphony experience reuse.
 
@@ -184,7 +184,7 @@ class TieredEvolutionStore:
         """Insert or replace a record, moving it to ``tier`` if it moved.
 
         Args:
-            record_id: Stable identifier; re-using one replaces the record.
+            record_id: Stable identifier; reusing one replaces the record.
             payload: Arbitrary JSON-serialisable experience payload.
             tier: One of :data:`TIERS`.
             task_type: Logical grouping used to scope ``mid`` lookups.
