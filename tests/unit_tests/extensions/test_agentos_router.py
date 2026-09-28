@@ -3072,7 +3072,7 @@ def test_apply_remote_overrides_updates_idle_timeout() -> None:
     client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
 
     client.apply_remote_overrides(
-        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 120}}}
+        {"agent_sandbox": {"idle_timeout": 120}}
     )
 
     assert client._sandbox_idle_timeout_seconds == 120.0
@@ -3090,7 +3090,7 @@ def test_apply_remote_overrides_tolerates_missing_path() -> None:
     client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
 
     client.apply_remote_overrides({})
-    client.apply_remote_overrides({"gateway": {}})
+    client.apply_remote_overrides({"agent_sandbox": {}})
 
     assert client._sandbox_idle_timeout_seconds == 600.0
 
@@ -3101,7 +3101,7 @@ def test_apply_remote_overrides_env_does_not_win_over_remote(monkeypatch) -> Non
     client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
 
     client.apply_remote_overrides(
-        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 120}}}
+        {"agent_sandbox": {"idle_timeout": 120}}
     )
 
     assert client._sandbox_idle_timeout_seconds == 120.0
@@ -3113,11 +3113,11 @@ def test_apply_remote_overrides_absent_field_does_not_roll_back() -> None:
     # signal to fall back to env/yaml.
     client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
     client.apply_remote_overrides(
-        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 120}}}
+        {"agent_sandbox": {"idle_timeout": 120}}
     )
     assert client._sandbox_idle_timeout_seconds == 120.0
 
-    client.apply_remote_overrides({"gateway": {"agentos": {}}})
+    client.apply_remote_overrides({"agent_sandbox": {}})
 
     assert client._sandbox_idle_timeout_seconds == 120.0
 
@@ -3129,9 +3129,7 @@ async def test_apply_remote_overrides_stops_reaper_when_disabled() -> None:
     client._ensure_idle_reaper_task()
     assert client._idle_reaper_task is not None
 
-    client.apply_remote_overrides(
-        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 0}}}
-    )
+    client.apply_remote_overrides({"agent_sandbox": {"idle_timeout": 0}})
     await asyncio.sleep(0)  # let the scheduled stop task run
 
     assert client._sandbox_idle_timeout_seconds == 0.0
@@ -3144,9 +3142,7 @@ async def test_apply_remote_overrides_starts_reaper_when_enabled() -> None:
     client._closed = False
     assert client._idle_reaper_task is None
 
-    client.apply_remote_overrides(
-        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 300}}}
-    )
+    client.apply_remote_overrides({"agent_sandbox": {"idle_timeout": 300}})
 
     assert client._sandbox_idle_timeout_seconds == 300.0
     assert client._idle_reaper_task is not None
@@ -3161,7 +3157,7 @@ async def test_apply_remote_overrides_keeps_reaper_running_on_value_change() -> 
     existing = client._idle_reaper_task
 
     client.apply_remote_overrides(
-        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 120}}}
+        {"agent_sandbox": {"idle_timeout": 120}}
     )
 
     assert client._sandbox_idle_timeout_seconds == 120.0

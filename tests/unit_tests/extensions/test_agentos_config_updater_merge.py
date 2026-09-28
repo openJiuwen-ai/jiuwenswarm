@@ -63,13 +63,11 @@ def test_extract_section_non_mapping_document_returns_empty():
 
 def test_filter_managed_section_keeps_only_allowlisted_fields():
     section = {
-        "gateway": {
-            "agentos": {
-                "sandbox_idle_timeout_seconds": 120,
-                "workspace_root": "/tmp/override",
-            },
-            "cron": {"store_backend": "file"},
+        "agent_sandbox": {
+            "idle_timeout": 120,
+            "workspace_root": "/tmp/override",
         },
+        "gateway": {"agentos": {"sandbox_idle_timeout_seconds": 600}},
         "sandbox": {
             "cpu": 2000,
             "memory": 4096,
@@ -81,15 +79,14 @@ def test_filter_managed_section_keeps_only_allowlisted_fields():
 
     managed, ignored = filter_managed_section(section)
 
-    assert managed == {
-        "gateway": {"agentos": {"sandbox_idle_timeout_seconds": 120}},
-        "sandbox": {"cpu": 2000, "memory": 4096},
-    }
+    # Only ``agent_sandbox.idle_timeout`` is managed; the tool-sandbox fields
+    # (``sandbox.cpu`` / ``sandbox.memory``) and the old ``gateway.*`` path are
+    # not.
+    assert managed == {"agent_sandbox": {"idle_timeout": 120}}
     assert ignored == [
-        "gateway.agentos.workspace_root",
-        "gateway.cron",
-        "sandbox.type",
-        "sandbox.image",
+        "agent_sandbox.workspace_root",
+        "gateway",
+        "sandbox",
         "channels",
     ]
 
@@ -104,10 +101,23 @@ def test_filter_managed_section_ignores_malformed_parent_nodes():
 
 
 def test_filter_managed_section_preserves_explicit_null_for_validation():
-    managed, ignored = filter_managed_section({"sandbox": {"cpu": None}})
+    managed, ignored = filter_managed_section(
+        {"agent_sandbox": {"idle_timeout": None}}
+    )
 
-    assert managed == {"sandbox": {"cpu": None}}
+    assert managed == {"agent_sandbox": {"idle_timeout": None}}
     assert ignored == []
+
+
+def test_filter_managed_section_ignores_tool_sandbox_resources():
+    # ``sandbox.cpu`` / ``sandbox.memory`` belong to the tool sandbox and are
+    # not managed via the data plane.
+    managed, ignored = filter_managed_section(
+        {"sandbox": {"cpu": 2000, "memory": 4096}}
+    )
+
+    assert managed == {}
+    assert ignored == ["sandbox"]
 
 
 # --------------------------------------------------------------------------
@@ -183,44 +193,34 @@ def test_merge_handles_non_dict_local():
 # --------------------------------------------------------------------------
 
 def test_validate_accepts_managed_fields():
-    section = {
-        "gateway": {"agentos": {"sandbox_idle_timeout_seconds": 600}},
-        "sandbox": {"cpu": 2000, "memory": 4096},
-    }
+    section = {"agent_sandbox": {"idle_timeout": 600}}
     assert validate_section(section) == []
 
 
-def test_validate_rejects_non_positive_cpu():
-    errors = validate_section({"sandbox": {"cpu": 0}})
+def test_validate_rejects_non_numeric_idle_timeout():
+    errors = validate_section({"agent_sandbox": {"idle_timeout": "soon"}})
     assert len(errors) == 1
-    assert "sandbox.cpu" in errors[0]
+    assert "idle_timeout" in errors[0]
 
 
-def test_validate_rejects_negative_memory():
-    errors = validate_section({"sandbox": {"memory": -1}})
-    assert len(errors) == 1
-    assert "sandbox.memory" in errors[0]
-
-
-def test_validate_rejects_non_numeric_cpu():
-    errors = validate_section({"sandbox": {"cpu": "big"}})
-    assert len(errors) == 1
-
-
-def test_validate_rejects_boolean_cpu():
+def test_validate_rejects_boolean_idle_timeout():
     # bool is an int subclass -- must be caught explicitly.
-    errors = validate_section({"sandbox": {"cpu": True}})
+    errors = validate_section({"agent_sandbox": {"idle_timeout": True}})
     assert len(errors) == 1
+
+
+def test_validate_ignores_unmanaged_tool_sandbox_resources():
+    # ``sandbox.cpu`` / ``sandbox.memory`` are no longer managed, so their
+    # values (even invalid ones) are not validated here.
+    assert validate_section({"sandbox": {"cpu": 0}}) == []
+    assert validate_section({"sandbox": {"memory": -1}}) == []
+    assert validate_section({"sandbox": {"cpu": "big"}}) == []
 
 
 def test_validate_allows_idle_timeout_zero_and_negative():
-    # <= 0 is a valid "disable reclamation" value, unlike cpu/memory.
-    assert validate_section(
-        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 0}}}
-    ) == []
-    assert validate_section(
-        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": -1}}}
-    ) == []
+    # <= 0 is a valid "disable reclamation" value.
+    assert validate_section({"agent_sandbox": {"idle_timeout": 0}}) == []
+    assert validate_section({"agent_sandbox": {"idle_timeout": -1}}) == []
 
 
 def test_validate_ignores_unknown_fields_after_filtering_boundary():
@@ -230,11 +230,9 @@ def test_validate_ignores_unknown_fields_after_filtering_boundary():
 @pytest.mark.parametrize(
     ("section", "field"),
     [
-        ({"sandbox": {"cpu": None}}, "sandbox.cpu"),
-        ({"sandbox": {"memory": None}}, "sandbox.memory"),
         (
-            {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": None}}},
-            "gateway.agentos.sandbox_idle_timeout_seconds",
+            {"agent_sandbox": {"idle_timeout": None}},
+            "agent_sandbox.idle_timeout",
         ),
     ],
 )
@@ -245,19 +243,9 @@ def test_validate_rejects_explicit_null_managed_field(section, field):
     assert field in errors[0]
 
 
-@pytest.mark.parametrize("value", [0.5, "1.25"])
-def test_validate_rejects_fractional_cpu_and_memory(value):
-    assert validate_section({"sandbox": {"cpu": value}})
-    assert validate_section({"sandbox": {"memory": value}})
-
-
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
 def test_validate_rejects_non_finite_managed_values(value):
-    assert validate_section({"sandbox": {"cpu": value}})
-    assert validate_section({"sandbox": {"memory": value}})
-    assert validate_section(
-        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": value}}}
-    )
+    assert validate_section({"agent_sandbox": {"idle_timeout": value}})
 
 
 def test_validate_missing_fields_is_ok():
@@ -265,7 +253,7 @@ def test_validate_missing_fields_is_ok():
 
 
 def test_validate_accepts_numeric_strings():
-    assert validate_section({"sandbox": {"cpu": "2000"}}) == []
+    assert validate_section({"agent_sandbox": {"idle_timeout": "120"}}) == []
 
 
 # --------------------------------------------------------------------------
@@ -273,25 +261,23 @@ def test_validate_accepts_numeric_strings():
 # --------------------------------------------------------------------------
 
 def test_normalize_coerces_numeric_strings():
-    normalized = normalize_section({"sandbox": {"cpu": "2000", "memory": "4096"}})
-    assert normalized == {"sandbox": {"cpu": 2000, "memory": 4096}}
+    normalized = normalize_section({"agent_sandbox": {"idle_timeout": "120"}})
+    assert normalized == {"agent_sandbox": {"idle_timeout": 120}}
 
 
 def test_normalize_idle_timeout_whole_number_stays_int():
     # Whole numbers stay int so writing back does not turn a user's 600 into
     # 600.0; consumers cast to float as needed.
-    normalized = normalize_section(
-        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": "120"}}}
-    )
-    assert normalized["gateway"]["agentos"]["sandbox_idle_timeout_seconds"] == 120
+    normalized = normalize_section({"agent_sandbox": {"idle_timeout": "120"}})
+    assert normalized["agent_sandbox"]["idle_timeout"] == 120
 
 
 def test_normalize_mutates_in_place():
     # In-place is required to preserve ruamel's nested CommentedMap types.
-    section = {"sandbox": {"cpu": "2000"}}
+    section = {"agent_sandbox": {"idle_timeout": "120"}}
     result = normalize_section(section)
     assert result is section
-    assert section == {"sandbox": {"cpu": 2000}}
+    assert section == {"agent_sandbox": {"idle_timeout": 120}}
 
 
 def test_normalize_leaves_unknown_fields_untouched():

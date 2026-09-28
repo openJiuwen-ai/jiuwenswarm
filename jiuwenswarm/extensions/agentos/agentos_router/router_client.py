@@ -2223,9 +2223,9 @@ class AgentOSRouterClient(AgentServerClient):
     def apply_remote_overrides(self, overrides: Mapping[str, Any]) -> None:
         """Apply remotely-managed fields to the running process.
 
-        Narrow interface, no reconnect. Handles
-        ``gateway.agentos.sandbox_idle_timeout_seconds``, which is otherwise
-        frozen at construction -- this is its only runtime update path.
+        Narrow interface, no reconnect. Handles the data-plane
+        ``agent_sandbox.idle_timeout``, which is otherwise frozen at
+        construction -- this is its only runtime update path.
 
         The management plane outranks env here: the remote value wins even when
         ``SANDBOX_IDLE_TIMEOUT_SECONDS`` is set (env is only a startup fallback).
@@ -2235,10 +2235,10 @@ class AgentOSRouterClient(AgentServerClient):
 
         Starts/stops the reaper in both directions (0 disables reclamation).
         """
-        agentos_section = read_mapping_path(overrides, "gateway", "agentos")
+        agent_sandbox_section = read_mapping_path(overrides, "agent_sandbox")
         new_timeout = read_optional_float(
-            agentos_section,
-            "sandbox_idle_timeout_seconds",
+            agent_sandbox_section,
+            "idle_timeout",
         )
         if new_timeout is None:
             # Field not pushed (or deleted): keep the current value.
