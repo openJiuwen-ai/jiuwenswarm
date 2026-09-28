@@ -612,6 +612,37 @@ class _FirstTeamRequestPreparation:
     error_chunks: list[AgentResponseChunk] | None = None
 
 
+def _render_stale_ask_user_continuation(query: Any) -> str | None:
+    """Render stale ask_user answers as a standalone continuation message.
+
+    Only ask_user answers are self-describing (the question text is the dict
+    key, the answer the value); permission/evolution approvals carry a bare
+    ``action`` payload and must NOT be degraded — a detached "allow" is
+    meaningless and unsafe. Returns None when the input is not safely
+    renderable, so the caller keeps its error path.
+    """
+    user_inputs = getattr(query, "user_inputs", None)
+    if not isinstance(user_inputs, dict) or not user_inputs:
+        return None
+    sections: list[str] = []
+    for _node_id, value in user_inputs.items():
+        answers = value.get("answers") if isinstance(value, dict) else None
+        if not isinstance(answers, dict) or not answers:
+            return None  # permission/evolution approval shape -> not degradable
+        lines = []
+        for question, answer in answers.items():
+            if isinstance(answer, list):
+                answer_text = "、".join(str(item) for item in answer)
+            else:
+                answer_text = str(answer)
+            lines.append(f"问：{question}\n答：{answer_text}")
+        sections.append("\n".join(lines))
+    return (
+        "（注：此前的团队任务因服务重启中断。以下是对先前提问的回答，"
+        "请结合会话历史理解并继续任务。）\n" + "\n".join(sections)
+    )
+
+
 async def _prepare_first_team_request(
     *,
     team_manager: Any,
@@ -660,6 +691,24 @@ async def _prepare_first_team_request(
             _resolve_channel_id(channel_id),
             session_id,
         )
+        # ask_user answers are self-describing Q&A pairs, so degrade them into
+        # a continuation message and rebuild the runtime via the normal
+        # cold-start path (recovered_runtime=False). Permission/evolution
+        # approvals are not degradable and keep the error below.
+        continuation = _render_stale_ask_user_continuation(query)
+        if continuation is not None:
+            logger.info(
+                "[TeamHelpers] stale ask_user answers degraded to fresh-team continuation: "
+                "channel_id=%s session_id=%s",
+                _resolve_channel_id(channel_id),
+                session_id,
+            )
+            return _FirstTeamRequestPreparation(
+                recovered_runtime=False,
+                query=continuation,
+                hide_dm=hide_dm,
+                debug=debug,
+            )
         error_chunks = [
             AgentResponseChunk(
                 request_id=request_id,
