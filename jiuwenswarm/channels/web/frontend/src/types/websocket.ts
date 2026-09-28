@@ -40,6 +40,8 @@ export interface WebRequestOptions {
   isStream?: boolean;
   /** Keep the existing request pending until the runtime confirms acceptance. */
   awaitRuntimeAccepted?: boolean;
+  /** Called before sending, so supplemental receipts can be associated with this request. */
+  onRequestId?: (requestId: string) => void;
 }
 
 export interface WebConnectOptions {
@@ -157,6 +159,7 @@ export interface Question {
  * 用户问题请求 Payload（服务端 -> 客户端）
  */
 export interface AskUserQuestionPayload {
+  duplexJobId?: string;
   request_id: string;
   questions: Question[];
   source?: string; // 来源标识，用于区分自进化确认和工具权限确认

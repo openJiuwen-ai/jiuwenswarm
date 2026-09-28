@@ -136,6 +136,7 @@ def test_reload_config_uses_explicit_gp_and_disables_core_injection() -> None:
 
     spec = _gp(config.subagents)
     assert config.add_general_purpose_agent is False
+    assert spec.max_iterations == 3
     assert spec.model is model and spec.tools == [tool.card]
     assert spec.restrict_to_work_dir is False
     assert spec.rails is not None and spec.rails[1] is ordinary
@@ -183,6 +184,58 @@ async def test_cold_create_passes_only_explicit_gp(
     kwargs = create.call_args.kwargs
     spec = _gp(kwargs["subagents"])
     assert kwargs["add_general_purpose_agent"] is False
+    assert spec.max_iterations == 100
     assert spec.rails is not None and spec.rails[1] is ordinary
     assert spec.workspace is kwargs["workspace"]
     assert spec.sys_operation is kwargs["sys_operation"] is sys_operation
+
+
+def _build_gp(
+    react_config: dict[str, object],
+    *,
+    allow_general: bool = True,
+) -> SubAgentConfig:
+    adapter = JiuWenSwarmDeepAdapter()
+    with patch.object(adapter, "_build_configured_subagents", return_value=(None, True)):
+        subagents = adapter._build_subagents_with_general_purpose(
+            MagicMock(),
+            react_config,
+            {},
+            rails=[SysOperationRail()],
+            tools=[],
+            workspace=Workspace(root_path="/tmp/workspace", language="en"),
+            sys_operation=MagicMock(),
+            reload=False,
+            allow_general=allow_general,
+        )
+    return _gp(subagents)
+
+
+def test_general_purpose_inherits_former_generic_cap_when_unconfigured() -> None:
+    spec = _build_gp({"subagents": {"general_agent": {"enabled": True}}})
+
+    assert spec.max_iterations == 100
+
+
+def test_general_purpose_inherits_configured_generic_cap() -> None:
+    spec = _build_gp(
+        {
+            "max_iterations": 42,
+            "subagents": {"general_agent": {"enabled": True}},
+        }
+    )
+
+    assert spec.max_iterations == 42
+
+
+def test_general_purpose_honors_own_max_iterations() -> None:
+    spec = _build_gp(
+        {
+            "max_iterations": 42,
+            "subagents": {
+                "general_agent": {"enabled": True, "max_iterations": 7},
+            },
+        }
+    )
+
+    assert spec.max_iterations == 7

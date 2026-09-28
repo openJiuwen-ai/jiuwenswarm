@@ -16,10 +16,10 @@ from jiuwenswarm.runtime.session_lifecycle import (
     SessionExecutionFinishedEvent,
     SessionForegroundEvent,
     SessionInactiveEvent,
+    SessionInputIntentDisposition,
+    SessionInputIntentEvent,
     SessionKind,
     SessionLifecycleTarget,
-    SessionPrepareDisposition,
-    SessionPrepareEvent,
 )
 from jiuwenswarm.server.runtime.session.kv_cache import kv_cache_task_guard
 
@@ -89,10 +89,10 @@ class KVCacheSessionLifecycleParticipant:
         # discarded instead of growing for the lifetime of the process.
         self._guard().forget(target.descriptor.session_id)
 
-    async def session_preparing(
+    async def session_input_intent(
         self,
-        event: SessionPrepareEvent,
-    ) -> SessionPrepareDisposition:
+        event: SessionInputIntentEvent,
+    ) -> SessionInputIntentDisposition:
         guard = self._guard()
         target = event.target
         guard.set_foreground(
@@ -110,9 +110,9 @@ class KVCacheSessionLifecycleParticipant:
         )
         self._schedule(action)
         return (
-            SessionPrepareDisposition.SCHEDULED
+            SessionInputIntentDisposition.SCHEDULED
             if action is not None
-            else SessionPrepareDisposition.NOT_NEEDED
+            else SessionInputIntentDisposition.NOT_NEEDED
         )
 
     async def foreground_changed(self, event: SessionForegroundEvent) -> None:

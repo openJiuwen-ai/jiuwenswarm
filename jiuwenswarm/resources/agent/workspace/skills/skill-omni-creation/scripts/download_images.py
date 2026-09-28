@@ -42,7 +42,7 @@ def _load_runtime_dependencies() -> None:
 
 def _fetch_one(url: str) -> tuple[str, bytes | None, str | None]:
     try:
-        resp = _session.get(url, timeout=common.OPERATION_TIMEOUT_SECONDS, stream=True)
+        resp = _session.get(url, timeout=common.IMAGE_FETCH_TIMEOUT_SECONDS, stream=True)
         resp.raise_for_status()
         mime = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
         if mime not in common.SUPPORTED_MIMES:

@@ -281,24 +281,53 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
     await rail.before_model_call(ctx)
 
     prompt = builder.build()
+    normalized_prompt = " ".join(prompt.split())
     assert "## Skill Orchestration Contract" in prompt
     assert "`symphony_compose_graph`" in prompt
-    assert "exact identifiers or names" in prompt
-    assert "when ANY of these conditions is true" in prompt
-    assert "two or more specialized capabilities" in prompt
-    assert "identified, inspected, selected, invoked, or recommended" in prompt
-    assert "Calling `skill_branch_explore` creates a mandatory orchestration follow-up" in prompt
-    assert "never pass every Skill returned by exploration" in prompt
-    assert "still call `symphony_compose_graph`" in prompt
-    assert "`planned_graph.graph.metadata.status`" in prompt
-    assert "`planned_graph.graph.nodes`" in prompt
-    assert "`planned_graph.graph.edges`" in prompt
-    assert "Do not present a planning" in prompt
+    assert "multiple selected Skills" in normalized_prompt
+    assert "an ordered or dependent workflow" in normalized_prompt
+    assert "selected exact Skill IDs are sufficient evidence" in normalized_prompt
+    assert (
+        "Calling `skill_index` alone is also not a compose trigger"
+        in normalized_prompt
+    )
+    assert "never pass all retrieval results" in normalized_prompt
+    assert "Do not call `symphony_compose_graph`" in prompt
+    assert "skill_branch_explore" not in prompt
+    assert "do not call `skill_tool`" in prompt
+    assert "SKILL.md" in prompt
+    assert "`planned_graph` status, nodes, and edges" in prompt
+    assert "do not present it" in prompt
     assert "search_skill" not in prompt
     assert "install_skill" not in prompt
     assert "returned\n`content` directly" not in prompt
-    assert "none of the three trigger conditions is true" in prompt
     assert "Symphony" not in prompt
+
+
+def test_symphony_orchestration_guidance_has_precise_compose_boundaries():
+    prompt = SymphonyOrchestrationRail._build_orchestration_guidance()
+    normalized_prompt = " ".join(prompt.split())
+
+    for positive in (
+        "explicitly requests combining or orchestrating multiple Skills",
+        "task needs multiple selected Skills",
+        "ordered or dependent workflow",
+        "Two or more selected exact Skill IDs are sufficient evidence",
+    ):
+        assert positive in normalized_prompt
+
+    assert (
+        "Do not call `symphony_compose_graph` for single Skill use, inspection, "
+        "or question, a simple single-Skill command, pure search, listing, "
+        "comparison, or recommendation, or when the user merely mentions a "
+        "Skill or 技能."
+    ) in normalized_prompt
+
+    assert "`skill_index`" in prompt
+    assert "skill_branch_explore" not in prompt
+    assert "only the selected exact Skill IDs" in prompt
+    assert "do not call `skill_tool`" in prompt
+    assert "read any SKILL.md" in prompt
 
 
 @pytest.mark.asyncio
@@ -823,6 +852,16 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     ]
 
 
+def test_host_deadline_preserves_other_run_context_without_mutating_input():
+    inputs = {"query": "test", "run": {"context": {"extra": {"existing": "kept"}}}}
+    request = SimpleNamespace(metadata={"execution_deadline_at": 123456.0})
+    updated = JiuWenSwarmDeepAdapter._with_execution_deadline(inputs, request)
+    assert updated["run"]["context"]["extra"] == {"existing": "kept", "execution_deadline_at": 123456.0}
+    assert inputs["run"]["context"]["extra"] == {"existing": "kept"}
+    ordinary = SimpleNamespace(metadata={})
+    assert JiuWenSwarmDeepAdapter._with_execution_deadline(inputs, ordinary) is inputs
+
+
 @pytest.mark.asyncio
 async def test_symphony_tool_model_is_isolated_from_interleaved_adapter_requests(
     monkeypatch,
@@ -1098,9 +1137,14 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
     assert "genuinely unanswered requirements" in task_section.content["en"]
     assert "a partial label or unmapped field alone does not justify" in task_section.content["en"]
     assert "Do not use `subagent_spawn` for browser_agent" in task_section.content["en"]
+    assert "Delegate only the original goal and necessary constraints" in task_section.content["en"]
+    assert "top AI/knowledge/weather answers with attribution" in task_section.content["en"]
+    assert "preserve explicit natural-result/detail-visit requests" in task_section.content["en"]
     assert not rail.system_prompt_builder.has_section("browser_tool_policy")
     assert "浏览器能力路由规则" in build_browser_task_prompt("cn")
     assert "不因 partial 标签或字段未结构化而重跑浏览器或交叉验证" in build_browser_task_prompt("cn")
+    assert "派发描述只保留原始目标和必要约束" in build_browser_task_prompt("cn")
+    assert "用户明确要求自然结果或进入详情时仍须执行" in build_browser_task_prompt("cn")
 
     agent.deep_config.subagents = [
         SubAgentConfig(
@@ -1358,6 +1402,87 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
     assert (
         "用户任务中的相对路径必须相对于当前工作目录路径去解析" in prompt
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("language", "core_heading", "extensions_heading", "rules_heading"),
+    [
+        ("cn", "### 核心内部数据", "### 已安装扩展资产", "### 目录使用规则"),
+        (
+            "en",
+            "### Core Internal Data",
+            "### Installed Extension Assets",
+            "### Directory Usage Rules",
+        ),
+    ],
+)
+async def test_runtime_prompt_lists_installed_extensions_from_global_workspace(
+    tmp_path,
+    monkeypatch,
+    language,
+    core_heading,
+    extensions_heading,
+    rules_heading,
+):
+    builder = SystemPromptBuilder(language=language)
+    agent = _FakeAgent(builder)
+    installed_workspace = tmp_path / "installed-agent-workspace"
+    member_workspace = tmp_path / "member-workspace"
+    project_dir = tmp_path / "project"
+    for directory in (installed_workspace, member_workspace, project_dir):
+        directory.mkdir()
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_agent_workspace_dir",
+        lambda: installed_workspace,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        lambda: tmp_path / "jiuwenswarm-data",
+    )
+
+    runtime_rail = RuntimePromptRail(language=language, channel="web")
+    runtime_rail.init(agent)
+    runtime_rail.set_runtime_paths(
+        cwd=str(project_dir),
+        project_dir=str(project_dir),
+        workspace_dir=str(member_workspace),
+    )
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=None,
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await runtime_rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert core_heading in prompt
+    assert extensions_heading in prompt
+    assert rules_heading in prompt
+    assert str(member_workspace) in prompt
+    assert str(installed_workspace / "skills" / "{skill_name}") in prompt
+    assert (
+        str(installed_workspace / "plugins" / "agent_templates" / "local")
+        in prompt
+    )
+    assert (
+        str(
+            tmp_path
+            / "jiuwenswarm-data"
+            / ".agent_teams"
+            / "agent_groups"
+            / "local"
+        )
+        in prompt
+    )
+    assert (
+        str(installed_workspace / "plugins" / "plugin_packages" / "local")
+        in prompt
+    )
+    assert str(installed_workspace / "mcp" / "mcp_hub") in prompt
+    assert str(member_workspace / "plugins" / "agent_templates" / "local") not in prompt
 
 
 @pytest.mark.asyncio
@@ -1664,8 +1789,9 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     rendered = agent.prompt_attachment_manager.render(
         await agent.prompt_attachment_manager.list_by_filter(session_id="sess1")
     )
-    assert "## 已安装 Skill" in rendered
-    assert "当前没有可用 Skill" in rendered
+    assert "## 已安装 Skill" not in rendered
+    assert "## 已安装 Skill" in builder.build()
+    assert "当前没有可用 Skill" in builder.build()
     assert "## Skill 发现" not in rendered
 
     class _AttachmentContext:
@@ -1681,7 +1807,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
 
     history = _AttachmentContext()
     manager = agent.prompt_attachment_manager
-    assert await manager.sync_to_context(history, "sess1") is not None
+    assert await manager.sync_to_context(history, "sess1") is None
 
     # before_invoke runs before the model tool list exists. It must not clear
     # and then re-add the same large snapshot on every user turn.
@@ -1695,7 +1821,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     )
     await rail.before_model_call(ctx)
     assert await manager.sync_to_context(history, "sess1") is None
-    assert len(history.messages) == 1
+    assert len(history.messages) == 0
 
     missing_index_ctx = AgentCallbackContext(
         agent=agent,

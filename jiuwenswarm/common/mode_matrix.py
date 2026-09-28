@@ -66,6 +66,12 @@ MODE_ALIASES: dict[str, str] = {
     "team.plan": TEAM_PLAN_NORMAL_MODE,
     # TUI 的用户-facing 名称；运行时沿用历史 canonical ID。
     "team.code": "code.team",
+    # issue #4168: shorthand names (full name minus ".normal"). The TUI
+    # translates them before sending; direct chat.send callers do not.
+    "team.work": NEW_TEAM_WORK_NORMAL,
+    "team.normal": NEW_TEAM_WORK_NORMAL,
+    "agent.work": NEW_AGENT_WORK_NORMAL,
+    "agent.code": NEW_AGENT_CODE_NORMAL,
 }
 
 NEW_CANONICAL_MODES: frozenset[str] = frozenset(

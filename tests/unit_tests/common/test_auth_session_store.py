@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import pytest
@@ -136,19 +137,22 @@ def test_reloads_when_another_process_writes(_isolated_auth_dir):
     assert reader.get(created.session_id) is not None
 
 
-def test_logout_does_not_overwrite_what_another_process_just_wrote(_isolated_auth_dir):
+def test_logout_preserves_other_process_update_when_archive_mtime_is_unchanged(_isolated_auth_dir):
     gateway = AuthSessionStore()
     alice = gateway.create(_outcome("openid-alice"))
     bob = gateway.create(_outcome("openid-bob"))
+    path = _isolated_auth_dir / "sessions.json"
+    original_mtime_ns = path.stat().st_mtime_ns
 
     agent_server = AuthSessionStore()
-    assert agent_server.get(bob.session_id) is not None
-    agent_server.update_credential(  # 另一个进程续期，写了盘
+    agent_server.update_credential(
         bob.session_id, Credential(id_token="ID-RENEWED", refresh_token="R", expires_at=time.time() + 3600)
     )
+    # Some filesystems report the same mtime for two rapid atomic replacements.
+    os.utime(path, ns=(original_mtime_ns, original_mtime_ns))
 
-    gateway.remove(alice.session_id)  # 本进程内存里 bob 还是旧凭据
+    gateway.remove(alice.session_id)
 
     fresh = AuthSessionStore()
     assert fresh.get(alice.session_id) is None
-    assert fresh.get(bob.session_id).credential.id_token == "ID-RENEWED", "bob 刚续好的凭据被登出操作覆盖了"
+    assert fresh.get(bob.session_id).credential.id_token == "ID-RENEWED"

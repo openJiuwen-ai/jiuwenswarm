@@ -307,7 +307,7 @@ async def audio_metadata(audio_path_or_url: str) -> str:
                 scored.append((
                     itm.get("duration_ms"),
                     itm.get("title"),
-                    itm.get("artists", [{}])[0].get("name"),
+                    (itm.get("artists") or [{}])[0].get("name"),
                     itm.get("release_date"),
                     itm.get("score"),
                 ))
@@ -316,7 +316,8 @@ async def audio_metadata(audio_path_or_url: str) -> str:
             return f"Name: {best[1]}, Artist: {best[2]}, Release Date: {best[3]}. Note: score={best[4]}"
         elif "music" in meta:
             itm = meta["music"][0]
-            return f"Name: {itm['title']}, Artist: {itm['artists'][0]['name']}, Release Date: {itm['release_date']}."
+            artist = (itm.get("artists") or [{}])[0].get("name")
+            return f"Name: {itm.get('title')}, Artist: {artist}, Release Date: {itm.get('release_date')}."
         else:
             return f"Duration (seconds): {duration:.2f}\nACR: No metadata found for the given audio file."
 

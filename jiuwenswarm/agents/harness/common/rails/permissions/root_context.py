@@ -408,7 +408,6 @@ HOST_USER_ORIGIN_INTERNAL = "internal_dispatch"
 _REQUIRED_ENVELOPE_KEYS = frozenset(
     {
         "source",
-        "timezone",
         "timestamp",
         "preferred_response_language",
         "content",
@@ -417,7 +416,7 @@ _REQUIRED_ENVELOPE_KEYS = frozenset(
         "origin_kind",
     }
 )
-_OPTIONAL_ENVELOPE_KEYS = frozenset({"skills_to_use", "trusted_dirs"})
+_OPTIONAL_ENVELOPE_KEYS = frozenset({"skills_to_use", "trusted_dirs", "timezone"})
 
 
 def extract_permission_user_content(rendered_prompt: Any) -> str | None:
@@ -457,7 +456,7 @@ def extract_permission_user_content(rendered_prompt: Any) -> str | None:
         return None
     if any(
         not isinstance(envelope.get(name), str) or not envelope[name].strip()
-        for name in ("timezone", "timestamp", "preferred_response_language")
+        for name in ("timestamp", "preferred_response_language")
     ):
         return None
     if not _is_json_object_string(envelope.get("files_updated_by_user")):

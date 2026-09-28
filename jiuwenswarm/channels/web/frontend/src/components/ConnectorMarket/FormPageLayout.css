@@ -1,0 +1,125 @@
+.form-page-layout {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  background: var(--color-surface-card);
+}
+
+.form-page-layout__header {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 32px;
+  padding-bottom: 16px;
+}
+
+.form-page-layout__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  padding: 0;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 22px;
+}
+.form-page-layout__back:hover {
+  opacity: 0.7;
+}
+
+.form-page-layout__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 30px;
+  color: var(--color-text-primary);
+}
+
+.form-page-layout__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scrollbar-gutter: stable both-edges;
+  padding-top: 16px;
+}
+
+/* 滚动体内层与 .page-scroll>* 同一条内容线：容器两侧各预留 8px 滚动条槽，
+   限宽在 100% 基础上扣 96-16=80px（窄屏两侧至少 48px），对齐 .page-shell 固定区 */
+.form-page-layout__body > .page-shell {
+  width: min(1400px, calc(100% - 80px));
+}
+
+.form-page-layout__footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--color-settings-border);
+}
+
+.form-page-layout__footer-inner {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 16px 24px;
+}
+
+.form-page-layout__footer-inner--with-slot {
+  justify-content: space-between;
+}
+
+.form-page-layout__footer-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.form-page-layout__footer-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.form-page-layout__footer-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  padding: 0 16px;
+  min-width: 84px;
+  min-height: 32px;
+  border: 1px solid var(--color-control-emphasis);
+  border-radius: 16px;
+  background: var(--color-surface-card);
+  color: var(--color-control-emphasis);
+  font-size: 14px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.form-page-layout__footer-btn > svg {
+  flex: 0 0 auto;
+}
+
+.form-page-layout__footer-btn:hover {
+  opacity: 0.8;
+}
+
+.form-page-layout__footer-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.form-page-layout__footer-btn-primary {
+  background: var(--color-control-emphasis);
+  color: var(--color-control-emphasis-text);
+}
+
+.form-page-layout__footer-btn-primary:disabled {
+  background: var(--color-surface-card);
+  border-color: var(--color-border-default);
+  color: var(--color-text-muted);
+  opacity: 1;
+}

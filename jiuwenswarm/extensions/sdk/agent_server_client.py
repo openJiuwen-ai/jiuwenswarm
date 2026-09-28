@@ -1,6 +1,6 @@
 from abc import abstractmethod
 
-from jiuwenswarm.gateway.routing.agent_client import AgentServerClient
+from jiuwenswarm.common.client.agent_client import AgentServerClient
 from jiuwenswarm.extensions.sdk.base import BaseExtension
 
 

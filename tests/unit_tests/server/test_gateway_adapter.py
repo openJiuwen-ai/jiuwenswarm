@@ -186,7 +186,7 @@ def patched_sessions(monkeypatch: pytest.MonkeyPatch):
 
     def _patch(sessions, total):
         monkeypatch.setattr(
-            "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.get_all_sessions_metadata",
+            "jiuwenswarm.server.control.repositories.session_repository.get_all_sessions_metadata",
             lambda limit=20, offset=0: (sessions, total),
         )
         return sessions, total
@@ -288,7 +288,7 @@ class TestSessionAdapter:
             raise RuntimeError("boom")
 
         monkeypatch.setattr(
-            "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.get_all_sessions_metadata",
+            "jiuwenswarm.server.control.repositories.session_repository.get_all_sessions_metadata",
             _boom,
         )
         resp = await SessionAdapter().handle(
@@ -313,7 +313,7 @@ class TestSessionAdapter:
     async def test_get_metadata(self, monkeypatch) -> None:
         """session.get_metadata：OK 返回 metadata；不存在返回 NOT_FOUND（与 Web fallback 语义一致）。"""
         monkeypatch.setattr(
-            "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.get_session_metadata",
+            "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata",
             lambda sid, cache_bust=False: {"session_id": sid, "mode": "agent", "model": "m1"},
         )
         resp = await SessionAdapter().handle(
@@ -324,7 +324,7 @@ class TestSessionAdapter:
         assert resp.payload["model"] == "m1"
 
         monkeypatch.setattr(
-            "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.get_session_metadata",
+            "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata",
             lambda sid, cache_bust=False: {},
         )
         resp = await SessionAdapter().handle(
@@ -333,9 +333,37 @@ class TestSessionAdapter:
         assert resp.ok is False
         assert resp.payload["code"] == "NOT_FOUND"
 
+    async def test_pin_keeps_event_loop_responsive(self, monkeypatch) -> None:
+        import asyncio
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+        def slow_pin(sid, pinned):
+            started.set()
+            assert release.wait(3), "event loop could not release pin worker"
+            return True, 1
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.control.repositories.session_repository.set_session_pinned",
+            slow_pin,
+        )
+        task = asyncio.create_task(SessionAdapter().handle(
+            _request(ReqMethod.SESSION_PIN, {"session_id": "sess-1", "pinned": True})
+        ))
+        try:
+            async with asyncio.timeout(2):
+                while not started.is_set():
+                    await asyncio.sleep(0.01)
+            assert not task.done()
+        finally:
+            release.set()
+            response = await task
+        assert response.ok is True
+
     async def test_pin(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.set_session_pinned",
+            "jiuwenswarm.server.control.repositories.session_repository.set_session_pinned",
             lambda sid, pinned: (True, 3),
         )
         resp = await SessionAdapter().handle(
@@ -347,7 +375,7 @@ class TestSessionAdapter:
     async def test_color_set(self, monkeypatch) -> None:
         """查询模式返回当前色值；非法色值拒绝（白名单与 TUI 一致）。"""
         monkeypatch.setattr(
-            "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.get_session_metadata",
+            "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata",
             lambda sid, cache_bust=False: {"accent_color": "blue"},
         )
         resp = await SessionAdapter().handle(
@@ -372,7 +400,7 @@ class TestSessionAdapter:
             {"role": "member", "event_type": "team.message", "content": "team msg"},
         ]
         monkeypatch.setattr(
-            "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.load_history_records",
+            "jiuwenswarm.server.control.repositories.session_repository.load_history_records",
             lambda sid: history,
         )
         resp = await SessionAdapter().handle(
@@ -818,6 +846,38 @@ class TestWorkspaceFileAdapter:
         normalize_chat_media_attachments(params, session_id="sess-1")
         assert "media_items" not in params
 
+    async def test_media_discard_deletes_only_session_upload(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.attachments.media_attachments.get_agent_sessions_dir",
+            lambda: tmp_path,
+        )
+        upload_dir = tmp_path / "current-session" / "uploads"
+        upload_dir.mkdir(parents=True)
+        image = upload_dir / "sample.png"
+        image.write_bytes(b"png")
+        original = tmp_path / "sample.png"
+        original.write_bytes(b"original")
+
+        removed = await self._adapter().handle(
+            _request(ReqMethod.MEDIA_DISCARD, {"path": str(image)})
+        )
+        assert removed.ok is True
+        assert removed.payload == {"deleted": True}
+        assert not image.exists()
+
+        rejected = await self._adapter().handle(
+            _request(ReqMethod.MEDIA_DISCARD, {"path": str(original)})
+        )
+        assert rejected.ok is False
+        assert rejected.payload["code"] == "BAD_REQUEST"
+        assert original.read_bytes() == b"original"
+
+        missing_path = await self._adapter().handle(_request(ReqMethod.MEDIA_DISCARD, {}))
+        assert missing_path.ok is False
+        assert missing_path.payload["code"] == "BAD_REQUEST"
+
 
 # ── MemoryAdapter ────────────────────────────────────────────────────────────
 
@@ -1010,7 +1070,7 @@ class TestProjectAdapterSessions:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Directory isolation is authoritative; old metadata owners are not."""
-        module = "jiuwenswarm.server.runtime.gateway_adapter.project_adapter"
+        module = "jiuwenswarm.server.control.store.project_queries"
         monkeypatch.setattr(f"{module}.project_store.list_projects", lambda **_kwargs: [])
         monkeypatch.setattr(
             f"{module}.collect_all_sessions_metadata",
@@ -1143,20 +1203,15 @@ async def test_config_adapter_command_model_forces_local_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The AgentServer-side command must not proxy to Gateway a second time."""
-    from jiuwenswarm.gateway.channel_manager.tui import tui_connect
+    from jiuwenswarm.common.config_panel import tui_models_handlers
 
-    def fake_register(bind) -> None:
-        assert bind.force_local_config is True
+    async def fake_handler(channel, ws, req_id, params, session_id, **kwargs):
+        _ = (params, session_id, kwargs)
+        await channel.send_response(
+            ws, req_id, ok=True, payload={"type": "switched", "current": "m1"}
+        )
 
-        async def handler(ws, req_id, params, session_id):
-            _ = (params, session_id)
-            await bind.channel.send_response(
-                ws, req_id, ok=True, payload={"type": "switched", "current": "m1"}
-            )
-
-        bind.channel.register_local_handler("/tui", ReqMethod.COMMAND_MODEL.value, handler)
-
-    monkeypatch.setattr(tui_connect, "register_cli_handlers", fake_register)
+    monkeypatch.setattr(tui_models_handlers, "command_model_handler", fake_handler)
 
     response = await ConfigAdapter().handle(
         _request(ReqMethod.COMMAND_MODEL, {"model": "m1"}, channel_id="tui")

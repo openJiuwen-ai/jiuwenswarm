@@ -1,7 +1,7 @@
 import type { ModelEntry } from '../../../../types';
 
 /** Matches backend ``LOGIN_MODEL_SOURCE``: login-granted models must not be edited here. */
-const LOGIN_MODEL_SOURCE = 'huawei-maas-login';
+export const LOGIN_MODEL_SOURCE = 'huawei-maas-login';
 
 export type ModelDisplayItem = {
   model: ModelEntry;

@@ -13,21 +13,11 @@ export const agentModule: SettingsModuleDefinition = {
       titleKey: 'settingsPanel.agent.skills',
       items: [
         { id: 'skill-evolution', component: 'switch', key: 'skill_evolution' },
+        { id: 'ttse-enabled', component: 'switch', key: 'ttse_enabled' },
         {
           id: 'skill-retrieval',
           component: 'switch',
           key: 'skill_retrieval_enabled',
-          subItems: {
-            show: 'always',
-            disabled: 'when-parent-unchecked',
-            items: [
-              {
-                id: 'skill-retrieval-index',
-                component: 'switch',
-                key: 'skill_retrieval_index_enabled',
-              },
-            ],
-          },
         },
       ],
     },

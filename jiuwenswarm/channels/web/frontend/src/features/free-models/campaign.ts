@@ -1,11 +1,17 @@
 import { useEffect } from 'react';
 
+import type { CampaignState } from '../../services/authClient';
 import { useAuthStore } from '../../stores/authStore';
 
-export function useFreeModelsCampaign(): boolean {
-  const enabled = useAuthStore((state) => state.enabled);
-  const initialized = useAuthStore((state) => state.initialized);
-  const refresh = useAuthStore((state) => state.refresh);
+export interface FreeModelsCampaign {
+  state: CampaignState;
+}
+
+export function useFreeModelsCampaign(): FreeModelsCampaign {
+  const state = useAuthStore((store) => store.campaignState);
+  const enabled = useAuthStore((store) => store.enabled);
+  const initialized = useAuthStore((store) => store.initialized);
+  const refresh = useAuthStore((store) => store.refresh);
 
   useEffect(() => {
     if (!initialized) void refresh();
@@ -24,5 +30,5 @@ export function useFreeModelsCampaign(): boolean {
     };
   }, [enabled, refresh]);
 
-  return enabled;
+  return { state };
 }

@@ -21,6 +21,7 @@
 import { useChatStore } from '../../stores/chatStore';
 import { useGoalStore } from '../../stores/goalStore';
 import { usePlanStore } from '../../stores/planStore';
+import { hasUnfinishedGoal } from '../../components/ChatPanel/slashCommands/semantics';
 import {
   PLAN_ENTRY_SOURCE_PLAN_TOGGLE,
   PLAN_ENTRY_SOURCE_SLASH_COMMAND,
@@ -62,10 +63,10 @@ export function isSessionBusyForPlanToggle(sessionId: string | null | undefined)
 }
 
 /** 该会话是否还有未完成目标（active / paused / blocked 都算，只有 completed 不算）。 */
-function hasUnfinishedGoal(sessionId: string | null | undefined): boolean {
+function sessionHasUnfinishedGoal(sessionId: string | null | undefined): boolean {
   if (!sessionId) return false;
   const goal = useGoalStore.getState().runtimes[sessionId]?.goal ?? null;
-  return goal != null && goal.status !== 'completed';
+  return hasUnfinishedGoal(goal);
 }
 
 /**
@@ -83,7 +84,7 @@ export function evaluatePlanToggle(
 ): PlanToggleDecision {
   const busy = isSessionBusyForPlanToggle(sessionId);
   if (next) {
-    if (hasUnfinishedGoal(sessionId)) {
+    if (sessionHasUnfinishedGoal(sessionId)) {
       return { ok: false, reason: 'plan.toolbarUnavailableGoal' };
     }
     if (busy) {

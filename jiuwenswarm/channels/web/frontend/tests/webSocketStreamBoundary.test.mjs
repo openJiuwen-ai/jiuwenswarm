@@ -154,6 +154,100 @@ async function mountConnection(context, sessionIds) {
   };
 }
 
+test('cross-session queue status is visible while the target is processing', async (context) => {
+  const sessionId = 'target-session';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    useChatStore.getState().setProcessing(sessionId, true);
+    const message = {
+      message_id: 'sm-1',
+      source_session_id: 'source-session',
+      source_title: 'Source',
+      target_session_id: sessionId,
+      content: 'Check the weather',
+      status: 'queued',
+    };
+    connection.receive('session.message.updated', { session_id: sessionId, message });
+    assert.equal(connection.runtime().isProcessing, true);
+    assert.deepEqual(connection.runtime().queuedSessionMessages, [{
+      messageId: 'sm-1',
+      sourceSessionId: 'source-session',
+      sourceTitle: 'Source',
+      content: 'Check the weather',
+    }]);
+
+    connection.receive('session.message.updated', {
+      session_id: sessionId,
+      message: { ...message, status: 'running' },
+    });
+    assert.deepEqual(connection.runtime().queuedSessionMessages, []);
+    assert.equal(connection.runtime().isProcessing, true);
+  } finally {
+    await connection.dispose();
+  }
+});
+
+test('late queued status cannot restore a message that already started', async (context) => {
+  const sessionId = 'target-session';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    const message = {
+      message_id: 'sm-late',
+      target_session_id: sessionId,
+      source_session_id: 'source-session',
+      source_title: 'Source',
+      content: 'Late message',
+    };
+    connection.receive('session.message.updated', {
+      session_id: sessionId,
+      message: { ...message, status: 'running' },
+    });
+    connection.receive('session.message.updated', {
+      session_id: sessionId,
+      message: { ...message, status: 'queued' },
+    });
+    assert.deepEqual(connection.runtime().queuedSessionMessages, []);
+  } finally {
+    await connection.dispose();
+  }
+});
+
+test('queue snapshot removes stale entries and preserves live updates', async (context) => {
+  const sessionId = 'target-session';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    const store = useChatStore.getState();
+    const stale = { messageId: 'sm-stale', sourceSessionId: 'source', sourceTitle: 'Source', content: 'Stale' };
+    const live = { messageId: 'sm-live', sourceSessionId: 'source', sourceTitle: 'Source', content: 'Live' };
+    const recovered = { messageId: 'sm-recovered', sourceSessionId: 'source', sourceTitle: 'Source', content: 'Recovered' };
+    const initialSnapshot = store.beginQueuedSessionMessageSnapshot(sessionId);
+    store.reconcileQueuedSessionMessageSnapshot(sessionId, initialSnapshot, [recovered]);
+    assert.deepEqual(connection.runtime().queuedSessionMessages, [recovered]);
+
+    store.upsertQueuedSessionMessage(sessionId, stale);
+    const snapshot = store.beginQueuedSessionMessageSnapshot(sessionId);
+    store.upsertQueuedSessionMessage(sessionId, live);
+    store.reconcileQueuedSessionMessageSnapshot(sessionId, snapshot, []);
+    assert.deepEqual(connection.runtime().queuedSessionMessages, [live]);
+
+    const nextSnapshot = store.beginQueuedSessionMessageSnapshot(sessionId);
+    connection.receive('session.message.updated', {
+      session_id: sessionId,
+      message: { message_id: live.messageId, target_session_id: sessionId, status: 'running' },
+    });
+    store.reconcileQueuedSessionMessageSnapshot(sessionId, nextSnapshot, [live]);
+    assert.deepEqual(connection.runtime().queuedSessionMessages, []);
+
+    const older = store.beginQueuedSessionMessageSnapshot(sessionId);
+    const newer = store.beginQueuedSessionMessageSnapshot(sessionId);
+    store.reconcileQueuedSessionMessageSnapshot(sessionId, newer, []);
+    store.reconcileQueuedSessionMessageSnapshot(sessionId, older, [stale]);
+    assert.deepEqual(connection.runtime().queuedSessionMessages, []);
+  } finally {
+    await connection.dispose();
+  }
+});
+
 test('tool call within the batch interval preserves the entire previous segment and isolates the next one', async (context) => {
   const sessionId = 'stream-boundary';
   const connection = await mountConnection(context, [sessionId]);
@@ -293,4 +387,92 @@ test('tool calls without pending deltas preserve finalized text and do not creat
   } finally {
     await connection.dispose();
   }
+});
+
+function teamDelta(connection, sessionId, requestId, content) {
+  connection.receive('chat.delta', { session_id: sessionId, request_id: requestId, content });
+}
+
+function pauseTeam(connection, sessionId) {
+  connection.receive('chat.interrupt_result', {
+    session_id: sessionId, request_id: `pause-${sessionId}`, intent: 'pause', success: true,
+  });
+}
+
+test('team pause preserves the delta target without restarting its cursor or processing state', async (context) => {
+  const sessionId = 'team-paused-deltas';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    useSessionStore.getState().setMode(sessionId, 'team');
+    teamDelta(connection, sessionId, 'round-1', '你好');
+    const id = connection.runtime().messages[0].id;
+    pauseTeam(connection, sessionId);
+    for (const chunk of ['，', '很', '高兴见到你。']) teamDelta(connection, sessionId, 'round-1', chunk);
+    assert.equal(connection.runtime().messages.length, 1);
+    assert.equal(connection.runtime().messages[0].id, id);
+    assert.equal(connection.runtime().messages[0].content, '你好，很高兴见到你。');
+    assert.equal(connection.runtime().messages[0].isStreaming, false);
+    assert.equal(connection.runtime().isProcessing, false);
+    assert.equal(connection.runtime().isPaused, true);
+    connection.receive('chat.final', {
+      session_id: sessionId, request_id: 'round-1', content: '你好，很高兴见到你。',
+    });
+    assert.equal(connection.runtime().messages.length, 1, 'final updates the paused segment instead of duplicating it');
+    assert.match(connection.runtime().messages[0].content, /你好，很高兴见到你。/);
+  } finally { await connection.dispose(); }
+});
+
+test('the first delta after pause creates one non-streaming segment and subsequent chunks append', async (context) => {
+  const sessionId = 'team-pause-before-text';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    useSessionStore.getState().setMode(sessionId, 'team');
+    pauseTeam(connection, sessionId);
+    teamDelta(connection, sessionId, 'round-1', '你');
+    teamDelta(connection, sessionId, 'round-1', '好');
+    assert.deepEqual(connection.runtime().messages.map(m => m.content), ['你好']);
+    assert.equal(connection.runtime().messages[0].isStreaming, false);
+  } finally { await connection.dispose(); }
+});
+
+test('paused team tool and final boundaries keep distinct output segments', async (context) => {
+  const sessionId = 'team-paused-boundaries';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    useSessionStore.getState().setMode(sessionId, 'team');
+    teamDelta(connection, sessionId, 'round-1', '先检查。');
+    pauseTeam(connection, sessionId);
+    connection.receive('chat.tool_call', {
+      session_id: sessionId, request_id: 'round-1', tool_call_id: 'read-paused', name: 'read_file', arguments: {},
+    });
+    teamDelta(connection, sessionId, 'round-1', '检查');
+    teamDelta(connection, sessionId, 'round-1', '完成。');
+    assert.deepEqual(connection.runtime().messages.map(m => m.content), ['先检查。', '检查完成。']);
+    connection.receive('chat.final', { session_id: sessionId, request_id: 'round-1', content: '' });
+    teamDelta(connection, sessionId, 'round-1', '下一段');
+    teamDelta(connection, sessionId, 'round-1', '正文。');
+    assert.deepEqual(connection.runtime().messages.map(m => m.content), ['先检查。', '检查完成。', '下一段正文。']);
+    assert.ok(connection.runtime().messages.every(m => m.isStreaming === false));
+  } finally { await connection.dispose(); }
+});
+
+test('late paused output stays with its request across a new user turn and another session', async (context) => {
+  const sessionId = 'team-paused-old-request';
+  const other = 'team-paused-other-session';
+  const connection = await mountConnection(context, [sessionId, other]);
+  try {
+    for (const id of [sessionId, other]) useSessionStore.getState().setMode(id, 'team');
+    teamDelta(connection, sessionId, 'round-1', '旧轮');
+    pauseTeam(connection, sessionId);
+    useChatStore.getState().addMessage(sessionId, { id: 'new-user', role: 'user', content: '新问题', timestamp: new Date().toISOString() });
+    useChatStore.getState().setPaused(sessionId, false);
+    teamDelta(connection, sessionId, 'round-2', '新轮');
+    teamDelta(connection, other, 'round-1', '另一会话');
+    teamDelta(connection, sessionId, 'round-1', '尾部');
+    teamDelta(connection, sessionId, 'round-2', '正文');
+    assert.deepEqual(connection.runtime().messages.map(m => m.content), ['旧轮尾部', '新问题', '新轮正文']);
+    assert.equal(connection.runtime().messages[0].isStreaming, false);
+    assert.equal(connection.runtime().messages[2].isStreaming, true);
+    assert.deepEqual(connection.runtime(other).messages.map(m => m.content), ['另一会话']);
+  } finally { await connection.dispose(); }
 });

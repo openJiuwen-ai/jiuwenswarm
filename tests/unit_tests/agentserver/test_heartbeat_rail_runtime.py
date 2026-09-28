@@ -595,6 +595,7 @@ async def test_heartbeat_execution_timeout_releases_session() -> None:
 
     class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
+            assert isinstance(request.metadata.get("execution_deadline_at"), float)
             try:
                 await asyncio.Event().wait()
             finally:

@@ -3,11 +3,12 @@ import type { Message } from '../../../types/message';
 import { useGoalStore } from '../../../stores/goalStore';
 import { usePlanStore } from '../../../stores/planStore';
 import { isSessionBusyForPlanToggle } from '../../../features/planMode/planModeGate';
+import { evaluateGoalArm } from '../../../features/goalMode/goalModeGate';
 import { NEW_CONVERSATION_ID } from '../../../multi-session/state/newConversationLifecycle';
 import { resolvePlanGoalInterlock } from './semantics';
 
 /**
- * 斜杠命令注册表（/new、/fork、/side、/compact、/plan、/goal、/persist）。
+ * 斜杠命令注册表（/fork、/compact、/plan、/goal、/persist）。
  * 后端与 TUI 共用 agent_ws_server；命令结果以 system 消息留痕，
  * 第一行回显命令行，MessageItem 按 isCommandOutput 渲染。
  */
@@ -21,9 +22,7 @@ export type SlashCommandContext = {
   inputLine: string;
   addMessage: (sessionId: string, message: Message) => void;
   submitMessage?: (content: string) => void;
-  startNewConversation: () => void;
   forkConversation: (sourceSessionId: string) => Promise<void>;
-  startSideConversation: (sourceSessionId: string, prompt?: string) => Promise<void>;
   runGoalAction: (
     sessionId: string,
     action: GoalSlashAction,
@@ -79,7 +78,8 @@ export type GoalSlashIntent =
 export type GoalSetPreparationResult =
   | 'ready'
   | 'confirm_overwrite'
-  | 'blocked_by_plan';
+  | 'blocked_by_plan'
+  | 'blocked_by_busy';
 
 export type PlanSlashToggleResult =
   | 'activated'
@@ -136,13 +136,23 @@ export function parseGoalSlashArgs(args: string): GoalSlashIntent {
   return { action: 'set', objective: normalizedArgs };
 }
 
-/** Apply the same Goal/Plan interlock used by the composer toolbar. */
+/**
+ * Apply the same Goal/Plan interlock used by the composer toolbar.
+ *
+ * 会话进行中 / 暂停 / 等待 ask_user 回答时不允许 `/goal set`——与 `evaluateGoalArm`
+ * 打开方向、`/plan` 的 `togglePlanFromSlash` 共用同一套 planModeGate 忙态判断
+ * （bugfix 2026092401 bug001：任务执行中仍可 `/goal set <目标>` 直接设目标，
+ * 与「执行期间禁用目标模式」的要求不一致）。忙态检查放在最前：会话忙时直接拦，
+ * 不再先弹"覆盖确认"再问了个寂寞。默认参数便于单测注入。
+ */
 export function prepareGoalSetFromSlash(
   sessionId: string,
   overwriteConfirmed = false,
   planStore: GoalPlanSlashStore = usePlanStore.getState(),
   goalStore: GoalSlashStore = useGoalStore.getState(),
+  sessionBusy: boolean = isSessionBusyForPlanToggle(sessionId),
 ): GoalSetPreparationResult {
+  if (sessionBusy) return 'blocked_by_busy';
   const currentGoal = goalStore.getRuntime(sessionId)?.goal;
   if (currentGoal && currentGoal.status !== 'completed' && !overwriteConfirmed) {
     return 'confirm_overwrite';
@@ -189,15 +199,6 @@ function commandResultMessage(inputLine: string, output: string): Message {
   };
 }
 
-/** /new —— 复用 App 的新建会话入口；真实 session 在首条消息发送时再创建。 */
-const newCommand: SlashCommand = {
-  name: 'new',
-  requiresSession: false,
-  execute: async (ctx) => {
-    ctx.startNewConversation();
-  },
-};
-
 /** /fork —— 复制当前会话，并复用 App 的会话恢复流程切换到副本。 */
 const forkCommand: SlashCommand = {
   name: 'fork',
@@ -206,18 +207,6 @@ const forkCommand: SlashCommand = {
       await ctx.forkConversation(ctx.sessionId);
     } catch {
       ctx.addMessage(ctx.sessionId, commandResultMessage(ctx.inputLine, '分叉会话失败，请稍后再试。'));
-    }
-  },
-};
-
-/** /side —— 从当前上下文创建不进入普通历史列表的临时侧会话。 */
-const sideCommand: SlashCommand = {
-  name: 'side',
-  execute: async (ctx, args) => {
-    try {
-      await ctx.startSideConversation(ctx.sessionId, args.trim() || undefined);
-    } catch {
-      ctx.addMessage(ctx.sessionId, commandResultMessage(ctx.inputLine, '创建临时侧会话失败，请稍后再试。'));
     }
   },
 };
@@ -304,6 +293,11 @@ function goalStatusOutput(goal: GoalSlashSnapshot): string {
  * /goal —— 复用 Web 已有的 Goal 状态机和 GoalBar。
  * 语法与 TUI 一致：无参查询，pause/resume/clear 控制，set <objective>
  * 或任意其他文本设置目标。已有未完成目标时先请用户确认覆盖。
+ *
+ * `clear` 走 evaluateGoalArm 同一套忙态保护（bugfix 2026092201 bug001 第9轮）：跟"+"菜单
+ * 目标开关的关闭方向、目标 tag 的 × 关闭按钮口径一致，目标 active 时不能被命令行随手清掉。
+ * `pause`/`resume`/`get` 不受这层限制——暂停本来就该在 active 时可用，对齐 GoalBar 的
+ * 暂停按钮（那个按钮从第7轮起就只受"双击防护"限制，不受 active 状态限制）。
  */
 const goalCommand: SlashCommand = {
   name: 'goal',
@@ -344,6 +338,13 @@ const goalCommand: SlashCommand = {
           if (!confirmed) return;
           preparation = prepareGoalSetFromSlash(ctx.sessionId, true);
         }
+        if (preparation === 'blocked_by_busy') {
+          ctx.addMessage(
+            ctx.sessionId,
+            commandResultMessage(ctx.inputLine, '对话进行中，暂时无法设置目标，请等待执行结束。'),
+          );
+          return;
+        }
         if (preparation === 'blocked_by_plan') {
           ctx.addMessage(
             ctx.sessionId,
@@ -353,6 +354,22 @@ const goalCommand: SlashCommand = {
         }
         await ctx.runGoalAction(ctx.sessionId, 'set', intent.objective);
         return;
+      }
+
+      // bugfix 2026092201 bug001 第9轮：`/goal clear` 在这次改造之前完全没有忙态保护，
+      // 直接绕过"+"菜单开关、目标 tag 关闭按钮共用的 evaluateGoalArm，能在目标 active 时
+      // 把它当场清掉——跟那两个入口应该"同样不能被随手关闭"的要求不一致，这里补上同一套
+      // 判断。`pause`/`resume`/`get` 不受影响：暂停本来就该在 active 时可用（对齐 GoalBar
+      // 的暂停按钮），查询任何时候都不该被拦。
+      if (intent.action === 'clear') {
+        const decision = evaluateGoalArm(ctx.sessionId, false);
+        if (!decision.ok) {
+          ctx.addMessage(
+            ctx.sessionId,
+            commandResultMessage(ctx.inputLine, '目标正在执行中，暂时无法清除，请先暂停或等待执行结束。'),
+          );
+          return;
+        }
       }
 
       const goal = await ctx.runGoalAction(ctx.sessionId, intent.action);
@@ -395,9 +412,7 @@ const persistCommand: SlashCommand = {
 };
 
 export const SLASH_COMMANDS: SlashCommand[] = [
-  newCommand,
   forkCommand,
-  sideCommand,
   compactCommand,
   planCommand,
   goalCommand,

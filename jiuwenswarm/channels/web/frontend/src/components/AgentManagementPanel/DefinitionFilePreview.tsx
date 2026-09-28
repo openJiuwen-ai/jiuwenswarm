@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { DefinitionFileEntry, RequestStatus } from '../../features/agentManagement';
+import type { AgentFileContent, DefinitionFileEntry, RequestStatus } from '../../features/agentManagement';
 import { isPreviewableFile } from '../../features/agentManagement';
 import {
   FilePreviewContent,
@@ -17,7 +17,7 @@ type DefinitionFilePreviewProps = {
   filesStatus: RequestStatus;
   filesError: string | null;
   selectedFilePath: string | null;
-  fileContent: { relativePath: string; content: string } | null;
+  fileContent: AgentFileContent | null;
   fileStatus: RequestStatus;
   fileError: string | null;
   onRetryFiles: () => void;
@@ -59,7 +59,11 @@ export function DefinitionFilePreview({
   const selectedIsPreviewable = selectedFilePath ? isPreviewableFile(selectedFilePath) : false;
   const file = useMemo<FilePreviewContentFile | null>(() => {
     if (!selectedFilePath) return null;
-    return { path: selectedFilePath, content: fileContent?.content ?? null };
+    return {
+      path: selectedFilePath,
+      content: fileContent?.content ?? null,
+      downloadUrl: fileContent?.downloadUrl ?? null,
+    };
   }, [selectedFilePath, fileContent]);
 
   return (
@@ -74,12 +78,13 @@ export function DefinitionFilePreview({
           selectedPath={selectedFilePath}
           onSelectFile={onSelectFile}
           onRetry={onRetryFiles}
+          allowUnsupportedSelection
           labels={{
             loading: t('common.loading'),
             error: filesError || t('agentManagement.files.loadError'),
             empty: t('agentManagement.files.empty'),
             retry: t('common.retry'),
-            notPreviewable: t('agentManagement.files.notPreviewable'),
+            notPreviewable: '',
           }}
         />
       }

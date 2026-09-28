@@ -17,14 +17,15 @@ const EVENT_REFRESH_DEBOUNCE_MS = 300;
 
 /**
  * 归档相关的 WebSocket 事件：仅用于同步刷新，不替代请求结果。
- * `project.deleted` 必须保留：项目级联删除会清掉归档区会话，
- * 而网关对项目删除只发项目级事件、不发逐会话事件。
+ * `project.removed` / `project.restored` 必须订阅：项目可见性变化会改写
+ * 归档项的 `project_hidden` 标记与分组说明，本页要跟着刷新。
  */
 const ARCHIVE_EVENT_NAMES = [
   'session.archived',
   'session.unarchived',
   'session.deleted',
-  'project.deleted',
+  'project.removed',
+  'project.restored',
 ] as const;
 
 export interface ResourceListState<T> {

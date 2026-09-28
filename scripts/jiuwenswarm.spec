@@ -442,6 +442,14 @@ datas += _rust_datas
 hiddenimports += _rust_hidden
 _bundled_binaries = _bundled_binaries + _rust_binaries
 
+# sqlite-vec 是 SQLite 的可加载扩展，包内仅含纯 Python __init__.py 与动态库 vec0.dll。
+# collect_all("sqlite_vec") 会把 vec0.dll 作为 data file 收进冻结包；缺了它，运行时
+# `sqlite_vec.load()` 找不到动态库，报 "找不到指定的模块"，记忆向量能力降级（issue #4319）。
+_sqlite_vec_datas, _sqlite_vec_binaries, _sqlite_vec_hidden = collect_all("sqlite_vec")
+datas += _sqlite_vec_datas
+hiddenimports += _sqlite_vec_hidden
+_bundled_binaries = _bundled_binaries + _sqlite_vec_binaries
+
 a = Analysis(
     [entry_script],
     pathex=[project_root, symphony_root],

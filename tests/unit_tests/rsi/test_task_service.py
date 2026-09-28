@@ -197,6 +197,27 @@ class TestTaskGet:
         assert "search_width" not in data["config"]
         assert data["progress"]["iteration"] == 0
 
+    def test_failed_projection_prefers_detailed_result_over_generic_history(self, ctx):
+        task_id = ctx.task_service.create(_harness_create_params())[
+            "task_id"
+        ]
+        ctx.store.update_status(task_id, ["CREATED"], "QUEUED", cause="start")
+        ctx.store.update_status(task_id, ["QUEUED"], "RUNNING", cause="start")
+        ctx.store.update_status(task_id, ["RUNNING"], "FAILED", cause="provider.failed")
+        ctx.store.merge_results(
+            task_id,
+            {"error_code": "ENGINE_FAILED", "error_message": "评测脚本缺少入口函数"},
+        )
+
+        data = ctx.task_service.get(
+            {"task_id": task_id},
+            projector=ctx.projector,
+            usage_recorder=ctx.usage_recorder,
+            artifact_service=ctx.artifact_service,
+        )
+
+        assert data["failure_reason"] == "评测脚本缺少入口函数"
+
     def test_artifact_config_projection(self, ctx, tmp_path: Path):
         program_path = tmp_path / "program"
         program_path.mkdir()
@@ -307,6 +328,70 @@ class TestTaskDelete:
             ctx.task_service.delete({"task_id": task_id})
         ctx.store.mark_active_ref_released(task_id)
         assert ctx.task_service.delete({"task_id": task_id}) == {"ok": True}
+
+    def test_delete_queued_updates_state_before_removing_task(self, ctx):
+        ctx.bind_task_service(harness_refs_provider=lambda: None)
+        task_id = ctx.task_service.create(_harness_create_params())["task_id"]
+        ctx.store.update_status(task_id, [TaskStatus.CREATED.value], TaskStatus.QUEUED.value, cause="start")
+        status_changes: list[tuple[str, str, str]] = []
+        ctx.store.set_status_changed_callback(lambda *change: status_changes.append(change))
+
+        assert ctx.task_service.delete({"task_id": task_id}) == {"ok": True}
+
+        assert status_changes == [(task_id, TaskStatus.QUEUED.value, TaskStatus.TERMINATED.value)]
+        with pytest.raises(RsiTaskNotFound):
+            ctx.store.get(task_id)
+
+    def test_delete_paused_updates_state_before_removing_task(self, ctx):
+        ctx.bind_task_service(harness_refs_provider=lambda: None)
+        task_id = ctx.task_service.create(_harness_create_params())["task_id"]
+        ctx.store.update_status(task_id, [TaskStatus.CREATED.value], TaskStatus.QUEUED.value, cause="start")
+        ctx.store.update_status(task_id, [TaskStatus.QUEUED.value], TaskStatus.PAUSED.value, cause="pause")
+        status_changes: list[tuple[str, str, str]] = []
+        ctx.store.set_status_changed_callback(lambda *change: status_changes.append(change))
+
+        assert ctx.task_service.delete({"task_id": task_id}, worker=ctx.worker) == {"ok": True}
+
+        assert status_changes == [(task_id, TaskStatus.PAUSED.value, TaskStatus.TERMINATED.value)]
+        with pytest.raises(RsiTaskNotFound):
+            ctx.store.get(task_id)
+
+    def test_delete_queued_with_worker_removes_queue_entry(self, ctx):
+        ctx.bind_task_service(harness_refs_provider=lambda: None)
+        task_id = ctx.task_service.create(_harness_create_params())["task_id"]
+        ctx.worker.enqueue(task_id)
+        assert ctx.store.get(task_id).status == TaskStatus.QUEUED.value
+
+        assert ctx.task_service.delete({"task_id": task_id}, worker=ctx.worker) == {"ok": True}
+
+        assert ctx.worker._queue.empty()  # noqa: SLF001 - verify queued deletion cleanup
+        with pytest.raises(RsiTaskNotFound):
+            ctx.store.get(task_id)
+
+    def test_store_delete_allows_queued_but_not_running_or_paused(self, ctx):
+        ctx.bind_task_service(harness_refs_provider=lambda: None)
+        queued_id = ctx.task_service.create(_harness_create_params(name="queued"))["task_id"]
+        ctx.store.update_status(
+            queued_id,
+            [TaskStatus.CREATED.value],
+            TaskStatus.QUEUED.value,
+            cause="start",
+        )
+        ctx.store.delete(queued_id)
+        with pytest.raises(RsiTaskNotFound):
+            ctx.store.get(queued_id)
+
+        running_id = ctx.task_service.create(_harness_create_params(name="running"))["task_id"]
+        ctx.store.update_status(running_id, [TaskStatus.CREATED.value], TaskStatus.QUEUED.value, cause="start")
+        ctx.store.update_status(running_id, [TaskStatus.QUEUED.value], TaskStatus.RUNNING.value, cause="start")
+        with pytest.raises(RsiTaskStateConflict):
+            ctx.store.delete(running_id)
+
+        paused_id = ctx.task_service.create(_harness_create_params(name="paused"))["task_id"]
+        ctx.store.update_status(paused_id, [TaskStatus.CREATED.value], TaskStatus.QUEUED.value, cause="start")
+        ctx.store.update_status(paused_id, [TaskStatus.QUEUED.value], TaskStatus.PAUSED.value, cause="pause")
+        with pytest.raises(RsiTaskStateConflict):
+            ctx.store.delete(paused_id)
 
     def test_delete_missing(self, ctx):
         with pytest.raises(RsiTaskNotFound):

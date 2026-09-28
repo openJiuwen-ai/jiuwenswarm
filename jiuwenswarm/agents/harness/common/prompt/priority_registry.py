@@ -28,6 +28,7 @@ class SystemPromptPriority(IntEnum):
     TOOLS = 30
     SKILLS = 40
     SYMPHONY = 42
+    TTSE_FACTS_TIPS = 43
 
     # Memory and request/response contract.
     MEMORY = 50
@@ -88,6 +89,7 @@ _SECTION_PRIORITIES = MappingProxyType({
     "safety": SystemPromptPriority.SAFETY,
     "tools": SystemPromptPriority.TOOLS,
     "skills": SystemPromptPriority.SKILLS,
+    "ttse_facts_tips": SystemPromptPriority.TTSE_FACTS_TIPS,
     "memory": SystemPromptPriority.MEMORY,
     "daily_memory_context": SystemPromptPriority.DAILY_MEMORY_CONTEXT,
     "external_memory": SystemPromptPriority.EXTERNAL_MEMORY,

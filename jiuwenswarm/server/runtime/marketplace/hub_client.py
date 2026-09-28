@@ -318,6 +318,7 @@ class HubClient(HubAssetPort):
                     icon_uri=self._normalize_icon_uri(item.icon_uri),
                     tags=item.tags,
                     package_name=item.name,
+                    category_name=item.category_name,
                 )
             )
         return HubSearchPage(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -79,8 +81,15 @@ def _store(client: FakeEtcdJsonClient | None = None) -> tuple[EtcdCronJobStore, 
 
 
 @pytest.mark.asyncio
-async def test_etcd_put_get_list_delete():
-    store, _fake = _store()
+@pytest.mark.parametrize(
+    "extra_fields",
+    [
+        {},
+        {"mcp": ["tool"], "credential_ref": "0123456789abcdef0123456789abcdef"},
+    ],
+)
+async def test_etcd_put_get_list_delete(extra_fields):
+    store, fake = _store()
     created = await store.create_job(
         name="daily",
         cron_expr="0 9 * * *",
@@ -88,16 +97,66 @@ async def test_etcd_put_get_list_delete():
         description="ping",
         targets="web",
         user_id="u1",
+        **extra_fields,
     )
-    fetched = await store.get_job(created.id)
+    # A new store instance must recover the fields from persisted JSON.
+    reader, _ = _store(fake)
+    fetched = await reader.get_job(created.id)
     assert fetched is not None
     assert fetched.name == "daily"
     assert fetched.user_id == "u1"
-    listed = await store.list_jobs()
+    assert fetched.mcp == extra_fields.get("mcp")
+    assert fetched.credential_ref == extra_fields.get("credential_ref", "")
+    listed = await reader.list_jobs()
     assert [job.id for job in listed] == [created.id]
+    assert listed[0].mcp == fetched.mcp
+    assert listed[0].credential_ref == fetched.credential_ref
     assert await store.delete_job(created.id) is True
     assert await store.get_job(created.id) is None
     assert await store.list_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_controller_creates_etcd_job_without_login_model(monkeypatch):
+    """AgentOS creation passes mcp and an empty credential_ref without login."""
+    from jiuwenswarm.gateway.cron.controller import CronController
+
+    def unexpected_login_binding(*_args):
+        raise AssertionError("ordinary cron must not bind login credentials")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.cron.controller._login_credential_ref_from_session",
+        unexpected_login_binding,
+    )
+    store, fake = _store()
+    scheduler = SimpleNamespace(
+        reload=AsyncMock(),
+        project_execution_allowed=AsyncMock(return_value=True),
+    )
+    controller = CronController(store=store, scheduler=scheduler)
+    job = await controller.create_job(
+        {
+            "name": "agentos-job",
+            "cron_expr": "0 0 9 * * ? *",
+            "timezone": "UTC",
+            "description": "reminder",
+            "targets": "web",
+            "project_id": "agentos-project",
+            "work_mode": "work",
+            "user_id": "route-user",
+            "mcp": [" tool ", "tool"],
+            "_agentos_project_binding_verified": True,
+        }
+    )
+    reader, _ = _store(fake)
+    stored = await reader.get_job(job["id"])
+    assert stored is not None
+    assert stored.project_id == "agentos-project"
+    assert stored.user_id == "route-user"
+    assert stored.mcp == ["tool"]
+    assert stored.credential_ref == ""
+    assert "credential_ref" not in job
+    scheduler.reload.assert_awaited_once()
 
 
 @pytest.mark.asyncio

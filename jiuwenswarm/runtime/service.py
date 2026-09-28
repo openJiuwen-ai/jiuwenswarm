@@ -17,6 +17,7 @@ from contextlib import aclosing
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session_provisioner import (
     PreparedSessionProvision,
@@ -49,12 +50,15 @@ from jiuwenswarm.runtime.session_lifecycle import (
     SessionExecutionEvent,
     SessionExecutionFinishedEvent,
     SessionInactiveEvent,
+    SessionInputIntentDisposition,
+    SessionInputIntentEvent,
     SessionKind,
     SessionLifecycleTarget,
-    SessionPrepareDisposition,
-    SessionPrepareEvent,
 )
-from jiuwenswarm.runtime.session.model import SessionExecutionSnapshot
+from jiuwenswarm.runtime.session.model import (
+    SessionExecutionSnapshot,
+    SessionExecutionState,
+)
 from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
@@ -370,6 +374,7 @@ class AgentRuntime:
         self._pending_session_provisions: set[PreparedSessionProvision[Any]] = set()
         self._started = False
         self._closed = False
+        self.set_admission_controller(admission_controller)
 
     @property
     def agent_manager(self) -> AgentManager:
@@ -383,6 +388,44 @@ class AgentRuntime:
     def set_admission_controller(self, controller: Any | None) -> None:
         """Attach optional host-owned scheduling admission to chat execution."""
         self._admission_controller = controller
+        setter = getattr(controller, "set_session_message_blocker", None)
+        if callable(setter):
+            setter(self._session_message_goal_busy)
+
+    def session_message_requires_queue(self, session_id: str) -> bool:
+        """Prevent cross-session steering from interrupting plans or active goals."""
+        return (
+            session_id in self._plan_controller.active_sessions
+            or self._session_message_goal_busy(session_id)
+        )
+
+    def _require_cross_session_input_admission(self, request: AgentRequest) -> None:
+        from jiuwenswarm.common.mode_matrix import is_plan_mode
+        from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
+
+        if isinstance(request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict) and (
+            is_plan_mode(request.params.get("mode"))
+            or self.session_message_requires_queue(request.session_id)
+        ):
+            raise SessionInputQueueRequiredError(
+                "cross-session messages must queue while a plan or goal is active"
+            )
+
+    def _session_message_goal_busy(self, session_id: str) -> bool:
+        """Check Goal ownership, including rounds without an output consumer."""
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if snapshot is None:
+            return False
+        if any(
+            execution.work_kind in {
+                SessionWorkKind.GOAL_STREAM, SessionWorkKind.GOAL_ATTACH,
+            }
+            and not execution.state.terminal
+            for execution in snapshot.executions
+        ):
+            return True
+        checker = getattr(self._agent_manager, "has_active_goal", None)
+        return bool(callable(checker) and checker(snapshot.channel_id, session_id))
 
     async def _mark_pending_interaction(self, event: RuntimeEvent) -> None:
         if event.event_type != "chat.ask_user_question":
@@ -396,6 +439,9 @@ class AgentRuntime:
     async def _mark_pending_interaction_id(
         self, session_id: str, request_id: str
     ) -> None:
+        request_id = str(request_id or "").strip()
+        if not request_id:
+            return
         marker = getattr(self._admission_controller, "mark_interaction_pending", None)
         if callable(marker):
             await marker(session_id, request_id)
@@ -1331,7 +1377,10 @@ class AgentRuntime:
         )
         activity_execution_started = False
         activity_execution_succeeded = False
-        admitted = foreground and not self._request_targets_team(request)
+        admitted = (
+            (foreground or self._starts_goal(request))
+            and not self._request_targets_team(request)
+        )
         interrupt_resume = self._is_interrupt_resume_request(request)
         interaction_answer = (
             interrupt_resume or request.req_method == ReqMethod.CHAT_ANSWER
@@ -1700,6 +1749,7 @@ class AgentRuntime:
             validate_session_input(request.params)
             if background:
                 raise ValueError("session input must use foreground delivery")
+            self._require_cross_session_input_admission(request)
             if not request.session_id or not self._is_single_agent_session_mode(
                 request.params.get("mode"), work_mode=request.params.get("work_mode"),
             ):
@@ -1720,7 +1770,26 @@ class AgentRuntime:
                     yield event
                 return
             if work_kind is SessionWorkKind.SESSION_INPUT:
+                self._require_cross_session_input_admission(request)
+
                 async def idle_input():
+                    from jiuwenswarm.runtime.events import RuntimeEvent
+
+                    self._require_cross_session_input_admission(request)
+                    # Web stream clients need the idle disposition before ordinary output.
+                    # Unary clients must retain their single final response.
+                    if request.is_stream:
+                        yield RuntimeEvent(
+                            request_id=request.request_id,
+                            channel_id=request.channel_id or "default",
+                            session_id=request.session_id,
+                            payload={
+                                "event_type": "runtime.accepted",
+                                "request_id": request.request_id,
+                                "session_id": request.session_id,
+                                "input_delivery": "chat",
+                            },
+                        )
                     if not request.is_stream:
                         for event in await self._invoke_started(
                             request, trigger_hook=trigger_hook, on_control_event=on_control_event,
@@ -1742,6 +1811,7 @@ class AgentRuntime:
                     lambda owner_channel: self._stream_session_input_started(request, owner_channel),
                     idle_input,
                     suspension_key=self._waiting_control_id,
+                    expected_execution_id=request.params.get("expected_execution_id"),
                 )
             else:
                 stream = self._session_coordinator.run_stream(
@@ -1767,6 +1837,7 @@ class AgentRuntime:
                 on_agent_ready=on_agent_ready,
                 agent_execution=_agent_execution,
             )
+        execution_id = None
         try:
             while True:
                 # Never keep a ContextVar token across a yield boundary.  An
@@ -1781,6 +1852,20 @@ class AgentRuntime:
                     return
                 finally:
                     reset_runtime_context(token)
+                if execution_id is None and work_kind is not None:
+                    snapshot = self._session_coordinator.snapshot_session(request.session_id or "default")
+                    executions = snapshot.executions if snapshot else ()
+                    execution = next(
+                        (item for item in reversed(executions) if item.request_id == request.request_id), None,
+                    )
+                    if execution is not None:
+                        execution_id = (
+                            execution.parent_execution_id
+                            if execution.work_kind is SessionWorkKind.SESSION_INPUT
+                            else execution.execution_id
+                        )
+                if execution_id is not None and isinstance(event.payload, dict):
+                    event.payload["execution_id"] = execution_id
                 yield event
         finally:
             token = set_runtime_context(self, self._agent_manager)
@@ -1812,7 +1897,9 @@ class AgentRuntime:
         activity_execution_started = False
         activity_execution_succeeded = False
         admitted = (
-            is_chat_turn and not background and not self._request_targets_team(request)
+            (is_chat_turn or self._starts_goal(request))
+            and not background
+            and not self._request_targets_team(request)
         )
         interrupt_resume = self._is_interrupt_resume_request(request)
         interaction_answer = (
@@ -1829,6 +1916,18 @@ class AgentRuntime:
         cancellation: asyncio.CancelledError | None = None
         generator_exit: GeneratorExit | None = None
         supersede_attempted = False
+        mailbox_turn = background and isinstance(
+            (request.params or {}).get(SESSION_MESSAGE_INTERNAL_KEY), dict
+        )
+        pending_mailbox_interactions: set[str] = set()
+
+        async def mark_interaction(event: RuntimeEvent) -> None:
+            await self._mark_pending_interaction(event)
+            if mailbox_turn:
+                control_id = self._waiting_control_id(event)
+                if control_id:
+                    pending_mailbox_interactions.add(control_id)
+
         try:
             if activity_participants:
                 activity_execution_started = (
@@ -1874,11 +1973,11 @@ class AgentRuntime:
                     control_events = self._control_events(request, plan_result.events)
                     if on_control_event is not None:
                         for event in control_events:
-                            await self._mark_pending_interaction(event)
+                            await mark_interaction(event)
                             await on_control_event(event)
                     else:
                         for event in control_events:
-                            await self._mark_pending_interaction(event)
+                            await mark_interaction(event)
                             yield event
             if on_agent_ready is not None:
                 ready_result = on_agent_ready(agent)
@@ -1886,6 +1985,7 @@ class AgentRuntime:
                     await ready_result
             managed_heartbeat = (
                 background
+                and not mailbox_turn
                 and self._is_single_agent_session_mode(
                     (request.params or {}).get("mode"),
                     work_mode=(request.params or {}).get("work_mode"),
@@ -1927,7 +2027,7 @@ class AgentRuntime:
                             )
                             continue
                     else:
-                        await self._mark_pending_interaction(event)
+                        await mark_interaction(event)
                     if (
                         admission_started
                         and not supersede_attempted
@@ -1966,11 +2066,11 @@ class AgentRuntime:
                     )
                     if on_control_event is not None:
                         for event in control_events:
-                            await self._mark_pending_interaction(event)
+                            await mark_interaction(event)
                             await on_control_event(event)
                     elif generator_exit is None:
                         for event in control_events:
-                            await self._mark_pending_interaction(event)
+                            await mark_interaction(event)
                             yield event
             except BaseException as exc:  # preserve execution/cancellation below
                 plan_error = exc
@@ -1991,6 +2091,14 @@ class AgentRuntime:
                     self._record_session_execution_finished(
                         request,
                         succeeded=activity_execution_succeeded,
+                    )
+
+            if mailbox_turn and (
+                not activity_execution_succeeded or plan_error is not None
+            ):
+                for control_id in pending_mailbox_interactions:
+                    await self._clear_pending_interaction(
+                        request.session_id or "default", control_id
                     )
 
             primary_error: BaseException | None = (
@@ -2049,14 +2157,15 @@ class AgentRuntime:
     ) -> AsyncIterator[RuntimeEvent]:
         """Borrow the actual owner; an ingress channel is not an Agent identity."""
         from jiuwenswarm.runtime.events import RuntimeEvent
+        from jiuwenswarm.runtime.session_input import SessionInputRejectedError
 
         lookup = getattr(self._agent_manager, "get_agent_for_session_nowait", None)
         agent = lookup(owner_channel, request.session_id) if callable(lookup) else None
         if agent is None:
-            raise RuntimeError(f"session has no active agent: {request.session_id}")
+            raise SessionInputRejectedError(f"session has no active agent: {request.session_id}")
         deliver = getattr(agent, "deliver_session_input", None)
         if not callable(deliver):
-            raise RuntimeError("active agent does not support supplemental input")
+            raise SessionInputRejectedError("active agent does not support supplemental input")
         async with aclosing(deliver(request)) as stream:
             async for chunk in stream:
                 event = RuntimeEvent.from_agent_message(
@@ -2269,18 +2378,145 @@ class AgentRuntime:
         if not requests:
             self._pending_chat_requests.pop(session_id, None)
 
-    def is_session_running(self, session_id: str) -> bool:
-        """Read current execution state without cancelling work or fencing admission."""
-        if getattr(self, "_pending_chat_requests", {}).get(session_id):
-            return True
+    def is_session_running(
+        self, session_id: str, *, ignore_heartbeats: bool = False
+    ) -> bool:
+        """Read current execution state without cancelling work or fencing admission.
+
+        Only RUNNING executions count. Queued requests, waiting controls,
+        persistent response streams and cached runtimes do not make a Session busy.
+
+        ``ignore_heartbeats`` drops background Heartbeat executions from the
+        read, answering "would this Session still be busy once a lifecycle
+        action has stopped its Heartbeats".  Removal prechecks use it so a
+        Heartbeat the removal is about to stop does not read as a blocker;
+        the action itself still scans with them counted, so a run that
+        refused to cancel keeps the Session busy.
+        """
         snapshot = self._session_coordinator.snapshot_session(session_id)
         if snapshot and any(
-            not execution.state.terminal for execution in snapshot.executions
+            execution.state is SessionExecutionState.RUNNING
+            and not (
+                ignore_heartbeats
+                and execution.work_kind is SessionWorkKind.HEARTBEAT
+            )
+            for execution in snapshot.executions
         ):
             return True
         from jiuwenswarm.agents.harness.team.team_manager import is_team_session_running
 
         return is_team_session_running(session_id)
+
+    def has_parked_team_streams(self, session_id: str) -> bool:
+        """Whether every pending chat request is parked on a released Team round.
+
+        A Team first-request handler stays alive for the whole persistent
+        leader stream; once its round was released it no longer owns team
+        work, only the parked response stream.  Lifecycle actions may pass
+        such handlers and leave that stream alone.  A request still
+        preparing or mid-round has no released-round marker, so mixed states
+        keep the Session running.
+        """
+        requests = getattr(self, "_pending_chat_requests", {}).get(session_id)
+        if not requests:
+            return False
+        from jiuwenswarm.agents.harness.team.team_manager import (
+            team_session_has_parked_request,
+        )
+
+        return team_session_has_parked_request(session_id, requests)
+
+    async def stop_heartbeat_runs(self, session_id: str) -> bool:
+        """Cancel the Session's active Heartbeat run so lifecycle work can proceed.
+
+        Archive and delete stop a background Heartbeat instead of waiting it
+        out; neither may move a Session out from under a live run.  Returns
+        False when no Heartbeat owns the Session.  A run that refuses to
+        cancel raises, leaving the caller its ordinary busy fallback.
+        """
+        controller = getattr(self, "_admission_controller", None)
+        stopper = getattr(controller, "stop_active_heartbeat", None)
+        stopped = bool(await stopper(session_id)) if callable(stopper) else False
+        # The coordinator adopts the admitted run, so releasing the admission
+        # marker alone does not settle the Session: cancel the Heartbeat
+        # execution too, or the ordinary busy check still sees a live run.
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if not snapshot:
+            return stopped
+        executions = []
+        for execution in snapshot.executions:
+            if execution.work_kind is not SessionWorkKind.HEARTBEAT:
+                continue
+            if execution.state.terminal:
+                continue
+            executions.append(execution)
+        if not executions:
+            return stopped
+        cancel = getattr(self._session_coordinator, "cancel_execution", None)
+        if not callable(cancel):
+            return stopped
+        for execution in executions:
+            await cancel(session_id, execution_id=execution.execution_id)
+        return True
+
+    async def stop_subagent_runtimes(
+        self,
+        session_id: str,
+        *,
+        channel_id: str = "",
+        reason: str = "session_deleted",
+    ) -> bool:
+        """Release the Session's resident subagents so lifecycle work can proceed.
+
+        A resident subagent stays alive until something explicitly releases it,
+        so it can outlive the user's own stop and keep the Session looking
+        busy.  Archive and delete release it instead of waiting it out, same as
+        they do for a Heartbeat.  Returns False when no Agent owns the Session;
+        a release that raises leaves the caller its ordinary busy fallback.
+        """
+        manager = getattr(self, "_agent_manager", None)
+        release = getattr(manager, "release_subagent_runtime_for_session", None)
+        if not callable(release):
+            return False
+        return bool(
+            await release(
+                channel_id=channel_id or None,
+                session_id=session_id,
+                reason=reason,
+            )
+        )
+
+    def is_subagent_finishing(
+        self, session_id: str, *, channel_id: str = ""
+    ) -> bool:
+        """Whether a busy Session is only waiting on resident subagents.
+
+        Those subagents were already told to stop — by the user, or by the
+        lifecycle action itself — but cancel and teardown take time, so the
+        Session still reads busy.  Lifecycle actions use this to ask for a
+        retry shortly instead of telling the user to stop a Session that has
+        already been stopped.
+        """
+        manager = getattr(self, "_agent_manager", None)
+        probe = getattr(manager, "session_has_live_subagents", None)
+        if not callable(probe):
+            return False
+        return bool(probe(channel_id=channel_id or None, session_id=session_id))
+
+    @staticmethod
+    def is_team_round_finishing(session_id: str) -> bool:
+        """Whether a busy Team session is only wrapping up after its swarmflow runs ended.
+
+        ``swarmflow.stop`` and natural workflow completion keep the round
+        active while the leader reports the outcome.  Lifecycle actions use
+        this to tell the user to retry shortly instead of asking them to stop
+        a session that is already ending on its own.
+        """
+        from jiuwenswarm.agents.harness.team.team_manager import (
+            team_round_finishing_after_flow,
+        )
+
+        return team_round_finishing_after_flow(session_id)
 
     async def stop_session_for_archive(
         self, *, channel_id: str, session_id: str
@@ -2293,6 +2529,9 @@ class AgentRuntime:
         )
 
         assert_runtime_owner(session_id)
+        await self._stop_team_runtime_for_delete(
+            channel_id=channel_id, session_id=session_id
+        )
         closed = await self._session_coordinator.close_session(
             session_id, wait_timeout=10
         )
@@ -2303,10 +2542,34 @@ class AgentRuntime:
             session_id=session_id,
             reason="session_archived",
         )
+        # Join the outer response producers directly; idle adapter caches are
+        # removed by cleanup below and never require a polling delay.
+        await self._agent_manager.cancel_session_tasks(
+            channel_id=channel_id, session_id=session_id
+        )
         await self.cleanup_session(
             channel_id=channel_id, session_id=session_id, reset_plan_state=False
         )
         release_runtime(session_id)
+
+    async def _stop_team_runtime_for_delete(
+        self, *, channel_id: str, session_id: str
+    ) -> None:
+        """Stop response streams, retaining Runner until delete releases resources."""
+        try:
+            from jiuwenswarm.agents.harness.team import get_team_manager
+
+            team_manager = get_team_manager(channel_id)
+            stopper = getattr(team_manager, "stop_session_runtime", None)
+            if callable(stopper):
+                await stopper(session_id, "session.delete: ", stop_runner=False)
+        except Exception:
+            logger.warning(
+                "[AgentRuntime] team runtime stop failed before delete: "
+                "session_id=%s",
+                session_id,
+                exc_info=True,
+            )
 
     async def delete_session(
         self,
@@ -2506,8 +2769,6 @@ class AgentRuntime:
     ) -> None:
         """Resolve stale mailbox waits while this user still owns admission."""
 
-        from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
-
         if request.req_method not in (ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME):
             return
         params = request.params if isinstance(request.params, dict) else {}
@@ -2531,11 +2792,39 @@ class AgentRuntime:
             )
             return
         if superseded:
+            await self.release_session_message_interactions(target_session_id)
             logger.info(
                 "[SessionMessaging] user turn superseded %d waiting message(s): "
                 "session_id=%s",
                 superseded,
                 target_session_id,
+            )
+
+    async def release_session_message_interactions(
+        self, session_id: str, *, request_id: str | None = None
+    ) -> None:
+        """Release questions whose mailbox turn was superseded or failed."""
+        coordinator = getattr(self, "_session_coordinator", None)
+        snapshot = coordinator.snapshot_session(session_id) if coordinator else None
+        if snapshot is None:
+            return
+        for execution in snapshot.executions:
+            if execution.state is not SessionExecutionState.WAITING_FOR_CONTROL:
+                continue
+            if (
+                (execution.root_work_kind or execution.work_kind)
+                is not SessionWorkKind.SESSION_MESSAGE
+                or (
+                    request_id is not None
+                    and (execution.root_request_id or execution.request_id) != request_id
+                )
+            ):
+                continue
+            await coordinator.cancel_execution(
+                session_id, execution_id=execution.execution_id
+            )
+            await self._clear_pending_interaction(
+                session_id, execution.waiting_control_id
             )
 
     def _should_admit_interrupt_resume(self, request: AgentRequest) -> bool:
@@ -2617,6 +2906,14 @@ class AgentRuntime:
             and not cls._is_interrupt_resume_request(request)
         )
 
+    @staticmethod
+    def _starts_goal(request: AgentRequest) -> bool:
+        params = request.params if isinstance(request.params, dict) else {}
+        return (
+            request.req_method is ReqMethod.COMMAND_GOAL
+            and str(params.get("action") or "get").strip().lower() in {"set", "resume"}
+        )
+
     @classmethod
     def session_work_kind(
         cls,
@@ -2625,9 +2922,19 @@ class AgentRuntime:
         background: bool = False,
     ) -> SessionWorkKind | None:
         """Classify product Session work at the Runtime boundary."""
-        if background or not request.session_id:
+        if not request.session_id:
             return None
         params = request.params if isinstance(request.params, dict) else {}
+        if background:
+            return (
+                SessionWorkKind.SESSION_MESSAGE
+                if request.req_method in cls._chat_turn_methods()
+                and isinstance(params.get(SESSION_MESSAGE_INTERNAL_KEY), dict)
+                and cls._is_single_agent_session_mode(
+                    params.get("mode"), work_mode=params.get("work_mode")
+                )
+                else None
+            )
         if not cls._is_single_agent_session_mode(
             params.get("mode"),
             work_mode=params.get("work_mode"),
@@ -2792,13 +3099,13 @@ class AgentRuntime:
                     exc,
                 )
 
-    async def record_session_prepare(
+    async def record_session_input_intent(
         self,
         request: AgentRequest,
         *,
         view_id: str = "default-view",
     ) -> str:
-        """Publish input intent and retain the established transport outcome."""
+        """Publish a transport-neutral user input intent to participants."""
         participants = self._participant_registry.snapshot_activity()
         if not participants:
             return "disabled"
@@ -2813,7 +3120,7 @@ class AgentRuntime:
             has_history = history_exists(target.descriptor.session_id)
         except Exception:
             has_history = False
-        event = SessionPrepareEvent(
+        event = SessionInputIntentEvent(
             target=target,
             has_history=has_history,
             view_id=view_id,
@@ -2829,11 +3136,11 @@ class AgentRuntime:
         failures = 0
         for participant in participants:
             try:
-                results.append(await participant.session_preparing(event))
+                results.append(await participant.session_input_intent(event))
             except Exception as exc:
                 failures += 1
-                logger.warning("Runtime activity session_preparing failed: %s", exc)
-        if SessionPrepareDisposition.SCHEDULED in results:
+                logger.warning("Runtime activity session_input_intent failed: %s", exc)
+        if SessionInputIntentDisposition.SCHEDULED in results:
             return "scheduled"
         if results:
             return "not_needed"

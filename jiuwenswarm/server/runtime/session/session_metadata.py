@@ -239,8 +239,6 @@ def _apply_metadata_defaults_with_inference(
     metadata.setdefault("pinned", False)
     metadata.setdefault("pin_order", 0)
     metadata.setdefault("status", "idle")
-    metadata.setdefault("ephemeral", False)
-    metadata.setdefault("side_parent_session_id", "")
 
     changed = False  # 是否有需要写盘的确定性推断
     changed_fields: set[str] = set()
@@ -1430,10 +1428,10 @@ def set_session_pinned(session_id: str, pinned: bool) -> tuple[bool, int] | None
     """置顶/取消置顶会话,并对所有置顶会话紧凑重编号为 1..N。幂等。
 
     整个操作在进程内全局锁内完成:
-      1. 设置目标会话 ``pinned``(取消时同步清零 ``pin_order``);
+      1. 读取目标会话状态;
       2. 扫描全部会话,收集 ``pinned=True`` 的会话;
       3. 按 ``pin_order`` 升序稳定排序,重新分配 1..N(消除间隙);
-      4. 逐个写回。
+      4. 仅同步写回状态或排序发生变化的会话。
 
     新置顶的会话 ``pin_order`` 默认为 0,排序后置于最前(即新置顶会显示在置顶区顶部)。
     非置顶会话 ``pin_order`` 置 0。幂等:对已处于目标状态的会话再次操作视为成功。
@@ -1450,54 +1448,81 @@ def set_session_pinned(session_id: str, pinned: bool) -> tuple[bool, int] | None
         ``(操作后的 pinned, 操作后的 pin_order)``;会话不存在(metadata 缺失)时返回 ``None``。
         取消置顶时 ``pin_order`` 恒为 0。
     """
-    with _SESSION_PIN_LOCK:
-        meta = _read_metadata(session_id, cache_bust=True)
-        if not meta:
-            return None
-        # 1. 设置目标会话 pinned 状态(保留原 pin_order 供重编号排序,取消时清零)
-        #    全部 sync_write=True:跨进程敏感写入,返回前必须落盘,否则只读磁盘的
-        #    AgentServer 在窗口期内读到旧值,后续整份 metadata 回写会覆盖 pinned 状态。
-        if pinned:
-            update_session_metadata(
-                session_id=session_id, pinned=True,
-                touch_last_message_at=False, cache_bust=True, sync_write=True,
-            )
-        else:
-            update_session_metadata(
-                session_id=session_id, pinned=False, pin_order=0,
-                touch_last_message_at=False, cache_bust=True, sync_write=True,
-            )
+    started = time.perf_counter()
+    lock_ms = read_ms = scan_ms = write_ms = 0.0
+    scanned = writes = pinned_count = 0
+    outcome = "error"
+    try:
+        with _SESSION_PIN_LOCK:
+            lock_ms = (time.perf_counter() - started) * 1000
+            phase = time.perf_counter()
+            meta = _read_metadata(session_id, cache_bust=True)
+            read_ms = (time.perf_counter() - phase) * 1000
+            if not meta:
+                outcome = "not_found"
+                return None
 
-        # 2. 收集所有置顶会话(读缓存:步骤 1 刚把新状态写入缓存,cache_bust=False
-        #    能立即看到;且 pinned/pin_order 仅由 Gateway 进程写入,缓存即权威源。
-        #    若用 cache_bust=True 读盘,异步写入未落盘时会读到步骤 1 之前的旧状态,
-        #    导致取消置顶的会话被重新纳入重编号而又写回 pinned=True。)
-        sessions_dir = get_agent_sessions_dir()
-        pinned_list: list[tuple[str, int]] = []
-        if sessions_dir.is_dir():
-            for session_dir in sessions_dir.iterdir():
-                if not session_dir.is_dir():
-                    continue
-                sid = session_dir.name
-                if sid.startswith(_EPHEMERAL_PROBE_SESSION_PREFIXES):
-                    continue
-                m = _read_metadata(sid)
-                if not m:
-                    continue
-                if m.get("pinned"):
-                    pinned_list.append((sid, int(m.get("pin_order", 0))))
+            current_order = int(meta.get("pin_order", 0))
+            if bool(meta.get("pinned")) == pinned and (
+                current_order > 0 if pinned else current_order == 0
+            ):
+                # Repeated clicks/retries must not rescan every session or rewrite pins.
+                outcome = "unchanged"
+                return pinned, current_order
 
-        # 3. 升序排序 + 4. 紧凑重编号写回(force disk read 避免回滚覆盖)
-        pinned_list.sort(key=lambda x: x[1])
-        new_orders: dict[str, int] = {}
-        for idx, (sid, _old) in enumerate(pinned_list, start=1):
-            update_session_metadata(
-                session_id=sid, pinned=True, pin_order=idx,
-                touch_last_message_at=False, cache_bust=True, sync_write=True,
-            )
-            new_orders[sid] = idx
+            # Compute final orders before writing: the target is written once,
+            # and unchanged pins need no disk writes. Keep compact 1..N ordering.
+            phase = time.perf_counter()
+            sessions_dir = get_agent_sessions_dir()
+            pinned_list: list[tuple[str, int]] = []
+            if sessions_dir.is_dir():
+                for session_dir in sessions_dir.iterdir():
+                    if not session_dir.is_dir():
+                        continue
+                    sid = session_dir.name
+                    if sid.startswith(_EPHEMERAL_PROBE_SESSION_PREFIXES):
+                        continue
+                    scanned += 1
+                    m = meta if sid == session_id else _read_metadata(sid)
+                    if sid != session_id and m.get("pinned"):
+                        pinned_list.append((sid, int(m.get("pin_order", 0))))
+            if pinned:
+                pinned_list.append((session_id, int(meta.get("pin_order", 0))))
+            pinned_list.sort(key=lambda item: item[1])
+            pinned_count = len(pinned_list)
+            scan_ms = (time.perf_counter() - phase) * 1000
 
-        return pinned, new_orders.get(session_id, 0)
+            phase = time.perf_counter()
+            new_order = 0
+            if not pinned and (meta.get("pinned") or meta.get("pin_order", 0) != 0):
+                update_session_metadata(
+                    session_id=session_id, pinned=False, pin_order=0,
+                    touch_last_message_at=False, cache_bust=True, sync_write=True,
+                )
+                writes += 1
+            for idx, (sid, old_order) in enumerate(pinned_list, start=1):
+                if sid == session_id:
+                    new_order = idx
+                if old_order == idx and (sid != session_id or meta.get("pinned")):
+                    continue
+                update_session_metadata(
+                    session_id=sid, pinned=True, pin_order=idx,
+                    touch_last_message_at=False, cache_bust=True, sync_write=True,
+                )
+                writes += 1
+            write_ms = (time.perf_counter() - phase) * 1000
+            outcome = "ok"
+            return pinned, new_order
+    finally:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        log = logger.warning if elapsed_ms >= 1000 or outcome == "error" else logger.info
+        log(
+            "[session.pin] session_id=%s pinned=%s outcome=%s elapsed_ms=%.1f "
+            "lock_ms=%.1f read_ms=%.1f scan_ms=%.1f write_ms=%.1f "
+            "scanned=%d pinned_count=%d writes=%d",
+            session_id, pinned, outcome, elapsed_ms, lock_ms, read_ms,
+            scan_ms, write_ms, scanned, pinned_count, writes,
+        )
 
 
 def increment_session_round_count(session_id: str) -> int:

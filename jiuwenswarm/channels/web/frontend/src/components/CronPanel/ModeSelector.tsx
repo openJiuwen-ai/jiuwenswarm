@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
 import { useTranslation } from 'react-i18next';
@@ -38,6 +38,28 @@ export default function ModeSelector({ value, onChange, disabled = false }: Mode
     };
     document.addEventListener('pointerdown', handlePointerDown);
     return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [open]);
+
+  // 菜单是 portal 到 body 的 fixed 定位，坐标来自打开瞬间的 rect 快照：抽屉主体
+  // （overflow-y-auto）或窗口滚动/缩放都会移动触发按钮，必须重算锚点，否则菜单
+  // 钉在旧视口位置、与按钮脱离。做法与会话界面 InputArea 的模式菜单
+  // （updateModeMenuPosition）和 ModelPicker（updatePosition）保持同一套口径：
+  // scroll 监听用 capture 才能捕获抽屉内层容器的滚动（冒泡阶段收不到）。
+  useLayoutEffect(() => {
+    if (!open) return;
+    const updateMenuPosition = () => {
+      if (!rootRef.current) return;
+      const rect = rootRef.current.getBoundingClientRect();
+      setMenuAnchor(rect);
+      setMenuDirection(window.innerHeight - rect.bottom >= 120 ? 'down' : 'up');
+    };
+    updateMenuPosition();
+    window.addEventListener('resize', updateMenuPosition);
+    window.addEventListener('scroll', updateMenuPosition, true);
+    return () => {
+      window.removeEventListener('resize', updateMenuPosition);
+      window.removeEventListener('scroll', updateMenuPosition, true);
+    };
   }, [open]);
 
   const currentMode = AGENT_MODE_OPTIONS.find((item) => item.value === value) ?? AGENT_MODE_OPTIONS[0];

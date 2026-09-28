@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from jiuwenswarm.server.runtime.marketplace.hub_asset_installer import (
+    _find_package_root,
     install_hub_asset_package,
 )
 from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
@@ -17,6 +18,15 @@ from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
     HubInstallRecord,
     HubInstallStateStore,
 )
+
+
+def test_group_archive_root_allows_nested_expert_manifests(tmp_path):
+    root = tmp_path / "group"
+    member = root / "agents" / "leader"
+    member.mkdir(parents=True)
+    (root / "manifest.json").write_text('{"package_type":"agent_group"}')
+    (member / "manifest.json").write_text('{"package_type":"agent_template"}')
+    assert _find_package_root(tmp_path, "agent_group") == root
 
 
 class _HubPort:

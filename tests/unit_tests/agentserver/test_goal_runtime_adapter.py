@@ -85,6 +85,56 @@ def _adapter(goal_manager: _FakeGoals) -> JiuWenSwarmDeepAdapter:
     return adapter
 
 
+@pytest.mark.parametrize("status", list(GoalStatus))
+@pytest.mark.parametrize("active_round", [False, True])
+def test_active_goal_probe_includes_unwinding_round(status, active_round) -> None:
+    goals = _FakeGoals()
+    goals.record = GoalRecord.create(session_id="session-1", objective="finish")
+    goals.record.status = status
+    adapter = _adapter(goals)
+    adapter._parent_session_id = "session-1"
+    adapter._instance.interaction_started = True
+    adapter._instance.active_round = SimpleNamespace(run_kind="goal") if active_round else None
+    facade = JiuWenSwarm.__new__(JiuWenSwarm)
+    facade._adapter = adapter
+
+    assert facade.has_active_goal("session-1") is (
+        status is GoalStatus.ACTIVE or active_round
+    )
+    assert facade.has_active_goal("other-session") is False
+    assert goals.calls == []  # Inspection neither attaches nor changes the Goal.
+
+
+def test_active_goal_probe_uses_only_target_cached_adapter() -> None:
+    child = _adapter(_FakeGoals())
+    child._parent_session_id = "session-1"
+    parent = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    parent._is_session_scoped_adapter = False
+    parent._session_adapters = {"session-1": child}
+    assert parent.has_active_goal("session-1") is False
+    assert parent.has_active_goal("unknown") is False
+    assert list(parent._session_adapters) == ["session-1"]
+
+
+def test_manager_goal_probe_does_not_borrow_agents() -> None:
+    from jiuwenswarm.server.runtime.agent_manager import AgentManager
+
+    goals = _FakeGoals()
+    goals.record = GoalRecord.create(session_id="session-1", objective="finish")
+    adapter = _adapter(goals)
+    adapter._parent_session_id = "session-1"
+    facade = JiuWenSwarm.__new__(JiuWenSwarm)
+    facade._adapter = adapter
+    manager = AgentManager.__new__(AgentManager)
+    manager.agents = {"web": {"agent": facade}}
+    manager._agent_borrowers = {}
+
+    assert manager.has_active_goal("web", "session-1") is True
+    assert manager.has_active_goal("web", "other-session") is False
+    assert manager.has_active_goal("tui", "session-1") is False
+    assert manager._agent_borrowers == {}
+
+
 def _chunk(chunk_type: str, payload: object) -> OutputSchema:
     return OutputSchema(type=chunk_type, index=0, payload=payload)
 
@@ -604,7 +654,7 @@ def test_paused_goal_keeps_chat_final_terminal_even_if_round_still_unwinding() -
         "event_type": "chat.final",
         "content": "cancelled output",
     }
-    assert adapter._has_active_goal_interaction() is True
+    assert adapter.has_active_goal_interaction() is True
     assert adapter._goal_record_is_active() is False
 
 

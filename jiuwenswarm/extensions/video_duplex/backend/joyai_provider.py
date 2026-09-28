@@ -17,9 +17,10 @@ import wave
 
 import httpx
 
+from .tasks.prompts import JOYAI_TASK_INSTRUCTIONS
 
 MAX_FRAME_CHARS = 4_000_000
-MAX_INSTRUCTION_CHARS = 2_000
+MAX_INSTRUCTION_CHARS = 16_000
 MAX_TOOL_CONTEXT_CHARS = 4_000
 _TTS_VOICE = "vivian"
 _TTS_INSTRUCTIONS = (
@@ -106,7 +107,25 @@ def parse_action(raw_content: str) -> dict[str, str]:
     return {"decision": "response", "response": raw, "delegation": ""}
 
 
-def ground_user_instruction(instruction: str, tool_context: str = "") -> str:
+def normalize_response_language(value: object) -> str:
+    from .settings import ALLOWED_REPLY_LANGUAGES
+    value = str(value or "").strip()
+    return value if value in ALLOWED_REPLY_LANGUAGES else "match"
+
+
+def response_language_instruction(value: object = "match") -> str:
+    language = normalize_response_language(value)
+    if language == "en":
+        return "Speak to the user in English."
+    if language == "zh-CN":
+        return "Speak to the user in Simplified Chinese."
+    return (
+        "Speak to the user in the same language as their latest utterance "
+        "(speech transcript or typed text), not screen OCR language."
+    )
+
+
+def ground_user_instruction(instruction: str, tool_context: str = "", reply_language: object = "match") -> str:
     """Add per-turn grounding rules without changing frame-only or tool turns."""
     instruction = str(instruction or "").strip()
     if not instruction:
@@ -122,7 +141,8 @@ def ground_user_instruction(instruction: str, tool_context: str = "") -> str:
         )
     return (
         f"{confirmed_context}【用户原话】{instruction}\n\n"
-        f"{_USER_KNOWLEDGE_GUARD}"
+        f"{response_language_instruction(reply_language)}\n{_USER_KNOWLEDGE_GUARD}"
+        f"{JOYAI_TASK_INSTRUCTIONS}"
     )
 
 

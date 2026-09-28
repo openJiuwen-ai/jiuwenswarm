@@ -52,6 +52,14 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
     }
   }
 
+  // 关闭弹窗（X）：如果 saveCredentialsAndConnect 的 connect 还在进行中（form B 探活等），
+  // 通知后端收尾成 cancelled，避免卡片一直 stuck 在 connecting 等 10 分钟超时。store 的
+  // cancelConnectAction 幂等且只在实际进行中时才回落 disconnected，已连好的 MCP 不会被误翻。
+  function handleClose() {
+    void useConnectorStore.getState().cancelConnectAction(name);
+    onCancel();
+  }
+
   // z-[10100]：这个弹窗可能从 ChatPanel/ExtensionPickerPanel.tsx 的"+"扩展面板里弹出，那个
   // 面板自身是 zIndex:9999 的 fixed 浮层，弹窗必须盖在它上面（2026-08-25 用户反馈：连接弹窗
   // 之前用 z-50，被扩展面板整个压在下面，弹窗形同虚设）。
@@ -66,7 +74,7 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
   return createPortal(
     <div data-connector-auth-modal="true" data-testid="connector-market-token-modal" className="fixed inset-0 z-[10100] flex items-center justify-center bg-overlay-cron-dialog">
       <div className="relative w-[400px] rounded-2xl bg-card p-6 shadow-xl">
-        <button type="button" onClick={onCancel} className="absolute right-5 top-5 text-text-muted hover:text-text" data-testid="connector-market-token-modal-close">
+        <button type="button" onClick={handleClose} className="absolute right-5 top-5 text-text-muted hover:text-text" data-testid="connector-market-token-modal-close">
           <X size={18} />
         </button>
 

@@ -28,7 +28,11 @@ def test_mcp_hub_lifecycle_methods_are_forwarded_by_web_gateway() -> None:
 
 
 class FakeHub:
+    def __init__(self) -> None:
+        self.search_requests = []
+
     async def search_assets(self, request):
+        self.search_requests.append(request)
         return HubSearchPage(
             items=(
                 HubAssetSummary(
@@ -213,6 +217,59 @@ async def test_hub_mcp_list_show_install_and_uninstall(tmp_path: Path, monkeypat
     assert removed == {"id": "mcp-asset-uuid", "name": "hub-mcp", "removed": True}
     assert not (tmp_path / "mcp" / "mcp_hub" / "hub-mcp").exists()
     assert not credentials.exists()
+
+
+@pytest.mark.anyio
+async def test_mcp_market_search_forwards_keyword_to_hub(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(marketplace, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(marketplace.registry, "get_workspace_dir", lambda: tmp_path)
+    hub = FakeHub()
+
+    await marketplace.list_mcps_with_hub(
+        "builtin", hub_port=hub, query="销售 分析", cache_mode="prefer_cache"
+    )
+
+    assert len(hub.search_requests) == 1
+    assert hub.search_requests[0].kind == "mcp"
+    assert hub.search_requests[0].query == "销售 分析"
+
+
+@pytest.mark.anyio
+async def test_mcp_market_search_drops_result_matching_only_internal_asset_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(marketplace, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(marketplace.registry, "get_workspace_dir", lambda: tmp_path)
+    class IdOnlyMatchHub(FakeHub):
+        async def search_assets(self, request):
+            self.search_requests.append(request)
+            return HubSearchPage(
+                items=(
+                    HubAssetSummary(
+                        kind="mcp",
+                        asset_id="93e6e963-0896-4473-8655-09f611bcddc8",
+                        package_name="research-connector",
+                        display_name="Research Connector",
+                        short_description="Search industry reports",
+                        public_latest_version="1.0.0",
+                        icon_uri="",
+                        tags=("research",),
+                    ),
+                ),
+                total=1,
+                page=request.page,
+                page_size=request.page_size,
+            )
+
+    hub = IdOnlyMatchHub()
+
+    cards = await marketplace.list_mcps_with_hub(
+        "builtin", hub_port=hub, query="6"
+    )
+
+    assert cards == []
 
 
 @pytest.mark.anyio

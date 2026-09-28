@@ -6,6 +6,7 @@
 覆盖：
 - ``media.persist``：浏览器上传图片 base64 解码后落盘
   ``agent/sessions/<sid>/uploads``（复用 ``normalize_chat_media_attachments``）；
+- ``media.discard``：删除尚未发送的会话 uploads 副本（只允许该目录内的普通文件）；
 - ``document.persist`` / ``document.formats``：文档本地路径黑名单校验与格式
   列表（复用 ``persist_and_parse_documents`` / ``forbidden_formats``，不落盘）；
 - ``path.select_directory`` / ``path.select_files``：**注入目录内枚举**（决策 D3）。
@@ -38,6 +39,7 @@ from jiuwenswarm.server.runtime.attachments.document_attachments import (
     persist_and_parse_documents,
 )
 from jiuwenswarm.server.runtime.attachments.media_attachments import (
+    discard_session_upload,
     normalize_chat_media_attachments,
 )
 from jiuwenswarm.server.runtime.attachments.upload_storage import unique_upload_path
@@ -104,6 +106,7 @@ class WorkspaceFileAdapter(GatewayAdapter):
     methods: frozenset[str] = frozenset(
         {
             ReqMethod.MEDIA_PERSIST.value,
+            ReqMethod.MEDIA_DISCARD.value,
             ReqMethod.DOCUMENT_PERSIST.value,
             ReqMethod.DOCUMENT_FORMATS.value,
             ReqMethod.PATH_SELECT_DIRECTORY.value,
@@ -119,6 +122,8 @@ class WorkspaceFileAdapter(GatewayAdapter):
         method = request.req_method
         if method == ReqMethod.MEDIA_PERSIST:
             return await self._handle_media_persist(request)
+        if method == ReqMethod.MEDIA_DISCARD:
+            return await self._handle_media_discard(request)
         if method == ReqMethod.DOCUMENT_PERSIST:
             return await self._handle_document_persist(request)
         if method == ReqMethod.DOCUMENT_FORMATS:
@@ -159,6 +164,30 @@ class WorkspaceFileAdapter(GatewayAdapter):
         for key in ("content", "query", "media_items", "files"):
             if key in normalized:
                 payload[key] = normalized[key]
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload=payload,
+            metadata=request.metadata,
+        )
+
+    async def _handle_media_discard(self, request: AgentRequest) -> AgentResponse:
+        params = request.params if isinstance(request.params, dict) else {}
+        raw_path = params.get("path")
+        if not isinstance(raw_path, str):
+            return build_error_response(request, "path is required", code="BAD_REQUEST")
+        try:
+            payload = await asyncio.to_thread(
+                discard_session_upload,
+                request.session_id,
+                raw_path,
+            )
+        except ValueError as exc:
+            return build_error_response(request, str(exc), code="BAD_REQUEST")
+        except OSError as exc:
+            logger.exception("[WorkspaceFileAdapter] media.discard failed: %s", exc)
+            return build_error_response(request, str(exc), code="INTERNAL_ERROR")
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,

@@ -7,7 +7,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import TipIcon from '../../assets/tip.svg?react';
 import UpFileIcon from '../../assets/upFile.svg?react';
-import { ModalCloseButton } from './SkillPanelWidgets';
+import { CloseButton } from '../ui';
 
 interface UploadSkillModalProps {
   actionTarget: string | null;
@@ -37,11 +37,7 @@ export function UploadSkillModal({ actionTarget, onUpload, onClose }: UploadSkil
           <span data-testid="skill-panel-upload-skill-modal-title" className="text-lg font-semibold text-text-strong">
             {t('skills.uploadSkillModal.title')}
           </span>
-          <ModalCloseButton
-            onClick={onClose}
-            label={t('skills.uploadSkillModal.cancel')}
-            testId="skill-panel-upload-skill-modal-close-btn"
-          />
+          <CloseButton onClick={onClose} />
         </div>
         {/* 提示行 */}
         <div className="px-6 pt-4">

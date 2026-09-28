@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-HubAssetKind = Literal["agent_template", "plugin", "mcp"]
+HubAssetKind = Literal["agent_template", "agent_group", "plugin", "mcp"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +41,24 @@ class HubAssetSummary:
     icon_uri: str
     tags: tuple[str, ...]
     package_name: str = ""
+    category_name: str = ""
+
+
+def hub_asset_matches_visible_query(item: HubAssetSummary, query: str) -> bool:
+    """Return whether every search term occurs in a marketplace-visible field."""
+    terms = str(query or "").strip().casefold().split()
+    if not terms:
+        return True
+    visible_text = " ".join(
+        (
+            item.package_name,
+            item.display_name,
+            item.short_description,
+            item.category_name,
+            *item.tags,
+        )
+    ).casefold()
+    return all(term in visible_text for term in terms)
 
 
 @dataclass(frozen=True, slots=True)

@@ -39,34 +39,6 @@ export function filterPublishedHistoryBatch<T extends { historyBatchSeq?: number
   );
 }
 
-export interface BoundedTimelineRange {
-  start: number;
-  end: number;
-}
-
-/** Move a fixed-size render window without letting previously visited history accumulate in the DOM. */
-export function shiftBoundedTimelineRange(
-  range: BoundedTimelineRange,
-  itemCount: number,
-  direction: 'older' | 'newer',
-  batchSize: number,
-  maxSize: number,
-): BoundedTimelineRange {
-  if (direction === 'older') {
-    const start = Math.max(0, range.start - batchSize);
-    return {
-      start,
-      end: Math.min(range.end, start + maxSize),
-    };
-  }
-
-  const end = Math.min(itemCount, range.end + batchSize);
-  return {
-    start: Math.max(range.start, end - maxSize),
-    end,
-  };
-}
-
 export type HistoryPrefetchOutcome = 'completed' | 'failed' | 'cancelled';
 
 interface PrefetchHistoryBatchesOptions<Batch extends HistoryCursorBatchDescriptor> {
@@ -146,31 +118,4 @@ export function shouldShowHistoryRetry(
   state: HistoryLoadMoreState & { retryAvailable: boolean },
 ): boolean {
   return state.retryAvailable && canLoadOlderHistory(state);
-}
-
-interface HistoryPrependScrollState {
-  previousPublishedBatchSeq: number;
-  publishedBatchSeq: number;
-  previousScrollHeight: number;
-  scrollHeight: number;
-  previousScrollTop: number;
-}
-
-/** Preserve the viewport after a newly published history batch is prepended. */
-export function resolveHistoryPrependScrollTop({
-  previousPublishedBatchSeq,
-  publishedBatchSeq,
-  previousScrollHeight,
-  scrollHeight,
-  previousScrollTop,
-}: HistoryPrependScrollState): number | null {
-  if (
-    previousPublishedBatchSeq <= 0
-    || publishedBatchSeq <= previousPublishedBatchSeq
-  ) {
-    return null;
-  }
-
-  const prependedHeight = scrollHeight - previousScrollHeight;
-  return prependedHeight === 0 ? null : previousScrollTop + prependedHeight;
 }

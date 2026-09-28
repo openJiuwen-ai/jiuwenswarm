@@ -119,12 +119,22 @@ def _window_api_methods() -> set[str]:
     """pywebview 暴露给前端的 API 面 = _WindowApi 的公开方法。"""
     for node in ast.walk(_desktop_app_module()):
         if isinstance(node, ast.ClassDef) and node.name == "_WindowApi":
-            return {
+            methods = {
                 item.name
                 for item in node.body
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and not item.name.startswith("_")
             }
+            # Platform-specific native commands may be bound in __init__.
+            for item in ast.walk(node):
+                if isinstance(item, ast.Assign) and isinstance(item.value, ast.Attribute):
+                    for target in item.targets:
+                        if (isinstance(target, ast.Attribute)
+                                and isinstance(target.value, ast.Name)
+                                and target.value.id == "self"
+                                and not target.attr.startswith("_")):
+                            methods.add(target.attr)
+            return methods
     raise AssertionError("class _WindowApi not found in desktop_app.py")
 
 
@@ -326,6 +336,32 @@ def test_frontend_used_api_available_on_both_desktops() -> None:
     )
     for usage in sorted(_frontend_direct_usages()):
         assert usage in shared, f"前端直接调用 pywebview?.api?.{usage}, 但两侧桌面未同时提供"
+
+
+def test_windows_close_and_tray_behavior_matches() -> None:
+    python_source = _read(DESKTOP_APP_PY)
+    electron_source = _read(MAIN_CJS)
+
+    for source in (python_source, electron_source):
+        assert "desktop-window.json" in source
+        assert "CLOSE_ACTION_ASK" in source
+        assert "CLOSE_ACTION_HIDE" in source
+        assert "CLOSE_ACTION_QUIT" in source
+        assert "显示并最大化" in source
+        assert "记住我的选择" in source
+        assert "最小化到托盘" in source
+        assert "退出应用" in source
+        assert "确认" in source
+
+    assert "self.window.events.closing += self._on_closing" in python_source
+    assert "WinForms.NotifyIcon()" in python_source
+    assert "remember.Checked = False" in python_source
+    assert "mainWindow.on('close'" in electron_source
+    assert "new Tray(iconPath)" in electron_source
+    assert 'type="radio" name="action"' in electron_source
+    assert 'name="remember" value="1" checked' not in electron_source
+    assert 'name="remember" value="1">' in electron_source
+    assert "event.preventDefault();" in electron_source
 
 
 # ─── 启动/关闭常量对齐 ──────────────────────────────────────────────────────
@@ -596,6 +632,22 @@ def test_installers_recursively_pack_runtime_into_app_dir() -> None:
     ), "installer-electron.iss 不再递归打包 Electron 产物, resources\\backend\\runtime 将不会进安装包"
 
 
+def test_installers_use_versioned_shortcut_icon() -> None:
+    """升级后快捷方式应使用版本化图标路径，避免 Windows 复用旧图标缓存。"""
+    icon_path = r"{app}\logo-{#MyAppVersion}.ico"
+
+    for installer_path in (INSTALLER_PY_ISS, INSTALLER_ELECTRON_ISS):
+        source = _read(installer_path)
+        assert f"UninstallDisplayIcon={icon_path}" in source
+        assert 'DestName: "logo-{#MyAppVersion}.ico"' in source
+        assert source.count(f'IconFilename: "{icon_path}"') == 2
+
+    python_installer = _read(INSTALLER_PY_ISS)
+    assert 'Type: filesandordirs; Name: "{app}\\resources"' in python_installer
+    assert 'Type: files; Name: "{app}\\logo-*.ico"' in python_installer
+    assert 'Type: files; Name: "{app}\\logo-*.ico"' in _read(INSTALLER_ELECTRON_ISS)
+
+
 # ─── macOS 打包链路的 node 绑定对齐(build-macos.sh / build-electron-exe.sh) ─
 
 RUNTIME_SH_FUNCTIONS = (
@@ -686,3 +738,31 @@ def test_macos_electron_build_ships_tui_binary_next_to_backend() -> None:
         r'tui_binary = Path\(sys\.executable\)\.parent / "jiuwenswarm-tui"',
         _read(DESKTOP_APP_PY),
     ), "desktop_app.py 的 TUI 查找路径漂移, 请同步本测试与打包脚本"
+
+
+def test_electron_macos_close_hides_window_and_dock_reopens_it() -> None:
+    """macOS 原生关闭仅隐藏窗口，Dock 激活恢复；明确退出仍走完整清理。"""
+    source = _read(MAIN_CJS)
+
+    close_handler = _balanced_braces_block(source, "mainWindow.on('close'")
+    assert "process.platform === 'darwin'" in close_handler
+    assert "if (shuttingDown) return" in close_handler
+    assert "event.preventDefault()" in close_handler
+    assert "mainWindow.hide()" in close_handler
+
+    activate_handler = _balanced_braces_block(source, "app.on('activate'")
+    assert "mainWindow.show()" in activate_handler
+    assert "mainWindow.focus()" in activate_handler
+
+    second_instance_handler = _balanced_braces_block(source, "app.on('second-instance'")
+    assert "process.platform === 'darwin'" in second_instance_handler
+    assert "mainWindow.show()" in second_instance_handler
+
+    all_closed_handler = _balanced_braces_block(source, "app.on('window-all-closed'")
+    assert "process.platform !== 'darwin'" in all_closed_handler
+    assert "app.quit()" in all_closed_handler
+
+    explicit_close_handler = _balanced_braces_block(
+        source, "registerHandler('desktop:close-window'"
+    )
+    assert "requestShutdown()" in explicit_close_handler

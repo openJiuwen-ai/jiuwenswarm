@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any, Callable
+from weakref import WeakSet
 
 from .background_agents import BackgroundAgentRunner
 from .evidence import (
@@ -339,6 +340,9 @@ def _memory_query(events: list[dict[str, Any]]) -> str:
     return " ".join(reversed(parts))[:2400] or "recent conversation"
 
 
+_LIVE_COORDINATORS: WeakSet["SessionCoordinator"] = WeakSet()
+
+
 class SessionCoordinator:
     """Own all mutable eternal state for exactly one product Session."""
 
@@ -360,6 +364,11 @@ class SessionCoordinator:
         self._closed = False
         self._schedule_lock = asyncio.Lock()
         self._write_manifest()
+        _LIVE_COORDINATORS.add(self)
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     def _write_manifest(self) -> None:
         path = self.root / "audit" / "source-manifest.json"
@@ -378,6 +387,8 @@ class SessionCoordinator:
         if self._closed:
             return
         async with self._schedule_lock:
+            if self._closed:
+                return
             state = read_json(self.state_path, {}) or {}
             requested = max(int(state.get("requested_cursor") or 0), int(cursor))
             state["requested_cursor"] = requested
@@ -487,8 +498,12 @@ class SessionCoordinator:
             await self._schedule_builder()
 
     async def _schedule_builder(self) -> None:
+        if self._closed:
+            return
         if self._builder is None or self._builder.done():
             await self._clear_worker_error("builder")
+            if self._closed:
+                return
             self._builder = asyncio.create_task(
                 self._guarded_build_loop(),
                 name=f"eternal-builder:{self.session_id}",
@@ -577,8 +592,27 @@ class SessionCoordinator:
             await asyncio.gather(*active, return_exceptions=True)
 
     async def close(self) -> None:
-        await self.wait_idle()
+        """Stop Extractor/Builder and in-flight memory-cli processes.
+
+        Rail.close() must not call this: Adapter retirement is not Session end.
+        Process shutdown and tests use close_all_session_coordinators().
+        """
+        if self._closed:
+            await self.wait_idle()
+            return
         self._closed = True
+        await self.memory.abort()
+        for task in (self._worker, self._builder):
+            if task is not None and not task.done():
+                task.cancel()
+        await self.wait_idle()
 
 
-__all__ = ["SessionCoordinator"]
+async def close_live_coordinators() -> None:
+    coordinators = list(_LIVE_COORDINATORS)
+    _LIVE_COORDINATORS.clear()
+    for coordinator in coordinators:
+        await coordinator.close()
+
+
+__all__ = ["SessionCoordinator", "close_live_coordinators"]

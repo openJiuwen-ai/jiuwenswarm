@@ -101,6 +101,9 @@ E2A_CANCEL_SOURCE_CLIENT_DISCONNECT = "client_disconnect"
 
 # Gateway → AgentServer：登录模型的请求级凭据
 E2A_MODEL_AUTH_PARAM_KEY = "_model_auth"
+# Gateway → AgentServer：没有登录会话的通道（飞书等）拿不到登录模型凭据时的具体原因提示，
+# AgentServer 报 login_required 时用它替换通用文案。只由 Gateway 写。
+E2A_LOGIN_REQUIRED_HINT_PARAM_KEY = "_login_required_hint"
 
 # 仅用于编解码 / 队列语义，不得随业务 channel metadata 下发给 Message.metadata
 E2A_WIRE_INTERNAL_METADATA_KEYS: frozenset[str] = frozenset(

@@ -60,8 +60,7 @@ def _build_model_auth(model_name: str, session_id: str | None) -> dict[str, Any]
     只放句柄，发请求时再换成真 token（见 ``login_credentials``）。
     """
     from jiuwenswarm.common.auth.apig import resolve_apig_config
-    from jiuwenswarm.common.auth.login_credentials import bare_model_name, credential_ref_for_user
-    from jiuwenswarm.common.auth.model_catalog import get_models
+    from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user
     from jiuwenswarm.common.auth.service import ModelAuthRequired, live_session
 
     if not session_id:
@@ -69,17 +68,7 @@ def _build_model_auth(model_name: str, session_id: str | None) -> dict[str, Any]
     apig_config = resolve_apig_config(allow_refresh=False)
     if apig_config is None:
         return None
-
-    try:
-        # 请求的模型是不是登录来源？名字带 #index 后缀时取前半段（通道侧的全局序号）。
-        bare_name = bare_model_name(model_name)
-        # allow_refresh=False：这里在 Gateway 的转发热路径上，不能为了刷模型目录
-        # 去发一次同步 HTTP。缓存里没有就当作不是登录模型。
-        known = {model.model_name for model in get_models(session_id, allow_refresh=False)}
-        if bare_name not in known and model_name not in known:
-            return None
-    except Exception:  # noqa: BLE001 — 目录读不到就当作不是登录模型
-        logger.debug("[ModelAuth] 读取登录模型目录失败", exc_info=True)
+    if not _is_login_model(model_name, session_id):
         return None
 
     try:
@@ -130,3 +119,39 @@ def refreshed_credential_for_ref(credential_ref: str) -> dict[str, Any] | None:
     if fresh is None or fresh.credential.is_expired():
         return revoked
     return {"credential_ref": credential_ref, "api_key": fresh.credential.id_token}
+
+
+def _is_login_model(model_name: str, session_id: str | None) -> bool:
+    """请求的模型是不是登录来源。名字带 #index 后缀时取前半段（通道侧的全局序号）。"""
+    from jiuwenswarm.common.auth.login_credentials import bare_model_name
+    from jiuwenswarm.common.auth.model_catalog import get_models
+
+    try:
+        # allow_refresh=False：这里在 Gateway 的转发热路径上，不能为了刷模型目录
+        # 去发一次同步 HTTP。缓存里没有就当作不是登录模型。
+        known = {model.model_name for model in get_models(session_id, allow_refresh=False)}
+    except Exception:  # noqa: BLE001 — 目录读不到就当作不是登录模型
+        logger.debug("[ModelAuth] 读取登录模型目录失败", exc_info=True)
+        return False
+    return model_name in known or bare_model_name(model_name) in known
+
+
+def expired_login_session(params: dict[str, Any], session_id: str | None):
+    """这次请求要用登录模型、而调用方的凭据**已经过期**时返回该会话，否则 ``None``。
+
+    转发热路径平时不同步续期（:meth:`AuthService.ensure_fresh` 的 ``blocking=False``）：
+    快过期的在后台续、这一次先用旧 token。但已经过期的这一次就挂不上——放置一两个
+    小时后发的第一条消息会被当成"未登录"。调用方拿到会话后应先续期（放线程里）再转发。
+    只看内存 / 本地缓存，不发网络请求，可以直接在事件循环上调。
+    """
+    from jiuwenswarm.common.auth.service import get_auth_service
+
+    model_name = str(params.get("model_name") or "").strip()
+    # 先判模型：自配模型的请求不碰会话存储，开销和改动前一样
+    if not model_name or not session_id or not _is_login_model(model_name, session_id):
+        return None
+    session = get_auth_service().resolve_session(session_id)
+    if session is None or not session.credential.is_expired():
+        return None
+    return session
+

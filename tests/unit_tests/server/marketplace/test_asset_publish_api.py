@@ -112,6 +112,44 @@ async def test_five_calls_and_request_scope_cannot_be_forged(api):
 
 
 @pytest.mark.asyncio
+async def test_prepare_blocks_same_completed_version_until_force_is_enabled(api):
+    server, _, _ = api
+    metadata = {
+        "asset_name": "demo",
+        "version": "1.0.0",
+        "description": "First release",
+        "tags": [],
+    }
+    first = await server.call(
+        "prepare",
+        params(kind="skill", local_id="demo", metadata=metadata),
+        gateway_user="browser-user",
+    )
+    await server.call(
+        "commit",
+        params(draft_id=first["draft_id"], request_id="first-release"),
+        gateway_user="browser-user",
+    )
+    await server.service.wait_idle()
+
+    duplicate = await server.call(
+        "prepare",
+        params(kind="skill", local_id="demo", metadata=metadata),
+        gateway_user="browser-user",
+    )
+    assert duplicate["can_submit"] is False
+    assert duplicate["errors"] == [{"code": "VERSION_CONFLICT", "field": "version"}]
+
+    forced = await server.call(
+        "prepare",
+        params(kind="skill", local_id="demo", metadata=metadata, force=True),
+        gateway_user="browser-user",
+    )
+    assert forced["can_submit"] is True
+    assert forced["errors"] == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "extra",
     [
@@ -170,7 +208,8 @@ async def test_scope_is_persistently_bound_without_storing_tokens(api):
 
 @pytest.mark.parametrize(
     "kind,directory",
-    [("plugin", "plugin_packages"), ("agent_template", "agent_templates")],
+    [("plugin", "plugin_packages"), ("agent_template", "agent_templates"),
+     ("agent_group", "agent_groups")],
 )
 def test_real_equipment_resolver_accepts_installed_package(
     tmp_path, monkeypatch, kind, directory
@@ -181,7 +220,12 @@ def test_real_equipment_resolver_accepts_installed_package(
     )
 
     monkeypatch.setattr(packages, "get_agent_workspace_dir", lambda: tmp_path)
-    root = tmp_path / "plugins" / directory / "local" / "demo"
+    monkeypatch.setattr(packages, "get_user_workspace_dir", lambda: tmp_path)
+    root = (
+        tmp_path / ".agent_teams" / directory / "local" / "demo"
+        if kind == "agent_group"
+        else tmp_path / "plugins" / directory / "local" / "demo"
+    )
     root.mkdir(parents=True)
     (root / "manifest.json").write_text(
         json.dumps(
@@ -195,6 +239,114 @@ def test_real_equipment_resolver_accepts_installed_package(
         )
     )
     assert resolve_local_asset(kind, "demo") == root
+
+
+def test_agent_group_publish_resolves_installed_hub_asset_id(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime import extension_package_manager as packages
+    from jiuwenswarm.server.runtime.marketplace.asset_publish_api import resolve_local_asset
+    from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
+        HubInstallRecord,
+        HubInstallStateStore,
+    )
+
+    monkeypatch.setattr(packages, "get_user_workspace_dir", lambda: tmp_path)
+    root = tmp_path / ".agent_teams" / "agent_groups" / "local" / "business-planning"
+    root.mkdir(parents=True)
+    (root / "manifest.json").write_text(
+        json.dumps({"package_type": "agent_group", "name": "business-planning"})
+    )
+    HubInstallStateStore(root.parent.parent).upsert(
+        HubInstallRecord(
+            asset_id="b80afb7afff147bd801ed5f788fa767c",
+            kind="agent_group",
+            package_id="business-planning",
+            version="1.2.0",
+            checksum_sha256="checksum",
+            installed_at="2026-09-18T00:00:00Z",
+        )
+    )
+
+    assert resolve_local_asset("agent_group", "b80afb7afff147bd801ed5f788fa767c") == root
+
+
+@pytest.mark.asyncio
+async def test_agent_group_describe_uses_local_group_manifest(tmp_path):
+    root = tmp_path / "demo"
+    root.mkdir()
+    (root / "manifest.json").write_text(json.dumps({
+        "package_type": "agent_group",
+        "name": "demo",
+        "version": "0.2.0",
+        "display_name": "Demo Team",
+        "description": "A team of experts",
+        "agents": ["leader"],
+    }))
+    instance = AssetPublishAPI(
+        tmp_path / "state",
+        publisher=Publisher(),
+        resolver=lambda kind, local_id: root,
+        hub_url="https://example.com",
+    )
+    try:
+        result = await instance.call(
+            "describe",
+            params(kind="agent_group", local_id="demo"),
+            gateway_user="browser-user",
+        )
+        assert result["defaults"] == {
+            "asset_name": "demo",
+            "version": "0.2.0",
+            "display_name": "Demo Team",
+            "description": "A team of experts",
+            "tags": [],
+            "visibility": "public",
+        }
+    finally:
+        instance.store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,package_name,manifest_name,display_name",
+    [
+        ("agent_template", "agent-mudhsgoh", "手动专家", "手动专家"),
+        ("agent_group", "agent-group-mudhsgoh", "agent-group-mudhsgoh", "手动专家团"),
+    ],
+)
+async def test_agent_describe_uses_resolved_package_name_for_publish_identity(
+    tmp_path, kind, package_name, manifest_name, display_name
+):
+    root = tmp_path / package_name
+    root.mkdir()
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "package_type": kind,
+                "name": manifest_name,
+                "display_name": {"zh": display_name, "en": display_name},
+                "description": "Issue 4799 regression",
+            },
+            ensure_ascii=False,
+        )
+    )
+    instance = AssetPublishAPI(
+        tmp_path / "state",
+        publisher=Publisher(),
+        # A Hub-installed asset may be addressed by its remote UUID. The
+        # resolved package directory remains the canonical publish identity.
+        resolver=lambda requested_kind, local_id: root,
+        hub_url="https://example.com",
+    )
+    try:
+        result = await instance.call(
+            "describe",
+            params(kind=kind, local_id="b80afb7afff147bd801ed5f788fa767c"),
+            gateway_user="browser-user",
+        )
+        assert result["defaults"]["asset_name"] == package_name
+        assert result["defaults"]["display_name"] == display_name
+    finally:
+        instance.store.close()
 
 
 @pytest.mark.parametrize(

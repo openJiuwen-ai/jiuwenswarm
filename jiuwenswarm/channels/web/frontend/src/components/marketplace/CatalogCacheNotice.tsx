@@ -1,35 +1,35 @@
 import { useTranslation } from 'react-i18next';
-import type { CatalogCacheMetadata } from '../../features/catalogCache';
+import {
+  catalogCacheNotice,
+  catalogCacheTimestamp,
+  formatCatalogCacheUpdatedAt,
+  type CatalogCacheMetadata,
+} from '../../features/catalogCache';
 export function CatalogCacheNotice({ cache }: { cache?: CatalogCacheMetadata }) {
   const { i18n } = useTranslation();
-  if (!cache || (!cache.refreshing && cache.state === 'fresh' && cache.complete !== false)) return null;
+  const notice = catalogCacheNotice(cache);
+  if (!notice) return null;
   const zh = i18n.language.startsWith('zh');
-  const text = cache.refreshing
+  const text = notice.kind === 'error'
     ? zh
-      ? '正在更新目录，已有内容仍可使用。'
-      : 'Updating the catalog. Existing items remain available.'
-    : cache.state === 'error' || cache.last_refresh_error
-      ? zh
-        ? '目录更新暂时失败，保留上次可用内容。'
-        : 'Catalog refresh failed. Previously available items are retained.'
-      : cache.complete === false
-        ? zh
-          ? '当前显示部分目录。'
-          : 'Showing a partial catalog.'
-        : zh
-          ? '当前显示已缓存的目录。'
-          : 'Showing the cached catalog.';
+      ? '目录刷新失败，继续显示上次可用内容。'
+      : 'Catalog refresh failed. Previously available items are retained.'
+    : zh
+      ? '当前显示旧缓存。'
+      : 'Showing previously cached content.';
+  const updatedText = formatCatalogCacheUpdatedAt(notice.updatedAt, i18n.language);
+  const updatedTimestamp = catalogCacheTimestamp(notice.updatedAt);
   return (
     <p
       className="page-shell py-2 text-xs text-text-muted"
       role="status"
       data-testid="marketplace-cache-notice"
-      data-variant={cache.state}
+      data-variant={notice.kind}
     >
-      {text}{' '}
-      {(cache.updated_at || cache.fetched_at) && (
-        <time data-testid="marketplace-cache-updated" dateTime={cache.updated_at || cache.fetched_at}>
-          {cache.updated_at || cache.fetched_at}
+      {text}
+      {updatedText && updatedTimestamp !== null && (
+        <time data-testid="marketplace-cache-updated" dateTime={new Date(updatedTimestamp).toISOString()}>
+          {zh ? ` 上次更新时间：${updatedText}` : ` Last updated: ${updatedText}`}
         </time>
       )}
     </p>

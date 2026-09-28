@@ -1,0 +1,67 @@
+.ui-dialog.project-archive-dialog {
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(480px, calc(100vh - 32px));
+}
+
+.project-archive-dialog__panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.project-archive-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 22px 0;
+}
+
+.project-archive-dialog__header h2 {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+}
+
+.project-archive-dialog__close {
+  display: inline-flex;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.project-archive-dialog__close:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}
+
+.project-archive-dialog__close:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.project-archive-dialog__description {
+  margin: 6px 0 0;
+  padding: 0 22px 22px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.project-archive-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 0 22px 22px;
+}
+
+.project-archive-dialog__actions .ui-button {
+  min-width: 84px;
+}

@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 
 # ── Gradient Update Prompt ──────────────────────────────────────────
 
-GRADIENT_UPDATE_PROMPT = """\
+# 梯度规则语言跟随 config.yaml preferred_language：规则是 LLM 生成的自然语言，
+# 喂回决策/话术 prompt 时要求与模板语言一致——zh 用户生成中文规则、en 用户生成
+# 英文规则。语言切换前的存量旧语言规则保留（LLM 双语都能读），新规则按当前语言。
+GRADIENT_UPDATE_PROMPT_ZH = """\
 你是推荐策略分析师。根据用户反馈，更新推荐策略规则。
 
 【用户反馈】
@@ -51,7 +54,7 @@ GRADIENT_UPDATE_PROMPT = """\
 - tone: 关于"语气风格"（如"简洁克制"、"不要过度热情"）
 - structure: 关于"话术结构"（如"1-2句话"、"不要解释功能"）
 
-每条规则一句话，不超过25字。
+每条规则一句话，不超过25字。⚠️ 规则必须用简体中文书写。
 
 ⚠️ 避免语义重复：如果新反馈与已有规则相关，优先 revise 已有规则，而非 add 新规则。
 
@@ -73,13 +76,75 @@ GRADIENT_UPDATE_PROMPT = """\
 如果没有需要更新的，返回 {{"operations": []}}。
 """
 
+GRADIENT_UPDATE_PROMPT_EN = """\
+You are a recommendation-strategy analyst. Update the recommendation strategy \
+rules based on user feedback.
+
+[User feedback]
+{feedbacks_text}
+
+[Existing strategy rules]
+{existing_rules_text}
+
+Analyze the feedback, extract improvement suggestions, and update the rules.
+
+⚠️ Feedback type → rule mapping:
+
+1. Explicit feedback (like/dislike):
+   - A like means the user is interested in the recommended topic
+   - A dislike means the user is not interested in that topic
+   - Only target-type rules may be generated (what to recommend / not recommend)
+   - Example: user likes "translation skill" → "user is interested in translation topics"
+   - Example: user dislikes "schedule reminders" → "avoid recommending schedule topics"
+
+2. Implicit feedback (the user's text reply):
+   - The user clearly expressed an opinion or suggestion
+   - Any rule type may be generated (target/relation/tone/structure)
+   - Base rules only on what the user explicitly said; do not guess
+
+⚠️ Rule categories:
+- target: what to push (e.g. "don't push translation", "prefer productivity topics")
+- relation: how to relate (e.g. "schedule links must be real", "quote the user's words")
+- tone: style (e.g. "concise and restrained", "don't be overly enthusiastic")
+- structure: copy structure (e.g. "1-2 sentences", "don't explain features")
+
+One sentence per rule, max 25 words. ⚠️ Rules MUST be written in English.
+
+⚠️ Avoid semantic duplicates: if new feedback relates to an existing rule, prefer \
+revising it over adding a new one.
+
+Output JSON:
+{{
+  "operations": [
+    {{"action": "add", "rule": "new rule", "category": "target|relation|tone|structure"}},
+    {{"action": "revise", "gradient_id": "g_xxx", "rule": "revised rule", "category": "target|relation|tone|structure"}},
+    {{"action": "drop", "gradient_id": "g_yyy"}}
+  ]
+}}
+
+Field notes:
+- action: "add" | "revise" | "drop"
+- rule: rule content (required for add/revise)
+- category: rule category (required for add/revise)
+- gradient_id: rule ID to modify/delete (required for revise/drop)
+
+If nothing needs updating, return {{"operations": []}}.
+"""
+
+
+def gradient_update_prompt(language: str) -> str:
+    """按语言返回统一梯度更新 prompt 模板（未 format）。"""
+    lang = str(language or "zh").strip().lower()
+    return GRADIENT_UPDATE_PROMPT_EN if lang == "en" else GRADIENT_UPDATE_PROMPT_ZH
+
 
 # ── Helper functions ────────────────────────────────────────────────
 
-def _render_feedbacks(feedbacks: list[dict]) -> str:
-    """Render feedback records for prompt."""
+def _render_feedbacks(feedbacks: list[dict], language: str = "zh") -> str:
+    """Render feedback records for prompt（标签按 preferred_language 渲染）。"""
+    is_en = str(language or "zh").strip().lower() == "en"
     if not feedbacks:
-        return "（无反馈）"
+        return "(no feedback)" if is_en else "（无反馈）"
 
     lines = []
     for i, fb in enumerate(feedbacks, 1):
@@ -87,11 +152,18 @@ def _render_feedbacks(feedbacks: list[dict]) -> str:
         rec_content = fb.get("rec_content", "")
         user_reply = fb.get("user_reply", "")
 
-        line = f"{i}. 反馈类型: {feedback_type}"
-        if rec_content:
-            line += f"\n   推荐内容: {rec_content}"
-        if user_reply:
-            line += f"\n   用户回复: {user_reply}"
+        if is_en:
+            line = f"{i}. feedback type: {feedback_type}"
+            if rec_content:
+                line += f"\n   recommendation content: {rec_content}"
+            if user_reply:
+                line += f"\n   user reply: {user_reply}"
+        else:
+            line = f"{i}. 反馈类型: {feedback_type}"
+            if rec_content:
+                line += f"\n   推荐内容: {rec_content}"
+            if user_reply:
+                line += f"\n   用户回复: {user_reply}"
 
         lines.append(line)
 
@@ -246,13 +318,66 @@ async def _update_gradients_from_explicit_feedback(
     proactive_agent: Any,
 ) -> list[dict]:
     """从显式反馈生成 target 类型规则。"""
-    feedbacks_text = _render_feedbacks(feedbacks)
+    from jiuwenswarm.common.config import get_config
+
+    feedbacks_text = _render_feedbacks(feedbacks, language=get_config().get("preferred_language", "zh"))
     existing_text = _render_gradients(existing_gradients)
 
-    # 显式反馈专用 prompt，只允许生成 target 类型规则。
-    # 泛化保守：单次反馈只记具体 target + 场景（从 rec_content 提取），不泛化成大类；
-    # 只有已有多条同类反馈时才 revise 成类偏好。避免一条点踩 → 整大类被压抑误伤其他场景。
-    prompt = f"""\
+    if get_config().get("preferred_language", "zh") == "en":
+        prompt = f"""\
+You are a recommendation-strategy analyst. Update the recommendation strategy \
+rules based on the user's like/dislike feedback.
+
+[User feedback]
+{feedbacks_text}
+
+[Existing strategy rules]
+{existing_text}
+
+⚠️ Key constraints:
+- A like means the user is interested in that recommendation; a dislike means not.
+- Only target-type rules may be generated (what to recommend / not recommend).
+- Do NOT generate tone/structure/relation rules.
+- Do not guess why the user liked/disliked.
+
+⚠️ Conservative generalization (critical):
+- Decide whether the user dislikes "this specific recommendation scenario" or "this \
+whole class of skill/topic" — prefer the concrete scenario in the recommendation \
+content (rec_content), e.g. "writing skill pushed for an NBA PPT". Record the rule \
+for the specific scenario; do not generalize to a whole category by skill name alone.
+- Single feedback: record the specific target + scenario only, e.g.:
+  · user dislikes "general-writing (NBA PPT copy scenario)" → "writing skill for \
+NBA PPT is unwelcome" (NOT "avoid copywriting topics" — that would wrongly suppress \
+other scenarios that need copywriting)
+  · user likes "translation skill (foreign-document scenario)" → "translation skill \
+for translating documents is well received"
+- Only when [Existing strategy rules] already records several same-kind feedbacks, \
+revise into a class preference: e.g. several dislikes on different copywriting \
+skills → merge into "avoid copywriting topics"
+
+Examples:
+- Single feedback stays specific: user likes "translation skill" → "user is \
+interested in translation skills for translating documents" (do not generalize to \
+"translation in general")
+- Several same-kind feedbacks generalize: existing "dislike on translation skill A" \
++ "dislike on translation skill B" → revise into "avoid translation topics"
+
+Rules MUST be written in English (legacy Chinese rules already stored may remain; \
+revise them into English when new feedback touches them).
+
+Output JSON:
+{{
+  "operations": [
+    {{"action": "add", "rule": "new rule", "category": "target"}},
+    {{"action": "revise", "gradient_id": "g_xxx", "rule": "revised rule", "category": "target"}},
+    {{"action": "drop", "gradient_id": "g_yyy"}}
+  ]
+}}
+
+If nothing needs updating, return {{"operations": []}}.
+"""
+    else:
+        prompt = f"""\
 你是推荐策略分析师。根据用户的点赞/点踩反馈，更新推荐策略规则。
 
 【用户反馈】
@@ -281,6 +406,8 @@ async def _update_gradients_from_explicit_feedback(
 示例：
 - 单次反馈记具体：用户点赞"翻译技能" → "用户对翻译技能用于翻文档感兴趣"（不泛化成"翻译类"）
 - 多次同类才泛化：已有"翻译技能点踩"+"其他翻译技能点踩" → revise 成"避免翻译类话题"
+
+规则必须用简体中文书写（存量旧语言的规则可保留；新反馈触及它们时 revise 成中文）。
 
 输出 JSON：
 {{
@@ -339,13 +466,70 @@ async def _update_gradients_from_implicit_feedback(
     proactive_agent: Any,
 ) -> list[dict]:
     """从隐式反馈生成任意类型规则。"""
-    feedbacks_text = _render_feedbacks(feedbacks)
+    from jiuwenswarm.common.config import get_config
+
+    feedbacks_text = _render_feedbacks(feedbacks, language=get_config().get("preferred_language", "zh"))
     existing_text = _render_gradients(existing_gradients)
 
     # 隐式反馈专用 prompt，可以生成任意类型规则。
     # 泛化保守 + 读场景：从 rec_content 提取具体场景，单次反馈只记具体，多次同类才泛化。
     # 无关反馈（用户聊别的、和推荐无关）返回空 operations——配合砍掉的时间窗，相关性由模型判断。
-    prompt = f"""\
+    if get_config().get("preferred_language", "zh") == "en":
+        prompt = f"""\
+You are a recommendation-strategy analyst. Update the recommendation strategy \
+rules based on the user's text replies.
+
+[User feedback]
+{feedbacks_text}
+
+[Existing strategy rules]
+{existing_text}
+
+⚠️ Key constraints:
+- In [User feedback], feedback_type "implicit" means the raw text of the user's \
+reply, with sentiment NOT pre-classified (keyword-based classification was removed \
+due to high misjudgment). First judge the sentiment (positive/negative/neutral) \
+from the user_reply text itself, then decide whether to generate rules. Neutral \
+replies → return empty operations.
+- Base rules only on what the user explicitly expressed; do not guess intent.
+- Any rule type may be generated (target/relation/tone/structure).
+
+⚠️ Relevance check (paired with the removed time window):
+- user_reply may be unrelated to the recommendation (the user moved on to another \
+topic). If the reply has no connection to the recommendation content, return empty \
+operations — do not force a link.
+
+⚠️ Conservative generalization (critical):
+- Prefer the concrete scenario in the recommendation content (rec_content); record \
+rules for the specific scenario, not whole categories by skill name/topic.
+- Single feedback records a specific target + scenario: e.g. user replies "not \
+needed" to "writing skill pushed for an NBA PPT" → "writing skill for NBA PPT is \
+unwelcome" (NOT "avoid copywriting").
+- Only when [Existing strategy rules] already records several same-kind feedbacks, \
+revise into a class preference.
+
+Examples:
+- User says "be more concise" → rule: "keep the tone concise and restrained" (tone)
+- User says "stop pushing translation" → rule: "avoid recommending translation \
+topics" (target — the user explicitly said so)
+- Reply unrelated to the recommendation → return empty operations
+
+Rules MUST be written in English (legacy Chinese rules already stored may remain; \
+revise them into English when new feedback touches them).
+
+Output JSON:
+{{
+  "operations": [
+    {{"action": "add", "rule": "new rule", "category": "target|relation|tone|structure"}},
+    {{"action": "revise", "gradient_id": "g_xxx", "rule": "revised rule", "category": "target|relation|tone|structure"}},
+    {{"action": "drop", "gradient_id": "g_yyy"}}
+  ]
+}}
+
+If nothing needs updating, return {{"operations": []}}.
+"""
+    else:
+        prompt = f"""\
 你是推荐策略分析师。根据用户的文本回复，更新推荐策略规则。
 
 【用户反馈】
@@ -377,6 +561,8 @@ async def _update_gradients_from_implicit_feedback(
 - 用户说"简洁点" → 生成规则："语气简洁克制"（tone 类型）
 - 用户说"不要推翻译类" → 生成规则："避免推荐翻译类话题"（target 类型，因用户明确说了"翻译类"）
 - 用户回复和推荐无关（如聊到别的话题）→ 返回空 operations
+
+规则必须用简体中文书写（存量旧语言的规则可保留；新反馈触及它们时 revise 成中文）。
 
 输出 JSON：
 {{
@@ -457,12 +643,12 @@ def attribute_gradients(gradients: list[dict]) -> tuple[list[dict], list[dict]]:
     return decision_gradients, style_gradients
 
 
-def render_decision_rules(gradients: list[dict]) -> str:
-    """Render decision layer rules for UNIFIED_ANALYSIS_PROMPT."""
+def render_decision_rules(gradients: list[dict], language: str = "zh") -> str:
+    """Render decision layer rules for the analysis prompt."""
     decision_g, _ = attribute_gradients(gradients)
 
     if not decision_g:
-        return "（暂无）"
+        return "(none yet)" if str(language or "zh").strip().lower() == "en" else "（暂无）"
 
     lines = []
     # 留最新 10 条喂决策 LLM：与存储留最新（[-20:]）方向一致，反映最近反馈学到的偏好。
@@ -472,14 +658,19 @@ def render_decision_rules(gradients: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def render_style_rules(gradients: list[dict]) -> str:
-    """Render style layer rules for DIRECTIVE_PROMPT."""
+def render_style_rules(gradients: list[dict], language: str = "zh") -> str:
+    """Render style layer rules for the directive prompt."""
     _, style_g = attribute_gradients(gradients)
 
     if not style_g:
         return ""
 
-    lines = ["【话术风格要求】（基于用户历史反馈）"]
+    heading = (
+        "[Style rules for the copy] (from the user's past feedback)"
+        if str(language or "zh").strip().lower() == "en"
+        else "【话术风格要求】（基于用户历史反馈）"
+    )
+    lines = [heading]
     # 留最新 10 条喂话术 LLM（与决策层一致，反映最近反馈学到的偏好）。
     for g in style_g[-10:]:
         lines.append(f"- {g.get('rule', '')}")

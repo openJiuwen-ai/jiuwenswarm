@@ -72,7 +72,7 @@ def build_symphony_graph_evolution_rail(
     config = load_symphony_config(ctx.config)
     if ctx.role != "leader":
         return None
-    core_evolution_enabled = config.enabled and config.evolution.enabled
+    core_evolution_enabled = config.enabled and config.evolution.flow.enabled
     if not core_evolution_enabled:
         return None
     try:
