@@ -29,25 +29,47 @@ def filter_agent_extension_config(
     return filtered
 
 
+def _extension_config_from_run_context(run_context: Any) -> list[dict[str, Any]] | None:
+    """Return ``extension_config`` list from a RunContext-like object, if present."""
+    if run_context is None:
+        return None
+    extra = getattr(run_context, "extra", None)
+    if not isinstance(extra, dict):
+        return None
+    ext_config = extra.get("extension_config")
+    if isinstance(ext_config, list):
+        return ext_config
+    return None
+
+
 def get_extension_config_from_ctx(ctx: Any) -> list[dict[str, Any]] | None:
-    """Extract extension_config from AgentCallbackContext inputs.
+    """Extract extension_config from AgentCallbackContext.
 
     Supports:
-    1) InvokeInputs / dataclass with ``run_context.extra``
-    2) Raw dict inputs with top-level ``extension_config``
+    1) InvokeInputs / dataclass with ``run_context.extra`` (DeepAgent outer path)
+    2) ``ctx.extra["run_context"].extra`` (ReActAgent bridged path)
+    3) Raw dict inputs with top-level ``extension_config``
     """
     inputs = getattr(ctx, "inputs", None)
     if inputs is None:
         return None
 
-    run_context = getattr(inputs, "run_context", None)
-    if run_context is not None:
-        extra = getattr(run_context, "extra", None)
-        if isinstance(extra, dict):
-            ext_config = extra.get("extension_config")
-            if isinstance(ext_config, list):
-                return ext_config
+    # Path 1: ctx.inputs.run_context.extra (DeepAgent BEFORE/AFTER_INVOKE)
+    found = _extension_config_from_run_context(getattr(inputs, "run_context", None))
+    if found is not None:
+        return found
 
+    # Path 2: ctx.extra["run_context"].extra
+    # ReActAgent._inner_invoke keeps InvokeInputs.run_context=None and puts the
+    # object on ctx.extra; bridged rails (before_tool_call / before_model_call)
+    # therefore only see this location.
+    ctx_extra = getattr(ctx, "extra", None)
+    if isinstance(ctx_extra, dict):
+        found = _extension_config_from_run_context(ctx_extra.get("run_context"))
+        if found is not None:
+            return found
+
+    # Path 3: raw dict inputs (top-level passthrough)
     if isinstance(inputs, dict):
         ext_config = inputs.get("extension_config")
         if isinstance(ext_config, list):

@@ -72,6 +72,18 @@ def test_get_extension_config_from_run_context_extra() -> None:
     assert get_extension_config_from_ctx(ctx) == payload
 
 
+def test_get_extension_config_from_ctx_extra_run_context() -> None:
+    """ReActAgent bridges run_context onto ctx.extra, not ctx.inputs."""
+    payload = [{"template_id": "tpl-react", "template_name": "bridged"}]
+    ctx = SimpleNamespace(
+        inputs=SimpleNamespace(run_context=None, query="hi"),
+        extra={
+            "run_context": SimpleNamespace(extra={"extension_config": payload}),
+        },
+    )
+    assert get_extension_config_from_ctx(ctx) == payload
+
+
 def test_get_extension_config_from_dict_inputs() -> None:
     payload = [{"template_id": "tpl-2"}]
     ctx = SimpleNamespace(inputs={"extension_config": payload})
@@ -81,6 +93,15 @@ def test_get_extension_config_from_dict_inputs() -> None:
 def test_get_extension_config_missing() -> None:
     assert get_extension_config_from_ctx(SimpleNamespace(inputs=None)) is None
     assert get_extension_config_from_ctx(SimpleNamespace(inputs={})) is None
+    assert (
+        get_extension_config_from_ctx(
+            SimpleNamespace(
+                inputs=SimpleNamespace(run_context=None),
+                extra={"run_context": SimpleNamespace(extra={})},
+            )
+        )
+        is None
+    )
 
 
 def test_summarize_extension_config_redacts_hook_config() -> None:
