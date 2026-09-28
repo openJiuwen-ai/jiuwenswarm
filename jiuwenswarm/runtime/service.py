@@ -1762,6 +1762,26 @@ class AgentRuntime:
         work_kind = self.session_work_kind(request, background=background)
         if work_kind is not None:
             await self._ensure_session_registered(request)
+            if work_kind is SessionWorkKind.CONTROL_INPUT and not (
+                self._session_coordinator.has_control_target(
+                    request.session_id or "default",
+                    self._control_request_id(request),
+                )
+            ):
+                # After a restart the execution registry is empty, so a stale
+                # answer has no waiting execution to resume. ask_user answers
+                # degrade into a fresh continuation turn (single-agent path;
+                # the team path handles this in team_helpers); permission /
+                # evolution approvals keep the original error.
+                degraded = self._degrade_stale_ask_user_answer(request)
+                if degraded is not None:
+                    logger.info(
+                        "[RuntimeService] stale ask_user answer degraded to "
+                        "fresh continuation turn: session_id=%s",
+                        request.session_id,
+                    )
+                    request = degraded
+                    work_kind = self.session_work_kind(request, background=background)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
                 events = await self._deliver_control(
                     request, on_control_event=on_control_event,
@@ -2947,6 +2967,50 @@ class AgentRuntime:
     def _control_request_id(request: AgentRequest) -> str:
         params = request.params if isinstance(request.params, dict) else {}
         return str(params.get("request_id") or request.request_id or "")
+
+    @staticmethod
+    def _degrade_stale_ask_user_answer(request: AgentRequest) -> AgentRequest | None:
+        """Rewrite a stale ask_user answer as a fresh continuation turn.
+
+        After a service restart the execution registry is empty, so the answer
+        has no waiting execution to resume ("session has no active
+        execution"). ask_user answers are self-describing Q&A pairs and can
+        continue as a normal turn; permission/evolution approvals are not
+        degradable (a detached "allow" is meaningless and unsafe) and return
+        None so the caller keeps the original error.
+        """
+        params = request.params if isinstance(request.params, dict) else {}
+        if str(params.get("source") or "").strip() != "ask_user_interrupt":
+            return None
+        answers = params.get("answers")
+        if not isinstance(answers, list) or not answers:
+            return None
+        lines: list[str] = []
+        for answer in answers:
+            if not isinstance(answer, dict):
+                return None
+            question = str(answer.get("question") or "").strip()
+            options = [
+                str(option).strip()
+                for option in answer.get("selected_options") or []
+                if str(option).strip()
+            ]
+            custom = str(answer.get("custom_input") or "").strip()
+            if not question and not custom:
+                continue
+            chosen = "、".join([*options, custom]) if (options or custom) else ""
+            lines.append(f"问：{question or '（自由输入）'}\n答：{chosen}")
+        if not lines:
+            return None
+        continuation = (
+            "（注：此前的任务因服务重启中断。以下是对先前提问的回答，"
+            "请结合会话历史理解并继续任务。）\n" + "\n".join(lines)
+        )
+        new_params = dict(params)
+        new_params.pop("answers", None)
+        new_params.pop("source", None)
+        new_params["query"] = continuation
+        return replace(request, params=new_params)
 
     @staticmethod
     def _waiting_control_id(value: object) -> str | None:
