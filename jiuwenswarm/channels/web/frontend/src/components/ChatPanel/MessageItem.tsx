@@ -38,6 +38,7 @@ import { isGoalCompletedContent } from '../GoalBar/goalCompletedMessage';
 import { a2uiContentToText } from '../../features/a2ui/a2uiContent';
 import { formatTimestamp, onTtsStop, sanitizeTtsText } from '../../utils';
 import { useSpeechSynthesis } from '../../hooks';
+import { findPromptBefore } from '../../utils/ttsVoice';
 import clsx from 'clsx';
 import { MarkdownRenderer } from '../../components/MarkdownRenderer';
 import { isTeamP2PMessageToUser, parseTeamEventMessage } from './teamEventUtils';
@@ -393,7 +394,6 @@ export const MessageItem = memo(function MessageItem({
 
   // TTS
   const { isSpeaking, speak, stop, isSupported: ttsSupported } = useSpeechSynthesis({
-    language: 'zh-CN',
     rate: 1.1,
   });
 
@@ -450,12 +450,17 @@ export const MessageItem = memo(function MessageItem({
       const readableContent = a2uiContentToText(content) || content;
       const cleanContent = sanitizeTtsText(readableContent);
       if (cleanContent) {
-        speak(cleanContent);
+        // 回复本身无法判定语言（如纯数字）时，按触发它的用户输入的语言朗读
+        const messages = useChatStore.getState().getRuntime(activeSessionId)?.messages ?? [];
+        const promptText = stripSwarmflowAdvisory(stripUploadDocumentBlocks(findPromptBefore(messages, id)));
+        speak(cleanContent, promptText);
       }
     }
   }, [
+    activeSessionId,
     audioBase64,
     content,
+    id,
     isAudioPlaying,
     isSpeaking,
     playGeneratedAudio,
