@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from jiuwenavatar.server.runtime.coding import (
@@ -17,6 +19,7 @@ from jiuwenavatar.server.runtime.coding.engines import (
     CliCodingEngine,
     CodexEngine,
     JiuwenEngine,
+    _non_interactive_task_prompt,
     assert_coding_engine_selectable,
     coding_engine_selectability,
     list_coding_engine_selectability,
@@ -29,6 +32,19 @@ def test_registry_returns_expected_engines():
     assert isinstance(get_coding_engine(CODING_ENGINE_JIUWEN), JiuwenEngine)
     assert isinstance(get_coding_engine(CODING_ENGINE_CLAUDE_CODE), ClaudeCodeEngine)
     assert isinstance(get_coding_engine(CODING_ENGINE_CODEX), CodexEngine)
+
+
+def test_non_interactive_task_prompt_mentions_repo_review_standards():
+    """Review tasks delegated to a CLI engine must load repo-local standards."""
+    prompt = _non_interactive_task_prompt(
+        engine_name="Claude Code",
+        message="检视 PR: https://gitcode.com/openJiuwen/jiuwenswarm/pull/7464",
+        workspace=Path("/tmp/ws"),
+        skills_root=Path("/tmp/skills"),
+    )
+    assert "repo_review_standards" in prompt
+    assert "仓内检视标准" in prompt
+    assert "base 版本" in prompt
 
 
 def test_unknown_and_empty_engine_fall_back_to_jiuwen():

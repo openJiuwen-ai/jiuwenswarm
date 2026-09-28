@@ -212,7 +212,8 @@ def _non_interactive_task_prompt(
         "\n"
         "【执行要求】\n"
         "1. 先阅读 ./skills/dev-reviewer/SKILL.md；需要 GitCode 仓库信息时可阅读 ./skills/gitcode-repo/SKILL.md 和 gitcode-repo.json。\n"
-        "2. 对代码检视任务，按 dev-reviewer 流程收集 diff、分析风险、输出可执行发现。\n"
+        "2. 对代码检视任务，按 dev-reviewer 流程收集 diff、分析风险、输出可执行发现；collect 后若 context.json 的 \
+            project_context.repo_review_standards 非空，必须先读取列出的仓内检视标准再检视（被本 PR 修改的按 PR base 版本读取）。\n"
         "3. 你可以运行允许的 bash/python/git 命令；所有失败都要自行降级重试或记录限制，不要停下来问问题。\n"
         "4. 最终必须给出实质结果：至少包含执行摘要、已检查的文件/证据、Must Fix/Should Fix/可不评论项；没有发现问题也要说明已检查依据。\n"
         "5. 不要输出请提供仓库路径/Token/PR信息等请求，除非原始任务完全没有目标。\n"

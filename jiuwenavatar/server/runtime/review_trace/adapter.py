@@ -539,7 +539,12 @@ def _apply_command_activity(activity: dict[str, Any], command: str, result: Any,
             results = payload.get("results") if isinstance(payload.get("results"), list) else []
             successful = [
                 item for item in results
-                if isinstance(item, dict) and item.get("status") in {"dry_run", "posted", "skipped_existing"}
+                # skipped_existing / skipped_duplicate mean the comment is
+                # already on the PR (id or content dedup), so they count as
+                # commented evidence for the all_findings_commented gate.
+                if isinstance(item, dict) and item.get("status") in {
+                    "dry_run", "posted", "skipped_existing", "skipped_duplicate",
+                }
             ]
             activity["successful_comment_calls"] += len(successful)
             for item in successful:
