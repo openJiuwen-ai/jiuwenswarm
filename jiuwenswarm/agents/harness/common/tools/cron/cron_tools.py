@@ -548,7 +548,7 @@ class CronTools:
                 normalized["model_name"] = inherited_model
         model_name_raw = normalized.get("model_name")
         if model_name_raw is not None and str(model_name_raw).strip():
-            model_kw["model_name"] = validate_cron_model(model_name_raw)
+            model_kw["model_name"] = validate_cron_model(model_name_raw, allow_login_model=True)
         # mcp：会话级 MCP 选择（backend 层已继承 chat-session 快照或显式传入），
         # 只做类型规范化（strip/去空/去重），不校验存在性——MCP 断连后 job 应降级运行。
         mcp_kw: dict[str, Any] = {}
@@ -637,7 +637,9 @@ class CronTools:
         if "mode" in normalized_patch:
             normalized_patch["mode"] = normalize_cron_job_mode(normalized_patch.get("mode"))
         if "model_name" in normalized_patch:
-            normalized_patch["model_name"] = validate_cron_model(normalized_patch.get("model_name"))
+            normalized_patch["model_name"] = validate_cron_model(
+                normalized_patch.get("model_name"), allow_login_model=True
+            )
         if "mcp" in normalized_patch:
             # 显式传 null/[] 归 None（清除选择）；元素不规范的非列表值同样归 None。
             normalized_patch["mcp"] = normalize_cron_job_mcp(normalized_patch.get("mcp"))

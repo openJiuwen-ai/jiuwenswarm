@@ -942,6 +942,27 @@ class CronSchedulerService:
             )
         return "__cron__", f"cron_{ts}_{job.id}"
 
+    @staticmethod
+    async def _attach_login_model_auth(job: CronJob, params: dict[str, Any]) -> None:
+        from jiuwenswarm.common.auth.passthrough import model_auth_for_owner
+        from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+
+        try:
+            auth = await asyncio.to_thread(
+                model_auth_for_owner, str(job.model_name), job.login_credential_ref
+            )
+        except Exception:  # noqa: BLE001 — 凭据取不到不该让调度本身出错
+            logger.warning("[Cron] 取免费模型登录凭据异常 job_id=%s", job.id, exc_info=True)
+            return
+        if auth is None:
+            logger.warning(
+                "[Cron] 免费模型任务取不到登录凭据（未登录或登录已过期）job_id=%s model=%s",
+                job.id,
+                job.model_name,
+            )
+            return
+        params[E2A_MODEL_AUTH_PARAM_KEY] = auth
+
     async def _allocate_execution_session(
         self,
         job: CronJob,
@@ -1461,6 +1482,8 @@ class CronSchedulerService:
                 }
                 if job.model_name:
                     params["model_name"] = job.model_name
+                    if job.login_credential_ref:
+                        await self._attach_login_model_auth(job, params)
                 if job.model_selection:
                     params["model_selection"] = dict(job.model_selection)
                 # 会话级 MCP 选择：注入 chat.send 的 ``mcp`` 字段，走 AgentServer

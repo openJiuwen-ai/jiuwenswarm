@@ -14,14 +14,14 @@ class _CapturingCronController:
         self.update_patch: dict | None = None
         self.user_id = ""
 
-    async def create_job(self, params: dict) -> dict:
+    async def create_job(self, params: dict, *, auth_session=None) -> dict:
         self.create_params = dict(params)
         return {"id": "job-1"}
 
     async def get_job(self, job_id: str) -> dict:
         return {"id": job_id, "user_id": self.user_id}
 
-    async def update_job(self, job_id: str, patch: dict) -> dict:
+    async def update_job(self, job_id: str, patch: dict, *, auth_session=None) -> dict:
         _ = job_id
         self.update_patch = dict(patch)
         return {"id": "job-1"}

@@ -147,7 +147,7 @@ class _CronToolsCronBackend(CronToolBackend):
                 return payload
             from jiuwenswarm.runtime.cron.models import validate_cron_model
 
-            canonical = validate_cron_model(inherited)
+            canonical = validate_cron_model(inherited, allow_login_model=True)
             if canonical:
                 out = dict(payload)
                 out["model_name"] = canonical

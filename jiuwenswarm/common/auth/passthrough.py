@@ -97,6 +97,51 @@ def _build_model_auth(model_name: str, session_id: str | None) -> dict[str, Any]
     }
 
 
+def login_owner_ref(auth_session: str | None) -> str | None:
+    """调用方的登录会话 → 账号句柄；没登录（或会话已失效）返回 ``None``。
+
+    给"事后才执行、执行时没有登录会话"的调用方（定时任务）在设置时记下是谁：
+    句柄按账号算、不可逆，落盘无妨；同一账号重新登录后句柄不变，任务照常能用。
+    """
+    from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user
+    from jiuwenswarm.common.auth.service import get_auth_service
+
+    session = get_auth_service().resolve_session(auth_session)
+    return credential_ref_for_user(session.user_id) if session is not None else None
+
+
+def model_auth_for_owner(model_name: str, credential_ref: str) -> dict[str, Any] | None:
+    """按 :func:`login_owner_ref` 记下的句柄造登录模型凭据，形状同请求路径上挂的那份。
+
+    找不到会话、续不了期、或已不是登录模型时返回 ``None``：不在这里报错，AgentServer
+    解析模型时会给出"需要登录华为账号"的提示。续期是同步 HTTP，调用方要放到线程里跑。
+    """
+    from jiuwenswarm.common.auth.service import get_auth_service
+
+    session = _session_for_ref(credential_ref)
+    if session is None:
+        return None
+    fresh = get_auth_service().try_refresh(session)
+    if fresh is None or fresh.credential.is_expired():
+        return None
+    return _build_model_auth(model_name, fresh.session_id)
+
+
+def _session_for_ref(credential_ref: str):
+    """句柄 → 本机当前的登录会话；格式不对或没有这个账号的会话返回 ``None``。"""
+    from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user, is_credential_ref
+    from jiuwenswarm.common.auth.session_store import get_session_store
+
+    if not is_credential_ref(credential_ref):
+        return None
+    # 句柄是账号的单向 HMAC，只能逐个算出来比对。本机会话数量很少，代价可以忽略。
+    # 同一账号重新登录过也能找到：句柄按账号算，找到的是它当前那个会话。
+    return next(
+        (s for s in get_session_store().list_sessions() if credential_ref_for_user(s.user_id) == credential_ref),
+        None,
+    )
+
+
 def refreshed_credential_for_ref(credential_ref: str) -> dict[str, Any] | None:
     """AgentServer 请求续期时调用：按句柄找到登录会话，续期后返回要推回去的参数。
 
@@ -107,23 +152,13 @@ def refreshed_credential_for_ref(credential_ref: str) -> dict[str, Any] | None:
 
     这是同步 HTTP（续期），调用方要放到线程里跑。句柄格式不对返回 ``None``。
     """
-    from jiuwenswarm.common.auth.login_credentials import (
-        REFRESH_AHEAD_S,
-        credential_ref_for_user,
-        is_credential_ref,
-    )
+    from jiuwenswarm.common.auth.login_credentials import REFRESH_AHEAD_S, is_credential_ref
     from jiuwenswarm.common.auth.service import get_auth_service
-    from jiuwenswarm.common.auth.session_store import get_session_store
 
     if not is_credential_ref(credential_ref):
         return None
     revoked = {"credential_ref": credential_ref, "revoked": True}
-    # 句柄是账号的单向 HMAC，只能逐个算出来比对。本机会话数量很少，代价可以忽略。
-    # 同一账号重新登录过也能找到：句柄按账号算，找到的是它当前那个会话。
-    session = next(
-        (s for s in get_session_store().list_sessions() if credential_ref_for_user(s.user_id) == credential_ref),
-        None,
-    )
+    session = _session_for_ref(credential_ref)
     if session is None:
         return revoked
     fresh = get_auth_service().try_refresh(session, ahead_s=REFRESH_AHEAD_S)

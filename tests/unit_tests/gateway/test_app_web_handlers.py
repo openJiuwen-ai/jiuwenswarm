@@ -285,7 +285,7 @@ class _CapturingCronController:
     def __init__(self) -> None:
         self.params = None
 
-    async def create_job(self, params):
+    async def create_job(self, params, *, auth_session=None):
         self.params = dict(params)
         return {"id": "cron-1"}
 
@@ -298,7 +298,7 @@ class _OwnedCronController:
     async def get_job(self, job_id):
         return self.job if job_id == self.job.id else None
 
-    async def update_job(self, job_id, patch):
+    async def update_job(self, job_id, patch, *, auth_session=None):
         self.update_calls += 1
         return {"id": job_id, **patch}
 
@@ -364,7 +364,7 @@ class FakeHeartbeatController:
         self.calls.append(("list", dict(params), access_session_id, user_id))
         return {"jobs": []}
 
-    async def create_job(self, params, *, user_id=""):
+    async def create_job(self, params, *, user_id="", auth_session=None):
         self.calls.append(("create", dict(params), user_id))
         return dict(params, id="hb-test")
 
@@ -726,7 +726,7 @@ async def test_agentos_cron_update_project_fields_with_dict_job(monkeypatch) -> 
         async def get_job(self, job_id):
             return dict(self.job) if job_id == self.job["id"] else None
 
-        async def update_job(self, job_id, patch):
+        async def update_job(self, job_id, patch, *, auth_session=None):
             self.update_calls.append((job_id, dict(patch)))
             return {"id": job_id, **patch}
 
