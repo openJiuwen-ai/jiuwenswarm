@@ -856,10 +856,10 @@ class PersonalContextHostAPI:
             or getattr(status, "pipeline_running", False) is True
             or getattr(status, "state", None) == "STOPPING"
         )
-        if (
+        same_runtime_configuration = (
             same_configuration and previous_active == candidate.collection_enabled
-            and (candidate.collection_enabled or not shutdown_pending)
-        ):
+        )
+        if same_runtime_configuration and (candidate.collection_enabled or not shutdown_pending):
             _publish_yaml(self._config_path, payload)
             self._stored_config = deepcopy(stored)
             return
@@ -938,7 +938,7 @@ class PersonalContextHostAPI:
         except BaseException as exc:
             if disabled_yaml_published and phase == "stop":
                 if isinstance(exc, asyncio.CancelledError):
-                    raise
+                    raise exc
                 raise _as_host_error(
                     exc, "PersonalContext runtime could not be stopped"
                 ) from None
@@ -1042,7 +1042,7 @@ class PersonalContextHostAPI:
         except BaseException as exc:
             if preserve_disabled_intent and published:
                 if isinstance(exc, asyncio.CancelledError):
-                    raise
+                    raise exc
                 raise _as_host_error(
                     exc, "PersonalContext runtime could not be stopped"
                 ) from None

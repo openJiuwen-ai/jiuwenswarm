@@ -2730,8 +2730,11 @@ async def test_delete_fetch_service_allows_when_not_collecting(
 async def test_patch_runtime_config_rejects_while_fetch_round_running(
     fake_host: tuple[PersonalContextHostAPI, FakeCore],
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     host, core = fake_host
+    # balanced must change the configuration instead of falling back to rules.
+    _pin_models(monkeypatch, [_model_entry("guard-model")])
     await host.configure(_config(enabled=False, root_dir=tmp_path))
     before = host._config_path.read_bytes()
     core.snapshot_result = SimpleNamespace(

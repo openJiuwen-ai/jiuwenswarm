@@ -189,7 +189,9 @@ def log_error(error: BaseException) -> None:
     ).replace("\r", " ").replace("\n", " ")
     message = re.sub(r"(?i)bearer\s+[^\s,;]+", "[REDACTED]", message)
     message = re.sub(
-        r"""(?ix)["']?(?:api[_\ -]?key|(?:access[_\ -]?|refresh[_\ -]?)?token|pat|secret|password|authorization|cookie|credentials?)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)""",
+        r"""(?ix)["']?(?:api[_\ -]?key|(?:access[_\ -]?|refresh[_\ -]?)?token|"""
+        r"""pat|secret|password|authorization|cookie|credentials?)["']?\s*[:=]\s*"""
+        r"""(?:"[^"]*"|'[^']*'|[^\s,;]+)""",
         "[REDACTED]",
         message,
     )
