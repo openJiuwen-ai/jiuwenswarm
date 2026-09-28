@@ -5,6 +5,7 @@
 export { useChatStore } from './chatStore';
 export { useTodoStore } from './todoStore';
 export { useGoalStore } from './goalStore';
+export { usePlanStore } from './planStore';
 export { useSessionStore, resolveEffectiveModel } from './sessionStore';
 export { PROJECT_SESSION_PAGE_SIZE, useWorkspaceStore } from './workspaceStore';
 export { useHarnessStore } from './harnessStore';

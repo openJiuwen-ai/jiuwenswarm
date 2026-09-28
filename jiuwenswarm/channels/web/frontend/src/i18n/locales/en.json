@@ -619,6 +619,16 @@
     "pending": "Pending",
     "completed": "Completed"
   },
+  "plan": {
+    "toolbarTag": "Plan",
+    "closeTag": "Exit plan mode",
+    "approvalPrompt": "The plan is ready. Choose what to do next.",
+    "executePrompt": "The plan is approved. Start executing it.",
+    "approvalExecute": "Execute",
+    "approvalSkip": "Skip",
+    "approvalNext": "Next",
+    "approvalInputPlaceholder": "Add revision notes then click Next; leave empty and click Skip"
+  },
   "goal": {
     "formSubmit": "Confirm",
     "formCancel": "Cancel",
