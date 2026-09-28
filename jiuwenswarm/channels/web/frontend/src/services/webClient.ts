@@ -35,7 +35,7 @@ export const PAUSABLE_STREAM_EVENTS = new Set([
   // 会把 processing 翻回 true，暂停中的 thinking 面板"复活"。
   'chat.reasoning',
   'todo.updated', 'context.compressed', 'context.usage',
-  'chat.subtask_update', 'chat.usage_summary',
+  'chat.subtask_update', 'chat.subagent_activity', 'chat.usage_summary',
 ]);
 
 export interface PauseBufferHook {
