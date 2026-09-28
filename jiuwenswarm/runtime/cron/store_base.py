@@ -45,6 +45,7 @@ class CronJobStoreBackend(Protocol):
         app_id: str = "",
         work_mode: str = "work",
         user_id: str = "",
+        login_credential_ref: str = "",
     ) -> CronJob:
         ...
 

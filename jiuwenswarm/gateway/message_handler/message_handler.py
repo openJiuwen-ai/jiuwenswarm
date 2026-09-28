@@ -3435,6 +3435,12 @@ class MessageHandler(ABC):
 
         is_agentos = is_agentos_routing_client(self.agent_client)
         owner_user_id = str(user_id or "").strip()
+        request_metadata = self._stream_metadata.get(request_id)
+        auth_session = (
+            str(request_metadata.get("auth_session") or "").strip() or None
+            if isinstance(request_metadata, dict)
+            else None
+        )
 
         async def _get_owned_job(job_id: str) -> dict[str, Any] | None:
             job = await cc.get_job(job_id)
@@ -3475,7 +3481,7 @@ class MessageHandler(ABC):
                 # 与用户目录隔离时，允许 controller 跳过其本地反查。
                 if is_agentos:
                     params["_agentos_project_binding_verified"] = True
-                data = await cc.create_job(params)
+                data = await cc.create_job(params, auth_session=auth_session)
             elif action == "update":
                 job_id = str(params.get("job_id") or "")
                 if await _get_owned_job(job_id) is None:
@@ -3483,7 +3489,7 @@ class MessageHandler(ABC):
                 patch = dict(params.get("patch") or {})
                 if is_agentos:
                     patch["_agentos_project_binding_verified"] = True
-                data = await cc.update_job(job_id, patch)
+                data = await cc.update_job(job_id, patch, auth_session=auth_session)
             elif action == "delete":
                 job_id = str(params.get("job_id") or "")
                 if await _get_owned_job(job_id) is None:

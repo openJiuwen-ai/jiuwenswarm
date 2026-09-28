@@ -4736,7 +4736,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 })
                 params.pop("project_dir", None)
                 params["_agentos_project_binding_verified"] = True
-            job = await cc.create_job(params)
+            job = await cc.create_job(
+                params, auth_session=getattr(ws, "_jiuwen_auth_session", "") or None
+            )
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except Exception as e:  # noqa: BLE001
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
@@ -4820,7 +4822,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 })
                 patch.pop("project_dir", None)
                 patch["_agentos_project_binding_verified"] = True
-            job = await cc.update_job(job_id, patch)
+            job = await cc.update_job(
+                job_id, patch, auth_session=getattr(ws, "_jiuwen_auth_session", "") or None
+            )
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")

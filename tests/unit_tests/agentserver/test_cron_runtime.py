@@ -744,7 +744,7 @@ async def test_cron_tools_create_job_uses_route_project_id_and_work_mode(
     # 严格校验，与 test_cron_tools_update_job_validates_model 保持一致。
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.tools.cron.cron_tools.validate_cron_model",
-        lambda raw: str(raw).strip() or None,
+        lambda raw, **_: str(raw).strip() or None,
     )
 
     token = tools.push_cron_route(
@@ -906,7 +906,7 @@ async def test_cron_tools_update_job_validates_model(tmp_path, monkeypatch) -> N
     )
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.tools.cron.cron_tools.validate_cron_model",
-        lambda raw: "checked-model" if raw == "valid-model" else None,
+        lambda raw, **_: "checked-model" if raw == "valid-model" else None,
     )
 
     job = await tools.update_job("job-1", {"model_name": "valid-model"})

@@ -220,6 +220,55 @@ def test_validate_cron_model_zen_cache_empty_still_rejected(
         validate_cron_model("deepseek-v4-flash-free")
 
 
+def _only_login_model_glm(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.common.auth.model_catalog import LoginModel
+
+    monkeypatch.setattr("jiuwenswarm.common.config.get_model_config", lambda name, index=None: None)
+    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: ["my-model"])
+    monkeypatch.setattr(
+        "jiuwenswarm.common.auth.model_catalog.get_models",
+        lambda session_id=None, allow_refresh=True: [LoginModel("GLM-5.2", "GLM-5.2")],
+    )
+
+
+def test_validate_cron_model_login_model_needs_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    _only_login_model_glm(monkeypatch)
+    with pytest.raises(ValueError, match="Unknown model 'GLM-5.2'"):
+        validate_cron_model("GLM-5.2")
+    assert validate_cron_model("GLM-5.2", allow_login_model=True) == "GLM-5.2"
+    assert validate_cron_model("GLM-5.2#3", allow_login_model=True) == "GLM-5.2"
+    with pytest.raises(ValueError, match="Unknown model 'no-such-model'"):
+        validate_cron_model("no-such-model", allow_login_model=True)
+
+
+def test_controller_records_login_model_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.gateway.cron.controller import CronController
+
+    _only_login_model_glm(monkeypatch)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.auth.passthrough.login_owner_ref",
+        lambda auth_session: "a" * 32 if auth_session == "sess-1" else None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_model_config",
+        lambda name, index=None: _user_model_entry() if name == "my-model" else None,
+    )
+
+    # 自配模型：不记账号，和以前一样
+    assert CronController._resolve_model("my-model", "sess-1") == ("my-model", "")
+    # 登录模型：记下设置者的账号句柄
+    assert CronController._resolve_model("GLM-5.2", "sess-1") == ("GLM-5.2", "a" * 32)
+    # 登录模型但没登录：拒绝，而不是建一个到点必失败的任务
+    with pytest.raises(ValueError, match="请先登录"):
+        CronController._resolve_model("GLM-5.2", None)
+
+    job = CronJob.from_dict(
+        {"id": "j", "name": "n", "cron_expr": "0 9 * * *", "timezone": "Asia/Shanghai",
+         "description": "d", "targets": "web", "model_name": "GLM-5.2", "login_credential_ref": "a" * 32}
+    )
+    assert CronJob.from_dict(job.to_dict()).login_credential_ref == "a" * 32
+
+
 # ---------------------------------------------------------------------------
 # 会话级 MCP 选择（mcp）：类型规范化 + CronJob 序列化 round-trip
 # ---------------------------------------------------------------------------

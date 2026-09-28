@@ -248,8 +248,25 @@ class CronController:
     def job_metadata() -> dict[str, Any]:
         return cron_job_metadata()
 
+    @staticmethod
+    def _resolve_model(raw: Any, auth_session: str | None) -> tuple[str | None, str]:
+        try:
+            return validate_cron_model(raw), ""
+        except ValueError:
+            model_name = validate_cron_model(raw, allow_login_model=True)
+        from jiuwenswarm.common.auth.passthrough import login_owner_ref
+
+        owner_ref = login_owner_ref(auth_session)
+        if not owner_ref:
+            raise ValueError(
+                f"「{model_name}」是登录华为账号获得的限时免费模型，请先登录后再设置定时任务"
+            )
+        return model_name, owner_ref
+
     @_serialize_mutation
-    async def create_job(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def create_job(
+        self, params: dict[str, Any], *, auth_session: str | None = None
+    ) -> dict[str, Any]:
         # This marker is set only by the AgentServer-to-Gateway path after the
         # project has been resolved against the user's AgentServer directory.
         # Do not persist it with the job payload.
@@ -271,7 +288,9 @@ class CronController:
             mode = normalize_cron_job_mode(mode)
         else:
             mode = None
-        model_name = validate_cron_model(params.get("model_name"))
+        model_name, login_credential_ref = self._resolve_model(
+            params.get("model_name"), auth_session
+        )
         model_selection = params.get("model_selection")
         if model_selection is not None:
             from jiuwenswarm.common.model_selection import ModelSelection
@@ -372,20 +391,26 @@ class CronController:
             app_id=app_id,
             work_mode=work_mode,
             user_id=user_id,
+            login_credential_ref=login_credential_ref,
         )
         await self._scheduler.reload()
         return job.to_dict()
 
     @_serialize_mutation
-    async def update_job(self, job_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+    async def update_job(
+        self, job_id: str, patch: dict[str, Any], *, auth_session: str | None = None
+    ) -> dict[str, Any]:
         patch = dict(patch or {})
         allow_unresolved_project_id = bool(
             patch.pop("_agentos_project_binding_verified", False)
         )
+        patch.pop("login_credential_ref", None)
         if "mode" in patch:
             patch["mode"] = normalize_cron_job_mode(patch.get("mode"))
         if "model_name" in patch:
-            patch["model_name"] = validate_cron_model(patch.get("model_name"))
+            patch["model_name"], patch["login_credential_ref"] = self._resolve_model(
+                patch.get("model_name"), auth_session
+            )
         if "mcp" in patch:
             # 显式传 null/[] 归 None（清除选择，执行时回到全局默认集）。
             patch["mcp"] = normalize_cron_job_mcp(patch.get("mcp"))

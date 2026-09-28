@@ -230,7 +230,22 @@ def normalize_cron_job_mcp(raw: Any) -> list[str] | None:
     return out or None
 
 
-def validate_cron_model(raw: Any) -> str | None:
+def _login_model_name(value: str) -> str | None:
+    try:
+        from jiuwenswarm.common.auth.login_credentials import bare_model_name
+        from jiuwenswarm.common.auth.model_catalog import get_models
+
+        names = {model.model_name for model in get_models(allow_refresh=False)}
+    except Exception as exc:  # noqa: BLE001 - optional catalog must not break cron
+        logger.debug("[cron] login model catalog lookup failed for %r: %s", value, exc)
+        return None
+    if value in names:
+        return value
+    bare_name = bare_model_name(value)
+    return bare_name if bare_name in names else None
+
+
+def validate_cron_model(raw: Any, *, allow_login_model: bool = False) -> str | None:
     """Validate model name/alias against configured models. Returns canonical model_name or raises.
 
     If the input is an alias, resolves to the underlying ``model_client_config.model_name``
@@ -241,6 +256,11 @@ def validate_cron_model(raw: Any) -> str | None:
     Opencode Zen free models are in-memory only, so a configured-model miss
     also checks the live free-model cache.  A cache failure never blocks the
     normal configured-model validation path.
+
+    ``allow_login_model``: also accept free models granted by Huawei account
+    login. They are not in config.yaml either, and running one needs the
+    creator's login credentials, so only callers that record the owner
+    (see ``CronController``) or defer to such a caller should pass ``True``.
     """
     if raw is None:
         return None
@@ -281,6 +301,11 @@ def validate_cron_model(raw: Any) -> str | None:
                 return model_name
     except Exception as exc:  # noqa: BLE001 - optional cache must not break cron
         logger.debug("[cron] zen free-model lookup failed for %r: %s", value, exc)
+
+    if allow_login_model:
+        login_model = _login_model_name(value)
+        if login_model:
+            return login_model
 
     available = get_model_names()
     hint = ", ".join(available[:20]) if available else "(no models configured)"
@@ -373,6 +398,10 @@ class CronJob:
     # 否则 CreateSandbox 拉不起导致 60s 超时（见 plan-cron-user-id）。
     # 默认空串兼容旧数据；语义=创建者，创建后不可变。
     user_id: str = ""
+    # model_name 是登录华为账号获得的免费模型时，设置它的那个账号的句柄
+    # （credential_ref_for_user，不可逆）。执行时没有登录会话，按它找回凭据；
+    # 空串 = 不是免费模型。只由 Gateway 按调用方的登录会话写入。
+    login_credential_ref: str = ""
     # 工作模式派生快照：由 project_id 归属推导（"code" / "work"）。
     # 不作为独立隔离维度，任务归属仍以 project_id 为准。
     # from_dict 仅做 normalize + 兜底 "work"，不做跨层 Project 反查；
@@ -420,6 +449,8 @@ class CronJob:
             d["app_id"] = self.app_id
         if self.user_id:
             d["user_id"] = self.user_id
+        if self.login_credential_ref:
+            d["login_credential_ref"] = self.login_credential_ref
         return d
 
     @staticmethod
@@ -545,6 +576,10 @@ class CronJob:
         job_user_id = (
             str(job_user_id_raw).strip() if isinstance(job_user_id_raw, str) else ""
         )
+        login_ref_raw = data.get("login_credential_ref", "")
+        job_login_credential_ref = (
+            str(login_ref_raw).strip() if isinstance(login_ref_raw, str) else ""
+        )
 
         # work_mode：仅做 normalize + 兜底 "work"，不做跨层 Project 反查
         # （gateway.cron.models 是底层数据模型，不应反向依赖 server.runtime.session.project_store）
@@ -577,6 +612,7 @@ class CronJob:
             mcp=job_mcp,
             app_id=job_app_id,
             user_id=job_user_id,
+            login_credential_ref=job_login_credential_ref,
             work_mode=job_work_mode,
         )
 

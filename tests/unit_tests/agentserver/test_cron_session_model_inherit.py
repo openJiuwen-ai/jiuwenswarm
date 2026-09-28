@@ -273,7 +273,7 @@ def test_inherit_session_model_reuses_session_model(monkeypatch: pytest.MonkeyPa
     # validate_cron_model 返回 canonical 值（这里模拟其解析成功）
     monkeypatch.setattr(
         "jiuwenswarm.gateway.cron.models.validate_cron_model",
-        lambda raw: str(raw).strip() or None,
+        lambda raw, **_: str(raw).strip() or None,
     )
     context = CronToolContext(channel_id="web", session_id="web_sess_1")
     payload = _CronToolsCronBackend._inherit_session_model(
@@ -291,7 +291,7 @@ def test_inherit_session_model_overrides_explicit(monkeypatch: pytest.MonkeyPatc
     )
     monkeypatch.setattr(
         "jiuwenswarm.gateway.cron.models.validate_cron_model",
-        lambda raw: str(raw).strip() or None,
+        lambda raw, **_: str(raw).strip() or None,
     )
     context = CronToolContext(channel_id="web", session_id="web_sess_1")
     payload = _CronToolsCronBackend._inherit_session_model(
@@ -334,7 +334,7 @@ def test_inherit_session_model_validation_failure_keeps_payload(monkeypatch: pyt
         lambda sid, cache_bust=False: {"model": "no-such-model"},
     )
     # validate_cron_model 对未知模型抛错 → 复用失败不应阻断创建
-    def _reject(raw: Any) -> Any:
+    def _reject(raw: Any, **_: Any) -> Any:
         raise ValueError(f"Unknown model {raw!r}")
 
     monkeypatch.setattr(
