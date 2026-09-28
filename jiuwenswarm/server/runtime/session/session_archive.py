@@ -416,19 +416,11 @@ class SessionArchiveService:
         session_id: str,
         action: str,
         active: Path,
-        *,
-        parked_team_streams: bool = False,
     ) -> bool:
         """Whether this lifecycle action must wait for an active session to stop."""
         if action not in {"archive", "delete"}:
             return False
         if not active.exists():
-            return False
-        if parked_team_streams:
-            # Parked Team stream handlers no longer own team work; only the
-            # persistent leader stream keeps them alive.  Archive leaves that
-            # stream alone; delete proceeds and its stop path tears the team
-            # runtime (and with it the stream) down.
             return False
         # Running cron sessions must still stop before deletion: nothing in
         # this path owns their runs.  Heartbeat runs were stopped above.
@@ -499,17 +491,10 @@ class SessionArchiveService:
             if action in {"archive", "delete"}:
                 await self._stop_heartbeat(session_id)
                 await self._stop_subagents(session_id, action, owner_channel_id)
-            parked_team_streams = False
-            if action in {"archive", "delete"} and self.runtime.is_session_running(
-                session_id
-            ):
-                probe = getattr(self.runtime, "has_parked_team_streams", None)
-                parked_team_streams = callable(probe) and bool(probe(session_id))
             if self._session_is_busy_for_action(
                 session_id,
                 action,
                 active,
-                parked_team_streams=parked_team_streams,
             ):
                 details = {"stop_pending": False}
                 message = f"Session is running; stop it before {action}"
