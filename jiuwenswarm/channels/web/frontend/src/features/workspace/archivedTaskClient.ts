@@ -69,10 +69,12 @@ export interface BatchSessionResultEntry {
   error?: string;
   stop_pending?: boolean;
   /**
-   * SESSION_BUSY 的细分：swarm flow 已结束、Team 回合仍在收尾（leader 汇报
-   * 中），会话会自行结束——提示稍后重试，而不是让用户先手动停止。
+   * SESSION_BUSY 的细分：会话只是还在收尾，会自行结束——提示稍后重试，
+   * 而不是让用户先手动停止一个已停过的会话。
    */
   finishing?: boolean;
+  /** finishing 为真时的成因：常驻 subagent 正在退出，而非 Team 回合收尾。 */
+  subagent_finishing?: boolean;
   warnings?: ArchiveWarning[];
 }
 
@@ -109,6 +111,43 @@ export function getArchiveErrorFinishing(error: unknown): boolean {
     return (payload as { finishing?: unknown }).finishing === true;
   }
   return false;
+}
+
+/** 收尾成因：常驻 subagent 正在退出，或 swarm flow 已结束、Team 回合仍在收尾。 */
+export type ArchiveFinishingCause = 'subagent' | 'team';
+
+function readDetailFlag(source: unknown, key: string): boolean {
+  if (!source || typeof source !== 'object') return false;
+  return (source as Record<string, unknown>)[key] === true;
+}
+
+/** 找出承载 details 的对象：Error 自身（批量路径）或 WebError.payload（直连路径）。 */
+function finishingDetailSource(error: unknown): unknown {
+  if (!error || typeof error !== 'object') return null;
+  if ('finishing' in error) return error;
+  return (error as { payload?: unknown }).payload ?? null;
+}
+
+/**
+ * SESSION_BUSY 的收尾成因。同样是"会自行结束"，subagent 退出与 Team 回合
+ * 收尾对用户是两件事，文案也要分开。未标记收尾时返回 null。
+ */
+export function getArchiveErrorFinishingCause(
+  error: unknown,
+): ArchiveFinishingCause | null {
+  if (!error || typeof error !== 'object') return null;
+  if (!getArchiveErrorFinishing(error)) return null;
+  return readDetailFlag(finishingDetailSource(error), 'subagent_finishing')
+    ? 'subagent'
+    : 'team';
+}
+
+/** 批量结果项的收尾成因；非收尾项返回 null。 */
+export function batchResultFinishingCause(
+  entry: { finishing?: boolean; subagent_finishing?: boolean } | null | undefined,
+): ArchiveFinishingCause | null {
+  if (!entry || entry.finishing !== true) return null;
+  return entry.subagent_finishing === true ? 'subagent' : 'team';
 }
 
 /** 批量会话恢复/归档响应中取单个会话的结果；信封 ok 不代表该会话成功。 */

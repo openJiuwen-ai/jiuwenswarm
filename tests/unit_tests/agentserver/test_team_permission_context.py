@@ -40,7 +40,7 @@ def _make_adapter() -> JiuWenSwarmDeepAdapter:
     adapter._has_valid_model_config = lambda _model: True
     adapter._resolve_model_for_request = lambda _request: None
     adapter._apply_model_to_react_agent = lambda _model, **_kwargs: None
-    adapter._native_image_input_enabled = lambda _config, _model: False
+    adapter._native_image_input_status = lambda _config, _model: "disabled"
     adapter._build_image_tool_fallback_notice = lambda *_args, **_kwargs: None
     adapter._prepare_multimodal_image_inputs = staticmethod(
         lambda _request, inputs: inputs

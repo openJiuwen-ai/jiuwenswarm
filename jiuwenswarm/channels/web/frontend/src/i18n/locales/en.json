@@ -336,6 +336,8 @@
       "toggleCapability": "Toggle {{name}} capability",
       "saveAndEnable": "Save and enable",
       "savedRestartRequired": "Saved; takes effect after restart.",
+      "regionalBaseHint": "Keys are region-bound: use https://api.minimax.io/v1 for a global key and https://api.minimaxi.com/v1 for a China key. If the address and the key's region differ, the other region is tried automatically.",
+      "regionalBaseHintModelark": "Keys and model activation are region-bound: use https://ark.ap-southeast.bytepluses.com/api/v3 for BytePlus ModelArk (international) and https://ark.cn-beijing.volces.com/api/v3 for Volcengine (China). Models must be activated in the Ark console first, otherwise calls fail with ModelNotOpen.",
       "deleteModelTitle": "Delete model configuration",
       "deleteModelConfirm": "This deletes the saved model configuration for {{name}} and turns the capability off if it is currently enabled.",
       "team": "Agent team"
@@ -1812,6 +1814,7 @@
       "enable": "Collect Personal Context",
       "enableHint": "Periodic context harvesting & graph building.",
       "strategyProfile": "Context strategy",
+      "strategyLockedByFetch": "A fetch task is running or stopping. You can change the strategy when it finishes.",
       "strategy_agent": "Agent",
       "strategy_balanced": "LLM",
       "strategy_rules": "Rules",
@@ -1821,7 +1824,9 @@
       "modelHint": "Select a model configured in JiuwenSwarm.",
       "collectionStopPending": "A fetch task is running; the setting takes effect shortly.",
       "collectionStoppingRetry": "A fetch task is still running or stopping. Please try again in a moment.",
-      "operationTimeout": "Request timed out. Please try again in a moment."
+      "operationTimeout": "Request timed out. Please try again in a moment.",
+      "collectionTimeoutReconciling": "Request timed out. Checking the actual collection state.",
+      "collectionReconciling": "Request result is still unknown. Checking the actual collection state."
     },
     "authorization": {
       "title": "Content source authorization",
@@ -1921,6 +1926,7 @@
       "colActions": "Actions",
       "stateCollecting": "Fetching",
       "stateCompleted": "Completed",
+      "statePartial": "Partially completed: {{completed}}/{{total}}, {{failed}} failed",
       "stateFailed": "Failed",
       "stateWaiting": "Waiting",
       "stateStopped": "Stopped",
@@ -1946,10 +1952,10 @@
       "collectAll": "Collect All",
       "statSources": "Sources",
       "statKnowledge": "Context Nodes",
-      "statCollecting": "Collecting",
+      "statCollecting": "Active fetch tasks",
       "knowledgeSource": "Context Source",
       "lastRun": "Last Run",
-      "fetchTaskRunning": "A fetch task is currently running. Please wait for it to complete before changing settings."
+      "fetchTaskRunning": "A fetch task is running or stopping. Please wait for it to finish before changing settings."
     },
     "addContent": {
       "title": "Add content",
@@ -3550,6 +3556,7 @@
       "sessionsArchived": "Archived {{count}} conversations",
       "archiveBatchFailedRunning": "{{count}} conversation(s) are running and could not be archived",
       "archiveBatchFailedFinishing": "The swarm flow has ended and {{count}} conversation(s) are wrapping up. Please try again shortly.",
+      "archiveBatchFailedSubagentFinishing": "{{count}} conversation(s) still have sub-tasks wrapping up and will finish on their own. Please try again shortly.",
       "archiveBatchFailed": "{{count}} conversation(s) failed to archive",
       "defaultProjectName": "Default Project",
       "absolutePathError": "Enter an absolute path, for example /Users/name/work/project",
@@ -3560,8 +3567,10 @@
         "projectUnavailable": "Project unavailable. Refresh and retry.",
         "archiveSessionBusy": "This conversation is running and cannot be archived. Stop it manually, then try again.",
         "archiveSessionFinishing": "The swarm flow has ended and the conversation is wrapping up. Please try archiving again shortly.",
+        "archiveSessionSubagentFinishing": "Sub-tasks are still wrapping up. This conversation will finish on its own; please try archiving again shortly.",
         "deleteSessionBusy": "This conversation is running and cannot be deleted. Stop it manually, then try again.",
         "deleteSessionFinishing": "The swarm flow has ended and the conversation is wrapping up. Please try deleting again shortly.",
+        "deleteSessionSubagentFinishing": "Sub-tasks are still wrapping up. This conversation will finish on its own; please try deleting again shortly.",
         "archiveForbidden": "This task does not support archiving.",
         "archiveNotFound": "The resource no longer exists or has changed. Refresh and try again.",
         "archiveFailed": "The archive operation failed. Please try again later.",
@@ -3817,7 +3826,7 @@
       "message": "Deleting this custom connector removes its configuration, credentials, and skills for good — this cannot be undone. If you just want to reconnect later, disconnect instead of deleting."
     },
     "confirmUninstallPlugin": {
-      "message": "This plugin will become unavailable — you can reinstall it anytime."
+      "message": "Uninstalling will delete this plugin's related local files. Please confirm whether you want to continue."
     },
     "empty": {
       "myMcp": "No connectors yet",
@@ -4219,7 +4228,6 @@
       "statusFailed": "Task failed",
       "statusPaused": "Paused",
       "statusTerminated": "Terminated",
-      "statusInstalled": "Installed",
       "actionConfig": "Configuration",
       "actionDelete": "Delete",
       "actionPause": "Pause task",

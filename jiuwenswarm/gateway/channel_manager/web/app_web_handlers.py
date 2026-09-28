@@ -84,6 +84,7 @@ from jiuwenswarm.common.config_panel.config_set_handlers import (  # noqa: F401 
     team_item_requests_codex as _team_item_requests_codex,
     team_payload_requests_codex as _team_payload_requests_codex,
 )
+from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.config_panel.models_handlers import (  # noqa: F401  — 兼容别名
     reasoning_level_display as _reasoning_level_display,
     normalize_provider_value as _normalize_provider_value,
@@ -2111,6 +2112,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             agent_client=_resolve(agent_client),
         )
 
+
     async def _config_save_all(ws, req_id, params, session_id):
         """config.save_all 实现已下沉 ``common.config_panel.config_set_handlers``。"""
         await config_set_handlers.config_save_all_handler(
@@ -2124,6 +2126,61 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _models_validate(ws, req_id, params, session_id):
         """测试指定模型配置是否可用（复用 config.validate_model 逻辑）。"""
         await _config_validate_model(ws, req_id, params, session_id)
+
+    async def _model_resource_rpc(ws, req_id, params, session_id, operation):
+        from jiuwenswarm.common.config import (
+            delete_model_resource, upsert_model_group_resource, upsert_model_resource,
+        )
+        from jiuwenswarm.common.model_errors import (
+            MODEL_SELECTION_NOT_FOUND, MODEL_SELECTION_REFERENCED, ModelSelectionError,
+        )
+        from jiuwenswarm.common.model_selection import ModelSelection
+        try:
+            catalog = ModelCatalog()
+            if operation == "groups.list":
+                payload = {"groups": catalog.list_public_groups()}
+            elif operation == "models.get":
+                model_id = str((params or {}).get("model_id") or "").strip()
+                payload = {"model": catalog.get_public_model_detail(model_id)}
+            elif operation == "models.references":
+                selection = ModelSelection.model_validate(params)
+                payload = {"references": [r.__dict__ for r in catalog.find_references(selection)]}
+            elif operation in {"models.delete", "groups.delete"}:
+                resource_type = "model_group" if operation.startswith("groups") else "model"
+                key = "model_group_id" if resource_type == "model_group" else "model_id"
+                resource_id = str((params or {}).get(key) or "").strip()
+                selection = ModelSelection(type=resource_type, id=resource_id)
+                references = catalog.find_references(selection)
+                if references:
+                    raise ModelSelectionError(MODEL_SELECTION_REFERENCED, "resource is still referenced",
+                        references=[r.__dict__ for r in references])
+                if not delete_model_resource(resource_type, resource_id):
+                    raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, "resource does not exist")
+                payload = {key: resource_id, "deleted": True}
+            elif operation == "models.upsert":
+                saved = upsert_model_resource((params or {}).get("model") or {})
+                payload = {"model": ModelCatalog().get_public_model_detail(saved["model_id"])}
+            else:
+                payload = {"group": upsert_model_group_resource((params or {}).get("group") or {})}
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except ModelSelectionError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code, payload=exc.to_payload())
+        except Exception as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
+
+    async def _session_selection_set(ws, req_id, params, session_id):
+        from jiuwenswarm.common.model_selection import ModelSelection
+        from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+        from jiuwenswarm.server.runtime.session.model_selection_store import set_session_model_selection
+        try:
+            target = str((params or {}).get("session_id") or session_id or "")
+            selection = ModelSelection.model_validate((params or {}).get("model_selection"))
+            ModelSelectionResolver().resolve(selection)
+            set_session_model_selection(target, selection)
+            await channel.send_response(ws, req_id, ok=True, payload={"model_selection": selection.model_dump()})
+        except Exception as exc:
+            code = getattr(exc, "code", "BAD_REQUEST")
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=code)
 
     async def _channel_get(ws, req_id, params, session_id):
         """返回已注册的 channel 列表."""
@@ -4945,8 +5002,23 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL, _config_save_all)
     _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL, _config_validate_model)
     _register_config_proxy("models.list", _ConfigReq.MODELS_LIST, _models_list)
+    _register_config_proxy("models.get", _ConfigReq.MODELS_GET,
+                           lambda ws, rid, p, sid: _model_resource_rpc(ws, rid, p, sid, "models.get"))
     _register_config_proxy("models.replace_all", _ConfigReq.MODELS_REPLACE_ALL, _models_replace_all)
     _register_config_proxy("models.validate", _ConfigReq.MODELS_VALIDATE, _models_validate)
+    _register_config_proxy("models.upsert", _ConfigReq.MODELS_UPSERT,
+                           lambda *a: _model_resource_rpc(*a, "models.upsert"))
+    _register_config_proxy("models.delete", _ConfigReq.MODELS_DELETE,
+                           lambda *a: _model_resource_rpc(*a, "models.delete"))
+    _register_config_proxy("models.references", _ConfigReq.MODELS_REFERENCES,
+                           lambda *a: _model_resource_rpc(*a, "models.references"))
+    _register_config_proxy("model_groups.list", _ConfigReq.MODEL_GROUPS_LIST,
+                           lambda *a: _model_resource_rpc(*a, "groups.list"))
+    _register_config_proxy("model_groups.upsert", _ConfigReq.MODEL_GROUPS_UPSERT,
+                           lambda *a: _model_resource_rpc(*a, "groups.upsert"))
+    _register_config_proxy("model_groups.delete", _ConfigReq.MODEL_GROUPS_DELETE,
+                           lambda *a: _model_resource_rpc(*a, "groups.delete"))
+    _register_config_proxy("session.selection.set", _ConfigReq.SESSION_SELECTION_SET, _session_selection_set)
 
     # vendors.* 为本分支新增的厂商选择接口，不经 config proxy（无 AgentOS 多用户注入目录语义），
     # 直接走本地 handler。
