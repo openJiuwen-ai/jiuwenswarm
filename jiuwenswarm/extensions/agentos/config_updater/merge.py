@@ -13,12 +13,15 @@ from typing import Any
 # Top-level keys starting with ``_`` are metadata and never merged.
 METADATA_PREFIX = "_"
 
-# Managed field paths, relative to the *extracted section* (not the raw etcd
-# document). For the ``gateway`` component the section looks like
-# ``{"agent_sandbox": {"idle_timeout": 600}}``. kind is "float" or
-# "positive_int".
+# Managed field paths, relative to the extracted ``gateway`` section.
+# Agent Sandbox and Tool Sandbox intentionally use separate namespaces.
 _MANAGED_FIELDS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("agent_sandbox", "idle_timeout"), "float"),
+    (("agent_sandbox", "cpu"), "positive_int"),
+    (("agent_sandbox", "memory"), "positive_int"),
+    (("tool_sandbox", "idle_timeout"), "int"),
+    (("tool_sandbox", "cpu"), "positive_int"),
+    (("tool_sandbox", "memory"), "positive_int"),
 )
 
 _MISSING = object()
@@ -191,10 +194,10 @@ def _validate_field(value: Any, path: tuple[str, ...], kind: str) -> str | None:
         return f"{field} must be a number, got {value!r}"
     if not math.isfinite(number):
         return f"{field} must be finite, got {value!r}"
-    if kind == "positive_int":
+    if kind in ("positive_int", "int"):
         if not number.is_integer():
             return f"{field} must be an integer, got {value!r}"
-        if number <= 0:
+        if kind == "positive_int" and number <= 0:
             return f"{field} must be > 0, got {value!r}"
     return None
 
