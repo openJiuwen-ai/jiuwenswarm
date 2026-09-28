@@ -27,6 +27,7 @@ from jiuwenswarm.gateway.cron.models import (
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES
+from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
@@ -57,6 +58,45 @@ def _is_cron_interrupt_event(event_type: str) -> bool:
 
 def _now_utc_ts() -> float:
     return time.time()
+
+
+def _login_model_auth_for_job(job: CronJob) -> dict[str, Any] | None:
+    """登录免费模型的请求级凭据（``_model_auth`` 参数体）；未绑定或拿不到凭据返回 ``None``。
+
+    AgentServer 不持有登录凭据，交互请求由 Gateway 转发时统一挂上
+    （``common/auth/passthrough.py``）；cron 执行请求直发 AgentServer、不走那条
+    转发路径，这里按任务创建时绑定的凭据句柄（``CronJob.credential_ref``，来自
+    创建连接的服务端登录会话）补挂。绑定即"所选模型是登录模型"的标记：
+    自配模型即使与登录模型同名也没有绑定，不会被误注入登录凭据。路由
+    user_id 与华为账号是两套独立用户体系，互不可推导，不在此做任何按名/按
+    user_id 的猜测。含同步续期 HTTP（token 未临近过期时 ``try_refresh`` 直接
+    返回，不发请求），调用方放线程里跑。
+
+    拿不到凭据不在这里报错：AgentServer 对"登录模型没带凭据"有面向用户的
+    ``login_required`` 报错，任务以明确原因失败，而不是静默换默认模型。
+    """
+    from jiuwenswarm.common.auth.apig import resolve_apig_config
+    from jiuwenswarm.common.auth.login_credentials import is_credential_ref
+    from jiuwenswarm.common.auth.passthrough import refreshed_credential_for_ref
+
+    ref = str(getattr(job, "credential_ref", "") or "").strip()
+    if not ref or not is_credential_ref(ref):
+        return None
+    fresh = refreshed_credential_for_ref(ref)
+    if (
+        not isinstance(fresh, dict)
+        or fresh.get("revoked")
+        or not str(fresh.get("api_key") or "").strip()
+    ):
+        return None
+    apig_config = resolve_apig_config(allow_refresh=False)
+    if apig_config is None:
+        return None
+    return {
+        "api_base": apig_config.invoke_base_url,
+        "api_key": str(fresh["api_key"]),
+        "credential_ref": ref,
+    }
 
 
 def _resolve_cron_execution_context(
@@ -1463,6 +1503,23 @@ class CronSchedulerService:
                     params["model_name"] = job.model_name
                 if job.model_selection:
                     params["model_selection"] = dict(job.model_selection)
+                # 登录免费模型：凭据随请求带给 AgentServer（cron 直发路径
+                # 不经过 Gateway 转发时的统一挂载，这里补挂）。挂不上不拦
+                # 执行——AgentServer 对"登录模型没带凭据"有 login_required
+                # 报错，任务以明确原因失败。
+                try:
+                    login_auth = await asyncio.to_thread(
+                        _login_model_auth_for_job, job
+                    )
+                except Exception:  # noqa: BLE001 — 凭据挂载失败不拦执行
+                    login_auth = None
+                    logger.warning(
+                        "[Cron] login model auth lookup failed job_id=%s",
+                        job.id,
+                        exc_info=True,
+                    )
+                if login_auth is not None:
+                    params[E2A_MODEL_AUTH_PARAM_KEY] = login_auth
                 # 会话级 MCP 选择：注入 chat.send 的 ``mcp`` 字段，走 AgentServer
                 # 与 chat-session 相同的 reconcile_session_mcp 通道（增量注册/注销）；
                 # 未配置（None）时保持既有行为（仅 init 全局默认集）。

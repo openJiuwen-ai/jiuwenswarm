@@ -4682,6 +4682,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 否则 CreateSandbox 拉不起 → 60s 超时（见 plan-cron-user-id）。
             if user_id:
                 params["user_id"] = str(user_id).strip()
+            # 登录会话 id：服务端专有键，无条件覆盖客户端传值。controller 用它给
+            # 登录免费模型绑定华为账号凭据句柄（与路由 user_id 是两套独立用户
+            # 体系），用后即弃、不落任务数据。
+            params["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
             is_agentos = is_agentos_routing_client(_resolve(agent_client))
             # 仅共享目录单用户可由 Gateway 从 session metadata 补 project_dir。
             # AgentOS 下 metadata 在目标 AgentServer 用户目录，Gateway 读部署目录会
@@ -4820,6 +4824,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 })
                 patch.pop("project_dir", None)
                 patch["_agentos_project_binding_verified"] = True
+            # 登录会话 id（服务端专有键，见 _cron_job_create）：改选登录免费模型时
+            # 重绑华为账号凭据句柄；无条件覆盖客户端传值。
+            patch["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
             job = await cc.update_job(job_id, patch)
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except KeyError:
