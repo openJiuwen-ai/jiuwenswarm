@@ -131,7 +131,7 @@ def _worker_command(
         command.extend(("--_operation", operation))
     else:
         command.append("--_forwarded-live-input")
-        model_selection = str(getattr(args, "_model_selection", "") or "")
+        model_selection = str(getattr(args, "model_selection", "") or "")
         if model_selection:
             command.extend(("--_model-selection", model_selection))
     if session_id:
@@ -671,7 +671,7 @@ async def _handle_control_command(
                 key = data.get("selection_key")
                 if not isinstance(key, str) or not key:
                     raise ControlQueryError("模型查询结果缺少选择键")
-                args._model_selection = key
+                args.model_selection = key
                 state.model_selection = key
                 state.model_name = str(data.get("display_name") or data.get("model_name") or key)
                 ui.notice(f"下一轮将使用模型：{state.model_name} [{key}]")
@@ -712,7 +712,7 @@ async def _handle_control_command(
     except asyncio.CancelledError:
         _clear_current_task_cancellation()
         ui.notice("已取消当前查询，可以继续输入。")
-    except (ControlQueryError, TimeoutError, OSError) as error:
+    except (ControlQueryError, OSError) as error:
         ui.notice(str(error) or "Runtime 查询失败")
     return True
 

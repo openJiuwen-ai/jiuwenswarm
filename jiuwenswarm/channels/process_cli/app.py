@@ -102,7 +102,7 @@ def _build_request(
             or (args.output == "human" and sys.stdin.isatty())
         ),
     }
-    model_selection = str(getattr(args, "_model_selection", "") or "").strip()
+    model_selection = str(getattr(args, "model_selection", "") or "").strip()
     if model_selection:
         params["model_name"] = model_selection
     return AgentRequest(

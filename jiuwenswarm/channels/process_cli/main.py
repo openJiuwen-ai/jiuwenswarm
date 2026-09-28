@@ -204,7 +204,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--_worker-result-file",
         help=argparse.SUPPRESS,
     )
-    parser.add_argument("--_model-selection", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--_model-selection", dest="model_selection", help=argparse.SUPPRESS
+    )
     parser.add_argument(
         "--_prompt-file",
         help=argparse.SUPPRESS,
