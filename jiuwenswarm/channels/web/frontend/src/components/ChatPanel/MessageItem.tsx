@@ -213,6 +213,28 @@ function TeamLeaderPlainTextMessage({
     }
   }, [content, isStreaming]);
 
+  // TTS，与单 Agent 回复保持一致
+  const { isSpeaking, speak, stop, isSupported: ttsSupported } = useSpeechSynthesis({
+    language: 'zh-CN',
+    rate: 1.1,
+  });
+
+  const handleSpeak = useCallback(() => {
+    if (isSpeaking) {
+      stop();
+      return;
+    }
+    const cleanContent = sanitizeTtsText(a2uiContentToText(content) || content);
+    if (cleanContent) {
+      speak(cleanContent);
+    }
+  }, [content, isSpeaking, speak, stop]);
+
+  useEffect(() => onTtsStop(stop), [stop]);
+
+  // 复制/朗读仅对 leader 回复开放：中间回复已由 hideMeta 收起，成员直发用户的消息不提供操作
+  const showActions = isTeamLeaderMember(member) && Boolean(content);
+
   return (
     <TeamMemberMessageFrame
       member={member}
@@ -244,7 +266,7 @@ function TeamLeaderPlainTextMessage({
           className="flex items-center gap-1 text-sm mt-2 text-text-meta justify-start"
         >
           <span data-testid="chat-panel-message-timestamp">{formatTimestamp(timestamp)}</span>
-          {Boolean(content) && (
+          {showActions && (
             <div className="relative" data-testid="chat-panel-message-copy">
               <button
                 type="button"
@@ -262,6 +284,30 @@ function TeamLeaderPlainTextMessage({
                   <Check className="w-4 h-4" strokeWidth={1.5} />
                 ) : (
                   <Copy className="w-4 h-4" strokeWidth={1.5} />
+                )}
+              </button>
+              {tooltip}
+            </div>
+          )}
+          {showActions && ttsSupported && (
+            <div className="relative" data-testid="chat-panel-message-tts">
+              <button
+                type="button"
+                data-testid="chat-panel-message-tts-btn"
+                data-variant={isSpeaking ? 'playing' : 'idle'}
+                aria-label={isSpeaking ? t('chatUi.stopReading') : t('chatUi.readMessage')}
+                data-tooltip={isSpeaking ? t('chatUi.stopReading') : t('chatUi.readMessage')}
+                {...tooltipHandlers}
+                onClick={handleSpeak}
+                className={clsx(
+                  'p-1.5 rounded-md',
+                  isSpeaking ? 'text-accent bg-accent/10' : 'hover:text-accent hover:bg-secondary',
+                )}
+              >
+                {isSpeaking ? (
+                  <Square className="w-4 h-4 fill-current" strokeWidth={1.5} />
+                ) : (
+                  <Volume2 className="w-4 h-4" strokeWidth={1.5} />
                 )}
               </button>
               {tooltip}
