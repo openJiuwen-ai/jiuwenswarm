@@ -100,9 +100,9 @@ _LEGACY_TODO_TOOLS = {
     "todo_complete",
     "todo_remove",
 }
-_SESSION_STATUS_TOOLS = {"session_list", "session_message_list"}
+_SESSION_STATUS_TOOLS = {"session_list", "session_message_list", "session_read"}
 _SESSION_SEND_TOOLS = {"session_send_message"}
-_SESSION_MESSAGE_MANAGEMENT_TOOLS = {"session_message_resolve"}
+_SESSION_MESSAGE_MANAGEMENT_TOOLS = {"session_message_resolve", "session_continue_queued"}
 _INTERNAL_READONLY_TOOLS = {
     "cron_list_jobs", "cron_get_job", "cron_preview_job",
     "heartbeat_list_jobs", "heartbeat_get_job", "heartbeat_preview_job",

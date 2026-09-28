@@ -57,6 +57,7 @@ class SkillPackDefinition:
     description: str
     members: tuple[str, ...]
     workflow_graph: dict[str, Any] | None
+    display_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -220,11 +221,18 @@ def load_skillpack(
 
     _validate_required_sections(body)
     workflow_graph = _parse_workflow_graph(body, set(members))
+    raw_display_name = frontmatter.get("display_name")
+    display_name = (
+        raw_display_name.strip()
+        if isinstance(raw_display_name, str) and raw_display_name.strip()
+        else None
+    )
     return SkillPackDefinition(
         name=name,
         description=description,
         members=tuple(members),
         workflow_graph=workflow_graph,
+        display_name=display_name,
     )
 
 

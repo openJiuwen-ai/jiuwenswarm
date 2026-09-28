@@ -286,6 +286,8 @@ class GatewayLock:
                     self._acquired = True
                     return True
                 if time.monotonic() >= deadline:
+                    if self._degrade_if_unheld():
+                        return True
                     logger.error(
                         "Another Gateway is running (pid=%d, workspace=%s); "
                         "refusing duplicate instance: %s",
@@ -298,6 +300,8 @@ class GatewayLock:
                 continue
             except (portalocker.exceptions.LockException, OSError):
                 if time.monotonic() >= deadline:
+                    if self._degrade_if_unheld():
+                        return True
                     logger.error(
                         "Failed to acquire Gateway lock within %.1fs: %s",
                         timeout,
@@ -429,6 +433,30 @@ class GatewayLock:
             probe.release()
         except Exception:  # noqa: BLE001 - best-effort cleanup
             pass
+        return False
+
+    def _degrade_if_unheld(self) -> bool:
+        """Sandbox fallback: proceed lock-free when no live holder is recorded.
+
+        On restricted environments (e.g. TRAE sandbox) the OS locking syscall
+        (``msvcrt.locking``) is denied, so portalocker raises ``AlreadyLocked``
+        even though no other Gateway holds the workspace. Before refusing
+        startup we verify the holder metadata: if it records no live PID, no
+        process can own the OS lock here, and we degrade to lock-free
+        operation with a warning (mirrors the ``media_capability_config``
+        lock-free fallback).
+        """
+        holder = self._read_holder()
+        pid = int(holder.get("pid", 0) or 0) if holder else 0
+        if pid <= 0 or not is_process_alive(pid):
+            logger.warning(
+                "Gateway OS lock unavailable (%s) and no live holder recorded; "
+                "proceeding lock-free (degraded mode)",
+                self.lock_path,
+            )
+            self._acquired = True
+            self._lock = None
+            return True
         return False
 
     def _read_holder(self) -> Optional[Dict[str, Any]]:

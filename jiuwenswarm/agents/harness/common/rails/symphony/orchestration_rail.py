@@ -255,11 +255,6 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         if state is None:
             return
         tool_name = self._tool_name(ctx.inputs)
-        if self._is_skill_tool(tool_name) and (
-            state.awaiting_input or state.pending_recompose
-        ):
-            self._reject_skill_until_composed(ctx)
-            return
         if tool_name != self.COMPOSE_TOOL_NAME:
             return
         if state.awaiting_input:
@@ -293,22 +288,10 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             state.pending_recompose = False
             return
         if state.pending_recompose and status == "ready":
-            # A resumed invocation may execute Skills only after a complete,
-            # explicitly ready replacement plan. Invalid/no-plan/failure
-            # results retain the gate; graph timeout/preparing keep their
-            # existing terminal lifecycle below.
+            # Clear the recompose state only after an explicitly ready plan.
+            # Other results leave the candidate/query constraints in place.
             state.pending_recompose = False
             state.awaiting_input = False
-
-    def _reject_skill_until_composed(self, ctx: AgentCallbackContext) -> None:
-        payload = {
-            "success": False,
-            "reason": "symphony_plan_not_ready",
-            "retryable": True,
-            "required_tool": self.COMPOSE_TOOL_NAME,
-            "detail": "Call symphony_compose_graph before executing skill_tool.",
-        }
-        self._skip_tool(ctx, payload)
 
     def _reject_compose_until_input(self, ctx: AgentCallbackContext) -> None:
         payload = {

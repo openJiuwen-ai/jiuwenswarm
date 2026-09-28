@@ -305,6 +305,50 @@ async def test_agent_group_describe_uses_local_group_manifest(tmp_path):
         instance.store.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,package_name,manifest_name,display_name",
+    [
+        ("agent_template", "agent-mudhsgoh", "手动专家", "手动专家"),
+        ("agent_group", "agent-group-mudhsgoh", "agent-group-mudhsgoh", "手动专家团"),
+    ],
+)
+async def test_agent_describe_uses_resolved_package_name_for_publish_identity(
+    tmp_path, kind, package_name, manifest_name, display_name
+):
+    root = tmp_path / package_name
+    root.mkdir()
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "package_type": kind,
+                "name": manifest_name,
+                "display_name": {"zh": display_name, "en": display_name},
+                "description": "Issue 4799 regression",
+            },
+            ensure_ascii=False,
+        )
+    )
+    instance = AssetPublishAPI(
+        tmp_path / "state",
+        publisher=Publisher(),
+        # A Hub-installed asset may be addressed by its remote UUID. The
+        # resolved package directory remains the canonical publish identity.
+        resolver=lambda requested_kind, local_id: root,
+        hub_url="https://example.com",
+    )
+    try:
+        result = await instance.call(
+            "describe",
+            params(kind=kind, local_id="b80afb7afff147bd801ed5f788fa767c"),
+            gateway_user="browser-user",
+        )
+        assert result["defaults"]["asset_name"] == package_name
+        assert result["defaults"]["display_name"] == display_name
+    finally:
+        instance.store.close()
+
+
 @pytest.mark.parametrize(
     "url",
     [

@@ -484,7 +484,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const result = findBatchSessionResult(response, sessionId);
     if (!result?.ok) {
       const error = new Error(result?.error || 'Failed to archive session');
-      Object.assign(error, { code: result?.code });
+      // finishing 透传给 UI：SESSION_BUSY 时区分「回合收尾中」与「运行中」文案。
+      Object.assign(error, { code: result?.code, finishing: result?.finishing === true });
       throw error;
     }
   },

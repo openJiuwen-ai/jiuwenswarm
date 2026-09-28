@@ -90,6 +90,18 @@ interface TaskItem {
   mediaItems?: MediaItem[];
 }
 
+export interface QueuedSessionMessage {
+  messageId: string;
+  sourceSessionId: string;
+  sourceTitle: string;
+  content: string;
+}
+
+export interface QueuedSessionMessageSnapshot {
+  generation: number;
+  previous: QueuedSessionMessage[];
+}
+
 export interface HistoryPagerMeta {
   nextCursor: string | null;
   hasMore: boolean;
@@ -160,6 +172,10 @@ export interface ChatRuntime {
     toolResultDedupDropped: number;
   };
   taskQueue: TaskItem[];
+  queuedSessionMessages: QueuedSessionMessage[];
+  queuedSessionMessageSnapshotGeneration: number;
+  /** A mailbox item cannot return to queued after it starts. */
+  settledQueuedSessionMessageIds: Set<string>;
   /** Keep request ownership even after a receipt is dismissed, to isolate late ACK/errors. */
   taskInputRequests: Record<string, { taskId: string; content: string; delivery?: 'chat' }>;
   /** Message-level feedback survives removal from the executable queue. */
@@ -213,6 +229,9 @@ function createEmptyRuntime(): ChatRuntime {
       toolResultDedupDropped: 0,
     },
     taskQueue: [],
+    queuedSessionMessages: [],
+    queuedSessionMessageSnapshotGeneration: 0,
+    settledQueuedSessionMessageIds: new Set(),
     taskInputRequests: {},
     taskInputReceipts: {},
     queuePaused: false,
@@ -304,6 +323,14 @@ interface ChatState {
   setEvolutionStatus: (sessionId: string, status: EvolutionStatusPayload | null) => void;
   setPaused: (sessionId: string, paused: boolean, task?: string | null) => void;
   setQueuePaused: (sessionId: string, paused: boolean) => void;
+  upsertQueuedSessionMessage: (sessionId: string, message: QueuedSessionMessage) => void;
+  removeQueuedSessionMessage: (sessionId: string, messageId: string) => void;
+  beginQueuedSessionMessageSnapshot: (sessionId: string) => QueuedSessionMessageSnapshot;
+  reconcileQueuedSessionMessageSnapshot: (
+    sessionId: string,
+    snapshot: QueuedSessionMessageSnapshot,
+    messages: QueuedSessionMessage[]
+  ) => void;
   setInterruptResult: (sessionId: string, result: InterruptResultPayload | null) => void;
   setSwitchingMode: (sessionId: string, switching: boolean) => void;
   setNewSession: (sessionId: string, isNew: boolean) => void;
@@ -1030,6 +1057,84 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         runtimes: {
           ...state.runtimes,
           [sessionId]: { ...runtime, queuePaused: paused },
+        },
+      };
+    });
+  },
+
+  upsertQueuedSessionMessage: (sessionId, message) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      if (runtime.settledQueuedSessionMessageIds.has(message.messageId)) return state;
+      const existing = runtime.queuedSessionMessages.findIndex(
+        (item) => item.messageId === message.messageId
+      );
+      const queuedSessionMessages = [...runtime.queuedSessionMessages];
+      if (existing >= 0) queuedSessionMessages[existing] = message;
+      else queuedSessionMessages.push(message);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, queuedSessionMessages },
+        },
+      };
+    });
+  },
+
+  removeQueuedSessionMessage: (sessionId, messageId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      if (runtime.settledQueuedSessionMessageIds.has(messageId)) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            queuedSessionMessages: runtime.queuedSessionMessages.filter(
+              (item) => item.messageId !== messageId
+            ),
+            settledQueuedSessionMessageIds: new Set([...runtime.settledQueuedSessionMessageIds, messageId]),
+          },
+        },
+      };
+    });
+  },
+
+  beginQueuedSessionMessageSnapshot: (sessionId) => {
+    const runtime = get().ensureRuntime(sessionId);
+    const snapshot = {
+      generation: runtime.queuedSessionMessageSnapshotGeneration + 1,
+      previous: runtime.queuedSessionMessages,
+    };
+    set((state) => ({
+      runtimes: {
+        ...state.runtimes,
+        [sessionId]: {
+          ...state.runtimes[sessionId],
+          queuedSessionMessageSnapshotGeneration: snapshot.generation,
+        },
+      },
+    }));
+    return snapshot;
+  },
+
+  reconcileQueuedSessionMessageSnapshot: (sessionId, snapshot, messages) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || runtime.queuedSessionMessageSnapshotGeneration !== snapshot.generation) return state;
+      const queuedSessionMessages = messages.filter(
+        (message) => !runtime.settledQueuedSessionMessageIds.has(message.messageId)
+      );
+      for (const message of runtime.queuedSessionMessages) {
+        if (snapshot.previous.includes(message)) continue;
+        const existing = queuedSessionMessages.findIndex((item) => item.messageId === message.messageId);
+        if (existing >= 0) queuedSessionMessages[existing] = message;
+        else queuedSessionMessages.push(message);
+      }
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, queuedSessionMessages },
         },
       };
     });

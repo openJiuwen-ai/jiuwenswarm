@@ -267,6 +267,79 @@ class TestEventConsumer:
         assert pushed[-1][0] == "rsi-t1"
         assert pushed[-1][1]["usage"]["tokens"] == {"input": 7, "output": 3, "cache_hit": 2}
 
+    def test_call_usage_keeps_growing_after_cumulative_snapshot(self, projector, usage, artifacts):
+        from types import SimpleNamespace
+
+        import asyncio
+
+        projector.register_root("rsi-t1", baseline=0.5)
+        consumer = RsiEventConsumer("rsi-t1", usage, projector, artifacts)
+        pushed = []
+
+        async def on_progress(task_id, payload):
+            pushed.append((task_id, payload))
+
+        consumer.bind_push(on_progress=on_progress)
+
+        def cumulative(input_tokens, output_tokens, call_count):
+            return SimpleNamespace(
+                event_type="progress",
+                iteration=1,
+                total_iterations=2,
+                score=None,
+                baseline=0.5,
+                usage={
+                    "tokens": {
+                        "input": input_tokens,
+                        "output": output_tokens,
+                        "cache_hit": 0,
+                    },
+                    "call_count": call_count,
+                },
+            )
+
+        def call(event_id, input_tokens, output_tokens):
+            return EventUsage(
+                event_id=event_id,
+                task_id="rsi-t1",
+                ts="2026-09-07T01:00:00+00:00",
+                call_id=f"call-live-{event_id}",
+                model_call=EngineRsiModelCall(
+                    model="m",
+                    call_count=1,
+                    tokens=RsiUsageTokens(
+                        input=input_tokens,
+                        output=output_tokens,
+                        cache_hit=0,
+                    ),
+                ),
+                node_ref="N1",
+            )
+
+        asyncio.run(consumer.on_engine_event(cumulative(10, 1, 1)))
+        asyncio.run(consumer.on_engine_event(call(2, 5, 2)))
+        asyncio.run(consumer.on_engine_event(call(2, 5, 2)))
+        assert pushed[-1][1]["usage"]["tokens"] == {
+            "input": 15,
+            "output": 3,
+            "cache_hit": 0,
+        }
+        assert pushed[-1][1]["usage"]["call_count"] == 2
+
+        # An unchanged snapshot must not erase deltas received since it.
+        asyncio.run(consumer.on_engine_event(cumulative(10, 1, 1)))
+        assert usage.get("rsi-t1")["usage"]["tokens"]["input"] == 15
+
+        # A newer cumulative snapshot absorbs the delta exactly once.
+        asyncio.run(consumer.on_engine_event(cumulative(15, 3, 2)))
+        asyncio.run(consumer.on_engine_event(call(3, 3, 1)))
+        assert pushed[-1][1]["usage"]["tokens"] == {
+            "input": 18,
+            "output": 4,
+            "cache_hit": 0,
+        }
+        assert pushed[-1][1]["usage"]["call_count"] == 3
+
     def test_node_created_with_artifacts(self, projector, usage, artifacts, tmp_path):
         task_dir = tmp_path / "rsi-t1"
         task_dir.mkdir()

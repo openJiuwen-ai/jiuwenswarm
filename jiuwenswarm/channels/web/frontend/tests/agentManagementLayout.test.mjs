@@ -193,6 +193,17 @@ test('Expert Team loading keeps the back bar outside the centered content', asyn
   const markup = renderToStaticMarkup(
     React.createElement(AgentGroupDetailPage, {
       detail: null,
+      loadingSummary: {
+        id: 'slow-team',
+        displayName: 'Slow Team',
+        description: 'Summary remains visible while details load.',
+        source: 'hub',
+        installed: false,
+        category: 'general',
+        tags: [],
+        avatarUrl: null,
+        capabilities: {},
+      },
       detailStatus: 'loading',
       detailError: null,
       onBack() {},
@@ -209,6 +220,8 @@ test('Expert Team loading keeps the back bar outside the centered content', asyn
   assert.ok(content);
   assert.equal(content.contains(back), false);
   assert.equal(content.getAttribute('role'), 'status');
+  assert.equal(shell.querySelector('[data-testid="agent-management-detail-name"]').textContent, 'Slow Team');
+  assert.match(shell.textContent, /Summary remains visible while details load\./);
 });
 
 test('publish actions require an installed runtime asset', () => {

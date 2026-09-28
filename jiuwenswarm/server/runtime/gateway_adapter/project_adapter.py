@@ -172,27 +172,33 @@ def _count_project_conversations(project_id: str) -> int:
 
 
 def _project_conversation_state(
-    project_id: str, runtime: Any = None,
+    project_id: str, runtime: Any = None, *, ignore_heartbeats: bool = False,
 ) -> tuple[int, list[str]]:
-    """Count Web conversations and find running ones in one metadata scan.
+    """Count Web conversations and check all channels for running sessions.
 
     执行判定与 session.archive 的
     ``_session_is_busy_for_action`` 一致:parked 的 Team 常驻流只剩响应流、
     不再持有团队工作,不阻塞移除——否则任何跑过 Team 会话的项目都会因
     常驻 leader 流而永远无法移除。
+
+    ``ignore_heartbeats`` 把后台 Heartbeat 执行排除在读之外,回答"停掉心跳后
+    本会话是否仍在跑"。预检用它,避免把即将被停掉的心跳读成阻塞项。
     """
     count = 0
     busy: list[str] = []
     for session in collect_all_sessions_metadata():
-        if session.get("channel_id") != "web" or session.get("cron_id"):
+        session_id = str(session.get("session_id") or "")
+        if session.get("cron_id") or session_id.startswith("cron_"):
             continue
         if str(session.get("project_id") or "") != project_id:
             continue
-        count += 1
+        if session.get("channel_id") == "web":
+            count += 1
         if runtime is None:
             continue
-        session_id = str(session.get("session_id") or "")
-        if not session_id or not runtime.is_session_running(session_id):
+        if not session_id or not runtime.is_session_running(
+            session_id, ignore_heartbeats=ignore_heartbeats
+        ):
             continue
         probe = getattr(runtime, "has_parked_team_streams", None)
         if callable(probe) and probe(session_id):
@@ -201,8 +207,65 @@ def _project_conversation_state(
     return count, busy
 
 
+def _project_heartbeat_blocked(project_id: str, runtime: Any) -> bool:
+    """Whether live Heartbeats are the only thing keeping a removal blocked.
+
+    移除会先停掉这些心跳再重扫,所以真实工作仍在跑时必须返回 False:那份工作
+    无论如何都会把移除挡下,为一次注定被拒的移除去取消心跳是对会话的无谓副作用。
+    """
+    if runtime is None:
+        return False
+    controller = getattr(runtime, "_admission_controller", None)
+    active = getattr(controller, "active_heartbeat_sessions", None)
+    if not callable(active) or not active():
+        # No Heartbeat runs anywhere: nothing to stop, and no second scan.
+        return False
+    busy = _project_conversation_state(project_id, runtime)[1]
+    if not busy:
+        return False
+    running = getattr(runtime, "is_session_running", None)
+    if not callable(running):
+        return False
+    # Re-read only the blockers: real work among them keeps the removal busy
+    # either way, so those Heartbeats must not be cancelled for it.
+    return not any(running(sid, ignore_heartbeats=True) for sid in busy)
+
+
+async def _stop_project_heartbeats(project_id: str, runtime: Any) -> None:
+    """Stop the project's Heartbeat runs before removal rescans them.
+
+    移除只是软隐藏:心跳继续在会话上跑的话,结果会写进一个已从工作区消失的
+    会话里,无处呈现。移除先停掉这些心跳(与 archive/delete 一致),随后的
+    busy 扫描读到的就是已落定的会话。停不掉只记日志,扫描仍把会话判为 busy,
+    移除照常报 SESSION_BUSY,不会隐藏仍在跑的工作。
+    """
+    if runtime is None or not project_id:
+        return
+    stopper = getattr(runtime, "stop_heartbeat_runs", None)
+    if not callable(stopper):
+        return
+    for session in collect_all_sessions_metadata():
+        session_id = str(session.get("session_id") or "")
+        if not session_id or str(session.get("project_id") or "") != project_id:
+            continue
+        try:
+            await stopper(session_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[ProjectAdapter] could not stop heartbeat runs: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+
+
 def _project_busy_sessions(project_id: str, runtime: Any) -> list[str]:
-    return _project_conversation_state(project_id, runtime)[1]
+    """project.remove 预检专用的阻塞会话列表。
+
+    预检只回答"移除会不会被挡",不执行移除,因此不负责停心跳——它按"心跳已被
+    停掉"来读,与真正的移除(停心跳后再严格扫描)保持同向:预检放行、移除停掉
+    心跳后成功;心跳真的停不掉时,由移除那一次扫描报 SESSION_BUSY。
+    """
+    return _project_conversation_state(project_id, runtime, ignore_heartbeats=True)[1]
 
 
 def _remove_project(
@@ -1206,9 +1269,15 @@ class ProjectAdapter(GatewayAdapter):
                 request, "project.create", _create_project, params, request.channel_id,
             )
         if method == ReqMethod.PROJECT_REMOVE:
+            runtime = self._runtime_probe() if self._runtime_probe is not None else None
+            project_id = str(params.get("project_id") or "").strip()
+            if _project_heartbeat_blocked(project_id, runtime):
+                # Heartbeats are the only blocker: stop them, and let the
+                # removal's own scan read a settled session.
+                await _stop_project_heartbeats(project_id, runtime)
             return await _run_threaded(
                 request, "project.remove", _remove_project, params,
-                runtime=self._runtime_probe() if self._runtime_probe is not None else None,
+                runtime=runtime,
             )
         if method == ReqMethod.PROJECT_RESTORE:
             return await _run_threaded(request, "project.restore", _restore_project, params)

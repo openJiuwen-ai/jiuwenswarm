@@ -613,12 +613,14 @@ class RuntimeSessionCoordinator:
                 if terminal_item is not None:
                     await queue.put(terminal_item)
 
+        # Streamed mailbox work already owns host admission. Scheduling it in
+        # the chat lane can deadlock behind a user turn waiting for that admission.
+        use_lane = work_kind.scheduled and work_kind is not SessionWorkKind.SESSION_MESSAGE
         scheduled = asyncio.create_task(
             self._scheduler.submit_and_wait(handle, produce)
-            if work_kind.scheduled
-            else produce()
+            if use_lane else produce()
         )
-        if not work_kind.scheduled:
+        if not use_lane:
             handle.task = scheduled
         completed_normally = False
         try:
@@ -832,6 +834,7 @@ class RuntimeSessionCoordinator:
                     self._registry.mark_terminal(
                         previous, SessionExecutionState.CANCELLED
                     )
+        parent = self._registry.get(parent_execution_id) if parent_execution_id else None
         handle = SessionExecutionHandle(
             execution_id=uuid.uuid4().hex,
             session_id=record.session_id,
@@ -839,6 +842,8 @@ class RuntimeSessionCoordinator:
             generation=record.generation,
             work_kind=work_kind,
             parent_execution_id=parent_execution_id,
+            root_work_kind=(parent.root_work_kind or parent.work_kind) if parent else None,
+            root_request_id=(parent.root_request_id or parent.request_id) if parent else None,
         )
         self._registry.register(handle)
         record.state = RuntimeSessionState.ACTIVE

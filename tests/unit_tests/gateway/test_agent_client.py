@@ -5,15 +5,17 @@ import logging
 import pytest
 from websockets.exceptions import ConnectionClosedError
 
-from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
+    parse_agent_server_wire_chunk,
 )
+from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.gateway.routing import agent_client
 from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 
 
 class FakeWebSocket:
@@ -49,6 +51,23 @@ class AckThenHangWebSocket:
         if self.recv_calls == 1:
             return json.dumps({"type": "event", "event": "connection.ack", "params": {}})
         await asyncio.Event().wait()  # 挂起，模拟连接保持
+
+
+class PushFramesWebSocket:
+    def __init__(self) -> None:
+        self.frames: asyncio.Queue[str] = asyncio.Queue()
+        self.read_both = asyncio.Event()
+        self.read_count = 0
+
+    async def recv(self) -> str:
+        frame = await self.frames.get()
+        self.read_count += 1
+        if self.read_count == 2:
+            self.read_both.set()
+        return frame
+
+    async def close(self) -> None:
+        pass
 
 
 class AgentClientHarness(WebSocketAgentServerClient):
@@ -105,6 +124,102 @@ class ReconnectingAgentClientHarness(AgentClientHarness):
 def test_agent_client_uses_shared_websocket_limit():
     assert not hasattr(agent_client, "_WS_MAX_SIZE")
     assert agent_client.AGENT_WS_MAX_MESSAGE_BYTES == AGENT_WS_MAX_MESSAGE_BYTES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("second_request_id", "final_is_complete", "second_event_type"),
+    [
+        ("cross-session-turn", False, "chat.final"),
+        ("interaction-1", False, "chat.final"),
+        ("cross-session-turn", True, "chat.final"),
+        ("interaction-1", True, "chat.final"),
+        ("interaction-1", True, "chat.error"),
+    ],
+)
+async def test_server_push_frames_keep_wire_order_when_first_handler_waits(
+    second_request_id, final_is_complete, second_event_type
+):
+    client = AgentClientHarness()
+    ws = PushFramesWebSocket()
+    client.set_ws_for_test(ws)
+    client.set_running_for_test(True)
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    both_handled = asyncio.Event()
+    unrelated_push_handled = asyncio.Event()
+    handled: list[int] = []
+    request_queue: asyncio.Queue[dict] = asyncio.Queue()
+    client.set_message_queue_for_test("foreground-turn", request_queue)
+    visible_text = ""
+
+    async def on_push(frame: dict) -> None:
+        nonlocal visible_text
+        index = frame["index"]
+        if index == 2:
+            unrelated_push_handled.set()
+            return
+        if index == 0:
+            first_started.set()
+            await release_first.wait()
+        payload = parse_agent_server_wire_chunk(frame).payload
+        assert payload["turn_request_id"] == "cross-session-turn"
+        assert payload["cross_session"]["message_id"] == "sm-1"
+        if payload["event_type"] == "chat.delta":
+            visible_text += payload["content"]
+        else:
+            visible_text = payload["content"]
+        handled.append(index)
+        if len(handled) == 2:
+            both_handled.set()
+
+    client.set_server_push_handler(on_push)
+    for index in (0, 1):
+        request_id = "cross-session-turn" if index == 0 else second_request_id
+        wire = encode_agent_chunk_for_wire(
+            AgentResponseChunk(
+                request_id=request_id,
+                channel_id="web",
+                payload={
+                    "event_type": "chat.delta" if index == 0 else second_event_type,
+                    "turn_request_id": "cross-session-turn",
+                    "message_origin": "cross_session_agent",
+                    "session_message_id": "sm-1",
+                    "cross_session": {"message_id": "sm-1", "source_session_id": "source-1"},
+                    "content": "杭州今日天气",
+                },
+                is_complete=index == 1 and final_is_complete,
+            ),
+            response_id=request_id,
+            sequence=index,
+        )
+        wire["index"] = index
+        wire["metadata"][E2A_WIRE_SERVER_PUSH_KEY] = True
+        ws.frames.put_nowait(json.dumps(wire))
+    ws.frames.put_nowait(json.dumps({
+        "index": 2,
+        "request_id": "unrelated-push",
+        "metadata": {E2A_WIRE_SERVER_PUSH_KEY: True},
+    }))
+    ws.frames.put_nowait(json.dumps({"request_id": "foreground-turn"}))
+
+    receiver = asyncio.create_task(client.run_message_receiver_loop_for_test())
+    try:
+        await asyncio.wait_for(first_started.wait(), 1)
+        await asyncio.wait_for(ws.read_both.wait(), 1)
+        await asyncio.wait_for(unrelated_push_handled.wait(), 1)
+        assert (await asyncio.wait_for(request_queue.get(), 1))["request_id"] == "foreground-turn"
+        await asyncio.sleep(0)
+        assert handled == []
+        release_first.set()
+        await asyncio.wait_for(both_handled.wait(), 1)
+        assert handled == [0, 1]
+        assert visible_text == "杭州今日天气"
+    finally:
+        release_first.set()
+        receiver.cancel()
+        await receiver
+        await client.disconnect()
 
 
 @pytest.mark.asyncio

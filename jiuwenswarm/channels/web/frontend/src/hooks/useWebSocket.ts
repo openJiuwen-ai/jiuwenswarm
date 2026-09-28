@@ -93,6 +93,7 @@ import {
   crossSessionAssistantMessageId,
   generateUuidV4,
   prefixedMessageId,
+  proactiveAssistantMessageId,
 } from '../utils';
 import {
   findOverlappingFileExecutionEvent,
@@ -165,6 +166,7 @@ function ensureCrossSessionUserTurn(
   timestamp: string
 ): void {
   const chatStore = useChatStore.getState();
+  chatStore.removeQueuedSessionMessage(sessionId, crossSession.messageId);
   const userMsgId = crossSessionUserMessageId(crossSession.messageId);
   const existing = chatStore
     .getRuntime(sessionId)
@@ -2880,6 +2882,25 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (runtime?.mode !== 'team') return;
         useSessionStore.getState().setTeamLeaderIdentity(sessionId, identity);
       }),
+      webClient.on('session.message.updated', ({ payload }) => {
+        const sessionId = resolveEventSessionId(payload);
+        const message = payload.message;
+        if (!sessionId || !message || typeof message !== 'object' || Array.isArray(message)) return;
+        const record = message as Record<string, unknown>;
+        const messageId = typeof record.message_id === 'string' ? record.message_id : '';
+        if (!messageId || record.target_session_id !== sessionId) return;
+        const chatStore = useChatStore.getState();
+        if (record.status !== 'queued') {
+          chatStore.removeQueuedSessionMessage(sessionId, messageId);
+          return;
+        }
+        chatStore.upsertQueuedSessionMessage(sessionId, {
+          messageId,
+          sourceSessionId: typeof record.source_session_id === 'string' ? record.source_session_id : '',
+          sourceTitle: typeof record.source_title === 'string' ? record.source_title : '',
+          content: typeof record.content === 'string' ? record.content : '',
+        });
+      }),
       ...['chat.input_received', 'chat.output_phase'].map((event) => webClient.on(event, ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
@@ -2941,6 +2962,39 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               isStreaming: true,
               crossSession,
               ...(agentTemplateName ? { agentTemplateName } : {}),
+            });
+          }
+          return;
+        }
+
+        // 主动推荐按 rec_id 固定气泡，不占用 currentStreamId。
+        // 否则后一条推荐的 delta/final 会追加或整段覆盖前一条，直播时只剩一张卡片；
+        // 重启走历史恢复才会按 rec_id 拆开，所以第二条要刷新后才出现。
+        if (isProactiveRecommendationPayload(payload)) {
+          if (!content) return;
+          const proactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : '';
+          const proactiveType = typeof payload.proactive_type === 'string' ? payload.proactive_type : undefined;
+          const assistantMsgId = proactiveAssistantMessageId(proactiveRecId);
+          const chatStore = useChatStore.getState();
+          const existing = chatStore
+            .getRuntime(sessionId)
+            ?.messages.find((message) => message.id === assistantMsgId);
+          if (existing) {
+            chatStore.updateMessage(sessionId, assistantMsgId, {
+              content: (existing.content || '') + content,
+            });
+          } else {
+            chatStore.addMessage(sessionId, {
+              id: assistantMsgId,
+              role: 'assistant',
+              content,
+              timestamp: normalizeEventTimestampIso(payload.timestamp),
+              isStreaming: true,
+              isProactiveRecommendation: true,
+              ...(proactiveType
+                ? { proactiveType: proactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' }
+                : {}),
+              ...(proactiveRecId ? { proactiveRecId } : {}),
             });
           }
           return;
@@ -3092,7 +3146,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldIgnoreSessionOutput(payload)) return;
         // Supplemental requests never own a separate answer or task lifecycle.
         if (handleTaskInputReceipt('chat.final', payload)) return;
-        if (shouldDropDuplicatedEvent('chat.final', payload)) return;
+        const crossSession = extractCrossSessionMessage(payload);
+        // One cross-session request may emit several finals. Its stable bubble ID
+        // makes each final safe to replay, while the latest one replaces the text.
+        if (!crossSession && shouldDropDuplicatedEvent('chat.final', payload)) return;
 
         const cronMeta = payload.cron as Record<string, unknown> | undefined;
 
@@ -3235,7 +3292,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
         // 与 delta 使用同一稳定 ID，只收尾本次跨会话后台请求。这里不能执行普通
         // final 的 turn collapse/segment rewrite，否则可能重写目标会话已有回复。
-        const crossSession = extractCrossSessionMessage(payload);
         if (crossSession) {
           ensureCrossSessionUserTurn(
             sessionId,
@@ -3332,6 +3388,46 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           // 这里是它丢帧时的兜底，避免输入区转圈/停止按钮卡死。只关这个 session 的
           // 状态，不碰任何消息内容，不会影响另一条普通聊天或另一条 Heartbeat run。
           closeHeartbeatSessionState(sessionId, hbFinalAutomation.run_id);
+          return;
+        }
+
+        // 与 delta 使用同一 rec_id。这里不能走普通 final 的 currentStreamId 收尾：
+        // 那会把后一条推荐写进前一条气泡，并 stopStreaming 打断用户正在进行的回答。
+        if (isProactiveRecommendationPayload(payload)) {
+          const proactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : '';
+          const proactiveType = typeof payload.proactive_type === 'string' ? payload.proactive_type : '';
+          const assistantMsgId = proactiveAssistantMessageId(proactiveRecId);
+          const chatStore = useChatStore.getState();
+          const existing = chatStore
+            .getRuntime(sessionId)
+            ?.messages.find((message) => message.id === assistantMsgId);
+          const completedAt = normalizeEventTimestampIso(payload.timestamp);
+          const proactivePatch: Partial<Message> = {
+            isStreaming: false,
+            completedAt,
+            isProactiveRecommendation: true,
+            ...(proactiveType
+              ? { proactiveType: proactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' }
+              : {}),
+            ...(proactiveRecId ? { proactiveRecId } : {}),
+          };
+          if (existing) {
+            chatStore.updateMessage(sessionId, assistantMsgId, {
+              ...(content.trim() ? { content } : {}),
+              ...proactivePatch,
+            });
+          } else if (content.trim()) {
+            chatStore.addMessage(sessionId, {
+              id: assistantMsgId,
+              role: 'assistant',
+              content,
+              timestamp: completedAt,
+              ...proactivePatch,
+            });
+          }
+          if (content.trim() && !content.includes('MEDIA:')) {
+            handleTtsPlayback(sessionId, assistantMsgId, content);
+          }
           return;
         }
 

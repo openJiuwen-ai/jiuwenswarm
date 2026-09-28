@@ -244,6 +244,13 @@ class _ActiveTeamRound:
     release_admission: Callable[[], Awaitable[None]] | None = None
     defer_terminal_release: bool = False
     terminal_armed: bool = False
+    # 本回合见证过 swarmflow 终态事件（workflow.updated 转入 completed/failed/
+    # stopped）。收尾探测据此区分「本回合正在汇报 flow 结果」与「上一回合遗留
+    # 的终态 run」；标记随回合对象生灭，不跨回合。
+    saw_flow_terminal: bool = False
+    # Terminal replays must not hide execution that continued after the flow.
+    continued_after_flow: bool = False
+    open_archive_tasks: set[str] = field(default_factory=set)
     completion_state: dict[str, Any] = field(
         default_factory=new_cron_team_round_state
     )
@@ -515,6 +522,29 @@ class TeamManager:
             return
         if not terminal and current_round is not None:
             current_round.terminal_armed = True
+        if current_round is not None and self._is_workflow_terminal_event(event):
+            # 见证即记录：无论有没有 waiter，本回合看到 flow 终态就置位，
+            # 收尾探测（team_round_finishing_after_flow）据此关联回合与 run。
+            current_round.saw_flow_terminal = True
+        if current_round is not None:
+            if event_type == "team.task":
+                task = event.get("event")
+                if isinstance(task, dict) and task.get("task_id"):
+                    task_id = str(task["task_id"])
+                    status = task.get("status")
+                    task_type = str(task.get("type") or "")
+                    if status in {"completed", "cancelled", "failed"} or task_type.endswith(
+                        (".completed", ".cancelled", ".verified")
+                    ):
+                        current_round.open_archive_tasks.discard(task_id)
+                    elif status or task_type.endswith((".created", ".started", ".claimed")):
+                        current_round.open_archive_tasks.add(task_id)
+                        if current_round.saw_flow_terminal:
+                            current_round.continued_after_flow = True
+            if current_round.saw_flow_terminal and event_type in {
+                "chat.tool_call", "chat.ask_user_question",
+            }:
+                current_round.continued_after_flow = True
 
         waiters = list(self._pending_waiters.get(session_id, ()))
         exclusive_request_id = self._exclusive_waiters.get(session_id)
@@ -761,6 +791,16 @@ class TeamManager:
     def is_round_active(self, session_id: str) -> bool:
         """Return whether a Team round, rather than its transport, is active."""
         return session_id in self._active_rounds
+
+    def round_can_finish_after_flow(self, session_id: str) -> bool:
+        """Whether the round saw a flow end without outstanding or subsequent work."""
+        current = self._active_rounds.get(session_id)
+        return (
+            current is not None
+            and current.saw_flow_terminal
+            and not current.continued_after_flow
+            and not current.open_archive_tasks
+        )
 
     def is_round_owner(self, session_id: str, request_id: str) -> bool:
         current = self._active_rounds.get(session_id)
@@ -3188,6 +3228,45 @@ def team_session_has_parked_request(session_id: str, request_ids) -> bool:
     return all(
         manager.is_round_ended_request(session_id, request_id)
         for request_id in request_ids
+    )
+
+
+def team_round_finishing_after_flow(session_id: str) -> bool:
+    """Whether the active Team round is only wrapping up after its swarmflow runs ended.
+
+    Companion of :func:`is_team_session_running` for the lifecycle busy guard:
+    ``swarmflow.stop`` and natural workflow completion leave the round active
+    while the leader reports the outcome, so an archive or delete in that
+    window hits SESSION_BUSY even though nothing is left for the user to stop.
+    The guard uses this to answer "retry shortly" instead of "stop it first".
+
+    Two gates keep the probe honest: the round must itself have witnessed a
+    flow terminal event (``round_can_finish_after_flow`` — the workflow handler
+    keeps run states across rounds, so stale terminals from an earlier round
+    must not leak into a fresh one), and every run must be terminal.  A paused
+    run is deliberately excluded: the flow has not ended, so the user still
+    has something to resume or stop.
+    Outstanding Team tasks and execution after the terminal event also exclude
+    the round: flow completion alone does not mean the leader is only reporting.
+    """
+    manager = _team_manager
+    if manager is None or not manager.is_round_active(session_id):
+        return False
+    if not manager.round_can_finish_after_flow(session_id):
+        return False
+    handler = manager.get_workflow_handler(session_id)
+    if handler is None:
+        return False
+    get_run_states = getattr(handler, "get_run_states", None)
+    if not callable(get_run_states):
+        return False
+    run_states = get_run_states() or {}
+    if not run_states:
+        # A round that never ran a swarmflow is ordinary execution, not the
+        # post-flow report window this probe describes.
+        return False
+    return all(
+        bool(getattr(run, "is_terminal", False)) for run in run_states.values()
     )
 
 

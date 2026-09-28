@@ -1,6 +1,6 @@
 import { InstallationFilterSelect, matchesInstallation, type InstallationFilter } from '../marketplace/InstallationFilterSelect';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
-import { scheduleCatalogRefresh, catalogScope, withCatalogCache, catalogCacheOf } from '../../features/catalogCache';
+import { catalogAwaitingItems, scheduleCatalogRefresh, catalogScope, withCatalogCache, catalogCacheOf } from '../../features/catalogCache';
 import { ChevronDown } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -453,12 +453,12 @@ export function AgentManagementPanel({
         client.listCatalog({ filter: equipmentListFilter('agent', 'mine'), ...compatibilityOptions }),
       ]);
       if (requestScope !== catalogScope()) return;
-      scheduleCatalogRefresh('agent-catalog', marketplaceCatalog.cache, () => { void loadCatalog(options); }, () => catalogRevisionRef.current === revision);
+      const cache = scheduleCatalogRefresh('agent-catalog', marketplaceCatalog.cache, () => { void loadCatalog(options); }, () => catalogRevisionRef.current === revision);
       const catalog = Array.from(
         new Map([...mineCatalog, ...marketplaceCatalog].map((item) => [item.id, item])).values(),
       );
       if (revision !== catalogRevisionRef.current) return;
-      withCatalogCache(catalog, marketplaceCatalog.cache);
+      withCatalogCache(catalog, cache);
       catalogRef.current = catalog;
       if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loaded' });
       // 回填共享目录缓存：聊天输入区的专家 tag 依赖它首帧解析 displayName/头像。
@@ -1542,7 +1542,11 @@ export function AgentManagementPanel({
               totalItems={isMine ? mineView.totalItems : catalogView.totalItems}
               query={isMine ? mineQuery : query}
               category={category}
-              status={state.catalogStatus}
+              status={
+                !isMine && !state.catalogError && catalogAwaitingItems(catalogView.totalItems, catalogCacheOf(state.catalog))
+                  ? 'loading'
+                  : state.catalogStatus
+              }
               error={state.catalogError}
               busyIds={busyIds}
               onCategoryChange={value => { setCategory(value); setCatalogPage(1); }}
@@ -1630,6 +1634,9 @@ export function AgentManagementPanel({
       {view === 'group-detail' && (
         <AgentGroupDetailPage
           detail={groupDetail}
+          loadingSummary={
+            [...groupCatalogRef.current, ...groupMineRef.current].find(item => item.id === groupSelectedId) ?? null
+          }
           detailStatus={groupDetailStatus}
           detailError={groupDetailError}
           detailTab={groupDetailTab}

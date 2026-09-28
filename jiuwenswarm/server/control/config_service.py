@@ -25,6 +25,10 @@ from jiuwenswarm.common.utils import get_config_file
 from jiuwenswarm.common.version import __version__
 from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
 from jiuwenswarm.server.control.responses import build_error_response
+from jiuwenswarm.symphony.config import (
+    resolve_symphony_enabled,
+    resolve_symphony_evolution_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +156,13 @@ def _affinity_enabled(raw: dict[str, Any]) -> bool:
 
 def _flatten_symphony(raw: dict[str, Any]) -> dict[str, str]:
     symphony = raw.get("symphony") if isinstance(raw.get("symphony"), dict) else {}
+    evolution = (
+        symphony.get("evolution") if isinstance(symphony.get("evolution"), dict) else {}
+    )
+    flow = evolution.get("flow") if isinstance(evolution.get("flow"), dict) else {}
+    flow_enabled = flow.get("enabled")
+    if flow_enabled is None:
+        flow_enabled = evolution.get("enabled")
     retrieval = (
         symphony.get("skill_retrieval")
         if isinstance(symphony.get("skill_retrieval"), dict)
@@ -162,7 +173,12 @@ def _flatten_symphony(raw: dict[str, Any]) -> dict[str, str]:
         retrieval.get("discovery") if isinstance(retrieval.get("discovery"), dict) else {}
     )
     return {
-        "symphony_enabled": _bool_text(symphony.get("enabled"), False),
+        "symphony_enabled": _bool_text(
+            resolve_symphony_enabled(symphony.get("enabled"))
+        ),
+        "symphony_evolution_enabled": _bool_text(
+            resolve_symphony_evolution_enabled(flow_enabled)
+        ),
         "skill_retrieval_enabled": _bool_text(retrieval.get("enabled"), False),
         "skill_retrieval_index_enabled": _bool_text(index.get("enabled"), False),
         "skill_retrieval_index_recommendation_shown": _bool_text(

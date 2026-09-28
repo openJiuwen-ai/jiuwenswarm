@@ -32,7 +32,11 @@ from jiuwenswarm.symphony.adapter import (
     orchestration_config_from_swarm,
 )
 from jiuwenswarm.symphony.llm import LLMConfig, probe_model_connection
-from jiuwenswarm.symphony.config import SymphonyConfig, load_symphony_config
+from jiuwenswarm.symphony.config import (
+    SymphonyConfig,
+    evolution_flow_enabled,
+    load_symphony_config,
+)
 from jiuwenswarm.symphony.build import build_graph as service_build_graph
 from jiuwenswarm.symphony.build import graph_status
 from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
@@ -47,8 +51,27 @@ CapabilityPackager = core_symphony.flow.CapabilityPackager
 LLMPackageReviewAgent = core_symphony.LLMPackageReviewAgent
 PackageReviewGate = core_symphony.flow.PackageReviewGate
 SymphonyFlowEngine = core_symphony.flow.SymphonyFlowEngine
+SymphonyFlowConfig = core_symphony.orchestration.config.SymphonyFlowConfig
 SkillPackAdapter = core_symphony.flow.SkillPackAdapter
 VERDICT_APPROVED = core_symphony.flow.VERDICT_APPROVED
+
+
+def _symphony_flow_config(flow_cfg: Any) -> SymphonyFlowConfig:
+    """Pass distill thresholds only when this openjiuwen build accepts them."""
+
+    accepted = inspect.signature(SymphonyFlowConfig).parameters
+    kwargs: dict[str, Any] = {}
+    if "min_successes" in accepted:
+        kwargs["min_successes"] = flow_cfg.min_successes
+    else:
+        for name in ("min_successes_candidate", "min_successes_verified"):
+            if name in accepted:
+                kwargs[name] = flow_cfg.min_successes
+    if "min_pack_success_rate" in accepted:
+        kwargs["min_pack_success_rate"] = flow_cfg.min_pack_success_rate
+    elif "min_pack_success_rate_verified" in accepted:
+        kwargs["min_pack_success_rate_verified"] = flow_cfg.min_pack_success_rate
+    return SymphonyFlowConfig(**kwargs)
 
 
 ProgressCallback = Callable[[dict[str, Any]], Any]
@@ -106,9 +129,6 @@ def _candidate_question(
             "",
             "**包含的技能及执行顺序**",
             structure,
-            "",
-            "**使用记录**",
-            f"执行 {candidate.execution_count} 次，成功 {candidate.success_count} 次",
         )
     )
     return {
@@ -631,7 +651,7 @@ class SwarmSymphonyService:
             config.orchestration.top_k,
             config.orchestration.max_depth,
             config.orchestration.min_edge_confidence,
-            config.evolution.enabled,
+            evolution_flow_enabled(config),
             llm_signature,
         )
         if self._runtime is None or self._runtime_key != key:
@@ -660,10 +680,12 @@ class SwarmSymphonyService:
     ) -> SymphonyRuntimeType:
         model = model_from_config(llm_config)
         flow_engine = None
-        if with_flow and config.evolution.enabled:
+        if with_flow and evolution_flow_enabled(config):
             flow_dir = config.paths.graph_dir.parent / "flow"
+            flow_cfg = config.evolution.flow
             flow_engine = SymphonyFlowEngine(
                 flow_dir,
+                config=_symphony_flow_config(flow_cfg),
                 llm_client=model,
                 gate=PackageReviewGate(LLMPackageReviewAgent(model)),
                 skill_adapter=SkillPackAdapter(),
@@ -735,7 +757,7 @@ class SwarmSymphonyService:
         """Submit one Rail graph pair and deliver any new install candidates."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not evolution_flow_enabled(config):
             return
         runtime = self._runtime_for(config)
         result = await runtime.submit_evolution(
@@ -787,7 +809,7 @@ class SwarmSymphonyService:
         """Start Flow recovery when the feature is enabled."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not evolution_flow_enabled(config):
             return
         runtime = self._runtime_for(config)
         recovered = await self._start_flow(runtime)
@@ -869,7 +891,7 @@ class SwarmSymphonyService:
         """Return installable Recipe versions retained by the Core Flow store."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not evolution_flow_enabled(config):
             return {"success": True, "enabled": False, "candidates": []}
         flow = self._runtime_for(config).flow_engine
         candidates = flow.list_candidates() if flow is not None else ()
@@ -890,7 +912,7 @@ class SwarmSymphonyService:
         """Re-send one retained candidate through the existing Host question flow."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not evolution_flow_enabled(config):
             return {"success": False, "reason": "flow_disabled"}
         flow = self._runtime_for(config).flow_engine
         candidate = (
@@ -928,7 +950,7 @@ class SwarmSymphonyService:
         if request_id != expected_request_id:
             return {"installed": False, "reason": "invalid_request_id"}
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not evolution_flow_enabled(config):
             return {"installed": False, "reason": "flow_disabled"}
         async with self._install_lock:
             previous = self._install_receipts.get(request_id)
@@ -1239,7 +1261,10 @@ def _web_graph_payload(
             member_ids = list(definition.members)
             pack_node_id = f"pack:{pack_id}"
             description = definition.description or pack_id
-            label = description[:50] + "..." if len(description) > 50 else description
+            # 节点 label 用包名（display_name 优先，frontmatter name 兜底），
+            # 描述保留在 properties 里由详情面板展示
+            label_source = definition.display_name or pack_id
+            label = label_source[:50] + "..." if len(label_source) > 50 else label_source
             pack_dir = skills_dir / pack_id
             pack_nodes.append({
                 "id": pack_node_id,

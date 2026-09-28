@@ -122,40 +122,48 @@ def _shared_skills(package_dir: Path, payload: dict[str, Any]) -> list[SkillSpec
     if not isinstance(raw_skills, list):
         raise ValueError("agent_group manifest skills must be a list")
 
-    skill_names: list[str] = []
-    seen: set[str] = set()
-    for raw_name in raw_skills:
-        name = _safe_component(raw_name, label="skill name")
-        if name in seen:
-            raise ValueError(f"duplicate skill name in agent_group manifest: {name}")
-        seen.add(name)
-        skill_names.append(name)
-
     skills_path = package_dir / "skills"
+    specs: list[SkillSpec] = []
+    seen_paths: set[str] = set()
+
+    def _append_skill(raw: Any) -> None:
+        if isinstance(raw, str):
+            name = _safe_component(raw, label="skill name")
+            values: dict[str, Any] = {"dir": str(skills_path / name), "mode": "all"}
+        elif isinstance(raw, dict) and isinstance(raw.get("dir"), str):
+            raw_dir = raw["dir"]
+            if Path(raw_dir).expanduser().is_absolute():
+                raise ValueError("agent_group skill dir must be package-relative")
+            values = {**raw, "dir": str(package_dir / raw_dir)}
+        else:
+            raise ValueError("agent_group manifest skills entries must be names or dir mappings")
+        try:
+            skill_dir = Path(values["dir"]).resolve(strict=True)
+        except OSError as exc:
+            raise ValueError(f"shared skill not found: {raw!r}") from exc
+        if not skill_dir.is_relative_to(package_dir) or not skill_dir.is_dir():
+            raise ValueError(f"shared skill escapes AgentGroup package: {raw!r}")
+        _package_file(
+            skill_dir / "SKILL.md",
+            root=skill_dir,
+            label=f"shared skill {skill_dir.name!r} SKILL.md",
+        )
+        key = str(skill_dir)
+        if key in seen_paths:
+            raise ValueError(f"duplicate shared skill in agent_group manifest: {skill_dir.name}")
+        seen_paths.add(key)
+        specs.append(SkillSpec.model_validate({**values, "dir": key}))
+
+    for raw_skill in raw_skills:
+        _append_skill(raw_skill)
+
     if skills_path.exists() or skills_path.is_symlink():
         skills_root = _child_dir(package_dir, "skills", label="skills directory")
         for child in sorted(skills_root.iterdir(), key=lambda item: item.name):
             if not child.is_dir() or not (child / "SKILL.md").is_file():
                 continue
-            name = _safe_component(child.name, label="skill name")
-            if name not in seen:
-                seen.add(name)
-                skill_names.append(name)
-    else:
-        skills_root = skills_path.resolve()
-
-    specs: list[SkillSpec] = []
-    for name in skill_names:
-        try:
-            skill_dir = _child_dir(skills_root, name, label="shared skill")
-        except FileNotFoundError as exc:
-            raise ValueError(f"shared skill not found: {name}") from exc
-        _package_file(
-            skill_dir / "SKILL.md",
-            root=skill_dir,
-            label=f"shared skill {name!r} SKILL.md",
-        )
-        specs.append(SkillSpec(dir=str(skill_dir), mode="all"))
+            if str(child.resolve()) not in seen_paths:
+                _append_skill({"dir": str(child.relative_to(package_dir)), "mode": "all"})
     return specs
 
 
@@ -259,6 +267,8 @@ def load_agent_group_package(path: Path) -> dict[str, AgentTemplateSpec]:
     templates: dict[str, AgentTemplateSpec] = {}
     for agent_name in _agent_names(payload):
         template = _load_member_template(package_dir, agent_name)
+        if agent_name == "leader" and template.runtime is not None:
+            raise ValueError("AgentGroup leader does not support external runtime")
         prompt_sections = list(template.prompt_sections)
         if instruction:
             if any(

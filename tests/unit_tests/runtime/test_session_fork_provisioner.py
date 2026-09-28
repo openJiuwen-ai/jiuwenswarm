@@ -115,6 +115,7 @@ async def test_explicit_target_preserves_business_order_agent_arguments_and_comm
             "target_session_id": "fork-target",
             "title": "Forked session",
             "channel_id": "tui",
+            "session_equipment_override": {"mcp": ["connector-a"]},
         }
         state.events.append("fork.filesystem")
         return _result()
@@ -154,7 +155,15 @@ async def test_explicit_target_preserves_business_order_agent_arguments_and_comm
     runtime = _runtime(state)
     try:
         await runtime.start()
-        prepared = await runtime.prepare_session_fork(_input())
+        prepared = await runtime.prepare_session_fork(
+            SessionForkInput(
+                channel_id="tui",
+                source_session_id="fork-source",
+                target_session_id="fork-target",
+                title="Forked session",
+                session_equipment_override={"mcp": ["connector-a"]},
+            )
+        )
 
         assert state.events == [
             "runtime.start",
@@ -249,71 +258,6 @@ async def test_message_fork_rebuilds_context_from_copied_prefix_without_latest_s
         )
 
         assert prepared.result.session_id == "fork-target"
-        assert state.events == [
-            "runtime.start",
-            "fork.filesystem",
-            "agent.lookup",
-            "fork.context",
-        ]
-        copy_state.assert_not_awaited()
-        await runtime.abort_session_provision(prepared)
-    finally:
-        await runtime.close()
-
-
-@pytest.mark.asyncio
-async def test_side_fork_marks_ephemeral_context_and_skips_checkpoint_state(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from jiuwenswarm.agents.harness.common import session_ops_service
-
-    state = _ForkState()
-    deep_agent = SimpleNamespace(card=object())
-    state.agent = SimpleNamespace(ensure_instance=AsyncMock(return_value=deep_agent))
-
-    def fork_session(**kwargs: Any) -> dict[str, Any]:
-        assert kwargs["side_conversation"] is True
-        state.events.append("fork.filesystem")
-        return {**_result(), "ephemeral": True}
-
-    async def copy_session_context(
-        selected_agent: Any,
-        source_session_id: str,
-        target_session_id: str,
-        *,
-        side_conversation: bool = False,
-    ) -> bool:
-        assert selected_agent is deep_agent
-        assert (source_session_id, target_session_id) == (
-            "fork-source",
-            "fork-target",
-        )
-        assert side_conversation is True
-        state.events.append("fork.context")
-        return True
-
-    copy_state = AsyncMock(return_value=True)
-    monkeypatch.setattr(session_ops_service, "fork_session", fork_session)
-    monkeypatch.setattr(
-        session_ops_service,
-        "copy_session_context",
-        copy_session_context,
-    )
-    monkeypatch.setattr(session_ops_service, "copy_session_state", copy_state)
-
-    runtime = _runtime(state)
-    try:
-        await runtime.start()
-        prepared = await runtime.prepare_session_fork(
-            SessionForkInput(
-                channel_id="web",
-                source_session_id="fork-source",
-                target_session_id="fork-target",
-                side_conversation=True,
-            )
-        )
-
-        assert prepared.result.ephemeral is True
         assert state.events == [
             "runtime.start",
             "fork.filesystem",

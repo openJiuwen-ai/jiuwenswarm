@@ -237,13 +237,13 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
                 '{"query":"task","candidate_skill_ids":["skill-a"]}',
                 "compose-1",
             ),
-            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-blocked-1"),
+            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-before-answer"),
             _call(
                 "ask_user",
                 '{"questions":[{"header":"Audience","question":"Audience"}]}',
                 "ask-1",
             ),
-            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-blocked-2"),
+            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-after-answer"),
             _call(
                 "symphony_compose_graph",
                 '{"query":"drift","candidate_skill_ids":["other"]}',
@@ -278,7 +278,7 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
     )
     first = await agent.invoke(_inputs("task", mode=mode))
     assert first["result_type"] == "interrupt"
-    assert not skill_calls
+    assert skill_calls == [{"skill_name": "skill-a"}]
     answer = InteractiveInput()
     answer.update(
         "ask-1", {"answers": {"Audience": "engineering", "api_key": "secret"}}
@@ -289,7 +289,7 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
     assert compose_calls[1]["query"] == (
         'task\n\n补充信息：\n- Audience: "engineering"\n- api_key: "secret"'
     )
-    assert skill_calls == [{"skill_name": "skill-a"}]
+    assert skill_calls == [{"skill_name": "skill-a"}] * 3
     assert client.index == len(client.responses)
 
 
@@ -312,18 +312,18 @@ async def test_real_deep_agent_rekeys_two_needs_input_rounds() -> None:
             _call(
                 "symphony_compose_graph", '{"candidate_skill_ids":["skill-a"]}', "c1"
             ),
-            _call("skill_tool", '{"skill_name":"skill-a"}', "blocked-1"),
+            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-before-answer-1"),
             _call(
                 "symphony_compose_graph",
                 '{"query":"drift","candidate_skill_ids":["drift"]}',
                 "compose-blocked-original",
             ),
             _call("ask_user", '{"questions":[{"question":"Audience"}]}', "ask-1"),
-            _call("skill_tool", '{"skill_name":"skill-a"}', "blocked-2"),
+            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-after-answer-1"),
             _call("symphony_compose_graph", '{"candidate_skill_ids":["drift"]}', "c2"),
-            _call("skill_tool", '{"skill_name":"skill-a"}', "blocked-3"),
+            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-before-answer-2"),
             _call("ask_user", '{"questions":[{"question":"Scope"}]}', "ask-2"),
-            _call("skill_tool", '{"skill_name":"skill-a"}', "blocked-4"),
+            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-after-answer-2"),
             _call("symphony_compose_graph", '{"candidate_skill_ids":["drift"]}', "c3"),
             _call("skill_tool", '{"skill_name":"skill-a"}', "allowed"),
             AssistantMessage(
@@ -362,7 +362,7 @@ async def test_real_deep_agent_rekeys_two_needs_input_rounds() -> None:
     ]
     assert "engineering" in compose_calls[-1]["query"]
     assert "platform" in compose_calls[-1]["query"]
-    assert skill_calls == [{"skill_name": "skill-a"}]
+    assert skill_calls == [{"skill_name": "skill-a"}] * 5
     assert client.index == len(client.responses)
 
 
@@ -629,7 +629,7 @@ async def test_invalid_ask_user_answers_do_not_claim_paused_state(
         {"planned_graph": {"graph": {"metadata": {"status": "invalid"}}}},
     ],
 )
-async def test_resumed_nonready_compose_keeps_skill_gate(result: Any) -> None:
+async def test_resumed_nonready_compose_does_not_block_skill_tool(result: Any) -> None:
     rail, resumed = await _resumed_state_for_test()
     compose = _inner_tool_ctx(
         resumed,
@@ -644,13 +644,13 @@ async def test_resumed_nonready_compose_keeps_skill_gate(result: Any) -> None:
     )
     await rail.before_tool_call(skill)
 
-    assert skill.inputs.tool_result["reason"] == "symphony_plan_not_ready"
-    assert skill.extra["_skip_tool_calls"] == {"skill": True}
+    assert skill.inputs.tool_result is None
+    assert skill.extra.get("_skip_tool_calls") is None
     assert rail._active_state_for_ctx(skill).pending_recompose
 
 
 @pytest.mark.asyncio
-async def test_resumed_compose_exception_keeps_skill_gate() -> None:
+async def test_resumed_compose_exception_does_not_block_skill_tool() -> None:
     rail, resumed = await _resumed_state_for_test()
     compose = _inner_tool_ctx(
         resumed,
@@ -665,48 +665,9 @@ async def test_resumed_compose_exception_keeps_skill_gate() -> None:
     skill = _inner_tool_ctx(resumed, name="skill_tool", call_id="skill-exception")
     await rail.before_tool_call(skill)
 
-    assert skill.inputs.tool_result["reason"] == "symphony_plan_not_ready"
+    assert skill.inputs.tool_result is None
+    assert skill.extra.get("_skip_tool_calls") is None
     assert rail._active_state_for_ctx(skill).pending_recompose
-
-
-@pytest.mark.asyncio
-async def test_parallel_skill_gates_are_keyed_by_each_tool_call_id() -> None:
-    rail, resumed = await _resumed_state_for_test()
-    shared_extra = {"run_context": resumed.inputs.run_context}
-    first = _inner_tool_ctx(
-        resumed,
-        name="skill_tool",
-        call_id="skill-one",
-        extra=shared_extra,
-    )
-    second = _inner_tool_ctx(
-        resumed,
-        name="skill_tool",
-        call_id="skill-two",
-        extra=shared_extra,
-    )
-    await asyncio.gather(rail.before_tool_call(first), rail.before_tool_call(second))
-
-    assert shared_extra.get("_skip_tool") is None
-    assert shared_extra["_skip_tool_calls"] == {"skill-one": True, "skill-two": True}
-    assert first.inputs.tool_result["reason"] == second.inputs.tool_result["reason"]
-
-
-@pytest.mark.asyncio
-async def test_pending_skill_without_provider_id_gets_its_own_skip_key() -> None:
-    rail, resumed = await _resumed_state_for_test()
-    skill = _inner_tool_ctx(
-        resumed,
-        name="skill_tool",
-        call_id="",
-        args={"skill_name": "old-skill"},
-    )
-    await rail.before_tool_call(skill)
-
-    tool_call_id = skill.inputs.tool_call.id
-    assert tool_call_id.startswith("symphony-skip-")
-    assert skill.extra["_skip_tool_calls"] == {tool_call_id: True}
-    assert skill.inputs.tool_msg.tool_call_id == tool_call_id
 
 
 @pytest.mark.asyncio

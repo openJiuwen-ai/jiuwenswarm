@@ -13,17 +13,13 @@ const NEW_CONVERSATION_ID = 'new';
 function createContext(sessionId, inputLine) {
   const messages = [];
   const submissions = [];
-  const newConversations = [];
   const forkedConversations = [];
-  const sideConversations = [];
   const goalActions = [];
   const goalOverwriteConfirmations = [];
   return {
     messages,
     submissions,
-    newConversations,
     forkedConversations,
-    sideConversations,
     goalActions,
     goalOverwriteConfirmations,
     context: {
@@ -32,9 +28,7 @@ function createContext(sessionId, inputLine) {
       inputLine,
       addMessage: (_sessionId, message) => messages.push(message),
       submitMessage: (content) => submissions.push(content),
-      startNewConversation: () => newConversations.push(true),
       forkConversation: async (sourceSessionId) => forkedConversations.push(sourceSessionId),
-      startSideConversation: async (sourceSessionId, prompt) => sideConversations.push([sourceSessionId, prompt]),
       runGoalAction: async (goalSessionId, action, objective) => {
         goalActions.push([goalSessionId, action, objective]);
         return null;
@@ -51,17 +45,9 @@ test('/btw is not registered by the Web frontend', () => {
   assert.equal(findSlashCommand('btw'), undefined);
 });
 
-test('/new is registered and delegates to the existing new-conversation path', async () => {
-  const command = findSlashCommand('new');
-  assert.ok(command);
-  assert.equal(command.requiresSession, false);
-
-  const state = createContext('existing-session', '/new');
-  await command.execute(state.context, '');
-
-  assert.deepEqual(state.newConversations, [true]);
-  assert.deepEqual(state.submissions, []);
-  assert.deepEqual(state.messages, []);
+test('/new and /side are absent from the Web command registry', () => {
+  assert.equal(findSlashCommand('new'), undefined);
+  assert.equal(findSlashCommand('side'), undefined);
 });
 
 test('/fork is registered and delegates the current session to the App fork path', async () => {
@@ -90,33 +76,6 @@ test('/fork reports a command result when the App fork path fails', async () => 
   assert.equal(state.messages.length, 1);
   assert.equal(state.messages[0].commandName, 'fork');
   assert.match(state.messages[0].commandOutput, /分叉会话失败/);
-});
-
-test('/side starts an ephemeral side conversation and forwards optional text', async () => {
-  const command = findSlashCommand('side');
-  assert.ok(command);
-  assert.notEqual(command.requiresSession, false);
-
-  const state = createContext('existing-session', '/side inspect the cache path');
-  await command.execute(state.context, 'inspect the cache path');
-
-  assert.deepEqual(state.sideConversations, [['existing-session', 'inspect the cache path']]);
-  assert.deepEqual(state.messages, []);
-});
-
-test('/side reports a command result when side conversation creation fails', async () => {
-  const command = findSlashCommand('side');
-  assert.ok(command);
-  const state = createContext('existing-session', '/side');
-  state.context.startSideConversation = async () => {
-    throw new Error('side failed');
-  };
-
-  await command.execute(state.context, '');
-
-  assert.equal(state.messages.length, 1);
-  assert.equal(state.messages[0].commandName, 'side');
-  assert.match(state.messages[0].commandOutput, /侧会话失败/);
 });
 
 test('/goal argument parsing matches the TUI command grammar', () => {

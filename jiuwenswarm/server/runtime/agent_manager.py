@@ -915,6 +915,60 @@ class AgentManager:
             )
         return cleaned
 
+    def session_has_live_subagents(
+        self,
+        *,
+        channel_id: str | None,
+        session_id: str,
+    ) -> bool:
+        """Whether the session-scoped adapter still holds live subagents.
+
+        Reads the registry the adapter already keeps, without creating either
+        the Agent or a subagent control, so asking never hydrates work.  Pairs
+        with :meth:`release_subagent_runtime_for_session`: a Session that is
+        busy only because subagents are still tearing down must not be
+        reported as one the user has to stop.
+        """
+        agent = self._resolve_session_agent(channel_id, session_id)
+        adapter = self._resolve_runtime_adapter(agent)
+        probe = getattr(adapter, "_session_has_live_subagents", None)
+        if not callable(probe):
+            return False
+        try:
+            return bool(probe(session_id))
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[AgentManager] live subagent probe failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+            return False
+
+    def _resolve_session_agent(
+        self,
+        channel_id: str | None,
+        session_id: str,
+    ) -> "JiuWenSwarm | None":
+        """Return the cached channel Agent that actually owns ``session_id``.
+
+        Subagent controls and session adapters are held per Agent, so both the
+        release and the live probe have to land on the owning Agent: a channel
+        caches one Agent per project and mode, and the first match is another
+        project's or mode's Agent whenever the channel holds more than one.
+        Releasing against that Agent cancels nothing and leaves the resident
+        subagents running, which is what made the Session look busy.
+
+        Falls back to the channel's Agent when no Agent claims the Session's
+        runtime — already torn down, or never bound — so a release that used to
+        run still gets a chance to run.
+        """
+        owner = self.get_agent_for_session_nowait(
+            channel_id=channel_id or "", session_id=session_id
+        )
+        if owner is not None:
+            return owner
+        return self.get_agent_nowait(channel_id=channel_id or "")
+
     async def release_subagent_runtime_for_session(
         self,
         *,
@@ -922,14 +976,14 @@ class AgentManager:
         session_id: str,
         reason: str = "session_deleted",
     ) -> bool:
-        """Release subagent control owned by the channel's existing Agent.
+        """Release subagent control owned by the Agent running ``session_id``.
 
-        Product Session deletion historically performed this lookup in
-        AgentServer.  Keeping it here preserves the same first-Agent lookup and
-        adapter selection while hiding Agent/Adapter internals behind the
-        Runtime-owned manager boundary.
+        Product Session deletion historically performed a first-Agent lookup in
+        AgentServer.  Resolving the owning Agent here instead keeps the adapter
+        selection while hiding Agent/Adapter internals behind the Runtime-owned
+        manager boundary.
         """
-        agent = self.get_agent_nowait(channel_id=channel_id or "")
+        agent = self._resolve_session_agent(channel_id, session_id)
         adapter = self._resolve_runtime_adapter(agent)
         release_runtime = getattr(
             adapter,
@@ -1297,6 +1351,15 @@ class AgentManager:
                 **create_kwargs,
             )
             return self._borrow_agent(agent)
+
+    def has_active_goal(self, channel_id: str, session_id: str) -> bool:
+        """Inspect cached Goal owners without borrowing or creating an Agent."""
+        channel_agents = self.agents.get(_normalize_channel_id(channel_id), {})
+        for agent in channel_agents.values():
+            checker = getattr(agent, "has_active_goal", None)
+            if callable(checker) and checker(session_id):
+                return True
+        return False
 
     def get_agent_for_session_nowait(
         self,

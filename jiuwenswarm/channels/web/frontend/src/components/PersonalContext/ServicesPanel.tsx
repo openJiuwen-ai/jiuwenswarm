@@ -306,8 +306,8 @@ export function PersonalContextServicesPanel({
             <span className="pc-services__stat-number">{graph?.nodes.length ?? 0}</span>
           </div>
           <div className="pc-services__stat-card">
-            <span className="pc-services__stat-label">{t('personalContext.services.statCollecting')}</span>
-            <span className="pc-services__stat-number">{Object.values(status?.fetch_run_progress ?? {}).filter((p) => p.run_state === 'running').length}</span>
+            <span className="pc-services__stat-label" data-testid="personal-context-active-fetch-label">{t('personalContext.services.statCollecting')}</span>
+            <span className="pc-services__stat-number" data-testid="personal-context-active-fetch-count">{Object.values(status?.fetch_run_progress ?? {}).filter((p) => p.run_state === 'running' || p.run_state === 'stopping').length}</span>
           </div>
         </div>
 
@@ -399,6 +399,7 @@ export function PersonalContextServicesPanel({
                       !!pendingWrites[`stop:${s.service_id}`] ||
                       !!pendingWrites[`del:${s.service_id}`]
                     }
+                    runPending={!!pendingWrites[`run:${s.service_id}`]}
                     stopping={!!pendingWrites[`stop:${s.service_id}`]}
                     onRun={handleRun}
                     onStop={handleStop}
@@ -467,6 +468,7 @@ const STATUS_WAITING_PATHS = [
 const STATUS_RING_COLORS: Record<string, string> = {
   stateStopped: '#C2C2C2',
   stateCompleted: '#5CB300',
+  statePartial: 'var(--color-feedback-warning)',
   stateFailed: '#F23030',
   stateCollecting: '#5CB300',
   stateStopping: '#808080',
@@ -498,6 +500,7 @@ function ServiceCard({
   progress,
   lastRun,
   pending,
+  runPending,
   stopping,
   onRun,
   onStop,
@@ -511,6 +514,7 @@ function ServiceCard({
   progress?: FetchRunProgress;
   lastRun?: FetchRunRecord | null;
   pending: boolean;
+  runPending: boolean;
   stopping: boolean;
   onRun: (id: string) => void;
   onStop: (id: string) => void;
@@ -523,9 +527,10 @@ function ServiceCard({
   const serviceRunning = state === 'STARTING' || state === 'RUNNING' || state === 'STOPPING';
   // 活动运行态（实时）：以小写进度态为准，快照未带进度时回退到大写服务态。
   // running / stopping 都算"采集中"，保证采集期间进度条与「停止采集」按钮持续可见。
-  const isCollecting = runState != null
+  const activeRun = runState != null
     ? runState === 'running' || runState === 'stopping'
     : serviceRunning;
+  const isCollecting = runPending || activeRun;
   const isStopping = state === 'STOPPING' || stopping || runState === 'stopping';
 
   // 最近一次运行结果（历史记录，持久）：成功/失败以此为准，
@@ -534,6 +539,7 @@ function ServiceCard({
   const lastRunFailed =
     lastRunState === 'failed' || state === 'FAILED' || (!!lastError && state === 'STOPPED');
   const lastRunCompleted = lastRunState === 'succeeded';
+  const lastRunPartial = lastRunState === 'partial_succeeded';
   const errorText = lastRun?.last_error ?? lastError;
   // 失败提示只在非采集/非停止时展示：采集中旧失败标记不应残留（与 statusKey 优先级一致）
   const showFailedHint = !isStopping && !isCollecting && lastRunFailed && !!errorText;
@@ -544,15 +550,17 @@ function ServiceCard({
       ? 'stateCollecting'
       : lastRunFailed
         ? 'stateFailed'
-        : lastRunCompleted
-          ? 'stateCompleted'
-          : !service.enabled
-            ? 'stateStopped'
-            : 'stateWaiting';
+        : lastRunPartial
+          ? 'statePartial'
+          : lastRunCompleted
+            ? 'stateCompleted'
+            : !service.enabled
+              ? 'stateStopped'
+              : 'stateWaiting';
 
   const percent = progress?.progress_percent;
   // 采集中即展示进度条（含 0%），避免后端尚未上报总量时进度条消失，让用户看到"采集中"进度占位。
-  const hasProgress = isCollecting && typeof percent === 'number';
+  const hasProgress = activeRun && !runPending && typeof percent === 'number';
 
   const interval = service.interval_seconds;
   const isHour = interval % FREQUENCY_SECONDS.hour === 0;
@@ -603,8 +611,16 @@ function ServiceCard({
           <span
             className={`pc-services__status-text pc-services__status-text--${statusKey}`}
             title={showFailedHint ? errorText : undefined}
+            data-testid="personal-context-service-status"
+            data-variant={statusKey}
           >
-            {t(`personalContext.services.${statusKey}`)}
+            {statusKey === 'statePartial'
+              ? t('personalContext.services.statePartial', {
+                completed: lastRun?.completed_items ?? 0,
+                total: lastRun?.total_items ?? 0,
+                failed: lastRun?.failed_items ?? 0,
+              })
+              : t(`personalContext.services.${statusKey}`)}
           </span>
           {showFailedHint ? (
             <svg className="pc-services__status-hint" viewBox="0 0 16 16" width="14" height="14" fill="none" role="img" aria-label={errorText}>
@@ -629,7 +645,7 @@ function ServiceCard({
 
         {/* 右：操作按钮 + 开关 */}
         <div className="pc-services__card-actions">
-          {isCollecting ? (
+          {activeRun ? (
             <button type="button" className="pc-services__action-link" onClick={() => onStop(service.service_id)} disabled={pending}>
               {t('personalContext.services.actionStop')}
             </button>

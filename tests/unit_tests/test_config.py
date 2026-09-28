@@ -86,7 +86,8 @@ def test_symphony_evolution_switch_matches_full_parser(
     target["enabled"] = value
     parsed = symphony_config_module.symphony_config_from_dict(raw)
     assert get_symphony_evolution_enabled({"symphony": raw}) is expected
-    assert expected is (parsed.enabled and parsed.evolution.enabled)
+    # enabled 已移到 evolution.flow 下；evolution 层的旧位置靠回退兼容
+    assert expected is (parsed.enabled and parsed.evolution.flow.enabled)
 
 
 @pytest.mark.parametrize("value", [None, {}, [], "invalid", True, 1])
