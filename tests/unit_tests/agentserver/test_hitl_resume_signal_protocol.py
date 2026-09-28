@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -26,6 +25,11 @@ from jiuwenswarm.server.runtime.agent_adapter.interface import (
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
+)
+from jiuwenswarm.server.runtime.agent_adapter.interrupt_state_machine import (
+    INTERRUPT_PHASE_SESSION_KEY,
+    PHASE_IDLE,
+    PHASE_RESUMED,
 )
 
 
@@ -159,6 +163,125 @@ async def test_guard_allows_live_card_answer() -> None:
     assert await adapter.guard_stale_interrupt_response(
         _ask_user_answer_request("tcid#2")
     ) is False
+
+
+class _MemSession:
+    """相位读写用的内存 session，不碰 checkpointer。"""
+
+    def __init__(self, phase: str | None = None) -> None:
+        self._state: dict[str, object] = {}
+        if phase is not None:
+            self._state[INTERRUPT_PHASE_SESSION_KEY] = {"phase": phase}
+
+    def get_state(self, key: str):
+        return self._state.get(key)
+
+    def update_state(self, patch: dict) -> None:
+        self._state.update(patch)
+
+
+def _permission_card(request_id: str, question: str) -> dict:
+    return {
+        "event_type": "chat.ask_user_question",
+        "request_id": request_id,
+        "source": "permission_interrupt",
+        "questions": [{"question": question, "options": ["本次允许"]}],
+    }
+
+
+def _permission_answer(card_id: str) -> AgentRequest:
+    return AgentRequest(
+        request_id="req-allow",
+        channel_id="officeclaw",
+        session_id="sess-guard",
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "query": "",
+            "source": "permission_interrupt",
+            "request_id": card_id,
+            "answers": [{"selected_options": ["本次允许"]}],
+        },
+    )
+
+
+def _card_adapter(phase: str | None) -> JiuWenSwarmDeepAdapter:
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._hitl_card_instances = {}
+    adapter._hitl_base_live_instance = {}
+    adapter._hitl_dead_card_ids = set()
+    adapter._ask_user_card_seq = {}
+    adapter._instance = SimpleNamespace(
+        _interaction_session=_MemSession(phase),
+        loop_session=None,
+    )
+    return adapter
+
+
+def _emit_second_permission_card(adapter: JiuWenSwarmDeepAdapter) -> None:
+    emitted_ids: set[str] = set()
+    emitted_questions: dict[str, str] = {}
+    first = _permission_card("call_x", "列出目录?")
+    assert adapter._dedupe_ask_user_card(first, emitted_ids, emitted_questions) is False
+    second = _permission_card("call_x", "列出目录? 新参数")
+    assert adapter._dedupe_ask_user_card(second, emitted_ids, emitted_questions) is False
+    assert second["request_id"] == "call_x#2"
+
+
+@pytest.mark.asyncio
+async def test_superseded_permission_card_rejected_while_live_suffix_resumes() -> None:
+    """发出 #2 后，旧卡 call_x 拒绝；进行中的 call_x#2 仍放行。"""
+    adapter = _card_adapter(None)
+    _emit_second_permission_card(adapter)
+    assert await adapter.guard_stale_interrupt_response(
+        _permission_answer("call_x")
+    ) is True
+    # 活卡未进死卡集；相位检查需要真实 session，这里只验证卡片守卫放行。
+    adapter._instance = None
+    assert await adapter.guard_stale_interrupt_response(
+        _permission_answer("call_x#2")
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_finished_round_rejects_late_live_permission_card() -> None:
+    """命令跑完、相位 resumed→idle 后，最后那张活卡的迟到允许被拒绝。"""
+    adapter = _card_adapter(None)
+    _emit_second_permission_card(adapter)
+    # 发卡把相位打成 paused；应答受理后才是 resumed，轮次结束才回 idle。
+    session = adapter._instance._interaction_session
+    session.update_state({INTERRUPT_PHASE_SESSION_KEY: {"phase": PHASE_RESUMED}})
+    adapter._mark_interrupt_idle_inmemory()
+    session = adapter._instance._interaction_session
+    phase = session.get_state(INTERRUPT_PHASE_SESSION_KEY)
+    assert phase["phase"] == PHASE_IDLE
+    assert "call_x#2" in adapter._hitl_dead_card_ids
+    assert await adapter.guard_stale_interrupt_response(
+        _permission_answer("call_x#2")
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_paused_round_keeps_live_permission_card() -> None:
+    """还有卡在等时不转死卡，进行中的 #2 仍可恢复。"""
+    adapter = _card_adapter(None)
+    _emit_second_permission_card(adapter)
+    adapter._mark_interrupt_idle_inmemory()
+    assert "call_x#2" not in adapter._hitl_dead_card_ids
+    adapter._instance = None
+    assert await adapter.guard_stale_interrupt_response(
+        _permission_answer("call_x#2")
+    ) is False
+
+
+def test_missing_instance_does_not_invalidate_live_card() -> None:
+    """读不到运行实例时不转死卡，避免重启后吞掉仍在等待的点击。"""
+    adapter = _card_adapter(None)
+    _emit_second_permission_card(adapter)
+    session = adapter._instance._interaction_session
+    session.update_state({INTERRUPT_PHASE_SESSION_KEY: {"phase": PHASE_RESUMED}})
+    adapter._instance = None
+    adapter._mark_interrupt_idle_inmemory()
+    assert "call_x#2" not in adapter._hitl_dead_card_ids
 
 
 @pytest.mark.asyncio

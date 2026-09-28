@@ -20421,8 +20421,8 @@ class JiuWenSwarmDeepAdapter:
                 is_complete=True,
             )
         else:
-            # 重放轮正常完成且无新卡在飞：相位回 idle（仅 resumed 时转换；
-            # paused/终态/普通轮次 no-op，见方法 docstring）。
+            # 重放轮正常完成且无新卡在飞：相位回 idle，并把活卡转死卡
+            # （仅 resumed 时转换；paused/终态/普通轮次 no-op）。
             self._mark_interrupt_idle_inmemory()
             yield AgentResponseChunk(
                 request_id=rid,
@@ -20754,11 +20754,15 @@ class JiuWenSwarmDeepAdapter:
             )
 
     def _mark_interrupt_idle_inmemory(self) -> None:
-        """重放轮次正常完成且无新卡在飞：相位 → idle。
+        """重放轮次正常完成且无新卡在飞：相位 → idle，并把活卡转死卡。
 
         仅在当前相位为 resumed 时转换——paused（卡在飞等待作答）与终态
         （cancel/supplement 的守卫语义需跨请求存活）均保持原状，普通轮次
         （idle）no-op 避免 idle→idle 噪音。
+
+        同一条件下作废活卡：命令已经跑完后，最后那张活卡（含 ``#N``）的迟到
+        「本次允许」不再进入 runtime 被写成 ``approved``。实例不存在、读不到
+        相位、或相位不是 resumed 时不转死卡，避免吞掉仍在等待的点击。
         """
         instance = getattr(self, "_instance", None)
         if instance is None:
@@ -20774,6 +20778,7 @@ class JiuWenSwarmDeepAdapter:
             if (phase or {}).get("phase") != PHASE_RESUMED:
                 return
             mark_interrupt_idle(proxy)
+            self._invalidate_all_hitl_card_instances()
         except Exception:  # noqa: BLE001 — 相位标记失败不影响轮次收尾
             logger.debug(
                 "[JiuWenClaw] mark interrupt idle failed",
