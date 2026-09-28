@@ -25,6 +25,10 @@
 2. 用 `pr_creator.py --list --author <login> --target-project upstream --workspace <WS> --state open`。
 3. 对每个候选 PR 再核对 `user == login`，不匹配一律剔除。
 
+## 仓内检视标准
+
+每个 PR collect 之后、检视之前，读取 `context.json` 的 `project_context.repo_review_standards` 并对照执行（规则见 [workflow.md §仓内检视标准](workflow.md)）：清单非空必须逐个读取；被本 PR 修改的标准按 PR base（目标分支）版本读取，并在行评中提示维护者确认。
+
 ## 去重
 
 周期性检视“未检视过的 PR”时，远端评论是唯一事实来源。禁止用会话记忆判断是否已检视。

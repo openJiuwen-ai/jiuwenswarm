@@ -65,6 +65,31 @@ FRONTMATTER_RE = re.compile(r"\A---\s*\r?\n(.*?)\r?\n---\s*(?:\r?\n|$)", re.DOTA
 REPORT_BODY_NOTE = "<!-- 以下正文由 report 根据 doc/<module>/review/result.json 自动生成，请勿手改 -->"
 DISCUSSION_LOCATIONS = {"(architecture)", "(documentation)"}
 
+# Repo-local review standards discovery (docs/zh/开发实践/目标仓AI检视Skill加载方案.md).
+# Primary convention: the agent-workspace skills directory, at the repo root or
+# under a single-level package dir (e.g. jiuwenswarm/resources/agent/workspace/
+# skills/<name>/SKILL.md). Platform project-skill directories are scanned for
+# compatibility. AGENTS.md / CLAUDE.md are recorded as supplementary context.
+REVIEW_SKILL_SLOT_GLOBS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "resources-workspace-skills",
+        (
+            "resources/agent/workspace/skills/*/SKILL.md",
+            "*/resources/agent/workspace/skills/*/SKILL.md",
+        ),
+    ),
+    (
+        "platform-project-skills",
+        (
+            ".claude/skills/*/SKILL.md",
+            ".cursor/skills/*/SKILL.md",
+            ".codex/skills/*/SKILL.md",
+        ),
+    ),
+)
+REPO_INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md")
+SKILL_REFERENCES_CAP = 50
+
 
 def module_doc_dir(repo_root: Path, module: str) -> Path:
     name = module.strip().strip("/\\")
@@ -378,6 +403,180 @@ def collect_project_context(repo: Path) -> dict[str, Any]:
     return context
 
 
+def _normalize_repo_path(path: str) -> str:
+    """Normalize a changed-file path for comparison (posix, no leading ./)."""
+    p = (path or "").strip().replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p
+
+
+def _parse_skill_frontmatter(path: Path) -> dict[str, str]:
+    """Best-effort ``name``/``description`` from a SKILL.md YAML frontmatter."""
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return {}
+    match = FRONTMATTER_RE.match(text)
+    if not match:
+        return {}
+    fields: dict[str, str] = {}
+    for line in match.group(1).splitlines():
+        if ":" not in line or line[:1].isspace():
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip().lower()
+        value = value.strip().strip("\"'")
+        if key in {"name", "description"} and value:
+            fields[key] = value
+    return fields
+
+
+def _git_last_commit_date(repo: Path, rel: str) -> str:
+    code, stdout, _ = run(["git", "log", "-1", "--format=%cs", "--", rel], cwd=repo, timeout=10)
+    date = stdout.strip()
+    return date if code == 0 and date else ""
+
+
+def _skill_reference_files(repo: Path, skill_dir: Path) -> list[str]:
+    """Repo-relative reference file list under a skill dir (SKILL.md excluded)."""
+    refs: list[str] = []
+    for item in sorted(skill_dir.rglob("*")):
+        if not item.is_file() or item.name == "SKILL.md":
+            continue
+        try:
+            refs.append(item.relative_to(repo).as_posix())
+        except ValueError:
+            continue
+        if len(refs) >= SKILL_REFERENCES_CAP:
+            break
+    return refs
+
+
+def _repo_standard_entry(
+    repo: Path,
+    file_path: Path,
+    *,
+    slot: str,
+    kind: str,
+    name: str,
+    description: str = "",
+    references: list[str] | None = None,
+    changed: set[str] | None = None,
+) -> dict[str, Any]:
+    changed = changed or set()
+    try:
+        rel = file_path.relative_to(repo).as_posix()
+    except ValueError:
+        rel = str(file_path)
+    if kind == "skill":
+        # A PR touching the SKILL.md or anything under its dir (references,
+        # assets) is treated as modifying the standard itself.
+        prefix = str(Path(rel).parent.as_posix()) + "/"
+        touched = rel in changed or any(p.startswith(prefix) for p in changed)
+    else:
+        touched = rel in changed
+    return {
+        "path": rel,
+        "slot": slot,
+        "kind": kind,
+        "name": name,
+        "description": description,
+        "references": references or [],
+        "last_commit": _git_last_commit_date(repo, rel),
+        "modified_by_pr": touched,
+    }
+
+
+def _resolve_explicit_review_skill(repo: Path, raw: str) -> Path | None:
+    """Resolve an explicit --review-skill value to a file (dir -> SKILL.md)."""
+    target = Path(raw.strip()).expanduser()
+    if not target.is_absolute():
+        target = repo / target
+    target = target.resolve()
+    if target.is_dir():
+        target = target / "SKILL.md"
+    return target if target.is_file() else None
+
+
+def discover_repo_review_standards(
+    repo: Path,
+    changed_files: list[str] | None = None,
+    extra_paths: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Discover repo-local AI review standards; returns (entries, warnings).
+
+    Scan order: explicit ``--review-skill`` paths first, then the slot globs in
+    ``REVIEW_SKILL_SLOT_GLOBS`` (resources-workspace-skills is the primary
+    convention), then repo-level instruction files (AGENTS.md / CLAUDE.md,
+    ``kind="repo-instructions"``). Skills are deduplicated by name, keeping the
+    highest-priority hit. File contents are intentionally NOT inlined — the
+    reviewer reads the listed paths on demand.
+    """
+    changed = {_normalize_repo_path(p) for p in changed_files or [] if str(p or "").strip()}
+    entries: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    seen_names: set[str] = set()
+
+    def add_skill(file_path: Path, slot: str) -> None:
+        fields = _parse_skill_frontmatter(file_path)
+        name = fields.get("name") or file_path.parent.name
+        if name in seen_names:
+            return
+        seen_names.add(name)
+        entry = _repo_standard_entry(
+            repo,
+            file_path,
+            slot=slot,
+            kind="skill",
+            name=name,
+            description=fields.get("description", ""),
+            references=_skill_reference_files(repo, file_path.parent),
+            changed=changed,
+        )
+        entries.append(entry)
+        if entry["modified_by_pr"]:
+            warnings.append(
+                f"Repo review standard touched by this PR: {entry['path']}. "
+                "Apply the PR base (target branch) version (a newly added standard does not "
+                "apply to this review) and flag the change for maintainer confirmation."
+            )
+
+    for raw in extra_paths or []:
+        resolved = _resolve_explicit_review_skill(repo, raw)
+        if resolved is None:
+            warnings.append(f"--review-skill path not found, skipped: {raw}")
+            continue
+        add_skill(resolved, "explicit")
+
+    for slot, patterns in REVIEW_SKILL_SLOT_GLOBS:
+        for pattern in patterns:
+            for file_path in sorted(repo.glob(pattern)):
+                add_skill(file_path, slot)
+
+    for name in REPO_INSTRUCTION_FILES:
+        file_path = repo / name
+        if not file_path.is_file():
+            continue
+        entry = _repo_standard_entry(
+            repo,
+            file_path,
+            slot="repo-instructions",
+            kind="repo-instructions",
+            name=name.removesuffix(".md"),
+            changed=changed,
+        )
+        entries.append(entry)
+        if entry["modified_by_pr"]:
+            warnings.append(
+                f"Repo instruction file touched by this PR: {entry['path']}. "
+                "Apply the PR base (target branch) version (a newly added file does not "
+                "apply to this review) and flag the change for maintainer confirmation."
+            )
+
+    return entries, warnings
+
+
 def collect_hard_failure(pr: str, diff_text: str, changed_files: list[str], warnings: list[str]) -> bool:
     """True when local/URL collect produced no usable scope and errors are not recoverable by manual review alone."""
     if diff_text.strip() or changed_files:
@@ -480,6 +679,14 @@ def command_collect(ns: argparse.Namespace) -> int:
     limitations: list[str] = []
     if git_snapshot.get("dirty") and fetch_method == "pr-url-diff":
         limitations.append("Local repo has uncommitted changes; checkout PR branch before lint.")
+    repo_review_standards, standards_warnings = discover_repo_review_standards(
+        repo,
+        changed_files,
+        extra_paths=list(getattr(ns, "review_skill", []) or []),
+    )
+    warnings.extend(standards_warnings)
+    project_context = collect_project_context(repo)
+    project_context["repo_review_standards"] = repo_review_standards
     context = {
         "schema_version": 1,
         "module": module,
@@ -498,7 +705,7 @@ def command_collect(ns: argparse.Namespace) -> int:
         "changed_files": changed_files,
         "diff_path": str(out_dir / "pr.diff"),
         "issue_text_path": str(out_dir / "issue.txt"),
-        "project_context": collect_project_context(repo),
+        "project_context": project_context,
         "warnings": warnings,
         "limitations": limitations,
     }
@@ -804,6 +1011,10 @@ def build_report_body_lines(
     nice_to_have = get_findings(review, "nice_to_have")
     summary = review.get("summary") or {}
     security_review = review.get("security_review") or {}
+    standards = (context.get("project_context") or {}).get("repo_review_standards") or []
+    standard_paths = [
+        str(item.get("path")) for item in standards if isinstance(item, dict) and item.get("path")
+    ]
     lines: list[str] = [
         REPORT_BODY_NOTE,
         "",
@@ -816,6 +1027,7 @@ def build_report_body_lines(
         f"- Repository: {context.get('repo') or 'unknown'}",
         f"- Diff source: {context.get('fetch_method') or 'unknown'}",
         f"- Changed files: {', '.join(context.get('changed_files') or []) or 'none collected'}",
+        f"- Repo review standards: {', '.join(standard_paths) or 'none discovered'}",
         "",
         "## Overall Verdict",
         "",
@@ -1341,6 +1553,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_review_output_args(p)
     p.add_argument("--gitcode-token", default="", help="GitCode access token for private/login-required PR or issue URLs.")
+    p.add_argument(
+        "--review-skill",
+        action="append",
+        default=[],
+        help="Repo-relative path to a repo-local review standard \
+        (SKILL.md, skill dir, or instruction file). Repeatable; takes priority over slot discovery.",
+    )
     p.set_defaults(func=command_collect)
 
     p = sub.add_parser("init-review", help="Create doc/<module>/review/result.json draft.")
