@@ -1671,3 +1671,16 @@ flash:
     k1: 0.9
     b: 0.4
     name_weight: 0.5
+
+# ── 模型路由（model_routing rail）──────────────────────────────
+model_routing:
+  enabled: false
+  health_check:
+    enabled: true
+    interval_seconds: 180
+    timeout_seconds: 10
+    max_rounds: 1
+    max_consecutive_failures: 2
+    recovery_consecutive_successes: 1
+    health_check_prompt: "hi"
+    max_tokens: 1

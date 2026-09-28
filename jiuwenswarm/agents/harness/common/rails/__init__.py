@@ -28,6 +28,9 @@ from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import Notify
 from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import (
     DeepResearchExecutionRail,
 )
+from jiuwenswarm.agents.harness.common.rails.model_routing.model_routing_rail import (
+    ModelRoutingRail,
+)
 
 __all__ = [
     "JiuSwarmStreamEventRail",
@@ -45,4 +48,5 @@ __all__ = [
     "NotifyingLLMRetryRail",
     "DeepResearchExecutionRail",
     "DisabledToolsRail",
+    "ModelRoutingRail",
 ]

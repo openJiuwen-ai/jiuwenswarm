@@ -1648,6 +1648,38 @@ def parse_int(value: Any, default: int) -> int:
         return default
 
 
+def _parse_bool(value: Any, *, default: bool = False) -> bool:
+    """Parse YAML bool / env-var-backed boolean strings.
+
+    ``${VAR:-default}`` 插值会把 env 值解析成字符串（config.resolve_env_vars），
+    所以「环境变量驱动的开关」必须容忍 "true"/"1"/"yes"/"on" 这类字符串，不能
+    用 ``is True`` 判等。
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    return default
+
+
+def _model_routing_enabled(config: dict[str, Any] | None) -> bool:
+    """model_routing 总开关：config.yaml ``model_routing.enabled``（默认 false）+ 进程级 env 覆盖。
+
+    relay 侧可经 spawn env 注入 ``JIUWENSWARM_MODEL_ROUTING_ENABLED``（进程级开关，
+    仿 JIUWENSWARM_CODE_COAUTHOR_HEADER_ENABLED）；env 显式设置时优先于 config.yaml。
+    """
+    enabled = _parse_bool((config or {}).get("model_routing", {}).get("enabled"))
+    env_val = os.getenv("JIUWENSWARM_MODEL_ROUTING_ENABLED")
+    if env_val is not None and env_val.strip():
+        enabled = _parse_bool(env_val)
+    return enabled
+
+
 def _resolve_instance_config_base(config_base: dict[str, Any] | None) -> dict[str, Any]:
     if config_base is None:
         return copy.deepcopy(get_config())
@@ -5453,6 +5485,34 @@ class JiuWenSwarmDeepAdapter:
                 len(ext_config),
             )
 
+    @staticmethod
+    def _inject_model_selection_into_inputs(
+        request: AgentRequest, inputs: dict[str, Any]
+    ) -> None:
+        """把请求的模型选择值注入 ``inputs["run"]["context"]["extra"]["model_selection"]``，供 ModelRoutingRail 每请求读取。
+
+        relay 前端下拉框与具体模型同级：四档（fast/balanced/extreme/auto）与具体
+        模型统一经 frame ``params.model_name`` → ``request.params`` → 这里写入
+        ``run_context.extra``（DeepAgent ``_normalize_inputs`` 会把它带进
+        ``InvokeInputs.run_context.extra``）。取值可为具体模型名，或
+        fast/balanced/extreme/auto（写死路由）；缺失不写入，rail 侧走
+        "具体模型/默认"分支（跳过路由）。
+        """
+        params = request.params if isinstance(request.params, dict) else {}
+        raw = str(params.get("model_name") or "").strip()
+        if not raw:
+            return
+        run_extra = (
+            inputs.setdefault("run", {})
+            .setdefault("context", {})
+            .setdefault("extra", {})
+        )
+        if isinstance(run_extra, dict):
+            run_extra["model_selection"] = raw
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] model_selection injected: value=%s", raw
+            )
+
     def _refresh_multimodal_configs(
         self,
         config_base: dict[str, Any],
@@ -6049,6 +6109,37 @@ class JiuWenSwarmDeepAdapter:
     def _build_model_from_entry(mcc: dict, mco: dict) -> Model:
         """根据单个模型条目的 model_client_config / model_config_obj 构建 Model 实例。"""
         name = mcc.get("model_name", "")
+        # models.json 在 relay spawn 前落盘；未登录时 maas 条目 api_base/api_key 为空，
+        # Model 构建会失败（整批跳过，四档路由只能 keep current）。登录后 invoke 同步
+        # 把 maas 凭证 env（API_BASE/API_KEY/default_headers）注入 tip，这里在 api_base
+        # 缺失时原位回填：仅当候选 base 命中 maas 端点标记才填，避免把自定义 OpenAI
+        # 网关误配给 maas 模型。原位修改 mcc 使 _register_model_cache_entry 的
+        # model_ref 哈希与注入后的一致。
+        if not str(mcc.get("api_base") or "").strip():
+            try:
+                from jiuwenswarm.common.local_env_config import read_env
+                from jiuwenswarm.llm_sse_patch import _is_huawei_maas_api_base
+
+                for _base_key in (
+                    "OFFICE_CLAW_HUAWEI_MAAS_BASE_URL",
+                    "API_BASE",
+                    "OPENAI_BASE_URL",
+                    "OPENAI_API_BASE",
+                ):
+                    _base_val = read_env(_base_key, "").strip()
+                    if _base_val and _is_huawei_maas_api_base(_base_val):
+                        mcc["api_base"] = _base_val
+                        break
+                if not str(mcc.get("api_key") or "").strip():
+                    mcc["api_key"] = (
+                        read_env("OPENAI_API_KEY", "").strip()
+                        or read_env("API_KEY", "").strip()
+                        or "huawei-maas-session"
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] MaaS credential backfill skipped: %s", exc
+                )
         mcc_fields = {k: v for k, v in mcc.items() if k != "model_name"}
         if not mcc_fields.get("client_provider"):
             mcc_fields["client_provider"] = "OpenAI"
@@ -6167,6 +6258,41 @@ class JiuWenSwarmDeepAdapter:
         name_counter: dict[str, int] = {}
 
         for entry in get_default_models(config):
+            self._register_model_cache_entry(entry, name_counter)
+
+        # sidecar 模式：把 relay 落盘的 models.json 条目也登记进缓存，使具体模型的
+        # model_ref（maas 端点哈希）能被 _resolve_model_by_identity 解析——这些哈希只在
+        # models.json 里有，config.yaml 里没有（config.yaml 仅 glm-5.2 火山）。
+        self._register_models_json_cache_entries(name_counter)
+
+    def _register_models_json_cache_entries(self, name_counter: dict[str, int]) -> None:
+        """把 sidecar 模式 relay 落盘的 models.json::defaults 条目登记进模型缓存。
+
+        models.json 与 config.yaml 条目同构（model_client_config/model_config_obj/顶层
+        字段），直接复用 _register_model_cache_entry；与 config.yaml 条目按 name_counter
+        顺序分配 #index key。同名（config.yaml 已登记本地实配模型）时跳过，避免
+        _resolve_model_by_name 出现歧义。
+        """
+        try:
+            from jiuwenswarm.agents.harness.common.rails.model_routing.capability import (
+                _load_models_json,
+            )
+            models_json = _load_models_json()
+        except Exception as exc:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] models.json cache register skipped: %s", exc
+            )
+            return
+        defaults = models_json.get("defaults") if isinstance(models_json, dict) else None
+        if not isinstance(defaults, list):
+            return
+        for entry in defaults:
+            if not isinstance(entry, dict):
+                continue
+            mcc = entry.get("model_client_config") or {}
+            name = str(mcc.get("model_name") or "").strip()
+            if not name or name in self._model_name_to_keys:
+                continue
             self._register_model_cache_entry(entry, name_counter)
 
     def _build_model_cache_legacy(self, config: dict) -> None:
@@ -8981,6 +9107,46 @@ class JiuWenSwarmDeepAdapter:
             return rail
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] LLMRetryRail create failed: %s", exc)
+            return None
+
+    @staticmethod
+    def _build_model_routing(config: dict[str, Any] | None = None) -> Any | None:
+        """构建 ModelRoutingRail（模型路由）。
+
+        - 使能：config.yaml ``model_routing.enabled`` = true，或进程级 env
+          ``JIUWENSWARM_MODEL_ROUTING_ENABLED``（relay spawn 注入，见 _model_routing_enabled）。
+        - 始终真切换（apply_routing=True）。
+        - 模型选择由前端下拉框与具体模型同级：四档（fast / balanced / extreme / auto）
+          与具体模型统一经 frame ``params.model_name`` 注入（四档写死模式，或具体
+          模型名），见 ModelRoutingRail。
+        - 能力表来自 ``routing_state/models.json``（sidecar）或 config.yaml ``models.defaults``
+          + ``models.vision``（后者作 model_type="vision" 候选）；model_builder 传
+          _build_model_from_entry 使能力表带 Model 对象（真切换前置）。
+        """
+        if not _model_routing_enabled(config):
+            return None
+
+        try:
+            from jiuwenswarm.agents.harness.common.rails.model_routing import (
+                ModelRoutingRail,
+                build_capability_table_from_config,
+            )
+
+            caps = build_capability_table_from_config(
+                config,
+                model_builder=JiuWenSwarmDeepAdapter._build_model_from_entry,
+            )
+            rail = ModelRoutingRail(
+                caps,
+                apply_routing=True,
+            )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] ModelRoutingRail create success, %d models",
+                len(caps),
+            )
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] ModelRoutingRail create failed: %s", exc)
             return None
 
     def _build_runtime_prompt_rail(self) -> RuntimePromptRail | None:
@@ -17917,6 +18083,7 @@ class JiuWenSwarmDeepAdapter:
         await self._refresh_stale_mcp_tool_lists()
 
         self._inject_extension_config_into_inputs(inputs)
+        self._inject_model_selection_into_inputs(request, inputs)
 
         _req_model = (request.params.get("model_name") or "") if isinstance(request.params, dict) else ""
         if not self._has_valid_model_config(_req_model):
@@ -18699,6 +18866,7 @@ class JiuWenSwarmDeepAdapter:
         await self._refresh_stale_mcp_tool_lists()
 
         self._inject_extension_config_into_inputs(inputs)
+        self._inject_model_selection_into_inputs(request, inputs)
 
         _req_model = (request.params.get("model_name") or "") if isinstance(request.params, dict) else ""
         if not self._has_valid_model_config(_req_model):

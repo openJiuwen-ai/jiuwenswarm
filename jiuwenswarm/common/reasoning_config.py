@@ -19,6 +19,7 @@ OPENAI_SDK_REASONING_PROVIDERS = {
 SUPPORTED_DEEPSEEK_V4_MODELS = {
     "deepseek-v4-pro",
     "deepseek-v4-flash",
+    "deepseek-v4-flash-0731",
 }
 
 LEVEL_MAPPING: dict[ReasoningLevel, ReasoningEffort] = {
