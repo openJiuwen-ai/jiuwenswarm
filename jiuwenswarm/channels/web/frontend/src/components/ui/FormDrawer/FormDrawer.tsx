@@ -13,6 +13,7 @@ export interface FormDrawerProps {
   width?: number | string;
   notice?: ReactNode;
   footer?: ReactNode;
+  footerLeading?: ReactNode;
   onConfirm?: () => void;
   confirmLabel?: string;
   confirmDisabled?: boolean;
@@ -30,6 +31,7 @@ export function FormDrawer({
   width,
   notice,
   footer,
+  footerLeading,
   onConfirm,
   confirmLabel,
   confirmDisabled,
@@ -73,6 +75,7 @@ export function FormDrawer({
           className={`form-drawer__footer${footer ? ' form-drawer__footer--slot' : ''}`}
           data-testid={`${testId}-footer`}
         >
+          {footerLeading ? <div className="form-drawer__footer-leading">{footerLeading}</div> : null}
           {footer ?? (
             <>
               <button type="button" onClick={onClose} className="form-drawer__btn" data-testid={`${testId}-cancel`}>

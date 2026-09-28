@@ -1,14 +1,19 @@
-import { type ReactNode } from 'react';
-import { ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { LoaderCircle } from 'lucide-react';
 
 import { useTranslation } from 'react-i18next';
 import { type AgentCatalogItem, type RequestStatus } from '../../features/agentManagement';
 import { getAgentAvatarUrl } from '../../features/agentManagement';
-import { CategoryTabs, PageCard } from '../ui';
+import { CategoryTabs, EmptyState, PageCard } from '../ui';
+// 深引入而非 ../ui barrel：本组件被 agent-management-layout 测试以 esbuild 独立打包
+import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import ReminderIcon from '../../assets/agent-management/remind.svg?react';
 
-const AGENT_PAGE_SIZE = 15;
+/** 首批渲染数量；触底后每批追加同数量（目录由 listCatalog 一次性载入内存，这里做增量展示）。 */
+const CATALOG_BATCH_SIZE = 30;
+/** 触底判定余量：距滚动底部不足该像素即视为到底。 */
+const LOAD_MORE_THRESHOLD_PX = 40;
 
 const CATEGORIES = [
   'ProductDevelopment',
@@ -25,8 +30,6 @@ type CatalogPageProps = {
   scope: 'catalog' | 'mine';
   items: AgentCatalogItem[];
   totalItems: number;
-  page: number;
-  onPageChange: (page: number) => void;
   query: string;
   category: string;
   status: RequestStatus;
@@ -45,8 +48,6 @@ export function CatalogPage({
   scope,
   items,
   totalItems,
-  page: requestedPage,
-  onPageChange,
   query,
   category,
   status,
@@ -62,11 +63,28 @@ export function CatalogPage({
 }: CatalogPageProps) {
   const { t } = useTranslation();
   const isMine = scope === 'mine';
-  const totalPages = Math.max(1, Math.ceil(totalItems / AGENT_PAGE_SIZE));
-  const page = Math.min(Math.max(1, requestedPage), totalPages);
-  const pageItems = items.slice((page - 1) * AGENT_PAGE_SIZE, page * AGENT_PAGE_SIZE);
+  const [visibleCount, setVisibleCount] = useState(CATALOG_BATCH_SIZE);
+  const contentScrollRef = useRef<HTMLDivElement | null>(null);
+  const hasMore = visibleCount < items.length;
+  const pageItems = items.slice(0, visibleCount);
   const isEmpty = status === 'success' && totalItems === 0;
   const hasQuery = query.trim().length > 0 || Boolean(category);
+
+  // 切换作用域/分类/搜索词后回到首批，对齐原分页的重置行为
+  useEffect(() => {
+    setVisibleCount(CATALOG_BATCH_SIZE);
+  }, [scope, query, category]);
+
+  const appendNextBatch = useCallback(() => {
+    setVisibleCount((count) => (count < items.length ? Math.min(count + CATALOG_BATCH_SIZE, items.length) : count));
+  }, [items.length]);
+
+  // 滚动触底：底部加载组件已可见，追加下一批（数据在内存中，追加为同步展示）
+  const handleContentScroll = useCallback(() => {
+    const el = contentScrollRef.current;
+    if (!el || !hasMore) return;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - LOAD_MORE_THRESHOLD_PX) appendNextBatch();
+  }, [appendNextBatch, hasMore]);
 
   return (
     <>
@@ -86,7 +104,12 @@ export function CatalogPage({
         </div>
       ) : null}
 
-      <div className="page-scroll min-h-0 flex-1 overflow-y-auto" data-testid="agent-management-catalog-content">
+      <div
+        className="page-scroll min-h-0 flex-1 overflow-y-auto"
+        data-testid="agent-management-catalog-content"
+        ref={contentScrollRef}
+        onScroll={handleContentScroll}
+      >
         {status === 'loading' && totalItems === 0 ? (
           <div
             className="agent-management-state"
@@ -109,22 +132,24 @@ export function CatalogPage({
             </button>
           </div>
         ) : isEmpty ? (
-          <div className="agent-management-state" data-testid="agent-management-empty-state" data-kind="agent">
-            <p>
-              {hasQuery
+          <EmptyState
+            id="agent-management-empty-state"
+            text={
+              hasQuery
                 ? t('agentManagement.states.noMatch')
-                : t(isMine ? 'agentManagement.states.mineEmpty' : 'agentManagement.states.catalogEmpty')}
-            </p>
+                : t(isMine ? 'agentManagement.states.mineEmpty' : 'agentManagement.states.catalogEmpty')
+            }
+          >
             {isMine && !hasQuery ? (
               <button
                 type="button"
-                className="agent-management-button agent-management-button--primary"
+                className="h-[28px] w-[96px] rounded-full border border-[var(--color-button-border)] bg-card text-[12px] text-text"
                 onClick={onCreate}
               >
                 {t('agentManagement.actions.createFirst')}
               </button>
             ) : null}
-          </div>
+          </EmptyState>
         ) : (
           <>
             <div className="card-grid-auto">
@@ -193,40 +218,15 @@ export function CatalogPage({
                 );
               })}
             </div>
-            {totalPages > 1 ? (
+            {hasMore ? (
               <div
-                className="agent-management-pagination"
-                aria-label={t('agentManagement.pagination.label')}
-                data-testid="agent-catalog-pagination"
+                className="flex items-center justify-center gap-2 py-4"
+                role="status"
+                aria-label={t('agentManagement.loadMore')}
+                data-testid="agent-catalog-load-more"
               >
-                <span>
-                  {t('agentManagement.pagination.range', {
-                    start: (page - 1) * AGENT_PAGE_SIZE + 1,
-                    end: Math.min(page * AGENT_PAGE_SIZE, totalItems),
-                    total: totalItems,
-                  })}
-                </span>
-                <div className="agent-management-pagination__buttons">
-                  <button
-                    type="button"
-                    data-testid="agent-catalog-page-previous"
-                    disabled={page <= 1}
-                    onClick={() => onPageChange(page - 1)}
-                    aria-label={t('agentManagement.pagination.previous')}
-                  >
-                    <ChevronLeft size={16} aria-hidden="true" />
-                  </button>
-                  <span>{t('agentManagement.pagination.page', { page, total: totalPages })}</span>
-                  <button
-                    type="button"
-                    data-testid="agent-catalog-page-next"
-                    disabled={page >= totalPages}
-                    onClick={() => onPageChange(page + 1)}
-                    aria-label={t('agentManagement.pagination.next')}
-                  >
-                    <ChevronRight size={16} aria-hidden="true" />
-                  </button>
-                </div>
+                <LoadingSpinner size={16} testId="agent-catalog-load-more-spinner" />
+                <span className="text-sm text-text-muted">{t('agentManagement.loadMore')}</span>
               </div>
             ) : null}
           </>

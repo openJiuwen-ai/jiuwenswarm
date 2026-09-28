@@ -16,7 +16,7 @@ import MoreIcon from '../../assets/work-mode/more-rimless.svg?react';
 import NewConversationIcon from '../../assets/new_conversation.svg?react';
 import SourceManagerIcon from '../../assets/skill-panel/source-manager.svg?react';
 import RefreshIcon from '../../assets/skill-panel/refresh.svg?react';
-import { PageCard, PageHeader, PageToolbar, PageToolbarSearch, Tabs, LoadingSpinner } from '../ui';
+import { PageCard, PageHeader, PageToolbar, PageToolbarSearch, Tabs, LoadingSpinner, EmptyState } from '../ui';
 import { webRequest } from '../../services/webClient';
 import { SourceManagerModal } from '../../features/SourceManagerModal';
 import { SkillNetSearchModal } from '../../features/SkillNetSearchModal';
@@ -1220,7 +1220,7 @@ export function SkillPanel({
       <PageHeader title={t('skills.title')} subtitle={t('skills.subtitle')}>
         <button
           onClick={() => setSourceModalOpen(true)}
-          className="flex items-center gap-2 py-1.5 rounded-lg text-sm text-text-weak hover:text-text hover:bg-secondary/50"
+          className="flex items-center gap-2 py-1.5 rounded-lg text-sm text-text-weak hover:text-text"
           data-testid="skill-panel-source-manager-btn"
         >
           <SourceManagerIcon className="w-4 h-4" />
@@ -1241,7 +1241,7 @@ export function SkillPanel({
           className={`flex items-center gap-2 py-1.5 rounded-lg text-sm text-text-weak ${
             activeTab === 'graph' && graphReading
               ? 'cursor-not-allowed opacity-70'
-              : 'hover:text-text hover:bg-secondary/50'
+              : 'hover:text-text'
           }`}
           disabled={activeTab === 'graph' && graphReading}
           data-testid="skill-panel-refresh-btn"
@@ -1535,13 +1535,18 @@ export function SkillPanel({
       ) : (
         <>
           {listState === 'success' && mySkillsFiltered.length === 0 ? (
-            <div className="page-shell mt-4 text-sm text-text-muted">{t(MY_SKILLS_EMPTY_KEY[mySkillsSubTab])}</div>
+            <EmptyState id="skill-panel-my-list-empty" className="page-shell mt-4" text={t(MY_SKILLS_EMPTY_KEY[mySkillsSubTab])} />
           ) : null}
           {listState !== 'success' || mySkillsFiltered.length > 0 ? (
             <div className="page-scroll mt-0 flex-1 min-h-0 overflow-y-auto">
               {listState === 'loading' && (
-                <div className="text-sm text-text-muted" data-testid="skill-panel-my-list-loading">
-                  {t('common.loading')}
+                <div
+                  className="flex h-full items-center justify-center"
+                  role="status"
+                  aria-label={t('common.loading')}
+                  data-testid="skill-panel-my-list-loading"
+                >
+                  <LoadingSpinner size={28} />
                 </div>
               )}
               {listState === 'error' && (

@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
-import { Check, LoaderCircle, Plus } from 'lucide-react';
+import { LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import EntityAddIcon from '../../assets/agent-management/add.svg?react';
+import EntityRemoveIcon from '../../assets/agent-management/remove.svg?react';
 import {
   getAgentAvatarUrl,
   isAgentGroupAgentCompatibilityLoading,
@@ -229,9 +231,9 @@ export function AgentGroupMemberPicker({
                     ) : (
                       <span className="shrink-0" aria-hidden="true">
                         {selected ? (
-                          <Check size={14} className="text-[color:var(--color-chat-accent)]" />
+                          <EntityRemoveIcon className="text-[color:var(--color-chat-accent)]" />
                         ) : (
-                          <Plus size={14} className="text-text-muted" />
+                          <EntityAddIcon className="text-text-muted" />
                         )}
                       </span>
                     )

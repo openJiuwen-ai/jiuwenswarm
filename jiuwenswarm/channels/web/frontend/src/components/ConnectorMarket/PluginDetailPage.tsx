@@ -221,7 +221,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
                   type="button"
                   onClick={handleUse}
                   disabled={!linked || reconnectFlow.active}
-                  className="flex items-center gap-1 text-[13px] text-text hover:text-[color:var(--color-chat-accent)] disabled:cursor-not-allowed disabled:opacity-60"
+                  className="flex h-[28px] items-center gap-1 rounded-full border border-[var(--color-button-border)] bg-card px-4 text-[13px] text-text hover:text-[color:var(--color-chat-accent)] disabled:cursor-not-allowed disabled:opacity-60"
                   data-testid="connector-market-plugin-detail-use"
                 >
                   <NewConversationIcon size={14} />
@@ -308,7 +308,6 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
                   <DetailPromptChip
                     key={text}
                     text={text}
-                    icon={<NewConversationIcon size={12} />}
                     onClick={() => onUseExample(text, detail.runtimePackageName)}
                     testId="connector-market-plugin-detail-example"
                     variant={text}

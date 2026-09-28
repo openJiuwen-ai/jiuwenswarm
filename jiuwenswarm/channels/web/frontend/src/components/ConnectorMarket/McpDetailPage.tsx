@@ -301,7 +301,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                   // disabled:hover:text-text 优先级比裸 hover: 高（多一层 :disabled 伪类，选择器更
                   // 精确），专门用来盖掉禁用态下鼠标悬停仍然变蓝的问题——原生 disabled 属性不保证
                   // 阻止 :hover 伪类生效，具体行为跟浏览器有关，不能只靠 disabled 属性本身。
-                  className="flex items-center gap-1 text-[13px] text-text hover:text-[color:var(--color-chat-accent)] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:text-text"
+                  className="flex h-[28px] items-center gap-1 rounded-full border border-[var(--color-button-border)] bg-card px-4 text-[13px] text-text hover:text-[color:var(--color-chat-accent)] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:text-text"
                   data-testid="connector-market-mcp-detail-use"
                 >
                   <NewConversationIcon size={14} />
@@ -392,7 +392,6 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                   <DetailPromptChip
                     key={example}
                     text={example}
-                    icon={<NewConversationIcon size={12} />}
                     onClick={() => onUseExample(example, runtimeName, connector.displayName)}
                     testId="connector-market-mcp-detail-example"
                     variant={example}

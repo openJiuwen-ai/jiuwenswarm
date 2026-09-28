@@ -74,3 +74,27 @@ test('open 透传 success/warning 变体', async () => {
   await waitForExit();
   assert.equal(toastStore.getSnapshot().length, 0);
 });
+
+test('open 携带同 id 时原地更新并复用原 key；closing 中的条目不复活', async () => {
+  const key1 = toast.open({ id: 'conn', content: 'a' });
+  const key2 = toast.open({ id: 'conn', content: 'b', variant: 'success' });
+
+  assert.equal(key2, key1);
+  const snapshot = toastStore.getSnapshot();
+  assert.equal(snapshot.length, 1);
+  assert.equal(snapshot[0].content, 'b');
+  assert.equal(snapshot[0].variant, 'success');
+  assert.equal(snapshot[0].closing, false);
+
+  toast.close(key1);
+  const key3 = toast.open({ id: 'conn', content: 'c' });
+  assert.notEqual(key3, key1);
+  const afterClose = toastStore.getSnapshot();
+  assert.equal(afterClose.length, 2);
+  assert.equal(afterClose.find((record) => record.key === key1).closing, true);
+  assert.equal(afterClose.find((record) => record.key === key3).content, 'c');
+
+  toast.close(key3);
+  await waitForExit();
+  assert.equal(toastStore.getSnapshot().length, 0);
+});

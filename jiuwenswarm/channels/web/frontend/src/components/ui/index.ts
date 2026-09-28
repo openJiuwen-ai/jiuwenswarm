@@ -70,3 +70,4 @@ export { DetailPromptChip, type DetailPromptChipProps } from './DetailPromptChip
 export { PageCard, type PageCardProps, type PageCardActionProps } from './PageCard/PageCard';
 export { FormDrawer, type FormDrawerProps } from './FormDrawer/FormDrawer';
 export { LoadingSpinner, type LoadingSpinnerProps } from './LoadingSpinner/LoadingSpinner';
+export { EmptyState, type EmptyStateProps } from './EmptyState/EmptyState';

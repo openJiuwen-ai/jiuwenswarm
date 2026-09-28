@@ -13,7 +13,6 @@ import { DefinitionFilePreview } from './DefinitionFilePreview';
 import { GroupAvatar } from './GroupCard';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
-import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
 import { DetailPromptChip, DetailSection, EntityAvatar, EntityHeader, MarkdownPane, PageToolbar, Tabs } from '../ui';
 
 type AgentGroupDetailPageProps = {
@@ -321,7 +320,6 @@ export function AgentGroupDetailPage({
                 <DetailPromptChip
                   key={`${index}-${prompt}`}
                   text={prompt}
-                  icon={<PromptSendIcon width={16} height={16} />}
                   disabled={!canUse || busy || !onUsePrompt}
                   onClick={() => onUsePrompt?.(detail.id, prompt)}
                   testId="agent-group-detail-prompt-send"

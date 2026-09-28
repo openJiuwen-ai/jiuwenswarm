@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Search, Plus, Check } from 'lucide-react';
+import { Search } from 'lucide-react';
+import EntityAddIcon from '../../assets/agent-management/add.svg?react';
+import EntityRemoveIcon from '../../assets/agent-management/remove.svg?react';
 import { FormDrawer, PageCard } from '../ui';
 
 export interface PickerItem {
@@ -76,9 +78,9 @@ export function PickerModal({ title, items, initialSelectedIds, loading, onCance
                 onClick={() => toggle(item.id)}
                 actionSlot={
                   checked ? (
-                    <Check size={14} className="shrink-0 text-[color:var(--color-chat-accent)]" />
+                    <EntityRemoveIcon className="shrink-0 text-[color:var(--color-chat-accent)]" />
                   ) : (
-                    <Plus size={14} className="shrink-0 text-text-muted" />
+                    <EntityAddIcon className="shrink-0 text-text-muted" />
                   )
                 }
               />

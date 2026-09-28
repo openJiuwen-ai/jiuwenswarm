@@ -55,10 +55,6 @@ const agentEditorSource = readFileSync(
   new URL('../src/components/AgentManagementPanel/AgentEditor.tsx', import.meta.url),
   'utf8',
 );
-const selectionPaginationSource = readFileSync(
-  new URL('../src/components/AgentManagementPanel/SelectionPagination.tsx', import.meta.url),
-  'utf8',
-);
 const pageCardSource = readFileSync(new URL('../src/components/ui/PageCard/PageCard.tsx', import.meta.url), 'utf8');
 const groupUploadSource = readFileSync(
   new URL('../src/components/AgentManagementPanel/AgentGroupUploadDialog.tsx', import.meta.url),
@@ -85,6 +81,7 @@ await i18next.use(initReactI18next).init({
           searchMine: '搜索我的专家',
           categories: { all: '全部' },
           states: { loading: '加载中' },
+          loadMore: '加载更多内容',
         },
       },
     },
@@ -163,13 +160,11 @@ test('expert catalog shows a spinner while the first page is loading', async () 
       scope: 'catalog',
       items: [],
       totalItems: 0,
-      page: 1,
       query: '',
       category: '',
       status: 'loading',
       error: null,
       busyIds: new Set(),
-      onPageChange() {},
       onCategoryChange() {},
       onRetry() {},
       onOpen() {},
@@ -547,7 +542,7 @@ test('management pickers expose source tabs and preserve install/connect actions
   assert.match(groupEditorSource, /agent-group-editor-skill-picker-tab-local/);
   assert.match(groupEditorSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
   assert.match(agentEditorSource, /agent-editor-skill-picker-tabs/);
-  assert.match(agentEditorSource, /agent-editor-skill-picker-pagination/);
+  assert.match(agentEditorSource, /agent-editor-skill-picker-load-more/);
   assert.match(agentEditorSource, /agent-editor-mcp-picker-tabs/);
   assert.match(agentEditorSource, /agent-editor-mcp-picker-connect/);
   assert.match(agentEditorSource, /sortMcpOptions\(\s*mcpOptions\.filter\([\s\S]*?mcpSourceTab/);
@@ -566,7 +561,6 @@ test('management pickers expose source tabs and preserve install/connect actions
   assert.match(panelSource, /setBusyMcpId\(mcp\.id\)/);
   assert.match(panelSource, /installingSkillId=\{busySkillId\}/);
   assert.match(panelSource, /installingMcpId=\{busyMcpId\}/);
-  assert.match(selectionPaginationSource, /SELECTION_PAGE_SIZE = 10/);
   assert.match(agentManagementCss, /agent-management-selection-card\.page-card\.is-disabled[\s\S]*opacity: 1;/);
   assert.match(
     agentManagementCss,
@@ -836,7 +830,7 @@ test('Expert Team upload error prioritizes the latest local validation and stays
     agentManagementCss,
     /\.agent-group-upload-dialog \.agent-management-upload-dialog__error\s*\{[\s\S]*order: 4;[\s\S]*margin:/,
   );
-  assert.match(agentManagementCss, /\.agent-group-upload-dialog > footer\s*\{[\s\S]*order: 5;/);
+  assert.match(agentManagementCss, /\.agent-group-upload-dialog\s*>\s*footer\s*\{[\s\S]*order: 5;/);
 });
 
 test('manual Expert Team validation names the capability description precisely', () => {
@@ -855,7 +849,7 @@ test('leaving Expert management discards unfinished manual-create subpages', () 
 });
 
 for (const status of ['success', 'loading', 'error']) {
-  test(`expert catalog keeps page two cards during ${status}`, async () => {
+  test(`expert catalog renders every card without pagination during ${status}`, async () => {
     const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
     const { JSDOM } = await import('jsdom');
     const items = Array.from({ length: 20 }, (_, i) => ({
@@ -875,27 +869,158 @@ for (const status of ['success', 'loading', 'error']) {
           scope: 'mine',
           items,
           totalItems: items.length,
-          page: 2,
           query: '',
           category: '',
           status,
           error: 'Refresh failed',
           busyIds: new Set(),
-          onPageChange() {},
+          onCategoryChange() {},
+          onRetry() {},
+          onOpen() {},
+          onUse() {},
+          onReconnect() {},
+          onInstall() {},
+          onCreate() {},
         }),
       ),
     ).window.document;
     const cards = document.querySelectorAll('[data-testid="agent-card"]');
-    assert.equal(cards.length, 5);
-    assert.equal(cards[0].getAttribute('data-variant'), 'expert-15');
-    assert.equal(document.querySelector('[data-testid="agent-catalog-page-previous"]').disabled, false);
-    assert.equal(document.querySelector('[data-testid="agent-catalog-page-next"]').disabled, true);
+    assert.equal(cards.length, 20);
+    assert.equal(cards[0].getAttribute('data-variant'), 'expert-0');
+    assert.equal(document.querySelector('[data-testid="agent-catalog-pagination"]'), null);
+    assert.equal(document.querySelector('[data-testid="agent-catalog-load-more"]'), null);
     for (const card of cards) {
       assert.equal(card.querySelectorAll('button').length, 1);
       assert.ok(card.querySelector('.agent-management-card-action--use'));
     }
   });
 }
+
+test('expert catalog shows the first 30-item batch and a bottom load-more row while more remain', async () => {
+  const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const items = Array.from({ length: 45 }, (_, i) => ({
+    id: `expert-${i}`,
+    runtimePackageName: `expert-${i}`,
+    displayName: `Expert ${i}`,
+    description: '',
+    source: 'local',
+    installed: true,
+    connectionState: 'connected',
+    tags: [],
+    avatarUrl: null,
+  }));
+  const document = new JSDOM(
+    renderToStaticMarkup(
+      React.createElement(CatalogPage, {
+        scope: 'catalog',
+        items,
+        totalItems: items.length,
+        query: '',
+        category: '',
+        status: 'success',
+        error: null,
+        busyIds: new Set(),
+        onCategoryChange() {},
+        onRetry() {},
+        onOpen() {},
+        onUse() {},
+        onReconnect() {},
+        onInstall() {},
+        onCreate() {},
+      }),
+    ),
+  ).window.document;
+  const cards = document.querySelectorAll('[data-testid="agent-card"]');
+  assert.equal(cards.length, 30);
+  assert.equal(cards[0].getAttribute('data-variant'), 'expert-0');
+  assert.equal(document.querySelector('[data-testid="agent-catalog-pagination"]'), null);
+  const loader = document.querySelector('[data-testid="agent-catalog-load-more"]');
+  assert.ok(loader, 'load-more row is rendered while more items remain');
+  assert.equal(loader.getAttribute('role'), 'status');
+  assert.match(loader.textContent, /加载更多内容/);
+  const spinner = loader.querySelector('[data-testid="agent-catalog-load-more-spinner"]');
+  assert.ok(spinner, 'load-more row contains the LoadingSpinner');
+  assert.equal(spinner.tagName.toLowerCase(), 'svg');
+});
+
+test('expert catalog appends the next batch when the list is scrolled to the bottom', async () => {
+  const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const { act } = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const items = Array.from({ length: 45 }, (_, i) => ({
+    id: `expert-${i}`,
+    runtimePackageName: `expert-${i}`,
+    displayName: `Expert ${i}`,
+    description: '',
+    source: 'local',
+    installed: true,
+    connectionState: 'connected',
+    tags: [],
+    avatarUrl: null,
+  }));
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' });
+  const globals = { window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true };
+  const previous = new Map();
+  for (const [name, value] of Object.entries(globals)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+  }
+  try {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        React.createElement(CatalogPage, {
+          scope: 'catalog',
+          items,
+          totalItems: items.length,
+          query: '',
+          category: '',
+          status: 'success',
+          error: null,
+          busyIds: new Set(),
+          onCategoryChange() {},
+          onRetry() {},
+          onOpen() {},
+          onUse() {},
+          onReconnect() {},
+          onInstall() {},
+          onCreate() {},
+        }),
+      );
+    });
+    const content = document.querySelector('[data-testid="agent-management-catalog-content"]');
+    assert.equal(document.querySelectorAll('[data-testid="agent-card"]').length, 30);
+
+    // 未到底：滚动事件不触发追加
+    Object.defineProperty(content, 'scrollHeight', { configurable: true, value: 6000 });
+    Object.defineProperty(content, 'clientHeight', { configurable: true, value: 2000 });
+    content.scrollTop = 3000;
+    await act(async () => {
+      content.dispatchEvent(new dom.window.Event('scroll'));
+    });
+    assert.equal(document.querySelectorAll('[data-testid="agent-card"]').length, 30);
+
+    // 触底：追加下一批 30 个（45 个全部展示后加载行消失）
+    content.scrollTop = 4050;
+    await act(async () => {
+      content.dispatchEvent(new dom.window.Event('scroll'));
+    });
+    assert.equal(document.querySelectorAll('[data-testid="agent-card"]').length, 45);
+    assert.equal(document.querySelector('[data-testid="agent-catalog-load-more"]'), null);
+
+    await act(async () => root.unmount());
+  } finally {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+    dom.window.close();
+  }
+});
 
 test('expert selection matches Hub identity or runtime package without clearing a missing catalog entry', () => {
   assert.match(inputAreaSource, /item\.id === selectedId \|\| item\.runtimePackageName === selectedId/);
