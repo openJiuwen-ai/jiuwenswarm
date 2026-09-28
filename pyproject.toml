@@ -18,6 +18,7 @@ dependencies = [
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@9e3390195a9ea15235b2b5f7412cb2aa440622cc",
+    "gateway-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@feature/E2A#subdirectory=gateway-protocol",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -197,6 +198,7 @@ default-groups = ['dev']
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
 openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "9e3390195a9ea15235b2b5f7412cb2aa440622cc" }
+gateway-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", branch = "feature/E2A", subdirectory = "gateway-protocol" }
 
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)

@@ -1,30 +1,16 @@
-from jiuwenswarm.common.schema.event_base import HookEventBase
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+"""转发别名（过渡形态）：Hook 事件常量已迁 ``gateway_protocol.hooks``。
 
+Gateway/AgentServer 交互事件与 AgentServer 内部事件的事件名契约以 protocol 包为
+source of truth；本文件属扩展框架通用模块（随 gateway 仓迁移整体退役），当前
+保留旧 import 路径供消费方过渡。
+"""
 
-class GatewayHookEvents(HookEventBase):
-    """Gateway 和 AgentServer 交互事件
+from __future__ import annotations
 
-    这些事件定义了 Gateway 与 AgentServer 之间的消息传递生命周期。
-    """
+from gateway_protocol.hooks import (  # noqa: F401
+    AgentServerHookEvents,
+    GatewayHookEvents,
+)
 
-    scope: str = "gateway"
-
-    GATEWAY_STARTED = HookEventBase.get_event("gateway_started")
-    GATEWAY_STOPPED = HookEventBase.get_event("gateway_stopped")
-    BEFORE_CHAT_REQUEST = HookEventBase.get_event("before_chat_request")
-
-
-class AgentServerHookEvents(HookEventBase):
-    """AgentServer 事件
-
-    这些事件定义了 AgentServer 的内部事件。
-    """
-
-    scope: str = "agent_server"
-
-    AGENT_SERVER_STARTED = HookEventBase.get_event("agent_server_started")
-    AGENT_SERVER_STOPPED = HookEventBase.get_event("agent_server_stopped")
-    BEFORE_CHAT_REQUEST = HookEventBase.get_event("before_chat_request")
-    MEMORY_BEFORE_CHAT = HookEventBase.get_event("memory_before_chat")
-    MEMORY_AFTER_CHAT = HookEventBase.get_event("memory_after_chat")
-    BEFORE_SYSTEM_PROMPT_BUILD = HookEventBase.get_event("before_system_prompt_build")
+__all__ = ["AgentServerHookEvents", "GatewayHookEvents"]

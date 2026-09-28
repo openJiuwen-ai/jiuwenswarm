@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Tuple
 
+from gateway_protocol.hooks import AgentServerHookEvents, MemoryHookContext
+
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
 from jiuwenswarm.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
@@ -89,8 +91,6 @@ from jiuwenswarm.common.context_keys import (
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
-from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
-from jiuwenswarm.extensions.hooks_context import MemoryHookContext
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,

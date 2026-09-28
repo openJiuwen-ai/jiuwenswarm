@@ -41,10 +41,39 @@ from jiuwenswarm.common.e2a.constants import (
 )
 from jiuwenswarm.common.e2a.models import E2AEnvelope, E2AProvenance, E2AResponse, utc_now_iso
 from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
+from jiuwenswarm.common.version import __version__
+from jiuwenswarm.gateway.channel_manager.base import BaseChannel, RobotMessageRouter
 from jiuwenswarm.gateway.routing.keys import DeliveryTarget
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 
 logger = logging.getLogger(__name__)
+
+
+def _acp_tool_response_message_factory(
+    *,
+    channel_id: str,
+    session_id: str | None,
+    params: dict[str, Any],
+    metadata: dict[str, Any],
+    jsonrpc_id: str,
+) -> Message:
+    """为协议包 ``build_acp_tool_response_message`` 构造本仓 ``Message`` 实例。
+
+    协议包不依赖 jiuwenswarm 的 Message/ReqMethod（拆分边界），调用方注入
+    本工厂保持 ``_dispatch_message`` 收到的仍是 Message 对象（与迁移前一致）。
+    """
+    return Message(
+        id=f"acp_tool_resp_{uuid.uuid4().hex[:12]}",
+        type="req",
+        channel_id=channel_id,
+        session_id=session_id,
+        params=params,
+        timestamp=time.time(),
+        ok=True,
+        req_method=ReqMethod.ACP_TOOL_RESPONSE,
+        is_stream=False,
+        metadata=metadata,
+    )
 
 _ACP_STDOUT = getattr(sys, "__stdout__", sys.stdout)
 _STDIN_EOF_GRACE_SECONDS = 5.0
@@ -192,6 +221,7 @@ class AcpGatewayBridge:
             response_data=data,
             session_id=session_id,
             channel_id=self._channel_id,
+            message_factory=_acp_tool_response_message_factory,
         )
         await self._dispatch_message(msg)
         if session_id:
@@ -249,7 +279,7 @@ class AcpGatewayBridge:
         params = data.get("params") if isinstance(data.get("params"), dict) else {}
         try:
             if method == "initialize":
-                await self._send_raw_jsonrpc_result(ws, rpc_id, build_acp_initialize_result())
+                await self._send_raw_jsonrpc_result(ws, rpc_id, build_acp_initialize_result(agent_version=__version__))
                 return True
             if method == "session/new":
                 session_id = str(params.get("sessionId") or f"acp_{uuid.uuid4().hex[:12]}").strip()
@@ -836,6 +866,7 @@ class AcpChannel(BaseChannel):
             response_data=data,
             session_id=session_id,
             channel_id=self.channel_id,
+            message_factory=_acp_tool_response_message_factory,
         )
         await self._dispatch_message(msg)
         if session_id:
@@ -1116,7 +1147,7 @@ class AcpChannel(BaseChannel):
             logger.debug("[ACP] failed to forward initialize to gateway", exc_info=True)
 
     def _initialize_result(self) -> dict[str, Any]:
-        return build_acp_initialize_result()
+        return build_acp_initialize_result(agent_version=__version__)
 
     async def _handle_jsonrpc_session_new(
         self,
