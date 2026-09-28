@@ -36,7 +36,6 @@ import { isQaSummaryContent } from '../InteractionSlot/qaSummary';
 import { GoalCompletedCard } from '../GoalBar/GoalCompletedCard';
 import { isGoalCompletedContent } from '../GoalBar/goalCompletedMessage';
 import { a2uiContentToText } from '../../features/a2ui/a2uiContent';
-import { writeClipboard } from '../../features/trajectory/primitives/clipboard';
 import { formatTimestamp, onTtsStop, sanitizeTtsText } from '../../utils';
 import { useSpeechSynthesis } from '../../hooks';
 import clsx from 'clsx';
