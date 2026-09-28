@@ -40,16 +40,24 @@ from openjiuwen.agent_teams.harness.manifest import (
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 
+from jiuwenswarm.agents.harness.common.browser_defaults import (
+    DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
+)
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.agents.swarm.providers.code_rails import (
     code_runtime_language,
     CODING_MEMORY_EXTRAS_KEY,
+)
+from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
+    DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
+    build_statusline_setup_agent_config,
 )
 
 logger = logging.getLogger(__name__)
 
 CODE_AGENT = "swarm.code_agent"
 SWARM_BROWSER_AGENT = "swarm.browser_agent"
+STATUSLINE_SETUP_AGENT = "swarm.statusline_setup_agent"
 
 # Key under ``ctx.extras`` where ``DeepAgentSpec.build`` publishes the resolved
 # parent member model for sub-agent providers to reuse.
@@ -118,11 +126,53 @@ def build_code_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildContext) -> 
     return spec
 
 
+def _parent_sys_operation(ctx: SwarmBuildContext) -> Any:
+    """Read the parent SysOperation from build-context extras when present.
+
+    Dest SDK does not yet export ``parent_sys_operation``; extras is the
+    documented BuildContext extension point for live handles.
+    """
+    extras = getattr(ctx, "extras", None)
+    if isinstance(extras, dict):
+        sys_operation = extras.get("sys_operation")
+        if sys_operation is None:
+            sys_operation = extras.get("_parent_sys_operation")
+        if sys_operation is not None:
+            return sys_operation
+    return getattr(ctx, "sys_operation", None)
+
+
+@harness_element(
+    kind=ElementKind.SUBAGENT,
+    name=STATUSLINE_SETUP_AGENT,
+    description="Built-in JiuwenSwarm TUI status-line setup subagent.",
+    input_model=CodeAgentInput,
+)
+def build_statusline_setup_agent(
+    factory_kwargs: dict[str, Any],
+    ctx: SwarmBuildContext,
+) -> Any:
+    """Build the status-line setup subagent for a team member."""
+
+    inp = CodeAgentInput.resolve(factory_kwargs, ctx)
+    model = ctx.extras.get(_PARENT_MODEL_EXTRAS_KEY)
+    if model is None:
+        logger.warning("[swarm.statusline_setup_agent] skipped: no parent model")
+        return None
+    return build_statusline_setup_agent_config(
+        model,
+        workspace=str(inp.workspace_root or "./"),
+        sys_operation=_parent_sys_operation(ctx),
+        language=inp.language,
+        max_iterations=inp.max_iterations,
+    )
+
+
 class BrowserAgentInput(ConstructionInput):
     """Construction inputs for the swarm browser sub-agent."""
 
     max_iterations: int = param_field(
-        default=_DEFAULT_MAX_ITERATIONS,
+        default=DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
         description="Maximum task-loop iterations for the sub-agent.",
     )
     workspace_root: str | None = context_field(
@@ -206,5 +256,7 @@ def build_swarm_browser_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildCon
 
 __all__ = [
     "CODE_AGENT",
+    "DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS",
+    "STATUSLINE_SETUP_AGENT",
     "SWARM_BROWSER_AGENT",
 ]

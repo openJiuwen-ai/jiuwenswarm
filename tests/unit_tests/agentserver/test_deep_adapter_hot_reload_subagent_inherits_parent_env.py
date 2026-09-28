@@ -103,3 +103,55 @@ def test_hot_reload_injected_spec_carries_parent_workspace_and_sys_operation(
         "mint a fresh LOCAL SysOperation for the general-purpose subagent"
     )
     assert getattr(spec.workspace, "root_path", None) == str(tmp_path)
+
+
+def test_deep_adapter_live_hot_switch_rebuilds_child_spec_on_same_adapter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Same Deep adapter, no rebuild: switch workspace then remake config.
+
+    The new general-purpose spec must use the new root and the same
+    sys_operation instance the parent still carries.
+    """
+    old_root = tmp_path / "old"
+    new_root = tmp_path / "new"
+    old_root.mkdir()
+    new_root.mkdir()
+
+    adapter = JiuWenSwarmDeepAdapter()
+    sentinel_sysop = object()
+    adapter._sys_operation = sentinel_sysop
+    adapter._workspace_dir = str(old_root)
+
+    monkeypatch.setattr(interface_module, "get_config", lambda *a, **k: _CFG)
+    adapter._sync_browser_runtime_environment = lambda *a, **k: None  # type: ignore[assignment]
+    adapter._browser_runtime_enabled = lambda *a, **k: False  # type: ignore[assignment]
+
+    first = adapter._make_deep_agent_config(
+        model=object(),
+        config=_CFG,
+        config_base=_CFG,
+        agent_card=AgentCard(name="main_agent", description="verify"),
+        tool_cards=[],
+        rails=None,
+    )
+    first_spec = _general_purpose_spec(first)
+    assert getattr(first_spec.workspace, "root_path", None) == str(old_root)
+    assert first.sys_operation is sentinel_sysop
+
+    adapter._workspace_dir = str(new_root)
+    second = adapter._make_deep_agent_config(
+        model=object(),
+        config=_CFG,
+        config_base=_CFG,
+        agent_card=AgentCard(name="main_agent", description="verify"),
+        tool_cards=[],
+        rails=None,
+    )
+    second_spec = _general_purpose_spec(second)
+    assert second is not first
+    assert getattr(second.workspace, "root_path", None) == str(new_root)
+    assert getattr(second_spec.workspace, "root_path", None) == str(new_root)
+    assert second.sys_operation is sentinel_sysop
+    assert second_spec.sys_operation is sentinel_sysop
+    assert second_spec.workspace is second.workspace

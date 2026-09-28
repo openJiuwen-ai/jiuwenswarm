@@ -21,6 +21,12 @@ from typing import Literal
 import yaml
 
 from jiuwenswarm.common.utils import get_user_workspace_dir
+from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
+    DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
+    STATUSLINE_SETUP_AGENT_DESCRIPTION,
+    STATUSLINE_SETUP_AGENT_TYPE,
+    STATUSLINE_SETUP_SYSTEM_PROMPT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +129,15 @@ class UpdateAgentParams:
 # ---------------------------------------------------------------------------
 
 BUILTIN_AGENTS: list[AgentDefinition] = [
+    AgentDefinition(
+        name=STATUSLINE_SETUP_AGENT_TYPE,
+        description=STATUSLINE_SETUP_AGENT_DESCRIPTION,
+        prompt=STATUSLINE_SETUP_SYSTEM_PROMPT,
+        source="builtin",
+        tools=["Read", "Write", "Edit", "Bash"],
+        enabled=True,
+        max_iterations=DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
+    ),
     AgentDefinition(
         name="general-purpose",
         description="通用多步任务 agent，适用于没有专用 agent 的各类任务",
