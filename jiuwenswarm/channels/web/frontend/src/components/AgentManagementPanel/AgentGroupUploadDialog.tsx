@@ -6,6 +6,7 @@ import UpFileIcon from '../../assets/upFile.svg?react';
 import {
   DESKTOP_DIRECTORY_DROP_REJECTED_EVENT,
   DESKTOP_FILE_DRAG_EVENT,
+  DESKTOP_VIRTUAL_FILE_DROP_REJECTED_EVENT,
   registerDesktopLocalFilesConsumer,
   selectLocalFiles,
   type LocalFilePick,
@@ -144,6 +145,16 @@ export function DefinitionUploadDialog({
     };
     window.addEventListener(DESKTOP_DIRECTORY_DROP_REJECTED_EVENT, rejectDirectory);
     return () => window.removeEventListener(DESKTOP_DIRECTORY_DROP_REJECTED_EVENT, rejectDirectory);
+  }, [t]);
+
+  useEffect(() => {
+    const rejectVirtualFile = () => {
+      setDragActive(false);
+      setFilePick(null);
+      setPickerError(t('agentManagement.form.uploadVirtualFileUnsupported'));
+    };
+    window.addEventListener(DESKTOP_VIRTUAL_FILE_DROP_REJECTED_EVENT, rejectVirtualFile);
+    return () => window.removeEventListener(DESKTOP_VIRTUAL_FILE_DROP_REJECTED_EVENT, rejectVirtualFile);
   }, [t]);
 
   useDialogFocusTrap({ dialogRef, onEscape: onCancel, escapeDisabled: submitting });

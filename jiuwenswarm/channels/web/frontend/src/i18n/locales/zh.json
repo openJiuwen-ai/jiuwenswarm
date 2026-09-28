@@ -2921,6 +2921,7 @@
       "webUploadPlaceholder": "点击上传文件",
       "uploadInvalidType": "仅支持 .zip 和 .tar 文件",
       "uploadDirectoryUnsupported": "不支持直接拖拽文件夹，请先将文件夹压缩为 .zip 或 .tar 文件后再上传",
+      "uploadVirtualFileUnsupported": "不支持直接从 WinRAR 等压缩软件中拖入文件，请先解压或复制到本地磁盘后再上传",
       "uploadPickerUnsupported": "当前环境暂不支持选择本地文件",
       "uploadPickerFailed": "打开文件选择器失败，请重试",
       "removeUpload": "移除已选文件",
