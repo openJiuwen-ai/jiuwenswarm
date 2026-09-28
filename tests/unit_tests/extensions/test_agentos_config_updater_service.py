@@ -70,7 +70,7 @@ def test_build_refresh_handler_forwards_merged_document():
     client = WithOverrides()
     handler = build_refresh_handler(client)
 
-    merged = {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 120}}}
+    merged = {"agent_sandbox": {"idle_timeout": 120}}
     handler(merged)
 
     assert client.applied == [merged]
@@ -186,9 +186,7 @@ async def test_watch_event_refreshes_full_merged_snapshot():
             (),
             {
                 "section": {
-                    "gateway": {
-                        "agentos": {"sandbox_idle_timeout_seconds": 120}
-                    },
+                    "agent_sandbox": {"idle_timeout": 120},
                     "sandbox": {"cpu": 2000, "memory": 4096},
                 },
                 "mod_revision": 5,
@@ -202,13 +200,13 @@ async def test_watch_event_refreshes_full_merged_snapshot():
     await service.start()
     await asyncio.wait_for(fake.watch_called.wait(), timeout=2)
 
+    # Only the idle-timeout field is managed; the remote ``sandbox.cpu/memory``
+    # values are unmanaged and the local tool-sandbox values are preserved.
     assert seen == [
         {
-            "gateway": {
-                "cron": {"store_backend": "etcd"},
-                "agentos": {"sandbox_idle_timeout_seconds": 120},
-            },
-            "sandbox": {"type": "yuanrong", "cpu": 2000, "memory": 4096},
+            "gateway": {"cron": {"store_backend": "etcd"}},
+            "sandbox": {"type": "yuanrong", "cpu": 1000},
+            "agent_sandbox": {"idle_timeout": 120},
         }
     ]
     await service.stop()

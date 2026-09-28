@@ -39,7 +39,7 @@ async def test_apply_merges_full_snapshot_and_refreshes():
     result = await harness.applier().apply(
         FakeFetched(
             {
-                "gateway": {"agentos": {"sandbox_idle_timeout_seconds": 120}},
+                "agent_sandbox": {"idle_timeout": 120},
                 "sandbox": {"cpu": 2000, "memory": 4096},
             },
             {},
@@ -48,28 +48,29 @@ async def test_apply_merges_full_snapshot_and_refreshes():
     )
 
     assert result.applied is True
+    # ``sandbox.cpu/memory`` are unmanaged: the remote values are ignored and
+    # the local tool-sandbox values are preserved.
     assert harness.refreshes == [
         {
-            "gateway": {
-                "cron": {"store_backend": "etcd"},
-                "agentos": {"sandbox_idle_timeout_seconds": 120},
-            },
+            "gateway": {"cron": {"store_backend": "etcd"}},
             "sandbox": {
                 "type": "yuanrong",
-                "cpu": 2000,
-                "memory": 4096,
+                "cpu": 1000,
             },
+            "agent_sandbox": {"idle_timeout": 120},
         }
     ]
 
 
 async def test_apply_does_not_mutate_initial_config():
-    initial = {"sandbox": {"type": "yuanrong", "cpu": 1000}}
+    initial = {"agent_sandbox": {"idle_timeout": 600}}
     applier = ConfigUpdaterApplier(initial)
 
-    await applier.apply(FakeFetched({"sandbox": {"cpu": 2000}}, {}, 5))
+    await applier.apply(
+        FakeFetched({"agent_sandbox": {"idle_timeout": 120}}, {}, 5)
+    )
 
-    assert initial == {"sandbox": {"type": "yuanrong", "cpu": 1000}}
+    assert initial == {"agent_sandbox": {"idle_timeout": 600}}
 
 
 async def test_apply_ignores_unmanaged_fields():
@@ -86,11 +87,9 @@ async def test_apply_ignores_unmanaged_fields():
     await harness.applier().apply(
         FakeFetched(
             {
+                "agent_sandbox": {"idle_timeout": 120},
                 "gateway": {
-                    "agentos": {
-                        "workspace_root": "/bad",
-                        "sandbox_idle_timeout_seconds": 120,
-                    },
+                    "agentos": {"workspace_root": "/bad"},
                     "cron": {"store_backend": "file"},
                 },
                 "sandbox": {"type": "other", "image": "bad", "cpu": 2000},
@@ -101,15 +100,14 @@ async def test_apply_ignores_unmanaged_fields():
     )
 
     merged = harness.refreshes[0]
-    assert merged["gateway"]["agentos"] == {
-        "workspace_root": "/safe",
-        "sandbox_idle_timeout_seconds": 120,
-    }
+    assert merged["agent_sandbox"] == {"idle_timeout": 120}
+    # Unmanaged remote fields (gateway.* and sandbox.*) must not be applied.
+    assert merged["gateway"]["agentos"] == {"workspace_root": "/safe"}
     assert merged["gateway"]["cron"] == {"store_backend": "etcd"}
     assert merged["sandbox"] == {
         "type": "yuanrong",
         "image": "trusted",
-        "cpu": 2000,
+        "cpu": 1000,
     }
 
 
@@ -127,11 +125,11 @@ async def test_only_unmanaged_fields_are_skipped():
 
 
 async def test_invalid_managed_field_is_rejected():
-    harness = Harness({"sandbox": {"cpu": 1000}})
+    harness = Harness({"agent_sandbox": {"idle_timeout": 600}})
     applier = harness.applier()
 
     result = await applier.apply(
-        FakeFetched({"sandbox": {"cpu": None}}, {}, 5)
+        FakeFetched({"agent_sandbox": {"idle_timeout": None}}, {}, 5)
     )
 
     assert result.skipped_reason == "validation-failed"
@@ -140,7 +138,7 @@ async def test_invalid_managed_field_is_rejected():
     assert applier.last_applied_mod_revision == 5
 
     repeated = await applier.apply(
-        FakeFetched({"sandbox": {"cpu": None}}, {}, 5)
+        FakeFetched({"agent_sandbox": {"idle_timeout": None}}, {}, 5)
     )
     assert repeated.skipped_reason == "revision-unchanged"
 
@@ -157,12 +155,12 @@ async def test_empty_section_revision_is_acknowledged():
 
 
 async def test_same_and_older_revisions_are_ignored():
-    harness = Harness({})
+    harness = Harness({"agent_sandbox": {"idle_timeout": 600}})
     applier = harness.applier()
 
-    await applier.apply(FakeFetched({"sandbox": {"cpu": 2000}}, {}, 6))
-    same = await applier.apply(FakeFetched({"sandbox": {"cpu": 1000}}, {}, 6))
-    older = await applier.apply(FakeFetched({"sandbox": {"cpu": 1000}}, {}, 5))
+    await applier.apply(FakeFetched({"agent_sandbox": {"idle_timeout": 120}}, {}, 6))
+    same = await applier.apply(FakeFetched({"agent_sandbox": {"idle_timeout": 60}}, {}, 6))
+    older = await applier.apply(FakeFetched({"agent_sandbox": {"idle_timeout": 60}}, {}, 5))
 
     assert same.skipped_reason == "revision-unchanged"
     assert older.skipped_reason == "revision-unchanged"
@@ -170,11 +168,11 @@ async def test_same_and_older_revisions_are_ignored():
 
 
 async def test_unchanged_managed_values_skip_refresh():
-    harness = Harness({"sandbox": {"type": "yuanrong", "cpu": 2000}})
+    harness = Harness({"agent_sandbox": {"idle_timeout": 120}})
     applier = harness.applier()
 
     result = await applier.apply(
-        FakeFetched({"sandbox": {"cpu": 2000}}, {}, 5)
+        FakeFetched({"agent_sandbox": {"idle_timeout": 120}}, {}, 5)
     )
 
     assert result.skipped_reason == "no-change"
@@ -191,7 +189,7 @@ async def test_refresh_failure_retries_same_snapshot():
             raise RuntimeError("reload failed")
 
     applier = ConfigUpdaterApplier({}, refresh_handler=flaky_refresh)
-    fetched = FakeFetched({"sandbox": {"cpu": 2000}}, {}, 5)
+    fetched = FakeFetched({"agent_sandbox": {"idle_timeout": 120}}, {}, 5)
 
     failed = await applier.apply(fetched)
     retried = await applier.apply(fetched)
@@ -200,8 +198,8 @@ async def test_refresh_failure_retries_same_snapshot():
     assert failed.retryable is True
     assert retried.applied is True
     assert attempts == [
-        {"sandbox": {"cpu": 2000}},
-        {"sandbox": {"cpu": 2000}},
+        {"agent_sandbox": {"idle_timeout": 120}},
+        {"agent_sandbox": {"idle_timeout": 120}},
     ]
     assert applier.last_applied_mod_revision == 5
 
@@ -211,22 +209,22 @@ async def test_refresh_receives_copy_of_effective_config():
 
     async def mutating_refresh(merged):
         seen.append(copy.deepcopy(merged))
-        merged["sandbox"]["cpu"] = 9999
+        merged["agent_sandbox"]["idle_timeout"] = 9999
 
     applier = ConfigUpdaterApplier(
-        {"sandbox": {"cpu": 1000}},
+        {"agent_sandbox": {"idle_timeout": 600}},
         refresh_handler=mutating_refresh,
     )
-    await applier.apply(FakeFetched({"sandbox": {"cpu": 2000}}, {}, 5))
-    await applier.apply(FakeFetched({"sandbox": {"memory": 4096}}, {}, 6))
+    await applier.apply(FakeFetched({"agent_sandbox": {"idle_timeout": 120}}, {}, 5))
+    await applier.apply(FakeFetched({"agent_sandbox": {"idle_timeout": 60}}, {}, 6))
 
-    assert seen[1]["sandbox"] == {"cpu": 2000, "memory": 4096}
+    assert seen[1]["agent_sandbox"] == {"idle_timeout": 60}
 
 
 async def test_new_revision_uses_latest_local_base_config():
     current = {
         "models": {"marker": "initial"},
-        "sandbox": {"type": "yuanrong", "cpu": 1000},
+        "gateway": {"agentos": {"sandbox_idle_timeout_seconds": 600}},
     }
     seen: list[dict] = []
 
@@ -238,14 +236,12 @@ async def test_new_revision_uses_latest_local_base_config():
         config_provider=lambda: current,
         refresh_handler=refresh,
     )
-    await applier.apply(FakeFetched({"sandbox": {"cpu": 2000}}, {}, 5))
+    await applier.apply(FakeFetched({"agent_sandbox": {"idle_timeout": 120}}, {}, 5))
 
     current["models"]["marker"] = "updated-locally"
-    await applier.apply(FakeFetched({"sandbox": {"memory": 4096}}, {}, 6))
+    await applier.apply(FakeFetched({"agent_sandbox": {"idle_timeout": 60}}, {}, 6))
 
     assert seen[1]["models"]["marker"] == "updated-locally"
-    assert seen[1]["sandbox"] == {
-        "type": "yuanrong",
-        "cpu": 2000,
-        "memory": 4096,
-    }
+    # The local config field is untouched; the managed override is separate.
+    assert seen[1]["gateway"]["agentos"] == {"sandbox_idle_timeout_seconds": 600}
+    assert seen[1]["agent_sandbox"] == {"idle_timeout": 60}
