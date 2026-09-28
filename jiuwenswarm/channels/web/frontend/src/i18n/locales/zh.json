@@ -1923,6 +1923,12 @@
       "colActions": "操作",
       "stateCollecting": "正在采集",
       "stateCompleted": "采集完成",
+      "stateCancelled": "已取消",
+      "createdNodes": "本次新增 {{nodes}} 个节点（{{files}} 个文件）",
+      "updatedNodes": "已更新 {{count}} 个节点",
+      "noNewContent": "无新增内容",
+      "collectionDisabledHint": "请先在上下文设置中开启总开关和内容采集，再立即采集。",
+      "collectionStoppingHint": "正在停止采集，请等待停止完成后重试。",
       "statePartial": "部分成功：{{completed}}/{{total}}，{{failed}} 项失败",
       "stateFailed": "采集失败",
       "stateWaiting": "等待采集",
@@ -1982,7 +1988,8 @@
       "maxItemsLabel": "单次最多采集条数",
       "maxItemsPlaceholder": "留空使用默认",
       "advancedConfig": "高级配置",
-      "maxItemsRangeError": "单次采集条数须在 1~40 之间，或留空使用默认",
+      "maxItemsRangeError": "单次采集条数须为 1~40 之间的整数，或留空使用默认",
+      "frequencyRangeError": "采集频率须为 1~{{max}} 之间的整数",
       "previousStep": "上一步",
       "submit": "添加",
       "save": "保存",
@@ -1994,7 +2001,8 @@
       "localFiles": {
         "rootDirLabel": "本地文件夹路径",
         "rootDirPlaceholder": "D:/my-notes",
-        "rootDirHint": "须为绝对路径"
+        "rootDirHint": "须为绝对路径",
+        "rootDirRequired": "请选择本地文件夹路径"
       },
       "zhihu": {
         "columnUrlLabel": "知乎专栏地址",

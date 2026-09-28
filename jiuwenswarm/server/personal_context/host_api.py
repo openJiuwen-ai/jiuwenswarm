@@ -24,13 +24,18 @@ import yaml
 from openjiuwen.harness.personal_context import PersonalContext
 
 from jiuwenswarm.common.config import get_config, get_default_models
+from jiuwenswarm.server.personal_context.error_messages import (
+    localize_error,
+    localize_payload,
+    log_error,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 
 _CONFIG_FILENAME = "personal_context.yaml"
 _MAX_CONFIG_BYTES = 4 * 1024 * 1024
-_STOP_TIMEOUT_SECONDS = 30.0
+_STOP_TIMEOUT_SECONDS = 60.0
 _PERSONAL_CONTEXT_MODEL_MAX_RETRIES = 2
 _PAT_VALIDATION_TIMEOUT_SECONDS = 15.0
 _MAX_PAT_RESPONSE_BYTES = 1024 * 1024
@@ -225,8 +230,12 @@ def _host_error(
     *,
     status_name: str = "CONTEXT_PROACTIVE_CONFIG_INVALID",
     cause: BaseException | None = None,
+    reason: str | None = None,
 ) -> PersonalContext.Error:
     """Create the existing Core error type without adding a Host exception."""
+
+    if cause is not None:
+        log_error(cause)
 
     # PersonalContext.Config.from_dict() is the Core's public error-construction boundary.
     # Deliberately use it instead of importing another Core error class here:
@@ -238,7 +247,9 @@ def _host_error(
         # PersonalContext import; this Host compatibility bridge therefore uses its
         # protected resolver without importing a second Core symbol.
         status = PersonalContext._status_for_name(status_name)  # pylint: disable=protected-access
-        return type(baseline)(status, msg=message, cause=cause)
+        error = type(baseline)(status, msg=message, cause=cause)
+        error.pcs_reason = reason
+        return error
     return PersonalContext.Error(PersonalContext.Error.status, msg=message, cause=cause)
 
 
@@ -247,8 +258,11 @@ def _raise_host_error(
     *,
     status_name: str = "CONTEXT_PROACTIVE_CONFIG_INVALID",
     cause: BaseException | None = None,
+    reason: str | None = None,
 ) -> NoReturn:
-    raise _host_error(message, status_name=status_name, cause=cause) from None
+    raise _host_error(
+        message, status_name=status_name, cause=cause, reason=reason
+    ) from None
 
 
 def _as_host_error(
@@ -256,10 +270,24 @@ def _as_host_error(
     message: str,
     *,
     status_name: str = "CONTEXT_PROACTIVE_STATE_INVALID",
+    reason: str | None = None,
 ) -> PersonalContext.Error:
     if isinstance(exc, PersonalContext.Error):
         return exc
-    return _host_error(message, status_name=status_name, cause=exc)
+    return _host_error(message, status_name=status_name, cause=exc, reason=reason)
+
+
+def _validate_service_integers(service: dict[str, object]) -> None:
+    for field in ("interval_seconds", "max_items_per_run"):
+        if field not in service or (
+            field == "max_items_per_run" and service[field] is None
+        ):
+            continue
+        value = service[field]
+        if type(value) not in (int, float) or value <= 0 or value % 1 != 0:
+            _raise_host_error(
+                f"{field} must be a positive integer", reason="positive_integer"
+            )
 
 
 def _reject_symlink_chain(path: Path) -> None:
@@ -268,6 +296,7 @@ def _reject_symlink_chain(path: Path) -> None:
         if current.is_symlink():
             _raise_host_error(
                 "PersonalContext configuration path must not traverse a symlink",
+                reason="config_file_error",
                 status_name="CONTEXT_PROACTIVE_FILE_EXECUTION_ERROR",
             )
         parent = current.parent
@@ -281,13 +310,18 @@ def _serialize_config(config: dict[str, object]) -> bytes:
         text = yaml.safe_dump(config, allow_unicode=True, sort_keys=False)
         payload = text.encode("utf-8")
         if len(payload) > _MAX_CONFIG_BYTES:
-            _raise_host_error("PersonalContext configuration exceeds the 4 MiB limit")
+            _raise_host_error(
+                "PersonalContext configuration exceeds the 4 MiB limit",
+                reason="config_file_error",
+            )
         return payload
     except PersonalContext.Error:
         raise
     except Exception as exc:
         _raise_host_error(
-            "PersonalContext configuration could not be serialized", cause=exc
+            "PersonalContext configuration could not be serialized",
+            reason="config_file_error",
+            cause=exc,
         )
 
 
@@ -321,6 +355,7 @@ def _stage_yaml(path: Path, payload: bytes) -> Path:
                 temporary.unlink()
         _raise_host_error(
             "PersonalContext configuration temporary file could not be written",
+            reason="config_file_error",
             status_name="CONTEXT_PROACTIVE_FILE_EXECUTION_ERROR",
             cause=exc,
         )
@@ -337,6 +372,7 @@ def _replace_yaml(temporary: Path, path: Path) -> None:
     except Exception as exc:
         _raise_host_error(
             "PersonalContext configuration file could not be replaced",
+            reason="config_file_error",
             status_name="CONTEXT_PROACTIVE_FILE_EXECUTION_ERROR",
             cause=exc,
         )
@@ -365,12 +401,14 @@ def _read_yaml(path: Path) -> dict[str, object] | None:
                 if not stat.S_ISREG(opened.st_mode):
                     _raise_host_error(
                         "PersonalContext configuration path is not a file",
+                        reason="config_file_error",
                         status_name="CONTEXT_PROACTIVE_FILE_EXECUTION_ERROR",
                     )
                 payload = handle.read(_MAX_CONFIG_BYTES + 1)
             if len(payload) > _MAX_CONFIG_BYTES:
                 _raise_host_error(
-                    "PersonalContext configuration exceeds the 4 MiB limit"
+                    "PersonalContext configuration exceeds the 4 MiB limit",
+                    reason="config_file_error",
                 )
             text = payload.decode("utf-8")
         except FileNotFoundError:
@@ -433,22 +471,32 @@ def _resolve_model_reference(
     model_index: object,
 ) -> tuple[dict[str, object], dict[str, object]]:
     if type(model_index) is not int or model_index < 0:
-        _raise_host_error("model_index must be a non-negative integer")
+        _raise_host_error(
+            "model_index must be a non-negative integer", reason="parameter_invalid"
+        )
     models = get_default_models()
     if model_index >= len(models):
-        _raise_host_error("selected JiuwenSwarm model no longer exists")
+        _raise_host_error(
+            "selected JiuwenSwarm model no longer exists", reason="model_invalid"
+        )
     entry = models[model_index]
     if not isinstance(entry, dict):
-        _raise_host_error("selected JiuwenSwarm model is invalid")
+        _raise_host_error(
+            "selected JiuwenSwarm model is invalid", reason="model_invalid"
+        )
     client_raw = entry.get("model_client_config")
     request_raw = entry.get("model_config_obj")
     if not isinstance(client_raw, dict) or not isinstance(request_raw, dict):
-        _raise_host_error("selected JiuwenSwarm model is invalid")
+        _raise_host_error(
+            "selected JiuwenSwarm model is invalid", reason="model_invalid"
+        )
     client = deepcopy(client_raw)
     request = deepcopy(request_raw)
     model_name = str(client.pop("model_name", "")).strip()
     if not model_name:
-        _raise_host_error("selected JiuwenSwarm model is invalid")
+        _raise_host_error(
+            "selected JiuwenSwarm model is invalid", reason="model_invalid"
+        )
     client["max_retries"] = _PERSONAL_CONTEXT_MODEL_MAX_RETRIES
     request["model"] = model_name
     return client, request
@@ -458,23 +506,33 @@ def _normalize_provider_credentials(value: object) -> dict[str, dict[str, str]]:
     if value is None:
         return {}
     if not isinstance(value, dict):
-        _raise_host_error("provider_credentials must be an object")
+        _raise_host_error(
+            "provider_credentials must be an object", reason="parameter_invalid"
+        )
     unknown = set(value) - set(_REPOSITORY_PAT_FIELDS)
     if unknown:
-        _raise_host_error("provider_credentials contains an unsupported provider")
+        _raise_host_error(
+            "provider_credentials contains an unsupported provider",
+            reason="parameter_invalid",
+        )
     normalized: dict[str, dict[str, str]] = {}
     for provider, raw_credentials in value.items():
         if not isinstance(raw_credentials, dict):
-            _raise_host_error(f"{provider} provider credentials must be an object")
+            _raise_host_error(
+                f"{provider} provider credentials must be an object",
+                reason="credentials_invalid",
+            )
         field = _REPOSITORY_PAT_FIELDS[provider]
         if set(raw_credentials) != {field}:
             _raise_host_error(
-                f"{provider} provider credentials must contain only {field}"
+                f"{provider} provider credentials must contain only {field}",
+                reason="credentials_invalid",
             )
         secret = raw_credentials[field]
         if not isinstance(secret, str) or not secret.strip():
             _raise_host_error(
-                f"{provider} provider credential must be a non-empty string"
+                f"{provider} provider credential must be a non-empty string",
+                reason="credentials_invalid",
             )
         normalized[provider] = {field: secret.strip()}
     return normalized
@@ -596,7 +654,9 @@ def _repository_authorization_result(
 async def _validate_repository_pat(provider: str, secret: str) -> dict[str, str]:
     url = _REPOSITORY_USER_URLS.get(provider)
     if url is None:
-        _raise_host_error("unsupported repository provider")
+        _raise_host_error(
+            "unsupported repository provider", reason="authorization_unsupported"
+        )
     try:
         async with httpx.AsyncClient(
             timeout=_PAT_VALIDATION_TIMEOUT_SECONDS,
@@ -610,48 +670,73 @@ async def _validate_repository_pat(provider: str, secret: str) -> dict[str, str]
                 },
             )
     except httpx.TimeoutException:
-        _raise_host_error("repository provider credential validation timed out")
+        _raise_host_error(
+            "repository provider credential validation timed out",
+            reason="authorization_failed",
+        )
     except httpx.HTTPError:
-        _raise_host_error("repository provider credential validation request failed")
+        _raise_host_error(
+            "repository provider credential validation request failed",
+            reason="authorization_failed",
+        )
     except Exception:
-        _raise_host_error("repository provider credential validation request failed")
+        _raise_host_error(
+            "repository provider credential validation request failed",
+            reason="authorization_failed",
+        )
     if response.status_code != 200:
         _raise_host_error(
-            f"repository provider credential validation returned HTTP {response.status_code}"
+            f"repository provider credential validation returned HTTP {response.status_code}",
+            reason="credentials_invalid",
         )
     content_length = response.headers.get("Content-Length")
     if content_length is not None:
         try:
             if int(content_length) > _MAX_PAT_RESPONSE_BYTES:
                 _raise_host_error(
-                    "repository provider credential response exceeds the size limit"
+                    "repository provider credential response exceeds the size limit",
+                    reason="authorization_failed",
                 )
         except ValueError:
             _raise_host_error(
-                "repository provider credential response has an invalid size"
+                "repository provider credential response has an invalid size",
+                reason="authorization_failed",
             )
     content = response.content
     if len(content) > _MAX_PAT_RESPONSE_BYTES:
         _raise_host_error(
-            "repository provider credential response exceeds the size limit"
+            "repository provider credential response exceeds the size limit",
+            reason="authorization_failed",
         )
     try:
         payload = response.json()
     except (ValueError, TypeError):
-        _raise_host_error("repository provider credential response is invalid")
+        _raise_host_error(
+            "repository provider credential response is invalid",
+            reason="authorization_failed",
+        )
     if not isinstance(payload, dict):
-        _raise_host_error("repository provider credential response is invalid")
+        _raise_host_error(
+            "repository provider credential response is invalid",
+            reason="authorization_failed",
+        )
     login = payload.get("login") or payload.get("username")
     display_name = payload.get("name") or payload.get("display_name") or login
     if not isinstance(login, str) or not isinstance(display_name, str):
-        _raise_host_error("repository provider account response is invalid")
+        _raise_host_error(
+            "repository provider account response is invalid",
+            reason="authorization_failed",
+        )
     for value in (login, display_name):
         if (
             not value.strip()
             or len(value) > 256
             or any(ord(character) < 32 for character in value)
         ):
-            _raise_host_error("repository provider account response is invalid")
+            _raise_host_error(
+                "repository provider account response is invalid",
+                reason="authorization_failed",
+            )
     return {"login": login.strip(), "display_name": display_name.strip()}
 
 
@@ -665,6 +750,7 @@ async def _validate_repository_pat_for_write(
         raise _as_host_error(
             exc,
             f"{provider} credential verification failed",
+            reason="credentials_invalid",
             status_name="CONTEXT_PROACTIVE_CONFIG_INVALID",
         ) from None
 
@@ -680,6 +766,25 @@ class PersonalContextHostAPI:
         self._stored_config: dict[str, object] | None = None
         self._operation_lock = asyncio.Lock()
         self._fetch_run_stop_lock = asyncio.Lock()
+        self._refresh_error_language()
+
+    @property
+    def error_language(self) -> str:
+        """The language selected when this Host was initialized or re-enabled."""
+        return self._error_language
+
+    def _refresh_error_language(self) -> None:
+        try:
+            config = get_config() or {}
+            language = (
+                config.get("preferred_language") if isinstance(config, dict) else None
+            )
+        except Exception:
+            language = None
+        self._error_language = "en" if language == "en" else "zh"
+
+    def localize_error(self, error: object) -> str:
+        return localize_error(error, self._error_language)
 
     def _refresh_embedding_configuration(self) -> None:
         model_name, base_url, api_key = _global_embedding_values()
@@ -723,6 +828,7 @@ class PersonalContextHostAPI:
 
         previous_active = False
         has_active_fetch = False
+        status = known_status
         if previous is not None:
             if known_status is not None:
                 previous_active = _is_runtime_active(known_status)
@@ -745,47 +851,69 @@ class PersonalContextHostAPI:
                         exc,
                         "PersonalContext runtime status could not be read",
                     ) from None
-        if same_configuration and previous_active == candidate.collection_enabled:
+        shutdown_pending = (
+            previous_active or has_active_fetch
+            or getattr(status, "pipeline_running", False) is True
+            or getattr(status, "state", None) == "STOPPING"
+        )
+        if (
+            same_configuration and previous_active == candidate.collection_enabled
+            and (candidate.collection_enabled or not shutdown_pending)
+        ):
             _publish_yaml(self._config_path, payload)
             self._stored_config = deepcopy(stored)
             return
 
         temporary: Path | None = _stage_yaml(self._config_path, payload)
+        disabling = (
+            previous is not None
+            and not candidate.collection_enabled
+            and (previous.collection_enabled or (same_configuration and shutdown_pending))
+        )
 
         # A running fetch round must not be silently cancelled by a config
         # update: reject the change so the caller can surface a clear
         # "task is running, please try later" message to the user.
-        if previous_active and has_active_fetch:
+        if previous_active and has_active_fetch and not disabling:
             if temporary is not None:
                 with contextlib.suppress(OSError):
                     temporary.unlink()
             _raise_host_error(
                 "A fetch task is running",
+                reason="service_running",
                 status_name="CONTEXT_PROACTIVE_STATE_INVALID",
             )
-        disabling = (
-            previous is not None
-            and previous.collection_enabled
-            and not candidate.collection_enabled
-        )
         disabled_yaml_published = False
         rollback_runtime = False
         phase = "stop"
         try:
             if disabling:
                 phase = "replace"
-                if temporary is None:
-                    _raise_host_error("PersonalContext configuration staging failed")
-                _replace_yaml(temporary, self._config_path)
-                temporary = None
+                # Only publish flags applied during stop. Other candidate
+                # fields become authoritative after set_configuration succeeds.
+                stopping_stored = deepcopy(previous_stored)
+                stopping_stored["collection_enabled"] = False
+                if not candidate.agent_use_enabled:
+                    stopping_stored["agent_use_enabled"] = False
+                stopping_stored, stopping_config = _prepare_stored_config(stopping_stored)
+                _publish_yaml(self._config_path, _serialize_config(stopping_stored))
                 disabled_yaml_published = True
+                self._config = stopping_config
+                self._stored_config = stopping_stored
 
             if previous is not None:
                 phase = "stop"
                 rollback_runtime = True
-                await self._personal_context.deactivate_runtime(
-                    timeout_seconds=_STOP_TIMEOUT_SECONDS
-                )
+                if disabling:
+                    if not candidate.agent_use_enabled:
+                        await self._personal_context.stop_agent_use()
+                    await self._personal_context.stop_collection(
+                        timeout_seconds=_STOP_TIMEOUT_SECONDS
+                    )
+                else:
+                    await self._personal_context.deactivate_runtime(
+                        timeout_seconds=_STOP_TIMEOUT_SECONDS
+                    )
 
             phase = "set"
             rollback_runtime = True
@@ -796,16 +924,24 @@ class PersonalContextHostAPI:
                 self._refresh_embedding_configuration()
                 await self._personal_context.activate_runtime()
 
-            if not disabled_yaml_published:
-                phase = "replace"
-                if temporary is None:
-                    _raise_host_error("PersonalContext configuration staging failed")
-                _replace_yaml(temporary, self._config_path)
-                temporary = None
+            phase = "replace"
+            if temporary is None:
+                _raise_host_error(
+                    "PersonalContext configuration staging failed",
+                    reason="config_file_error",
+                )
+            _replace_yaml(temporary, self._config_path)
+            temporary = None
 
             self._config = candidate
             self._stored_config = deepcopy(stored)
         except BaseException as exc:
+            if disabled_yaml_published and phase == "stop":
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                raise _as_host_error(
+                    exc, "PersonalContext runtime could not be stopped"
+                ) from None
             rollback_error: BaseException | None = None
             if rollback_runtime or disabled_yaml_published:
                 try:
@@ -846,6 +982,7 @@ class PersonalContextHostAPI:
                 raise _as_host_error(
                     exc,
                     "PersonalContext configuration file could not be replaced",
+                    reason="config_file_error",
                     status_name="CONTEXT_PROACTIVE_FILE_EXECUTION_ERROR",
                 ) from None
             raise _as_host_error(
@@ -864,11 +1001,14 @@ class PersonalContextHostAPI:
         apply: Callable[[], Awaitable[None]],
         rollback: Callable[[], Awaitable[None]],
         publish_before_apply: bool = False,
+        preserve_disabled_intent: bool = False,
     ) -> None:
         """Atomically couple one hot Core update with its complete YAML snapshot."""
 
         if self._stored_config is None:
-            _raise_host_error("PersonalContext is not configured")
+            _raise_host_error(
+                "PersonalContext is not configured", reason="not_configured"
+            )
         previous_payload = _serialize_config(self._stored_config)
         temporary: Path | None = _stage_yaml(self._config_path, payload)
         published = False
@@ -876,21 +1016,36 @@ class PersonalContextHostAPI:
         try:
             if publish_before_apply:
                 if temporary is None:
-                    _raise_host_error("PersonalContext configuration staging failed")
+                    _raise_host_error(
+                        "PersonalContext configuration staging failed",
+                        reason="config_file_error",
+                    )
                 _replace_yaml(temporary, self._config_path)
                 temporary = None
                 published = True
+                if preserve_disabled_intent:
+                    self._config = candidate
+                    self._stored_config = deepcopy(stored)
             apply_started = True
             await apply()
             if not published:
                 if temporary is None:
-                    _raise_host_error("PersonalContext configuration staging failed")
+                    _raise_host_error(
+                        "PersonalContext configuration staging failed",
+                        reason="config_file_error",
+                    )
                 _replace_yaml(temporary, self._config_path)
                 temporary = None
                 published = True
             self._config = candidate
             self._stored_config = deepcopy(stored)
         except BaseException as exc:
+            if preserve_disabled_intent and published:
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                raise _as_host_error(
+                    exc, "PersonalContext runtime could not be stopped"
+                ) from None
             rollback_error: BaseException | None = None
             if apply_started:
                 try:
@@ -929,7 +1084,9 @@ class PersonalContextHostAPI:
             return {
                 "configured": self._stored_config is not None,
                 "config": config,
-                "status": status.model_dump(mode="json"),
+                "status": localize_payload(
+                    status.model_dump(mode="json"), self._error_language
+                ),
             }
 
     async def get_runtime_config(self) -> dict[str, object]:
@@ -947,17 +1104,21 @@ class PersonalContextHostAPI:
         """Atomically patch the allowed runtime configuration fields."""
 
         if not isinstance(patch, dict):
-            _raise_host_error("patch must be an object")
+            _raise_host_error("patch must be an object", reason="parameter_invalid")
         unknown = set(patch) - {
             "collection_enabled",
             "agent_use_enabled",
             "strategy_profile",
         }
         if unknown:
-            _raise_host_error("runtime patch contains unsupported fields")
+            _raise_host_error(
+                "runtime patch contains unsupported fields", reason="parameter_invalid"
+            )
         async with self._operation_lock:
             if self._stored_config is None:
-                _raise_host_error("PersonalContext is not configured")
+                _raise_host_error(
+                    "PersonalContext is not configured", reason="not_configured"
+                )
             stored = deepcopy(self._stored_config)
             stored.update(deepcopy(patch))
             stored, candidate = _prepare_stored_config(stored)
@@ -972,14 +1133,21 @@ class PersonalContextHostAPI:
         """Select one current JiuwenSwarm model by its models.list index."""
 
         if type(model_index) is not int or model_index < 0:
-            _raise_host_error("model_index must be a non-negative integer")
+            _raise_host_error(
+                "model_index must be a non-negative integer", reason="parameter_invalid"
+            )
         async with self._operation_lock:
             if self._stored_config is None:
-                _raise_host_error("PersonalContext is not configured")
+                _raise_host_error(
+                    "PersonalContext is not configured", reason="not_configured"
+                )
             # 校验放在锁内，避免 models.list 在校验和写入之间发生变化。
             # 显式选择必须拦截；_reconcile_model_selection 会把不可用下标静默回退。
             if not _model_index_is_usable(model_index):
-                _raise_host_error("selected JiuwenSwarm model no longer exists")
+                _raise_host_error(
+                    "selected JiuwenSwarm model no longer exists",
+                    reason="model_invalid",
+                )
             stored = deepcopy(self._stored_config)
             stored["model_index"] = model_index
             stored["model_id"] = _model_entry_id(get_default_models()[model_index])
@@ -995,7 +1163,7 @@ class PersonalContextHostAPI:
         """Persist and apply the PersonalContext collection switch."""
 
         if not isinstance(enabled, bool):
-            _raise_host_error("enabled must be a boolean")
+            _raise_host_error("enabled must be a boolean", reason="parameter_invalid")
         async with self._operation_lock:
             first_start = self._stored_config is None
             if self._stored_config is None:
@@ -1034,6 +1202,7 @@ class PersonalContextHostAPI:
                         else self._start_collection_with_embedding
                     ),
                     publish_before_apply=not enabled,
+                    preserve_disabled_intent=not enabled,
                 )
             result = _project_stored_config(stored)
             return result
@@ -1042,10 +1211,12 @@ class PersonalContextHostAPI:
         """Persist the Agent-use switch without creating an initial configuration."""
 
         if not isinstance(enabled, bool):
-            _raise_host_error("enabled must be a boolean")
+            _raise_host_error("enabled must be a boolean", reason="parameter_invalid")
         async with self._operation_lock:
             if self._stored_config is None:
-                _raise_host_error("PersonalContext is not configured")
+                _raise_host_error(
+                    "PersonalContext is not configured", reason="not_configured"
+                )
             stored = deepcopy(self._stored_config)
             stored["agent_use_enabled"] = enabled
             stored, candidate = _prepare_stored_config(stored)
@@ -1074,8 +1245,10 @@ class PersonalContextHostAPI:
         """
 
         if not isinstance(enabled, bool):
-            _raise_host_error("enabled must be a boolean")
+            _raise_host_error("enabled must be a boolean", reason="parameter_invalid")
         async with self._operation_lock:
+            if enabled and not (self._stored_config or {}).get("master_enabled"):
+                self._refresh_error_language()
             first_start = self._stored_config is None
             if self._stored_config is None:
                 if not enabled:
@@ -1099,10 +1272,10 @@ class PersonalContextHostAPI:
                         await self._start_collection_with_embedding()
                         await self._personal_context.start_agent_use()
                     else:
+                        await self._personal_context.stop_agent_use()
                         await self._personal_context.stop_collection(
                             timeout_seconds=_STOP_TIMEOUT_SECONDS
                         )
-                        await self._personal_context.stop_agent_use()
 
                 async def rollback_master() -> None:
                     if enabled:
@@ -1121,6 +1294,7 @@ class PersonalContextHostAPI:
                     apply=apply_master,
                     rollback=rollback_master,
                     publish_before_apply=not enabled,
+                    preserve_disabled_intent=not enabled,
                 )
             return _project_stored_config(stored)
 
@@ -1143,16 +1317,24 @@ class PersonalContextHostAPI:
 
         async with self._operation_lock:
             if self._stored_config is None:
-                _raise_host_error("PersonalContext is not configured")
+                _raise_host_error(
+                    "PersonalContext is not configured", reason="not_configured"
+                )
             if not isinstance(service, dict):
-                _raise_host_error("service must be an object")
+                _raise_host_error(
+                    "service must be an object", reason="parameter_invalid"
+                )
+            _validate_service_integers(service)
             stored = deepcopy(self._stored_config)
             services = cast(list[dict[str, object]], stored["fetch_services"])
             service_id = service.get("service_id")
             normalized_id = service_id.strip() if isinstance(service_id, str) else None
             existing_ids = {cast(str, item["service_id"]) for item in services}
             if normalized_id is not None and normalized_id in existing_ids:
-                _raise_host_error("PersonalContext fetch service already exists")
+                _raise_host_error(
+                    "PersonalContext fetch service already exists",
+                    reason="duplicate_service",
+                )
             provider = service.get("provider")
             normalized_provider = (
                 provider.strip().casefold() if isinstance(provider, str) else None
@@ -1163,13 +1345,15 @@ class PersonalContextHostAPI:
                 )
                 if provider_count >= 20:
                     _raise_host_error(
-                        f"{normalized_provider} fetch service limit of 20 has been reached"
+                        f"{normalized_provider} fetch service limit of 20 has been reached",
+                        reason="service_limit",
                     )
             internal_service = deepcopy(service)
             if normalized_provider in _REPOSITORY_PAT_FIELDS:
                 if "credentials" in service:
                     _raise_host_error(
-                        "repository fetch service credentials are managed by the provider authorization"
+                        "repository fetch service credentials are managed by the provider authorization",
+                        reason="credentials_invalid",
                     )
                 provider_credentials = cast(
                     dict[str, dict[str, str]],
@@ -1179,7 +1363,8 @@ class PersonalContextHostAPI:
                 field = _REPOSITORY_PAT_FIELDS[normalized_provider]
                 if current is None or field not in current:
                     _raise_host_error(
-                        f"{normalized_provider} must be authorized before creating a fetch service"
+                        f"{normalized_provider} must be authorized before creating a fetch service",
+                        reason="authorization_required",
                     )
                 internal_service["credentials"] = {field: current[field]}
             services.append(internal_service)
@@ -1225,14 +1410,20 @@ class PersonalContextHostAPI:
 
         async with self._operation_lock:
             if self._stored_config is None:
-                _raise_host_error("PersonalContext is not configured")
+                _raise_host_error(
+                    "PersonalContext is not configured", reason="not_configured"
+                )
             if not isinstance(service_id, str) or not service_id.strip():
-                _raise_host_error("service_id must be a non-empty string")
+                _raise_host_error(
+                    "service_id must be a non-empty string", reason="parameter_invalid"
+                )
             normalized_id = service_id.strip()
             stored = deepcopy(self._stored_config)
             services = cast(list[dict[str, object]], stored["fetch_services"])
             if not any(item["service_id"] == normalized_id for item in services):
-                _raise_host_error("unknown PersonalContext fetch service")
+                _raise_host_error(
+                    "unknown PersonalContext fetch service", reason="unknown_service"
+                )
             try:
                 status = await self._personal_context.snapshot()
             except asyncio.CancelledError:
@@ -1245,6 +1436,7 @@ class PersonalContextHostAPI:
             if _has_active_fetch(status, service_id=normalized_id):
                 _raise_host_error(
                     "PersonalContext 抓取服务正在执行，无法删除",
+                    reason="service_running",
                     status_name="CONTEXT_PROACTIVE_STATE_INVALID",
                 )
             try:
@@ -1281,8 +1473,10 @@ class PersonalContextHostAPI:
                     apply=lambda: self._personal_context._remove_fetch_service_config(  # pylint: disable=protected-access
                         normalized_id
                     ),
-                    rollback=lambda: self._personal_context._append_fetch_service_config(  # pylint: disable=protected-access
-                        removed_service
+                    rollback=lambda: (
+                        self._personal_context._append_fetch_service_config(  # pylint: disable=protected-access
+                            removed_service
+                        )
                     ),
                 )
             except BaseException as exc:
@@ -1322,9 +1516,11 @@ class PersonalContextHostAPI:
         """Atomically patch one existing fixed fetch service."""
 
         if not isinstance(service_id, str) or not service_id.strip():
-            _raise_host_error("service_id must be a non-empty string")
+            _raise_host_error(
+                "service_id must be a non-empty string", reason="parameter_invalid"
+            )
         if not isinstance(patch, dict):
-            _raise_host_error("patch must be an object")
+            _raise_host_error("patch must be an object", reason="parameter_invalid")
         allowed = {
             "interval_seconds",
             "max_items_per_run",
@@ -1332,11 +1528,17 @@ class PersonalContextHostAPI:
             "time_range",
         }
         if set(patch) - allowed:
-            _raise_host_error("fetch service patch contains unsupported fields")
+            _raise_host_error(
+                "fetch service patch contains unsupported fields",
+                reason="parameter_invalid",
+            )
+        _validate_service_integers(patch)
         normalized_id = service_id.strip()
         async with self._operation_lock:
             if self._stored_config is None:
-                _raise_host_error("PersonalContext is not configured")
+                _raise_host_error(
+                    "PersonalContext is not configured", reason="not_configured"
+                )
             stored = deepcopy(self._stored_config)
             services = cast(list[dict[str, object]], stored["fetch_services"])
             target = next(
@@ -1348,7 +1550,9 @@ class PersonalContextHostAPI:
                 None,
             )
             if target is None:
-                _raise_host_error("unknown PersonalContext fetch service")
+                _raise_host_error(
+                    "unknown PersonalContext fetch service", reason="unknown_service"
+                )
             try:
                 status = await self._personal_context.snapshot()
             except asyncio.CancelledError:
@@ -1361,6 +1565,7 @@ class PersonalContextHostAPI:
             if _has_active_fetch(status, service_id=normalized_id):
                 _raise_host_error(
                     "PersonalContext 抓取服务正在执行，无法修改配置",
+                    reason="service_running",
                     status_name="CONTEXT_PROACTIVE_STATE_INVALID",
                 )
             _, original_candidate = _prepare_stored_config(stored)
@@ -1404,15 +1609,21 @@ class PersonalContextHostAPI:
         if service_id is not None and (
             not isinstance(service_id, str) or not service_id.strip()
         ):
-            _raise_host_error("service_id must be a non-empty string")
+            _raise_host_error(
+                "service_id must be a non-empty string", reason="parameter_invalid"
+            )
         if run_id is not None:
             if service_id is None or not isinstance(run_id, str) or not run_id.strip():
-                _raise_host_error("run_id requires service_id and a non-empty string")
+                _raise_host_error(
+                    "run_id requires service_id and a non-empty string",
+                    reason="parameter_invalid",
+                )
         normalized_id = service_id.strip() if service_id is not None else None
-        return await self._personal_context.get_fetch_run_status(
+        result = await self._personal_context.get_fetch_run_status(
             normalized_id,
             run_id=run_id,
         )
+        return cast(dict[str, object], localize_payload(result, self._error_language))
 
     async def set_fetch_service_enabled(
         self,
@@ -1422,25 +1633,30 @@ class PersonalContextHostAPI:
         """Persist and hot-apply one service's future scheduling switch."""
 
         if not isinstance(enabled, bool):
-            _raise_host_error("enabled must be a boolean")
+            _raise_host_error("enabled must be a boolean", reason="parameter_invalid")
         if not isinstance(service_id, str):
-            _raise_host_error("service_id must be a string")
+            _raise_host_error("service_id must be a string", reason="parameter_invalid")
         async with self._operation_lock:
             if self._stored_config is None:
                 _raise_host_error(
-                    "PersonalContext configuration must be set before changing a fetch service"
+                    "PersonalContext configuration must be set before changing a fetch service",
+                    reason="not_configured",
                 )
             raw = deepcopy(self._stored_config)
             normalized_id = service_id.strip()
             if not normalized_id:
-                _raise_host_error("service_id must not be empty")
+                _raise_host_error(
+                    "service_id must not be empty", reason="parameter_invalid"
+                )
             services = cast(list[dict[str, object]], raw["fetch_services"])
             target = next(
                 (item for item in services if item["service_id"] == normalized_id),
                 None,
             )
             if target is None:
-                _raise_host_error("unknown PersonalContext fetch service")
+                _raise_host_error(
+                    "unknown PersonalContext fetch service", reason="unknown_service"
+                )
             target["enabled"] = enabled
             raw, candidate = _prepare_stored_config(raw)
             await self._apply_live_update_locked(
@@ -1465,13 +1681,23 @@ class PersonalContextHostAPI:
         """Delegate one immediate fetch request without changing configuration."""
 
         async with self._operation_lock:
-            return await self._personal_context.run_fetch(service_id=service_id)
+            try:
+                return await self._personal_context.run_fetch(service_id=service_id)
+            except PersonalContext.Error as exc:
+                if exc.status.name == "CONTEXT_PROACTIVE_STATE_INVALID":
+                    if self._config is None:
+                        exc.pcs_reason = "not_configured"
+                    elif not self._config.collection_enabled:
+                        exc.pcs_reason = "collection_disabled"
+                raise
 
     async def stop_fetch_run(self, service_id: str) -> dict[str, object]:
         """Stop one active fetch round without changing persisted configuration."""
 
         if not isinstance(service_id, str) or not service_id.strip():
-            _raise_host_error("service_id must be a non-empty string")
+            _raise_host_error(
+                "service_id must be a non-empty string", reason="parameter_invalid"
+            )
         normalized_id = service_id.strip()
         # stop_fetch_run 不修改 Host 配置。它改用独立锁，避免一次 Core 收尾
         # 阻塞 create/patch/delete；Core 内部仍由 _fetch_lock 保护运行任务。
@@ -1519,7 +1745,9 @@ class PersonalContextHostAPI:
 
         async with self._operation_lock:
             if not isinstance(provider, str) or not provider.strip():
-                _raise_host_error("provider must be a non-empty string")
+                _raise_host_error(
+                    "provider must be a non-empty string", reason="parameter_invalid"
+                )
             normalized_provider = provider.strip().casefold()
             if normalized_provider in _REPOSITORY_PAT_FIELDS:
                 if self._stored_config is None:
@@ -1547,7 +1775,9 @@ class PersonalContextHostAPI:
                     return _repository_authorization_result(
                         normalized_provider,
                         "authorization_failed",
-                        error="credential verification failed",
+                        error=localize_error(
+                            None, self._error_language, reason="authorization_failed"
+                        ),
                     )
                 return _repository_authorization_result(
                     normalized_provider,
@@ -1555,10 +1785,14 @@ class PersonalContextHostAPI:
                     account=account,
                 )
             if normalized_provider != "feishu":
-                _raise_host_error("provider does not support authorization")
+                _raise_host_error(
+                    "provider does not support authorization",
+                    reason="authorization_unsupported",
+                )
             if self._config is None:
                 _raise_host_error(
-                    "PersonalContext configuration must be set before provider authorization"
+                    "PersonalContext configuration must be set before provider authorization",
+                    reason="not_configured",
                 )
             result: dict[str, object] | None = None
             cancelled: asyncio.CancelledError | None = None
@@ -1570,15 +1804,20 @@ class PersonalContextHostAPI:
                 cancelled = exc
             except Exception as exc:
                 raise _as_host_error(
-                    exc, "PersonalContext provider authorization status failed"
+                    exc,
+                    "PersonalContext provider authorization status failed",
+                    reason="authorization_failed",
                 ) from None
             if cancelled is not None:
                 raise cancelled
             if result is None:
                 _raise_host_error(
-                    "PersonalContext provider authorization status returned no result"
+                    "PersonalContext provider authorization status returned no result",
+                    reason="authorization_failed",
                 )
-            return result
+            return cast(
+                dict[str, object], localize_payload(result, self._error_language)
+            )
 
     async def authorize_provider(
         self,
@@ -1590,21 +1829,27 @@ class PersonalContextHostAPI:
         """Check or begin user authorization for a configured provider."""
 
         if not isinstance(reauthorize, bool):
-            _raise_host_error("reauthorize must be a boolean")
+            _raise_host_error(
+                "reauthorize must be a boolean", reason="parameter_invalid"
+            )
         async with self._operation_lock:
             if not isinstance(provider, str) or not provider.strip():
-                _raise_host_error("provider must be a non-empty string")
+                _raise_host_error(
+                    "provider must be a non-empty string", reason="parameter_invalid"
+                )
             normalized_provider = provider.strip().casefold()
             if normalized_provider in _REPOSITORY_PAT_FIELDS:
                 field = _REPOSITORY_PAT_FIELDS[normalized_provider]
                 if not isinstance(credentials, dict) or set(credentials) != {field}:
                     _raise_host_error(
-                        f"{normalized_provider} credentials must contain only {field}"
+                        f"{normalized_provider} credentials must contain only {field}",
+                        reason="credentials_invalid",
                     )
                 secret = credentials[field]
                 if not isinstance(secret, str) or not secret.strip():
                     _raise_host_error(
-                        f"{normalized_provider} credential must be a non-empty string"
+                        f"{normalized_provider} credential must be a non-empty string",
+                        reason="credentials_invalid",
                     )
                 normalized_secret = secret.strip()
                 account = await _validate_repository_pat_for_write(
@@ -1637,7 +1882,9 @@ class PersonalContextHostAPI:
                 elif reauthorize and matching_service_ids:
                     current = self._config
                     if current is None:
-                        _raise_host_error("PersonalContext is not configured")
+                        _raise_host_error(
+                            "PersonalContext is not configured", reason="not_configured"
+                        )
                     previous_services = tuple(
                         item
                         for item in current.fetch_services
@@ -1679,23 +1926,35 @@ class PersonalContextHostAPI:
                     account=account,
                 )
             if normalized_provider != "feishu":
-                _raise_host_error("provider does not support authorization")
+                _raise_host_error(
+                    "provider does not support authorization",
+                    reason="authorization_unsupported",
+                )
             if credentials is not None:
-                _raise_host_error("feishu authorization does not accept credentials")
+                _raise_host_error(
+                    "feishu authorization does not accept credentials",
+                    reason="credentials_invalid",
+                )
             if self._config is None:
                 _raise_host_error(
-                    "PersonalContext configuration must be set before provider authorization"
+                    "PersonalContext configuration must be set before provider authorization",
+                    reason="not_configured",
                 )
             try:
-                return await self._personal_context.authorize_provider(
+                result = await self._personal_context.authorize_provider(
                     normalized_provider,
                     reauthorize=reauthorize,
+                )
+                return cast(
+                    dict[str, object], localize_payload(result, self._error_language)
                 )
             except asyncio.CancelledError:
                 raise
             except BaseException as exc:
                 raise _as_host_error(
-                    exc, "PersonalContext provider authorization failed"
+                    exc,
+                    "PersonalContext provider authorization failed",
+                    reason="authorization_failed",
                 ) from None
 
     async def start(self) -> None:
@@ -1723,6 +1982,7 @@ class PersonalContextHostAPI:
             if config is None or not config.collection_enabled:
                 return
             try:
+                self._refresh_error_language()
                 self._refresh_embedding_configuration()
                 await self._personal_context.activate_runtime()
             except BaseException as exc:
@@ -1742,7 +2002,17 @@ class PersonalContextHostAPI:
     async def get_status(self) -> PersonalContext.Status:
         """Return the Core's bounded, credential-free status snapshot."""
 
-        return await self._personal_context.snapshot()
+        status = await self._personal_context.snapshot()
+        if isinstance(status, PersonalContext.Status):
+            return status.model_copy(
+                update=cast(
+                    dict[str, object],
+                    localize_payload(
+                        status.model_dump(mode="json"), self._error_language
+                    ),
+                )
+            )
+        return status
 
     async def stop(self, *, timeout_seconds: float = _STOP_TIMEOUT_SECONDS) -> None:
         """Stop Core runtime while preserving configuration and published files."""
