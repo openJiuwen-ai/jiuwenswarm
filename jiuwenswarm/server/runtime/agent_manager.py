@@ -16,6 +16,7 @@ from typing import Any, Callable, NamedTuple, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
+from jiuwenswarm.common.version import __version__
 from jiuwenswarm.agents.harness.team import get_team_manager
 from jiuwenswarm.common.config import get_available_models, get_config
 from jiuwenswarm.common.mode_matrix import (
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-ACP_DEFAULT_CAPABILITIES: dict[str, Any] = build_acp_initialize_result()
+ACP_DEFAULT_CAPABILITIES: dict[str, Any] = build_acp_initialize_result(agent_version=__version__)
 
 
 def _normalize_channel_id(channel_id: str | None) -> str:

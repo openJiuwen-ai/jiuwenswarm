@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from gateway_protocol.third_agent import ThirdAgent
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentRuntime
-from jiuwenswarm.gateway.routing.third_agent import ThirdAgent
 
 if TYPE_CHECKING:
     from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
