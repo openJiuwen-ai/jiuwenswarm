@@ -67,7 +67,7 @@ def test_progressive_defaults_expose_registered_ask_user_tool():
 
     assert rail is not None
     assert "ask_user" in rail.eager_tools
-    assert "deepresearch_execute" in rail.eager_tools
+    assert "deepresearch_execute" not in rail.eager_tools
     assert "ask_user_question" not in rail.eager_tools
     assert "ttse_consult" not in rail.eager_tools
 
@@ -104,7 +104,6 @@ def test_progressive_legacy_eager_config_exposes_registered_ask_user_tool():
     assert rail.eager_tools == [
         "tools_search",
         "invoke_tool",
-        "deepresearch_execute",
         "read_file",
         "ask_user",
     ]
@@ -130,7 +129,6 @@ def test_progressive_eager_tools_keep_ttse_consult_when_inject_enabled():
     assert rail.eager_tools == [
         "tools_search",
         "invoke_tool",
-        "deepresearch_execute",
         "read_file",
         "ttse_consult",
         "skill_acceleration_exec",

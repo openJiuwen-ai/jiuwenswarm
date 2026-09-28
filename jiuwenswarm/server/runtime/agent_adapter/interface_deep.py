@@ -297,6 +297,7 @@ from jiuwenswarm.agents.harness.common.rails.disabled_tools_rail import (
 from jiuwenswarm.agents.harness.common.rails.skill_active_state import (
     SkillActiveStateRail,
     clear_session_skill_state,
+    get_session_active_skill,
     resolve_stale_invoke_limit,
 )
 from jiuwenswarm.agents.harness.common.rails.skill_credential_injection_rail import (
@@ -1507,20 +1508,20 @@ def build_progressive_tool_rail_from_config(
     agent_card_id: str | None = None,
     subagent_kind: str | None = None,
     deepresearch_context_provider: Callable[[], dict[str, str]] | None = None,
+    active_skill_provider: Callable[[], str | None] | None = None,
 ) -> ProgressiveToolRail | None:
     """Build ProgressiveToolRail from react.tool_lazy_load config.
 
-    Fixed eager-tools schema; deferred tools are reached via tools_search +
-    invoke_tool. For subagents, set profile="subagent" and configure
+    Stable base eager-tools schema; deferred tools are reached via tools_search
+    + invoke_tool, while ToolCard skill gates may add direct tools for the
+    active session skill. For subagents, set profile="subagent" and configure
     react.tool_lazy_load.subagents.
     """
     config = react_config if isinstance(react_config, dict) else {}
     lazy_cfg = config.get("tool_lazy_load") or {}
     if not isinstance(lazy_cfg, dict):
         lazy_cfg = {}
-
-    if not lazy_cfg.get("enabled", False):
-        return None
+    lazy_load_enabled = bool(lazy_cfg.get("enabled", False))
 
     enable_for_models = _normalize_tool_names(
         lazy_cfg.get("enable_for_models", []), []
@@ -1550,10 +1551,6 @@ def build_progressive_tool_rail_from_config(
             lazy_cfg.get("eager_tools", _DEFAULT_PROGRESSIVE_EAGER_TOOLS),
             _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
         )
-        # This tool owns native multi-step HITL. It must execute directly;
-        # invoke_tool would hide the outer call from its lifecycle Rail.
-        if "deepresearch_execute" not in eager_tools:
-            eager_tools.insert(2, "deepresearch_execute")
 
     eager_tools = _ensure_ttse_consult_eager_tool(eager_tools, config)
 
@@ -1569,8 +1566,10 @@ def build_progressive_tool_rail_from_config(
         )
 
     logger.info(
-        "[ProgressiveToolRail] enabled profile=%s kind=%s eager_tools=%s "
+        "[ProgressiveToolRail] mounted lazy_load_enabled=%s profile=%s "
+        "kind=%s eager_tools=%s "
         "agent_id=%s agent_card_id=%s enable_for_models=%s disabled_tools=%s",
+        lazy_load_enabled,
         normalized_profile,
         subagent_kind or "",
         eager_tools,
@@ -1581,13 +1580,14 @@ def build_progressive_tool_rail_from_config(
     )
 
     return ProgressiveToolRail(
-        enabled=True,
+        enabled=lazy_load_enabled,
         eager_tools=eager_tools,
         language=normalized_language,
         agent_id=agent_id,
         agent_card_id=agent_card_id,
         enable_for_models=enable_for_models,
         deepresearch_context_provider=deepresearch_context_provider,
+        active_skill_provider=active_skill_provider,
         disabled_tools=disabled_tools,
     )
 
@@ -9063,12 +9063,29 @@ class JiuWenSwarmDeepAdapter:
             agent_id=self._tool_owner_id(),
             agent_card_id=self._tool_owner_id(),
             deepresearch_context_provider=self._get_deepresearch_tool_context,
+            active_skill_provider=self._get_progressive_active_skill,
         )
         if rail is not None:
             logger.info(
-                "[JiuWenSwarmDeepAdapter] ProgressiveToolRail enabled (fixed schema mode)"
+                "[JiuWenSwarmDeepAdapter] ProgressiveToolRail mounted mode=%s",
+                "progressive" if rail.enabled else "skill-gate-only",
             )
         return rail
+
+    def _get_progressive_active_skill(self) -> str | None:
+        """Return active-skill state for this adapter's current session."""
+        session_id = str(self._skill_rail_session_id() or "").strip()
+        if not session_id:
+            session_id = str(get_runtime_tool_session_id() or "").strip()
+        if not session_id:
+            session_id = str(
+                self._current_request_route.get("session_id") or ""
+            ).strip()
+        if not session_id:
+            session_id = str(
+                self._runtime_cron_tool_context.session_id or ""
+            ).strip()
+        return get_session_active_skill(session_id) if session_id else None
 
     @staticmethod
     def _build_disabled_tools_rail(

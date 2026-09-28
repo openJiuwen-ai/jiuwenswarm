@@ -1055,6 +1055,7 @@ async def deepresearch_execute(
 
 
 deepresearch_execute.card.properties["resilience"] = {"timeout_s": None}
+deepresearch_execute.card.properties["required_skill"] = "deepresearch"
 deepresearch_execute.card.parallel_safe = False
 
 

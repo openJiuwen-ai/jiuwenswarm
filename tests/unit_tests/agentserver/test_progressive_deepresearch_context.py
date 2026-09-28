@@ -192,7 +192,7 @@ async def test_deferred_deepresearch_rebinds_trusted_adapter_context():
 
 
 @pytest.mark.asyncio
-async def test_eager_deepresearch_entry_rebinds_trusted_adapter_context():
+async def test_skill_activated_deepresearch_entry_rebinds_trusted_adapter_context():
     service_id = "progressive-eager-service"
     agent_id = "office"
     shared_root = "/trusted/office-claw-skills"
@@ -201,8 +201,12 @@ async def test_eager_deepresearch_entry_rebinds_trusted_adapter_context():
         service_id=service_id,
         agent_id=agent_id,
     )
+    agent = SimpleNamespace(
+        ability_manager=SimpleNamespace(list=lambda: [de.deepresearch_execute.card]),
+    )
     rail = ProgressiveToolRail(
-        eager_tools=["tools_search", "invoke_tool", "deepresearch_execute"],
+        eager_tools=["tools_search", "invoke_tool"],
+        active_skill_provider=lambda: "deepresearch",
         deepresearch_context_provider=lambda: {
             "request_id": "request",
             "channel_id": "officeclaw",
@@ -216,6 +220,7 @@ async def test_eager_deepresearch_entry_rebinds_trusted_adapter_context():
         id="call-1", name="deepresearch_execute", arguments={"query": "q"}
     )
     ctx = SimpleNamespace(
+        agent=agent,
         inputs=ToolCallInputs(
             tool_call=tool_call,
             tool_name="deepresearch_execute",

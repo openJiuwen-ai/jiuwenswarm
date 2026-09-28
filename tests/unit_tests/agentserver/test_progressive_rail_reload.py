@@ -49,10 +49,12 @@ def test_reload_plan_does_not_create_progressive_rail_when_config_omits_tool_laz
     assert adapter._progressive_tool_rail is None
 
 
-def test_reload_plan_stages_progressive_rail_when_disabled():
+def test_reload_plan_keeps_skill_gate_rail_when_lazy_loading_is_disabled():
     adapter = _rail_plan_adapter()
     old_rail = MagicMock(name="old-progressive-tool-rail")
+    gate_only_rail = SimpleNamespace(enabled=False)
     adapter._progressive_tool_rail = old_rail
+    adapter._build_progressive_tool_rail.return_value = gate_only_rail
 
     rails, rails_to_unregister = adapter._get_current_agent_rails(
         {"tool_lazy_load": {"enabled": False}},
@@ -60,8 +62,9 @@ def test_reload_plan_stages_progressive_rail_when_disabled():
     )
 
     assert old_rail not in rails
-    assert rails_to_unregister == [old_rail]
-    assert adapter._progressive_tool_rail is old_rail
+    assert gate_only_rail in rails
+    assert rails_to_unregister == []
+    assert adapter._progressive_tool_rail is gate_only_rail
 
 
 def test_reload_plan_adds_new_progressive_rail_when_enabled():
