@@ -681,6 +681,37 @@ def _find_package_root() -> Path | None:
     return current
 
 
+# 播种在冷启动时按租户逐次调用，每次都要重解析出厂模板，故按文件 mtime/size 缓存语言解析结果。
+_PREFERRED_LANGUAGE_CACHE: dict[str, tuple[tuple[int, int], str | None]] = {}
+
+
+def _read_preferred_language_cached(cfg_path: Path) -> str | None:
+    """读取该路径声明的 zh/en；文件缺失、解析异常或值非法时返回 None。"""
+    try:
+        st = cfg_path.stat()
+    except OSError:
+        return None
+    cache_key = str(cfg_path)
+    stamp = (st.st_mtime_ns, st.st_size)
+    cached = _PREFERRED_LANGUAGE_CACHE.get(cache_key)
+    if cached is not None and cached[0] == stamp:
+        # 缓存也记住“该路径无有效语言”，但解析异常不缓存，保持每次报错可见。
+        return cached[1]
+    value: str | None = None
+    try:
+        rt = YAML()
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            data = rt.load(f) or {}
+        lang = str(data.get("preferred_language") or "").strip().lower()
+        if lang in ("zh", "en"):
+            value = lang
+    except Exception as e:
+        logger.error(f"Failed to load config.yaml: {e}")
+        return None
+    _PREFERRED_LANGUAGE_CACHE[cache_key] = (stamp, value)
+    return value
+
+
 def _resolve_preferred_language(
     config_yaml_dest: Path, explicit: Optional[str]
 ) -> str:
@@ -690,16 +721,9 @@ def _resolve_preferred_language(
         return lang if lang in ("zh", "en") else "zh"
     # 稀疏 override 模式：先读 override，再读模板
     for cfg_path in (config_yaml_dest, resolve_shipped_template_config_path()):
-        if cfg_path.exists():
-            try:
-                rt = YAML()
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    data = rt.load(f) or {}
-                lang = str(data.get("preferred_language") or "").strip().lower()
-                if lang in ("zh", "en"):
-                    return lang
-            except Exception as e:
-                logger.error(f"Failed to load config.yaml: {e}")
+        lang = _read_preferred_language_cached(cfg_path)
+        if lang is not None:
+            return lang
     return "zh"
 
 
