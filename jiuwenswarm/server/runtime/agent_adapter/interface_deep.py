@@ -2037,6 +2037,10 @@ class JiuWenSwarmDeepAdapter:
         # a HITL resume adds to the ReAct loop already running, so it cannot
         # live on a single root span — see ``_resolve_trajectory_turn``.
         self._turn_tracker = SessionTurnTracker()
+        # Gate KVC-only metadata at the host boundary. Trajectory tracking is
+        # independent, but an affinity-OFF request must enter Agent Core with
+        # exactly the same effective inputs as before this feature.
+        self._kv_cache_affinity_enabled = False
         # Root-adapter-only: its own DeepAgent is built on demand (see
         # ``ensure_instance``), so the chat path does not pay for an instance it
         # never runs on.
@@ -9608,6 +9612,8 @@ class JiuWenSwarmDeepAdapter:
             config,
             model_state=context_model_state,
         )
+        kv_cache_affinity_config = _deep_agent_kv_cache_affinity_config(config_base, model)
+        self._kv_cache_affinity_enabled = kv_cache_affinity_config.enable_kv_cache_affinity
         return DeepAgentConfig(
             model=model,
             card=agent_card,
@@ -9616,7 +9622,7 @@ class JiuWenSwarmDeepAdapter:
                 language=self._resolve_prompt_language(),
             ),
             context_engine_config=context_engine_config,
-            kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config_base, model),
+            kv_cache_affinity_config=kv_cache_affinity_config,
             enable_task_loop=self._resolve_enable_task_loop(config, config_base),
             enable_subagent_runtime=self._resolve_enable_subagent_runtime(config_base),
             max_iterations=parse_optional_int(config.get("max_iterations")),
@@ -10750,10 +10756,12 @@ class JiuWenSwarmDeepAdapter:
             config,
             model_state=context_model_state,
         )
+        kv_cache_affinity_config = _deep_agent_kv_cache_affinity_config(config_base, model)
+        self._kv_cache_affinity_enabled = kv_cache_affinity_config.enable_kv_cache_affinity
         self._instance = create_deep_agent(
             **common_kwargs,
             context_engine_config=context_engine_config,
-            kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config_base, model),
+            kv_cache_affinity_config=kv_cache_affinity_config,
             vision_model_config=self._vision_model_config,
             audio_model_config=self._audio_model_config,
             enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config),
@@ -15471,6 +15479,12 @@ class JiuWenSwarmDeepAdapter:
                 turn_id=_turn.turn_id,
                 turn_number=_turn.turn_number,
             )
+            # Reuse the host-owned trajectory turn number for inference-side
+            # affinity. The UUID remains an observability identity; the wire
+            # protocol deliberately carries the 1-based integer sequence.
+            inputs = dict(inputs)
+            if self._kv_cache_affinity_enabled:
+                inputs["_turn_number"] = _turn.turn_number
             inputs = await self._prepare_root_input_dispatch(request, inputs)
             attach_goal = self._wants_attach_goal(request.params)
             if attach_goal:
@@ -16512,6 +16526,11 @@ class JiuWenSwarmDeepAdapter:
                 turn_id=_turn.turn_id,
                 turn_number=_turn.turn_number,
             )
+            # Propagate the host-owned turn number explicitly; ContextVars from
+            # this request do not cross the long-lived Agent Core scheduler.
+            inputs = dict(inputs)
+            if self._kv_cache_affinity_enabled:
+                inputs["_turn_number"] = _turn.turn_number
             _otel_trace_id = ""
             _otel_span_id = ""
             if _run_span is not None:
