@@ -23,6 +23,13 @@ from jiuwenswarm.common.utils import (
     resolve_tenant_agent_workspace_dir,
     resolve_tenant_sessions_dir,
 )
+from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
+    PLAN_REMINDER_ORIGINAL_QUERY_KEY,
+)
+from jiuwenswarm.common.mode_matrix import (
+    ResolvedMode,
+    resolve_request_mode,
+)
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 
 logger = logging.getLogger(__name__)
@@ -36,6 +43,16 @@ _background_session_kvc_tasks: set[asyncio.Task] = set()
 # Set by _check_post_process_plan_exit, consumed by _ensure_code_mode_state
 # to prevent TUI-race re-entrance to plan mode.
 _plan_exited_sessions: set[str] = set()
+
+# 本进程内曾进入过 plan 的 work 单 agent 会话。work 的准入面覆盖 IM / 定时任务 /
+# CLI / Web work 的每一条普通消息，而其中绝大多数会话从未开过 Plan；有这个标记
+# 才需要去同步 plan 状态。跨重启的情况另有一道判据（会话 metadata 里上一轮的
+# canonical mode），见 ``_session_may_hold_plan_state``。
+_plan_active_sessions: set[str] = set()
+
+# 上一轮写盘前的会话 canonical mode，由 ``_prepare_code_mode_chat_turn`` 在覆盖
+# metadata 之前捎带到 params 里，给 ``_ensure_code_mode_state`` 当跨重启判据。
+_SESSION_PREVIOUS_MODE_KEY = "_session_previous_mode"
 
 
 # Serialize plan-mode restore per session to avoid checkpoint races.
@@ -210,17 +227,29 @@ def resolve_agent_request_mode(
     return mode, sub_mode, canonical_mode
 
 
+def resolve_request_runtime_mode(
+    request: AgentRequest,
+    *,
+    work_mode: Any = None,
+) -> ResolvedMode:
+    """解析请求的运行模式（Web 组合 mode + work_mode；其余走历史解析）。"""
+    params = request.params if isinstance(request.params, dict) else {}
+    return resolve_request_mode(
+        params,
+        resolve_agent_request_mode,
+        work_mode=work_mode,
+    )
+
+
 def _apply_resolved_mode_to_request(
     request: AgentRequest,
     *,
     work_mode: Any = None,
 ) -> tuple[str, str | None]:
-    mode, sub_mode, canonical_mode = resolve_agent_request_mode(
-        request.params.get("mode", "agent"),
-        work_mode=work_mode,
-    )
-    request.params["mode"] = canonical_mode
-    return mode, sub_mode
+    resolved = resolve_request_runtime_mode(request, work_mode=work_mode)
+    if isinstance(request.params, dict):
+        request.params["mode"] = resolved.canonical_mode
+    return resolved.manager_mode, resolved.sub_mode
 
 
 def _resolve_model(ctx, model_name: Optional[str] = None) -> Optional[Any]:
@@ -479,6 +508,8 @@ def _inject_plan_mode_activation_reminder(request: AgentRequest) -> None:
     )
     if isinstance(request.params, dict):
         query = request.params.get("query") or ""
+        # 提醒只面向模型；把用户原文留一份，供会话历史与前端回显使用。
+        request.params[PLAN_REMINDER_ORIGINAL_QUERY_KEY] = query
         request.params["query"] = reminder + query
         logger.info(
             "[_ensure_code_mode_state] Injected plan mode activation reminder "

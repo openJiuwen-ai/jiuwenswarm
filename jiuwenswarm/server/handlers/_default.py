@@ -23,6 +23,7 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
     is_interrupt_resume_payload,
 )
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
+from jiuwenswarm.common.mode_matrix import is_plan_mode
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.ws_diagnostics import describe_ws_exception, format_ws_diagnostics
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -32,11 +33,14 @@ from jiuwenswarm.server.handlers._shared import (
     _CODE_MODE_SYNC_METHODS,
     _apply_resolved_mode_to_request,
     _inject_plan_mode_activation_reminder,
+    _plan_active_sessions,
     _plan_exited_sessions,
+    _SESSION_PREVIOUS_MODE_KEY,
     _session_mode_sync_locks,
     _sessions_dir_for_request,
     _sync_chat_request_metadata,
     resolve_request_project_dir,
+    resolve_request_runtime_mode,
 )
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 
@@ -77,10 +81,22 @@ def _is_readonly_goal_get_request(request: AgentRequest) -> bool:
 
 
 def _is_explicit_plan_entry_request(request: AgentRequest) -> bool:
+    """本次请求是否为"用户明确要求进入 plan"。
+
+    不能因为"这是一条 Web 的 plan 请求"就当成显式进入——那样
+    ``_plan_exited_sessions`` 与 ``plan_slug`` 两道防重入闸门对 Web 就永远
+    不生效：``plan.mode_exited`` 一旦丢包（网络抖动、页面刷新），开关不复位，
+    用户的下一条消息会静默把会话重新拖回 plan。
+
+    只认一次性的 ``plan_entry_source``：TUI 的 ``/plan`` 发
+    ``slash_command``，e2a 通道发 ``e2a``，Web 在用户手动打开 Plan 开关的
+    那一条消息上发 ``plan_toggle``（开关本身是持续状态，但"刚被打开"只发生
+    一次）。
+    """
     if not isinstance(request.params, dict):
         return False
     source = str(request.params.get("plan_entry_source") or "").strip().lower()
-    return source in {"slash_command", "e2a"}
+    return source in {"slash_command", "e2a", "plan_toggle"}
 
 
 def _should_sync_code_mode_state(request: AgentRequest) -> bool:
@@ -134,17 +150,32 @@ async def _get_stateless_agent(ctx, channel_id: str) -> Any:
     return agent
 
 
-async def _push_plan_mode_exited(ctx, request: AgentRequest) -> None:
-    """Notify the client that plan mode ended after user approval."""
+async def _push_plan_mode_exited(
+    ctx,
+    request: AgentRequest,
+    *,
+    exit_mode: str | None = None,
+) -> None:
+    """Notify the client that plan mode ended after user approval.
+
+    ``mode`` 保持 TUI 已消费的语义：退出 plan 后应回到的普通模式。code 单
+    agent 仍是 ``code.normal``；work 单 agent / 集群按各自 profile 动态计算。
+    """
     session_id = request.session_id
     if not session_id:
         return
+    if not exit_mode:
+        # ``normal_mode`` 对非 plan 的 canonical 模式原样返回，所以这里不需要
+        # 分情况：plan 请求得到它的退出目标，普通请求得到它自己。别写死
+        # "code.normal"——最常走的这条路径（plan→normal 恢复后回调）恰好是
+        # 普通请求，写死会把 code 的模式推给 work 会话。
+        exit_mode = resolve_request_runtime_mode(request).normal_mode
     await ctx.services.send_push({
         "channel_id": request.channel_id or "default",
         "session_id": session_id,
         "payload": {
             "event_type": PLAN_MODE_EXITED_EVENT_TYPE,
-            "mode": "code.normal",
+            "mode": exit_mode,
         },
     })
 
@@ -177,20 +208,23 @@ async def _check_post_process_plan_exit(
     session_id = request.session_id
     if not session_id:
         return
-    mode, sub_mode = _apply_resolved_mode_to_request(request)
-    if mode != "code" or sub_mode != "plan":
+    resolved = resolve_request_runtime_mode(request)
+    if isinstance(request.params, dict):
+        request.params["mode"] = resolved.canonical_mode
+    # 只检查"本轮确实运行在单 agent plan"的请求：plan→normal 只可能发生在
+    # 这类请求里。集群 plan 的退出由 team runtime 自己处理，普通请求不检查，
+    # 否则每个 code.normal 背景 RPC 都会误判。
+    if resolved.is_team or not resolved.is_plan:
         return
-    from openjiuwen.core.single_agent import create_agent_session
-    deep_agent = await agent.ensure_instance()
-    session = create_agent_session(
-        session_id=session_id,
-        card=deep_agent.card,
-    )
-    await session.pre_run(inputs=None)
+
+    # 读运行中的那个 session：exit_plan_mode 是在它上面恢复模式的，落盘要等本轮
+    # 结束，这里用一次性 session 读 checkpointer 有可能读到退出前的旧值。
+    deep_agent, session, _live = await _open_plan_state_session(agent, session_id)
     state = deep_agent.load_state(session)
     if state.plan_mode.mode == "normal":
         _plan_exited_sessions.add(session_id)
-        await _push_plan_mode_exited(ctx, request)
+        _plan_active_sessions.discard(session_id)
+        await _push_plan_mode_exited(ctx, request, exit_mode=resolved.normal_mode)
         logger.info(
             "[_check_post_process_plan_exit] Detected plan→normal after "
             "tool execution for session=%s",
@@ -222,7 +256,30 @@ async def _ensure_code_mode_state(
         Returns:
             ``True`` if plan mode was restored to normal (mode sync occurred).
         """
-    if mode != "code" or sub_mode == "team":
+    resolved = resolve_request_runtime_mode(request)
+    if resolved.is_team:
+        return False
+    is_code_single = mode == "code" and sub_mode != "team"
+    is_work_single_plan_capable = (
+        resolved.from_web_composition and resolved.manager_mode == "agent"
+    )
+    if not (is_code_single or is_work_single_plan_capable):
+        return False
+    # 目标 plan 状态由 canonical mode 决定：code 单 agent 沿用 sub_mode，
+    # work 单 agent 的 sub_mode 只有 None / "plan"。
+    target_plan_state = "plan" if resolved.is_plan else "normal"
+    session_id = request.session_id or "default"
+    # work 的准入面覆盖 IM / 定时任务 / CLI / Web work 的每一条普通消息
+    # （``work_mode`` 总会被 session metadata 补齐），而这些会话绝大多数从未
+    # 开过 Plan。打开 plan 状态 session 在会话首轮还没有 live session 时会强制
+    # 构建 root DeepAgent（重跑工具注册、rail 装配、MCP 注册），代价不小。
+    # 所以普通请求先看这个会话有没有 plan 痕迹，没有就直接返回。
+    # code 单 agent 不走这条捷径，保持既有行为。
+    if (
+        not is_code_single
+        and target_plan_state == "normal"
+        and not _session_may_hold_plan_state(request, session_id)
+    ):
         return False
     if not _should_sync_code_mode_state(request):
         return False
@@ -234,25 +291,24 @@ async def _ensure_code_mode_state(
             (request.params or {}).get("source") if isinstance(request.params, dict) else None,
         )
         return False
-    session_id = request.session_id or "default"
     restored_after_approval = False
     async with _session_mode_sync_lock(session_id):
-        from openjiuwen.core.single_agent import create_agent_session
-        deep_agent = await agent.ensure_instance()
-        session = create_agent_session(
-            session_id=request.session_id, card=deep_agent.card
+        deep_agent, session, live = await _open_plan_state_session(
+            agent, request.session_id
         )
-        await session.pre_run(inputs=None)  # 从 checkpointer 加载历史 state
         state = deep_agent.load_state(session)
+        # switch_mode 会就地改写这个 state 对象（load_state 返回的是 session 上
+        # 缓存的同一个实例），所以切换前先把原模式记下来。
+        previous_plan_state = state.plan_mode.mode
         # 仅在目标模式与当前模式不同时执行模式切换
         mode_changed_to_plan = False
-        if state.plan_mode.mode != sub_mode:
+        if state.plan_mode.mode != target_plan_state:
             # Guard: block stale normal→plan switches when plan was already exited.
             # Explicit user /plan requests bypass this guard and start a fresh plan.
             # Two mechanisms:
             #   1. _plan_exited_sessions flag (precise — set by _check_post_process_plan_exit)
             #   2. plan_slug fallback (defense-in-depth — plan exists but mode is normal)
-            if state.plan_mode.mode == "normal" and sub_mode == "plan":
+            if state.plan_mode.mode == "normal" and target_plan_state == "plan":
                 blocked = False
                 explicit_plan_entry = _is_explicit_plan_entry_request(request)
                 if explicit_plan_entry:
@@ -270,7 +326,7 @@ async def _ensure_code_mode_state(
                     # Clear slug so this guard is one-shot.
                     state.plan_mode.plan_slug = None
                     deep_agent.save_state(session, state)
-                    await session.post_run()
+                    await session.commit()
                     blocked = True
                     logger.info(
                         "[_ensure_code_mode_state] Blocked stale plan re-entry via "
@@ -278,34 +334,100 @@ async def _ensure_code_mode_state(
                         session_id,
                     )
                 if blocked:
+                    exit_mode = resolved.normal_mode
                     if isinstance(request.params, dict):
-                        request.params["mode"] = "code.normal"
-                    await _push_plan_mode_exited(ctx, request)
+                        request.params["mode"] = exit_mode
+                    await _push_plan_mode_exited(ctx, request, exit_mode=exit_mode)
                     return False
-            deep_agent.switch_mode(session=session, mode=sub_mode)
-            if state.plan_mode.mode == "plan" and sub_mode == "normal":
+            deep_agent.switch_mode(session=session, mode=target_plan_state)
+            if previous_plan_state == "plan" and target_plan_state == "normal":
                 restored_after_approval = True
+                _plan_active_sessions.discard(session_id)
                 logger.info(
                     "[_ensure_code_mode_state] Synced plan→normal for session=%s",
                     session_id,
                 )
-            if sub_mode == "plan":
+            if target_plan_state == "plan":
                 mode_changed_to_plan = True
+                _plan_active_sessions.add(session_id)
                 # Clear stale plan_slug from previous plan session so
                 # enter_plan_mode creates a fresh plan file.
                 state = deep_agent.load_state(session)
                 if state.plan_mode.plan_slug:
                     state.plan_mode.plan_slug = None
                     deep_agent.save_state(session, state)
-            # switch_mode 内部已通过 save_state 写入 "deepagent" key，
-            # 只需 post_run 持久化到 checkpointer
-            await session.post_run()
+            # switch_mode 内部已通过 save_state 写入 "deepagent" key，这里只需
+            # 落盘。用 commit 而不是 post_run：live session 还要继续跑这一轮，
+            # post_run 会关掉输出流并把它标记成已结束。
+            await session.commit()
+            logger.info(
+                "[_ensure_code_mode_state] plan state -> %s for session=%s (live=%s)",
+                target_plan_state,
+                session_id,
+                live,
+            )
         # 切换到 plan 模式时注入 <system-reminder> 告知 LLM 调用 enter_plan_mode。
         # 使用 mode_changed_to_plan 而非 plan_slug 判断，因为 restore_mode_after_plan_exit
         # 不清除 plan_slug，导致后续 /plan 时提醒被错误跳过。
-        if sub_mode == "plan" and mode_changed_to_plan:
+        if target_plan_state == "plan" and mode_changed_to_plan:
             _inject_plan_mode_activation_reminder(request)
     return restored_after_approval
+
+
+def _session_may_hold_plan_state(request: AgentRequest, session_id: str) -> bool:
+    """会话是否可能还停在 plan 里，需要同步 plan 状态。
+
+    两道判据：本进程内的 ``_plan_active_sessions`` 标记（精确），以及会话
+    metadata 里上一轮的 canonical mode（跨重启仍然有效——服务重启后一个停在
+    plan 里的会话，下一条普通消息依然能被切回 normal 并通知前端复位）。
+
+    Args:
+        request: 当前请求（读其中捎带的上一轮 canonical mode）。
+        session_id: 会话 ID。
+
+    Returns:
+        ``True`` 表示需要继续做 plan 状态同步。
+    """
+    if session_id in _plan_active_sessions:
+        return True
+    params = request.params if isinstance(request.params, dict) else {}
+    return is_plan_mode(params.get(_SESSION_PREVIOUS_MODE_KEY))
+
+
+async def _open_plan_state_session(
+    agent: Any,
+    session_id: str | None,
+) -> tuple[Any, Any, bool]:
+    """Return ``(deep_agent, session, is_live)`` for reading/writing plan state.
+
+    ``DeepAgent.load_state`` caches its snapshot on the Session object, and a
+    chat turn keeps reusing the one ``start_interaction`` bound. Writing plan
+    state through a throwaway session therefore only reaches the
+    checkpointer: the running conversation would keep the pre-switch snapshot
+    and the user's Plan toggle would do nothing until the agent instance is
+    rebuilt.
+
+    A live session exists from the session's second turn on. On the first
+    turn there is none yet, so we fall back to a throwaway session — the
+    checkpointer is authoritative there, because ``start_interaction`` reads
+    it when it creates the session.
+    """
+    from openjiuwen.core.single_agent import create_agent_session
+
+    from jiuwenswarm.agents.harness.common.session_ops_service import (
+        resolve_live_agent_session,
+    )
+
+    live_deep_agent = agent.get_live_session_instance(session_id)
+    if live_deep_agent is not None:
+        live_session = resolve_live_agent_session(live_deep_agent, session_id or "default")
+        if live_session is not None:
+            return live_deep_agent, live_session, True
+
+    deep_agent = await agent.ensure_instance()
+    session = create_agent_session(session_id=session_id, card=deep_agent.card)
+    await session.pre_run(inputs=None)  # 从 checkpointer 加载历史 state
+    return deep_agent, session, False
 
 
 async def _prepare_code_mode_chat_turn(
@@ -367,6 +489,16 @@ async def _prepare_code_mode_chat_turn(
                     stored_mode,
                     source,
                 )
+        # 下面的 sync 会把本轮 canonical mode 覆盖进 metadata，所以在覆盖前
+        # 先把上一轮的值捎带给 _ensure_code_mode_state：它据此判断这个会话是
+        # 不是可能还停在 plan 里（跨进程重启依然有效）。
+        stored_session_mode = (
+            session_metadata.get("mode")
+            if isinstance(session_metadata, dict)
+            else None
+        )
+        if isinstance(stored_session_mode, str) and stored_session_mode.strip():
+            params[_SESSION_PREVIOUS_MODE_KEY] = stored_session_mode.strip()
         stored_work_mode = (
             session_metadata.get("work_mode")
             if isinstance(session_metadata, dict)
@@ -393,10 +525,20 @@ async def _prepare_code_mode_chat_turn(
     concrete_mode = str(_raw_mode or "").strip().lower()
     if concrete_mode.startswith(("code.", "team")) or concrete_mode == "code":
         mode_work_mode = None
-    mode, sub_mode = _apply_resolved_mode_to_request(
-        request,
-        work_mode=mode_work_mode,
-    )
+    # ``resolve_request_mode`` 在入参 work_mode 为空时会回读 params["work_mode"]，
+    # 把上面刚写入的 runtime_work_mode 又捞回来，令显式 code 模式守卫失效。
+    # 解析前暂时摘掉，解析后还原（下游 adapter 路由仍依赖该字段）。
+    overridden_work_mode = None
+    if mode_work_mode is None:
+        overridden_work_mode = params.pop("work_mode", None)
+    try:
+        mode, sub_mode = _apply_resolved_mode_to_request(
+            request,
+            work_mode=mode_work_mode,
+        )
+    finally:
+        if overridden_work_mode is not None:
+            params["work_mode"] = overridden_work_mode
     agent_mode = "agent" if mode == "auto_harness" else mode
     requested_project_dir = resolve_request_project_dir(request)
     # [改动] 写盘用 canonical mode（request.params["mode"]，已被规范化为
