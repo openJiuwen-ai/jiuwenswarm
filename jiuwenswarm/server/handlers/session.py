@@ -489,6 +489,18 @@ async def handle_session_delete(ctx: RequestContext) -> None:
                         target,
                         sessions_root=sessions_root,
                     )
+                    try:
+                        from jiuwenswarm.server.runtime.session.session_history import (
+                            reset_error_dedup,
+                        )
+
+                        reset_error_dedup(target)
+                    except Exception:  # noqa: BLE001
+                        logger.debug(
+                            "[AgentWebSocketServer] session.delete error-dedup cleanup failed: session_id=%s",
+                            target,
+                            exc_info=True,
+                        )
                     if is_team_mode:
                         try:
                             from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
