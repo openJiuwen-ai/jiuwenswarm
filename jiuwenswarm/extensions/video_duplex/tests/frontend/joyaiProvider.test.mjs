@@ -48,19 +48,20 @@ test('long user instructions and their final constraints reach the RPC intact', 
 
 function setup() {
   const speech = [];
+  const messages = [];
   const provider = new JoyAIProvider({
     hasPendingTranscriptions: () => false,
     setToolStatus() {}, report() {},
-    commitAssistantAnswer() { assert.fail('Tool results must use the shared display path'); },
+    commitAssistantAnswer(text) { messages.push(text); },
   });
   provider.sessionId = 'media-1';
   provider.speakText = (text) => { speech.push(text); };
   const payload = (id) => ({ job_id: id, question: `任务${id}`, result: '旧字段', display_result: '```python\nprint(1)\n```' });
-  return { provider, speech, payload };
+  return { provider, speech, messages, payload };
 }
 
 test('tool context is immediate; only the brief waits for speech, in task order', async () => {
-  const { provider, speech, payload } = setup();
+  const { provider, speech, messages, payload } = setup();
   provider.userSpeechActive = true;
   assert.equal(provider.handleCompletedSearch(payload('a'), brief), true);
   assert.equal(provider.handleCompletedSearch(payload('b'), { ...brief, summary: '第二项已完成。' }), true);
@@ -68,22 +69,25 @@ test('tool context is immediate; only the brief waits for speech, in task order'
   assert.equal(provider.pendingToolContext[0].result, payload('a').display_result);
   await Promise.resolve();
   assert.deepEqual(speech, []);
+  assert.deepEqual(messages, []);
   provider.userSpeechActive = false;
   await provider.searchDeliveryQueue;
   assert.deepEqual(speech, [brief.summary, '第二项已完成。']);
+  assert.deepEqual(messages, speech);
 });
 
 test('continuous frame inference does not block a ready tool receipt', async () => {
-  const { provider, speech, payload } = setup();
+  const { provider, speech, messages, payload } = setup();
   provider.requestQueue = new Promise(() => {});
   provider.queuedRequestCount = 1;
   provider.handleCompletedSearch(payload('a'), brief);
   await provider.searchDeliveryQueue;
   assert.deepEqual(speech, [brief.summary]);
+  assert.deepEqual(messages, speech);
 });
 
 test('tool receipts wait for playback and do not leak into a restarted media session', async () => {
-  const { provider, speech, payload } = setup();
+  const { provider, speech, messages, payload } = setup();
   let release;
   provider.ttsQueue = new Promise((resolve) => { release = resolve; });
   provider.handleCompletedSearch(payload('a'), brief);
@@ -95,4 +99,5 @@ test('tool receipts wait for playback and do not leak into a restarted media ses
   release();
   await delivery;
   assert.deepEqual(speech, []);
+  assert.deepEqual(messages, []);
 });

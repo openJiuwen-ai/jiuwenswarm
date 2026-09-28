@@ -203,7 +203,11 @@ export class JoyAIProvider {
 
     const deliver = async () => {
       if (!(await this.waitForAnswerSlot(sessionId))) return;
-      this.speakText(brief.summary, this.ttsGeneration);
+      const spokenBrief = assistantSpeechText(brief.summary, 500);
+      if (spokenBrief) {
+        this.callbacks.commitAssistantAnswer(spokenBrief);
+        this.speakText(spokenBrief, this.ttsGeneration);
+      }
       this.callbacks.setToolStatus('');
       this.callbacks.report('search_result_dispatched', {
         job_id: jobId,

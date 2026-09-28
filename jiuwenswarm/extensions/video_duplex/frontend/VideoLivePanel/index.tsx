@@ -107,6 +107,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   const framesRef = useRef<CapturedFrame[]>([]);
   const duplexRef = useRef<RealtimeDuplexSession | null>(null);
   const joyaiProviderRef = useRef<JoyAIProvider | null>(null);
+  const onConversationItemRef = useRef(onConversationItem);
+  onConversationItemRef.current = onConversationItem;
   const startingRealtimeRef = useRef<Promise<void> | null>(null);
   const chatSequenceRef = useRef(0);
   const pendingTranscriptionsRef = useRef(0);
@@ -196,7 +198,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       const item = { id: ++chatSequenceRef.current, role, text: normalized, presentation };
       setChatHistory((current) => [...current, item]);
     }
-    if (role === 'user' || role === 'assistant') onConversationItem?.(role, normalized, presentation);
+    if (role === 'user' || role === 'assistant') onConversationItemRef.current?.(role, normalized, presentation);
   };
 
   const commitAssistantAnswer = (text: string, toolJobId?: string) => {
