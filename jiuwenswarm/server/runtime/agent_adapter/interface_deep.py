@@ -78,6 +78,8 @@ from openjiuwen.harness.rails import (
     unconfigure_skill_evolution,
 )
 from openjiuwen.harness.rails.personal_context import PersonalContextRail
+from openjiuwen.harness.personal_context.im.search_tool import ImSearchTool
+from openjiuwen.harness.personal_context.im.sqlite_search import SqliteImSearchStore
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 try:
     from openjiuwen.harness.rails.evolution import (
@@ -2597,6 +2599,11 @@ class JiuWenSwarmDeepAdapter:
         self._prompt_attachment_loader: PromptAttachmentLoader | None = None
         self._personal_context_rail: PersonalContextRail | None = None
         self._personal_context_rail_lock = asyncio.Lock()
+        # im_search tools ride the PersonalContext switch: mounted only while
+        # the rail is registered, reclaimed through the standard tool-group
+        # teardown so configure-rebuild stays consistent.
+        self._im_search_tools: list[Any] = []
+        self._im_search_tools_registered: bool = False
         self._security_rail: SecurityRail | None = None
         self._memory_rail: MemoryRail | None = None
         self._external_memory_rail: Any = None
@@ -12221,6 +12228,17 @@ class JiuWenSwarmDeepAdapter:
                 rail = None
 
             if not enabled:
+                # Tools share the Rail lifecycle: detach them whenever the
+                # feature turns off (teardown's "cleanup" mode lands here too).
+                self._im_search_tools, self._im_search_tools_registered = (
+                    self._sync_tool_group(
+                        current_tools=self._im_search_tools,
+                        registered=self._im_search_tools_registered,
+                        enabled=False,
+                        create_fn=list,
+                        warn_label="im search tool",
+                    )
+                )
                 return
 
             if rail is None:
@@ -12250,6 +12268,25 @@ class JiuWenSwarmDeepAdapter:
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] PersonalContextRail registered for %s", mode
                 )
+
+            # Mount the read-only im_search tool under the same switch so the
+            # agent can retrieve learned IM history without being told to.
+            self._im_search_tools, self._im_search_tools_registered = (
+                self._sync_tool_group(
+                    current_tools=self._im_search_tools,
+                    registered=self._im_search_tools_registered,
+                    enabled=True,
+                    create_fn=lambda: [
+                        ImSearchTool(
+                            SqliteImSearchStore(
+                                get_user_workspace_dir() / ".personal_context"
+                            ),
+                            language=self._resolve_runtime_language(),
+                        )
+                    ],
+                    warn_label="im search tool",
+                )
+            )
 
     async def _reconcile_evolution_rails(self) -> None:
         """Apply evolution rail configuration through its runtime owner."""
