@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+from jiuwenswarm.common.cron_session import cron_session_matches_job
 from jiuwenswarm.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
@@ -16,8 +18,13 @@ from jiuwenswarm.common.work_mode import (
 from jiuwenswarm.server.runtime.session import project_store
 from jiuwenswarm.server.runtime.session.lifecycle import projection as lifecycle_projection
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
-from jiuwenswarm.server.runtime.session.session_metadata import collect_all_sessions_metadata
+from jiuwenswarm.server.runtime.session.session_metadata import (
+    collect_all_sessions_metadata,
+    sync_session_request_metadata,
+)
 from jiuwenswarm.server.runtime.session.work_mode import resolve_request_work_mode
+
+logger = logging.getLogger(__name__)
 
 
 def attribute_session_project(
@@ -224,6 +231,14 @@ def _parse_page(params: dict[str, Any]) -> tuple[int | None, int]:
     return (max(1, limit) if limit is not None else None), max(0, offset)
 
 
+def _last_user_message_ts(session: dict[str, Any]) -> float:
+    """Recency sort key; sessions without a usable timestamp sort last."""
+    value = session.get("last_user_message_at")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return 0.0
+
+
 def load_project_sessions(
     params: dict[str, Any], _user_id: str
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
@@ -247,15 +262,7 @@ def load_project_sessions(
         ) != project_id:
             continue
         matched.append(session)
-    matched.sort(
-        key=lambda session: (
-            float(session["last_user_message_at"])
-            if isinstance(session.get("last_user_message_at"), (int, float))
-            and not isinstance(session.get("last_user_message_at"), bool)
-            else 0.0
-        ),
-        reverse=True,
-    )
+    matched.sort(key=_last_user_message_ts, reverse=True)
     total = len(matched)
     page = matched[offset:offset + limit] if limit is not None else matched[offset:]
     return {
@@ -281,24 +288,57 @@ def load_project_cron_sessions(
             return None, "project not found", "NOT_FOUND"
     matched: list[dict[str, Any]] = []
     for session in collect_all_sessions_metadata():
-        if session.get("pinned") or not session.get("cron_id"):
+        if session.get("pinned"):
             continue
-        if attribute_session_project(
-            session, visible_project_ids, removed_project_ids
-        ) != project_id:
+        stored_cron_id = str(session.get("cron_id") or "")
+        session_id = str(session.get("session_id") or "")
+        # 兜底：目录名符合 cron_*_{job_id} 约定但元数据缺 cron_id 的存量 team
+        # 执行会话。旧版 team 链路靠聊天准入的元数据同步隐式落 cron_id，链路被
+        # 跳过时任务照常执行、结果照常推送，但会话永远进不了本列表，还会以
+        # 普通会话身份泄漏进 project.get_sessions。命中即回写 cron_id 自愈
+        # （首次查询后自动从普通会话列表退场），并仅对空项目归属绕过过滤——名字里的
+        # job id 是比空 project_id 更强的归属信号，且前端只会在任务所属项目下
+        # 发起该查询。project_id 必须随 cron_id 一并回写：否则第二次查询起
+        # stored_cron_id 已有值、走正常路径并重新应用项目归属过滤，存量会话
+        # project_id 为空会被归到默认项目，任务挂在真实项目下时会话从本列表
+        # 二次消失（且已从普通会话列表退场，两头都看不到）。两字段在
+        # sync_session_request_metadata 中均为首次锁定语义，只写空值、不腐蚀
+        # 已有归属；与治本路径 session.create 带 job.project_id 对齐。
+        name_matched = bool(cron_id) and not stored_cron_id and cron_session_matches_job(
+            session_id, cron_id
+        )
+        if name_matched:
+            # 已有项目归属必须继续参与过滤；回写只补空值，不能将其他项目
+            # 的会话临时列出后又在下一次查询中隐藏。只有未绑定项目才迁移。
+            if str(session.get("project_id") or "").strip() and attribute_session_project(
+                session, visible_project_ids, removed_project_ids
+            ) != project_id:
+                continue
+            try:
+                sync_session_request_metadata(
+                    session_id=session_id,
+                    cron_id=cron_id,
+                    project_id=project_id,
+                    is_chat_turn=False,
+                )
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "backfill cron_id via session name failed: session=%s cron_id=%s error=%s",
+                    session_id,
+                    cron_id,
+                    exc,
+                )
+            session = {**session, "cron_id": cron_id}
+        elif not stored_cron_id:
             continue
         if cron_id and session.get("cron_id") != cron_id:
             continue
+        if not name_matched and attribute_session_project(
+            session, visible_project_ids, removed_project_ids
+        ) != project_id:
+            continue
         matched.append(session)
-    matched.sort(
-        key=lambda session: (
-            float(session["last_user_message_at"])
-            if isinstance(session.get("last_user_message_at"), (int, float))
-            and not isinstance(session.get("last_user_message_at"), bool)
-            else 0.0
-        ),
-        reverse=True,
-    )
+    matched.sort(key=_last_user_message_ts, reverse=True)
     total = len(matched)
     page = matched[offset:offset + limit] if limit is not None else matched[offset:]
     return {

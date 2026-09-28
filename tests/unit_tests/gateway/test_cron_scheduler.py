@@ -485,7 +485,12 @@ class TestCronLastSessionId:
         assert not agent.unary_requests
 
     @pytest.mark.asyncio
-    async def test_run_now_info_keeps_team_mode(self, tmp_path):
+    async def test_run_now_info_allocates_execution_session_for_team_mode(self, tmp_path):
+        """team 任务与单 agent 统一显式预建执行会话（session.create 带 cron_id）。
+
+        旧版 team 链路由流式 chat.send 隐式建会话，cron_id 依赖聊天准入的
+        元数据同步落盘，链路被跳过时执行会话进不了"触发的会话"列表。
+        """
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, mode="team.work.normal")
         agent = FakeAgentClient()
@@ -495,8 +500,16 @@ class TestCronLastSessionId:
 
         state = svc.runs[info["run_id"]]
         assert state.exec_mode == "team.work.normal"
-        assert state.execution_session_allocated is False
-        assert not agent.unary_requests
+        assert state.execution_session_allocated is True
+        assert info["session_id"] == "cron_agentserver_allocated"
+        assert state.exec_session_id == "cron_agentserver_allocated"
+        # team 的流式事件按 targets 渠道回传，执行渠道路由保持 targets。
+        assert state.exec_channel_id == job.targets
+        create_env = next(
+            env for env in agent.unary_requests if env.method == "session.create"
+        )
+        assert create_env.params["cron_id"] == job.id
+        assert create_env.params["mode"] == "team.work.normal"
 
 
 class TestCronFailureDelivery:
@@ -1452,7 +1465,12 @@ class TestTeamModeWake:
     """Team-mode cron jobs stream to AgentServer and publish SwarmFlow chunks."""
 
     @pytest.mark.asyncio
-    async def test_team_wake_uses_isolated_session_and_stream(self, tmp_path):
+    async def test_team_wake_allocates_session_and_streams_into_it(self, tmp_path):
+        """team wake 与单 agent 一致：先 session.create（带 cron_id）再流式执行。
+
+        执行会话不再由流式 chat.send 隐式创建，会话与任务的 cron_id 关联
+        变为显式必达；流式信封渠道仍走 targets（SwarmFlow 直播路由不变）。
+        """
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = _make_job(
             mode="team",
@@ -1472,17 +1490,25 @@ class TestTeamModeWake:
         assert task is not None
         await task
 
+        assert len(agent.unary_requests) == 1
+        create_env = agent.unary_requests[0]
+        assert create_env.method == "session.create"
+        assert create_env.params["cron_id"] == job.id
+        assert create_env.params["mode"] == "team.work.normal"
+
         assert len(agent.stream_requests) == 1
-        assert len(agent.unary_requests) == 0
         env = agent.stream_requests[0]
         assert env.is_stream is True
         assert env.channel == "tui"
-        assert env.session_id.startswith("cron_") and env.session_id.endswith(f"_{job.id}")
+        assert env.session_id == "cron_agentserver_allocated"
         assert env.params["mode"] == "team.work.normal"
+        assert env.params["cron_id"] == job.id
         assert env.user_id == "team-owner"
 
         state = svc.runs[run_id]
         assert state.exec_user_id == "team-owner"
+        assert state.exec_session_id == "cron_agentserver_allocated"
+        assert state.execution_session_allocated is True
         assert state.status == "succeeded"
         assert state.result_text == "team result"
         assert len(handler.published) == 2

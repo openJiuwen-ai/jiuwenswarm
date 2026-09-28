@@ -213,6 +213,15 @@ def _preload_runtime_backend() -> None:
         from jiuwenswarm.common.utils import prepare_runtime_workspace
 
         prepare_runtime_workspace(cleanup_stale_descs=True, migrate_config=True)
+    # Persist missing model/model-group/route IDs before any session or agent is
+    # restored. Validation happens against the complete candidate before writing.
+    # Runs here, not at import time: Front must listen without loading config.
+    from jiuwenswarm.common.config import migrate_model_business_ids
+
+    migrate_model_business_ids()
+    from jiuwenswarm.common.model_migration import migrate_legacy_model_selections
+
+    migrate_legacy_model_selections()
     _configure_openjiuwen_logging()
     _apply_runtime_entry_patches()
     import openjiuwen.core.runner  # noqa: F401
@@ -535,7 +544,10 @@ def _resolve_bind_host() -> str:
 
 
 def main() -> None:
-    from jiuwenswarm.common.debug_dump import install_async_dump_handler
+    from jiuwenswarm.common.debug_dump import (
+        install_async_dump_handler,
+        install_crash_exit_handler,
+    )
     from jiuwenswarm.dotenv_early import get_parsed_dotenv
 
     parser = argparse.ArgumentParser(
@@ -576,6 +588,7 @@ def main() -> None:
         else:
             port = 18092
 
+    install_crash_exit_handler("agentserver")
     install_async_dump_handler("agentserver")
     asyncio.run(_run(host=host, port=port))
 

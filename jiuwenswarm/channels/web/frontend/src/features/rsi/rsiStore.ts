@@ -44,7 +44,7 @@ interface RsiState {
   selectedTaskId: string | null;
   detail: Record<string, RsiDetailState>;
   detailLoading: boolean;
-  // 后端 RSI 状态没有 INSTALLED；安装成功后先在前端会话内标记，刷新后以后端状态为准。
+  // 仅在当前会话内记录已安装任务，用于隐藏重复安装操作；任务状态始终以 RSI 状态为准。
   installedTaskIds: Record<string, boolean>;
 
   // 列表

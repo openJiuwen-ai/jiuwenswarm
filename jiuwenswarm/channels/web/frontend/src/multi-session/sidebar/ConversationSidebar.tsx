@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { useChatStore, type ChatRuntime } from '../../stores/chatStore';
 import { webClient } from '../../services/webClient';
-import { getArchiveErrorCode, getArchiveErrorFinishing, archivedTaskClient, findBatchSessionResult } from '../../features/workspace/archivedTaskClient';
+import { getArchiveErrorCode, getArchiveErrorFinishingCause, batchResultFinishingCause, archivedTaskClient, findBatchSessionResult } from '../../features/workspace/archivedTaskClient';
 import { requestSettingsModule } from '../../features/settings/settingsNavigation';
 import { DeleteDialog } from '../dialogs/Dialogs';
 import { ProjectArchiveDialog, resolveProjectArchiveSessionCount } from './ProjectArchiveDialog';
@@ -1177,8 +1177,13 @@ export function ConversationSidebar({
   function archiveErrorKey(error: unknown): string {
     const code = getArchiveErrorCode(error);
     if (code === 'SESSION_BUSY') {
-      // swarm flow 已结束、回合收尾中：会话会自行结束，引导稍后重试
-      return getArchiveErrorFinishing(error)
+      // 会话会自行结束，引导稍后重试，而不是让用户先手动停止一个已经停过的
+      // 会话。成因不同文案不同：subagent 退出与 Team 回合收尾是两件事。
+      const cause = getArchiveErrorFinishingCause(error);
+      if (cause === 'subagent') {
+        return 'multiSession.project.errors.archiveSessionSubagentFinishing';
+      }
+      return cause === 'team'
         ? 'multiSession.project.errors.archiveSessionFinishing'
         : 'multiSession.project.errors.archiveSessionBusy';
     }
@@ -1265,7 +1270,11 @@ export function ConversationSidebar({
             const entry = findBatchSessionResult(response, session.session_id);
             if (!entry?.ok) {
               const error = new Error(entry?.error || 'Failed to unarchive session');
-              Object.assign(error, { code: entry?.code });
+              Object.assign(error, {
+                code: entry?.code,
+                finishing: entry?.finishing,
+                subagent_finishing: entry?.subagent_finishing,
+              });
               throw error;
             }
             await useWorkspaceStore.getState().refreshWorkspaceAndCron();
@@ -1345,8 +1354,11 @@ export function ConversationSidebar({
         }
         if (failedItems.length > 0) {
           const busyItems = failedItems.filter((item) => item.code === 'SESSION_BUSY');
-          const finishingItems = busyItems.filter((item) => item.finishing === true);
-          const failureContent = finishingItems.length === failedItems.length
+          const finishingItems = busyItems.filter((item) => batchResultFinishingCause(item) !== null);
+          const subagentItems = busyItems.filter((item) => batchResultFinishingCause(item) === 'subagent');
+          const failureContent = subagentItems.length === failedItems.length
+            ? t('multiSession.project.archiveBatchFailedSubagentFinishing', { count: subagentItems.length })
+            : finishingItems.length === failedItems.length
             ? t('multiSession.project.archiveBatchFailedFinishing', { count: finishingItems.length })
             : busyItems.length === failedItems.length
             ? t('multiSession.project.archiveBatchFailedRunning', { count: busyItems.length })

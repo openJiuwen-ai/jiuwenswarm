@@ -37,8 +37,9 @@ def test_classifies_cross_session_send_as_high_flex_delegation() -> None:
     assert capability.high_flex is True
 
 
-def test_classifies_cross_session_resolution_as_high_risk_state_change() -> None:
-    capability = classify_tool("session_message_resolve")
+@pytest.mark.parametrize("tool_name", ["session_message_resolve", "session_continue_queued"])
+def test_classifies_cross_session_resolution_as_high_risk_state_change(tool_name) -> None:
+    capability = classify_tool(tool_name)
 
     assert capability.category == "task_management"
     assert capability.operation_family == "cross_session_resolution"
@@ -240,7 +241,7 @@ def test_search_skill_is_medium_skill_discovery_without_high_flex() -> None:
 
 
 def test_session_list_is_low_risk_task_status_query() -> None:
-    for tool_name in ("session_list", "session_message_list"):
+    for tool_name in ("session_list", "session_message_list", "session_read"):
         info = classify_tool(tool_name)
         assert info.category == "task_management"
         assert info.risk_tier == "low"

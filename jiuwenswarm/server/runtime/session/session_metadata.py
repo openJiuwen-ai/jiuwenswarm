@@ -239,8 +239,6 @@ def _apply_metadata_defaults_with_inference(
     metadata.setdefault("pinned", False)
     metadata.setdefault("pin_order", 0)
     metadata.setdefault("status", "idle")
-    metadata.setdefault("ephemeral", False)
-    metadata.setdefault("side_parent_session_id", "")
 
     changed = False  # 是否有需要写盘的确定性推断
     changed_fields: set[str] = set()

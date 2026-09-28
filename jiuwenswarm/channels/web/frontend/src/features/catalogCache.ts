@@ -84,7 +84,9 @@ export function scheduleCatalogRefresh(
   const maxPolls = miss ? MISS_MAX_POLLS : STALE_MAX_POLLS;
   if (!cache?.refreshing || (previous?.count || 0) >= maxPolls) {
     refreshes.delete(key);
-    return;
+    return cache?.refreshing
+      ? { ...cache, state: 'error' as const, refreshing: false, error: 'refresh_timeout' }
+      : cache;
   }
   const scope = catalogScope();
   const delayMs = miss ? MISS_POLL_MS : STALE_POLL_MS;
@@ -93,7 +95,15 @@ export function scheduleCatalogRefresh(
     else refreshes.delete(key);
   }, delayMs);
   refreshes.set(key, { timer, count: (previous?.count || 0) + 1 });
+  return cache;
 }
 export function catalogCacheOf(items: unknown): CatalogCacheMetadata | undefined {
   return (items as { cache?: CatalogCacheMetadata } | null)?.cache;
+}
+
+/** An empty cache snapshot is not a final empty result while Hub is refreshing it. */
+export function catalogAwaitingItems(count: number, cache?: CatalogCacheMetadata): boolean {
+  return (
+    count === 0 && cache?.refreshing === true && cache.state !== 'error' && !cache.error && !cache.last_refresh_error
+  );
 }

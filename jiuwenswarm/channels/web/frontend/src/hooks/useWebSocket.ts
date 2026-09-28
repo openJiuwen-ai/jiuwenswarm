@@ -166,6 +166,7 @@ function ensureCrossSessionUserTurn(
   timestamp: string
 ): void {
   const chatStore = useChatStore.getState();
+  chatStore.removeQueuedSessionMessage(sessionId, crossSession.messageId);
   const userMsgId = crossSessionUserMessageId(crossSession.messageId);
   const existing = chatStore
     .getRuntime(sessionId)
@@ -2881,6 +2882,25 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (runtime?.mode !== 'team') return;
         useSessionStore.getState().setTeamLeaderIdentity(sessionId, identity);
       }),
+      webClient.on('session.message.updated', ({ payload }) => {
+        const sessionId = resolveEventSessionId(payload);
+        const message = payload.message;
+        if (!sessionId || !message || typeof message !== 'object' || Array.isArray(message)) return;
+        const record = message as Record<string, unknown>;
+        const messageId = typeof record.message_id === 'string' ? record.message_id : '';
+        if (!messageId || record.target_session_id !== sessionId) return;
+        const chatStore = useChatStore.getState();
+        if (record.status !== 'queued') {
+          chatStore.removeQueuedSessionMessage(sessionId, messageId);
+          return;
+        }
+        chatStore.upsertQueuedSessionMessage(sessionId, {
+          messageId,
+          sourceSessionId: typeof record.source_session_id === 'string' ? record.source_session_id : '',
+          sourceTitle: typeof record.source_title === 'string' ? record.source_title : '',
+          content: typeof record.content === 'string' ? record.content : '',
+        });
+      }),
       ...['chat.input_received', 'chat.output_phase'].map((event) => webClient.on(event, ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
@@ -3126,7 +3146,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldIgnoreSessionOutput(payload)) return;
         // Supplemental requests never own a separate answer or task lifecycle.
         if (handleTaskInputReceipt('chat.final', payload)) return;
-        if (shouldDropDuplicatedEvent('chat.final', payload)) return;
+        const crossSession = extractCrossSessionMessage(payload);
+        // One cross-session request may emit several finals. Its stable bubble ID
+        // makes each final safe to replay, while the latest one replaces the text.
+        if (!crossSession && shouldDropDuplicatedEvent('chat.final', payload)) return;
 
         const cronMeta = payload.cron as Record<string, unknown> | undefined;
 
@@ -3269,7 +3292,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
         // 与 delta 使用同一稳定 ID，只收尾本次跨会话后台请求。这里不能执行普通
         // final 的 turn collapse/segment rewrite，否则可能重写目标会话已有回复。
-        const crossSession = extractCrossSessionMessage(payload);
         if (crossSession) {
           ensureCrossSessionUserTurn(
             sessionId,

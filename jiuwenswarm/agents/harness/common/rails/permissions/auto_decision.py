@@ -394,7 +394,23 @@ def _closed_internal_args_valid(facts: ToolDecisionFacts, network: Any) -> bool:
             and ("count" not in args or integer_count)
         )
     if family == "session_status":
-        return not args
+        schemas = {
+            "session_list": {"query", "limit", "offset"},
+            "session_message_list": {"target_session_id", "limit", "offset"},
+            "session_read": {"target_session_id", "cursor", "limit", "max_output_chars"},
+        }
+        allowed = schemas.get(facts.tool_name)
+        if allowed is None or not args.keys() <= allowed:
+            return False
+        if facts.tool_name == "session_read" and "target_session_id" not in args:
+            return False
+        for key, value in args.items():
+            if key in {"limit", "offset", "max_output_chars"}:
+                if type(value) is not int or value < (0 if key == "offset" else 1):
+                    return False
+            elif not isinstance(value, str) or (key != "query" and not value.strip()):
+                return False
+        return True
     if family == "skill_read":
         name = args.get("skill_name")
         path = args.get("relative_file_path")

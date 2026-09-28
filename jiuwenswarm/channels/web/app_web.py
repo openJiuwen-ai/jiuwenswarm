@@ -331,6 +331,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     _WS_LOG_MAX_CHARS = 2000
     _HTTP_PROXY_TIMEOUT = 30
     _WS_CONNECT_TIMEOUT = 10
+    _WS_HANDSHAKE_TIMEOUT = 10
     _WS_SELECT_TIMEOUT = 60
     _WS_RECV_BUFFER = 65536
     _WS_HANDSHAKE_MAX_SIZE = 65536
@@ -694,6 +695,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.send_error(502, "proxy ws connect failed")
             return
 
+        # The 0.25s timeout above only paces connect retries. Keeping it for the
+        # handshake made every reconnect fail with 502 whenever the gateway loop
+        # needed more than 250ms to answer the Upgrade.
+        upstream.settimeout(self._WS_HANDSHAKE_TIMEOUT)
         try:
             if parsed.scheme in ("wss", "https"):
                 ctx = ssl.create_default_context() if _get_ssl_verify() else _get_insecure_ssl_context()

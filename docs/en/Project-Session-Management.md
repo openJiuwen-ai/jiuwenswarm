@@ -609,9 +609,9 @@ Symmetric to `discard_turn_changes`: re-applies the file changes that were disca
 
 Non-cron Web/TUI single-Agent Sessions belonging to the same user on the same AgentServer can exchange messages through the existing tools:
 
-- Use `session_list` to find a target. `session_send_message(target_session_id, message)` retains ordinary independent-task queueing.
-- Explicit `input_mode="steer"` delivers supplemental input through the public Session input entry point without waiting for independent-task admission. An idle target executes it as an ordinary message and can receive further steering once that execution starts.
+- Use `session_list` to find a target. `session_send_message(target_session_id, message)` defaults to `steer`: a running target handles the input in its current turn; an idle target starts a new turn.
+- Use `input_mode="follow_up"` for an independent queued task. Plan mode and active Goals always defer cross-session input to that queue. Each delivery lane is FIFO; steering can overtake independent tasks.
 - Use `session_message_list` to inspect the existing mailbox. `accepted: true` means persisted; `delivered` means supplemental input was accepted, not that the model consumed it or the target task succeeded. `succeeded` requires actual completion of an independent execution.
-- Known rejection becomes `failed`. Interrupted or uncertain delivery becomes `unknown`, retaining the existing explicit resolution workflow without automatic replay.
+- Temporary refusals before SDK submission (including pending user interactions and closing input windows) return to the independent-task queue. Interrupted or uncertain delivery becomes `unknown`, retaining the existing explicit resolution workflow without automatic replay. Failed input-boundary publication drops the supplemental input before model admission and does not fail the original task.
 
-Source Session, message ID, chain and Agent provenance are retained in delivery, UI and history. Agent input grants no new user authorization. Existing ownership, idempotency, capacity and hop limits remain in force. This adds no reply protocol and does not change the default delivery of existing calls.
+Source Session, message ID, chain and Agent provenance are retained in delivery, UI and history. Live and restored Agent inputs use a Host-generated tool call/result pair for SDK compatibility; the payload has tool authority and grants no new user authorization. Existing ownership, idempotency, capacity and hop limits remain in force. This adds no reply protocol; previously persisted independent tasks keep their delivery mode.

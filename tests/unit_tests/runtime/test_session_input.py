@@ -87,6 +87,7 @@ async def setup_runtime(monkeypatch):
         get_agent_for_session_nowait=Mock(return_value=agent),
     )
     plan = SimpleNamespace(
+        active_sessions=set(),
         ensure_state=AsyncMock(return_value=SimpleNamespace(events=[])),
         check_post_process_exit=AsyncMock(return_value=[]), reset_session=Mock(),
     )
@@ -129,6 +130,39 @@ async def test_new_input_bypasses_busy_lane_without_answer_or_second_agent(setup
     assert child.work_kind is SessionWorkKind.SESSION_INPUT
     agent.release.set()
     assert (await asyncio.wait_for(original, 2))[-1].payload["content"] == "original completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protected_mode", ["plan", "goal", "agent.code.plan", "agent.work.plan"])
+@pytest.mark.parametrize("busy", [False, True])
+async def test_protected_cross_session_input_never_uses_active_or_idle_delivery(
+    setup_runtime, protected_mode, busy,
+):
+    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
+
+    runtime, agent, manager = setup_runtime
+    original = None
+    if busy:
+        original = asyncio.create_task(collect(runtime.stream(request("original", input_mode=None))))
+        await asyncio.wait_for(agent.entered.wait(), 2)
+    if protected_mode == "plan":
+        runtime.plan_controller.active_sessions.add("input-session")
+    elif protected_mode == "goal":
+        manager.has_active_goal = Mock(return_value=True)
+    supplement = request(**{SESSION_MESSAGE_INTERNAL_KEY: {"message_id": "sm-steer"}})
+    if protected_mode.startswith("agent."):
+        supplement.params["mode"] = protected_mode
+    with pytest.raises(SessionInputQueueRequiredError):
+        await collect(runtime.stream(supplement))
+    assert not agent.delivered
+    assert not agent.cancelled
+    if original is not None:
+        assert not original.done()
+        agent.release.set()
+        await asyncio.wait_for(original, 2)
+    else:
+        assert not agent.entered.is_set()
 
 
 @pytest.mark.asyncio

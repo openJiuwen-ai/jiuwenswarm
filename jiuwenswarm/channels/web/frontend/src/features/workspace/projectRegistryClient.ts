@@ -6,7 +6,7 @@ export interface ProjectSessionBatchResult {
   project_id: string;
   succeeded_count: number;
   failed_count: number;
-  results: { session_id: string; ok: boolean; code?: string; error?: string; finishing?: boolean }[];
+  results: { session_id: string; ok: boolean; code?: string; error?: string; finishing?: boolean; subagent_finishing?: boolean }[];
 }
 
 export interface ProjectRemoveResult {
