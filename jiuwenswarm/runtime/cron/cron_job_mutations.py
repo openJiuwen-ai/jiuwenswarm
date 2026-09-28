@@ -157,6 +157,7 @@ def build_new_cron_job(
     app_id: str = "",
     work_mode: str = DEFAULT_WEB_WORK_MODE,
     user_id: str = "",
+    credential_ref: str = "",
 ) -> CronJob:
     """Construct and validate a ``CronJob`` without persisting it."""
     now = time.time()
@@ -213,6 +214,7 @@ def build_new_cron_job(
         app_id=str(app_id or "").strip(),
         work_mode=normalize_work_mode(work_mode, default=DEFAULT_WEB_WORK_MODE),
         user_id=str(user_id or "").strip(),
+        credential_ref=str(credential_ref or "").strip(),
     )
     CronJob.from_dict(job.to_dict())
     return job
@@ -329,6 +331,13 @@ def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
             else None
         )
         updated = replace(updated, model_name=new_model_name)
+    if "credential_ref" in patch:
+        # 模型来源切换时由 controller 重算：登录模型 → 绑定创建会话的华为账号
+        # 句柄；自配模型/清除模型 → 解绑（空串）。
+        updated = replace(
+            updated,
+            credential_ref=str(patch.get("credential_ref") or "").strip(),
+        )
     if "mcp" in patch:
         # 显式传 null/[] 归 None（不注入）；非字符串元素被过滤。
         updated = replace(updated, mcp=normalize_cron_job_mcp(patch.get("mcp")))

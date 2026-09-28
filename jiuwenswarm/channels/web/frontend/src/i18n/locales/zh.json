@@ -336,6 +336,8 @@
       "toggleCapability": "切换{{name}}能力",
       "saveAndEnable": "保存并启用",
       "savedRestartRequired": "配置已保存，重启后生效。",
+      "regionalBaseHint": "密钥分区域：国际版密钥用 https://api.minimax.io/v1，国内版密钥用 https://api.minimaxi.com/v1。地址与密钥的区域不一致时，会自动尝试另一个区域。",
+      "regionalBaseHintModelark": "密钥和模型开通都分区域：国际版（BytePlus ModelArk）用 https://ark.ap-southeast.bytepluses.com/api/v3，国内版（火山引擎）用 https://ark.cn-beijing.volces.com/api/v3。模型需要先在 Ark 控制台开通，否则会提示 ModelNotOpen。",
       "deleteModelTitle": "删除模型配置",
       "deleteModelConfirm": "将删除{{name}}已保存的模型配置；如果该能力当前已启用，将同步关闭。",
       "team": "智能体团队"
@@ -454,10 +456,6 @@
       "skill_retrieval_enabled": {
         "title": "技能自动检索",
         "description": "基于已安装技能数量，动态选择智能体的技能发现策略"
-      },
-      "skill_retrieval_index_enabled": {
-        "title": "技能索引",
-        "description": "启用已安装技能的树状目录，增强智能体的结构化技能发现能力（*可能消耗额外 Token）"
       },
       "ttse_enabled": {
         "title": "本地环境事实与任务经验自动演进",
@@ -974,16 +972,6 @@
     "historyLoadMore": "加载更多历史消息",
     "continuedFromChat": "从原会话继续",
     "openSourceChat": "打开原会话",
-    "sideConversation": {
-      "title": "侧会话",
-      "from": "来自 {{title}}",
-      "empty": "在不离开主会话的情况下提问",
-      "placeholder": "发送消息到侧会话",
-      "send": "发送消息",
-      "working": "处理中…",
-      "sendFailed": "消息发送失败，请重试。",
-      "close": "关闭侧会话"
-    },
     "config": {
       "mode": {
         "cluster": "集群模式",
@@ -1816,6 +1804,7 @@
       "enable": "采集个人上下文内容",
       "enableHint": "支持自动周期性采集上下文内容并自动构建图谱。",
       "strategyProfile": "上下文采集模式",
+      "strategyLockedByFetch": "采集任务正在运行或停止中，结束后可切换模式。",
       "strategy_agent": "智能体处理",
       "strategy_balanced": "大模型处理",
       "strategy_rules": "规则处理",
@@ -1826,7 +1815,9 @@
       "modelHint": "选择已在 JiuwenSwarm 中配置的模型。",
       "collectionStopPending": "采集任务运行中，稍后生效",
       "collectionStoppingRetry": "采集任务仍在运行或停止中，请稍后再试",
-      "operationTimeout": "请求超时，请稍后重试"
+      "operationTimeout": "请求超时，请稍后重试",
+      "collectionTimeoutReconciling": "请求超时，正在核对实际采集状态",
+      "collectionReconciling": "请求结果尚未确认，正在核对实际采集状态"
     },
     "authorization": {
       "title": "内容采集授权",
@@ -1926,6 +1917,7 @@
       "colActions": "操作",
       "stateCollecting": "正在采集",
       "stateCompleted": "采集完成",
+      "statePartial": "部分成功：{{completed}}/{{total}}，{{failed}} 项失败",
       "stateFailed": "采集失败",
       "stateWaiting": "等待采集",
       "stateStopped": "已停止",
@@ -1951,10 +1943,10 @@
       "collectAll": "全部开始采集",
       "statSources": "来源",
       "statKnowledge": "上下文节点数",
-      "statCollecting": "正在采集",
+      "statCollecting": "进行中的采集任务",
       "knowledgeSource": "上下文来源",
       "lastRun": "上次采集",
-      "fetchTaskRunning": "当前有采集任务正在运行，请等待完成后再修改配置"
+      "fetchTaskRunning": "当前有采集任务正在运行或停止中，请等待结束后再修改配置"
     },
     "addContent": {
       "title": "添加内容",
@@ -2016,7 +2008,7 @@
         "bookmarksPathLabel": "书签文件路径",
         "bookmarksPathPlaceholder": "留空使用 Edge 默认 Bookmarks 路径",
         "foldersLabel": "需采集的书签文件夹",
-        "foldersPlaceholder": "如 收藏栏/技术，多个用逗号分隔",
+        "foldersPlaceholder": "如 收藏夹栏/技术，多个用逗号分隔",
         "foldersHint": "可选，留空采集全部"
       },
       "github": {
@@ -2359,9 +2351,6 @@
       "description": "开启 Skill 发现后，系统按 1% 阈值为新会话选择完整候选快照或实时 skill_index 检索；分类索引是否构建由单独的索引开关控制。已有会话保持创建时冻结的策略。",
       "globalDisabledHint": "全局发现开关已关闭。Agent 使用 JiuwenSwarm 原有 Skill 逻辑；已有分类索引文件会保留但不使用。",
       "indexNotNeeded": "完整候选快照低于 1% 阈值时无需分类索引；即使已保存索引偏好，也不会启动构建。",
-      "indexRecommended": "当前已安装 Skills 较多。您可以构建 Skill 索引，以增强对已安装 Skills 的调用能力。\n\nSkill 索引主要提供以下增强：\n\n- 维护 Skills 的分层目录结构；\n- 探查 Skills 之间的结构性依赖关系；\n- 提供更强的 Skills 运行时渐进式发现、检索与编排能力。*\n\n*构建或刷新 Skill 索引需要调用 LLM 分析已安装 Skills，因此会额外消耗 token。",
-      "recommendationBuild": "立即构建",
-      "recommendationDismiss": "暂不构建",
       "indexDisabled": "分类索引开关已关闭。实时平铺检索仍可用，已有索引文件会保留。",
       "indexBuildRunning": "分类索引正在后台构建。构建期间检索仍可用；构建会消耗模型 token。",
       "indexActive": "分类索引开关已开启，当前分类目录正在使用；刷新会消耗模型 token。",
@@ -3094,6 +3083,8 @@
     "paused": "已暂停",
     "waitingTasks": "等待任务",
     "messageQueue": "消息队列",
+    "crossSessionMessageQueue": "跨会话消息",
+    "localMessageQueue": "本地消息",
     "turnRunning": "任务执行",
     "turnElapsed": "任务用时",
     "workCompleted": "已完成 {{duration}}",
@@ -3551,7 +3542,7 @@
       "archiveConfirmAll": "全部归档",
       "sessionsArchived": "已归档 {{count}} 个会话",
       "archiveBatchFailedRunning": "有 {{count}} 个聊天正在运行，无法归档",
-      "archiveBatchFailedFinishing": "有 {{count}} 个聊天的 swarm flow 已结束，回合收尾中，请稍后重试",
+      "archiveBatchFailedFinishing": "有 {{count}} 个聊天正在收尾，稍后自动结束，请稍后重试",
       "archiveBatchFailed": "有 {{count}} 个聊天归档失败",
       "defaultProjectName": "默认项目",
       "absolutePathError": "请输入绝对路径，例如 /Users/name/work/project",
@@ -3561,9 +3552,9 @@
         "pathMissing": "项目目录不存在，请选择已存在的目录",
         "projectUnavailable": "项目不可用，请刷新后重试",
         "archiveSessionBusy": "对话正在运行，无法归档。请先手动停止，再重试归档。",
-        "archiveSessionFinishing": "swarm flow 已结束，会话回合收尾中，请稍后重试归档。",
+        "archiveSessionFinishing": "会话正在收尾，稍后自动结束，请稍后重试归档。",
         "deleteSessionBusy": "对话正在运行，无法删除。请先手动停止，再重试删除。",
-        "deleteSessionFinishing": "swarm flow 已结束，会话回合收尾中，请稍后重试删除。",
+        "deleteSessionFinishing": "会话正在收尾，稍后自动结束，请稍后重试删除。",
         "archiveForbidden": "该任务不支持归档",
         "archiveNotFound": "资源不存在或已发生变化，请刷新后重试",
         "archiveFailed": "归档操作失败，请稍后重试",
@@ -3821,7 +3812,7 @@
       "message": "删除后该自定义连接器的配置、凭证与技能将被彻底清除，不可恢复；如果只是想以后还能重连，请用解绑而不是删除。"
     },
     "confirmUninstallPlugin": {
-      "message": "卸载后该插件将变为不可用状态，可以重新安装。"
+      "message": "卸载后将删除该插件在本地的相关文件，请确认是否继续。"
     },
     "empty": {
       "myMcp": "暂无我的连接器",

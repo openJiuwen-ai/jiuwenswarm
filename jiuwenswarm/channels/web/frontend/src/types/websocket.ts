@@ -40,6 +40,8 @@ export interface WebRequestOptions {
   isStream?: boolean;
   /** Keep the existing request pending until the runtime confirms acceptance. */
   awaitRuntimeAccepted?: boolean;
+  /** Called before sending, so supplemental receipts can be associated with this request. */
+  onRequestId?: (requestId: string) => void;
 }
 
 export interface WebConnectOptions {

@@ -485,7 +485,12 @@ class TestCronLastSessionId:
         assert not agent.unary_requests
 
     @pytest.mark.asyncio
-    async def test_run_now_info_keeps_team_mode(self, tmp_path):
+    async def test_run_now_info_allocates_execution_session_for_team_mode(self, tmp_path):
+        """team 任务与单 agent 统一显式预建执行会话（session.create 带 cron_id）。
+
+        旧版 team 链路由流式 chat.send 隐式建会话，cron_id 依赖聊天准入的
+        元数据同步落盘，链路被跳过时执行会话进不了"触发的会话"列表。
+        """
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, mode="team.work.normal")
         agent = FakeAgentClient()
@@ -495,8 +500,16 @@ class TestCronLastSessionId:
 
         state = svc.runs[info["run_id"]]
         assert state.exec_mode == "team.work.normal"
-        assert state.execution_session_allocated is False
-        assert not agent.unary_requests
+        assert state.execution_session_allocated is True
+        assert info["session_id"] == "cron_agentserver_allocated"
+        assert state.exec_session_id == "cron_agentserver_allocated"
+        # team 的流式事件按 targets 渠道回传，执行渠道路由保持 targets。
+        assert state.exec_channel_id == job.targets
+        create_env = next(
+            env for env in agent.unary_requests if env.method == "session.create"
+        )
+        assert create_env.params["cron_id"] == job.id
+        assert create_env.params["mode"] == "team.work.normal"
 
 
 class TestCronFailureDelivery:
@@ -1452,7 +1465,12 @@ class TestTeamModeWake:
     """Team-mode cron jobs stream to AgentServer and publish SwarmFlow chunks."""
 
     @pytest.mark.asyncio
-    async def test_team_wake_uses_isolated_session_and_stream(self, tmp_path):
+    async def test_team_wake_allocates_session_and_streams_into_it(self, tmp_path):
+        """team wake 与单 agent 一致：先 session.create（带 cron_id）再流式执行。
+
+        执行会话不再由流式 chat.send 隐式创建，会话与任务的 cron_id 关联
+        变为显式必达；流式信封渠道仍走 targets（SwarmFlow 直播路由不变）。
+        """
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = _make_job(
             mode="team",
@@ -1472,17 +1490,25 @@ class TestTeamModeWake:
         assert task is not None
         await task
 
+        assert len(agent.unary_requests) == 1
+        create_env = agent.unary_requests[0]
+        assert create_env.method == "session.create"
+        assert create_env.params["cron_id"] == job.id
+        assert create_env.params["mode"] == "team.work.normal"
+
         assert len(agent.stream_requests) == 1
-        assert len(agent.unary_requests) == 0
         env = agent.stream_requests[0]
         assert env.is_stream is True
         assert env.channel == "tui"
-        assert env.session_id.startswith("cron_") and env.session_id.endswith(f"_{job.id}")
+        assert env.session_id == "cron_agentserver_allocated"
         assert env.params["mode"] == "team.work.normal"
+        assert env.params["cron_id"] == job.id
         assert env.user_id == "team-owner"
 
         state = svc.runs[run_id]
         assert state.exec_user_id == "team-owner"
+        assert state.exec_session_id == "cron_agentserver_allocated"
+        assert state.execution_session_allocated is True
         assert state.status == "succeeded"
         assert state.result_text == "team result"
         assert len(handler.published) == 2
@@ -3080,3 +3106,141 @@ async def test_project_gate_discards_response_crossing_hide(tmp_path, monkeypatc
     svc._project_admission_revisions["p"] = 2
     release.set()
     assert await pending is False
+
+
+# ── 登录免费模型：执行请求携带凭据 ────────────────────────────────────────────
+
+_LOGIN_REF = "0123456789abcdef0123456789abcdef"
+
+
+def _patch_login_credential_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fresh: dict | None = None,
+) -> None:
+    """把"按句柄取凭据"换成内存桩；是否注入仍由 job.credential_ref 真实决定。
+
+    ``fresh`` 为 refreshed_credential_for_ref 的返回值（None=凭据已撤销/拿不到）。
+    """
+    monkeypatch.setattr(
+        "jiuwenswarm.common.auth.passthrough.refreshed_credential_for_ref",
+        lambda ref: fresh
+        if fresh is not None
+        else {"credential_ref": ref, "revoked": True},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.auth.apig.resolve_apig_config",
+        lambda allow_refresh=True: SimpleNamespace(
+            invoke_base_url="https://apig.example.com/v1"
+        ),
+    )
+
+
+class TestLoginModelAuthForJob:
+    def test_returns_auth_payload_for_bound_job(self, monkeypatch):
+        """绑定了登录账号句柄的任务 → 返回请求级凭据体。"""
+        _patch_login_credential_lookup(
+            monkeypatch, fresh={"credential_ref": _LOGIN_REF, "api_key": "tok-1"}
+        )
+        job = _make_job(
+            model_name="GLM-5.2", user_id="route-user-1", credential_ref=_LOGIN_REF
+        )
+        assert cron_scheduler_module._login_model_auth_for_job(job) == {
+            "api_base": "https://apig.example.com/v1",
+            "api_key": "tok-1",
+            "credential_ref": _LOGIN_REF,
+        }
+
+    def test_none_without_binding_even_if_user_id_present(self, monkeypatch):
+        """路由 user_id 与华为账号是两套独立用户体系：没有绑定就不能注入。
+
+        回归：曾按 job.user_id 推导凭据句柄，路由 ID ≠ openid（或为空）时
+        静默拿不到凭据，任务无法使用登录模型。
+        """
+        _patch_login_credential_lookup(
+            monkeypatch, fresh={"credential_ref": _LOGIN_REF, "api_key": "tok-1"}
+        )
+        job = _make_job(model_name="GLM-5.2", user_id="route-user-1")
+        assert cron_scheduler_module._login_model_auth_for_job(job) is None
+
+    def test_none_for_malformed_ref(self, monkeypatch):
+        _patch_login_credential_lookup(
+            monkeypatch, fresh={"credential_ref": "bad", "api_key": "tok-1"}
+        )
+        job = _make_job(model_name="GLM-5.2", credential_ref="not-a-ref")
+        assert cron_scheduler_module._login_model_auth_for_job(job) is None
+
+    def test_none_when_credential_revoked(self, monkeypatch):
+        _patch_login_credential_lookup(monkeypatch, fresh=None)
+        job = _make_job(model_name="GLM-5.2", credential_ref=_LOGIN_REF)
+        assert cron_scheduler_module._login_model_auth_for_job(job) is None
+
+
+@pytest.mark.asyncio
+async def test_wake_execution_carries_login_model_auth(tmp_path, monkeypatch):
+    """绑定登录账号的任务执行请求必须带 _model_auth 凭据，否则 AgentServer 会报 login_required。"""
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    job = await store.create_job(
+        name="free-model-job",
+        cron_expr="0 0 9 * * ? *",
+        timezone="Asia/Shanghai",
+        description="reminder",
+        targets="web",
+        user_id="route-user-1",
+        model_name="GLM-5.2",
+        credential_ref=_LOGIN_REF,
+    )
+    agent = FakeAgentClient()
+    svc = _make_scheduler(store, agent_client=agent)
+    _patch_login_credential_lookup(
+        monkeypatch, fresh={"credential_ref": _LOGIN_REF, "api_key": "tok-1"}
+    )
+
+    run_id = f"{job.id}:1234"
+    await svc.on_wake(job, run_id)
+    await svc.run_tasks[run_id]
+
+    chat_env = next(
+        env for env in agent.stream_requests if "model_name" in (env.params or {})
+    )
+    assert chat_env.params["model_name"] == "GLM-5.2"
+    assert chat_env.params["_model_auth"] == {
+        "api_base": "https://apig.example.com/v1",
+        "api_key": "tok-1",
+        "credential_ref": _LOGIN_REF,
+    }
+
+
+@pytest.mark.asyncio
+async def test_wake_execution_without_binding_omits_model_auth(tmp_path, monkeypatch):
+    """未绑定（自配模型，即使与登录模型同名）→ 不注入 _model_auth。
+
+    回归：曾按"模型名出现在登录目录"就注入，同名自配模型会被切到登录模型、
+    改用 APIG 接入点和登录账号额度计费。
+    """
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    job = await store.create_job(
+        name="config-model-job",
+        cron_expr="0 0 9 * * ? *",
+        timezone="Asia/Shanghai",
+        description="reminder",
+        targets="web",
+        user_id="route-user-1",
+        model_name="GLM-5.2",
+    )
+    agent = FakeAgentClient()
+    svc = _make_scheduler(store, agent_client=agent)
+    # 凭据查询桩即使返回可用凭据也不该被用到
+    _patch_login_credential_lookup(
+        monkeypatch, fresh={"credential_ref": _LOGIN_REF, "api_key": "tok-1"}
+    )
+
+    run_id = f"{job.id}:1234"
+    await svc.on_wake(job, run_id)
+    await svc.run_tasks[run_id]
+
+    chat_env = next(
+        env for env in agent.stream_requests if "model_name" in (env.params or {})
+    )
+    assert chat_env.params["model_name"] == "GLM-5.2"
+    assert "_model_auth" not in chat_env.params

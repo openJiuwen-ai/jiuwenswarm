@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from jiuwenswarm.common.cron_session import cron_session_matches_job
 from jiuwenswarm.common.work_mode import is_default_project_id
 from jiuwenswarm.server.runtime.session import lifecycle as lc, project_store
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
@@ -151,8 +152,8 @@ class SessionArchiveService:
                     if not operation or operation.get("status") == "completed":
                         continue
                     if operation.get("kind") == "archive":
-                        # 归档不设执行栅栏，卡死的 operation 只挡住反向操作；
-                        # 重放搬目录等于替用户做决定，按目录实际位置收尾即可。
+                        # Release abandoned archive fences according to the actual
+                        # directory position; never replay the move during recovery.
                         await asyncio.to_thread(
                             self._finalize_abandoned_archive, operation
                         )
@@ -364,12 +365,57 @@ class SessionArchiveService:
         service = getattr(self.runtime, "session_message_service", None)
         return service if service is not None else None
 
+    async def _stop_heartbeat(self, session_id: str) -> None:
+        """Stop the Session's background Heartbeat instead of waiting it out.
+
+        A live Heartbeat run must not turn archive or delete into a busy
+        rejection: the action stops the run first, then reads a settled
+        Session.  Failure is only logged, so a run that refuses to cancel
+        still trips the ordinary busy check below.
+        """
+        stopper = getattr(self.runtime, "stop_heartbeat_runs", None)
+        if not callable(stopper):
+            return
+        try:
+            await stopper(session_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "session lifecycle could not stop heartbeat runs: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+
+    async def _stop_subagents(self, session_id: str, action: str, channel_id: str) -> None:
+        """Release the Session's resident subagents instead of waiting them out.
+
+        A subagent stays resident until something explicitly releases it, so it
+        can outlive the user's own stop and keep the Session looking busy —
+        archive and delete then reject it with SESSION_BUSY and the user is
+        asked to stop a Session they already stopped.  The action releases them
+        first, then reads a settled Session.  Failure is only logged, so a
+        subagent that refuses to release still trips the ordinary busy check.
+        """
+        stopper = getattr(self.runtime, "stop_subagent_runtimes", None)
+        if not callable(stopper):
+            return
+        try:
+            await stopper(
+                session_id,
+                channel_id=channel_id,
+                reason="session_archived" if action == "archive" else "session_deleted",
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "session lifecycle could not release subagents: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+
     def _session_is_busy_for_action(
         self,
         session_id: str,
         action: str,
         active: Path,
-        is_cron_session: bool,
         *,
         parked_team_streams: bool = False,
     ) -> bool:
@@ -384,10 +430,8 @@ class SessionArchiveService:
             # stream alone; delete proceeds and its stop path tears the team
             # runtime (and with it the stream) down.
             return False
-        if action == "delete" and is_cron_session:
-            return False
-        # is_cron_session 不再豁免 busy 检查：running 的 cron/heartbeat session
-        # 同样必须先停止才能 delete，避免僵尸流永久锁定会话。
+        # Running cron sessions must still stop before deletion: nothing in
+        # this path owns their runs.  Heartbeat runs were stopped above.
         return self.runtime.is_session_running(session_id)
 
     async def _session(
@@ -421,6 +465,10 @@ class SessionArchiveService:
             is_cron_session = bool(meta.get("cron_id")) or session_id.startswith(
                 ("cron_", "heartbeat_")
             )
+            # Subagent controls and session adapters are held per Agent, and
+            # Agents are cached per channel: reach them through the Session's
+            # own channel, not the one that happens to serve this request.
+            owner_channel_id = str(meta.get("channel_id") or channel_id or "")
             # 两个方向都要重排置顶序号：归档后该会话离开活跃区（活跃区留空档），
             # 取消归档后它带着归档前的序号回到活跃区（可能与其他会话重复）。
             pin_reindex_required = action in {"archive", "unarchive"} and bool(
@@ -448,6 +496,9 @@ class SessionArchiveService:
                         restored=False,
                         project_id=project_id,
                     )
+            if action in {"archive", "delete"}:
+                await self._stop_heartbeat(session_id)
+                await self._stop_subagents(session_id, action, owner_channel_id)
             parked_team_streams = False
             if action in {"archive", "delete"} and self.runtime.is_session_running(
                 session_id
@@ -458,7 +509,6 @@ class SessionArchiveService:
                 session_id,
                 action,
                 active,
-                is_cron_session,
                 parked_team_streams=parked_team_streams,
             ):
                 details = {"stop_pending": False}
@@ -470,9 +520,20 @@ class SessionArchiveService:
                     # 会话。finishing 标记供前端区分两种 busy 文案。
                     details["finishing"] = True
                     message = "swarm flow 已结束，会话回合收尾中，请稍后重试"
+                else:
+                    probe = getattr(self.runtime, "is_subagent_finishing", None)
+                    if callable(probe) and probe(
+                        session_id, channel_id=owner_channel_id
+                    ):
+                        # subagent 常驻直到显式释放：已被要求停止、仍在收尾，
+                        # 用户无活可停。finishing 让前端走"稍后重试"文案，
+                        # subagent_finishing 供后续把文案区分到 subagent。
+                        details["finishing"] = True
+                        details["subagent_finishing"] = True
+                        message = "subagent 正在收尾，会话稍后自动结束，请稍后重试"
                 raise lc.LifecycleError("SESSION_BUSY", message, details)
             operation = lc.begin(
-                "session", session_id, action, block_execution=action != "archive"
+                "session", session_id, action, block_execution=True
             )
             operation = lc.claim_operation("session", session_id, self._owner_id)
             # 置顶会话跨归档边界后活跃区序号必然失真（归档留空档、取消归档带
@@ -1037,9 +1098,9 @@ class SessionArchiveService:
 
     @staticmethod
     def _cron_session_name_matches(session_id: str, cron_id: str) -> bool:
-        if session_id == f"cron_{cron_id}":
-            return True
-        return session_id.startswith("cron_") and session_id.endswith(f"_{cron_id}")
+        # 共享实现见 common/cron_session.py（project.get_cron_sessions 的兜底
+        # 匹配与此同源，避免两处约定漂移）。
+        return cron_session_matches_job(session_id, cron_id)
 
     @staticmethod
     def cron_sessions(cron_id: str) -> list[str]:

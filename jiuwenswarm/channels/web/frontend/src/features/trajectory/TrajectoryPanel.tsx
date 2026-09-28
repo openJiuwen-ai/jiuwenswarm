@@ -50,9 +50,12 @@ import {
 } from './trajectorySequences';
 import {
   exitTrajectoryReplay,
+  isTrajectoryArchiveFormatError,
   parseTrajectoryArchive,
   shouldCatchUpTrajectory,
+  trajectoryArchiveMode,
   trajectoryArchiveView,
+  trajectoryReplayTeamMode,
   type TrajectoryArchive,
 } from './trajectoryArchive';
 import {
@@ -85,6 +88,11 @@ import {
   groupTrajectorySubjects,
   MAIN_TRAJECTORY_SUBJECT_ID,
 } from './trajectorySubjects';
+import {
+  countTurns,
+  unrecordedTurnRanges,
+  type TrajectoryTurnRange,
+} from './trajectoryTurnGaps';
 import { TeamTrajectoryWorkspace } from './TeamTrajectoryWorkspace';
 import css from './TrajectoryPanel.module.css';
 import './client/theme.css';
@@ -155,6 +163,12 @@ function detailRecordLabel(record: TrajectoryDetailRecord): string {
   return `Raw ${shortIdentity}${size}`;
 }
 
+function formatTurnRanges(ranges: readonly TrajectoryTurnRange[], separator: string): string {
+  return ranges
+    .map(range => (range.first === range.last ? `${range.first}` : `${range.first}–${range.last}`))
+    .join(separator);
+}
+
 function errorMessage(error: unknown, chinese: boolean): string {
   if (error instanceof TrajectoryApiError && error.code === 'TRAJECTORY_DISABLED') {
     return chinese ? '轨迹观测当前未启用。' : 'Trajectory observability is disabled.';
@@ -192,12 +206,12 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
 }: TrajectoryPanelProps) {
   const { i18n } = useTranslation();
   const chinese = (i18n.resolvedLanguage ?? i18n.language).toLowerCase().startsWith('zh');
-  const teamMode = mode === 'team';
+  const sessionTeamMode = mode === 'team';
   // The panel is not remounted when the session or its mode changes, so the
   // stable callbacks below read the mode through a ref instead of closing
   // over the value they were first created with.
-  const teamModeRef = useRef(teamMode);
-  teamModeRef.current = teamMode;
+  const sessionTeamModeRef = useRef(sessionTeamMode);
+  sessionTeamModeRef.current = sessionTeamMode;
   const windowStateRef = useRef(createTrajectoryWindowState());
   const operationCoordinatorRef = useRef(createTrajectoryOperationCoordinator());
   const loadedSessionRef = useRef<string | null>(null);
@@ -234,12 +248,21 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   // Team mode: `null` collapses every lane (only the swimlane grid is shown);
   // a subject id expands that member's trajectory drawer.
   const [selectedSubjectId, setSelectedSubjectId] = useState<string | null>(
-    teamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID,
+    sessionTeamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID,
   );
   const [loading, setLoading] = useState(false);
   const [initialLoadProgress, setInitialLoadProgress] = useState<InitialLoadProgress | null>(null);
   const [exporting, setExporting] = useState(false);
   const [replayArchive, setReplayArchive] = useState<TrajectoryArchive | null>(null);
+  const replayArchiveMode = useMemo(
+    () => replayArchive === null ? null : trajectoryArchiveMode(replayArchive),
+    [replayArchive],
+  );
+  // A replay renders in the mode its archive was exported from, not the mode
+  // of the session hosting it.
+  const teamMode = replayArchive === null
+    ? sessionTeamMode
+    : trajectoryReplayTeamMode(replayArchiveMode, sessionTeamMode);
   // The file as imported. Exporting a replay saves these bytes: the parsed
   // archive has its references resolved, and restating them would undo what
   // makes the addressed file small.
@@ -272,6 +295,12 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     exitReplay: '退出复现',
     replay: (sourceSession: string) => `只读复现 · ${sourceSession}`,
     archiveTooLarge: '轨迹归档超过 128 MB，无法在浏览器中导入。',
+    archiveInvalid: (detail: string) => (
+      `无法导入：所选文件不是有效的轨迹归档（.archive.json）。详情：${detail}`
+    ),
+    replayModeMismatch: (replayTeamMode: boolean) => (replayTeamMode
+      ? '该轨迹导出自集群模式会话，与当前单 Agent 会话模式不同，已按集群模式复现。'
+      : '该轨迹导出自单 Agent 模式会话，与当前集群会话模式不同，已按单 Agent 模式复现。'),
     exportBrowserStarted: '轨迹归档下载已开始；请在浏览器下载列表确认文件。',
     exportBrowserSaved: '轨迹归档已保存到本地。',
     exportDesktopSaved: '轨迹归档已保存到本地。',
@@ -283,6 +312,10 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     summary: (traces: number, spans: number) => `${traces} 条 trace · ${spans} 个 OTel Span`,
     invalid: '· 存在无法投影的原始记录',
     diagnostic: (code: string) => `轨迹数据不完整（${code}），已保留最近一次有效视图。`,
+    unrecordedTurns: (ranges: readonly TrajectoryTurnRange[]) => (
+      `第 ${formatTurnRanges(ranges, '、')} 轮对话没有轨迹记录（共 ${countTurns(ranges)} 轮），`
+      + '通常是因为当时轨迹开关尚未开启。'
+    ),
     raw: (count: number) => `原始 OTel 记录 (${count})`,
     rawLabel: '选择原始 OTel 记录',
     rawLoad: '按需加载原始记录',
@@ -330,6 +363,15 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     exitReplay: 'Exit replay',
     replay: (sourceSession: string) => `Read-only replay · ${sourceSession}`,
     archiveTooLarge: 'The trajectory archive exceeds the 128 MB browser import limit.',
+    archiveInvalid: (detail: string) => (
+      'Cannot import: the selected file is not a valid trajectory archive '
+      + `(.archive.json). Details: ${detail}`
+    ),
+    replayModeMismatch: (replayTeamMode: boolean) => (replayTeamMode
+      ? 'This trajectory was exported from a Team session, unlike the current single-Agent session; '
+        + 'it is replayed as a Team.'
+      : 'This trajectory was exported from a single-Agent session, unlike the current Team session; '
+        + 'it is replayed as a single Agent.'),
     exportBrowserStarted: 'Trajectory archive download started; confirm it in the browser downloads list.',
     exportBrowserSaved: 'Trajectory archive saved locally.',
     exportDesktopSaved: 'Trajectory archive saved locally.',
@@ -341,6 +383,12 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     summary: (traces: number, spans: number) => `${traces} traces · ${spans} OTel spans`,
     invalid: '· Some raw records could not be projected',
     diagnostic: (code: string) => `Trajectory data is incomplete (${code}); the last valid view was retained.`,
+    unrecordedTurns: (ranges: readonly TrajectoryTurnRange[]) => {
+      const total = countTurns(ranges);
+      return `${total === 1 ? 'Turn' : 'Turns'} ${formatTurnRanges(ranges, ', ')} `
+        + `${total === 1 ? 'has' : 'have'} no trajectory records, `
+        + 'usually because the trajectory switch was off at the time.';
+    },
     raw: (count: number) => `Raw OTel records (${count})`,
     rawLabel: 'Select a raw OTel record',
     rawLoad: 'Load raw record on demand',
@@ -459,7 +507,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     setPublishedWindow(EMPTY_PUBLISHED_WINDOW);
     initialLoadProgressRef.current = null;
     setInitialLoadProgress(null);
-    setSelectedSubjectId(teamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+    setSelectedSubjectId(sessionTeamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
     setInvalidRecordSeen(false);
     setError(null);
     setRawSelection('');
@@ -947,6 +995,14 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const selectedSubjectSnapshot = selectedSubjectGroup === undefined
     ? undefined
     : subjectSnapshots.get(selectedSubjectGroup.subject.id);
+  // Only the main Agent's numbers follow the session's turn counter; other
+  // subjects and Team lanes number turns their own way, so a gap there says
+  // nothing about recording. The window holds every record of the session,
+  // so no turn is missing for any other reason.
+  const mainTurnSnapshot = teamMode ? undefined : subjectSnapshots.get(MAIN_TRAJECTORY_SUBJECT_ID);
+  const unrecordedTurns = useMemo(() => (mainTurnSnapshot === undefined
+    ? []
+    : unrecordedTurnRanges(mainTurnSnapshot.turns.map(turn => turn.turn), 0)), [mainTurnSnapshot]);
 
   const selectSubject = useCallback((subjectId: string | null) => {
     if (subjectId === null) {
@@ -1098,26 +1154,40 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     if (file === undefined) return;
     setArchiveError(null);
     setArchiveNotice(null);
+    if (file.size > MAX_ARCHIVE_BYTES) {
+      setArchiveError(copy.archiveTooLarge);
+      return;
+    }
     try {
-      if (file.size > MAX_ARCHIVE_BYTES) throw new Error(copy.archiveTooLarge);
       const text = await file.text();
       const archive = parseTrajectoryArchive(text);
+      const replayTeamMode = trajectoryReplayTeamMode(
+        trajectoryArchiveMode(archive),
+        sessionTeamModeRef.current,
+      );
       replayArchiveTextRef.current = text;
       setReplayArchive(archive);
-      setSelectedSubjectId(teamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+      setSelectedSubjectId(replayTeamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+      if (replayTeamMode !== sessionTeamModeRef.current) {
+        setArchiveNotice(copy.replayModeMismatch(replayTeamMode));
+      }
       setRawSelection('');
       setFetchedRaw(null);
       setRawError(null);
     } catch (importError) {
-      setArchiveError(errorMessage(importError, chinese));
+      if (isTrajectoryArchiveFormatError(importError)) {
+        setArchiveError(copy.archiveInvalid(importError.message));
+      } else {
+        setArchiveError(errorMessage(importError, chinese));
+      }
     }
-  }, [chinese, copy.archiveTooLarge]);
+  }, [chinese, copy]);
 
   const exitReplay = useCallback(() => {
     const transition = exitTrajectoryReplay(replayArchive);
     replayArchiveTextRef.current = null;
     setReplayArchive(transition.archive);
-    setSelectedSubjectId(teamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+    setSelectedSubjectId(sessionTeamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
     setArchiveError(null);
     setArchiveNotice(null);
     setRawSelection('');
@@ -1398,6 +1468,11 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
             {copy.diagnostic(diagnostic.code)}{diagnostic.count > 1 ? ` × ${diagnostic.count}` : ''}
           </p>
         ))}
+        {selectedSubjectGroup?.subject.id === MAIN_TRAJECTORY_SUBJECT_ID && unrecordedTurns.length > 0 ? (
+          <p className={css.rawNotice} role="status" data-testid="trajectory-unrecorded-turns">
+            {copy.unrecordedTurns(unrecordedTurns)}
+          </p>
+        ) : null}
         {error !== null && replayArchive === null && displayedRecords.length === 0 ? (
           <p className={`${css.rawNotice} ${css.errorText}`}>{error}</p>
         ) : null}

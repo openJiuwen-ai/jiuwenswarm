@@ -30,11 +30,9 @@ export function projectTimelineItems(
     const contentOpen = turnOpen && streakOpen;
     const isTurnAnchor = turnFoldAnchorKeys.get(item.turnId) === item.key;
     const deliverables = item.type === 'toolGroup' && !contentOpen ? filterDeliverableExecutions(item.executions) : [];
-    if (item.type === 'turnSummary' && turnFoldable) return [];
     if (
       (item.type === 'reasoning' || item.type === 'toolGroup') &&
       !contentOpen &&
-      !(turnFoldable && isTurnAnchor) &&
       !(turnOpen && streak?.firstKey === item.key) &&
       deliverables.length === 0
     )
@@ -42,7 +40,7 @@ export function projectTimelineItems(
 
     return [
       {
-        key: turnFoldable && isTurnAnchor ? `completed-work-${turnKey}` : item.key,
+        key: item.key,
         item,
         turnKey,
         meta,

@@ -230,9 +230,7 @@ class _ConfigChangeSet:
             scopes.add("search")
         for key in self.yaml_updated:
             key_text = str(key)
-            if key_text == "skill_retrieval_index_recommendation_shown":
-                scopes.add("web_ui")
-            elif key_text in {"models.defaults"} or key_text.startswith("models."):
+            if key_text in {"models.defaults"} or key_text.startswith("models."):
                 scopes.add("model")
             elif key_text in {"modes.team", "agents", "team"}:
                 scopes.add("team")
@@ -1293,12 +1291,6 @@ _SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
 _SYMPHONY_CONFIG_KEYS = tuple(_SYMPHONY_CONFIG_SPECS.keys())
 _SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "skill_retrieval_enabled": (("enabled",), "bool", False),
-    "skill_retrieval_index_enabled": (("index", "enabled"), "bool", False),
-    "skill_retrieval_index_recommendation_shown": (
-        ("index", "recommendation_shown"),
-        "bool",
-        False,
-    ),
     "skill_retrieval_max_results": (("discovery", "max_results"), "int", 10),
     "skill_retrieval_max_output_chars": (
         ("discovery", "max_output_chars"),
@@ -4801,6 +4793,22 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             on_done=_attach_runtime_status,
         )
 
+    async def _session_message_continue_queued(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params,
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED,
+            label="session.message.continue_queued",
+        )
+
     async def _session_plan_status(ws, req_id, params, session_id, user_id=None):
         """查询会话当前是否处于计划模式（只读，刷新后恢复前端「计划」标签）。
 
@@ -6783,6 +6791,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 否则 CreateSandbox 拉不起 → 60s 超时（见 plan-cron-user-id）。
             if user_id:
                 params["user_id"] = str(user_id).strip()
+            # 登录会话 id：服务端专有键，无条件覆盖客户端传值。controller 用它给
+            # 登录免费模型绑定华为账号凭据句柄（与路由 user_id 是两套独立用户
+            # 体系），用后即弃、不落任务数据。
+            params["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
             is_agentos = is_agentos_routing_client(_resolve(agent_client))
             # 仅共享目录单用户可由 Gateway 从 session metadata 补 project_dir。
             # AgentOS 下 metadata 在目标 AgentServer 用户目录，Gateway 读部署目录会
@@ -6921,6 +6933,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 })
                 patch.pop("project_dir", None)
                 patch["_agentos_project_binding_verified"] = True
+            # 登录会话 id（服务端专有键，见 _cron_job_create）：改选登录免费模型时
+            # 重绑华为账号凭据句柄；无条件覆盖客户端传值。
+            patch["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
             job = await cc.update_job(job_id, patch)
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except KeyError:
@@ -7122,6 +7137,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("session.list", _session_list)
     channel.register_method("session.create", _session_create)
     channel.register_method("session.get_metadata", _session_get_metadata)
+    channel.register_method("session.message.continue_queued", _session_message_continue_queued)
     channel.register_method("session.plan_status", _session_plan_status)
     channel.register_method("session.rename", _session_rename)
     channel.register_method("session.pin", _session_pin)

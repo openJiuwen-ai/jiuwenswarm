@@ -1,7 +1,9 @@
 import { useTranslation } from 'react-i18next';
 import { openAssetPublish } from '../../features/assetPublishEvents';
+import { canShowAssetPublish } from '../../features/assetPublishState';
 import type {
   AgentFileContent,
+  AgentGroupCatalogItem,
   AgentGroupDetail,
   DefinitionFileEntry,
   RequestStatus,
@@ -16,6 +18,7 @@ import { DetailPromptChip, DetailSection, EntityAvatar, EntityHeader, MarkdownPa
 
 type AgentGroupDetailPageProps = {
   detail: AgentGroupDetail | null;
+  loadingSummary: AgentGroupCatalogItem | null;
   detailStatus: RequestStatus;
   detailError: string | null;
   detailTab: 'content' | 'files';
@@ -42,6 +45,7 @@ type AgentGroupDetailPageProps = {
 
 export function AgentGroupDetailPage({
   detail,
+  loadingSummary,
   detailStatus,
   detailError,
   detailTab,
@@ -68,16 +72,43 @@ export function AgentGroupDetailPage({
   const { t } = useTranslation();
   if (detailStatus === 'loading')
     return (
-      <div
-        className="agent-management-detail agent-management-detail--state"
-        data-testid="agent-group-detail-state"
-        data-variant="loading"
-      >
+      <div className="agent-management-detail agent-group-detail" data-testid="agent-group-detail" aria-busy="true">
         <button type="button" className="detail-back" data-testid="agent-group-detail-back" onClick={onBack}>
           <BackIcon aria-hidden="true" />
           {t('agentManagement.actions.back')}
         </button>
-        <p>{t('common.loading')}</p>
+        <div className="detail-body flex-1 min-h-0 overflow-y-auto">
+          {loadingSummary ? (
+            <>
+              <EntityHeader
+                testId="agent-management-detail-header"
+                avatar={<GroupAvatar item={loadingSummary} size="detail" />}
+                title={loadingSummary.displayName}
+                titleTestId="agent-management-detail-name"
+                tags={[
+                  ...(loadingSummary.category?.trim()
+                    ? [t(`agentManagement.categories.${loadingSummary.category}`, { defaultValue: loadingSummary.category })]
+                    : []),
+                  t('agentManagement.detail.sourcePrefix', {
+                    source: t(`agentManagement.source.${loadingSummary.source}`),
+                  }),
+                  ...(loadingSummary.installed ? [t('agentManagement.states.installed')] : []),
+                ]}
+              />
+              <DetailSection testId="agent-management-detail-ability" title={t('agentManagement.detail.ability')}>
+                <p>{loadingSummary.description || t('agentManagement.unknownDescription')}</p>
+              </DetailSection>
+            </>
+          ) : null}
+          <div
+            className="agent-management-detail--state"
+            data-testid="agent-group-detail-state"
+            data-variant="loading"
+            role="status"
+          >
+            <p>{t('common.loading')}</p>
+          </div>
+        </div>
       </div>
     );
   if (detailStatus === 'error' || !detail)
@@ -132,7 +163,7 @@ export function AgentGroupDetailPage({
           ]}
           actions={
             <div className="agent-management-detail__actions">
-              {detail.capabilities.canPublish ? (
+              {canShowAssetPublish(detail.installed, detail.capabilities.canPublish) ? (
                 <button
                   type="button"
                   className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text"

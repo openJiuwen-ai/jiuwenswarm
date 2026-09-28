@@ -1,5 +1,6 @@
 import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
 import { openAssetPublish } from '../../features/assetPublishEvents';
+import { canShowAssetPublish } from '../../features/assetPublishState';
 
 import { useTranslation } from 'react-i18next';
 import {
@@ -147,7 +148,7 @@ export function DefinitionDetailPage({
           ]}
           actions={
             <div className="agent-management-detail__actions">
-              {(detail.installed || detail.source !== 'hub') && (
+              {canShowAssetPublish(detail.installed) && (
                 <button
                   type="button"
                   className="agent-management-button agent-management-button--secondary"

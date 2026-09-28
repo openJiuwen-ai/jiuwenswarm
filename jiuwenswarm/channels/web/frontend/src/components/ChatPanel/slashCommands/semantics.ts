@@ -1,11 +1,11 @@
-/** Team 会话仅保留跨会话的全局指令；单 Agent 支持完整的内置指令集。 */
+/** Team 会话不提供 Web 内置斜杠指令；单 Agent 支持完整的内置指令集。 */
 export function supportsWebSlashCommands(mode: string): boolean {
   return mode !== 'team';
 }
 
-/** 统一给快捷面板做模式过滤；/new 不依赖 Agent 类型，在 Team 会话同样可用。 */
+/** 统一给快捷面板做模式过滤。 */
 export function getWebSlashCommandsForMode<T extends { name: string }>(commands: T[], mode: string): T[] {
-  return supportsWebSlashCommands(mode) ? commands : commands.filter((command) => command.name.toLowerCase() === 'new');
+  return supportsWebSlashCommands(mode) ? commands : [];
 }
 
 /** 命令说明由后端维护；旧服务端或缺少当前语言时回退到原 description。 */
@@ -44,14 +44,13 @@ export function isSlashCommandDisabledByGoal(name: string, unfinishedGoal: boole
 }
 
 /**
- * `/new`、`/fork` 和 `/plan` 是输入面板上的即时操作。只有独立命令才执行；
+ * `/fork` 和 `/plan` 是输入面板上的即时操作。只有独立命令才执行；
  * 带有其他文本时（如 `/fork title`）应保留原文并按普通消息发送。
- * Team 模式仅执行与 Agent 类型无关的 `/new`。
  *
  * 调用方已先确认 name 存在于命令注册表中。
  */
 export function shouldExecuteRegisteredSlashCommand(name: string, args: string, mode: string): boolean {
   const normalizedName = name.toLowerCase();
-  if (!supportsWebSlashCommands(mode) && normalizedName !== 'new') return false;
-  return !['new', 'fork', 'plan'].includes(normalizedName) || args.trim().length === 0;
+  if (!supportsWebSlashCommands(mode)) return false;
+  return !['fork', 'plan'].includes(normalizedName) || args.trim().length === 0;
 }
