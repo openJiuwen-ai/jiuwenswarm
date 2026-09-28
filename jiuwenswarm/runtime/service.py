@@ -1763,9 +1763,16 @@ class AgentRuntime:
         if work_kind is not None:
             await self._ensure_session_registered(request)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
-                events = await self._deliver_control(
-                    request, on_control_event=on_control_event,
-                )
+                # The resumed turn runs inside this await, before the loop
+                # below binds the Runtime. Bind it here as ``invoke`` does so
+                # the turn can reach host services such as Session messaging.
+                token = set_runtime_context(self, self._agent_manager)
+                try:
+                    events = await self._deliver_control(
+                        request, on_control_event=on_control_event,
+                    )
+                finally:
+                    reset_runtime_context(token)
                 for event in events:
                     yield event
                 return

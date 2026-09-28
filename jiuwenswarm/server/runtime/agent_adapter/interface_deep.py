@@ -11580,14 +11580,26 @@ class JiuWenSwarmDeepAdapter:
             getattr(existing, "name", "")
             for existing in (self._instance.ability_manager.list() or [])
         }
-        eligible = bool(
+        session_eligible = bool(
             normalized_session_id
             and not normalized_session_id.startswith(
                 ("heartbeat", "health_check", "cron")
             )
             and str(channel_id or "").strip().lower() in {"web", "tui"}
             and not is_team_mode(deprecate_mode(self._last_mode))
-            and getattr(runtime, "session_message_service", None) is not None
+        )
+        if session_eligible and runtime is None:
+            # Without a bound Runtime the host capability is unknown, not
+            # absent. Removing the tools here would leave a live Session unable
+            # to answer the cross-session message that started its turn.
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] no Runtime bound; keeping Session "
+                "messaging tools unchanged: session_id=%s",
+                normalized_session_id,
+            )
+            return
+        eligible = session_eligible and (
+            getattr(runtime, "session_message_service", None) is not None
         )
         messaging_rail = getattr(self, "_session_messaging_route_rail", None)
         if messaging_rail is not None:

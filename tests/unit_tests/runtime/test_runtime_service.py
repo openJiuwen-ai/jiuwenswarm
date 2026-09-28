@@ -2530,6 +2530,55 @@ async def test_runtime_context_is_available_during_early_stream_close() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_context_is_bound_while_stream_resumes_interaction() -> None:
+    # Session tools are resolved against the bound Runtime. A streamed answer
+    # once resumed its turn without one, so the resumed turn lost them.
+    observed: dict[str, object] = {}
+
+    class ResumingAgent(AskUserAgent):
+        async def process_message_stream(self, request: AgentRequest):
+            observed.setdefault("turn", get_current_runtime())
+            async for chunk in super().process_message_stream(request):
+                yield chunk
+
+        async def deliver_control_input(self, request: AgentRequest):
+            observed["resume"] = get_current_runtime()
+            async for chunk in super().deliver_control_input(request):
+                yield chunk
+
+    class ResumingManager(FakeAgentManager):
+        def get_agent_for_session_nowait(self, channel_id, session_id):
+            return self.agent
+
+    manager = ResumingManager()
+    manager.agent = ResumingAgent()
+    runtime = AgentRuntime(
+        agent_manager=manager, initializer=AsyncMock(), plan_controller=FakePlanController(),
+    )
+    session_id = "resume-runtime-context"
+    try:
+        await _collect_events(runtime.stream(AgentRequest(
+            request_id="turn", channel_id="web", session_id=session_id,
+            req_method=ReqMethod.CHAT_SEND, is_stream=True,
+            params={"query": "delete the file", "mode": "agent"},
+        ), trigger_hook=False))
+        events = await _collect_events(runtime.stream(AgentRequest(
+            request_id="answer", channel_id="web", session_id=session_id,
+            req_method=ReqMethod.CHAT_SEND, is_stream=True,
+            params={
+                "query": "", "mode": "agent", "request_id": "call_ask_user",
+                "source": "ask_user_interrupt", "answers": [{"selected_options": ["no"]}],
+            },
+        ), trigger_hook=False))
+    finally:
+        await runtime.close()
+
+    assert [event.event_type for event in events] == ["chat.final"]
+    assert observed == {"turn": runtime, "resume": runtime}
+    assert get_runtime_context() is None
+
+
+@pytest.mark.asyncio
 async def test_early_stream_close_delivers_post_event_to_callback() -> None:
     manager = FakeAgentManager()
     delivered: list[str] = []
