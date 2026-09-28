@@ -218,8 +218,6 @@ def _run_manager_coro(coro: Any) -> Any:
         except BaseException as exc:  # noqa: BLE001
             error.append(exc)
 
-    import threading
-
     thread = threading.Thread(target=_runner, daemon=True)
     thread.start()
     thread.join()
