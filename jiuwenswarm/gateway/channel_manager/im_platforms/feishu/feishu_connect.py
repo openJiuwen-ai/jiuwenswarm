@@ -204,6 +204,8 @@ class FeishuChannel(BaseChannel):
         self._stopping = False
         # 按 request_id 聚合 chat.delta，避免同一任务被拆分成多条消息发送到飞书。
         self._stream_text_buffers: dict[str, str] = {}
+        # 已经发过 chat.error 的请求：结束时不再补一句"[状态] 已完成"，避免看起来像是成功了
+        self._errored_stream_keys: set[str] = set()
         self._cardkit_sessions: dict[str, FeishuStreamingSession] = {}
         self._cardkit_buffers: dict[str, str] = {}
         self._cardkit_lock = asyncio.Lock()
@@ -576,6 +578,7 @@ class FeishuChannel(BaseChannel):
         self._running = False
         self._stopping = True
         self._stream_text_buffers.clear()
+        self._errored_stream_keys.clear()
         for session in list(self._cardkit_sessions.values()):
             try:
                 await session.finalize()
@@ -1647,9 +1650,13 @@ class FeishuChannel(BaseChannel):
                         return
                 else:
                     content_str = self._stream_text_buffers.pop(stream_key, "")
+                    errored = stream_key in self._errored_stream_keys
+                    self._errored_stream_keys.discard(stream_key)
                     if not content_str.strip():
                         if not streaming_enabled:
                             await self._handle_processing_status_event(msg, meta, payload)
+                            return
+                        if errored:
                             return
                         content_str = self._extract_message_content(msg)
                         if not content_str.strip():
@@ -1660,6 +1667,8 @@ class FeishuChannel(BaseChannel):
                     buffered_text = self._stream_text_buffers.pop(stream_key, "")
                 elif event_name in {"chat.error", "chat.interrupt_result"}:
                     self._stream_text_buffers.pop(stream_key, None)
+                    if event_name == "chat.error" and stream_key:
+                        self._errored_stream_keys.add(stream_key)
                 content_str = self._extract_message_content(msg)
                 is_complete = msg.payload.get("is_complete", False)
                 if is_complete:
