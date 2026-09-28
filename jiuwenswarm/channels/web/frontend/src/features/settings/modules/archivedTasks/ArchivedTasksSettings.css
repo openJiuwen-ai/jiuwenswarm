@@ -67,6 +67,18 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* 项目已移除：会话仍留在此处，撤销归档会连带恢复项目 */
+.archived-tasks__removed-project-note {
+  margin: 0 4px 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-settings-border);
+  border-radius: var(--radius-md, 6px);
+  background: var(--color-settings-card-subtle);
+  color: var(--color-settings-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .archived-tasks__stop-pending {
   flex-shrink: 0;
   padding: 1px 8px;

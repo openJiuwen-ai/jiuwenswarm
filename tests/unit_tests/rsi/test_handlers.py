@@ -300,6 +300,15 @@ class TestP1Push:
         assert first["payload"]["task_id"] == task_id
         assert first["payload"]["old_status"] == "CREATED"
         assert first["payload"]["new_status"] == "QUEUED"
+        ctx.store.update_status(
+            task_id,
+            ["RUNNING"],
+            "FAILED",
+            cause="输入程序目录不存在: /tmp/deleted-program",
+        )
+        failed = pushes[-1]
+        assert failed["payload"]["status"] == "FAILED"
+        assert failed["payload"]["failure_reason"] == "输入程序目录不存在: /tmp/deleted-program"
 
 
 class TestTrainingControl:

@@ -150,6 +150,11 @@ export function ToolPanel({
   const mode = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const resolvedSessionId = sessionId ?? activeSessionId ?? '';
   const teamMembers = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamMembers ?? []);
+  const teamConnectionPresentation = useSessionStore((s) =>
+    s.runtimes[activeSessionId ?? '']?.mode === 'team'
+      ? (s.runtimes[activeSessionId ?? '']?.teamConnectionPresentation ?? null)
+      : null,
+  );
   const teamHistoryMessages = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamHistoryMessages ?? []);
   const setTeamMembers = useSessionStore(s => s.setTeamMembers);
   const setTeamTaskEvents = useSessionStore(s => s.setTeamTaskEvents);
@@ -283,6 +288,7 @@ export function ToolPanel({
       running: t('chat.applicationTasks.running'),
       completed: t('chat.applicationTasks.completed'),
       failed: t('chat.applicationTasks.failed'),
+      unknown: t('chat.applicationTasks.unknown'),
       cancelling: t('chat.applicationTasks.cancelling'),
       cancelled: t('chat.applicationTasks.cancelled'),
     }),
@@ -480,6 +486,7 @@ export function ToolPanel({
                 <TeamMembersPanel
                   variant="expanded"
                   members={teamMembers}
+                  connectionPresentation={teamConnectionPresentation}
                   selectedMemberId={teamAreaSelectedMemberId ?? ''}
                   selectedMember={teamMembers.find(m => m.member_id === teamAreaSelectedMemberId) ?? null}
                   activeDetailTab={teamAreaActiveDetailTab}

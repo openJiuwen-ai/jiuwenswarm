@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import os
 import signal
@@ -21,6 +22,14 @@ from jiuwenswarm.channels.process_cli.commands import (
     parse_slash_command,
     resolve_mode_target,
 )
+from jiuwenswarm.channels.process_cli.control_commands import (
+    ControlQueryError,
+    query_runtime,
+    show_models,
+    show_permissions,
+    show_sessions,
+    show_status,
+)
 from jiuwenswarm.channels.process_cli.display_context import (
     resolve_cli_work_mode as _resolve_cli_work_mode,
 )
@@ -29,6 +38,13 @@ from jiuwenswarm.channels.process_cli.display_context import (
 )
 from jiuwenswarm.channels.process_cli.display_context import (
     resolve_display_mode as _resolve_display_mode,
+)
+from jiuwenswarm.channels.process_cli.live_layout import (
+    FORWARDED_RECEIPT_PREFIX,
+    LiveTurnLayout,
+)
+from jiuwenswarm.channels.process_cli.prompt import (
+    create_live_prompt_session as _create_live_prompt_session,
 )
 from jiuwenswarm.channels.process_cli.prompt import (
     create_prompt_session as _create_prompt_session,
@@ -60,12 +76,22 @@ _STATEFUL_WORKER_OPERATIONS = frozenset(
 )
 
 
+def _worker_environment() -> dict[str, str]:
+    """Use one explicit wire encoding for the parent/worker stdio pipes."""
+
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
+
+
 @dataclass(slots=True)
 class _ReplState:
     session_id: str | None
     cwd: str
     model_name: str
     display_mode: str
+    model_selection: str = ""
 
 
 def _clear_current_task_cancellation() -> None:
@@ -103,6 +129,11 @@ def _worker_command(
         command.extend(("--_worker-result-file", worker_result_file))
     if operation != "chat":
         command.extend(("--_operation", operation))
+    else:
+        command.append("--_forwarded-live-input")
+        model_selection = str(getattr(args, "model_selection", "") or "")
+        if model_selection:
+            command.extend(("--_model-selection", model_selection))
     if session_id:
         command.extend(("--session", session_id))
     if args.cwd:
@@ -120,7 +151,11 @@ def _worker_command(
     return command
 
 
-async def _drain_runtime_logs(reader: asyncio.StreamReader) -> deque[str]:
+async def _drain_runtime_logs(
+    reader: asyncio.StreamReader,
+    *,
+    on_receipt=None,
+) -> deque[str]:
     tail: deque[str] = deque(maxlen=20)
     pending = b""
     while True:
@@ -132,9 +167,115 @@ async def _drain_runtime_logs(reader: asyncio.StreamReader) -> deque[str]:
         pending += chunk
         while b"\n" in pending:
             line, pending = pending.split(b"\n", 1)
-            tail.append(line.decode(errors="replace").rstrip("\r"))
+            decoded = line.decode("utf-8", errors="replace").rstrip("\r")
+            if decoded.startswith(FORWARDED_RECEIPT_PREFIX):
+                try:
+                    prefix_length = len(FORWARDED_RECEIPT_PREFIX)
+                    receipt = json.loads(decoded[prefix_length:])
+                except json.JSONDecodeError:
+                    tail.append("工作进程返回了无效的补充输入回执")
+                else:
+                    if on_receipt is not None and isinstance(receipt, dict):
+                        on_receipt(str(receipt.get("status") or "unknown"))
+                continue
+            tail.append(decoded)
         if len(pending) > _LOG_LINE_TAIL_BYTES:
             pending = _TRUNCATED_LOG_MARKER + pending[-_LOG_LINE_TAIL_BYTES:]
+
+
+def _write_parent_output(text: str) -> None:
+    """Write worker text through the parent terminal stream."""
+
+    stream = sys.stdout
+    stream.write(text)
+    stream.flush()
+
+
+async def _relay_worker_output(
+    reader: asyncio.StreamReader,
+    *,
+    layout: LiveTurnLayout | None,
+) -> None:
+    """Append worker output to the model-output region of one live turn."""
+
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    while True:
+        chunk = await reader.read(64 * 1024)
+        if not chunk:
+            text = decoder.decode(b"", final=True)
+            if layout is not None:
+                layout.append_output(text)
+            elif text:
+                _write_parent_output(text)
+            return
+        text = decoder.decode(chunk)
+        if layout is not None:
+            layout.append_output(text)
+        elif text:
+            _write_parent_output(text)
+
+
+async def _read_live_prompt(
+    prompt_session,
+    layout: LiveTurnLayout,
+) -> str:
+    return await prompt_session.prompt_async(message=layout.message)
+
+
+async def _forward_live_input(
+    process: Process,
+    *,
+    prompt_session,
+    layout: LiveTurnLayout,
+    cancel_requested: asyncio.Event | None = None,
+) -> None:
+    """Route live slash commands locally and forward ordinary input to the worker."""
+
+    writer = process.stdin
+    if writer is None:
+        raise RuntimeError("process CLI worker stdin pipe is unavailable")
+    try:
+        while process.returncode is None:
+            try:
+                text = await _read_live_prompt(prompt_session, layout)
+            except EOFError:
+                return
+            except KeyboardInterrupt:
+                if cancel_requested is not None:
+                    cancel_requested.set()
+                await _interrupt_worker(process)
+                return
+            if process.returncode is not None:
+                return
+            stripped = text.strip()
+            if stripped.startswith("/"):
+                command = parse_slash_command(stripped)
+                if command is None:
+                    layout.add_notice(f"未知命令：{stripped.split(maxsplit=1)[0]}。输入 /help 查看可用命令。")
+                elif command.name == "/cancel" and not command.arguments:
+                    if cancel_requested is not None:
+                        cancel_requested.set()
+                    layout.add_notice("正在中断当前任务…")
+                    await _interrupt_worker(process)
+                    return
+                elif command.name == "/cancel":
+                    layout.add_notice("用法：/cancel")
+                else:
+                    layout.add_notice(f"当前任务运行中，暂不能执行 {command.name}；可使用 /cancel 中断任务。")
+                continue
+            layout.add_supplement(text)
+            writer.write((text + "\n").encode("utf-8"))
+            await writer.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        return
+    finally:
+        if not writer.is_closing():
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
 
 async def _wait_for_worker_exit(process: Process, *, timeout: float) -> bool:
@@ -189,7 +330,17 @@ async def _run_worker(
     prompt: str,
     session_id: str | None,
     operation: str = "chat",
+    prompt_session=None,
 ) -> tuple[int, str | None]:
+    live_layout = (
+        LiveTurnLayout(prompt)
+        if operation == "chat" and prompt_session is not None
+        else None
+    )
+    live_prompt_session = None
+    if live_layout is not None:
+        live_prompt_session = _create_live_prompt_session()
+        live_layout.bind(live_prompt_session)
     with tempfile.TemporaryDirectory(prefix="jiuwenswarm-process-repl-") as temp_dir:
         result_path = Path(temp_dir) / "session-id.txt"
         worker_result_path = Path(temp_dir) / "worker-result.json"
@@ -205,26 +356,84 @@ async def _run_worker(
                 worker_result_file=str(worker_result_path),
                 operation=operation,
             ),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             creationflags=creationflags,
+            env=_worker_environment(),
         )
+        process_stdout = getattr(process, "stdout", None)
         process_stderr = process.stderr
+        if process_stdout is None:
+            # Lightweight process doubles used by channel lifecycle tests do
+            # not expose a stdout reader.
+            process_stdout = asyncio.StreamReader()
+            process_stdout.feed_eof()
         if process_stderr is None:
             raise RuntimeError("process CLI worker stderr pipe is unavailable")
-        log_task = asyncio.create_task(_drain_runtime_logs(process_stderr))
+        log_task = asyncio.create_task(
+            _drain_runtime_logs(
+                process_stderr,
+                on_receipt=(
+                    live_layout.apply_receipt if live_layout is not None else None
+                ),
+            )
+        )
+        output_task = asyncio.create_task(
+            _relay_worker_output(
+                process_stdout,
+                layout=live_layout,
+            )
+        )
+        cancel_requested = asyncio.Event()
+        input_task = (
+            asyncio.create_task(
+                _forward_live_input(
+                    process,
+                    prompt_session=live_prompt_session,
+                    layout=live_layout,
+                    cancel_requested=cancel_requested,
+                )
+            )
+            if live_layout is not None and live_prompt_session is not None
+            else None
+        )
         try:
             return_code = await process.wait()
+            if cancel_requested.is_set():
+                return_code = 130
         except asyncio.CancelledError:
             _clear_current_task_cancellation()
             await _interrupt_worker(process)
             return_code = 130
         finally:
+            try:
+                await output_task
+            finally:
+                if input_task is not None:
+                    if (
+                        live_prompt_session is not None
+                        and live_prompt_session.app.is_running
+                    ):
+                        live_prompt_session.default_buffer.reset()
+                        live_prompt_session.app.erase_when_done = True
+                        live_prompt_session.app.exit(result="")
+                        await asyncio.gather(input_task, return_exceptions=True)
+                    else:
+                        input_task.cancel()
+                        await asyncio.gather(input_task, return_exceptions=True)
+                else:
+                    process_stdin = getattr(process, "stdin", None)
+                    if process_stdin is not None and not process_stdin.is_closing():
+                        process_stdin.close()
             if process.returncode is None:
                 log_task.cancel()
             try:
                 log_tail = await log_task
             except asyncio.CancelledError:
                 log_tail = deque()
+            if live_layout is not None:
+                _write_parent_output(live_layout.final_text())
 
         next_session = session_id
         worker_result: dict[str, object] | None = None
@@ -235,10 +444,7 @@ async def _run_worker(
             except (OSError, json.JSONDecodeError) as exc:
                 log_tail.append(f"工作进程结果无效：{exc}")
             else:
-                if (
-                    isinstance(loaded, dict)
-                    and loaded.get("operation") == operation
-                ):
+                if isinstance(loaded, dict) and loaded.get("operation") == operation:
                     worker_result = loaded
                     setattr(args, "_last_worker_result", dict(loaded))
                     value = loaded.get("session_id")
@@ -424,6 +630,116 @@ async def _handle_delete_command(
         ui.notice("已中断当前指令，可以继续输入。")
 
 
+async def _handle_control_command(
+    args: argparse.Namespace,
+    command: ParsedSlashCommand,
+    ui: ProcessCliUI,
+    state: _ReplState,
+) -> bool:
+    """Handle the additional REPL controls without creating a chat worker."""
+
+    name = command.name
+    if name not in {"/sessions", "/model", "/plan", "/status", "/permissions"}:
+        return False
+    arguments = command.arguments
+    if name == "/plan":
+        requested = arguments.lower()
+        if requested not in {"", "on", "off", "status"}:
+            ui.notice("用法：/plan [on|off|status]")
+        elif not state.display_mode.startswith("agent."):
+            ui.notice("/plan 仅支持单 Agent 模式。")
+        elif requested == "status":
+            ui.notice(f"当前规划模式：{'开启' if state.display_mode.endswith('.plan') else '关闭'}")
+        else:
+            enabled = (
+                not state.display_mode.endswith(".plan")
+                if not requested
+                else requested == "on"
+            )
+            args.mode = f"agent.{args.work_mode}.{'plan' if enabled else 'normal'}"
+            state.display_mode = _resolve_display_mode(args.mode, args.work_mode)
+            ui.notice(f"已切换模式：{state.display_mode}")
+        return True
+
+    try:
+        timeout = args.timeout or 30.0
+        if name == "/sessions":
+            parts = arguments.split()
+            if len(parts) > 2 or any(not part.isdecimal() for part in parts):
+                ui.notice("用法：/sessions [limit] [offset]")
+                return True
+            limit = int(parts[0]) if parts else 20
+            offset = int(parts[1]) if len(parts) == 2 else 0
+            if not 1 <= limit <= 200:
+                ui.notice("limit 必须在 1 到 200 之间。")
+                return True
+            data = await query_runtime(
+                "session.list",
+                cwd=state.cwd,
+                params={"limit": limit, "offset": offset},
+                timeout=timeout,
+            )
+            show_sessions(ui, data, state.session_id)
+        elif name == "/model":
+            if not arguments or arguments.lower() == "list":
+                data = await query_runtime("model.list", cwd=state.cwd, timeout=timeout)
+                show_models(ui, data, state.model_selection)
+            else:
+                data = await query_runtime(
+                    "model.resolve",
+                    cwd=state.cwd,
+                    params={"requested": arguments},
+                    timeout=timeout,
+                )
+                key = data.get("selection_key")
+                if not isinstance(key, str) or not key:
+                    raise ControlQueryError("模型查询结果缺少选择键")
+                args.model_selection = key
+                state.model_selection = key
+                state.model_name = str(data.get("display_name") or data.get("model_name") or key)
+                ui.notice(f"下一轮将使用模型：{state.model_name} [{key}]")
+        elif name == "/status":
+            if arguments:
+                ui.notice("用法：/status")
+                return True
+            session = None
+            if state.session_id:
+                data = await query_runtime(
+                    "session.get",
+                    cwd=state.cwd,
+                    params={"session_id": state.session_id},
+                    timeout=timeout,
+                )
+                session = data.get("session")
+                if session is not None and not isinstance(session, dict):
+                    raise ControlQueryError("会话状态格式无效")
+                if session is None:
+                    ui.notice("当前会话未在 Runtime 中找到。")
+            show_status(
+                ui,
+                session_id=state.session_id,
+                session=session,
+                next_mode=state.display_mode,
+                next_model=state.model_name,
+                cwd=state.cwd,
+            )
+        else:
+            if arguments:
+                ui.notice("用法：/permissions")
+                return True
+            params = {"session_id": state.session_id} if state.session_id else {}
+            data = await query_runtime(
+                "permission.get", cwd=state.cwd, params=params, timeout=timeout
+            )
+            show_permissions(ui, data)
+    except asyncio.CancelledError:
+        _clear_current_task_cancellation()
+        ui.notice("已取消当前查询，可以继续输入。")
+    except (ControlQueryError, OSError) as error:
+        ui.notice(str(error) or "Runtime 查询失败")
+    return True
+
+
 async def _handle_slash_command(
     args: argparse.Namespace,
     command: ParsedSlashCommand,
@@ -431,6 +747,8 @@ async def _handle_slash_command(
     state: _ReplState,
 ) -> bool:
     """Handle one recognized command and report whether the REPL should exit."""
+    if await _handle_control_command(args, command, ui, state):
+        return False
     if command.name == "/mode":
         state.display_mode = _handle_mode_command(
             args,
@@ -492,6 +810,9 @@ def _handle_simple_slash_command(
         return False
     if command.name == "/exit":
         return True
+    if command.name == "/cancel":
+        ui.notice("当前没有运行中的任务。")
+        return False
     if command.name == "/status":
         ui.status(
             model_name=state.model_name,
@@ -527,7 +848,8 @@ async def run_repl(args: argparse.Namespace) -> int:
         # These values are best-effort previews for the next fresh worker.
         # Refresh them every turn so configuration changes are not displayed
         # indefinitely after the worker would observe a newer configuration.
-        state.model_name = _resolve_configured_model_name()
+        if not state.model_selection:
+            state.model_name = _resolve_configured_model_name()
         state.display_mode = _resolve_display_mode(args.mode, args.work_mode)
         ui.status(
             model_name=state.model_name,
@@ -557,11 +879,16 @@ async def run_repl(args: argparse.Namespace) -> int:
             if await _handle_slash_command(args, slash_command, ui, state):
                 return 0
             continue
-        return_code, state.session_id = await _run_worker(
-            args,
-            prompt=prompt,
-            session_id=state.session_id,
-        )
+        if prompt.startswith("/"):
+            ui.notice(f"未知命令：{prompt.split(maxsplit=1)[0]}。输入 /help 查看可用命令。")
+            continue
+        worker_kwargs = {
+            "prompt": prompt,
+            "session_id": state.session_id,
+        }
+        if prompt_session is not None:
+            worker_kwargs["prompt_session"] = prompt_session
+        return_code, state.session_id = await _run_worker(args, **worker_kwargs)
         if return_code == 130:
             ui.notice("已中断当前指令，可以继续输入。")
 

@@ -364,7 +364,7 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
         ) : null}
       </div>
 
-      <div className="flex-1 min-h-0 overflow-auto p-5" data-testid="agent-panel-file-viewer-body">
+      <div className="flex-1 min-h-0 overflow-auto p-5" data-timeline-scroll-root data-testid="agent-panel-file-viewer-body">
         {loading ? (
           <div className="h-full flex items-center justify-center" data-testid="agent-panel-file-viewer-loading">
             <div className="w-7 h-7 rounded-full border-4 border-border border-t-accent animate-spin" />
@@ -435,6 +435,7 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
                   messages={historyMessages}
                   executions={historyExecutions}
                   reasoningSegments={historyReasoningSegments}
+                  key={filePath}
                   staticTimeline
                   virtualized
                   mode={historyPreviewMode ?? undefined}

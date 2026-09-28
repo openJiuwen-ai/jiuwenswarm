@@ -1,3 +1,4 @@
+import type { CatalogCacheMetadata } from '../catalogCache';
 import type { AgentConnectionState } from './types';
 
 export type RawLocalizedText = {
@@ -100,6 +101,7 @@ export type RawAgentGroupDetail = RawAgentGroupListItem & {
 
 export type RawAgentGroupListPayload = {
   agentGroups?: RawAgentGroupListItem[];
+  cache?: import('../catalogCache').CatalogCacheMetadata;
 };
 
 export type RawAgentGroupDetailPayload = {
@@ -119,6 +121,7 @@ export type RawAgentFileEntry = {
   type: 'file' | 'dir';
   visible?: boolean;
   size?: number;
+  previewable?: boolean;
   children?: RawAgentFileEntry[];
 };
 
@@ -128,7 +131,8 @@ export type RawAgentFileListPayload = {
 
 export type RawAgentFileReadPayload = {
   path?: string;
-  content?: string;
+  content?: string | null;
+  download_url?: string | null;
 };
 
 export type RawSkillOption = {
@@ -137,8 +141,30 @@ export type RawSkillOption = {
   description?: string;
   source?: string;
   installed?: boolean;
+  kind?: string;
+  skill_type?: string;
+  marketplace?: string;
+  spec?: string;
+  install_spec?: string;
 };
 
 export type RawSkillListPayload = {
   skills?: RawSkillOption[];
+};
+
+export type RawTeamSkillMarketplaceItem = {
+  asset_id?: string;
+  name?: string;
+  display_name?: string;
+  short_desc?: string;
+  description?: string;
+  plugin_type?: string;
+};
+
+export type RawTeamSkillMarketplacePayload = {
+  success?: boolean;
+  detail?: string;
+  cache?: CatalogCacheMetadata;
+  skills?: RawTeamSkillMarketplaceItem[];
+  items?: RawTeamSkillMarketplaceItem[];
 };

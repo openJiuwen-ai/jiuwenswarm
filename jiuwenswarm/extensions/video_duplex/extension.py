@@ -29,14 +29,16 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
         del config
 
     async def shutdown(self) -> None:
-        return None
+        manager = getattr(self, "_task_manager", None)
+        if manager is not None:
+            await manager.close()
 
     def bind_web_channel(
         self,
         channel: Any,
         services: ApplicationPluginServices,
     ) -> None:
-        register_video_live_handler(
+        self._task_manager = register_video_live_handler(
             channel,
             agent_client=services.require_agent_client(),
             normalize_media_attachments=services.normalize_media_attachments,
@@ -64,7 +66,10 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
                 )
                 return
             try:
-                settings.update_settings(values)
+                clear_secrets = params.get("clear_secrets", False)
+                if not isinstance(clear_secrets, bool):
+                    raise ValueError("clear_secrets must be a boolean")
+                settings.update_settings(values, clear_secrets=clear_secrets)
             except ValueError as exc:
                 await channel.send_response(
                     ws,
@@ -135,7 +140,10 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
                 id="video-live",
                 nav_key="app:video-duplex",
                 title="Full-duplex",
-                render_mode="bundled",
+                # The runtime remains bundled for task-chat integration, but
+                # the standalone plugin tab is intentionally hidden. Its
+                # configuration now lives under Settings > Experimental.
+                render_mode="none",
                 component="video-duplex",
                 position=75,
             ),

@@ -56,18 +56,22 @@ def resolve_local_asset(kind: str, local_id: str):
         ):
             raise PublishAPIError("RESOURCE_NOT_FOUND")
         return candidate
-    if kind in {"agent_template", "plugin"}:
+    if kind in {"agent_template", "agent_group", "plugin"}:
         from jiuwenswarm.server.runtime import extension_package_manager as packages
 
-        runtime_id = packages.resolve_equipment_runtime_id(
-            "agent_templates" if kind == "agent_template" else "plugin_packages",
-            local_id,
-        )
-        resolver = (
-            packages.resolve_agent_template_dir
-            if kind == "agent_template"
-            else packages.resolve_plugin_dir
-        )
+        if kind == "agent_group":
+            runtime_id = packages.resolve_equipment_runtime_id("agent_groups", local_id)
+            resolver = packages.resolve_agent_group_publish_dir
+        else:
+            runtime_id = packages.resolve_equipment_runtime_id(
+                "agent_templates" if kind == "agent_template" else "plugin_packages",
+                local_id,
+            )
+            resolver = (
+                packages.resolve_agent_template_dir
+                if kind == "agent_template"
+                else packages.resolve_plugin_dir
+            )
         try:
             return resolver(runtime_id)
         except (ValueError, OSError):
@@ -114,7 +118,17 @@ def _defaults(kind: str, local_id: str, source) -> dict:
             value = value.get("zh") or value.get("en") or ""
         return value if isinstance(value, str) else ""
 
-    name = label(data.get("id" if kind in {"plugin", "mcp"} else "name")) or local_id
+    manifest_name = label(data.get("name"))
+    if kind in {"agent_template", "agent_group"} and isinstance(source, Path):
+        # Agent manifests use ``name`` as a user-facing label, while the
+        # resolved package directory is the canonical Hub package identity.
+        # This also avoids publishing a Hub asset UUID when ``local_id`` is
+        # the remote identity rather than the installed package name.
+        name = source.name
+        display_name = label(data.get("display_name")) or manifest_name or name
+    else:
+        name = label(data.get("id" if kind in {"plugin", "mcp"} else "name")) or local_id
+        display_name = label(data.get("display_name")) or name
     version = label(data.get("version")) or "1.0.0"
     if not re.fullmatch(r"(?:\d+\.\d+\.\d+|[0-9a-f]{7})", version):
         version = "1.0.0"
@@ -126,7 +140,7 @@ def _defaults(kind: str, local_id: str, source) -> dict:
     return dict(
         asset_name=name,
         version=version,
-        display_name=label(data.get("display_name")) or name,
+        display_name=display_name,
         description=label(data.get("description"))
         or label(data.get("display_description")),
         tags=[t for t in tags if isinstance(t, str)] if isinstance(tags, list) else [],
@@ -181,8 +195,10 @@ class AssetPublishAPI:
             publisher or HubClient(base_url=self.hub_url),
             lambda scope, kind, local_id: resolver(kind, local_id),
             self.root / "packages",
-            on_published=lambda request, result: invalidate_hub_catalog(
-                request.identity.kind
+            on_published=lambda request, result: (
+                invalidate_hub_catalog(request.identity.kind),
+                invalidate_hub_catalog("agent_template")
+                if request.identity.kind == "agent_group" else None,
             ),
         )
 
@@ -232,7 +248,7 @@ class AssetPublishAPI:
             raise PublishAPIError("INVALID_PARAMETERS")
         if method == "local_status":
             kind, local_id = params.get("kind"), _safe_id(params.get("local_id"))
-            if kind not in {"skill", "agent_template", "plugin", "mcp"}:
+            if kind not in {"skill", "agent_template", "agent_group", "plugin", "mcp"}:
                 raise PublishAPIError("INVALID_KIND")
             # Workspace access remains enforced by the Web/Gateway route and local
             # resolver. This read-only summary never grants Hub account access.
@@ -243,7 +259,7 @@ class AssetPublishAPI:
         try:
             if method in {"describe", "prepare", "records"}:
                 kind, local_id = params.get("kind"), _safe_id(params.get("local_id"))
-                if kind not in {"skill", "agent_template", "plugin", "mcp"}:
+                if kind not in {"skill", "agent_template", "agent_group", "plugin", "mcp"}:
                     raise PublishAPIError("INVALID_KIND")
                 if method == "records":
                     return {
@@ -282,6 +298,7 @@ class AssetPublishAPI:
                     metadata.get("version", ""),
                     params.get("target_asset_id") or None,
                 )
+                force = params.get("force", False)
                 prepared = await self.service.prepare(
                     scope,
                     local_id,
@@ -292,15 +309,25 @@ class AssetPublishAPI:
                             for k, v in metadata.items()
                             if k not in {"asset_name", "version"}
                         },
-                        "force": params.get("force", False),
+                        "force": force,
                     },
+                )
+                version_conflict = not force and any(
+                    record.get("package_name") == identity.package_name
+                    and record.get("version") == identity.version
+                    and record.get("execution_status") != "failed"
+                    for record in self.service.records(scope, kind, local_id)
                 )
                 return {
                     **prepared,
                     "artifact_sha256": prepared["checksum_sha256"],
-                    "can_submit": True,
+                    "can_submit": not version_conflict,
                     "warnings": [],
-                    "errors": [],
+                    "errors": (
+                        [{"code": "VERSION_CONFLICT", "field": "version"}]
+                        if version_conflict
+                        else []
+                    ),
                 }
             if method == "commit":
                 return await self.service.commit(

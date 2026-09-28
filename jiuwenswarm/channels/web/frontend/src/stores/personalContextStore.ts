@@ -23,6 +23,7 @@ export type InfoTab = 'graph' | 'services';
 /** 未配置时的统一投影（与后端 _unconfigured_projection 字段对齐）。 */
 const UNCONFIGURED: PersonalContextConfig = {
   configured: false,
+  master_enabled: false,
   collection_enabled: false,
   agent_use_enabled: false,
   strategy_profile: 'agent',
@@ -46,6 +47,8 @@ interface PersonalContextState {
   loadingStatus: boolean;
   loadingGraph: boolean;
   loadingServices: boolean;
+  configNeedsReconciliation: boolean;
+  switchWriteGeneration: number;
   /** 按字段记录正在提交中的写操作，用于禁用对应控件。 */
   pendingWrites: Record<string, boolean>;
 
@@ -56,6 +59,7 @@ interface PersonalContextState {
   loadServices: () => Promise<void>;
   loadGraph: () => Promise<void>;
   loadAll: () => Promise<void>;
+  reconcileConfig: () => void;
 
   /** 一次 RTT 拉齐 services + status + runHistories，合并成单次 set()。
    *  由 5s 轮询的刷新任务调用，避免三次独立 set() 触发三次级联渲染。 */
@@ -63,7 +67,7 @@ interface PersonalContextState {
 
   setEnabled: (enabled: boolean) => Promise<void>;
   setAgentUseEnabled: (enabled: boolean) => Promise<void>;
-  /** 总开关：无独立持久化状态，仅联动两个子开关——开启=两者开，关闭=两者关。 */
+  /** 总开关（独立持久化）：开启=两个子开关都开，关闭=两个子开关都关；子开关切换不影响它。 */
   setMasterEnabled: (enabled: boolean) => Promise<void>;
   setStrategyProfile: (profile: PersonalContextConfig['strategy_profile']) => Promise<void>;
   selectModel: (modelIndex: number) => Promise<void>;
@@ -78,10 +82,12 @@ interface PersonalContextState {
   stopRun: (serviceId: string) => Promise<void>;
 
   loadAuthStatus: (provider: string) => Promise<void>;
-  /** 授权（飞书 OAuth 设备流不带 credentials；github/gitcode 传 {token}/{pat}）。 */
+  /** 授权（飞书 OAuth 设备流不带 credentials；github/gitcode 传 {token}/{pat}）。
+   *  reauthorize=true 时强制重新发起授权（飞书已授权后再次授权需传）。 */
   authorizeProvider: (
     provider: string,
     credentials?: Record<string, string>,
+    reauthorize?: boolean,
   ) => Promise<AuthorizationResult>;
   /** 派生：provider 是否已授权（飞书/github/gitcode 走 authByProvider 真实态，其余无需授权）。 */
   isProviderAuthorized: (provider: FetchProvider) => boolean;
@@ -99,18 +105,46 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   loadingStatus: false,
   loadingGraph: false,
   loadingServices: false,
+  configNeedsReconciliation: false,
+  switchWriteGeneration: 0,
   pendingWrites: {},
 
   setInfoTab: (tab) => set({ infoTab: tab }),
 
   loadConfig: async () => {
+    const generationAtStart = get().switchWriteGeneration;
     set({ loadingConfig: true });
     try {
       const config = await pcApi.getConfig();
-      set({ config });
+      set((state) =>
+        state.switchWriteGeneration === generationAtStart &&
+        !state.pendingWrites.collection_enabled &&
+        !state.pendingWrites.agent_use_enabled
+          ? { config, configNeedsReconciliation: false }
+          : state,
+      );
     } finally {
       set({ loadingConfig: false });
     }
+  },
+
+  reconcileConfig: () => {
+    if (get().configNeedsReconciliation) return;
+    set({ configNeedsReconciliation: true });
+    const retry = async (): Promise<void> => {
+      if (!get().configNeedsReconciliation) return;
+      try {
+        await get().loadConfig();
+      } catch {
+        // 写入结果不明时保留请求态，下次继续核对 Host 配置。
+      }
+      if (get().configNeedsReconciliation) {
+        globalThis.setTimeout(() => {
+          void retry();
+        }, 5000);
+      }
+    };
+    void retry();
   },
 
   loadStatus: async () => {
@@ -138,6 +172,9 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   },
 
   loadGraph: async () => {
+    // 防重入：getGraph 走全局流式事件订阅，并发调用会互相收到对方的 nodes/edges 帧，
+    // 导致数据串扰；上一轮未结束时跳过本轮，由进行中的那次完成后统一 set。
+    if (get().loadingGraph) return;
     set({ loadingGraph: true });
     try {
       const graph = await pcApi.getGraph();
@@ -152,17 +189,28 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   },
 
   batchRefresh: async () => {
-    // 一次 RTT 拉齐三路数据后合并成单次 set()，避免三次独立 set() 在轮询期间
-    // 触发三次级联重渲染（见抖动问题）。某一路失败时保留旧值，不阻断其余刷新。
-    const [services, status, runHistories] = await Promise.all([
+    // 开关请求结果不明时额外读取 Host 配置；正常轮询不增加配置请求。
+    const generationAtStart = get().switchWriteGeneration;
+    const reconcile = get().configNeedsReconciliation;
+    const [services, status, runHistories, config] = await Promise.all([
       pcApi.listServices().catch(() => null),
       pcApi.getStatus().catch(() => null),
       pcApi.getRunStatus().catch(() => null),
+      reconcile ? pcApi.getConfig().catch(() => null) : Promise.resolve(null),
     ]);
     set((state) => ({
-      ...(services
-        ? { config: { ...state.config, fetch_services: services.services } }
-        : {}),
+      ...(config &&
+      state.configNeedsReconciliation &&
+      state.switchWriteGeneration === generationAtStart &&
+      !state.pendingWrites.collection_enabled &&
+      !state.pendingWrites.agent_use_enabled
+        ? {
+            config: { ...config, fetch_services: services?.services ?? config.fetch_services },
+            configNeedsReconciliation: false,
+          }
+        : services
+          ? { config: { ...state.config, fetch_services: services.services } }
+          : {}),
       ...(status ? { status } : {}),
       ...(runHistories
         ? {
@@ -175,14 +223,21 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   },
 
   setEnabled: async (enabled) => {
-    set({ pendingWrites: { ...get().pendingWrites, collection_enabled: true } });
+    set((state) => ({
+      switchWriteGeneration: state.switchWriteGeneration + 1,
+      pendingWrites: { ...state.pendingWrites, collection_enabled: true },
+    }));
     const prev = get().config;
     set({ config: { ...prev, collection_enabled: enabled } });
     try {
       const next = enabled ? await pcApi.startRuntime() : await pcApi.stopRuntime();
-      set({ config: next, status: await pcApi.getStatus().catch(() => get().status) });
+      set({
+        config: next,
+        configNeedsReconciliation: false,
+        status: await pcApi.getStatus().catch(() => get().status),
+      });
     } catch (e) {
-      set({ config: prev });
+      get().reconcileConfig();
       throw e;
     } finally {
       set({ pendingWrites: { ...get().pendingWrites, collection_enabled: false } });
@@ -190,14 +245,44 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   },
 
   setMasterEnabled: async (enabled) => {
-    // 总开关为派生状态，本身不落库：开=两个子开关都开，关=两个子开关都关。
-    if (enabled) {
-      // 开启顺序：先采集（可能触发后端首次初始化 config），再 agent 使用
-      await get().setEnabled(true);
-      await get().setAgentUseEnabled(true);
-    } else {
-      await get().setEnabled(false);
-      await get().setAgentUseEnabled(false);
+    // 总开关联动两个子开关，由后端一次 RPC 原子持久化，避免中间状态落盘不一致。前端仍做
+    // 乐观更新 + pendingWrites（对齐 setEnabled/setAgentUseEnabled）：切换期间主/子开关都进入
+    // 禁用态，失败回滚乐观翻转。
+    set((state) => ({
+      switchWriteGeneration: state.switchWriteGeneration + 1,
+      pendingWrites: {
+        ...state.pendingWrites,
+        collection_enabled: true,
+        agent_use_enabled: true,
+      },
+    }));
+    const prev = get().config;
+    set({
+      config: {
+        ...prev,
+        master_enabled: enabled,
+        collection_enabled: enabled,
+        agent_use_enabled: enabled,
+      },
+    });
+    try {
+      const next = await pcApi.setMasterEnabled(enabled);
+      set({
+        config: next,
+        configNeedsReconciliation: false,
+        status: await pcApi.getStatus().catch(() => get().status),
+      });
+    } catch (e) {
+      get().reconcileConfig();
+      throw e;
+    } finally {
+      set({
+        pendingWrites: {
+          ...get().pendingWrites,
+          collection_enabled: false,
+          agent_use_enabled: false,
+        },
+      });
     }
   },
 
@@ -323,7 +408,7 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     set({ pendingWrites: { ...get().pendingWrites, [`run:${serviceId}`]: true } });
     try {
       await pcApi.runOne(serviceId);
-      await Promise.all([get().loadServices(), get().loadStatus()]);
+      await get().batchRefresh();
     } finally {
       const next = { ...get().pendingWrites };
       delete next[`run:${serviceId}`];
@@ -352,10 +437,10 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     }
   },
 
-  authorizeProvider: async (provider, credentials) => {
+  authorizeProvider: async (provider, credentials, reauthorize) => {
     set({ pendingWrites: { ...get().pendingWrites, [`auth:${provider}`]: true } });
     try {
-      const result = await pcApi.authorizeProvider(provider, credentials);
+      const result = await pcApi.authorizeProvider(provider, credentials, reauthorize);
       set({ authByProvider: { ...get().authByProvider, [provider]: result } });
       return result;
     } finally {

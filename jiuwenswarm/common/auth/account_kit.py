@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import urlencode, urljoin, urlparse
 
 from jiuwenswarm.common.auth.net import requests_request
-from jiuwenswarm.common.auth.remote_config import RemoteConfig
+from jiuwenswarm.common.auth.remote_config import RemoteConfig, config_url
 from jiuwenswarm.common.auth.remote_config import get_config as get_remote_config
 
 logger = logging.getLogger(__name__)
@@ -31,10 +31,17 @@ LOGIN_SECTION = "huaweiaccount_login"
 DEFAULT_CLIENT_ID = "118944053"
 #: 回调落**本机 Gateway** 时的地址。必须和AGC里登记的逐字一致
 DEFAULT_REDIRECT_URI = "http://localhost:19000/api/v1/auth/callback"
+#: 华为账号中心的个人页面。换账号时界面把用户领到这里退出——华为没有登出端点，浏览器里的
+#: 登录态只能用户自己清。用这个地址是因为它直接落在个人页面（退出入口在那里），省掉先点登录那一步；
+#: 华为按区域有 id1/id7 等多个站点，换区域或改版时由配置的 account_center_url 覆盖，不用发版
+DEFAULT_ACCOUNT_CENTER_URL = "https://id1.cloud.huawei.com/AMW/portal/userCenter/index.html"
 _CLAIM_FINGERPRINT_SALT = "jiuwen-account-kit-claim:"
 _CLAIM_FINGERPRINT_LEN = 32
-#: 回调落 ECS 时，发起方每隔这么久去认领一次，直到拿到结果或 state 过期
+#: 回调落ECS鉴权服务时，发起方每隔这么久去认领一次，直到拿到结果或state过期
 CLAIM_POLL_INTERVAL_S = 2.0
+#: 发起这么久还没授权完就放慢到 CLAIM_POLL_SLOW_INTERVAL_S：多半是放弃了，用户回到应用时的认领会当场再取一次
+CLAIM_POLL_SLOW_AFTER_S = 2 * 60.0
+CLAIM_POLL_SLOW_INTERVAL_S = 10.0
 DEFAULT_SCOPE = "openid profile"
 STATE_TTL_S = 10 * 60.0
 CLAIM_TTL_S = 5 * 60.0
@@ -92,6 +99,15 @@ def login_enabled() -> bool:
     return config is not None and config.is_effective
 
 
+def campaign_state() -> str:
+    if not config_url():
+        return "off"
+    config = get_remote_config()
+    if config is None:
+        return "unavailable"
+    return "active" if config.is_effective else "ended"
+
+
 @dataclass(frozen=True)
 class OAuthConfig:
     client_id: str
@@ -101,6 +117,8 @@ class OAuthConfig:
     callback_url: str = ""
     claim_url: str = ""
     authorize_url: str = AUTHORIZE_URL
+    #: 换账号时让用户去退出华为账号的地址
+    account_center_url: str = DEFAULT_ACCOUNT_CENTER_URL
 
     @property
     def effective_redirect_uri(self) -> str:
@@ -129,6 +147,7 @@ class OAuthConfig:
             exchange_url=login.value("exchange_url"),
             callback_url=login.value("callback_url"),
             claim_url=login.value("claim_url"),
+            account_center_url=login.value("account_center_url", DEFAULT_ACCOUNT_CENTER_URL),
         )
 
 
@@ -198,6 +217,11 @@ def _outcome_from_token_response(payload: dict[str, Any], previous_refresh: str 
     return LoginOutcome(credential=credential, user_id=user_id, user_name=user_name)
 
 
+def _same_token(expected: str, provided: str) -> bool:
+    # 按 bytes 比：compare_digest 的 str 形式遇到非 ASCII 会抛 TypeError
+    return hmac.compare_digest(expected.encode("utf-8"), provided.encode("utf-8"))
+
+
 @dataclass
 class PendingLogin:
     state: str
@@ -258,11 +282,17 @@ class PendingLogins:
             pending.error = error
             pending.expires_at = time.time() + CLAIM_TTL_S
 
+    def discard(self, state: str, claim_token: str) -> None:
+        with self._lock:
+            pending = self._items.get(state)
+            if pending is not None and _same_token(pending.claim_token, claim_token):
+                self._items.pop(state, None)
+
     def claim(self, state: str, claim_token: str) -> str | None:
         with self._lock:
             self._prune()
             pending = self._items.get(state)
-            if pending is None or not hmac.compare_digest(pending.claim_token, claim_token):
+            if pending is None or not _same_token(pending.claim_token, claim_token):
                 raise OAuthError("登录请求无效或已过期，请重新发起登录", "oauth_state_invalid")
             if pending.error is not None:
                 self._items.pop(state, None)
@@ -281,7 +311,7 @@ class PendingLogins:
 def claim_fingerprint(claim_token: str) -> str:
     """``claim_token`` → 放进 state 里的指纹。
 
-    回调落 ECS 时，ECS 凭它确认"来认领的确实是发起这次登录的客户端"，因此发起方不用
+    回调落ECS鉴权服务时，ECS凭它确认"来认领的确实是发起这次登录的客户端"，因此发起方不用
     提前去登记，ECS 的多个实例之间也没有要同步的账本。取哈希而不是原值：state 会进地址栏、
     浏览器历史和华为的日志。**规则必须和ECS侧一字不差**
     """
@@ -324,7 +354,7 @@ class AccountKitFlow:
         logger.info(
             "[Auth] 已生成授权地址 state=%s 回调=%s",
             mask(pending.state),
-            "ECS" if config.callback_url else "本机",
+            "ECS鉴权服务" if config.callback_url else "本机",
         )
         return {
             "authorizeUrl": f"{config.authorize_url}?{urlencode(params)}",
@@ -348,7 +378,7 @@ class AccountKitFlow:
         return outcome
 
     def claim_from_exchange(self, state: str, claim_token: str) -> tuple[str, OAuthError | None] | None:
-        """回调落 ECS 时：去 ECS 取这次登录的授权码。
+        """回调落ECS鉴权服务时：去ECS取这次登录的授权码。
 
         返回 ``(code, None)``、``("", OAuthError)``（用户取消等），回调还没到返回 ``None``。
         网络抖动也返回 ``None``——由调用方的轮询下次再试，不该把一次登录判死。
@@ -368,6 +398,10 @@ class AccountKitFlow:
             logger.warning("[Auth] 认领授权码失败（稍后重试）: %s", exc)
             return None
         if response.status_code == 202:
+            return None
+        if response.status_code == 429 or response.status_code >= 500:
+            # 限流、APIG/鉴权服务暂时不可用：下次轮询再试，不把登录判死
+            logger.warning("[Auth] 认领接口暂时不可用 HTTP %s（稍后重试）", response.status_code)
             return None
         try:
             payload = response.json()
@@ -419,7 +453,7 @@ class AccountKitFlow:
 
     def _token_request(self, form: dict[str, str]) -> dict[str, Any]:
         self._ensure_exchange_available()
-        # ECS补上client_secret再转给登录页面，client_id也带上让它核对
+        # ECS鉴权服务补上client_secret再转给登录页面，client_id也带上让它核对
         data = {**form, "client_id": self.config.client_id}
         try:
             response = requests_request(

@@ -19,6 +19,10 @@ import openjiuwen.symphony as core_symphony  # type: ignore[import-untyped]
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
+from jiuwenswarm.server.runtime.skill.skillpack import (
+    read_skillpack_section,
+    scan_skillpacks,
+)
 from jiuwenswarm.symphony.adapter import (
     candidate_ids_from_skill_ids,
     graph_config_from_swarm,
@@ -28,11 +32,11 @@ from jiuwenswarm.symphony.adapter import (
     orchestration_config_from_swarm,
 )
 from jiuwenswarm.symphony.llm import LLMConfig, probe_model_connection
-from jiuwenswarm.symphony.experience import (
-    JiuwenSwarmSkillAdapter,
-    SkillPackNotInstallableError,
+from jiuwenswarm.symphony.config import (
+    SymphonyConfig,
+    evolution_flow_enabled,
+    load_symphony_config,
 )
-from jiuwenswarm.symphony.config import SymphonyConfig, load_symphony_config
 from jiuwenswarm.symphony.build import build_graph as service_build_graph
 from jiuwenswarm.symphony.build import graph_status
 from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
@@ -47,7 +51,27 @@ CapabilityPackager = core_symphony.flow.CapabilityPackager
 LLMPackageReviewAgent = core_symphony.LLMPackageReviewAgent
 PackageReviewGate = core_symphony.flow.PackageReviewGate
 SymphonyFlowEngine = core_symphony.flow.SymphonyFlowEngine
+SymphonyFlowConfig = core_symphony.orchestration.config.SymphonyFlowConfig
+SkillPackAdapter = core_symphony.flow.SkillPackAdapter
 VERDICT_APPROVED = core_symphony.flow.VERDICT_APPROVED
+
+
+def _symphony_flow_config(flow_cfg: Any) -> SymphonyFlowConfig:
+    """Pass distill thresholds only when this openjiuwen build accepts them."""
+
+    accepted = inspect.signature(SymphonyFlowConfig).parameters
+    kwargs: dict[str, Any] = {}
+    if "min_successes" in accepted:
+        kwargs["min_successes"] = flow_cfg.min_successes
+    else:
+        for name in ("min_successes_candidate", "min_successes_verified"):
+            if name in accepted:
+                kwargs[name] = flow_cfg.min_successes
+    if "min_pack_success_rate" in accepted:
+        kwargs["min_pack_success_rate"] = flow_cfg.min_pack_success_rate
+    elif "min_pack_success_rate_verified" in accepted:
+        kwargs["min_pack_success_rate_verified"] = flow_cfg.min_pack_success_rate
+    return SymphonyFlowConfig(**kwargs)
 
 
 ProgressCallback = Callable[[dict[str, Any]], Any]
@@ -84,22 +108,27 @@ def _candidate_question(
     request_id: str,
 ) -> dict[str, Any]:
     structure = (
-        "；".join(
-            f"{source} → {target} ({relation})"
-            for source, target, relation in candidate.structure
+        "\n".join(
+            f"`{source}` → `{target}`"
+            for source, target, _relation in candidate.structure
         )
-        or "线性组合能力"
+        or "根据任务需要组合使用"
     )
-    statistics = (
-        f"成功 {candidate.success_count}/{candidate.execution_count} 次"
-        f"（{candidate.success_rate:.0%}）"
-    )
+    package_name = candidate.name or "组合技能包"
+    applicability = candidate.applicability or "适合需要多个技能配合完成的类似任务。"
     question = "\n".join(
         (
-            candidate.applicability or "发现一条可复用的成功能力组合。",
-            f"能力结构：{structure}",
-            f"历史统计：{statistics}",
-            "是否安装为组合 Skill？",
+            "系统发现这套能力组合在类似任务中表现稳定，可以保存为技能包，"
+            "以后遇到类似任务时直接使用。",
+            "",
+            "**技能包名称**",
+            package_name,
+            "",
+            "**适用场景**",
+            applicability,
+            "",
+            "**包含的技能及执行顺序**",
+            structure,
         )
     )
     return {
@@ -107,11 +136,19 @@ def _candidate_question(
         "request_id": request_id,
         "questions": [
             {
-                "header": (candidate.name or "组合 Skill")[:12],
+                "header": "发现可复用的技能包",
                 "question": question,
                 "options": [
-                    {"label": "安装", "description": "评审通过后安装组合 Skill。"},
-                    {"label": "稍后", "description": "保留经验，暂不安装。"},
+                    {
+                        "label": "创建技能包",
+                        "value": "install",
+                        "description": "保存这套能力组合，供以后直接使用。",
+                    },
+                    {
+                        "label": "暂不创建",
+                        "value": "defer",
+                        "description": "保留这条推荐，本次不创建技能包。",
+                    },
                 ],
                 "multi_select": False,
             }
@@ -344,6 +381,7 @@ class SwarmSymphonyService:
                 min_edge_confidence=config.orchestration.min_edge_confidence,
                 disabled_skill_names=load_execution_disabled_skills(),
                 dynamic_overlay=None,
+                skills_root=config.paths.skills_root,
             )
         payload.update(_build_log_payload(graph_dir))
         _prefer_build_failure_detail(payload)
@@ -401,8 +439,7 @@ class SwarmSymphonyService:
                             "retryable": False,
                             "build_status": "running",
                             "operation": "plan",
-                            "detail": graph_build.get("detail")
-                            or failure["detail"],
+                            "detail": graph_build.get("detail") or failure["detail"],
                         }
                     )
                 return failure
@@ -614,7 +651,7 @@ class SwarmSymphonyService:
             config.orchestration.top_k,
             config.orchestration.max_depth,
             config.orchestration.min_edge_confidence,
-            config.evolution.enabled,
+            evolution_flow_enabled(config),
             llm_signature,
         )
         if self._runtime is None or self._runtime_key != key:
@@ -643,13 +680,15 @@ class SwarmSymphonyService:
     ) -> SymphonyRuntimeType:
         model = model_from_config(llm_config)
         flow_engine = None
-        if with_flow and config.evolution.enabled:
+        if with_flow and evolution_flow_enabled(config):
             flow_dir = config.paths.graph_dir.parent / "flow"
+            flow_cfg = config.evolution.flow
             flow_engine = SymphonyFlowEngine(
                 flow_dir,
+                config=_symphony_flow_config(flow_cfg),
                 llm_client=model,
                 gate=PackageReviewGate(LLMPackageReviewAgent(model)),
-                skill_adapter=JiuwenSwarmSkillAdapter(),
+                skill_adapter=SkillPackAdapter(),
             )
         return SymphonyRuntime(
             graph_artifact_root=config.paths.graph_dir,
@@ -718,7 +757,7 @@ class SwarmSymphonyService:
         """Submit one Rail graph pair and deliver any new install candidates."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not evolution_flow_enabled(config):
             return
         runtime = self._runtime_for(config)
         result = await runtime.submit_evolution(
@@ -730,7 +769,15 @@ class SwarmSymphonyService:
         recovered = self._recovered_candidates
         try:
             recovered = (*recovered, *await self._start_flow(runtime))
-            self._recovered_candidates = ()
+            if execution_graph.get("outcome") == "success":
+                self._recovered_candidates = ()
+            else:
+                # Startup recovery has no originating session. Keep those
+                # candidates queued until a successful task provides an
+                # appropriate conversation context; a cancelled/partial run
+                # must not surface an unrelated historical recommendation.
+                self._recovered_candidates = _unique_candidates(recovered)
+                recovered = ()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Symphony Flow startup recovery failed (%s)",
@@ -762,7 +809,7 @@ class SwarmSymphonyService:
         """Start Flow recovery when the feature is enabled."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not evolution_flow_enabled(config):
             return
         runtime = self._runtime_for(config)
         recovered = await self._start_flow(runtime)
@@ -806,25 +853,45 @@ class SwarmSymphonyService:
                 build_server_push_message,
             )
             # Delivery succeeded. Keep the process-local guard even if the
-            # persistent Flow acknowledgement is stale or temporarily fails;
-            # otherwise concurrent submissions can show the same prompt again.
+            # user has not answered yet; otherwise concurrent submissions can
+            # show the same prompt again.
             self._notified_candidates.add(key)
-            runtime = self._runtime
-            if runtime is None or runtime.flow_engine is None:
-                return
-            try:
-                runtime.flow_engine.acknowledge_candidate(*key)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "Symphony candidate acknowledgement failed (%s)",
-                    type(exc).__name__,
-                )
+
+    def defer_candidate(self, recipe_id: str, version: int) -> None:
+        """Allow a deferred candidate to be offered by a later successful run."""
+
+        key = (recipe_id, version)
+        self._notified_candidates.discard(key)
+        runtime = self._runtime
+        if runtime is None or runtime.flow_engine is None:
+            return
+        try:
+            runtime.flow_engine.release_candidate(*key)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Symphony deferred candidate release failed (%s)",
+                type(exc).__name__,
+            )
+
+    @staticmethod
+    def _acknowledge_installed_candidate(
+        flow: Any,
+        recipe_id: str,
+        recipe_version: int,
+    ) -> None:
+        try:
+            flow.acknowledge_candidate(recipe_id, recipe_version)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Symphony installed candidate acknowledgement failed (%s)",
+                type(exc).__name__,
+            )
 
     def list_experience_candidates(self) -> dict[str, Any]:
         """Return installable Recipe versions retained by the Core Flow store."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not evolution_flow_enabled(config):
             return {"success": True, "enabled": False, "candidates": []}
         flow = self._runtime_for(config).flow_engine
         candidates = flow.list_candidates() if flow is not None else ()
@@ -845,7 +912,7 @@ class SwarmSymphonyService:
         """Re-send one retained candidate through the existing Host question flow."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not evolution_flow_enabled(config):
             return {"success": False, "reason": "flow_disabled"}
         flow = self._runtime_for(config).flow_engine
         candidate = (
@@ -883,19 +950,26 @@ class SwarmSymphonyService:
         if request_id != expected_request_id:
             return {"installed": False, "reason": "invalid_request_id"}
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not evolution_flow_enabled(config):
             return {"installed": False, "reason": "flow_disabled"}
         async with self._install_lock:
             previous = self._install_receipts.get(request_id)
-            if previous is not None:
+            if previous is not None and previous.get("installed") is True:
+                flow = self.runtime().flow_engine
+                if flow is not None:
+                    self._acknowledge_installed_candidate(
+                        flow, recipe_id, recipe_version
+                    )
                 return {**previous, "newly_installed": False, "replayed": True}
+            self._install_receipts.pop(request_id, None)
             runtime = self.runtime()
             flow = runtime.flow_engine
             if flow is None:
                 return {"installed": False, "reason": "flow_disabled"}
             persisted = _read_install_receipt(flow.store.root.resolve(), request_id)
-            if persisted is not None:
+            if persisted is not None and persisted.get("installed") is True:
                 self._install_receipts[request_id] = dict(persisted)
+                self._acknowledge_installed_candidate(flow, recipe_id, recipe_version)
                 return {**persisted, "newly_installed": False, "replayed": True}
             preparation = await flow.review_and_prepare_install(
                 recipe_id,
@@ -915,8 +989,6 @@ class SwarmSymphonyService:
                     "recipe_version": recipe_version,
                     "request_id": request_id,
                 }
-                _save_install_receipt(flow.store.root.resolve(), result)
-                self._install_receipts[request_id] = dict(result)
                 return result
             if package_id and package_id != actual_package_id:
                 return {"installed": False, "reason": "package_id_mismatch"}
@@ -925,52 +997,53 @@ class SwarmSymphonyService:
             if not CapabilityPackager.verify_package_integrity(package):
                 return {"installed": False, "reason": "invalid_integrity"}
             flow_root = flow.store.root.resolve()
-            with tempfile.TemporaryDirectory(
-                prefix=".symphony-install-", dir=flow_root
-            ) as staging_value:
-                artifact_dir = Path(staging_value).resolve()
+            artifact_value = preparation.artifact_dir
+            if not artifact_value:
+                return {"installed": False, "reason": "missing_artifact"}
+            artifact_path = Path(artifact_value)
+            artifact_dir = artifact_path.resolve()
+            expected_artifact_dir = (
+                flow_root / "packages" / actual_package_id / "skill"
+            ).resolve()
+            if (
+                artifact_dir != expected_artifact_dir
+                or not artifact_dir.is_dir()
+                or artifact_path.is_symlink()
+            ):
+                return {"installed": False, "reason": "invalid_artifact"}
+            recover = getattr(skill_manager, "recover_symphony_skill_install", None)
+            installed = (
+                recover(
+                    artifact_dir,
+                    package_id=actual_package_id,
+                    integrity=actual_integrity,
+                )
+                if callable(recover)
+                else None
+            )
+            if installed is None:
                 try:
-                    JiuwenSwarmSkillAdapter.render(package, artifact_dir)
-                except SkillPackNotInstallableError as exc:
-                    logger.warning("Symphony SkillPack is not installable: %s", exc)
-                    return {
-                        "installed": False,
-                        "reason": "not_installable",
-                        "details": [str(exc)],
-                    }
-                recover = getattr(skill_manager, "recover_symphony_skill_install", None)
-                installed = (
-                    recover(
+                    installed = skill_manager.install_symphony_skill_artifact(
                         artifact_dir,
+                        expected_root=flow_root,
                         package_id=actual_package_id,
                         integrity=actual_integrity,
                     )
-                    if callable(recover)
-                    else None
-                )
-                if installed is None:
-                    try:
-                        installed = skill_manager.install_symphony_skill_artifact(
-                            artifact_dir,
-                            expected_root=flow_root,
-                            package_id=actual_package_id,
-                            integrity=actual_integrity,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "Symphony Skill install failed (%s)",
-                            type(exc).__name__,
-                        )
-                        if getattr(exc, "code", "") in {
-                            "SKILL_INVALID_METADATA",
-                            "SKILL_INVALID_PACKAGE",
-                        }:
-                            return {
-                                "installed": False,
-                                "reason": "not_installable",
-                                "details": [str(exc)],
-                            }
-                        return {"installed": False, "reason": "install_failed"}
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Symphony Skill install failed (%s)",
+                        type(exc).__name__,
+                    )
+                    if getattr(exc, "code", "") in {
+                        "SKILL_INVALID_METADATA",
+                        "SKILL_INVALID_PACKAGE",
+                    }:
+                        return {
+                            "installed": False,
+                            "reason": "not_installable",
+                            "details": [str(exc)],
+                        }
+                    return {"installed": False, "reason": "install_failed"}
             receipt = {
                 "installed": bool(installed.get("success")),
                 "newly_installed": bool(installed.get("success")),
@@ -985,6 +1058,7 @@ class SwarmSymphonyService:
             if receipt["installed"]:
                 _save_install_receipt(flow_root, receipt)
                 self._install_receipts[request_id] = dict(receipt)
+                self._acknowledge_installed_candidate(flow, recipe_id, recipe_version)
             return receipt
 
     async def close(self) -> None:
@@ -1098,6 +1172,7 @@ def _web_graph_payload(
     min_edge_confidence: float,
     disabled_skill_names: set[str] | list[str] | tuple[str, ...],
     dynamic_overlay: dict[str, Any] | None,
+    skills_root: Path | None = None,
 ) -> dict[str, Any]:
     """Adapt the public capability graph for the existing Skill Graph panel."""
 
@@ -1174,85 +1249,37 @@ def _web_graph_payload(
 
     graph = {"nodes": nodes, "edges": edges}
 
-    # Load skill packs if evolution is enabled
+    # Scan installed SkillPacks from the workspace skills directory; the graph,
+    # the skills page, and the execution-disabled check all read one source.
     pack_nodes = []
     pack_edges = []
     pack_member_nodes = []  # Track member skill nodes that need to be added
     try:
-        from jiuwenswarm.symphony.evolution.pack_store import read_packs
-        from jiuwenswarm.symphony.evolution.store import read_events
-
-        # Build event index for pack trace lookup
-        events_index: dict[str, dict[str, Any]] = {}
-        try:
-            for event in read_events(graph_dir):
-                eid = event.get("event_id", "")
-                if eid:
-                    events_index[eid] = event
-        except Exception:  # noqa: BLE001
-            pass
-
-        packs_data = read_packs(graph_dir)
-        for pack in packs_data.get("packs", []):
-            pack_id = pack.get("pack_id", "")
-            if not pack_id:
-                continue
-
-            # Create pack node
+        skills_dir = Path(skills_root) if skills_root is not None else graph_dir.parent.parent / "skills"
+        for definition in scan_skillpacks(skills_dir):
+            pack_id = definition.name
+            member_ids = list(definition.members)
             pack_node_id = f"pack:{pack_id}"
-            member_ids = pack.get("member_ids", [])
-
-            # Extract query and trace details from associated events
-            group_traces = pack.get("group_traces", [])
-            queries: list[str] = []
-            trace_details: list[dict[str, Any]] = []
-            for trace_id in group_traces:
-                event = events_index.get(trace_id)
-                if not event:
-                    continue
-                q = str(event.get("query") or "").strip()
-                if q and q not in queries:
-                    queries.append(q)
-                detail = str(event.get("detail") or "").strip()
-                if detail:
-                    trace_details.append({
-                        "event_id": trace_id,
-                        "query": q,
-                        "detail": detail,
-                        "outcome": event.get("outcome", ""),
-                        "ts": event.get("ts", ""),
-                    })
-
-            # Use task_description as label (truncated for graph display)
-            task_desc = pack.get("task_description", "")
-            if task_desc:
-                label = task_desc[:50] + "..." if len(task_desc) > 50 else task_desc
-            elif queries:
-                full_label = queries[0]
-                label = full_label[:50] + "..." if len(full_label) > 50 else full_label
-            elif member_ids:
-                label = f"Pack ({len(member_ids)} skills)"
-            else:
-                label = "Skill Pack"
-
-            pack_node = {
+            description = definition.description or pack_id
+            # 节点 label 用包名（display_name 优先，frontmatter name 兜底），
+            # 描述保留在 properties 里由详情面板展示
+            label_source = definition.display_name or pack_id
+            label = label_source[:50] + "..." if len(label_source) > 50 else label_source
+            pack_dir = skills_dir / pack_id
+            pack_nodes.append({
                 "id": pack_node_id,
                 "type": "skill_pack",
                 "label": label,
                 "properties": {
                     "pack_id": pack_id,
                     "member_ids": member_ids,
-                    "quality": pack.get("quality", {}),
-                    "status": pack.get("status", ""),
-                    "grade": pack.get("grade", ""),
-                    "query": queries[0] if queries else "",
-                    "trace_details": trace_details,
-                    "task_description": pack.get("task_description", ""),
-                    "execution_narrative": pack.get("execution_narrative", ""),
+                    "description": description,
+                    "task_description": description,
+                    "execution_narrative": read_skillpack_section(
+                        pack_dir, "Execution Process"
+                    ),
                 },
-            }
-            pack_nodes.append(pack_node)
-
+            })
             # Create contains edges from pack to each member
             for member_id in member_ids:
                 member_ref = web_node_refs.get(member_id)
@@ -1265,15 +1292,14 @@ def _web_graph_payload(
                         "label": member_id,
                         "properties": {"id": member_id, "name": member_id},
                     })
-                pack_edge = {
+                pack_edges.append({
                     "source": pack_node_id,
                     "target": member_ref,
                     "type": "contains",
                     "confidence": 1.0,
-                }
-                pack_edges.append(pack_edge)
-    except Exception:
-        # If pack loading fails, continue without packs
+                })
+    except Exception:  # noqa: BLE001
+        # If pack scanning fails, continue without packs
         pass
 
     result_graph = _graph_with_runtime_weights(graph, dynamic_overlay)

@@ -6,6 +6,10 @@ import json
 import pytest
 
 from jiuwenswarm.common.schema.message import EventType, Message
+from jiuwenswarm.common.session_message import (
+    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
+    SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
+)
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
 from jiuwenswarm.gateway.channel_manager.web.web_connect import (
     WebChannel,
@@ -63,6 +67,75 @@ class _FakeClient:
 
     async def send(self, data):
         self.frames.append(json.loads(data))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_user_id", ["owner", None, "local"])
+async def test_web_channel_routes_session_message_status_to_owner_only(owner_user_id):
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    owner = _FakeClient()
+    other = _FakeClient()
+    WebChannel._resolve_connection_user_id(
+        {"user_id": owner_user_id} if owner_user_id else {}, owner
+    )
+    other.authenticated_user_id = "other"
+    WebChannel._resolve_connection_user_id({"user_id": owner_user_id or "local"}, other)
+    for client, user_id in ((owner, owner_user_id or "local-peer"), (other, "other")):
+        await channel.register_ws(
+            client,
+            RoutingKey(
+                channel_id="web",
+                app_id="default",
+                user_id=user_id,
+                session_id="target-1",
+                agent_ref=None,
+            ),
+        )
+    try:
+        msg = Message(
+            id="sm-1",
+            type="event",
+            channel_id="web",
+            session_id="target-1",
+            params={},
+            timestamp=1.0,
+            ok=True,
+            payload={
+                "event_type": "session.message.updated",
+                "message": {"message_id": "sm-1", "content": "private prompt", "status": "queued"},
+            },
+            metadata={
+                "ws_id": getattr(other, "_jiuwen_ws_id", ""),
+                SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY: owner_user_id or "local",
+                SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY: owner_user_id is None,
+            },
+        )
+
+        await channel.send(msg)
+        for _ in range(20):
+            if owner.frames:
+                break
+            await asyncio.sleep(0.005)
+        await asyncio.sleep(0.01)
+        assert owner.frames == [{
+            "type": "event",
+            "event": "session.message.updated",
+            "payload": {
+                "event_type": "session.message.updated",
+                "message": {"message_id": "sm-1", "content": "private prompt", "status": "queued"},
+                "session_id": "target-1",
+            },
+        }]
+        assert other.frames == []
+
+        msg.metadata = {"ws_id": getattr(other, "_jiuwen_ws_id", "")}
+        await channel.send(msg)
+        await asyncio.sleep(0.01)
+        assert len(owner.frames) == 1
+        assert other.frames == []
+    finally:
+        await channel.unregister_ws(owner)
+        await channel.unregister_ws(other)
 
 
 def test_web_channel_exposes_heartbeat_marker_without_routing_metadata():
@@ -132,6 +205,33 @@ def test_web_channel_preserves_cross_session_stream_identity():
         "message_origin": "cross_session_agent",
         "session_message_id": "sm-1",
         "cross_session": cross_session,
+    }
+
+
+def test_web_channel_preserves_queued_session_message():
+    queued = {
+        "message_id": "sm-1",
+        "source_session_id": "source-1",
+        "source_title": "Source",
+        "target_session_id": "target-1",
+        "content": "check the weather",
+        "status": "queued",
+    }
+    msg = Message(
+        id="sm-1",
+        type="event",
+        channel_id="web",
+        session_id="target-1",
+        params={},
+        timestamp=1.0,
+        ok=True,
+        payload={"event_type": "session.message.updated", "message": queued},
+    )
+
+    assert WebChannel._build_event_payload(msg, "session.message.updated") == {
+        "event_type": "session.message.updated",
+        "message": queued,
+        "session_id": "target-1",
     }
 
 

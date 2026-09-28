@@ -85,6 +85,7 @@ class TrajectoryRecordSink:
         self._store = store or TrajectoryStore(
             settings.database_path,
             retention_days=settings.retention_days,
+            discard_final_span_frames=settings.discard_final_span_frames,
         )
         self._queue: queue.Queue[OtlpSpanRecordLike] = queue.Queue(
             maxsize=settings.queue_size,

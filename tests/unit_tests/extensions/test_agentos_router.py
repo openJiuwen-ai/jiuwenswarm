@@ -2188,6 +2188,62 @@ async def test_register_agent_skips_placement_when_ips_missing() -> None:
     await client.shutdown()
 
 
+class NeverRunningYuanRongClient(FakeYuanRongClient):
+    async def wait_until_running(self, instance_id: str, **_kwargs: Any) -> dict:
+        self.wait_running_calls.append(instance_id)
+        raise YuanrongAgentApiError(
+            f"agent instance not running after 60s: instance_id={instance_id}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_register_agent_deletes_sandbox_and_registry_when_never_running() -> None:
+    """create 已登记但一直未 running：删 YuanRong 沙箱并注销注册中心条目。"""
+    yuanrong = NeverRunningYuanRongClient()
+    registry = FakeRegistryClient()
+    agent_manager = AgentManager()
+    info = await _seed_ready_runtime(agent_manager)
+    live = (await agent_manager.list_user_agents("u1"))[0]
+    agent_id = live.info.agent_id
+    client = _router_client(yuanrong, registry, agent_manager)
+
+    await client._register_agent(info)
+
+    assert yuanrong.wait_running_calls == ["sbx-1"]
+    assert yuanrong.delete_calls == ["sbx-1"]
+    assert len(registry.registered) == 1
+    assert registry.unregistered == [
+        {
+            "agent_id": agent_id,
+            "user_id": "u1",
+            "agent_type": "jiuwenswarm",
+        }
+    ]
+    assert registry.updated_instances == []
+    assert await agent_manager.list_user_agents("u1") == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_send_request_cleans_up_when_create_never_reaches_running() -> None:
+    """请求路径 create 成功后探针不过：删沙箱、注销登记、不留下 READY runtime。"""
+    yuanrong = NeverRunningYuanRongClient()
+    registry = FakeRegistryClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, registry, agent_manager)
+    try:
+        response = await client.send_request(_envelope())
+        await asyncio.sleep(0.05)
+
+        assert not response.ok
+        assert "agent instance unavailable" in str(response.payload.get("error"))
+        assert "sbx-1" in yuanrong.delete_calls
+        assert registry.unregistered
+        assert await agent_manager.list_user_agents("u1") == []
+    finally:
+        await client.shutdown()
+
+
 # ── YuanRong 删除幂等 + 强制清理不被中断（issue #3497 §7.3） ────────────────
 
 
@@ -2523,7 +2579,7 @@ def test_load_router_config_probe_knobs(monkeypatch) -> None:
     assert defaults.probes.startup_failure_threshold == 6
     assert defaults.probes.liveness_timeout_seconds == 2
     assert defaults.probes.liveness_failure_threshold == 3
-    assert defaults.probes.wait_running_timeout_seconds == 60.0
+    assert defaults.probes.wait_running_timeout_seconds == 90.0
     assert defaults.probes.wait_running_interval_seconds == 1.0
 
     loaded = load_router_config(
@@ -2531,7 +2587,7 @@ def test_load_router_config_probe_knobs(monkeypatch) -> None:
             "gateway": {
                 "agent_client": base_agent_client,
                 "agentos": {
-                    "wait_running_timeout_seconds": 90,
+                    "wait_running_timeout_seconds": 120,
                     "wait_running_interval_seconds": 2.5,
                     "probes": {
                         "startup": {
@@ -2555,7 +2611,7 @@ def test_load_router_config_probe_knobs(monkeypatch) -> None:
     assert loaded.probes.startup_failure_threshold == 8
     assert loaded.probes.liveness_timeout_seconds == 3
     assert loaded.probes.liveness_failure_threshold == 5
-    assert loaded.probes.wait_running_timeout_seconds == 90.0
+    assert loaded.probes.wait_running_timeout_seconds == 120.0
     assert loaded.probes.wait_running_interval_seconds == 2.5
 
     monkeypatch.setenv("AGENTOS_PROBE_STARTUP_INITIAL_DELAY_SECONDS", "7")

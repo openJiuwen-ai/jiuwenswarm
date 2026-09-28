@@ -98,7 +98,12 @@ export interface ConnectorDetail extends ConnectorSummary {
   timeoutS?: number;
 }
 
-export type ConnectorConnectResponseType = 'connected' | 'credentials_required' | 'auth_required';
+export type ConnectorConnectResponseType =
+  | 'connected'
+  | 'credentials_required'
+  | 'auth_required'
+  // mcp.cancel_connect 收尾 hold-open 的 connect/wait_auth 时返回（用户中途放弃连接/授权）。
+  | 'cancelled';
 
 export interface ConnectorCredentialField {
   label?: string;

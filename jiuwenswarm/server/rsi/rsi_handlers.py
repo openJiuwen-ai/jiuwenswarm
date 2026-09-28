@@ -53,7 +53,7 @@ class RsiAgentServerHandlers:
         self,
         context: Any,
         *,
-        send_push: Callable[[dict[str, Any]], bool] | None = None,
+        send_push: Callable[[dict[str, Any]], Any] | None = None,
         harness_refs_provider: Callable[[], str | None] | None = None,
         default_channel_id: str = "web",
     ) -> None:
@@ -162,7 +162,7 @@ class RsiAgentServerHandlers:
         )
 
     def _do_task_delete(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self.context.task_service.delete(params)
+        return self.context.task_service.delete(params, worker=self.context.worker)
 
     def _do_training_start(self, params: dict[str, Any]) -> dict[str, Any]:
         return self.context.task_service.start(params, worker=self.context.worker)
@@ -234,21 +234,26 @@ class RsiAgentServerHandlers:
 
     def _bind_status_push(self) -> None:
         def _on_status_changed(task_id: str, old: str, new: str) -> None:
-            self._push(
-                RSI_PUSH_STATUS_CHANGED,
-                {
-                    "task_id": task_id,
-                    "old_status": old,
-                    "new_status": new,
-                    "status": new,
-                },
-            )
+            payload: dict[str, Any] = {
+                "task_id": task_id,
+                "old_status": old,
+                "new_status": new,
+                "status": new,
+            }
+            if new == "FAILED":
+                try:
+                    reason = self.context.store.get(task_id).failure_reason_text()
+                except Exception:  # noqa: BLE001 - status push is best effort
+                    reason = None
+                if reason:
+                    payload["failure_reason"] = reason
+            self._push(RSI_PUSH_STATUS_CHANGED, payload)
 
         self.context.store.set_status_changed_callback(_on_status_changed)
 
     def _bind_event_push(self) -> None:
         async def _on_progress(event_type: str, task_id: str, payload: dict[str, Any]) -> None:
-            self._push(
+            await self._push_async(
                 event_type,
                 {
                     "task_id": task_id,
@@ -257,7 +262,7 @@ class RsiAgentServerHandlers:
             )
 
         async def _on_tree_delta(event_type: str, task_id: str, payload: dict[str, Any]) -> None:
-            self._push(
+            await self._push_async(
                 event_type,
                 {
                     "task_id": task_id,
@@ -272,32 +277,46 @@ class RsiAgentServerHandlers:
             }
         )
 
+    def _build_push_message(self, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+        message: dict[str, Any] = {
+            "channel_id": self.default_channel_id,
+            "payload": {
+                "event_type": event_type,
+                **payload,
+            },
+        }
+        task_id = str(payload.get("task_id") or "").strip()
+        if task_id:
+            try:
+                task = self.context.store.get(task_id)
+                config = task.config if isinstance(task.config, dict) else {}
+                session_id = str(config.get("rsi_session_id") or "").strip()
+                if session_id:
+                    message["session_id"] = session_id
+            except Exception:  # noqa: BLE001 - a late push must not break worker
+                pass
+        return message
+
+    async def _push_async(self, event_type: str, payload: dict[str, Any]) -> None:
+        """Await a worker event push so queue draining includes WebSocket delivery."""
+        try:
+            result = self.send_push(self._build_push_message(event_type, payload))
+            if inspect.isawaitable(result):
+                await result
+        except Exception:  # noqa: BLE001 - a late push must not break worker
+            logger.warning("[RSI] push failed: %s", event_type)
+
     def _push(self, event_type: str, payload: dict[str, Any]) -> None:
         """统一推送出口（复用 E2A server_push；零改动）。"""
         try:
-            message: dict[str, Any] = {
-                "channel_id": self.default_channel_id,
-                "payload": {
-                    "event_type": event_type,
-                    **payload,
-                },
-            }
-            task_id = str(payload.get("task_id") or "").strip()
-            if task_id:
-                try:
-                    task = self.context.store.get(task_id)
-                    config = task.config if isinstance(task.config, dict) else {}
-                    session_id = str(config.get("rsi_session_id") or "").strip()
-                    if session_id:
-                        message["session_id"] = session_id
-                except Exception:  # noqa: BLE001 - a late push must not break worker
-                    pass
-            result = self.send_push(message)
+            result = self.send_push(self._build_push_message(event_type, payload))
             if not inspect.isawaitable(result):
                 return
             try:
                 asyncio.get_running_loop().create_task(result)
             except RuntimeError:
+                if inspect.iscoroutine(result):
+                    result.close()
                 logger.warning("[RSI] push 无运行中事件循环，丢弃: %s", event_type)
         except Exception:  # noqa: BLE001
             logger.warning("[RSI] push failed: %s", event_type)

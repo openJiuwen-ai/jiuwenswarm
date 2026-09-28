@@ -112,6 +112,7 @@ async def serve_qwen_omni_websocket(websocket: WebSocket) -> None:
         await websocket.close(code=1008, reason="Qwen-Omni gateway is not configured")
         return
 
+    close_code, close_reason = 1000, ""
     try:
         async with websockets.connect(
             upstream_url,
@@ -123,10 +124,9 @@ async def serve_qwen_omni_websocket(websocket: WebSocket) -> None:
             max_size=8 * 1024 * 1024,
         ) as upstream:
             logger.info("Qwen-Omni Realtime relay connected model=%s", config.model)
-            tasks = {
-                asyncio.create_task(_relay_browser_to_upstream(websocket, upstream)),
-                asyncio.create_task(_relay_upstream_to_browser(websocket, upstream)),
-            }
+            browser_task = asyncio.create_task(_relay_browser_to_upstream(websocket, upstream))
+            upstream_task = asyncio.create_task(_relay_upstream_to_browser(websocket, upstream))
+            tasks = {browser_task, upstream_task}
             try:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
@@ -135,20 +135,41 @@ async def serve_qwen_omni_websocket(websocket: WebSocket) -> None:
                     exception = task.exception()
                     if exception is not None:
                         raise exception
+                close_code = getattr(upstream, "close_code", None) or 1000
+                close_reason = getattr(upstream, "close_reason", "") or ""
+                if upstream_task in done and browser_task not in done:
+                    message = _safe_upstream_error(
+                        RuntimeError(f"Qwen Realtime 连接已关闭（{close_code}）：{close_reason or '服务端未提供具体原因'}"),
+                        config.api_key,
+                    )
+                    await _send_gateway_error(websocket, "qwen_gateway_upstream_closed", message)
             finally:
                 for task in tasks:
                     if not task.done():
                         task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
-    except (ConnectionClosed, WebSocketDisconnect):
-        pass
+    except ConnectionClosed as exc:
+        close_code = exc.rcvd.code if exc.rcvd else 1011
+        close_reason = exc.rcvd.reason if exc.rcvd else "Upstream disconnected without a close frame"
+        await _send_gateway_error(
+            websocket, "qwen_gateway_upstream_closed", _safe_upstream_error(exc, config.api_key)
+        )
+    except WebSocketDisconnect:
+        return
     except Exception as exc:  # noqa: BLE001 - isolate one upstream session
         message = _safe_upstream_error(exc, config.api_key)
         logger.warning("Qwen-Omni Realtime relay failed: %s", message)
         await _send_gateway_error(websocket, "qwen_gateway_upstream_error", message)
+        close_code, close_reason = 1011, "Qwen upstream connection failed"
     finally:
+        close_reason = _safe_upstream_error(Exception(close_reason), config.api_key) if close_reason else ""
+        logger.info("Qwen-Omni relay closed code=%s reason=%s", close_code, close_reason)
+        if close_code in {1004, 1005, 1006, 1015}:
+            close_reason = f"Upstream close {close_code}: {close_reason}"
+            close_code = 1011
+        close_reason = close_reason.encode("utf-8")[:123].decode("utf-8", errors="ignore")
         if websocket.client_state != WebSocketState.DISCONNECTED:
             try:
-                await websocket.close(code=1000)
+                await websocket.close(code=close_code, reason=close_reason)
             except (RuntimeError, WebSocketDisconnect):
                 pass

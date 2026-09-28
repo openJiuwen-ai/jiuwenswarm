@@ -105,6 +105,6 @@ test('expert group identity is preserved in bounded history and complete static 
     assert.match(markup, /History Expert Group/);
     assert.match(markup, /history-content-199-end/);
     assert.equal(markup.includes('history-content-0-end'), !virtualized);
-    assert.equal(markup.includes('chat-panel-timeline-history-sentinel'), virtualized);
+    assert.equal(markup.includes('data-virtualized="true"'), virtualized);
   }
 });

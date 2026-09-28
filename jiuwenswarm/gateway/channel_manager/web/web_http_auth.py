@@ -6,6 +6,7 @@
 ``POST /api/v1/auth/authorize``       生成授权地址（后端做 state / PKCE）
 ``GET  /api/v1/auth/callback``        华为回调落点：换 token + 建会话 + 下 cookie
 ``POST /api/v1/auth/claim``           发起方凭 ``{state, claimToken}`` 取回会话
+``POST /api/v1/auth/cancel``          发起方凭 ``{state, claimToken}`` 放弃这次登录
 ``GET  /api/v1/auth/status``          当前登录状态（不含任何凭据）
 ``POST /api/v1/auth/logout``          清会话
 ``GET  /api/v1/auth/models``          登录后可用的模型
@@ -17,7 +18,7 @@
 关闭；通知不到的（不同源、桌面端开在系统浏览器里），由应用在窗口重新获得焦点时去 ``/claim``。
 生产形态下回调落 ECS，这个路由用不到。
 
-发起登录 / 认领 / 登出这几个 POST 必须带 ``X-Jiuwen-Auth: 1``（见 :data:`AUTH_REQUEST_HEADER`）。
+发起登录 / 认领 / 取消 / 登出这几个 POST 必须带 ``X-Jiuwen-Auth: 1``（见 :data:`AUTH_REQUEST_HEADER`）。
 
 会话 id 同时接受 cookie（``jiuwenswarm_auth``）和 ``X-Auth-Session`` 头——
 浏览器用 cookie，桌面 WebView / TUI 这类拿不到那份 cookie 的前端用请求头。
@@ -230,7 +231,8 @@ def register_auth_routes(app: FastAPI) -> None:
         if not await run_in_threadpool(lambda: service.enabled):
             return _error("登录未开启", "login_disabled", 404)
         try:
-            session = service.claim(body.state.strip(), body.claimToken.strip())
+            # 回调落鉴权服务时会当场去鉴权服务取一次，是网络调用
+            session = await run_in_threadpool(service.claim, body.state.strip(), body.claimToken.strip())
         except OAuthError as err:
             return _error(str(err), err.code, 400)
         if session is None:
@@ -238,6 +240,19 @@ def register_auth_routes(app: FastAPI) -> None:
         response = JSONResponse({"ok": True, "islogin": True, **session.public_view()})
         _attach_session(response, session, request)
         return response
+
+    @app.post(
+        "/api/v1/auth/cancel",
+        tags=[_OPENAPI_TAG],
+        summary="放弃这次登录（停止向鉴权服务认领）",
+    )
+    async def auth_cancel(request: Request, body: AuthClaimBody = Body(...)) -> Response:
+        rejected = _reject_without_auth_header(request)
+        if rejected is not None:
+            return rejected
+        # 不区分state存不存在、对不对得上：不给探测留信号
+        get_auth_service().cancel(body.state.strip(), body.claimToken.strip())
+        return JSONResponse({"ok": True})
 
     @app.get(
         "/api/v1/auth/status",

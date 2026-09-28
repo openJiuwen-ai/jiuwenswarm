@@ -12,6 +12,50 @@
   <body>
     <div id="root">
     </div>
+    <!--
+      ES2022 运行时 API 兜底（必须在 /src/main.tsx 之前以同步脚本执行）：
+      依赖（es-toolkit / mermaid 等）与部分应用源码直接调用 Object.hasOwn /
+      structuredClone / Array.prototype.at，老版本浏览器/内嵌 WebView 不支持会抛
+      "Object.hasOwn is not a function"。ES module 的 import 求值在依赖图加载后
+      才发生，无法保证早于依赖顶层执行，故用同步内联脚本先注入 polyfill。
+    -->
+    <script>
+      (function () {
+        if (!Object.hasOwn) {
+          Object.hasOwn = function (obj, prop) {
+            if (obj == null) {
+              throw new TypeError('Cannot convert undefined or null to object');
+            }
+            return Object.prototype.hasOwnProperty.call(Object(obj), prop);
+          };
+        }
+        if (typeof structuredClone !== 'function') {
+          // 深拷贝兜底：满足 a2uiContent 消息克隆用途（可序列化对象）。
+          window.structuredClone = function (value) {
+            return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+          };
+        }
+        if (!Array.prototype.at) {
+          Array.prototype.at = function (index) {
+            var len = this.length >>> 0;
+            var i = index >= 0 ? index : len + index;
+            return i >= 0 && i < len ? this[i] : undefined;
+          };
+        }
+        if (!String.prototype.replaceAll) {
+          String.prototype.replaceAll = function (search, replacement) {
+            if (search instanceof RegExp) {
+              if (!search.global) {
+                throw new TypeError('String.prototype.replaceAll called with a non-global RegExp argument');
+              }
+              return this.replace(search, replacement);
+            }
+            var escaped = String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            return this.replace(new RegExp(escaped, 'g'), replacement);
+          };
+        }
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

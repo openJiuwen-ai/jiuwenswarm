@@ -17,6 +17,9 @@ const desktopApi = Object.freeze({
   minimizeWindow: () => invoke('desktop:minimize-window'),
   toggleFullscreenWindow: () => invoke('desktop:toggle-fullscreen-window'),
   closeWindow: () => invoke('desktop:close-window'),
+  getCloseAction: () => invoke('desktop:get-close-action'),
+  setCloseAction: action => invoke('desktop:set-close-action', action),
+  openExternalUrl: url => invoke('desktop:open-external-url', url),
   downloadFile: (url, filename) => invoke('desktop:download-file', url, filename),
   installUpdate: installerPath => invoke('desktop:install-update', installerPath),
   saveDataUrl: (dataUrl, filename) => invoke('desktop:save-data-url', dataUrl, filename),
@@ -29,6 +32,8 @@ const desktopApi = Object.freeze({
   selectLocalFilePath: (initialPath, title) => invoke('desktop:select-local-file-path', initialPath, title),
   describeLocalFiles: paths => invoke('desktop:describe-local-files', paths),
   getClipboardFiles: () => invoke('desktop:get-clipboard-files'),
+  pasteClipboard: () => invoke('desktop:paste-clipboard'),
+  clearHuaweiSignIn: () => invoke('auth:clear-huawei-sign-in'),
   onLayoutInvalidated: callback => {
     const listener = () => callback();
     ipcRenderer.on('desktop:layout-invalidated', listener);
@@ -67,6 +72,9 @@ contextBridge.exposeInMainWorld('pywebview', {
     minimize_window: desktopApi.minimizeWindow,
     toggle_fullscreen_window: desktopApi.toggleFullscreenWindow,
     close_window: desktopApi.closeWindow,
+    get_close_action: desktopApi.getCloseAction,
+    set_close_action: desktopApi.setCloseAction,
+    open_external_url: desktopApi.openExternalUrl,
     download_file: desktopApi.downloadFile,
     install_update: desktopApi.installUpdate,
     save_data_url: desktopApi.saveDataUrl,
@@ -79,5 +87,6 @@ contextBridge.exposeInMainWorld('pywebview', {
     select_local_file_path: desktopApi.selectLocalFilePath,
     describe_local_files: desktopApi.describeLocalFiles,
     get_clipboard_files: desktopApi.getClipboardFiles,
+    paste_clipboard: desktopApi.pasteClipboard,
   },
 });

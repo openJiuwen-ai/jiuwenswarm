@@ -1,5 +1,6 @@
-export type PublishAssetKind = 'skill' | 'agent_template' | 'plugin' | 'mcp';
+export type PublishAssetKind = 'skill' | 'agent_template' | 'agent_group' | 'plugin' | 'mcp';
 export type AssetReference = { kind: PublishAssetKind; local_id: string };
+export type AssetPublishOpenRequest = AssetReference & { avatar_url?: string };
 export type PublishMetadata = {
   asset_name: string;
   display_name: string;

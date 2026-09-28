@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, type MouseEvent as ReactMouseEvent } 
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { isDesktopShell } from '../../features/workspace/localFilePicker';
+import { toast } from '../ui/Toast/toastStore';
 import {
   findTextEditTarget,
   getTextEditCapabilities,
@@ -109,9 +110,14 @@ export function DesktopTextEditContextMenu() {
       closeMenu();
       // Restore focus before mutating selection / clipboard.
       target.focus();
-      await runTextEditAction(target, action);
+      try {
+        await runTextEditAction(target, action);
+      } catch (error) {
+        console.error('[desktop] text edit action failed', action, error);
+        toast.open({ content: t('common.editMenu.actionFailed'), variant: 'error' });
+      }
     },
-    [closeMenu, menu],
+    [closeMenu, menu, t],
   );
 
   if (!menu) return null;

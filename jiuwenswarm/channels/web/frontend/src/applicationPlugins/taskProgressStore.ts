@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { TeamTask } from '../stores/sessionStore';
 
-export type ApplicationTaskStatus = 'queued' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'failed';
+export type ApplicationTaskStatus = 'unknown' | 'queued' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'failed';
 export type ApplicationTaskAction = 'cancel' | 'next' | 'before' | 'preempt';
 type TaskController = (
   task: ApplicationTaskProgress,
@@ -76,7 +76,7 @@ export function applicationTasksToTeamTasks(
   tasks: ApplicationTaskProgress[],
   labels: Record<ApplicationTaskStatus, string>,
 ): TeamTask[] {
-  const priority = { running: 0, cancelling: 0, queued: 1, failed: 2, cancelled: 2, completed: 3 };
+  const priority = { unknown: 0, running: 0, cancelling: 0, queued: 1, failed: 2, cancelled: 2, completed: 3 };
   return [...tasks]
     .sort(
       (a, b) =>
@@ -97,6 +97,7 @@ export function applicationTasksToTeamTasks(
         .join('\n'),
       status: (
         {
+          unknown: 'pending',
           queued: 'pending',
           running: 'in_progress',
           cancelling: 'in_progress',

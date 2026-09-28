@@ -3,7 +3,7 @@
  * 字段对齐契约 §6.1 task.create 入参。数据集走 rsi.dataset.validate，
  * 数据集路径复用 path.select_files（单文件），产物路径沿用 path.select_directory。
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
 import { Check, Copy } from 'lucide-react';
@@ -105,12 +105,31 @@ function defaultForm(): FormState {
 export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExperimentDialogProps) {
   const { t } = useTranslation();
   const [form, setForm] = useState<FormState>(defaultForm);
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [showErrors, setShowErrors] = useState(false);
+  const [submitError, setSubmitError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [datasetValid, setDatasetValid] = useState<null | { valid: boolean; count: number | null }>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   const branch: Branch = form.scenario === 'HARNESS' ? 'HARNESS' : form.artifactType;
+
+  // Reactive validation: recomputes on every form field change.
+  const validationErrors = useMemo((): Record<string, string> => {
+    const e: Record<string, string> = {};
+    if (!form.name.trim()) e.name = t('rsi.createDialog.validation.nameRequired');
+    if (branch === 'HARNESS' && !form.datasetFile) e.dataset = t('rsi.createDialog.validation.datasetRequired');
+    if (!form.optimizer) e.optimizer = t('rsi.createDialog.validation.optimizerRequired');
+    if (branch === 'HARNESS' && !form.tester) e.tester = t('rsi.createDialog.validation.testerRequired');
+    if (branch === 'PAPER' && !form.optimizationInstruction.trim() && !form.artifactPath) {
+      e.paper = t('rsi.createDialog.validation.paperOrInstruction');
+    }
+    if (branch === 'PROGRAM' && !form.artifactPath) {
+      e.program = t('rsi.createDialog.validation.programRequired');
+    }
+    return e;
+  }, [form, branch, t]);
+
+  const hasValidationErrors = Object.keys(validationErrors).length > 0;
   const isArtifact = form.scenario === 'ARTIFACT';
 
   // 选择数据集路径后自动校验
@@ -144,10 +163,20 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
     if (!open && dialog.open) dialog.close();
   }, [open]);
 
+  // Reset form and error state when the dialog is closed.
+  useEffect(() => {
+    if (!open) {
+      setForm(defaultForm());
+      setDatasetValid(null);
+      setShowErrors(false);
+      setSubmitError('');
+    }
+  }, [open]);
+
   // 切换实验场景（Harness 优化 vs 产物优化）
   const switchScenario = useCallback((s: RsiScenario) => {
     setDatasetValid(null);
-    setErrors({});
+    setShowErrors(false);
     setForm((f) => {
       if (s === 'HARNESS')
         return {
@@ -165,7 +194,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
 
   // 切换产物子类型（论文 / 程序）
   const switchArtifactType = useCallback((at: RsiArtifactType) => {
-    setErrors({});
+    setShowErrors(false);
     setForm((f) => {
       if (at === 'PAPER') return { ...f, artifactType: 'PAPER', artifactPath: '' };
       return {
@@ -191,11 +220,6 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
         });
         if (!result.ok || !result.path) return;
         update('artifactPath', result.path);
-        setErrors((prev) => {
-          const next = { ...prev };
-          delete next.paper;
-          return next;
-        });
         return;
       }
       if (target === 'dataset') {
@@ -213,26 +237,11 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
     [branch, form.artifactPath, update],
   );
 
-  const validate = useCallback((): boolean => {
-    const e: Record<string, string> = {};
-    if (!form.name.trim()) e.name = t('rsi.createDialog.validation.nameRequired');
-    if (branch === 'HARNESS' && !form.datasetFile) e.dataset = t('rsi.createDialog.validation.datasetRequired');
-    if (!form.optimizer) e.optimizer = t('rsi.createDialog.validation.optimizerRequired');
-    if (branch === 'HARNESS' && !form.tester) e.tester = t('rsi.createDialog.validation.testerRequired');
-    if (branch === 'PAPER') {
-      if (!form.optimizationInstruction.trim() && !form.artifactPath) {
-        e.paper = t('rsi.createDialog.validation.paperOrInstruction');
-      }
-    }
-    if (branch === 'PROGRAM') {
-      if (!form.artifactPath) e.program = t('rsi.createDialog.validation.programRequired');
-    }
-    setErrors(e);
-    return Object.keys(e).length === 0;
-  }, [form, branch, t]);
 
   const handleSubmit = useCallback(async () => {
-    if (!validate()) return;
+    setShowErrors(true);
+    setSubmitError('');
+    if (hasValidationErrors) return;
     setSubmitting(true);
     try {
       const createParams: RsiTaskCreateParams =
@@ -297,13 +306,14 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
       onClose();
       setForm(defaultForm());
       setDatasetValid(null);
+      setShowErrors(false);
     } catch (e) {
       console.error('[rsi] create failed', e);
-      setErrors((prev) => ({ ...prev, submit: e instanceof Error ? e.message : String(e) }));
+      setSubmitError(e instanceof Error ? e.message : String(e));
     } finally {
       setSubmitting(false);
     }
-  }, [form, branch, validate, onCreated, onClose]);
+  }, [form, branch, hasValidationErrors, onCreated, onClose]);
 
   // 程序优化无"最大迭代轮次"字段（样式概要明确）
   const showMaxIterations = branch !== 'PROGRAM';
@@ -350,7 +360,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
             onChange={(e) => update('name', e.target.value)}
             placeholder={t('rsi.createDialog.namePlaceholder')}
           />
-          {errors.name && <Err text={errors.name} />}
+          {showErrors && validationErrors.name && <Err text={validationErrors.name} />}
         </Field>
 
         <Field label={t('rsi.createDialog.typeLabel')}>
@@ -387,13 +397,13 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
 
         <Field label={t('rsi.createDialog.optimizerModelLabel')}>
           <ModelSelect value={form.optimizer} onChange={(v) => update('optimizer', v)} />
-          {errors.optimizer && <Err text={errors.optimizer} />}
+          {showErrors && validationErrors.optimizer && <Err text={validationErrors.optimizer} />}
         </Field>
 
         {branch === 'HARNESS' && (
           <Field label={t('rsi.createDialog.testerModelLabel')}>
             <ModelSelect value={form.tester} onChange={(v) => update('tester', v)} />
-            {errors.tester && <Err text={errors.tester} />}
+            {showErrors && validationErrors.tester && <Err text={validationErrors.tester} />}
           </Field>
         )}
 
@@ -445,7 +455,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
                   : t('rsi.createDialog.invalid')}
               </div>
             )}
-            {errors.dataset && <Err text={errors.dataset} />}
+            {showErrors && validationErrors.dataset && <Err text={validationErrors.dataset} />}
           </Field>
         )}
 
@@ -466,7 +476,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
                 placeholder={t('rsi.createDialog.paperPlaceholder')}
                 onPick={() => pickPath('artifact')}
               />
-              {errors.paper && <Err text={errors.paper} />}
+              {showErrors && validationErrors.paper && <Err text={validationErrors.paper} />}
             </Field>
             <Field
               label={t('rsi.createDialog.webProxyLabel')}
@@ -494,7 +504,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
                 placeholder={t('rsi.createDialog.programPlaceholder')}
                 onPick={() => pickPath('artifact')}
               />
-              {errors.program && <Err text={errors.program} />}
+              {showErrors && validationErrors.program && <Err text={validationErrors.program} />}
             </Field>
           </>
         )}
@@ -505,7 +515,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
           </Field>
         )}
 
-        {errors.submit && <Err text={errors.submit} />}
+        {submitError && <Err text={submitError} />}
 
         <div className="rsi-create-dialog__actions">
           <button type="button" className="rsi-btn rsi-btn--ghost" onClick={onClose} disabled={submitting}>
@@ -757,7 +767,7 @@ function ModelSelect({ value, onChange }: { value: string; onChange: (v: string)
   };
 
   const isFree = (m: ModelEntry) => m.is_free === true;
-  const freeModels = availableModels.filter(isFree);
+  // 免费模型由网关按会话注入凭据，RSI 实验配置无法持久化保存，这里不展示。
   const configuredModels = availableModels.filter((m) => !isFree(m));
 
   const renderGroup = (label: string, models: ModelEntry[]) =>
@@ -833,13 +843,10 @@ function ModelSelect({ value, onChange }: { value: string; onChange: (v: string)
 
       {open && (
         <div className="chat-mode-select__menu model-select__menu rsi-model-select__menu" role="listbox">
-          {availableModels.length === 0 ? (
+          {configuredModels.length === 0 ? (
             <div className="model-select__section-header">{t('rsi.createDialog.modelPlaceholder')}</div>
           ) : (
-            <>
-              {renderGroup(t('chat.modelSelector.configured'), configuredModels)}
-              {renderGroup(t('chat.modelSelector.free'), freeModels)}
-            </>
+            renderGroup(t('chat.modelSelector.configured'), configuredModels)
           )}
         </div>
       )}

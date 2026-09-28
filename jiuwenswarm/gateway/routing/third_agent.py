@@ -1,86 +1,17 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
-"""ThirdAgent - Gateway 侧第三方 Agent list/switch 能力接口."""
+"""ThirdAgent - 第三方 Agent list/switch 能力接口.
+
+实现已下沉 ``jiuwenswarm.common.client.third_agent``（保留侧与 Gateway 仓共用契约）；
+此处 re-export 保持既有 import 路径兼容。
+"""
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import Any
+from jiuwenswarm.common.client.third_agent import (
+    ThirdAgent,
+    UnsupportedThirdAgent,
+    get_unsupported_third_agent,
+)
 
-
-class ThirdAgent(ABC):
-    """第三方 Agent 目录 / 切换接口（Gateway 域）。"""
-
-    def normalize_agent_type(self, raw: Any) -> str:
-        """Normalize agent_type; registry names keep case, builtin does not."""
-        agent_type = str(raw or "").strip()
-        if not agent_type or agent_type.lower() == "jiuwenswarm":
-            return "jiuwenswarm"
-        return agent_type
-
-    @abstractmethod
-    async def thirdagent_list(
-        self,
-        *,
-        user_id: str,
-        current_agent_type: str = "",
-        access_mode: str = "",
-    ) -> dict[str, Any]:
-        """Handle ``3rdagent.list`` for a user.
-
-        ``access_mode`` selects which registry ``access_mode[].cmd`` to
-        return (TUI passes ``tui``).
-        """
-        ...
-
-    @abstractmethod
-    async def thirdagent_switch(
-        self,
-        *,
-        user_id: str,
-        agent_type: str,
-        session_id: str = "",
-        params: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Handle ``3rdagent.switch`` for (user_id, agent_type)."""
-        ...
-
-
-class UnsupportedThirdAgent(ThirdAgent):
-    """Default implementation when no ThirdAgent extension is registered."""
-
-    async def thirdagent_list(
-        self,
-        *,
-        user_id: str,
-        current_agent_type: str = "",
-        access_mode: str = "",
-    ) -> dict[str, Any]:
-        del user_id, current_agent_type, access_mode
-        return {
-            "ok": False,
-            "error": "3rdagent.list requires an AgentOS Router extension",
-            "code": "UNSUPPORTED",
-        }
-
-    async def thirdagent_switch(
-        self,
-        *,
-        user_id: str,
-        agent_type: str,
-        session_id: str = "",
-        params: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        del user_id, agent_type, session_id, params
-        return {
-            "ok": False,
-            "error": "3rdagent.switch requires an AgentOS Router extension",
-            "code": "UNSUPPORTED",
-        }
-
-
-_UNSUPPORTED_THIRD_AGENT = UnsupportedThirdAgent()
-
-
-def get_unsupported_third_agent() -> ThirdAgent:
-    return _UNSUPPORTED_THIRD_AGENT
+__all__ = ["ThirdAgent", "UnsupportedThirdAgent", "get_unsupported_third_agent"]

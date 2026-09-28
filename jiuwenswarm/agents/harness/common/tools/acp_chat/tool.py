@@ -10,7 +10,7 @@ from typing import Any
 
 from openjiuwen.core.foundation.tool import tool
 
-from jiuwenswarm.acp.stdio_client import AcpStdioClient
+from jiuwenswarm.common.acp.stdio_client import AcpStdioClient
 from jiuwenswarm.common.config import get_config
 
 logger = logging.getLogger(__name__)

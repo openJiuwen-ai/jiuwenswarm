@@ -141,6 +141,7 @@ class RsiEventConsumer:
                     "node_ref": getattr(event, "node_ref", None),
                     "model_call": getattr(event, "model_call", None),
                 },
+                call_sequence=getattr(event, "event_id", None),
             )
             if self._on_progress is not None:
                 progress = self.projector.derive_progress(self.task_id)

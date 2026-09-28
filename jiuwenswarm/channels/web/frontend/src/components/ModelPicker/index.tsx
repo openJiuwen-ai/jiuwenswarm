@@ -1,7 +1,8 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
 import { useTranslation } from 'react-i18next';
+import { requestSettingsModule } from '../../features/settings/settingsNavigation';
 import { requestLogin } from '../../stores/authStore';
 import { useFreeModelsCampaign } from '../../features/free-models/campaign';
 import { useSessionStore } from '../../stores/sessionStore';
@@ -14,6 +15,8 @@ interface ModelPickerProps {
   onChange: (modelName: string) => void;
   disabled?: boolean;
   onAddModel?: () => void;
+  /** 过滤掉登录/免费模型，用于无法持久化免费模型凭据的场景；默认不过滤。 */
+  excludeFreeModels?: boolean;
   testIdPrefix?: string;
 }
 
@@ -26,11 +29,16 @@ export default function ModelPicker({
   onChange,
   disabled = false,
   onAddModel,
+  excludeFreeModels = false,
   testIdPrefix = 'model-picker',
 }: ModelPickerProps): JSX.Element {
   const { t } = useTranslation();
-  const models = useSessionStore((state) => state.chatAvailableModels);
-  const campaignActive = useFreeModelsCampaign();
+  const allModels = useSessionStore((state) => state.chatAvailableModels);
+  const models = useMemo(
+    () => (excludeFreeModels ? allModels.filter((model) => model.is_free !== true) : allModels),
+    [allModels, excludeFreeModels],
+  );
+  const campaign = useFreeModelsCampaign();
   const { tooltip, handlers } = useAdaptiveTooltip();
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<CSSProperties | null>(null);
@@ -46,7 +54,7 @@ export default function ModelPicker({
     },
     { id: 'free', label: t('chat.modelSelector.free'), models: freeModels },
   ];
-  const showFreeModelsCta = campaignActive && freeModels.length === 0;
+  const showFreeModelsCta = !excludeFreeModels && campaign.state !== 'off' && freeModels.length === 0;
 
   useEffect(() => {
     if (disabled) setOpen(false);
@@ -181,7 +189,8 @@ export default function ModelPicker({
                       data-testid={`${testIdPrefix}-free-cta`}
                       onClick={() => {
                         setOpen(false);
-                        requestLogin();
+                        if (campaign.state === 'active') requestLogin();
+                        else requestSettingsModule('models');
                       }}
                     >
                       <span className="model-select__free-cta-main">

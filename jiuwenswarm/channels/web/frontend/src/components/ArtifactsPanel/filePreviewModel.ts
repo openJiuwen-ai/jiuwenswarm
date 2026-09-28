@@ -44,9 +44,9 @@ const IMAGE_EXTENSIONS = new Set([
   'webp',
 ]);
 
-function inlineDownloadUrl(downloadUrl: string, origin: string): string {
+export function inlineDownloadUrl(downloadUrl: string, origin: string): string {
   const url = new URL(downloadUrl, origin);
-  if (url.protocol === 'blob:') return url.href;
+  if (url.protocol === 'blob:' || url.protocol === 'data:') return url.href;
   url.searchParams.set('inline', '1');
   return url.pathname + url.search;
 }

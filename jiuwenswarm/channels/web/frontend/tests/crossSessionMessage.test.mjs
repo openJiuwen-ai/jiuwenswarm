@@ -86,3 +86,20 @@ test('history restore keeps prior conversation and marks the appended external t
   assert.equal(messages[3].id, 'cross-session-assistant-execution-1');
   assert.equal(messages[3].crossSession?.messageId, 'sm-1');
 });
+
+test('restored steering retains both supplemental identity and Agent source', () => {
+  const messages = parseHistoryJsonFileToPreviewMessages([
+    { role: 'user', content: 'original question', request_id: 'original', timestamp: 1 },
+    { role: 'assistant', event_type: 'chat.final', content: 'visible prefix', request_id: 'original', timestamp: 2 },
+    { role: 'user', content: 'external question', request_id: 'steer-request', timestamp: 3,
+      is_supplemental_input: true, ...crossSessionRecord },
+    { role: 'assistant', event_type: 'chat.final', content: 'continued answer', request_id: 'original', timestamp: 4 },
+  ], 'target-1');
+  const input = messages.find(message => message.crossSession?.messageId === 'sm-1');
+  assert.equal(input.supplementalInput.requestId, 'steer-request');
+  assert.equal(input.crossSession.sourceSessionId, 'source-1');
+  assert.equal(input.crossSession.sourceTitle, 'Source');
+  assert.deepEqual(messages.map(message => message.content), [
+    'original question', 'visible prefix', 'external question', 'continued answer',
+  ]);
+});

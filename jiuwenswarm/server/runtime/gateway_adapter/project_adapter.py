@@ -11,14 +11,11 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any
+from typing import Any, Callable
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.work_mode import (
-    DEFAULT_PROJECT_ID_CODE,
-    DEFAULT_PROJECT_ID_WORK,
-    DEFAULT_TUI_WORK_MODE,
     DEFAULT_WEB_WORK_MODE,
     is_default_project_id,
 )
@@ -27,337 +24,20 @@ from jiuwenswarm.server.runtime.gateway_adapter.base import (
     build_error_response,
 )
 from jiuwenswarm.server.runtime.session import project_store
-from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError, projection as lifecycle_projection
-from jiuwenswarm.server.runtime.session.session_metadata import (
-    collect_all_sessions_metadata,
+from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+from jiuwenswarm.server.control.store.project_queries import (
+    load_pinned_sessions as _load_pinned_sessions,
+    load_project_cron_sessions as _load_project_cron_sessions,
+    load_project_info as _load_project_info,
+    load_project_list as _load_project_list,
+    load_project_sessions as _load_project_sessions,
+    project_info_payload as _project_info_payload,
+    resolve_cron_binding as _resolve_cron_binding,
 )
-from jiuwenswarm.server.runtime.session.session_info import to_session_info
+from jiuwenswarm.server.runtime.session.session_metadata import collect_all_sessions_metadata
 from jiuwenswarm.server.runtime.session.work_mode import resolve_request_work_mode
 
 logger = logging.getLogger(__name__)
-
-
-def _attribute_session_project(
-    metadata: dict[str, Any], visible_project_ids: set[str]
-) -> str:
-    """Return the visible project ID, or the matching virtual default project."""
-    project_id = str(metadata.get("project_id") or "")
-    if project_id and project_id in visible_project_ids:
-        return project_id
-    return (
-        DEFAULT_PROJECT_ID_CODE
-        if str(metadata.get("work_mode") or "") == DEFAULT_TUI_WORK_MODE
-        else DEFAULT_PROJECT_ID_WORK
-    )
-
-
-def _project_info_payload(
-    project: Any | None,
-    *,
-    default_id: str | None = None,
-    stats: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Serialize project.info exactly like the existing Web contract."""
-    statistics = stats or {
-        "session_count": 0,
-        "last_message_at": None,
-        "last_user_message_at": None,
-    }
-    git_defaults = {
-        "enabled": False,
-        "repo_root": "",
-        "initialized_by_jiuwenswarm": False,
-        "detected_at": 0,
-        "status": "disabled",
-        "branch": "",
-        "error": "",
-        "error_code": "",
-        "hint": "",
-        "is_dirty": False,
-    }
-    raw_git = getattr(project, "git", {}) if project is not None else {}
-    git = {**git_defaults, **dict(raw_git)} if isinstance(raw_git, dict) and raw_git else git_defaults
-    if default_id is not None:
-        return {
-            "project_id": default_id,
-            "name": "默认项目",
-            "project_dir": "",
-            "pinned": False,
-            "pin_order": 0,
-            "is_default": True,
-            "lifecycle_operation": None,
-            "execution_blocked": False,
-            "stop_pending": False,
-            "work_mode": (
-                DEFAULT_TUI_WORK_MODE
-                if default_id == DEFAULT_PROJECT_ID_CODE
-                else DEFAULT_WEB_WORK_MODE
-            ),
-            "git": git,
-            "session_count": statistics["session_count"],
-            "last_message_at": statistics["last_message_at"],
-            "last_user_message_at": statistics["last_user_message_at"],
-            "created_at": 0,
-            "updated_at": 0,
-        }
-    return {
-        "project_id": project.project_id,
-        "name": project.name,
-        "project_dir": project.project_dir,
-        "pinned": project.pinned,
-        "pin_order": project.pin_order,
-        "is_default": False,
-        **lifecycle_projection("project", project.project_id),
-        "work_mode": getattr(project, "work_mode", "") or DEFAULT_WEB_WORK_MODE,
-        "git": git,
-        "session_count": statistics["session_count"],
-        "last_message_at": statistics["last_message_at"],
-        "last_user_message_at": statistics["last_user_message_at"],
-        "created_at": project.created_at,
-        "updated_at": getattr(project, "updated_at", 0),
-    }
-
-
-def _load_project_info(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    project_id = str(params.get("project_id") or "").strip()
-    if not project_id:
-        return None, "project_id is required", "BAD_REQUEST"
-
-    all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_project_ids = {project.project_id for project in all_projects}
-    stats: dict[str, Any] = {
-        "session_count": 0,
-        "last_message_at": None,
-        "last_user_message_at": None,
-    }
-    for session in collect_all_sessions_metadata():
-        if session.get("channel_id") != "web" or session.get("pinned") or session.get("cron_id"):
-            continue
-        if _attribute_session_project(session, visible_project_ids) != project_id:
-            continue
-        stats["session_count"] += 1
-        for key in ("last_message_at", "last_user_message_at"):
-            value = session.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                if stats[key] is None or value > stats[key]:
-                    stats[key] = value
-
-    if is_default_project_id(project_id):
-        info = _project_info_payload(None, default_id=project_id, stats=stats)
-        return {"project": info, **info}, None, None
-
-    project = project_store.get_project_by_id(project_id, cache_bust=True)
-    if project is None:
-        return None, "project not found", "NOT_FOUND"
-    info = _project_info_payload(project, stats=stats)
-    return {"project": info, **info}, None, None
-
-
-def _load_pinned_sessions() -> dict[str, Any]:
-    """Return the Web projection of pinned sessions from this user's directory."""
-    sessions = collect_all_sessions_metadata()
-    pinned = [
-        session
-        for session in sessions
-        if session.get("pinned") and session.get("channel_id") == "web"
-    ]
-    pinned.sort(key=lambda session: int(session.get("pin_order", 0) or 0))
-    return {"sessions": [to_session_info(session) for session in pinned]}
-
-
-def _resolve_cron_binding(
-    params: dict[str, Any], channel_id: str
-) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    """Resolve a cron project against this AgentServer's injected directory."""
-    work_mode, error = resolve_request_work_mode(params, channel_id=channel_id or "web")
-    if error is not None:
-        return None, f"invalid work_mode: {params.get('work_mode')!r}", "BAD_REQUEST"
-    binding = project_store.resolve_cron_project_binding(
-        params.get("project_id"), params.get("project_dir"), work_mode,
-    )
-    if binding.error is not None:
-        return None, binding.error, binding.code or "BAD_REQUEST"
-    return {
-        "project_id": binding.project_id,
-        "work_mode": binding.work_mode,
-    }, None, None
-
-
-def _parse_page(params: dict[str, Any]) -> tuple[int | None, int]:
-    """Preserve the Web handler's permissive pagination parsing."""
-    raw_limit = params.get("limit")
-    limit: int | None = None
-    if isinstance(raw_limit, int) and not isinstance(raw_limit, bool):
-        limit = raw_limit
-    elif isinstance(raw_limit, float) and raw_limit.is_integer():
-        limit = int(raw_limit)
-    elif isinstance(raw_limit, str) and raw_limit.strip().isdigit():
-        limit = int(raw_limit.strip())
-    raw_offset = params.get("offset")
-    offset = 0
-    if isinstance(raw_offset, int) and not isinstance(raw_offset, bool):
-        offset = raw_offset
-    elif isinstance(raw_offset, float) and raw_offset.is_integer():
-        offset = int(raw_offset)
-    elif isinstance(raw_offset, str) and raw_offset.strip().isdigit():
-        offset = int(raw_offset.strip())
-    return (max(1, limit) if limit is not None else None), max(0, offset)
-
-
-def _load_project_sessions(
-    params: dict[str, Any], _user_id: str
-) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    project_id = str(params.get("project_id") or "").strip()
-    if not project_id:
-        return None, "project_id is required", "BAD_REQUEST"
-    limit, offset = _parse_page(params)
-    all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_project_ids = {project.project_id for project in all_projects}
-    if not is_default_project_id(project_id):
-        project = project_store.get_project_by_id(project_id, cache_bust=True)
-        if project is None:
-            return None, "project not found", "NOT_FOUND"
-
-    matched: list[dict[str, Any]] = []
-    for session in collect_all_sessions_metadata():
-        if session.get("pinned") or session.get("cron_id") or session.get("channel_id") != "web":
-            continue
-        if _attribute_session_project(session, visible_project_ids) != project_id:
-            continue
-        matched.append(session)
-    matched.sort(
-        key=lambda session: (
-            float(session["last_user_message_at"])
-            if isinstance(session.get("last_user_message_at"), (int, float))
-            and not isinstance(session.get("last_user_message_at"), bool)
-            else 0.0
-        ),
-        reverse=True,
-    )
-    total = len(matched)
-    page = matched[offset:offset + limit] if limit is not None else matched[offset:]
-    return {
-        "sessions": [to_session_info(session) for session in page],
-        "total": total,
-    }, None, None
-
-
-def _load_project_cron_sessions(
-    params: dict[str, Any], _user_id: str
-) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    """Return cron execution sessions from this AgentServer's user directory."""
-    project_id = str(params.get("project_id") or "").strip()
-    if not project_id:
-        return None, "project_id is required", "BAD_REQUEST"
-    cron_id = str(params.get("cron_id") or "").strip()
-    limit, offset = _parse_page(params)
-    all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_project_ids = {project.project_id for project in all_projects}
-    if not is_default_project_id(project_id):
-        project = project_store.get_project_by_id(project_id, cache_bust=True)
-        if project is None:
-            return None, "project not found", "NOT_FOUND"
-    matched: list[dict[str, Any]] = []
-    for session in collect_all_sessions_metadata():
-        if session.get("pinned") or not session.get("cron_id"):
-            continue
-        if _attribute_session_project(session, visible_project_ids) != project_id:
-            continue
-        if cron_id and session.get("cron_id") != cron_id:
-            continue
-        matched.append(session)
-    matched.sort(
-        key=lambda session: (
-            float(session["last_user_message_at"])
-            if isinstance(session.get("last_user_message_at"), (int, float))
-            and not isinstance(session.get("last_user_message_at"), bool)
-            else 0.0
-        ),
-        reverse=True,
-    )
-    total = len(matched)
-    page = matched[offset:offset + limit] if limit is not None else matched[offset:]
-    return {
-        "sessions": [to_session_info(session) for session in page],
-        "total": total,
-    }, None, None
-
-
-def _load_project_list(
-    params: dict[str, Any]
-) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    """Build the existing Web project-list view in the injected directory."""
-    filter_value = str(params.get("filter") or "all").strip() or "all"
-    if filter_value not in {"all", "pinned", "unpinned"}:
-        filter_value = "all"
-    raw_work_mode = params.get("work_mode")
-    work_mode: str | None = None
-    if isinstance(raw_work_mode, str) and raw_work_mode.strip():
-        candidate = raw_work_mode.strip().lower()
-        if candidate not in {DEFAULT_WEB_WORK_MODE, DEFAULT_TUI_WORK_MODE}:
-            return None, f"invalid work_mode: {candidate!r}, must be 'code' or 'work'", "BAD_REQUEST"
-        work_mode = candidate
-
-    all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    projects = [p for p in all_projects if work_mode is None or (p.work_mode or DEFAULT_WEB_WORK_MODE) == work_mode]
-    visible_project_ids = {project.project_id for project in all_projects}
-    stats: dict[str, dict[str, Any]] = {}
-
-    def stats_for(project_id: str) -> dict[str, Any]:
-        return stats.setdefault(
-            project_id,
-            {"session_count": 0, "last_message_at": None, "last_user_message_at": None},
-        )
-
-    for session in collect_all_sessions_metadata():
-        if session.get("channel_id") != "web" or session.get("pinned") or session.get("cron_id"):
-            continue
-        entry = stats_for(_attribute_session_project(session, visible_project_ids))
-        entry["session_count"] += 1
-        for key in ("last_message_at", "last_user_message_at"):
-            value = session.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                if entry[key] is None or value > entry[key]:
-                    entry[key] = value
-
-    zero = {"session_count": 0, "last_message_at": None, "last_user_message_at": None}
-
-    def item(project: Any | None, default_id: str | None = None) -> dict[str, Any]:
-        if default_id is not None:
-            return _project_info_payload(None, default_id=default_id, stats=stats.get(default_id, zero))
-        return _project_info_payload(
-            project,
-            stats=stats.get(project.project_id, zero),
-        )
-
-    default_ids: list[str] = []
-    if work_mode in (None, DEFAULT_WEB_WORK_MODE):
-        default_ids.append(DEFAULT_PROJECT_ID_WORK)
-    if work_mode in (None, DEFAULT_TUI_WORK_MODE):
-        default_ids.append(DEFAULT_PROJECT_ID_CODE)
-    default_items = [item(None, default_id) for default_id in default_ids]
-
-    def user_sort(info: dict[str, Any]) -> float:
-        value = info["last_user_message_at"]
-        return (
-            float(value)
-            if isinstance(value, (int, float)) and not isinstance(value, bool)
-            else 0.0
-        )
-    if filter_value == "pinned":
-        result = [item(project) for project in projects if project.pinned]
-        result.sort(key=lambda info: info["pin_order"])
-    elif filter_value == "unpinned":
-        result = [item(p) for p in projects if not p.pinned]
-        result.sort(key=user_sort, reverse=True)
-        result.extend(default_items)
-    else:
-        pinned = [item(project) for project in projects if project.pinned]
-        pinned.sort(key=lambda info: info["pin_order"])
-        unpinned = [item(p) for p in projects if not p.pinned]
-        unpinned.sort(key=user_sort, reverse=True)
-        result = pinned + unpinned + default_items
-    return {"projects": result}, None, None
 
 
 def _rename_project(
@@ -398,7 +78,7 @@ def _pin_project(
     if is_default_project_id(project_id):
         return None, "default project cannot be pinned", "FORBIDDEN"
     project = project_store.get_project_by_id(project_id, cache_bust=True)
-    if project is None:
+    if project is None or project.hidden:
         return None, "project not found", "NOT_FOUND"
     project.pinned = pinned
     if not pinned:
@@ -474,6 +154,192 @@ def _create_project(
         "work_mode": project.work_mode or DEFAULT_WEB_WORK_MODE,
         "git": info["git"],
         "project": info,
+    }, None, None
+
+
+def _count_project_conversations(project_id: str) -> int:
+    """Count the active Web conversations a project remove/restore moves.
+
+    ``collect_all_sessions_metadata`` already excludes archived sessions, so
+    this is exactly the set that disappears from the workspace when the project
+    is removed and comes back when it is restored; archived sessions stay in
+    the archive page either way.  Pinned conversations are counted because
+    removal hides those too, keeping their ``pinned`` flag for the restore.
+    Cron execution sessions are excluded, as in every other conversation count
+    in this module.
+    """
+    return _project_conversation_state(project_id)[0]
+
+
+def _project_conversation_state(
+    project_id: str, runtime: Any = None, *, ignore_heartbeats: bool = False,
+) -> tuple[int, list[str]]:
+    """Count Web conversations and check all channels for running sessions.
+
+    执行判定与 session.archive 的
+    ``_session_is_busy_for_action`` 一致:parked 的 Team 常驻流只剩响应流、
+    不再持有团队工作,不阻塞移除——否则任何跑过 Team 会话的项目都会因
+    常驻 leader 流而永远无法移除。
+
+    ``ignore_heartbeats`` 把后台 Heartbeat 执行排除在读之外,回答"停掉心跳后
+    本会话是否仍在跑"。预检用它,避免把即将被停掉的心跳读成阻塞项。
+    """
+    count = 0
+    busy: list[str] = []
+    for session in collect_all_sessions_metadata():
+        session_id = str(session.get("session_id") or "")
+        if session.get("cron_id") or session_id.startswith("cron_"):
+            continue
+        if str(session.get("project_id") or "") != project_id:
+            continue
+        if session.get("channel_id") == "web":
+            count += 1
+        if runtime is None:
+            continue
+        if not session_id or not runtime.is_session_running(
+            session_id, ignore_heartbeats=ignore_heartbeats
+        ):
+            continue
+        probe = getattr(runtime, "has_parked_team_streams", None)
+        if callable(probe) and probe(session_id):
+            continue
+        busy.append(session_id)
+    return count, busy
+
+
+def _project_heartbeat_blocked(project_id: str, runtime: Any) -> bool:
+    """Whether live Heartbeats are the only thing keeping a removal blocked.
+
+    移除会先停掉这些心跳再重扫,所以真实工作仍在跑时必须返回 False:那份工作
+    无论如何都会把移除挡下,为一次注定被拒的移除去取消心跳是对会话的无谓副作用。
+    """
+    if runtime is None:
+        return False
+    controller = getattr(runtime, "_admission_controller", None)
+    active = getattr(controller, "active_heartbeat_sessions", None)
+    if not callable(active) or not active():
+        # No Heartbeat runs anywhere: nothing to stop, and no second scan.
+        return False
+    busy = _project_conversation_state(project_id, runtime)[1]
+    if not busy:
+        return False
+    running = getattr(runtime, "is_session_running", None)
+    if not callable(running):
+        return False
+    # Re-read only the blockers: real work among them keeps the removal busy
+    # either way, so those Heartbeats must not be cancelled for it.
+    return not any(running(sid, ignore_heartbeats=True) for sid in busy)
+
+
+async def _stop_project_heartbeats(project_id: str, runtime: Any) -> None:
+    """Stop the project's Heartbeat runs before removal rescans them.
+
+    移除只是软隐藏:心跳继续在会话上跑的话,结果会写进一个已从工作区消失的
+    会话里,无处呈现。移除先停掉这些心跳(与 archive/delete 一致),随后的
+    busy 扫描读到的就是已落定的会话。停不掉只记日志,扫描仍把会话判为 busy,
+    移除照常报 SESSION_BUSY,不会隐藏仍在跑的工作。
+    """
+    if runtime is None or not project_id:
+        return
+    stopper = getattr(runtime, "stop_heartbeat_runs", None)
+    if not callable(stopper):
+        return
+    for session in collect_all_sessions_metadata():
+        session_id = str(session.get("session_id") or "")
+        if not session_id or str(session.get("project_id") or "") != project_id:
+            continue
+        try:
+            await stopper(session_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[ProjectAdapter] could not stop heartbeat runs: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+
+
+def _project_busy_sessions(project_id: str, runtime: Any) -> list[str]:
+    """project.remove 预检专用的阻塞会话列表。
+
+    预检只回答"移除会不会被挡",不执行移除,因此不负责停心跳——它按"心跳已被
+    停掉"来读,与真正的移除(停心跳后再严格扫描)保持同向:预检放行、移除停掉
+    心跳后成功;心跳真的停不掉时,由移除那一次扫描报 SESSION_BUSY。
+    """
+    return _project_conversation_state(project_id, runtime, ignore_heartbeats=True)[1]
+
+
+def _remove_project(
+    params: dict[str, Any],
+    runtime: Any = None,
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    """Hide a project, reporting how many active conversations it takes with it.
+
+    有会话仍在执行时拒绝移除(SESSION_BUSY):移除只是软隐藏,执行中的
+    会话不会随之停止,只会连同项目一起从前端列表消失,结果无处呈现。
+    """
+    project_id = str(params.get("project_id") or "").strip()
+    if not project_id:
+        return None, "project_id is required", "BAD_REQUEST"
+    if is_default_project_id(project_id):
+        return None, "default project cannot be removed", "FORBIDDEN"
+    project = project_store.get_project_by_id(project_id, cache_bust=True)
+    if project is None:
+        return None, "project not found", "NOT_FOUND"
+    if project.hidden:
+        return {"project_id": project_id, "hidden": True, "affected_sessions": 0}, None, None
+
+    affected, busy = _project_conversation_state(project_id, runtime)
+    if busy:
+        return (
+            None,
+            "project has running sessions; stop them before removing",
+            "SESSION_BUSY",
+        )
+
+    hidden = project_store.hide_project(project_id)
+    if hidden is None:
+        return {"project_id": project_id, "hidden": True, "affected_sessions": 0}, None, None
+    project_store.reindex_project_pin_orders()
+    return {
+        "project_id": project_id,
+        "hidden": True,
+        "affected_sessions": affected,
+    }, None, None
+
+
+def _restore_project(
+    params: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    """Restore a hidden project, reporting how many conversations come back."""
+    project_id = str(params.get("project_id") or "").strip()
+    if not project_id:
+        return None, "project_id is required", "BAD_REQUEST"
+    if is_default_project_id(project_id):
+        return None, "default project cannot be restored", "FORBIDDEN"
+    project = project_store.get_project_by_id(project_id, cache_bust=True)
+    if project is None:
+        return None, "project not found", "NOT_FOUND"
+    if not project.hidden:
+        return None, "project is not hidden", "CONFLICT"
+
+    affected = _count_project_conversations(project_id)
+    try:
+        restored = project_store.restore_project(project_id)
+    except project_store.ProjectNameConflict:
+        # 与撤销归档的连带恢复(session_archive._restore_hidden_project)同码,
+        # 前端用同一套 i18n 文案提示"先重命名占用方再重试"。
+        return (
+            None,
+            "a project with this name exists; rename it before restoring",
+            "PROJECT_NAME_CONFLICT",
+        )
+    if restored is None:
+        return None, "project is not hidden", "CONFLICT"
+    return {
+        "project_id": restored.project_id,
+        "restored": True,
+        "work_mode": restored.work_mode or DEFAULT_WEB_WORK_MODE,
+        "affected_sessions": affected,
     }, None, None
 
 
@@ -1300,6 +1166,12 @@ async def _run_threaded(
 class ProjectAdapter(GatewayAdapter):
     """Project-domain adapter: project/git CRUD, diff status, session queries."""
 
+    def __init__(self, runtime_probe: Callable[[], Any] | None = None) -> None:
+        # project.remove 的 busy 扫描要读 AgentRuntime 的会话执行状态。
+        # 传探针而非实例:agent_manager 重建后 _execution_runtime 会换新实例,
+        # 每次移除时探针总能取到当前 runtime。
+        self._runtime_probe = runtime_probe
+
     methods: frozenset[str] = frozenset(
         {
             ReqMethod.PROJECT_INFO.value,
@@ -1311,6 +1183,8 @@ class ProjectAdapter(GatewayAdapter):
             ReqMethod.PROJECT_CREATE.value,
             ReqMethod.PROJECT_RENAME.value,
             ReqMethod.PROJECT_PIN.value,
+            ReqMethod.PROJECT_REMOVE.value,
+            ReqMethod.PROJECT_RESTORE.value,
             ReqMethod.PROJECT_GIT_STATUS.value,
             ReqMethod.PROJECT_GIT_PROBE.value,
             ReqMethod.PROJECT_GIT_INIT.value,
@@ -1394,6 +1268,19 @@ class ProjectAdapter(GatewayAdapter):
             return await _run_threaded(
                 request, "project.create", _create_project, params, request.channel_id,
             )
+        if method == ReqMethod.PROJECT_REMOVE:
+            runtime = self._runtime_probe() if self._runtime_probe is not None else None
+            project_id = str(params.get("project_id") or "").strip()
+            if _project_heartbeat_blocked(project_id, runtime):
+                # Heartbeats are the only blocker: stop them, and let the
+                # removal's own scan read a settled session.
+                await _stop_project_heartbeats(project_id, runtime)
+            return await _run_threaded(
+                request, "project.remove", _remove_project, params,
+                runtime=runtime,
+            )
+        if method == ReqMethod.PROJECT_RESTORE:
+            return await _run_threaded(request, "project.restore", _restore_project, params)
         if method == ReqMethod.PROJECT_PINNED_SESSIONS:
             return await _run_threaded(
                 request, "project.pinned_sessions", _load_pinned_sessions,

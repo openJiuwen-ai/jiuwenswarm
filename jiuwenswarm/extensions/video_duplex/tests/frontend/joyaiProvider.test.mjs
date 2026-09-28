@@ -14,7 +14,10 @@ const compiled = await build({
       builder.onResolve({ filter: /\/services\/webClient$/ }, () => ({ path: 'web-client', namespace: 'offline' }));
       builder.onLoad({ filter: /.*/, namespace: 'offline' }, () => ({ contents: `
         export const webClient = { on() { throw new Error('Unexpected network subscription'); } };
-        export function webRequest() { throw new Error('Unexpected network request'); }
+        export function webRequest(...args) {
+          if (globalThis.joyaiTestRequest) return globalThis.joyaiTestRequest(...args);
+          throw new Error('Unexpected network request');
+        }
       ` }));
     },
   }],
@@ -23,6 +26,26 @@ const { JoyAIProvider } = await import(`data:text/javascript;base64,${Buffer.fro
 globalThis.window = globalThis;
 
 const brief = { status: 'completed', summary: '代码已生成，详情见界面。', source: 'core_agent' };
+test('long user instructions and their final constraints reach the RPC intact', async (t) => {
+  const calls = [];
+  globalThis.joyaiTestRequest = async (...args) => {
+    calls.push(args);
+    return { response: '', search_job: null };
+  };
+  t.after(() => { delete globalThis.joyaiTestRequest; });
+  const provider = new JoyAIProvider({
+    getSearchSessionId: () => 'scope', rememberSearchJob() {}, report() {},
+  });
+  provider.sessionId = 'media-long-input';
+  const tail = 'Do not modify any files.';
+  const instruction = 'x'.repeat(16000 - tail.length) + tail;
+  await provider.requestFrame(instruction, instruction, 'data:image/jpeg;base64,ZmFrZQ==');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'video.joyai.frame');
+  assert.equal(calls[0][1].instruction, instruction);
+  assert.equal(calls[0][1].question, instruction);
+});
+
 function setup() {
   const speech = [];
   const provider = new JoyAIProvider({

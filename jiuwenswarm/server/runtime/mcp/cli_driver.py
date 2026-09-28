@@ -57,6 +57,16 @@ def _cleanup_stale_auth_proc(name: str) -> None:
             pass
 
 
+def cancel_pending_auth_proc(name: str) -> None:
+    """Kill and drop a pending authWaitForExit proc for *name* (idempotent).
+
+    Public wrapper around :func:`_cleanup_stale_auth_proc` so the MCP registry
+    can abort a CLI OAuth flow the user cancelled (``mcp.cancel_connect``)
+    without importing a private helper.
+    """
+    _cleanup_stale_auth_proc(name)
+
+
 def _platform_key() -> str:
     sysname = platform.system()
     if sysname == "Windows":

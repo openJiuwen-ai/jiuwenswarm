@@ -155,9 +155,13 @@ class TestHandleMcpList:
         captured: dict[str, Any] = {}
 
         async def _fake(
-            filter: str = "builtin", *, cache_mode: str | None = None, refresh: bool = False
+            filter: str = "builtin",
+            *,
+            cache_mode: str | None = None,
+            refresh: bool = False,
+            query: str = "",
         ) -> list[dict[str, Any]]:
-            captured.update(filter=filter, cache_mode=cache_mode, refresh=refresh)
+            captured.update(filter=filter, cache_mode=cache_mode, refresh=refresh, query=query)
             return [{"name": "github", "connection_state": "disconnected"}]
 
         # 显式 local → 透传 local
@@ -169,11 +173,21 @@ class TestHandleMcpList:
                 ws,
                 _make_request(
                     req_method=ReqMethod.MCP_LIST,
-                    params={"filter": "local", "cache_mode": "prefer_cache", "refresh": True},
+                    params={
+                        "filter": "local",
+                        "cache_mode": "prefer_cache",
+                        "refresh": True,
+                        "query": "github",
+                    },
                 ),
                 send_lock,
             )
-        assert captured == {"filter": "local", "cache_mode": "prefer_cache", "refresh": True}
+        assert captured == {
+            "filter": "local",
+            "cache_mode": "prefer_cache",
+            "refresh": True,
+            "query": "github",
+        }
 
         # 无 filter → 兜底 builtin
         with patch(
@@ -185,7 +199,12 @@ class TestHandleMcpList:
                 _make_request(req_method=ReqMethod.MCP_LIST, params={}),
                 send_lock,
             )
-        assert captured == {"filter": "builtin", "cache_mode": None, "refresh": False}
+        assert captured == {
+            "filter": "builtin",
+            "cache_mode": None,
+            "refresh": False,
+            "query": "",
+        }
 
         # 非法值 → 兜底 builtin
         with patch(
@@ -197,7 +216,12 @@ class TestHandleMcpList:
                 _make_request(req_method=ReqMethod.MCP_LIST, params={"filter": "bogus"}),
                 send_lock,
             )
-        assert captured == {"filter": "builtin", "cache_mode": None, "refresh": False}
+        assert captured == {
+            "filter": "builtin",
+            "cache_mode": None,
+            "refresh": False,
+            "query": "",
+        }
 
 
 class TestHandleMcpShow:

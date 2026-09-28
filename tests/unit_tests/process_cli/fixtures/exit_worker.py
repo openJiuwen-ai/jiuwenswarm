@@ -11,6 +11,9 @@ import sys
 import types
 
 
+_background_tasks: list[asyncio.Task[None]] = []
+
+
 def note(stage: str) -> None:
     print(f"EXIT_TEST:{stage}", file=sys.stderr, flush=True)
 
@@ -24,7 +27,9 @@ class FakeClient:
         if self.scenario == "startup_failure":
             raise SystemExit(0)
         if self.scenario == "shutdown_failure":
-            asyncio.create_task(self.background())
+            # Keep the injected task alive until asyncio.run cancels pending
+            # tasks, so garbage collection cannot hide its shutdown failure.
+            _background_tasks.append(asyncio.create_task(self.background()))
             await asyncio.sleep(0)
 
     async def background(self) -> None:

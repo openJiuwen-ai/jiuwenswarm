@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.skill.archive_store import ARCHIVE_DIRNAME
 from jiuwenswarm.server.runtime.skill.skill_manager import (
@@ -474,3 +474,91 @@ def test_parse_multipart_roundtrip() -> None:
     fields = parse_multipart_form(content_type, body)
     assert fields["link"] == "https://a.example"
     assert fields["skill_description"] == "desc"
+
+
+async def _serve_skill_rpc_mock_server(handler: Any) -> Any:
+    """在空闲端口起一个协议兼容的 Mock AgentServer，返回 (server, uri)."""
+    import socket
+
+    from websockets.legacy.server import serve as legacy_serve
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    server = await legacy_serve(handler, "127.0.0.1", port)
+    return server, f"ws://127.0.0.1:{port}"
+
+
+@pytest.mark.asyncio
+async def test_skill_rpc_client_skips_ack_and_decoy_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """最小 WS 客户端须先消费 connection.ack，并按 request_id 丢弃无关帧。"""
+    from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+    from jiuwenswarm.server.runtime.skill import skills_multipart_http as mod
+
+    seen: list[dict[str, Any]] = []
+
+    async def handler(ws: Any) -> None:
+        await ws.send(json.dumps({"type": "event", "event": "connection.ack", "params": {}}))
+        request = json.loads(await ws.recv())
+        seen.append(request)
+        # 先发一条 request_id 不匹配的帧，再发迟到的事件帧，最后才是真正的响应。
+        decoy = encode_agent_response_for_wire(
+            AgentResponse(request_id="someone-else", channel_id="web", ok=True, payload={}),
+            response_id="someone-else",
+        )
+        await ws.send(json.dumps(decoy, ensure_ascii=False))
+        await ws.send(json.dumps({"type": "event", "event": "connection.ack", "params": {}}))
+        good = encode_agent_response_for_wire(
+            AgentResponse(
+                request_id=request["request_id"],
+                channel_id="web",
+                ok=True,
+                payload={"success": True, "skill": {"name": "from-ws"}},
+            ),
+            response_id=request["request_id"],
+        )
+        await ws.send(json.dumps(good, ensure_ascii=False))
+
+    server, uri = await _serve_skill_rpc_mock_server(handler)
+    monkeypatch.setenv("AGENT_SERVER_URL", uri)
+    try:
+        payload = await mod._call_agent_skill_rpc(
+            method=ReqMethod.SKILLS_IMPORT_UPLOAD,
+            params={"path": "/tmp/x.zip", "overwrite": False},
+            timeout_s=10.0,
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert payload["success"] is True
+    assert payload["skill"]["name"] == "from-ws"
+    assert seen and seen[0]["request_id"].startswith("file-api-")
+
+
+@pytest.mark.asyncio
+async def test_skill_rpc_client_rejects_missing_ack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未收到 connection.ack 时应直接失败，避免把非 ack 帧当作响应。"""
+    from jiuwenswarm.server.runtime.skill import skills_multipart_http as mod
+
+    async def handler(ws: Any) -> None:
+        await ws.send(json.dumps({"type": "event", "event": "unexpected"}))
+
+    server, uri = await _serve_skill_rpc_mock_server(handler)
+    monkeypatch.setenv("AGENT_SERVER_URL", uri)
+    try:
+        with pytest.raises(SkillRpcError) as excinfo:
+            await mod._call_agent_skill_rpc(
+                method=ReqMethod.SKILLS_IMPORT_UPLOAD,
+                params={"path": "/tmp/x.zip"},
+                timeout_s=10.0,
+            )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert "connection.ack" in excinfo.value.message

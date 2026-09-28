@@ -15,6 +15,7 @@ export type LocalFilePickResult =
 export const DESKTOP_LOCAL_FILES_EVENT = 'jiuwen-desktop-local-files';
 export const DESKTOP_READY_EVENT = 'jiuwen-desktop-ready';
 export const DESKTOP_FILE_DRAG_EVENT = 'jiuwen-desktop-file-drag';
+export const DESKTOP_DIRECTORY_DROP_REJECTED_EVENT = 'jiuwen-desktop-directory-drop-rejected';
 
 export type DesktopLocalFilesEventDetail = {
   source?: 'drop' | 'paste' | string;
@@ -111,6 +112,21 @@ function dataTransferHasFiles(dt: DataTransfer | null): boolean {
   }
 }
 
+function dataTransferHasDirectory(dt: DataTransfer | null): boolean {
+  if (!dt?.items) return false;
+  try {
+    return Array.from(dt.items).some((item) => {
+      if (item.kind !== 'file') return false;
+      const entry = (item as DataTransferItem & {
+        webkitGetAsEntry?: () => { isDirectory?: boolean } | null;
+      }).webkitGetAsEntry?.();
+      return entry?.isDirectory === true;
+    });
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Install window-level file-drag accept handlers inside the desktop webview.
  * Must run in the page itself (not only via Python evaluate_js) so a frontend
@@ -135,7 +151,9 @@ export function installDesktopFileDragAccept(): boolean {
       if (!dataTransferHasFiles(event.dataTransfer)) return;
       event.preventDefault();
       try {
-        if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+        if (event.dataTransfer) {
+          event.dataTransfer.dropEffect = dataTransferHasDirectory(event.dataTransfer) ? 'none' : 'copy';
+        }
       } catch {
         // ignore
       }
@@ -150,10 +168,15 @@ export function installDesktopFileDragAccept(): boolean {
   const accept = (event: DragEvent) => {
     if (!dataTransferHasFiles(event.dataTransfer)) return;
     event.preventDefault();
+    const hasDirectory = dataTransferHasDirectory(event.dataTransfer);
     try {
-      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+      if (event.dataTransfer) event.dataTransfer.dropEffect = hasDirectory ? 'none' : 'copy';
     } catch {
       // ignore
+    }
+    if (hasDirectory) {
+      event.stopImmediatePropagation();
+      return;
     }
     window.dispatchEvent(
       new CustomEvent(DESKTOP_FILE_DRAG_EVENT, { detail: { active: true } }),
@@ -174,6 +197,10 @@ export function installDesktopFileDragAccept(): boolean {
     (event: DragEvent) => {
       if (!dataTransferHasFiles(event.dataTransfer)) return;
       event.preventDefault();
+      if (dataTransferHasDirectory(event.dataTransfer)) {
+        event.stopImmediatePropagation();
+        window.dispatchEvent(new CustomEvent(DESKTOP_DIRECTORY_DROP_REJECTED_EVENT));
+      }
       endDrag();
     },
     true,

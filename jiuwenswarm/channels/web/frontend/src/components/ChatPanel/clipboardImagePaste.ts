@@ -38,6 +38,37 @@ function getFileExtension(filename: string): string {
   return filename.slice(idx).toLowerCase();
 }
 
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+};
+
+/**
+ * Keep a MIME that mimetypes (or the browser) already resolved.
+ * Fill image/webp only when that result is missing or octet-stream.
+ */
+export function resolveImageMimeType(filename: string, mimeType?: string): string {
+  const normalized = (mimeType || '').toLowerCase().split(';')[0].trim();
+  if (normalized && normalized !== 'application/octet-stream') {
+    return normalized;
+  }
+  return IMAGE_MIME_BY_EXTENSION[getFileExtension(filename)] || normalized || 'application/octet-stream';
+}
+
+/** Desktop picks have no browser File; retry still works from base64 or a local path. */
+export function canRetryAttachmentDraft(draft: {
+  file?: unknown;
+  base64Data?: string;
+  localPath?: string;
+}): boolean {
+  if (draft.file) return true;
+  if (typeof draft.base64Data === 'string' && draft.base64Data.length > 0) return true;
+  return typeof draft.localPath === 'string' && draft.localPath.trim().length > 0;
+}
+
 function isImageFile(file: File): boolean {
   const type = file.type.toLowerCase();
   if (ACCEPTED_IMAGE_TYPES.has(type)) return true;

@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Globe2, Minimize2 } from 'lucide-react';
 import MaximizeIcon from '../../assets/maximize.svg?react';
 import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
-import RecentTasksIcon from '../../assets/work-mode/progress-tasks.svg?react';
+import RecentTasksIcon from '../../assets/work-mode/recent-tasks.svg?react';
 import TabCloseIcon from '../../assets/work-mode/close.svg?react';
 import artifactsIcon from '../../assets/artifacts.svg';
 import reviewIcon from '../../assets/review.svg';

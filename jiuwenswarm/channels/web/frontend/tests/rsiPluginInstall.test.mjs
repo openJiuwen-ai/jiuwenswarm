@@ -73,3 +73,49 @@ test('Harness refs are installed through RSI, not imported as archives, and refr
     delete globalThis.document;
   }
 });
+
+test('failed RSI tasks show the persisted failure reason inline', async () => {
+  const dom = new JSDOM('<div id="root"></div>');
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  globalThis.rsiInstallProbe = {
+    calls: [],
+    store: { installedTaskIds: {}, markTaskInstalled() {} },
+    install: async () => {},
+    plugins: { loadList: async () => {} },
+  };
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () => root.render(React.createElement(RsiDetailHeader, {
+      task: {
+        task_id: 'failed-task',
+        name: 'Deleted program',
+        status: 'FAILED',
+        scenario: 'ARTIFACT',
+        artifact_type: 'PROGRAM',
+        failure_reason: 'nothing at /tmp/deleted-program',
+        config: { max_iterations: 1 },
+      },
+      tree: null,
+      report: null,
+      createdAt: null,
+      onOpenConfig() {},
+      onOpenArtifact() {},
+    })));
+    await act(async () => document.querySelector('[data-testid="rsi-failure-reason-trigger"]').click());
+    assert.match(
+      document.querySelector('[data-testid="rsi-failure-reason-popover"]')?.textContent ?? '',
+      /nothing at \/tmp\/deleted-program/,
+    );
+    await act(async () => document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape' })));
+    assert.equal(document.querySelector('[data-testid="rsi-failure-reason-popover"]'), null);
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    delete globalThis.rsiInstallProbe;
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});

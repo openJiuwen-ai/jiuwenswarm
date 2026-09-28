@@ -542,6 +542,54 @@ def test_make_deep_agent_config_resolves_completion_timeout(
     assert deep_cfg.completion_timeout == expected_timeout
 
 
+def test_make_deep_agent_config_omits_unconfigured_max_iterations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = JiuWenSwarmDeepAdapter()
+    config_base = _make_config("teamleader")
+    config_base["react"].pop("max_iterations", None)
+    monkeypatch.setattr(interface_module, "get_config", lambda: config_base)
+
+    with patch.object(
+        interface_module.JiuWenSwarmDeepAdapter,
+        "_build_configured_subagents",
+        return_value=(None, False),
+    ):
+        deep_cfg = adapter._make_deep_agent_config(
+            model=object(),
+            config=config_base["react"],
+            agent_card=MagicMock(),
+            tool_cards=[],
+            rails=[],
+        )
+
+    assert deep_cfg.max_iterations is None
+
+
+def test_make_deep_agent_config_honors_configured_max_iterations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = JiuWenSwarmDeepAdapter()
+    config_base = _make_config("teamleader")
+    config_base["react"]["max_iterations"] = 42
+    monkeypatch.setattr(interface_module, "get_config", lambda: config_base)
+
+    with patch.object(
+        interface_module.JiuWenSwarmDeepAdapter,
+        "_build_configured_subagents",
+        return_value=(None, False),
+    ):
+        deep_cfg = adapter._make_deep_agent_config(
+            model=object(),
+            config=config_base["react"],
+            agent_card=MagicMock(),
+            tool_cards=[],
+            rails=[],
+        )
+
+    assert deep_cfg.max_iterations == 42
+
+
 def test_make_deep_agent_config_keeps_native_auto_with_vision_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

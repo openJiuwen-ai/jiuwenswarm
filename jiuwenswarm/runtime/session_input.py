@@ -12,6 +12,24 @@ class SessionInputMode(str, Enum):
     FOLLOW_UP = "follow_up"
 
 
+class SessionInputRejectedError(RuntimeError):
+    """A known refusal before input reaches the SDK queue."""
+
+    code = "SESSION_INPUT_REJECTED"
+
+
+class SessionInputTargetError(SessionInputRejectedError):
+    """A supplemental input must never become work for a different execution."""
+
+    code = "SESSION_INPUT_TARGET_CHANGED"
+
+
+class SessionInputQueueRequiredError(SessionInputRejectedError):
+    """Cross-session input must wait for ordinary task admission; nothing was sent."""
+
+    code = "SESSION_INPUT_QUEUE_REQUIRED"
+
+
 def resolve_session_input_mode(params: Any) -> SessionInputMode | None:
     """Normalize the existing mode and its legacy alias in one place.
 
@@ -38,6 +56,12 @@ def resolve_session_input_mode(params: Any) -> SessionInputMode | None:
 
 
 def validate_session_input(params: Mapping[str, Any]) -> None:
+    if "expected_execution_id" in params:
+        target = params["expected_execution_id"]
+        if not isinstance(target, str) or not target.strip():
+            raise ValueError("expected_execution_id must be a non-empty string")
+        if resolve_session_input_mode(params) is not SessionInputMode.STEER:
+            raise ValueError("expected_execution_id requires steer mode")
     query = params.get("query")
     if not isinstance(query, str) or not query.strip():
         raise ValueError("session input requires non-empty text")

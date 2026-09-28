@@ -182,6 +182,8 @@ def test_code_spec_forces_task_loop_for_skill_evolution(tmp_path):
     assert spec.enable_task_loop is True
     assert spec.progressive_tool is not None
     assert spec.progressive_tool.enabled is False
+    assert spec.max_iterations == DeepAgentSpec.model_fields["max_iterations"].default
+    assert "max_iterations" not in spec.subagents[0].factory_kwargs
 
 
 def test_code_spec_materializes_through_registered_providers(tmp_path):

@@ -20,7 +20,7 @@ def test_personal_context_api_inventory_and_legacy_removal() -> None:
         "personal_context.fetch.stop_" + "scheduler",
     }
 
-    assert len(methods) == 25
+    assert len(methods) == 26
     assert methods.isdisjoint(removed_methods)
     assert not any(item.value.startswith(legacy_prefix) for item in ReqMethod)
 

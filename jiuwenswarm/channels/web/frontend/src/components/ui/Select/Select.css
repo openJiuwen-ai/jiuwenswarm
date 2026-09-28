@@ -1,25 +1,69 @@
 .ui-select {
   box-sizing: border-box;
-  min-height: 38px;
+  height: 32px;
   max-width: 100%;
-  padding: 8px 31px 8px 11px;
+  padding: 5px 32px 5px 12px;
   font: inherit;
-  font-size: var(--font-size-sm);
+  font-size: 14px;
   color: var(--color-text-primary);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-input-strong);
+  border-radius: var(--radius-sm);
   outline: none;
   background: var(--color-surface-card);
+  /* data-URI 无法引用 CSS 变量，色值对应 --color-border-input-strong (#c2c2c2) */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 6l4 4 4-4' stroke='%23c2c2c2' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  appearance: none;
+  text-align: left;
 }
-.ui-select:focus {
-  border-color: var(--color-action-primary);
-  box-shadow: var(--effect-focus-ring);
+.ui-select:hover:not(:disabled):not(.ui-select--invalid),
+.ui-select:focus,
+.ui-select[data-state='open'] {
+  border-color: var(--color-control-emphasis);
+}
+.ui-select:hover:not(:disabled):not(.ui-select--invalid),
+.ui-select:focus,
+.ui-select[data-state='open'] {
+  /* 对应 --color-control-emphasis (#191919) */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 6l4 4 4-4' stroke='%23191919' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 .ui-select:disabled {
   color: var(--color-text-tertiary);
-  background: var(--color-surface-muted);
+  background-color: var(--color-surface-muted);
   cursor: not-allowed;
 }
 .ui-select--invalid {
   border-color: var(--color-border-danger);
+}
+
+/* 下拉面板：复用 .ui-dropdown-menu 的面板与选项样式，仅补充 select 特有部分。
+   双类选择器提高特异性，确保 z-index 不被后加载的 DropdownMenu.css(1000) 覆盖 */
+.ui-dropdown-menu.ui-select__panel {
+  display: flex;
+  flex-direction: column;
+  max-height: 280px;
+  overflow-y: auto;
+  /* 去掉左右内边距，选项行铺满面板宽度（不影响 DropdownMenu 自身的 8px 全向内边距） */
+  padding: 8px 0;
+  /* 高于 asset-publish-backdrop(10000)，保证在抽屉/全屏遮罩内可见 */
+  z-index: 10001;
+}
+.ui-select__option {
+  flex: none;
+}
+/* 选项行铺满面板宽度，去掉圆角（双类提高特异性，不影响 DropdownMenu 自身选项） */
+.ui-dropdown-menu__item.ui-select__option {
+  border-radius: 0;
+}
+.ui-dropdown-menu__item.ui-select__option--selected {
+  /* 对应 --color-chat-accent (#1476ff) */
+  color: var(--color-chat-accent);
+  font-weight: 700;
+}
+/* 选中项 hover/focus 不叠加背景，仅非选中项才有 hover 高亮 */
+.ui-dropdown-menu__item.ui-select__option--selected:hover:not(:disabled),
+.ui-dropdown-menu__item.ui-select__option--selected:focus-visible:not(:disabled) {
+  background: transparent;
+  color: var(--color-chat-accent);
 }

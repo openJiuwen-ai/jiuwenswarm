@@ -84,6 +84,65 @@ test('all five RPCs send the current token and provider without frontend identit
   assert.equal(calls[0].params.user_id, undefined);
   webClient.request = original;
 });
+test('publish form uses compact resource, account, grouped settings, and folded secondary content', async () => {
+  sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
+  sessionStorage.setItem('marketplace_oauth_provider', 'gitcode');
+  sessionStorage.setItem(
+    'marketplace_oauth_user',
+    JSON.stringify({ id: 'user-1', name: 'Alice', login: 'alice', avatar_url: '', is_market_moderation_admin: false }),
+  );
+  assetPublishApi.describe = async () => ({
+    ...description,
+    hub_url: 'https://swarmskills.openjiuwen.com/',
+  });
+  await act(async () => root.render(React.createElement(AssetPublishHost)));
+  await act(async () =>
+    openAssetPublish({
+      kind: 'skill',
+      local_id: 'demo-skill',
+      avatar_url: 'data:image/png;base64,ZGVtby1hdmF0YXI=',
+    }),
+  );
+  await tick();
+
+  assert.match(find('asset-publish-resource-summary').textContent, /Demo/);
+  assert.match(find('asset-publish-resource-summary').textContent, /Skill/);
+  assert.equal(find('asset-publish-resource-avatar-image').getAttribute('src'), 'data:image/png;base64,ZGVtby1hdmF0YXI=');
+  assert.equal(find('asset-publish-resource-id').title, 'demo-skill');
+  assert.match(find('asset-publish-account-card').textContent, /GitCode/);
+  assert.equal(find('asset-publish-provider-icon').dataset.variant, 'gitcode');
+  assert.equal(find('asset-publish-provider-icon').getAttribute('alt'), '');
+  assert.match(find('asset-publish-account-card').textContent, /Alice/);
+  assert.match(find('asset-publish-account-card').textContent, /swarmskills\.openjiuwen\.com/);
+  assert.ok(find('asset-publish-switch-account'));
+  assert.equal(document.querySelectorAll('[data-testid="asset-publish-provider"]').length, 0);
+
+  assert.ok(document.querySelector('[data-testid="asset-publish-form-section"][data-variant="basic"]'));
+  assert.ok(document.querySelector('[data-testid="asset-publish-form-section"][data-variant="publish"]'));
+  assert.ok(document.querySelector('[data-testid="asset-publish-form-section"][data-variant="advanced"]'));
+  assert.equal(document.querySelectorAll('[data-testid="asset-publish-visibility-option"]').length, 2);
+  assert.equal(find('asset-publish-visibility'), null);
+  assert.ok(find('asset-publish-records-fold'));
+  assert.equal(find('asset-publish-records-fold').open, false);
+  assert.match(find('asset-publish-records-fold').textContent, /Local publishing history/);
+  assert.doesNotMatch(find('asset-publish-records-fold').querySelector('summary').textContent, /\(0\)/);
+  assert.match(find('asset-publish-records-help').dataset.tooltip, /does not represent the latest Hub moderation status/);
+  assert.equal(find('asset-publish-records-help').closest('summary') !== null, true);
+  assert.match(find('asset-publish-advanced-help').dataset.tooltip, /updating an existing resource/);
+  assert.equal(find('asset-publish-advanced-help').closest('summary') !== null, true);
+  assert.equal(find('asset-publish-advanced-help').className, find('asset-publish-records-help').className);
+  assert.equal(find('asset-publish-refresh').closest('[data-testid="asset-publish-records-fold"]') !== null, true);
+  assert.equal(find('asset-publish-refresh').closest('[data-testid="asset-publish-records-toolbar"]') !== null, true);
+  assert.match(find('asset-publish-records').textContent, /No local publishing records/);
+  assert.equal(find('asset-publish-tags').closest('label').textContent.includes('comma separated'), false);
+  const hints = [...document.querySelectorAll('[data-testid="asset-publish-field-hint"]')];
+  assert.equal(hints.length, 4);
+  assert.ok(hints.every((hint) => hint.dataset.tooltip?.length > 20));
+  assert.ok(hints.every((hint) => hint.tabIndex === 0));
+
+  await act(async () => find('asset-publish-close').click());
+  sessionStorage.removeItem('marketplace_oauth_user');
+});
 test('all four kinds open the shared review, retain moderation result, and never trust install ownership', async () => {
   sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
   const refs = [];
@@ -99,11 +158,12 @@ test('all four kinds open the shared review, retain moderation result, and never
   assetPublishApi.commit = async () => ({
     operation_id: 'op',
     execution_status: 'completed',
-    result: { publish_result: 'pending_moderation', visibility: null },
+    result: { publish_result: 'pending_moderation', visibility: null, asset_id: 'hub-asset', version: '1.0.0' },
     error: null,
+    updated_at: '2026-09-16T06:49:59Z',
   });
   await act(async () => root.render(React.createElement(AssetPublishHost)));
-  for (const kind of ['skill', 'agent_template', 'plugin', 'mcp']) {
+  for (const kind of ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp']) {
     await act(async () => openAssetPublish({ kind, local_id: 'demo' }));
     await tick();
     assert.ok(find('asset-publish-drawer'));
@@ -113,17 +173,25 @@ test('all four kinds open the shared review, retain moderation result, and never
     );
     await tick();
     assert.ok(find('asset-publish-review'));
+    assert.equal(find('asset-publish-notice'), null);
     assert.equal(submits.at(-1)[2], '');
     assert.equal(submits.at(-1)[3], false);
     await act(async () => find('asset-publish-commit').click());
     await tick();
     assert.equal(find('asset-publish-result').dataset.variant, 'pending_moderation');
-    assert.match(find('asset-publish-visibility-unconfirmed').textContent, /without confirming visibility/);
+    assert.ok(find('asset-publish-result-header'));
+    assert.ok(find('asset-publish-result-metadata'));
+    assert.match(find('asset-publish-result-metadata').textContent, /hub-asset/);
+    assert.match(find('asset-publish-result-metadata').textContent, /1\.0\.0/);
+    assert.ok(find('asset-publish-result-footer'));
+    assert.equal(find('asset-publish-new-version').closest('[data-testid="asset-publish-result-footer"]') !== null, true);
+    assert.equal(find('asset-publish-notice'), null);
+    assert.equal(find('asset-publish-visibility-unconfirmed'), null);
     await act(async () => find('asset-publish-close').click());
   }
   assert.deepEqual(
     refs.map((ref) => ref.kind),
-    ['skill', 'agent_template', 'plugin', 'mcp'],
+    ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp'],
   );
 });
 test('account change discards an in-flight prepare result', async () => {
@@ -220,6 +288,31 @@ test('definitive expired draft rejection unlocks editing and requires a new pack
     assert.ok(find('asset-publish-prepare'));
     await act(async () => find('asset-publish-close').click());
   }
+});
+test('Hub request rejection identifies Hub and gives actionable guidance', async () => {
+  assetPublishApi.describe = async () => description;
+  assetPublishApi.prepare = async () => draft;
+  assetPublishApi.commit = async () => ({
+    operation_id: 'hub-rejected-operation',
+    draft_id: 'draft',
+    execution_status: 'failed',
+    result: null,
+    error: { code: 'hub_request_failed' },
+    updated_at: '2026-09-24T06:00:00Z',
+  });
+  await act(async () => openAssetPublish({ kind: 'agent_template', local_id: 'hub-rejected' }));
+  await tick();
+  await act(async () =>
+    find('asset-publish-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })),
+  );
+  await tick();
+  await act(async () => find('asset-publish-commit').click());
+  await tick();
+  const message = document.querySelector('.asset-publish-result-error').textContent;
+  assert.match(message, /Hub did not accept this publishing request/);
+  assert.match(message, /contact the Hub administrator/);
+  assert.doesNotMatch(message, /hub_request_failed/i);
+  await act(async () => find('asset-publish-close').click());
 });
 test('polling completion updates the matching history row', async () => {
   const queued = { operation_id: 'polled', draft_id: 'draft', execution_status: 'queued', result: null, error: null };

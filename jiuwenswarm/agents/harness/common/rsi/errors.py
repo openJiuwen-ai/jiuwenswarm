@@ -5,6 +5,61 @@ from __future__ import annotations
 from typing import Any
 
 
+_FAILURE_REASON_LIMIT = 500
+
+
+def _first_error_message(errors: Any) -> str:
+    """Return the first actionable message from a Provider error list."""
+
+    if not isinstance(errors, (list, tuple)):
+        return ""
+    for item in errors:
+        if isinstance(item, dict):
+            message = str(item.get("message") or item.get("reason") or "").strip()
+        else:
+            message = str(item or "").strip()
+        if message:
+            return message[:_FAILURE_REASON_LIMIT]
+    return ""
+
+
+def failure_reason(value: Any, *, fallback: str = "") -> str:
+    """Normalize an exception or Provider result into a short reason."""
+
+    if isinstance(value, dict):
+        errors = value.get("errors") or value.get("detail")
+        structured = _first_error_message(errors)
+        if structured:
+            return structured
+        for key in ("error_message", "last_reason", "message"):
+            message = str(value.get(key) or "").strip()
+            if message:
+                return message[:_FAILURE_REASON_LIMIT]
+        error_code = str(value.get("error_code") or "").strip()
+        return error_code[:_FAILURE_REASON_LIMIT] if error_code else str(fallback or "").strip()[:_FAILURE_REASON_LIMIT]
+
+    structured = _first_error_message(getattr(value, "errors", None))
+    if not structured:
+        structured = _first_error_message(getattr(value, "detail", None))
+    if structured:
+        return structured
+
+    for attr in ("error_message", "last_reason", "message"):
+        message = str(getattr(value, attr, "") or "").strip()
+        if message:
+            return message[:_FAILURE_REASON_LIMIT]
+
+    if isinstance(value, BaseException):
+        message = str(value).strip()
+        if message:
+            return message[:_FAILURE_REASON_LIMIT]
+
+    error_code = str(getattr(value, "error_code", "") or "").strip()
+    if error_code:
+        return error_code[:_FAILURE_REASON_LIMIT]
+    return str(fallback or "").strip()[:_FAILURE_REASON_LIMIT]
+
+
 class RsiError(Exception):
     """RSI 服务域统一异常：携带对外错误码（web §3.5）。"""
 

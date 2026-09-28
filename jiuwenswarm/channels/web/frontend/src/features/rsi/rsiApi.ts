@@ -396,6 +396,7 @@ export function normalizeRsiStatusChangedPayload(value: unknown): RsiTrainingSta
     status: normalizeRsiStatus(raw?.status ?? raw?.new_status),
     old_status: from != null ? normalizeRsiStatus(from) : undefined,
     new_status: normalizeRsiStatus(raw?.status ?? raw?.new_status),
+    failure_reason: asNullableString(raw?.failure_reason),
   };
 }
 

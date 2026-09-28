@@ -34,6 +34,34 @@ test('market pages share the 1400px centered design surface', async () => {
   assert.match(markup, /pt-16/);
 });
 
+test('cache notice stays hidden during normal refresh and identifies stale content', async () => {
+  const { CatalogCacheNotice } =
+    await import('../node_modules/.cache/market-visual-contract/marketplace/CatalogCacheNotice.js');
+
+  const refreshingMarkup = renderToStaticMarkup(
+    React.createElement(CatalogCacheNotice, {
+      cache: { state: 'fresh', refreshing: true, complete: true },
+    }),
+  );
+  assert.equal(refreshingMarkup, '');
+
+  const staleMarkup = renderToStaticMarkup(
+    React.createElement(CatalogCacheNotice, {
+      cache: { state: 'stale', refreshing: true, updated_at: 1789522670.483113 },
+    }),
+  );
+  assert.match(staleMarkup, /当前显示旧缓存/);
+  assert.match(staleMarkup, /上次更新时间/);
+  assert.doesNotMatch(staleMarkup, /1789522670/);
+
+  const failedMarkup = renderToStaticMarkup(
+    React.createElement(CatalogCacheNotice, {
+      cache: { state: 'fresh', refreshing: false, error: 'refresh_failed' },
+    }),
+  );
+  assert.match(failedMarkup, /目录刷新失败/);
+});
+
 test('market cards use the design card dimensions and typography', async () => {
   const { MarketCard } = await import('../node_modules/.cache/market-visual-contract/ConnectorMarket/MarketCard.js');
 

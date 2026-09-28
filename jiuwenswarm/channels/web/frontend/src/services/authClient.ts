@@ -7,7 +7,12 @@
 
 import { getApiBase } from '../utils/env';
 
-/** 没有 cookie 的环境回落到请求头带会话 id。 */
+/**
+ * 没有 cookie 的环境回落到请求头带会话 id。
+ *
+ * 存 `localStorage` 而不是 `sessionStorage`：桌面 WebView 拿不到种在系统浏览器里的 cookie，
+ * 只剩这一条路，而 `sessionStorage` 关掉窗口就清空——重开应用会显示未登录，其实网关那边会话还在
+ */
 const SESSION_HEADER = 'X-Auth-Session';
 const SESSION_STORAGE_KEY = 'jiuwenswarm.auth.sessionId';
 
@@ -29,9 +34,18 @@ export interface AuthorizeResponse {
   expiresIn?: number;
 }
 
+/**
+ * 活动状态，决定界面显示什么对应：`campaign_state`：
+ * `active` 正常；`ended` 活动已结束；`unavailable` 拉不到配置；
+ * `off` 本地关掉了，什么都不显示。老版本 Gateway 不返回这个字段。
+ */
+export type CampaignState = 'active' | 'ended' | 'unavailable' | 'off';
+
 export interface AuthStatus {
   islogin: boolean;
   enabled: boolean;
+  state?: CampaignState;
+  accountCenterUrl?: string;
   provider?: string;
   userId?: string | null;
   userName?: string | null;
@@ -58,7 +72,7 @@ export class AuthApiError extends Error {
 
 function readStoredSessionId(): string {
   try {
-    return sessionStorage.getItem(SESSION_STORAGE_KEY) || '';
+    return localStorage.getItem(SESSION_STORAGE_KEY) || '';
   } catch {
     return '';
   }
@@ -66,10 +80,10 @@ function readStoredSessionId(): string {
 
 function writeStoredSessionId(sessionId: string): void {
   try {
-    if (sessionId) sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId);
-    else sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    if (sessionId) localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+    else localStorage.removeItem(SESSION_STORAGE_KEY);
   } catch {
-    /* 隐私模式下 sessionStorage 可能抛错，忽略即可——cookie 仍然生效 */
+    /* 隐私模式下 localStorage 可能抛错，忽略即可——cookie 仍然生效 */
   }
 }
 
@@ -146,6 +160,36 @@ export async function claim(state: string, claimToken: string): Promise<ClaimOut
   return { kind: 'done', status: { ...data, enabled: true } };
 }
 
+/**
+ * 放弃这次登录，让Gateway别再替它向鉴权服务认领。发不出去时Gateway也会在state过期后自己停。
+ * `keepalive` 让页面关闭时发起的这次请求也能送达。
+ */
+export async function cancelLogin(state: string, claimToken: string): Promise<void> {
+  try {
+    await fetch(authUrl('/cancel'), {
+      method: 'POST',
+      credentials: 'include',
+      keepalive: true,
+      headers: stateChangingHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ state, claimToken }),
+    });
+  } catch {
+    /* 见上 */
+  }
+}
+
+export function openExternal(url: string): Window | null {
+  const opened = window.open(url, '_blank');
+  if (opened) {
+    try {
+      opened.opener = null;
+    } catch {
+      /* 个别 WebView 不允许改写 */
+    }
+  }
+  return opened;
+}
+
 /** 查询当前登录状态。后端未开启登录时返回 `enabled: false`。 */
 export async function status(): Promise<AuthStatus> {
   const response = await fetch(authUrl('/status'), {
@@ -154,7 +198,11 @@ export async function status(): Promise<AuthStatus> {
     headers: authHeaders({ Accept: 'application/json' }),
   });
   if (!response.ok) throw await readError(response, '获取登录状态失败');
-  return (await response.json()) as AuthStatus;
+  const data = (await response.json()) as AuthStatus;
+  // 会话确实过期了才丢掉本地句柄：它的优先级高于 cookie，留着会把还能用的 cookie 挡住。
+  // 未登录状态不算，活动下线时也是未登录，那时清掉，活动恢复后还需要重登一次
+  if (data.expired) writeStoredSessionId('');
+  return data;
 }
 
 export interface LoginModelInfo {
