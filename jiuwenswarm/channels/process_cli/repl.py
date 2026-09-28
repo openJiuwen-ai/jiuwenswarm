@@ -591,7 +591,7 @@ async def _choose_session(
         except (EOFError, KeyboardInterrupt):
             ui.notice("已取消会话选择。")
             return None
-        except (ControlQueryError, OSError, TimeoutError) as error:
+        except (ControlQueryError, OSError) as error:
             ui.notice(str(error) or "会话查询失败")
             return None
 
