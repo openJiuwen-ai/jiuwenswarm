@@ -482,18 +482,25 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
         # 走线程是因为底层 httpx 是同步 API, 不能直接堵 event loop。
         # cleanup 自身已经吞了所有异常并永不抛, 外层 try/except 只是再加一道防线,
         # 兜住 import 阶段 (例如 venv 损坏) 这种极端情况。
-        try:
-            from jiuwenswarm.server.sandbox_lifecycle import (
-                shutdown_jiuwenbox_sandboxes,
-            )
+        # 企业级 sidecar 模式静默跳过 step 1: pod 终止时 sidecar 毫秒级退出、
+        # 先于本进程清理, DELETE 必败纯噪音 (沙箱由 box-server lifespan +
+        # bwrap PDEATHSIG + 容器 cgroup 三层兜底销毁); 非 enterprise external
+        # 模式 box-server 长活于本进程外, 仍需 DELETE。
+        if not is_enterprise():
+            try:
+                from jiuwenswarm.server.sandbox_lifecycle import (
+                    shutdown_jiuwenbox_sandboxes,
+                )
 
-            logger.info("[AgentServer][sandbox] step 1: DELETE 远端沙箱 (box-server 活着)")
-            released = await asyncio.to_thread(shutdown_jiuwenbox_sandboxes)
-            logger.info("[AgentServer][sandbox] step 1 done: released=%s", released)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[AgentServer] jiuwenbox sandbox cleanup failed: %s", exc,
-            )
+                logger.info(
+                    "[AgentServer][sandbox] step 1: DELETE 远端沙箱 (box-server 活着)"
+                )
+                released = await asyncio.to_thread(shutdown_jiuwenbox_sandboxes)
+                logger.info("[AgentServer][sandbox] step 1 done: released=%s", released)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[AgentServer] jiuwenbox sandbox cleanup failed: %s", exc,
+                )
         # 停 internal 模式下由本 agent-server 拉起的 box-server 子进程。box-server
         # 进程退出时其 FastAPI lifespan shutdown 会兜底调 shutdown_all_sandboxes
         # (清上面 DELETE 漏网的沙箱)。失败不阻断后续清理。

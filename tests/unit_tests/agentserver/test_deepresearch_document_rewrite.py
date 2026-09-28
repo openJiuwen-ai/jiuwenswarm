@@ -2149,7 +2149,14 @@ def test_context_store_is_bounded_and_evicts_earliest_expiry(
     with rewrite_module._CONTEXT_LOCK:
         rewrite_module._CONTEXTS.clear()
 
-    tokens = [_prepare(tmp_path, report, "text")["context_token"] for _ in range(5)]
+    # 连续 _prepare 可能落在同一个单调时钟 tick，expires_at 相同时淘汰会退化为按 token 字符串比较；
+    # 显式让每个 token 的过期时间严格递增，使"最早过期"没有歧义。
+    tokens = []
+    for _ in range(5):
+        token = _prepare(tmp_path, report, "text")["context_token"]
+        with rewrite_module._CONTEXT_LOCK:
+            rewrite_module._CONTEXTS[token].expires_at = rewrite_module.time.monotonic() + len(tokens)
+        tokens.append(token)
 
     with rewrite_module._CONTEXT_LOCK:
         assert len(rewrite_module._CONTEXTS) == 3
@@ -2178,7 +2185,14 @@ def test_context_is_compact_under_large_citation_cache_saturation(
     with rewrite_module._CONTEXT_LOCK:
         rewrite_module._CONTEXTS.clear()
 
-    tokens = [_prepare(tmp_path, report, "claim")["context_token"] for _ in range(5)]
+    # 同 test_context_store_is_bounded_and_evicts_earliest_expiry：
+    # 让每个 token 的过期时间严格递增，避免同一时钟 tick 下淘汰顺序不确定。
+    tokens = []
+    for _ in range(5):
+        token = _prepare(tmp_path, report, "claim")["context_token"]
+        with rewrite_module._CONTEXT_LOCK:
+            rewrite_module._CONTEXTS[token].expires_at = rewrite_module.time.monotonic() + len(tokens)
+        tokens.append(token)
 
     with rewrite_module._CONTEXT_LOCK:
         assert set(rewrite_module._CONTEXTS) == set(tokens[-3:])

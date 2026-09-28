@@ -822,3 +822,127 @@ class TestWorkspaceToJiuwenclawWorkspaceMigration:
         )
         new_ws = agent_root / "jiuwenclaw_workspace"
         assert projects["projects"][0]["project_dir"] == str(new_ws / "work" / "demo")
+
+
+class TestPreferredLanguageResolutionCache:
+    """语言解析结果按文件 mtime/size 缓存，避免播种路径重复解析 YAML。"""
+
+    @staticmethod
+    def _isolate_cache(monkeypatch):
+        """替换模块级缓存字典，避免用例间互相污染。"""
+        monkeypatch.setattr(utils, "_PREFERRED_LANGUAGE_CACHE", {})
+
+    @staticmethod
+    def _count_yaml_parses(monkeypatch):
+        """包装 utils.YAML，统计构造次数（每次构造即一次解析）。"""
+        counts = {"n": 0}
+        real_yaml = utils.YAML
+
+        class _CountingYAML:
+            def __init__(self, *args, **kwargs):
+                counts["n"] += 1
+                self._inner = real_yaml(*args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        monkeypatch.setattr(utils, "YAML", _CountingYAML)
+        return counts
+
+    def test_same_config_parsed_once(self, monkeypatch, tmp_path: Path):
+        """同一份配置重复解析，只应真正读一次 YAML。"""
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("preferred_language: en\n", encoding="utf-8")
+        self._isolate_cache(monkeypatch)
+        counts = self._count_yaml_parses(monkeypatch)
+
+        for _ in range(3):
+            assert utils._resolve_preferred_language(cfg, None) == "en"
+
+        assert counts["n"] == 1
+
+    def test_seed_repeated_call_parses_once(self, monkeypatch, tmp_path: Path):
+        """同一租户重复播种，语言解析同样只应读一次 YAML。"""
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("preferred_language: en\n", encoding="utf-8")
+        tenant = tmp_path / "service_s" / "agent_a"
+        tenant.mkdir(parents=True)
+        self._isolate_cache(monkeypatch)
+        counts = self._count_yaml_parses(monkeypatch)
+        monkeypatch.setattr(utils, "get_config_file", lambda: cfg)
+
+        for _ in range(3):
+            utils.seed_tenant_agent_workspace(tenant)
+
+        assert counts["n"] == 1
+
+    def test_cache_invalidated_on_config_change(self, monkeypatch, tmp_path: Path):
+        """config.yaml 被重写（语言切换）后，缓存须失效并读到新值。"""
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("preferred_language: en\n", encoding="utf-8")
+        self._isolate_cache(monkeypatch)
+
+        assert utils._resolve_preferred_language(cfg, None) == "en"
+
+        cfg.write_text('preferred_language: "zh"\n', encoding="utf-8")
+        assert utils._resolve_preferred_language(cfg, None) == "zh"
+
+    def test_explicit_wins_and_skips_cache(self, monkeypatch, tmp_path: Path):
+        """显式参数仍短路，不触发任何 YAML 解析。"""
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("preferred_language: zh\n", encoding="utf-8")
+        self._isolate_cache(monkeypatch)
+        counts = self._count_yaml_parses(monkeypatch)
+
+        assert utils._resolve_preferred_language(cfg, "EN") == "en"
+        assert utils._resolve_preferred_language(cfg, "bogus") == "zh"
+        assert counts["n"] == 0
+
+
+class TestSeedTenantAgentWorkspace:
+    """播种语义回归：补齐模板、单侧缺失自愈、齐全时不写文件。"""
+
+    _TEMPLATES = (
+        "AGENT.md",
+        "HEARTBEAT.md",
+        "IDENTITY.md",
+        "SOUL.md",
+        "USER.md",
+        "memory/MEMORY.md",
+    )
+
+    @classmethod
+    def _rel(cls):
+        return utils.get_agent_workspace_relative_dir()
+
+    def test_fills_all_templates(self, tmp_path: Path):
+        tenant = tmp_path / "service_s" / "agent_a"
+        tenant.mkdir(parents=True)
+        utils.seed_tenant_agent_workspace(tenant)
+
+        workspace = tenant / self._rel()
+        for name in self._TEMPLATES:
+            assert (workspace / name).is_file()
+
+    def test_self_heals_single_missing_template(self, tmp_path: Path):
+        tenant = tmp_path / "service_s" / "agent_a"
+        tenant.mkdir(parents=True)
+        utils.seed_tenant_agent_workspace(tenant)
+        workspace = tenant / self._rel()
+
+        (workspace / "SOUL.md").unlink()
+        utils.seed_tenant_agent_workspace(tenant)
+
+        assert (workspace / "SOUL.md").is_file()
+
+    def test_no_write_when_all_present(self, tmp_path: Path):
+        tenant = tmp_path / "service_s" / "agent_a"
+        tenant.mkdir(parents=True)
+        utils.seed_tenant_agent_workspace(tenant)
+        workspace = tenant / self._rel()
+
+        mtimes = {name: (workspace / name).stat().st_mtime_ns for name in self._TEMPLATES}
+        utils.seed_tenant_agent_workspace(tenant)
+
+        for name in self._TEMPLATES:
+            assert (workspace / name).stat().st_mtime_ns == mtimes[name]
