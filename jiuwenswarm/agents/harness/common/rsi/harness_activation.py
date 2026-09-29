@@ -24,6 +24,7 @@ import yaml
 
 from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiBadRequest,
+    RsiError,
     RsiHarnessInstallConflict,
     RsiHarnessInstallFailed,
     RsiHarnessInvalid,
@@ -580,6 +581,93 @@ class RsiHarnessInstaller:
         # both requests cannot race on the same content-addressed version.
         self._install_lock = asyncio.Lock()
 
+    def publication_availability(self, task_id: str) -> dict[str, Any]:
+        """Read publication readiness without installing or activating anything."""
+        result = {
+            "harness_installable": False,
+            "harness_publication_status": "unavailable",
+            "harness_provenance": {"published": None, "installed": None},
+        }
+        task = self.store.get(task_id)
+        if str(task.scenario).upper() != "HARNESS" or str(task.status).upper() != "COMPLETED":
+            return result
+        try:
+            root = self._task_run_root(task)
+            state = self._read_publication_state(task_id, task, root)
+            status = str(state.get("publication_status") or "unavailable").strip().lower()
+            result["harness_publication_status"] = status
+            if status != "published":
+                return result
+            raw = str(state.get("published_harness_refs_path") or "").strip()
+            if not raw:
+                raise RsiHarnessNotPublished("Missing published refs")
+            refs = Path(raw).expanduser()
+            refs = (refs if refs.is_absolute() else root / refs).resolve(strict=False)
+            _ensure_inside(refs, root, label="published refs")
+            parsed = parse_published_harness_refs(refs, task_run_root=root)
+            _read_manifest_extension_name(parsed.package_path)
+            package_sha256 = hash_harness_package(parsed.package_path)
+            result["harness_installable"] = True
+            result["harness_provenance"]["published"] = self._published_provenance(
+                task_id, state, package_sha256
+            )
+            installed = next(
+                (
+                    record for record in self.activation_store.list_versions()
+                    if str(record.get("task_id") or "").strip() == task_id
+                    and str(record.get("sha256") or "").lower() == package_sha256.lower()
+                ),
+                None,
+            )
+            if installed is not None:
+                result["harness_provenance"]["installed"] = self._installed_provenance(installed)
+        except (RsiError, OSError, ValueError, yaml.YAMLError):
+            result["harness_publication_status"] = "unavailable"
+        return result
+
+    @staticmethod
+    def _published_provenance(
+        task_id: str, state: dict[str, Any], package_sha256: str
+    ) -> dict[str, Any]:
+        """Expose stable identity without returning local filesystem paths."""
+        refs_path = str(state.get("best_harness_refs_path") or "")
+        optimization_id = next(
+            (part for part in Path(refs_path).parts if part.startswith("member_optimization_")),
+            None,
+        )
+        checkpoints = state.get("epoch_checkpoints")
+        checkpoint = checkpoints[-1] if isinstance(checkpoints, list) and checkpoints else {}
+        if not isinstance(checkpoint, dict):
+            checkpoint = {}
+        best_refs = state.get("best_harness_refs_path")
+        node_id = state.get("final_node_id") or state.get("best_node_id")
+        if not node_id and isinstance(checkpoints, list):
+            for item in reversed(checkpoints):
+                if (
+                    isinstance(item, dict)
+                    and item.get("promotion_applied")
+                    and item.get("selected_harness_refs_path") == best_refs
+                ):
+                    node_id = f"epoch-{int(item.get('epoch', 0)):03d}"
+                    break
+        return {
+            "task_id": task_id,
+            "optimization_id": optimization_id,
+            "node_id": node_id,
+            "epoch": checkpoint.get("epoch"),
+            "score": state.get("best_score"),
+            "installation_id": f"rsi-harness-{package_sha256[:16]}",
+            "sha256": package_sha256,
+            "action_ids": list(checkpoint.get("retained_candidate_action_ids") or []),
+        }
+
+    @staticmethod
+    def _installed_provenance(record: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: record.get(key)
+            for key in ("task_id", "node_id", "installation_id", "sha256", "installed_at", "status")
+        }
+
     async def install(self, task_id: str) -> dict[str, Any]:
         async with self._install_lock:
             return await self._install_unlocked(task_id)
@@ -915,15 +1003,16 @@ class RsiHarnessInstaller:
             # providers by returning ``{}`` when raw publication state is not
             # available.  Treat that sentinel as “no reader” and continue to
             # the task run's durable state file instead of masking it.
-            if isinstance(state, dict):
+            if isinstance(state, dict) and any(
+                key in state
                 for key in (
                     "publication_status",
                     "published_harness_refs_path",
                     "current_harness_refs_path",
                     "best_harness_refs_path",
-                ):
-                    if key in state:
-                        return state
+                )
+            ):
+                return state
         path = run_root / _STATE_FILE_NAME
         if not path.is_file():
             raise RsiHarnessNotPublished(f"任务 {task_id} 缺少 single_harness_state.yaml")
