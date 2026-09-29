@@ -7,20 +7,17 @@ function encodeBase64Url(value: ArrayBuffer | null): string | null {
   bytes.forEach((byte) => {
     binary += String.fromCharCode(byte);
   });
-  return window.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  const encoded = window.btoa(binary);
+  return encoded.replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
 }
 
-export function decodeCreationOptions(
+export const decodeCreationOptions = (
   options: PublicKeyCredentialCreationOptionsJSON,
-): PublicKeyCredentialCreationOptions {
-  return PublicKeyCredential.parseCreationOptionsFromJSON(options);
-}
+): PublicKeyCredentialCreationOptions => PublicKeyCredential.parseCreationOptionsFromJSON(options);
 
-export function decodeRequestOptions(
+export const decodeRequestOptions = (
   options: PublicKeyCredentialRequestOptionsJSON,
-): PublicKeyCredentialRequestOptions {
-  return PublicKeyCredential.parseRequestOptionsFromJSON(options);
-}
+): PublicKeyCredentialRequestOptions => PublicKeyCredential.parseRequestOptionsFromJSON(options);
 
 function serializeCredential(credential: PublicKeyCredential): Record<string, unknown> {
   const common = {
@@ -82,9 +79,8 @@ export async function createPasskey(options: PublicKeyCredentialCreationOptionsJ
 export async function getPasskeyAssertion(
   options: PublicKeyCredentialRequestOptionsJSON,
 ): Promise<Record<string, unknown>> {
-  const credential = await navigator.credentials.get({
-    publicKey: decodeRequestOptions(options),
-  });
+  const publicKey = decodeRequestOptions(options);
+  const credential = await navigator.credentials.get({ publicKey });
   if (!(credential instanceof PublicKeyCredential)) {
     throw new Error('Passkey authorization did not return a public-key credential');
   }

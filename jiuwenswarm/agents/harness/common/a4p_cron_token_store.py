@@ -78,14 +78,13 @@ class SQLiteCronIntentTokenStore:
         if not job_id or not self.path.exists():
             return None
         with closing(self._connect()) as connection:
-            row = connection.execute(
-                """
-                SELECT token_json
-                FROM cron_intent_tokens
-                WHERE cron_job_id = ?
-                """,
-                (job_id,),
-            ).fetchone()
+            with closing(connection.cursor()) as cursor:
+                cursor.execute(
+                    "SELECT token_json FROM cron_intent_tokens "
+                    "WHERE cron_job_id = ?",
+                    (job_id,),
+                )
+                row = cursor.fetchone()
         if row is None:
             return None
         encoded = str(row[0])
@@ -117,9 +116,11 @@ class SQLiteCronIntentTokenStore:
         if not self.path.exists():
             return 0
         with closing(self._connect()) as connection:
-            rows = connection.execute(
-                "SELECT cron_job_id, token_json FROM cron_intent_tokens"
-            ).fetchall()
+            with closing(connection.cursor()) as cursor:
+                cursor.execute(
+                    "SELECT cron_job_id, token_json FROM cron_intent_tokens"
+                )
+                rows = cursor.fetchall()
         removed = 0
         for job_id, token_json in rows:
             encoded = str(token_json)
