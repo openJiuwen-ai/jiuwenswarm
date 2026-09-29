@@ -76,7 +76,7 @@ class SkillTurboPlanner:
 - `match_skill` 内部前置检查（任一命中 → None）：无注册 skill；`model_client` 缺失。
 - LLM 调用必须是**流式**（`client.stream`）：部分模型服务对非流式调用存在路由注册限制（触发 429 Route missed），流式规避。
 - 解析经 `extract_llm_json`，期望结构 `{"skill_name": str|null, "confidence": float, "reason": str}`。
-- 路由 system prompt（`_build_route_messages`）当前内嵌 **PPT 准入规则 5 条**（新建空白 / 主题生成整套 / 文档转 PPT / 调整大纲文案逻辑重生成 / 以旧 PPT 为参考重做新版）与**排除规则 7 条**（寒暄问答 / 纯总结 / 普通文章 / 仅图片 / 直接编辑原 PPT / 调度类诉求即便提及 PPT 也判 null / `__skill_turbo_prior_artifacts__` 增量判定——迭代调整已有产物不参与候选，任一关键参数不同属全新任务正常参与）。新增技能家族时必须把规则重构为按 skill 组织的准入/排除结构，不允许继续堆叠单技能段落。
+- 路由 system prompt（`_build_route_messages`）当前内嵌 **PPT 准入规则 5 条**（新建空白 / 主题生成整套 / 文档转 PPT / 调整大纲文案逻辑重生成 / 以旧 PPT 为参考重做新版）与**排除规则 6 条**（寒暄问答 / 纯总结 / 普通文章 / 仅图片 / 直接编辑原 PPT / 调度类诉求即便提及 PPT 也判 null。曾有第 7 条 `__skill_turbo_prior_artifacts__` 增量判定，因字段注入随 bbc64b25c 删除成孤儿规则而移除，残留产物的 fresh 拦截由工具层守卫承接，见 [[F_01]]）。新增技能家族时必须把规则重构为按 skill 组织的准入/排除结构，不允许继续堆叠单技能段落。
 
 ### skill_meta 模块（skill_meta.py，无引擎内部依赖、可独立测试）
 
@@ -268,7 +268,7 @@ HITL resume 不走 planner：直接使用持久化的 `resume_ctx["plan_code"]`�
 
 - **改入口优先级链** → 只改 `skill_meta.find_skill_root_file` 一处；必查三消费方（注册扫描 / planner 组装 / 工具描述）输出一致，并同步 `planner._build_skill_plan_code` docstring 的入口约定描述。
 - **改路由重试或阈值** → 必查重试范围不含 confidence 不足 / skill_name=null（防循环降级）；同步 `_ROUTE_MAX_ATTEMPTS` 日志口径与测试。
-- **改准入/排除规则** → 必查 `__skill_turbo_prior_artifacts__` 增量判定分支语义不被破坏；多技能场景先重构为 per-skill 规则结构再增规则。
+- **改准入/排除规则** → 必查已删的 `__skill_turbo_prior_artifacts__` 增量判定分支不被复活（字段无注入方，规则悬空；残留产物拦截归 [[F_01]] fresh 守卫）；多技能场景先重构为 per-skill 规则结构再增规则。
 - **改 tools_loader 分组** → 必同步 [[S_03]] 审批卡清单 `SKILL_TURBO_APPROVAL_TOOLS` + tool_info.json 消费方 + 回归测试 `test_skill_turbo_approval_tools.py`。
 - **改拦截关键词/正则** → 必查双防线同源（`region_edit.REGION_EDIT_KEYWORDS`）+ SkillTurboPromptRail 排除提示词同步；删除拦截块前先确认主防线覆盖。
 - **新模型接入** → checklist：`enable_for_models`（懒加载白名单）/ `vendor_map`（thinking 白名单）/ vision 等能力 config 三处逐一核对，缺一即行为分裂。

@@ -298,9 +298,35 @@ _SKILL_TURBO_ARTIFACT_SUMMARY_MARKER = "[SkillAccelerationExec 产物摘要]"
 # 1) after_tool_call 改写后的 tool_msg 文案基准（"已暂停等待回答"，非"被用户打断"，
 #    防止外层模型把暂停误读为失败而放弃加速通道）；
 # 2) _fix_incomplete_tool_context 的中断占位识别模板。
+# 文案是"相位盲"的：写入时机是 HITL 暂停，但它留在会话历史中被所有后续相位的
+# LLM 读到，故必须按用户意图分叉而非无条件禁止行动：
+# - 作答 / 暂停仍有效 → 系统自动恢复，禁止重调本工具恢复（防子代理"重调即续跑"
+#   误读，F_01 首版教训）；
+# - 非作答消息（停止/取消/调整/新任务，即 cancel 已清断点、无自动恢复）→ 必须
+#   按消息意图行动，禁止被动等待（v2 文案"也无需其他操作"曾诱导 LLM 在 cancel
+#   后回复"正在继续生成"然后空转收尾——前端显示任务完成但什么都没跑，F_01 二次
+#   教训）。修订本文案时两条约束都必须保持。
 _SKILL_TURBO_HITL_PLACEHOLDER = (
     "[技能加速已暂停] 工具 skill_acceleration_exec 正在等待用户回答，"
+    "没有失败。用户回答后系统将自动恢复执行，"
+    "请勿重新调用本工具来恢复执行。"
+    "若后续用户消息不是对该问题的回答（如要求停止、取消、调整或另起新任务），"
+    "说明本次暂停已被终止、不存在自动恢复，"
+    "必须按该消息的用户意图正常处理；"
+    "若需继续原任务，可基于会话中已生成的产物文件继续。"
+)
+# 历史版本文案，仅用于识别已持久化的历史 tool_msg（流式恢复/上下文修复场景
+# 需匹配历史消息中的占位文本），新消息一律使用上面的新文案。
+# v1（bbc64b25c 前）："回答后将自动继续执行"——诱导子代理"重调即续跑"。
+_SKILL_TURBO_HITL_PLACEHOLDER_LEGACY = (
+    "[技能加速已暂停] 工具 skill_acceleration_exec 正在等待用户回答，"
     "回答后将自动继续执行，没有失败。"
+)
+# v2（F_01 首版修订）："请勿再次调用，也无需其他操作"——cancel 后相位诱导被动空转。
+_SKILL_TURBO_HITL_PLACEHOLDER_LEGACY_V2 = (
+    "[技能加速已暂停] 工具 skill_acceleration_exec 正在等待用户回答，"
+    "没有失败。用户回答后系统将自动恢复执行，"
+    "请勿再次调用 skill_acceleration_exec，也无需其他操作。"
 )
 
 # ── 待在外层 tool_result 之后发出的 PPT 交付总结 ──
@@ -818,16 +844,155 @@ def _wrap_skill_turbo_result(
     return result_dict
 
 
+# ────────────────── fresh 调用守卫（中断残留产物拦截，fresh_start 显式放行） ──────────────────
+# cancel/中断按 [[S_06]] 语义保留 node_artifacts（"供降级 DeepAgent 复用"），本
+# 守卫是其消费方：fresh 调用 skill_acceleration_exec 时若会话有残留产物记录，
+# 返回失败 + 产物摘要，阻止新 executor 从 Stage 1 清盘重跑。
+#
+# 机制性拦截语义（F_01 修订）：产物记录存在期间，每次 fresh 调用（未携带
+# fresh_start=true）一律拦截——拦截不清库，任何调用者（外层 LLM / 子代理 /
+# 其它入口）重复调用均持续被拦；仅当调用显式携带 fresh_start=true（LLM 明确
+# 全新任务）时清空产物记录并放行。早期"一次性拦截"（拦一次即清库/登记 sid）
+# 被外层派发的子代理隔层重试击穿：子代理看不到外层的拒绝 tool_result，拿不到
+# 一次性语义，重调即放行导致清盘重跑（case: turbo ppt 暂停后继续从头重跑）。
+
+
+def _build_fresh_artifacts_guard_error(summary: str, skill: str) -> str:
+    """构造 fresh 调用守卫拒绝文案（引导基于产物继续，或显式 fresh_start 重跑）。"""
+    skill_hint = f"（技能：{skill}）" if skill else ""
+    return (
+        f"检测到本会话上一轮 SkillAccelerationExec{skill_hint}留有已完成节点产物：\n\n"
+        f"{summary}\n\n"
+        "直接重新调用会丢弃以上产物记录并从 Stage 1 全量重跑，"
+        "已完成的工作将被重复执行。\n"
+        "- 若用户想继续、完善或检查之前的任务：请勿调用 skill_acceleration_exec，"
+        "改用 skill_tool 走标准流程（可基于以上产物文件继续），"
+        "或先用 read_file 查看产物文件当前状态后再决定后续操作；\n"
+        "- 仅当用户明确要求与以上产物无关的全新任务时，才重新调用 "
+        "skill_acceleration_exec 并显式携带参数 fresh_start=true"
+        "（表示确认丢弃旧产物、从头执行）。"
+    )
+
+
+async def _fresh_call_artifacts_guard(
+    *,
+    adapter: Any,
+    parent_session: Any,
+    external_session_id: str,
+    fresh_start: bool = False,
+) -> dict[str, Any] | None:
+    """fresh 调用守卫：会话残留 SkillTurbo 节点产物时拦截全新 turbo 调用。
+
+    仅在非 resume（resume_ctx 为 None）路径调用——resume 重放由
+    ``_inherit_node_artifacts_for_replay`` 按 plan_code_hash 继承产物，无需拦截。
+    返回 None 表示放行；返回 ``{"success": False, "error": ...}`` 表示拦截。
+    全链 fail-open：任何异常放行，不影响主流程。
+
+    拦截/放行语义（机制性，F_01 修订版）：
+    - ``fresh_start=False`` 且产物记录存在 → 拦截，**不清库**（产物记录是
+      P2-2 hash 继承与后续拦截的数据源，拦截本身不消耗它）；
+    - ``fresh_start=True`` → 显式全新任务：清空产物记录后放行（清库失败仅
+      warning，executor 的 _clear_stale_node_artifacts 仍会在 fresh run 兜底清）。
+    """
+    from openjiuwen.core.session.agent import create_agent_session
+    from jiuwenswarm.server.runtime.skill_turbo.node_artifact_store import (
+        clear_node_artifacts,
+        load_node_artifacts,
+    )
+    from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
+        set_skill_turbo_id,
+    )
+
+    sid = _resolve_skill_turbo_resume_session_id(external_session_id, parent_session)
+
+    card = getattr(getattr(adapter, "_instance", None), "card", None)
+    guard_session = None
+    try:
+        guard_session = (
+            create_agent_session(session_id=sid, card=card)
+            if sid
+            else create_agent_session(card=card)
+        )
+        # 必须与 executor 一致使用 __skill_turbo 隔离 checkpointer key，
+        # 否则读不到产物记录（同 _inherit_node_artifacts_for_replay 范式）。
+        set_skill_turbo_id(guard_session, card)
+        await guard_session.pre_run(inputs=None)
+    except Exception:
+        # session 打不开（含测试桩场景）：fail-open 放行。session 未经 pre_run
+        # 成功打开，不做 post_run（未初始化的 emitter 可能有副作用）。
+        logger.warning(
+            "[SkillTurboTool] fresh guard session setup failed (fail-open) sid=%s",
+            sid,
+            exc_info=True,
+        )
+        return None
+
+    try:
+        if fresh_start:
+            try:
+                await clear_node_artifacts(guard_session)
+                logger.info(
+                    "[SkillTurboTool] fresh guard bypassed by fresh_start=true sid=%s",
+                    sid,
+                )
+            except Exception:
+                logger.warning(
+                    "[SkillTurboTool] fresh_start clear artifacts failed "
+                    "(executor stale-clear still applies) sid=%s",
+                    sid,
+                    exc_info=True,
+                )
+            return None
+
+        state = await load_node_artifacts(guard_session)
+        if not state:
+            return None
+        nodes = state.get("nodes") or {}
+        summary = _build_artifact_summary(nodes)
+        if not summary:
+            return None
+        skill = str(state.get("skill") or "").strip()
+        logger.info(
+            "[SkillTurboTool] fresh guard fired sid=%s skill=%s nodes=%d",
+            sid,
+            skill,
+            len(nodes),
+        )
+        return {
+            "success": False,
+            "error": _build_fresh_artifacts_guard_error(summary, skill),
+        }
+    except Exception:
+        logger.warning(
+            "[SkillTurboTool] fresh guard failed (fail-open, fresh run proceeds) sid=%s",
+            sid,
+            exc_info=True,
+        )
+        return None
+    finally:
+        try:
+            await guard_session.post_run()
+        except Exception:
+            logger.debug(
+                "[SkillTurboTool] fresh guard post_run failed sid=%s",
+                sid,
+                exc_info=True,
+            )
+
+
 @tool(
     name="skill_acceleration_exec",
     description=_build_tool_description(),
     stateless=True,
 )
-async def skill_turbo(query: str) -> dict[str, Any] | str:
+async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] | str:
     """执行 SkillAccelerationExec 任务。
 
     Args:
         query: 对单个任务的忠实总结，须严格基于用户原话与历史上下文中已有的信息，不得自行扩写、脑补或补充用户未提及的内容细节（如擅自罗列章节大纲、技术要点、子主题等）。仅在用户表达零散时做必要的凝练与指代消解，确保任务目标、产物与约束完整可执行，但不新增任何信息。每次调用只处理一个任务；若用户要求多个任务，必须串行调用：等待前一次调用完成并收到返回结果后，再发起下一次调用。
+        fresh_start: 显式确认全新任务。仅当用户明确要求一个与本会话已有加速产物完全无关的新任务时才设为
+            true（将丢弃旧产物记录并从头执行）；默认 false。若调用被拒绝并提示"存在已完成节点产物"，
+            继续旧任务应改用 skill_tool，不要靠本参数重试。
     """
     # ── [TEMP-TEMPLATE-BYPASS] 模板请求拦截（临时措施，待 skill 加速器适配模板功能后删除整块）──
     # 拦截任何携带自定义模板路径的请求：前端选择自定义模板时会注入"模板目录路径/模板主文件路径"
@@ -1043,6 +1208,21 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
                     )
                 turbo_session = None
             raise
+
+    # fresh 调用守卫：上一轮 turbo 中断/取消后 node_artifacts 按 [[S_06]] 语义保留
+    # （"供降级 DeepAgent 复用"），本守卫是其唯一消费方——有残留产物且未显式声明
+    # fresh_start 时返回失败并附摘要，引导 LLM 走 skill_tool / read_file 基于产物
+    # 继续，阻止盲目 fresh 重启 turbo 从 Stage 1 清盘重跑；仅 fresh_start=true
+    # （LLM 明确全新任务）清空产物记录后放行。
+    if resume_ctx is None:
+        guard_reject = await _fresh_call_artifacts_guard(
+            adapter=adapter,
+            parent_session=parent_session,
+            external_session_id=external_session_id,
+            fresh_start=fresh_start,
+        )
+        if guard_reject is not None:
+            return _wrap_skill_turbo_result(guard_reject)
 
     # 构造 config 和 SkillTurbo 实例；resume 模式必须在此之前恢复原模型。
     config = adapter.build_skill_turbo_config()

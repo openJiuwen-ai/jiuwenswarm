@@ -716,6 +716,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
     ) -> bool:
         from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
             _SKILL_TURBO_HITL_PLACEHOLDER,
+            _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY,
+            _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY_V2,
         )
 
         legacy_templates = [
@@ -723,8 +725,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             f"no result available.",
             f"[Tool interrupted] Tool {tool_name} was interrupted by the user and has no result.",
             f"[工具执行被中断] 工具 {tool_name} 执行过程中被用户打断，没有执行结果。",
-            # HITL 暂停 tool_msg（skill_acceleration_exec 专用文案）
+            # HITL 暂停 tool_msg（skill_acceleration_exec 专用文案，含历史版本）
             _SKILL_TURBO_HITL_PLACEHOLDER
+            if tool_name == "skill_acceleration_exec"
+            else "",
+            _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY
+            if tool_name == "skill_acceleration_exec"
+            else "",
+            _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY_V2
             if tool_name == "skill_acceleration_exec"
             else "",
         ]
