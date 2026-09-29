@@ -501,7 +501,8 @@ def test_work_plan_whitelist_excludes_side_effect_tools():
     allowed = set(WORK_PLAN_ALLOWED_TOOLS)
 
     assert {"ask_user", "read_file", "write_file", "exit_plan_mode"} <= allowed
-    # 配了子 agent 时要能用 task_tool 做只读调研。
-    assert "task_tool" in allowed
+    # task_tool 不得进白名单：子 agent 有独立 session 与 plan_mode 状态，
+    # 父 agent 的 plan 约束不传播，委派即可绕开只读约束（评审定论）。
+    assert "task_tool" not in allowed
     for forbidden in ("send_file_to_user", "cron_create", "switch_mode"):
         assert forbidden not in allowed

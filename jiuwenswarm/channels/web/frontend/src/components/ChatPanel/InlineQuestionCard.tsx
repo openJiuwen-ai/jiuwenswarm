@@ -18,7 +18,8 @@ import { classifyPrompt } from '../InteractionSlot/promptRouting';
 import { isValidSkillApprovalCard, SkillApprovalCard } from './SkillApprovalCard';
 
 interface InlineQuestionCardProps {
-  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => Promise<void>;
+  /** 提交应答；resolve true = 已送出，false = 发送失败（卡片保持可重试）。 */
+  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => Promise<boolean>;
 }
 
 // 后端会给带选项的问题末尾追加一个「自定义输入」选项（interrupt_helpers._build_multi_questions）。
@@ -243,11 +244,13 @@ export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
   const isPlanApproval = pendingQuestion?.planApprovalKind === 'plan_approval';
 
   const handlePlanAction = useCallback(
-    (value: string, customInput: string) => {
+    async (value: string, customInput: string) => {
       if (!pendingQuestion || submitted) return;
       setSubmitted(true);
       const question = pendingQuestion.questions[0];
-      onSubmit(
+      // 等发送结果再收卡：失败时保留 pendingQuestion 并恢复按钮，用户可原地重试，
+      // 不必重新触发 exit_plan_mode 才能再看到审批弹窗。
+      const sent = await onSubmit(
         pendingQuestion.request_id,
         [
           {
@@ -258,6 +261,10 @@ export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
         ],
         pendingQuestion.source
       );
+      if (!sent) {
+        setSubmitted(false);
+        return;
+      }
       const sid = useChatStore.getState().activeSessionId;
       if (sid) {
         useChatStore.getState().setPendingQuestion(sid, null);
@@ -284,7 +291,16 @@ export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
   }
 
   if (skillApprovalCard) {
-    return <SkillApprovalCard key={pendingQuestion.request_id} onSubmit={onSubmit} card={skillApprovalCard} />;
+    return (
+      <SkillApprovalCard
+        key={pendingQuestion.request_id}
+        // SkillApprovalCard 的通道仍是 void 语义；这里包一层丢弃发送结果布尔值。
+        onSubmit={async (requestId, answers, source) => {
+          await onSubmit(requestId, answers, source);
+        }}
+        card={skillApprovalCard}
+      />
+    );
   }
 
   const borderColor = isEvolution
@@ -401,6 +417,7 @@ export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
                 {/* 计划审批用专用操作区；其余审批保持原有选项按钮 */}
                 {isPlanApproval ? (
                   <PlanApprovalActions
+                    key={pendingQuestion.request_id}
                     disabled={submitted}
                     onAct={handlePlanAction}
                   />
