@@ -348,8 +348,8 @@ class ImLoginManager:
             "error": None,
         }
 
+    @staticmethod
     def _finish(
-        self,
         session: LoginSession,
         phase: str,
         *,
@@ -402,8 +402,6 @@ class ImLoginManager:
                 self._finish(session, PHASE_LOGGED_IN, message="已登录")
             else:
                 self._finish(session, PHASE_FAILED, error="授权流程结束但账号仍未登录，请重试")
-        except asyncio.CancelledError:
-            raise
         except ImError as exc:
             self._finish(session, PHASE_FAILED, error=str(exc))
         except Exception as exc:  # noqa: BLE001
