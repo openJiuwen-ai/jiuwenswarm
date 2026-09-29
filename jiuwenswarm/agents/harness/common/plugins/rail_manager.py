@@ -373,7 +373,25 @@ class RailManager:
         return self._extensions[name].to_dict()
 
     def set_agent_instance(self, agent_instance: Any) -> None:
-        """设置 DeepAgent 实例，用于热更新 rail."""
+        """设置 DeepAgent 实例，用于热更新 rail.
+
+        注意: DeepAgent 实例是 per-session 新建的，而 RailManager 是进程级单例。
+        ``_registered_rails`` 跟踪的是"哪些 rail 已挂到当前 ``_agent_instance``"，
+        一旦 agent 实例更换，旧实例上的注册记录随之作废，必须清空；否则后续
+        ``hot_reload_rail`` 会因 ``name in self._registered_rails`` 误判"已注册"
+        而跳过挂载，rail 不会挂到新实例上，before_tool_call 等回调自第二个
+        session 起静默失效。
+
+        ``_rail_instances`` 缓存保留: rail 实例本身不绑定具体 agent，可跨 session
+        复用，重挂时由 ``register_rail`` 将其注册到新实例。
+        """
+        if self._agent_instance is not agent_instance and self._registered_rails:
+            logger.info(
+                "[RailManager] DeepAgent 实例已更换, 清空 %d 个旧实例的 rail 注册以触发重挂: %s",
+                len(self._registered_rails),
+                ", ".join(sorted(self._registered_rails)),
+            )
+            self._registered_rails.clear()
         self._agent_instance = agent_instance
         logger.info("[RailManager] DeepAgent 实例已设置")
 
