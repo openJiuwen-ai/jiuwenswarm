@@ -17,7 +17,10 @@ from typing import Any, Callable
 
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 from jiuwenswarm.gateway.channel_manager.base import BaseChannel, RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.protocol.ssh.config import proxy_config_from_dict
+from jiuwenswarm.gateway.channel_manager.protocol.ssh.config import (
+    DEFAULT_LISTEN_HOST,
+    proxy_config_from_dict,
+)
 from jiuwenswarm.gateway.channel_manager.protocol.ssh.server import SSHAgentHooks, SSHProxy
 
 logger = logging.getLogger(__name__)
@@ -53,7 +56,7 @@ class SshChannelConfig:
     """SSH server channel configuration."""
 
     enabled: bool = False
-    listen_host: str = "0.0.0.0"
+    listen_host: str = DEFAULT_LISTEN_HOST
     listen_port: int = 2222
     host_key_path: str = ""
     relay_timeout_sec: float = 3600.0
@@ -70,7 +73,7 @@ class SshChannelConfig:
     def from_dict(cls, conf: dict[str, Any]) -> "SshChannelConfig":
         return cls(
             enabled=bool(conf.get("enabled", False)),
-            listen_host=str(conf.get("listen_host", "0.0.0.0")),
+            listen_host=str(conf.get("listen_host") or DEFAULT_LISTEN_HOST),
             listen_port=int(conf.get("listen_port", 2222)),
             host_key_path=str(conf.get("host_key_path") or ""),
             relay_timeout_sec=float(conf.get("relay_timeout_sec", 3600.0)),

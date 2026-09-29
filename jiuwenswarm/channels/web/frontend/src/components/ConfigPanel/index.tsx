@@ -16,6 +16,7 @@ import {
 } from "./openaiAccountModelState";
 import { ConfigFieldHintLabel } from "./ConfigFieldHintLabel";
 import { PermissionsToolsEditor } from "./PermissionsToolsEditor";
+import { NetGuardEditor } from "./NetGuardEditor";
 import { ModelProviderIcon } from '../ModelProviderIcon';
 
 function MultiSelectDropdown({
@@ -4627,7 +4628,10 @@ export function ConfigPanel({
                         t={t}
                         afterTable={
                           group.tag === "permissions" ? (
-                            <PermissionsToolsEditor isConnected={isConnected} />
+                            <>
+                              <PermissionsToolsEditor isConnected={isConnected} />
+                              <NetGuardEditor isConnected={isConnected} />
+                            </>
                           ) : null
                         }
                       />

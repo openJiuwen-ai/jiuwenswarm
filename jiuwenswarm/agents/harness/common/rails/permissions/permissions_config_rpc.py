@@ -26,12 +26,74 @@ _PERMISSIONS_CFG_METHODS: frozenset[ReqMethod] = frozenset(
         ReqMethod.PERMISSIONS_RULES_DELETE,
         ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET,
         ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_DELETE,
+        ReqMethod.PERMISSIONS_NET_GUARD_GET,
+        ReqMethod.PERMISSIONS_NET_GUARD_SET,
+    }
+)
+
+_PERMISSIONS_READ_ONLY_METHODS: frozenset[ReqMethod] = frozenset(
+    {
+        ReqMethod.PERMISSIONS_TOOLS_GET,
+        ReqMethod.PERMISSIONS_RULES_GET,
+        ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET,
+        ReqMethod.PERMISSIONS_NET_GUARD_GET,
     }
 )
 
 
 def get_permissions_config_req_methods() -> frozenset[ReqMethod]:
     return _PERMISSIONS_CFG_METHODS
+
+
+def get_permissions_read_only_req_methods() -> frozenset[ReqMethod]:
+    return _PERMISSIONS_READ_ONLY_METHODS
+
+
+def publish_host_exit_policy_from_config(config: dict[str, Any] | None = None) -> None:
+    """把 ``permissions.net_guard`` 发布给宿主出口（P3）。
+
+    P3 是进程级状态，只在配置加载（AgentServer 启动、配置热更新）和
+    ``permissions.net_guard.set`` 写入后发布；``config`` 缺省时读当前 config.yaml。
+    """
+    from openjiuwen.harness.security.outbound import publish_host_exit_policy
+    from openjiuwen.harness.security.permission_engine.core import prepare_permissions_for_engine
+
+    from jiuwenswarm.common.config import get_config
+
+    cfg = config if isinstance(config, dict) else (get_config() or {})
+    perms = cfg.get("permissions") if isinstance(cfg.get("permissions"), dict) else {}
+    publish_host_exit_policy(prepare_permissions_for_engine(perms))
+
+
+def _net_guard_payload() -> dict[str, Any]:
+    """URL / 域名规则分组：用户规则 + 只读内置底线 + P3 状态 + 豁免清单。"""
+    from openjiuwen.harness.security.outbound import describe_host_exit
+    from openjiuwen.harness.security.permission_engine.netguard.net_urls import load_package_net_urls
+
+    from jiuwenswarm.common.config import get_config
+
+    cfg = get_config() or {}
+    perms = cfg.get("permissions") if isinstance(cfg.get("permissions"), dict) else {}
+    raw = perms.get("net_guard") if isinstance(perms.get("net_guard"), dict) else {}
+    section = {
+        "enabled": bool(raw.get("enabled")),
+        "defaults": str(raw.get("defaults") or "allow"),
+        "urls": dict(raw.get("urls") or {}) if isinstance(raw.get("urls"), dict) else {},
+        "enforce_host_exit": raw.get("enforce_host_exit", True) is not False,
+    }
+    warnings: list[str] = []
+    if section["enabled"] and not section["enforce_host_exit"]:
+        warnings.append("enforce_host_exit=false：宿主出站 HTTP 无强制")
+    if not section["enabled"]:
+        warnings.append("net_guard 未启用：工具参数护栏（P1）与宿主出口（P3）均不生效")
+    return {
+        "net_guard": section,
+        "builtin_urls": load_package_net_urls(),
+        "enforcement_points": ["P1 工具参数护栏", "P3 宿主出口"],
+        "apply_mode": "hot_reload",
+        "host_exit": describe_host_exit(),
+        "warnings": warnings,
+    }
 
 
 def _err(request: AgentRequest, message: str, *, code: str = "BAD_REQUEST") -> AgentResponse:
@@ -147,6 +209,19 @@ def dispatch_permissions_config_request(request: AgentRequest) -> AgentResponse:
                 return _err(request, "approval_override not found", code="NOT_FOUND")
             return _ok(request, {"ok": True})
 
+        if m == ReqMethod.PERMISSIONS_NET_GUARD_GET:
+            return _ok(request, _net_guard_payload())
+
+        if m == ReqMethod.PERMISSIONS_NET_GUARD_SET:
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import (
+                persist_net_guard_section,
+            )
+
+            patch = params.get("net_guard") if isinstance(params.get("net_guard"), dict) else params
+            persist_net_guard_section(patch)
+            publish_host_exit_policy_from_config()
+            return _ok(request, _net_guard_payload())
+
     except ValueError as e:
         return _err(request, str(e))
     except Exception as e:
@@ -159,5 +234,7 @@ def dispatch_permissions_config_request(request: AgentRequest) -> AgentResponse:
 __all__ = [
     "dispatch_permissions_config_request",
     "get_permissions_config_req_methods",
+    "get_permissions_read_only_req_methods",
+    "publish_host_exit_policy_from_config",
 ]
 

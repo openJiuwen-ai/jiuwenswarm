@@ -273,7 +273,7 @@ class AgentOSRouterClient(AgentServerClient):
             "ok": False,
             "error": (
                 "ssh channel endpoint is unavailable: enable channels.ssh "
-                "and set listen_host / listen_port"
+                "and set advertise_host (or listen_host) / listen_port"
             ),
             "code": "SSH_ENDPOINT_UNAVAILABLE",
         }
@@ -288,7 +288,8 @@ class AgentOSRouterClient(AgentServerClient):
         """Handle ``3rdagent.switch``: ensure agent exists without forwarding chat.
 
         Success payload includes northbound SSH channel ``ssh_ip``/``ssh_port``
-        (``channels.ssh.listen_host`` / ``listen_port``). Missing values fail.
+        (``channels.ssh.advertise_host`` falling back to ``listen_host`` / ``listen_port``).
+        Missing values fail.
         """
         uid = str(user_id or "").strip()
         if not uid:

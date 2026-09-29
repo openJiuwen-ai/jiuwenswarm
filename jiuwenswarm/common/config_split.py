@@ -10,7 +10,7 @@
 变了、无用户 yaml、缺 builtin_rules、或 ``init -f``。
 
 覆盖前快照白名单（仅与**当前模板不同**的用户值）与 keep-set（``last_*`` /
-``push_id``），``copy2`` 后写回。从 ``_SCALAR_PATHS`` / ``LIST_PATHS`` 拿掉
+``push_id``），``copy2`` 后写回。从 ``_SCALAR_PATHS`` / ``LIST_PATHS`` / ``MAP_PATHS`` 拿掉
 = 下次升级跟模板锁定；新增须是小艺 PC/手机点击且键与点击一一对应。
 
 现网遗留 ``config.user.yaml`` 只在启动时把当前白名单叶折进 yaml，之后不读不写。
@@ -57,6 +57,12 @@ _SCALAR_PATHS: tuple[tuple[str, ...], ...] = (
 LIST_PATHS: tuple[tuple[str, ...], ...] = (
     ("permissions", "approval_overrides"),
     ("permissions", "file_guard", "paths"),
+)
+
+# 与 LIST_PATHS 同语义，但值是映射：按键 upsert，仅写回与模板不同的键。
+# 前端安全页「URL / 域名规则」写 net_guard.urls（pattern → allow|deny）。
+MAP_PATHS: tuple[tuple[str, ...], ...] = (
+    ("permissions", "net_guard", "urls"),
 )
 
 # 用户 config 目录；比的是包内模板哈希，不是用户 yaml 是否等于模板。
@@ -202,6 +208,28 @@ def _user_only_list_items(
     return extra
 
 
+def _user_only_map_items(user_map: Any, package_map: Any) -> dict[str, Any]:
+    """相对模板多出来或值不同的用户键。"""
+    if not isinstance(user_map, dict):
+        return {}
+    pkg = package_map if isinstance(package_map, dict) else {}
+    return {
+        str(k): _plain(v)
+        for k, v in user_map.items()
+        if str(k) not in pkg or not _eq(v, pkg.get(str(k)))
+    }
+
+
+def upsert_map(base_map: Any, overlay_map: Any) -> dict[str, Any]:
+    """按键 upsert：后者同键赢，独有键追加。"""
+    result: dict[str, Any] = {}
+    for src in (base_map, overlay_map):
+        if isinstance(src, dict):
+            for k, v in src.items():
+                result[str(k)] = _plain(v)
+    return result
+
+
 def upsert_list_by_id(
     base_list: Any,
     overlay_list: Any,
@@ -251,6 +279,10 @@ def extract_user_keep_from_legacy(user: Any, package: Any) -> dict[str, Any]:
         extra = _user_only_list_items(_get(user, path), _get(package, path), path)
         if extra:
             _set(keep, path, extra)
+    for path in MAP_PATHS:
+        extra_map = _user_only_map_items(_get(user, path), _get(package, path))
+        if extra_map:
+            _set(keep, path, extra_map)
     return keep
 
 
@@ -262,7 +294,7 @@ def project_user_keep(data: Any) -> dict[str, Any]:
     for path in _SCALAR_PATHS:
         if _has(data, path):
             _set(projected, path, _get(data, path))
-    for path in LIST_PATHS:
+    for path in (*LIST_PATHS, *MAP_PATHS):
         if not _has(data, path):
             continue
         value = _get(data, path)
@@ -292,6 +324,10 @@ def snapshot_user_keep_set(
         merged = upsert_list_by_id(_get(keep, path), _get(from_overlay, path), path)
         if merged:
             _set(keep, path, merged)
+    for path in MAP_PATHS:
+        merged_map = upsert_map(_get(keep, path), _get(from_overlay, path))
+        if merged_map:
+            _set(keep, path, merged_map)
     return keep
 
 
@@ -318,6 +354,10 @@ def restore_user_keep_set(user_yaml: Path, keep: dict[str, Any]) -> None:
         _set_path_on_mapping(
             loaded, path, upsert_list_by_id(existing, _get(keep, path), path)
         )
+    for path in MAP_PATHS:
+        if not _has(keep, path):
+            continue
+        _set_path_on_mapping(loaded, path, upsert_map(_get(loaded, path), _get(keep, path)))
     _dump_ruamel_mapping(user_yaml, loaded)
     logger.info("restored user-keep onto %s", user_yaml)
 

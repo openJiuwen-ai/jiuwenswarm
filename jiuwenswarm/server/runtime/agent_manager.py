@@ -980,6 +980,12 @@ class AgentManager:
                     effective_config = get_config()
                 except Exception:
                     effective_config = None
+            if isinstance(effective_config, dict):
+                from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
+                    publish_host_exit_policy_from_config,
+                )
+
+                publish_host_exit_policy_from_config(effective_config)
             fingerprint = self._reload_fingerprint(
                 effective_config,
                 self._latest_env_overrides,

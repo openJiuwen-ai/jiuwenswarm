@@ -10,9 +10,9 @@ import re
 from html import unescape
 from urllib.parse import parse_qs, unquote, urlparse
 
-import requests
 import urllib3
 from openjiuwen.core.foundation.tool import tool
+from openjiuwen.harness.security.outbound import sync_client as outbound_http
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -32,7 +32,7 @@ _CHARSET_META_RE = re.compile(
 )
 
 
-def _extract_declared_charset(response: requests.Response) -> str:
+def _extract_declared_charset(response: outbound_http.Response) -> str:
     content_type = response.headers.get("Content-Type", "") or ""
     header_match = _CHARSET_HEADER_RE.search(content_type)
     if header_match:
@@ -97,7 +97,7 @@ def _apply_free_search_proxy(url: str, kwargs: dict[str, object]) -> bool:
     return True
 
 
-def _decode_response_text(response: requests.Response) -> str:
+def _decode_response_text(response: outbound_http.Response) -> str:
     raw = response.content or b""
     if not raw:
         return ""
@@ -139,21 +139,14 @@ def _decode_response_text(response: requests.Response) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-def _http_get(url: str, **kwargs) -> requests.Response:
-    """Try normal requests first; retry without env proxies on ProxyError."""
-    explicit_proxy = _apply_free_search_proxy(url, kwargs)
+def _http_get(url: str, **kwargs) -> outbound_http.Response:
+    """GET through the host exit; no direct-connect retry on proxy errors."""
+    _apply_free_search_proxy(url, kwargs)
     verify = _free_search_ssl_verify()
     kwargs.setdefault("verify", verify)
     if verify is False:
         _disable_insecure_request_warning()
-    try:
-        return requests.get(url, **kwargs)
-    except requests.exceptions.ProxyError:
-        if explicit_proxy:
-            raise
-        with requests.Session() as session:
-            session.trust_env = False
-            return session.get(url, **kwargs)
+    return outbound_http.get(url, **kwargs)
 
 
 def _clip_text(value: str, max_chars: int) -> str:

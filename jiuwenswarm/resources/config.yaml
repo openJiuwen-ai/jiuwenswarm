@@ -945,7 +945,10 @@ channels:
     # 客户端: ssh -p <listen_port> user@<gateway-host>
     # 南向连接参数见 gateway.agentos.ssh；agent_type 跟随用户当前值（3rdagent.switch）。
     enabled: false
-    listen_host: "0.0.0.0"
+    # 绑定地址；默认仅本机回环，对外提供需显式改为网卡地址。
+    listen_host: "127.0.0.1"
+    # 上报给 AgentOS Router 的对外可达地址；为空时回退为 listen_host。
+    advertise_host: ""
     listen_port: 2222
     host_key_path: ~/.jiuwenswarm/config/ssh_host_key
     relay_timeout_sec: 3600
@@ -969,6 +972,19 @@ permissions:
   shell_guard:
     unknown_structure: false
     interpreter_sink: false
+
+  # Pipeline C（URL / 域名规则的唯一存储）。P1 校验 fetch 工具参数，P3 在宿主 HTTP 出口
+  # 建连前再校验一次（每一跳 3xx 都校验）。只有 allow / deny，无 ask。
+  # 只按 URL 里的 host 字面量匹配，不做 DNS 解析，也不支持 IP 网段。
+  # 内置底线（agent-core builtin_rules.yaml::net_urls：云元数据 / localhost / 127.0.0.1）
+  # 在运行时并入且只能更严，不必写在这里。
+  net_guard:
+    enabled: true
+    defaults: allow            # allow | deny（deny 即白名单模式）
+    urls: {}                   # host 通配（*.example.com）或 URL 前缀/glob → allow | deny
+    # 覆盖的工具写死为 mcp_fetch_webpage / fetch_webpage / web_fetch_webpage，不从配置读取。
+    # false 等于宿主出站无强制（会打 warn 日志）
+    enforce_host_exit: true
 
   defaults:
     "*": "allow"

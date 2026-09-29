@@ -1454,6 +1454,26 @@ class AgentWebSocketServer:
                         "fall back to base policy: %s",
                         exc,
                     )
+            elif policy_path == resolve_sandbox_policy_path(default_sandbox_policy_file()):
+                # Linux: box-server 固定以打包 default-policy.yaml 为基底合并副本,
+                # 只有用的正是该基底时才换成副本, 否则自定义 policy_file 会被丢掉.
+                try:
+                    from jiuwenswarm.server.sandbox_policy_render import (
+                        ensure_linux_copy_exists,
+                    )
+                    runtime_policy = ensure_linux_copy_exists()
+                    if runtime_policy.is_file():
+                        policy_path = runtime_policy
+                        logger.info(
+                            "[AgentWebSocketServer][sandbox] using Linux runtime policy copy: %s",
+                            policy_path,
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[AgentWebSocketServer][sandbox] ensure Linux runtime copy failed, "
+                        "fall back to base policy: %s",
+                        exc,
+                    )
 
             host, preferred_port = self._parse_sandbox_host_port(url)
             port = self._allocate_internal_jiuwenbox_port(host, preferred_port)
@@ -5173,12 +5193,11 @@ class AgentWebSocketServer:
         # reload agent config so the PermissionInterruptRail picks up the
         # change immediately instead of waiting for the next tool call's
         # get_permissions_snapshot refresh.
-        read_only_methods = {
-            ReqMethod.PERMISSIONS_TOOLS_GET,
-            ReqMethod.PERMISSIONS_RULES_GET,
-            ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET,
-        }
-        if resp.ok and request.req_method not in read_only_methods:
+        from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
+            get_permissions_read_only_req_methods,
+        )
+
+        if resp.ok and request.req_method not in get_permissions_read_only_req_methods():
             # 后台异步重载: 不阻塞权限 RPC 回包(避免 reload 慢导致 AgentServer
             # request timed out)。reload_agents_config 内部有 _reload_lock 串行化
             # + fingerprint 去重,fire-and-forget 安全。
@@ -6453,6 +6472,11 @@ class AgentWebSocketServer:
             url = server_payload.get("url", "")
             if not url:
                 return True, "skipped: no url"
+            from jiuwenswarm.common.mcp_config import mcp_endpoint_blocked_reason
+
+            blocked = mcp_endpoint_blocked_reason(str(url))
+            if blocked:
+                return False, f"{name} ({transport}) pre-check failed: {blocked}"
             payload["server_path"] = url
             params = {}
             if isinstance(server_payload.get("headers"), dict):
@@ -6511,6 +6535,12 @@ class AgentWebSocketServer:
             url = str(entry.get("url", "")).strip()
             if not url:
                 logger.warning("[command.mcp] _fetch skipped: no url for sse")
+                return []
+            from jiuwenswarm.common.mcp_config import mcp_endpoint_blocked_reason
+
+            blocked = mcp_endpoint_blocked_reason(url)
+            if blocked:
+                logger.warning("[command.mcp] _fetch skipped: %s", blocked)
                 return []
             payload["server_path"] = url
             params = {}

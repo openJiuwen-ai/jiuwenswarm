@@ -624,6 +624,78 @@ def persist_merged_allow_rule_snapshot(permissions: dict[str, Any]) -> bool:
         return False
 
 
+_NET_GUARD_ACTIONS = frozenset({"allow", "deny"})
+_NET_GUARD_BOOL_KEYS = ("enabled", "enforce_host_exit")
+
+
+def normalize_net_guard_patch(patch: Any) -> dict[str, Any]:
+    """校验前端提交的 ``net_guard`` 局部更新；非法值抛 ``ValueError``。
+
+    ``urls`` 为整表替换，只存用户规则；内置底线（builtin_rules.yaml::net_urls）
+    由引擎在运行时并入，不写进 config.yaml。内置 deny 条目只能更严：
+    用户把同名 pattern 写成 ``allow`` 会被拒绝。
+    """
+    from openjiuwen.harness.security.permission_engine.netguard.net_urls import load_package_net_urls
+
+    builtin_deny = {k for k, v in load_package_net_urls().items() if v == "deny"}
+    if not isinstance(patch, dict):
+        raise ValueError("net_guard must be an object")
+    out: dict[str, Any] = {}
+    for key in _NET_GUARD_BOOL_KEYS:
+        if key in patch:
+            if not isinstance(patch[key], bool):
+                raise ValueError(f"net_guard.{key} must be boolean")
+            out[key] = patch[key]
+    if "defaults" in patch:
+        defaults = str(patch["defaults"] or "").strip().lower()
+        if defaults not in _NET_GUARD_ACTIONS:
+            raise ValueError("net_guard.defaults must be allow|deny")
+        out["defaults"] = defaults
+    if "urls" in patch:
+        urls = patch["urls"]
+        if not isinstance(urls, dict):
+            raise ValueError("net_guard.urls must be an object {pattern: allow|deny}")
+        normalized: dict[str, str] = {}
+        for pattern, action in urls.items():
+            key = str(pattern or "").strip()
+            if not key:
+                raise ValueError("net_guard.urls: pattern must be non-empty")
+            act = str(action or "").strip().lower()
+            if act not in _NET_GUARD_ACTIONS:
+                raise ValueError(f"net_guard.urls[{key!r}]: action must be allow|deny")
+            if act == "allow" and key in builtin_deny:
+                raise ValueError(f"net_guard.urls[{key!r}]: 内置底线规则不可放宽为 allow")
+            normalized[key] = act
+        out["urls"] = normalized
+    return out
+
+
+def persist_net_guard_section(patch: Any) -> dict[str, Any]:
+    """把 ``net_guard`` 局部更新写入 config.yaml，返回落盘后的整段。"""
+    normalized = normalize_net_guard_patch(patch)
+    from jiuwenswarm.common.config import update_config
+
+    stored: dict[str, Any] = {}
+
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        perms = _ensure_permissions_dict(data)
+        ng = perms.get("net_guard")
+        if not isinstance(ng, dict):
+            ng = {"enabled": True, "defaults": "allow", "urls": {}}
+            perms["net_guard"] = ng
+        for key, value in normalized.items():
+            ng[key] = value
+        stored.update(json.loads(json.dumps(ng, default=str)))
+        return data
+
+    update_config(mutator)
+    logger.info(
+        "[PermissionPersist] net_guard.persist keys=%s",
+        sorted(normalized.keys()),
+    )
+    return stored
+
+
 def persist_permission_allow_rule(tool_name: str, tool_args: dict | str) -> bool:
     """用户选择「总是允许」时，将 allow 规则写入 config.yaml 的场景 list。"""
     tool_args = _normalize_tool_args(tool_args)
@@ -806,10 +878,12 @@ __all__ = [
     "extract_session_overlay_delta",
     "get_permissions_with_session_overlay",
     "load_session_permissions_overlay",
+    "normalize_net_guard_patch",
     "persist_cli_trusted_directory",
     "persist_cli_trusted_directory_with_overrides",
     "persist_external_directory_allow",
     "persist_merged_allow_rule_snapshot",
+    "persist_net_guard_section",
     "persist_permission_allow_rule",
     "persist_session_allow_rule",
     "session_permissions_overlay_path",
