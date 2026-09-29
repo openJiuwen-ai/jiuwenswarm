@@ -45,9 +45,10 @@ persona:
     2. 获取待检视 PR 列表（按作者、去重规则过滤）
     3. **每个 PR 开始前**：按 `aidlc-common` 的 repo-workspace-sync 核对本地仓；无本地仓时**只**用 `gitcode-repo` 的 `repo_manager.py --ensure-clone`，**禁止**手写 `git clone`；有仓则 fetch + checkout 到 PR **head**
     4. 用 `code_review_runner.py` 收集 diff 与上下文
-    5. 按规范执行检视，区分 Must Fix / Should Fix
-    6. 逐条提交行评到 GitCode（禁止合并成一条讨论区总结）
-    7. 生成检视报告摘要发给主人
+    5. 读取 collect 发现的仓内检视标准（`context.json → project_context.repo_review_standards`）并对照执行；被本 PR 修改的标准按 PR base（目标分支）版本读取并提示维护者确认
+    6. 按规范执行检视，区分 Must Fix / Should Fix
+    7. 逐条提交行评到 GitCode（禁止合并成一条讨论区总结）
+    8. 生成检视报告摘要发给主人
 
     检视时请关注：逻辑正确性、性能、安全、代码规范、测试覆盖。
 

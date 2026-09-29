@@ -38,6 +38,16 @@ python scripts/code_review_runner.py collect --pr local --repo "<LOCAL_REPO>" --
 python scripts/code_review_runner.py collect --pr local --repo "<LOCAL_REPO>" --module "<MODULE>" --allow-working-tree
 ```
 
+## 仓内检视标准
+
+`collect` 完成后检查 `doc/<module>/review/context.json` 的 `project_context.repo_review_standards`：
+
+- **非空**：逐个读取列出的文件（SKILL.md 优先，`references` 按需），检视时对照仓内标准执行；`kind=repo-instructions`（AGENTS.md / CLAUDE.md）作为补充上下文。`report` 生成的 review.md 会列出本次发现的标准。
+- **标准被本次 PR 修改**（条目 `modified_by_pr=true`，或 collect 警告提示）：该标准改按 PR **base（目标分支）** 版本读取（`git -C "<repo-root>" show <base>:<path>`），并在 limitations 与行评中提示维护者确认标准变更；base 无该文件时标准为本 PR **新增**，本次检视按通用标准执行，只在行评中提示维护者确认新增的标准。
+- **优先级**：流程、门禁、行评格式、location 规则以 dev-reviewer 为准；技术判断（什么算缺陷、架构边界、规范取舍）以仓内标准为准；冲突记入 limitations。
+- **清单为空**：按通用五维标准检视，无需额外动作。
+- 目标仓的标准未放在约定槽位时，用 `collect --review-skill <repo 相对路径>` 显式指定（可重复传入）。
+
 ## 可选自动化
 
 ```powershell
