@@ -4509,6 +4509,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         lastError: null,
       });
       if (!connected && (state === 'reconnecting' || state === 'closed')) {
+        // 补发标记随连接作废：点「执行」登记后若后端崩溃/断连，批准轮的
+        // processing_status=false 不会再送达，残留标记会让重连后下一条
+        // 普通消息完成时凭空补发一条执行消息。断线即失配，统一清掉；
+        // plan.mode_exited 里不能清——它先于 processing_status=false 到达，
+        // 提前删会杀掉正常补发。
+        pendingPlanExecuteRef.current.clear();
         streamDeltaBatcherRef.current?.flushAll();
         onDisconnectRef.current?.();
       }
