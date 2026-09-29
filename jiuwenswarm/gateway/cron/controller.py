@@ -26,6 +26,7 @@ from jiuwenswarm.gateway.cron.models import (
     resolve_cron_model,
     validate_cron_model,
 )
+from jiuwenswarm.common.timezone import get_default_timezone
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService, _cron_next_push_dt
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 
@@ -285,7 +286,8 @@ class CronController:
         name = str(params.get("name") or "").strip()
         cron_expr = normalize_cron_expr(str(params.get("cron_expr") or "").strip())
         timezone = (
-            str(params.get("timezone") or "Asia/Shanghai").strip() or "Asia/Shanghai"
+            str(params.get("timezone") or get_default_timezone().key).strip()
+            or get_default_timezone().key
         )
         enabled = bool(params.get("enabled", True))
         description = str(params.get("description") or "")
@@ -698,7 +700,7 @@ class CronController:
                     "but year semantics implicitly '*', it will repeat every year; "
                     "for a real one-shot, use the 7-field form with a fixed year.\n"
                     "description should contain task content only (no time/frequency). "
-                    "timezone defaults to Asia/Shanghai."
+                    f"timezone defaults to {get_default_timezone().key}."
                 ),
                 input_params={
                     "type": "object",
@@ -722,7 +724,7 @@ class CronController:
                         "timezone": {
                             "type": "string",
                             "description": "Time zone (IANA), e.g. Asia/Shanghai",
-                            "default": "Asia/Shanghai",
+                            "default": get_default_timezone().key,
                         },
                         "targets": {
                             "type": "string",

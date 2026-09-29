@@ -21,6 +21,7 @@ from jiuwenswarm.runtime.cron.models import (
 )
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
 from jiuwenswarm.common.schema.message import Message, ReqMethod
+from jiuwenswarm.common.timezone import get_default_timezone
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.runtime.host_services import send_runtime_wake
 
@@ -388,7 +389,7 @@ class _CronToolsCronBackend(CronToolBackend):
             {
                 "kind": "cron",
                 "expr": str(row.get("cron_expr") or "").strip(),
-                "tz": str(row.get("timezone") or "Asia/Shanghai").strip() or "Asia/Shanghai",
+                "tz": str(row.get("timezone") or get_default_timezone().key).strip() or get_default_timezone().key,
             },
         )
         row.setdefault(
@@ -442,8 +443,8 @@ def _extract_legacy_params(
             schedule.get("tz")
             or schedule.get("timezone")
             or data.get("timezone")
-            or "Asia/Shanghai"
-        ).strip() or "Asia/Shanghai"
+            or get_default_timezone().key
+        ).strip() or get_default_timezone().key
 
         if kind == "at":
             at_raw = str(schedule.get("at") or "").strip()

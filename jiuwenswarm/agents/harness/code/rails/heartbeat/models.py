@@ -19,6 +19,8 @@ from typing import Any
 
 from .cron_schedule import validate_cron_expression
 
+from jiuwenswarm.common.timezone import get_default_timezone
+
 # ---------------------------------------------------------------------------
 # 枚举与常量
 # ---------------------------------------------------------------------------
@@ -90,8 +92,8 @@ HEARTBEAT_SESSION_DELETED_POLICIES: tuple[str, ...] = (
     SESSION_DELETED_COMPLETED,
 )
 
-# 默认值(可被 config 覆盖)。
-DEFAULT_TIMEZONE: str = "Asia/Shanghai"
+# 默认值(可被 config 覆盖,取全局统一时区)。
+DEFAULT_TIMEZONE: str = get_default_timezone().key
 DEFAULT_MAX_RUNS: int = 12
 DEFAULT_CONCURRENCY_POLICY: str = CONCURRENCY_SKIP
 DEFAULT_SESSION_DELETED_POLICY: str = SESSION_DELETED_DISABLE
