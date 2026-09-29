@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Search } from 'lucide-react';
 import EntityAddIcon from '../../assets/agent-management/add.svg?react';
 import EntityRemoveIcon from '../../assets/agent-management/remove.svg?react';
-import { FormDrawer, PageCard } from '../ui';
+import { FormDrawer, Input, PageCard, SelectedCount } from '../ui';
 
 export interface PickerItem {
   id: string;
@@ -43,17 +43,17 @@ export function PickerModal({ title, items, initialSelectedIds, loading, onCance
       onConfirm={() => onConfirm(selected)}
       testId="connector-market-picker"
       width={900}
+      bodyClassName="form-drawer__body--flush"
+      footerLeading={
+        <SelectedCount count={selected.length} testId="connector-market-picker-selected-count" />
+      }
     >
-      <div className="relative mb-4 shrink-0">
-        <Search
-          size={14}
-          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--color-text-placeholder)]"
-        />
-        <input
+      <div className="mx-6 mb-4 shrink-0">
+        <Input
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={setQuery}
           placeholder={t('connectorMarket.common.search')}
-          className="h-8 w-full rounded-lg border border-border bg-bg pl-8 pr-3 text-[12px] leading-[18px] text-text outline-none focus:border-border-hover"
+          prefix={<Search size={14} />}
           data-testid="connector-market-picker-search"
         />
       </div>
@@ -63,7 +63,10 @@ export function PickerModal({ title, items, initialSelectedIds, loading, onCance
           {t('common.loading')}
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-4" data-testid="connector-market-picker-list">
+        <div
+          className="form-drawer__scroll-area grid content-start grid-cols-2 gap-4"
+          data-testid="connector-market-picker-list"
+        >
           {visible.map((item) => {
             const checked = selected.includes(item.id);
             return (

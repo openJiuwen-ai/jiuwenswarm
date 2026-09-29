@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, Minus, Plus, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, Minus, Plus } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import SearchIcon from '../../assets/agent-management/agent-search.svg?react';
@@ -19,7 +19,9 @@ import {
 } from '../../features/agentManagement';
 import { AGENT_DESCRIPTION_MAX_LENGTH, AGENT_NAME_MAX_LENGTH } from '../../features/agentManagement/limits';
 import { AgentTagPicker } from './AgentTagPicker';
-import { PageCard, Tabs, Input, Textarea, FormDrawer } from '../ui';
+import { DeleteCardIcon } from './cardActions';
+import { PageCard, Tabs, Input, Textarea, FormDrawer, FieldError, SelectedCount } from '../ui';
+import type { PageCardDefaultButton } from '../ui';
 // 深引入而非 ../ui barrel：本组件经 esbuild 独立打包进测试
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import { FormPageLayout } from '../ConnectorMarket/FormPageLayout';
@@ -38,7 +40,6 @@ type AgentEditorProps = {
   mcpStatus: RequestStatus;
   saving: boolean;
   error: string | null;
-  selectionError?: string | null;
   onChange: (draft: AgentDraft) => void;
   onReloadSkills: () => void;
   onReloadMcps: () => void;
@@ -62,7 +63,6 @@ export function AgentEditor({
   mcpStatus,
   saving,
   error,
-  selectionError,
   onChange,
   onReloadSkills,
   onReloadMcps,
@@ -257,11 +257,9 @@ export function AgentEditor({
                 showCounter
                 counterTestId="agent-editor-name-counter"
               />
-              {touched && errors.name ? (
-                <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="agent-editor-name-error">
-                  {errors.name}
-                </p>
-              ) : null}
+              <FieldError className="mt-1" testId="agent-editor-name-error">
+                {touched && errors.name ? errors.name : null}
+              </FieldError>
             </div>
 
             <div className="mb-4">
@@ -280,11 +278,9 @@ export function AgentEditor({
                 counterTestId="agent-editor-description-counter"
                 scrollable
               />
-              {touched && errors.description ? (
-                <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="agent-editor-description-error">
-                  {errors.description}
-                </p>
-              ) : null}
+              <FieldError className="mt-1" testId="agent-editor-description-error">
+                {touched && errors.description ? errors.description : null}
+              </FieldError>
             </div>
 
             <div className="mb-4">
@@ -351,11 +347,9 @@ export function AgentEditor({
                   </div>
                 </div>
               </div>
-              {touched && errors.persona ? (
-                <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="agent-editor-persona-error">
-                  {errors.persona}
-                </p>
-              ) : null}
+              <FieldError className="mt-1" testId="agent-editor-persona-error">
+                {touched && errors.persona ? errors.persona : null}
+              </FieldError>
             </div>
           </Section>
 
@@ -377,7 +371,7 @@ export function AgentEditor({
             onToggle={() => setMcpOpen((open) => !open)}
           >
             {selectedMcps.length > 0 ? (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="card-grid-auto">
                 {selectedMcps.map((mcp) => (
                   <PageCard
                     key={mcp.id}
@@ -388,7 +382,7 @@ export function AgentEditor({
                     description={mcp.description}
                     actionsHover
                     action={{
-                      icon: <Trash2 size={15} />,
+                      icon: <DeleteCardIcon />,
                       onClick: () => update({ mcpRefs: draft.mcpRefs.filter((id) => id !== mcp.id) }),
                     }}
                   />
@@ -424,7 +418,7 @@ export function AgentEditor({
                 </button>
               </div>
             ) : selectedSkills.length > 0 ? (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="card-grid-auto">
                 {selectedSkills.map((skill) => (
                   <PageCard
                     key={skill.id}
@@ -435,7 +429,7 @@ export function AgentEditor({
                     description={skill.description || t('agentManagement.unknownDescription')}
                     actionsHover
                     action={{
-                      icon: <Trash2 size={15} />,
+                      icon: <DeleteCardIcon />,
                       onClick: () => update({ skillRefs: draft.skillRefs.filter((id) => id !== skill.id) }),
                     }}
                   />
@@ -500,16 +494,12 @@ export function AgentEditor({
           }}
           testId="agent-editor-skill-picker"
           width={900}
+          bodyClassName="form-drawer__body--flush"
           footerLeading={
-            <span
-              className="text-[13px] text-text-muted"
-              data-testid="agent-editor-skill-picker-selected-count"
-            >
-              {t('agentManagement.form.selectedCount', { count: skillDraft.length })}
-            </span>
+            <SelectedCount count={skillDraft.length} testId="agent-editor-skill-picker-selected-count" />
           }
         >
-          <div className="relative mb-4 shrink-0">
+          <div className="relative mx-6 mb-4 shrink-0">
             <SearchIcon
               className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[color:var(--color-text-placeholder)]"
               aria-hidden="true"
@@ -523,7 +513,7 @@ export function AgentEditor({
             />
           </div>
           <Tabs
-            className="mb-4"
+            className="mb-4 px-6"
             items={[
               {
                 value: 'market',
@@ -542,12 +532,7 @@ export function AgentEditor({
             role="tablist"
             ariaLabel={t('agentManagement.form.skillSourceTabsLabel')}
           />
-          {selectionError ? (
-            <div className="agent-management-form-error mb-4" role="alert" data-testid="agent-editor-selection-error">
-              {selectionError}
-            </div>
-          ) : null}
-          <div className="flex-1 min-h-0 overflow-y-auto" ref={skillListScrollRef} onScroll={handleSkillListScroll}>
+          <div className="form-drawer__scroll-area" ref={skillListScrollRef} onScroll={handleSkillListScroll}>
             {skillsStatus === 'loading' ? (
               <p className="py-10 text-center text-[13px] text-text-muted">{t('common.loading')}</p>
             ) : skillsStatus === 'error' ? (
@@ -568,6 +553,19 @@ export function AgentEditor({
                     const selected = skillDraft.includes(skill.id);
                     const installed = skill.installed === true;
                     const installing = installingSkillId === skill.id;
+                    const defaultButton: PageCardDefaultButton | undefined =
+                      !installed && onInstallSkill
+                        ? {
+                            text: installing
+                              ? t('agentManagement.form.installingSkill')
+                              : t('agentManagement.form.installSkill'),
+                            testId: 'agent-editor-skill-picker-install',
+                            variant: skill.id,
+                            disabled: installing,
+                            busy: installing,
+                            onClick: () => void onInstallSkill(skill),
+                          }
+                        : undefined;
                     return (
                       <PageCard
                         key={skill.id}
@@ -587,25 +585,9 @@ export function AgentEditor({
                         avatar={{ name: skill.name }}
                         title={skill.name}
                         description={skill.description || t('agentManagement.unknownDescription')}
+                        defaultButton={defaultButton}
                         actionSlot={
-                          !installed && onInstallSkill ? (
-                            <button
-                              type="button"
-                              className="agent-management-inline-action"
-                              data-testid="agent-editor-skill-picker-install"
-                              data-variant={skill.id}
-                              disabled={installing}
-                              aria-busy={installing}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void onInstallSkill(skill);
-                              }}
-                            >
-                              {installing
-                                ? t('agentManagement.form.installingSkill')
-                                : t('agentManagement.form.installSkill')}
-                            </button>
-                          ) : (
+                          !installed && onInstallSkill ? null : (
                             <span className="shrink-0" aria-hidden="true">
                               {selected ? (
                                 <EntityRemoveIcon className="text-[color:var(--color-chat-accent)]" />
@@ -646,9 +628,13 @@ export function AgentEditor({
           }}
           testId="agent-editor-mcp-picker"
           width={900}
+          bodyClassName="form-drawer__body--flush"
+          footerLeading={
+            <SelectedCount count={mcpDraft.length} testId="agent-editor-mcp-picker-selected-count" />
+          }
         >
           <Tabs
-            className="mb-4"
+            className="mb-4 px-6"
             items={[
               {
                 value: 'market',
@@ -667,7 +653,7 @@ export function AgentEditor({
             role="tablist"
             ariaLabel={t('agentManagement.form.mcpSourceTabsLabel')}
           />
-          <div className="relative mb-4 shrink-0">
+          <div className="relative mx-6 mb-4 shrink-0">
             <SearchIcon
               className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[color:var(--color-text-placeholder)]"
               aria-hidden="true"
@@ -680,106 +666,91 @@ export function AgentEditor({
               data-testid="agent-editor-mcp-picker-search"
             />
           </div>
-          {selectionError ? (
-            <div className="agent-management-form-error mb-4" role="alert" data-testid="agent-editor-selection-error">
-              {selectionError}
+          {mcpStatus === 'loading' ? (
+            <p className="py-10 text-center text-[13px] text-text-muted">{t('common.loading')}</p>
+          ) : mcpStatus === 'error' ? (
+            <div className="agent-management-form-error mx-6">
+              <span>{t('agentManagement.form.mcpError')}</span>
+              <button type="button" onClick={onReloadMcps}>
+                {t('common.retry')}
+              </button>
+            </div>
+          ) : mcpStatus === 'success' && filteredMcps.length === 0 ? (
+            <div className="py-10 text-center text-[13px] text-text-muted">
+              <p>{t('agentManagement.form.mcpEmpty')}</p>
+            </div>
+          ) : mcpStatus === 'success' && filteredMcps.length > 0 ? (
+            <div
+              className="form-drawer__scroll-area grid content-start grid-cols-2 gap-4"
+              data-testid="agent-editor-mcp-picker-list"
+            >
+              {filteredMcps.map((mcp) => {
+                const selected = mcpDraft.includes(mcp.id);
+                const installed = mcp.installed === true;
+                const selectable = isMcpSelectable(mcp);
+                const unconnected = installed && !selectable;
+                const connecting = connectingMcpId === mcp.id || mcp.connectionState === 'connecting';
+                const installing = installingMcpId === mcp.id;
+                const defaultButton: PageCardDefaultButton | undefined =
+                  !installed && onInstallMcp
+                    ? {
+                        text: installing
+                          ? t('agentManagement.form.installingConnector')
+                          : t('agentManagement.form.installConnector'),
+                        testId: 'agent-editor-mcp-picker-install',
+                        variant: mcp.id,
+                        disabled: installing,
+                        busy: installing,
+                        onClick: () => void onInstallMcp(mcp),
+                      }
+                    : unconnected && onConnectMcp
+                      ? {
+                          text: connecting
+                            ? t('agentManagement.form.connectingConnector')
+                            : t('agentManagement.form.connectConnector'),
+                          testId: 'agent-editor-mcp-picker-connect',
+                          variant: mcp.id,
+                          disabled: connecting,
+                          busy: connecting,
+                          onClick: () => onConnectMcp(mcp),
+                        }
+                      : undefined;
+                return (
+                  <PageCard
+                    key={mcp.id}
+                    testId="agent-editor-mcp-picker-item"
+                    variant={mcp.id}
+                    interactive={selectable}
+                    selected={selected}
+                    disabled={!selectable && !onInstallMcp && !onConnectMcp}
+                    onClick={
+                      selectable
+                        ? () =>
+                            setMcpDraft((current) =>
+                              selected ? current.filter((id) => id !== mcp.id) : [...current, mcp.id],
+                            )
+                        : undefined
+                    }
+                    avatar={{ name: mcp.name, iconUrl: mcp.icon || undefined }}
+                    title={mcp.name}
+                    description={mcp.description || t('agentManagement.unknownDescription')}
+                    defaultButton={defaultButton}
+                    actionSlot={
+                      !installed && onInstallMcp ? null : unconnected && onConnectMcp ? null : (
+                        <span className="shrink-0" aria-hidden="true">
+                          {selected ? (
+                            <EntityRemoveIcon className="text-[color:var(--color-chat-accent)]" />
+                          ) : (
+                            <EntityAddIcon className="text-text-muted" />
+                          )}
+                        </span>
+                      )
+                    }
+                  />
+                );
+              })}
             </div>
           ) : null}
-          <div className="flex-1 overflow-y-auto">
-            {mcpStatus === 'loading' ? (
-              <p className="py-10 text-center text-[13px] text-text-muted">{t('common.loading')}</p>
-            ) : mcpStatus === 'error' ? (
-              <div className="agent-management-form-error">
-                <span>{t('agentManagement.form.mcpError')}</span>
-                <button type="button" onClick={onReloadMcps}>
-                  {t('common.retry')}
-                </button>
-              </div>
-            ) : mcpStatus === 'success' && filteredMcps.length === 0 ? (
-              <div className="py-10 text-center text-[13px] text-text-muted">
-                <p>{t('agentManagement.form.mcpEmpty')}</p>
-              </div>
-            ) : mcpStatus === 'success' && filteredMcps.length > 0 ? (
-              <>
-                <div className="grid grid-cols-2 gap-4" data-testid="agent-editor-mcp-picker-list">
-                  {filteredMcps.map((mcp) => {
-                    const selected = mcpDraft.includes(mcp.id);
-                    const installed = mcp.installed === true;
-                    const selectable = isMcpSelectable(mcp);
-                    const unconnected = installed && !selectable;
-                    const connecting = connectingMcpId === mcp.id || mcp.connectionState === 'connecting';
-                    const installing = installingMcpId === mcp.id;
-                    return (
-                      <PageCard
-                        key={mcp.id}
-                        testId="agent-editor-mcp-picker-item"
-                        variant={mcp.id}
-                        interactive={selectable}
-                        selected={selected}
-                        disabled={!selectable && !onInstallMcp && !onConnectMcp}
-                        onClick={
-                          selectable
-                            ? () =>
-                                setMcpDraft((current) =>
-                                  selected ? current.filter((id) => id !== mcp.id) : [...current, mcp.id],
-                                )
-                            : undefined
-                        }
-                        avatar={{ name: mcp.name, iconUrl: mcp.icon || undefined }}
-                        title={mcp.name}
-                        description={mcp.description || t('agentManagement.unknownDescription')}
-                        actionSlot={
-                          !installed && onInstallMcp ? (
-                            <button
-                              type="button"
-                              className="agent-management-inline-action"
-                              data-testid="agent-editor-mcp-picker-install"
-                              data-variant={mcp.id}
-                              disabled={installing}
-                              aria-busy={installing}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void onInstallMcp(mcp);
-                              }}
-                            >
-                              {installing
-                                ? t('agentManagement.form.installingConnector')
-                                : t('agentManagement.form.installConnector')}
-                            </button>
-                          ) : unconnected && onConnectMcp ? (
-                            <button
-                              type="button"
-                              className="agent-management-inline-action"
-                              data-testid="agent-editor-mcp-picker-connect"
-                              data-variant={mcp.id}
-                              disabled={connecting}
-                              aria-busy={connecting}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                onConnectMcp(mcp);
-                              }}
-                            >
-                              {connecting
-                                ? t('agentManagement.form.connectingConnector')
-                                : t('agentManagement.form.connectConnector')}
-                            </button>
-                          ) : (
-                            <span className="shrink-0" aria-hidden="true">
-                              {selected ? (
-                                <EntityRemoveIcon className="text-[color:var(--color-chat-accent)]" />
-                              ) : (
-                                <EntityAddIcon className="text-text-muted" />
-                              )}
-                            </span>
-                          )
-                        }
-                      />
-                    );
-                  })}
-                </div>
-              </>
-            ) : null}
-          </div>
         </FormDrawer>
       )}
     </>

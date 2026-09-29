@@ -500,6 +500,7 @@ body.workspace-resize-active iframe {
     overflow: hidden;
     background: var(--color-surface-card);
     padding-top: var(--page-content-padding-top);
+    margin-bottom: 16px;
   }
 
   /* 限宽骨架：页面不滚动的固定区（header/toolbar 等）使用，
@@ -1705,8 +1706,8 @@ body.workspace-resize-active iframe {
     overflow-anchor: none;
   }
 
-  .chat-timeline > *,
-  .chat-timeline-row > * {
+  .chat-timeline>*,
+  .chat-timeline-row>* {
     margin-top: 0;
     margin-bottom: 0;
   }

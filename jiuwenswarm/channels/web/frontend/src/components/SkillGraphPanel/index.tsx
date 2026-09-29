@@ -126,8 +126,6 @@ export type SkillGraphPanelHandle = {
 type SkillGraphPanelProps = {
   onReadingChange?: (reading: boolean) => void;
   onBuildAccepted?: (mode: SymphonyBuildMode) => void;
-  externalError?: string | null;
-  onExternalErrorClear?: () => void;
 };
 
 type GraphNode = {
@@ -745,7 +743,7 @@ function buildLogSignature(entries?: BuildLogEntry[]): string {
 }
 
 export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanelProps>(function SkillGraphPanel(
-  { onReadingChange, onBuildAccepted, externalError, onExternalErrorClear },
+  { onReadingChange, onBuildAccepted },
   ref,
 ) {
   const { t } = useTranslation();
@@ -1032,10 +1030,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     };
   }, [autoFitRequest, fitView, visible.nodes.length, visible.edges.length]);
 
-  const loadGraph = useCallback(async (clearExternalError = false) => {
-    if (clearExternalError) {
-      onExternalErrorClear?.();
-    }
+  const loadGraph = useCallback(async () => {
     setLoading(true);
     let keepLoading = false;
     try {
@@ -1088,7 +1083,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         setLoading(false);
       }
     }
-  }, [applyBuildLog, onExternalErrorClear, requestAutoFit, t]);
+  }, [applyBuildLog, requestAutoFit, t]);
 
   const restoreBuildStatus = useCallback(async (): Promise<boolean> => {
     const data = await webRequest<SkillGraphStatus>(
@@ -1115,7 +1110,6 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     setBuildMode(mode);
     setShowBuildLogPanel(true);
     setError(null);
-    onExternalErrorClear?.();
     setTokenUsage(null);
     setBuildProgress({
       stage: 'update.start',
@@ -1152,13 +1146,12 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
       }));
       throw error;
     }
-  }, [applyBuildLog, onBuildAccepted, onExternalErrorClear, t]);
+  }, [applyBuildLog, onBuildAccepted, t]);
 
   const cancelBuild = useCallback(async () => {
     setCancellingBuild(true);
     setShowBuildLogPanel(true);
     setError(null);
-    onExternalErrorClear?.();
     try {
       const data = await webRequest<SkillGraphUpdate>(
         'skills.graph.cancel',
@@ -1177,7 +1170,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     } finally {
       setCancellingBuild(false);
     }
-  }, [applyBuildLog, onExternalErrorClear, resetBuildUiOnTerminalStatus, t]);
+  }, [applyBuildLog, resetBuildUiOnTerminalStatus, t]);
 
   const cancelActiveBuild = useCallback(async () => {
     setCancellingBuild(true);
@@ -1662,7 +1655,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   const buildMetricsText = [tokenUsageText, elapsedText].filter(Boolean).join(' · ');
 
   const detailTasks = selectedNode ? asDetailItems(selectedNode.properties.tasks, t('skills.graph.required')) : [];
-  const visibleError = externalError || error;
+  const visibleError = error;
   const graphIsEmpty = graph.nodes.length === 0;
   const filteredGraphIsEmpty = graph.nodes.length > 0 && visible.nodes.length === 0;
   const showCanvasEmptyState = !isBusy && !visibleError;
@@ -1680,7 +1673,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
       if (isBusy) {
         return false;
       }
-      void loadGraph(true);
+      void loadGraph();
       return true;
     },
     startIncrementalBuild: () => rebuildGraph('incremental'),

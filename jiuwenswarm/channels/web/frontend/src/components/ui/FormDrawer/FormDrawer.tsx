@@ -20,6 +20,8 @@ export interface FormDrawerProps {
   confirmLoading?: boolean;
   panelRef?: Ref<HTMLElement>;
   className?: string;
+  /** 附加到 form-drawer__body 上的修饰类，如 form-drawer__body--flush + 子级 form-drawer__scroll-area */
+  bodyClassName?: string;
   closeTestId?: string;
 }
 
@@ -38,6 +40,7 @@ export function FormDrawer({
   confirmLoading,
   panelRef,
   className,
+  bodyClassName,
   closeTestId,
 }: FormDrawerProps) {
   const { t } = useTranslation();
@@ -67,7 +70,7 @@ export function FormDrawer({
 
         {notice && <div data-testid={`${testId}-notice`}>{notice}</div>}
 
-        <div className="form-drawer__body" data-testid={`${testId}-body`}>
+        <div className={`form-drawer__body${bodyClassName ? ` ${bodyClassName}` : ''}`} data-testid={`${testId}-body`}>
           {children}
         </div>
 

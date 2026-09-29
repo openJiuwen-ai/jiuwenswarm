@@ -214,6 +214,15 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
         if (localResult.status === 'rejected') throw localResult.reason;
         const marketplace = marketplaceResult.status === 'fulfilled' ? marketplaceResult.value : [];
         const local = localResult.value;
+        // mcp.list v2 用 filter 拆分"广场 vs 我的"（local = 已连接的预置 + 全部自定义），summary
+        // 里不下发 installed；connectorApi 层的 installed 只是 source!=='hub' 的启发式，会把所有
+        // 未连接预置误标成已安装，导致抽屉"我的MCP"与"MCP广场"两个 tab 内容雷同。这里以是否
+        // 出现在 local 列表为准还原 installed（扩展中心两个 tab 也是直接吃后端这份拆分）。
+        const localNames = new Set(
+          local
+            .map((item) => item.runtimePackageName || item.name)
+            .filter((name) => Boolean(name)),
+        );
         const byRuntimeName = new Map<string, McpOption>();
         [...marketplace, ...local].forEach((item) => {
           const runtimePackageName = item.runtimePackageName || item.name;
@@ -228,7 +237,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
             source: item.source,
             runtimePackageName,
             ...(item.hubAssetId ? { hubAssetId: item.hubAssetId } : {}),
-            installed: item.installed,
+            installed: localNames.has(runtimePackageName),
             icon: item.icon,
           };
           const previous = byRuntimeName.get(runtimePackageName);

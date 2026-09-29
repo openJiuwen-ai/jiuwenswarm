@@ -12,7 +12,8 @@ import {
   type AgentCatalogItem,
   type RequestStatus,
 } from '../../features/agentManagement';
-import { FormDrawer, PageCard, Tabs } from '../ui';
+import { FormDrawer, PageCard, SelectedCount, Tabs } from '../ui';
+import type { PageCardDefaultButton } from '../ui';
 
 type AgentGroupMemberPickerProps = {
   mode: 'leader' | 'member';
@@ -24,7 +25,6 @@ type AgentGroupMemberPickerProps = {
   onCancel: () => void;
   onConfirm: (ids: string[]) => void;
   onReloadAgents: () => void;
-  selectionError?: string | null;
   onInstallAgent?: (id: string) => void | Promise<void>;
   installingAgentIds?: ReadonlySet<string>;
   restoreFocusRef?: { current: HTMLElement | null };
@@ -54,7 +54,6 @@ export function AgentGroupMemberPicker({
   onCancel,
   onConfirm,
   onReloadAgents,
-  selectionError,
   onInstallAgent,
   installingAgentIds,
 }: AgentGroupMemberPickerProps) {
@@ -79,7 +78,10 @@ export function AgentGroupMemberPicker({
 
   const toggle = (id: string, legacyId?: string) => {
     if (mode === 'leader') {
-      setSelection([id]);
+      // 单选但可反选：再点已选中的即取消，确认按钮会因 selection 为空而置灰
+      setSelection((current) =>
+        current.includes(id) || (legacyId ? current.includes(legacyId) : false) ? [] : [id],
+      );
       return;
     }
     setSelection((current) => {
@@ -112,8 +114,12 @@ export function AgentGroupMemberPicker({
       confirmDisabled={mode === 'leader' && selection.length === 0}
       testId="agent-group-member-picker"
       width={900}
+      bodyClassName="form-drawer__body--flush"
+      footerLeading={
+        <SelectedCount count={selection.length} testId="agent-group-member-picker-selected-count" />
+      }
     >
-      <div className="relative mb-4 shrink-0">
+      <div className="relative mx-6 mb-4 shrink-0">
         <input
           type="search"
           value={query}
@@ -124,7 +130,7 @@ export function AgentGroupMemberPicker({
         />
       </div>
       <Tabs
-        className="mb-4"
+        className="mb-4 px-6"
         items={[
           {
             value: 'market',
@@ -145,16 +151,7 @@ export function AgentGroupMemberPicker({
         role="tablist"
         ariaLabel={t('agentManagement.group.picker.sourceTabsLabel')}
       />
-      {selectionError ? (
-        <div
-          className="agent-management-form-error mb-4"
-          role="alert"
-          data-testid="agent-group-member-picker-selection-error"
-        >
-          {selectionError}
-        </div>
-      ) : null}
-      <div className="flex-1 overflow-y-auto">
+      <div className="form-drawer__scroll-area">
         {agentsStatus === 'error' ? (
           <div className="agent-management-form-error" role="alert" data-testid="agent-group-member-picker-error">
             <span>{agentsError || t('agentManagement.states.loadError')}</span>
@@ -183,9 +180,23 @@ export function AgentGroupMemberPicker({
                   ? selectionId === selectedLeaderId || agent.id === selectedLeaderId
                   : selectedMemberIds.includes(selectionId) || selectedMemberIds.includes(agent.id));
               const installed = agent.installed === true;
+              const installing = installingAgentIds?.has(agent.id) === true;
               const categoryTags = agent.tags.length > 0 ? agent.tags.map((tag) => tag.label) : undefined;
               const description = agent.description || t('agentManagement.unknownDescription');
               const cardDisabled = !compatibilityLoading && disabled;
+              const defaultButton: PageCardDefaultButton | undefined =
+                !compatibilityLoading && !installed && onInstallAgent
+                  ? {
+                      text: installing
+                        ? t('agentManagement.group.picker.installing')
+                        : t('agentManagement.group.picker.install'),
+                      testId: 'agent-group-member-picker-install',
+                      variant: agent.id,
+                      disabled: installing,
+                      busy: installing,
+                      onClick: () => void onInstallAgent(agent.id),
+                    }
+                  : undefined;
               return (
                 <PageCard
                   key={agent.id}
@@ -206,29 +217,13 @@ export function AgentGroupMemberPicker({
                   title={agent.displayName}
                   label={categoryTags}
                   description={description}
+                  defaultButton={defaultButton}
                   actionSlot={
                     compatibilityLoading ? (
                       <span className="animate-spin" aria-label={t('agentManagement.group.picker.loading')}>
                         <LoaderCircle size={16} />
                       </span>
-                    ) : !agent.installed && onInstallAgent ? (
-                      <button
-                        type="button"
-                        className="agent-management-inline-action"
-                        data-testid="agent-group-member-picker-install"
-                        data-variant={agent.id}
-                        disabled={installingAgentIds?.has(agent.id)}
-                        aria-busy={installingAgentIds?.has(agent.id)}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void onInstallAgent(agent.id);
-                        }}
-                      >
-                        {installingAgentIds?.has(agent.id)
-                          ? t('agentManagement.group.picker.installing')
-                          : t('agentManagement.group.picker.install')}
-                      </button>
-                    ) : (
+                    ) : installed || !onInstallAgent ? (
                       <span className="shrink-0" aria-hidden="true">
                         {selected ? (
                           <EntityRemoveIcon className="text-[color:var(--color-chat-accent)]" />
@@ -236,16 +231,13 @@ export function AgentGroupMemberPicker({
                           <EntityAddIcon className="text-text-muted" />
                         )}
                       </span>
-                    )
+                    ) : null
                   }
                 />
               );
             })}
           </div>
         )}
-      </div>
-      <div className="mt-4 flex items-center justify-between text-[13px] text-text-muted">
-        <span>{t('agentManagement.group.picker.selectedCount', { count: selection.length })}</span>
       </div>
     </FormDrawer>
   );

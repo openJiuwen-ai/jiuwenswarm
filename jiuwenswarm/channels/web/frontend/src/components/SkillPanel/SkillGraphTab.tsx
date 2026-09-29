@@ -11,28 +11,22 @@ import { Switch } from '../Switch';
 
 interface SkillGraphTabProps {
   isConnected: boolean;
-  symphonySaveError: string | null;
   symphonySaving: boolean;
   symphonyEnabledDraft: boolean;
   onUpdateSymphonyEnabled: (enabled: boolean) => void;
   skillGraphPanelRef: MutableRefObject<SkillGraphPanelHandle | null>;
   onGraphReadingChange: (reading: boolean) => void;
   onStartRetrievalIndexBuild: (force: boolean) => Promise<boolean>;
-  graphActionError: string | null;
-  onExternalErrorClear: () => void;
 }
 
 export function SkillGraphTab({
   isConnected,
-  symphonySaveError,
   symphonySaving,
   symphonyEnabledDraft,
   onUpdateSymphonyEnabled,
   skillGraphPanelRef,
   onGraphReadingChange,
   onStartRetrievalIndexBuild,
-  graphActionError,
-  onExternalErrorClear,
 }: SkillGraphTabProps) {
   const { t } = useTranslation();
   return (
@@ -56,11 +50,6 @@ export function SkillGraphTab({
               </p>
             </div>
           </div>
-          {symphonySaveError ? (
-            <p className="mt-1 text-xs leading-5 text-danger" role="alert">
-              {symphonySaveError}
-            </p>
-          ) : null}
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
           {symphonySaving ? (
@@ -84,8 +73,6 @@ export function SkillGraphTab({
           ref={skillGraphPanelRef}
           onReadingChange={onGraphReadingChange}
           onBuildAccepted={(mode) => void onStartRetrievalIndexBuild(mode === 'full')}
-          externalError={graphActionError}
-          onExternalErrorClear={onExternalErrorClear}
         />
       </div>
     </div>

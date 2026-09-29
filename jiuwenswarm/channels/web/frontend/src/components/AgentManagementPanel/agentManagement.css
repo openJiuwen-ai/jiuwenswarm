@@ -2854,11 +2854,12 @@
 }
 
 /* Newly added Expert Team fields keep the same quiet focus treatment as the
-   ordinary Expert Team name input. */
-.agent-group-editor input:focus,
-.agent-group-editor input:focus-visible,
-.agent-group-editor textarea:focus,
-.agent-group-editor textarea:focus-visible {
+   ordinary Expert Team name input. Invalid fields keep their invalid border
+   while focused instead of the quiet default one. */
+.agent-group-editor input:focus:not(.ui-input--invalid),
+.agent-group-editor input:focus-visible:not(.ui-input--invalid),
+.agent-group-editor textarea:focus:not(.ui-textarea--invalid),
+.agent-group-editor textarea:focus-visible:not(.ui-textarea--invalid) {
   border-color: var(--color-border-default);
   outline: 0;
   box-shadow: none;
@@ -3189,11 +3190,4 @@
   border-color: var(--color-button-border);
   background: var(--color-surface-card);
   color: var(--color-text-primary);
-}
-/* 技能选择抽屉：body 改为纵向 flex，让技能列表区自己成为滚动容器——
-   触底加载（agent-editor-skill-picker-load-more）依赖列表自身的 scroll 事件，
-   若沿用 body 整体滚动，列表 div 高度为 auto 永不滚动，加载行会一直停在底部 */
-[data-testid='agent-editor-skill-picker'] .form-drawer__body {
-  display: flex;
-  flex-direction: column;
 }

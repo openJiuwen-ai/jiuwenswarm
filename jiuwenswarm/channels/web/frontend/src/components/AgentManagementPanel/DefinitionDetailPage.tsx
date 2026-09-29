@@ -28,7 +28,6 @@ type DefinitionDetailPageProps = {
   fileContent: AgentFileContent | null;
   fileStatus: RequestStatus;
   fileError: string | null;
-  actionError: string | null;
   actionNotice: string | null;
   busy: boolean;
   onBack: () => void;
@@ -57,7 +56,6 @@ export function DefinitionDetailPage({
   fileContent,
   fileStatus,
   fileError,
-  actionError,
   actionNotice,
   busy,
   onBack,
@@ -242,15 +240,6 @@ export function DefinitionDetailPage({
             </div>
           }
         />
-        {actionError ? (
-          <div
-            className="agent-management-inline-error"
-            role="alert"
-            data-testid="agent-management-detail-action-error"
-          >
-            {actionError}
-          </div>
-        ) : null}
 
         {actionNotice ? (
           <div

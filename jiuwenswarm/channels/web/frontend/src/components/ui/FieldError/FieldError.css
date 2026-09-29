@@ -1,0 +1,5 @@
+.ui-field-error {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-field-invalid-text);
+}

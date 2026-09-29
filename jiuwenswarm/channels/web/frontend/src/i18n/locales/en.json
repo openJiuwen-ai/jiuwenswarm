@@ -23,6 +23,7 @@
     "optional": "(optional)",
     "processing": "Processing…",
     "retry": "Retry",
+    "selectedCount": "{{count}} selected",
     "editMenu": {
       "actionFailed": "Unable to complete the text editing action. Please try again.",
       "cut": "Cut",
@@ -2954,7 +2955,6 @@
       "skillSourceTabsLabel": "Skill sources",
       "installSkill": "Install",
       "installingSkill": "Installing…",
-      "selectedCount": "{{count}} selected",
       "refreshSkills": "Refresh skills",
       "skillsError": "Unable to load the skill list. Try again.",
       "skillsEmpty": "No skills available",
@@ -3077,7 +3077,6 @@
         "leaderTitle": "Choose a leader",
         "memberTitle": "Choose members",
         "empty": "No matching Experts",
-        "selectedCount": "{{count}} selected",
         "localTab": "Local",
         "marketTab": "Marketplace",
         "sourceTabsLabel": "Expert sources",
@@ -3105,6 +3104,13 @@
     "forkFromMessage": "Create a conversation branch from this message",
     "forkFromMessageFailed": "Failed to create a conversation branch. Try again.",
     "fileExpired": "Expired",
+    "fileTypeDocument": "Document",
+    "fileTypeSpreadsheet": "Spreadsheet",
+    "fileTypePresentation": "Presentation",
+    "fileTypePdf": "PDF",
+    "fileTypeImage": "Image",
+    "fileTypeSkill": "Skill",
+    "fileTypeFile": "File",
     "agentProcessing": "Agent Processing",
     "thinking": "Thinking...",
     "processing": "Processing...",
@@ -3856,13 +3862,7 @@
       "loadingMyPlugin": "Loading my plugins...",
       "loadingMyMcp": "Loading my connectors..."
     },
-    "pagination": {
-      "pageSize": "Rows per page",
-      "all": "All",
-      "rangeInfo": "{{start}}-{{end}} of {{total}}",
-      "prev": "Previous page",
-      "next": "Next page"
-    },
+    "loadMore": "Load more content",
     "toast": {
       "mcpConnected": "Connector connected successfully.",
       "mcpInstalled": "Connector installed. Connect it before use.",

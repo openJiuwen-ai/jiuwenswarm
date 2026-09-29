@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { ArrowLeftRight, ChevronDown, ChevronUp, Minus, Plus, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, Minus, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import EntityAddIcon from '../../assets/agent-management/add.svg?react';
 import EntityRemoveIcon from '../../assets/agent-management/remove.svg?react';
@@ -18,7 +18,9 @@ import {
 import { AGENT_DESCRIPTION_MAX_LENGTH, AGENT_NAME_MAX_LENGTH } from '../../features/agentManagement/limits';
 import { AgentGroupMemberPicker } from './AgentGroupMemberPicker';
 import { AgentTagPicker } from './AgentTagPicker';
-import { PageCard, Tabs, Input, Textarea, FormDrawer } from '../ui';
+import { DeleteCardIcon, SwitchCardIcon } from './cardActions';
+import { PageCard, Tabs, Input, Textarea, FormDrawer, FieldError, SelectedCount } from '../ui';
+import type { PageCardDefaultButton } from '../ui';
 import { FormPageLayout } from '../ConnectorMarket/FormPageLayout';
 
 type AgentGroupEditorProps = {
@@ -30,7 +32,6 @@ type AgentGroupEditorProps = {
   skillsStatus: RequestStatus;
   saving: boolean;
   error: string | null;
-  selectionError?: string | null;
   onChange: (draft: AgentGroupDraft) => void;
   onReloadAgents: () => void;
   onReloadSkills: () => void;
@@ -52,7 +53,6 @@ export function AgentGroupEditor({
   skillsStatus,
   saving,
   error,
-  selectionError,
   onChange,
   onReloadAgents,
   onReloadSkills,
@@ -207,11 +207,9 @@ export function AgentGroupEditor({
                 showCounter
                 counterTestId="agent-group-editor-name-counter"
               />
-              {touched && errors.name ? (
-                <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="agent-group-editor-name-error">
-                  {errors.name}
-                </p>
-              ) : null}
+              <FieldError className="mt-1" testId="agent-group-editor-name-error">
+                {touched && errors.name ? errors.name : null}
+              </FieldError>
             </div>
 
             <div className="mb-4">
@@ -230,14 +228,9 @@ export function AgentGroupEditor({
                 counterTestId="agent-group-editor-description-counter"
                 scrollable
               />
-              {touched && errors.description ? (
-                <p
-                  className="mt-1 text-[11px] leading-4 text-danger"
-                  data-testid="agent-group-editor-description-error"
-                >
-                  {errors.description}
-                </p>
-              ) : null}
+              <FieldError className="mt-1" testId="agent-group-editor-description-error">
+                {touched && errors.description ? errors.description : null}
+              </FieldError>
             </div>
 
             <div className="mb-4">
@@ -265,11 +258,9 @@ export function AgentGroupEditor({
                 aria-label={t('agentManagement.group.form.personaLabel')}
                 data-testid="agent-group-editor-persona"
               />
-              {touched && errors.persona ? (
-                <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="agent-group-editor-persona-error">
-                  {errors.persona}
-                </p>
-              ) : null}
+              <FieldError className="mt-1" testId="agent-group-editor-persona-error">
+                {touched && errors.persona ? errors.persona : null}
+              </FieldError>
             </div>
           </Section>
 
@@ -296,21 +287,21 @@ export function AgentGroupEditor({
                   ) : null}
                 </div>
                 {selectedLeader ? (
-                  <PageCard
-                    testId="agent-group-editor-leader-card"
-                    avatar={{ name: selectedLeader.displayName, iconUrl: getAgentAvatarUrl(selectedLeader) }}
-                    title={selectedLeader.displayName}
-                    description={selectedLeader.description || t('agentManagement.unknownDescription')}
-                    actionsHover
-                    action={{
-                      icon: <ArrowLeftRight size={15} />,
-                      onClick: () => openMemberPicker('leader'),
-                    }}
-                  />
+                  <div className="card-grid-auto">
+                    <PageCard
+                      testId="agent-group-editor-leader-card"
+                      avatar={{ name: selectedLeader.displayName, iconUrl: getAgentAvatarUrl(selectedLeader) }}
+                      title={selectedLeader.displayName}
+                      description={selectedLeader.description || t('agentManagement.unknownDescription')}
+                      actionsHover
+                      action={{
+                        icon: <SwitchCardIcon />,
+                        onClick: () => openMemberPicker('leader'),
+                      }}
+                    />
+                  </div>
                 ) : touched && errors.leader ? (
-                  <p className="text-[11px] leading-4 text-danger" data-testid="agent-group-editor-leader-error">
-                    {errors.leader}
-                  </p>
+                  <FieldError testId="agent-group-editor-leader-error">{errors.leader}</FieldError>
                 ) : null}
               </div>
 
@@ -328,7 +319,7 @@ export function AgentGroupEditor({
                   </button>
                 </div>
                 {selectedMembers.length > 0 ? (
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="card-grid-auto">
                     {selectedMembers.map((agent) => (
                       <PageCard
                         key={agent.id}
@@ -339,7 +330,7 @@ export function AgentGroupEditor({
                         description={agent.description || t('agentManagement.unknownDescription')}
                         actionsHover
                         action={{
-                          icon: <Trash2 size={15} />,
+                          icon: <DeleteCardIcon />,
                           onClick: () =>
                             update({
                               memberIds: draft.memberIds.filter(
@@ -351,9 +342,7 @@ export function AgentGroupEditor({
                     ))}
                   </div>
                 ) : touched && errors.members ? (
-                  <p className="text-[11px] leading-4 text-danger" data-testid="agent-group-editor-members-error">
-                    {errors.members}
-                  </p>
+                  <FieldError testId="agent-group-editor-members-error">{errors.members}</FieldError>
                 ) : null}
               </div>
             </div>
@@ -377,7 +366,7 @@ export function AgentGroupEditor({
             onToggle={() => setSkillsOpen((open) => !open)}
           >
             {draft.skillRefs.length > 0 ? (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="card-grid-auto">
                 {draft.skillRefs.map((id) => {
                   const skill = skillOptions.find((option) => option.id === id);
                   const name = skill?.name || id;
@@ -391,7 +380,7 @@ export function AgentGroupEditor({
                       description={skill?.description || t('agentManagement.unknownDescription')}
                       actionsHover
                       action={{
-                        icon: <Trash2 size={15} />,
+                        icon: <DeleteCardIcon />,
                         onClick: () => update({ skillRefs: draft.skillRefs.filter((item) => item !== id) }),
                       }}
                     />
@@ -456,7 +445,6 @@ export function AgentGroupEditor({
           selectedLeaderId={draft.leaderId}
           selectedMemberIds={draft.memberIds}
           restoreFocusRef={pickerMode === 'leader' ? leaderPickerTriggerRef : memberPickerTriggerRef}
-          selectionError={selectionError}
           onInstallAgent={onInstallAgent}
           installingAgentIds={installingAgentIds}
           onReloadAgents={onReloadAgents}
@@ -480,8 +468,12 @@ export function AgentGroupEditor({
           }}
           testId="agent-group-editor-skill-picker"
           width={900}
+          bodyClassName="form-drawer__body--flush"
+          footerLeading={
+            <SelectedCount count={skillDraft.length} testId="agent-group-editor-skill-picker-selected-count" />
+          }
         >
-          <div className="relative mb-4 shrink-0">
+          <div className="relative mx-6 mb-4 shrink-0">
             <input
               value={skillQuery}
               onChange={(event) => setSkillQuery(event.target.value)}
@@ -491,7 +483,7 @@ export function AgentGroupEditor({
             />
           </div>
           <Tabs
-            className="mb-4"
+            className="mb-4 px-6"
             items={[
               {
                 value: 'market',
@@ -510,16 +502,7 @@ export function AgentGroupEditor({
             role="tablist"
             ariaLabel={t('agentManagement.group.picker.skillSourceTabsLabel')}
           />
-          {selectionError ? (
-            <div
-              className="agent-management-form-error mb-4"
-              role="alert"
-              data-testid="agent-group-editor-selection-error"
-            >
-              {selectionError}
-            </div>
-          ) : null}
-          <div className="flex-1 overflow-y-auto">
+          <div className="form-drawer__scroll-area">
             {skillsStatus === 'loading' ? (
               <p className="py-10 text-center text-[13px] text-text-muted">{t('common.loading')}</p>
             ) : skillsStatus === 'error' ? (
@@ -539,6 +522,19 @@ export function AgentGroupEditor({
                   const selected = skillDraft.includes(skill.id);
                   const installed = skill.installed === true;
                   const installing = installingSkillId === skill.id;
+                  const defaultButton: PageCardDefaultButton | undefined =
+                    !installed && onInstallSkill
+                      ? {
+                          text: installing
+                            ? t('agentManagement.form.installingSkill')
+                            : t('agentManagement.form.installSkill'),
+                          testId: 'agent-group-editor-skill-picker-install',
+                          variant: skill.id,
+                          disabled: installing,
+                          busy: installing,
+                          onClick: () => void onInstallSkill(skill),
+                        }
+                      : undefined;
                   return (
                     <PageCard
                       key={skill.id}
@@ -551,25 +547,9 @@ export function AgentGroupEditor({
                       avatar={{ name: skill.name }}
                       title={skill.name}
                       description={skill.description || t('agentManagement.unknownDescription')}
+                      defaultButton={defaultButton}
                       actionSlot={
-                        !installed && onInstallSkill ? (
-                          <button
-                            type="button"
-                            className="agent-management-inline-action"
-                            data-testid="agent-group-editor-skill-picker-install"
-                            data-variant={skill.id}
-                            disabled={installing}
-                            aria-busy={installing}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void onInstallSkill(skill);
-                            }}
-                          >
-                            {installing
-                              ? t('agentManagement.form.installingSkill')
-                              : t('agentManagement.form.installSkill')}
-                          </button>
-                        ) : (
+                        !installed && onInstallSkill ? null : (
                           <span className="shrink-0" aria-hidden="true">
                             {selected ? (
                               <EntityRemoveIcon className="text-[color:var(--color-chat-accent)]" />
@@ -584,11 +564,6 @@ export function AgentGroupEditor({
                 })}
               </div>
             )}
-          </div>
-          <div className="mt-4 flex items-center justify-between border-t border-border pt-4">
-            <span className="text-[13px] text-text-muted">
-              {t('agentManagement.group.picker.selectedCount', { count: skillDraft.length })}
-            </span>
           </div>
         </FormDrawer>
       )}

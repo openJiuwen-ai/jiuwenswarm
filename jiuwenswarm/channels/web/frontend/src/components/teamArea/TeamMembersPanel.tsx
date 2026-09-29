@@ -14,7 +14,7 @@ import { isTeamLeaderMember, isUserMember } from '../../utils/teamMemberAvatar';
 import { contextCompressionRunningText } from '../../utils/contextCompression';
 import { getSkillAvatar } from '../../utils/skillAvatar';
 import teamIcon from '../../assets/team.svg';
-import PendingIcon from '../../assets/pending.svg?react';
+import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 
 import BackIcon from '../../assets/back.svg?react';
@@ -489,7 +489,7 @@ const TeamMemberOverviewCard = memo(function TeamMemberOverviewCard({
   const statusIcon = isRunning && !showIdleStatus ? (
     <LoadingSpinner />
   ) : (
-    <PendingIcon className="w-4 h-4 shrink-0 text-text-muted" />
+    <FrameTimeIcon className="w-4 h-4 shrink-0 text-text-meta" />
   );
 
   return (
@@ -730,11 +730,11 @@ function FinalSummaryList({ events }: { events: TeamMemberExecutionEvent[] }) {
 
   return (
     <div className="mt-5 border-t border-[var(--color-team-detail-divider)] pt-4" data-testid="team-area-final-summary">
-      <div className="mt-4 space-y-6">
+      <div className="mt-4">
         {events.map((event) => (
           <section
             key={event.id}
-            className="space-y-3"
+            className="my-4 space-y-3"
             data-testid="team-area-final-summary-item"
             data-variant={event.id}
           >

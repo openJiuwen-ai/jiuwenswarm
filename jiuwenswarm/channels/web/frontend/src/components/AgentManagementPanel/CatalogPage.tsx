@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { LoaderCircle } from 'lucide-react';
 
 import { useTranslation } from 'react-i18next';
@@ -165,37 +165,22 @@ export function CatalogPage({
                   ? item.tags.map(tg => tg.label)
                   : undefined;
 
-                let actionContent: ReactNode = null;
-                if (item.installed) {
-                  actionContent = (
-                    <div className="agent-management-card__actions" aria-label={t('agentManagement.card.actions', { name: item.displayName })}>
-                      <button
-                        type="button"
-                        className="agent-management-button agent-management-button--primary agent-management-card-action--use"
-                        disabled={isBusy || item.enabled === false}
-                        aria-disabled={isBusy || item.enabled === false}
-                        onClick={(e) => { e.stopPropagation(); needsConnection ? onReconnect(item.id) : onUse(item.id); }}
-                      >
-                        {t('agentManagement.actions.use')}
-                      </button>
-
-                    </div>
-                  );
-                } else {
-                  actionContent = (
-                    <div className="agent-management-card__actions" aria-label={t('agentManagement.card.actions', { name: item.displayName })}>
-                      <button
-                        type="button"
-                        className="agent-management-button agent-management-button--primary"
-                        disabled={isBusy}
-                        aria-busy={isBusy}
-                        onClick={(e) => { e.stopPropagation(); onInstall(item.id); }}
-                      >
-                        {isBusy ? t('agentManagement.actions.installing') : t('agentManagement.actions.install')}
-                      </button>
-                    </div>
-                  );
-                }
+                const defaultButton = item.installed
+                  ? {
+                      text: t('agentManagement.actions.use'),
+                      className: 'agent-management-card-action--use',
+                      disabled: isBusy || item.enabled === false,
+                      onClick: () => {
+                        if (needsConnection) onReconnect(item.id);
+                        else onUse(item.id);
+                      },
+                    }
+                  : {
+                      text: isBusy ? t('agentManagement.actions.installing') : t('agentManagement.actions.install'),
+                      disabled: isBusy,
+                      busy: isBusy,
+                      onClick: () => onInstall(item.id),
+                    };
 
                 return (
                   <PageCard
@@ -213,7 +198,7 @@ export function CatalogPage({
                     }
                     label={labelTags}
                     description={description}
-                    actionSlot={actionContent}
+                    defaultButton={defaultButton}
                   />
                 );
               })}

@@ -403,7 +403,7 @@ test('Expert and Expert Team management keep the shared page shell and field lim
   assert.match(groupCardSource, /headerTestId="agent-group-card-open"/);
   assert.match(groupCardSource, /<PageCard[\s\S]*testId=\{`agent-group-card-\$\{item\.id\}`\}/);
   assert.match(groupCardSource, /interactive\s*\n?\s*ariaLabel/);
-  assert.match(groupCardSource, /className="agent-management-card__actions"/);
+  assert.match(groupCardSource, /defaultButton=\{defaultButton\}/);
   assert.doesNotMatch(groupCardSource, /<article/);
   assert.match(groupEditorSource, /data-testid="agent-group-editor-name"[\s\S]*maxLength=\{AGENT_NAME_MAX_LENGTH\}/);
   assert.match(
@@ -483,7 +483,7 @@ test('single-mode picker removes its redundant title and More routes to the matc
 });
 
 test('leader and member picker cards include the shared Expert description', () => {
-  assert.match(memberPickerSource, /import \{ FormDrawer, PageCard, Tabs \} from '\.\.\/ui';/);
+  assert.match(memberPickerSource, /import \{[^}]*FormDrawer[^}]*PageCard[^}]*\} from '\.\.\/ui';/);
   assert.match(memberPickerSource, /<PageCard[\s\S]*testId="agent-group-member-picker-item"/);
   assert.match(memberPickerSource, /description=\{description\}/);
   assert.match(
@@ -605,14 +605,12 @@ test('Expert Team cards and details reuse the Expert visual primitives', () => {
     catalogPageSource,
     /<PageCard[\s\S]*className="agent-management-page-card agent-definition-card(?:\s|")/,
   );
-  assert.match(groupCardSource, /import \{ PageCard \} from '\.\.\/ui';/);
+  assert.match(groupCardSource, /import \{ PageCard, type PageCardDefaultButton \} from '\.\.\/ui';/);
   assert.match(groupCardSource, /className="agent-management-page-card agent-group-card"/);
   assert.match(groupCardSource, /<PageCard[\s\S]*testId=\{`agent-group-card-\$\{item\.id\}`\}/);
   assert.match(groupCardSource, /<PageCard[\s\S]*interactive/);
-  assert.match(
-    groupCardSource,
-    /className="agent-management-card__actions"[\s\S]*onClick=\{\(event\) => event\.stopPropagation\(\)\}/,
-  );
+  assert.match(groupCardSource, /variant: 'use'[\s\S]*variant: 'install'/);
+  assert.doesNotMatch(groupCardSource, /agent-management-card__actions/);
   assert.match(agentManagementCss, /\.agent-management-page-card \.entity-header__actions\s*\{\s*display: contents;/);
   assert.match(agentManagementCss, /\.agent-management-page-card \.entity-header__identity\s*\{\s*flex: 1 1 auto;/);
   assert.match(
