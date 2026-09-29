@@ -296,7 +296,7 @@ export function forkParentDisplay(parentSessionId?: string): string {
  */
 export function parseVerifyOutcome(
   outcome?: string,
-  threshold = 0.85,
+  _threshold = 0.85,
 ): {
   type: 'pass' | 'fail' | 'score' | 'undecided' | null;
   score?: number;
@@ -308,8 +308,7 @@ export function parseVerifyOutcome(
       if (obj.decision === 'pass') return { type: 'pass' };
       if (obj.decision === 'fail') return { type: 'fail' };
       if (typeof obj.score === 'number') {
-        const type = obj.score >= threshold ? 'pass' : 'fail';
-        return { type, score: obj.score };
+        return { type: 'score', score: obj.score };
       }
       if ('decision' in obj || 'score' in obj) {
         return { type: 'undecided' };

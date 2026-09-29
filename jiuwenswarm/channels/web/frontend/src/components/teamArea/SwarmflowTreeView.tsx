@@ -629,7 +629,6 @@ function AgentNode({
             {roleTag && (
               <span
                 className={`shrink-0 text-[10px] font-medium ${roleTagCls(agent.status)}`}
-                title={t('swarmflow.reviewerRoleHint')}
                 data-testid="team-area-swarmflow-agent-role"
                 data-variant={agent.id}
               >
@@ -704,7 +703,6 @@ function AgentNode({
                 key={sec.key}
                 type="button"
                 aria-label={badge.value ? `${sec.label} (${badge.value} ${badge.unit || t('swarmflow.charUnit')})` : sec.label}
-                title={sec.key === 'prompt' && isFork ? t('swarmflow.forkInheritedContextHint') : undefined}
                 data-testid="team-area-swarmflow-agent-detail-chip"
                 data-variant={sec.key}
                 onClick={(e) => {
@@ -831,8 +829,7 @@ function voteBadgeFor(
     return { type: 'undecided' };
   }
   if (typeof vote.score === 'number') {
-    const type = vote.score >= (group.threshold ?? 0.85) ? 'pass' : 'fail';
-    return { type, score: vote.score };
+    return { type: 'score', score: vote.score };
   }
   return { type: 'undecided' };
 }
@@ -920,8 +917,8 @@ function VerifyPanel({
       });
       return;
     }
-    // 刷新后 summary 不带 reviewer prompt（重文本走 get_agent 懒拉）：点击时拉
-    // 第一个 detail_pending reviewer 的完整体，并入 store 后开弹窗。
+    // 刷新后 summary 不带 reviewer 完整文本（重文本走 get_agent 懒拉）：点击时拉
+    // 第一个 detail_pending reviewer 的完整体，并入 store 后按 key 开弹窗。
     const pending = reviewers.find((r) => r.detail_pending === true);
     if (!pending) return;
     void useSessionStore
@@ -933,11 +930,14 @@ function VerifyPanel({
           runId,
           pending.id,
         );
-        const prompt = fresh?.agent.prompt ?? '';
-        if (!prompt) return;
+        const content = (key === 'prompt' ? fresh?.agent.prompt : fresh?.agent.outcome) ?? '';
+        if (!content) return;
         setModalState({
-          sections: [{ key: 'prompt', label: t('swarmflow.sectionInput'), icon: '▶', content: prompt, accent: 'blue' }],
-          activeKey: 'prompt',
+          sections:
+            key === 'prompt'
+              ? [{ key: 'prompt', label: t('swarmflow.sectionInput'), icon: '▶', content, accent: 'blue' }]
+              : [{ key: 'outcome', label: t('swarmflow.sectionOutput'), icon: '◀', content, accent: 'emerald' }],
+          activeKey: key,
         });
       })
       .catch(() => undefined);
@@ -1016,7 +1016,6 @@ function VerifyPanel({
           <button
             type="button"
             className="shrink-0 inline-flex items-center gap-1 rounded-md border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-[11px] font-medium text-blue-600 dark:text-blue-300 hover:bg-blue-500/20 transition-colors"
-            title={t('swarmflow.verifyWholeInputHint')}
             data-testid="team-area-swarmflow-verify-panel-input"
             onClick={() => openWhole('prompt')}
           >
@@ -1035,7 +1034,6 @@ function VerifyPanel({
           <button
             type="button"
             className="shrink-0 inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-300 hover:bg-emerald-500/20 transition-colors"
-            title={t('swarmflow.verifyWholeOutputHint')}
             data-testid="team-area-swarmflow-verify-panel-output"
             onClick={() => openWhole('outcome')}
           >
