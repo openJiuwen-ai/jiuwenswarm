@@ -36,6 +36,26 @@ from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_ra
     JiuwenSwarmPermissionInterruptRail,
 )
 
+# jiuwenswarm.common.utils:3030 sets up its module logger under the
+# ``jiuwenswarm`` root logger, and jiuwenswarm.common.utils:2871 disables
+# propagate on that root. Pytest's ``caplog`` fixture hooks the Python root
+# logger, so without re-enabling propagation the audit warning emitted from
+# ``_reject_unparseable_resume`` reaches stderr but never enters caplog.
+
+
+@pytest.fixture(autouse=True)
+def _enable_audit_propagation():
+    """Temporarily re-enable propagation on the ``jiuwenswarm`` root logger so
+    pytest's ``caplog`` fixture can capture audit warnings emitted from
+    ``jiuwenswarm.common.utils``."""
+    root = logging.getLogger("jiuwenswarm")
+    original = root.propagate
+    root.propagate = True
+    try:
+        yield
+    finally:
+        root.propagate = original
+
 
 def _bash_call(call_id: str, command: str):
     """Return a minimal ToolCall-shaped object the rail can introspect."""
@@ -81,7 +101,7 @@ async def test_str_user_input_is_audited_and_rejected_without_first_check(
         }
     )
 
-    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail"):
+    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.common.utils"):
         decision = await rail.resolve_interrupt(
             ctx=_ctx(),
             tool_call=_bash_call("t1", "git status"),
@@ -139,7 +159,7 @@ async def test_malformed_dict_payload_is_audited_and_rejected(
         }
     )
 
-    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail"):
+    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.common.utils"):
         decision = await rail.resolve_interrupt(
             ctx=_ctx(),
             tool_call=_bash_call("t3", "git status"),
