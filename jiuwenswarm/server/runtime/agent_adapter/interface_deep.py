@@ -10237,12 +10237,19 @@ class JiuWenSwarmDeepAdapter:
         # 非 plan 态它们几乎不做事：``AgentModeRail.before_model_call`` 会把
         # enter/exit_plan_mode 从模型可见工具里滤掉（``WorkAgentModeRail`` 再补上
         # switch_mode），审批 rail 只拦 ``exit_plan_mode``，普通模式下不会触发。
-        rail_infos.append(
-            _RailBuildInfo("_work_agent_mode_rail", self._build_work_agent_mode_rail)
-        )
-        rail_infos.append(
-            _RailBuildInfo("_work_plan_approval_rail", self._build_work_plan_approval_rail)
-        )
+        #
+        # team 装配跳过：team 会话 plan_mode 恒 normal、无 plan 入口，挂载只带来
+        # 每轮 load_state 与工具过滤开销（评审 CR-5，2026-09-29）。
+        if mode not in {"team", "team.plan", "code.team"}:
+            rail_infos.append(
+                _RailBuildInfo("_work_agent_mode_rail", self._build_work_agent_mode_rail)
+            )
+            rail_infos.append(
+                _RailBuildInfo("_work_plan_approval_rail", self._build_work_plan_approval_rail)
+            )
+        else:
+            self._work_agent_mode_rail = None
+            self._work_plan_approval_rail = None
 
         return self._instantiate_rails(rail_infos, config_base)
 
