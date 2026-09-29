@@ -82,11 +82,11 @@ export function createQwenOmniToolResultEvents(
   callId: string,
   brief: RealtimeBrief,
   context?: QwenOmniToolResultContext,
-  replyLanguage?: string,
+  toolLanguage?: string,
 ): Array<Record<string, unknown>> {
   return [
     createQwenOmniBriefOutputEvent(callId, brief, context),
-    createQwenOmniToolFollowupEvent(brief, context, replyLanguage),
+    createQwenOmniToolFollowupEvent(brief, context, toolLanguage),
     createQwenOmniResponseEvent(),
   ];
 }
