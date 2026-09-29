@@ -64,6 +64,8 @@ SPAWN_ENV_KEYS: frozenset[str] = frozenset(
         "OFFICE_CLAW_MCP_ARGS_JSON",
         "OFFICE_CLAW_MCP_CWD",
         "OFFICE_CLAW_MCP_EXCLUDED_TOOLS",
+        "OFFICE_CLAW_MCP_MANIFEST_PATH",
+        "JIUWENSWARM_MCP_MANIFEST",
         # Legacy aliases (pre-alignment SPAWN table); accept so old shared_env is not ignored.
         "OFFICE_CLAW_MCP_SERVER_COMMAND",
         "OFFICE_CLAW_MCP_SERVER_ARGS_JSON",
