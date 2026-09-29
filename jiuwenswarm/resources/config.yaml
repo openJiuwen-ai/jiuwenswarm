@@ -627,6 +627,10 @@ react:
   # send_input/close/resume 六个工具替换（两者互斥）。默认开启。
   subagent_runtime:
     enabled: true
+    # 把子代理的思考/工具帧原样镜像到父会话流，并带 stream_source_id=子代理 id，
+    # 供按 source 路由的宿主（RelayClaw）渲染成嵌套子代理行。进程级开关：
+    # 打开后同一进程服务的所有 channel 都会收到这些帧，默认关闭。
+    mirror_child_stream: false
   # ProgressiveToolRail: 工具延迟加载，固定 eager_tools schema，deferred 工具通过
   # tools_search → invoke_tool 间接调用，最大化 prefix cache 命中率。
   tool_lazy_load:

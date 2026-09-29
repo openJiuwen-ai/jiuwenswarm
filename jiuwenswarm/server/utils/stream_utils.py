@@ -481,7 +481,11 @@ def _parse_typed_chunk(
             if isinstance(payload, dict)
             else payload
         )
-        return {"event_type": "chat.tool_call", "tool_call": tool_info}
+        return {
+            "event_type": "chat.tool_call",
+            "tool_call": tool_info,
+            **_propagate_stream_source_id(payload),
+        }
 
     if chunk_type == "tool_update":
         if isinstance(payload, dict):
@@ -492,6 +496,7 @@ def _parse_typed_chunk(
         return {
             "event_type": "chat.tool_update",
             **update_payload,
+            **_propagate_stream_source_id(payload),
         }
 
     if chunk_type == "tool_result":
@@ -503,6 +508,7 @@ def _parse_typed_chunk(
         return {
             "event_type": "chat.tool_result",
             **result_payload,
+            **_propagate_stream_source_id(payload),
         }
 
     if chunk_type == "error":

@@ -76,7 +76,76 @@ def test_install_patch_rebinds_control_factory(monkeypatch: pytest.MonkeyPatch) 
     from openjiuwen.harness.tools.subagent import _control_registry
 
     monkeypatch.setattr(_control_registry, "SubagentControl", SubagentControl)
+    previous = CompatibleSubagentControl.mirror_child_stream
+    CompatibleSubagentControl.mirror_child_stream = False
 
-    install_subagent_control_compat_patch()
+    install_subagent_control_compat_patch(mirror_child_stream=True)
 
     assert _control_registry.SubagentControl is CompatibleSubagentControl
+    assert CompatibleSubagentControl.mirror_child_stream is True
+    CompatibleSubagentControl.mirror_child_stream = previous
+
+
+class _Chunk:
+    def __init__(self, chunk_type: str, payload: object) -> None:
+        self.type = chunk_type
+        self.payload = payload
+
+
+class _ParentSession:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.written: list[tuple[str, dict]] = []
+        self._fail = fail
+
+    async def write_stream(self, schema: object) -> None:
+        if self._fail:
+            raise RuntimeError("stream closed")
+        self.written.append((schema.type, schema.payload))
+
+
+def _mirror_control(session: _ParentSession) -> CompatibleSubagentControl:
+    control = object.__new__(CompatibleSubagentControl)
+    control._parent_session = session  # pylint: disable=protected-access
+    control.mirror_child_stream = True
+    return control
+
+
+@pytest.mark.asyncio
+async def test_mirror_replays_allowed_chunks_with_source_id() -> None:
+    session = _ParentSession()
+    control = _mirror_control(session)
+
+    await control._on_child_chunk("sub-1", _Chunk("llm_reasoning", {"content": "先看一下"}))
+    await control._on_child_chunk(
+        "sub-1",
+        _Chunk("tool_call", {"tool_call": {"id": "c1", "name": "web_search"}, "task_id": "t-child"}),
+    )
+    await control._on_child_chunk("sub-1", _Chunk("answer", {"output": "结论"}))
+    await control._on_child_chunk("sub-1", _Chunk("content_chunk", {"content": "正文"}))
+    await control._on_child_chunk("sub-1", _Chunk("error", {"error": "boom"}))
+    await control._on_child_chunk("sub-1", _Chunk("task.start", {"task_id": "t-child"}))
+
+    assert [item[0] for item in session.written] == ["llm_reasoning", "tool_call"]
+    reasoning, tool = (item[1] for item in session.written)
+    assert reasoning == {"content": "先看一下", "stream_source_id": "sub-1"}
+    assert tool["stream_source_id"] == "sub-1"
+    assert "task_id" not in tool
+    assert tool["tool_call"]["name"] == "web_search"
+
+
+@pytest.mark.asyncio
+async def test_mirror_disabled_writes_nothing() -> None:
+    session = _ParentSession()
+    control = _mirror_control(session)
+    control.mirror_child_stream = False
+
+    await control._on_child_chunk("sub-1", _Chunk("llm_reasoning", {"content": "x"}))
+
+    assert session.written == []
+
+
+@pytest.mark.asyncio
+async def test_mirror_write_failure_is_swallowed() -> None:
+    control = _mirror_control(_ParentSession(fail=True))
+
+    await control._on_child_chunk("sub-1", _Chunk("tool_result", {"result": "ok"}))
