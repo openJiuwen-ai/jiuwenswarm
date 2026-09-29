@@ -716,6 +716,16 @@ def append_history_record(
     if mode:
         item["mode"] = str(mode)
 
+    # 调试落盘开关（trace.json 的 session_history / JIUWENSWARM_TRACE_SESSION=1）：
+    # 把这条即将落盘的记录镜像到 <日志目录>/session_flat/<sid>_history.jsonl，
+    # 缺省关闭；异常一律吞掉，不影响落盘与业务。
+    try:
+        from jiuwenswarm.common.e2a.wire_trace import trace_history_record
+
+        trace_history_record(item, sid)
+    except Exception:  # noqa: BLE001
+        pass
+
     _ensure_worker_started()
     try:
         _WRITE_QUEUE.put_nowait((sid, item))
