@@ -2374,6 +2374,26 @@ class DesktopRuntime:
       return false;
     }
   }
+  // WinRAR and similar archive/mail clients expose dragged entries as Shell
+  // virtual files rather than real filesystem entries. Passing those objects to
+  // pywebview's document drop handler makes WebView2 call
+  // postMessageWithAdditionalObjects and can crash the renderer. Reject them
+  // before the pywebview listener serializes the DataTransfer.
+  function hasVirtualFiles(dt) {
+    if (!dt || !dt.items) return false;
+    try {
+      var fileItems = Array.from(dt.items).filter(function (item) {
+        return item && item.kind === 'file';
+      });
+      if (!fileItems.length) return false;
+      return fileItems.some(function (item) {
+        if (typeof item.webkitGetAsEntry !== 'function') return false;
+        return item.webkitGetAsEntry() === null;
+      });
+    } catch (err) {
+      return false;
+    }
+  }
   // Distinguish an app-internal HTML5 drag (queue reorder, etc.) from an OS file
   // drag. 'Files' alone is NOT reliable: dragging an <img> element makes Chromium
   // inject a spurious 'Files'/'text/uri-list' entry. Chromium tags every drag
@@ -2417,6 +2437,12 @@ class DesktopRuntime:
     window.addEventListener('drop', function (e) {
       if (!hasFiles(e.dataTransfer)) return;
       e.preventDefault();
+      if (hasVirtualFiles(e.dataTransfer)) {
+        e.stopImmediatePropagation();
+        window.dispatchEvent(new CustomEvent('jiuwen-desktop-virtual-file-drop-rejected'));
+        endDrag();
+        return;
+      }
       if (hasDirectory(e.dataTransfer)) {
         e.stopImmediatePropagation();
         window.dispatchEvent(new CustomEvent('jiuwen-desktop-directory-drop-rejected'));
@@ -2443,6 +2469,12 @@ class DesktopRuntime:
       e.stopImmediatePropagation();
       // Preserve the anti-navigation default prevention the bridge used to give.
       e.preventDefault();
+    }, false);
+    document.addEventListener('drop', function (e) {
+      if (!hasFiles(e.dataTransfer) || !hasVirtualFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      window.dispatchEvent(new CustomEvent('jiuwen-desktop-virtual-file-drop-rejected'));
     }, false);
   }
 })();

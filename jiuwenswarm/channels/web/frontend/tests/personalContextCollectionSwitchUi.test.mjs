@@ -21,9 +21,10 @@ const config = {
   fetch_services: [],
 };
 let reconciling = true;
+let runtimeState = 'STOPPED';
 globalThis.__pcSettingsState = () => ({
   config,
-  status: { configured: true },
+  status: { configured: true, state: runtimeState },
   loadingConfig: false,
   pendingWrites: {},
   configNeedsReconciliation: reconciling,
@@ -92,4 +93,15 @@ test('verification messages are localized in Chinese and English', async () => {
     assert.ok(locale.personalContext.settings.collectionReconciling);
     assert.ok(locale.personalContext.settings.collectionTimeoutReconciling);
   }
+});
+
+test('a STOPPING runtime keeps master and collection switches disabled after config is loaded', () => {
+  reconciling = false;
+  runtimeState = 'STOPPING';
+  const markup = renderToStaticMarkup(createElement(PersonalContextSettingsPanel, { isConnected: true }));
+  const switches = [...markup.matchAll(/<button[^>]*role="switch"[^>]*>/g)].map(([tag]) => tag);
+  assert.ok(switches[0]?.includes('disabled'));
+  assert.ok(switches[1]?.includes('disabled'));
+  assert.ok(markup.includes('personalContext.settings.collectionStoppingRetry'));
+  runtimeState = 'STOPPED';
 });

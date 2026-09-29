@@ -915,6 +915,19 @@ class AgentManager:
             )
         return cleaned
 
+    async def cancel_session_tasks(
+        self, *, channel_id: str = "", session_id: str
+    ) -> None:
+        """Cancel and join session request tasks before lifecycle cleanup."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        channel_key = _normalize_channel_id(channel_id)
+        for agent in list(self.agents.get(channel_key, {}).values()):
+            cancel = getattr(agent, "cancel_session_tasks", None)
+            if callable(cancel):
+                await cancel(sid)
+
     def session_has_live_subagents(
         self,
         *,

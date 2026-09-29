@@ -176,10 +176,7 @@ def _project_conversation_state(
 ) -> tuple[int, list[str]]:
     """Count Web conversations and check all channels for running sessions.
 
-    执行判定与 session.archive 的
-    ``_session_is_busy_for_action`` 一致:parked 的 Team 常驻流只剩响应流、
-    不再持有团队工作,不阻塞移除——否则任何跑过 Team 会话的项目都会因
-    常驻 leader 流而永远无法移除。
+    与会话删除/归档共用 Runtime 的执行判定：空闲团队和常驻响应流不算 busy。
 
     ``ignore_heartbeats`` 把后台 Heartbeat 执行排除在读之外,回答"停掉心跳后
     本会话是否仍在跑"。预检用它,避免把即将被停掉的心跳读成阻塞项。
@@ -199,9 +196,6 @@ def _project_conversation_state(
         if not session_id or not runtime.is_session_running(
             session_id, ignore_heartbeats=ignore_heartbeats
         ):
-            continue
-        probe = getattr(runtime, "has_parked_team_streams", None)
-        if callable(probe) and probe(session_id):
             continue
         busy.append(session_id)
     return count, busy

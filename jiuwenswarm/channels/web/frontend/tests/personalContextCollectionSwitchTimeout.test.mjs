@@ -24,6 +24,9 @@ let storedConfig = { ...enabledConfig };
 let configError = null;
 let configReads = 0;
 let deferredConfigRead = null;
+let deferredStatusRead = null;
+let runtimeState = 'STOPPED';
+let statusReads = 0;
 globalThis.__pcApi = {
   stopRuntime: () =>
     new Promise((_resolve, reject) => {
@@ -44,7 +47,15 @@ globalThis.__pcApi = {
     return { ...storedConfig };
   },
   listServices: async () => ({ services: [] }),
-  getStatus: async () => ({ state: 'STOPPED', collection_enabled: false }),
+  getStatus: async () => {
+    statusReads += 1;
+    if (deferredStatusRead) {
+      const pending = deferredStatusRead;
+      deferredStatusRead = null;
+      return pending;
+    }
+    return { state: runtimeState, collection_enabled: false };
+  },
   getRunStatus: async () => ({ services: [] }),
 };
 
@@ -287,4 +298,171 @@ test('master switch timeout restores all three states when Host rolled back', as
   assert.equal(usePersonalContextStore.getState().config.collection_enabled, true);
   assert.equal(usePersonalContextStore.getState().config.agent_use_enabled, true);
   assert.equal(usePersonalContextStore.getState().configNeedsReconciliation, false);
+});
+
+test('a failed stop checks actual runtime and keeps switches blocked until STOPPING settles', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  storedConfig = { ...enabledConfig, master_enabled: false, collection_enabled: false, agent_use_enabled: false };
+  runtimeState = 'STOPPING';
+  configError = null;
+  const readsBefore = statusReads;
+  usePersonalContextStore.setState({ config: { ...enabledConfig }, pendingWrites: {}, configNeedsReconciliation: false });
+  const operation = usePersonalContextStore.getState().setMasterEnabled(false);
+  rejectMaster(new Error('stop timeout'));
+  await assert.rejects(operation, /stop timeout/);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(statusReads > readsBefore, 'stop failures must read runtime, not only persisted config');
+  assert.equal(usePersonalContextStore.getState().status.state, 'STOPPING');
+  assert.equal(usePersonalContextStore.getState().configNeedsReconciliation, true);
+  runtimeState = 'STOPPED';
+  context.mock.timers.tick(5000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(usePersonalContextStore.getState().configNeedsReconciliation, false);
+  context.mock.timers.reset();
+});
+
+test('a single-run stop failure refreshes actual runtime before clearing pending', async () => {
+  runtimeState = 'STOPPING';
+  const readsBefore = statusReads;
+  globalThis.__pcApi.stopRun = async () => { throw new Error('stop request lost'); };
+  usePersonalContextStore.setState({ pendingWrites: {}, configNeedsReconciliation: false });
+  await assert.rejects(usePersonalContextStore.getState().stopRun('notes'), /stop request lost/);
+  assert.ok(statusReads > readsBefore);
+  assert.equal(usePersonalContextStore.getState().status.state, 'STOPPING');
+  assert.equal(usePersonalContextStore.getState().pendingWrites['stop:notes'], undefined);
+  runtimeState = 'STOPPED';
+});
+
+test('a remount config response cannot resurrect reconciliation after the retry confirmed STOPPED', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  storedConfig = { ...enabledConfig, collection_enabled: false };
+  runtimeState = 'STOPPING';
+  configError = null;
+  usePersonalContextStore.setState({ config: { ...storedConfig }, pendingWrites: {}, configNeedsReconciliation: false });
+  usePersonalContextStore.getState().reconcileConfig();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(usePersonalContextStore.getState().configNeedsReconciliation, true);
+
+  let resolveOlderConfig;
+  deferredConfigRead = new Promise((resolve) => { resolveOlderConfig = resolve; });
+  const remountRead = usePersonalContextStore.getState().loadConfig();
+  runtimeState = 'STOPPED';
+  context.mock.timers.tick(5000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(usePersonalContextStore.getState().configNeedsReconciliation, false);
+  assert.equal(usePersonalContextStore.getState().status.state, 'STOPPED');
+
+  resolveOlderConfig({ ...storedConfig });
+  await remountRead;
+  assert.equal(usePersonalContextStore.getState().status.state, 'STOPPED');
+  assert.equal(usePersonalContextStore.getState().configNeedsReconciliation, false);
+  await usePersonalContextStore.getState().loadStatus();
+  assert.equal(usePersonalContextStore.getState().configNeedsReconciliation, false);
+  const readsAfterRecovery = configReads;
+  context.mock.timers.tick(5000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(configReads, readsAfterRecovery, 'settled reconciliation has no outstanding retry');
+  context.mock.timers.reset();
+});
+
+test('a newer batch reconciliation supersedes an older config read without reviving STOPPING', async () => {
+  storedConfig = { ...enabledConfig, collection_enabled: false, strategy_profile: 'balanced' };
+  runtimeState = 'STOPPING';
+  usePersonalContextStore.setState({ config: { ...enabledConfig }, pendingWrites: {}, configNeedsReconciliation: true });
+  let resolveOlderConfig;
+  deferredConfigRead = new Promise((resolve) => { resolveOlderConfig = resolve; });
+  const olderRead = usePersonalContextStore.getState().loadConfig();
+  runtimeState = 'STOPPED';
+  await usePersonalContextStore.getState().batchRefresh();
+  resolveOlderConfig({ ...enabledConfig, collection_enabled: false });
+  await olderRead;
+  assert.equal(usePersonalContextStore.getState().config.strategy_profile, 'balanced');
+  assert.equal(usePersonalContextStore.getState().status.state, 'STOPPED');
+  assert.equal(usePersonalContextStore.getState().configNeedsReconciliation, false);
+  assert.equal(usePersonalContextStore.getState().loadingConfig, false);
+});
+
+for (const read of ['loadConfig', 'loadStatus', 'batchRefresh']) {
+  test(`a delayed ${read} status response cannot overwrite a newer status poll`, async () => {
+    storedConfig = { ...enabledConfig, collection_enabled: false };
+    runtimeState = 'STOPPED';
+    usePersonalContextStore.setState({ config: { ...storedConfig }, pendingWrites: {}, configNeedsReconciliation: true });
+    let resolveOlderStatus;
+    deferredStatusRead = new Promise((resolve) => { resolveOlderStatus = resolve; });
+    const olderRead = usePersonalContextStore.getState()[read]();
+    await usePersonalContextStore.getState().loadStatus();
+    resolveOlderStatus({ state: 'STOPPING', collection_enabled: false });
+    await olderRead;
+    assert.equal(usePersonalContextStore.getState().status.state, 'STOPPED');
+    await usePersonalContextStore.getState().loadConfig();
+    assert.equal(usePersonalContextStore.getState().configNeedsReconciliation, false);
+  });
+}
+
+for (const read of ['loadStatus', 'batchRefresh']) {
+  test(`${read} keeps applying six-second replies while five-second polling continues`, async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    const originalGetStatus = globalThis.__pcApi.getStatus;
+    let requestCount = 0;
+    globalThis.__pcApi.getStatus = () => {
+      const pipeline_queue_size = ++requestCount;
+      return new Promise((resolve) => setTimeout(() => resolve({ state: 'STOPPED', pipeline_queue_size }), 6000));
+    };
+    usePersonalContextStore.setState({ status: { state: 'STOPPING' }, pendingWrites: {}, configNeedsReconciliation: false });
+    const pending = [usePersonalContextStore.getState()[read]()];
+    const interval = setInterval(() => pending.push(usePersonalContextStore.getState()[read]()), 5000);
+    try {
+      context.mock.timers.tick(5000);
+      context.mock.timers.tick(1000);
+      await new Promise((resolve) => setImmediate(resolve));
+      for (let applied = 1; applied <= 3; applied += 1) {
+        assert.ok(requestCount > applied, 'a newer request is still in flight');
+        assert.equal(usePersonalContextStore.getState().status.state, 'STOPPED');
+        assert.equal(usePersonalContextStore.getState().status.pipeline_queue_size, applied);
+        if (applied < 3) {
+          context.mock.timers.tick(4000);
+          context.mock.timers.tick(1000);
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      }
+    } finally {
+      clearInterval(interval);
+      context.mock.timers.tick(6000);
+      await Promise.all(pending);
+      globalThis.__pcApi.getStatus = originalGetStatus;
+      context.mock.timers.reset();
+    }
+  });
+}
+
+test('reconciliation finishes during ongoing five-second polling when status replies take six seconds', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const originalGetStatus = globalThis.__pcApi.getStatus;
+  globalThis.__pcApi.getStatus = () => new Promise((resolve) => setTimeout(() => resolve({ state: 'STOPPED' }), 6000));
+  storedConfig = { ...enabledConfig, collection_enabled: false };
+  usePersonalContextStore.setState({ config: { ...storedConfig }, status: { state: 'STOPPING' }, pendingWrites: {}, configNeedsReconciliation: false });
+  const readsBefore = configReads;
+  usePersonalContextStore.getState().reconcileConfig();
+  const pending = [];
+  const interval = setInterval(() => pending.push(usePersonalContextStore.getState().loadStatus()), 5000);
+  try {
+    context.mock.timers.tick(5000);
+    context.mock.timers.tick(1000);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(pending.length, 1, 'the next status poll remains in flight');
+    assert.equal(usePersonalContextStore.getState().status.state, 'STOPPED');
+    assert.equal(usePersonalContextStore.getState().configNeedsReconciliation, false);
+    context.mock.timers.tick(10000);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(pending.length >= 3, 'polling continues after reconciliation');
+    assert.equal(usePersonalContextStore.getState().configNeedsReconciliation, false);
+    assert.equal(configReads, readsBefore + 1, 'no further reconciliation retry is needed');
+  } finally {
+    clearInterval(interval);
+    context.mock.timers.tick(6000);
+    await Promise.all(pending);
+    await new Promise((resolve) => setImmediate(resolve));
+    globalThis.__pcApi.getStatus = originalGetStatus;
+    context.mock.timers.reset();
+  }
 });
