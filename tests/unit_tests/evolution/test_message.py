@@ -60,8 +60,10 @@ class TestReqMethod:
             "personal_context.context.search_pages",
             "personal_context.context.get_node",
             "personal_context.context.get_source",
+            "personal_context.im_learning.get_status",
+            "personal_context.im_learning.run_now",
         }
-        assert len(methods) == 25
+        assert len(methods) == 27
 
     @staticmethod
     def test_session_methods():

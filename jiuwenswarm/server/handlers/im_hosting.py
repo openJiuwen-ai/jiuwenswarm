@@ -126,9 +126,14 @@ async def _dispatch(svc, method: ReqMethod, params: dict[str, Any]) -> dict[str,
         return {"policy": svc.policy.load()}
     if method == ReqMethod.IM_HOSTING_POLICY_PATCH:
         channel_id = str(params.get("channel_id") or "").strip()
-        patch = params.get("patch") if isinstance(params.get("patch"), dict) else {
-            k: v for k, v in params.items() if k != "channel_id"
-        }
+        raw_patch = params.get("patch")
+        if isinstance(raw_patch, dict):
+            patch = raw_patch
+        else:
+            patch = {}
+            for key, value in params.items():
+                if key != "channel_id":
+                    patch[key] = value
         return {"policy": await svc.apply_channel_policy(channel_id, patch)}
     if method == ReqMethod.IM_HOSTING_POLL_NOW:
         target_id = params.get("target_id") or params.get("id")

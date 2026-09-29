@@ -14,6 +14,7 @@ from jiuwenswarm.server.im.im_connector.cli_runtime import (
 )
 
 
+
 class WelinkCli(ChannelCli):
     CLI_NAME = "welink-cli"
 
