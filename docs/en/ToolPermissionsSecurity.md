@@ -61,7 +61,7 @@ Unknown `severity` is treated as **HIGH**.
    - If **any** hit is **DENY**: **immediately return** (user parameter-level **DENY takes effect at this stage**).
    - Note: this happens **before** `approval_overrides`, so a user rule `deny` can block an override that would otherwise match (the override is never evaluated).
 
-4. **`approval_overrides`** (only `action: allow` entries participate):
+4. **Legacy `approval_overrides`** (only `action: allow` entries participate; `exact_operation` records are evaluated after all guards, as described in §5):
    - If **at least one** matches the current `tool_name` + `tool_args`: **immediately return ALLOW**, with `matched_rule` prefixed `tiered_policy:approval_overrides:...`.
    - Does **NOT** override step 2's built-in DENY (never reached). Does **NOT** override step 3's user parameter DENY.
 
@@ -112,14 +112,162 @@ Configuring `approval_overrides` without `external_directory` may still result i
 
 ---
 
-## 5. `approval_overrides` (User "Always Allow" Persistence)
+## 5. Dynamic ASK Approval
 
-When the user selects **"Remember this rule"** or equivalent persistence logic during approval, an entry is appended to `permissions.approval_overrides`. Fields typically include:
+An ASK interrupts before the tool runs. The user can allow once, allow for the current session, always allow, or reject. Session grants are stored in the session overlay; permanent grants are stored in `permissions.approval_overrides`. Remembering another operation permanently does not promote existing session grants.
 
-- `id`, `tools`, `match_type` (`path` / `command`), `pattern`, `action` (e.g. `allow`), `source` (e.g. `user_approval`, `cli_add_dir`).
+`authorization_mode: allow` permits only the current object: resolved file paths and access actions, the exact URL, or the original unsplit command and working directory. `allow_with_scope` also permits a server-derived scope: a file's immediate parent directory (including descendants), or a URL's registrable domain and subdomains (keeping its scheme and port). Commands cannot be broadened. IP addresses, localhost and public suffixes do not offer domain broadening.
 
-**Shell-type** `pattern` prefixed with `re:` is a regex matching the **entire command string**.
-**Path-type** `re:` patterns normalize `\` → `/` in path strings before matching.
+New records use `match_type: exact_operation` and a structured JSON `pattern`. The engine checks them after all guards, and they only lift ASK; an explicit DENY still blocks execution, including a denial added while approval was pending. Existing path/command overrides and CLI-created rules retain their previous matching behavior.
+
+The Web configuration panel displays **Sandbox → File Security Guard → Shell Security Guard → Network Security Guard**. The Sandbox card has one action row: **Sync file guard**, **Sync network guard**, then **Apply and recreate sandboxes**. Both sync actions only save their respective rules; the third applies both together. The separate Network Security Guard card configures `allow`, `ask` and `deny` rules.
+
+### 5.1 NetGuard Configuration RPCs
+
+| Method | params | Response payload / behavior |
+| --- | --- | --- |
+| `permissions.net_guard.get` | `{}` | `net_guard`, `builtin_urls`, `enforcement_points`, `apply_mode: "hot_reload"`, `host_exit`, `warnings` |
+| `permissions.net_guard.set` | `{"net_guard": {...}}` | Save a partial guard update; same response shape as get. Does not synchronize sandbox rules |
+| `sandbox.network.get` | `{}` | `{"network": {"disable_all": false, "allow_domains": [], "deny_domains": []}}`; reads user settings from the current platform's runtime policy copy |
+
+The existing get/set API now supports ASK. Updatable fields are boolean `enabled` / `enforce_host_exit`, `defaults: allow|ask|deny`, and `urls: {pattern: allow|ask|deny}`. Omitted fields stay unchanged; supplying `urls` replaces the entire user rule map, and `{}` clears it. Built-in DENY rules are merged at runtime and cannot be changed to allow or ask under the same pattern. Invalid values return `BAD_REQUEST`.
+
+Example Web request:
+
+```json
+{
+  "type": "req",
+  "id": "net-guard-set-1",
+  "method": "permissions.net_guard.set",
+  "params": {"net_guard": {
+    "enabled": true,
+    "defaults": "allow",
+    "urls": {"blocked.example.com": "deny", "review.example.com": "ask"}
+  }}
+}
+```
+
+ASK interrupts supported webpage fetch tools before execution. The host HTTP exit checks every hop: DENY always blocks, and a redirect target requiring ASK is stopped before connection. The error identifies the target URL for a separate tool call and approval; the exit does not open an approval dialog or carry the original URL grant to the redirect target. Sandbox process traffic remains subject to sandbox policy.
+
+Across matching rules, DENY takes precedence, followed by ASK and then ALLOW. An allow rule does not override a matching ask or deny rule.
+
+### 5.2 New RPC: `sandbox.network.sync`
+
+`params` must be an empty object. The server reads saved NetGuard settings; clients cannot supply rules or widened scopes here. Requires sandbox type `jiuwenbox`, `permissions.enabled: true`, and `permissions.net_guard.enabled: true`. The sandbox itself need not currently be enabled.
+
+```json
+{"type":"req","id":"net-sync-1","method":"sandbox.network.sync","params":{}}
+```
+
+For the guard configuration above, the Web response is:
+
+```json
+{
+  "type": "res",
+  "id": "net-sync-1",
+  "ok": true,
+  "payload": {
+    "urls": {"blocked.example.com": "deny"},
+    "skipped": [{"pattern":"review.example.com","reason":"询问仅在工具调用前处理，不同步到沙箱"}],
+    "restart_required": true
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `urls` | Domain-to-allow/deny mapping saved to `config.yaml` under `sandbox.urls`; replaces the previous mapping |
+| `skipped` | `{pattern, reason}` entries, or `[]`; partial skipping still returns success. Current reason strings are server-generated Chinese text |
+| `restart_required` | Always true; call `sandbox.restart` to apply both sets of rules |
+
+Only allow/deny rules for plain domains or `*.domain` are copied. **ASK is skipped, never mapped to DENY**. Full URLs, ports and unsupported wildcard patterns are also skipped rather than broadened. Non-allow defaults are reported with `pattern: "defaults"` because domain lists cannot represent them. If all rules are skipped, `sandbox.urls` becomes `{}`. Original NetGuard rules are unchanged. Sandbox allowlist, blocklist and base-policy semantics still apply; synchronization is not a complete translation of NetGuard.
+
+Like file sync saving `sandbox.files`, network sync only saves `sandbox.urls` in `config.yaml`. It does not change the runtime policy copy or start, reload or recreate sandboxes. `ok: true` means saved, not applied. Example saved configuration:
+
+```yaml
+sandbox:
+  files: []
+  urls:
+    example.org: allow
+    blocked.example.com: deny
+```
+
+`sandbox.files` and `sandbox.urls` store sandbox-supported rules synchronized from their respective Guards. `sandbox.restart` reads both saved configurations, applies them and rebuilds the sandboxes. It does not reread Guard rules or copy runtime rules back into configuration. Guard edits require another sync to update the pending configuration. Network application converts `sandbox.urls` into domain lists in the platform runtime policy copy, preserving `disable_all`. The defaults `files: []` and `urls: {}` both mean empty rules. Starting the internally managed service also loads the current configuration. Applying network rules fails explicitly if a custom policy does not use the platform runtime copy.
+
+Read pending rules from the sync response or `config.yaml`. The separate legacy `sandbox.network.get/set` interfaces still operate on the runtime policy copy. They do not participate in Guard synchronization or read pending `sandbox.urls`. Unified application uses the saved sandbox configuration.
+
+Both sync actions feed the same **Apply and recreate sandboxes** action: `{"type":"req","id":"apply-1","method":"sandbox.restart","params":{}}`. It waits for the service to load the saved network policy, reloading when the runtime policy copy changed, then recreates active instances with the saved file rules. Unchanged policy reuses a healthy service. Reload/recreation stops current tasks; AgentServer itself is not restarted.
+
+Success payload example: `{"restarted":2,"scope":"all_active_sandboxes","status":"applied"}`. If neither instances were recreated nor service policy reloaded, status is `no_active_sandboxes`. A completed service-policy reload with no active instances can return `applied` and `restarted: 0`. Requires an enabled sandbox. Internal services reload automatically; external mode still recreates instances with file rules and adds `network_status: "externally_managed"` to the response. The UI states that the external service must load network policy; no external service configuration or process is changed. Internal service application failure prevents instance recreation. Service or instance failures return `SANDBOX_RESTART_FAILED`, including partial rebuild failure, and saved rules remain available for retry.
+
+| Error code | Condition / message |
+| --- | --- |
+| `AGENT_NOT_READY` | Web forwarding cannot reach a ready AgentServer: `AgentServer is not ready` |
+| `BAD_REQUEST` | Nonempty params: `sandbox.network.sync accepts no parameters` |
+| `BAD_REQUEST` | Unsupported provider: `sandbox.network.sync currently supports jiuwenbox only` |
+| `BAD_REQUEST` | Permissions or NetGuard disabled: `NetGuard must be enabled before synchronization` |
+| `INTERNAL_ERROR` | Failure to read or save `config.yaml` |
+
+Runtime policy write/readback failures during application, such as `Sandbox network configuration could not be saved`, are returned by `sandbox.restart` as `SANDBOX_RESTART_FAILED`.
+
+Web errors have the shape `{"type":"res","id":"net-sync-1","ok":false,"error":"...","code":"BAD_REQUEST"}`. Internal AgentServer RPCs use `AgentResponse`: success data is in `payload`, while failures have `ok: false` and `payload: {"error":"...","code":"..."}`. These are different envelopes.
+
+### 5.3 Dynamic Authorization Protocol Fields
+
+The existing `chat.ask_user_question` event uses `source: "permission_interrupt"`. Each `questions[]` entry may include `authorization_scopes: [{value, label}]`. This is event metadata, not a new RPC. For `https://api.example.com/data`, an example scope list is:
+
+```json
+[
+  {"value":"exact","label":"仅当前对象"},
+  {"value":"domain","label":"域名（含子域名）：example.com"}
+]
+```
+
+The client submits optional fields in `chat.user_answer` → `params.answers[]`:
+
+| Field / combination | Default and constraint |
+| --- | --- |
+| `authorization_mode` | Defaults to `allow`; accepts `allow` or `allow_with_scope` |
+| `authorization_scope` | Defaults to `exact`; accepts `exact`, `parent` or `domain`, subject to the actual object type |
+| `allow` + `exact` | Current tool and resolved file paths/actions, exact URL, or original unsplit command plus working directory. Command wildcard characters stay literal |
+| `allow_with_scope` + `parent` | Immediate parent directory and descendants; preserves tool and access-action limits |
+| `allow_with_scope` + `domain` | Registrable domain and subdomains, preserving scheme and port; e.g. `api.example.co.uk` → `example.co.uk`. Not offered for IP addresses, localhost or public suffixes |
+| `allow_with_scope` + `exact` | Valid; remains an exact-object authorization |
+
+Commands cannot be broadened. Grants for bash, powershell and mcp_exec_command bind their execution `workdir` (or contextual working directory) and `shell_type`; an unrecognised `cwd` cannot override that binding. Custom shell tools bind all arguments conservatively. Older object command grants without interpreter information require approval again. Scope and lifetime are independent; allow-once does not save a scope for future calls. Clients must use server-provided option values and scope choices, and cannot supply an arbitrary path or domain. Missing scope metadata should result in exact-only UI. Old clients omitting both new fields retain `allow/exact` behavior; these fields do not change ordinary question or other confirmation flows.
+
+Example session grant using domain scope:
+
+```json
+{
+  "type": "req",
+  "id": "answer-rpc-1",
+  "method": "chat.user_answer",
+  "params": {
+    "request_id": "permission-1",
+    "answers": [{
+      "selected_options": ["session_allow"],
+      "authorization_mode": "allow_with_scope",
+      "authorization_scope": "domain"
+    }]
+  }
+}
+```
+
+The outer `id` identifies this RPC; `params.request_id` references the pending approval event. Send it through the original session connection/routing context.
+
+| Choice | `selected_options[0]` | Internal confirmation fields | Lifetime |
+| --- | --- | --- | --- |
+| Allow once | `approve` | `approved: true, auto_confirm: false` | Current call only |
+| Allow in session | `session_allow` | `approved: true, auto_confirm: true, persist_allow: false` | Current session overlay |
+| Always allow | `always_allow` | `approved: true, auto_confirm: true, persist_allow: true` | Permanent user configuration |
+| Reject | `reject` | `approved: false, auto_confirm: false` | Reject current call; no grant |
+
+Internal confirmation also carries `feedback` (default empty string) and the scope fields. For legacy callers, `auto_confirm: true` with missing/null `persist_allow` means permanent persistence. New Web clients should use the explicit choices above.
+
+Malformed confirmation structures or unknown enum values trigger another prompt. Structurally valid but invalid combinations, such as `allow/parent` or a command using `domain`, are rejected with `[PERMISSION_DENIED]`. Rejection returns `[PERMISSION_REJECTED]` or the supplied feedback. A new DENY added while awaiting approval also blocks resumption. Persistence failure rolls back the in-memory change and logs failure; the approved current call may still proceed.
+
+`chat.user_answer` returning `accepted: true` only acknowledges receipt, not authorization, persistence or execution success. Continue observing interrupt/tool results. Dynamic grants do not synchronize sandbox configuration or override sandbox denials.
 
 ---
 

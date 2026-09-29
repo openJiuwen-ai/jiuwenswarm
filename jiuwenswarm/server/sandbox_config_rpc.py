@@ -46,6 +46,7 @@ def set_internal_jiuwenbox_bootstrap(cb: Callable[[], Awaitable[None]] | None) -
 _SANDBOX_CFG_METHODS: frozenset[ReqMethod] = frozenset(
     {
         ReqMethod.SANDBOX_FILES_SYNC,
+        ReqMethod.SANDBOX_NETWORK_SYNC,
         ReqMethod.SANDBOX_RESTART,
         ReqMethod.SANDBOX_ENABLED_GET,
         ReqMethod.SANDBOX_ENABLED_SET,
@@ -252,6 +253,41 @@ def _trigger_apply(kind: str) -> None:
         )
 
 
+async def apply_sandbox_policy_for_restart(
+    bootstrap: Callable[[], Awaitable[None]] | None = None,
+) -> bool:
+    """Await saved server policy application before recreating sandbox instances."""
+    from jiuwenswarm.common.config import get_sandbox_startup_mode
+    from jiuwenswarm.common.net_guard_config import render_saved_sandbox_urls
+    from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
+
+    if get_sandbox_startup_mode() != "internal":
+        # External service ownership must not prevent per-instance file-policy
+        # recreation. The caller reports that network policy is externally managed.
+        return False
+    runner = JiuwenBoxRunner.instance()
+    if not runner.owns_process or runner.process is None:
+        bootstrap = bootstrap or _internal_bootstrap
+        if bootstrap is None:
+            raise RuntimeError("Sandbox service bootstrap is unavailable")
+        await bootstrap()
+        if not runner.owns_process or runner.process is None or not await runner.health_check():
+            raise RuntimeError("Sandbox service failed to start with the saved policy")
+        return True
+    policy_path = runner.spawned_policy_path
+    render_saved_sandbox_urls(policy_path)
+    if policy_path is None or runner._policy_fingerprint(policy_path) is None:
+        raise RuntimeError("Sandbox runtime policy is unavailable")
+    changed = runner._policy_fingerprint(policy_path) != runner._spawned_policy_fingerprint
+    ready = await runner.ensure_running(
+        host=runner.host, port=runner.port, startup_mode="internal",
+        policy_path=policy_path, timeout=120.0,
+    )
+    if not ready:
+        raise RuntimeError("Sandbox service failed to apply the saved policy")
+    return changed
+
+
 def dispatch_sandbox_config_request(request: AgentRequest) -> AgentResponse:
     """执行一条 sandbox 配置 RPC (与 dispatch_permissions_config_request 同形态).
 
@@ -281,6 +317,11 @@ def dispatch_sandbox_config_request(request: AgentRequest) -> AgentResponse:
             if params:
                 return _err(request, "sandbox.files.sync accepts no parameters")
             return _ok(request, sync_file_guard_to_sandbox())
+        if m == ReqMethod.SANDBOX_NETWORK_SYNC:
+            from jiuwenswarm.common.net_guard_config import sync_net_guard_to_sandbox
+            if params:
+                return _err(request, "sandbox.network.sync accepts no parameters")
+            return _ok(request, sync_net_guard_to_sandbox())
         if m == ReqMethod.SANDBOX_ENABLED_GET:
             return _ok(
                 request,

@@ -50,6 +50,7 @@ _EXTRACT_LOCK = threading.Lock()
 # xiaoyi / GaussPD / auto_memory / 权限档 knobs 不要加本表（桌面打回 / 跟模板）。
 _SCALAR_PATHS: tuple[tuple[str, ...], ...] = (
     ("sandbox", "enabled"),
+    ("permissions", "shell_guard", "builtin_rules_enabled"),
 )
 
 # 小艺 PC/手机 HITL「永久记住」。按 id（路径条目按 path）upsert 回新模板 list。

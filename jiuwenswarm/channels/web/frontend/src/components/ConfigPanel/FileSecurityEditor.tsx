@@ -3,34 +3,12 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Box, ShieldCheck, X } from 'lucide-react';
 import { webRequest } from '../../services/webClient';
+import { SecurityConfigSwitch as ConfigSwitch } from './SecurityConfigSwitch';
 
 type Level = 'allow' | 'ask' | 'deny';
 type Axes = Partial<Record<'read' | 'write' | 'exec', Level>>;
 type PathRule = Axes & { path: string; match?: 'prefix' | 'glob' };
 type FileGuard = { enabled?: boolean; defaults?: Axes; workspace?: Axes; paths?: PathRule[] };
-
-// Match the boolean controls used by ConfigPanel's GroupSection.
-function ConfigSwitch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
-  return (
-    <div className="flex items-center border-b border-border px-4 py-2.5">
-      <span className="w-[32%] shrink-0 text-xs text-text-muted">{label}</span>
-      <div className="flex h-[calc(1.25rem+16px)] items-center pl-4">
-        <button
-          type="button"
-          role="switch"
-          aria-label={label}
-          aria-checked={checked}
-          onClick={() => onChange(!checked)}
-          className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent focus-visible:outline-accent disabled:cursor-not-allowed ${checked ? 'bg-[var(--color-toggle-enabled)]' : 'bg-[var(--color-toggle-disabled)]'}`}
-        >
-          <span
-            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-[var(--color-control-thumb)] shadow ${checked ? 'translate-x-4' : 'translate-x-0'}`}
-          />
-        </button>
-      </div>
-    </div>
-  );
-}
 
 export function FileSecurityEditor({ isConnected }: { isConnected: boolean }) {
   const { t } = useTranslation();
@@ -145,6 +123,82 @@ export function FileSecurityEditor({ isConnected }: { isConnected: boolean }) {
 
   return (
     <div className="space-y-3">
+      <section className={cardClass} aria-labelledby="sandbox-config-title">
+        <div className="flex items-center gap-3 px-4 py-3 bg-secondary/30 border-b border-border">
+          <span className="inline-flex items-center justify-center rounded-md border w-7 h-7 shrink-0 text-accent bg-accent/10 border-accent/20">
+            <Box className="w-4 h-4" />
+          </span>
+          <div>
+            <h3 id="sandbox-config-title" className="text-sm font-medium text-text-strong">
+              {t('fileSecurity.sandbox')}
+            </h3>
+            <p className="text-xs text-text-muted">{t('sandboxSecurity.hint')}</p>
+          </div>
+        </div>
+        <fieldset disabled={disabled || sandbox === null} className="min-w-0 disabled:opacity-60">
+          <ConfigSwitch
+            label={t('fileSecurity.sandboxEnabled')}
+            checked={sandbox === true}
+            onChange={enabled => {
+              void run(async () => {
+                const result = await webRequest<{ enabled: boolean }>('sandbox.enabled.set', { enabled });
+                setSandbox(result.enabled);
+                return t('fileSecurity.switchSaved');
+              });
+            }}
+          />
+          <div className="px-4 py-3 space-y-3">
+            <p className="text-xs text-text-muted">{t('sandboxSecurity.syncHint')}</p>
+            {dirty && <p className="text-xs text-warn">{t('fileSecurity.saveFirst')}</p>}
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="btn text-xs disabled:opacity-50"
+                disabled={dirty || !guard || guard.enabled === false}
+                onClick={() =>
+                  void run(async () => {
+                    const result = await webRequest<{ files: PathRule[]; skipped?: { path: string; reason: string }[] }>('sandbox.files.sync', {});
+                    if (result.skipped?.length) {
+                      return `${t('fileSecurity.syncedPartial', { count: result.files.length, skipped: result.skipped.length })}\n${result.skipped.map(item => `${item.path}: ${item.reason}`).join('\n')}`;
+                    }
+                    return t('fileSecurity.synced');
+                  })
+                }
+              >
+                {t('fileSecurity.sync')}
+              </button>
+              <button
+                type="button"
+                className="btn text-xs disabled:opacity-50"
+                onClick={() =>
+                  void run(async () => {
+                    const result = await webRequest<{ skipped: { pattern: string; reason: string }[] }>('sandbox.network.sync', {});
+                    const skipped = result.skipped.map(item => `${item.pattern}: ${item.reason}`).join('\n');
+                    return t('sandboxSecurity.networkSynced') + (skipped ? `\n${skipped}` : '');
+                  })
+                }
+              >
+                {t('sandboxSecurity.syncNetwork')}
+              </button>
+              <button
+                type="button"
+                className="btn primary text-xs disabled:opacity-50"
+                disabled={!sandbox || dirty}
+                onClick={() =>
+                  void run(async () => {
+                    const result = await webRequest<{ status: string; restarted: number; network_status?: string }>('sandbox.restart', {}, { timeoutMs: 180000 });
+                    if (result.network_status === 'externally_managed') return t('fileSecurity.restartedExternal', { count: result.restarted });
+                    return result.status === 'no_active_sandboxes' ? t('fileSecurity.noActive') : t('fileSecurity.restarted', { count: result.restarted });
+                  })
+                }
+              >
+                {t('fileSecurity.restart')}
+              </button>
+            </div>
+            <p className="text-xs text-text-muted">{t('fileSecurity.restartHint')}</p>
+          </div>
+        </fieldset>
+      </section>
       <section className={cardClass} aria-labelledby="file-guard-title">
         <div className="flex items-center justify-between gap-3 px-4 py-3 bg-secondary/30 border-b border-border">
           <div className="flex items-center gap-3 min-w-0">
@@ -252,67 +306,6 @@ export function FileSecurityEditor({ isConnected }: { isConnected: boolean }) {
             </div>
           </fieldset>
         )}
-      </section>
-      <section className={cardClass} aria-labelledby="sandbox-config-title">
-        <div className="flex items-center gap-3 px-4 py-3 bg-secondary/30 border-b border-border">
-          <span className="inline-flex items-center justify-center rounded-md border w-7 h-7 shrink-0 text-accent bg-accent/10 border-accent/20">
-            <Box className="w-4 h-4" />
-          </span>
-          <div>
-            <h3 id="sandbox-config-title" className="text-sm font-medium text-text-strong">
-              {t('fileSecurity.sandbox')}
-            </h3>
-            <p className="text-xs text-text-muted">{t('fileSecurity.syncHint')}</p>
-          </div>
-        </div>
-        <fieldset disabled={disabled || sandbox === null} className="min-w-0 disabled:opacity-60">
-          <ConfigSwitch
-            label={t('fileSecurity.sandboxEnabled')}
-            checked={sandbox === true}
-            onChange={enabled => {
-              void run(async () => {
-                const result = await webRequest<{ enabled: boolean }>('sandbox.enabled.set', { enabled });
-                setSandbox(result.enabled);
-                return t('fileSecurity.switchSaved');
-              });
-            }}
-          />
-          <div className="px-4 py-3 space-y-3">
-            {dirty && <p className="text-xs text-warn">{t('fileSecurity.saveFirst')}</p>}
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                className="btn text-xs disabled:opacity-50"
-                disabled={dirty || !guard || guard.enabled === false}
-                onClick={() =>
-                  void run(async () => {
-                    const result = await webRequest<{ files: PathRule[]; skipped?: { path: string; reason: string }[] }>('sandbox.files.sync', {});
-                    if (result.skipped?.length) {
-                      return `${t('fileSecurity.syncedPartial', { count: result.files.length, skipped: result.skipped.length })}\n${result.skipped.map(item => `${item.path}: ${item.reason}`).join('\n')}`;
-                    }
-                    return t('fileSecurity.synced');
-                  })
-                }
-              >
-                {t('fileSecurity.sync')}
-              </button>
-              <button
-                type="button"
-                className="btn text-xs disabled:opacity-50"
-                disabled={!sandbox || dirty}
-                onClick={() =>
-                  void run(async () => {
-                    const result = await webRequest<{ status: string; restarted: number }>('sandbox.restart', {}, { timeoutMs: 180000 });
-                    return result.status === 'no_active_sandboxes' ? t('fileSecurity.noActive') : t('fileSecurity.restarted', { count: result.restarted });
-                  })
-                }
-              >
-                {t('fileSecurity.restart')}
-              </button>
-            </div>
-            <p className="text-xs text-text-muted">{t('fileSecurity.restartHint')}</p>
-          </div>
-        </fieldset>
       </section>
       {(error || message || busy) &&
         createPortal(

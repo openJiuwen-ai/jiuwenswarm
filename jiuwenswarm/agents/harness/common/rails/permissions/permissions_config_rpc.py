@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 _PERMISSIONS_CFG_METHODS: frozenset[ReqMethod] = frozenset(
     {
+        ReqMethod.PERMISSIONS_SHELL_GUARD_GET,
+        ReqMethod.PERMISSIONS_SHELL_GUARD_UPDATE,
         ReqMethod.PERMISSIONS_FILE_GUARD_GET,
         ReqMethod.PERMISSIONS_FILE_GUARD_UPDATE,
         ReqMethod.PERMISSIONS_TOOLS_GET,
@@ -35,6 +37,7 @@ _PERMISSIONS_CFG_METHODS: frozenset[ReqMethod] = frozenset(
 
 _PERMISSIONS_READ_ONLY_METHODS: frozenset[ReqMethod] = frozenset(
     {
+        ReqMethod.PERMISSIONS_SHELL_GUARD_GET,
         ReqMethod.PERMISSIONS_FILE_GUARD_GET,
         ReqMethod.PERMISSIONS_TOOLS_GET,
         ReqMethod.PERMISSIONS_RULES_GET,
@@ -139,6 +142,12 @@ def dispatch_permissions_config_request(request: AgentRequest) -> AgentResponse:
     tag = m.value if m is not None else ""
 
     try:
+        if m == ReqMethod.PERMISSIONS_SHELL_GUARD_GET:
+            from jiuwenswarm.common.shell_guard_config import get_shell_guard_config, get_shell_guard_rules
+            return _ok(request, {"shell_guard": get_shell_guard_config(), **get_shell_guard_rules()})
+        if m == ReqMethod.PERMISSIONS_SHELL_GUARD_UPDATE:
+            from jiuwenswarm.common.shell_guard_config import update_shell_guard_config
+            return _ok(request, {"shell_guard": update_shell_guard_config(params.get("patch"))})
         if m == ReqMethod.PERMISSIONS_FILE_GUARD_GET:
             from jiuwenswarm.common.file_guard_config import get_file_guard_config
             return _ok(request, {"file_guard": get_file_guard_config()})

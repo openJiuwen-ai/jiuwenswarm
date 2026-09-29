@@ -7,6 +7,55 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from jiuwenswarm.server import agent_ws_server as server_module
+from jiuwenswarm.server.sandbox_config_rpc import apply_sandbox_policy_for_restart as apply_saved_policy
+
+
+@pytest.fixture(autouse=True)
+def saved_service_policy(monkeypatch):
+    from jiuwenswarm.server import sandbox_config_rpc
+
+    apply = AsyncMock(return_value=False)
+    monkeypatch.setattr(sandbox_config_rpc, "apply_sandbox_policy_for_restart", apply)
+    return apply
+
+
+@pytest.mark.asyncio
+async def test_network_application_failure_prevents_instance_recreation(monkeypatch, saved_service_policy):
+    adapter = SimpleNamespace(apply_sandbox_runtime_patch=AsyncMock(return_value=True))
+    server = SimpleNamespace(
+        _agent_manager=SimpleNamespace(agents={"one": {"a": adapter}}),
+        _resolve_adapter=lambda agent: agent,
+    )
+    monkeypatch.setattr(server_module, "get_sandbox_runtime", lambda: {"enabled": True})
+    monkeypatch.setattr(server_module, "get_sandbox_endpoint", lambda: {"type": "jiuwenbox"})
+    saved_service_policy.side_effect = RuntimeError("Network policy reload failed")
+    with pytest.raises(RuntimeError, match="Network policy reload failed"):
+        await server_module.AgentWebSocketServer._restart_configured_sandboxes(server, {})
+    adapter.apply_sandbox_runtime_patch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_external_service_allows_file_rebuild_and_reports_network_ownership(monkeypatch):
+    from jiuwenswarm.common import config
+    from jiuwenswarm.server import sandbox_config_rpc as rpc
+    from jiuwenswarm.common import net_guard_config
+
+    monkeypatch.setattr(config, "get_sandbox_startup_mode", lambda: "external")
+    monkeypatch.setattr(rpc, "apply_sandbox_policy_for_restart", apply_saved_policy)
+    render = Mock(side_effect=AssertionError("must not mutate external service policy"))
+    monkeypatch.setattr(net_guard_config, "render_saved_sandbox_urls", render)
+    adapter = SimpleNamespace(apply_sandbox_runtime_patch=AsyncMock(return_value=True))
+    server = SimpleNamespace(
+        _agent_manager=SimpleNamespace(agents={"web": {"one": adapter}}),
+        _resolve_adapter=lambda agent: agent,
+    )
+    monkeypatch.setattr(server_module, "get_sandbox_endpoint", lambda: {"type": "jiuwenbox"})
+    monkeypatch.setattr(server_module, "get_sandbox_runtime", lambda: {"enabled": True, "files": []})
+    result = await server_module.AgentWebSocketServer._restart_configured_sandboxes(server, {})
+    assert result["restarted"] == 1
+    assert result["network_status"] == "externally_managed"
+    assert adapter.apply_sandbox_runtime_patch.await_count == 2
+    render.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -62,6 +111,59 @@ async def test_restart_no_active_sandbox_is_not_reported_applied(monkeypatch):
     monkeypatch.setattr(server_module, "get_sandbox_endpoint", lambda: {"type": "jiuwenbox"})
     result = await server_module.AgentWebSocketServer._restart_configured_sandboxes(server, {})
     assert result["status"] == "no_active_sandboxes"
+
+
+@pytest.mark.asyncio
+async def test_restart_rebinds_old_session_before_deduplicating(monkeypatch):
+    from jiuwenswarm.common import config
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep as mod
+    from openjiuwen.extensions.sys_operation.sandbox.providers import jiuwenbox as box
+
+    monkeypatch.setattr(config, "get_config", lambda: {})
+    monkeypatch.setattr(mod, "build_filesystem_policy", lambda *a, **kw: ({}, []))
+    cls = mod.JiuWenSwarmDeepAdapter
+    old_launcher = SimpleNamespace(
+        sandbox_type="jiuwenbox", base_url="http://127.0.0.1:8321", extra_params={},
+    )
+    current_launcher = SimpleNamespace(
+        sandbox_type="jiuwenbox", base_url="http://127.0.0.1:58543", extra_params={},
+    )
+    gateway = SimpleNamespace(launcher_config=current_launcher)
+    registered = SimpleNamespace(id="shared-op", _run_config=SimpleNamespace(config=gateway))
+    monkeypatch.setattr(cls, "_get_registered_sys_operation_by_isolation_key",
+                        staticmethod(lambda key: registered if key == "same-project" else None))
+    adapters = []
+    for launcher in (old_launcher, current_launcher):
+        adapter = SimpleNamespace(
+            _sys_operation_card=SimpleNamespace(
+                id="shared-op", mode=mod.OperationMode.SANDBOX,
+                gateway_config=SimpleNamespace(launcher_config=launcher),
+            ),
+            _sys_operation_isolation_key=lambda card: "same-project",
+            _is_code_agent=False, _resolve_project_dir_for_sandbox=lambda: None,
+        )
+        adapter.refresh_sandbox_runtime_binding = MethodType(cls.refresh_sandbox_runtime_binding, adapter)
+        adapter.apply_sandbox_runtime_patch = MethodType(cls.apply_sandbox_runtime_patch, adapter)
+        adapters.append(adapter)
+    create = AsyncMock(return_value="new-sandbox")
+    monkeypatch.setattr(box, "force_recreate_jiuwenbox_sandbox", create)
+    monkeypatch.setattr(box, "delete_jiuwenbox_sandbox", AsyncMock(return_value=[]))
+    server = SimpleNamespace(
+        _agent_manager=SimpleNamespace(agents={"web": dict(enumerate(adapters))}),
+        _resolve_adapter=lambda agent: agent,
+    )
+    monkeypatch.setattr(server_module, "get_sandbox_runtime", lambda: {"enabled": True, "files": []})
+    monkeypatch.setattr(server_module, "get_sandbox_endpoint", lambda: {"type": "jiuwenbox"})
+
+    result = await server_module.AgentWebSocketServer._restart_configured_sandboxes(server, {})
+
+    assert result["restarted"] == 1
+    create.assert_awaited_once()
+    assert create.await_args.args[0] == "http://127.0.0.1:58543"
+    assert create.await_args.kwargs["shared_key"] == "http://127.0.0.1:58543|same-project"
+    assert all(adapter._sys_operation_card.gateway_config is gateway for adapter in adapters)
+    assert current_launcher.extra_params["sandbox_id"] == "new-sandbox"
+    assert "sandbox_id" not in old_launcher.extra_params
 
 
 @pytest.mark.asyncio

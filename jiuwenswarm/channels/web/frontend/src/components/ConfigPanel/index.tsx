@@ -17,6 +17,7 @@ import {
 import { ConfigFieldHintLabel } from "./ConfigFieldHintLabel";
 import { PermissionsToolsEditor } from "./PermissionsToolsEditor";
 import { FileSecurityEditor } from "./FileSecurityEditor";
+import { ShellSecurityEditor } from "./ShellSecurityEditor";
 import { NetGuardEditor } from "./NetGuardEditor";
 import { ModelProviderIcon } from '../ModelProviderIcon';
 
@@ -4616,6 +4617,8 @@ export function ConfigPanel({
               {configTab === "security" ? (
                 <div role="tabpanel" aria-labelledby="config-tab-security" className="space-y-3 pb-2">
                   <FileSecurityEditor isConnected={isConnected} />
+                  <ShellSecurityEditor isConnected={isConnected} />
+                  <NetGuardEditor isConnected={isConnected} />
                   {securityGroups.length === 0 ? (
                     <p className="text-sm text-text-muted px-1">{t("config.tabEmpty.security")}</p>
                   ) : (
@@ -4632,7 +4635,6 @@ export function ConfigPanel({
                           group.tag === "permissions" ? (
                             <>
                               <PermissionsToolsEditor isConnected={isConnected} />
-                              <NetGuardEditor isConnected={isConnected} />
                             </>
                           ) : null
                         }
