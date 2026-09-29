@@ -611,14 +611,13 @@ class RsiHarnessInstaller:
             result["harness_provenance"]["published"] = self._published_provenance(
                 task_id, state, package_sha256
             )
-            installed = next(
-                (
-                    record for record in self.activation_store.list_versions()
-                    if str(record.get("task_id") or "").strip() == task_id
-                    and str(record.get("sha256") or "").lower() == package_sha256.lower()
-                ),
-                None,
-            )
+            installed = None
+            for record in self.activation_store.list_versions():
+                record_task_id = str(record.get("task_id") or "").strip()
+                record_sha256 = str(record.get("sha256") or "").lower()
+                if record_task_id == task_id and record_sha256 == package_sha256.lower():
+                    installed = record
+                    break
             if installed is not None:
                 result["harness_provenance"]["installed"] = self._installed_provenance(installed)
         except (RsiError, OSError, ValueError, yaml.YAMLError):
@@ -1003,15 +1002,13 @@ class RsiHarnessInstaller:
             # providers by returning ``{}`` when raw publication state is not
             # available.  Treat that sentinel as “no reader” and continue to
             # the task run's durable state file instead of masking it.
-            if isinstance(state, dict) and any(
-                key in state
-                for key in (
-                    "publication_status",
-                    "published_harness_refs_path",
-                    "current_harness_refs_path",
-                    "best_harness_refs_path",
-                )
-            ):
+            publication_keys = {
+                "publication_status",
+                "published_harness_refs_path",
+                "current_harness_refs_path",
+                "best_harness_refs_path",
+            }
+            if isinstance(state, dict) and publication_keys.intersection(state):
                 return state
         path = run_root / _STATE_FILE_NAME
         if not path.is_file():
