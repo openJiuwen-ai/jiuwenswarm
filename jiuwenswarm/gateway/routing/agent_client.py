@@ -46,6 +46,16 @@ _UNARY_REQUEST_TIMEOUT_SECONDS = AGENT_REQUEST_TIMEOUT_SECONDS
 # 流式响应空闲上限（无任何 chunk 的最长等待）：与一元请求同级 600s，
 # 防止 AgentServer 无产出时 gateway 转发循环被裸 queue.get() 永久堵住
 _STREAM_IDLE_TIMEOUT_SECONDS: float = 600.0
+# 空闲超时后的有界宽限探活：宿主挂起（睡眠/休眠/断网）恢复的一瞬间，本进程与
+# AgentServer 的计时器会同时到点。若此时立刻断流，会把"马上就会到达"的
+# keepalive / 模型错误帧全部丢掉：2026-09-27 19:13:30.936 的空闲超时比
+# AgentServer 19:13:30.875 的 keepalive 早 61ms 触发，该轮之后 500 帧被判
+# "无目标队列"丢弃，用户侧显示"已完成"而 agent 其实还在跑（19:14:40 才
+# chat.final）。故超时后先按探活窗口再等：任一窗口收到任意一帧（含 keepalive）
+# 即恢复收流；全部窗口耗尽才判超时。上限可控（默认 6×10s，窗口即 AgentServer
+# 的 keepalive 间隔），真挂死的流不会永久占住网关转发循环。
+_STREAM_IDLE_GRACE_PROBES: int = 6
+_STREAM_IDLE_GRACE_PROBE_SECONDS: float = 10.0
 
 
 class AgentServerUnaryTimeout(RuntimeError):
@@ -719,16 +729,50 @@ class WebSocketAgentServerClient(AgentServerClient):
                         )
                     except asyncio.TimeoutError as idle_exc:
                         logger.warning(
-                            "[WebSocketAgentServerClient] 流式响应空闲超时: request_id=%s "
-                            "chunks=%d idle_timeout=%ss",
+                            "[WebSocketAgentServerClient] 流式响应空闲超时，进入宽限探活: "
+                            "request_id=%s chunks=%d idle_timeout=%ss probes=%d×%ss",
                             rid,
                             chunk_count,
                             _STREAM_IDLE_TIMEOUT_SECONDS,
+                            _STREAM_IDLE_GRACE_PROBES,
+                            _STREAM_IDLE_GRACE_PROBE_SECONDS,
                         )
-                        raise RuntimeError(
-                            f"AgentServer 流式响应空闲超时 (request_id={rid}, "
-                            f"idle_timeout={_STREAM_IDLE_TIMEOUT_SECONDS}s)"
-                        ) from idle_exc
+                        # 不立刻断流：宿主挂起恢复时 keepalive 往往只差几十毫秒就到，
+                        # 一旦在此 raise，该轮后续所有帧都会被当作已取消请求丢弃。
+                        # 按探活次数（而非墙钟）计预算，所以宽限期内再次被挂起冻结，
+                        # 醒来后下一个窗口仍能收到帧并恢复收流。
+                        data = None
+                        for _probe in range(_STREAM_IDLE_GRACE_PROBES):
+                            try:
+                                data = await asyncio.wait_for(
+                                    queue.get(),
+                                    timeout=_STREAM_IDLE_GRACE_PROBE_SECONDS,
+                                )
+                            except asyncio.TimeoutError:
+                                continue
+                            logger.info(
+                                "[WebSocketAgentServerClient] 宽限探活收到帧，继续收流: "
+                                "request_id=%s chunks=%d probe=%d/%d",
+                                rid,
+                                chunk_count,
+                                _probe + 1,
+                                _STREAM_IDLE_GRACE_PROBES,
+                            )
+                            break
+                        if data is None:
+                            logger.warning(
+                                "[WebSocketAgentServerClient] 宽限探活耗尽，判定流停滞: "
+                                "request_id=%s chunks=%d idle_timeout=%ss grace=%ss",
+                                rid,
+                                chunk_count,
+                                _STREAM_IDLE_TIMEOUT_SECONDS,
+                                _STREAM_IDLE_GRACE_PROBES
+                                * _STREAM_IDLE_GRACE_PROBE_SECONDS,
+                            )
+                            raise RuntimeError(
+                                f"AgentServer 流式响应空闲超时 (request_id={rid}, "
+                                f"idle_timeout={_STREAM_IDLE_TIMEOUT_SECONDS}s)"
+                            ) from idle_exc
                 if isinstance(data, _ReceiverFailure):
                     raise RuntimeError("AgentServer WebSocket connection closed") from data.exc
                 chunk = parse_agent_server_wire_chunk(data)
