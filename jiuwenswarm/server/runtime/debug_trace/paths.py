@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from jiuwenswarm.common.mode_matrix import NEW_AGENT_WORK_PLAN
 from jiuwenswarm.common.path_provider import PathCategory
 from jiuwenswarm.common.utils import _dispatch_path, get_user_workspace_dir
 
@@ -53,13 +54,16 @@ def resolve_debug_trace_mode(
 ) -> str:
     """Return the mode used to select a request's local dump path.
 
-    Web code-profile Plan requests arrive as ``agent.plan`` and are later
-    canonicalized to ``code.plan`` for Adapter selection. Preserve the explicit
-    Agent Plan wire mode for storage classification without changing ordinary
+    Web code-profile Plan requests arrive as ``agent.plan`` or the equivalent
+    three-segment ``agent.work.plan`` mode and can later be canonicalized to a
+    Code runtime mode for Adapter selection. Preserve either explicit Agent
+    Plan wire mode for storage classification without changing ordinary
     ``agent`` + ``work_mode=code`` requests, which remain Code dumps.
     """
     requested = str(original_mode or "").strip().lower()
-    return "agent.plan" if requested == "agent.plan" else runtime_mode
+    if requested in {"agent.plan", NEW_AGENT_WORK_PLAN}:
+        return requested
+    return runtime_mode
 
 
 __all__ = ["debug_trace_dir", "debug_trace_file", "resolve_debug_trace_mode"]

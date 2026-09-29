@@ -21976,15 +21976,25 @@ class JiuWenSwarmDeepAdapter:
             "context_occupancy": context_occupancy,
         }
 
-    async def generate_recap(self, session_id: str) -> dict[str, Any]:
+    async def generate_recap(
+        self,
+        session_id: str,
+        request: AgentRequest | None = None,
+    ) -> dict[str, Any]:
         """生成会话快速回顾（read-only，不修改对话历史）。
 
         取最近30条消息 → fast model → 1-3句摘要。
         """
         if not self._is_session_scoped_adapter:
-            session_adapter = await self._get_or_create_session_adapter(session_id)
+            session_adapter = await self._get_or_create_session_adapter(
+                session_id,
+                request=request,
+            )
             try:
-                return await session_adapter.generate_recap(session_id=session_id)
+                return await session_adapter.generate_recap(
+                    session_id=session_id,
+                    request=request,
+                )
             finally:
                 await self._evict_idle_session_adapters()
 
