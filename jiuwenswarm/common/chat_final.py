@@ -45,3 +45,4 @@ def ensure_final_mode_inplace(
     if isinstance(existing, str) and existing.strip():
         return
     payload["final_mode"] = final_mode
+
