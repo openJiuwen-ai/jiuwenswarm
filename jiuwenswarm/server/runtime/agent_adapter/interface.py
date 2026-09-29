@@ -1539,6 +1539,10 @@ class JiuWenSwarm:
         mode = raw_mode.strip().lower() if isinstance(raw_mode, str) else ""
         # 新版 mode_matrix 把 ``team`` 也列为 Web 可组合模式，但集群 adapter
         # 选型从不随 work_mode 改变（4413 的矩阵尚未把 team 纳入组合集）。
+        # 当前所有发送方都保证 mode 非空（Web 出站恒带 mode、cron 恒非空、
+        # IM/TUI 不带 work_mode 走 legacy 分支），``mode or "agent"`` 仅为
+        # 防御性兜底；空 mode + work_mode=code 理论上会选 CodeAdapter（与
+        # 历史默认 DeepAdapter 不同），该组合现不可达。
         if (
             work_mode is not None
             and mode != "team"
