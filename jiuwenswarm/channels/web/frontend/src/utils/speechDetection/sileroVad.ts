@@ -1,4 +1,4 @@
-import type { SpeechDetection, SpeechGateOptions } from './speechGate';
+import type { SpeechDetection } from './speechGate';
 
 export type { SpeechDetection };
 
@@ -14,8 +14,6 @@ export class SileroVad {
   private recovering = false;
   private restartAttempts = 0;
   private timingBatches = 0;
-  private peakProbability = 0;
-  private peakLevel = 0;
   private watchdog: number | null = null;
   private restartTimer: number | null = null;
 
@@ -23,7 +21,6 @@ export class SileroVad {
     private readonly onDetection: (detection: SpeechDetection) => void,
     private readonly onError: (message: string) => void,
     private readonly onDiagnostic: (event: string, details: Record<string, unknown>) => void = () => {},
-    private readonly gateOptions: SpeechGateOptions = {},
   ) {}
 
   async start(): Promise<void> {
@@ -76,28 +73,20 @@ export class SileroVad {
               this.restartAttempts = 0;
               this.onDiagnostic('qwen_vad_recovered', { latency_ms: Math.round(latencyMs) });
             }
-            for (const detection of data.detections as SpeechDetection[]) {
-              this.peakProbability = Math.max(this.peakProbability, detection.probability);
-              this.peakLevel = Math.max(this.peakLevel, detection.level);
-              this.onDetection(detection);
-            }
+            for (const detection of data.detections as SpeechDetection[]) this.onDetection(detection);
             if (++this.timingBatches % 50 === 0 || latencyMs > 150) {
               this.onDiagnostic('qwen_vad_timing', {
                 latency_ms: Math.round(latencyMs),
                 inference_ms: Math.round(inferenceMs),
                 wait_ms: Math.round(Math.max(0, latencyMs - inferenceMs)),
                 queued_count: this.queue.length,
-                peak_probability: Math.round(this.peakProbability * 100) / 100,
-                peak_level: Math.round(this.peakLevel),
               });
-              this.peakProbability = 0;
-              this.peakLevel = 0;
             }
           }
           this.dispatch();
         }
       };
-      worker.postMessage({ type: 'init', gateOptions: this.gateOptions });
+      worker.postMessage({ type: 'init' });
     });
   }
 
