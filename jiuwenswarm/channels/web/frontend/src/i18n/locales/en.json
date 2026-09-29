@@ -11,6 +11,8 @@
     "saveSuccess": "Saved successfully",
     "error": "Error",
     "ok": "OK",
+    "yes": "Yes",
+    "no": "No",
     "and": "and",
     "modify": "Modify",
     "delete": "Delete",
@@ -22,6 +24,64 @@
       "pageSize": "Per page",
       "jumpTo": "Go to",
       "go": "Go"
+    },
+    "all": "All"
+  },
+  "approvals": {
+    "myTitle": "My requests",
+    "mySubtitle": "View and manage approval requests you submitted",
+    "unavailable": "Requests are unavailable in the current environment",
+    "empty": "No requests yet",
+    "loadFailed": "Failed to load requests",
+    "cancelFailed": "Failed to cancel request",
+    "cancel": "Cancel",
+    "resubmit": "Edit and resubmit",
+    "resubmitTitle": "Resubmit request",
+    "resubmitHint": "Update the request and resubmit. This revises the same request.",
+    "resubmitSubmit": "Resubmit",
+    "resubmitFailed": "Failed to resubmit",
+    "rejectComment": "Rejection comment",
+    "currentQuota": "Current quota",
+    "approvers": "Approvers",
+    "copyLink": "Copy approval link",
+    "copyLinkSuccess": "Approval link copied",
+    "copyLinkFailed": "Failed to copy approval link",
+    "copyOrderNum": "Click to copy order number",
+    "copyOrderNumSuccess": "Order number copied",
+    "copyOrderNumFailed": "Failed to copy order number",
+    "stats": {
+      "total": "Total {{count}}"
+    },
+    "search": {
+      "placeholder": "Search by order number, title, or reason",
+      "noResults": "No matching requests"
+    },
+    "filter": {
+      "reset": "Clear filters"
+    },
+    "table": {
+      "title": "Title",
+      "orderNum": "Order No.",
+      "type": "Type",
+      "summary": "Summary",
+      "requestedQuota": "Requested quota",
+      "approver": "Current approver",
+      "reason": "Reason",
+      "status": "Status",
+      "createdAt": "Submitted",
+      "actions": "Actions"
+    },
+    "status": {
+      "pending": "Pending",
+      "approved": "Approved",
+      "rejected": "Rejected",
+      "cancelled": "Cancelled"
+    },
+    "business": {
+      "workspace_quota_expand": "Workspace expansion"
+    },
+    "summary": {
+      "quotaExpand": "Requested quota {{size}}"
     }
   },
   "a2ui": {
@@ -35,6 +95,7 @@
     "chat": "Chat",
     "work": "Work",
     "agent": "Agent",
+    "workspace": "Space",
     "teams": "Teams",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
@@ -50,7 +111,9 @@
     "logs": "Logs",
     "update": "Updates",
     "a2aIngress": "A2A Control Center",
-    "personalContext": "Personal\nContext"
+    "personalContext": "Personal\nContext",
+    "approvals": "Requests",
+    "diagnosis": "Diagnose"
   },
   "team": {
     "members": "Team Members",
@@ -572,6 +635,7 @@
       "apply": "Apply",
       "switching": "Switching...",
       "logout": "Sign out",
+      "switchToManager": "Go to Manager",
       "customRequired": "Please fill in bot_id, group_id, user_id, and jiuwenclaw_id",
       "noMatch": "No matches",
       "pleaseSelect": "Please select"
@@ -1287,6 +1351,7 @@
       "permissions": { "label": "Tool Safety Guardrail", "hint": "Enable or disable permission checks for tool calls" },
       "a2ui": { "label": "A2UI", "hint": "Enable or disable generated UI rendering and A2UI runtime prompts." },
       "trajectoryUi": { "label": "Trajectory UI", "hint": "Show the chat/trajectory switch in single-agent and team modes and enable trajectory observation." },
+      "diagnosis": { "label": "Trajectory Diagnosis", "hint": "When enabled, auto-analyze session issues in \"Diagnose\". Online mode requires Trajectory UI enabled; offline mode only needs uploaded/imported logs." },
       "swarmflow": { "label": "SwarmFlow", "hint": "Enable or disable the SwarmFlow process view and monitoring in Team mode." },
       "symphony": { "label": "Skill Symphony", "hint": "Control Skill Symphony" },
       "skillRetrieval": { "label": "Skill Symphony", "hint": "Control Skill Symphony" },
@@ -2204,8 +2269,8 @@
     }
   },
   "agent": {
-    "title": "Agent Management",
-    "subtitle": "View agent workspace files and memory content",
+    "title": "Workspace",
+    "subtitle": "View usage, clean deletable files, and preview or download workspace content",
     "root": "Root",
     "workspace": "Workspace",
     "workspaceMeta": "{{directories}} directories, {{files}} files",
@@ -2214,14 +2279,86 @@
     "previewableCount": "{{count}} previewable",
     "refresh": "Refresh List",
     "empty": "No files",
+    "emptyDeletable": "Nothing deletable (cleanup zones are empty)",
     "notPreviewable": "Not previewable",
-    "contentPreview": "Content Preview",
-    "selectMarkdown": "Select a previewable file on the left to view",
-    "selectMarkdownContent": "Select a previewable file on the left to view its content",
+    "contentPreview": "Details & preview",
+    "selectMarkdown": "Select a file on the left to view",
+    "selectMarkdownContent": "Select a file on the left to view its content",
     "markdownOnly": "Only Markdown/JSON (.md/.mdx/.json) preview is supported",
+    "selectEntry": "Select a file or folder on the left to view metadata",
+    "selectEntryHint": "Click an entry to see path, zone, and size. Files can be previewed or downloaded.",
+    "dirSelectedHint": "Folder selected. Download as zip, or delete the subtree when allowed.",
+    "binaryPreview": "Binary files have no text preview. Use Download.",
+    "previewTruncated": "Preview truncated. Download for the full file.",
+    "previewEmpty": "No preview content",
+    "deletable": "Deletable",
+    "filterDeletable": "Deletable only",
+    "download": "Download",
+    "delete": "Delete",
+    "notDeletableReason": "Protected zone — cannot delete",
+    "confirmDelete": "Delete \"{{name}}\"? This cannot be undone.",
+    "deleteConfirmTitle": "Confirm delete",
+    "quota": {
+      "title": "Workspace usage",
+      "ok": "OK",
+      "warn": "Near limit",
+      "block": "Full",
+      "unlimited": "Unlimited",
+      "unavailable": "Usage unavailable",
+      "requestExpand": "Request expansion",
+      "expandHint": "Submit an expansion request to the admin plane",
+      "expandIdleHint": "Expansion is not needed while usage is healthy",
+      "expandUnlimitedHint": "Quota is unlimited; expansion is not applicable",
+      "expandSoon": "Expansion requests will connect to admin approval soon. Clean deletable files first, or ask an admin to raise the quota.",
+      "expandTitle": "Request workspace expansion",
+      "expandDialogHint": "Enter the target quota (GiB) and a reason. The new limit takes effect after approval.",
+      "expandLimitLabel": "Target quota (GiB)",
+      "expandReasonLabel": "Reason",
+      "expandApproverLabel": "Approver",
+      "expandApproverPlaceholder": "Select an approver",
+      "expandApproverSearch": "Search by user ID or display name",
+      "expandApproverNoMatch": "No matching approvers",
+      "expandApproverRequired": "Please select an approver",
+      "expandApproverEmpty": "No approvers available. Ask an admin to grant approval permission.",
+      "expandApproverLoadFailed": "Failed to load approvers",
+      "expandSubmit": "Submit request",
+      "expandInvalidLimit": "Enter a valid target quota in GiB",
+      "expandReasonRequired": "Please provide a reason",
+      "expandMustIncrease": "Target quota must be greater than the current limit",
+      "expandFailed": "Failed to submit expansion request",
+      "expandSubmittedTitle": "Request submitted",
+      "expandSubmittedBody": "Your expansion request was submitted. The new quota takes effect after approval. Track progress under <approvals>My Requests</approvals>.",
+      "expandViewApprovals": "View My Requests",
+      "expandSubmitted": "Expansion request submitted. The new quota takes effect after approval — track progress under My Requests in the sidebar.",
+      "expandContextRequired": "Select an Agent context (cluster and bot) before requesting expansion",
+      "openWorkspace": "Open workspace",
+      "chatWarnTitle": "Workspace nearly full",
+      "chatWarnBody": "Over 80% of quota used. Clean session artifacts or request expansion.",
+      "chatBlockTitle": "Workspace full — writes blocked",
+      "chatBlockBody": "Quota exhausted. Clean deletable files or request expansion before sending messages."
+    },
+    "meta": {
+      "zone": "Zone",
+      "size": "Size",
+      "mtime": "Modified",
+      "deletable": "Deletable"
+    },
+    "zones": {
+      "session_workspace": "Session artifacts",
+      "session_todo": "Session todos",
+      "session_meta": "Session metadata",
+      "skills": "Skills",
+      "role_md": "Role files",
+      "memory": "Memory",
+      "runtime": "Runtime",
+      "artifact": "Attachments",
+      "other": "Other"
+    },
     "errors": {
       "refreshFailed": "Refresh failed: unable to rebuild the agent file index. Check the generator script logs.",
-      "loadFailed": "Unable to read the agent file list. Check whether agent/jiuwenclaw_workspace/agent-data.json has been generated."
+      "loadFailed": "Unable to list the workspace. Ensure the Agent is ready.",
+      "deleteFailed": "Delete failed",
+      "downloadFailed": "Download failed"
     }
   },
   "fileViewer": {
@@ -2660,7 +2797,13 @@
     "runtime": { "processing": "Processing" },
     "deleteDialog": { "title": "Delete", "description": "Delete “<name>{{title}}</name>”? This action cannot be undone." },
     "notFound": { "title": "Conversation not found or deleted", "newConversation": "New conversation" },
-    "errors": { "delete": "Failed to delete conversation", "create": "Failed to create conversation", "send": "Failed to send message" }
+    "errors": {
+      "delete": "Failed to delete conversation",
+      "create": "Failed to create conversation",
+      "quotaExceededTitle": "Workspace is full",
+      "quotaExceeded": "A new conversation cannot be created. Clean deletable files in Space, or request more quota, then try again.",
+      "send": "Failed to send message"
+    }
   },
   "mermaid": {
     "image": "Image",
@@ -2999,6 +3142,47 @@
     },
     "errors": {
       "actionFailed": "Action failed"
+    }
+  },
+  "subagent": {
+    "title": "Subagents",
+    "compactTitle": "Subagents ({{count}})",
+    "activeListTitle": "Active now {{count}}",
+    "expand": "Expand Subagents",
+    "selectWithStatus": "Select {{name}}, status: {{status}}",
+    "running": "Running",
+    "idle": "Waiting",
+    "closed": "Closed",
+    "failed": "Error",
+    "cancelled": "Cancelled",
+    "activityTitle": "Activity",
+    "activityEmpty": "No activity yet",
+    "historyLoading": "Restoring history…",
+    "empty": "No subagents",
+    "activity": {
+      "thinking": "Thinking",
+      "toolCall": "Tool call",
+      "toolResult": "Tool result",
+      "expand": "Expand activity details",
+      "collapse": "Collapse activity details",
+      "ok": "OK",
+      "error": "Error",
+      "truncated": "Activity condensed",
+      "fields": {
+        "type": "Type",
+        "time": "Time",
+        "tool": "Tool",
+        "call": "Call",
+        "result": "Result",
+        "content": "Content",
+        "status": "Status",
+        "dropped": "Dropped"
+      },
+      "tools": {
+        "search": "Web search",
+        "terminal": "Terminal",
+        "todo": "Task list"
+      }
     }
   }
 }

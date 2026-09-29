@@ -114,6 +114,9 @@ class E2AEnvelope:
     task_id: str | None = None
     context_id: str | None = None
     session_id: str | None = None
+    # 业务对话 ID（前端 thread_<ts+random>）：与 session_id（其 sha256 哈希）同级。
+    # PC 端 OfficeAce 记忆 sync_turn 上报 pc-threads/{thread_id}/messages 用它。
+    thread_id: str | None = None
     message_id: str | None = None
 
     # --- 时间戳：规范为 RFC 3339 UTC 字符串；from_dict 可将历史 float 纪元秒规范化 ---
@@ -421,6 +424,7 @@ def _envelope_from_dict(data: dict[str, Any]) -> E2AEnvelope:
         task_id=data.get("task_id"),
         context_id=data.get("context_id"),
         session_id=data.get("session_id"),
+        thread_id=data.get("thread_id"),
         message_id=data.get("message_id"),
         timestamp=_normalize_timestamp_value(data.get("timestamp")),
         identity_origin=origin,

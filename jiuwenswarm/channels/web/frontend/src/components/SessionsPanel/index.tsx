@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CircleAlert } from 'lucide-react';
-import { FileViewer } from '../AgentPanel/FileViewer';
+import { FileViewer } from '../WorkspacePanel/FileViewer';
 import { containsIgnoredDirectory } from '../../features/fileTreeFilters';
 import { isHistoryPreviewFile } from '../../features/historyFilePreview';
 import { webRequest } from '../../services/webClient';

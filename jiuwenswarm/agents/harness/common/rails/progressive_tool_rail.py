@@ -1,8 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Progressive tool rail - fixed tools schema with deferred tool access.
+"""Progressive tool rail - stable base schema with deferred tool access.
 
 - eager_tools: always visible in the model tools schema
+- skill-gated tools: direct-visible only while their required skill is active
 - deferred_tools: registered at runtime but hidden from schema; accessed via
   tools_search + invoke_tool
 - disabled_tools / DisabledToolsRail: excluded from schema, navigation,
@@ -14,8 +15,9 @@ Fixed schema maximizes LLM prefix caching while keeping rarely used tools reacha
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager, nullcontext
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any
 
 import anyio
 from openjiuwen.core.runner import Runner
@@ -25,13 +27,13 @@ from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.prompts.sections import SectionName
 from openjiuwen.harness.rails.base import DeepAgentRail
 
-from jiuwenswarm.agents.harness.common.tools.tools_search_tool import (
-    ToolsSearchInput,
-    ToolsSearchTool,
-)
 from jiuwenswarm.agents.harness.common.tools.invoke_tool_tool import (
     InvokeToolInput,
     InvokeToolTool,
+)
+from jiuwenswarm.agents.harness.common.tools.tools_search_tool import (
+    ToolsSearchInput,
+    ToolsSearchTool,
 )
 from jiuwenswarm.common.mcp_config import (
     OFFICE_CLAW_EXPECTED_TOOL_IDS_KWARG,
@@ -56,6 +58,7 @@ def _office_claw_tool_env_value(tool: Any, key: str) -> str:
 logger = logging.getLogger(__name__)
 
 _LOG_PREFIX = "[ProgressiveToolRail]"
+_REQUIRED_SKILL_KEY = "required_skill"
 _EAGER_DEEPRESEARCH_BINDINGS_KEY = "__eager_deepresearch_bindings__"
 _DEEPRESEARCH_CONTEXT_TOOLS = frozenset({
     "deepresearch_execute",
@@ -90,16 +93,48 @@ def _json_safe_value(value: Any) -> Any:
     return str(value)
 
 
+def _required_skill_requirement(tool: Any) -> tuple[bool, str | None]:
+    """Return whether a ToolCard declares a gate and its valid skill name.
+
+    A missing property preserves the existing eager/deferred behavior. Once the
+    property is present, malformed values remain declared but resolve to
+    ``None`` so every visibility and execution surface fails closed.
+    """
+    properties = getattr(tool, "properties", None)
+    if not isinstance(properties, Mapping) or _REQUIRED_SKILL_KEY not in properties:
+        return False, None
+    value = properties.get(_REQUIRED_SKILL_KEY)
+    if not isinstance(value, str):
+        return True, None
+    skill_name = value.strip()
+    if not skill_name or skill_name in {".", ".."}:
+        return True, None
+    if "/" in skill_name or "\\" in skill_name:
+        return True, None
+    return True, skill_name
+
+
 class ProgressiveToolRail(DeepAgentRail):
-    """Progressive tool visibility with a fixed eager-tools schema.
+    """Progressive tool visibility with a stable base eager-tools schema.
 
     - eager_tools: always visible in the model tools schema
+    - skill-gated tools: direct-visible only while their declared skill is active
     - deferred_tools: registered in ability_manager but hidden from schema;
       accessed via tools_search (get schema) + invoke_tool (proxy call)
-    - tools schema never changes, maximizing LLM prefix cache
+    - ordinary tool schema stays stable, maximizing LLM prefix cache
     """
 
     priority = 80
+    # Do NOT inherit this rail into a general-purpose subagent. init() /
+    # before_invoke bind ``_deep_agent`` / ``_runtime_agent`` and refresh the
+    # deferred-tool cache from that agent's ability_manager. Factory injects
+    # parent rails by reference; the child's init then rebinds the shared
+    # instance and overwrites the cache with the child's smaller tool set.
+    # Parent tools_search / invoke_tool for deferred names such as
+    # subagent_wait then miss (「未注册或不在按需可见工具列表中」) while the
+    # child is still running. react.tool_lazy_load.subagents.enabled is
+    # already false — this flag makes factory honor that.
+    inherit_to_subagents = False
 
     def __init__(
         self,
@@ -111,6 +146,7 @@ class ProgressiveToolRail(DeepAgentRail):
         agent_card_id: str | None = None,
         enable_for_models: list[str] | None = None,
         deepresearch_context_provider: Callable[[], dict[str, str]] | None = None,
+        active_skill_provider: Callable[[], str | None] | None = None,
         disabled_tools: list[str] | None = None,
     ) -> None:
         super().__init__()
@@ -126,6 +162,7 @@ class ProgressiveToolRail(DeepAgentRail):
         ]
         self._cached_model_name = ""
         self._deepresearch_context_provider = deepresearch_context_provider
+        self._active_skill_provider = active_skill_provider
         self._disabled_tools: set[str] = {
             str(name).strip()
             for name in (disabled_tools or [])
@@ -203,6 +240,110 @@ class ProgressiveToolRail(DeepAgentRail):
                 exc,
             )
         return frozenset(name for name in names if name)
+
+    def _current_active_skill(self) -> str | None:
+        """Read the session's active skill without trusting provider failures."""
+        provider = getattr(self, "_active_skill_provider", None)
+        if provider is None:
+            return None
+        try:
+            value = provider()
+        except Exception as exc:  # noqa: BLE001 - provider failure must fail closed
+            logger.warning("%s failed to read active skill: %s", _LOG_PREFIX, exc)
+            return None
+        if not isinstance(value, str):
+            return None
+        return value or None
+
+    @staticmethod
+    def _tool_by_name(tools: Iterable[Any], tool_name: str) -> Any | None:
+        for tool in tools:
+            if str(getattr(tool, "name", "") or "") == tool_name:
+                return tool
+        return None
+
+    def _registered_tool_card(
+        self,
+        agent: Any,
+        tool_name: str,
+    ) -> tuple[bool, Any | None]:
+        """Return an authoritative registered card without refreshing MCP lists.
+
+        The boolean distinguishes a successful negative lookup from an
+        unavailable registry. Callers must fail closed when the registry cannot
+        be read; otherwise a transient metadata failure could bypass a gate.
+        """
+        ability_manager = getattr(agent, "ability_manager", None)
+        if ability_manager is None:
+            return False, None
+
+        getter = getattr(ability_manager, "get", None)
+        if callable(getter):
+            try:
+                return True, getter(tool_name)
+            except Exception as exc:  # noqa: BLE001 - lookup failure is deny
+                logger.warning(
+                    "%s failed to get registered tool card name=%s error=%s",
+                    _LOG_PREFIX,
+                    tool_name,
+                    exc,
+                )
+                return False, None
+
+        lister = getattr(ability_manager, "list", None)
+        if callable(lister):
+            try:
+                return True, self._tool_by_name(lister(), tool_name)
+            except Exception as exc:  # noqa: BLE001 - lookup failure is deny
+                logger.warning(
+                    "%s failed to list registered tool cards name=%s error=%s",
+                    _LOG_PREFIX,
+                    tool_name,
+                    exc,
+                )
+        return False, None
+
+    @staticmethod
+    def _reject_tool_not_available(ctx: AgentCallbackContext, tool_name: str) -> None:
+        """Short-circuit a forged/stale direct call with a normal ToolMessage."""
+        from openjiuwen.core.foundation.llm import ToolMessage
+
+        message = (
+            f"[TOOL_NOT_AVAILABLE] Tool '{tool_name}' is not available "
+            "in the current skill context."
+        )
+        inputs = getattr(ctx, "inputs", None)
+        tool_call = getattr(inputs, "tool_call", None)
+        tool_call_id = str(getattr(tool_call, "id", "") or "")
+        ctx.extra["_skip_tool"] = True
+        inputs.tool_result = message
+        inputs.tool_msg = ToolMessage(content=message, tool_call_id=tool_call_id)
+
+    async def _skill_gate_blocks_direct_call(
+        self,
+        ctx: AgentCallbackContext,
+        tool_name: str,
+    ) -> bool:
+        """Revalidate a declared gate immediately before direct execution."""
+        cached_card = self._tool_by_name(
+            getattr(self, "_cached_all_tool_infos", ()),
+            tool_name,
+        )
+        agent = self._resolve_runtime_agent(ctx)
+        lookup_succeeded, live_card = self._registered_tool_card(agent, tool_name)
+        if not lookup_succeeded:
+            return True
+        declared, required_skill = _required_skill_requirement(
+            live_card if live_card is not None else cached_card
+        )
+        if not declared:
+            return False
+        return (
+            live_card is None
+            or tool_name in self._current_disabled_tools()
+            or required_skill is None
+            or required_skill != self._current_active_skill()
+        )
 
     def set_office_claw_active_tool_ids(
         self,
@@ -421,7 +562,7 @@ class ProgressiveToolRail(DeepAgentRail):
         return agent
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
-        """Bind trusted tenant context for the direct DeepResearch entry."""
+        """Enforce skill gates, then bind trusted direct-tool context."""
         inputs = getattr(ctx, "inputs", None)
         tool_call = getattr(inputs, "tool_call", None)
         tool_name = str(
@@ -429,6 +570,9 @@ class ProgressiveToolRail(DeepAgentRail):
             or getattr(tool_call, "name", "")
             or ""
         ).strip()
+        if tool_name and await self._skill_gate_blocks_direct_call(ctx, tool_name):
+            self._reject_tool_not_available(ctx, tool_name)
+            return
         if tool_name != "deepresearch_execute":
             return
         manager = self._bind_deepresearch_context(tool_name)
@@ -606,16 +750,15 @@ class ProgressiveToolRail(DeepAgentRail):
         )
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
-        """Filter tools to eager_tools (minus disabled) and inject navigation."""
-        if not self._lazy_load_active_for_ctx(ctx):
-            return
-
+        """Always enforce skill gates; optionally apply progressive loading."""
+        lazy_load_active = self._lazy_load_active_for_ctx(ctx)
         if getattr(ctx, "agent", None) is not None:
             self._runtime_agent = ctx.agent
-        self._resolve_runtime_agent(ctx)
-        await self._refresh_deferred_tool_cache_if_stale()
+        agent = self._resolve_runtime_agent(ctx)
+        if lazy_load_active:
+            await self._refresh_deferred_tool_cache_if_stale()
         disabled = self._current_disabled_tools()
-        if any(
+        if lazy_load_active and any(
             str(getattr(tool, "name", "") or "") in disabled
             for tool in self._cached_deferred_tool_infos
         ):
@@ -632,14 +775,38 @@ class ProgressiveToolRail(DeepAgentRail):
             return
 
         original_count = len(tools)
+        active_skill = self._current_active_skill()
+        active_gated_names: list[str] = []
         filtered_tools = []
         for tool in tools:
             name = str(getattr(tool, "name", "") or "")
-            if name in self.eager_tools and name not in disabled:
+            lookup_succeeded, live_card = self._registered_tool_card(agent, name)
+            if not lookup_succeeded or live_card is None:
+                continue
+            declared, required_skill = _required_skill_requirement(live_card)
+            if name in disabled:
+                continue
+            if declared:
+                if (
+                    live_card is not None
+                    and required_skill is not None
+                    and required_skill == active_skill
+                ):
+                    filtered_tools.append(tool)
+                    if name not in active_gated_names:
+                        active_gated_names.append(name)
+                continue
+            if not lazy_load_active or name in self.eager_tools:
                 filtered_tools.append(tool)
-        # Canonical eager order — never follow ability_manager / MCP rebind order.
-        # Mid-task send_file_to_user <-> tools_search swaps break LLM prefix cache.
-        inputs.tools = self._order_tools_by_eager_list(filtered_tools)
+        if lazy_load_active:
+            # Canonical eager order — never follow ability_manager / MCP rebind order.
+            # Mid-task send_file_to_user <-> tools_search swaps break LLM prefix cache.
+            inputs.tools = self._order_tools_by_name_list(
+                filtered_tools,
+                [*self.eager_tools, *active_gated_names],
+            )
+        else:
+            inputs.tools = filtered_tools
 
         input_tool_names = set()
         for tool in tools:
@@ -658,16 +825,24 @@ class ProgressiveToolRail(DeepAgentRail):
             sorted(disabled),
         )
 
-        await self._add_navigation_section(ctx)
+        if lazy_load_active:
+            await self._add_navigation_section(ctx)
 
     def _order_tools_by_eager_list(self, tools: list[Any]) -> list[Any]:
         """Stable-sort filtered tools to match ``self.eager_tools`` order."""
+        return self._order_tools_by_name_list(tools, self.eager_tools)
+
+    @staticmethod
+    def _order_tools_by_name_list(
+        tools: list[Any], ordered_names: Iterable[str]
+    ) -> list[Any]:
+        """Stable-sort filtered tools to match an explicit canonical order."""
         by_name: dict[str, Any] = {}
         for tool in tools:
             name = str(getattr(tool, "name", "") or "")
             if name and name not in by_name:
                 by_name[name] = tool
-        return [by_name[name] for name in self.eager_tools if name in by_name]
+        return [by_name[name] for name in ordered_names if name in by_name]
 
     @staticmethod
     def _deferred_name_fingerprint(tools: list[Any]) -> frozenset[str]:
@@ -891,7 +1066,11 @@ class ProgressiveToolRail(DeepAgentRail):
 
     async def _get_all_tool_infos(self, agent: Any = None) -> list[Any]:
         """Get navigable tool cards from ability_manager (MCP list kept in sync)."""
-        resolved = agent or self._runtime_agent or self._deep_agent
+        resolved = (
+            agent
+            or getattr(self, "_runtime_agent", None)
+            or getattr(self, "_deep_agent", None)
+        )
         if resolved is None:
             return []
 
@@ -930,7 +1109,8 @@ class ProgressiveToolRail(DeepAgentRail):
         deferred_tools = []
         for tool in all_tools:
             name = str(getattr(tool, "name", "") or "")
-            if name not in self.eager_tools and name not in disabled:
+            declared, _required_skill = _required_skill_requirement(tool)
+            if not declared and name not in self.eager_tools and name not in disabled:
                 deferred_tools.append(tool)
         self._cached_deferred_tool_infos = deferred_tools
 
@@ -958,6 +1138,17 @@ class ProgressiveToolRail(DeepAgentRail):
             if str(getattr(tool, "id", "") or "")
         }
 
+    @staticmethod
+    def _required_skill_states(
+        tools: list[Any],
+    ) -> dict[str, tuple[bool, str | None]]:
+        """Return live declaration states so same-id card updates invalidate."""
+        return {
+            str(getattr(tool, "name", "") or ""): _required_skill_requirement(tool)
+            for tool in tools
+            if str(getattr(tool, "name", "") or "")
+        }
+
     async def _refresh_deferred_tool_cache_if_stale(self) -> None:
         """Refresh cache when ability_manager has tools not in cache."""
         agent = self._resolve_runtime_agent()
@@ -975,13 +1166,21 @@ class ProgressiveToolRail(DeepAgentRail):
         ):
             await self._refresh_deferred_tool_cache(agent)
             return
+        if self._required_skill_states(live_tools) != self._required_skill_states(
+            self._cached_all_tool_infos
+        ):
+            await self._refresh_deferred_tool_cache(agent)
+            return
         disabled = self._current_disabled_tools()
         live_deferred = []
         for tool in live_tools:
             name = str(getattr(tool, "name", "") or "")
-            if name not in self.eager_tools and name not in disabled:
+            declared, _required_skill = _required_skill_requirement(tool)
+            if not declared and name not in self.eager_tools and name not in disabled:
                 live_deferred.append(tool)
-        if live_deferred and not self._cached_deferred_tool_infos:
+        if self._tool_name_set(live_deferred) != self._tool_name_set(
+            self._cached_deferred_tool_infos
+        ):
             await self._refresh_deferred_tool_cache(agent)
 
     # ------------------------------------------------------------------
@@ -1323,17 +1522,34 @@ class ProgressiveToolRail(DeepAgentRail):
                 "tool_name": "",
             }
 
-        if tool_name in self.eager_tools:
-            return {
-                "success": False,
-                "error": f"工具 '{tool_name}' 是常驻可见工具，可直接调用，无需通过 invoke_tool。",
-                "tool_name": tool_name,
-            }
-
         if tool_name in self._current_disabled_tools():
             return {
                 "success": False,
                 "error": f"工具 '{tool_name}' 已禁用，无法通过 invoke_tool 调用。",
+                "tool_name": tool_name,
+            }
+
+        registered_card = self._tool_by_name(
+            getattr(self, "_cached_all_tool_infos", ()),
+            tool_name,
+        )
+        if registered_card is None:
+            registered_card = self._tool_by_name(
+                self._cached_deferred_tool_infos,
+                tool_name,
+            )
+        declared, _required_skill = _required_skill_requirement(registered_card)
+        if declared:
+            return {
+                "success": False,
+                "error": f"工具 '{tool_name}' 未注册或不在按需可见工具列表中。",
+                "tool_name": tool_name,
+            }
+
+        if tool_name in self.eager_tools:
+            return {
+                "success": False,
+                "error": f"工具 '{tool_name}' 是常驻可见工具，可直接调用，无需通过 invoke_tool。",
                 "tool_name": tool_name,
             }
 

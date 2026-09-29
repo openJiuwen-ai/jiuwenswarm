@@ -785,7 +785,15 @@ function FileDownloadList({
 }) {
   const { t } = useTranslation();
   const [expiredSet, setExpiredSet] = useState<Set<number>>(new Set());
-  const fileDownloadUrl = (file: FileDownloadItem): string | undefined => file.download_url || file.url;
+
+  const fileDownloadUrl = (file: FileDownloadItem): string | undefined => {
+    if (file.download_url) return file.download_url;
+    if (file.url) {
+      return `/file-api/download?url=${encodeURIComponent(file.url)}&name=${encodeURIComponent(file.name || 'download')}`;
+    }
+    return undefined;
+  };
+
   const downloadProbeKey = files.map((file) => fileDownloadUrl(file) ?? '').join('\0');
 
   useEffect(() => {

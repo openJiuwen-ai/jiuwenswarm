@@ -284,21 +284,59 @@ async def handle_session_create(ctx: RequestContext) -> None:
                 return
 
             # 初始化会话元数据(同步写盘),将 project_dir/project_id 等字段落盘
+            from jiuwenswarm.server.runtime.workspace.policy_reload import (
+                reload_quota_policies_from_gateway_db,
+            )
+            from jiuwenswarm.common.workspace.quota import WorkspaceQuotaExceeded
             from jiuwenswarm.server.runtime.session.session_metadata import (
                 init_session_metadata,
             )
-            init_session_metadata(
-                session_id=session_id,
-                channel_id=channel_id,
-                user_id=params.get("user_id", ""),
-                title=params.get("title", ""),
-                mode=canonical_mode,
-                project_dir=project_dir,
-                project_id=project_id,
-                work_mode=final_work_mode,
-                cron_id=str(params.get("cron_id") or "").strip(),
-                sessions_root=_sessions_dir_for_request(request, params=params),
+
+            await reload_quota_policies_from_gateway_db()
+            from jiuwenswarm.common.request_identity import web_routing_identity
+            from jiuwenswarm.common.workspace.quota import (
+                bind_quota_identity,
+                reset_quota_identity,
             )
+
+            identity = web_routing_identity(
+                request.metadata if isinstance(request.metadata, dict) else None
+            )
+            quota_tokens = bind_quota_identity(
+                user_id=identity.get("user_id", ""),
+                group_id=identity.get("group_id", ""),
+                bot_id=identity.get("bot_id", ""),
+            )
+            try:
+                init_session_metadata(
+                    session_id=session_id,
+                    channel_id=channel_id,
+                    user_id=params.get("user_id", ""),
+                    title=params.get("title", ""),
+                    mode=canonical_mode,
+                    project_dir=project_dir,
+                    project_id=project_id,
+                    work_mode=final_work_mode,
+                    cron_id=str(params.get("cron_id") or "").strip(),
+                    sessions_root=_sessions_dir_for_request(request, params=params),
+                )
+            except WorkspaceQuotaExceeded:
+                await ctx.services.agent_manager.release_session_prewarm_claim(session_id)
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=False,
+                    payload={
+                        "error": "WORKSPACE_QUOTA_EXCEEDED",
+                        "code": "WORKSPACE_QUOTA_EXCEEDED",
+                        "detail": "WORKSPACE_QUOTA_EXCEEDED",
+                    },
+                )
+                wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+                await ctx.sink.send_wire(wire)
+                return
+            finally:
+                reset_quota_identity(quota_tokens)
             ctx.services.agent_manager.activate_session_prewarm(session_id)
 
             # team prepare 必须在 ack 前完成，避免首条 chat.send 与分布式切换竞态；

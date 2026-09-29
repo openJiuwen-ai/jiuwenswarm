@@ -65,6 +65,7 @@ from jiuwenswarm.common.config import (
     update_updater_in_config,
     update_proactive_recommendation_in_config,
     update_trajectory_ui_in_config,
+    update_diagnosis_in_config,
 )
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.request_identity import (
@@ -969,6 +970,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "memory_forbidden_description",
     "a2ui_enabled",
     "trajectory_ui_enabled",
+    "diagnosis_enabled",
     "proactive_recommendation_enabled",
     "proactive_recommendation_max_recommend_per_day",
     "proactive_recommendation_max_rounds_per_tick",
@@ -2313,6 +2315,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["trajectory_ui_enabled"] = (
                 "true" if trajectory_ui_cfg.get("enabled", False) else "false"
             )
+            diagnosis_cfg = raw.get("diagnosis") or {}
+            payload["diagnosis_enabled"] = (
+                "true" if diagnosis_cfg.get("enabled", False) else "false"
+            )
             for key, val in payload.items():
                 payload[key] = decrypt(key, val)
             react_cfg = raw.get("react") or {}
@@ -2367,6 +2373,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("permissions_enabled", "false")
             payload.setdefault("setup_guide_enabled", "true")
             payload.setdefault("trajectory_ui_enabled", "false")
+            payload.setdefault("diagnosis_enabled", "false")
             payload.setdefault("evolution_enabled", "true")
             payload.setdefault("ttse_enabled", "true")
             payload.setdefault("skill_create", "false")
@@ -2570,6 +2577,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     update_setup_guide_enabled_in_config(parsed)
                 elif param_key == "trajectory_ui_enabled":
                     update_trajectory_ui_in_config(parsed)
+                elif param_key == "diagnosis_enabled":
+                    update_diagnosis_in_config(parsed)
                 elif param_key == "memory_forbidden_enabled":
                     await update_memory_forbidden_enabled_in_config(parsed)
                 elif param_key == "memory_forbidden_description":
@@ -7525,8 +7534,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("cron.job.preview", _cron_job_preview)
     channel.register_method("cron.job.run_now", _cron_job_run_now)
 
-    from jiuwenswarm.gateway.channel_manager.web.long_horizon_web_rpc import (
-        register_long_horizon_web_methods,
+    from jiuwenswarm.gateway.channel_manager.web.web_method_register import (
+        register_modular_web_methods,
     )
 
     channel.cron_controller = cron_controller
@@ -7540,7 +7549,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     except Exception as exc:
         logger.warning("[WebChannel] resolve message_handler failed: %s", exc)
         channel.message_handler = message_handler
-    register_long_horizon_web_methods(channel)
+    register_modular_web_methods(channel, agent_client=agent_client)
 
     # 数字分身 — permissions.owner_scopes：仅 Web 网关直连 config（不经 E2A / config_rpc）。
     # 其余 permissions.*（tools / rules / approval_overrides）走 _forward_permissions_to_agent。

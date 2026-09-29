@@ -251,6 +251,38 @@ memory:
       base_id: ${LAKEBASE_MEM_BASE_ID:-}
       database_id: ${LAKEBASE_DATABASE_ID:-}
 
+    # -- AgentArts Memory（OfficeAce 记忆，凭据直接读 config/env）--
+    # 生效条件：provider='officeace_cloud'
+    # 无 pre-session 级别：凭据一次性绑定静态配置（config 段或
+    #   AGENTARTS_MEMORY_API_KEY/SPACE_ID/BASE_URL 环境变量）。
+    # 业务对话 thread_id 由 relay-claw chat.send 顶层下发 → ExternalMemoryRail
+    #   透传给 provider.sync_turn 上报 pc-threads/{thread_id}/messages（PC 端）。
+    officeace_cloud:
+      base_url: ${AGENTARTS_MEMORY_BASE_URL:-https://memory.cn-southwest-2.huaweicloud-agentarts.com}
+      api_key: ${AGENTARTS_MEMORY_API_KEY:-}
+      space_id: ${AGENTARTS_MEMORY_SPACE_ID:-}
+
+  # ------------------------------------------------------------
+  # 用户画像（用户级记忆概览，OfficeAceUserProfileRail 自动注入 prompt）
+  # ------------------------------------------------------------
+  # 独立于 engine/external：不要求 memory.engine=external 即可生效。
+  # endpoint/api_key 任一为空 → rail 不挂载（零残留，对话照常）。
+  # user_id 复用上层 memory.external.user_id（${MEMORY_USER_ID:-__default__}），
+  # 不在此段单独配置。
+  #
+  # 部署形态由 OFFICE_ACE_DEPLOYMENT 区分（cloud=OfficeAce 云服务, pc=本地桌面端）：
+  #   cloud：endpoint/api_key 回落到 AgentArts Memory 凭证（AGENTARTS_MEMORY_*），
+  #          由 get_office_ace_user_profile_config() 在 Python 层填充。
+  #   pc  ：用下方 OFFICE_ACE_USER_PROFILE_* 专用凭证。
+  office_ace_user_profile:
+    # 启用条件由 external memory 开关 + provider=officeace_cloud 隐含控制，无独立 enabled 段。
+    # endpoint/api_key/user_id 任一为空 → rail/后台拉取不挂载（零残留）。
+    endpoint: ${OFFICE_ACE_USER_PROFILE_ENDPOINT:-}
+    api_key: ${OFFICE_ACE_USER_PROFILE_API_KEY:-}
+    fetch_interval_minutes: ${OFFICE_ACE_USER_PROFILE_FETCH_INTERVAL:-10}   # 后台周期拉取间隔（分钟）
+    max_chars: ${OFFICE_ACE_USER_PROFILE_MAX_CHARS:-8000}                    # 注入 prompt 的最大字符数
+    timeout_seconds: ${OFFICE_ACE_USER_PROFILE_TIMEOUT:-15}                 # 单次拉取超时（秒）
+
 
 proactive_recommendation:
   enabled: false                # 总开关
@@ -512,6 +544,25 @@ trajectory_ui:
   detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
 
 # ============================================================
+# Trace 问题自动分析定位（Diagnosis）配置
+# ============================================================
+# 用户在 Web 上一键触发自动分析定位，产出结构化诊断报告（根因假设/可疑环节/
+# 代码定位/建议下一步）。证据主来自 trajectory store（raw_json），日志为辅。
+# 编排放 Gateway 进程，独立于会话 agent 配额。
+# 依赖：enabled=true 隐含 trajectory_ui.enabled=true（证据主来源）；
+#       建议同时调大 agent_observability.attribute_value_max_length（10240→51200），
+#       否则超长 prompt/工具结果在 span 采集端就被截断，诊断时看不全。
+# 报告/证据包落在 ~/.jiuwenswarm/.trace/diagnosis/<session>/，随 keep_evidence_days 清理。
+# ============================================================
+diagnosis:
+  enabled: false                    # 一键分析总开关
+  include_logs: true                # 是否纳入日志辅助证据（ERROR/Traceback 行）
+  history_summary_records: 20       # 被诊断会话 history 尾部摘要条数（辅助证据）
+  keep_evidence_days: 7             # 证据包/报告保留天数
+  allow_log_upload: true            # 是否允许上传日志文件（G5）
+  max_upload_log_mb: 50             # 单个上传日志文件大小上限（G5）
+
+# ============================================================
 # Agent / Code 调试链路追踪（Debug Trace）配置
 # ============================================================
 # 控制非 team 模式（agent.* / code.*）的人类可读本地 dump。
@@ -572,6 +623,10 @@ react:
   task_planning:
     enable_progress_repeat: ${TODO_PROGRESS_REPEAT:-true}
     list_tool_call_interval: 20
+  # 常驻 subagent 运行时。开启后 task_tool 由 subagent_spawn/wait/list/
+  # send_input/close/resume 六个工具替换（两者互斥）。默认开启。
+  subagent_runtime:
+    enabled: true
   # ProgressiveToolRail: 工具延迟加载，固定 eager_tools schema，deferred 工具通过
   # tools_search → invoke_tool 间接调用，最大化 prefix cache 命中率。
   tool_lazy_load:
@@ -624,6 +679,9 @@ react:
       enabled: false
       # max_iterations: 15
     browser_agent:
+      enabled: true
+      # max_iterations: 100
+    statusline-setup:
       enabled: true
       # max_iterations: 15
   # ============ SkillTurbo 配置 ============
@@ -727,6 +785,16 @@ react:
     auto_save: true           # true = 自演进审批无需用户点击自动通过（内部开关）
     skill_create: false        # true = 注册 SkillCreateRail（单 agent）及 TeamSkillCreateRail（leader）
     skill_base_dir: "agent/skills"  # Skill 根目录
+    # 按「使用」统计：同一用户任务内每技能最多 +1（工作工具归因）；不计 skill_tool 加载
+    # 是否离线演进按技能取 .office-claw/capabilities.json 的 selfEvolution：
+    # off/未登记=不训练，suggest=只写 evolutions.json，auto=生成新版本
+    skill_sleep:
+      call_threshold: 20       # 某技能使用次数 > threshold 时触发
+      state_dir: ""             # 空则 workspace/.skill_sleep（计数 + sleep state）
+      # 训练用模型：默认跟随主对话当前模型（models.defaults）；主模型不可用时回退 env/.env
+      model_name: ""            # 可选，指定 models.defaults 中的 model_name / alias
+      model_tier: ""            # 可选，lite | pro，对应 models.defaults[].tier；model_name 优先
+      gate_mode: "on"           # on = 候选须在验证任务上得分高于原版才采纳；off = 应用成功的修改直接采纳（不比分）
   # TTSE（Two-Track Self-Evolution）FACT/TIP 双轨自演进；与 skill 演进独立
   # 默认开启；agent 模式挂载 TTSERail，并由代码把 ttse_consult 插入首轮
   # eager schema（不必写进上方 eager_tools）。
@@ -918,6 +986,15 @@ execution_guard:
     repeat_window_chars: 1024
     # 单字符连续重复阈值，用于检测分隔线等场景，默认较高以减少误判
     single_char_repeat_count: 90
+  # develop 防死循环 rail：重复调用 / ping-pong / 未知工具打断（force-finish）。
+  # 默认关闭，避免和 dest-stable 已开启的 agent_ras.repeat_tool 双挂。
+  # 不是 issue 的 OPEN/HALF_OPEN 恢复型熔断。
+  circuit_breaker:
+    enabled: false
+    warning_threshold: 10
+    critical_threshold: 20
+    global_breaker_threshold: 30
+    unknown_tool_threshold: 10
 
 # Agent RAS 整体配置
 agent_ras:
@@ -935,6 +1012,12 @@ agent_ras:
       global_breaker_threshold: 10
       # 未知/错误工具连续失败达到该次数时 CRITICAL（WARNING 为阈值一半）
       unknown_tool_threshold: 10
+      # Match the outer tool and selected top-level arguments exactly.
+      # Add rules for other polling functions without exempting the whole tool.
+      ignored_tool_calls:
+        - tool_name: invoke_tool
+          argument_equals:
+            tool_name: image_get_run
     # LLM 文本/思考死循环检测（门槛单位：字符）
     llm_thinking_loop:
       enabled: true
@@ -1671,3 +1754,18 @@ flash:
     k1: 0.9
     b: 0.4
     name_weight: 0.5
+
+# ── 模型路由（model_routing rail）──────────────────────────────
+model_routing:
+  enabled: false
+  # ⚠️ health_check 段为后续迭代预留（当前 model_routing 模块零消费，
+  # 调参无效果；PR 检视 CR-6）。能力表健康检查落地后再启用这些键。
+  health_check:
+    enabled: true
+    interval_seconds: 180
+    timeout_seconds: 10
+    max_rounds: 1
+    max_consecutive_failures: 2
+    recovery_consecutive_successes: 1
+    health_check_prompt: "hi"
+    max_tokens: 1

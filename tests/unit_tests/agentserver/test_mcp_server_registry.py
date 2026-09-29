@@ -1314,30 +1314,30 @@ async def test_update_aborts_when_config_changes_during_discover(
 async def test_force_rebuild_shuts_down_outside_pool_lock(monkeypatch) -> None:
     pool = GlobalMcpWorkerPool()
     started: list[int] = []
-    lock_held_during_shutdown: list[bool] = []
+    lock_held_during_retire: list[bool] = []
 
     async def fake_run(params, worker):
         started.append(1)
         await worker.queue.get()
 
-    async def fake_shutdown(worker):
-        lock_held_during_shutdown.append(pool._lock.locked())
-
     import jiuwenswarm.common.mcp_server_registry as registry_mod
 
-    real_shutdown = registry_mod.shutdown_pooled_mcp_worker
+    real_retire = registry_mod.retire_pooled_mcp_worker
 
-    async def fake_shutdown(worker):
-        lock_held_during_shutdown.append(pool._lock.locked())
-        await real_shutdown(worker)
+    async def fake_retire(worker, *, reason="", grace_s=None):
+        lock_held_during_retire.append(pool._lock.locked())
+        await real_retire(worker, reason=reason, grace_s=grace_s)
 
     monkeypatch.setattr(registry_mod, "_run_mcp_worker", fake_run)
-    monkeypatch.setattr(registry_mod, "shutdown_pooled_mcp_worker", fake_shutdown)
+    monkeypatch.setattr(registry_mod, "retire_pooled_mcp_worker", fake_retire)
     await pool.acquire("s", {"url": "https://example.com/mcp"})
     await _wait_until(lambda: started)
     await pool.acquire("s", {"url": "https://example.com/mcp"}, force_rebuild=True)
-    assert lock_held_during_shutdown == [False]
+    assert lock_held_during_retire == [False]
     await pool.close_all()
+    from jiuwenswarm.common import mcp_config
+
+    await asyncio.gather(*list(mcp_config._retire_tasks), return_exceptions=True)
 
 
 @pytest.mark.asyncio

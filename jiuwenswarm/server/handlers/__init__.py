@@ -29,6 +29,7 @@ from jiuwenswarm.server.handlers import (
     schedule,
     session,
     team,
+    workspace,
 )
 
 __all__ = [
@@ -47,4 +48,5 @@ __all__ = [
     "schedule",
     "session",
     "team",
+    "workspace",
 ]

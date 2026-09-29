@@ -339,6 +339,22 @@ class SandboxManager:
                 directory,
             )
 
+        # Match the docstring: preserve (recreate if missing) so late writers
+        # during shutdown cannot FileNotFoundError on state_dir / policies_dir.
+        for label, directory in (
+            ("sandbox state", self.state_dir),
+            ("sandbox policy", self.policy_engine.policies_dir),
+        ):
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                logger.warning(
+                    "clear_persistent_state: failed to recreate %s dir %s: %s",
+                    label,
+                    directory,
+                    exc,
+                )
+
     async def shutdown_all_sandboxes(self) -> None:
         """Best-effort teardown of every registered sandbox.
 
@@ -573,6 +589,10 @@ class SandboxManager:
 
     def _save_state(self, sandbox: SandboxRef) -> None:
         """Persist a single sandbox's state to disk."""
+        # Defend against a missing state_dir (e.g. wiped after process start):
+        # mkdir only happens in ``__init__`` otherwise, so a vanished parent
+        # would turn every create into an unhandled FileNotFoundError / HTTP 500.
+        self.state_dir.mkdir(parents=True, exist_ok=True)
         path = self.state_dir / f"{sandbox.id}.json"
         path.write_text(sandbox.model_dump_json(indent=2))
 
@@ -627,13 +647,26 @@ class SandboxManager:
             )
             self._sandboxes[sandbox_id] = ref
             self._policies[sandbox_id] = policy
-            self._save_state(ref)
-
-            self.audit.log(AuditEventType.SANDBOX_CREATED, sandbox_id)
-
-            # Write resolved policy
-            policy_path = self.policy_engine.write_sandbox_policy(sandbox_id, policy)
-            self.audit.log(AuditEventType.POLICY_APPLIED, sandbox_id, policy_name=policy.name)
+            try:
+                self._save_state(ref)
+                self.audit.log(AuditEventType.SANDBOX_CREATED, sandbox_id)
+                # Write resolved policy
+                policy_path = self.policy_engine.write_sandbox_policy(
+                    sandbox_id, policy
+                )
+                self.audit.log(
+                    AuditEventType.POLICY_APPLIED,
+                    sandbox_id,
+                    policy_name=policy.name,
+                )
+            except Exception:
+                # Roll back in-memory registration so a failed persist cannot
+                # leave a stuck PROVISIONING orphan that idle reaper skips.
+                self._sandboxes.pop(sandbox_id, None)
+                self._policies.pop(sandbox_id, None)
+                self._delete_state(sandbox_id)
+                self.policy_engine.delete_sandbox_policy(sandbox_id)
+                raise
 
         # Runtime startup can be expensive. Do it outside the manager-wide lock
         # so independent sandboxes can start in parallel.

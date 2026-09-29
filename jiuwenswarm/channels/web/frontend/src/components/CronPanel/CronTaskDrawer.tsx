@@ -19,7 +19,7 @@ import { getProjectDisplayName } from '../../stores/workspaceStore';
 import type { AgentMode } from '../../types';
 // 会话输入框工具栏那一套 .chat-mode-select pill 下拉组件（模式/模型选择器）的 CSS，
 // 抽屉里的模式/模型选择器直接复用同一套 class，跟会话界面视觉/交互完全一致。
-// 这份 CSS 是普通全局样式（非 CSS Module），AgentPanel/FileViewer.tsx 已有同样 import 先例。
+// 这份 CSS 是普通全局样式（非 CSS Module），WorkspacePanel/FileViewer.tsx 已有同样 import 先例。
 import '../ChatPanel/ChatPanel.css';
 
 export { isDefaultLikeProject } from './cronProjectDisplay';

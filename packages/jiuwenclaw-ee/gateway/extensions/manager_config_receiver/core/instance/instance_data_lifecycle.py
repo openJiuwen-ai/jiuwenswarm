@@ -36,6 +36,8 @@ INSTANCE_PURGE_TABLES: tuple[str, ...] = (
     "agent_template",
     "instance_agent_resource",
     "log_masking_rule",
+    "workspace_quota_policy",
+    "workspace_quota_usage",
     "logging_config",
     "task_memory_config",
     "audit_log_config",

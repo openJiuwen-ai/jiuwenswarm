@@ -537,5 +537,7 @@
 }
 .enterprise-context-popover__status { margin-top: 10px; color: var(--color-text-secondary); font-size: 11px; }
 .enterprise-context-popover__error { margin-top: 10px; color: var(--color-feedback-danger); font-size: 11px; line-height: 1.45; }
-.enterprise-context-popover__logout { width: 100%; margin-top: 12px; padding: 8px 10px; border: 1px solid var(--color-border-default); border-radius: 7px; background: transparent; color: var(--color-feedback-danger); cursor: pointer; font-size: 12px; text-align: center; }
+.enterprise-context-popover__switch { width: 100%; margin-top: 12px; padding: 8px 10px; border: 1px solid var(--color-border-default); border-radius: 7px; background: transparent; color: var(--color-text-primary); cursor: pointer; font-size: 12px; text-align: center; }
+.enterprise-context-popover__switch:hover { background: color-mix(in srgb, var(--color-action-primary) 8%, transparent); border-color: var(--color-action-primary); color: var(--color-action-primary); }
+.enterprise-context-popover__logout { width: 100%; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--color-border-default); border-radius: 7px; background: transparent; color: var(--color-feedback-danger); cursor: pointer; font-size: 12px; text-align: center; }
 .enterprise-context-popover__logout:hover { background: color-mix(in srgb, var(--color-feedback-danger) 8%, transparent); border-color: var(--color-feedback-danger); }

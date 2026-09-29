@@ -28,6 +28,7 @@ from jiuwenswarm.common.mcp_config import (
     _validate_request_scoped_remote_mcp,
     create_mcp_tool,
     list_request_mcp_server_tools,
+    retire_pooled_mcp_worker,
     shutdown_pooled_mcp_worker,
 )
 
@@ -147,6 +148,17 @@ def get_mcp_registry_settings() -> McpRegistrySettings:
 def config_fingerprint(config: Mapping[str, Any]) -> str:
     payload = json.dumps(dict(config or {}), sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _changed_config_keys(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
+    old_map = dict(old or {})
+    new_map = dict(new or {})
+    keys = set(old_map) | set(new_map)
+    return sorted(
+        str(k)
+        for k in keys
+        if old_map.get(k) != new_map.get(k)
+    )
 
 
 def cached_tools_equal(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> bool:
@@ -310,7 +322,7 @@ class GlobalMcpWorkerPool:
         wanted_fp = config_fingerprint(copied)
         stale = await self._evict_locked(key, wanted_fp, force_rebuild=force_rebuild)
         if stale is not None:
-            await shutdown_pooled_mcp_worker(stale)
+            await retire_pooled_mcp_worker(stale, reason="fingerprint_changed")
         extra = None
         async with self._lock:
             worker = self._workers.get(key)
@@ -324,7 +336,7 @@ class GlobalMcpWorkerPool:
             worker.task = asyncio.create_task(_run_mcp_worker(copied, worker))
             worker.last_used = time.monotonic()
         if extra is not None:
-            await shutdown_pooled_mcp_worker(extra)
+            await retire_pooled_mcp_worker(extra, reason="worker_replaced")
         return worker
 
     async def _evict_locked(
@@ -352,17 +364,27 @@ class GlobalMcpWorkerPool:
         for worker in workers:
             await shutdown_pooled_mcp_worker(worker)
 
+    async def retire_server(self, server_name: str, *, reason: str = "") -> None:
+        """Detach workers so new calls rebuild, letting in-flight calls finish."""
+
+        name = str(server_name or "").strip()
+        async with self._lock:
+            keys = [k for k in self._workers if k == name or k.startswith(f"{name}#")]
+            workers = [self._workers.pop(k) for k in keys]
+        for worker in workers:
+            await retire_pooled_mcp_worker(worker, reason=reason)
+
     async def reap_idle(self, ttl_s: float) -> None:
         cutoff = time.monotonic() - max(1.0, float(ttl_s))
         async with self._lock:
             idle_keys = [
                 key
                 for key, worker in self._workers.items()
-                if getattr(worker, "last_used", 0.0) <= cutoff
+                if getattr(worker, "last_used", 0.0) <= cutoff and not worker.busy
             ]
             workers = [self._workers.pop(k) for k in idle_keys]
         for worker in workers:
-            await shutdown_pooled_mcp_worker(worker)
+            await shutdown_pooled_mcp_worker(worker, reason="idle_ttl")
 
     async def close_all(self) -> None:
         async with self._lock:
@@ -480,7 +502,7 @@ class McpServerRegistry:
             if not existed:
                 results.append({"name": name, "ok": False, "error": "not found"})
                 continue
-            await self.worker_pool.close_server(name)
+            await self.worker_pool.retire_server(name, reason="server_removed")
             results.append({"name": name, "ok": True})
         return results
 
@@ -555,7 +577,14 @@ class McpServerRegistry:
                     last_error="",
                     connect_params=copy.deepcopy(params),
                 )
-            await self.worker_pool.close_server(name)
+            await self.worker_pool.retire_server(name, reason="config_update")
+            logger.info(
+                "[McpServerRegistry] config update name=%s old_fp=%s new_fp=%s changed=%s retire=True",
+                name,
+                expected_fp[:12],
+                config_fingerprint(config)[:12],
+                _changed_config_keys(current.config, config),
+            )
             tool_names = [str(t.get("name") or "") for t in tools]
             results.append(
                 {
@@ -639,16 +668,16 @@ class McpServerRegistry:
             else:
                 stale_error = None
         if stale_error is not None:
-            await self.worker_pool.close_server(name)
+            await self.worker_pool.retire_server(name, reason="acquire_stale_disabled")
             raise stale_error
         if latest is not None and config_fingerprint(params) != config_fingerprint(latest):
-            await self.worker_pool.close_server(name)
+            await self.worker_pool.retire_server(name, reason="acquire_fingerprint_changed")
             worker = await self.worker_pool.acquire(name, latest, force_rebuild=True)
             async with self._lock:
                 try:
                     self._invoke_connect_params_locked(name)
                 except McpRegistryChatError as exc:
-                    await self.worker_pool.close_server(name)
+                    await self.worker_pool.retire_server(name, reason="acquire_stale")
                     raise exc
         return worker
 

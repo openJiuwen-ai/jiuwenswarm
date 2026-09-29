@@ -134,6 +134,7 @@ def host_init_workspace_sync(
 
     Returns:
         状态字典：``status`` 为 skipped_marker / copytree / materialize。
+        满额拒绝时 ``status=quota_exceeded``。
     """
     root_path = Path(root)
     marker = root_path / ".workspace"
@@ -141,6 +142,35 @@ def host_init_workspace_sync(
         return {"status": "skipped_marker", "path": str(root_path)}
 
     dirs = list(directories or [])
+
+    # 配额门禁：估算模板增量后再 mkdir/copy（§2.3）
+    try:
+        from jiuwenswarm.common.workspace.quota import (
+            WorkspaceQuotaExceeded,
+            check_workspace_write,
+        )
+
+        def _estimate_nodes(nodes: list[dict[str, Any]]) -> int:
+            total = 0
+            for node in nodes or []:
+                if node.get("is_file"):
+                    content = node.get("default_content") or ""
+                    if not isinstance(content, str):
+                        content = str(content)
+                    total += len(content.encode("utf-8"))
+                total += _estimate_nodes(list(node.get("children") or []))
+            return total
+
+        check_workspace_write(additional_bytes=max(0, _estimate_nodes(dirs)))
+    except WorkspaceQuotaExceeded:
+        return {
+            "status": "quota_exceeded",
+            "path": str(root_path),
+            "error": "WORKSPACE_QUOTA_EXCEEDED",
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[workspace.quota] host_init precheck skipped: %s", exc)
+
     root_path.mkdir(parents=True, exist_ok=True)
     try:
         is_empty = not any(root_path.iterdir())

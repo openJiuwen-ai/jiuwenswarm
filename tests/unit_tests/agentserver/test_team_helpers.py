@@ -3650,13 +3650,22 @@ async def test_consume_stream_with_query_broadcasts_leader_task_failed_detail_an
         "BadRequestError: deepseek-v4-X is invalid, use deepseek-v4-pro or deepseek-v4-flash"
     )
 
+    pulled_after_failure = False
+
     async def _fake_stream(**kwargs):
+        nonlocal pulled_after_failure
         yield SimpleNamespace(
             type="controller_output",
             payload={
                 "type": "task_failed",
                 "data": [{"type": "text", "text": detail}],
             },
+            role=TeamRole.LEADER,
+        )
+        pulled_after_failure = True
+        yield SimpleNamespace(
+            type="llm_output",
+            payload={"content": "should-not-forward"},
             role=TeamRole.LEADER,
         )
 
@@ -3716,6 +3725,7 @@ async def test_consume_stream_with_query_broadcasts_leader_task_failed_detail_an
         event.get("event_type") == "chat.processing_status" and event.get("is_processing") is False
         for event in broadcasted
     )
+    assert pulled_after_failure is False
 
 
 @pytest.mark.anyio

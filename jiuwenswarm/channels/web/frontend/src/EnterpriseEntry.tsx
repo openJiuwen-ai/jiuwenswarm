@@ -189,7 +189,19 @@ function errorText(error: unknown): string {
   return error instanceof Error && error.message ? error.message : '加载企业用户上下文失败';
 }
 
-function EntryStatus({ phase, error, onLogout }: { phase: EntryPhase; error: string; onLogout: () => void }) {
+function EntryStatus({
+  phase,
+  error,
+  managerAccess,
+  onSwitchToManager,
+  onLogout,
+}: {
+  phase: EntryPhase;
+  error: string;
+  managerAccess: boolean;
+  onSwitchToManager: () => void;
+  onLogout: () => void;
+}) {
   const empty = phase === 'empty';
   const failed = phase === 'error';
   const loginRequired = phase === 'login-required';
@@ -222,9 +234,16 @@ function EntryStatus({ phase, error, onLogout }: { phase: EntryPhase; error: str
                 : '正在校验账号权限并选择一个可用 Agent。'}
         </p>
         {(empty || failed) && (
-          <button type="button" className="enterprise-entry__button" onClick={onLogout}>
-            返回登录页
-          </button>
+          <div className="enterprise-entry__actions">
+            {managerAccess && (
+              <button type="button" className="enterprise-entry__button" onClick={onSwitchToManager}>
+                进入管理面
+              </button>
+            )}
+            <button type="button" className="enterprise-entry__button" onClick={onLogout}>
+              返回登录页
+            </button>
+          </div>
         )}
       </div>
     </div>
@@ -244,10 +263,15 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
   const [error, setError] = useState('');
   const [contextError, setContextError] = useState('');
   const [contextSwitching, setContextSwitching] = useState(false);
+  const [managerAccess, setManagerAccess] = useState(false);
 
   const logout = useCallback(() => {
     if (provider) void provider.logout();
   }, [provider]);
+
+  const switchToManager = useCallback(() => {
+    window.location.href = '/manager';
+  }, []);
 
   useEffect(() => {
     if (!enterprise || !provider) return;
@@ -263,7 +287,17 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
         const preferred = parseRuntimeScope(window.location.search);
         const preferredClusterId =
           parsePreferredClusterId(window.location.search) || readKnownCluster();
-        const [user, contexts] = await Promise.all([provider.getCurrentUser(), provider.listAgentContexts()]);
+        const user = await provider.getCurrentUser();
+        if (cancelled) return;
+        let canManage = false;
+        try {
+          canManage = provider.getManagerAccess ? await provider.getManagerAccess() : false;
+        } catch {
+          canManage = false;
+        }
+        if (cancelled) return;
+        setManagerAccess(canManage);
+        const contexts = await provider.listAgentContexts();
         if (cancelled) return;
 
         let selected: EnterpriseAgentContext | null = null;
@@ -347,6 +381,7 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
     if (!context) return null;
     return {
       ...context,
+      managerAccess,
       contextError,
       contextSwitching,
       onContextChange: key => {
@@ -407,11 +442,22 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
           }
         })();
       },
+      onSwitchToManager: switchToManager,
       onLogout: logout,
     };
-  }, [context, contextError, contextSwitching, logout, provider, t]);
+  }, [context, contextError, contextSwitching, logout, managerAccess, provider, switchToManager, t]);
 
   if (!enterprise) return <>{children}</>;
-  if (phase !== 'ready' || !contextValue) return <EntryStatus phase={phase} error={error} onLogout={logout} />;
+  if (phase !== 'ready' || !contextValue) {
+    return (
+      <EntryStatus
+        phase={phase}
+        error={error}
+        managerAccess={managerAccess}
+        onSwitchToManager={switchToManager}
+        onLogout={logout}
+      />
+    );
+  }
   return <EnterpriseContext.Provider value={contextValue}>{children}</EnterpriseContext.Provider>;
 }

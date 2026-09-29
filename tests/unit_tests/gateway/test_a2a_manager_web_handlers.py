@@ -5,7 +5,7 @@ from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
     WebHandlersBindParams,
     _register_web_handlers,
 )
-from jiuwenswarm.gateway.channel_manager.web.web_http_routes import MAPPED_ROUTES
+from jiuwenswarm.gateway.channel_manager.web.http_routes.mapped import MAPPED_ROUTES
 
 
 class _WebChannelProbe:

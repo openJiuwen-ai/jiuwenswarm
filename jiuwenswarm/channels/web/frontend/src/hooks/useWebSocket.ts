@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { isWorkspaceQuotaError } from '../multi-session/state/createConversationSession';
 import {
   ConnectionAckPayload,
   WebConnectOptions,
@@ -43,8 +44,14 @@ import {
   useHarnessStore,
   useWorkspaceStore,
   useCronStore,
+  useSubagentStore,
 } from '../stores';
 import { isPlanWireMode, resolvePlanWireMode } from '../features/planMode/wireMode';
+import {
+  isNativeSubagentRosterPayload,
+  normalizeSubagentActivityEvent,
+  normalizeSubagentStatusEvent,
+} from '../features/subagent/subagentNormalizer';
 import { normalizeTaskEvent } from '../stores/teamTaskNormalize';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
 import {
@@ -477,7 +484,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function getPayloadSessionId(payload: Record<string, unknown>): string | undefined {
-  const direct = pickString(payload.session_id);
+  const direct = pickString(payload.session_id, payload.parent_session_id);
   if (direct) {
     return direct;
   }
@@ -2021,6 +2028,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     async (sessionId: string) => {
       try {
         await interrupt(sessionId, 'cancel');
+        useSubagentStore.getState().markRunningSubagentsCancelled(sessionId);
       } catch (error) {
         const webError = error as WebError;
         setConnectionStats({ lastError: webError.message });
@@ -3646,8 +3654,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.error', payload)) return;
         useChatStore.getState().setThinking(sessionId, false);
-        const errorMsg =
+        const rawError =
           typeof payload.error === 'string' ? payload.error : t('network.unknownError');
+        const errorMsg = isWorkspaceQuotaError(payload)
+          ? t('multiSession.errors.quotaExceeded')
+          : rawError;
         // 忽略 "invalid page_idx or session history not found" 错误，因为这是新会话的正常情况
         if (errorMsg.includes('invalid page_idx or session history not found')) {
           useChatStore.getState().setLoadingHistory(sessionId, false);
@@ -3874,7 +3885,30 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.subtask_update', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
+        if (isNativeSubagentRosterPayload(payload)) {
+          const event = normalizeSubagentStatusEvent({
+            ...payload,
+            event_type: 'chat.subtask_update',
+            session_id: sessionId,
+          });
+          if (event) {
+            useSubagentStore.getState().applyEvent(sessionId, event);
+          }
+          return;
+        }
         useChatStore.getState().updateSubtask(sessionId, payload as unknown as SubtaskUpdatePayload);
+      }),
+      webClient.on('chat.subagent_activity', ({ payload }) => {
+        const sessionId = resolveEventSessionId(payload);
+        if (!sessionId) return;
+        const event = normalizeSubagentActivityEvent({
+          ...payload,
+          event_type: 'chat.subagent_activity',
+          session_id: sessionId,
+        });
+        if (event) {
+          useSubagentStore.getState().applyEvent(sessionId, event);
+        }
       }),
       webClient.on('chat.ask_user_question', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);

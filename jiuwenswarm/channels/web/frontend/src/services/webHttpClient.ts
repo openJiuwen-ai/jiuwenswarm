@@ -139,6 +139,10 @@ const ROUTES: Record<string, RouteRow> = {
   'project.remove': { verb: 'DELETE', path: '/projects/{project_id}', kind: 'unary' },
   'project.restore': { verb: 'POST', path: '/projects/actions/restore', kind: 'unary' },
   'project.pinned_sessions': { verb: 'GET', path: '/projects/pinned-sessions', kind: 'unary' },
+  'workspace.tree': { verb: 'GET', path: '/workspace/tree', kind: 'unary' },
+  'workspace.usage': { verb: 'GET', path: '/workspace/usage', kind: 'unary' },
+  'workspace.entries.delete': { verb: 'DELETE', path: '/workspace/entries', kind: 'unary' },
+  'workspace.preview': { verb: 'GET', path: '/workspace/preview', kind: 'unary' },
 };
 
 const PATH_PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;

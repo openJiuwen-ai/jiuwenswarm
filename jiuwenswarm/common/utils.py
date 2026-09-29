@@ -318,15 +318,42 @@ class _ComponentNameFilter(logging.Filter):
         return _log_component_from_logger_name(record.name) == self.component
 
 
-class _CompositeFilter(logging.Filter):
-    """组合多个过滤器，任一通过即放行"""
+def _is_diagnosis_record(record: logging.LogRecord) -> bool:
+    """诊断日志判定：request_id 前缀（Gateway/AgentServer 跨进程一致）或
+    诊断模块 logger 名（覆盖落盘/配置类无 request_id 的日志）。"""
+    rid = getattr(record, "request_id", "")
+    if isinstance(rid, str) and rid.startswith("diagnosis-"):
+        return True
+    return record.name.startswith("jiuwenswarm.observability.diagnosis")
 
-    def __init__(self, filters: list[logging.Filter]) -> None:
+
+class _DiagnosisLogFilter(logging.Filter):
+    """按 include 参数放行或排除诊断日志（用于 diagnosis.log 与主日志隔离）。"""
+
+    def __init__(self, *, include: bool) -> None:
         super().__init__()
-        self.filters = filters
+        self.include = include
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return any(f.filter(record) for f in self.filters)
+        return _is_diagnosis_record(record) == self.include
+
+
+class _CompositeFilter(logging.Filter):
+    """组合过滤器：filters 任一通过 + excludes 全部通过才放行"""
+
+    def __init__(
+        self,
+        filters: list[logging.Filter],
+        *excludes: logging.Filter,
+    ) -> None:
+        super().__init__()
+        self.filters = filters
+        self.excludes = excludes
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not any(f.filter(record) for f in self.filters):
+            return False
+        return all(f.filter(record) for f in self.excludes)
 
 
 # ---------------------------------------------------------------------------
@@ -681,6 +708,37 @@ def _find_package_root() -> Path | None:
     return current
 
 
+# 播种在冷启动时按租户逐次调用，每次都要重解析出厂模板，故按文件 mtime/size 缓存语言解析结果。
+_PREFERRED_LANGUAGE_CACHE: dict[str, tuple[tuple[int, int], str | None]] = {}
+
+
+def _read_preferred_language_cached(cfg_path: Path) -> str | None:
+    """读取该路径声明的 zh/en；文件缺失、解析异常或值非法时返回 None。"""
+    try:
+        st = cfg_path.stat()
+    except OSError:
+        return None
+    cache_key = str(cfg_path)
+    stamp = (st.st_mtime_ns, st.st_size)
+    cached = _PREFERRED_LANGUAGE_CACHE.get(cache_key)
+    if cached is not None and cached[0] == stamp:
+        # 缓存也记住“该路径无有效语言”，但解析异常不缓存，保持每次报错可见。
+        return cached[1]
+    value: str | None = None
+    try:
+        rt = YAML()
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            data = rt.load(f) or {}
+        lang = str(data.get("preferred_language") or "").strip().lower()
+        if lang in ("zh", "en"):
+            value = lang
+    except Exception as e:
+        logger.error(f"Failed to load config.yaml: {e}")
+        return None
+    _PREFERRED_LANGUAGE_CACHE[cache_key] = (stamp, value)
+    return value
+
+
 def _resolve_preferred_language(
     config_yaml_dest: Path, explicit: Optional[str]
 ) -> str:
@@ -690,16 +748,9 @@ def _resolve_preferred_language(
         return lang if lang in ("zh", "en") else "zh"
     # 稀疏 override 模式：先读 override，再读模板
     for cfg_path in (config_yaml_dest, resolve_shipped_template_config_path()):
-        if cfg_path.exists():
-            try:
-                rt = YAML()
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    data = rt.load(f) or {}
-                lang = str(data.get("preferred_language") or "").strip().lower()
-                if lang in ("zh", "en"):
-                    return lang
-            except Exception as e:
-                logger.error(f"Failed to load config.yaml: {e}")
+        lang = _read_preferred_language_cached(cfg_path)
+        if lang is not None:
+            return lang
     return "zh"
 
 
@@ -2804,6 +2855,20 @@ def install_source_record_masking() -> None:
     def _sanitizing_record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
         record = old_factory(*args, **kwargs)
         try:
+            # request_id 注入（与 agent-core ContextFilter 同源 ContextVar），
+            # 供诊断证据按 request_id 精确过滤日志。失败时留空，不阻断日志。
+            try:
+                from openjiuwen.extensions.observability.span_context import (
+                    get_current_request_id,
+                )
+
+                record.request_id = get_current_request_id()
+            except Exception:
+                record.request_id = ""
+            # request_id 展示片段：空时不留 [req=]（避免每行带空标签噪音），
+            # 非空时为 "[req=xxx] "。原始 record.request_id 保留供
+            # _is_diagnosis_record 精确匹配（diagnosis- 前缀）。
+            record.req_tag = f"[req={record.request_id}] " if record.request_id else ""
             # message 脱敏（含 %s/format 格式化后的最终文本）。
             msg = record.getMessage()
             record.msg = _sanitize_log_text(msg)
@@ -3148,6 +3213,9 @@ class IdentityTextFormatter(logging.Formatter):
             record.identity = build_log_identity(record)
         if not isinstance(getattr(record, "session_id", None), str):
             record.session_id = current_log_session_id()
+        if not isinstance(getattr(record, "req_tag", None), str):
+            rid = getattr(record, "request_id", "") or ""
+            record.req_tag = f"[req={rid}] " if rid else ""
         return super().format(record)
 
 
@@ -3264,10 +3332,11 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
         root.removeHandler(handler)
 
     json_config = _resolve_json_config() if log_format in ("json", "dual") else {}
-    # 文本格式串（含 process/identity/user_tag/lineno）
+    # 文本格式串（含 process/identity/user_tag/req_tag/lineno）。
+    # req_tag 由 record factory 预拼为 "[req=xxx] " 或 ""（空 request_id 不留噪音）。
     text_fmt = (
         "%(asctime)s.%(msecs)03d [%(process)d] [%(session_id)s] %(levelname)s "
-        "%(identity)s%(user_tag)s%(name)s:%(lineno)d: %(message)s"
+        "%(identity)s%(user_tag)s%(req_tag)s%(name)s:%(lineno)d: %(message)s"
     )
 
     if log_format in ("json", "dual"):
@@ -3317,12 +3386,18 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
         listener_targets.append(h)
 
     def _component_files(ext: str, use_json: bool) -> None:
-        _add_rotating(f"gateway.{ext}", levels.gateway, _ComponentNameFilter("gateway"), use_json=use_json)
-        _add_rotating(f"channel.{ext}", levels.channel, _ComponentNameFilter("channel"), use_json=use_json)
+        # 主日志文件排除诊断日志（隔离：诊断只落 diagnosis.log）
+        _exclude_diagnosis = _DiagnosisLogFilter(include=False)
+        _add_rotating(f"gateway.{ext}", levels.gateway,
+                      _CompositeFilter([_ComponentNameFilter("gateway")], _exclude_diagnosis), use_json=use_json)
+        _add_rotating(f"channel.{ext}", levels.channel,
+                      _CompositeFilter([_ComponentNameFilter("channel")], _exclude_diagnosis), use_json=use_json)
         _add_rotating(f"agent_server.{ext}", levels.agent_server,
-                      _CompositeFilter([_ComponentNameFilter("agent_server"), _ComponentNameFilter("permissions")]),
+                      _CompositeFilter([_ComponentNameFilter("agent_server"),
+                                        _ComponentNameFilter("permissions")], _exclude_diagnosis),
                       use_json=use_json)
-        _add_rotating(f"full.{ext}", levels.full, None, use_json=use_json)
+        _add_rotating(f"full.{ext}", levels.full, _exclude_diagnosis, use_json=use_json)
+        _add_rotating(f"diagnosis.{ext}", levels.full, _DiagnosisLogFilter(include=True), use_json=use_json)
 
     if log_format == "text":
         _component_files("log", use_json=False)
@@ -3475,6 +3550,8 @@ _FILE_HANDLER_LEVEL_MAP: dict[str, str] = {
     "agent_server.json": "agent_server",
     "full.log": "full",
     "full.json": "full",
+    "diagnosis.log": "full",
+    "diagnosis.json": "full",
     "permissions.log": "agent_server",
 }
 
@@ -3488,7 +3565,11 @@ def update_log_levels(
     agent_server: Optional[str] = None,
     full: Optional[str] = None,
 ) -> logging.Logger:
-    """运行时动态更新 ``jiuwenswarm`` 根日志及各 handler 的级别，无需重建 handler。"""
+    """运行时动态更新 ``jiuwenswarm`` 根日志及各 handler 的级别。
+
+    企业版同时把解析后的 ``agent_server`` 级别写到 openjiuwen core。单机版不改
+    core，避免覆盖 ``logging.yaml`` 或启动时的 INFO 默认。
+    """
     levels = _resolve_logging_levels(log_level)
 
     if console_level is not None:
@@ -3518,7 +3599,22 @@ def update_log_levels(
         elif isinstance(h, logging.StreamHandler):
             h.setLevel(levels.console)
 
+    if is_enterprise():
+        _sync_openjiuwen_log_level(levels.agent_server)
     return root
+
+
+def _sync_openjiuwen_log_level(level: int) -> None:
+    """Push the managed AgentServer level onto openjiuwen core loggers."""
+    try:
+        from jiuwenswarm.common.openjiuwen_logging import apply_openjiuwen_log_level
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[logging_config] openjiuwen level sync import failed: %s", exc)
+        return
+    try:
+        apply_openjiuwen_log_level(level)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[logging_config] openjiuwen level sync failed: %s", exc)
 
 
 _LOGGING_CONFIG_TABLE = "logging_config"

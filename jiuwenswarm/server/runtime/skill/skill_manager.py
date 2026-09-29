@@ -2746,14 +2746,26 @@ class SkillManager:
         if existing is None:
             return self._source_error("skill_not_found", "installed SkillRef was not found")
         current_version_id = str(existing.get("version_id") or "").strip()
+        # Already at target: treat as success before optimistic-lock check so a
+        # stale expected_current_version_id (e.g. client timeout after a real
+        # update succeeded) still retries idempotently.
+        if target_version_id == current_version_id:
+            return {"success": True, "skill": self._skill_installation_dto(existing)}
         expected = str(params.get("expected_current_version_id") or "").strip()
         if expected and expected != current_version_id:
+            logger.warning(
+                "Skill update version conflict: source_id=%s skill_id=%s "
+                "expected=%s current=%s target=%s",
+                source_id,
+                skill_id,
+                expected,
+                current_version_id,
+                target_version_id,
+            )
             return self._source_error(
                 "skill_version_conflict",
                 f"expected {expected}, current version is {current_version_id}",
             )
-        if target_version_id == current_version_id:
-            return {"success": True, "skill": self._skill_installation_dto(existing)}
         install_params = dict(params)
         install_params.update(
             {

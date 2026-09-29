@@ -71,6 +71,10 @@ class AgentRequest:
     request_id: str
     channel_id: str = ""
     session_id: str | None = None
+    # thread_id：业务对话 ID（前端 thread_<ts+random>），与 session_id 同级下发。
+    # PC 端 OfficeAce 记忆按此 ID 归档对话到 pc-threads/{thread_id}/messages
+    # （session_id 是 thread_id 的 sha256 哈希，不可逆，故单独透传业务维度）。
+    thread_id: str | None = None
     chat_id: str | None = None
     # 企业多租户 / OfficeClaw：service_id / agent_id（企业版与 tip 隔离共用）
     service_id: str | None = None

@@ -314,6 +314,10 @@ class PolicyEngine:
             logger.warning("Policy '%s': %s", policy.name, warning)
 
         resolved = self.resolve_policy(policy)
+        # Same defensive mkdir as SandboxManager._save_state: policies_dir is
+        # created in ``__init__`` only, so a vanished parent must not turn
+        # create_sandbox into FileNotFoundError.
+        self.policies_dir.mkdir(parents=True, exist_ok=True)
         policy_path = self.policies_dir / f"{sandbox_id}_sandbox_policy.yaml"
 
         with open(policy_path, "w", encoding="utf-8", newline="\n") as f:

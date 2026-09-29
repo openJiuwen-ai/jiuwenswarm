@@ -47,6 +47,17 @@ function errorCode(error: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
+export function isWorkspaceQuotaError(error: unknown): boolean {
+  if (typeof error === 'string') {
+    return error.includes('WORKSPACE_QUOTA_EXCEEDED');
+  }
+  if (!error || typeof error !== 'object') return false;
+  const record = error as { code?: unknown; message?: unknown; error?: unknown };
+  return [record.code, record.message, record.error].some(
+    (value) => typeof value === 'string' && value.includes('WORKSPACE_QUOTA_EXCEEDED'),
+  );
+}
+
 export function isRequestTimeoutError(error: unknown): boolean {
   return errorCode(error) === 'REQUEST_TIMEOUT';
 }

@@ -11,7 +11,6 @@ export const isEnterprise = (): boolean => readEdition() === "enterprise";
 
 export const ENTERPRISE_HIDDEN_NAV_ITEMS = [
   "channels",
-  "agents",
   "teams",
   "personalContext",
   "extensions",

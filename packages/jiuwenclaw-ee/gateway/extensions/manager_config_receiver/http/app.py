@@ -17,6 +17,7 @@ from ..infrastructure.config import get_settings
 from ..routers.application_config_routers import application_config_router
 from ..routers.instance_resource_routers import instance_resource_router
 from ..routers.instance_routers import instance_router
+from ..routers.quota_routers import quota_router
 from ..routers.template_routers import templates_router
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
     v1.include_router(instance_router, tags=["Instances"])
     v1.include_router(instance_resource_router, tags=["Instance Resources"])
     v1.include_router(application_config_router, tags=["Application Config"])
+    v1.include_router(quota_router, tags=["Quota"])
 
     app.include_router(v1)
     return app

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import logging
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from threading import RLock
@@ -29,6 +30,7 @@ from jiuwenswarm.telemetry.attributes import (
 )
 from jiuwenswarm.telemetry.metrics import metrics_channel_id, metrics_session_id
 
+logger = logging.getLogger(__name__)
 
 _REQUEST_BINDING_STACK: ContextVar[tuple[object, ...]] = ContextVar(
     "jiuwenswarm_request_binding_stack",
@@ -237,6 +239,7 @@ def bind_incoming_request(request: object) -> IncomingRequestBinding:
                 otel_context.detach(otel_token)
         raise
     _bind_incoming_trace_attributes(request, identity)
+    _bind_current_request_id(request)
     marker = object()
     stack_token = _REQUEST_BINDING_STACK.set(
         (*_REQUEST_BINDING_STACK.get(), marker)
@@ -249,6 +252,24 @@ def bind_incoming_request(request: object) -> IncomingRequestBinding:
         _marker=marker,
         _stack_token=stack_token,
     )
+
+
+def _bind_current_request_id(request: object) -> None:
+    """Expose request_id to the logging layer for precise log↔span join.
+
+    Paired with ``open_agent_run_span``'s ``set_current_request_id`` on the
+    AgentServer side; on the Gateway side this is the entry point that first
+    sees the request_id. Best-effort: never blocks the business request.
+    """
+    try:
+        from openjiuwen.extensions.observability.span_context import (
+            set_current_request_id,
+        )
+
+        set_current_request_id(str(getattr(request, "request_id", None) or ""))
+    except Exception as e:
+        logger.warning(f"set diagnosis request id failed: {e}.")
+        return
 
 
 def _bind_incoming_trace_attributes(
@@ -333,7 +354,21 @@ def reset_incoming_request(binding: IncomingRequestBinding) -> None:
             try:
                 IdentityStore.clear(binding.identity_token)
             finally:
+                _clear_current_request_id()
                 otel_context.detach(binding.otel_token)
+
+
+def _clear_current_request_id() -> None:
+    """Clear the request_id ContextVar paired with ``_bind_current_request_id``."""
+    try:
+        from openjiuwen.extensions.observability.span_context import (
+            clear_current_request_id,
+        )
+
+        clear_current_request_id()
+    except Exception as e:
+        logger.warning(f"Clear request failed:{e}.")
+        return
 
 
 def _identity_value(value: object) -> str | None:

@@ -24,11 +24,13 @@ class _FakeRail:
     last_args = None
 
     def __init__(self, provider, *, user_id="__default__", scope_id="__default__",
-                 session_id="__default__"):
+                 session_id="__default__", thread_id=None):
         _FakeRail.last_args = {
             "provider": provider,
             "user_id": user_id,
             "scope_id": scope_id,
+            "session_id": session_id,
+            "thread_id": thread_id,
         }
         self.provider = provider
 
@@ -94,6 +96,23 @@ class _FakeLakeBaseProvider:
         return _FakeLakeBaseProvider.available
 
 
+class _FakeAgentArtsProvider:
+    """Stub for OfficeAce memory providers (cloud + pc).
+
+    The builder dispatches ``officeace_cloud`` to either
+    ``OfficeAceMemoryCloudProvider`` or ``OfficeAceMemoryPcProvider`` based on
+    OFFICE_ACE_DEPLOYMENT. Both are stubbed to this class so tests can assert
+    construction kwargs regardless of dispatch branch.
+    """
+    last_init_kwargs = None
+    last_class = None  # which class the builder picked: "cloud" | "pc"
+
+    def __init__(self, **kwargs):
+        _FakeAgentArtsProvider.last_init_kwargs = kwargs
+        self.name = "officeace"
+        self.kwargs = kwargs
+
+
 def _ensure_module(name: str) -> ModuleType:
     mod = sys.modules.get(name)
     if mod is None:
@@ -130,6 +149,21 @@ def _install_agent_core_stubs():
 
     lb_mod = _ensure_module("openjiuwen.core.memory.external.lakebase_memory_provider")
     lb_mod.LakeBaseMemoryProvider = _FakeLakeBaseProvider
+
+    aa_mod = _ensure_module("openjiuwen.core.memory.external.agentarts_memory_provider")
+    aa_mod.AgentArtsMemoryProvider = _FakeAgentArtsProvider
+
+    # OfficeAce cloud/pc providers (the two branches the officeace_cloud
+    # builder dispatches to).
+    oa_cloud_mod = _ensure_module(
+        "openjiuwen.core.memory.external.office_ace_memory_cloud_provider"
+    )
+    oa_cloud_mod.OfficeAceMemoryCloudProvider = _FakeAgentArtsProvider
+
+    oa_pc_mod = _ensure_module(
+        "openjiuwen.core.memory.external.office_ace_memory_pc_provider"
+    )
+    oa_pc_mod.OfficeAceMemoryPcProvider = _FakeAgentArtsProvider
 
 
 def _install_jiuwenswarm_stubs():
@@ -269,6 +303,8 @@ def reset_spy_state():
     _FakeVikingProvider.available = True
     _FakeLakeBaseProvider.last_init_kwargs = None
     _FakeLakeBaseProvider.available = True
+    _FakeAgentArtsProvider.last_init_kwargs = None
+    _FakeAgentArtsProvider.last_class = None
     yield
 
 
@@ -314,6 +350,25 @@ def test_openjiuwen_happy_path(monkeypatch):
     rail_args = _FakeRail.last_args
     assert rail_args["user_id"] == "alice"
     assert rail_args["scope_id"] == "proj-a"
+
+
+def test_non_agentarts_provider_ignores_session_id(monkeypatch):
+    """Passing a session_id must NOT reach openjiuwen/mem0/openviking/lakebase
+    rails — they keep "__default__" so their message tagging is unchanged.
+    Only agentarts consumes the per-session session_id."""
+    monkeypatch.setattr(
+        emc, "get_embed_config",
+        lambda: {"api_key": "ek", "base_url": "eb", "model": "em"},
+    )
+    cfg = {"memory": {"engine": "external", "external": {
+        "provider": "openjiuwen",
+        "openjiuwen": {"kv_type": "in_memory"},
+    }}}
+    assert emb.build_external_memory_rail(
+        cfg, session_id="real-session-123"
+    ) is not None
+    # openjiuwen rail must keep "__default__", not "real-session-123"
+    assert _FakeRail.last_args["session_id"] == "__default__"
 
 
 # ---------------------------------------------------------------------------
@@ -543,3 +598,107 @@ def test_rail_import_failure_returns_none():
             sys.modules["openjiuwen.harness.rails.external_memory_rail"] = orig_rail_mod
         else:
             sys.modules.pop("openjiuwen.harness.rails.external_memory_rail", None)
+
+
+# ---------------------------------------------------------------------------
+# OfficeAce memory provider — per-session credentials bound at construction.
+# Builder dispatches the ``officeace_cloud`` config key to either the cloud
+# or pc provider class based on OFFICE_ACE_DEPLOYMENT (both stubbed here).
+# ---------------------------------------------------------------------------
+
+def _officeace_cfg(provider_section: dict) -> dict:
+    return {"memory": {"engine": "external", "external": {
+        "provider": "officeace_cloud",
+        "officeace_cloud": provider_section,
+    }}}
+
+
+def test_officeace_thread_id_threaded_into_rail(monkeypatch):
+    """thread_id (业务对话 ID) is threaded from builder → rail constructor.
+
+    PC 端 OfficeAce 记忆 sync_turn 上报 pc-threads/{thread_id}/messages 用它。
+    """
+    monkeypatch.setenv("OFFICE_ACE_DEPLOYMENT", "pc")
+    cfg = _officeace_cfg({"api_key": "k", "space_id": "s"})
+    session_id = "relayclaw-sess-12345678"
+    thread_id = "thread_abc123"
+    assert emb.build_external_memory_rail(
+        cfg, session_id=session_id, thread_id=thread_id
+    ) is not None
+    # session_id + thread_id both threaded into the rail constructor
+    assert _FakeRail.last_args["session_id"] == session_id
+    assert _FakeRail.last_args["thread_id"] == thread_id
+
+
+def test_officeace_thread_id_none_for_non_officeace_provider(monkeypatch):
+    """Non-officeace providers get thread_id=None (they don't consume it)."""
+    monkeypatch.setenv("OFFICE_ACE_DEPLOYMENT", "pc")
+    cfg = {"memory": {"external": {"provider": "mem0", "mem0": {"api_key": "k"}}}}
+    assert emb.build_external_memory_rail(
+        cfg, session_id="sess", thread_id="thread_x"
+    ) is not None
+    # thread_id only flows to officeace_cloud; mem0 rail gets None
+    assert _FakeRail.last_args["thread_id"] is None
+    # session_id stays __default__ for non-officeace providers
+    assert _FakeRail.last_args["session_id"] == "__default__"
+
+
+def test_officeace_static_config_values_used(monkeypatch):
+    """Static config values are read directly (no per-session runtime_config)."""
+    monkeypatch.setenv("OFFICE_ACE_DEPLOYMENT", "cloud")
+    for var in ("AGENTARTS_MEMORY_BASE_URL", "AGENTARTS_MEMORY_API_KEY", "AGENTARTS_MEMORY_SPACE_ID"):
+        monkeypatch.delenv(var, raising=False)
+    cfg = _officeace_cfg({
+        "base_url": "https://memory.example.com",
+        "api_key": "static-key",
+        "space_id": "static-space",
+    })
+    assert emb.build_external_memory_rail(cfg) is not None
+    kwargs = _FakeAgentArtsProvider.last_init_kwargs
+    assert kwargs["base_url"] == "https://memory.example.com"
+    assert kwargs["api_key"] == "static-key"
+    assert kwargs["space_id"] == "static-space"
+    # No session_id -> rail falls back to "__default__"
+    assert _FakeRail.last_args["session_id"] == "__default__"
+    # No thread_id -> rail gets None
+    assert _FakeRail.last_args["thread_id"] is None
+
+
+def test_officeace_env_fallback_when_yaml_empty(monkeypatch):
+    """Env vars fill in when config section is empty."""
+    monkeypatch.setenv("OFFICE_ACE_DEPLOYMENT", "cloud")
+    monkeypatch.setenv("AGENTARTS_MEMORY_BASE_URL", "https://env.example.com")
+    monkeypatch.setenv("AGENTARTS_MEMORY_API_KEY", "env-key")
+    monkeypatch.setenv("AGENTARTS_MEMORY_SPACE_ID", "env-space")
+    cfg = _officeace_cfg({})
+    assert emb.build_external_memory_rail(cfg) is not None
+    kwargs = _FakeAgentArtsProvider.last_init_kwargs
+    assert kwargs["base_url"] == "https://env.example.com"
+    assert kwargs["api_key"] == "env-key"
+    assert kwargs["space_id"] == "env-space"
+
+
+def test_officeace_cloud_dispatch_when_deployment_cloud(monkeypatch):
+    """OFFICE_ACE_DEPLOYMENT=cloud → OfficeAceMemoryCloudProvider branch."""
+    monkeypatch.setenv("OFFICE_ACE_DEPLOYMENT", "cloud")
+    cfg = _officeace_cfg({"api_key": "k", "space_id": "s"})
+    assert emb.build_external_memory_rail(cfg) is not None
+    # cloud provider receives space_id (pc provider does not)
+    assert _FakeAgentArtsProvider.last_init_kwargs.get("space_id") == "s"
+
+
+def test_officeace_pc_dispatch_when_deployment_pc(monkeypatch):
+    """OFFICE_ACE_DEPLOYMENT=pc → OfficeAceMemoryPcProvider branch."""
+    monkeypatch.setenv("OFFICE_ACE_DEPLOYMENT", "pc")
+    cfg = _officeace_cfg({"api_key": "k", "space_id": "s"})
+    assert emb.build_external_memory_rail(cfg) is not None
+    # pc provider does NOT receive space_id (only base_url/api_key/actor_id)
+    assert "space_id" not in _FakeAgentArtsProvider.last_init_kwargs
+
+
+def test_officeace_pc_dispatch_when_deployment_unset(monkeypatch):
+    """Unset OFFICE_ACE_DEPLOYMENT defaults to pc branch."""
+    monkeypatch.delenv("OFFICE_ACE_DEPLOYMENT", raising=False)
+    cfg = _officeace_cfg({"api_key": "k"})
+    assert emb.build_external_memory_rail(cfg) is not None
+    assert "space_id" not in _FakeAgentArtsProvider.last_init_kwargs

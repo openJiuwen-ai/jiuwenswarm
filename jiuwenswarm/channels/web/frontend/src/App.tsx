@@ -8,7 +8,8 @@ import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo
 import { ChatPanel } from './components/ChatPanel';
 import { SessionSidebar } from './components/SessionSidebar';
 import { SkillPanel } from './components/SkillPanel';
-import { AgentPanel } from './components/AgentPanel/index';
+import { WorkspacePanel } from './components/WorkspacePanel/index';
+import { ApprovalsPanel } from './components/ApprovalsPanel';
 import { TeamPanel } from './components/TeamPanel';
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
@@ -64,6 +65,7 @@ import {
   usePlanStore,
   useWorkspaceStore,
   useCronStore,
+  useSubagentStore,
 } from './stores';
 import { chatRoutePath } from './multi-session/routing/route';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
@@ -74,7 +76,7 @@ import {
   type MainNavKey,
 } from './features/mainNavigationState';
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
-import { DeleteDialog } from './multi-session/dialogs/Dialogs';
+import { DeleteDialog, NoticeDialog } from './multi-session/dialogs/Dialogs';
 import {
   NEW_CONVERSATION_ID,
   createConversationTitle,
@@ -84,7 +86,7 @@ import {
   resetNewConversationRuntime,
 } from './multi-session/state/newConversationLifecycle';
 import { toDisplaySessionTitle } from './utils/documentMessage';
-import { createConversationSession } from './multi-session/state/createConversationSession';
+import { createConversationSession, isWorkspaceQuotaError } from './multi-session/state/createConversationSession';
 import { useTranslation } from 'react-i18next';
 import {
   normalizeA2UIEnabled,
@@ -113,12 +115,19 @@ import {
   normalizeTrajectoryUiEnabled,
   setTrajectoryUiEnabled,
   useTrajectoryUiEnabled,
+  normalizeDiagnosisEnabled,
+  setDiagnosisEnabled,
+  useDiagnosisEnabled,
 } from './features/trajectory/featureConfig';
 import './App.css';
 
 const LazyTrajectoryPanel = lazy(async () => {
   const module = await import('./features/trajectory/TrajectoryPanel');
   return { default: module.TrajectoryPanel };
+});
+const LazyDiagnosisHistoryPanel = lazy(async () => {
+  const module = await import('./features/trajectory/DiagnosisHistoryPanel');
+  return { default: module.DiagnosisHistoryPanel };
 });
 
 const TEAM_SESSION_MODES = new Set(['team', 'team.plan', 'code.team']);
@@ -342,7 +351,10 @@ function AppContent() {
   const enterpriseMode = isEnterprise();
   const cronJobPullSyncEnabled = enterpriseMode && getWebTransport() === 'http';
   useCronJobSync(cronJobPullSyncEnabled);
-  const enterpriseBlockedNav = new Set<MainNavKey>(ENTERPRISE_HIDDEN_NAV_ITEMS);
+  const enterpriseBlockedNav = useMemo(
+    () => new Set<MainNavKey>(enterpriseMode ? ENTERPRISE_HIDDEN_NAV_ITEMS : (['approvals'] as const)),
+    [enterpriseMode],
+  );
   const [activeNav, setActiveNav] = useState<MainNavKey>(() => {
     let stored: string | null = null;
     try {
@@ -351,12 +363,13 @@ function AppContent() {
       // Storage may be unavailable in private/locked-down browser contexts.
     }
     return parseStoredMainNav(stored, {
-      blocked: enterpriseMode ? ENTERPRISE_HIDDEN_NAV_ITEMS : [],
+      blocked: enterpriseMode ? ENTERPRISE_HIDDEN_NAV_ITEMS : ['approvals'],
       updaterEnabled: FEATURE_APP_UPDATER_UI,
     });
   });
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
   const trajectoryUiEnabled = useTrajectoryUiEnabled();
+  const diagnosisEnabled = useDiagnosisEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
   const [restartModalOpen, setRestartModalOpen] = useState(false);
@@ -375,12 +388,15 @@ function AppContent() {
   const [hasVisitedSkills, setHasVisitedSkills] = useState(activeNav === 'skills');
   const [hasVisitedChannels, setHasVisitedChannels] = useState(activeNav === 'channels');
   const [hasVisitedPersonalContext, setHasVisitedPersonalContext] = useState(activeNav === 'personalContext');
+  // 诊断面板保活：切走再切回不丢流式输出（卸载会销毁流式状态并断 SSE）
+  const [hasVisitedDiagnosis, setHasVisitedDiagnosis] = useState(activeNav === 'diagnosis');
   const [sidebarMorePanelOpen, setSidebarMorePanelOpen] = useState(false);
   const [modelSetupGuideStep, setModelSetupGuideStep] = useState<ModelSetupGuideStep | null>(null);
   const [modelSetupGuideManual, setModelSetupGuideManual] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Session | null>(null);
   const [dialogBusy, setDialogBusy] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
+  const [createErrorNotice, setCreateErrorNotice] = useState<{ title: string; message?: string } | null>(null);
   const [composerFocusNonce, setComposerFocusNonce] = useState(0);
   const [missingSessionId, setMissingSessionId] = useState<string | null>(null);
   const startupUpdateCheckRef = useRef(false);
@@ -428,14 +444,23 @@ function AppContent() {
     }
   }, [activeNav]);
 
+  // 功能开关关闭后残留的 sessionStorage 导航态不应继续渲染诊断面板
+  // （面板 API 会 403）。照搬 updatepanel 的 redirect 模式。
+  useEffect(() => {
+    if (!diagnosisEnabled && activeNav === 'diagnosis') {
+      setActiveNav('chat');
+    }
+  }, [activeNav, diagnosisEnabled]);
+
   useEffect(() => {
     const handler = (e: Event) => {
       const nav = (e as CustomEvent<MainNavKey>).detail;
-      if (!nav || (enterpriseMode && enterpriseBlockedNav.has(nav))) return;
+      if (!nav || enterpriseBlockedNav.has(nav)) return;
       setActiveNav(nav);
       if (nav === 'skills') setHasVisitedSkills(true);
       if (nav === 'channels') setHasVisitedChannels(true);
       if (nav === 'personalContext') setHasVisitedPersonalContext(true);
+      if (nav === 'diagnosis') setHasVisitedDiagnosis(true);
     };
     window.addEventListener('jiuwen:nav', handler);
     return () => window.removeEventListener('jiuwen:nav', handler);
@@ -494,6 +519,11 @@ function AppContent() {
     sessionIdRef.current = sessionId;
     setHistoryLoadingMore(false);
     setHistoryPrepending(historyLoadingSessionsRef.current.has(sessionId));
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || sessionId === NEW_CONVERSATION_ID) return;
+    useSubagentStore.getState().hydrateRuntime(sessionId);
   }, [sessionId]);
 
   const {
@@ -717,18 +747,20 @@ function AppContent() {
   const proactiveNotificationMessage = useHarnessStore((s) => s.proactiveNotificationMessage);
   const setProactiveNotification = useHarnessStore((s) => s.setProactiveNotification);
 
+  const subagentCount = useSubagentStore((s) => Object.keys(s.runtimes[sessionId]?.subagentsById ?? {}).length);
   const toolPanelHasContent = useMemo(() => {
     const hasMessages = messages.length > 0;
     const hasCodeEnvironment = sessionProject?.work_mode === 'code' && sessionId !== NEW_CONVERSATION_ID;
+    const hasSubagents = subagentCount > 0;
     switch (mode) {
       case 'auto_harness':
         return Boolean(extensionReady?.runtimePath) || hasMessages;
       case 'team':
-        return isRestoringTeamHistory || teamTaskEvents.length > 0 || teamTasks.length > 0 || teamMembers.length > 0 || hasMessages || hasCodeEnvironment;
+        return isRestoringTeamHistory || teamTaskEvents.length > 0 || teamTasks.length > 0 || teamMembers.length > 0 || hasMessages || hasCodeEnvironment || hasSubagents;
       default:
-        return todos.length > 0 || hasMessages || hasCodeEnvironment;
+        return todos.length > 0 || hasMessages || hasCodeEnvironment || hasSubagents;
     }
-  }, [mode, todos.length, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, isRestoringTeamHistory, sessionId, sessionProject?.work_mode]);
+  }, [mode, todos.length, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, isRestoringTeamHistory, sessionId, sessionProject?.work_mode, subagentCount]);
   // 单 agent 模式同样复用集群模式的展开布局（百分比宽度 + 可拖拽分割线），
   // 避免右侧面板与聊天面板平分空间导致宽度与集群模式不一致；auto_harness 走收起态分支。
   const isTeamAreaExpanded = mode !== 'auto_harness' && teamAreaExpanded && toolPanelHasContent;
@@ -1017,6 +1049,7 @@ function AppContent() {
       const config = await request<Record<string, unknown>>('config.get');
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
+      setDiagnosisEnabled(normalizeDiagnosisEnabled(config.diagnosis_enabled));
       setServerConfig(config);
       setConfigError(null);
       if (!modelSetupGuideEvaluatedRef.current) {
@@ -1175,6 +1208,11 @@ function AppContent() {
       }
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(updates.trajectory_ui_enabled));
     }
+    if ('diagnosis_enabled' in updates) {
+      if (payload?.updated?.includes('diagnosis_enabled')) {
+        setDiagnosisEnabled(normalizeDiagnosisEnabled(updates.diagnosis_enabled));
+      }
+    }
     setServerConfig((prev) => {
       if (!prev) return updates;
       const next: Record<string, unknown> = { ...prev, ...updates };
@@ -1311,6 +1349,11 @@ function AppContent() {
         throw new Error(t('config.errors.trajectoryUiUnsupported'));
       }
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(payload.config.trajectory_ui_enabled));
+    }
+    if (payload.config && 'diagnosis_enabled' in payload.config) {
+      if (result?.updated?.includes('diagnosis_enabled')) {
+        setDiagnosisEnabled(normalizeDiagnosisEnabled(payload.config.diagnosis_enabled));
+      }
     }
     setServerConfig((prev) => {
       const next: Record<string, unknown> = { ...(prev ?? {}) };
@@ -1919,7 +1962,13 @@ function AppContent() {
         useChatStore.getState().setThinking(NEW_CONVERSATION_ID, false);
         useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, content);
         console.error('Failed to create conversation:', error);
-        window.alert(t('multiSession.errors.create'));
+        const quotaHit = isWorkspaceQuotaError(error);
+        setCreateErrorNotice(quotaHit
+          ? {
+            title: t('multiSession.errors.quotaExceededTitle'),
+            message: t('multiSession.errors.quotaExceeded'),
+          }
+          : { title: t('multiSession.errors.create') });
       } finally {
         creatingSessionRef.current = false;
       }
@@ -2333,6 +2382,7 @@ function AppContent() {
       useTodoStore.getState().removeRuntime(deletedSessionId);
       useHarnessStore.getState().removeRuntime(deletedSessionId);
       useGoalStore.getState().removeRuntime(deletedSessionId);
+      useSubagentStore.getState().removeRuntime(deletedSessionId);
     }
 
     if (routeSessionId && deletedSessionIds.has(routeSessionId)) {
@@ -2362,6 +2412,7 @@ function AppContent() {
       useTodoStore.getState().removeRuntime(deleteTarget.session_id);
       useHarnessStore.getState().removeRuntime(deleteTarget.session_id);
       useGoalStore.getState().removeRuntime(deleteTarget.session_id);
+      useSubagentStore.getState().removeRuntime(deleteTarget.session_id);
       const deletingCurrent = sessionIdRef.current === deleteTarget.session_id;
       setDeleteTarget(null);
       await useWorkspaceStore.getState().refreshSessionWorkspace(deletedSession);
@@ -2379,7 +2430,7 @@ function AppContent() {
   }, [deleteTarget, enterNewConversation, request, t]);
 
   const handleNavigate = useCallback((nav: MainNavKey) => {
-    if (enterpriseMode && enterpriseBlockedNav.has(nav)) return;
+    if (enterpriseBlockedNav.has(nav)) return;
     setActiveNav(nav);
     if (modelSetupGuideStep === 1 && nav === 'configpanel') {
       setModelSetupGuideStep(2);
@@ -2387,7 +2438,8 @@ function AppContent() {
     if (nav === 'skills') setHasVisitedSkills(true);
     if (nav === 'channels') setHasVisitedChannels(true);
     if (nav === 'personalContext') setHasVisitedPersonalContext(true);
-  }, [enterpriseMode, modelSetupGuideStep]);
+    if (nav === 'diagnosis') setHasVisitedDiagnosis(true);
+  }, [enterpriseBlockedNav, modelSetupGuideStep]);
 
   const skipModelSetupGuide = useCallback(() => {
     setModelSetupGuideStep(null);
@@ -2512,7 +2564,12 @@ function AppContent() {
         isConnected={isConnected}
         onNewSession={handleNewSession}
         showNewSession={false}
-        hiddenNavItems={enterpriseMode ? ['sessions', 'history', ...ENTERPRISE_HIDDEN_NAV_ITEMS] : ['sessions', 'history']}
+        hiddenNavItems={(() => {
+          const base: MainNavKey[] = enterpriseMode
+            ? ['sessions', 'history', ...ENTERPRISE_HIDDEN_NAV_ITEMS]
+            : ['sessions', 'history', 'approvals'];
+          return diagnosisEnabled ? base : [...base, 'diagnosis'];
+        })()}
         onMorePanelOpenChange={setSidebarMorePanelOpen}
       />
 
@@ -2646,7 +2703,12 @@ function AppContent() {
         )}
         {activeNav === 'agents' && (
           <div className="app-section">
-            <AgentPanel sessionId={sessionId} />
+            <WorkspacePanel sessionId={sessionId} />
+          </div>
+        )}
+        {activeNav === 'approvals' && (
+          <div className="app-section">
+            <ApprovalsPanel />
           </div>
         )}
         {activeNav === 'teams' && (
@@ -2744,6 +2806,13 @@ function AppContent() {
             <UpdatePanel isConnected={isConnected} request={request} />
           </div>
         )}
+        {hasVisitedDiagnosis && (
+          <div className={`app-section min-h-0 ${activeNav === 'diagnosis' ? '' : 'is-hidden'}`}>
+            <Suspense fallback={null}>
+              <LazyDiagnosisHistoryPanel request={request} currentSessionId={sessionId} />
+            </Suspense>
+          </div>
+        )}
 
         {hasVisitedSkills && (
           <div className={`app-section ${activeNav === 'skills' ? '' : 'is-hidden'}`}>
@@ -2781,6 +2850,14 @@ function AppContent() {
           error={dialogError}
           onCancel={() => setDeleteTarget(null)}
           onDelete={() => { void handleDeleteConversation(); }}
+        />
+      )}
+
+      {createErrorNotice && (
+        <NoticeDialog
+          title={createErrorNotice.title}
+          message={createErrorNotice.message}
+          onClose={() => setCreateErrorNotice(null)}
         />
       )}
 

@@ -166,7 +166,7 @@ async def test_session_child_reuses_authoritative_config_snapshot() -> None:
             return None
 
     child = FakeChild()
-    adapter._new_session_scoped_adapter = lambda _sid: child
+    adapter._new_session_scoped_adapter = lambda _sid, **_kw: child
 
     async def _reload_noop(_sid, _child):
         return None
@@ -204,7 +204,7 @@ async def test_enterprise_request_rebuilds_session_child_created_without_identit
     stale = FakeChild()
     fresh = FakeChild()
     parent._session_adapters = {"sess_a": stale}
-    parent._new_session_scoped_adapter = lambda _sid: fresh
+    parent._new_session_scoped_adapter = lambda _sid, **_kw: fresh
 
     async def _reload_noop(_sid, _child) -> None:
         return None

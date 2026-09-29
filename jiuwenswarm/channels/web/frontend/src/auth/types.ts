@@ -8,6 +8,8 @@ export interface EnterpriseAuthProvider {
   redirectToLogin(): boolean;
   getCurrentUser(): Promise<EnterpriseUser>;
   listAgentContexts(): Promise<EnterpriseAgentContext[]>;
+  /** 是否可进入管理面（有管理面角色/权限）；普通用户为 false。模拟登录可省略。 */
+  getManagerAccess?(): Promise<boolean>;
   /** 写入 Manager 用户面反代 Cookie ``jiuwenclaw_id``；模拟登录可省略。 */
   setActiveCluster?(jiuwenclawId: string): Promise<void>;
   logout(): Promise<void>;

@@ -213,6 +213,113 @@ async def test_source_update_keeps_target_marketplace_version_and_author_in_list
     assert detail["author"] == "Architecture Team v2"
 
 
+@pytest.mark.asyncio
+async def test_source_update_idempotent_when_stale_expected_but_already_at_target(
+    tmp_path, monkeypatch
+):
+    """Client timeout after a successful update: retry with stale expected still succeeds."""
+    monkeypatch.setattr(ExtensionRegistry, "_instance", None)
+    manager = SkillManager(workspace_dir=str(tmp_path))
+    registry = SourceRegistry()
+    registry.register(
+        SourceConfig(
+            source_id="hub-market",
+            provider_type="customhub",
+            capabilities=frozenset({"get_artifact"}),
+            download_policy=DownloadPolicy(allowed_hosts=("example.com",)),
+        ),
+        _MarketplaceMetadataProvider(),
+    )
+    manager._source_registry = registry
+    installed = await manager.handle_skills_source_install(
+        {
+            "source_id": "hub-market",
+            "skill_id": "skill-123",
+            "version_id": "version-456",
+            "version": "1.0.0",
+            "author": "Architecture Team",
+        }
+    )
+    assert installed["success"] is True
+
+    first = await manager.handle_skills_update(
+        {
+            "source_id": "hub-market",
+            "skill_id": "skill-123",
+            "target_version_id": "version-789",
+            "expected_current_version_id": "version-456",
+            "version": "1.1.0",
+        }
+    )
+    assert first["success"] is True
+    assert first["skill"]["version_id"] == "version-789"
+
+    # Simulate retry after client timeout: expected still points at pre-update version.
+    retry = await manager.handle_skills_update(
+        {
+            "source_id": "hub-market",
+            "skill_id": "skill-123",
+            "target_version_id": "version-789",
+            "expected_current_version_id": "version-456",
+        }
+    )
+    assert retry["success"] is True
+    assert retry["skill"]["version_id"] == "version-789"
+
+
+@pytest.mark.asyncio
+async def test_source_update_still_conflicts_when_current_differs_from_target(
+    tmp_path, monkeypatch
+):
+    """Stale expected with a different target remains a real optimistic-lock conflict."""
+    monkeypatch.setattr(ExtensionRegistry, "_instance", None)
+    manager = SkillManager(workspace_dir=str(tmp_path))
+    registry = SourceRegistry()
+    registry.register(
+        SourceConfig(
+            source_id="hub-market",
+            provider_type="customhub",
+            capabilities=frozenset({"get_artifact"}),
+            download_policy=DownloadPolicy(allowed_hosts=("example.com",)),
+        ),
+        _MarketplaceMetadataProvider(),
+    )
+    manager._source_registry = registry
+    installed = await manager.handle_skills_source_install(
+        {
+            "source_id": "hub-market",
+            "skill_id": "skill-123",
+            "version_id": "version-456",
+            "version": "1.0.0",
+        }
+    )
+    assert installed["success"] is True
+
+    updated = await manager.handle_skills_update(
+        {
+            "source_id": "hub-market",
+            "skill_id": "skill-123",
+            "target_version_id": "version-789",
+            "expected_current_version_id": "version-456",
+            "version": "1.1.0",
+        }
+    )
+    assert updated["success"] is True
+
+    conflict = await manager.handle_skills_update(
+        {
+            "source_id": "hub-market",
+            "skill_id": "skill-123",
+            "target_version_id": "version-999",
+            "expected_current_version_id": "version-456",
+        }
+    )
+    assert conflict["success"] is False
+    assert conflict["error_code"] == "skill_version_conflict"
+    assert "expected version-456" in conflict["error_message"]
+    assert "current version is version-789" in conflict["error_message"]
+
+
 def _skill_zip_bytes(name: str, *, author: str = "", version: str = "0.1") -> bytes:
     lines = [f"name: {name}", f"version: {version}"]
     if author:

@@ -41,6 +41,14 @@ from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.explore_agent import build_explore_agent_config
 from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
+from jiuwenswarm.agents.harness.common.browser_defaults import (
+    DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
+)
+from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
+    DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
+    STATUSLINE_SETUP_AGENT_TYPE,
+    build_statusline_setup_agent_config,
+)
 
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
@@ -50,6 +58,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _RailBuildInfo,
     _agent_def_to_subagent_config,
     _deep_agent_kv_cache_affinity_config,
+    _optional_enable_subagent_runtime,
     _resolve_instance_config_base,
     parse_int,
 )
@@ -62,10 +71,17 @@ from jiuwenswarm.agents.harness.code.rails import (
     PlanApprovalInterruptRail,
 )
 from jiuwenswarm.agents.harness.common.rails import (
+    OfficeAceUserProfileRail,
     ProjectMemoryRail,
     StructuredAskUserRail,
 )
 from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_memory_enabled
+from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
+    get_office_ace_user_profile_config,
+)
+from jiuwenswarm.agents.harness.common.rails.office_ace_user_profile import (
+    UserProfileConfig,
+)
 from jiuwenswarm.agents.harness.common.tools import (
     SkillToolkit,
 )
@@ -230,6 +246,7 @@ _RAIL_BUILD_NAMES: dict[str, str] = {
     "ContextProcessorRail": "_build_context_processor_rail",
     "SkillEvolutionRail": "_build_skill_evolution_rail_via_config",
     "ProjectMemoryRail": "_build_project_memory_rail",
+    "OfficeAceUserProfileRail": "_build_office_ace_user_profile_rail",
     "CodingMemoryRail": "_build_coding_memory_rail",
     "WorktreeRail": "_build_worktree_rail_via_config",
     "CodeAgentRail": "_build_code_agent_rail",
@@ -386,7 +403,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         "RequestSummaryRail",
         "RuntimePromptRail", "ResponsePromptRail",
         "JiuSwarmStreamEventRail", "SecurityRail",
-        "LspRail", "ProjectMemoryRail", "PermissionInterruptRail",
+        "LspRail", "ProjectMemoryRail", "OfficeAceUserProfileRail",
+        "PermissionInterruptRail",
         "ContextProcessorRail",
         "ContextOverflowRecoveryRail",
         "SysOperationRail", "CodingMemoryRail",
@@ -554,6 +572,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
             auto_create_workspace=is_enterprise(),
             completion_timeout=config.get("completion_timeout", 3600.0),
+            **_optional_enable_subagent_runtime(
+                self._resolve_enable_subagent_runtime(config_base),
+            ),
         )
 
         # Keep ensure_initialized on the main event loop (same as interface_deep).
@@ -641,6 +662,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_security_rail", self._build_security_rail),
             _RailBuildInfo("_lsp_rail", self._build_lsp_rail_via_config),
             _RailBuildInfo("_project_memory_rail", self._build_project_memory_rail),
+            _RailBuildInfo(
+                "_office_ace_user_profile_rail",
+                self._build_office_ace_user_profile_rail,
+            ),
             _RailBuildInfo(
                 "_permission_rail",
                 self._build_permission_rail_for_agent,
@@ -938,6 +963,37 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             )
             return None
 
+    @staticmethod
+    def _build_office_ace_user_profile_rail() -> OfficeAceUserProfileRail | None:
+        """Build OfficeAceUserProfileRail to inject cloud-side user profile.
+
+        启用条件由 external memory 开关 + provider=officeace_cloud + 凭证齐全隐含控制
+        （``get_office_ace_user_profile_config`` 综合判定，``cfg["enabled"]`` 为结果）。
+        不满足 → rail 不挂载（零残留）。
+        """
+        try:
+            cfg = get_office_ace_user_profile_config(get_config())
+            if not cfg["enabled"]:
+                logger.info(
+                    "[JiuwenSwarmCodeAdapter] OfficeAceUserProfileRail disabled "
+                    "(external memory off / provider not officeace_cloud / credentials incomplete)",
+                )
+                return None
+            rail = OfficeAceUserProfileRail(UserProfileConfig(**cfg))
+            logger.info(
+                "[JiuwenSwarmCodeAdapter] OfficeAceUserProfileRail create success "
+                "(user=%s, endpoint=%s)",
+                cfg["user_id"],
+                cfg["endpoint"],
+            )
+            return rail
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[JiuwenSwarmCodeAdapter] OfficeAceUserProfileRail create failed: %s",
+                exc,
+            )
+            return None
+
     def _build_worktree_rail_via_config(self) -> WorktreeRail | None:
         """Build WorktreeRail for code mode.
 
@@ -1009,18 +1065,44 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             config: dict[str, Any],
             config_base: dict[str, Any] | None = None,
     ) -> tuple[list[Any] | None, bool]:
-        """Build subagents for code mode: explore_agent + plan_agent + code_agent + browser_agent.
+        """Build subagents for code mode, including the built-in status-line setup agent.
 
         explore_agent / plan_agent 固定挂载（Code 模式核心子代理）。
         code_agent / browser_agent 按配置启用。
+
+        每个 spec 都带上父 Agent 的 ``sys_operation``，子 Agent 才能和父 Agent 落在
+        同一套文件系统边界上。
         """
         react_cfg = config if isinstance(config, dict) else {}
         subagents_cfg = react_cfg.get("subagents")
 
         resolved_language = self._resolve_runtime_language()
         workspace = self._workspace_dir or "./"
+        sys_operation = self._sys_operation
         subagents: list[Any] = []
         self._sync_browser_runtime_environment(config_base)
+
+        statusline_setup_cfg = (
+            subagents_cfg.get(STATUSLINE_SETUP_AGENT_TYPE)
+            if isinstance(subagents_cfg, dict)
+            else None
+        )
+        if self._is_subagent_default_enabled(statusline_setup_cfg):
+            statusline_setup_options = (
+                statusline_setup_cfg if isinstance(statusline_setup_cfg, dict) else {}
+            )
+            subagents.append(
+                build_statusline_setup_agent_config(
+                    model,
+                    workspace=workspace,
+                    sys_operation=sys_operation,
+                    language=resolved_language,
+                    max_iterations=parse_int(
+                        statusline_setup_options.get("max_iterations"),
+                        DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
+                    ),
+                )
+            )
 
         # ── 固定挂载：explore_agent（Code 模式核心子代理，始终启用）──
         if not self._subagent_list_has_name(subagents, "explore_agent"):
@@ -1028,6 +1110,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             explore_spec = build_explore_agent_config(
                 model=model,
                 workspace=workspace,
+                sys_operation=sys_operation,
                 language=resolved_language,
                 max_iterations=parse_int(
                     explore_agent_cfg.get("max_iterations") if isinstance(explore_agent_cfg, dict) else None,
@@ -1043,6 +1126,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             plan_spec = build_plan_agent_config(
                 model=model,
                 workspace=workspace,
+                sys_operation=sys_operation,
                 language=resolved_language,
                 max_iterations=parse_int(
                     plan_agent_cfg.get("max_iterations") if isinstance(plan_agent_cfg, dict) else None,
@@ -1066,6 +1150,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 code_spec = build_code_agent_config(
                     model,
                     workspace=workspace,
+                    sys_operation=sys_operation,
                     language=resolved_language,
                     rails=code_agent_rails,
                     max_iterations=parse_int(
@@ -1087,14 +1172,18 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         "[JiuwenSwarmCodeAdapter] browser subagent enabled without BROWSER_DRIVER; "
                         "defaulting to managed mode"
                     )
+                browser_max_iterations = None
+                if isinstance(browser_agent_cfg, dict):
+                    browser_max_iterations = browser_agent_cfg.get("max_iterations")
                 browser_spec = build_browser_agent_config(
                     model,
                     workspace=workspace,
+                    sys_operation=sys_operation,
                     language=resolved_language,
                     max_iterations=parse_int(
-                        browser_agent_cfg.get("max_iterations") if isinstance(browser_agent_cfg, dict) else None,
-                        react_cfg.get("max_iterations", 15),
-                    )
+                        browser_max_iterations,
+                        DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
+                    ),
                 )
                 browser_spec.factory_kwargs = {"auto_create_workspace": False}
                 subagents.append(browser_spec)
@@ -1329,6 +1418,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 self._project_memory_rail.set_additional_directories(
                     runtime_config.trusted_dirs,
                 )
+
+        code_agent_rail = getattr(self, "_code_agent_rail", None)
+        if code_agent_rail is not None:
+            code_agent_rail.set_workspace_dir(project_workspace)
 
         # code 模式始终走 _update_rails_for_mode 的 code 逻辑
         await self._update_rails_for_mode(runtime_config.mode)
@@ -1605,8 +1698,14 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         deep_config = getattr(agent, "deep_config", None)
         if deep_config is not None and getattr(deep_config, "model", None) is None:
             deep_config.model = model
-        if deep_config is not None and getattr(deep_config, "sys_operation", None) is None:
-            deep_config.sys_operation = self._create_sys_operation()
+        inherited_sys_operation = (
+            getattr(deep_config, "sys_operation", None) if deep_config is not None else None
+        )
+        if inherited_sys_operation is None:
+            inherited_sys_operation = self._create_sys_operation()
+            if deep_config is not None:
+                deep_config.sys_operation = inherited_sys_operation
+        self._sys_operation = inherited_sys_operation
         tool_cards = self.build_code_tool_cards(agent_id)
         added_tools = _merge_tool_cards(agent, tool_cards)
 

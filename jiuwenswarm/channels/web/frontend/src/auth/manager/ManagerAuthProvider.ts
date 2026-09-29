@@ -57,6 +57,17 @@ export const managerAuthProvider: EnterpriseAuthProvider = {
     if (result.code !== 200) throw new EnterpriseAuthError(result.code, result.message || '加载 Agent 上下文失败');
     return result.data?.contexts ?? [];
   },
+  async getManagerAccess() {
+    try {
+      const result = await requestJson<
+        ManagerResponse<{ manager_access?: boolean; is_platform_admin?: boolean }>
+      >('/manager-api/v1/authz/me');
+      if (result.code !== 200) return false;
+      return Boolean(result.data?.manager_access || result.data?.is_platform_admin);
+    } catch {
+      return false;
+    }
+  },
   async setActiveCluster(jiuwenclawId: string) {
     const result = await requestJson<ManagerResponse<{ jiuwenclaw_id: string }>>(
       resolveApiUrl('/manager-api/v1/user-console/active-cluster'),

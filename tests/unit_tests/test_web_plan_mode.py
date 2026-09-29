@@ -101,17 +101,20 @@ def test_work_team_has_no_plan_rails(role):
 
 
 def test_code_team_subagents_unchanged_for_both_roles():
+    """code.team 双角色同为 statusline-setup + explore/plan（statusline-setup 为上游 !7546 默认启用）。"""
     from jiuwenswarm.agents.swarm.config_specs import build_member_subagent_specs
 
     for role in ("leader", "teammate"):
         names = [spec.agent_card.name for spec in build_member_subagent_specs({}, "code.team", role)]
-        assert names == ["explore_agent", "plan_agent"]
+        assert names == ["statusline-setup", "explore_agent", "plan_agent"]
 
 
 def test_plain_work_team_has_no_code_subagents():
+    """team 不带 code 侧子 agent；statusline-setup 是上游默认启用项，与 plan 无关。"""
     from jiuwenswarm.agents.swarm.config_specs import build_member_subagent_specs
 
-    assert build_member_subagent_specs({}, "team", "leader") == []
+    names = [spec.agent_card.name for spec in build_member_subagent_specs({}, "team", "leader")]
+    assert names == ["statusline-setup"]
 
 
 # ── 审批动作：执行 / 跳过 / 下一步 都复用 approve / reject ──────────────────

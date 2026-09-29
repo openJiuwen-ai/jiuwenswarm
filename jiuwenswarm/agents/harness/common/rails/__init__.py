@@ -11,6 +11,9 @@ from jiuwenswarm.agents.harness.common.rails.disabled_tools_rail import (
     DisabledToolsRail,
 )
 from jiuwenswarm.agents.harness.common.rails.project_memory_rail import ProjectMemoryRail
+from jiuwenswarm.agents.harness.common.rails.office_ace_user_profile import (
+    OfficeAceUserProfileRail,
+)
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
 from jiuwenswarm.agents.harness.common.rails.symphony import (
@@ -28,6 +31,9 @@ from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import Notify
 from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import (
     DeepResearchExecutionRail,
 )
+from jiuwenswarm.agents.harness.common.rails.model_routing.model_routing_rail import (
+    ModelRoutingRail,
+)
 
 __all__ = [
     "JiuSwarmStreamEventRail",
@@ -36,6 +42,7 @@ __all__ = [
     "PermissionInterruptRail",
     "AvatarPromptRail",
     "ProjectMemoryRail",
+    "OfficeAceUserProfileRail",
     "ResponsePromptRail",
     "RuntimePromptRail",
     "SymphonyOrchestrationRail",
@@ -45,4 +52,5 @@ __all__ = [
     "NotifyingLLMRetryRail",
     "DeepResearchExecutionRail",
     "DisabledToolsRail",
+    "ModelRoutingRail",
 ]

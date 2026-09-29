@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 OUTBOUND_PATH = ROOT / "jiuwenswarm" / "gateway" / "channel_manager" / "web" / "outbound.py"
 HTTP_PATH = ROOT / "jiuwenswarm" / "gateway" / "channel_manager" / "web" / "web_http_app.py"
 SERVER_PATH = ROOT / "jiuwenswarm" / "gateway" / "channel_manager" / "web" / "web_http_server.py"
-ROUTES_PATH = ROOT / "jiuwenswarm" / "gateway" / "channel_manager" / "web" / "web_http_routes.py"
+ROUTES_PATH = ROOT / "jiuwenswarm" / "gateway" / "channel_manager" / "web" / "http_routes" / "mapped.py"
 
 
 def _load_module(mod_name: str, path: Path) -> ModuleType:
@@ -83,29 +83,27 @@ def app_with_mock(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock]:
             m.__path__ = []  # type: ignore[attr-defined]
             monkeypatch.setitem(sys.modules, pkg, m)
 
-    # Real route table (no Gateway imports) so create_web_http_app can register workspace routes.
+    # http_routes package (special mounts stubbed; mapped loaded as real table).
+    routes_pkg = ModuleType("jiuwenswarm.gateway.channel_manager.web.http_routes")
+    routes_pkg.__path__ = []  # type: ignore[attr-defined]
+    routes_pkg.register_special_http_routes = lambda app, channel: None  # type: ignore[attr-defined]
+    routes_pkg.catalog_file_compat_entries = lambda: []  # type: ignore[attr-defined]
+    routes_pkg.catalog_sessions_compat_entries = lambda: []  # type: ignore[attr-defined]
+    sys.modules["jiuwenswarm.gateway.channel_manager.web.http_routes"] = routes_pkg
+
+    # Real mapped table (no Gateway imports) so create_web_http_app can register routes.
     _load_module(
-        "jiuwenswarm.gateway.channel_manager.web.web_http_routes",
+        "jiuwenswarm.gateway.channel_manager.web.http_routes.mapped",
         ROUTES_PATH,
     )
 
-    # web_http_app imports file/sessions compat; stub them (empty package __path__ above).
-    sessions_compat = ModuleType("jiuwenswarm.gateway.channel_manager.web.web_http_sessions_compat")
-    sessions_compat.register_sessions_compat_routes = lambda app: None  # type: ignore[attr-defined]
-    sessions_compat.catalog_sessions_compat_entries = lambda: []  # type: ignore[attr-defined]
+    # web_http_app also mounts trajectory routes; stub to avoid heavy imports.
+    trajectory = ModuleType("jiuwenswarm.gateway.channel_manager.web.trajectory_http")
+    trajectory.attach_trajectory_routes = lambda app, channel: None  # type: ignore[attr-defined]
     monkeypatch.setitem(
         sys.modules,
-        "jiuwenswarm.gateway.channel_manager.web.web_http_sessions_compat",
-        sessions_compat,
-    )
-
-    file_compat = ModuleType("jiuwenswarm.gateway.channel_manager.web.web_http_file_compat")
-    file_compat.register_file_compat_routes = lambda app: None  # type: ignore[attr-defined]
-    file_compat.catalog_file_compat_entries = lambda: []  # type: ignore[attr-defined]
-    monkeypatch.setitem(
-        sys.modules,
-        "jiuwenswarm.gateway.channel_manager.web.web_http_file_compat",
-        file_compat,
+        "jiuwenswarm.gateway.channel_manager.web.trajectory_http",
+        trajectory,
     )
 
     # web_http_app imports timeout helpers from web_http_server (stdlib-only).
@@ -223,6 +221,26 @@ def test_http_json_outbound_wait_response():
         frame = await peer.wait_response("r1", timeout=2)
         assert frame["ok"] is True
         assert frame["payload"]["a"] == 1
+
+    asyncio.run(_run())
+
+
+def test_http_json_outbound_wait_response_accepts_chat_error_event():
+    async def _run():
+        peer = outbound_mod.HttpJsonOutbound()
+        peer.accept_frame({
+            "type": "event",
+            "event": "chat.error",
+            "payload": {
+                "request_id": "r-quota",
+                "error": "WORKSPACE_QUOTA_EXCEEDED",
+                "code": "WORKSPACE_QUOTA_EXCEEDED",
+            },
+        })
+        frame = await peer.wait_response("r-quota", timeout=2)
+        assert frame["ok"] is False
+        assert frame["code"] == "WORKSPACE_QUOTA_EXCEEDED"
+        assert frame["error"] == "WORKSPACE_QUOTA_EXCEEDED"
 
     asyncio.run(_run())
 

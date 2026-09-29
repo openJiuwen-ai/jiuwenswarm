@@ -6,6 +6,7 @@
 - [TUI 使用指南](TUI使用指南.md)
 - [页面概览](页面概览.md)
 - [E2A 协议（Gateway↔Agent）](E2A-protocol.md)
+- [AgentServer WebSocket 接口](AgentServer-WebSocket接口.md)
 - [A2A 接入说明](A2A.md)
 - [Gateway A2A HTTP 接口](../../jiuwenswarm/gateway/docs/Gateway%20A2A接口文档.md)
 - [A2UI 生成式界面](A2UI.md)

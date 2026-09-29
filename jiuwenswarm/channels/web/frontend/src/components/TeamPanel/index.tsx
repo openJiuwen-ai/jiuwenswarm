@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FileViewer } from '../AgentPanel/FileViewer';
+import { FileViewer } from '../WorkspacePanel/FileViewer';
 import { webRequest } from '../../services/webClient';
 import { containsIgnoredDirectory } from '../../features/fileTreeFilters';
 import { isHistoryPreviewFile } from '../../features/historyFilePreview';

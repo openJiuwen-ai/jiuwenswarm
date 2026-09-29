@@ -14,7 +14,11 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails.base import DeepAgentRail
 
-from jiuwenswarm.agents.harness.common.memory.external_memory_config import is_builtin_memory_allowed
+from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
+    is_builtin_memory_allowed,
+    is_external_memory_allowed,
+    is_external_memory_enabled,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
 )
@@ -56,7 +60,12 @@ class AvatarPromptRail(DeepAgentRail):
         language = getattr(builder, "language", "cn") or "cn"
 
         # forbidden_memory — engine=none 或自定义 forbidden 配置时注入，不依赖数字分身功能
-        engine_disabled = not is_builtin_memory_allowed(get_config())
+        # "记忆全禁用"指没有任何记忆引擎可用：builtin 不允许 *且* external 未启用。
+        # 仅 external 模式（agentarts 等）时 builtin=False 但记忆实际可用，不算全禁用。
+        _config = get_config()
+        _builtin_ok = is_builtin_memory_allowed(_config)
+        _external_ok = is_external_memory_allowed(_config) and is_external_memory_enabled(_config)
+        engine_disabled = not (_builtin_ok or _external_ok)
         try:
             from jiuwenswarm.agents.harness.common.memory.forbidden import get_forbidden_memory_prompt
             forbidden = get_forbidden_memory_prompt(language) or ""

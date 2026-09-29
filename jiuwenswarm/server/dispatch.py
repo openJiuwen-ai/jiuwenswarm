@@ -28,6 +28,7 @@ from jiuwenswarm.server.handlers import schedule as schedule_handlers
 from jiuwenswarm.server.handlers import session as session_handlers
 from jiuwenswarm.server.handlers import team as team_handlers
 from jiuwenswarm.server.handlers import steering as steering_handlers
+from jiuwenswarm.server.handlers import workspace as workspace_handlers
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,12 @@ HANDLERS: dict[ReqMethod, HandlerSpec] = {
     ReqMethod.AGENT_RELOAD_CONFIG: HandlerSpec(fn=ops_handlers.handle_agent_reload_config),
     ReqMethod.SYNC_AGENTS_CONFIGS: HandlerSpec(fn=ops_handlers.handle_sync_agents_configs),
     ReqMethod.AGENT_PREWARM_SYNC: HandlerSpec(fn=ops_handlers.handle_agent_prewarm_sync),
+    # --- 用户工作区 ---
+    ReqMethod.WORKSPACE_TREE: HandlerSpec(fn=workspace_handlers.handle_workspace),
+    ReqMethod.WORKSPACE_USAGE: HandlerSpec(fn=workspace_handlers.handle_workspace),
+    ReqMethod.WORKSPACE_ENTRIES_DELETE: HandlerSpec(fn=workspace_handlers.handle_workspace),
+    ReqMethod.WORKSPACE_PREVIEW: HandlerSpec(fn=workspace_handlers.handle_workspace),
+    ReqMethod.WORKSPACE_DOWNLOAD: HandlerSpec(fn=workspace_handlers.handle_workspace),
 }
 
 

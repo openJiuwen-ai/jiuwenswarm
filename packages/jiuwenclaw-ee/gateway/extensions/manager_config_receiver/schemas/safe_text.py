@@ -30,6 +30,7 @@ SAFE_TEXT_FIELD_NAMES: frozenset[str] = frozenset(
     {
         "template_name",
         "policy_name",
+        "policy_desc",
         "description",
         "namespace",
         "pod_name",

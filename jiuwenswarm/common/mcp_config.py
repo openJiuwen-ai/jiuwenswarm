@@ -898,6 +898,14 @@ _MCP_CALL_TOOL_TIMEOUT_S = 300.0
 _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S = 300.0
 
 
+class McpWorkerRetiringError(RuntimeError):
+    """Raised when a new call targets a worker that is being retired."""
+
+
+class McpWorkerStoppedError(RuntimeError):
+    """Raised when a worker stops for internal lifecycle reasons."""
+
+
 class _McpCallRequest:
     """One call_tool request handed from an invoke task to the owner task."""
 
@@ -915,7 +923,17 @@ class _PooledMcpWorker:
     Exposes ``call_tool`` so callers can treat it like a ``ClientSession``.
     """
 
-    __slots__ = ("queue", "task", "server_name", "last_used", "params_fingerprint")
+    __slots__ = (
+        "queue",
+        "task",
+        "server_name",
+        "last_used",
+        "params_fingerprint",
+        "retiring",
+        "inflight",
+        "close_reason",
+        "call_timeout_s",
+    )
 
     def __init__(self, server_name: str, params_fingerprint: str = "") -> None:
         self.queue: asyncio.Queue[_McpCallRequest | None] = asyncio.Queue()
@@ -923,21 +941,37 @@ class _PooledMcpWorker:
         self.server_name = server_name
         self.last_used = time.monotonic()
         self.params_fingerprint = params_fingerprint
+        self.retiring = False
+        self.inflight = 0
+        self.close_reason = ""
+        self.call_timeout_s = 0.0
 
     @property
     def alive(self) -> bool:
         return self.task is not None and not self.task.done()
 
+    @property
+    def busy(self) -> bool:
+        return self.inflight > 0
+
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         """Submit a call_tool to the owner task and await its result."""
+        if self.retiring:
+            raise McpWorkerRetiringError(
+                f"MCP worker for '{self.server_name}' is retiring"
+            )
         if not self.alive:
             raise RuntimeError(
                 f"request-scoped MCP worker for '{self.server_name}' is not running"
             )
         self.last_used = time.monotonic()
         req = _McpCallRequest(name, arguments)
-        await self.queue.put(req)
-        return await req.future
+        self.inflight += 1
+        try:
+            await self.queue.put(req)
+            return await req.future
+        finally:
+            self.inflight -= 1
 
 
 # 按 (request_id, server_name) 池化：同 key 并发 invoke 共享一个进程/浏览器，跨请求不共享。
@@ -969,6 +1003,7 @@ async def _run_mcp_worker(
         _positive_timeout_s(params.get("timeout_s"))
         or _MCP_CALL_TOOL_TIMEOUT_S
     )
+    worker.call_timeout_s = call_timeout_s
 
     async with AsyncExitStack() as stack:
         try:
@@ -1037,12 +1072,18 @@ async def _run_mcp_worker(
                     continue
             except BaseException as exc:
                 # 即使 cancel/keyboard 也要解除 caller，避免 invoke 永挂死 worker。
+                mapped: BaseException = exc
+                if isinstance(exc, asyncio.CancelledError) and worker.close_reason:
+                    mapped = McpWorkerStoppedError(
+                        "MCP worker stopped: "
+                        f"server={worker.server_name} reason={worker.close_reason}"
+                    )
                 if not req.future.done():
-                    req.future.set_exception(exc)
+                    req.future.set_exception(mapped)
                 worker.queue.task_done()
                 if not isinstance(exc, Exception):
                     # Cancelled/KeyboardInterrupt/SystemExit：worker 被销毁，先排干队列再 raise。
-                    await _drain_queue_with_error(worker, exc)
+                    await _drain_queue_with_error(worker, mapped)
                     raise
                 # 普通调用失败：保留循环，让 invoke 的 force_rebuild 重建 worker。
                 continue
@@ -1254,9 +1295,14 @@ async def acquire_request_scoped_mcp_session(
     return worker
 
 
-async def shutdown_pooled_mcp_worker(worker: _PooledMcpWorker) -> None:
+async def shutdown_pooled_mcp_worker(
+    worker: _PooledMcpWorker,
+    *,
+    reason: str = "shutdown",
+) -> None:
     """Best-effort stop of one pooled worker (kills the stdio process)."""
 
+    worker.close_reason = worker.close_reason or reason
     task = worker.task
     if task is None:
         return
@@ -1297,6 +1343,96 @@ async def shutdown_pooled_mcp_worker(worker: _PooledMcpWorker) -> None:
             "MCP worker owner task exited with error server=%s error=%s",
             worker.server_name,
             exc,
+        )
+
+
+_retire_tasks: set[asyncio.Task] = set()
+
+
+def _retire_grace_s(worker: _PooledMcpWorker) -> float:
+    raw = str(os.environ.get("MCP_REGISTRY_WORKER_RETIRE_GRACE_S", "") or "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if value > 0:
+            return value
+    base = worker.call_timeout_s or _MCP_CALL_TOOL_TIMEOUT_S
+    return base + 30.0
+
+
+async def retire_pooled_mcp_worker(
+    worker: _PooledMcpWorker,
+    *,
+    reason: str = "",
+    grace_s: float | None = None,
+) -> None:
+    """Stop accepting new calls; let in-flight calls finish, then close."""
+
+    worker.retiring = True
+    if reason:
+        worker.close_reason = reason
+    task = worker.task
+    if task is None:
+        return
+    try:
+        worker.queue.put_nowait(None)
+    except Exception as exc:
+        logger.warning(
+            "MCP worker retire: put_nowait(None) failed server=%s reason=%s error=%s",
+            worker.server_name,
+            reason,
+            exc,
+        )
+    grace = grace_s if grace_s is not None else _retire_grace_s(worker)
+    reaper = asyncio.create_task(_reap_retired_mcp_worker(worker, grace, reason))
+    _retire_tasks.add(reaper)
+    reaper.add_done_callback(_retire_tasks.discard)
+
+
+async def _reap_retired_mcp_worker(
+    worker: _PooledMcpWorker,
+    grace_s: float,
+    reason: str,
+) -> None:
+    task = worker.task
+    if task is None:
+        return
+    try:
+        with anyio.fail_after(grace_s):
+            await task
+    except TimeoutError:
+        logger.warning(
+            "MCP worker retire timeout, force cancel server=%s reason=%s inflight=%s",
+            worker.server_name,
+            reason,
+            worker.inflight,
+        )
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    except asyncio.CancelledError:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        raise
+    except Exception as exc:
+        logger.warning(
+            "MCP worker retired with error server=%s reason=%s error=%r",
+            worker.server_name,
+            reason,
+            exc,
+        )
+    else:
+        logger.info(
+            "MCP worker retired server=%s reason=%s",
+            worker.server_name,
+            reason,
         )
 
 

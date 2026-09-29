@@ -313,10 +313,15 @@ def _open_legacy_agent_run_span(
         except Exception as cleanup_error:
             logger.debug("[AgentObservability] team span cleanup failed: %s", cleanup_error)
         try:
-            from openjiuwen.extensions.observability.span_context import clear_root_span, clear_current_session_id
+            from openjiuwen.extensions.observability.span_context import (
+                clear_current_request_id,
+                clear_current_session_id,
+                clear_root_span,
+            )
 
             clear_root_span(session_id=session_id, expected_span=span)
             clear_current_session_id()
+            clear_current_request_id()
         except Exception as cleanup_error:
             logger.debug("[AgentObservability] root context cleanup failed: %s", cleanup_error)
         try:
@@ -378,9 +383,14 @@ def close_agent_run_span(handle: Any, *, session_id: str = "") -> None:
         except Exception as exc:
             logger.debug("[AgentObservability] clear team span failed: %s", exc)
     try:
-        from openjiuwen.extensions.observability.span_context import clear_root_span, clear_current_session_id
+        from openjiuwen.extensions.observability.span_context import (
+            clear_current_request_id,
+            clear_current_session_id,
+            clear_root_span,
+        )
 
         clear_root_span(session_id=session_id, expected_span=root_span)
         clear_current_session_id()
+        clear_current_request_id()
     except Exception as exc:
         logger.debug("[AgentObservability] clear root context failed: %s", exc)

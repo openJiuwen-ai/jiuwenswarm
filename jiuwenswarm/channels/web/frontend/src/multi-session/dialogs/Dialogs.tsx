@@ -41,6 +41,27 @@ function DialogActions({ busy, danger = false, confirmLabel, onCancel, onConfirm
   );
 }
 
+interface NoticeDialogProps {
+  title: string;
+  message?: string;
+  confirmLabel?: string;
+  onClose: () => void;
+}
+
+export function NoticeDialog({ title, message, confirmLabel, onClose }: NoticeDialogProps) {
+  const { t } = useTranslation();
+  return (
+    <DialogShell title={title} onCancel={onClose}>
+      {message ? <p>{message}</p> : null}
+      <div className="conversation-dialog__actions">
+        <button type="button" className="is-primary" onClick={onClose}>
+          {confirmLabel || t('common.ok')}
+        </button>
+      </div>
+    </DialogShell>
+  );
+}
+
 export function DeleteDialog({
   title,
   dialogTitle,

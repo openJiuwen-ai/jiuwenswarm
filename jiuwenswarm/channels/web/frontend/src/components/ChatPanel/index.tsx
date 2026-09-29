@@ -23,6 +23,7 @@ import deleteIcon from '../../assets/delete.svg';
 import moveIcon from '../../assets/move.svg';
 import restartIcon from '../../assets/restart.svg';
 import { SubtaskProgress } from './SubtaskProgress';
+import { SubagentCompactPanel } from '../subagent/SubagentCompactPanel';
 import { InlineQuestionCard } from './InlineQuestionCard';
 import { InteractionSlot } from '../InteractionSlot';
 import { GoalBar } from '../GoalBar';
@@ -33,6 +34,7 @@ import { isTeamLeaderMember } from '../../utils/teamMemberAvatar';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import welcomeBanner from '../../assets/home-banner.svg';
 import './ChatPanel.css';
+import { WorkspaceQuotaBanner } from '../WorkspacePanel/WorkspaceQuotaBanner';
 import { CodeChangesCard } from '../../features/code-mode/CodeChangesCard';
 import { useCodeTurnDiffHistory } from '../../features/code-mode/useCodeTurnDiffHistory';
 import type { CodeReviewTarget } from '../../features/code-mode/types';
@@ -1155,6 +1157,7 @@ export function ChatPanel({
           </div>
         </div>
       )}
+      <WorkspaceQuotaBanner />
       {hasHarnessProgress && (
         <div className="sticky top-0 z-10 px-3 pt-2 bg-bg/95 backdrop-blur-sm">
           <HarnessProgressBar />
@@ -1190,6 +1193,12 @@ export function ChatPanel({
                       onShare={() => setHumanShareOpen(true)}
                     />
                   )}
+                  {activeSessionId ? (
+                    <SubagentCompactPanel
+                      sessionId={activeSessionId}
+                      onExpand={() => onToggleTeamArea?.(true)}
+                    />
+                  ) : null}
                   <SubtaskProgress />
                   {/* 内联审批卡片（演进审批 & 权限审批共用） */}
                   <InlineQuestionCard onSubmit={onUserAnswer} />

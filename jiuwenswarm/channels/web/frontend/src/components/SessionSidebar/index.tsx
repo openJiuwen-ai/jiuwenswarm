@@ -12,13 +12,13 @@ import PluginIcon from '../../assets/sidebar/plugin.svg?react';
 import ConfigIcon from '../../assets/sidebar/config.svg?react';
 import A2AIcon from '../../assets/sidebar/a2a.svg?react';
 import WebIcon from '../../assets/sidebar/web.svg?react';
+import DiagnosisIcon from '../../assets/sidebar/logs.svg?react';
 import PlusIcon from '../../assets/sidebar/plus.svg?react';
 import logoIcon from '/logo.svg';
 import AdvancedConfigIcon from '../../assets/sidebar/advanced-config-new.svg?react';
 import UpdateIcon from '../../assets/sidebar/advanced-config.svg?react';
 import WorkIcon from '../../assets/工作.svg?react';
 import SkillDesignIcon from '../../assets/技能.svg?react';
-import AgentDesignIcon from '../../assets/智能体.svg?react';
 import MoreDesignIcon from '../../assets/更多.svg?react';
 import { webRequest } from '../../services/webClient';
 import {
@@ -81,11 +81,31 @@ const personalContextNavIcon = (
   </svg>
 );
 
+const workspaceNavIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"
+    />
+  </svg>
+);
+
+const approvalsNavIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+    />
+  </svg>
+);
+
 const mainNavItems: NavItem[] = [
   { key: 'chat', labelKey: 'nav.work', icon: <WorkIcon aria-hidden /> },
   { key: 'skills', labelKey: 'nav.skills', icon: <SkillDesignIcon aria-hidden /> },
   { key: 'channels', labelKey: 'nav.channels', icon: <ChannelIcon aria-hidden /> },
-  { key: 'agents', labelKey: 'nav.agent', icon: <AgentDesignIcon aria-hidden /> },
+  { key: 'agents', labelKey: 'nav.workspace', icon: workspaceNavIcon },
   { key: 'teams', labelKey: 'nav.teams', icon: teamNavIcon },
   { key: 'personalContext', labelKey: 'nav.personalContext', icon: personalContextNavIcon },
 ];
@@ -96,6 +116,7 @@ const moreNavItems: NavItem[] = [
   { key: 'browserpanel', labelKey: 'nav.browser', icon: <WebIcon aria-hidden /> },
   { key: 'a2aingress', labelKey: 'nav.a2aIngress', icon: <A2AIcon aria-hidden /> },
   { key: 'updatepanel', labelKey: 'nav.update', icon: <UpdateIcon aria-hidden /> },
+  { key: 'diagnosis', labelKey: 'nav.diagnosis', icon: <DiagnosisIcon aria-hidden /> },
 ];
 
 // Advanced Config Panel Component
@@ -359,6 +380,19 @@ export function SessionSidebar({
 
       <div className="icon-rail-spacer" />
 
+      {enterprise && !hiddenNavItems.includes('approvals') && (
+        <button
+          type="button"
+          className={`icon-rail-nav-item${activeNav === 'approvals' ? ' icon-rail-nav-item--active' : ''}`}
+          onClick={() => handleNavClick('approvals')}
+          aria-label={t('nav.approvals')}
+          title={t('nav.approvals')}
+        >
+          <span className="icon-rail-nav-item__icon">{approvalsNavIcon}</span>
+          <span className="icon-rail-nav-item__label">{t('nav.approvals')}</span>
+        </button>
+      )}
+
       {enterprise && (
         <button
           ref={contextButtonRef}
@@ -493,6 +527,15 @@ export function SessionSidebar({
             <div className="enterprise-context-popover__status">{t('sessionSidebar.enterpriseContext.switching')}</div>
           )}
           {enterprise.contextError && <div className="enterprise-context-popover__error">{enterprise.contextError}</div>}
+          {enterprise.managerAccess && (
+            <button
+              type="button"
+              className="enterprise-context-popover__switch"
+              onClick={enterprise.onSwitchToManager}
+            >
+              {t('sessionSidebar.enterpriseContext.switchToManager')}
+            </button>
+          )}
           <button type="button" className="enterprise-context-popover__logout" onClick={enterprise.onLogout}>
             {t('sessionSidebar.enterpriseContext.logout')}
           </button>

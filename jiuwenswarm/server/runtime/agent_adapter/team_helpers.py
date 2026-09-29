@@ -2883,6 +2883,9 @@ async def _consume_stream_with_query(
                                 "rid": round_id,
                             },
                         )
+                        # Leader 失败是本轮终态。继续阻塞在上游 outputs() 上时
+                        # finally 不跑，客户端等不到 WS is_complete。
+                        break
                     continue
                 # chat.final: if team events (team.member / team.task /
                 # workflow.updated) have already been broadcast (tracked

@@ -11,6 +11,8 @@
     "saveSuccess": "保存成功",
     "error": "错误",
     "ok": "确定",
+    "yes": "是",
+    "no": "否",
     "and": "和",
     "modify": "修改",
     "delete": "删除",
@@ -22,6 +24,64 @@
       "pageSize": "每页",
       "jumpTo": "跳至",
       "go": "确定"
+    },
+    "all": "全部"
+  },
+  "approvals": {
+    "myTitle": "我的申请",
+    "mySubtitle": "查看并管理本人提交的审批单",
+    "unavailable": "当前环境无法查看申请记录",
+    "empty": "暂无申请记录",
+    "loadFailed": "加载申请列表失败",
+    "cancelFailed": "撤回申请失败",
+    "cancel": "撤回",
+    "resubmit": "编辑并重新提交",
+    "resubmitTitle": "重新提交申请",
+    "resubmitHint": "修改后重新提交，将更新同一张申请单。",
+    "resubmitSubmit": "重新提交",
+    "resubmitFailed": "重新提交失败",
+    "rejectComment": "驳回意见",
+    "currentQuota": "当前配额",
+    "approvers": "当前审批人",
+    "copyLink": "复制审批链接",
+    "copyLinkSuccess": "审批链接已复制",
+    "copyLinkFailed": "复制审批链接失败",
+    "copyOrderNum": "点击复制单号",
+    "copyOrderNumSuccess": "单号已复制",
+    "copyOrderNumFailed": "复制单号失败",
+    "stats": {
+      "total": "申请总数 {{count}}"
+    },
+    "search": {
+      "placeholder": "搜索单号、标题或申请说明",
+      "noResults": "没有符合条件的申请"
+    },
+    "filter": {
+      "reset": "清除筛选"
+    },
+    "table": {
+      "title": "标题",
+      "orderNum": "单号",
+      "type": "类型",
+      "summary": "摘要",
+      "requestedQuota": "申请配额",
+      "approver": "当前审批人",
+      "reason": "申请说明",
+      "status": "状态",
+      "createdAt": "提交时间",
+      "actions": "操作"
+    },
+    "status": {
+      "pending": "审批中",
+      "approved": "已通过",
+      "rejected": "已驳回",
+      "cancelled": "已撤回"
+    },
+    "business": {
+      "workspace_quota_expand": "工作区扩容"
+    },
+    "summary": {
+      "quotaExpand": "申请配额 {{size}}"
     }
   },
   "a2ui": {
@@ -35,6 +95,7 @@
     "chat": "对话",
     "work": "工作",
     "agent": "智能体",
+    "workspace": "空间",
     "teams": "团队",
     "sessions": "会话",
     "cron": "定时任务",
@@ -50,7 +111,9 @@
     "logs": "日志",
     "update": "更新",
     "a2aIngress": "A2A 调度中心",
-    "personalContext": "个人\n上下文"
+    "personalContext": "个人\n上下文",
+    "approvals": "申请",
+    "diagnosis": "一键定位"
   },
   "team": {
     "members": "团队成员",
@@ -573,6 +636,7 @@
       "apply": "应用",
       "switching": "正在切换...",
       "logout": "注销登录",
+      "switchToManager": "进入管理面",
       "customRequired": "请填写 bot_id、group_id、user_id、jiuwenclaw_id",
       "noMatch": "没有匹配项",
       "pleaseSelect": "请选择"
@@ -1276,6 +1340,7 @@
       "permissions": { "label": "工具安全护栏", "hint": "控制工具调用时的权限检查" },
       "a2ui": { "label": "A2UI", "hint": "开启或关闭生成式界面渲染与 A2UI 运行时提示词" },
       "trajectoryUi": { "label": "轨迹界面", "hint": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路" },
+      "diagnosis": { "label": "轨迹诊断", "hint": "开启后可在「一键定位」对会话进行自动问题分析；在线诊断依赖轨迹界面已开启，离线模式仅需上传/导入日志" },
       "swarmflow": { "label": "SwarmFlow", "hint": "控制 Team 模式是否启用 SwarmFlow 流程视图与监控" },
       "symphony": { "label": "技能交响乐", "hint": "控制技能交响乐" },
       "skillRetrieval": { "label": "技能交响乐", "hint": "控制技能交响乐" },
@@ -2191,24 +2256,96 @@
     }
   },
   "agent": {
-    "title": "智能体管理",
-    "subtitle": "查看智能体工作区文件与记忆内容",
+    "title": "工作空间管理",
+    "subtitle": "查看用量、清理可删文件，并预览或下载工作空间内容",
     "root": "根目录",
-    "workspace": "工作区",
+    "workspace": "工作空间",
     "workspaceMeta": "{{directories}} 个目录，{{files}} 个文件",
     "directoryCount": "{{count}} 个目录",
     "fileCount": "{{count}} 个文件",
     "previewableCount": "{{count}} 个可预览",
     "refresh": "刷新列表",
     "empty": "暂无文件",
+    "emptyDeletable": "暂无可删除内容（清理区为空）",
     "notPreviewable": "不可预览",
-    "contentPreview": "内容预览",
-    "selectMarkdown": "选择左侧可预览文件查看",
-    "selectMarkdownContent": "请选择左侧可预览文件查看内容",
+    "contentPreview": "详情与预览",
+    "selectMarkdown": "选择左侧文件查看",
+    "selectMarkdownContent": "请选择左侧文件查看内容",
     "markdownOnly": "仅支持 Markdown/JSON（.md/.mdx/.json）预览",
+    "selectEntry": "选择左侧文件或目录查看元信息",
+    "selectEntryHint": "点击左侧条目查看路径、zone、大小等信息；文件可预览与下载",
+    "dirSelectedHint": "已选中目录。可下载为 zip，或在可删时删除整棵子树。",
+    "binaryPreview": "二进制文件不展示正文，请使用下载。",
+    "previewTruncated": "内容已截断，完整文件请下载。",
+    "previewEmpty": "暂无预览内容",
+    "deletable": "可删",
+    "filterDeletable": "仅可删除",
+    "download": "下载",
+    "delete": "删除",
+    "notDeletableReason": "该 zone 受保护，不可删除",
+    "confirmDelete": "确认删除「{{name}}」？此操作不可恢复。",
+    "deleteConfirmTitle": "删除确认",
+    "quota": {
+      "title": "工作空间用量",
+      "ok": "正常",
+      "warn": "接近上限",
+      "block": "已满额",
+      "unlimited": "无限制",
+      "unavailable": "暂无法读取用量",
+      "requestExpand": "申请扩容",
+      "expandHint": "向管理面提交扩容申请",
+      "expandIdleHint": "用量正常时无需扩容",
+      "expandUnlimitedHint": "当前为无限制配额，无需扩容",
+      "expandSoon": "扩容申请将对接管理面审批（即将上线）。当前请先清理可删文件，或联系管理员调整配额。",
+      "expandTitle": "申请工作区扩容",
+      "expandDialogHint": "请填写目标配额（GiB）与申请说明。审批通过后配额才会生效。",
+      "expandLimitLabel": "目标配额（GiB）",
+      "expandReasonLabel": "申请说明",
+      "expandApproverLabel": "审批人",
+      "expandApproverPlaceholder": "请选择审批人",
+      "expandApproverSearch": "搜索用户 ID 或显示名",
+      "expandApproverNoMatch": "没有匹配的审批人",
+      "expandApproverRequired": "请选择审批人",
+      "expandApproverEmpty": "暂无可选审批人，请联系管理员配置审批权限",
+      "expandApproverLoadFailed": "加载审批人列表失败",
+      "expandSubmit": "提交申请",
+      "expandInvalidLimit": "请输入有效的目标配额（GiB）",
+      "expandReasonRequired": "请填写申请说明",
+      "expandMustIncrease": "目标配额必须大于当前生效配额",
+      "expandFailed": "提交扩容申请失败",
+      "expandSubmittedTitle": "申请已提交",
+      "expandSubmittedBody": "扩容申请已提交，审批通过后配额将自动生效。可在<approvals>我的申请</approvals>查看进度。",
+      "expandViewApprovals": "查看我的申请",
+      "expandSubmitted": "扩容申请已提交。审批通过后配额将自动生效，可在侧栏「我的申请」查看进度。",
+      "expandContextRequired": "请先选择 Agent 上下文（集群与 Bot）后再申请扩容",
+      "openWorkspace": "打开工作空间",
+      "chatWarnTitle": "工作空间即将用尽",
+      "chatWarnBody": "已超过 80% 配额，建议清理会话产物或申请扩容。",
+      "chatBlockTitle": "工作空间已满，无法继续写入",
+      "chatBlockBody": "已用尽配额。请清理可删文件或申请扩容后再发送消息。"
+    },
+    "meta": {
+      "zone": "分区",
+      "size": "大小",
+      "mtime": "修改时间",
+      "deletable": "可删除"
+    },
+    "zones": {
+      "session_workspace": "会话产物",
+      "session_todo": "会话待办",
+      "session_meta": "会话元数据",
+      "skills": "技能",
+      "role_md": "角色文件",
+      "memory": "记忆",
+      "runtime": "运行时",
+      "artifact": "附件",
+      "other": "其他"
+    },
     "errors": {
       "refreshFailed": "刷新失败：无法重建 agent 文件索引，请检查生成脚本日志。",
-      "loadFailed": "无法读取 agent 文件列表，请检查 agent/jiuwenclaw_workspace/agent-data.json 是否已生成。"
+      "loadFailed": "无法读取工作空间目录，请确认 Agent 已就绪。",
+      "deleteFailed": "删除失败",
+      "downloadFailed": "下载失败"
     }
   },
   "fileViewer": {
@@ -2650,7 +2787,13 @@
     "runtime": { "processing": "处理中" },
     "deleteDialog": { "title": "删除", "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。" },
     "notFound": { "title": "对话不存在或已删除", "newConversation": "新建对话" },
-    "errors": { "delete": "删除对话失败", "create": "创建对话失败", "send": "发送消息失败" }
+    "errors": {
+      "delete": "删除对话失败",
+      "create": "创建对话失败",
+      "quotaExceededTitle": "工作空间已满",
+      "quotaExceeded": "无法创建新对话。请先到「空间」清理可删除文件，或申请扩容后再试。",
+      "send": "发送消息失败"
+    }
   },
   "mermaid": {
     "image": "图片",
@@ -2988,6 +3131,47 @@
     },
     "errors": {
       "actionFailed": "操作失败"
+    }
+  },
+  "subagent": {
+    "title": "子智能体",
+    "compactTitle": "子智能体（{{count}}）",
+    "activeListTitle": "当前活跃 {{count}}",
+    "expand": "展开子智能体",
+    "selectWithStatus": "选择 {{name}}，状态：{{status}}",
+    "running": "运行中",
+    "idle": "待机中",
+    "closed": "已关闭",
+    "failed": "异常",
+    "cancelled": "已取消",
+    "activityTitle": "活动",
+    "activityEmpty": "暂无活动",
+    "historyLoading": "正在恢复历史…",
+    "empty": "暂无子智能体",
+    "activity": {
+      "thinking": "思考",
+      "toolCall": "工具调用",
+      "toolResult": "工具结果",
+      "expand": "展开活动详情",
+      "collapse": "收起活动详情",
+      "ok": "完成",
+      "error": "异常",
+      "truncated": "活动已折叠",
+      "fields": {
+        "type": "类型",
+        "time": "时间",
+        "tool": "工具",
+        "call": "调用",
+        "result": "结果",
+        "content": "内容",
+        "status": "状态",
+        "dropped": "丢弃数量"
+      },
+      "tools": {
+        "search": "搜索网页",
+        "terminal": "运行终端",
+        "todo": "待办清单"
+      }
     }
   }
 }

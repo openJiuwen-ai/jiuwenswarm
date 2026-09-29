@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # These methods are handled inside Gateway and therefore do not pass through
 # AgentServer's E2A normalization. Local handlers only receive ``params``, so
 # merge ``metadata.routing`` into the handler params copy (not Message.params).
-_LOCAL_ROUTING_IDENTITY_PREFIXES = ("cron.", "skills.enterprise.")
+_LOCAL_ROUTING_IDENTITY_PREFIXES = ("cron.", "skills.enterprise.", "workspace.")
 _LOCAL_ROUTING_IDENTITY_METHODS = frozenset({
     "models.list",
     "project.get_sessions",

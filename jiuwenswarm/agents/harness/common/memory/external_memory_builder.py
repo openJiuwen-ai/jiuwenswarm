@@ -23,14 +23,25 @@ from .external_memory_config import (
 
 logger = logging.getLogger(__name__)
 
-_BUILTIN_PROVIDERS = {"openjiuwen", "mem0", "openviking"}
+_BUILTIN_PROVIDERS = {"openjiuwen", "mem0", "openviking", "officeace_cloud"}
 
 
 def build_external_memory_rail(
     config: Optional[Dict[str, Any]] = None,
     workspace_dir: str = ".",
+    session_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
 ) -> Optional[Any]:
-    """Build an ExternalMemoryRail from config, or None if disabled/failed."""
+    """Build an ExternalMemoryRail from config, or None if disabled/failed.
+
+    Args:
+        config: Full config dict (memory.external.* selects the provider).
+        workspace_dir: Agent workspace directory.
+        session_id: relay-claw runtime session id (thread_id 的 sha256 哈希)。
+            officeace_cloud 用它做云端 memory session；其他 provider 忽略。
+        thread_id: 业务对话 ID（前端 thread_<ts+random>）。PC 端 OfficeAce 记忆
+            sync_turn 上报 pc-threads/{thread_id}/messages 用它。云端 provider 不消费。
+    """
     try:
         from openjiuwen.harness.rails import ExternalMemoryRail
     except Exception as exc:
@@ -52,6 +63,8 @@ def build_external_memory_rail(
             provider = _build_openviking_provider(ext_cfg)
         elif provider_name == "lakebase":
             provider = _build_lakebase_provider(ext_cfg)
+        elif provider_name == "officeace_cloud":
+            provider = _build_officeace_cloud_provider(ext_cfg)
         else:
             provider = _load_plugin_provider(provider_name, ext_cfg.get("allowed_plugins") or None)
     except Exception as exc:
@@ -64,15 +77,32 @@ def build_external_memory_rail(
     if provider is None:
         return None
 
+    # Only officeace_cloud consumes the per-session session_id (for its cloud
+    # memory session). Other providers (openjiuwen/mem0/openviking/lakebase)
+    # must keep their original "__default__" session_id — passing a real
+    # session id would change how they tag/scope stored messages, breaking
+    # the "do not affect other providers" requirement.
+    if provider_name == "officeace_cloud" and session_id:
+        rail_session_id = session_id
+    else:
+        rail_session_id = "__default__"
+
+    # thread_id 仅 officeace_cloud PC 端消费（sync_turn 上报）。
+    rail_thread_id = thread_id if provider_name == "officeace_cloud" else None
+
     try:
         rail = ExternalMemoryRail(
             provider,
             user_id=ext_cfg.get("user_id", "__default__"),
             scope_id=ext_cfg.get("scope_id", "__default__"),
+            session_id=rail_session_id,
+            thread_id=rail_thread_id,
         )
         logger.info(
-            "[ExternalMemoryBuilder] ExternalMemoryRail built (provider=%s)",
+            "[ExternalMemoryBuilder] ExternalMemoryRail built (provider=%s, session_id=%s, thread_id=%s)",
             provider_name,
+            (rail_session_id or "default"),
+            (rail_thread_id or "(none)"),
         )
         return rail
     except Exception as exc:
@@ -182,6 +212,82 @@ def _build_lakebase_provider(ext_cfg: Dict[str, Any]):
     logger.info(
         "[ExternalMemoryBuilder] LakeBase provider built: base_url=%s, base_id=%s",
         base_url, base_id,
+    )
+    return provider
+
+
+def _is_cloud_deployment() -> bool:
+    """True if running in cloud deployment form.
+
+    云端（``OFFICE_ACE_DEPLOYMENT=cloud``）与 PC 端（``pc`` 或缺省）的区分：
+    * 云端：记忆搜索走 AgentArts SDK，sync_turn 不上报（由 relay-claw 直报）。
+    * PC 端：记忆搜索走 chat-service appapi，sync_turn 走 pc-threads 上报。
+    """
+    return os.environ.get("OFFICE_ACE_DEPLOYMENT", "pc").strip().lower() == "cloud"
+
+
+def _build_officeace_cloud_provider(
+    ext_cfg: Dict[str, Any],
+):
+    """Build OfficeAce memory provider (cloud or PC form).
+
+    OfficeAce memory is a long-term memory service shared by cloud and PC
+    deployments. 凭据/endpoint 直接读 config/env（无 pre-session 级别）——
+    relay-claw 不再经 chat.send params 下发 per-session 凭据，provider 构造时
+    一次性绑定静态配置。
+
+    Deployment dispatch:
+        cloud → :class:`OfficeAceMemoryCloudProvider` (AgentArts SDK search,
+            sync_turn no-op; relay-claw reports conversations directly).
+        pc    → :class:`OfficeAceMemoryPcProvider` (chat-service appapi search
+            + pc-threads messages sync_turn).
+
+    Args:
+        ext_cfg: ``memory.external`` config slice (contains the
+            ``officeace_cloud`` sub-section).
+
+    Config shape (memory.external.officeace_cloud):
+        base_url: str    # OfficeAce memory endpoint
+        api_key: str     # 凭据（config 或 AGENTARTS_MEMORY_API_KEY 环境变量）
+        space_id: str    # space/library id（云端消费，PC 端不用）
+    """
+    oa_cfg = ext_cfg.get("officeace_cloud") or {}
+    base_url = oa_cfg.get("base_url") or os.environ.get("AGENTARTS_MEMORY_BASE_URL", "")
+    api_key = oa_cfg.get("api_key") or os.environ.get("AGENTARTS_MEMORY_API_KEY", "")
+    space_id = oa_cfg.get("space_id") or os.environ.get("AGENTARTS_MEMORY_SPACE_ID", "")
+    actor_id = ext_cfg.get("user_id") or ""
+
+    if _is_cloud_deployment():
+        from openjiuwen.core.memory.external.office_ace_memory_cloud_provider import (
+            OfficeAceMemoryCloudProvider,
+        )
+
+        provider = OfficeAceMemoryCloudProvider(
+            base_url=base_url or None,
+            api_key=api_key,
+            space_id=space_id,
+            actor_id=actor_id,
+        )
+        logger.info(
+            "[ExternalMemoryBuilder] OfficeAce cloud provider built: "
+            "base_url=%s, api_key=%s, space_id=%s",
+            base_url, bool(api_key), bool(space_id),
+        )
+        return provider
+
+    from openjiuwen.core.memory.external.office_ace_memory_pc_provider import (
+        OfficeAceMemoryPcProvider,
+    )
+
+    provider = OfficeAceMemoryPcProvider(
+        base_url=base_url or None,
+        api_key=api_key,
+        actor_id=actor_id,
+    )
+    logger.info(
+        "[ExternalMemoryBuilder] OfficeAce pc provider built: "
+        "base_url=%s, api_key=%s, actor_id=%s",
+        base_url, bool(api_key), actor_id or "(none)",
     )
     return provider
 

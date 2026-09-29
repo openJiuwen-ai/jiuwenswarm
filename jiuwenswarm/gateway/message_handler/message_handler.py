@@ -2901,8 +2901,13 @@ class MessageHandler(FileTransferMixin, ABC):
                 dict(raw_payload),
                 channel_id=channel_id,
             )
-            # 企业版：runtime 资源拒绝需规范化为 chat.error
-            if is_enterprise():
+            # 企业版：runtime 资源拒绝需规范化为 chat.error。
+            # 已经是 ok=False 且没有 event_type 的单次响应必须保持 type=res：
+            # HTTP unary（session.create 等）只等 res，转成 chat.error 事件后
+            # 前端会空等到超时（配额超限时新建对话页面一直转圈）。
+            if is_enterprise() and (
+                ok or isinstance(payload.get("event_type"), str)
+            ):
                 normalized = MessageHandler._normalize_runtime_failure_payload(payload)
                 if normalized is not None:
                     payload = normalized

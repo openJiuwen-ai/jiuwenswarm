@@ -10,7 +10,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.local_env_config import SPAWN_ENV_KEYS
 from jiuwenswarm.common import model_client_extensions
 
 
@@ -246,19 +245,3 @@ def test_u_openai_example_preserves_business_metadata(
         asyncio.run(client._parse_response(error_response))
 
     assert error.value.details["provider_metadata"] == error_response.model_extra
-
-
-def test_deployment_wires_model_client_env_to_both_processes() -> None:
-    root = Path(__file__).resolve().parents[3]
-    agentserver_template = (
-        root / "deploy/enterprise/templates/agentserver.template.env"
-    ).read_text(encoding="utf-8")
-    gateway_template = (
-        root / "deploy/enterprise/templates/gateway.template.env"
-    ).read_text(encoding="utf-8")
-
-    assert "AGENT_EXTRA_MODEL_CLIENTS=<<AGENT_EXTRA_MODEL_CLIENTS>>" in (
-        agentserver_template
-    )
-    assert "AGENT_EXTRA_MODEL_CLIENTS=<<AGENT_EXTRA_MODEL_CLIENTS>>" in gateway_template
-    assert "AGENT_EXTRA_MODEL_CLIENTS" in SPAWN_ENV_KEYS

@@ -115,11 +115,16 @@ PLAN_AGENT = _OJ_PLAN_AGENT
 BROWSER_AGENT = _OJ_BROWSER_AGENT
 CODE_AGENT = _code_subagents.CODE_AGENT
 SWARM_BROWSER_AGENT = _code_subagents.SWARM_BROWSER_AGENT
+DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS = (
+    _code_subagents.DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS
+)
+STATUSLINE_SETUP_AGENT = _code_subagents.STATUSLINE_SETUP_AGENT
 
 # Swarm-owned no-parameter class rails declared in ``builtin_rails``.
 RESPONSE_PROMPT = _builtin_rails.RESPONSE_PROMPT
 STREAM_EVENT = _builtin_rails.STREAM_EVENT
 AVATAR_PROMPT = _builtin_rails.AVATAR_PROMPT
+WORKSPACE_QUOTA = _builtin_rails.WORKSPACE_QUOTA
 
 # Generic rails provided + registered by openjiuwen (referenced by bare name).
 SYS_OPERATION = _OJ_SYS_OPERATION
@@ -231,5 +236,7 @@ __all__ = [
     "PLAN_AGENT",
     "CODE_AGENT",
     "SWARM_BROWSER_AGENT",
+    "DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS",
+    "STATUSLINE_SETUP_AGENT",
     "BROWSER_AGENT",
 ]

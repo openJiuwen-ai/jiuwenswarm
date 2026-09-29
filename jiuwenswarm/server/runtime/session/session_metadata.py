@@ -43,7 +43,22 @@ _CACHE_LOCK = threading.Lock()
 _TITLE_MAX_LEN = 50
 # 心跳任务会话目录前缀，不参与 session.list 等列表展示
 _HEARTBEAT_SESSION_PREFIX = "heartbeat_"
+# 预热产生的内部会话/目录前缀与标记目录，不参与 session.list 等列表展示
+_PREWARM_SESSION_PREFIX = "__prewarm__"
+_PREWARM_MARKER_DIR = ".prewarm"
+# 诊断 Agent 的一次性会话前缀，不参与 session.list 等列表展示
+_DIAGNOSIS_SESSION_PREFIX = "diagnosis_"
 _DELIVERY_KIND_SERVER_PUSH = "server_push"
+
+
+def _is_internal_session_dir(session_id: str) -> bool:
+    """是否为系统内部会话目录（心跳/预热/诊断），不参与用户可见的会话列表。"""
+    return (
+        session_id.startswith(_HEARTBEAT_SESSION_PREFIX)
+        or session_id.startswith(_PREWARM_SESSION_PREFIX)
+        or session_id.startswith(_DIAGNOSIS_SESSION_PREFIX)
+        or session_id == _PREWARM_MARKER_DIR
+    )
 
 
 def resolve_session_runtime_team_name(metadata: dict[str, Any] | None) -> str:
@@ -936,6 +951,18 @@ def init_session_metadata(
     if isinstance(channel_metadata, dict) and channel_metadata:
         metadata["channel_metadata"] = channel_metadata
     root_s = _normalize_sessions_root_s(sessions_root)
+    try:
+        from jiuwenswarm.common.workspace.quota import (
+            WorkspaceQuotaExceeded,
+            check_workspace_write,
+        )
+
+        approx = len(json.dumps(metadata, ensure_ascii=False, default=str).encode("utf-8"))
+        check_workspace_write(additional_bytes=max(64, approx))
+    except WorkspaceQuotaExceeded:
+        raise
+    except Exception:  # noqa: BLE001
+        pass
     _write_metadata_sync(session_id, metadata, sessions_root=root_s)
 
 
@@ -1384,7 +1411,7 @@ def set_session_pinned(session_id: str, pinned: bool) -> tuple[bool, int] | None
                 if not session_dir.is_dir():
                     continue
                 sid = session_dir.name
-                if sid.startswith(_HEARTBEAT_SESSION_PREFIX):
+                if _is_internal_session_dir(sid):
                     continue
                 m = _read_metadata(sid)
                 if not m:
@@ -1696,7 +1723,7 @@ def get_all_sessions_metadata(
             continue
 
         session_id = session_dir.name
-        if session_id.startswith(_HEARTBEAT_SESSION_PREFIX):
+        if _is_internal_session_dir(session_id):
             continue
         metadata = _read_metadata(session_id, sessions_root=sessions_root)
 
@@ -1751,7 +1778,7 @@ def get_all_sessions_metadata(
 def collect_all_sessions_metadata() -> list[dict[str, Any]]:
     """收集全部会话元数据(不分页、不排序),供项目统计与置顶会话聚合使用。
 
-    跳过 heartbeat 会话;强制读盘(``cache_bust=True``)以跨进程拿最新数据。
+    跳过内部会话(heartbeat/预热);强制读盘(``cache_bust=True``)以跨进程拿最新数据。
     无 ``metadata.json`` 的旧会话以目录时间戳构造最小兜底信息
     (``project_id=""``、``project_dir=""``、``pinned=False``),归入默认项目统计。
     返回的每个 dict 已对新增字段应用默认值兜底。
@@ -1766,7 +1793,7 @@ def collect_all_sessions_metadata() -> list[dict[str, Any]]:
         if not session_dir.is_dir():
             continue
         sid = session_dir.name
-        if sid.startswith(_HEARTBEAT_SESSION_PREFIX):
+        if _is_internal_session_dir(sid):
             continue
         meta = _read_metadata(sid, cache_bust=True)
         if not meta:

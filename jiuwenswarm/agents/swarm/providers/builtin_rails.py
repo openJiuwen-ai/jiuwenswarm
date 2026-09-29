@@ -32,11 +32,15 @@ from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import (
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
     JiuSwarmStreamEventRail,
 )
+from jiuwenswarm.agents.harness.common.rails.workspace_quota_rail import (
+    WorkspaceQuotaRail,
+)
 
 # No-parameter swarm-owned rail type names; namespaced under "swarm.".
 RESPONSE_PROMPT = "swarm.response_prompt"
 STREAM_EVENT = "swarm.stream_event"
 AVATAR_PROMPT = "swarm.avatar_prompt"
+WORKSPACE_QUOTA = "swarm.workspace_quota"
 
 
 class ResponsePromptInput(ConstructionInput):
@@ -76,9 +80,16 @@ harness_element(
     description="Injects per-request digital-avatar prompt sections.",
     builder=AvatarPromptRail,
 )
+harness_element(
+    kind=ElementKind.RAIL,
+    name=WORKSPACE_QUOTA,
+    description="Blocks bash/exec when workspace quota is exhausted.",
+    builder=WorkspaceQuotaRail,
+)
 
 __all__ = [
     "RESPONSE_PROMPT",
     "STREAM_EVENT",
     "AVATAR_PROMPT",
+    "WORKSPACE_QUOTA",
 ]

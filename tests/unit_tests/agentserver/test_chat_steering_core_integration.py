@@ -41,6 +41,9 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 # marker so a broken capability implementation in a newer SDK still fails.
 _CORE_HAS_STEERING = find_spec("openjiuwen.core.single_agent.schema.steering") is not None
 
+# CI 全量并行下真实 Core 启动偏慢；超时过紧会偶发 TimeoutError。
+_WAIT_S = 60
+
 
 class _BlockingTool(Tool):
     def __init__(self):
@@ -115,8 +118,6 @@ def _isolate_configuration(monkeypatch, adapter, model):
     monkeypatch.setattr(
         adapter, "_try_skill_turbo_resume", AsyncMock(return_value=None)
     )
-    # _arm_skill_turbo_interrupt_recovery_hint 已随三层产物恢复兜底物理移除，
-    # 无需再 patch 压制其副作用。
     monkeypatch.setattr(
         adapter, "_inject_extension_config_into_inputs", lambda *_: None
     )
@@ -238,7 +239,7 @@ async def test_chat_pipeline_steers_real_core_during_tool_without_replacing_orig
         main_task = asyncio.create_task(
             pipeline.dispatch_parsed_request(original_context, original)
         )
-        await asyncio.wait_for(tool.entered.wait(), 10)
+        await asyncio.wait_for(tool.entered.wait(), _WAIT_S)
         active_task = core.active_round.task_id
         owner = core._interaction_output.current_lease()
 
@@ -286,7 +287,7 @@ async def test_chat_pipeline_steers_real_core_during_tool_without_replacing_orig
             assert core._interaction_output.current_lease() is owner
             assert len(model.calls) == tool.calls == 1
             tool.release.set()
-            await asyncio.wait_for(main_task, 15)
+            await asyncio.wait_for(main_task, _WAIT_S)
             assert len(model.calls) == 2 and tool.calls == 1
             assert original_sink.chunks and not original_sink.wires
             assert all(chunk.request_id == original.request_id for chunk in original_sink.chunks)
@@ -313,7 +314,7 @@ async def test_chat_pipeline_steers_real_core_during_tool_without_replacing_orig
         assert core._interaction_output.current_lease() is owner
         assert len(model.calls) == tool.calls == 1
         tool.release.set()
-        await asyncio.wait_for(main_task, 15)
+        await asyncio.wait_for(main_task, _WAIT_S)
         assert len(model.calls) == 2
         assert tool.calls == 1
         assert all(
@@ -498,7 +499,7 @@ async def test_team_adapter_controls_real_native_leader_with_literal_fifo_inputs
                     outputs.append(chunk)
 
             main_task = asyncio.create_task(consume())
-            await asyncio.wait_for(entered.wait(), 10)
+            await asyncio.wait_for(entered.wait(), _WAIT_S)
             native_handle = core.active_round.task_id
             assert native_handle and native_handle != original.request_id
             output_queue = core._st.output_queue
@@ -559,13 +560,13 @@ async def test_team_adapter_controls_real_native_leader_with_literal_fifo_inputs
                 assert not main_task.done() and len(calls) == 1
                 existing_pool.get.assert_awaited_with("active-team")
                 release.set()
-                await asyncio.wait_for(finished.wait(), 10)
+                await asyncio.wait_for(finished.wait(), _WAIT_S)
                 assert len(calls) == 1 and round_handles == [native_handle]
                 send_spy.assert_not_awaited()
                 abort_spy.assert_not_awaited()
                 resume_spy.assert_not_awaited()
                 await harness.stop()
-                await asyncio.wait_for(main_task, 10)
+                await asyncio.wait_for(main_task, _WAIT_S)
                 assert any("old answer" in str(chunk.payload) for chunk in outputs)
                 assert all(chunk.request_id == original.request_id for chunk in outputs)
                 assert not any("legacy correction" in str(message.content)
@@ -594,7 +595,7 @@ async def test_team_adapter_controls_real_native_leader_with_literal_fifo_inputs
             assert len(calls) == 1
             existing_pool.get.assert_awaited_with("active-team")
             release.set()
-            await asyncio.wait_for(finished.wait(), 10)
+            await asyncio.wait_for(finished.wait(), _WAIT_S)
             assert len(calls) == 2
             assert round_handles == [native_handle, native_handle]
             steering = next(
@@ -624,7 +625,7 @@ async def test_team_adapter_controls_real_native_leader_with_literal_fifo_inputs
             assert await leader.get_steering_capability(active_request_id=native_handle) == {
                 "supported": False, "reason": "not_active",
             }
-            await asyncio.wait_for(main_task, 10)
+            await asyncio.wait_for(main_task, _WAIT_S)
             assert any(
                 "corrected native answer" in str(chunk.payload) for chunk in outputs
             )
