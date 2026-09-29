@@ -3665,7 +3665,16 @@ class SkillManager:
                     result = await self.handle_skills_swarm_skills_hub_recommend(effective)
                     if not result.get("success"):
                         raise ValueError("Hub recommendation failed")
-                    yield {**result, "complete": True, "has_more": False}
+                    # Signed OBS icon_uri is stripped by safe_metadata; convert to data URL
+                    # before _put (same pattern as cached_asset_catalog) so prefer_cache hits
+                    # still render avatars instead of letter fallbacks.
+                    skills = [s for s in (result.get("skills") or []) if isinstance(s, dict)]
+                    needs_images = any(s.get("icon_uri") for s in skills)
+                    yield {**result, "complete": not needs_images, "has_more": False}
+                    if needs_images:
+                        await get_hub_catalog_cache().avatars.fill(skills)
+                        yield {**result, "complete": True, "has_more": False}
+
                 data, state = get_hub_catalog_cache().read(
                     key, load_recommendation, public=not private, refresh=bool(params.get("refresh")), kind="skill"
                 )

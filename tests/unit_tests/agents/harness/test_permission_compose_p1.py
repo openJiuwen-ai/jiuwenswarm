@@ -1,6 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""P1 compose: Global ⊕ User ⊕ Session, no Agent overlay, Session cannot tighten."""
+"""P1 compose: Global ⊕ User ⊕ Session, no Agent overlay.
+
+Session cannot write deny/ask. User/Session allow may relax a higher-layer
+whole-tool ask; deny still wins.
+"""
 
 from __future__ import annotations
 
@@ -40,7 +44,7 @@ def test_missing_user_and_session_are_empty() -> None:
     assert effective["tools"]["bash"] == "ask"
 
 
-def test_session_drops_deny_and_cannot_override_user_ask() -> None:
+def test_session_drops_deny_and_ask_and_enabled() -> None:
     effective = compose_host_effective_permissions(
         global_permissions={"enabled": True, "defaults": {"*": "allow"}},
         user_permissions={"ask_tools": ["bash"]},
@@ -51,9 +55,79 @@ def test_session_drops_deny_and_cannot_override_user_ask() -> None:
             "allow_tools": ["bash", "python"],
         },
     )
-    assert effective["tools"].get("bash") == "ask"
+    assert effective["tools"].get("bash") == "allow"
     assert "python" not in effective.get("deny_tools", [])
+    assert "write_file" not in effective.get("ask_tools", [])
     assert effective.get("enabled") is True
+
+
+def test_session_allow_relaxes_user_ask() -> None:
+    effective = compose_host_effective_permissions(
+        global_permissions={"enabled": True, "defaults": {"*": "allow"}},
+        user_permissions={"ask_tools": ["bash"]},
+        session_permissions={"allow_tools": ["bash"]},
+    )
+    assert effective["tools"]["bash"] == "allow"
+
+
+def test_session_allow_relaxes_global_ask() -> None:
+    effective = compose_host_effective_permissions(
+        global_permissions={
+            "enabled": True,
+            "tools": {"mcp_fetch_webpage": "ask"},
+            "defaults": {"*": "allow"},
+        },
+        user_permissions={},
+        session_permissions={"allow_tools": ["mcp_fetch_webpage"]},
+    )
+    assert effective["tools"]["mcp_fetch_webpage"] == "allow"
+
+
+def test_user_allow_relaxes_global_ask() -> None:
+    effective = compose_host_effective_permissions(
+        global_permissions={
+            "enabled": True,
+            "tools": {"mcp_fetch_webpage": "ask"},
+            "defaults": {"*": "allow"},
+        },
+        user_permissions={"allow_tools": ["mcp_fetch_webpage"]},
+        session_permissions={},
+    )
+    assert effective["tools"]["mcp_fetch_webpage"] == "allow"
+
+
+def test_session_allow_cannot_relax_user_deny() -> None:
+    effective = compose_host_effective_permissions(
+        global_permissions={"enabled": True, "defaults": {"*": "allow"}},
+        user_permissions={"deny_tools": ["bash"]},
+        session_permissions={"allow_tools": ["bash"]},
+    )
+    assert effective["tools"]["bash"] == "deny"
+
+
+def test_user_allow_cannot_relax_global_deny() -> None:
+    effective = compose_host_effective_permissions(
+        global_permissions={
+            "enabled": True,
+            "tools": {"bash": "deny"},
+            "defaults": {"*": "allow"},
+        },
+        user_permissions={"allow_tools": ["bash"]},
+        session_permissions={"allow_tools": ["bash"]},
+    )
+    assert effective["tools"]["bash"] == "deny"
+
+
+def test_user_ask_still_tightens_global_allow() -> None:
+    effective = compose_host_effective_permissions(
+        global_permissions={
+            "enabled": True,
+            "tools": {"bash": "allow"},
+            "defaults": {"*": "allow"},
+        },
+        user_permissions={"ask_tools": ["bash"]},
+    )
+    assert effective["tools"]["bash"] == "ask"
 
 
 def test_session_allow_relaxes_unlisted_tool() -> None:

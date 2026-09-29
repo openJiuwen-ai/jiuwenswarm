@@ -49,6 +49,11 @@ interface PersonalContextState {
   loadingServices: boolean;
   configNeedsReconciliation: boolean;
   switchWriteGeneration: number;
+  /** 仅丢弃晚于更新回复返回的旧快照；有更新请求在途时仍接收已完成回复。 */
+  configReadGeneration: number;
+  statusReadGeneration: number;
+  configAppliedGeneration: number;
+  statusAppliedGeneration: number;
   /** 按字段记录正在提交中的写操作，用于禁用对应控件。 */
   pendingWrites: Record<string, boolean>;
 
@@ -107,22 +112,44 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   loadingServices: false,
   configNeedsReconciliation: false,
   switchWriteGeneration: 0,
+  configReadGeneration: 0,
+  statusReadGeneration: 0,
+  configAppliedGeneration: 0,
+  statusAppliedGeneration: 0,
   pendingWrites: {},
 
   setInfoTab: (tab) => set({ infoTab: tab }),
 
   loadConfig: async () => {
     const generationAtStart = get().switchWriteGeneration;
-    set({ loadingConfig: true });
+    const reconcile = get().configNeedsReconciliation;
+    const configReadGeneration = get().configReadGeneration + 1;
+    const statusReadGeneration = get().statusReadGeneration + (reconcile ? 1 : 0);
+    set({ loadingConfig: true, configReadGeneration, statusReadGeneration });
     try {
-      const config = await pcApi.getConfig();
-      set((state) =>
-        state.switchWriteGeneration === generationAtStart &&
-        !state.pendingWrites.collection_enabled &&
-        !state.pendingWrites.agent_use_enabled
-          ? { config, configNeedsReconciliation: false }
-          : state,
-      );
+      const [config, status] = await Promise.all([
+        pcApi.getConfig(),
+        reconcile ? pcApi.getStatus().catch(() => null) : Promise.resolve(null),
+      ]);
+      set((state) => {
+        if (
+          state.switchWriteGeneration !== generationAtStart ||
+          configReadGeneration <= state.configAppliedGeneration ||
+          state.pendingWrites.collection_enabled || state.pendingWrites.agent_use_enabled
+        ) {
+          return state;
+        }
+        const newerStatus = statusReadGeneration > state.statusAppliedGeneration;
+        const confirmedStatus = newerStatus ? status : state.status;
+        return {
+          config,
+          configAppliedGeneration: configReadGeneration,
+          ...(status && newerStatus ? { status, statusAppliedGeneration: statusReadGeneration } : {}),
+          configNeedsReconciliation: state.configNeedsReconciliation && (
+            !confirmedStatus || confirmedStatus.state === 'STOPPING'
+          ),
+        };
+      });
     } finally {
       set({ loadingConfig: false });
     }
@@ -148,10 +175,13 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   },
 
   loadStatus: async () => {
-    set({ loadingStatus: true });
+    const statusReadGeneration = get().statusReadGeneration + 1;
+    set({ loadingStatus: true, statusReadGeneration });
     try {
       const status = await pcApi.getStatus();
-      set({ status });
+      if (statusReadGeneration > get().statusAppliedGeneration) {
+        set({ status, statusAppliedGeneration: statusReadGeneration });
+      }
     } finally {
       set({ loadingStatus: false });
     }
@@ -192,34 +222,43 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     // 开关请求结果不明时额外读取 Host 配置；正常轮询不增加配置请求。
     const generationAtStart = get().switchWriteGeneration;
     const reconcile = get().configNeedsReconciliation;
+    const configReadGeneration = get().configReadGeneration + (reconcile ? 1 : 0);
+    const statusReadGeneration = get().statusReadGeneration + 1;
+    set({ configReadGeneration, statusReadGeneration });
     const [services, status, runHistories, config] = await Promise.all([
       pcApi.listServices().catch(() => null),
       pcApi.getStatus().catch(() => null),
       pcApi.getRunStatus().catch(() => null),
       reconcile ? pcApi.getConfig().catch(() => null) : Promise.resolve(null),
     ]);
-    set((state) => ({
-      ...(config &&
-      state.configNeedsReconciliation &&
-      state.switchWriteGeneration === generationAtStart &&
-      !state.pendingWrites.collection_enabled &&
-      !state.pendingWrites.agent_use_enabled
-        ? {
-            config: { ...config, fetch_services: services?.services ?? config.fetch_services },
-            configNeedsReconciliation: false,
-          }
-        : services
-          ? { config: { ...state.config, fetch_services: services.services } }
+    set((state) => {
+      const newerStatus = statusReadGeneration > state.statusAppliedGeneration;
+      const confirmedStatus = newerStatus ? status : state.status;
+      return {
+        ...(config &&
+        state.configNeedsReconciliation &&
+        state.switchWriteGeneration === generationAtStart &&
+        configReadGeneration > state.configAppliedGeneration &&
+        !state.pendingWrites.collection_enabled &&
+        !state.pendingWrites.agent_use_enabled
+          ? {
+              config: { ...config, fetch_services: services?.services ?? config.fetch_services },
+              configAppliedGeneration: configReadGeneration,
+              configNeedsReconciliation: !confirmedStatus || confirmedStatus.state === 'STOPPING',
+            }
+          : services
+            ? { config: { ...state.config, fetch_services: services.services } }
+            : {}),
+        ...(status && newerStatus ? { status, statusAppliedGeneration: statusReadGeneration } : {}),
+        ...(runHistories
+          ? {
+              runHistories: Object.fromEntries(
+                runHistories.services.map((item) => [item.service_id, item.runs]),
+              ),
+            }
           : {}),
-      ...(status ? { status } : {}),
-      ...(runHistories
-        ? {
-            runHistories: Object.fromEntries(
-              runHistories.services.map((item) => [item.service_id, item.runs]),
-            ),
-          }
-        : {}),
-    }));
+      };
+    });
   },
 
   setEnabled: async (enabled) => {
@@ -420,8 +459,9 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     set({ pendingWrites: { ...get().pendingWrites, [`stop:${serviceId}`]: true } });
     try {
       await pcApi.stopRun(serviceId);
-      await Promise.all([get().loadServices(), get().loadStatus()]);
     } finally {
+      // 停止请求失败或断连也核对实际运行态，并同步已发布的终态成果。
+      await get().batchRefresh();
       const next = { ...get().pendingWrites };
       delete next[`stop:${serviceId}`];
       set({ pendingWrites: next });

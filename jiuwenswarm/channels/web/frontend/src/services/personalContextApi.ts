@@ -55,6 +55,10 @@ export type FetchRunProgress = {
   item_errors: FetchItemError[];
   omitted_item_errors: number;
   last_error: string | null;
+  /** 本轮实际发布的 Context Markdown 节点（含目录说明）；旧历史缺字段表示未知。 */
+  created_node_count?: number;
+  updated_node_count?: number;
+  no_new_content?: boolean;
 };
 
 /** get_fetch_run_status 返回的单次运行记录；终端记录会保留 run_id 和起止时间。 */
@@ -95,15 +99,14 @@ export type PersonalContextStatus = {
 
 /**
  * 运行时停止超时不属于图谱发布失败；它应由采集任务页处理。
- * Core 目前会把 timeout 模板参数缺失渲染成 `<missing:timeout>`，所以这里只匹配稳定字段。
+ * 使用稳定状态码和操作名，后端消息可随缓存语言变化。
  */
 export function isFetchStopTimeoutError(
   error: PersonalContextStatus['last_error'] | undefined,
 ): boolean {
   return (
     error?.status === 'CONTEXT_PROACTIVE_RUNTIME_TIMEOUT' &&
-    error.operation === 'deactivate_runtime' &&
-    error.message.includes('PersonalContext stop timed out')
+    error.operation === 'deactivate_runtime'
   );
 }
 
@@ -262,15 +265,14 @@ export type ContextSourceDetail = {
 
 // ── API 方法 ──────────────────────────────────────────────────────────────
 /**
- * 采集单次运行/停止 RPC 的客户端超时。
- * run_fetch 虽为立即返回 accepted，但受后端 _operation_lock 串行影响；stop_fetch_run 会
- * await 采集任务真正落停。两者都放宽到 60s，避免默认 15s 造成的"后端其实已受理，前端却误报请求超时"。
+ * 采集操作 RPC 的客户端超时。run_fetch 虽立即返回 accepted，但受后端 _operation_lock
+ * 串行影响，放宽到 60s；停止操作使用下面的 90s 预算。
  */
 const FETCH_OP_TIMEOUT_MS = 60_000;
 
 /**
  * 配置变更类 RPC 的客户端超时。create_service 受 _operation_lock 串行，且运行时会
- * 先 deactivate（上限 30s）再重建，可能与正在等待/执行的 stop 叠加，故放宽到 90s。
+ * 先 deactivate（上限 60s）再重建；停止请求同样使用 90s，留出传输和状态返回余量。
  */
 const FETCH_CONFIG_TIMEOUT_MS = 90_000;
 
@@ -286,8 +288,7 @@ export const pcApi = {
       'personal_context.runtime.start_collection',
       {},
       // start_collection 会加载 embedding / activate_runtime，且受 _operation_lock 串行，
-      // 可能慢于默认 15s；stop_collection 后端会 await 到 _STOP_TIMEOUT_SECONDS(30s) 才返回，
-      // 故起停都放宽到 60s，避免"后端其实已停完/起完，前端却先报请求超时"。
+      // 可能慢于默认 15s，因此启动请求放宽到 60s。
       { timeoutMs: FETCH_OP_TIMEOUT_MS },
     ),
 
@@ -295,14 +296,14 @@ export const pcApi = {
     webRequest<PersonalContextConfig>(
       'personal_context.runtime.stop_collection',
       {},
-      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+      { timeoutMs: FETCH_CONFIG_TIMEOUT_MS },
     ),
 
   setMasterEnabled: (enabled: boolean) =>
     webRequest<PersonalContextConfig>(
       'personal_context.runtime.set_master_enabled',
       { enabled },
-      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+      { timeoutMs: FETCH_CONFIG_TIMEOUT_MS },
     ),
 
   startAgentUse: () =>
@@ -381,8 +382,8 @@ export const pcApi = {
     webRequest<{ ok: true }>(
       'personal_context.fetch.stop_run',
       { service_id },
-      // stop_fetch_run 会 await 采集任务真正落停（asyncio.shield），耗时随采集进度不定，放宽超时。
-      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+      // 覆盖后端 60s 收尾预算及状态返回余量。
+      { timeoutMs: FETCH_CONFIG_TIMEOUT_MS },
     ),
 
   getRunStatus: () =>

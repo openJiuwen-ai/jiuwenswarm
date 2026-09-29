@@ -1763,9 +1763,16 @@ class AgentRuntime:
         if work_kind is not None:
             await self._ensure_session_registered(request)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
-                events = await self._deliver_control(
-                    request, on_control_event=on_control_event,
-                )
+                # The resumed turn runs inside this await, before the loop
+                # below binds the Runtime. Bind it here as ``invoke`` does so
+                # the turn can reach host services such as Session messaging.
+                token = set_runtime_context(self, self._agent_manager)
+                try:
+                    events = await self._deliver_control(
+                        request, on_control_event=on_control_event,
+                    )
+                finally:
+                    reset_runtime_context(token)
                 for event in events:
                     yield event
                 return
@@ -2383,6 +2390,9 @@ class AgentRuntime:
     ) -> bool:
         """Read current execution state without cancelling work or fencing admission.
 
+        Only RUNNING executions count. Queued requests, waiting controls,
+        persistent response streams and cached runtimes do not make a Session busy.
+
         ``ignore_heartbeats`` drops background Heartbeat executions from the
         read, answering "would this Session still be busy once a lifecycle
         action has stopped its Heartbeats".  Removal prechecks use it so a
@@ -2390,11 +2400,9 @@ class AgentRuntime:
         the action itself still scans with them counted, so a run that
         refused to cancel keeps the Session busy.
         """
-        if getattr(self, "_pending_chat_requests", {}).get(session_id):
-            return True
         snapshot = self._session_coordinator.snapshot_session(session_id)
         if snapshot and any(
-            not execution.state.terminal
+            execution.state is SessionExecutionState.RUNNING
             and not (
                 ignore_heartbeats
                 and execution.work_kind is SessionWorkKind.HEARTBEAT
@@ -2528,6 +2536,9 @@ class AgentRuntime:
         )
 
         assert_runtime_owner(session_id)
+        await self._stop_team_runtime_for_delete(
+            channel_id=channel_id, session_id=session_id
+        )
         closed = await self._session_coordinator.close_session(
             session_id, wait_timeout=10
         )
@@ -2538,10 +2549,34 @@ class AgentRuntime:
             session_id=session_id,
             reason="session_archived",
         )
+        # Join the outer response producers directly; idle adapter caches are
+        # removed by cleanup below and never require a polling delay.
+        await self._agent_manager.cancel_session_tasks(
+            channel_id=channel_id, session_id=session_id
+        )
         await self.cleanup_session(
             channel_id=channel_id, session_id=session_id, reset_plan_state=False
         )
         release_runtime(session_id)
+
+    async def _stop_team_runtime_for_delete(
+        self, *, channel_id: str, session_id: str
+    ) -> None:
+        """Stop response streams, retaining Runner until delete releases resources."""
+        try:
+            from jiuwenswarm.agents.harness.team import get_team_manager
+
+            team_manager = get_team_manager(channel_id)
+            stopper = getattr(team_manager, "stop_session_runtime", None)
+            if callable(stopper):
+                await stopper(session_id, "session.delete: ", stop_runner=False)
+        except Exception:
+            logger.warning(
+                "[AgentRuntime] team runtime stop failed before delete: "
+                "session_id=%s",
+                session_id,
+                exc_info=True,
+            )
 
     async def delete_session(
         self,

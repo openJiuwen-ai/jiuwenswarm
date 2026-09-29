@@ -914,8 +914,8 @@ def test_core_flow_uses_success_count_config_and_ignores_legacy_switch(
     assert created["review_agent"] is not None
     assert created["flow_root"] == tmp_path / "flow"
     assert created["llm_client"] is model
-    assert created["config"].min_successes_candidate == 6
-    assert created["config"].min_successes_verified == 6
+    assert created["config"].min_successes == 6
+    assert created["config"].min_pack_success_rate == config.evolution.flow.min_pack_success_rate
     assert isinstance(created["skill_adapter"], SkillPackAdapter)
     assert isinstance(created["runtime"]["flow_engine"], Flow)
 
