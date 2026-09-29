@@ -113,12 +113,23 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
         """
         import json
 
+        output_dir = str(inputs.get("output_dir") or "").strip()
+        path_guard = (
+            "\n## 路径纪律（必须遵守）\n"
+            f"- 产物根目录 output_dir：`{output_dir}`\n"
+            "- 落盘文件必须使用输入参数中已给出的绝对路径，或基于上述 output_dir "
+            "拼接的完整绝对路径；严禁凭记忆重新拼写、缩略或改造目录名。\n"
+            if output_dir
+            else ""
+        )
+
         return (
             f"你正在替代一个失败的 SkillTurbo 规划节点完成任务。\n"
             f"节点名称: {node_name}\n"
             f"任务说明: {instruction}\n"
             f"原失败原因: {type(error).__name__}: {error}\n"
-            f"输入参数: {json.dumps(inputs, ensure_ascii=False, default=str)}\n\n"
+            f"输入参数: {json.dumps(inputs, ensure_ascii=False, default=str)}\n"
+            f"{path_guard}\n"
             f"## 强制输出格式\n"
             f"先输出给用户看的正文内容，然后在末尾另起一行输出契约声明（单行内联代码）：\n"
             f"---\n"
@@ -328,6 +339,114 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
             return False, {"reason": reason}
         return True, contract_result
 
+    @staticmethod
+    def _reconcile_contract_artifacts(
+        inputs: dict[str, Any],
+        contract_result: dict[str, Any],
+    ) -> list[str]:
+        """契约通过后，把产物路径归位到 output_dir（原地修正 contract_result）。
+
+        纠正 subagent 自行拼接路径、把产物写到 output_dir 之外导致下游
+        按约定路径读取失败的问题。仅当同时满足以下条件才动作：
+        - key 以 _path/_file 结尾，且值为已存在的文件；
+        - 文件不在 output_dir 之下；
+        - 文件位于允许源根之内：优先 inputs["workspace_base"]（会话产物根，
+          生产链路由 skill_turbo_tools 构造 inputs 时统一注入，直连调用方
+          建议显式传入以收紧允许源根），缺失时退化为 output_dir 父目录；
+          源根外的路径一律拒绝归位，防止被注入的 subagent 声明敏感路径
+          （如密钥、环境变量文件）借框架复制进交付目录外泄；
+        - output_dir 下无同名文件（不覆盖已有产物）。
+        动作为复制（非移动）；任何失败仅记 WARNING，不影响契约结果。
+        返回本次新建到 output_dir 的产物路径列表，供 validator 拒绝时回滚。
+        skill 流水线将产物根目录写入 inputs["output_dir"] 即可启用本防护。
+        """
+        import shutil
+        from pathlib import Path
+
+        relocated: list[str] = []
+        output_dir = str(inputs.get("output_dir") or "").strip()
+        if not output_dir:
+            return relocated
+        out_root = Path(output_dir)
+        source_root_raw = str(inputs.get("workspace_base") or "").strip()
+        if not source_root_raw:
+            source_root_raw = str(out_root.parent)
+        source_root = Path(source_root_raw)
+        out_root_resolved = out_root.resolve()
+        source_root_resolved = source_root.resolve()
+        path_key_suffixes = ("_path", "_file")
+        for key, value in list(contract_result.items()):
+            if not isinstance(value, str) or not value.strip():
+                continue
+            if not any(key.endswith(s) for s in path_key_suffixes):
+                continue
+            src = Path(value.strip())
+            if not src.is_file():
+                continue
+            # resolve 展开 symlink 后判定，防止根内链接指向根外敏感文件
+            src_real = src.resolve()
+            if src_real.is_relative_to(out_root_resolved):
+                continue
+            if not src_real.is_relative_to(source_root_resolved):
+                logger.warning(
+                    "[DeepAgentFallbackHandler] fallback artifact outside source root, "
+                    "skip relocate key=%s src=%s source_root=%s",
+                    key,
+                    src,
+                    source_root,
+                )
+                continue
+            dst = out_root / src.name
+            if dst.exists():
+                logger.warning(
+                    "[DeepAgentFallbackHandler] fallback artifact relocate skipped, "
+                    "dst exists key=%s src=%s dst=%s",
+                    key,
+                    src,
+                    dst,
+                )
+                continue
+            try:
+                shutil.copy2(src, dst)
+            except OSError as exc:
+                logger.warning(
+                    "[DeepAgentFallbackHandler] fallback artifact relocate failed "
+                    "key=%s src=%s error=%s",
+                    key,
+                    src,
+                    exc,
+                )
+                continue
+            contract_result[key] = str(dst.resolve())
+            relocated.append(contract_result[key])
+            logger.warning(
+                "[DeepAgentFallbackHandler] fallback artifact relocated key=%s src=%s dst=%s",
+                key,
+                src,
+                dst,
+            )
+        return relocated
+
+    @staticmethod
+    def _rollback_relocated_artifacts(paths: list[str]) -> None:
+        """validator 拒绝后回滚本次归位新建的产物，避免孤儿残留。"""
+        from pathlib import Path
+
+        for path in paths:
+            try:
+                Path(path).unlink(missing_ok=True)
+                logger.warning(
+                    "[DeepAgentFallbackHandler] fallback artifact rolled back path=%s",
+                    path,
+                )
+            except OSError as exc:
+                logger.warning(
+                    "[DeepAgentFallbackHandler] fallback artifact rollback failed "
+                    "path=%s error=%s",
+                    path,
+                    exc,
+                )
+
     async def _execute_spawn_fallback(self, call: FallbackCall) -> str:
         """通过 adapter 的 ``spawn_fallback`` 执行 SkillTurbo fallback，返回子代理输出文本。"""
         query = self._build_fallback_query(
@@ -367,9 +486,14 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
         # 抛出异常让 SkillTurbo 降级到 DeepAgent。
         success, contract_result = self._parse_fallback_output(fallback_output)
         if success:
+            # 先归位产物再校验交付物，validator 才能看到正确位置的产物；
+            # validator 拒绝时回滚本次归位，避免孤儿残留干扰重试与盘点
+            relocated = self._reconcile_contract_artifacts(inputs, contract_result)
             success, contract_result = self._apply_result_validator(
                 result_validator, node_name, inputs, contract_result
             )
+            if not success and relocated:
+                self._rollback_relocated_artifacts(relocated)
         if not success:
             reason = contract_result.get("reason", "fallback subagent 未达成节点契约")
             logger.error(
@@ -457,9 +581,14 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
         # 抛出异常让 SkillTurbo 降级到 DeepAgent。
         contract_success, contract_result = self._parse_fallback_output(fallback_output)
         if contract_success:
+            # 先归位产物再校验交付物，validator 才能看到正确位置的产物；
+            # validator 拒绝时回滚本次归位，避免孤儿残留干扰重试与盘点
+            relocated = self._reconcile_contract_artifacts(inputs, contract_result)
             contract_success, contract_result = self._apply_result_validator(
                 result_validator, node_name, inputs, contract_result
             )
+            if not contract_success and relocated:
+                self._rollback_relocated_artifacts(relocated)
         if not contract_success:
             reason = contract_result.get("reason", "fallback subagent 未达成节点契约")
             logger.error(
