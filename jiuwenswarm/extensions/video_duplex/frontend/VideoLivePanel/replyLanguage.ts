@@ -22,12 +22,6 @@ export function speakLanguageInstruction(replyLanguage: ReplyLanguage = 'match')
   );
 }
 
-export function normalizeToolLanguage(value?: string | null): 'zh-CN' | 'en' {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'en' || normalized.startsWith('en-')) return 'en';
-  return 'zh-CN';
-}
-
 export function announceLanguageInstruction(replyLanguage: ReplyLanguage = 'match'): string {
   if (replyLanguage === 'zh-CN') {
     return 'Respond naturally in one or two sentences of Simplified Chinese.';

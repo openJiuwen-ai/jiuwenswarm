@@ -2416,7 +2416,6 @@ async def test_realtime_config_propagates_english(monkeypatch, provider):
     response = channel.responses[-1][1]
     assert response["ok"] is True
     assert response["payload"]["reply_language"] == "en"
-    assert response["payload"]["tool_language"] == "en"
 
 
 @pytest.mark.asyncio

@@ -18,7 +18,6 @@ export interface RealtimeDuplexConfig {
   voice?: string;
   tools?: Array<Record<string, unknown>>;
   replyLanguage?: string;
-  toolLanguage?: string;
 }
 
 export interface RealtimeToolResult {
@@ -599,7 +598,7 @@ export class RealtimeDuplexSession {
         jobId: toolResult.jobId,
         turnId: toolResult.turnId,
         question: toolResult.question,
-      }, this.config.toolLanguage).forEach((event) => this.send(event));
+      }, this.config.replyLanguage).forEach((event) => this.send(event));
       this.emitDiagnostic('qwen_tool_result_returned', {
         job_id: toolResult.jobId,
         turn_id: toolResult.turnId,
