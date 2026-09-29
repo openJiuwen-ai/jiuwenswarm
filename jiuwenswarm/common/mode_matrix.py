@@ -234,8 +234,11 @@ def normalize_work_mode(raw: Any) -> str | None:
 def read_request_work_mode(params: Mapping[str, Any] | None) -> str | None:
     """读取请求中显式携带的 ``work_mode``；缺失或非法时返回 None。
 
-    只有 Web 会携带该字段，因此它同时充当"这是 Web 组合模式请求"的判据。
-    TUI / CLI / IM / cron 都不发送 ``work_mode``，会走历史解析分支。
+    只有 Web 前端用 ``work_mode`` 表达 profile 选择，因此它同时充当"这是 Web
+    组合模式请求"的判据。cron 也会显式携带 ``work_mode``（``job.work_mode``，
+    gateway/cron/scheduler.py），但其 mode 在落库前已被 ``_CRON_JOB_MODE_ALIASES``
+    归一、恒为基础模式，组合结果不变。TUI / CLI / IM 都不发送 ``work_mode``，
+    会走历史解析分支。
     """
     if not isinstance(params, Mapping):
         return None
