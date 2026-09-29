@@ -317,6 +317,7 @@ from jiuwenswarm.agents.harness.common.rails.concurrent_safe_rails import (
 )
 from jiuwenswarm.common.config import get_model_names
 from jiuwenswarm.common.model_identity import (
+    build_model_credential_fingerprint,
     build_model_identity_reference,
     normalize_model_identity_reference,
 )
@@ -2702,6 +2703,10 @@ class JiuWenSwarmDeepAdapter:
         self._model_cache: dict[str, Model] = {}
         self._model_name_to_keys: dict[str, list[str]] = {}
         self._model_identity_to_keys: dict[str, list[str]] = {}
+        # 同一 identity 下已登记的「凭证 owner 指纹 → cache key」：config.yaml 与
+        # models.json 双源聚合时同一 identity 可能被登记多次，凭证等价即同一 owner，
+        # 复用已有 cache key，避免 _resolve_model_by_identity 误判 ambiguous。
+        self._model_identity_owners: dict[str, dict[str, str]] = {}
         # Optional lite/pro mapping from models.defaults[].tier for task_tool.
         self._tier_model_cache: dict[str, Model] = {}
         # Cache system prompt to avoid re-building on every btw/recap call.
@@ -6239,31 +6244,49 @@ class JiuWenSwarmDeepAdapter:
         entry: dict[str, Any],
         name_counter: dict[str, int],
     ) -> None:
-        """Register one model entry into the request-selectable model cache."""
+        """Register one model entry into the request-selectable model cache.
+
+        统一注册入口：config.yaml / models.json / 环境变量回退都走这里。聚合多来源时同一
+        identity 可能被重复登记——凭证等价（同 api_key / custom_headers）即同一 owner，复用
+        已登记的 cache key 不再重复 append；凭证不同则保留多条，让
+        _resolve_model_by_identity 继续判 ambiguous（安全边界不变）。
+        """
         mcc = entry.get("model_client_config") or {}
         if not mcc.get("model_name"):
             return
         model_name = mcc["model_name"]
-        idx = name_counter.get(model_name, 0)
-        name_counter[model_name] = idx + 1
-        cache_key = f"{model_name}#{idx}"
         try:
             model = self._build_model_from_entry(
                 mcc,
                 entry.get("model_config_obj") or {},
             )
-            self._model_cache[cache_key] = model
         except Exception as exc:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] 跳过无效模型条目 %s: %s",
                 model_name, exc,
             )
             return
-        if model_name not in self._model_name_to_keys:
-            self._model_name_to_keys[model_name] = []
-        self._model_name_to_keys[model_name].append(cache_key)
+        # 指纹取自已构建的 ModelClientConfig：_build_model_from_entry 会回填 api_base /
+        # api_key 并合并 tip custom_headers，只有构建后的对象才反映实际生效的凭证。
         model_ref = build_model_identity_reference(model_name, mcc)
-        self._model_identity_to_keys.setdefault(model_ref, []).append(cache_key)
+        credential_fp = build_model_credential_fingerprint(model.model_client_config)
+        owners = self._model_identity_owners.setdefault(model_ref, {})
+        cache_key = owners.get(credential_fp)
+        if cache_key is not None:
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] 复用等价模型登记 %s (ref=%s, key=%s)",
+                model_name, model_ref, cache_key,
+            )
+        else:
+            idx = name_counter.get(model_name, 0)
+            name_counter[model_name] = idx + 1
+            cache_key = f"{model_name}#{idx}"
+            owners[credential_fp] = cache_key
+            self._model_cache[cache_key] = model
+            if model_name not in self._model_name_to_keys:
+                self._model_name_to_keys[model_name] = []
+            self._model_name_to_keys[model_name].append(cache_key)
+            self._model_identity_to_keys.setdefault(model_ref, []).append(cache_key)
 
         # 同时用纯 model_name 作为 key 指向 is_default=true 的条目
         if entry.get("is_default") is True:
@@ -6289,6 +6312,7 @@ class JiuWenSwarmDeepAdapter:
         """
         self._model_name_to_keys.clear()
         self._model_identity_to_keys.clear()
+        self._model_identity_owners.clear()
         self._tier_model_cache.clear()
         name_counter: dict[str, int] = {}
 
@@ -6305,8 +6329,13 @@ class JiuWenSwarmDeepAdapter:
 
         models.json 与 config.yaml 条目同构（model_client_config/model_config_obj/顶层
         字段），直接复用 _register_model_cache_entry；与 config.yaml 条目按 name_counter
-        顺序分配 #index key。同名（config.yaml 已登记本地实配模型）时跳过，避免
-        _resolve_model_by_name 出现歧义。
+        顺序分配 #index key。
+
+        不按 model_name 跳过：同名但 endpoint/provider 不同的是**不同 owner**，各自登记才能让
+        各自的 model_ref 解析得到——只按名字跳过会把 models.json 独有的 owner 整条丢掉，表现为
+        model_ref「owner not found」。真正的重复由 _register_model_cache_entry 按 identity +
+        凭证指纹判定：等价 owner 复用同一 cache key，不等价的保留多条（名称查询随之歧义，
+        调用方改用 model_ref）。
         """
         try:
             from jiuwenswarm.agents.harness.common.rails.model_routing.capability import (
@@ -6325,8 +6354,7 @@ class JiuWenSwarmDeepAdapter:
             if not isinstance(entry, dict):
                 continue
             mcc = entry.get("model_client_config") or {}
-            name = str(mcc.get("model_name") or "").strip()
-            if not name or name in self._model_name_to_keys:
+            if not str(mcc.get("model_name") or "").strip():
                 continue
             self._register_model_cache_entry(entry, name_counter)
 
@@ -6350,9 +6378,13 @@ class JiuWenSwarmDeepAdapter:
             or {}
         )
         try:
-            self._model_cache[model_name] = self._build_model_from_entry(mcc, mco)
+            model = self._build_model_from_entry(mcc, mco)
+            self._model_cache[model_name] = model
             model_ref = build_model_identity_reference(model_name, mcc)
             self._model_identity_to_keys.setdefault(model_ref, []).append(model_name)
+            self._model_identity_owners.setdefault(model_ref, {})[
+                build_model_credential_fingerprint(model.model_client_config)
+            ] = model_name
         except Exception as exc:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] 跳过无效模型条目(legacy) %s: %s",
@@ -6381,6 +6413,7 @@ class JiuWenSwarmDeepAdapter:
         self._model_cache.clear()
         self._model_name_to_keys.clear()
         self._model_identity_to_keys.clear()
+        self._model_identity_owners.clear()
         self._tier_model_cache.clear()
         self._inject_attribution_to_config(config)
         self._build_model_cache_from_defaults(config)
