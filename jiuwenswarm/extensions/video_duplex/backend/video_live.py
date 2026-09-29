@@ -220,7 +220,7 @@ def register_video_live_handler(
                 return
             await channel.send_response(
                 ws, req_id, ok=True,
-                payload={"provider": "joyai", "model": model, "reply_language": settings.reply_language()},
+                payload={"provider": "joyai", "model": model, "reply_language": settings.reply_language(), "tool_language": settings.tool_language()},
             )
             return
         config = QwenOmniRealtimeConfig.from_environment()
@@ -246,6 +246,7 @@ def register_video_live_handler(
                 "voice": config.voice,
                 "tools": qwen_omni_tools(),
                 "reply_language": settings.reply_language(),
+                "tool_language": settings.tool_language(),
             },
         )
 

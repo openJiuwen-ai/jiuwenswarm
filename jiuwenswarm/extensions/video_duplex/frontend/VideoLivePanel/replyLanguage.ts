@@ -7,3 +7,9 @@ export function speakLanguageInstruction(language: ReplyLanguage='match'): strin
   return `Speak to the user in the same language as their latest utterance (speech transcript or typed text). If mixed, follow the latest user turn — not screen OCR language, not older assistant turns. ${preserve}`;
 }
 export function announceLanguageInstruction(language: ReplyLanguage='match'): string { if(language==='en') return 'Respond naturally in one or two sentences of English.'; if(language==='zh-CN') return 'Respond naturally in one or two sentences of Simplified Chinese.'; return 'Respond naturally in one or two sentences in the same language as the original user question (or the latest user utterance if the original language is unclear).'; }
+
+export function normalizeToolLanguage(value?: string | null): 'zh-CN' | 'en' {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'en' || normalized.startsWith('en-')) return 'en';
+  return 'zh-CN';
+}

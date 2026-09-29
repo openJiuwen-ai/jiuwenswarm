@@ -1,4 +1,5 @@
 import { TASK_OPERATION_INSTRUCTIONS, taskResultNotice } from './taskPrompts.js';
+import { normalizeToolLanguage } from './replyLanguage.js';
 export const QWEN_OMNI_DELEGATE_TOOL_NAME = 'jiuwen_delegate';
 const QWEN_OMNI_LEGACY_RESEARCH_TOOL_NAME = 'jiuwen_research';
 export { QWEN_OMNI_TOOL_INSTRUCTIONS } from './taskPrompts.js';
@@ -88,7 +89,7 @@ export interface QwenOmniToolResultContext {
 export function createQwenOmniToolFollowupEvent(
   brief: RealtimeBrief,
   context?: QwenOmniToolResultContext,
-  replyLanguage?: string,
+  toolLanguage?: string,
 ): Record<string, unknown> {
   return {
     type: 'conversation.item.create',
@@ -98,7 +99,7 @@ export function createQwenOmniToolFollowupEvent(
       content: [
         {
           type: 'input_text',
-          text: taskResultNotice(brief, context?.question, replyLanguage),
+          text: taskResultNotice(brief, context?.question, normalizeToolLanguage(toolLanguage)),
         },
       ],
     },

@@ -19,6 +19,7 @@ export interface RealtimeDuplexConfig {
   voice?: string;
   tools?: Array<Record<string, unknown>>;
   replyLanguage?: string;
+  toolLanguage?: string;
 }
 
 export interface RealtimeToolResult {
@@ -701,7 +702,7 @@ export class RealtimeDuplexSession {
         jobId: toolResult.jobId,
         turnId: toolResult.turnId,
         question: toolResult.question,
-      }, this.config.replyLanguage);
+      }, this.config.toolLanguage);
       // Accepted delegation closed the call; completion is a separate notification.
       if (!toolResult.callId || this.acceptedToolResultIds.has(`operation:${toolResult.callId}`)) events.shift();
       events.forEach((event) => this.send(event));

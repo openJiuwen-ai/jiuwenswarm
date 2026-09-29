@@ -836,6 +836,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             voice: config.voice,
             tools: config.tools,
             replyLanguage: config.reply_language,
+            toolLanguage: config.tool_language,
           },
           {
             getVideoFrame: () => {

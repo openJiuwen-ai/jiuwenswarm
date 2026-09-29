@@ -105,6 +105,7 @@ export interface VideoSessionConfig {
   voice?: string;
   tools?: Array<Record<string, unknown>>;
   reply_language?: 'match' | 'zh-CN' | 'en';
+  tool_language?: 'zh-CN' | 'en';
 }
 
 export interface JoyAIFrameResult extends AgentAction {
