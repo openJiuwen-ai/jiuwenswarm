@@ -509,3 +509,40 @@ def test_work_plan_whitelist_excludes_side_effect_tools():
     assert "task_tool" not in allowed
     for forbidden in ("send_file_to_user", "cron_create", "switch_mode"):
         assert forbidden not in allowed
+
+
+# ── 非 plan 能力渠道的 plan token 归一（评审 CR-1）──────────────────────────
+
+
+def test_officeclaw_legacy_plan_token_normalizes_to_agent():
+    """officeclaw 历史恒发 mode="agent.plan"，叠加回填的 work_mode 不得误开 plan。"""
+    from jiuwenswarm.server.handlers._shared import resolve_request_runtime_mode
+
+    request = _request({"mode": "agent.plan", "work_mode": "work"}, channel_id="officeclaw")
+
+    resolved = resolve_request_runtime_mode(request)
+
+    assert resolved.is_plan is False
+    assert resolved.canonical_mode == "agent"
+
+
+def test_explicit_entry_marker_still_enters_plan_on_non_capable_channel():
+    """e2a 通道带 plan_entry_source 的显式进入不受渠道归一影响。"""
+    from jiuwenswarm.server.handlers._shared import resolve_request_runtime_mode
+
+    request = _request(
+        {"mode": "agent.plan", "work_mode": "work", "plan_entry_source": "e2a"},
+        channel_id="officeclaw",
+    )
+
+    assert resolve_request_runtime_mode(request).is_plan is True
+
+
+@pytest.mark.parametrize("channel", ["web", "tui"])
+def test_plan_capable_channels_keep_plan_token(channel):
+    """plan 进行中 Web 的后续消息不带 plan_entry_source，靠渠道白名单放行。"""
+    from jiuwenswarm.server.handlers._shared import resolve_request_runtime_mode
+
+    request = _request({"mode": "agent.plan", "work_mode": "work"}, channel_id=channel)
+
+    assert resolve_request_runtime_mode(request).is_plan is True

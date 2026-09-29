@@ -27,12 +27,33 @@ from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_REMINDER_ORIGINAL_QUERY_KEY,
 )
 from jiuwenswarm.common.mode_matrix import (
+    NEW_AGENT_WORK_PLAN,
     ResolvedMode,
+    WEB_PLAN_AGENT,
+    canonicalize_mode_text,
     resolve_request_mode,
 )
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 
 logger = logging.getLogger(__name__)
+
+
+# Plan 能力渠道：只有这些渠道（以及带显式进入标记的请求，见
+# EXPLICIT_PLAN_ENTRY_SOURCES）允许 plan 类 mode token 原样生效。officeclaw
+# 等 E2A 下游会把历史 token ``mode="agent.plan"`` 恒定发在普通单 agent 会话上，
+# 叠加 session metadata 回填的 ``work_mode`` 后会走 Web 组合分支误开 work plan
+# （评审 CR-1，2026-09-29）：白名单滤掉办公 agent 的全部业务工具，且 plan
+# 审批中断在下游通道无解。与 cron 的 ``_CRON_JOB_MODE_ALIASES``
+# （gateway/cron/models.py）同一思路：入口处归一，不依赖各消费点自行防御。
+PLAN_CAPABLE_CHANNELS: frozenset[str] = frozenset({"web", "tui"})
+
+# 显式进入 plan 的一次性来源标记（``plan_entry_source`` 的合法取值）。
+EXPLICIT_PLAN_ENTRY_SOURCES: frozenset[str] = frozenset(
+    {"slash_command", "e2a", "plan_toggle"}
+)
+
+# 参与 Web 组合后会产生 plan 态的 mode token。
+_PLAN_MODE_TOKENS: frozenset[str] = frozenset({WEB_PLAN_AGENT, NEW_AGENT_WORK_PLAN})
 
 
 # Session owner preparation completes before the response. Optional KVC signals
@@ -227,13 +248,35 @@ def resolve_agent_request_mode(
     return mode, sub_mode, canonical_mode
 
 
+def _request_allows_plan_entry(request: AgentRequest, params: dict) -> bool:
+    """plan 类 mode token 是否允许原样生效：plan 能力渠道，或带显式进入标记。"""
+    channel = str(request.channel_id or "").strip().lower()
+    if not channel:
+        # 无通道信息的内部 / 历史请求保持原行为；归一只针对已知的宿主渠道，
+        # 避免误伤 channel_id 缺省的 RPC 路径。
+        return True
+    if channel in PLAN_CAPABLE_CHANNELS:
+        return True
+    source = str(params.get("plan_entry_source") or "").strip().lower()
+    return source in EXPLICIT_PLAN_ENTRY_SOURCES
+
+
 def resolve_request_runtime_mode(
     request: AgentRequest,
     *,
     work_mode: Any = None,
 ) -> ResolvedMode:
-    """解析请求的运行模式（Web 组合 mode + work_mode；其余走历史解析）。"""
+    """解析请求的运行模式（Web 组合 mode + work_mode；其余走历史解析）。
+
+    非 plan 能力渠道且未带显式进入标记的请求，plan 类 mode token 一律归一为
+    基础模式（``agent.plan`` → ``agent``），防止历史 token 误开 plan。
+    """
     params = request.params if isinstance(request.params, dict) else {}
+    mode_text = canonicalize_mode_text(params.get("mode"))
+    if mode_text in _PLAN_MODE_TOKENS and not _request_allows_plan_entry(
+        request, params
+    ):
+        params = {**params, "mode": mode_text.split(".", 1)[0]}
     return resolve_request_mode(
         params,
         resolve_agent_request_mode,
