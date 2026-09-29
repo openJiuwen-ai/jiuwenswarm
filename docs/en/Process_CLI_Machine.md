@@ -68,8 +68,11 @@ loaded into a second Agent engine. Current Runtime rejects custom work-mode
 Agents and explicit tool allowlists; those errors are preserved, not silently
 downgraded. Available skills and model names still come from local Runtime
 configuration. The request is not a configuration-file override mechanism.
-An inline definition is invocation-scoped: send it again to execute the same
-custom definition when resuming history in a later process.
+An inline definition must be sent again when resuming history in a later
+process. The Process CLI stores its fingerprint with the Session; a different
+definition or omission is rejected. Calls using the same Session are guarded
+by an exclusive process lock; concurrent attempts return retryable
+`SESSION_BUSY`. Legacy unbound Sessions with history cannot adopt a custom Agent.
 
 Workspace paths are resolved relative to the launching directory **before**
 changing `cwd`. `cwd` controls process execution; `project_dir` remains a

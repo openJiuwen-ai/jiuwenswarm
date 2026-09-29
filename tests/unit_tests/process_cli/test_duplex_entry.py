@@ -131,6 +131,16 @@ def checked_write_result(self, result):
     original_write_result(self, result)
 
 OneShotWriter.write_result = checked_write_result
+from jiuwenswarm.channels.process_cli import machine
+class FakeSessionLease:
+    def __init__(self, session_id):
+        self.session_id = session_id
+    def acquire(self):
+        pass
+    def release(self):
+        pass
+machine.SessionLease = FakeSessionLease
+machine.bind_agent = lambda *_args, **_kwargs: None
 from jiuwenswarm.channels.process_cli.main import main
 main()
 """
