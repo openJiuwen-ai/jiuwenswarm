@@ -577,11 +577,15 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
             "data": body.get("data"),
             "message": body.get("message"),
         }
+        # 跟随 wire 的 is_final，不写死终止态：轮内受理回执带 is_final=False
+        # （cron_tools._send_split），解码后不得伪装成本轮终止帧；后台执行轮
+        # 完成推送带默认 is_final=True，仍按终止帧处理——两种场景共用本分支，
+        # 唯一区分位就是 e2a.is_final。
         return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
             request_id=rid,
             channel_id=ch,
             payload=body_payload,
-            is_complete=True,
+            is_complete=bool(e2a.is_final),
         )
 
     if kind == E2A_RESPONSE_KIND_ACP_OUTPUT_REQUEST:
