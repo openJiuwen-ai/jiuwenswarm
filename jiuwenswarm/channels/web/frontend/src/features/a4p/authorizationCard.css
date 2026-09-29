@@ -1,0 +1,132 @@
+.a4p-permission-options {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.a4p-permission-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  width: 100%;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.a4p-permission-count,
+.a4p-permission-status {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-text-secondary);
+}
+
+.a4p-permission-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.a4p-permission-option {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: var(--color-surface-elevated);
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.a4p-permission-option[data-variant='selected'] {
+  border-color: var(--color-action-primary);
+  background: var(--color-action-primary-subtle);
+}
+
+.a4p-permission-option:focus-within {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.a4p-permission-option[data-disabled='true'] {
+  cursor: wait;
+}
+
+.a4p-permission-option input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--color-action-primary);
+  cursor: inherit;
+}
+
+.a4p-permission-content,
+.a4p-permission-params,
+.a4p-permission-param {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 4px;
+}
+
+.a4p-permission-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+.a4p-permission-params {
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.a4p-permission-param-name {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.a4p-permission-param-value {
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.a4p-permission-status {
+  margin: 8px 0 0;
+  line-height: 1.6;
+}
+
+/* Only A4P owns this scroll region; other InteractionSlot cards are unchanged. */
+.a4p-authorization-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: var(--a4p-card-max-height, 65vh);
+  max-width: var(--a4p-card-max-width, 100%);
+}
+
+.a4p-authorization-header,
+.a4p-authorization-footer {
+  flex: 0 0 auto;
+}
+
+.a4p-authorization-body {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+}
+
+.a4p-authorization-body:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: -2px;
+}

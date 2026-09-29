@@ -121,6 +121,8 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.notice",
         "chat.message_updated",
         "session.message.updated",
+        "a4p.authorization_request",
+        "a4p.authorization_terminated",
         "history.message",
         "chat.session_result",
         "chat.usage_metadata",
@@ -807,6 +809,7 @@ class WebChannel(BaseWsChannel):
         return (
             event_name in _WEB_FULL_PAYLOAD_EVENT_TYPES
             or event_name in {"chat.input_received", "chat.output_phase"}
+            or event_name.startswith("a4p.")
             or event_name.startswith("team.")
             or event_name.startswith("harness.")
             or event_name.startswith("personal_context.context.")

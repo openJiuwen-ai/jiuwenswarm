@@ -102,6 +102,19 @@ export interface QueuedSessionMessageSnapshot {
   previous: QueuedSessionMessage[];
 }
 
+export interface A4PAuthorizationRequest {
+  originalActions?: Record<string, unknown>[];
+  preparedActionIndexes?: number[];
+  replacesRequestId?: string | null;
+  repreparing?: boolean;
+  requestId: string;
+  kind: string;
+  mandate: Record<string, unknown>;
+  signingOptions: Record<string, unknown>;
+  uiContext?: Record<string, unknown>;
+  sessionId?: string;
+}
+
 export interface HistoryPagerMeta {
   nextCursor: string | null;
   hasMore: boolean;
@@ -182,6 +195,8 @@ export interface ChatRuntime {
   taskInputReceipts: Record<string, TaskInputReceipt>;
   queuePaused: boolean;
   pendingQuestions: AskUserQuestionPayload[];
+  pendingA4PAuthorization: A4PAuthorizationRequest | null;
+  retiredA4PRequestIds?: string[];
   /**
    * 忙碌时设目标：用户气泡暂存在此（界面不立刻显示）；
    * 空 chat.final / processing 结束再正式入 messages。
@@ -236,6 +251,7 @@ function createEmptyRuntime(): ChatRuntime {
     taskInputReceipts: {},
     queuePaused: false,
     pendingQuestions: [],
+    pendingA4PAuthorization: null,
     pendingGoalObjectiveBubble: null as ChatRuntime['pendingGoalObjectiveBubble'],
     inputValue: '',
     evolutionStatusClearTimer: null,
@@ -373,6 +389,11 @@ interface ChatState {
   enqueuePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
   consumePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
   clearPendingQuestions: (sessionId: string) => void;
+  setPendingA4PAuthorization: (
+    sessionId: string,
+    request: A4PAuthorizationRequest | null,
+    terminatedRequestId?: string,
+  ) => void;
   setPendingGoalObjectiveBubble: (sessionId: string, content: string | null) => void;
   flushPendingGoalObjectiveBubble: (sessionId: string) => void;
   queueOrAddGoalObjectiveMessage: (sessionId: string, content: string) => void;
@@ -1594,6 +1615,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               orphanResults: new Map(),
               interruptResult: null,
               pendingQuestions: [],
+              pendingA4PAuthorization: null,
               toolMetrics: {
                 toolCallDedupDropped: 0,
                 toolResultDedupDropped: 0,
@@ -1612,6 +1634,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             orphanResults: new Map(),
             interruptResult: null,
             pendingQuestions: [],
+            pendingA4PAuthorization: null,
             toolMetrics: {
               toolCallDedupDropped: 0,
               toolResultDedupDropped: 0,
@@ -1676,6 +1699,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             taskQueue: [],
             taskInputReceipts: {},
             pendingQuestions: [],
+            pendingA4PAuthorization: null,
             pendingGoalObjectiveBubble: null,
           },
         },
@@ -1965,6 +1989,30 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         runtimes: {
           ...state.runtimes,
           [sessionId]: { ...runtime, pendingQuestions: [] },
+        },
+      };
+    });
+  },
+
+  setPendingA4PAuthorization: (sessionId, request, terminatedRequestId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      // Retain superseded IDs so delayed pushes cannot resurrect an old mandate.
+      const retired = new Set(runtime.retiredA4PRequestIds ?? []);
+      if (request && retired.has(request.requestId)) return state;
+      const previous = runtime.pendingA4PAuthorization;
+      if (terminatedRequestId) retired.add(terminatedRequestId);
+      const next = terminatedRequestId && previous?.requestId !== terminatedRequestId ? previous : request;
+      if (previous && previous.requestId !== next?.requestId) retired.add(previous.requestId);
+      if (request?.replacesRequestId) retired.add(request.replacesRequestId);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime, pendingA4PAuthorization: next,
+            retiredA4PRequestIds: [...retired],
+          },
         },
       };
     });
