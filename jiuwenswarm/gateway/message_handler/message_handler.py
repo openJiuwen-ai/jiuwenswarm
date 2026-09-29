@@ -4100,20 +4100,31 @@ class MessageHandler(ABC):
 
         if not is_legacy_shared_directory_client(self.agent_client):
             return ""
+        if self._session_has_model_selection(session_id):
+            return ""
+        try:
+            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+            metadata = get_session_metadata(session_id, cache_bust=True, enable_writeback=False)
+        except Exception:  # noqa: BLE001 — 读不到就当没有，但要留痕：否则免费模型会莫名不可用
+            logger.warning("[MessageHandler] 读取会话模型失败 session=%s", session_id, exc_info=True)
+            return ""
+        stored = metadata.get("model") if isinstance(metadata, dict) else None
+        return stored.strip() if isinstance(stored, str) else ""
+
+    @staticmethod
+    def _session_has_model_selection(session_id: str) -> bool:
         try:
             from jiuwenswarm.server.runtime.session.model_selection_store import (
                 get_session_model_selection,
             )
-            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
-
-            if get_session_model_selection(session_id) is not None:
-                return ""
-            metadata = get_session_metadata(session_id, cache_bust=True, enable_writeback=False)
-        except Exception:  # noqa: BLE001 — 读不到就当没有
-            logger.debug("[MessageHandler] 读取会话模型失败 session=%s", session_id, exc_info=True)
-            return ""
-        stored = metadata.get("model") if isinstance(metadata, dict) else None
-        return stored.strip() if isinstance(stored, str) else ""
+        except ImportError:
+            return False
+        try:
+            return get_session_model_selection(session_id) is not None
+        except Exception:  # noqa: BLE001
+            logger.warning("[MessageHandler] 读取会话模型路由失败 session=%s", session_id, exc_info=True)
+            return False
 
     async def _apply_session_login_owner(self, env: "E2AEnvelope") -> None:
         from jiuwenswarm.common.e2a.constants import (

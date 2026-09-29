@@ -111,3 +111,19 @@ def test_agent_server_uses_the_gateway_hint_for_login_required():
 
     assert _message({E2A_LOGIN_REQUIRED_HINT_PARAM_KEY: _LOGIN_HINT_NO_OWNER}) == _LOGIN_HINT_NO_OWNER
     assert _message({}) == "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
+
+
+def test_effective_model_is_read_from_session_metadata(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.routing.e2a_proxy.is_legacy_shared_directory_client", lambda client: True
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda session_id, cache_bust=False, *, enable_writeback=True: {"model": "GLM-5.2"},
+    )
+    handler = SimpleNamespace(
+        agent_client=None, _session_has_model_selection=MessageHandler._session_has_model_selection
+    )
+
+    assert MessageHandler._effective_session_model(handler, "web_s1", {"query": "x"}) == "GLM-5.2"
+    assert MessageHandler._effective_session_model(handler, "web_s1", {"model_name": "my-model"}) == "my-model"
