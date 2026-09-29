@@ -24,6 +24,7 @@ class RuntimeExecRequest:
     env: dict[str, str] | None = None
     stdin_data: bytes | None = None
     timeout: float | None = None
+    write_cap_sids: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class RuntimeBackgroundExecRequest:
     workdir: str | None = None
     env: dict[str, str] | None = None
     stdin_data: bytes | None = None
+    write_cap_sids: list[str] | None = None
 
 
 @dataclass(frozen=True)

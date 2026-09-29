@@ -8,7 +8,7 @@ import re
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 SANDBOX_ID_MIN_LEN = 4
 SANDBOX_ID_MAX_LEN = 40
@@ -107,6 +107,13 @@ class ExecResult(BaseModel):
     stderr: str = ""
 
 
+class AccessExtra(BaseModel):
+    """本次调用的合法访问范围. ``extra="forbid"`` 让未知字段直接 422."""
+
+    paths: list[str]
+    model_config = ConfigDict(extra="forbid")
+
+
 class BackgroundExecRequest(BaseModel):
     command: list[str]
     job_id: str | None = None
@@ -114,6 +121,7 @@ class BackgroundExecRequest(BaseModel):
     env: dict[str, str] | None = None
     stdin: str | None = None
     timeout_seconds: int | None = None
+    extra: AccessExtra | None = None
 
 
 class BackgroundExecResult(BaseModel):

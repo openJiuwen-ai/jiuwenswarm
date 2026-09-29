@@ -79,6 +79,7 @@ def _empty_skeleton() -> dict[str, Any]:
             "filesystem": {
                 "allow_read": [],
                 "allow_write": [],
+                "workspace": [],
                 "deny_read": [],
                 "deny_write": [],
             },
@@ -139,7 +140,7 @@ def _load_copy() -> dict[str, Any]:
     win.setdefault("network", {})
     win["network"].setdefault("disable_all", False)
     win["network"].setdefault("egress", {})
-    for k in ("allow_read", "allow_write", "deny_read", "deny_write"):
+    for k in ("allow_read", "allow_write", "deny_read", "deny_write", "workspace"):
         win["filesystem"].setdefault(k, [])
     for k in ("allowed_domains", "blocked_domains"):
         win["network"]["egress"].setdefault(k, [])

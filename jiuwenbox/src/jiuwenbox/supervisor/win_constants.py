@@ -59,7 +59,7 @@ TOKEN_SANDBOX_INERT = 29
 # CreateRestrictedToken 标志 (对齐 winnt.h).
 #   DISABLE_MAX_PRIVILEGE = 0x1 : 清除 token 中所有特权.
 #   SANDBOX_INERT        = 0x2 : 标记 token 为沙箱 inert (某些路径豁免检查).
-#   LUA_TOKEN            = 0x4 : 创建 UAC 筛选 token (低完整性), 非本项目所需.
+#   LUA_TOKEN            = 0x4 : 创建 UAC 筛选 token (低完整性).
 #   WRITE_RESTRICTED     = 0x8 : 只对写操作做 Restricted SID 双重 ACL 检查.
 #
 # 注意: 旧版误把 SANDBOX_INERT 标成 0x4 (实为 LUA_TOKEN 的值), RESTRICTED_TOKEN_FLAGS
@@ -68,16 +68,34 @@ TOKEN_SANDBOX_INERT = 29
 # ---------------------------------------------------------------------------
 DISABLE_MAX_PRIVILEGE = 0x1
 SANDBOX_INERT = 0x2
+LUA_TOKEN = 0x4
 WRITE_RESTRICTED = 0x8
 
-# CreateRestrictedToken 组合: 文档 6.5 要求的受限 SID 列表 =
-# [Everyone, 当前 LogonSession, JHXSandboxWrite].
-# 受限 token 实跑验证失败 (2026-08-02): WRITE_RESTRICTED 下 bash/python 启动即
-# 0xC0000142 (STATUS_DLL_INIT_FAILED), 故 exec 不用受限 token (改用 runner 未受限
-# primary token). _create_restricted_token 仍被 runner_main 构造但 exec 不消费
-# (dead code). WRITE_RESTRICTED 暂不 OR 进 flags, 待受限 token 0xC0000142 根因
-# (desktop/全局对象机制) 解决后再恢复.
-RESTRICTED_TOKEN_FLAGS = DISABLE_MAX_PRIVILEGE | SANDBOX_INERT  # 去掉 WRITE_RESTRICTED(0x8)
+# Legacy flags kept for reference. Exec always uses
+# ELEVATED_RESTRICTED_TOKEN_FLAGS (per-exec WRITE_RESTRICTED token).
+RESTRICTED_TOKEN_FLAGS = DISABLE_MAX_PRIVILEGE | SANDBOX_INERT
+
+# Codex elevated CreateRestrictedToken: DISABLE_MAX_PRIVILEGE | LUA_TOKEN |
+# WRITE_RESTRICTED. 不用 SANDBOX_INERT. restricting SID =
+# [合成写 SID, TokenUser, LogonSession, Everyone].
+ELEVATED_RESTRICTED_TOKEN_FLAGS = (
+    DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED
+)
+
+# OpenProcessToken / DuplicateTokenEx DesiredAccess (winnt.h).
+TOKEN_ASSIGN_PRIMARY = 0x0001
+TOKEN_DUPLICATE = 0x0002
+TOKEN_QUERY = 0x0008
+TOKEN_ADJUST_PRIVILEGES = 0x0020
+TOKEN_ADJUST_DEFAULT = 0x0080
+TOKEN_ADJUST_SESSIONID = 0x0100
+
+# DuplicateTokenEx: TokenPrimary + SecurityImpersonation.
+TokenPrimary = 1  # noqa: N816 - winnt.h TOKEN_TYPE
+SecurityImpersonation = 2  # noqa: N816 - winnt.h SECURITY_IMPERSONATION_LEVEL
+
+SE_PRIVILEGE_ENABLED = 0x00000002
+GENERIC_ALL = 0x10000000
 
 # ---------------------------------------------------------------------------
 # WellKnownSid 类型 (CreateWellKnownSid 的枚举值).
@@ -91,9 +109,20 @@ WIN_WORLD_SID = 1  # WinWorldSid -> Everyone
 # LogonUser / CreateProcessWithLogonW / CreateProcessAsUser 标志.
 # ---------------------------------------------------------------------------
 LOGON32_LOGON_INTERACTIVE = 2
+LOGON32_LOGON_NETWORK = 3
 LOGON32_PROVIDER_DEFAULT = 0
 # CreateProcessWithLogonW / LogonUser(INTERACTIVE) 未授「允许本地登录」时的 Win32 码.
 ERROR_LOGON_TYPE_NOT_GRANTED = 1385
+
+# TOKEN_GROUPS SID 属性 (winnt.h).
+SE_GROUP_MANDATORY = 0x00000001
+SE_GROUP_ENABLED_BY_DEFAULT = 0x00000002
+SE_GROUP_ENABLED = 0x00000004
+SE_GROUP_OWNER = 0x00000008
+SE_GROUP_USE_FOR_DENY_ONLY = 0x00000010
+SE_GROUP_INTEGRITY = 0x00000020
+SE_GROUP_INTEGRITY_ENABLED = 0x00000040
+SE_GROUP_LOGON_ID = 0xC0000000
 
 # LSA 用户权利 (ntsecapi.h). 第一跳 LOGON_WITH_PROFILE 需要交互式登录权利.
 # 对齐 secpol.msc → 本地策略 → 用户权限分配 → 允许本地登录.
@@ -163,9 +192,11 @@ SANDBOX_USER_FLAGS = (
 # NetLocalGroupAddMembers 预定义级别.
 LOCALGROUP_MEMBERS_INFO_0 = 0
 LOCALGROUP_MEMBERS_INFO_3 = 3
-# 加组成员: 已在组中 (幂等).
-ERROR_MEMBER_IN_ALIAS = 1377
-ERROR_MEMBER_NOT_IN_ALIAS = 1378
+# 加组成员: 已在组中 (幂等). winerror.h:
+#   ERROR_MEMBER_NOT_IN_ALIAS = 1377
+#   ERROR_MEMBER_IN_ALIAS     = 1378
+ERROR_MEMBER_NOT_IN_ALIAS = 1377
+ERROR_MEMBER_IN_ALIAS = 1378
 # 域机上裸名 jbx-sandbox 会被解析到域, 本机 SAM 账户加组失败.
 ERROR_NO_SUCH_MEMBER = 1387
 ERROR_INVALID_MEMBER = 1388
@@ -230,15 +261,24 @@ FILE_WRITE_DATA       = 0x00000002
 FILE_APPEND_DATA      = 0x00000004
 FILE_WRITE_EA         = 0x00000010
 FILE_WRITE_ATTRIBUTES = 0x00000100
+# 目录上删除子对象 (icacls Dc). 白名单目录上有它才能 del 已有子文件, 不必给每个文件打 ACE.
+FILE_DELETE_CHILD     = 0x00000040
 
-# allow_write 路径授予的写权限组合.
-ALLOW_WRITE_RIGHTS = FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | FILE_DELETE_ACCESS
+# allow_write 白名单节点: 写+执行+删对象. 不含 FILE_DELETE_CHILD, 对齐 Codex:
+# 有 FILE_DELETE_CHILD 时受保护子目录可被 rmdir 掉.
+ALLOW_WRITE_RIGHTS = (
+    FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE
+    | FILE_DELETE_ACCESS
+)
 # 工具目录 / python.exe 预装: FILE_GENERIC_READ 不含 FILE_EXECUTE/FILE_TRAVERSE,
 # 只授 Read 时 jbx-sandbox 无法 CreateProcessWithLogonW (WinError 5).
 ALLOW_READ_EXECUTE_RIGHTS = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE
 # deny_write 路径封锁的写权限组合: 只拒绝写特定位, 不含 SYNCHRONIZE/READ_CONTROL
 # (这两个位也属于 FILE_GENERIC_READ, 若出现在 Deny mask 中会阻断读访问).
-DENY_WRITE_RIGHTS = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES
+DENY_WRITE_RIGHTS = (
+    FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES
+    | FILE_DELETE_ACCESS | FILE_DELETE_CHILD
+)
 # read 控制中 deny 施加的读权限.
 DENY_READ_RIGHTS = FILE_GENERIC_READ
 
@@ -430,16 +470,20 @@ LOOPBACK_IPV4_INT = 0x7F000001  # 127.0.0.1 in host byte order
 REG_BASE_KEY = r"Software\JiuwenBox\WindowsSandbox"
 REG_VALUE_INSTALLED = "installed"
 REG_VALUE_SANDBOX_USER_SID = "sandbox_user_sid"
+REG_VALUE_SANDBOX_GROUP_SID = "sandbox_group_sid"
 REG_VALUE_SYNTHETIC_WRITE_SID = "synthetic_write_sid"
 REG_VALUE_SANDBOX_USER_PW = "sandbox_user_pw_encrypted"
 REG_VALUE_READ_ACL_PROGRESS = "read_acl_progress"
 # 已预装读 ACL 的完整路径集合 (JSON). ensure_windows_setup 幂等检查时对比
-# 本次 preinstall_paths, 若有新增路径 (如用户改了 tool_paths 后首次起 sandbox)
+# 本次 preinstall_paths, 若有新增路径 (如用户改了 read_acl_preinstall)
 # 则提示需 --force 重装让管理员补预装; 运行时普通用户无权改外部目录 DACL.
 REG_VALUE_PREINSTALLED_PATHS = "preinstalled_paths"
 # install 时已预授 WRITE_DAC 的 deny/allow 路径集合 (JSON).
 # ensure_windows_setup 增量检测: runtime policy 新增 deny/allow 路径时自动弹 UAC 补授权.
 REG_VALUE_ACL_POLICY_PATHS = "acl_policy_paths"
+# 旧版把施加过 ACE 的路径清单存在 HKLM (JSON list). 现已迁到
+# acl_state.json 的 read_acl / write_acl; 读路径仍保留做一次性迁移.
+REG_VALUE_APPLIED_ACL_PATHS = "applied_acl_paths"
 
 # UAC 提权子进程的命令行标记.
 INSTALL_SUBCOMMAND = "--install"
