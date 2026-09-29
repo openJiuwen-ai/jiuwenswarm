@@ -5463,14 +5463,23 @@ class AgentWebSocketServer:
                         payload["projects"].append(dict(project_id=project_id, operation=operation))
             elif method == "project.lifecycle":
                 project_id = lc.validate_id(params.get("project_id"))
-                payload = lc.projection("project", project_id)
-                from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
-                project = get_project_by_id(project_id, cache_bust=True)
+
+                def _project_snapshot():
+                    # cron 准入闸门会并发打这个分支：读盘必须离开事件循环
+                    # （issue #4885，同 events 分支的 to_thread 先例）。
+                    # state 只读一次，经 projection(value=) 复用，同一 JSON 不读两遍。
+                    from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
+                    return lc.state("project", project_id), get_project_by_id(
+                        project_id, cache_bust=True
+                    )
+
+                value, project = await asyncio.to_thread(_project_snapshot)
+                payload = lc.projection("project", project_id, value=value)
                 payload["exists"] = project is not None
                 # 调度闸门(project_execution_allowed)据此拒隐藏项目:被移除
                 # 项目的定时任务不到点触发、不进任务列表。
                 payload["hidden"] = bool(project is not None and project.hidden)
-                payload["operation"] = lc.state("project", project_id).get("operation")
+                payload["operation"] = value.get("operation")
                 if params.get("running_sessions"):
                     # project.remove 的移除前预检专用;cron 准入的常规查询不
                     # 带该参数,不付全量会话扫描的成本。判定与 project.remove

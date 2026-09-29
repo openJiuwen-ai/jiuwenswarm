@@ -796,11 +796,25 @@ class CronSchedulerService:
             return True
         from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
         revision = self._project_admission_revisions.get(project_id, 0)
+        _t0 = time.monotonic()
         ok, payload = await fetch_agent_unary(
             agent_client=self._agent_client, req_method=ReqMethod.PROJECT_LIFECYCLE,
             params={"project_id": project_id}, session_id=None, user_id=user_id,
             channel_id="__cron__", timeout_seconds=10,
         )
+        # 计时供 issue #4885 观察闸门 RPC 的耗时分布：>500ms 升 info，
+        # 线上默认日志级别可见，作为是否需要准入缓存（第二步）的判断依据。
+        _elapsed_ms = (time.monotonic() - _t0) * 1000
+        if _elapsed_ms > 500:
+            logger.info(
+                "[Cron] gate rpc slow project=%s user=%s elapsed_ms=%.0f ok=%s",
+                project_id, user_id, _elapsed_ms, ok,
+            )
+        else:
+            logger.debug(
+                "[Cron] gate rpc project=%s user=%s elapsed_ms=%.0f ok=%s",
+                project_id, user_id, _elapsed_ms, ok,
+            )
         # 隐藏(移除)项目的定时任务一律不放行:不到点触发、不进任务列表、
         # 不可手动启用/立即执行。enabled 标志在项目移除时已被停用,这里是
         # 防止任何路径(如历史数据)让隐藏项目的任务继续跑的执行层闸门。
