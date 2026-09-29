@@ -44,6 +44,8 @@ async def test_sandbox_web_rpc_requires_agent(method):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["permissions.file_guard.get", "permissions.file_guard.update",
+                                    "permissions.shell_guard.get", "permissions.shell_guard.update",
+                                    "permissions.rules.create", "permissions.rules.update", "permissions.rules.delete",
                                     "sandbox.enabled.get", "sandbox.enabled.set", "sandbox.files.sync", "sandbox.restart"])
 async def test_security_web_rpc_forwards_response_and_error(method):
     channel = Channel()

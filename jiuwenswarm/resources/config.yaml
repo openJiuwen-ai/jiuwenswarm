@@ -977,6 +977,7 @@ permissions:
   # Host-only switch: load command/file/network builtin rules from agent-core.
   package_builtin_rules: true
   shell_guard:
+    builtin_rules_enabled: true  # 内置高危命令黑 / 灰名单；不影响文件和网络规则
     unknown_structure: false
     interpreter_sink: false
 

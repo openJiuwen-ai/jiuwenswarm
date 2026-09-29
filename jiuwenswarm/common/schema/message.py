@@ -48,6 +48,8 @@ class ReqMethod(Enum):
     SANDBOX_FILES_SYNC = "sandbox.files.sync"
     SANDBOX_RESTART = "sandbox.restart"
     PERMISSIONS_FILE_GUARD_GET = "permissions.file_guard.get"
+    PERMISSIONS_SHELL_GUARD_GET = "permissions.shell_guard.get"
+    PERMISSIONS_SHELL_GUARD_UPDATE = "permissions.shell_guard.update"
     PERMISSIONS_FILE_GUARD_UPDATE = "permissions.file_guard.update"
     SANDBOX_FILES_GET = "sandbox.files.get"
     SANDBOX_FILES_SET = "sandbox.files.set"

@@ -1202,6 +1202,7 @@ def create_permissions_rule_in_config(rule: dict[str, Any]) -> dict[str, Any]:
     if not stored["pattern"]:
         raise ValueError("pattern must be non-empty")
     _normalize_rule_severity_action(stored)
+    _validate_rule_regex(stored)
 
     existing = get_permissions_rules().get("rules") or []
     if any(_dict_id(r) == rid for r in existing):
@@ -1262,6 +1263,7 @@ def update_permissions_rule_in_config(rule_id: str, patch: dict[str, Any]) -> di
     if not merged.get("pattern"):
         raise ValueError("pattern must be non-empty")
     _normalize_rule_severity_action(merged)
+    _validate_rule_regex(merged)
 
     def mutator(data: dict[str, Any]) -> dict[str, Any]:
         perms = _permissions_map(data)
@@ -1336,6 +1338,20 @@ def _normalize_rule_tools(raw: Any) -> list[str]:
     if isinstance(raw, list):
         return [str(x).strip() for x in raw if isinstance(x, str) and str(x).strip()]
     raise ValueError("tools must be a string or array of strings")
+
+
+def _validate_rule_regex(rule: dict[str, Any]) -> None:
+    pattern = rule.get("pattern", "")
+    if pattern.lower().startswith("re:"):
+        expression = pattern[3:].strip()
+        if expression.lower().startswith("re:"):
+            raise ValueError("regular expression must not contain a repeated re: prefix")
+        if not expression:
+            raise ValueError("regular expression must be non-empty")
+        try:
+            re.compile(expression)
+        except re.error as exc:
+            raise ValueError(f"invalid regular expression: {exc}") from exc
 
 
 def _normalize_rule_severity_action(rule: dict[str, Any]) -> None:

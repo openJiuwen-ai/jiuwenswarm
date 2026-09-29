@@ -6186,6 +6186,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         channel.register_method(method_name, _handler)
 
     _register_perm("permissions.file_guard.get", _PermReq.PERMISSIONS_FILE_GUARD_GET)
+    _register_perm("permissions.shell_guard.get", _PermReq.PERMISSIONS_SHELL_GUARD_GET)
+    _register_perm("permissions.shell_guard.update", _PermReq.PERMISSIONS_SHELL_GUARD_UPDATE)
     _register_perm("permissions.file_guard.update", _PermReq.PERMISSIONS_FILE_GUARD_UPDATE)
     _register_perm("sandbox.enabled.get", _PermReq.SANDBOX_ENABLED_GET)
     _register_perm("sandbox.enabled.set", _PermReq.SANDBOX_ENABLED_SET)
