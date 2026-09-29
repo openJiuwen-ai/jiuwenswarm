@@ -363,7 +363,7 @@ def _build_yuanrong_extra_params() -> dict[str, Any]:
     else:
         extra_params["workdir"] = workspace_str
 
-    for key in ("image", "cpu", "cpu_limit", "memory", "mem_limit", "rootfs"):
+    for key in ("image", "cpu", "cpu_limit", "memory", "mem_limit", "rootfs", "idle_timeout"):
         if key not in endpoint:
             continue
         value = endpoint[key]
@@ -377,7 +377,28 @@ def _build_yuanrong_extra_params() -> dict[str, Any]:
             continue
         if value is not None:
             extra_params[key] = value
+    _apply_tool_sandbox_env_overrides(extra_params)
     return extra_params
+
+
+_TOOL_SANDBOX_ENV_OVERRIDES = (
+    ("TOOL_SANDBOX_CPU", "cpu"),
+    ("TOOL_SANDBOX_MEMORY", "memory"),
+    ("TOOL_SANDBOX_IDLE_TIMEOUT", "idle_timeout"),
+)
+
+
+def _apply_tool_sandbox_env_overrides(extra_params: dict[str, Any]) -> None:
+    """Override yuanrong cpu / memory / idle_timeout when the env vars are set."""
+    for env_name, key in _TOOL_SANDBOX_ENV_OVERRIDES:
+        raw = os.environ.get(env_name)
+        if raw is None or not str(raw).strip():
+            continue
+        text = str(raw).strip()
+        try:
+            extra_params[key] = int(text)
+        except ValueError as exc:
+            raise ValueError(f"{env_name} must be an integer, got {raw!r}") from exc
 
 
 def build_yuanrong_sandbox_status_view() -> dict[str, Any]:
