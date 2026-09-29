@@ -110,6 +110,14 @@ class WebAuthorizerBroker:
     ) -> bool:
         return pending.request.route.logical_key == route.logical_key
 
+    @staticmethod
+    def _valid_selection_indexes(indexes: Any, action_count: int) -> bool:
+        if not isinstance(indexes, list) or not indexes:
+            return False
+        if any(type(i) is not int or i < 0 or i >= action_count for i in indexes):
+            return False
+        return len(set(indexes)) == len(indexes)
+
     def complete(
         self,
         request_id: str,
@@ -173,11 +181,7 @@ class WebAuthorizerBroker:
         if not self._route_matches(pending, route):
             return {"ok": False, "error": "A4P authorization route mismatch"}
         request = pending.request
-        if (
-            not isinstance(indexes, list) or not indexes
-            or any(type(i) is not int or i < 0 or i >= len(request.original_actions) for i in indexes)
-            or len(set(indexes)) != len(indexes)
-        ):
+        if not self._valid_selection_indexes(indexes, len(request.original_actions)):
             return {"ok": False, "error": "Invalid selectedActionIndexes", "code": "A4P_INVALID_SELECTION"}
         indexes = sorted(indexes)
         if indexes == request.prepared_action_indexes:
