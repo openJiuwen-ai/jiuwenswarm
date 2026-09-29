@@ -229,6 +229,14 @@ async def handle_agent_reload_config(ctx: RequestContext) -> None:
                     env_overrides,
                     **reload_kwargs,
                 )
+                # 数字分身走 TenantAgentPool 里独立的 AgentManager（channel=im_hosting），
+                # 不在上面的 web AgentManager 中。只热更新 web 时，已创建的托管会话
+                # 会继续用创建时的占位模型（.env 的 your-model-name）。
+                # 这块对接专家之后需要修改channel
+                await ctx.services.tenant_pool().reload_agents_config(
+                    config_payload,
+                    env_overrides if isinstance(env_overrides, dict) else {},
+                )
 
         # ``xiaoyi_claw`` can be enabled without restarting agent server.
         # Re-evaluate the gate after every config reload; the patch is idempotent.

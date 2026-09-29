@@ -30,6 +30,14 @@ def _maybe_patch_aclose_memory_cache():
     else:
         yield
 
+def _stub_tenant_pool(server):
+    """个人版托管走独立 AgentManager，单测里不要打到真实 TenantAgentPool。"""
+    pool = MagicMock()
+    pool.reload_agents_config = AsyncMock()
+    server._tenant_pool = lambda: pool
+    return pool
+
+
 def _ctx_for_test(ws, request, send_lock, server=None):
     from jiuwenswarm.server.context import AgentServerServices, RequestContext
     from jiuwenswarm.server.transports.sink import WSSink
@@ -248,6 +256,7 @@ async def test_agent_reload_config_handler_passes_explicit_scope(monkeypatch):
     server = agent_ws_server_module.AgentWebSocketServer()
     calls = []
     refresh_sse_patch = MagicMock()
+    pool = _stub_tenant_pool(server)
 
     async def fake_reload(config, env, **kwargs):
         calls.append((config, env, kwargs))
@@ -289,6 +298,10 @@ async def test_agent_reload_config_handler_passes_explicit_scope(monkeypatch):
             },
         )
     ]
+    pool.reload_agents_config.assert_awaited_once_with(
+        {"models": {"defaults": []}},
+        {},
+    )
     refresh_sse_patch.assert_called_once_with()
 
 
@@ -296,6 +309,7 @@ async def test_agent_reload_config_handler_passes_explicit_scope(monkeypatch):
 async def test_agent_reload_config_handler_skips_agent_manager_for_web_ui_scope(monkeypatch):
     server = agent_ws_server_module.AgentWebSocketServer()
     reload_agents = AsyncMock()
+    pool = _stub_tenant_pool(server)
     monkeypatch.setattr(server._agent_manager, "reload_agents_config", reload_agents)
     patch_handler_name(monkeypatch, "encode_agent_response_for_wire", lambda resp, response_id: {
             "response_id": response_id,
@@ -318,6 +332,7 @@ async def test_agent_reload_config_handler_skips_agent_manager_for_web_ui_scope(
     await ops_handlers.handle_agent_reload_config(_ctx_for_test(ws, request, asyncio.Lock(), server))
 
     reload_agents.assert_not_awaited()
+    pool.reload_agents_config.assert_not_awaited()
     assert json.loads(ws.sent[-1])["ok"] is True
 
 
@@ -325,6 +340,7 @@ async def test_agent_reload_config_handler_skips_agent_manager_for_web_ui_scope(
 async def test_agent_reload_config_handler_applies_proactive_scope_without_agent_reload(monkeypatch):
     server = agent_ws_server_module.AgentWebSocketServer()
     reload_agents = AsyncMock()
+    pool = _stub_tenant_pool(server)
     proactive_engine = MagicMock()
     server._proactive_engine = proactive_engine
 
@@ -351,6 +367,7 @@ async def test_agent_reload_config_handler_applies_proactive_scope_without_agent
     await ops_handlers.handle_agent_reload_config(_ctx_for_test(ws, request, asyncio.Lock(), server))
 
     reload_agents.assert_not_awaited()
+    pool.reload_agents_config.assert_not_awaited()
     proactive_engine.reload_config.assert_called_once_with({"enabled": True})
     assert json.loads(ws.sent[-1])["ok"] is True
 
