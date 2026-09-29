@@ -252,6 +252,11 @@ def _trigger_apply(kind: str) -> None:
         )
 
 
+def trigger_sandbox_apply(kind: str) -> None:
+    """``_trigger_apply`` 的公开包装 (供 security_lists_rpc 跨模块触发沙箱重载)."""
+    _trigger_apply(kind)
+
+
 def dispatch_sandbox_config_request(request: AgentRequest) -> AgentResponse:
     """执行一条 sandbox 配置 RPC (与 dispatch_permissions_config_request 同形态).
 
@@ -362,4 +367,5 @@ __all__ = [
     "dispatch_sandbox_config_request",
     "get_sandbox_config_req_methods",
     "set_internal_jiuwenbox_bootstrap",
+    "trigger_sandbox_apply",
 ]

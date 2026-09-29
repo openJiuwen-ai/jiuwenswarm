@@ -172,17 +172,43 @@ def test_convert_interactions_to_ask_user_questions_prefers_structured_duplicate
     assert payloads[0]["questions"][0]["question"] == "请选择语言"
 
 
-def _scene_hook_input(normalized_tool_name: str, user_input):
+def _scene_hook_input(
+    normalized_tool_name: str,
+    user_input,
+    *,
+    extra=None,
+    engine=None,
+    tool_call_id: str = "call_1",
+):
     from openjiuwen.harness.security.host import PermissionSceneHookInput
 
     return PermissionSceneHookInput(
-        ctx=SimpleNamespace(session=None),
-        tool_call=SimpleNamespace(id="call_1", name=normalized_tool_name, arguments={}),
+        ctx=SimpleNamespace(session=None, extra=extra or {}),
+        tool_call=SimpleNamespace(
+            id=tool_call_id, name=normalized_tool_name, arguments={}
+        ),
         user_input=user_input,
         normalized_tool_name=normalized_tool_name,
         tool_args={},
-        engine=None,
+        engine=engine,
     )
+
+
+class _FakeEngineLevel:
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+
+class _FakeSceneEngine:
+    """只实现 scene hook 用到的直接裁决查询。"""
+
+    def __init__(self, level) -> None:
+        self._level = level
+
+    def check_tool_permission_directly(self, tool_name, tool_args):
+        if isinstance(self._level, Exception):
+            raise self._level
+        return self._level, "engine_rule"
 
 
 def _permission_scene_hook():
@@ -223,6 +249,89 @@ def test_scene_hook_leaves_other_tools_to_engine():
     hook = _permission_scene_hook()
 
     outcome = asyncio.run(hook(_scene_hook_input("bash", None)))
+
+    assert outcome is None
+
+
+def test_scene_hook_rejects_when_security_list_denied():
+    """统一名单 Rail（95）deny 后，权限引擎层直接 reject，不二次弹窗。"""
+    from jiuwenswarm.agents.harness.common.rails.security_lists.rail import (
+        SECURITY_LIST_DENY_KEY,
+    )
+
+    hook = _permission_scene_hook()
+    deny_message = "[SECURITY_LIST_DENIED] 命中安全名单规则（命令: curl*），已拒绝执行 bash。"
+    extra = {SECURITY_LIST_DENY_KEY: deny_message}
+
+    outcome = asyncio.run(hook(_scene_hook_input("bash", None, extra=extra)))
+
+    assert outcome == ("reject", deny_message)
+
+
+def test_scene_hook_reuses_security_list_approval_when_engine_not_deny():
+    """归一化：名单 Rail 的 ask 已获用户批准 → 引擎层不再二次弹窗。"""
+    from jiuwenswarm.agents.harness.common.rails.security_lists.rail import (
+        SECURITY_LIST_APPROVED_KEY,
+    )
+
+    hook = _permission_scene_hook()
+    engine = _FakeSceneEngine(_FakeEngineLevel("ask"))
+    extra = {SECURITY_LIST_APPROVED_KEY: "call_1"}
+
+    outcome = asyncio.run(
+        hook(_scene_hook_input("bash", None, extra=extra, engine=engine))
+    )
+
+    assert outcome == ("approve",)
+
+
+def test_scene_hook_ignores_security_list_approval_when_engine_denies():
+    """引擎 deny 优先于用户批准：不因名单批准标记而放行（取严语义）。"""
+    from jiuwenswarm.agents.harness.common.rails.security_lists.rail import (
+        SECURITY_LIST_APPROVED_KEY,
+    )
+
+    hook = _permission_scene_hook()
+    engine = _FakeSceneEngine(_FakeEngineLevel("deny"))
+    extra = {SECURITY_LIST_APPROVED_KEY: "call_1"}
+
+    outcome = asyncio.run(
+        hook(_scene_hook_input("bash", None, extra=extra, engine=engine))
+    )
+
+    assert outcome is None
+
+
+def test_scene_hook_ignores_approval_marker_of_other_tool_call():
+    """标记按 tool_call_id 匹配：其他调用的残留标记不生效（防跨调用误放行）。"""
+    from jiuwenswarm.agents.harness.common.rails.security_lists.rail import (
+        SECURITY_LIST_APPROVED_KEY,
+    )
+
+    hook = _permission_scene_hook()
+    engine = _FakeSceneEngine(_FakeEngineLevel("ask"))
+    extra = {SECURITY_LIST_APPROVED_KEY: "other_call"}
+
+    outcome = asyncio.run(
+        hook(_scene_hook_input("bash", None, extra=extra, engine=engine))
+    )
+
+    assert outcome is None
+
+
+def test_scene_hook_does_not_approve_when_engine_query_fails():
+    """引擎查询失败时不放行，退回引擎自身判定流程（fail-safe）。"""
+    from jiuwenswarm.agents.harness.common.rails.security_lists.rail import (
+        SECURITY_LIST_APPROVED_KEY,
+    )
+
+    hook = _permission_scene_hook()
+    engine = _FakeSceneEngine(RuntimeError("engine unavailable"))
+    extra = {SECURITY_LIST_APPROVED_KEY: "call_1"}
+
+    outcome = asyncio.run(
+        hook(_scene_hook_input("bash", None, extra=extra, engine=engine))
+    )
 
     assert outcome is None
 

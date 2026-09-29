@@ -95,6 +95,16 @@ TOOL_INPUT_REJECT_TEMPLATE = (
     "[PERMISSION_DENIED] 安全扫描检测到风险，已阻止工具调用: {tool_name}"
 )
 
+# 风控不可用兜底拦截（fail-closed）——与扫描命中拦截文案区分（设计 5.8）。
+TOOL_INPUT_FALLBACK_REJECT_TEMPLATE = (
+    "[PERMISSION_DENIED] 云端安全检测不可用，本次操作已按高风险兜底策略拦截: {tool_name}"
+)
+
+ABORT_FALLBACK_MESSAGE = (
+    "云端安全检测不可用，本次操作已按高风险兜底策略拦截，"
+    "请稍后重试或检查网络连接"
+)
+
 TOOL_INPUT_DEFAULT: dict[str, object] = {
     "subSceneID": "TOOL_INPUT",
     "tool": "",

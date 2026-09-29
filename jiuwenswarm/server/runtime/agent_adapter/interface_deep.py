@@ -166,6 +166,9 @@ from jiuwenswarm.agents.harness.common.rails.execution_guard import (
 )
 from jiuwenswarm.common.config import get_model_names
 from jiuwenswarm.agents.harness.common.rails.cspl import CsplConfig, CsplSentinelRail
+from jiuwenswarm.agents.harness.common.rails.security_lists.fallback import (
+    is_strict_profile,
+)
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.server.runtime.agent_adapter.assembly_hooks import (
@@ -481,6 +484,18 @@ def _running_loop() -> asyncio.AbstractEventLoop | None:
         return asyncio.get_running_loop()
     except RuntimeError:
         return None
+
+
+def _effective_sandbox_fallback_policy(runtime: Any) -> str:
+    """沙箱本地回落策略生效值（设计 5.6）。
+
+    strict 档强制 ``never``（沙箱不可用时任何脚本都不回落本地）；
+    否则取 runtime 归一值（默认 ``inline_only``，非法值同归一）。
+    """
+    if is_strict_profile():
+        return "never"
+    raw = str((runtime or {}).get("fallback_policy") or "").strip() if isinstance(runtime, dict) else ""
+    return raw if raw in ("never", "inline_only", "always") else "inline_only"
 
 
 def _history_tail_lagged(
@@ -4018,6 +4033,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             idle_ttl_seconds=runtime.get("idle_ttl_seconds"),
             idle_check_interval=runtime.get("idle_check_interval"),
             fallback_on_failure=bool(runtime.get("fallback_on_failure", False)),
+            fallback_policy=_effective_sandbox_fallback_policy(runtime),
             project_dir=project_dir,
             is_code_agent=self._is_code_agent,
             startup_mode=get_sandbox_startup_mode(),
@@ -4376,6 +4392,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         )
         # A failed explicit policy rebuild must never execute outside the sandbox.
         extra["fallback_on_failure"] = False if strict else bool(runtime.get("fallback_on_failure", False))
+        extra["fallback_policy"] = _effective_sandbox_fallback_policy(runtime)
         new_policy, upload_list = build_filesystem_policy(
             runtime.get("files", []),
             project_dir=self._resolve_project_dir_for_sandbox(),
@@ -5118,6 +5135,33 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             logger.warning("[JiuWenSwarmDeepAdapter] CsplSentinelRail create failed: %s", exc)
             return None
 
+    def _build_security_list_rail(self):
+        """统一安全名单 Rail（priority=95，先于权限引擎）。
+
+        三档均装配（含 full_access）：内置基线 deny 不随档位漂移；
+        名单读取自身异常时 rail 内 fail-closed（DENY+审计），构造异常仅告警跳过。
+        注入引擎取值器以支持"弹窗前预检引擎裁决"的归一化（见 rail._engine_precheck）。
+        """
+        try:
+            from jiuwenswarm.agents.harness.common.rails.security_lists import (
+                UnifiedSecurityListRail,
+            )
+
+            rail = UnifiedSecurityListRail(engine_provider=self._permission_rail_engine)
+            logger.info("[JiuWenSwarmDeepAdapter] UnifiedSecurityListRail create success")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] UnifiedSecurityListRail create failed: %s", exc)
+            return None
+
+    def _permission_rail_engine(self):
+        """惰性取权限引擎实例，供名单 Rail 预检归一化。
+
+        ``_engine`` 是 agent-core ``PermissionInterruptRail`` 的内部属性：取不到
+        时返回 None，名单 Rail 自动退化为串行判定（功能可用性优先，不抛异常）。
+        """
+        return getattr(getattr(self, "_permission_rail", None), "_engine", None)
+
     def _include_outer_subagent_usage_rules(self) -> bool:
         """Whether to include the standalone ``# Subagent Usage Rules`` section.
 
@@ -5404,6 +5448,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             ),
             _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
             _RailBuildInfo("_cspl_sentinel_rail", self._build_cspl_sentinel_rail),
+            _RailBuildInfo("_security_list_rail", self._build_security_list_rail),
             _RailBuildInfo(
                 "_tool_visibility_rail",
                 self._build_xiaoyi_default_tool_visibility_rail,

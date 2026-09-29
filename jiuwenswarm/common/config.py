@@ -2288,7 +2288,25 @@ _SANDBOX_RUNTIME_DEFAULTS: dict[str, Any] = {
     "idle_ttl_seconds": None,
     "idle_check_interval": None,
     "fallback_on_failure": False,
+    "fallback_policy": "inline_only",
 }
+
+# 沙箱本地回落策略（设计 5.6）：never 不回落 / inline_only 仅内联脚本 / always 全回落。
+_SANDBOX_FALLBACK_POLICIES: frozenset[str] = frozenset(
+    {"never", "inline_only", "always"}
+)
+
+
+def _normalize_fallback_policy(value: Any) -> str:
+    """归一化 fallback_policy：非法值告警按默认 inline_only（与 agent-core 一致）。"""
+    raw = str(value or "").strip()
+    if raw in _SANDBOX_FALLBACK_POLICIES:
+        return raw
+    if raw:
+        logger.warning(
+            "[config] 非法 sandbox.fallback_policy=%r，按 inline_only 处理", raw
+        )
+    return "inline_only"
 
 # 受 ``get_sandbox_runtime`` / ``update_sandbox_runtime`` 管辖的 sandbox 字段。
 _SANDBOX_RUNTIME_KEYS: tuple[str, ...] = tuple(_SANDBOX_RUNTIME_DEFAULTS.keys())
@@ -2360,6 +2378,8 @@ def _ensure_sandbox_runtime_shape(runtime: Any) -> dict[str, Any]:
         out["enabled"] = bool(runtime["enabled"])
     if "fallback_on_failure" in runtime:
         out["fallback_on_failure"] = bool(runtime["fallback_on_failure"])
+    if "fallback_policy" in runtime:
+        out["fallback_policy"] = _normalize_fallback_policy(runtime["fallback_policy"])
     raw_excluded = runtime.get("excluded_commands")
     if isinstance(raw_excluded, list):
         out["excluded_commands"] = [
@@ -2890,7 +2910,7 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
     Args:
         patch: 部分字段更新；支持顶层键 ``enabled`` / ``excluded_commands``
             / ``idle_ttl_seconds`` / ``idle_check_interval``
-            / ``fallback_on_failure``。
+            / ``fallback_on_failure`` / ``fallback_policy``。
             ``files`` 仅由 sandbox.files.sync 写入。 ``idle_*`` 字段
             接受整数秒数 (``<= 0`` 归一化为 ``None`` = 禁用淘汰) 或 ``None``。
     """
@@ -2906,6 +2926,8 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
         merged["enabled"] = bool(patch["enabled"])
     if "fallback_on_failure" in patch:
         merged["fallback_on_failure"] = bool(patch["fallback_on_failure"])
+    if "fallback_policy" in patch:
+        merged["fallback_policy"] = _normalize_fallback_policy(patch["fallback_policy"])
     if "excluded_commands" in patch:
         value = patch["excluded_commands"]
         if not isinstance(value, list):
