@@ -42,6 +42,84 @@ _session_overlay_lock = threading.Lock()
 _AXIS_RANK = {"deny": 0, "ask": 1, "allow": 2}
 
 
+def _now_iso() -> str:
+    """ISO8601 UTC 时间戳（秒级；落盘条目 created_at 用）。"""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _current_permission_mode() -> str:
+    """当前 permission_mode（permission_profile 档位映射）；异常回退 default（fail-safe）。"""
+    try:
+        from jiuwenswarm.common.permission_profile import current_permission_profile
+
+        return current_permission_profile()
+    except Exception:  # noqa: BLE001
+        return "default"
+
+
+def _stamp_new_list_items(
+    items: Any,
+    *,
+    now: str,
+    mode: str | None,
+    prior_disk: dict[str, Any] | None = None,
+) -> list[Any]:
+    """给新增落盘条目补 ``created_at``（缺时）与 ``mode``（缺时且 mode 非 None）。
+
+    - 调用方保证只传**新增/变更**条目；``prior_disk`` 为磁盘同键条目 ``{id 或 path: entry}``：
+      - 磁盘已有 ``created_at`` → 保留原创建时间；
+      - 磁盘条目缺 ``created_at``/``mode`` → 对应字段**不补**（spec 5.2：存量缺字段条目不动，
+        投影按"全局+无时间"兼容；补 mode 会把存量通用格规则缩窄到当前模式）；
+      - 磁盘无此键（全新条目）→ 补 ``now``/``mode``。
+    - ``mode=None`` 时不写 mode（如 /add-dir 信任目录保持模式无关 → 投影通用格）。
+    """
+    prior_disk = prior_disk or {}
+    stamped: list[Any] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            stamped.append(item)
+            continue
+        it = dict(item)
+        key = str(it.get("id") or it.get("path") or "")
+        disk = prior_disk.get(key)
+        if not it.get("created_at"):
+            if disk is None or disk.get("created_at"):
+                it["created_at"] = str((disk or {}).get("created_at") or now)
+        if mode is not None and not it.get("mode"):
+            if disk is None or disk.get("mode"):
+                it["mode"] = mode
+        stamped.append(it)
+    return stamped
+
+
+def _stamp_file_guard_paths_created(
+    permissions: Any,
+    touched_paths: set[str],
+    *,
+    now: str,
+) -> None:
+    """给 ``file_guard.paths`` 中触达路径的条目补 ``created_at``（就地修改）。
+
+    仅匹配 ``touched_paths``（规范化后）且缺 ``created_at`` 的条目，存量不动；
+    不写 ``mode``——/add-dir 信任目录保持模式无关（投影通用格）。
+    """
+    if not isinstance(permissions, dict):
+        return
+    fg = permissions.get("file_guard")
+    paths = fg.get("paths") if isinstance(fg, dict) else None
+    if not isinstance(paths, list):
+        return
+    normalized = {p.replace("\\", "/").rstrip("/") for p in touched_paths}
+    for entry in paths:
+        if not isinstance(entry, dict) or entry.get("created_at"):
+            continue
+        entry_path = str(entry.get("path") or "").replace("\\", "/").rstrip("/")
+        if entry_path and entry_path in normalized:
+            entry["created_at"] = now
+
+
 def _load_config_yaml_round_trip() -> tuple[Any, Any]:
     """Load config.yaml and return (data, yaml_path)."""
     from jiuwenswarm.common.config import _CONFIG_YAML_PATH, _load_yaml_round_trip
@@ -535,6 +613,15 @@ def persist_session_allow_rule(
             sid,
         )
         return True
+    # 会话新增条目同样补 created_at/mode（spec 5.2；投影按 mode 过滤、标"仅当前会话"）。
+    stamp_now = _now_iso()
+    stamp_mode = _current_permission_mode()
+    delta_fg = delta.get("file_guard")
+    if isinstance(delta_fg, dict) and isinstance(delta_fg.get("paths"), list):
+        delta_fg["paths"] = _stamp_new_list_items(delta_fg["paths"], now=stamp_now, mode=stamp_mode)
+    delta_ov = delta.get("approval_overrides")
+    if isinstance(delta_ov, list):
+        delta["approval_overrides"] = _stamp_new_list_items(delta_ov, now=stamp_now, mode=stamp_mode)
     ok = write_session_permissions_overlay(sid, delta)
     logger.info(
         "[PermissionPersist] persist_session_allow_rule session=%s ok=%s keys=%s",
@@ -584,15 +671,31 @@ def persist_merged_allow_rule_snapshot(permissions: dict[str, Any]) -> bool:
         except Exception:
             package = {}
 
+    # 新增落盘条目补 created_at/mode（spec 5.2；存量缺字段条目不动）。
+    # mode 在 mutator 外读取（get_config 热读，避免锁内重复进配置链）。
+    stamp_now = _now_iso()
+    stamp_mode = _current_permission_mode()
+
     def mutator(data: dict[str, Any]) -> dict[str, Any]:
         perms = _ensure_permissions_dict(data)
         if "approval_overrides" in permissions:
+            disk_overrides = perms.get("approval_overrides")
+            prior_disk = {
+                str(e.get("id") or e.get("path") or ""): e
+                for e in (disk_overrides or [])
+                if isinstance(e, dict) and (e.get("id") or e.get("path"))
+            }
             perms["approval_overrides"] = upsert_list_by_id(
-                perms.get("approval_overrides"),
-                _user_only_list_items(
-                    permissions.get("approval_overrides"),
-                    _get(package, overrides_path),
-                    overrides_path,
+                disk_overrides,
+                _stamp_new_list_items(
+                    _user_only_list_items(
+                        permissions.get("approval_overrides"),
+                        _get(package, overrides_path),
+                        overrides_path,
+                    ),
+                    now=stamp_now,
+                    mode=stamp_mode,
+                    prior_disk=prior_disk,
                 ),
                 overrides_path,
             )
@@ -602,12 +705,23 @@ def persist_merged_allow_rule_snapshot(permissions: dict[str, Any]) -> bool:
             if not isinstance(fg_dst, dict):
                 fg_dst = {}
                 perms["file_guard"] = fg_dst
+            disk_paths = fg_dst.get("paths")
+            prior_path_disk = {
+                str(e.get("id") or e.get("path") or ""): e
+                for e in (disk_paths or [])
+                if isinstance(e, dict) and (e.get("id") or e.get("path"))
+            }
             fg_dst["paths"] = upsert_list_by_id(
-                fg_dst.get("paths"),
-                _user_only_list_items(
-                    fg.get("paths"),
-                    _get(package, paths_path),
-                    paths_path,
+                disk_paths,
+                _stamp_new_list_items(
+                    _user_only_list_items(
+                        fg.get("paths"),
+                        _get(package, paths_path),
+                        paths_path,
+                    ),
+                    now=stamp_now,
+                    mode=stamp_mode,
+                    prior_disk=prior_path_disk,
                 ),
                 paths_path,
             )
@@ -747,6 +861,8 @@ def persist_external_directory_allow(
             access_list.append((path_str, act))
         merged, wrote = merge_file_guard_access_allows(permissions, access_list)
         if wrote:
+            # /add-dir 信任目录补 created_at（保持模式无关，不写 mode，见设计 4.2 注）。
+            _stamp_file_guard_paths_created(merged, {p for p, _ in access_list}, now=_now_iso())
             data["permissions"] = merged
             _dump_config_yaml_round_trip(yaml_path, data)
         return
@@ -774,6 +890,7 @@ def persist_external_directory_allow(
         ):
             wrote = True
     if wrote:
+        _stamp_file_guard_paths_created(permissions, set(paths), now=_now_iso())
         _dump_config_yaml_round_trip(yaml_path, data)
 
 

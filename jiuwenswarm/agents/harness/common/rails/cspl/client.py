@@ -18,6 +18,33 @@ from jiuwenswarm.common.utils import logger
 
 SecurityStatus = Literal["ACCEPT", "REJECT"]
 
+#: CSPL 不可用（未配置/网络异常/网关错误等），由调用方按兜底策略决定放行或拒绝。
+class CsplScanUnavailableError(Exception):
+    pass
+
+
+_FALLBACK_POLICIES = frozenset({"auto", "p2_only", "strict"})
+
+
+def _resolve_fallback_policy(data: dict[str, Any]) -> str:
+    """解析 CSPL 兜底策略（spec 7.1：auto|p2_only|strict，默认 p2_only）。
+
+    优先级：新键 ``fallback_policy``（含 ``security.cspl.fallback_policy`` 注入）
+    > 旧 ``fail_open`` 布尔兼容（显式配置时生效：true→p2_only、false→strict）
+    > 默认 p2_only。
+    """
+    raw_policy = str(data.get("fallback_policy") or "").strip()
+    if raw_policy:
+        if raw_policy in _FALLBACK_POLICIES:
+            return raw_policy
+        logger.warning(
+            "[CsplClient] 非法 fallback_policy=%r，按 p2_only 处理", raw_policy
+        )
+        return "p2_only"
+    if "fail_open" in data:
+        return "p2_only" if data.get("fail_open") is not False else "strict"
+    return "p2_only"
+
 
 @dataclass
 class CsplConfig:
@@ -33,6 +60,8 @@ class CsplConfig:
     text_source: str = "question"
     timeout_ms: int = 5000
     fail_open: bool = True
+    # 兜底策略：auto|p2_only|strict（默认 p2_only；auto 由运行时按档位解析）
+    fallback_policy: str = "p2_only"
     scan_tool_input: bool = True
     scan_tool_output: bool = True
 
@@ -55,6 +84,7 @@ class CsplConfig:
             text_source=str(data.get("text_source") or "question"),
             timeout_ms=int(data.get("timeout_ms") or 5000),
             fail_open=data.get("fail_open", True) is not False,
+            fallback_policy=_resolve_fallback_policy(data),
             scan_tool_input=data.get("scan_tool_input", True) is not False,
             scan_tool_output=data.get("scan_tool_output", True) is not False,
         )
@@ -63,6 +93,14 @@ class CsplConfig:
     def load(cls) -> CsplConfig:
         config = get_config() or {}
         raw = dict(config.get("cspl") or {})
+
+        # 新键 security.cspl.fallback_policy（热读在 rail 侧按次解析；此处注入静态初值，
+        # 新键优先于 cspl.fail_open 兼容映射）。
+        security_cspl = (config.get("security") or {}).get("cspl") or {}
+        if isinstance(security_cspl, dict) and "fallback_policy" not in raw:
+            policy = security_cspl.get("fallback_policy")
+            if policy:
+                raw["fallback_policy"] = policy
 
         xiaoyi = (config.get("channels") or {}).get("xiaoyi") or {}
         if isinstance(xiaoyi, dict):
@@ -262,11 +300,20 @@ async def scan(
     action: str,
     session_id: str,
     config: CsplConfig | None = None,
+    *,
+    raise_on_error: bool = False,
 ) -> SecurityStatus:
-    """Call CSPL API and return ACCEPT or REJECT."""
+    """Call CSPL API and return ACCEPT or REJECT.
+
+    ``raise_on_error=True`` 时不可用（未配置/请求失败）抛
+    ``CsplScanUnavailableError``，由调用方按兜底策略处置；默认保持原契约
+    （按 ``fail_open`` 返回 ACCEPT/REJECT）。
+    """
     cfg = config or CsplConfig.load()
     if not cfg.is_configured:
         logger.warning("[CsplClient] CSPL not configured (missing service_url/uid/api_key)")
+        if raise_on_error:
+            raise CsplScanUnavailableError("CSPL not configured")
         return "ACCEPT" if cfg.fail_open else "REJECT"
 
     url = f"{cfg.service_url.rstrip('/')}{API_URL_SUFFIX}"
@@ -301,4 +348,6 @@ async def scan(
         return result
     except Exception as exc:
         logger.warning("[CsplClient] scan failed action=%s error=%s", action, exc)
+        if raise_on_error:
+            raise CsplScanUnavailableError(str(exc)) from exc
         return "ACCEPT" if cfg.fail_open else "REJECT"
