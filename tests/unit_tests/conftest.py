@@ -112,3 +112,21 @@ def patch_handler_name(monkeypatch, name, value):
             monkeypatch.setattr(mod, name, value)
             hit = True
     assert hit, f"没有任何目标模块定义 {name!r}，patch 会静默失效"
+
+
+def pytest_configure(config) -> None:
+    """Prime the tiktoken vocab once per worker, before any test runs.
+
+    TiktokenCounter downloads the cl100k_base BPE vocab on first use; on a
+    cold CI worker that fetch can take 40s+ (60s+ observed), tripping
+    per-test timeouts in any test whose setup constructs one synchronously
+    (steering integration, model routing rail). Warm it here, outside
+    per-test timed paths; fail-open mirrors TiktokenCounter's len//4
+    fallback.
+    """
+    try:
+        import tiktoken
+
+        tiktoken.get_encoding("cl100k_base")
+    except Exception:  # noqa: BLE001 - degrade to len//4 like TiktokenCounter
+        pass
