@@ -4969,6 +4969,68 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
         useChatStore.getState().enqueuePendingQuestion(sessionId, normalizedPayload);
       }),
+      webClient.on('a4p.authorization_request', ({ payload }) => {
+        const requestPayload = payload as Record<string, unknown>;
+        const sessionId = resolveEventSessionId(requestPayload);
+        if (!sessionId) return;
+        const requestId =
+          typeof requestPayload.requestId === 'string'
+            ? requestPayload.requestId
+            : typeof requestPayload.request_id === 'string'
+              ? requestPayload.request_id
+              : '';
+        const mandate = requestPayload.mandate;
+        const signingOptions = requestPayload.signingOptions;
+        if (
+          !requestId
+          || !mandate
+          || typeof mandate !== 'object'
+          || Array.isArray(mandate)
+          || !signingOptions
+          || typeof signingOptions !== 'object'
+          || Array.isArray(signingOptions)
+        ) {
+          return;
+        }
+        const uiContext =
+          requestPayload.uiContext && typeof requestPayload.uiContext === 'object'
+            ? requestPayload.uiContext as Record<string, unknown>
+            : {};
+        useChatStore.getState().setPendingA4PAuthorization(sessionId, {
+          requestId,
+          originalActions: Array.isArray(requestPayload.originalActions)
+            ? requestPayload.originalActions as Record<string, unknown>[] : undefined,
+          preparedActionIndexes: Array.isArray(requestPayload.preparedActionIndexes)
+            ? requestPayload.preparedActionIndexes as number[] : undefined,
+          replacesRequestId: typeof requestPayload.replacesRequestId === 'string'
+            ? requestPayload.replacesRequestId : undefined,
+          repreparing: requestPayload.repreparing === true,
+          kind: typeof requestPayload.kind === 'string' ? requestPayload.kind : 'intent',
+          mandate: mandate as Record<string, unknown>,
+          signingOptions: signingOptions as Record<string, unknown>,
+          uiContext,
+          sessionId: getPayloadSessionId(requestPayload),
+        });
+      }),
+      webClient.on('a4p.authorization_terminated', ({ payload }) => {
+        const requestPayload = payload as Record<string, unknown>;
+        const sessionId = resolveEventSessionId(requestPayload);
+        if (!sessionId) return;
+        const requestId =
+          typeof requestPayload.requestId === 'string'
+            ? requestPayload.requestId
+            : typeof requestPayload.request_id === 'string'
+              ? requestPayload.request_id
+              : '';
+        if (requestId) {
+          const store = useChatStore.getState();
+          store.setPendingA4PAuthorization(sessionId, null, requestId);
+          // A termination can overtake the replacement push; retire its predecessor too.
+          if (typeof requestPayload.replacesRequestId === 'string') {
+            store.setPendingA4PAuthorization(sessionId, null, requestPayload.replacesRequestId);
+          }
+        }
+      }),
       // 同时监听 session_result 事件，以处理后端可能发送的不同格式
       webClient.on('session_result', ({ payload }) => {
         applySessionResult(payload);
