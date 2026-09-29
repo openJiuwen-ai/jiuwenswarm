@@ -191,6 +191,14 @@ class ReqMethod(Enum):
     PERMISSIONS_NET_GUARD_GET = "permissions.net_guard.get"
     PERMISSIONS_NET_GUARD_SET = "permissions.net_guard.set"
 
+    # 统一安全名单（卡片视图聚合记录；写方法仅操作 user 区，审批格子无 RPC 创建通道）
+    SECURITY_LISTS_GET = "security_lists.get"
+    SECURITY_LISTS_UPSERT = "security_lists.upsert"
+    SECURITY_LISTS_CELLS_PATCH = "security_lists.cells.patch"
+    SECURITY_LISTS_DELETE = "security_lists.delete"
+    SECURITY_LISTS_CLOUD_SYNC = "security_lists.cloud.sync"
+    SECURITY_LISTS_AUDIT_QUERY = "security_lists.audit.query"
+
     CHANNEL_FEISHU_GET_CONF = "channel.feishu.get_conf"
     CHANNEL_FEISHU_SET_CONF = "channel.feishu.set_conf"
 

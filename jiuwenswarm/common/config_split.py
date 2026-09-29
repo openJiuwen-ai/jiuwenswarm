@@ -80,14 +80,20 @@ _XIAOYI_RUNTIME_KEEP_KEYS: tuple[str, ...] = (
 def _plain(value: Any) -> Any:
     """ruamel / 自定义类型 → 可比较的纯 Python 对象。
 
-    ``sort_keys=False``：保留用户 yaml 里的键顺序（PyYAML dump 默认会按字母序排，
+    ``sort_keys=False``：保留用户 yaml 里的键顺序（dump 默认会按字母序排，
     导致 Celia server 变成 ``command`` 在前，桌面补丁认不出 ``- name:``）。
+
+    dump 必须走 ruamel：PyYAML ``safe_dump`` 只按精确类型查注册器（不走 MRO），
+    ruamel ``CommentedMap``/``CommentedSeq`` 会直接 ``RepresenterError``——
+    磁盘 config 经 ruamel 加载后其条目正是这类对象（HITL 二次落盘、升级
+    keep-set 恢复都会踩到）。ruamel rt dump 天然保序、不排序。
     """
     if value is None:
         return None
-    return yaml.safe_load(
-        yaml.safe_dump(value, allow_unicode=True, sort_keys=False)
-    )
+    rt = YAML()
+    buf = StringIO()
+    rt.dump(value, buf)
+    return yaml.safe_load(buf.getvalue())
 
 
 def _eq(left: Any, right: Any) -> bool:

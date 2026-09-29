@@ -145,3 +145,129 @@ def test_persist_merged_allow_rule_snapshot_writes_yaml_not_overlay(
     assert system["permissions"]["file_guard"]["paths"][0]["path"] == "C:/docs"
     overlay = config_yaml.with_name("config.user.yaml")
     assert not overlay.is_file()
+
+
+# ---------------------------------------------------------------------------
+# spec 5.2：新增落盘条目补 created_at / mode（存量缺字段条目不动）
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def strict_config_yaml(tmp_path, monkeypatch):
+    """permission_mode=strict → current_permission_profile() == "default"。"""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "permissions:\n  enabled: true\n  permission_mode: strict\n",
+        encoding="utf-8",
+    )
+    from jiuwenswarm.common import config as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_CONFIG_YAML_PATH", cfg)
+    if hasattr(cfg_mod, "CONFIG_YAML_PATH"):
+        monkeypatch.setattr(cfg_mod, "CONFIG_YAML_PATH", cfg)
+    if hasattr(cfg_mod, "get_config_file"):
+        monkeypatch.setattr(cfg_mod, "get_config_file", lambda: cfg)
+    return cfg
+
+
+def test_snapshot_stamps_created_at_and_mode_on_new_entries(strict_config_yaml):
+    pp = _load_permissions_persist()
+    from jiuwenswarm.common.config import _load_yaml_round_trip
+
+    ok = pp.persist_merged_allow_rule_snapshot(
+        {
+            "approval_overrides": [
+                {"id": "ap_new", "tools": ["bash"], "match_type": "command",
+                 "pattern": "scp *", "action": "allow"},
+            ],
+            "file_guard": {"paths": [{"path": "D:/new", "read": "allow"}]},
+        }
+    )
+    assert ok is True
+    perms = _load_yaml_round_trip(strict_config_yaml)["permissions"]
+    override = perms["approval_overrides"][0]
+    assert override["created_at"].endswith("+00:00")
+    assert override["mode"] == "default"
+    fg_entry = perms["file_guard"]["paths"][0]
+    assert fg_entry["created_at"].endswith("+00:00")
+    assert fg_entry["mode"] == "default"
+
+
+def test_snapshot_keeps_legacy_entries_untouched(strict_config_yaml):
+    pp = _load_permissions_persist()
+    from jiuwenswarm.common.config import _load_yaml_round_trip
+
+    # 先入一条存量（此时也会被打点）——手工抹掉模拟 legacy 缺字段条目
+    assert pp.persist_merged_allow_rule_snapshot(
+        {"approval_overrides": [
+            {"id": "legacy", "tools": ["bash"], "match_type": "command",
+             "pattern": "curl *", "action": "allow"},
+        ]}
+    )
+    data = _load_yaml_round_trip(strict_config_yaml)
+    legacy = data["permissions"]["approval_overrides"][0]
+    legacy.pop("created_at", None)
+    legacy.pop("mode", None)
+    from jiuwenswarm.common.config import _dump_yaml_round_trip
+    _dump_yaml_round_trip(strict_config_yaml, data)
+
+    assert pp.persist_merged_allow_rule_snapshot(
+        {"approval_overrides": [
+            {"id": "legacy", "tools": ["bash"], "match_type": "command",
+             "pattern": "curl *", "action": "allow"},
+            {"id": "ap_new2", "tools": ["bash"], "match_type": "command",
+             "pattern": "wget *", "action": "allow"},
+        ]}
+    )
+    overrides = _load_yaml_round_trip(strict_config_yaml)["permissions"]["approval_overrides"]
+    by_id = {o["id"]: o for o in overrides}
+    # 存量 legacy 条目保持无 created_at/mode（投影按"全局+无时间"兼容）
+    assert "created_at" not in by_id["legacy"]
+    assert "mode" not in by_id["legacy"]
+    assert by_id["ap_new2"]["created_at"] and by_id["ap_new2"]["mode"] == "default"
+
+
+def test_session_overlay_delta_stamps_created_at_and_mode(strict_config_yaml, tmp_path, monkeypatch):
+    pp = _load_permissions_persist()
+    from jiuwenswarm.common import utils as utils_mod
+
+    sessions_dir = tmp_path / "sessions"
+    monkeypatch.setattr(utils_mod, "get_agent_sessions_dir", lambda: sessions_dir)
+
+    ok = pp.persist_session_allow_rule(
+        {
+            "enabled": True,
+            "permission_mode": "strict",
+            "approval_overrides": [
+                {"id": "ap_sess", "tools": ["bash"], "match_type": "command",
+                 "pattern": "rsync *", "action": "allow"},
+            ],
+        },
+        session_id="sess-stamp",
+    )
+    assert ok is True
+    overlay = sessions_dir / "sess-stamp" / "session_permissions.yaml"
+    assert overlay.is_file()
+    import yaml
+
+    data = yaml.safe_load(overlay.read_text(encoding="utf-8"))
+    entry = data["approval_overrides"][0]
+    assert entry["created_at"].endswith("+00:00")
+    assert entry["mode"] == "default"
+
+
+def test_add_dir_stamps_created_at_without_mode(strict_config_yaml, tmp_path):
+    pp = _load_permissions_persist()
+    from jiuwenswarm.common.config import _load_yaml_round_trip
+
+    target = tmp_path / "trusted-stamp"
+    target.mkdir()
+    pp.persist_external_directory_allow([str(target)])
+    fg = _load_yaml_round_trip(strict_config_yaml)["permissions"]["file_guard"]
+    dir_norm = str(target).replace("\\", "/").rstrip("/")
+    entry = next(
+        p for p in fg["paths"]
+        if str(p.get("path", "")).replace("\\", "/").rstrip("/") == dir_norm
+    )
+    assert entry["created_at"].endswith("+00:00")
+    assert "mode" not in entry  # 信任目录保持模式无关（投影通用格）
