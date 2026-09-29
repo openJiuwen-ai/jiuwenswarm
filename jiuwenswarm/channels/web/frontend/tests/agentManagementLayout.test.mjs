@@ -56,6 +56,10 @@ const agentEditorSource = readFileSync(
   'utf8',
 );
 const pageCardSource = readFileSync(new URL('../src/components/ui/PageCard/PageCard.tsx', import.meta.url), 'utf8');
+const pickerDrawerSource = readFileSync(
+  new URL('../src/components/ui/PickerDrawer/PickerDrawer.tsx', import.meta.url),
+  'utf8',
+);
 const groupUploadSource = readFileSync(
   new URL('../src/components/AgentManagementPanel/AgentGroupUploadDialog.tsx', import.meta.url),
   'utf8',
@@ -483,7 +487,7 @@ test('single-mode picker removes its redundant title and More routes to the matc
 });
 
 test('leader and member picker cards include the shared Expert description', () => {
-  assert.match(memberPickerSource, /import \{[^}]*FormDrawer[^}]*PageCard[^}]*\} from '\.\.\/ui';/);
+  assert.match(memberPickerSource, /import \{[^}]*PickerDrawer[^}]*PageCard[^}]*\} from '\.\.\/ui';/);
   assert.match(memberPickerSource, /<PageCard[\s\S]*testId="agent-group-member-picker-item"/);
   assert.match(memberPickerSource, /description=\{description\}/);
   assert.match(
@@ -519,12 +523,15 @@ test('management pickers expose source tabs and preserve install/connect actions
   assert.match(panelSource, /agentsStatus=\{state\.catalogCompatibilityStatus\}/);
   assert.match(groupEditorSource, /agentsError=\{agentsError\}/);
   assert.match(groupEditorSource, /onReloadAgents=\{onReloadAgents\}/);
-  assert.match(memberPickerSource, /agent-group-member-picker-tabs/);
+  assert.match(pickerDrawerSource, /data-testid=\{\`\$\{testId\}-search\`\}/);
+  assert.match(pickerDrawerSource, /wrapperTestId=\{\`\$\{testId\}-tabs\`\}/);
+  assert.match(pickerDrawerSource, /testId: \`\$\{testId\}-tab-\$\{item\.value\}\`/);
+  assert.match(memberPickerSource, /testId="agent-group-member-picker"/);
   assert.match(memberPickerSource, /agent-group-member-picker-install/);
   assert.match(memberPickerSource, /agent-group-member-picker-error/);
   assert.match(memberPickerSource, /onReloadAgents/);
-  assert.match(memberPickerSource, /agent-group-member-picker-tab-market/);
-  assert.match(memberPickerSource, /agent-group-member-picker-tab-local/);
+  assert.match(memberPickerSource, /value: 'market'/);
+  assert.match(memberPickerSource, /value: 'local'/);
   assert.match(memberPickerSource, /sortAgentGroupOptions\(sourceAgents, agentsStatus\)/);
   assert.match(memberPickerSource, /isAgentGroupAgentCompatibilityLoading\(agent, agentsStatus\)/);
   assert.match(memberPickerSource, /className=.*is-loading/);
@@ -537,22 +544,23 @@ test('management pickers expose source tabs and preserve install/connect actions
   assert.match(groupEditorSource, /isSkillVisibleInSourceTab\(skill, skillSourceTab\)/);
   assert.match(groupEditorSource, /agent-group-editor-skill-picker-install/);
   assert.match(groupEditorSource, /skillSourceTab/);
-  assert.match(groupEditorSource, /agent-group-editor-skill-picker-tabs/);
-  assert.match(groupEditorSource, /agent-group-editor-skill-picker-tab-market/);
-  assert.match(groupEditorSource, /agent-group-editor-skill-picker-tab-local/);
+  assert.match(groupEditorSource, /testId="agent-group-editor-skill-picker"/);
+  assert.match(groupEditorSource, /agent-group-editor-skill-picker-install/);
+  assert.match(groupEditorSource, /skillSourceTab/);
+  assert.match(groupEditorSource, /value: 'market'/);
+  assert.match(groupEditorSource, /value: 'local'/);
   assert.match(groupEditorSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
-  assert.match(agentEditorSource, /agent-editor-skill-picker-tabs/);
+  assert.match(agentEditorSource, /testId="agent-editor-skill-picker"/);
   assert.match(agentEditorSource, /agent-editor-skill-picker-load-more/);
-  assert.match(agentEditorSource, /agent-editor-mcp-picker-tabs/);
+  assert.match(agentEditorSource, /testId="agent-editor-mcp-picker"/);
   assert.match(agentEditorSource, /agent-editor-mcp-picker-connect/);
   assert.match(agentEditorSource, /sortMcpOptions\(\s*mcpOptions\.filter\([\s\S]*?mcpSourceTab/);
   assert.match(agentEditorSource, /const selectable = isMcpSelectable\(mcp\)/);
   assert.match(agentEditorSource, /interactive=\{selectable\}/);
-  assert.match(agentEditorSource, /agent-editor-skill-picker-tab-market/);
-  assert.match(agentEditorSource, /agent-editor-skill-picker-tab-local/);
+  assert.match(agentEditorSource, /value: 'market'/);
+  assert.match(agentEditorSource, /value: 'local'/);
   assert.match(agentEditorSource, /isTeamSkillOption\(skill, skillSourceTab\)/);
-  assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-market/);
-  assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-installed/);
+  assert.match(agentEditorSource, /value: 'installed'/);
   assert.match(agentEditorSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
   assert.doesNotMatch(agentEditorSource, /MCP_TYPE_OPTIONS|mcpTypeFilter|mcpTypeAll/);
   assert.match(panelSource, /const \[busySkillId, setBusySkillId\] = useState<string \| null>\(null\)/);

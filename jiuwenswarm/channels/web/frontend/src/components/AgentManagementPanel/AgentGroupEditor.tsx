@@ -19,7 +19,7 @@ import { AGENT_DESCRIPTION_MAX_LENGTH, AGENT_NAME_MAX_LENGTH } from '../../featu
 import { AgentGroupMemberPicker } from './AgentGroupMemberPicker';
 import { AgentTagPicker } from './AgentTagPicker';
 import { DeleteCardIcon, SwitchCardIcon } from './cardActions';
-import { PageCard, Tabs, Input, Textarea, FormDrawer, FieldError, SelectedCount } from '../ui';
+import { PickerDrawer, PickerListRegion, PageCard, Tabs, Input, Textarea, FieldError, SelectedCount } from '../ui';
 import type { PageCardDefaultButton } from '../ui';
 import { FormPageLayout } from '../ConnectorMarket/FormPageLayout';
 
@@ -459,7 +459,7 @@ export function AgentGroupEditor({
       ) : null}
 
       {skillPickerOpen && (
-        <FormDrawer
+        <PickerDrawer
           title={t('agentManagement.group.form.chooseSkills')}
           onClose={() => setSkillPickerOpen(false)}
           onConfirm={() => {
@@ -467,105 +467,77 @@ export function AgentGroupEditor({
             setSkillPickerOpen(false);
           }}
           testId="agent-group-editor-skill-picker"
-          width={900}
-          bodyClassName="form-drawer__body--flush"
           footerLeading={
             <SelectedCount count={skillDraft.length} testId="agent-group-editor-skill-picker-selected-count" />
           }
+          search={skillQuery}
+          onSearchChange={setSkillQuery}
+          searchPlaceholder={t('agentManagement.form.selectionSearchPlaceholder')}
+          tabs={{
+            value: skillSourceTab,
+            onChange: setSkillSourceTab,
+            ariaLabel: t('agentManagement.group.picker.skillSourceTabsLabel'),
+            items: [
+              { value: 'market', label: t('agentManagement.form.skillMarket') },
+              { value: 'local', label: t('agentManagement.form.mySkills') },
+            ],
+          }}
         >
-          <div className="relative mx-6 mb-4 shrink-0">
-            <input
-              value={skillQuery}
-              onChange={(event) => setSkillQuery(event.target.value)}
-              placeholder={t('agentManagement.form.selectionSearchPlaceholder')}
-              className="h-8 w-full rounded-lg border border-border bg-bg pl-8 pr-3 text-[12px] leading-[18px] text-text outline-none focus:border-border-hover"
-              data-testid="agent-group-editor-skill-picker-search"
-            />
-          </div>
-          <Tabs
-            className="mb-4 px-6"
-            items={[
-              {
-                value: 'market',
-                label: t('agentManagement.form.skillMarket'),
-                testId: 'agent-group-editor-skill-picker-tab-market',
-              },
-              {
-                value: 'local',
-                label: t('agentManagement.form.mySkills'),
-                testId: 'agent-group-editor-skill-picker-tab-local',
-              },
-            ]}
-            value={skillSourceTab}
-            onChange={setSkillSourceTab}
-            wrapperTestId="agent-group-editor-skill-picker-tabs"
-            role="tablist"
-            ariaLabel={t('agentManagement.group.picker.skillSourceTabsLabel')}
+          <PickerListRegion
+            status={skillsStatus === 'loading' ? 'loading' : skillsStatus === 'error' ? 'error' : 'success'}
+            items={filteredSkills}
+            getItemKey={(skill) => skill.id}
+            loadingMessage={t('common.loading')}
+            errorMessage={t('agentManagement.group.form.skillsError')}
+            emptyMessage={t('agentManagement.group.form.skillsEmpty')}
+            retryLabel={t('common.retry')}
+            onRetry={onReloadSkills}
+            retryTestId="agent-group-editor-skill-picker-retry"
+            renderItem={(skill) => {
+              const selected = skillDraft.includes(skill.id);
+              const installed = skill.installed === true;
+              const installing = installingSkillId === skill.id;
+              const defaultButton: PageCardDefaultButton | undefined =
+                !installed && onInstallSkill
+                  ? {
+                      text: installing
+                        ? t('agentManagement.form.installingSkill')
+                        : t('agentManagement.form.installSkill'),
+                      testId: 'agent-group-editor-skill-picker-install',
+                      variant: skill.id,
+                      disabled: installing,
+                      busy: installing,
+                      onClick: () => void onInstallSkill(skill),
+                    }
+                  : undefined;
+              return (
+                <PageCard
+                  testId="agent-group-editor-skill-picker-item"
+                  variant={skill.id}
+                  interactive={installed}
+                  selected={selected}
+                  disabled={!installed && !onInstallSkill}
+                  onClick={installed ? () => toggleSkill(skill.id) : undefined}
+                  avatar={{ name: skill.name }}
+                  title={skill.name}
+                  description={skill.description || t('agentManagement.unknownDescription')}
+                  defaultButton={defaultButton}
+                  actionSlot={
+                    !installed && onInstallSkill ? null : (
+                      <span className="shrink-0" aria-hidden="true">
+                        {selected ? (
+                          <EntityRemoveIcon className="text-[color:var(--color-chat-accent)]" />
+                        ) : (
+                          <EntityAddIcon className="text-text-muted" />
+                        )}
+                      </span>
+                    )
+                  }
+                />
+              );
+            }}
           />
-          <div className="form-drawer__scroll-area">
-            {skillsStatus === 'loading' ? (
-              <p className="py-10 text-center text-[13px] text-text-muted">{t('common.loading')}</p>
-            ) : skillsStatus === 'error' ? (
-              <div className="agent-management-form-error">
-                <span>{t('agentManagement.group.form.skillsError')}</span>
-                <button type="button" data-testid="agent-group-editor-skill-picker-retry" onClick={onReloadSkills}>
-                  {t('common.retry')}
-                </button>
-              </div>
-            ) : filteredSkills.length === 0 ? (
-              <div className="py-10 text-center text-[13px] text-text-muted">
-                <p>{t('agentManagement.group.form.skillsEmpty')}</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-4" data-testid="agent-group-editor-skill-picker-list">
-                {filteredSkills.map((skill) => {
-                  const selected = skillDraft.includes(skill.id);
-                  const installed = skill.installed === true;
-                  const installing = installingSkillId === skill.id;
-                  const defaultButton: PageCardDefaultButton | undefined =
-                    !installed && onInstallSkill
-                      ? {
-                          text: installing
-                            ? t('agentManagement.form.installingSkill')
-                            : t('agentManagement.form.installSkill'),
-                          testId: 'agent-group-editor-skill-picker-install',
-                          variant: skill.id,
-                          disabled: installing,
-                          busy: installing,
-                          onClick: () => void onInstallSkill(skill),
-                        }
-                      : undefined;
-                  return (
-                    <PageCard
-                      key={skill.id}
-                      testId="agent-group-editor-skill-picker-item"
-                      variant={skill.id}
-                      interactive={installed}
-                      selected={selected}
-                      disabled={!installed && !onInstallSkill}
-                      onClick={installed ? () => toggleSkill(skill.id) : undefined}
-                      avatar={{ name: skill.name }}
-                      title={skill.name}
-                      description={skill.description || t('agentManagement.unknownDescription')}
-                      defaultButton={defaultButton}
-                      actionSlot={
-                        !installed && onInstallSkill ? null : (
-                          <span className="shrink-0" aria-hidden="true">
-                            {selected ? (
-                              <EntityRemoveIcon className="text-[color:var(--color-chat-accent)]" />
-                            ) : (
-                              <EntityAddIcon className="text-text-muted" />
-                            )}
-                          </span>
-                        )
-                      }
-                    />
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </FormDrawer>
+        </PickerDrawer>
       )}
     </>
   );

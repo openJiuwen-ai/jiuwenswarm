@@ -1,9 +1,8 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Search } from 'lucide-react';
 import EntityAddIcon from '../../assets/agent-management/add.svg?react';
 import EntityRemoveIcon from '../../assets/agent-management/remove.svg?react';
-import { FormDrawer, Input, PageCard, SelectedCount } from '../ui';
+import { PickerDrawer, PickerListRegion, PageCard, SelectedCount } from '../ui';
 
 export interface PickerItem {
   id: string;
@@ -26,79 +25,59 @@ export function PickerModal({ title, items, initialSelectedIds, loading, onCance
   const [selected, setSelected] = useState<string[]>(initialSelectedIds);
   const [query, setQuery] = useState('');
 
-  const visible = items.filter((item) => {
-    const q = query.trim().toLowerCase();
-    if (!q) return true;
-    return item.name.toLowerCase().includes(q) || item.description.toLowerCase().includes(q);
-  });
+  const visible = useMemo(
+    () =>
+      items.filter((item) => {
+        const q = query.trim().toLowerCase();
+        if (!q) return true;
+        return item.name.toLowerCase().includes(q) || item.description.toLowerCase().includes(q);
+      }),
+    [items, query],
+  );
 
   function toggle(id: string) {
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
   return (
-    <FormDrawer
+    <PickerDrawer
       title={title}
       onClose={onCancel}
       onConfirm={() => onConfirm(selected)}
       testId="connector-market-picker"
-      width={900}
-      bodyClassName="form-drawer__body--flush"
-      footerLeading={
-        <SelectedCount count={selected.length} testId="connector-market-picker-selected-count" />
-      }
+      footerLeading={<SelectedCount count={selected.length} testId="connector-market-picker-selected-count" />}
+      search={query}
+      onSearchChange={setQuery}
+      searchPlaceholder={t('connectorMarket.common.search')}
     >
-      <div className="mx-6 mb-4 shrink-0">
-        <Input
-          value={query}
-          onChange={setQuery}
-          placeholder={t('connectorMarket.common.search')}
-          prefix={<Search size={14} />}
-          data-testid="connector-market-picker-search"
-        />
-      </div>
-
-      {loading ? (
-        <div className="py-10 text-center text-[13px] text-text-muted" data-testid="connector-market-picker-loading">
-          {t('common.loading')}
-        </div>
-      ) : (
-        <div
-          className="form-drawer__scroll-area grid content-start grid-cols-2 gap-4"
-          data-testid="connector-market-picker-list"
-        >
-          {visible.map((item) => {
-            const checked = selected.includes(item.id);
-            return (
-              <PageCard
-                key={item.id}
-                testId="connector-market-picker-item"
-                variant={item.id}
-                avatar={{ name: item.name, iconUrl: item.iconUrl }}
-                title={item.name}
-                description={item.description}
-                selected={checked}
-                onClick={() => toggle(item.id)}
-                actionSlot={
-                  checked ? (
-                    <EntityRemoveIcon className="shrink-0 text-[color:var(--color-chat-accent)]" />
-                  ) : (
-                    <EntityAddIcon className="shrink-0 text-text-muted" />
-                  )
-                }
-              />
-            );
-          })}
-          {visible.length === 0 && (
-            <div
-              className="col-span-full py-10 text-center text-[13px] text-text-muted"
-              data-testid="connector-market-picker-empty"
-            >
-              {t('connectorMarket.common.noResult')}
-            </div>
-          )}
-        </div>
-      )}
-    </FormDrawer>
+      <PickerListRegion
+        status={loading ? 'loading' : 'success'}
+        items={visible}
+        getItemKey={(item) => item.id}
+        loadingMessage={t('common.loading')}
+        emptyMessage={t('connectorMarket.common.noResult')}
+        loadingTestId="connector-market-picker-loading"
+        emptyTestId="connector-market-picker-empty"
+        listTestId="connector-market-picker-list"
+        renderItem={(item) => (
+          <PageCard
+            testId="connector-market-picker-item"
+            variant={item.id}
+            avatar={{ name: item.name, iconUrl: item.iconUrl }}
+            title={item.name}
+            description={item.description}
+            selected={selected.includes(item.id)}
+            onClick={() => toggle(item.id)}
+            actionSlot={
+              selected.includes(item.id) ? (
+                <EntityRemoveIcon className="shrink-0 text-[color:var(--color-chat-accent)]" />
+              ) : (
+                <EntityAddIcon className="shrink-0 text-text-muted" />
+              )
+            }
+          />
+        )}
+      />
+    </PickerDrawer>
   );
 }
