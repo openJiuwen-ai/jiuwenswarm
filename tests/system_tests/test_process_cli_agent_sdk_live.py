@@ -28,7 +28,9 @@ async def test_custom_agent_resume_binding_and_busy(tmp_path: Path, request) -> 
     request.addfinalizer(lambda: shutil.rmtree(config, ignore_errors=True))
 
     root = Path(__file__).resolve().parents[2]
-    sys.path.insert(0, str(root / "sdks" / "python" / "src"))
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parents[2] / "sdks" / "python" / "src")
+    )
     from jiuwenswarm_sdk import Client
 
     env = {"JIUWENSWARM_DATA_DIR": str(tmp_path)}
