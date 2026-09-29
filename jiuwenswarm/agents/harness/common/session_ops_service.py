@@ -24,6 +24,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# A history row is a streaming event rather than a complete chat message.  A
+# pathological long-running session can therefore contain far more rows than
+# the context window can ever consume.  Keep warmup bounded and start from a
+# user-message boundary so we never seed the context with an orphan tool result.
+_WARMUP_HISTORY_MAX_RECORDS = 10_000
+
 
 def _derive_first_prompt(history: list[dict[str, Any]]) -> str:
     for record in history:
@@ -966,6 +972,24 @@ def _build_context_messages_from_history(
     return filtered_messages, skipped
 
 
+def _limit_warmup_history_records(
+    history_records: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Bound restart warmup history without cutting through a conversation turn."""
+    overflow = len(history_records) - _WARMUP_HISTORY_MAX_RECORDS
+    if overflow <= 0:
+        return history_records, 0
+
+    recent_records = history_records[overflow:]
+    for index, record in enumerate(recent_records):
+        if record.get("role") in {"user", "human"}:
+            return recent_records[index:], overflow + index
+
+    # The retained tail contains only events belonging to an oversized turn.
+    # Restoring that partial turn could create orphan tool results, so skip it.
+    return [], len(history_records)
+
+
 async def warmup_session_context(
     *,
     deep_agent: "DeepAgent",
@@ -1016,6 +1040,14 @@ async def warmup_session_context(
             if str(record.get("request_id") or "").strip() == boundary_request_id:
                 history_records = history_records[:index]
                 break
+
+    history_records, truncated = _limit_warmup_history_records(history_records)
+    if truncated:
+        logger.info(
+            "warmup_session_context: session=%s omitted %d old history records",
+            session_id,
+            truncated,
+        )
 
     context_messages, skipped = _build_context_messages_from_history(history_records)
     if not context_messages:

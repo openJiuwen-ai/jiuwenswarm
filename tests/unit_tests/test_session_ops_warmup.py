@@ -112,3 +112,77 @@ async def test_warmup_keeps_history_when_boundary_is_not_yet_visible(monkeypatch
         "history_messages"
     ]
     assert [message.content for message in history_messages] == ["旧问题"]
+
+
+@pytest.mark.asyncio
+async def test_warmup_limits_history_at_user_turn_boundary(monkeypatch):
+    from jiuwenswarm.agents.harness.common import session_ops_service
+
+    deep_agent, context_engine = _deep_agent_with_empty_context()
+    monkeypatch.setattr(session_ops_service, "_WARMUP_HISTORY_MAX_RECORDS", 4)
+    monkeypatch.setattr(session_ops_service, "history_exists", lambda _session_id: True)
+    monkeypatch.setattr(
+        session_ops_service,
+        "load_history_records",
+        lambda _session_id: [
+            {"role": "user", "request_id": "request-1", "content": "问题一"},
+            {
+                "role": "assistant",
+                "request_id": "request-1",
+                "event_type": "chat.final",
+                "content": "回答一",
+            },
+            {"role": "tool", "request_id": "request-2", "content": "旧工具结果"},
+            {"role": "user", "request_id": "request-3", "content": "问题三"},
+            {
+                "role": "assistant",
+                "request_id": "request-3",
+                "event_type": "chat.final",
+                "content": "回答三",
+            },
+            {"role": "user", "request_id": "request-current", "content": "当前问题"},
+        ],
+    )
+    monkeypatch.setattr(
+        session_ops_service,
+        "_resolve_live_agent_session",
+        lambda _deep_agent, _session_id: object(),
+    )
+
+    restored = await session_ops_service.warmup_session_context(
+        deep_agent=deep_agent,
+        session_id="session-1",
+        history_before_request_id="request-current",
+    )
+
+    assert restored is True
+    history_messages = context_engine.create_context.await_args.kwargs[
+        "history_messages"
+    ]
+    assert [message.content for message in history_messages] == ["问题三", "回答三"]
+
+
+@pytest.mark.asyncio
+async def test_warmup_skips_oversized_partial_turn(monkeypatch):
+    from jiuwenswarm.agents.harness.common import session_ops_service
+
+    deep_agent, context_engine = _deep_agent_with_empty_context()
+    monkeypatch.setattr(session_ops_service, "_WARMUP_HISTORY_MAX_RECORDS", 2)
+    monkeypatch.setattr(session_ops_service, "history_exists", lambda _session_id: True)
+    monkeypatch.setattr(
+        session_ops_service,
+        "load_history_records",
+        lambda _session_id: [
+            {"role": "user", "request_id": "request-1", "content": "问题"},
+            {"role": "tool", "request_id": "request-1", "content": "工具结果一"},
+            {"role": "tool", "request_id": "request-1", "content": "工具结果二"},
+        ],
+    )
+
+    restored = await session_ops_service.warmup_session_context(
+        deep_agent=deep_agent,
+        session_id="session-1",
+    )
+
+    assert restored is False
+    context_engine.create_context.assert_not_awaited()
