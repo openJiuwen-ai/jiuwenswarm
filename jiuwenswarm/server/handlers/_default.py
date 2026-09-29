@@ -39,6 +39,7 @@ from jiuwenswarm.server.handlers._shared import (
     _session_mode_sync_locks,
     _sessions_dir_for_request,
     _sync_chat_request_metadata,
+    EXPLICIT_PLAN_ENTRY_SOURCES,
     resolve_request_project_dir,
     resolve_request_runtime_mode,
 )
@@ -96,7 +97,7 @@ def _is_explicit_plan_entry_request(request: AgentRequest) -> bool:
     if not isinstance(request.params, dict):
         return False
     source = str(request.params.get("plan_entry_source") or "").strip().lower()
-    return source in {"slash_command", "e2a", "plan_toggle"}
+    return source in EXPLICIT_PLAN_ENTRY_SOURCES
 
 
 def _should_sync_code_mode_state(request: AgentRequest) -> bool:
@@ -343,6 +344,10 @@ async def _ensure_code_mode_state(
             if previous_plan_state == "plan" and target_plan_state == "normal":
                 restored_after_approval = True
                 _plan_active_sessions.discard(session_id)
+                # 同步退出也置防重入标记：另一标签页残留的 stale agent.plan
+                # （无显式进入标记）不得凭空把会话拖回 plan；显式进入
+                # （/plan、开关刚打开的那条消息）会先 discard 该标记，不受影响。
+                _plan_exited_sessions.add(session_id)
                 logger.info(
                     "[_ensure_code_mode_state] Synced plan→normal for session=%s",
                     session_id,
