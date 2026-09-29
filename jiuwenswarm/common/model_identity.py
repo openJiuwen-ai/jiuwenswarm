@@ -13,6 +13,27 @@ def _normalized(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _normalized_headers(value: Any) -> dict[str, str]:
+    # Header names are case-insensitive.
+    if not isinstance(value, dict):
+        return {}
+    return {str(key).strip().lower(): str(val) for key, val in value.items()}
+
+
+def build_model_credential_fingerprint(client_config: Any) -> str:
+    """Digest of the credential-bearing fields (api_key / custom_headers)."""
+    def _field(name: str) -> Any:
+        if isinstance(client_config, dict):
+            return client_config.get(name)
+        return getattr(client_config, name, None)
+
+    payload = {
+        "api_key": _normalized(_field("api_key")),
+        "custom_headers": _normalized_headers(_field("custom_headers")),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
 def build_model_identity_reference(model_name: Any, client_config: dict[str, Any]) -> str:
     identity = {
         "api_base": _normalized(client_config.get("api_base")).rstrip("/"),
