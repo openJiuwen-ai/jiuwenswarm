@@ -3630,8 +3630,8 @@ async def test_process_team_message_stream_rejects_orphaned_permission_answer(mo
 
 
 @pytest.mark.anyio
-async def test_prepare_first_team_request_degrades_orphaned_ask_user_answers():
-    """Stale ask_user answers degrade into a continuation and rebuild the team."""
+async def test_prepare_first_team_request_schedules_ask_user_rebuild_resume():
+    """Stale ask_user answers keep the original payload for cold-rebuild resume."""
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
     ask_answer_input = InteractiveInput()
@@ -3666,9 +3666,7 @@ async def test_prepare_first_team_request_degrades_orphaned_ask_user_answers():
 
     assert preparation.error_chunks is None
     assert preparation.recovered_runtime is False
-    assert "你希望用什么技术实现？" in preparation.query
-    assert "浏览器（HTML/CSS/JS）" in preparation.query
-    assert "服务重启" in preparation.query
+    assert preparation.query is ask_answer_input
 
 
 @pytest.mark.anyio
