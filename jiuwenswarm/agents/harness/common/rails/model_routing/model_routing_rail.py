@@ -306,12 +306,19 @@ class ModelRoutingRail(DeepAgentRail):
                     getattr(getattr(recommended_cap.model, "model_config", None), "model_name", None)
                     or recommended_cap.model_name
                 )
-                if mname and isinstance(ctx.extra, dict):
+                if mname:
                     # 供 RuntimePromptRail 注入「当前模型」用：档位关键字（fast/balanced/
                     # extreme/auto）是作为 model_name 下发的，runtime_state 与 agent.model_name
                     # 记的都是路由前的取值，这里落一份路由后真正生效的模型名。
-                    ctx.extra["model_routing_applied_model"] = str(mname)
-                if mname:
+                    # 必须落进按引用透传的 RunContext：本 rail 的 before_invoke 只注册在外层
+                    # DeepAgent 的 ctx 上，读取方 RuntimePromptRail.before_model_call 却跑在
+                    # 内层 ReActAgent 新建的 ctx 上（extra 是另一个 dict），外层 ctx.extra
+                    # 传不过去；RunContext 则经 effective_inputs 原样带进内层，内层可从
+                    # ctx.extra["run_context"].extra 读回。
+                    run_context = getattr(getattr(ctx, "inputs", None), "run_context", None)
+                    rc_extra = getattr(run_context, "extra", None)
+                    if isinstance(rc_extra, dict):
+                        rc_extra["model_routing_applied_model"] = str(mname)
                     # Sync inner ReActAgent config
                     cfg = getattr(react_agent, "_config", None) or getattr(react_agent, "config", None)
                     if cfg is not None:
