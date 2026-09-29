@@ -10319,7 +10319,8 @@ class JiuWenSwarmDeepAdapter:
         # switch_mode），审批 rail 只拦 ``exit_plan_mode``，普通模式下不会触发。
         #
         # team 装配跳过：team 会话 plan_mode 恒 normal、无 plan 入口，挂载只带来
-        # 每轮 load_state 与工具过滤开销（评审 CR-5，2026-09-29）。
+        # 每轮 load_state 与工具过滤开销（评审 CR-5，2026-09-29）。两属性无
+        # 读取点，team 适配器不设它们。
         if mode not in {"team", "team.plan", "code.team"}:
             rail_infos.append(
                 _RailBuildInfo("_work_agent_mode_rail", self._build_work_agent_mode_rail)
@@ -10327,9 +10328,6 @@ class JiuWenSwarmDeepAdapter:
             rail_infos.append(
                 _RailBuildInfo("_work_plan_approval_rail", self._build_work_plan_approval_rail)
             )
-        else:
-            self._work_agent_mode_rail = None
-            self._work_plan_approval_rail = None
 
         return self._instantiate_rails(rail_infos, config_base)
 
