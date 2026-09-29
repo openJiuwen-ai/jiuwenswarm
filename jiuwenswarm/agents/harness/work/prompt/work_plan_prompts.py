@@ -195,9 +195,9 @@ WORK_PLAN_ALLOWED_TOOLS: tuple[str, ...] = (
     "exit_plan_mode",
     # 与用户澄清
     "ask_user",
-    # 委派子 agent 做只读调研。没有配置子 agent 时 AgentModeRail 不会注册
-    # task_tool，放进白名单不会凭空多出工具。
-    "task_tool",
+    # 不放 task_tool：子 agent 有独立 session 与 plan_mode 状态，父 agent 的
+    # plan 约束不会传播，委派出去就能绕开本白名单做任意写入（评审定论）。
+    # 待上游给 TaskTool 下发 plan 标记并装配只读 rail 后再评估恢复。
     # 只读文件与检索
     "read_file",
     "grep",

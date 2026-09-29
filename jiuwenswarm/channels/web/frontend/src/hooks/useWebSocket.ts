@@ -599,7 +599,7 @@ interface UseWebSocketReturn {
     answers: UserAnswer[],
     source?: string,
     status?: UserAnswerStatus
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   respondActivate: (
     sessionId: string,
     interactionId: string,
@@ -2215,6 +2215,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           });
         }
         useChatStore.getState().setPendingQuestion(sessionId, null);
+        return true;
       } catch (error) {
         if (planExecuteOptimistic) {
           // 请求没送出去，后端仍停在计划模式：撤回乐观更新，否则会留下一个标记，
@@ -2225,6 +2226,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const webError = error as WebError;
         setConnectionStats({ lastError: webError.message });
         onErrorRef.current?.(webError.message || t('network.submitAnswerFailed'));
+        return false;
       }
     },
     [request, setConnectionStats, t]

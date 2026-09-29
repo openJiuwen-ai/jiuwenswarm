@@ -2024,7 +2024,7 @@ function AppContent() {
   ) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) {
-      return Promise.resolve();
+      return Promise.resolve(false);
     }
     return sendUserAnswer(currentSessionId, requestId, answers, source, status);
   }, [sendUserAnswer]);
