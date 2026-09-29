@@ -1737,7 +1737,11 @@ def test_present_core_agent_result_splits_nonce_scoped_brief() -> None:
         "x" * (video_search.MAX_REALTIME_BRIEF_CHARS + 1),
     ],
 )
-def test_present_core_agent_result_rejects_unsafe_brief(unsafe_brief: str) -> None:
+def test_present_core_agent_result_rejects_unsafe_brief(monkeypatch, unsafe_brief: str) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"preferred_language": "zh"},
+    )
     nonce = "unsafe-brief"
     raw_answer = (
         "```python\nprint('authoritative full answer')\n```\n"
@@ -2389,6 +2393,10 @@ def test_joyai_response_language_is_grounded(language, expected):
 @pytest.mark.parametrize("provider", ["joyai", "qwen_omni"])
 async def test_realtime_config_propagates_english(monkeypatch, provider):
     monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", "en")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"preferred_language": "zh"},
+    )
     monkeypatch.setenv("VIDEO_LIVE_MODE", "joyai" if provider == "joyai" else "realtime")
     monkeypatch.setenv("VIDEO_REALTIME_PROVIDER", "qwen_omni")
     monkeypatch.setenv("JOYAI_API_BASE", "https://example.test/v1")
@@ -2401,6 +2409,7 @@ async def test_realtime_config_propagates_english(monkeypatch, provider):
     response = channel.responses[-1][1]
     assert response["ok"] is True
     assert response["payload"]["reply_language"] == "en"
+    assert response["payload"]["tool_language"] == "en"
 
 
 @pytest.mark.asyncio
@@ -2648,15 +2657,74 @@ async def test_joyai_shared_reply_language(monkeypatch, language, expected, kind
         assert "not screen OCR language" in calls[0]
 
 
-@pytest.mark.parametrize("language,expected", [("en", "Speak to the user in English"), ("zh-CN", "Simplified Chinese"), ("match", "same language as their latest utterance")])
-def test_core_receipt_uses_shared_reply_language(monkeypatch, language, expected):
-    monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", language)
-    assert expected in video_search.core_agent_brief_protocol("test-nonce")
-    assert "[[JIUWEN_BRIEF_BEGIN:test-nonce]]" in video_search.core_agent_brief_protocol("test-nonce")
+@pytest.mark.parametrize(
+    "reply_language,app_language,expected",
+    [
+        ("en", "zh", "en"),
+        ("zh-CN", "en", "zh-CN"),
+        ("match", "en", "en"),
+        ("match", "zh", "zh-CN"),
+        ("match", "zh-CN", "zh-CN"),
+        ("match", "", "zh-CN"),
+        ("invalid", "en", "en"),
+    ],
+)
+def test_tool_receipt_language_uses_app_language_only_for_match(
+    monkeypatch, reply_language, app_language, expected,
+):
+    monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", reply_language)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"preferred_language": app_language},
+    )
+    assert settings.tool_receipt_language() == expected
 
 
-@pytest.mark.parametrize("language,question", [("en", "生成文件"), ("match", "Generate a file")])
-def test_english_receipt_fallback_does_not_speak_chinese(monkeypatch, language, question):
-    monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", language)
-    result = video_search.present_core_agent_result("```python\nprint(1)\n```", nonce="missing", question=question)
-    assert result["realtime_brief"]["summary"] == "The task has finished. The full result is available in the interface."
+@pytest.mark.parametrize("app_language,expected", [("en", "Speak to the user in English"), ("zh", "Simplified Chinese")])
+def test_core_receipt_uses_app_language(monkeypatch, app_language, expected):
+    monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", "match")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"preferred_language": app_language},
+    )
+    protocol = video_search.core_agent_brief_protocol("test-nonce")
+    assert expected in protocol
+    assert "[[JIUWEN_BRIEF_BEGIN:test-nonce]]" in protocol
+    assert "不受完整答案的中文要求约束" in protocol
+    assert "same language as their latest utterance" not in protocol
+    assert settings.reply_language() == "match"
+
+
+@pytest.mark.parametrize(
+    "app_language,question,expected",
+    [
+        ("en", "生成文件", "The task has finished. The full result is available in the interface."),
+        ("zh", "Generate a file", "代码已经生成，完整内容已经显示在界面中。"),
+    ],
+)
+def test_tool_receipt_fallback_follows_app_language(monkeypatch, app_language, question, expected):
+    monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", "match")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"preferred_language": app_language},
+    )
+    result = video_search.present_core_agent_result(
+        "```python\nprint(1)\n```", nonce="missing", question=question,
+    )
+    assert result["realtime_brief"]["summary"] == expected
+
+
+def test_explicit_english_receipt_ignores_chinese_app_language(monkeypatch):
+    monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", "en")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"preferred_language": "zh"},
+    )
+    protocol = video_search.core_agent_brief_protocol("explicit-english")
+    assert "Speak to the user in English" in protocol
+    result = video_search.present_core_agent_result(
+        "```python\nprint(1)\n```", nonce="missing", question="生成文件",
+    )
+    assert result["realtime_brief"]["summary"] == (
+        "The task has finished. The full result is available in the interface."
+    )

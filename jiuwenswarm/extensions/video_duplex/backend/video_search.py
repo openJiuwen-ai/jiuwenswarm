@@ -44,11 +44,12 @@ def _brief_markers(nonce: str) -> tuple[str, str]:
 def core_agent_brief_protocol(nonce: str) -> str:
     from jiuwenswarm.extensions.video_duplex.backend import settings, joyai_provider
     begin, end = _brief_markers(nonce)
-    language_rule = joyai_provider.response_language_instruction(settings.reply_language())
+    language_rule = joyai_provider.response_language_instruction(settings.tool_receipt_language())
     return (
-        "\n\n语音回执协议（必须放在完整答案之后）：\n"
+        "\n\n语音回执协议（必须放在完整答案之后。回执只遵守下一句的语言，不受完整答案的中文要求约束）：\n"
         f"{begin}\n"
-        f"另写一至两句自然、简短的回执，概括任务结果，供实时模型直接播报。{language_rule}"
+        f"{language_rule}\n"
+        "另写一至两句自然、简短的回执，概括任务结果，供实时模型直接播报。"
         "不得包含代码、JSON、网址、Markdown链接或完整网页正文，也不得声称尚未完成。\n"
         f"{end}\n"
         "上述随机标记必须原样输出且只输出一次。"
@@ -89,15 +90,14 @@ def _safe_brief(value: str) -> str:
     return brief
 
 
-def _fallback_realtime_brief(
+def _fallback_realtime_brief(  # pylint: disable=unused-argument
     *,
     display_result: str,
     result_kind: str,
     question: str = "",
 ) -> tuple[str, str]:
     from jiuwenswarm.extensions.video_duplex.backend import settings
-    language = settings.reply_language()
-    if language == "en" or (language == "match" and question and not re.search(r"[\u3400-\u9fff]", question)):
+    if settings.tool_receipt_language() == "en":
         return "The task has finished. The full result is available in the interface.", "fallback"
     derived = _safe_brief(display_result)
     if derived and len(derived) <= 100:
@@ -403,7 +403,7 @@ async def execute_core_agent(
         "优先复用此前委托中已经定位的文件、网址、数据和执行结果；已有信息足以完成任务时，不要重新扫描文件系统、"
         "重复抓取网页或再次识别无关的视频帧。"
         "需要外部或时效性事实时，必须使用搜索及网页正文核实。\n\n"
-        "最终回答要求：必须使用简体中文。完成必要操作后直接回应用户原始指令，只保留执行结果、必要依据和必要来源，"
+        "最终回答要求：标记之前的完整答案必须使用简体中文。完成必要操作后直接回应用户原始指令，只保留执行结果、必要依据和必要来源，"
         "不得复述工具调用、抓取、重试或核实过程。回答的格式与详略服从用户原始指令；用户未指定时保持简洁。"
         f"{core_agent_brief_protocol(brief_nonce)}"
     )

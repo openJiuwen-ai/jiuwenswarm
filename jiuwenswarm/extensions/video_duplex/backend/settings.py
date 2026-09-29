@@ -166,6 +166,19 @@ def reply_language() -> str:
     return raw if raw in ALLOWED_REPLY_LANGUAGES else str(DEFAULTS["reply_language"])
 
 
+def tool_receipt_language() -> str:
+    """Use an explicit duplex language. Match falls back to the app language."""
+    selected = reply_language()
+    if selected in {"en", "zh-CN"}:
+        return selected
+    try:
+        from jiuwenswarm.common.config import get_config
+        raw = str(get_config().get("preferred_language") or "zh").strip().lower()
+    except Exception:
+        raw = "zh"
+    return "en" if raw == "en" or raw.startswith("en-") else "zh-CN"
+
+
 def set_enabled(enabled: bool) -> None:
     value = "true" if enabled else "false"
     os.environ["VIDEO_DUPLEX_ENABLED"] = value
