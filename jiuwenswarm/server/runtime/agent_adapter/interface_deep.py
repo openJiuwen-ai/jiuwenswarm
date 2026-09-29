@@ -4285,6 +4285,21 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             logger.warning("[JiuWenSwarmDeepAdapter] add sys_operation failed: %s", exc)
             return None
 
+    def refresh_sandbox_runtime_binding(self) -> None:
+        """Rebind cards retained before a shared sys operation was replaced."""
+        card = self._sys_operation_card
+        if card is None or card.mode != OperationMode.SANDBOX:
+            return
+        registered = JiuWenSwarmDeepAdapter._get_registered_sys_operation_by_isolation_key(
+            self._sys_operation_isolation_key(card)
+        )
+        if registered is None:
+            return
+        gateway = getattr(getattr(registered, "_run_config", None), "config", None)
+        if getattr(gateway, "launcher_config", None) is not None:
+            card.id = registered.id
+            card.gateway_config = gateway
+
     async def apply_sandbox_runtime_patch(
         self, runtime: dict[str, Any], *, files_changed: bool, strict: bool = False,
         prepare_only: bool = False,

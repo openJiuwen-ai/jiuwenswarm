@@ -1,4 +1,10 @@
 {
+  "sandboxSecurity": {
+    "hint": "Manage the sandbox and synchronize file and network guard rules.",
+    "syncHint": "Synchronization only saves supported file and network rules. Ask and other unsupported rules are skipped.",
+    "syncNetwork": "Sync network guard",
+    "networkSynced": "Network rules saved. Use Apply and recreate sandboxes to apply them together. Skipped rules do not apply to the sandbox."
+  },
   "shellSecurity": {
     "title": "Shell security guard",
     "userRules": "Custom command rules",
@@ -63,12 +69,13 @@
     "switchSaved": "Sandbox switch saved. Applying in the background.",
     "syncHint": "Synchronize saved concrete paths and read/write rules only. Ask, glob, nonexistent paths and other unsupported rules are skipped.",
     "saveFirst": "Save or discard guard changes before synchronizing.",
-    "sync": "Sync guard to sandbox",
+    "sync": "Sync file guard",
     "synced": "Rules synchronized. Restart the sandbox to apply.",
     "syncedPartial": "Synchronized {{count}} rules; skipped {{skipped}} unsupported rules. Restart the sandbox to apply. Skipped details:",
     "restart": "Apply and recreate sandboxes",
-    "restartHint": "Recreate current sandboxes with synchronized rules, stopping their tasks. The sandbox server process stays running.",
-    "restarted": "Recreated {{count}} sandbox(es).",
+    "restartHint": "Apply synchronized file and network rules together and recreate sandboxes. Changed network policy reloads the sandbox service; current tasks will stop.",
+    "restarted": "Applied file and network rules and recreated {{count}} sandbox(es).",
+    "restartedExternal": "Recreated {{count}} sandbox(es) with file rules; network policy must be loaded by the external sandbox service.",
     "noActive": "No active sandboxes. Synchronized settings will be used on the next creation.",
     "disconnected": "Connect to the server first."
   },
@@ -1181,8 +1188,9 @@
       }
     },
     "netGuard": {
-      "title": "URL / domain rules (permissions.net_guard)",
-      "subtitle": "Host-side outbound requests (web fetch, search, remote MCP) are allowed or denied by these rules. Changes are saved and hot-reloaded immediately. Outbound traffic from shell / code inside the sandbox is governed by sandbox network rules instead.",
+      "title": "Network security guard",
+      "subtitle": "Allow, ask or deny web fetches. Approval happens before the tool call. Changes save immediately and require the main permissions switch. The host exit enforces deny rules; sandbox rules sync separately.",
+      "actionAsk": "Ask (ask)",
       "refresh": "Refresh",
       "refreshing": "Loading…",
       "needConnection": "Connect to the server to manage URL / domain rules.",
@@ -1212,7 +1220,7 @@
       "addTitle": "Add rule",
       "patternPlaceholder": "e.g. *.evil.com or https://paste.example/",
       "duplicatePattern": "Rule already exists: {{pattern}}",
-      "builtinNotWidenable": "\"{{pattern}}\" is a built-in deny rule and cannot be set to allow",
+      "builtinNotWidenable": "\"{{pattern}}\" is a built-in deny rule and cannot be set to allow or ask",
       "add": "Add",
       "builtinTitle": "Built-in deny rules ({{count}}, read-only)",
       "builtinHint": "Shipped with the release and merged at runtime. They can only get stricter; users cannot lift them.",
@@ -2477,6 +2485,7 @@
   },
   "authPrompt": {
     "title": "Authorization",
+    "scope": "Authorization scope",
     "titleConfirm": "Confirm action",
     "allowOnce": "Allow once",
     "allowAlways": "Always allow",

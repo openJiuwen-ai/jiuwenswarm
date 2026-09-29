@@ -10,7 +10,7 @@
  * 动作按钮 hover 说明用 portal 挂到 body，避免被容器 overflow 截断。
  */
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
@@ -85,6 +85,11 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
   const setPendingQuestion = useChatStore((s) => s.setPendingQuestion);
   const [expanded, setExpanded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [scope, setScope] = useState<'exact' | 'parent' | 'domain'>('exact');
+  useEffect(() => {
+    setScope('exact');
+    setSubmitting(false);
+  }, [pending.request_id]);
 
   const questions = pending.questions ?? [];
   const primary = questions[0];
@@ -120,10 +125,19 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
           q.options.find((o) => (o.value || o.label) === (picked.option.value || picked.option.label)) ||
           q.options[0];
         const value = match ? match.value || match.label : picked.option.label;
-        return { selected_options: [value] };
+        const chosenScope = q.authorization_scopes?.some(o => o.value === scope) ? scope : 'exact';
+        return {
+          selected_options: [value],
+          ...(pending.source === 'permission_interrupt'
+            ? {
+                authorization_mode: chosenScope === 'exact' ? ('allow' as const) : ('allow_with_scope' as const),
+                authorization_scope: chosenScope,
+              }
+            : {}),
+        };
       });
     },
-    [questions],
+    [questions, scope, pending.source],
   );
 
   const handlePick = useCallback(
@@ -169,7 +183,7 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
         </div>
 
         {/* 动作按钮区不触发展开/收起 */}
-        <div className="auth-prompt__actions" onClick={(e) => e.stopPropagation()}>
+        <div className="auth-prompt__actions" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
           {actions.map((action) => (
             <HoverTip text={action.tip} key={action.semantic + action.option.label}>
               <button
@@ -193,6 +207,24 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
         }
         style={{ color: 'var(--color-text-primary)' }}
       >
+        {pending.source === 'permission_interrupt' && (primary.authorization_scopes?.length ?? 0) > 1 && (
+          <label className="auth-prompt__scope">
+            {t('authPrompt.scope', '授权范围')}
+            <select
+              aria-label={t('authPrompt.scope', '授权范围')}
+              className="auth-prompt__scope-select"
+              value={scope}
+              disabled={submitting}
+              onChange={e => setScope(e.target.value as typeof scope)}
+            >
+              {primary.authorization_scopes?.map(option => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         {expanded ? (
           questions.map((q, i) => (
             <div className="auth-prompt__body-item" key={i}>

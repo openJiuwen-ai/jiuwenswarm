@@ -6192,6 +6192,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_perm("sandbox.enabled.get", _PermReq.SANDBOX_ENABLED_GET)
     _register_perm("sandbox.enabled.set", _PermReq.SANDBOX_ENABLED_SET)
     _register_perm("sandbox.files.sync", _PermReq.SANDBOX_FILES_SYNC)
+    _register_perm("sandbox.network.sync", _PermReq.SANDBOX_NETWORK_SYNC)
     _register_perm("sandbox.restart", _PermReq.SANDBOX_RESTART)
     _register_perm("permissions.tools.get", _PermReq.PERMISSIONS_TOOLS_GET)
     _register_perm("permissions.tools.set", _PermReq.PERMISSIONS_TOOLS_SET)

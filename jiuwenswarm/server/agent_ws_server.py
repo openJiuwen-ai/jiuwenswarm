@@ -1478,6 +1478,11 @@ class AgentWebSocketServer:
                         exc,
                     )
 
+            # config.yaml is the source; materialize synchronized domains before
+            # starting a service, including startup after an AgentServer restart.
+            from jiuwenswarm.common.net_guard_config import render_saved_sandbox_urls
+            render_saved_sandbox_urls(policy_path)
+
             host, preferred_port = self._parse_sandbox_host_port(url)
             port = self._allocate_internal_jiuwenbox_port(host, preferred_port)
             if port != preferred_port:
@@ -5235,7 +5240,7 @@ class AgentWebSocketServer:
             await send_wire_payload(ws, wire)
 
     async def _restart_configured_sandboxes(self, params: dict) -> dict:
-        """Apply saved files to active jiuwenbox adapters, reporting actual failures."""
+        """Apply saved network policy and recreate sandboxes with saved file rules."""
         if params:
             raise ValueError("sandbox.restart accepts no parameters (scope: all active sandboxes)")
         if get_sandbox_endpoint().get("type") != "jiuwenbox":
@@ -5243,6 +5248,13 @@ class AgentWebSocketServer:
         runtime = get_sandbox_runtime()
         if not runtime.get("enabled"):
             raise ValueError("sandbox is disabled")
+        from jiuwenswarm.server.sandbox_config_rpc import apply_sandbox_policy_for_restart
+
+        # Network egress is owned by the service. Wait for its saved policy before
+        # recreating instances; never acknowledge a queued background reload.
+        service_reloaded = await apply_sandbox_policy_for_restart(
+            getattr(self, "_bootstrap_internal_jiuwenbox", None),
+        )
         adapters = []
         launchers = set()
         pending = []
@@ -5261,6 +5273,11 @@ class AgentWebSocketServer:
             pending.extend(reversed(list(getattr(adapter, "_session_adapters", {}).values())))
             if not hasattr(adapter, "apply_sandbox_runtime_patch"):
                 continue
+            # A port change can replace a registered sysop while older sessions
+            # still retain its previous card. Rebind before launcher deduplication.
+            refresh_binding = getattr(adapter, "refresh_sandbox_runtime_binding", None)
+            if refresh_binding is not None:
+                refresh_binding()
             card = getattr(adapter, "_sys_operation_card", None)
             gateway = getattr(card, "gateway_config", None)
             launcher = getattr(gateway, "launcher_config", None)
@@ -5291,8 +5308,12 @@ class AgentWebSocketServer:
                 + "; ".join(failures)
                 + ". Retry sandbox.restart to apply the saved policy."
             )
+        from jiuwenswarm.common.config import get_sandbox_startup_mode
+
         return {"restarted": restarted, "scope": "all_active_sandboxes",
-                "status": "applied" if restarted else "no_active_sandboxes"}
+                "status": "applied" if restarted or service_reloaded else "no_active_sandboxes",
+                **({"network_status": "externally_managed"}
+                   if get_sandbox_startup_mode() != "internal" else {})}
 
     async def _handle_history_get(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         params = request.params if isinstance(request.params, dict) else {}

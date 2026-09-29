@@ -562,10 +562,13 @@ def get_permissions_with_session_overlay(
     return apply_session_permissions_overlay(base, overlay)
 
 
-def persist_merged_allow_rule_snapshot(permissions: dict[str, Any]) -> bool:
+def persist_merged_allow_rule_snapshot(permissions: dict[str, Any], *, approval_grant: dict | None = None) -> bool:
     """HITL「永久记住」：把相对模板多出的场景 list 写入 config.yaml。"""
     if not isinstance(permissions, dict):
         return False
+    # Never promote other session grants when one operation is remembered forever.
+    if approval_grant is not None:
+        permissions = {"approval_overrides": [approval_grant]}
     from jiuwenswarm.common.config import update_config
     from jiuwenswarm.common.config_split import _get, _user_only_list_items, upsert_list_by_id
     from jiuwenswarm.common.utils import get_package_config_file
@@ -624,7 +627,7 @@ def persist_merged_allow_rule_snapshot(permissions: dict[str, Any]) -> bool:
         return False
 
 
-_NET_GUARD_ACTIONS = frozenset({"allow", "deny"})
+_NET_GUARD_ACTIONS = frozenset({"allow", "ask", "deny"})
 _NET_GUARD_BOOL_KEYS = ("enabled", "enforce_host_exit")
 
 
@@ -649,12 +652,12 @@ def normalize_net_guard_patch(patch: Any) -> dict[str, Any]:
     if "defaults" in patch:
         defaults = str(patch["defaults"] or "").strip().lower()
         if defaults not in _NET_GUARD_ACTIONS:
-            raise ValueError("net_guard.defaults must be allow|deny")
+            raise ValueError("net_guard.defaults must be allow|ask|deny")
         out["defaults"] = defaults
     if "urls" in patch:
         urls = patch["urls"]
         if not isinstance(urls, dict):
-            raise ValueError("net_guard.urls must be an object {pattern: allow|deny}")
+            raise ValueError("net_guard.urls must be an object {pattern: allow|ask|deny}")
         normalized: dict[str, str] = {}
         for pattern, action in urls.items():
             key = str(pattern or "").strip()
@@ -662,9 +665,9 @@ def normalize_net_guard_patch(patch: Any) -> dict[str, Any]:
                 raise ValueError("net_guard.urls: pattern must be non-empty")
             act = str(action or "").strip().lower()
             if act not in _NET_GUARD_ACTIONS:
-                raise ValueError(f"net_guard.urls[{key!r}]: action must be allow|deny")
-            if act == "allow" and key in builtin_deny:
-                raise ValueError(f"net_guard.urls[{key!r}]: 内置底线规则不可放宽为 allow")
+                raise ValueError(f"net_guard.urls[{key!r}]: action must be allow|ask|deny")
+            if act != "deny" and key in builtin_deny:
+                raise ValueError(f"net_guard.urls[{key!r}]: 内置底线规则不可放宽")
             normalized[key] = act
         out["urls"] = normalized
     return out

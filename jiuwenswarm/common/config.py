@@ -2301,6 +2301,7 @@ _SANDBOX_RUNTIME_DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "excluded_commands": [],
     "files": [],
+    "urls": {},
     "idle_ttl_seconds": None,
     "idle_check_interval": None,
     "fallback_on_failure": False,
@@ -2389,6 +2390,9 @@ def _ensure_sandbox_runtime_shape(runtime: Any) -> dict[str, Any]:
             raise ValueError("sandbox.files must be a list")
         from copy import deepcopy
         out["files"] = deepcopy(files)
+    if "urls" in runtime:
+        from jiuwenswarm.common.net_guard_config import validate_sandbox_urls
+        out["urls"] = validate_sandbox_urls(runtime["urls"])
     if "idle_ttl_seconds" in runtime:
         # ``<= 0`` 归一化成 ``None`` (= 禁用淘汰), 与 jiuwenbox server 端
         # ``TimeoutPolicy.idle_timeout`` 的语义对齐。
@@ -2907,13 +2911,16 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
         patch: 部分字段更新；支持顶层键 ``enabled`` / ``excluded_commands``
             / ``idle_ttl_seconds`` / ``idle_check_interval``
             / ``fallback_on_failure``。
-            ``files`` 仅由 sandbox.files.sync 写入。 ``idle_*`` 字段
+            ``files`` / ``urls`` 分别由 sandbox.files.sync / sandbox.network.sync 写入。
+            ``idle_*`` 字段
             接受整数秒数 (``<= 0`` 归一化为 ``None`` = 禁用淘汰) 或 ``None``。
     """
     if not isinstance(patch, dict):
         raise ValueError("patch must be an object")
     if "files" in patch:
         raise ValueError("sandbox.files is managed by sandbox.files.sync; edit FileGuard first")
+    if "urls" in patch:
+        raise ValueError("sandbox.urls is managed by sandbox.network.sync; edit NetGuard first")
 
     current = get_sandbox_runtime()
     merged = dict(current)
@@ -2945,7 +2952,7 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
         sandbox_block = data.setdefault("sandbox", {})
         if isinstance(sandbox_block.get("files"), dict):
             sandbox_block["files"] = []
-        # Preserve concurrently synchronized files; this entry cannot write files.
+        # Preserve concurrently synchronized files/urls; this entry cannot write them.
         for key in patch:
             if key in _SANDBOX_RUNTIME_KEYS:
                 sandbox_block[key] = merged[key]

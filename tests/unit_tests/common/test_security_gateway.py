@@ -73,12 +73,17 @@ def test_normalize_net_guard_patch_validates():
     for bad in (
         {"urls": {"169.254.169.254": "allow"}},
         {"enabled": "yes"},
-        {"defaults": "ask"},
-        {"urls": {"x": "ask"}},
+        {"defaults": "invalid"},
+        {"urls": {"x": "invalid"}},
         {"urls": ["x"]},
     ):
         with pytest.raises(ValueError):
             normalize_net_guard_patch(bad)
+    assert normalize_net_guard_patch({"defaults": "ask", "urls": {"example.com": "ask"}}) == {
+        "defaults": "ask", "urls": {"example.com": "ask"},
+    }
+    with pytest.raises(ValueError):
+        normalize_net_guard_patch({"urls": {"169.254.169.254": "ask"}})
 
 
 def test_net_guard_rpc_get_and_set(monkeypatch):
@@ -132,7 +137,11 @@ def test_net_guard_rpc_get_and_set(monkeypatch):
                 params={"defaults": "ask"},
             )
         )
-        assert not resp.ok and resp.payload["code"] == "BAD_REQUEST"
+        assert resp.ok and resp.payload["net_guard"]["defaults"] == "ask"
+        # ASK belongs to pre-tool approval; the host exit continues enforcing DENY.
+        host_exit.check_outbound_url("https://example.com/")
+        with pytest.raises(host_exit.OutboundBlockedError):
+            host_exit.check_outbound_url("https://a.evil.example/")
     finally:
         host_exit.reset_host_exit_policy()
 

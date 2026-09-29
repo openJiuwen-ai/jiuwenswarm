@@ -34,7 +34,7 @@ def test_file_and_network_guard_reads_do_not_trigger_reload():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["sandbox.enabled.get", "sandbox.enabled.set", "sandbox.files.sync", "sandbox.restart"])
+@pytest.mark.parametrize("method", ["sandbox.enabled.get", "sandbox.enabled.set", "sandbox.files.sync", "sandbox.network.sync", "sandbox.restart"])
 async def test_sandbox_web_rpc_requires_agent(method):
     channel = Channel()
     _register_web_handlers(WebHandlersBindParams(channel=channel))
@@ -46,6 +46,7 @@ async def test_sandbox_web_rpc_requires_agent(method):
 @pytest.mark.parametrize("method", ["permissions.file_guard.get", "permissions.file_guard.update",
                                     "permissions.shell_guard.get", "permissions.shell_guard.update",
                                     "permissions.rules.create", "permissions.rules.update", "permissions.rules.delete",
+                                    "permissions.net_guard.get", "permissions.net_guard.set", "sandbox.network.sync",
                                     "sandbox.enabled.get", "sandbox.enabled.set", "sandbox.files.sync", "sandbox.restart"])
 async def test_security_web_rpc_forwards_response_and_error(method):
     channel = Channel()

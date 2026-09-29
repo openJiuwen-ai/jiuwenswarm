@@ -46,6 +46,7 @@ class ReqMethod(Enum):
     SANDBOX_STARTUP_MODE_GET = "sandbox.startup_mode.get"
     SANDBOX_STARTUP_MODE_SET = "sandbox.startup_mode.set"
     SANDBOX_FILES_SYNC = "sandbox.files.sync"
+    SANDBOX_NETWORK_SYNC = "sandbox.network.sync"
     SANDBOX_RESTART = "sandbox.restart"
     PERMISSIONS_FILE_GUARD_GET = "permissions.file_guard.get"
     PERMISSIONS_SHELL_GUARD_GET = "permissions.shell_guard.get"

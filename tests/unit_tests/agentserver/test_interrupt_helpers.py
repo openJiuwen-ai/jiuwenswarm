@@ -10,6 +10,27 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
 )
 
 
+def test_permission_scope_options_reach_frontend():
+    scopes = [{"value": "exact", "label": "当前文件"}, {"value": "parent", "label": "上一级目录"}]
+    interaction = SimpleNamespace(id="approval", value={
+        "tool_name": "read_file", "message": "需要授权", "tool_args": {"path": "/tmp/a"},
+        "metadata": {"source": "permission_interrupt", "authorization_scopes": scopes},
+    })
+    result = convert_interactions_to_ask_user_question([interaction])
+    assert result["questions"][0]["authorization_scopes"] == scopes
+
+
+def test_permission_scope_reply_reaches_confirmation_payload():
+    from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+    result = JiuWenSwarm._build_interactive_input_from_answers("approval", [{
+        "selected_options": ["session_allow"], "authorization_mode": "allow_with_scope", "authorization_scope": "domain",
+    }], source="permission_interrupt")
+    assert result.user_inputs["approval"] == {
+        "approved": True, "auto_confirm": True, "persist_allow": False, "feedback": "",
+        "authorization_mode": "allow_with_scope", "authorization_scope": "domain",
+    }
+
+
 def _evolution_interrupt(
     tool_name: str,
     operation: str,

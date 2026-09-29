@@ -4618,6 +4618,7 @@ export function ConfigPanel({
                 <div role="tabpanel" aria-labelledby="config-tab-security" className="space-y-3 pb-2">
                   <FileSecurityEditor isConnected={isConnected} />
                   <ShellSecurityEditor isConnected={isConnected} />
+                  <NetGuardEditor isConnected={isConnected} />
                   {securityGroups.length === 0 ? (
                     <p className="text-sm text-text-muted px-1">{t("config.tabEmpty.security")}</p>
                   ) : (
@@ -4634,7 +4635,6 @@ export function ConfigPanel({
                           group.tag === "permissions" ? (
                             <>
                               <PermissionsToolsEditor isConnected={isConnected} />
-                              <NetGuardEditor isConnected={isConnected} />
                             </>
                           ) : null
                         }
