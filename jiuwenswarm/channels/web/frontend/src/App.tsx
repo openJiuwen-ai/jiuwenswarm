@@ -2034,13 +2034,19 @@ function AppContent({
       return;
     }
     connectionToastKeyRef.current = toast.open({
+      // 保留旧 DOM 契约：外层 app-connection-toast 定位，内层 message 元素带
+      // data-variant="connecting|loadingConfig"；id 仅作业务去重键，不进 DOM
       id: 'app-connection-toast-message',
-      content: connectionStatusText,
+      content: (
+        <span data-testid="app-connection-toast-message" data-variant={serverConfig ? 'connecting' : 'loadingConfig'}>
+          {connectionStatusText}
+        </span>
+      ),
       duration: 0,
       position: 'right',
       variant: 'info',
       icon: <LoadingSpinner size={14} />,
-      testId: 'app-connection-toast-message',
+      testId: 'app-connection-toast',
     });
   }, [isConnected, connectionStatusText]);
 
