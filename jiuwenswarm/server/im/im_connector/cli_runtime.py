@@ -156,19 +156,22 @@ class ChannelCli:
     ) -> list[str]:
         raise NotImplementedError
 
-    def auth_status_args(self) -> list[str]:
+    @staticmethod
+    def auth_status_args() -> list[str]:
         return ["auth", "status"]
 
     def search_persons_args(self, *, text: str) -> list[str]:
         raise NotImplementedError
 
-    def self_person_args(self) -> list[str]:
+    @staticmethod
+    def self_person_args() -> list[str]:
         return []
 
     def recent_conversations_args(self, *, query_count: int) -> list[str]:
         raise NotImplementedError
 
-    def help_args(self) -> list[str]:
+    @staticmethod
+    def help_args() -> list[str]:
         return ["--help"]
 
     async def _wait_pace(self) -> None:
@@ -179,7 +182,8 @@ class ChannelCli:
             await asyncio.sleep((self._pace - gap_ms) / 1000.0)
         self._last_call_at = time.monotonic()
 
-    def _is_transient(self, result: CliResult) -> bool:
+    @staticmethod
+    def _is_transient(result: CliResult) -> bool:
         if result.exit_code == 0:
             return False
         text = f"{result.stderr} {result.stdout} {result.error or ''}"
@@ -310,6 +314,19 @@ class ChannelCli:
         return await self.run_cli(self.help_args(), timeout_ms=self._cli_test_timeout_ms)
 
 
+def _args_contain_any(args: list[str], tokens: tuple[str, ...]) -> bool:
+    return any(token in args for token in tokens)
+
+
+def _looks_like_person_search(args: list[str]) -> bool:
+    mentions_search = any("search-user" in token or token == "search" for token in args)
+    if not mentions_search:
+        return False
+    if any("search-user" in token for token in args):
+        return True
+    return _args_contain_any(args, ("person", "user", "--query", "--text"))
+
+
 class MockCliRunner:
     """Queue CLI results by matched command key."""
 
@@ -356,21 +373,19 @@ class MockCliRunner:
             return "auth"
         if any("search-user" in token for token in args) and "--user-ids" in args:
             return "self_search"
-        if any("search-user" in token or token == "search" for token in args) and (
-            "person" in args or "user" in args or "--query" in args or "--text" in args or any("search-user" in token for token in args)
-        ):
+        if _looks_like_person_search(args):
             return "search"
-        if "query-history-message" in args or "+chat-messages-list" in args or "+chat-messages" in args:
+        if _args_contain_any(args, ("query-history-message", "+chat-messages-list", "+chat-messages")):
             return "history"
-        if "send-to-group" in args or "send-to-user" in args or "+messages-send" in args or "+send-to-group" in args or "+dm" in args:
-            if "--text" in args or "--content" in args or "--markdown" in args:
+        if _args_contain_any(args, ("send-to-group", "send-to-user", "+messages-send", "+send-to-group", "+dm")):
+            if _args_contain_any(args, ("--text", "--content", "--markdown")):
                 try:
                     flag = "--text" if "--text" in args else "--markdown" if "--markdown" in args else "--content"
                     self.sent_texts.append(args[args.index(flag) + 1])
                 except (ValueError, IndexError):
                     pass
             return "send"
-        if "query-recent-conversation" in args or "+chat-list" in args or "+chat-search" in args:
+        if _args_contain_any(args, ("query-recent-conversation", "+chat-list", "+chat-search")):
             return "conversations"
         if joined.strip() == "--help":
             return "help"

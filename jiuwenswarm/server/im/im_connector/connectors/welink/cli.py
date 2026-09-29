@@ -13,6 +13,7 @@ from jiuwenswarm.server.im.im_connector.cli_runtime import (
     MockCliRunner,
 )
 
+
 class WelinkCli(ChannelCli):
     CLI_NAME = "welink-cli"
 

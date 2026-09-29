@@ -102,11 +102,15 @@ async def _dispatch(svc, method: ReqMethod, params: dict[str, Any]) -> dict[str,
         target_id = str(params.get("id") or params.get("target_id") or "").strip()
         if not target_id:
             raise ValueError("id required")
-        patch = {k: params[k] for k in (
+        patch_keys = (
             "enabled", "title", "poll_interval_seconds", "fetch_count", "rule_override",
             "expert_service_id", "expert_agent_id",
             "expert_persona",
-        ) if k in params}
+        )
+        patch = {}
+        for key in patch_keys:
+            if key in params:
+                patch[key] = params[key]
         updated = svc.store.patch_target(target_id, patch)
         if updated is None:
             raise KeyError(target_id)
@@ -132,13 +136,7 @@ async def _dispatch(svc, method: ReqMethod, params: dict[str, Any]) -> dict[str,
         if target_id:
             results = await svc.poll_now(str(target_id))
         elif channel_id:
-            policy = svc.policy.load()
-            results = []
-            for target in svc.store.list_targets(channel_id):
-                if not target.get("enabled"):
-                    continue
-                ch_policy = policy.get(target["channel_id"]) or {}
-                results.append(await svc._poll_target(target, ch_policy))
+            results = await svc.poll_channel(channel_id)
         else:
             results = await svc.poll_now(None)
         return {"results": results}

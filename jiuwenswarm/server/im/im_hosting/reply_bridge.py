@@ -24,7 +24,8 @@ HOSTING_AGENT_CHANNEL_ID = "im_hosting"
 
 
 class AgentManagerLike(Protocol):
-    async def process_message(self, request: AgentRequest) -> AgentResponse: ...
+    async def process_message(self, request: AgentRequest) -> AgentResponse:
+        ...
 
 
 def hosting_session_id(target_id: str) -> str:

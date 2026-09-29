@@ -245,7 +245,8 @@ class HostingStore:
             )
             conn.commit()
         row = self.get_target(target_id)
-        assert row is not None
+        if row is None:
+            raise RuntimeError(f"hosting target missing after insert: {target_id}")
         return row
 
     def patch_target(self, target_id: str, patch: dict[str, Any]) -> Optional[dict[str, Any]]:

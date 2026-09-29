@@ -24,6 +24,14 @@ def _load_json(stdout: str) -> Any:
         return None
 
 
+def _looks_like_epoch_text(text: str) -> bool:
+    if not text[:1].isdigit():
+        return False
+    if "T" in text or " " in text:
+        return False
+    return "-" not in text[4:5]
+
+
 def _to_ms(value: Any) -> int:
     if value is None or value == "":
         return 0
@@ -31,7 +39,7 @@ def _to_ms(value: Any) -> int:
         text = value.strip()
         if not text:
             return 0
-        if text[:1].isdigit() and "T" not in text and " " not in text and "-" not in text[4:5]:
+        if _looks_like_epoch_text(text):
             try:
                 return _number_to_ms(float(text))
             except ValueError:

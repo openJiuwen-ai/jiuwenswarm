@@ -234,7 +234,10 @@ class HostingPollService:
         count = int(ch_policy.get("discover_count") or 50)
         try:
             identity = await plugin.resolve_identity()
-            convs = conversations if conversations is not None else await plugin.discover_conversations(query_count=count)
+            if conversations is not None:
+                convs = conversations
+            else:
+                convs = await plugin.discover_conversations(query_count=count)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[im_hosting] auto discover %s failed: %s", channel_id, exc)
             return {"channel_id": channel_id, "added": [], "error": str(exc)}
@@ -292,6 +295,16 @@ class HostingPollService:
             results.append(await self._poll_target(target, ch_policy))
         if results:
             self._last_round_at_ms = now_ms
+        return results
+
+    async def poll_channel(self, channel_id: str) -> list[dict[str, Any]]:
+        policy = self.policy.load()
+        results = []
+        for target in self.store.list_targets(channel_id):
+            if not target.get("enabled"):
+                continue
+            ch_policy = policy.get(target["channel_id"]) or {}
+            results.append(await self._poll_target(target, ch_policy))
         return results
 
     async def poll_now(self, target_id: Optional[str] = None) -> list[dict[str, Any]]:
