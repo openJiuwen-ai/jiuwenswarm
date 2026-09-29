@@ -145,7 +145,6 @@ export class JoyAIVoiceSession {
         }
         this.callbacks.onDiagnostic?.(event.replace(/^qwen_/, 'joyai_'), details);
       },
-      { startProbability: 0.65, confirmedFrames: 6 },
     );
     await this.vad.start();
     if (this.stopped) return;

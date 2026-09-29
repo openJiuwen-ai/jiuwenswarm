@@ -2,7 +2,7 @@ import * as ort from 'onnxruntime-web/wasm';
 import modelUrl from '../../../node_modules/@ricky0123/vad-web/dist/silero_vad_v5.onnx?url';
 import wasmUrl from '../../../node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm?url';
 import wasmModuleUrl from '../../../node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs?url';
-import { SpeechGate, type SpeechGateOptions } from './speechGate';
+import { SpeechGate } from './speechGate';
 
 const scope = self as unknown as {
   onmessage: ((event: MessageEvent) => void) | null;
@@ -13,11 +13,8 @@ let state: ort.Tensor;
 let sampleRate: ort.Tensor;
 let pending = new Float32Array(0);
 let gate = new SpeechGate();
-let gateOptions: SpeechGateOptions = {};
 
-async function initialize(options: SpeechGateOptions = {}): Promise<void> {
-  gateOptions = options;
-  gate = new SpeechGate(gateOptions);
+async function initialize(): Promise<void> {
   // This worker owns inference; do not create another worker or require cross-origin isolation.
   ort.env.wasm.numThreads = 1;
   ort.env.wasm.proxy = false;
@@ -34,7 +31,7 @@ async function processAudio(pcm: Int16Array, capturedAt: number, generation: num
     state.dispose();
     state = new ort.Tensor('float32', new Float32Array(256), [2, 1, 128]);
     pending = new Float32Array(0);
-    gate = new SpeechGate(gateOptions);
+    gate = new SpeechGate();
   }
   const samples = new Float32Array(pending.length + pcm.length);
   samples.set(pending);
@@ -72,7 +69,7 @@ async function processAudio(pcm: Int16Array, capturedAt: number, generation: num
 scope.onmessage = ({ data }) => {
   const operation =
     data.type === 'init'
-      ? initialize(data.gateOptions)
+      ? initialize()
       : processAudio(new Int16Array(data.pcm), data.capturedAt, data.generation, data.reset);
   void operation.catch((error: unknown) => {
     scope.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) });

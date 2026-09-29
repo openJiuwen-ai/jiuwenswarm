@@ -7,11 +7,6 @@ export interface SpeechDetection {
   silenceMs: number;
 }
 
-export interface SpeechGateOptions {
-  startProbability?: number;
-  confirmedFrames?: number;
-}
-
 /** Silero v5 consumes 512 samples at 16 kHz (32 ms per inference). */
 export class SpeechGate {
   private evidence: boolean[] = [];
@@ -20,10 +15,8 @@ export class SpeechGate {
   private speechMs = 0;
   private noiseFloor = 120;
 
-  constructor(private readonly options: SpeechGateOptions = {}) {}
-
   process(probability: number, level: number): SpeechDetection {
-    const speech = Number.isFinite(probability) && probability >= (this.options.startProbability ?? 0.8) && level >= 80;
+    const speech = Number.isFinite(probability) && probability >= 0.8 && level >= 80;
     // Background estimation is diagnostic only: loud noise must not become speech,
     // and a previously loud environment must not prevent a quiet user from speaking.
     if (probability < 0.35) this.noiseFloor += (level - this.noiseFloor) * 0.05;
@@ -45,7 +38,7 @@ export class SpeechGate {
       const confirmedFrames = this.evidence.filter(Boolean).length;
       this.silenceMs = speech ? 0 : this.silenceMs + 32;
       this.speechMs = confirmedFrames * 32;
-      if (speech && confirmedFrames >= (this.options.confirmedFrames ?? 8)) {
+      if (speech && confirmedFrames >= 8) {
         this.active = true;
         state = 'started';
       } else {
