@@ -24,6 +24,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from jiuwenswarm.agents.harness.common.tools.subagent_executor.execution_timeout import (
+    raise_for_subagent_stream_error,
+)
+
 _logger = logging.getLogger(__name__)
 
 
@@ -103,6 +107,7 @@ def _reduce_stream_chunk(chunk: Any, output_parts: list[str]) -> dict | None:
     ``llm_output`` content and finalise on an ``answer`` chunk. Inlined (rather
     than calling the SDK staticmethod) to avoid protected-member access.
     """
+    raise_for_subagent_stream_error(chunk)
     chunk_type = getattr(chunk, "type", None)
     payload = getattr(chunk, "payload", None)
     if isinstance(chunk, dict):

@@ -136,6 +136,11 @@ def apply_task_tool_debug_patch() -> None:
                 session=parent_session,
                 source_label=f"subagent:builtin:{subagent_type}",
             )
+            from jiuwenswarm.agents.harness.common.tools.subagent_executor.execution_timeout import (
+                raise_for_subagent_error,
+            )
+
+            raise_for_subagent_error(result)
             output = result.get("output", "")
             return ToolOutput(
                 success=True,
