@@ -322,8 +322,16 @@ class RuntimePromptRail(DeepAgentRail):
         if not available_models:
             available_models = configured_models
         fallback_model = configured_models[0] if configured_models else ""
+        # 档位关键字（fast/balanced/extreme/auto）是作为 model_name 下发的，runtime_state 与
+        # self._model_name 记的都是路由前的取值。路由后真正生效的模型名由 ModelRoutingRail 在
+        # before_invoke 写入 ctx.extra（同一 invoke 内跨事件共享），优先取它；否则「当前模型」
+        # 会把档位关键字当成模型名答给用户。
+        routed_model = ""
+        if isinstance(ctx.extra, dict):
+            routed_model = str(ctx.extra.get("model_routing_applied_model") or "").strip()
         model = str(
-            runtime_state.get("model")
+            routed_model
+            or runtime_state.get("model")
             or self._model_name
             or fallback_model
             or "unknown"

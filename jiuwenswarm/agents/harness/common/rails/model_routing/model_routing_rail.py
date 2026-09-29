@@ -306,6 +306,11 @@ class ModelRoutingRail(DeepAgentRail):
                     getattr(getattr(recommended_cap.model, "model_config", None), "model_name", None)
                     or recommended_cap.model_name
                 )
+                if mname and isinstance(ctx.extra, dict):
+                    # 供 RuntimePromptRail 注入「当前模型」用：档位关键字（fast/balanced/
+                    # extreme/auto）是作为 model_name 下发的，runtime_state 与 agent.model_name
+                    # 记的都是路由前的取值，这里落一份路由后真正生效的模型名。
+                    ctx.extra["model_routing_applied_model"] = str(mname)
                 if mname:
                     # Sync inner ReActAgent config
                     cfg = getattr(react_agent, "_config", None) or getattr(react_agent, "config", None)
