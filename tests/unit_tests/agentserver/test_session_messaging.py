@@ -1815,6 +1815,63 @@ def test_adapter_refreshes_toolkit_service_after_runtime_rebuild() -> None:
     assert adapter._session_messaging_route_rail._service is new_service
 
 
+_SESSION_TOOL_NAMES = {
+    "session_list",
+    "session_send_message",
+    "session_message_list",
+    "session_message_resolve",
+    "session_continue_queued",
+    "session_read",
+}
+
+
+def _adapter_with_registered_session_tools(service):
+    class _AbilityManager:
+        def __init__(self) -> None:
+            self.cards = {name: SimpleNamespace(name=name) for name in _SESSION_TOOL_NAMES}
+
+        def list(self):
+            return list(self.cards.values())
+
+        def remove(self, name):
+            self.cards.pop(name, None)
+
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = SimpleNamespace(ability_manager=_AbilityManager())
+    adapter._last_mode = "agent.code.normal"
+    adapter._session_messaging_toolkit = None
+    adapter._session_messaging_route_rail = SessionMessagingRouteRail()
+    adapter._session_messaging_route_rail.set_service(service)
+    return adapter
+
+
+def test_adapter_keeps_session_tools_when_no_runtime_is_bound() -> None:
+    # A resumed interaction once ran without a bound Runtime; stripping the
+    # tools then left the target unable to report back to its source Session.
+    service = object()
+    adapter = _adapter_with_registered_session_tools(service)
+
+    adapter._ensure_session_messaging_tools_registered("target-1", "web")
+
+    assert set(adapter._instance.ability_manager.cards) == _SESSION_TOOL_NAMES
+    assert adapter._session_messaging_route_rail._service is service
+
+
+@pytest.mark.parametrize(
+    ("session_id", "channel_id"),
+    [("target-1", "feishu"), ("cron_job-1", "web"), ("heartbeat_job-1", "tui")],
+)
+def test_adapter_removes_session_tools_from_ineligible_sessions_without_runtime(
+    session_id: str, channel_id: str,
+) -> None:
+    adapter = _adapter_with_registered_session_tools(object())
+
+    adapter._ensure_session_messaging_tools_registered(session_id, channel_id)
+
+    assert adapter._instance.ability_manager.cards == {}
+    assert adapter._session_messaging_route_rail._service is None
+
+
 def test_code_adapter_mounts_session_messaging_route_rail(monkeypatch) -> None:
     adapter = JiuwenSwarmCodeAdapter()
     monkeypatch.setattr(

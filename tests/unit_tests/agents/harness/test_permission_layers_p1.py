@@ -178,6 +178,51 @@ def test_session_persist_keeps_only_delta_against_global_and_user(
     ]
 
 
+def test_session_persist_extracts_allow_from_tools_projection(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        layers,
+        "session_permissions_path",
+        lambda session_id: tmp_path / session_id / "session_permissions.yaml",
+    )
+    monkeypatch.setattr(
+        layers,
+        "load_global_permissions",
+        lambda: {"tools": {"mcp_fetch_webpage": "ask", "write_file": "allow"}},
+    )
+    monkeypatch.setattr(layers, "load_user_permissions", lambda: {})
+    effective = {
+        "tools": {"mcp_fetch_webpage": "allow", "write_file": "allow"},
+        "ask_tools": ["mcp_fetch_webpage"],
+        "allow_tools": ["write_file"],
+    }
+    assert layers.persist_session_overlay_from_effective("s1", effective) is True
+    session = layers.load_session_permissions("s1")
+    assert session.get("allow_tools") == ["mcp_fetch_webpage"]
+    assert "ask_tools" not in session
+
+
+def test_user_persist_extracts_allow_from_tools_projection(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(layers, "user_permissions_path", lambda: tmp_path / "user_permissions.yaml")
+    monkeypatch.setattr(
+        layers,
+        "load_global_permissions",
+        lambda: {"tools": {"mcp_fetch_webpage": "ask", "write_file": "allow"}},
+    )
+    effective = {
+        "tools": {"mcp_fetch_webpage": "allow", "write_file": "allow"},
+        "ask_tools": ["mcp_fetch_webpage"],
+        "allow_tools": ["write_file"],
+    }
+    assert layers.persist_user_overlay_from_effective(effective) is True
+    user = layers.load_user_permissions()
+    assert user.get("allow_tools") == ["mcp_fetch_webpage"]
+    assert "mcp_fetch_webpage" not in (user.get("ask_tools") or [])
+
+
 def test_load_user_unwraps_permissions_wrapper(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "user_permissions.yaml"
     path.write_text("permissions:\n  allow_tools:\n    - todo_list\n", encoding="utf-8")

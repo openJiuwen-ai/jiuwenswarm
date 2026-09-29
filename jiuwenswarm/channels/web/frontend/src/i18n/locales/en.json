@@ -2934,6 +2934,7 @@
       "webUploadPlaceholder": "Click to upload a file",
       "uploadInvalidType": "Only .zip and .tar files are supported",
       "uploadDirectoryUnsupported": "Folders cannot be dragged here. Compress the folder into a .zip or .tar file before uploading.",
+      "uploadVirtualFileUnsupported": "Files cannot be dragged directly from WinRAR or another archive app. Extract or copy the file to a local folder before uploading.",
       "uploadPickerUnsupported": "Local file selection is not supported in this environment",
       "uploadPickerFailed": "Failed to open the local file picker. Try again.",
       "removeUpload": "Remove selected file",

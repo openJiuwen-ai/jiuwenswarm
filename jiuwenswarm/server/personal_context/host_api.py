@@ -856,10 +856,10 @@ class PersonalContextHostAPI:
             or getattr(status, "pipeline_running", False) is True
             or getattr(status, "state", None) == "STOPPING"
         )
-        if (
+        same_runtime_configuration = (
             same_configuration and previous_active == candidate.collection_enabled
-            and (candidate.collection_enabled or not shutdown_pending)
-        ):
+        )
+        if same_runtime_configuration and (candidate.collection_enabled or not shutdown_pending):
             _publish_yaml(self._config_path, payload)
             self._stored_config = deepcopy(stored)
             return
@@ -938,7 +938,7 @@ class PersonalContextHostAPI:
         except BaseException as exc:
             if disabled_yaml_published and phase == "stop":
                 if isinstance(exc, asyncio.CancelledError):
-                    raise
+                    raise exc
                 raise _as_host_error(
                     exc, "PersonalContext runtime could not be stopped"
                 ) from None
@@ -1042,7 +1042,7 @@ class PersonalContextHostAPI:
         except BaseException as exc:
             if preserve_disabled_intent and published:
                 if isinstance(exc, asyncio.CancelledError):
-                    raise
+                    raise exc
                 raise _as_host_error(
                     exc, "PersonalContext runtime could not be stopped"
                 ) from None
@@ -1766,58 +1766,57 @@ class PersonalContextHostAPI:
                         normalized_provider,
                         "not_authorized",
                     )
-                try:
-                    account = await _validate_repository_pat(
-                        normalized_provider,
-                        current[field],
-                    )
-                except Exception:
-                    return _repository_authorization_result(
-                        normalized_provider,
-                        "authorization_failed",
-                        error=localize_error(
-                            None, self._error_language, reason="authorization_failed"
-                        ),
-                    )
-                return _repository_authorization_result(
-                    normalized_provider,
-                    "authorized",
-                    account=account,
-                )
-            if normalized_provider != "feishu":
+                credential = current[field]
+            elif normalized_provider != "feishu":
                 _raise_host_error(
                     "provider does not support authorization",
                     reason="authorization_unsupported",
                 )
-            if self._config is None:
+            elif self._config is None:
                 _raise_host_error(
                     "PersonalContext configuration must be set before provider authorization",
                     reason="not_configured",
                 )
-            result: dict[str, object] | None = None
-            cancelled: asyncio.CancelledError | None = None
+
+        if normalized_provider in _REPOSITORY_PAT_FIELDS:
             try:
-                result = await self._personal_context.get_authorization_status(
-                    normalized_provider
+                account = await _validate_repository_pat(normalized_provider, credential)
+            except Exception:
+                return _repository_authorization_result(
+                    normalized_provider,
+                    "authorization_failed",
+                    error=localize_error(
+                        None, self._error_language, reason="authorization_failed"
+                    ),
                 )
-            except asyncio.CancelledError as exc:
-                cancelled = exc
-            except Exception as exc:
-                raise _as_host_error(
-                    exc,
-                    "PersonalContext provider authorization status failed",
-                    reason="authorization_failed",
-                ) from None
-            if cancelled is not None:
-                raise cancelled
-            if result is None:
-                _raise_host_error(
-                    "PersonalContext provider authorization status returned no result",
-                    reason="authorization_failed",
-                )
-            return cast(
-                dict[str, object], localize_payload(result, self._error_language)
+            return _repository_authorization_result(
+                normalized_provider,
+                "authorized",
+                account=account,
             )
+
+        result: dict[str, object] | None = None
+        cancelled: asyncio.CancelledError | None = None
+        try:
+            result = await self._personal_context.get_authorization_status(
+                normalized_provider
+            )
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+        except Exception as exc:
+            raise _as_host_error(
+                exc,
+                "PersonalContext provider authorization status failed",
+                reason="authorization_failed",
+            ) from None
+        if cancelled is not None:
+            raise cancelled
+        if result is None:
+            _raise_host_error(
+                "PersonalContext provider authorization status returned no result",
+                reason="authorization_failed",
+            )
+        return cast(dict[str, object], localize_payload(result, self._error_language))
 
     async def authorize_provider(
         self,
