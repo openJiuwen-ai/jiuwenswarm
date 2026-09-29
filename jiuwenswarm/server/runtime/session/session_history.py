@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Tuple
 
-from jiuwenswarm.common.utils import get_agent_sessions_dir
+from jiuwenswarm.common.utils import get_agent_sessions_dir, is_valid_session_id
 
 
 logger = logging.getLogger(__name__)
@@ -33,9 +33,6 @@ _LEGACY_HISTORY_FILENAME = "history.json"
 _JSONL_HISTORY_FILENAME = "history.jsonl"
 _LEGACY_HISTORY_ENV = "JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
 _HEARTBEAT_OK = "HEARTBEAT_OK"
-_VALID_SESSION_ID = re.compile(
-    r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,78}[A-Za-z0-9])?$"
-)
 # Gateway may inline @path as <file-content>...</file-content> before chat.send.
 # History should keep the short @path form so jsonl rows stay one physical line
 # and refresh UI does not load megabytes of file body.
@@ -101,11 +98,6 @@ def collapse_file_content_blocks(content: str) -> str:
     collapsed = _FILE_CONTENT_BLOCK_RE.sub(_replacer, content)
     return re.sub(r"\n{3,}", "\n\n", collapsed).strip()
 
-
-def is_valid_session_id(session_id: str) -> bool:
-    """Return whether a session id is safe to use as one path component."""
-
-    return _VALID_SESSION_ID.fullmatch(session_id) is not None
 
 # 缓冲层分两组：普通缓冲层（_session_buffer，合并后批量写）与暂留层（_session_pending，
 # tool_calls.delta 等对应 chat.tool_call 命中后再决定丢弃/落盘）。
@@ -422,9 +414,7 @@ def resolve_session_dir(
 ) -> tuple[Path | None, str | None]:
     """安全解析 session 目录路径（防路径遍历）。
 
-    采用白名单判据：``sanitize_session_id(session_id) == session_id`` 才认为合法，
-    原样使用；否则直接拒绝，根本不拼路径。这样删除类破坏性操作不会因 sanitize 后的
-    字符串（如 ``../config`` -> ``config``）误伤同名合法 session。
+    采用共享的严格白名单校验，合法值原样使用；否则直接拒绝，根本不拼路径。
 
     再用 ``resolve()`` + ``relative_to`` 做纵深防御，兜底白名单逻辑被绕过的极端情况。
 

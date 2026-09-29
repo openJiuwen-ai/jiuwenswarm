@@ -474,8 +474,6 @@ def _adapter_ready_for_followup_execution(monkeypatch: pytest.MonkeyPatch) -> Ji
     monkeypatch.setattr(adapter, "_register_session_agent_task", lambda _session_id: None)
     monkeypatch.setattr(adapter, "_unregister_session_agent_task", lambda _session_id: None)
     monkeypatch.setattr(adapter, "_unmark_session_active", lambda _session_id, **_kwargs: None)
-    monkeypatch.setattr(adapter, "_sync_prompt_attachments_for_request", AsyncMock())
-
     async def _noop_update_runtime_config(_runtime_config):
         return None
 
