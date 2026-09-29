@@ -30,6 +30,7 @@ export interface JiuwenElectronDesktopApi {
   setCloseAction: (action: 'ask' | 'hide' | 'quit') => Promise<boolean>;
   downloadFile: (url: string, filename: string) => Promise<boolean>;
   installUpdate: (installerPath: string) => Promise<boolean>;
+  openAppLink: (url: string) => Promise<boolean>;
   saveDataUrl: (dataUrl: string, filename: string) => Promise<{ ok: boolean; cancelled?: boolean }>;
   beginBlobSave: (
     filename: string,

@@ -30,6 +30,7 @@ interface Window {
     api?: {
       paste_clipboard?: () => Promise<void>;
       open_external_url?: (url: string) => Promise<boolean> | boolean;
+      open_app_link?: (url: string) => Promise<boolean> | boolean;
       download_file?: (url: string, filename: string) => Promise<DesktopSaveResult> | DesktopSaveResult;
       begin_blob_save?: (filename: string, mimeType: string, totalSize: number) => Promise<DesktopBlobSaveStartResult> | DesktopBlobSaveStartResult;
       append_blob_save?: (transferId: string, encodedChunk: string) => Promise<boolean> | boolean;

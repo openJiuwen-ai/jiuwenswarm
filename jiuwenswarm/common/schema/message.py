@@ -220,6 +220,10 @@ class ReqMethod(Enum):
     MCP_REGISTER_CUSTOM = "mcp.register_custom"
     MCP_DELETE_CUSTOM = "mcp.delete_custom"
     MCP_SAVE_CREDENTIALS = "mcp.save_credentials"
+    # MCP Apps host bridge (io.modelcontextprotocol/ui).
+    MCP_APP_LIST_TOOLS = "mcp_app.list_tools"
+    MCP_APP_READ_RESOURCE = "mcp_app.read_resource"
+    MCP_APP_CALL_TOOL = "mcp_app.call_tool"
 
     SKILLS_MARKETPLACE_LIST = "skills.marketplace.list"
     SKILLS_LIST = "skills.list"
