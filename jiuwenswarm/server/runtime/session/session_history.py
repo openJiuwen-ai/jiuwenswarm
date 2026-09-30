@@ -1130,7 +1130,9 @@ def append_history_record(
     }
     if subagent_id:
         item["subagent_id"] = subagent_id.strip()
-    if event_type:
+    if event_type and (
+        role_norm == "assistant" or event_type.startswith("design.")
+    ):
         item["event_type"] = event_type
     if isinstance(extra, dict) and extra:
         serialized_extra, extra_changed = _serialize_value_with_flag(extra)
