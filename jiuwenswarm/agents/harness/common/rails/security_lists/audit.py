@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 AUDIT_HIT = "security.list.hit"
 AUDIT_CHANGE = "security.list.change"
 AUDIT_FALLBACK = "security.list.fallback"
+#: 沙箱副本渲染被安全护栏拦下：渲染会丢弃副本里未纳管的条目（见 security_lists_render）
+AUDIT_RENDER_SKIPPED = "security.list.render.skipped"
 AUDIT_FALLBACK_SWITCH = "security.fallback.switch"
 AUDIT_START = "audit_start"
 AUDIT_HEALTH = "audit_health"
