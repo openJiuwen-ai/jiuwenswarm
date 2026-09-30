@@ -581,7 +581,7 @@ Swarm Skills 采用标准化的结构定义（5 文件规范），具备跨框�
 
 以下截图展示了医疗会诊 Swarm Skill 在 JiuwenSwarm 中的实际执行结果，包括已完成的任务列表和生成的会诊报告文件：
 
-
+![医疗会诊Swarm Skill执行结果](../assets/images/jiuwenswarm专家评估.png)
 
 #### Swarm Skills 的优势体现
 
@@ -769,19 +769,20 @@ graph TD
 
 **步骤七：验证**
 
-运行自动化验证器，确保 TeamSkill 符合规范：
+运行自动化验证器，确保 SwarmSkill 符合规范：
 
 ```bash
 # 方式一：使用 TUI 内置命令（推荐）
-# 将 <skill_path> 替换为 TeamSkill 的完整绝对路径
-# 注意：TUI 中 ~ 不会被展开，必须使用完整路径如 /root/.jiuwenswarm/agent/workspace/skills/my-team-skill
+# 将 <skill_path> 替换为 SwarmSkill 的完整绝对路径
+# 注意：TUI 中 ~ 不会被展开，必须使用完整路径如 /root/.jiuwenswarm/agent/workspace/skills/my-swarm-skill
 # 通用命令模板：/teamskills validate <你的技能绝对路径> --type teamskills
 
-# 示例：验证系统内置的 swarmskill-creator
-/teamskills validate /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator --type teamskills
+# 示例：注意：swarmskill-creator 是单 Agent 技能，不具备 Swarm Skill 的 5 文件结构，不能作为验证目标
+# 请使用你自己创建的 Swarm Skill 路径
+/teamskills validate /root/.jiuwenswarm/agent/workspace/skills/<your-swarm-skill> --type teamskills
 
 # 方式二：终端脚本验证（shell中~可展开，已给出可运行示例）
-python3 /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator/scripts/validate_swarmskill.py /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator
+python3 /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator/scripts/validate_swarmskill.py /root/.jiuwenswarm/agent/workspace/skills/<your-swarm-skill>
 ```
 
 > **实用提示**：
@@ -809,13 +810,13 @@ python3 /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator/scripts/val
 
 | 修改类型 | 需要重新执行的步骤 | 需要更新的文件 |
 |----------|-------------------|---------------|
-| 编辑角色 Identity / Boundary / Schema | 步骤 2（受影响角色） | `roles/<id>.md` |
-| 增删角色 | 步骤 1a + 2 + 3 + 4 + 5 | 所有 5 文件 |
-| 修改协作流程 | 步骤 3 | `workflow.md` + `bind.md`（如约束变化） |
-| 修改边界约束 | 步骤 4 | `bind.md` |
-| 修改依赖 | 步骤 2（自动匹配） + 5 | `dependencies.yaml` + `SKILL.md` |
+| 编辑角色 Identity / Boundary / Schema | 步骤三（受影响角色） | `roles/<id>.md` |
+| 增删角色 | 步骤一 + 二 + 三 + 四 + 五 | 所有 5 文件 |
+| 修改协作流程 | 步骤四 | `workflow.md` + `bind.md`（如约束变化） |
+| 修改边界约束 | 步骤五 | `bind.md` |
+| 修改依赖 | 步骤三（自动匹配） + 六 | `dependencies.yaml` + `SKILL.md` |
 
-**重要**：无论修改大小，步骤 7（验证）都必须执行。
+**重要**：无论修改大小，步骤七（验证）都必须执行。
 
 ### 5.3 将单 Agent Skill 转换为 Swarm Skill
 
@@ -826,7 +827,7 @@ python3 /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator/scripts/val
    - 找到顺序阶段和质量门控（如"先做 X，再验证 Y，再产出 Z"）
    - 找到按类别分支的检查清单（如"[ ] 安全 [ ] 性能 [ ] 可读性"）
 2. **明确转换价值**：单 Agent 形式下丢失了什么？这成为 Swarm Skill 的"为什么"
-3. **继续从步骤 2 开始**，按 CREATE 流程完成
+3. **继续从步骤二开始**，按 CREATE 流程完成
 
 ### 5.4 上传到 Swarm Skills Hub
 
@@ -836,7 +837,7 @@ python3 /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator/scripts/val
 
 ```bash
 # 方式一：使用 TUI 内置命令（推荐）
-/teamskills validate path/to/<swarmskill-name>/ --type swarmskills
+/teamskills validate path/to/<swarmskill-name>/ --type teamskills
 
 # 方式二：使用独立验证脚本（脚本随 swarmskill-creator 技能提供）
 python3 scripts/validate_swarmskill.py path/to/<swarmskill-name>/
@@ -898,8 +899,8 @@ python3 scripts/validate_swarmskill.py path/to/<swarmskill-name>/
 | 安装 Swarm Skill | `/teamskills install <asset_id> --version <x.y.z>` |
 | 查看已安装技能 | `/teamskills list` |
 | 卸载 Swarm Skill | `/teamskills uninstall <name>` |
-| 创建 Swarm Skill 脚手架 | `/teamskills init <name> --type swarmskills` |
-| 验证 Swarm Skill | `/teamskills validate <path> --type swarmskills` |
+| 创建 Swarm Skill 脚手架 | `/teamskills init <name> --type teamskills` |
+| 验证 Swarm Skill | `/teamskills validate <path> --type teamskills` |
 | 打包 Swarm Skill | `/teamskills pack <path> --output <dir>` |
 | 配置 Hub URL 和 Token | `/teamskills config --market-url <url> --token <TOKEN>` |
 | 发布到 Swarm Skills Hub | `/teamskills publish <path> --version <x.y.z> --token <TOKEN>` |
