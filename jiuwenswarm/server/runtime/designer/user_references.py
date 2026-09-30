@@ -223,14 +223,18 @@ async def classify_reference_images(
         for index, item in enumerate(slots, start=1)
     ]
     system = (
-        "You inspect each attached reference image for a short film. "
+        "You inspect each attached reference image. "
         "Output ONLY one JSON object: "
-        '{"reference_reads":[{"slot":1,"subject":"object","character_id":"","setting_id":""}]}. '
-        "subject is character when the image is a person who should be redrawn as a character sheet. "
-        "subject is scene when the image is a place. "
-        "subject is object when the image is a product, prop, or item that must appear in the clips. "
-        "A product the user asked to film is object, even when the brief also invents a presenter. "
-        "One read per image. Slot numbers follow the roster order."
+        '{"reference_reads":[{"slot":1,"subject":"object","roles":["product_hero"],'
+        '"binding":"verbatim","character_id":"","setting_id":""}]}. '
+        "roles is a list. Use character_identity for a person who will perform, "
+        "scene_source for a place, product_hero for an item that must stay as itself, "
+        "still_motion_source when this image is the frame that should move, "
+        "style_source when only the medium and palette should be copied. "
+        "binding is verbatim when the file itself is shown, or condition when a new "
+        "still must be generated from the file. One read per image. "
+        "subject remains character, scene, or object for compatibility. "
+        "Slot numbers follow the roster order."
     )
     payload = {"user_prompt": (prompt or "")[:2000], "images": roster}
     try:

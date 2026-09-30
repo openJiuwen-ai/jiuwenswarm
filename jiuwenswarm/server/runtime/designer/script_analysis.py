@@ -1029,30 +1029,35 @@ def _reference_reads(parsed: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         subject = _reference_subject(item.get("subject") or item.get("kind") or item.get("type"))
-        if not subject:
-            continue
-        try:
-            slot = int(item.get("slot") or index)
-        except (TypeError, ValueError):
-            slot = index
-        if slot < 1:
-            slot = index
-        reads.append(
-            {
-                "slot": slot,
-                "subject": subject,
-                "character_id": str(item.get("character_id") or "").strip(),
-                "setting_id": str(item.get("setting_id") or "").strip(),
-            }
+        from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+            absorb_reference_read,
         )
+
+        read = absorb_reference_read(item, index, subject)
+        if read is None:
+            continue
+        reads.append(read)
     return reads
 
 
-def _normalize_llm_analysis(parsed: dict[str, Any], base: dict[str, Any]) -> dict[str, Any] | None:
+def _normalize_llm_analysis(
+    parsed: dict[str, Any],
+    base: dict[str, Any],
+    *,
+    allow_empty_cast: bool = False,
+) -> dict[str, Any] | None:
     characters = parsed.get("characters") if isinstance(parsed.get("characters"), list) else []
     scenes = parsed.get("scenes") if isinstance(parsed.get("scenes"), list) else []
     shots = parsed.get("shots") if isinstance(parsed.get("shots"), list) else []
-    if len(characters) < 1 or len(shots) < 1:
+    if allow_empty_cast and len(shots) < 1:
+        shots = [
+            {
+                "shot_index": 1,
+                "action": str(base.get("user_prompt") or "")[:500],
+                "setting_id": "set_1",
+            }
+        ]
+    if (not allow_empty_cast and len(characters) < 1) or len(shots) < 1:
         return None
     norm_chars: list[dict[str, Any]] = []
     for i, ch in enumerate(characters[:_MAX_CHARS], start=1):
@@ -1067,7 +1072,7 @@ def _normalize_llm_analysis(parsed: dict[str, Any], base: dict[str, Any]) -> dic
             "match_terms": _match_terms_for_character(name, desc),
         }
         norm_chars.append(entry)
-    if not norm_chars:
+    if not norm_chars and not allow_empty_cast:
         return None
     valid_ids, by_name = _cast_id_maps(norm_chars)
     norm_scenes: list[dict[str, str]] = []
@@ -1483,12 +1488,25 @@ async def analyze_creative_brief(
                 if name in {"", "...", "…", "string", "name"}:
                     placeholder = True
                     break
-            if placeholder or not chars:
+            allow_empty_cast = bool(reference_images)
+            if allow_empty_cast and (
+                not isinstance(parsed.get("shots"), list) or not parsed.get("shots")
+            ):
+                parsed["shots"] = [
+                    {
+                        "shot_index": 1,
+                        "action": (prompt or "")[:500],
+                        "setting_id": "set_1",
+                    }
+                ]
+            if placeholder or (not chars and not allow_empty_cast):
                 logger.info("LLM script analysis looked like schema echo; soft-fail")
                 return None
             if short_clip:
                 parsed.setdefault("target_duration_sec", duration_sec)
-            normalized = _normalize_llm_analysis(parsed, base)
+            normalized = _normalize_llm_analysis(
+                parsed, base, allow_empty_cast=allow_empty_cast
+            )
             if not normalized:
                 return None
             if short_clip and normalized.get("shots"):

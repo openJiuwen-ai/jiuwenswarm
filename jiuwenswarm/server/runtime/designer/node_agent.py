@@ -1264,16 +1264,25 @@ class DesignerGraphToolkit:
                 cfg,
                 meta.get("aspect_lock") if isinstance(meta.get("aspect_lock"), dict) else None,
             )
+            from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+                video_generation_overrides,
+            )
+
+            overrides = video_generation_overrides(
+                cfg,
+                graph,
+                [str(p) for p in (ref_files or [])],
+            )
             result = await generate_clip_video(
                 prompt=text,
                 save_dir=str(self._media_save_dir()),
-                first_frame=None,
-                reference_images=ref_files or None,
+                first_frame=overrides["first_frame"],
+                reference_images=overrides["reference_images"],
                 reference_file=reference_file,
                 duration=dur,
                 audio=True if want_audio else False,
                 model=None,
-                force_reference_mode=True,
+                force_reference_mode=overrides["force_reference_mode"],
                 size=video_size,
                 resolution=video_res,
             )

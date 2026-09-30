@@ -44,6 +44,11 @@ from jiuwenswarm.server.runtime.designer.handlers.text_nodes import (
     StoryboardShot,
     parse_storyboard_shots,
 )
+from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+    reference_led_graph,
+    refresh_reference_continuity,
+    reject_removed_reference_stills,
+)
 
 
 class ChatDocumentConflict(DesignerGraphValidationError):
@@ -310,8 +315,12 @@ def _refresh_generation_details(before: DesignerExecutionGraph, graph: DesignerE
             cfg["pose_holds"] = stamped.get("pose_holds", [])
             if "seat_anchors" in cfg or (cfg.get("start_state") or {}).get("seats"):
                 cfg["seat_anchors"] = deepcopy((cfg.get("start_state") or {}).get("seats", {}))
-        if "end_state" in changed and ("exiting_character_ids" in cfg or (cfg.get("end_state") or {}).get("exited")):
-            cfg["exiting_character_ids"] = list((cfg.get("end_state") or {}).get("exited", []))
+        end_state = cfg.get("end_state")
+        # Reference-led clips keep end_state as prose, not a shot-state record.
+        if "end_state" in changed and isinstance(end_state, dict) and (
+            "exiting_character_ids" in cfg or end_state.get("exited")
+        ):
+            cfg["exiting_character_ids"] = list(end_state.get("exited", []))
         if "scene_specs" in changed:
             architecture = architecture_clause_from_bible(cfg.get("scene_specs"))
             for key in ("scene_architecture_clause", "scene_master_prompt"):
@@ -397,6 +406,9 @@ def prepare_document_update(
             if doc.pipeline == "storyboard":
                 validate_storyboard(graph, texts[key])
         removed = {node["id"] for node in before.get("nodes", [])} - nodes.keys()
+        reference_led = reference_led_graph(graph)
+        if reference_led:
+            reject_removed_reference_stills(graph, removed)
         for node in nodes.values():
             cfg = node_config(node)
             for source in (cfg, cfg.get("identity_refs") or {}):
@@ -407,6 +419,8 @@ def prepare_document_update(
                     if source.get(key) in removed:
                         source.pop(key)
         _refresh_generation_details(before, graph)
+        if reference_led:
+            refresh_reference_continuity(before, graph)
         _invalidate_generation_cache(before, graph)
         if removed_targets:
             old_nodes = {node["id"]: node for node in before["nodes"]}

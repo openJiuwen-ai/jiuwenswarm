@@ -523,9 +523,11 @@ def test_product_label_counts_as_an_object_route() -> None:
     reads = _reference_reads(
         {"reference_reads": [{"slot": 1, "subject": "产品"}]}
     )
-    assert reads == [
-        {"slot": 1, "subject": "object", "character_id": "", "setting_id": ""}
-    ]
+    assert reads[0]["slot"] == 1
+    assert reads[0]["subject"] == "object"
+    assert reads[0]["character_id"] == ""
+    assert reads[0]["setting_id"] == ""
+    assert "product_hero" in reads[0]["roles"]
 
 
 @pytest.mark.asyncio

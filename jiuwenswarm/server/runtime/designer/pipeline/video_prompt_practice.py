@@ -1016,6 +1016,12 @@ def prompt_respects_practice(
 ) -> list[str]:
     """Reasons the video call should be rewritten. Empty means it can be sent."""
     cfg = cfg if isinstance(cfg, dict) else {}
+    if str(cfg.get("reference_call_mode") or "").strip():
+        from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+            reference_prompt_issues,
+        )
+
+        return reference_prompt_issues(str(prompt or ""), cfg)
     text = str(prompt or "").strip()
     reasons: list[str] = []
     if not text:
@@ -1141,6 +1147,17 @@ def director_prepare_video_prompt(
     """Keep a concise faithful story-form prompt; otherwise rewrite locks into narrative."""
     del shot_index
     cfg = cfg if isinstance(cfg, dict) else {}
+    if str(cfg.get("reference_call_mode") or "").strip():
+        from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+            compose_reference_clip_prompt,
+            reference_prompt_issues,
+        )
+
+        raw = str(prompt or "").strip()
+        reasons = reference_prompt_issues(raw, cfg)
+        if not reasons:
+            return raw[:2200], ["kept_reference_led_prompt"]
+        return compose_reference_clip_prompt(cfg)[:2200], ["rewritten_reference_led", *reasons]
     reasons = prompt_respects_practice(prompt, cfg=cfg, graph=graph)
     try:
         from jiuwenswarm.server.runtime.designer.pipeline.clip_continuity_contract import (

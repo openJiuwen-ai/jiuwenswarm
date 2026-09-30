@@ -1042,18 +1042,27 @@ class ClipNodeHandler:
 
         meta = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
         want_audio, _model_override = resolve_video_audio_request(cfg, meta)
+        from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+            video_generation_overrides,
+        )
+
+        overrides = video_generation_overrides(
+            cfg,
+            graph,
+            [str(p) for p in ref_files],
+        )
         try:
             result = await generate_clip_video(
                 prompt,
-                first_frame=None,
-                reference_images=[str(p) for p in ref_files] or None,
+                first_frame=overrides["first_frame"],
+                reference_images=overrides["reference_images"],
                 reference_file=reference_file,
                 duration=duration,
                 size=video_size,
                 resolution=video_res,
                 audio=True if want_audio else False,
                 model=None,
-                force_reference_mode=True,
+                force_reference_mode=overrides["force_reference_mode"],
             )
             path = Path(str(result["video_path"]))
             message = f"clip {shot_index} generated" + (" (with audio)" if want_audio else "")

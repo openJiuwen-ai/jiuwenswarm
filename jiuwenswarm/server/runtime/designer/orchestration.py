@@ -1805,6 +1805,20 @@ class Director:
         shots = [s for s in (analysis.get("shots") or []) if isinstance(s, dict)]
         characters = list(analysis.get("characters") or [])
         user_prompt = str(graph.get("description") or meta.get("user_prompt") or "")
+        from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+            reference_led_active,
+        )
+
+        if reference_led_active(analysis):
+            ack = {
+                "ok": True,
+                "source": "reference_led",
+                "notes": "Reference-led graph kept.",
+                "shot_count": len(shots),
+            }
+            meta["director_graph_ack"] = ack
+            graph["metadata"] = meta
+            return dict(ack)
         approved_brief = str(meta.get("approved_brief") or "")[:12000]
         approved_sb = str(meta.get("approved_storyboard") or "")[:16000]
         source = "storyboard"

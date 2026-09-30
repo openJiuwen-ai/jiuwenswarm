@@ -1370,9 +1370,21 @@ async def _bootstrap_graph_with_director_impl(
         if callable(on_progress):
             on_progress("thinking", "Supervisor · Reading reference images")
         reads = await classify_reference_images(prompt, image_refs)
-        if reads:
-            analysis = dict(analysis)
-            analysis["reference_reads"] = reads
+        if not reads:
+            return (
+                None,
+                "Attached stills could not be assigned a reference role.",
+                "LLM_API_ERROR",
+            )
+        from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+            ReferenceIntentError,
+            stamp_creative_intent,
+        )
+
+        try:
+            analysis = stamp_creative_intent(analysis, reads, image_refs)
+        except ReferenceIntentError as exc:
+            return None, str(exc), "LLM_API_ERROR"
 
     payload, error, code = await asyncio.to_thread(
         _bootstrap_graph,

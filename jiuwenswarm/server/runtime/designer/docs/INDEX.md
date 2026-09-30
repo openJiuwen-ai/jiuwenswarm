@@ -16,6 +16,7 @@ The storyboard row is the authority for each shot: `start_state`, action, camera
 | [SCENE.md](./SCENE.md) | `n_scene_*` |
 | [CLIP.md](./CLIP.md) | `n_clip_*` |
 | [COMPOSE.md](./COMPOSE.md) | `n_compose` |
+| [REFERENCE_LED.md](./REFERENCE_LED.md) | Reference-image roles, graph branch, and test report |
 
 ```
 n_brief

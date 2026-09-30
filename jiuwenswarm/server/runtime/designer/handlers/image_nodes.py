@@ -272,6 +272,7 @@ async def _require_image(
     size: str = "1024x1024",
     max_tries: int = 2,
     ctx: NodeExecutionContext | None = None,
+    keep_references: bool = False,
 ) -> NodeResult:
     """Generate an image; fail closed when the image model returns nothing."""
     refs = [str(p) for p in (reference_images or []) if str(p).strip()]
@@ -309,8 +310,14 @@ async def _require_image(
     )
     err = str((generated or {}).get("error") or "")
     # DashScope often rejects ref uploads ("Cannot determine file type") — retry T2I-only.
-    if (not generated or not generated.get("image_path")) and clean_refs and (
-        "file type" in err.lower() or "InvalidParameter" in err or "181001" in err
+    # Reference-led stills fail closed instead of dropping the file.
+    if (
+        not keep_references
+        and (not generated or not generated.get("image_path"))
+        and clean_refs
+        and (
+            "file type" in err.lower() or "InvalidParameter" in err or "181001" in err
+        )
     ):
         generated = await handler_io.generate_designer_image(
             prompt + " Match the described architecture and cast from text alone.",
@@ -387,25 +394,33 @@ class CharacterDesignNodeHandler:
         combined = bool(cfg.get("combined_cast"))
         max_tries = max(2, int(cfg.get("max_image_calls") or 1))
         user_images = [str(path) for path in wired_user_reference_images(ctx, node)]
-        roster = prompt_slot_roster(_references_for_paths(ctx.graph, user_images))
-        prompt = _character_prompt(f"{name}\n{source}", combined_cast=combined)
-        try:
-            from jiuwenswarm.server.runtime.designer.pipeline.image_prompt_practice import (
-                ensure_still_tool_prompt,
+        task = str(cfg.get("reference_still_task") or "").strip()
+        if task in {"identity_sheet", "medium_change"}:
+            from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+                still_task_prompt,
             )
 
-            prompt, _ = ensure_still_tool_prompt(
-                prompt,
-                role="character",
-                cfg=cfg,
-                graph=ctx.graph if isinstance(ctx.graph, dict) else {},
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        if roster:
-            prompt = (
-                f"{prompt}\nUser reference slots (original files are visual authority):\n{roster}"
-            )
+            prompt = still_task_prompt(cfg)
+        else:
+            roster = prompt_slot_roster(_references_for_paths(ctx.graph, user_images))
+            prompt = _character_prompt(f"{name}\n{source}", combined_cast=combined)
+            try:
+                from jiuwenswarm.server.runtime.designer.pipeline.image_prompt_practice import (
+                    ensure_still_tool_prompt,
+                )
+
+                prompt, _ = ensure_still_tool_prompt(
+                    prompt,
+                    role="character",
+                    cfg=cfg,
+                    graph=ctx.graph if isinstance(ctx.graph, dict) else {},
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            if roster:
+                prompt = (
+                    f"{prompt}\nUser reference slots (original files are visual authority):\n{roster}"
+                )
         result = await _require_image(
             prompt=prompt,
             stem=f"designer_character_{ctx.run_id}_{ctx.node_id}",
@@ -413,6 +428,7 @@ class CharacterDesignNodeHandler:
             max_tries=max_tries,
             reference_images=user_images or None,
             ctx=ctx,
+            keep_references=bool(cfg.get("require_reference_images")),
         )
         return _with_card_ref(result, ctx, NODE_ROLE_CHARACTER_DESIGN)
 

@@ -854,6 +854,22 @@ def build_smart_video_graph(
     )
 
     prompt_text = prompt.strip()
+    from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+        build_reference_led_video_graph,
+        reference_led_active,
+    )
+
+    if reference_led_active(analysis):
+        graph = build_reference_led_video_graph(
+            project_id=project_id,
+            prompt=prompt_text,
+            analysis=analysis,
+            title=title,
+            optimize_for=optimize_for,
+        )
+        graph = normalize_execution_graph(graph)
+        prune_non_contributing_nodes(graph)
+        return attach_skills_metadata(graph, prompt_text)
     mode = "cost" if str(optimize_for).strip().lower() == "cost" else "quality"
     from jiuwenswarm.server.runtime.designer.audio_locks import ensure_audio_locks_on_analysis
 

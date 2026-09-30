@@ -182,6 +182,12 @@ def resolve_video_style(graph: dict[str, Any] | None = None, prompt: str = "") -
             for r in refs
         )
     text = prompt or str((graph or {}).get("description") or meta.get("user_prompt") or "")
+    from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+        skips_final_frame_reverse,
+    )
+
+    if not forced and skips_final_frame_reverse(graph):
+        return VIDEO_STYLE_DEFAULT_CINEMATIC
     return detect_video_style(text, has_reference_images=has_refs, forced=str(forced or "") or None)
 
 
