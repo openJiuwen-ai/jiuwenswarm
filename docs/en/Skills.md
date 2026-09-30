@@ -190,8 +190,8 @@ The Skills management page is the main place to manage and browse all skills. Op
 |--------|------|
 | **My Skills** | Browse and search installed skills, filter by "All / Enabled / Disabled", toggle skills on/off, and open details |
 | **Skill Marketplace** | Install new skills; contains three sub-pages: **Built-in**, **SwarmSkills online search**, and **Skills online search** (SkillNet / ClawHub) |
-| **Skill Graph** | Visualize capability relationships among installed skills; see [Symphony](symphony.md) |
-| **Skill Index** | Build a local skill retrieval index and find matching skills by task need; see [Symphony](symphony.md) |
+| **Skill Graph** | Visualize capability relationships among installed skills; see [Symphony](Symphony.md) |
+| **Skill Index** | Build a local skill retrieval index and find matching skills by task need; see [Symphony](Symphony.md) |
 
 ![Skills management page](../assets/images/current-ui-en/04-Skills-Page.png)
 
@@ -227,7 +227,7 @@ In the list, use **View skill experience** to browse evolution entries for that 
 
 #### Skill graph and skill index
 
-The **Skill Graph** and **Skill Index** tabs are part of Symphony. The skill index helps the agent find candidate skills from a large installed-skill set, while the skill graph uses `can_feed` relationships to show whether skills can connect. For multi-skill orchestration, graph building, graph reading, and chat usage, see [Symphony: Skill Orchestration and Dispatch](symphony.md).
+The **Skill Graph** and **Skill Index** tabs are part of Symphony. The skill index helps the agent find candidate skills from a large installed-skill set, while the skill graph uses `can_feed` relationships to show whether skills can connect. For multi-skill orchestration, graph building, graph reading, and chat usage, see [Symphony: Skill Orchestration and Dispatch](Symphony.md).
 
 ---
 
@@ -399,7 +399,7 @@ Show gitcode-pr details and SKILL.md content.
 
 ### Multi-skill tasks: Skill Symphony
 
-When a task needs several skills to work together, such as "recognize text from an image, translate it, write copy, and send an email," Skill Symphony can first produce a skill chain and then wait for confirmation before execution. For setup, prompt examples, and how to read the orchestration result, see [Symphony: Skill Orchestration and Dispatch](symphony.md).
+When a task needs several skills to work together, such as "recognize text from an image, translate it, write copy, and send an email," Skill Symphony can produce a skill chain. When the plan is `ready`, the agent continues along the graph; it pauses only for missing input, Tool permission approval, or another runtime constraint. For setup, prompt examples, and how to read the orchestration result, see [Symphony: Skill Orchestration and Dispatch](Symphony.md).
 
 ---
 

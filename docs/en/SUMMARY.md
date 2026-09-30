@@ -31,7 +31,7 @@
   - [Context Compression](ContextCompression.md)
   - [Coding Memory](CodingMemory.md)
   - [Skills](Skills.md)
-  - [Symphony](symphony.md)
+  - [Symphony](Symphony.md)
   - [Team Skills](SwarmSkills.md)
   - [Skill self-evolution](SkillSelfEvolution.md)
   - [TTSE dual-track self-evolution](TTSE.md)

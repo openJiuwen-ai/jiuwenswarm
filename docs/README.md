@@ -17,7 +17,7 @@
 * **安装**：面向首次使用 JiuwenSwarm 的用户，包含基础安装、环境准备、TUI 模式安装以及快速启动相关说明。
 * **基础使用**：介绍日常使用中常见的功能入口，包括页面概览、对话、智能体、会话、定时任务、技能、频道、配置信息、浏览器服务、日志和 MCP 服务设置等内容。
 * **高阶操作**：介绍系统的进阶能力与扩展机制，包括上下文压缩、Skill 自演进、工具权限与安全防护、E2A / A2A 协议、多智能体协作、记忆系统和 TUI 模式等内容。
-* **附录**：提供与项目使用和维护相关的补充资料，包括打包 EXE、Windows 自动更新设计和开发者文档。
+* **附录**：提供与项目使用和维护相关的补充资料，包括架构导览、打包 EXE、Windows 自动更新设计和开发者文档。
 * **开发实践**：整理基于 JiuwenSwarm 构建的实际 Agent 应用案例，帮助开发者参考已有实践进行二次开发和能力扩展。
 
 ---
@@ -98,7 +98,7 @@
     <tr>
       <td width="22%"><strong>技能交响乐</strong></td>
       <td width="28%"><a href="zh/Symphony-技能编排与分发.md">技能交响乐</a></td>
-      <td width="50%">技能编排与分发系统。</td>
+      <td width="50%">面向较大规模已安装 Skill 的渐进检索、关系图谱和多 Skill 编排。</td>
     </tr>
     <tr>
       <td width="22%"><strong>频道</strong></td>
@@ -215,6 +215,11 @@
       <td width="22%"><strong>自动更新</strong></td>
       <td width="28%"><a href="zh/windows自动更新设计.md">桌面端自动更新设计</a></td>
       <td width="50%">Windows 与 macOS 桌面端自动更新方案、流程与关键模块（含预发布版推送）。</td>
+    </tr>
+    <tr>
+      <td width="22%"><strong>新同学架构导览</strong></td>
+      <td width="28%"><a href="zh/新同学架构导览-Agent-Skill与Symphony.md">Agent、Skill 与 Symphony</a></td>
+      <td width="50%">从一次请求和 Skill 生命周期理解 JiuwenSwarm、agent-core、Symphony 的职责边界，并说明 GitHub-only 开发注意事项。</td>
     </tr>
     <tr>
       <td width="22%"><strong>开发者文档</strong></td>
