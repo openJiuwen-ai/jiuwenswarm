@@ -103,12 +103,89 @@ def _patch_openai_modelarts_tool_choice(client_class: type) -> None:
     _OPENAI_PATCHED_CLASSES.add(client_class)
 
 
+def _is_continuation_of(prev: Any, fragment: Any) -> bool:
+    same_index = prev.index is None or fragment.index is None or prev.index == fragment.index
+    return bool(prev.id) and not fragment.id and not fragment.name and prev.type == fragment.type and same_index
+
+
+def _coalesce_tool_call_fragments(chunk: Any) -> Any:
+    tool_calls = getattr(chunk, "tool_calls", None)
+    if not tool_calls or len(tool_calls) < 2:
+        return chunk
+    merged: list[Any] = []
+    for tool_call in tool_calls:
+        if merged and _is_continuation_of(merged[-1], tool_call):
+            prev = merged[-1]
+            merged[-1] = prev.model_copy(update={
+                "arguments": (prev.arguments or "") + (tool_call.arguments or ""),
+                "response_item_id": prev.response_item_id or tool_call.response_item_id,
+            })
+        else:
+            merged.append(tool_call)
+    if len(merged) == len(tool_calls):
+        return chunk
+    return chunk.model_copy(update={"tool_calls": merged})
+
+
+def _drop_orphan_tool_calls(messages: Any) -> Any:
+    if not isinstance(messages, list):
+        return messages
+    repaired_messages = messages
+    for position, message in enumerate(messages):
+        tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
+        if not isinstance(tool_calls, list):
+            continue
+        kept = [
+            tool_call for tool_call in tool_calls
+            if not isinstance(tool_call, Mapping)
+            or tool_call.get("id")
+            or (tool_call.get("function") or {}).get("name")
+        ]
+        if len(kept) == len(tool_calls):
+            continue
+        if repaired_messages is messages:
+            repaired_messages = list(messages)
+        repaired = {**message, "tool_calls": kept}
+        if not kept:
+            repaired.pop("tool_calls")
+        repaired_messages[position] = repaired
+        logger.warning("Dropped %d tool call(s) without id and name from history message %d",
+                       len(tool_calls) - len(kept), position)
+    return repaired_messages
+
+
+def _patch_openai_tool_call_fragments(client_class: type, client_module: Any) -> None:
+    if getattr(client_class, "_tool_call_fragment_patch_applied", False):
+        return
+    original_parse_chunk = client_class._parse_stream_chunk
+    original_parse_line = client_module._parse_gateway_stream_line
+    original_build = client_class._build_request_params
+
+    def _parse_stream_chunk(self, chunk):
+        return _coalesce_tool_call_fragments(original_parse_chunk(self, chunk))
+
+    def _parse_gateway_stream_line(line):
+        return _coalesce_tool_call_fragments(original_parse_line(line))
+
+    def _build_request_params(self, *args, **kwargs):
+        params = original_build(self, *args, **kwargs)
+        if isinstance(params, dict) and "messages" in params:
+            params["messages"] = _drop_orphan_tool_calls(params["messages"])
+        return params
+
+    client_class._parse_stream_chunk = _parse_stream_chunk
+    client_module._parse_gateway_stream_line = _parse_gateway_stream_line
+    client_class._build_request_params = _build_request_params
+    client_class._tool_call_fragment_patch_applied = True
+
+
 def apply_provider_compat_patches() -> None:
     """Install narrowly-scoped request-shape patches once per process."""
     global _PROVIDER_PATCHES_APPLIED  # pylint: disable=global-statement
     if _PROVIDER_PATCHES_APPLIED:
         return
     try:
+        from openjiuwen.core.foundation.llm.model_clients import openai_model_client
         from openjiuwen.core.foundation.llm.model_clients.anthropic_model_client import (
             AnthropicModelClient,
         )
@@ -121,6 +198,7 @@ def apply_provider_compat_patches() -> None:
 
     _patch_anthropic_modelarts(AnthropicModelClient)
     _patch_openai_modelarts_tool_choice(OpenAIModelClient)
+    _patch_openai_tool_call_fragments(OpenAIModelClient, openai_model_client)
     _PROVIDER_PATCHES_APPLIED = True
     logger.info("Provider compatibility patches applied")
 
