@@ -302,8 +302,6 @@ def test_native_approval_accepts_authorization_prompt_answers():
 
 
 def test_answer_input_preserves_permission_card_id():
-    from jiuwenswarm.extensions.video_duplex.backend.task_adapter import AgentTaskExecutor
-
     request = AgentTaskExecutor.answer_input({
         "request_id": "video-core-1",
         "core_session_id": "core-session",

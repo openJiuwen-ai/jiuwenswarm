@@ -384,7 +384,7 @@ def register_video_live_handler(
                 value = json.loads(delegation)
                 if not isinstance(value, dict) or set(value) != {"name", "arguments"}:
                     raise ValueError("Invalid task operation")
-                if value["name"] not in {
+                if value.get("name") not in {
                     "jiuwen_delegate",
                     "jiuwen_task_query",
                     "jiuwen_task_modify",
@@ -402,7 +402,7 @@ def register_video_live_handler(
                 )
                 if call.name == "jiuwen_delegate":
                     scheduling = {
-                        k: call.arguments[k]
+                        k: call.arguments.get(k)
                         for k in ("independent", "depends_on", "resources")
                         if k in call.arguments
                     }
@@ -473,7 +473,7 @@ def register_video_live_handler(
             req_id,
             ok=True,
             payload={
-                "response": result["response"],
+                "response": result.get("response"),
                 "search_job": search_job,
             },
         )

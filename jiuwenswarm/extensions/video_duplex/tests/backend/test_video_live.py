@@ -2670,7 +2670,6 @@ async def test_joyai_structured_independent_delegate_reaches_shared_service(
 def test_tool_language_uses_app_language_only_for_match(
     monkeypatch, reply_language, app_language, expected,
 ):
-    from jiuwenswarm.extensions.video_duplex.backend import settings
     monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", reply_language)
     monkeypatch.setattr(
         "jiuwenswarm.common.config.get_config",
@@ -2679,7 +2678,10 @@ def test_tool_language_uses_app_language_only_for_match(
     assert settings.tool_language() == expected
 
 
-@pytest.mark.parametrize("app_language,expected", [("en", "Speak to the user in English"), ("zh", "Simplified Chinese")])
+@pytest.mark.parametrize(
+    "app_language,expected",
+    [("en", "Speak to the user in English"), ("zh", "Simplified Chinese")],
+)
 def test_core_answer_and_receipt_use_tool_language(monkeypatch, app_language, expected):
     monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", "match")
     monkeypatch.setattr(
