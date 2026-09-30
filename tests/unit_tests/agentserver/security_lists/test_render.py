@@ -125,7 +125,7 @@ def test_render_writes_copy_preserving_disable_all(env):
 
 
 # ---------------------------------------------------------------------------
-# 渲染前安全检查：会丢掉副本里已有条目时，宁可不渲染（模块 docstring「为何要跳过」）
+# 副本单一写入者不变式：出现"未纳管条目"要留痕，但**不拦截**（见模块 docstring）
 # ---------------------------------------------------------------------------
 
 
@@ -141,62 +141,129 @@ def _seed_copy(path, *, allow_read=(), deny_write=(), blocked_domains=(), disabl
     }, allow_unicode=True), encoding="utf-8")
 
 
-def test_render_skips_when_it_would_drop_unmanaged_copy_entries(env):
-    """副本里有名单不知道的条目（沙箱面板 / /add-dir / FileGuard sync 写的）→ 不渲染。
+def test_render_warns_but_still_renders_when_copy_has_unmanaged_entries(env):
+    """副本里有名单不知道的条目 → **照常渲染** + 告警 + 审计留痕（不再拦截）。
 
-    否则第一次名单写入就会把这些 ACL/egress 静默清空，还会触发 box-server 重载
-    ——用户沙箱策略真的没了。这条是实测复现过的数据丢失路径。
+    拦截版会与写面收敛死锁：面板删一条时副本里还留着它，拦截就永远不让删除生效。
+    收敛之后副本只有本模块一个写入者，这条路径正常不该发生——真出现就说明
+    又有别的写入者，靠这条 WARNING/审计去排查。
     """
     _seed_copy(env["copy"], allow_read=["C:/users-data"],
                blocked_domains=["realmalware.example"])
     store.upsert_record(rec(pattern="C:/secret", cells={"*": {"read": "deny"}}))
 
-    counts = render.render_sandbox_copy(mode="*")
+    render.render_sandbox_copy(mode="*")
 
-    data = _read_copy(env["copy"])
-    fs = data["windows"]["filesystem"]
-    net = data["windows"]["network"]
-    assert fs["allow_read"] == ["C:/users-data"]        # 副本原样
-    assert fs["deny_read"] == []                         # 名单里的规则**没有**下发
-    assert net["egress"]["blocked_domains"] == ["realmalware.example"]
-    assert counts["skipped"] is True
+    fs = _read_copy(env["copy"])["windows"]["filesystem"]
+    net = _read_copy(env["copy"])["windows"]["network"]
+    assert fs["allow_read"] == []                     # 未纳管条目被覆盖（有留痕）
+    assert fs["deny_read"] == ["C:/secret"]
+    assert net["egress"]["blocked_domains"] == []
     events = [
         json.loads(ln)
         for ln in env["audit"].read_text(encoding="utf-8").splitlines() if ln.strip()
     ]
-    assert [e["kind"] for e in events] == [audit.AUDIT_RENDER_SKIPPED]
+    assert [e["kind"] for e in events] == [audit.AUDIT_RENDER_DROPPED]
+    assert events[0]["dropped"] == {
+        "allow_read": ["C:/users-data"], "blocked_domains": ["realmalware.example"],
+    }
 
 
-def test_render_does_not_skip_when_copy_entries_are_covered(env):
-    """副本已有条目全在名单里 → 不触发跳过（"会丢条目"是唯一的跳过条件）。"""
+def test_render_leaves_no_trace_when_nothing_dropped(env):
+    """副本已有条目全在名单里 → 不产生 dropped 审计（别把正常渲染也记成异常）。"""
     _seed_copy(env["copy"], allow_read=["C:/users-data"])
     store.upsert_record(rec(pattern="C:/users-data", cells={"*": {"read": "allow"}}))
     store.upsert_record(rec(pattern="C:/secret", cells={"*": {"read": "deny"}}))
 
-    counts = render.render_sandbox_copy(mode="*")
+    render.render_sandbox_copy(mode="*")
 
-    assert "skipped" not in counts
     fs = _read_copy(env["copy"])["windows"]["filesystem"]
     assert fs["allow_read"] == ["C:/users-data"]
     assert fs["deny_read"] == ["C:/secret"]
+    assert not env["audit"].exists()
 
 
-def test_render_skips_when_list_deletion_would_wipe_copy_entry(env):
-    """**已知取舍（记录在案）**：名单里删掉一条、副本还留着 → 仍属"会丢条目"，跳过。
-
-    即"从名单删除"暂时下发不到沙箱（护栏 rail 不受影响，它直读名单）。这是止血的
-    代价；正解是写面收敛（沙箱面板改写 security_lists，届时副本不会再有未纳管条目）。
-    """
+def test_render_propagates_list_deletion(env):
+    """名单里删掉一条 → 副本里也删掉（写面收敛后必须能下发，见模块 docstring）。"""
     _seed_copy(env["copy"], allow_read=["C:/gone"])
     store.upsert_record(rec(pattern="C:/gone", cells={"*": {"read": "allow"}}))
     render.render_sandbox_copy(mode="*")
     assert _read_copy(env["copy"])["windows"]["filesystem"]["allow_read"] == ["C:/gone"]
 
     store.delete_record(store.get_security_lists()["user"][0].id)
+    render.render_sandbox_copy(mode="*")
 
-    counts = render.render_sandbox_copy(mode="*")
-    assert counts["skipped"] is True
-    assert _read_copy(env["copy"])["windows"]["filesystem"]["allow_read"] == ["C:/gone"]
+    assert _read_copy(env["copy"])["windows"]["filesystem"]["allow_read"] == []
+
+
+# ---------------------------------------------------------------------------
+# 写面收敛：沙箱面板的 set 改写 security_lists（副本由渲染产生）
+# ---------------------------------------------------------------------------
+
+
+def test_panel_files_set_writes_lists_and_renders_copy(env):
+    """`sandbox.files.set` 不再直接写副本，而是写名单 → 渲染。
+
+    面板只有 allow/deny 两列表，对应到 per-axis 模型就是 read+write 两轴同值。
+    """
+    result = spr.set_sandbox_files_config(["C:/data"], ["C:/secret"])
+
+    assert result == {"allow": ["C:/data"], "deny": ["C:/secret"]}
+    records = {(r.pattern, r.type, r.migrated_from): r for r in store.get_security_lists()["user"]}
+    allow_rec = records[("C:/data", "file_path", "sandbox_panel")]
+    deny_rec = records[("C:/secret", "file_path", "sandbox_panel")]
+    assert allow_rec.cells == {"*": {"read": "allow", "write": "allow"}}
+    assert deny_rec.cells == {"*": {"read": "deny", "write": "deny"}}
+    # 副本由渲染产出
+    fs = _read_copy(env["copy"])["windows"]["filesystem"]
+    assert fs["allow_read"] == ["C:/data"] and fs["allow_write"] == ["C:/data"]
+    assert fs["deny_read"] == ["C:/secret"] and fs["deny_write"] == ["C:/secret"]
+
+
+def test_panel_files_set_replaces_only_its_own_records(env):
+    """面板保存不能清掉安全中心配的规则（两者写的都是 user 区）。"""
+    store.upsert_record(rec(pattern="C:/from-center", cells={"*": {"read": "deny"}}))
+    spr.set_sandbox_files_config(["C:/panel-a"], [])
+    spr.set_sandbox_files_config(["C:/panel-b"], [])
+
+    patterns = {r.pattern for r in store.get_security_lists()["user"]}
+    assert patterns == {"C:/from-center", "C:/panel-b"}   # center 的还在，panel-a 被替换掉
+
+
+def test_panel_files_set_removal_propagates_to_copy(env):
+    """从面板移除一条 → 名单里删掉 → 副本也删掉（这正是护栏降级换来的能力）。"""
+    spr.set_sandbox_files_config(["C:/a", "C:/b"], [])
+    assert _read_copy(env["copy"])["windows"]["filesystem"]["allow_read"] == ["C:/a", "C:/b"]
+
+    spr.set_sandbox_files_config(["C:/a"], [])
+
+    assert _read_copy(env["copy"])["windows"]["filesystem"]["allow_read"] == ["C:/a"]
+    assert {r.pattern for r in store.get_security_lists()["user"]} == {"C:/a"}
+
+
+def test_panel_network_set_writes_domain_records(env, monkeypatch):
+    monkeypatch.setattr(spr, "_is_windows", lambda: True)
+
+    result = spr.set_sandbox_network_config(False, ["ok.example"], ["*.evil.example"])
+
+    assert result["allow_domains"] == ["ok.example"]
+    records = {r.pattern: r for r in store.get_security_lists()["user"] if r.type == "domain"}
+    assert records["ok.example"].match == "exact"          # 裸域 + 子域（与 EgressFilter 一致）
+    assert records["*.evil.example"].match == "wildcard"   # 仅子域
+    assert records["ok.example"].migrated_from == "sandbox_panel"
+    egress = _read_copy(env["copy"])["windows"]["network"]["egress"]
+    assert egress["allowed_domains"] == ["ok.example"]
+    assert egress["blocked_domains"] == ["*.evil.example"]
+
+
+def test_panel_network_set_keeps_disable_all_out_of_lists(env, monkeypatch):
+    """disable_all 是沙箱总开关、不是名单语义，仍直接落副本（渲染不碰它）。"""
+    monkeypatch.setattr(spr, "_is_windows", lambda: True)
+
+    spr.set_sandbox_network_config(True, [], [])
+
+    assert _read_copy(env["copy"])["windows"]["network"]["disable_all"] is True
+    assert store.get_security_lists()["user"] == []
 
 
 def test_render_skips_non_absolute_paths(env):

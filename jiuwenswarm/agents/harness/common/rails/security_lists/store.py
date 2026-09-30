@@ -301,6 +301,83 @@ def patch_cells(
     return result[0]
 
 
+#: 沙箱面板写的记录的来源标记（``migrated_from`` 兼作记录来源；见 models）
+ORIGIN_SANDBOX_PANEL = "sandbox_panel"
+
+
+def replace_records_by_origin(
+    *,
+    origin: str,
+    list_type: str,
+    records: list[SecurityListRecord],
+) -> dict[str, Any]:
+    """把 ``origin`` 名下、``list_type`` 类的记录**整体替换**为 ``records``（一个事务）。
+
+    用途：``sandbox.files.set`` / ``sandbox.network.set`` 这类**只有 set 没有 delete**
+    的写面——"从列表里移除一条"只能靠"不在新列表里"推断，所以必须先知道"之前哪些
+    是这个写面写的"。``migrated_from`` 兼作记录来源标记（与 ``net_guard`` /
+    ``file_guard`` / ``sandbox_copy`` 这些迁移来源同一个字段）。
+
+    同操作对象 ``(type, pattern, match)`` 已被**别家**占用 → 跳过并放进 ``skipped``
+    （不夺权、也不静默丢：调用方应把 skipped 回报给用户）。
+
+    返回 ``{"created", "removed", "skipped"}``。
+    """
+    now = utc_now_iso()
+    created = 0
+    removed = 0
+    skipped: list[str] = []
+
+    def _mutate(data: dict[str, Any]) -> dict[str, Any] | None:
+        nonlocal created, removed
+        section = _ensure_section(data)
+        existing = _parse_existing_user(section)
+        user_raw = section["user"]
+
+        kept: list[SecurityListRecord] = []
+        kept_raw: list[Any] = []
+        for rec, raw in zip(existing, user_raw):
+            if rec.type == list_type and rec.migrated_from == origin:
+                removed += 1
+                continue
+            kept.append(rec)
+            kept_raw.append(raw)
+
+        occupied = {(r.type, r.pattern, r.match) for r in kept}
+        for rec in records:
+            key = (rec.type, rec.pattern, rec.match)
+            if key in occupied:
+                skipped.append(rec.pattern)
+                logger.warning(
+                    "按来源替换跳过（操作对象已被其它来源占用）: origin=%s %s %r",
+                    origin, rec.type, rec.pattern,
+                )
+                continue
+            rec.id = rec.id or new_record_id()
+            if any(r.id == rec.id for r in kept):
+                rec.id = new_record_id()
+            rec.enabled = True
+            rec.source = "user"
+            rec.migrated_from = origin
+            rec.created_at = rec.created_at or now
+            rec.updated_at = now
+            validate_record(rec, existing=kept)
+            kept.append(rec)
+            kept_raw.append(record_to_dict(rec))
+            occupied.add(key)
+            created += 1
+
+        section["user"] = kept_raw
+        return data
+
+    update_config(_mutate)
+    logger.info(
+        "按来源整体替换: origin=%s type=%s created=%d removed=%d skipped=%d",
+        origin, list_type, created, removed, len(skipped),
+    )
+    return {"created": created, "removed": removed, "skipped": skipped}
+
+
 def delete_record(record_id: str) -> bool:
     """删除 user 区记录，返回是否命中。"""
     found = False

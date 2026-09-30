@@ -269,25 +269,82 @@ def get_sandbox_files_config() -> dict[str, Any]:
     }
 
 
-def set_sandbox_files_config(allow: list[Any], deny: list[Any]) -> dict[str, Any]:
-    """整体替换用户文件白/黑名单.
+# ----------------------------------------------------------------------------
+# 写面收敛（2026-09-30）：沙箱面板的 set 不再直接写副本，而是写 security_lists，
+# 副本由 security_lists_render 统一渲染 —— 副本的六列表因此只剩一个写入者。
+# 只替换**本写面自己那份**（migrated_from="sandbox_panel"），不动安全中心配的规则。
+# ----------------------------------------------------------------------------
 
-    白名单 allow → 副本 allow_read + allow_write (merge 时去重并集到基底必需集, 不丢).
-    黑名单 deny → 副本 deny_read + deny_write (NTFS 显式 Deny 优先).
-    空 list 表示清空用户段 (副本该字段置空 → merge 不追加 → 回落基底).
+
+def _panel_records(list_type: str, entries: list[tuple[str, str]]) -> list[Any]:
+    """``[(pattern, action)]`` → 名单记录（面板的两列表 → per-axis 模型）.
+
+    - file_path：read/write 两轴同值（面板只有 allow/deny 一个维度）；
+    - domain：``*.`` 开头 → wildcard，否则 exact（与 ``_match_domain`` 及
+      EgressFilter 的"裸域 + 子域"语义一致）；
+    - 含 glob 元字符的路径 → glob，否则 prefix（同 ``_build_migrated_records``）.
+
+    无法表达的条目 warning 跳过（沿用"非法条目跳过、不整体失败"的既有取向）。
+    """
+    from jiuwenswarm.agents.harness.common.rails.security_lists.models import (
+        SecurityListRecord,
+        has_glob_chars,
+    )
+
+    out: list[Any] = []
+    for pattern, action in entries:
+        try:
+            if list_type == "file_path":
+                rec = SecurityListRecord(
+                    type="file_path", pattern=pattern,
+                    match="glob" if has_glob_chars(pattern) else "prefix",
+                    cells={"*": {"read": action, "write": action}},
+                )
+            else:
+                if "*" in pattern and not pattern.startswith("*."):
+                    raise ValueError(f"域名通配只支持 '*.' 前缀: {pattern!r}")
+                rec = SecurityListRecord(
+                    type="domain", pattern=pattern,
+                    match="wildcard" if pattern.startswith("*.") else "exact",
+                    cells={"*": {"*": action}},
+                )
+            out.append(rec)
+        except ValueError as exc:
+            logger.warning("[sandbox.set] 跳过无法表达的条目: %s (%s)", pattern, exc)
+    return out
+
+
+def _apply_panel_records(list_type: str, records: list[Any]) -> dict[str, Any]:
+    """写名单（只替换面板自己那份）→ 渲染副本."""
+    from jiuwenswarm.agents.harness.common.rails.security_lists import store
+    from jiuwenswarm.server.security_lists_render import render_sandbox_copy
+
+    result = store.replace_records_by_origin(
+        origin=store.ORIGIN_SANDBOX_PANEL, list_type=list_type, records=records,
+    )
+    render_sandbox_copy()
+    return result
+
+
+def set_sandbox_files_config(allow: list[Any], deny: list[Any]) -> dict[str, Any]:
+    """整体替换用户文件白/黑名单（**写面收敛**：写 security_lists，副本由渲染产生）.
+
+    白名单 allow → 每条 file_path 记录 ``{"read": "allow", "write": "allow"}``
+    （与旧行为一致：面板的两列表同时作用于 read/write 两轴）.
+    黑名单 deny → ``{"read": "deny", "write": "deny"}`` (NTFS 显式 Deny 优先).
+    空 list 表示清空**本写面自己那份** —— 安全中心配的规则不受影响.
     """
     if not isinstance(allow, list) or not isinstance(deny, list):
         raise ValueError("allow and deny must be lists")
     # P0-7: 路径校验 (绝对路径 + 无控制字符), 非法条目 warning 跳过.
     allow_norm = _norm_file_paths(allow)
     deny_norm = _norm_file_paths(deny)
-    data = _load_copy()
-    fs = data["windows"]["filesystem"]
-    fs["allow_read"] = list(allow_norm)
-    fs["allow_write"] = list(allow_norm)
-    fs["deny_read"] = list(deny_norm)
-    fs["deny_write"] = list(deny_norm)
-    _save_copy(data)
+    records = _panel_records(
+        "file_path",
+        [(p, "allow") for p in allow_norm] + [(p, "deny") for p in deny_norm],
+    )
+    _apply_panel_records("file_path", records)
+    return {"allow": allow_norm, "deny": deny_norm}
     return {"allow": allow_norm, "deny": deny_norm}
 
 
@@ -395,19 +452,29 @@ def set_sandbox_network_config(
     # P0-7: 域名校验 (格式 + 无端口/路径/控制字符), 非法条目 warning 跳过.
     allow_norm = _norm_domains(allow_domains)
     deny_norm = _norm_domains(deny_domains)
-    if _is_windows():
-        data = _load_copy()
-        net = data["windows"]["network"]
-        net["disable_all"] = disable_all
-    else:
+    if not _is_windows():
+        # Linux 分支维持原样：Linux 副本（default-policy.runtime.yaml）不是
+        # security_lists_render 的渲染目标，改走名单会让 Linux egress **掉规则**。
         data = _load_linux_copy()
         net = data["network"]
-    net["egress"]["allowed_domains"] = list(allow_norm)
-    net["egress"]["blocked_domains"] = list(deny_norm)
-    if _is_windows():
-        _save_copy(data)
-    else:
+        net["egress"]["allowed_domains"] = list(allow_norm)
+        net["egress"]["blocked_domains"] = list(deny_norm)
         _save_linux_copy(data)
+        return {
+            "disable_all": disable_all,
+            "allow_domains": allow_norm,
+            "deny_domains": deny_norm,
+        }
+
+    # Windows：写面收敛——域名走名单，disable_all 是沙箱总开关（非名单语义）仍直接落副本。
+    records = _panel_records(
+        "domain",
+        [(d, "allow") for d in allow_norm] + [(d, "deny") for d in deny_norm],
+    )
+    _apply_panel_records("domain", records)
+    data = _load_copy()
+    data["windows"]["network"]["disable_all"] = disable_all
+    _save_copy(data)
     return {
         "disable_all": disable_all,
         "allow_domains": allow_norm,

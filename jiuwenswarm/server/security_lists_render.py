@@ -15,25 +15,17 @@ user/cloud 记录按**当前模式**做格子解析（resolve_cell 回退链）�
 渲染后由调用方触发 box-server 重载（指纹变更才真正重启，见
 ``sandbox_config_rpc._apply_sandbox_change`` / ``JiuwenBoxRunner.ensure_running``）。
 
-**为何渲染前要先做"会不会丢条目"的检查**：副本有**两个独立写入者**——本模块，
-以及 ``sandbox_policy_render``（沙箱面板 / ``sandbox.files.set`` / ``.network.set`` /
-``/add-dir`` / FileGuard sync）。本模块是**整段替换**六列表，数据只来自
-``security_lists``；只要副本里存在名单不知道的条目，替换就会把它们**静默抹掉**，
-还会触发 box-server 重载——用户的沙箱 ACL/egress 就真的没了。
+**单一写入者不变式**：本模块是运行时副本六列表的**唯一**写入者。沙箱面板的
+``sandbox.files.set`` / ``sandbox.network.set`` 已收敛为写 ``security_lists``
+（经 :func:`store.replace_records_by_origin`），再回到本模块渲染——所以副本里
+不会再有"名单不知道的条目"。
 
-实测过的丢失路径：用户先在沙箱面板配了 ACL → 启动时的一次性迁移已经跑过（标记存在），
-于是这些新条目**不会**再被导入名单 → 之后用户在安全中心改任意一条规则 →
-本模块渲染 → 沙箱面板配的 ACL 消失。
-
-因此这里加一道**安全护栏**：若本次渲染会丢掉副本里已有的条目，就**不渲染**，
-WARNING + 审计留痕（``security.list.render.skipped``）。取舍是明确的：
-
-- 代价：名单里的增删暂时下发不到沙箱（**护栏 rail 不受影响**，它直读名单），
-  其中包括"从名单里删除"暂时无法同步到沙箱；
-- 收益：不会静默毁掉用户的沙箱策略。
-
-正解是**写面收敛**（沙箱面板改写 ``security_lists``，副本不再有未纳管条目），
-届时这道护栏自然失效、可以删掉。
+> 历史：收敛之前副本有两个独立写入者，本模块的整段替换会把面板配的 ACL **静默
+> 抹掉**（实测复现过）。当时加过一道"会丢条目就不渲染"的拦截护栏；但收敛之后
+> 那道护栏会**反过来死锁**——面板删掉一条路径时副本里还留着它，护栏会判定
+> "会丢条目"从而拒绝渲染，删除永远不生效。故降级为**告警不拦截**
+> （``security.list.render.dropped``）。若日志里出现它，说明又有别的写入者
+> 在改副本，应当排查而不是放行。
 """
 from __future__ import annotations
 
@@ -135,8 +127,9 @@ def render_sandbox_copy(*, mode: str | None = None) -> dict[str, Any]:
     复用 ``sandbox_policy_render`` 的副本读写与校验（原子写 + 非法条目跳过）。
     调用方负责触发 box-server 重载；本函数异常原样上抛（调用方 best-effort 捕获）。
 
-    若本次渲染会丢掉副本里已有、而名单不知道的条目 → **不渲染**（见模块 docstring），
-    返回里带 ``skipped=True``，各计数为**副本当前**条数（不是名单条数）。
+    若本次渲染会丢掉副本里已有、而名单不知道的条目 → **照常渲染**（本模块是副本的
+    唯一写入者，正常不该出现），但 WARNING + 审计留痕 ``security.list.render.dropped``——
+    出现即说明又有别的写入者在改副本，应排查。
     """
     from jiuwenswarm.server import sandbox_policy_render as spr
 
@@ -150,20 +143,16 @@ def render_sandbox_copy(*, mode: str | None = None) -> dict[str, Any]:
     lost = {key: values for key, values in dropped.items() if values}
     if lost:
         logger.warning(
-            "security_lists → 沙箱副本渲染已跳过：会丢弃副本里未纳管的条目 %s。"
-            "这些条目来自沙箱面板 / sandbox.files|network.set / FileGuard sync，"
-            "覆盖会静默清空用户策略；请改用写面收敛（沙箱面板写 security_lists）",
+            "security_lists → 沙箱副本渲染丢弃了副本里未纳管的条目 %s。"
+            "本模块应是副本六列表的唯一写入者，出现这条说明另有写入者，请排查",
             lost,
         )
         audit.log_event(
-            audit.AUDIT_RENDER_SKIPPED,
-            reason="would_drop_unmanaged_entries",
+            audit.AUDIT_RENDER_DROPPED,
+            reason="unmanaged_entries_overwritten",
             mode=mode or "",
             dropped=lost,
         )
-        counts: dict[str, Any] = {key: len(current[key]) for key in _LIST_KEYS}
-        counts["skipped"] = True
-        return counts
 
     fs = data["windows"]["filesystem"]
     fs["allow_read"] = spr._norm_file_paths(wanted["allow_read"])  # noqa: SLF001

@@ -486,6 +486,75 @@ def test_migrate_legacy_sources_can_be_narrowed(cfg):
     assert store.migrate_legacy_once(sources=("file_guard",))["created"] == 2
 
 
+# ---------------------------------------------------------------------------
+# 按来源整体替换（写面收敛：沙箱面板的 set 语义）
+# ---------------------------------------------------------------------------
+
+
+def test_replace_records_by_origin_replaces_only_its_own(cfg):
+    """面板"整体替换"只能替换**它自己那份**——否则会把安全中心配的规则一起清掉。
+
+    面板的 RPC 只有 set(allow, deny) 没有删除通道，"从面板移除一条"只能靠
+    "不在新列表里"推断，所以必须知道"之前哪些是面板写的" → 用 migrated_from 做来源。
+    """
+    store.upsert_record(rec(pattern="C:/from-center", cells={"*": {"read": "deny"}}))
+    store.replace_records_by_origin(
+        origin="sandbox_panel", list_type="file_path",
+        records=[rec(pattern="C:/panel-a", cells={"*": {"read": "allow"}})],
+    )
+    store.replace_records_by_origin(
+        origin="sandbox_panel", list_type="file_path",
+        records=[rec(pattern="C:/panel-b", cells={"*": {"read": "allow"}})],
+    )
+
+    records = {r.pattern: r for r in store.get_security_lists()["user"]}
+    assert set(records) == {"C:/from-center", "C:/panel-b"}     # panel-a 被本次替换移除
+    assert records["C:/from-center"].migrated_from is None      # 别家的没被动
+    assert records["C:/panel-b"].migrated_from == "sandbox_panel"
+
+
+def test_replace_records_by_origin_skips_conflicting_objects(cfg):
+    """同操作对象已被别家占用 → 跳过并报出来（不夺权、不静默丢）。"""
+    store.upsert_record(rec(pattern="C:/shared", cells={"*": {"read": "deny"}}))
+
+    result = store.replace_records_by_origin(
+        origin="sandbox_panel", list_type="file_path",
+        records=[rec(pattern="C:/shared", cells={"*": {"read": "allow"}}),
+                 rec(pattern="C:/own", cells={"*": {"read": "allow"}})],
+    )
+
+    assert result["created"] == 1 and result["skipped"] == ["C:/shared"]
+    records = {r.pattern: r for r in store.get_security_lists()["user"]}
+    assert records["C:/shared"].cells == {"*": {"read": "deny"}}   # 原样
+    assert records["C:/shared"].migrated_from is None
+
+
+def test_replace_records_by_origin_is_scoped_by_type(cfg):
+    """只替换同类型的自己那份，不误伤另一类（面板域名集合不该动面板文件集合）。"""
+    store.replace_records_by_origin(
+        origin="sandbox_panel", list_type="domain",
+        records=[rec(type="domain", pattern="panel.example", match="exact",
+                     cells={"*": {"*": "deny"}})],
+    )
+    store.replace_records_by_origin(
+        origin="sandbox_panel", list_type="file_path",
+        records=[rec(pattern="C:/panel", cells={"*": {"read": "allow"}})],
+    )
+
+    records = {(r.type, r.pattern) for r in store.get_security_lists()["user"]}
+    assert records == {("domain", "panel.example"), ("file_path", "C:/panel")}
+
+
+def test_replace_records_by_origin_empty_clears_own(cfg):
+    store.replace_records_by_origin(
+        origin="sandbox_panel", list_type="domain",
+        records=[rec(type="domain", pattern="panel.example", match="exact",
+                     cells={"*": {"*": "deny"}})],
+    )
+    store.replace_records_by_origin(origin="sandbox_panel", list_type="domain", records=[])
+    assert store.get_security_lists()["user"] == []
+
+
 def test_migrate_legacy_unknown_source_rejected(cfg):
     with pytest.raises(ValueError, match="未知迁移来源"):
         store.migrate_legacy_once(sources=("approval_overrides",))
