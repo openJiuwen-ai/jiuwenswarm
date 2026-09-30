@@ -28,7 +28,6 @@ type AgentGroupDetailPageProps = {
   fileContent: AgentFileContent | null;
   fileStatus: RequestStatus;
   fileError: string | null;
-  actionError: string | null;
   actionNotice: string | null;
   busy: boolean;
   onBack: () => void;
@@ -55,7 +54,6 @@ export function AgentGroupDetailPage({
   fileContent,
   fileStatus,
   fileError,
-  actionError,
   actionNotice,
   busy,
   onBack,
@@ -242,11 +240,6 @@ export function AgentGroupDetailPage({
             </div>
           }
         />
-        {actionError ? (
-          <div className="agent-management-inline-error" role="alert">
-            {actionError}
-          </div>
-        ) : null}
         {actionNotice ? (
           <div className="agent-management-inline-notice" role="status">
             {actionNotice}

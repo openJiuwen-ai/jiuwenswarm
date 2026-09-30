@@ -9,6 +9,7 @@ import { CreatePluginPage } from './CreatePluginPage';
 import { RegisterMcpPage } from './RegisterMcpPage';
 import { UploadFileCreateModal } from './UploadFileCreateModal';
 import { Toast } from './Toast';
+import { toast } from '../ui/Toast/toastStore';
 import { equipmentListFilter } from '../../features/equipmentMarketplace';
 
 // "管理我的插件/MCP" 一次性跳转握手：调用方（InputArea.tsx 的扩展面板）先把目标 tab 存进这个
@@ -113,19 +114,18 @@ export function ConnectorMarketPanel({
   const clearPluginNotice = usePluginPackageStore((s) => s.clearNotice);
   const pluginSuccess = usePluginPackageStore((s) => s.successMessage);
   const clearPluginSuccess = usePluginPackageStore((s) => s.clearSuccess);
-  const [errorToast, setErrorToast] = useState<string | null>(null);
   const [successToast, setSuccessToast] = useState<string | null>(null);
 
   useEffect(() => {
     if (connectorError) {
-      setErrorToast(connectorError);
+      toast.open({ id: 'connector-market-action-error', content: connectorError, variant: 'error', duration: 5 });
       clearConnectorError();
     }
   }, [connectorError, clearConnectorError]);
 
   useEffect(() => {
     if (pluginError) {
-      setErrorToast(pluginError);
+      toast.open({ id: 'connector-market-action-error', content: pluginError, variant: 'error', duration: 5 });
       clearPluginError();
     }
   }, [pluginError, clearPluginError]);
@@ -313,7 +313,6 @@ export function ConnectorMarketPanel({
         />
       )}
 
-      {errorToast && <Toast message={errorToast} variant="error" onClose={() => setErrorToast(null)} />}
       {successToast && <Toast message={successToast} variant="success" onClose={() => setSuccessToast(null)} />}
     </div>
   );

@@ -56,6 +56,22 @@ const agentEditorSource = readFileSync(
   'utf8',
 );
 const pageCardSource = readFileSync(new URL('../src/components/ui/PageCard/PageCard.tsx', import.meta.url), 'utf8');
+const pickerDrawerSource = readFileSync(
+  new URL('../src/components/ui/PickerDrawer/PickerDrawer.tsx', import.meta.url),
+  'utf8',
+);
+const pickerListRegionSource = readFileSync(
+  new URL('../src/components/ui/PickerListRegion/PickerListRegion.tsx', import.meta.url),
+  'utf8',
+);
+const skillPickerDrawerSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/SkillPickerDrawer.tsx', import.meta.url),
+  'utf8',
+);
+const connectorPickerDrawerSource = readFileSync(
+  new URL('../src/components/ConnectorMarket/ConnectorPickerDrawer.tsx', import.meta.url),
+  'utf8',
+);
 const groupUploadSource = readFileSync(
   new URL('../src/components/AgentManagementPanel/AgentGroupUploadDialog.tsx', import.meta.url),
   'utf8',
@@ -403,7 +419,7 @@ test('Expert and Expert Team management keep the shared page shell and field lim
   assert.match(groupCardSource, /headerTestId="agent-group-card-open"/);
   assert.match(groupCardSource, /<PageCard[\s\S]*testId=\{`agent-group-card-\$\{item\.id\}`\}/);
   assert.match(groupCardSource, /interactive\s*\n?\s*ariaLabel/);
-  assert.match(groupCardSource, /className="agent-management-card__actions"/);
+  assert.match(groupCardSource, /defaultButton=\{defaultButton\}/);
   assert.doesNotMatch(groupCardSource, /<article/);
   assert.match(groupEditorSource, /data-testid="agent-group-editor-name"[\s\S]*maxLength=\{AGENT_NAME_MAX_LENGTH\}/);
   assert.match(
@@ -483,7 +499,7 @@ test('single-mode picker removes its redundant title and More routes to the matc
 });
 
 test('leader and member picker cards include the shared Expert description', () => {
-  assert.match(memberPickerSource, /import \{ FormDrawer, PageCard, Tabs \} from '\.\.\/ui';/);
+  assert.match(memberPickerSource, /import \{[^}]*PickerDrawer[^}]*PageCard[^}]*\} from '\.\.\/ui';/);
   assert.match(memberPickerSource, /<PageCard[\s\S]*testId="agent-group-member-picker-item"/);
   assert.match(memberPickerSource, /description=\{description\}/);
   assert.match(
@@ -519,12 +535,17 @@ test('management pickers expose source tabs and preserve install/connect actions
   assert.match(panelSource, /agentsStatus=\{state\.catalogCompatibilityStatus\}/);
   assert.match(groupEditorSource, /agentsError=\{agentsError\}/);
   assert.match(groupEditorSource, /onReloadAgents=\{onReloadAgents\}/);
-  assert.match(memberPickerSource, /agent-group-member-picker-tabs/);
+  assert.match(pickerDrawerSource, /data-testid=\{`\$\{testId\}-search`\}/);
+  assert.match(pickerDrawerSource, /wrapperTestId=\{`\$\{testId\}-tabs`\}/);
+  assert.match(pickerDrawerSource, /testId: `\$\{testId\}-tab-\$\{item\.value\}`/);
+  assert.match(memberPickerSource, /testId="agent-group-member-picker"/);
   assert.match(memberPickerSource, /agent-group-member-picker-install/);
-  assert.match(memberPickerSource, /agent-group-member-picker-error/);
+  assert.match(pickerListRegionSource, /testId=\{testId \? `\$\{testId\}-error` : undefined\}/);
+  assert.match(pickerListRegionSource, /retryTestId=\{testId \? `\$\{testId\}-retry` : undefined\}/);
+  assert.match(memberPickerSource, /testId="agent-group-member-picker"/);
   assert.match(memberPickerSource, /onReloadAgents/);
-  assert.match(memberPickerSource, /agent-group-member-picker-tab-market/);
-  assert.match(memberPickerSource, /agent-group-member-picker-tab-local/);
+  assert.match(memberPickerSource, /value: 'market'/);
+  assert.match(memberPickerSource, /value: 'local'/);
   assert.match(memberPickerSource, /sortAgentGroupOptions\(sourceAgents, agentsStatus\)/);
   assert.match(memberPickerSource, /isAgentGroupAgentCompatibilityLoading\(agent, agentsStatus\)/);
   assert.match(memberPickerSource, /className=.*is-loading/);
@@ -533,27 +554,24 @@ test('management pickers expose source tabs and preserve install/connect actions
     /sourceTab === 'market' \? agent\.source !== 'local' : agent\.source === 'local' \|\| agent\.installed === true/,
   );
   assert.match(memberPickerSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
-  assert.match(groupEditorSource, /isTeamSkillOption\(skill, skillSourceTab\)/);
-  assert.match(groupEditorSource, /isSkillVisibleInSourceTab\(skill, skillSourceTab\)/);
-  assert.match(groupEditorSource, /agent-group-editor-skill-picker-install/);
-  assert.match(groupEditorSource, /skillSourceTab/);
-  assert.match(groupEditorSource, /agent-group-editor-skill-picker-tabs/);
-  assert.match(groupEditorSource, /agent-group-editor-skill-picker-tab-market/);
-  assert.match(groupEditorSource, /agent-group-editor-skill-picker-tab-local/);
-  assert.match(groupEditorSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
-  assert.match(agentEditorSource, /agent-editor-skill-picker-tabs/);
-  assert.match(agentEditorSource, /agent-editor-skill-picker-load-more/);
-  assert.match(agentEditorSource, /agent-editor-mcp-picker-tabs/);
+  assert.match(skillPickerDrawerSource, /isTeamSkillOption\(skill, sourceTab\)/);
+  assert.match(skillPickerDrawerSource, /isSkillVisibleInSourceTab\(skill, sourceTab\)/);
+  assert.match(skillPickerDrawerSource, /sortInstalledFirst\(/);
+  assert.match(skillPickerDrawerSource, /testId: `\$\{testId\}-install`/);
+  assert.match(groupEditorSource, /<SkillPickerDrawer/);
+  assert.match(groupEditorSource, /testId="agent-group-editor-skill-picker"/);
+  assert.match(groupEditorSource, /initialSelectedIds=\{draft\.skillRefs\}/);
+  assert.match(agentEditorSource, /testId="agent-editor-skill-picker"/);
+  assert.match(pickerListRegionSource, /data-testid=\{testId \? `\$\{testId\}-load-more` : undefined\}/);
+  assert.match(agentEditorSource, /testId="agent-editor-mcp-picker"/);
   assert.match(agentEditorSource, /agent-editor-mcp-picker-connect/);
-  assert.match(agentEditorSource, /sortMcpOptions\(\s*mcpOptions\.filter\([\s\S]*?mcpSourceTab/);
+  assert.match(agentEditorSource, /<ConnectorPickerDrawer/);
+  assert.match(agentEditorSource, /filterItem=\{\(mcp, sourceTab\) =>/);
+  assert.match(agentEditorSource, /const sortedMcps = useMemo\(\(\) => sortMcpOptions\(mcpOptions\), \[mcpOptions\]\)/);
   assert.match(agentEditorSource, /const selectable = isMcpSelectable\(mcp\)/);
   assert.match(agentEditorSource, /interactive=\{selectable\}/);
-  assert.match(agentEditorSource, /agent-editor-skill-picker-tab-market/);
-  assert.match(agentEditorSource, /agent-editor-skill-picker-tab-local/);
-  assert.match(agentEditorSource, /isTeamSkillOption\(skill, skillSourceTab\)/);
-  assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-market/);
-  assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-installed/);
-  assert.match(agentEditorSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
+  assert.match(connectorPickerDrawerSource, /selected: selectedIds\.includes\(getItemKey\(item\)\)/);
+  assert.match(agentEditorSource, /value: 'installed'/);
   assert.doesNotMatch(agentEditorSource, /MCP_TYPE_OPTIONS|mcpTypeFilter|mcpTypeAll/);
   assert.match(panelSource, /const \[busySkillId, setBusySkillId\] = useState<string \| null>\(null\)/);
   assert.match(panelSource, /const \[busyMcpId, setBusyMcpId\] = useState<string \| null>\(null\)/);
@@ -605,14 +623,12 @@ test('Expert Team cards and details reuse the Expert visual primitives', () => {
     catalogPageSource,
     /<PageCard[\s\S]*className="agent-management-page-card agent-definition-card(?:\s|")/,
   );
-  assert.match(groupCardSource, /import \{ PageCard \} from '\.\.\/ui';/);
+  assert.match(groupCardSource, /import \{ PageCard, type PageCardDefaultButton \} from '\.\.\/ui';/);
   assert.match(groupCardSource, /className="agent-management-page-card agent-group-card"/);
   assert.match(groupCardSource, /<PageCard[\s\S]*testId=\{`agent-group-card-\$\{item\.id\}`\}/);
   assert.match(groupCardSource, /<PageCard[\s\S]*interactive/);
-  assert.match(
-    groupCardSource,
-    /className="agent-management-card__actions"[\s\S]*onClick=\{\(event\) => event\.stopPropagation\(\)\}/,
-  );
+  assert.match(groupCardSource, /variant: 'use'[\s\S]*variant: 'install'/);
+  assert.doesNotMatch(groupCardSource, /agent-management-card__actions/);
   assert.match(agentManagementCss, /\.agent-management-page-card \.entity-header__actions\s*\{\s*display: contents;/);
   assert.match(agentManagementCss, /\.agent-management-page-card \.entity-header__identity\s*\{\s*flex: 1 1 auto;/);
   assert.match(

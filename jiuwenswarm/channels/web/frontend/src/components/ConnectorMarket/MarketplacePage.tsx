@@ -1,10 +1,10 @@
-import SimpleSelect from '../CronPanel/SimpleSelect';
 import { InstallationFilterSelect, matchesInstallation, type InstallationFilter } from '../marketplace/InstallationFilterSelect';
 import { catalogCacheOf } from '../../features/catalogCache';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+// 深引入而非 ../ui barrel：本组件经 esbuild 独立打包进测试
+import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import { useConnectorStore } from '../../stores/connectorStore';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
 import { connectorApi } from '../../services/connectorApi';
@@ -61,120 +61,11 @@ interface MarketplacePageProps {
 // CATEGORIES` 这个写死的枚举已从 types/connector.ts 删除。
 const CATEGORY_TOP_N = 6;
 
-const PAGE_SIZE_ALL = -1;
-const PAGE_SIZE_OPTIONS = [30, 50, PAGE_SIZE_ALL];
-const DEFAULT_PAGE_SIZE = 30;
+/** 首批渲染数量；触底后每批追加同数量（列表数据在内存中，这里做增量展示）。 */
+const MARKET_BATCH_SIZE = 30;
+/** 触底判定余量：距滚动底部不足该像素即视为到底。 */
+const LOAD_MORE_THRESHOLD_PX = 40;
 
-function buildPageList(current: number, total: number): (number | 'ellipsis')[] {
-  if (total <= 7) {
-    return Array.from({ length: total }, (_, i) => i + 1);
-  }
-  const pages: (number | 'ellipsis')[] = [1];
-  const start = Math.max(2, current - 1);
-  const end = Math.min(total - 1, current + 1);
-  if (start > 2) pages.push('ellipsis');
-  for (let p = start; p <= end; p++) pages.push(p);
-  if (end < total - 1) pages.push('ellipsis');
-  pages.push(total);
-  return pages;
-}
-
-interface PaginationBarProps {
-  currentPage: number;
-  totalPages: number;
-  pageSize: number;
-  totalCount: number;
-  onPageChange: (page: number) => void;
-  onPageSizeChange: (size: number) => void;
-}
-
-function PaginationBar({
-  currentPage,
-  totalPages,
-  pageSize,
-  totalCount,
-  onPageChange,
-  onPageSizeChange,
-}: PaginationBarProps) {
-  const { t } = useTranslation();
-  const pageSizeOptions = useMemo(
-    () =>
-      PAGE_SIZE_OPTIONS.map((n) => ({
-        value: String(n),
-        label: n === PAGE_SIZE_ALL ? t('connectorMarket.pagination.all') : String(n),
-      })),
-    [t],
-  );
-  const pages = useMemo(() => buildPageList(currentPage, totalPages), [currentPage, totalPages]);
-  const showAll = pageSize === PAGE_SIZE_ALL;
-  const rangeStart = totalCount === 0 ? 0 : showAll ? 1 : (currentPage - 1) * pageSize + 1;
-  const rangeEnd = showAll ? totalCount : Math.min(currentPage * pageSize, totalCount);
-
-  return (
-    <div
-      className="mt-4 flex flex-wrap items-center justify-between gap-3 text-[13px] text-text-muted"
-      data-testid="connector-market-pagination"
-    >
-      <div className="flex items-center gap-2">
-        <span>{t('connectorMarket.pagination.pageSize')}</span>
-        <SimpleSelect
-          value={String(pageSize)}
-          onChange={(v) => onPageSizeChange(Number(v))}
-          options={pageSizeOptions}
-          className="w-20"
-          menuPlacement="up"
-        />
-        <span data-testid="connector-market-pagination-range-info">
-          {t('connectorMarket.pagination.rangeInfo', { start: rangeStart, end: rangeEnd, total: totalCount })}
-        </span>
-      </div>
-      {totalPages > 1 && (
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            disabled={currentPage <= 1}
-            onClick={() => onPageChange(currentPage - 1)}
-            aria-label={t('connectorMarket.pagination.prev') ?? undefined}
-            className="flex h-7 w-7 items-center justify-center rounded-md border border-border text-text hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
-            data-testid="connector-market-pagination-prev"
-          >
-            <ChevronLeft size={14} />
-          </button>
-          {pages.map((p, idx) =>
-            p === 'ellipsis' ? (
-              <span key={`ellipsis-${idx}`} className="px-1.5 text-text-muted">
-                …
-              </span>
-            ) : (
-              <button
-                key={p}
-                type="button"
-                onClick={() => onPageChange(p)}
-                data-testid="connector-market-pagination-page"
-                data-variant={p}
-                className={`flex h-7 min-w-7 items-center justify-center rounded-md px-1.5 text-[13px] ${
-                  p === currentPage ? 'bg-text font-bold text-text-inverse' : 'text-text hover:bg-bg-hover'
-                }`}
-              >
-                {p}
-              </button>
-            ),
-          )}
-          <button
-            type="button"
-            disabled={currentPage >= totalPages}
-            onClick={() => onPageChange(currentPage + 1)}
-            aria-label={t('connectorMarket.pagination.next') ?? undefined}
-            className="flex h-7 w-7 items-center justify-center rounded-md border border-border text-text hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
-            data-testid="connector-market-pagination-next"
-          >
-            <ChevronRight size={14} />
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
 
 export function MarketplacePage({
   topTab,
@@ -201,8 +92,7 @@ export function MarketplacePage({
   const createMenuRef = useRef<HTMLDivElement>(null);
   useClickOutside(createMenuRef, () => setCreateMenuOpen(false));
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
-  const [currentPage, setCurrentPage] = useState(1);
+  const [marketVisibleCount, setMarketVisibleCount] = useState(MARKET_BATCH_SIZE);
 
   const [tokenTarget, setTokenTarget] = useState<{
     name: string;
@@ -508,34 +398,24 @@ export function MarketplacePage({
       ? connectorIsLoading
       : pluginIsLoading;
 
-  // 切换 tab/子筛选/分类/状态筛选/搜索词都会让 activeList 变成一份新列表，统一重置回第1页，
-  // 避免停留在一个对新列表来说已经越界的页码上看到空白（同款处理见 CronPanel/index.tsx 的
-  // "搜索内容变化时重置回第 1 页"）。
+  // 切换 tab/子筛选/分类/状态筛选/搜索词都会让 activeList 变成一份新列表，统一回到首批
+  //（对齐原分页的重置行为，同款处理见 CronPanel/index.tsx 的"搜索内容变化时重置回第 1 页"）。
   useEffect(() => {
-    setCurrentPage(1);
+    setMarketVisibleCount(MARKET_BATCH_SIZE);
   }, [topTab, myKind, category, pluginCategory, query, installationFilter]);
 
-  const totalPages = pageSize === PAGE_SIZE_ALL ? 1 : Math.max(1, Math.ceil(activeList.length / pageSize));
+  const hasMoreMarketItems = marketVisibleCount < activeList.length;
+  const visibleConnectors = filteredConnectors.slice(0, marketVisibleCount);
+  const visiblePlugins = filteredPlugins.slice(0, marketVisibleCount);
 
-  // 列表变短（比如删除/卸载后仍留在原页）导致当前页码越界时钳制回合法范围
-  useEffect(() => {
-    setCurrentPage((p) => (p > totalPages ? totalPages : p));
-  }, [totalPages]);
-
-  const pageStart = pageSize === PAGE_SIZE_ALL ? 0 : (currentPage - 1) * pageSize;
-  const pageEnd = pageSize === PAGE_SIZE_ALL ? undefined : pageStart + pageSize;
-  const paginatedConnectors = filteredConnectors.slice(pageStart, pageEnd);
-  const paginatedPlugins = filteredPlugins.slice(pageStart, pageEnd);
-
-  function goToPage(page: number) {
-    setCurrentPage(page);
-    scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
-  }
-
-  function changePageSize(size: number) {
-    setPageSize(size);
-    setCurrentPage(1);
-  }
+  // 滚动触底：底部加载组件已可见，追加下一批
+  const handleListScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || !hasMoreMarketItems) return;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - LOAD_MORE_THRESHOLD_PX) {
+      setMarketVisibleCount((count) => Math.min(count + MARKET_BATCH_SIZE, activeList.length));
+    }
+  }, [activeList.length, hasMoreMarketItems]);
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="connector-market-marketplace">
@@ -567,7 +447,7 @@ export function MarketplacePage({
           </div>
 
           <div className="flex items-center gap-3">
-            <InstallationFilterSelect value={installationFilter} onChange={value => { setInstallationFilter(value); setCurrentPage(1); }} />
+            <InstallationFilterSelect value={installationFilter} onChange={setInstallationFilter} />
             <PageToolbarSearch
               wrapperTestId="connector-market-search"
               inputTestId="connector-market-search-input"
@@ -680,11 +560,11 @@ export function MarketplacePage({
       )}
 
 <CatalogCacheNotice cache={catalogCacheOf(topTab === 'my' ? (myKind === 'mcp' ? myConnectors : localPackages) : topTab === 'mcp' ? builtinConnectors : packages)} />
-<div ref={scrollRef} className="page-scroll min-h-0 flex-1 overflow-y-auto">
+<div ref={scrollRef} className="page-scroll min-h-0 flex-1 overflow-y-auto" onScroll={handleListScroll}>
 <div className="card-grid-auto" data-testid="connector-market-card-list">
         {topTab === 'my'
           ? myKind === 'mcp'
-            ? paginatedConnectors.map((connector) => {
+            ? visibleConnectors.map((connector) => {
                 const cs = mcpCardStates[connector.runtimePackageName];
                 // "我的MCP"卡片列表可达性：customize（我的MCP）恒可达，built_in 一旦不是从未
                 // 连接过的 idle 态也可达——见 mcpState.ts deriveMcpAvailability。
@@ -705,7 +585,7 @@ export function MarketplacePage({
                   />
                 );
               })
-            : paginatedPlugins.map((pkg) => {
+            : visiblePlugins.map((pkg) => {
                 const pluginInstalled = !!installed[pkg.id];
                 const pluginConnected = (pluginConnectionStateMap[pkg.id] ?? 'disconnected') === 'connected';
                 return (
@@ -732,7 +612,7 @@ export function MarketplacePage({
                 );
               })
           : topTab === 'mcp'
-            ? paginatedConnectors.map((connector) => {
+            ? visibleConnectors.map((connector) => {
                 const cs = mcpCardStates[connector.runtimePackageName];
                 const { installed: mcpInstalled } = deriveMcpAvailability(connector.installed, cs);
                 return (
@@ -751,7 +631,7 @@ export function MarketplacePage({
                   />
                 );
               })
-            : paginatedPlugins.map((pkg) => {
+            : visiblePlugins.map((pkg) => {
                 const pluginInstalled = !!installed[pkg.id];
                 const pluginConnected = (pluginConnectionStateMap[pkg.id] ?? 'disconnected') === 'connected';
                 return (
@@ -795,21 +675,19 @@ export function MarketplacePage({
                     : t('connectorMarket.empty.searchNoResult')}
           />
         )}
+        {hasMoreMarketItems ? (
+          <div
+            className="flex items-center justify-center gap-2 py-4"
+            role="status"
+            aria-label={t('connectorMarket.loadMore')}
+            data-testid="connector-market-load-more"
+          >
+            <LoadingSpinner size={16} testId="connector-market-load-more-spinner" />
+            <span className="text-sm text-text-muted">{t('connectorMarket.loadMore')}</span>
+          </div>
+        ) : null}
         </div>
       </div>
-
-      {!isEmpty && (
-        <div className="page-shell">
-          <PaginationBar
-            currentPage={currentPage}
-            totalPages={totalPages}
-            pageSize={pageSize}
-            totalCount={activeList.length}
-            onPageChange={goToPage}
-            onPageSizeChange={changePageSize}
-          />
-        </div>
-      )}
 
       {tokenTarget && (
         <ConnectTokenModal
