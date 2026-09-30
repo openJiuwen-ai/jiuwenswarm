@@ -19,7 +19,14 @@ class _FakeResourceMgr:
     def get_tool(self, tool_id: str) -> object | None:
         return self._tools.get(tool_id)
 
-    def add_tool(self, tool: object) -> None:
+    def add_tool(
+        self,
+        tool: object,
+        *,
+        refresh: bool = False,
+        skip_if_exists: bool = False,
+    ) -> None:
+        del refresh, skip_if_exists
         self._tools[tool.card.id] = tool
 
 
