@@ -296,6 +296,16 @@ def _get_evolution_config(config: dict[str, Any] | None) -> dict[str, Any]:
     return evolution_config if isinstance(evolution_config, dict) else {}
 
 
+def _get_research_gates_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        return {}
+    react_config = config.get("react")
+    if not isinstance(react_config, dict):
+        return {}
+    gates_config = react_config.get("research_gates")
+    return gates_config if isinstance(gates_config, dict) else {}
+
+
 def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
     """Return the canonical ``react.evolution.skill_evolution`` switch."""
     return _get_evolution_config(config).get("skill_evolution") is True
@@ -447,6 +457,17 @@ def get_evolution_review_feedback_min_confidence(config: dict[str, Any] | None) 
 def get_evolution_auto_save_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return canonical ``react.evolution.auto_save`` without disk/env reads."""
     return _get_evolution_config(config).get("auto_save") is True
+
+
+def get_research_gates_enabled(config: dict[str, Any] | None) -> bool:
+    """Return the canonical ``react.research_gates.enabled`` switch."""
+    return _get_research_gates_config(config).get("enabled") is True
+
+
+def get_research_gates_strictness(config: dict[str, Any] | None) -> str:
+    """Return ``react.research_gates.strictness`` (``full``|``autopilot``)."""
+    raw = str(_get_research_gates_config(config).get("strictness") or "").strip().lower()
+    return raw if raw in ("full", "autopilot") else "autopilot"
 
 
 def update_skill_evolution_enabled_in_config(enabled: bool) -> None:
