@@ -96,9 +96,14 @@ def _spatial_continuity_patch(graph: DesignerExecutionGraph) -> list[str]:
         if idx < 1:
             continue
         action = str(shot.get("action") or shot.get("keyframe_prompt") or "")
+        carried = shot.get("continuity_lock") if isinstance(shot.get("continuity_lock"), dict) else {}
         lock = merge_lock_with_previous(
             _infer_continuity_lock(action), shot_locks.get(idx - 1)
         )
+        for key in ("brief", "story"):
+            value = str(carried.get(key) or "").strip()
+            if value:
+                lock[key] = value
         shot["continuity_lock"] = lock
         shot_locks[idx] = lock
         clause = _continuity_prompt_clause(lock)
@@ -1478,6 +1483,12 @@ class Director:
                 "demonstration, or emotional state; no filler, repeated action, or cosmetic "
                 "coverage used to consume runtime. Ensure the timelines span the requested "
                 "duration and preserve setup/hook, development, and payoff/CTA as applicable. "
+                "A shot duration already written in the approved brief is fixed: copy that "
+                "length exactly and do not shorten it. Character names, wardrobe, and body "
+                "locks written there stay on those characters. Place names and geography "
+                "written there stay on those scenes. Continuity notes and per-shot story "
+                "beats written there stay in the shot; do not rename people, move the scene, "
+                "or replace the beat. "
                 "Materialize the Brief's Script/speech plan as exact speech_by_character and "
                 "speech_line values in the appropriate shots. Keep language_lock and exact "
                 "wording; use empty speech fields for deliberately silent shots and never add "
@@ -1510,7 +1521,8 @@ class Director:
                 "Respond JSON only: "
                 '{"style_lock":{"look":"...","medium":"..."},'
                 '"characters":[{"id":"char_1","name":"...","description":"..."}],'
-                '"shots":[{"shot_index":1,"timeline":"0-5s","camera":"...",'
+                '"shots":[{"shot_index":1,"timeline":"<copy this shot timeline from the approved brief>",'
+                '"camera":"...",'
                 '"action":"...","on_screen":["char_1"],"offscreen":["char_2"],'
                 '"featured_cast_ids":["char_1"],"cast_actions":{"char_1":"preaching"},'
                 '"ensemble_cast_ids":["char_1","char_2"],"setting_id":"set_1",'
@@ -1839,7 +1851,9 @@ class Director:
                 "approved storyboard; each action must advance the story or message, not repeat "
                 "an earlier action as filler or alternate coverage. Preserve exact per-shot "
                 "speech_by_character and speech_line from the storyboard. "
-                "story window needs, with contiguous timelines. Retain every storyboard "
+                "story window needs, with contiguous timelines. A duration the approved brief "
+                "already gave a shot stays that length. Keep the brief's character names and "
+                "wardrobe, place names, and continuity notes. Retain every storyboard "
                 "clip that provides distinct content. "
                 "YOU own target_shot_count (prefer ≤8, hard max 16). "
                 "One clip = one continuous shot of that window's length. New KF on hard cut, new setting, "
@@ -1858,7 +1872,8 @@ class Director:
                 "Schema: "
                 '{"style_lock":{"look":"...","medium":"..."},'
                 '"characters":[{"id":"char_1","name":"...","description":"..."}],'
-                '"shots":[{"shot_index":1,"timeline":"0-5s","action":"...",'
+                '"shots":[{"shot_index":1,"timeline":"<copy this shot timeline from the approved brief>",'
+                '"action":"...",'
                 '"speech_by_character":{"char_1":"exact line"},"speech_line":"..."}],'
                 '"target_shot_count":N,"include_speech":bool,'
                 '"include_music":bool,"notes":"..."}'
@@ -2046,6 +2061,7 @@ class Director:
 
             analysis = apply_shot_scope(analysis, user_prompt)
             shots = list(analysis.get("shots") or shots)
+            analysis["shots"] = shots
         except Exception:  # noqa: BLE001
             pass
         analysis["target_shot_count"] = len(shots)
@@ -3620,13 +3636,16 @@ class Director:
                 "user prompt did not state it verbatim. Do not introduce a conflicting or "
                 "unrelated plot, cast, claim, or geography. Fix missing characters/views, "
                 "enhance sparse shots "
-                "(crowd, atmosphere), set shot durations, enforce time-coherent continuity, and "
+                "(crowd, atmosphere), keep each shot duration the approved brief already wrote, "
+                "fill a duration only when that shot was left untimed, keep the brief's character "
+                "names, wardrobe, places, and continuity notes, enforce time-coherent continuity, and "
                 "keep geography locked (same landmarks/layout/light across views). "
                 "Also approve/enforce film audio locks: language_lock (one language for all "
                 "speech), per-shot speech_by_character (exact lines or {} if silent), and "
                 "film-wide bgm_lock. Respond JSON only: "
                 '{"ok":true,"shot_fixes":[{"shot_index":1,"action":"...","camera":"...",'
-                '"timeline":"0-5s","continuity_lock":{"forbid":"..."},'
+                '"timeline":"<copy this shot timeline from the approved brief>",'
+                '"continuity_lock":{"forbid":"..."},'
                 '"character_ids":["char_1"],'
                 '"speech_by_character":{"char_1":"exact line"},"speech_line":"..."}],'
                 '"language_lock":"en",'

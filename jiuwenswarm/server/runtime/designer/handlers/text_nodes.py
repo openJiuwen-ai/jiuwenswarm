@@ -77,6 +77,8 @@ Rules:
 - Every row advances action, information, product proof, or emotion; no filler, repeated action, or duplicate coverage
 - Preserve the arc's setup/hook, development/turn, and payoff/CTA as applicable
 - Timeline as start-end seconds, e.g. 0.0-4.0s — durations must sum coherently
+- If the Brief already gives a shot a duration, copy that duration exactly
+- If the Brief names a character, place, wardrobe, spoken line, or continuity rule, copy it exactly
 - Camera is shot size + angle, e.g. wide/establishing, medium/eye-level, close-up/eye-level, medium/slow pan
 - Move is push/pull/pan/dolly/static and speed
 - Character action: FULL DETAIL for THIS shot only — who is on screen, where they sit/stand,
