@@ -544,6 +544,36 @@ def migrate_sandbox_copy_once(copy_path: Path | None = None) -> int:
 # ---------------------------------------------------------------------------
 
 
+#: 格子严格度（同对象重复条目合并时取大者）
+_CELL_SEVERITY = {"allow": 0, "ask": 1, "deny": 2}
+
+
+def _merge_same_object(records: list[SecurityListRecord]) -> list[SecurityListRecord]:
+    """同操作对象（``type``+``pattern``+``match``）多条 → 合入一条，格子取最严。
+
+    legacy 段是列表，同对象重复条目（手改配置 / 历史脏数据）并不罕见。user 区
+    ``(type, pattern, match)`` 唯一，不合并就会在 ``validate_record`` 上撞唯一性、
+    整批事务中止——或者更糟：按 id 判定"同一条"而**静默丢弃**后一条的格子。
+    取最严是安全名单的默认取向：宁可更紧，不可更松。
+    """
+    merged: dict[tuple[str, str, str], SecurityListRecord] = {}
+    for rec in records:
+        key = (rec.type, rec.pattern, rec.match)
+        kept = merged.get(key)
+        if kept is None:
+            merged[key] = rec
+            continue
+        logger.warning(
+            "legacy 段同操作对象重复，合并取最严: %s %r", rec.type, rec.pattern
+        )
+        for mode, row in rec.cells.items():
+            target = kept.cells.setdefault(mode, {})
+            for op, action in row.items():
+                if _CELL_SEVERITY.get(action, 0) > _CELL_SEVERITY.get(target.get(op, ""), -1):
+                    target[op] = action
+    return list(merged.values())
+
+
 def _legacy_candidates(
     permissions: Any,
     sources: tuple[str, ...],
@@ -556,7 +586,7 @@ def _legacy_candidates(
     per_source: dict[str, int] = {}
 
     if "net_guard" in sources:
-        net = project_net_guard(perms)
+        net = _merge_same_object(project_net_guard(perms))
         per_source["net_guard"] = len(net)
         for rec in net:
             rec.migrated_from = "net_guard"
@@ -564,7 +594,10 @@ def _legacy_candidates(
 
     if "file_guard" in sources:
         # 投影会一并产出 approval_overrides（type=command），只要 file_path 那部分
-        files = [r for r in project_approvals(permissions=perms) if r.type == "file_path"]
+        files = [
+            r for r in _merge_same_object(project_approvals(permissions=perms))
+            if r.type == "file_path"
+        ]
         per_source["file_guard"] = len(files)
         for rec in files:
             rec.migrated_from = "file_guard"

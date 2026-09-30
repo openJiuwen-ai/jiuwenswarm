@@ -489,3 +489,23 @@ def test_migrate_legacy_sources_can_be_narrowed(cfg):
 def test_migrate_legacy_unknown_source_rejected(cfg):
     with pytest.raises(ValueError, match="未知迁移来源"):
         store.migrate_legacy_once(sources=("approval_overrides",))
+
+
+def test_migrate_legacy_merges_duplicate_objects_strictest_wins(cfg):
+    """legacy 同对象重复条目（手改配置/历史脏数据的常见形态）合入一条记录。
+
+    user 区 ``(type, pattern, match)`` 唯一，不合并就会撞唯一性校验 → 整批事务中止、
+    迁移直接失败。合并规则取**最严**（安全名单的默认取向：宁可更紧不可更松）。
+    """
+    _write_legacy_permissions(cfg, {
+        "file_guard": {"enabled": True, "paths": [
+            {"path": "C:/data", "read": "allow", "match": "prefix"},
+            {"path": "C:/data", "read": "deny", "write": "ask", "match": "prefix"},
+        ]},
+    })
+
+    result = store.migrate_legacy_once()
+
+    assert result["created"] == 1
+    record = store.get_security_lists()["user"][0]
+    assert record.cells == {"*": {"read": "deny", "write": "ask"}}

@@ -162,6 +162,11 @@ def _build_cards(*, session_id: str | None) -> tuple[list[dict[str, Any]], dict[
         index.setdefault((rec.type, rec.pattern, rec.match), card)
 
     # 磁盘审批（显式注入 permissions，绕开 ContextVar 误判 session 范围）
+    #
+    # **刻意不传 occupied（让位）**：卡片视图回答的是"用户按了删除之后，到底还会不会被拦"，
+    # 而 legacy 段即使被 rail 让位，core 的 FileGuardChecker / NetGuardChecker **仍在读它**
+    # （见 store.migrate_legacy_once 文档）。此处若也按让位隐藏，用户会以为"删了就没了"，
+    # 实际引擎照拦——那是比重复展示更糟的谎。让位只是 rail 侧的唯一真源，不是全局的。
     from jiuwenswarm.common.config import get_config
 
     config = get_config()
