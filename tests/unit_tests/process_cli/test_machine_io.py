@@ -259,7 +259,9 @@ def test_nonfinite_json_constants_are_rejected(constant: str) -> None:
 
 
 def test_deeply_nested_json_is_reported_as_invalid_input() -> None:
-    document = "[" * 2000 + "0" + "]" * 2000
+    # 20000 层在全部受支持版本（3.11–3.13）都会触发 RecursionError；
+    # 2000 层在 3.13 的 C 扫描器下可以正常解析。
+    document = "[" * 20000 + "0" + "]" * 20000
 
     with pytest.raises(MachineInputError, match="valid JSON document"):
         read_run_input("-", stdin=io.StringIO(document))

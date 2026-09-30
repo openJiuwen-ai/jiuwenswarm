@@ -710,7 +710,7 @@ def _launch_windows_installer_helper(
 class _WindowApi:
     def __init__(self, runtime: "DesktopRuntime") -> None:
         self._runtime = runtime
-        if sys.platform == "darwin":
+        if sys.platform == "darwin" and hasattr(runtime, "paste_clipboard"):
             # Expose only where the host implements the native paste command.
             self.paste_clipboard = runtime.paste_clipboard
 

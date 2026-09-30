@@ -47,7 +47,14 @@ from openjiuwen.harness.subagents.browser_agent import build_browser_agent_confi
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.explore_agent import build_explore_agent_config
 from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
-from openjiuwen.harness.tools import WebFetchWebpageTool, WebPaidSearchTool, is_paid_search_enabled
+from openjiuwen.harness.tools import (
+    AudioTranscriptionTool,
+    ImageOCRTool,
+    VisualQuestionAnsweringTool,
+    WebFetchWebpageTool,
+    WebPaidSearchTool,
+    is_paid_search_enabled,
+)
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
 
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
@@ -95,6 +102,7 @@ from jiuwenswarm.agents.harness.common.tools import (
     SkillToolkit,
 )
 from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
+from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.tool_ownership import (
     mark_stateless,
@@ -404,11 +412,24 @@ _TOOL_BUILD_NAMES: dict[str, str] = {
     "web_free_search": "_build_web_free_search_tool",
     "web_fetch_webpage": "_build_web_fetch_webpage_tool",
     "web_paid_search": "_build_paid_search_tool",
+    "visual_question_answering": "_build_visual_question_answering_tool",
+    "image_ocr": "_build_image_ocr_tool",
+    "video_understanding": "_build_video_understanding_tool",
+    "audio_transcription": "_build_audio_transcription_tool",
     "user_todos": "_build_user_todos_tool",
     "skill_toolkit": "_build_skill_toolkit",
     "skill_retrieval": "_build_skill_retrieval_toolkit",
     "acp_chat": "_build_acp_chat_tool",
 }
+
+_CODE_MULTIMODAL_TOOL_NAMES = frozenset(
+    {
+        "visual_question_answering",
+        "image_ocr",
+        "video_understanding",
+        "audio_transcription",
+    }
+)
 
 
 def _resolve_coding_memory_dir(
@@ -997,6 +1018,14 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._instance.deep_config.tool_owner_id = tool_owner_id
         self._instance.ability_manager.set_owner_id(tool_owner_id)
         self._code_spec_rails = list(self._instance.configured_rails())
+        # Reloads never sync a caller-supplied Spec's tools, so the multimodal
+        # config refresh must not track and rewrite them either.
+        self._set_code_multimodal_runtime_state(
+            self._code_build_context.artifacts.tools
+            if not self._custom_code_spec_active
+            and isinstance(self._code_build_context, code_agent_spec.CodeBuildContext)
+            else []
+        )
         self._tool_cards = self._collect_code_spec_tool_cards()
         # Symphony is configured outside modes.code.tools. Reuse the same
         # canonical capability sync as reload, and do it before rail startup so
@@ -1052,8 +1081,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             initial_workspace,
         )
 
-        # code 模式不传 vision_model_config / audio_model_config；
-        # context_engine_config 和 completion_timeout 已从 react 配置传入。
+        # Code multimodal tools consume the cached model configs through their
+        # configured builders; context_engine_config and completion_timeout are
+        # supplied through the Spec.
 
         # Cron tools belong to the agent's standing toolset, not to any one
         # request; build them here so the first turn does not pay for it either.
@@ -1180,12 +1210,146 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 exc,
             )
 
-    def _sync_multimodal_tools_for_runtime(self) -> None:
-        """Code mode excludes multimodal tools, including during scoped reloads.
+    def _configured_code_tool_names(self) -> list[str]:
+        """Return the configured Code tool names from the active snapshot."""
+        config_base = getattr(self, "_config_base_cache", None)
+        if not isinstance(config_base, dict) or not config_base:
+            config_base = self._active_code_config()
+        return list(config_base.get("modes", {}).get("code", {}).get("tools") or [])
 
-        Keep the inherited snapshot refresh and session fan-out behavior without
-        allowing the deep adapter's reload path to register these capabilities.
+    def _set_code_multimodal_runtime_state(self, tools: list[Any]) -> None:
+        """Track Spec-owned multimodal instances for scoped config reloads."""
+        tools_by_name: dict[str, Any] = {}
+        for tool in tools:
+            card = getattr(tool, "card", None)
+            if card is None or card.name not in _CODE_MULTIMODAL_TOOL_NAMES:
+                continue
+            tools_by_name[card.name] = tool
+        self._vision_tools = [
+            tools_by_name[name]
+            for name in ("visual_question_answering", "image_ocr")
+            if name in tools_by_name
+        ]
+        self._vision_tools_registered = bool(self._vision_tools)
+        self._audio_tools = (
+            [tools_by_name["audio_transcription"]]
+            if "audio_transcription" in tools_by_name
+            else []
+        )
+        self._audio_tools_registered = bool(self._audio_tools)
+        self._video_tool_registered = "video_understanding" in tools_by_name
+
+    def _align_code_multimodal_tool_records(self) -> None:
+        """Mirror multimodal-only reload results into the Spec-owned tool records.
+
+        A full Spec reload retires only tools listed in the previous
+        ``deep_config.tools``, and its rollback re-registers the previous build
+        context's tools, so both records must follow the live registrations.
         """
+        live_tools = [*self._vision_tools, *self._audio_tools]
+        if self._video_tool_registered:
+            live_tools.append(video_understanding)
+        active_tools: dict[str, Any] = {}
+        for tool in live_tools:
+            card = getattr(tool, "card", None)
+            if card is not None:
+                active_tools[card.name] = tool
+        configured_active = [
+            active_tools[name]
+            for name in self._configured_code_tool_names()
+            if name in active_tools
+        ]
+        context = self._code_build_context
+        if isinstance(context, code_agent_spec.CodeBuildContext):
+            retained_tools = []
+            for tool in context.artifacts.tools:
+                card_name = getattr(getattr(tool, "card", None), "name", None)
+                if card_name not in _CODE_MULTIMODAL_TOOL_NAMES:
+                    retained_tools.append(tool)
+            context.artifacts.tools = retained_tools + configured_active
+        deep_config = getattr(self._instance, "deep_config", None)
+        if deep_config is not None:
+            deep_config.tools = [
+                card
+                for card in getattr(deep_config, "tools", None) or []
+                if getattr(card, "name", None) not in _CODE_MULTIMODAL_TOOL_NAMES
+            ] + [tool.card for tool in configured_active]
+
+    def _sync_multimodal_tools_for_runtime(self) -> None:
+        """Sync only the multimodal tools explicitly configured for Code mode."""
+        if self._custom_code_spec_active:
+            return
+
+        configured = set(self._configured_code_tool_names())
+        agent_id = self._tool_owner_id()
+
+        desired_vision_names = {
+            name
+            for name in ("visual_question_answering", "image_ocr")
+            if name in configured and self._vision_model_config is not None
+        }
+        current_vision_names = {tool.card.name for tool in self._vision_tools}
+        if (
+            self._vision_tools_registered
+            and current_vision_names != desired_vision_names
+        ):
+            self._remove_registered_tools(self._vision_tools)
+            self._prune_tool_cards(current_vision_names)
+            self._vision_tools = []
+            self._vision_tools_registered = False
+
+        def _create_vision_tools() -> list[Any]:
+            created: list[Any] = []
+            for name in ("visual_question_answering", "image_ocr"):
+                if name not in desired_vision_names:
+                    continue
+                tool = self._get_tool_build_func(name, agent_id)
+                if tool is not None:
+                    created.append(tool)
+            return created
+
+        self._vision_tools, self._vision_tools_registered = self._sync_tool_group(
+            current_tools=self._vision_tools,
+            registered=self._vision_tools_registered,
+            enabled=bool(desired_vision_names),
+            create_fn=_create_vision_tools,
+            warn_label="Code vision tools",
+        )
+
+        desired_audio_names = (
+            {"audio_transcription"}
+            if "audio_transcription" in configured
+            and self._audio_model_config is not None
+            else set()
+        )
+        current_audio_names = {tool.card.name for tool in self._audio_tools}
+        if self._audio_tools_registered and current_audio_names != desired_audio_names:
+            self._remove_registered_tools(self._audio_tools)
+            self._prune_tool_cards(current_audio_names)
+            self._audio_tools = []
+            self._audio_tools_registered = False
+        self._audio_tools, self._audio_tools_registered = self._sync_tool_group(
+            current_tools=self._audio_tools,
+            registered=self._audio_tools_registered,
+            enabled=bool(desired_audio_names),
+            create_fn=lambda: [
+                tool
+                for tool in [self._get_tool_build_func("audio_transcription", agent_id)]
+                if tool is not None
+            ],
+            warn_label="Code audio transcription tool",
+        )
+
+        _, self._video_tool_registered = self._sync_tool_group(
+            current_tools=mark_stateless([video_understanding]),
+            registered=self._video_tool_registered,
+            enabled=(
+                "video_understanding" in configured and bool(self._video_model_config)
+            ),
+            create_fn=lambda: mark_stateless([video_understanding]),
+            warn_label="Code video understanding tool",
+        )
+        self._align_code_multimodal_tool_records()
 
     async def reload_agent_config(
         self,
@@ -1420,6 +1584,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._commit_reload_fingerprints(reload_fingerprints)
         self._code_agent_spec = new_spec
         self._code_build_context = new_context
+        self._set_code_multimodal_runtime_state(new_context.artifacts.tools)
         self._code_spec_rails = [
             rail
             for rail in self._instance.configured_rails()
@@ -2430,6 +2595,43 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._paid_search_tool = tool
         self._paid_search_registered = True
         return tool
+
+    def _build_visual_question_answering_tool(self, agent_id: str) -> Any | None:
+        """Build visual question answering when the vision model is ready."""
+        if self._vision_model_config is None:
+            return None
+        return VisualQuestionAnsweringTool(
+            language=self._resolve_runtime_language(),
+            vision_model_config=self._vision_model_config,
+            agent_id=agent_id,
+        )
+
+    def _build_image_ocr_tool(self, agent_id: str) -> Any | None:
+        """Build image OCR when the vision model is ready."""
+        if self._vision_model_config is None:
+            return None
+        return ImageOCRTool(
+            language=self._resolve_runtime_language(),
+            vision_model_config=self._vision_model_config,
+            agent_id=agent_id,
+        )
+
+    def _build_video_understanding_tool(self, agent_id: str) -> Any | None:
+        """Expose the shared video-understanding tool when configured."""
+        del agent_id
+        if not self._video_model_config:
+            return None
+        return mark_stateless([video_understanding])[0]
+
+    def _build_audio_transcription_tool(self, agent_id: str) -> Any | None:
+        """Build only transcription from the wider audio tool family."""
+        if self._audio_model_config is None:
+            return None
+        return AudioTranscriptionTool(
+            language=self._resolve_runtime_language(),
+            audio_model_config=self._audio_model_config,
+            agent_id=agent_id,
+        )
 
     def _sync_paid_search_tool_for_runtime(self) -> None:
         """Sync paid search while respecting ``modes.code.tools``."""

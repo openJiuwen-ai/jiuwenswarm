@@ -1550,6 +1550,10 @@ modes:
       - web_free_search
       - web_fetch_webpage
       - web_paid_search
+      - visual_question_answering
+      - image_ocr
+      - video_understanding
+      - audio_transcription
       - user_todos
       - skill_toolkit
       - skill_retrieval
