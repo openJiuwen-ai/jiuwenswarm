@@ -22,7 +22,7 @@ import time
 from collections import Counter
 from collections.abc import Mapping
 from contextlib import aclosing, asynccontextmanager, contextmanager
-from contextvars import ContextVar, Token
+from contextvars import Context, ContextVar, Token, copy_context
 from dataclasses import dataclass, replace
 from pathlib import Path
 from shutil import which
@@ -68,7 +68,15 @@ from openjiuwen.core.sys_operation import (
     SysOperationCard,
     OperationMode,
 )
-from openjiuwen.core.sys_operation.cwd import init_cwd
+from openjiuwen.core.sys_operation.cwd import (
+    CwdState,
+    get_workspace,
+    init_cwd,
+    set_cwd,
+    set_original_cwd,
+    set_project_root,
+    set_workspace,
+)
 from openjiuwen.harness import (
     AudioModelConfig,
     DeepAgent,
@@ -10780,14 +10788,14 @@ class JiuWenSwarmDeepAdapter:
                 get_agent_workspace_dir()
             )
         else:
-            initial_runtime_workspace = self._project_dir or str(
-                get_default_project_session_workspace_dir()
-            )
+            # Seed the session directory before the scheduler starts.
+            initial_runtime_workspace = self._initial_runtime_workspace()
         initial_cwd = initial_runtime_workspace
         if self._enable_auto_permission:
             initial_cwd = str(self._require_permission_workspace_binding().cwd)
             self._instance.deep_config.cwd = initial_cwd
             self._instance.deep_config.project_root = initial_runtime_workspace
+        # The scheduler and its tasks inherit this session's CwdState.
         self._seed_runtime_cwd(initial_cwd, workspace=initial_runtime_workspace)
         setattr(self._instance, "_jiuwenswarm_project_dir", initial_runtime_workspace)
 
@@ -11912,26 +11920,45 @@ class JiuWenSwarmDeepAdapter:
         if self._instance.deep_config is not None:
             self._instance.deep_config.language = resolved_language
 
-    def _seed_runtime_cwd(
-        self, cwd: str | None = None, workspace: str | None = None
-    ) -> None:
-        """Seed Core's CwdState holder from the request/runtime cwd.
-
-        ``workspace``: optional per-request workspace override. When set,
-        becomes the workspace anchor for tools that read ``get_workspace()``
-        (notably ``fs_operation``'s sandbox enforcement, which gates
-        absolute-path writes by membership in the workspace tree). When
-        unset, falls back to the agent's instance-level workspace.
-        """
-        workspace_root = str(
-            workspace or self._workspace_dir or self._project_dir or os.getcwd()
+    def _initial_runtime_workspace(self) -> str:
+        """Use this session's directory, or the shared root for a root adapter."""
+        return self._project_dir or str(
+            get_default_project_session_workspace_dir(self._parent_session_id)
         )
+
+    def _runtime_workspace_root(self, workspace: str | None) -> str:
+        return str(workspace or self._workspace_dir or self._project_dir or os.getcwd())
+
+    def _resolve_runtime_cwd(self, cwd: str | None, workspace_root: str) -> str:
+        """Pick the first directory that exists: request cwd, project dir, workspace."""
         runtime_cwd = str(cwd or "").strip()
         if not runtime_cwd or not os.path.isdir(runtime_cwd):
             runtime_cwd = str(self._project_dir or "").strip()
         if not runtime_cwd or not os.path.isdir(runtime_cwd):
             runtime_cwd = workspace_root
+        return runtime_cwd
+
+    def _seed_runtime_cwd(
+        self, cwd: str | None = None, workspace: str | None = None
+    ) -> None:
+        """Bind a new CwdState before this agent's scheduler starts.
+
+        Replacing the binding isolates child agents from their parent. The
+        workspace stays the file-tool sandbox root for this session.
+        """
+        workspace_root = self._runtime_workspace_root(workspace)
+        runtime_cwd = self._resolve_runtime_cwd(cwd, workspace_root)
         init_cwd(runtime_cwd, project_root=workspace_root, workspace=workspace_root)
+        # Retain Core's cwd binding without other context values.
+        bindings = [
+            (variable, value)
+            for variable, value in copy_context().items()
+            if isinstance(value, CwdState)
+        ]
+        if len(bindings) != 1:
+            raise RuntimeError("Expected one cwd binding after init_cwd")
+        self._runtime_cwd_context = Context()
+        self._runtime_cwd_context.run(bindings[0][0].set, bindings[0][1])
 
     @staticmethod
     def _resolve_request_task_name(
@@ -11986,6 +12013,32 @@ class JiuWenSwarmDeepAdapter:
             normalized.split(".", 1)[0] == "agent"
             and not is_code_profile_mode(normalized)
         )
+
+    def _reseed_runtime_cwd(
+        self, cwd: str | None = None, workspace: str | None = None
+    ) -> None:
+        """Update the scheduler's CwdState and bind this request's cwd.
+
+        Later requests can arrive in a different async context. The saved
+        binding still points to the state inherited by scheduler tasks.
+        """
+        workspace_root = self._runtime_workspace_root(workspace)
+        runtime_cwd = self._resolve_runtime_cwd(cwd, workspace_root)
+        session_context = getattr(self, "_runtime_cwd_context", None)
+        if session_context is None:
+            self._seed_runtime_cwd(cwd, workspace=workspace)
+            return
+
+        def update_session_state() -> None:
+            if get_workspace() != workspace_root:
+                set_original_cwd(runtime_cwd)
+                set_project_root(workspace_root)
+                set_workspace(workspace_root)
+            set_cwd(runtime_cwd)
+
+        session_context.run(update_session_state)
+        # Do not mutate a different agent's state inherited by this request.
+        init_cwd(runtime_cwd, project_root=workspace_root, workspace=workspace_root)
 
     @dataclass
     class _RuntimeConfig:
@@ -12171,7 +12224,8 @@ class JiuWenSwarmDeepAdapter:
             # workspace.root_path (~/.jiuwenswarm/agent/workspace).
             deep_config.cwd = task_cwd
             deep_config.project_root = task_workspace
-        self._seed_runtime_cwd(task_cwd, workspace=task_workspace)
+        # Update the CwdState already held by the session's scheduler.
+        self._reseed_runtime_cwd(task_cwd, workspace=task_workspace)
         if runtime_paths is not None and runtime_paths.is_projectless:
             setattr(self._instance, "_jiuwenswarm_project_dir", task_workspace)
         resolved_language = self._resolve_runtime_language()
