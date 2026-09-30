@@ -444,6 +444,41 @@ def get_evolution_review_feedback_min_confidence(config: dict[str, Any] | None) 
         return 0.7
 
 
+def get_execution_grounded_gate_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Return ``react.evolution.execution_gate`` with safe defaults.
+
+    The gate is opt-in (``enabled`` defaults to False) so existing workspaces
+    keep native SkillEvolutionRail behaviour. When enabled, JiuwenSwarm wraps
+    the evolution rail with a success-window headroom check.
+
+    Returns:
+        ``{enabled, window, min_samples, min_confidence}``.
+    """
+    raw = _get_evolution_config(config).get("execution_gate")
+    if not isinstance(raw, dict):
+        raw = {}
+
+    def _int(key: str, default: int) -> int:
+        try:
+            return max(1, int(raw.get(key, default)))
+        except (TypeError, ValueError):
+            return default
+
+    def _float(key: str, default: float) -> float:
+        try:
+            v = float(raw.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return max(0.0, min(1.0, v))
+
+    return {
+        "enabled": raw.get("enabled") is True,
+        "window": _int("window", 6),
+        "min_samples": _int("min_samples", 3),
+        "min_confidence": _float("min_confidence", 0.6),
+    }
+
+
 def get_evolution_auto_save_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return canonical ``react.evolution.auto_save`` without disk/env reads."""
     return _get_evolution_config(config).get("auto_save") is True
