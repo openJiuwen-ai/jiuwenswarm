@@ -179,6 +179,11 @@ class AgentTaskExecutor:
                     "question": a["question"],
                     "custom_input": a.get("answer", ""),
                     "selected_options": a.get("selected_options", []),
+                    **(
+                        {"card_id": a["card_id"]}
+                        if isinstance(a.get("card_id"), str) and a["card_id"]
+                        else {}
+                    ),
                 }
                 for a in interaction["answers"]
             ),
