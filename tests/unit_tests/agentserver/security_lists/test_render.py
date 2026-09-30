@@ -25,9 +25,14 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(config_mod, "get_config_file", lambda: cfg_path)
     copy_path = tmp_path / "windows-policy.runtime.yaml"
     monkeypatch.setattr(spr, "_runtime_copy_path", lambda: copy_path)
+    linux_copy = tmp_path / "default-policy.runtime.yaml"
+    monkeypatch.setattr(spr, "_linux_runtime_copy_path", lambda: linux_copy)
     audit_path = tmp_path / "security_audit.jsonl"
     monkeypatch.setattr(audit, "_audit_file", lambda: audit_path)
-    return {"cfg": cfg_path, "copy": copy_path, "audit": audit_path}
+    # 默认按 Windows 主机跑；要验 Linux 分支的用例自己把它翻过来
+    monkeypatch.setattr(spr, "_is_windows", lambda: True)
+    return {"cfg": cfg_path, "copy": copy_path, "linux_copy": linux_copy,
+            "audit": audit_path}
 
 
 def rec(**kw) -> SecurityListRecord:
@@ -264,6 +269,73 @@ def test_panel_network_set_keeps_disable_all_out_of_lists(env, monkeypatch):
 
     assert _read_copy(env["copy"])["windows"]["network"]["disable_all"] is True
     assert store.get_security_lists()["user"] == []
+
+
+# ---------------------------------------------------------------------------
+# Linux 副本（default-policy.runtime.yaml）：只有 network.egress 两列表
+# ---------------------------------------------------------------------------
+
+
+def test_render_linux_copy_writes_egress_from_lists(env):
+    """Linux 沙箱的 egress 也必须由名单驱动（此前只有面板能写它 → 名单的域名规则到不了）。"""
+    store.upsert_record(rec(type="domain", pattern="blocked.example", match="exact",
+                            cells={"*": {"*": "deny"}}))
+    store.upsert_record(rec(type="domain", pattern="*.ok.example", match="wildcard",
+                            cells={"*": {"*": "allow"}}))
+    # 文件类规则不该出现在 Linux 副本里（Linux 侧没有文件 ACL 段）
+    store.upsert_record(rec(pattern="C:/locked", cells={"*": {"read": "deny"}}))
+
+    counts = render.render_linux_copy(mode="*")
+
+    assert counts == {"allowed_domains": 1, "blocked_domains": 1}
+    data = _read_copy(env["linux_copy"])
+    assert data == {"network": {"egress": {
+        "allowed_domains": ["*.ok.example"], "blocked_domains": ["blocked.example"],
+    }}}
+
+
+def test_render_linux_copy_warns_but_still_renders_on_unmanaged(env):
+    """与 Windows 同一条不变式：出现未纳管条目 → 照常渲染 + 留痕。"""
+    env["linux_copy"].write_text(yaml.safe_dump({
+        "network": {"egress": {"allowed_domains": ["legacy.example"],
+                               "blocked_domains": []}},
+    }), encoding="utf-8")
+
+    render.render_linux_copy(mode="*")
+
+    assert _read_copy(env["linux_copy"])["network"]["egress"]["allowed_domains"] == []
+    events = [
+        json.loads(ln)
+        for ln in env["audit"].read_text(encoding="utf-8").splitlines() if ln.strip()
+    ]
+    assert [e["kind"] for e in events] == [audit.AUDIT_RENDER_DROPPED]
+    assert events[0]["target"] == "linux"
+
+
+def test_panel_network_set_on_linux_writes_lists_not_copy(env, monkeypatch):
+    """Linux 分支也收敛到名单：否则名单的域名规则永远到不了 Linux egress。"""
+    monkeypatch.setattr(spr, "_is_windows", lambda: False)
+
+    result = spr.set_sandbox_network_config(False, ["ok.example"], ["*.evil.example"])
+
+    assert result["allow_domains"] == ["ok.example"]
+    records = {r.pattern for r in store.get_security_lists()["user"] if r.type == "domain"}
+    assert records == {"ok.example", "*.evil.example"}
+    # Linux 副本由渲染产出（而不是 set 直接写）
+    egress = _read_copy(env["linux_copy"])["network"]["egress"]
+    assert egress == {"allowed_domains": ["ok.example"], "blocked_domains": ["*.evil.example"]}
+    # 两份副本都由本次渲染统一产出（不做平台分支：哪台机器跑哪种沙箱，那份都是新的）
+    assert _read_copy(env["copy"])["windows"]["network"]["egress"]["blocked_domains"] == [
+        "*.evil.example"
+    ]
+
+
+def test_panel_network_set_on_linux_removal_propagates(env, monkeypatch):
+    monkeypatch.setattr(spr, "_is_windows", lambda: False)
+    spr.set_sandbox_network_config(False, ["a.example", "b.example"], [])
+    spr.set_sandbox_network_config(False, ["a.example"], [])
+
+    assert _read_copy(env["linux_copy"])["network"]["egress"]["allowed_domains"] == ["a.example"]
 
 
 def test_render_skips_non_absolute_paths(env):

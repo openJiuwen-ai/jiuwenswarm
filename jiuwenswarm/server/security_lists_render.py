@@ -37,7 +37,7 @@ from jiuwenswarm.agents.harness.common.rails.security_lists.models import resolv
 
 logger = logging.getLogger(__name__)
 
-#: 副本六列表键（filesystem 四轴 + egress 两轴）
+#: Windows 副本键（filesystem 四轴 + egress 两轴）
 _LIST_KEYS: tuple[str, ...] = (
     "allow_read",
     "allow_write",
@@ -46,6 +46,9 @@ _LIST_KEYS: tuple[str, ...] = (
     "allowed_domains",
     "blocked_domains",
 )
+
+#: Linux 副本键（只有 egress 两轴）
+_LINUX_LIST_KEYS: tuple[str, ...] = ("allowed_domains", "blocked_domains")
 
 
 def _current_mode() -> str:
@@ -121,8 +124,38 @@ def _copy_lists(data: Any, spr: Any) -> dict[str, list[str]]:
     }
 
 
+def _warn_unmanaged(
+    target: str,
+    current: dict[str, list[str]],
+    wanted: dict[str, list[str]],
+    keys: tuple[str, ...],
+    *,
+    mode: str | None,
+) -> None:
+    """渲染会丢掉副本里未纳管条目时留痕（照常渲染，不拦截——见模块 docstring）。"""
+    lost = {
+        key: [v for v in current[key] if v not in set(wanted[key])]
+        for key in keys
+    }
+    lost = {key: values for key, values in lost.items() if values}
+    if not lost:
+        return
+    logger.warning(
+        "security_lists → %s 副本渲染丢弃了副本里未纳管的条目 %s。"
+        "本模块应是副本列表的唯一写入者，出现这条说明另有写入者，请排查",
+        target, lost,
+    )
+    audit.log_event(
+        audit.AUDIT_RENDER_DROPPED,
+        reason="unmanaged_entries_overwritten",
+        target=target,
+        mode=mode or "",
+        dropped=lost,
+    )
+
+
 def render_sandbox_copy(*, mode: str | None = None) -> dict[str, Any]:
-    """把名单渲染进运行时副本用户段（保留 ``disable_all``），返回各类条数。
+    """把名单渲染进 **Windows** 运行时副本用户段（保留 ``disable_all``），返回各类条数。
 
     复用 ``sandbox_policy_render`` 的副本读写与校验（原子写 + 非法条目跳过）。
     调用方负责触发 box-server 重载；本函数异常原样上抛（调用方 best-effort 捕获）。
@@ -130,29 +163,14 @@ def render_sandbox_copy(*, mode: str | None = None) -> dict[str, Any]:
     若本次渲染会丢掉副本里已有、而名单不知道的条目 → **照常渲染**（本模块是副本的
     唯一写入者，正常不该出现），但 WARNING + 审计留痕 ``security.list.render.dropped``——
     出现即说明又有别的写入者在改副本，应排查。
+
+    Linux 副本见 :func:`render_linux_copy`；两者都由名单写后的同步动作调用。
     """
     from jiuwenswarm.server import sandbox_policy_render as spr
 
     wanted = collect_sandbox_lists(mode=mode)
     data = spr._load_copy()  # noqa: SLF001 - 同 server 包内复用副本读写
-    current = _copy_lists(data, spr)
-    dropped = {
-        key: [v for v in current[key] if v not in set(wanted[key])]
-        for key in _LIST_KEYS
-    }
-    lost = {key: values for key, values in dropped.items() if values}
-    if lost:
-        logger.warning(
-            "security_lists → 沙箱副本渲染丢弃了副本里未纳管的条目 %s。"
-            "本模块应是副本六列表的唯一写入者，出现这条说明另有写入者，请排查",
-            lost,
-        )
-        audit.log_event(
-            audit.AUDIT_RENDER_DROPPED,
-            reason="unmanaged_entries_overwritten",
-            mode=mode or "",
-            dropped=lost,
-        )
+    _warn_unmanaged("windows", _copy_lists(data, spr), wanted, _LIST_KEYS, mode=mode)
 
     fs = data["windows"]["filesystem"]
     fs["allow_read"] = spr._norm_file_paths(wanted["allow_read"])  # noqa: SLF001
@@ -164,11 +182,39 @@ def render_sandbox_copy(*, mode: str | None = None) -> dict[str, Any]:
     egress["blocked_domains"] = spr._norm_domains(wanted["blocked_domains"])  # noqa: SLF001
     spr._save_copy(data)  # noqa: SLF001
     rendered: dict[str, Any] = {key: len(wanted[key]) for key in _LIST_KEYS}
-    logger.info("security_lists → 沙箱副本渲染完成: %s", rendered)
+    logger.info("security_lists → Windows 副本渲染完成: %s", rendered)
+    return rendered
+
+
+def render_linux_copy(*, mode: str | None = None) -> dict[str, Any]:
+    """把名单**域名**规则渲染进 Linux 运行时副本 ``default-policy.runtime.yaml``。
+
+    Linux 副本只有 ``network.egress`` 两个列表（没有 filesystem 段、没有
+    ``disable_all``），所以只取名单的 domain 类条目。
+
+    此前 Linux 副本只有 ``sandbox.network.set`` 在写，名单里配的域名规则**到不了**
+    Linux 沙箱的 egress —— 本函数补上这条链，并让副本的写入者也收敛到本模块
+    （``set_sandbox_network_config`` 的 Linux 分支已改为写名单）。
+    """
+    from jiuwenswarm.server import sandbox_policy_render as spr
+
+    wanted_all = collect_sandbox_lists(mode=mode)
+    wanted = {key: wanted_all[key] for key in _LINUX_LIST_KEYS}
+    data = spr._load_linux_copy()  # noqa: SLF001
+    egress = data["network"]["egress"]
+    current = {key: spr._norm_domains(egress.get(key) or []) for key in _LINUX_LIST_KEYS}  # noqa: SLF001
+    _warn_unmanaged("linux", current, wanted, _LINUX_LIST_KEYS, mode=mode)
+
+    egress["allowed_domains"] = spr._norm_domains(wanted["allowed_domains"])  # noqa: SLF001
+    egress["blocked_domains"] = spr._norm_domains(wanted["blocked_domains"])  # noqa: SLF001
+    spr._save_linux_copy(data)  # noqa: SLF001
+    rendered: dict[str, Any] = {key: len(wanted[key]) for key in _LINUX_LIST_KEYS}
+    logger.info("security_lists → Linux 副本渲染完成: %s", rendered)
     return rendered
 
 
 __all__ = [
     "collect_sandbox_lists",
+    "render_linux_copy",
     "render_sandbox_copy",
 ]

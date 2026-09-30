@@ -232,9 +232,13 @@ def _trigger_sandbox_sync() -> None:
     副本内容未变时 runner 指纹比对早退，不会真重启 box-server。
     """
     try:
-        from jiuwenswarm.server.security_lists_render import render_sandbox_copy
+        from jiuwenswarm.server.security_lists_render import (
+            render_linux_copy,
+            render_sandbox_copy,
+        )
 
         render_sandbox_copy()
+        render_linux_copy()
     except Exception as exc:  # noqa: BLE001
         logger.warning("[security_lists] 沙箱副本渲染失败（rail 热读不受影响）: %s", exc)
         return

@@ -315,14 +315,18 @@ def _panel_records(list_type: str, entries: list[tuple[str, str]]) -> list[Any]:
 
 
 def _apply_panel_records(list_type: str, records: list[Any]) -> dict[str, Any]:
-    """写名单（只替换面板自己那份）→ 渲染副本."""
+    """写名单（只替换面板自己那份）→ 渲染两份运行时副本."""
     from jiuwenswarm.agents.harness.common.rails.security_lists import store
-    from jiuwenswarm.server.security_lists_render import render_sandbox_copy
+    from jiuwenswarm.server.security_lists_render import (
+        render_linux_copy,
+        render_sandbox_copy,
+    )
 
     result = store.replace_records_by_origin(
         origin=store.ORIGIN_SANDBOX_PANEL, list_type=list_type, records=records,
     )
     render_sandbox_copy()
+    render_linux_copy()
     return result
 
 
@@ -452,29 +456,17 @@ def set_sandbox_network_config(
     # P0-7: 域名校验 (格式 + 无端口/路径/控制字符), 非法条目 warning 跳过.
     allow_norm = _norm_domains(allow_domains)
     deny_norm = _norm_domains(deny_domains)
-    if not _is_windows():
-        # Linux 分支维持原样：Linux 副本（default-policy.runtime.yaml）不是
-        # security_lists_render 的渲染目标，改走名单会让 Linux egress **掉规则**。
-        data = _load_linux_copy()
-        net = data["network"]
-        net["egress"]["allowed_domains"] = list(allow_norm)
-        net["egress"]["blocked_domains"] = list(deny_norm)
-        _save_linux_copy(data)
-        return {
-            "disable_all": disable_all,
-            "allow_domains": allow_norm,
-            "deny_domains": deny_norm,
-        }
-
-    # Windows：写面收敛——域名走名单，disable_all 是沙箱总开关（非名单语义）仍直接落副本。
+    # 写面收敛（Windows 与 Linux 同一套）：域名走名单，副本由渲染产生。
+    # disable_all 是沙箱总开关、不是名单语义，仍直接落副本（Linux 无此键，见上）。
     records = _panel_records(
         "domain",
         [(d, "allow") for d in allow_norm] + [(d, "deny") for d in deny_norm],
     )
     _apply_panel_records("domain", records)
-    data = _load_copy()
-    data["windows"]["network"]["disable_all"] = disable_all
-    _save_copy(data)
+    if _is_windows():
+        data = _load_copy()
+        data["windows"]["network"]["disable_all"] = disable_all
+        _save_copy(data)
     return {
         "disable_all": disable_all,
         "allow_domains": allow_norm,
