@@ -70,10 +70,11 @@ export function CatalogPage({
   const isEmpty = status === 'success' && totalItems === 0;
   const hasQuery = query.trim().length > 0 || Boolean(category);
 
-  // 切换作用域/分类/搜索词后回到首批，对齐原分页的重置行为
+  // 切换作用域/分类/搜索词/安装态筛选后回到首批（父组件按这些条件重建 items 数组，
+  // 依赖 items 即可覆盖全部筛选路径），与 GroupCatalogPage 的重置行为一致
   useEffect(() => {
     setVisibleCount(CATALOG_BATCH_SIZE);
-  }, [scope, query, category]);
+  }, [items]);
 
   const appendNextBatch = useCallback(() => {
     setVisibleCount((count) => (count < items.length ? Math.min(count + CATALOG_BATCH_SIZE, items.length) : count));
