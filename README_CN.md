@@ -30,7 +30,7 @@
     <img src="https://img.shields.io/pypi/v/jiuwenswarm.svg" alt="Release" />
   </a>
   <img src="https://img.shields.io/badge/python-%E2%89%A53.11-blue.svg" alt="Python Version" />
-  <img src="https://img.shields.io/badge/os-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="OS Support" />
+  <img src="https://img.shields.io/badge/os-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20HarmonyOS-lightgrey.svg" alt="OS Support" />
   <img src="https://img.shields.io/badge/agent-coordination--engineering-purple.svg" alt="Coordination Engineering" />
   <img src="https://img.shields.io/badge/skill-self--evolution-teal.svg" alt="Skill Self-Evolution" />
 </p>

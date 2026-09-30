@@ -206,7 +206,7 @@ def collect_email_stats(date: str = None) -> dict:
         try:
             args = '("name" "python-imap" "version" "1.0" "vendor" "python")'
             mail._simple_command("ID", args)
-        except:
+        except Exception:
             pass
 
         # 使用 STATUS 命令获取邮件统计（绕过 SELECT 的 Unsafe Login 限制）
