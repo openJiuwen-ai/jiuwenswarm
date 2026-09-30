@@ -168,6 +168,20 @@ def test_build_agent_identity_prompt_contains_identity_section_only():
     assert "## Symphony Orchestration" not in prompt
     assert "`symphony_compose_score`" not in prompt
     assert "# 消息说明" not in prompt
+    # Agent-internal dirs must stay logical; absolute tenant paths belong in runtime context.
+    assert "Agent 内部数据目录/skills" in prompt
+    assert "workspace_default" not in prompt
+    assert "运行时目录上下文" in prompt
+    assert "绝对路径" in prompt
+
+
+def test_build_agent_identity_prompt_english_uses_logical_paths():
+    prompt = build_agent_identity_prompt(language="en")
+
+    assert "# JiuwenSwarm Internal Data" in prompt
+    assert "Agent internal data directory/skills" in prompt
+    assert "workspace_default" not in prompt
+    assert "runtime directory context" in prompt
 
 
 @pytest.mark.asyncio
@@ -1239,11 +1253,12 @@ def test_deep_adapter_subagents_omits_research_without_explicit_enable():
 
 @pytest.mark.asyncio
 async def test_runtime_rail_multi_tenant_workspace_dirs(monkeypatch):
-    """测试注入 workspace_dir 时 _resolve_agent_workspace_and_config 返回正确路径。"""
+    """workspace_dir 驱动租户内部数据路径；启动配置仍用全局 ~/.jiuwenswarm/config。"""
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
 
     builder = SystemPromptBuilder(language="cn")
     workspace_root = Path("/tmp/test_jiuwenswarm/workspace_abc/agent/jiuwenclaw_workspace")
+    global_root = Path("/tmp/test_jiuwenswarm_home")
     runtime_rail = RuntimePromptRail(
         language="cn",
         channel="web",
@@ -1253,8 +1268,12 @@ async def test_runtime_rail_multi_tenant_workspace_dirs(monkeypatch):
     runtime_rail.set_runtime_paths(workspace_dir=str(workspace_root))
     runtime_rail.init(SimpleNamespace(system_prompt_builder=builder))
 
-    ctx = AgentCallbackContext(agent=None, inputs=None, session=None)
-    await runtime_rail.before_model_call(ctx)
+    with patch(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        return_value=global_root,
+    ):
+        ctx = AgentCallbackContext(agent=None, inputs=None, session=None)
+        await runtime_rail.before_model_call(ctx)
 
     prompt = builder.build()
 
@@ -1262,18 +1281,29 @@ async def test_runtime_rail_multi_tenant_workspace_dirs(monkeypatch):
     assert "workspace" in prompt
     assert "workspace_abc" in prompt
     assert "Agent 内部数据目录" in prompt
+    assert "Agent 技能目录" in prompt
 
-    expected_base = workspace_root.parent.parent
-    expected_config = str(expected_base / "config")
+    expected_config = str(global_root / "config")
     expected_workspace = str(workspace_root)
+    expected_skills = str(workspace_root / "skills")
+    expected_tenant_config = str(workspace_root.parent.parent / "config")
     expected_config_win = expected_config.replace("/", "\\")
     expected_workspace_win = expected_workspace.replace("/", "\\")
+    expected_skills_win = expected_skills.replace("/", "\\")
+    expected_tenant_config_win = expected_tenant_config.replace("/", "\\")
     assert (
         expected_config in prompt or expected_config_win in prompt
     ), f"Config path not found: {expected_config}"
     assert (
         expected_workspace in prompt or expected_workspace_win in prompt
     ), f"Workspace path not found: {expected_workspace}"
+    assert (
+        expected_skills in prompt or expected_skills_win in prompt
+    ), f"Skills path not found: {expected_skills}"
+    assert (
+        expected_tenant_config not in prompt
+        and expected_tenant_config_win not in prompt
+    ), f"Tenant-scoped config must not appear: {expected_tenant_config}"
 
 
 @pytest.mark.asyncio
@@ -1319,6 +1349,64 @@ async def test_runtime_rail_single_tenant_workspace_dirs():
     assert (
         expected_workspace in prompt or expected_workspace_win in prompt
     ), f"Workspace path not found: {expected_workspace}"
+
+
+@pytest.mark.asyncio
+async def test_runtime_rail_path_provider_memory_override(tmp_path):
+    """Bound workspace 下 memory 走 PathProvider，不得硬拼 workspace/memory。"""
+    from jiuwenswarm.common import path_provider as providers
+
+    providers.reset_path_provider()
+    custom_memory = tmp_path / "shared" / "memory"
+    custom_memory.mkdir(parents=True)
+    bound_ws = tmp_path / "agent" / "jiuwenclaw_workspace"
+    bound_ws.mkdir(parents=True)
+
+    class MemoryProvider(providers.PathProvider):
+        name = "memory-override"
+
+        def resolve_path(self, category, ctx, **kwargs):
+            if category == providers.PathCategory.MEMORY:
+                return custom_memory
+            return None
+
+    providers.register_path_provider(MemoryProvider())
+    try:
+        builder = SystemPromptBuilder(language="cn")
+        runtime_rail = RuntimePromptRail(language="cn", channel="web")
+        # Match bound workspace so PathProvider-aware getters are used.
+        runtime_rail.set_runtime_paths(workspace_dir=str(bound_ws))
+        runtime_rail.init(SimpleNamespace(system_prompt_builder=builder))
+
+        with (
+            patch(
+                "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_agent_workspace_dir",
+                return_value=bound_ws,
+            ),
+            patch(
+                "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+                return_value=tmp_path,
+            ),
+            # get_agent_memory_dir() reads workspace via utils; keep fallback root
+            # aligned so only MEMORY is remapped by the registered provider.
+            patch.object(_utils_mod, "get_agent_workspace_dir", return_value=bound_ws),
+        ):
+            ctx = AgentCallbackContext(agent=None, inputs=None, session=None)
+            await runtime_rail.before_model_call(ctx)
+
+        prompt = builder.build()
+        expected_memory = str(custom_memory)
+        expected_memory_win = expected_memory.replace("/", "\\")
+        hard_joined = str(bound_ws / "memory")
+        hard_joined_win = hard_joined.replace("/", "\\")
+        assert (
+            expected_memory in prompt or expected_memory_win in prompt
+        ), f"Provider memory path not found: {expected_memory}"
+        assert (
+            hard_joined not in prompt and hard_joined_win not in prompt
+        ), f"Hard-joined memory must not appear when PathProvider overrides: {hard_joined}"
+    finally:
+        providers.reset_path_provider()
 
 
 def test_interface_deep_skill_rail_uses_multi_tenant_paths():
