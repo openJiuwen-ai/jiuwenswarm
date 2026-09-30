@@ -85,6 +85,13 @@ class SecurityListRecord:
 
     ``source``：``user``（安全中心配置）/ ``cloud``（云侧下发）为物理记录；
     ``builtin`` / ``user_approval`` 仅出现在 normalize 投影中，不落盘。
+
+    ``origin``：**投影期注记，不落盘**，用来区分同一 ``source`` 下的不同来路。
+    典型场景：``user_approval`` 既可能是审批流"永久记住"生成的，也可能是
+    ``file_guard.paths`` 的 legacy 段兼容读——只看 ``source`` 会把后者错误地
+    标成"审批记住"（来源标签是错的）。取值见各 ``project_*``：
+    ``approval`` / ``file_guard`` / ``net_guard``；``builtin`` 与物理记录的
+    ``source`` 已自证来源，留空。（``sandbox_copy`` 迁移记录另看 ``migrated_from``。）
     """
 
     id: str = ""
@@ -98,6 +105,8 @@ class SecurityListRecord:
     updated_at: str = ""
     source: str = "user"
     migrated_from: str | None = None
+    #: 投影期来路注记（不落盘，见类 docstring）
+    origin: str = ""
 
 
 def ops_for_type(list_type: str) -> tuple[str, ...]:
@@ -243,7 +252,10 @@ def resolve_default(defaults: Any, mode: str, list_type: str) -> str | None:
 
 
 def record_to_dict(rec: SecurityListRecord) -> dict[str, Any]:
-    """序列化为可落盘 dict（空 note / migrated_from 省略，保持 YAML 整洁）。"""
+    """序列化为可落盘 dict（空 note / migrated_from 省略，保持 YAML 整洁）。
+
+    ``origin`` **不落盘**——它是投影期注记（物理记录的归属由 ``source`` 决定）。
+    """
     data: dict[str, Any] = {
         "id": rec.id,
         "type": rec.type,

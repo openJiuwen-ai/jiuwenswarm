@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import yaml
 
+from jiuwenswarm.agents.harness.common.rails.security_lists.models import (
+    SecurityListRecord,
+    record_from_dict,
+    record_to_dict,
+)
 from jiuwenswarm.agents.harness.common.rails.security_lists.normalize import (
     project_approvals,
     project_builtin,
@@ -182,6 +187,50 @@ def test_project_net_guard_disabled_skips_all():
     """net_guard.enabled=false（面板总开关关）→ 不投影，与 file_guard.enabled 同判据。"""
     perms = {"net_guard": {"enabled": False, "urls": {"evil.example": "deny"}}}
     assert project_net_guard(permissions=perms) == []
+
+
+# ---------------------------------------------------------------------------
+# origin：同一 source 下区分"谁写的"（卡片来源徽标用）
+# ---------------------------------------------------------------------------
+
+
+def test_project_approvals_distinguishes_approval_from_legacy_file_guard():
+    """`source` 都是 user_approval，但一个是审批流生成的、一个是 legacy 段兼容读。
+
+    卡片徽标只有 source 可用时，会把「文件安全护栏」里配的路径规则显示成"审批记住"
+    ——来源标签是错的。用 origin 区分，**不动 source**（它必须留在
+    `evaluate._SOURCE_ORDER` 内，否则 ask/allow 会被静默丢弃）。
+    """
+    perms = {
+        "approval_overrides": [
+            {"id": "ov1", "match_type": "command", "pattern": "git *", "action": "allow"},
+        ],
+        "file_guard": {"paths": [{"path": "C:/data", "read": "allow"}]},
+    }
+
+    records = {r.pattern: r for r in project_approvals(permissions=perms)}
+
+    assert records["git *"].origin == "approval"
+    assert records["C:/data"].origin == "file_guard"
+    assert records["git *"].source == records["C:/data"].source == "user_approval"
+
+
+def test_project_net_guard_marks_origin():
+    perms = {"net_guard": {"enabled": True, "urls": {"evil.example": "deny"}}}
+    assert project_net_guard(permissions=perms)[0].origin == "net_guard"
+
+
+def test_project_builtin_origin_empty():
+    """builtin 的 source 已经自证来源，origin 留空（不制造第二个同义字段）。"""
+    assert all(r.origin == "" for r in project_builtin())
+
+
+def test_origin_is_not_persisted():
+    """origin 是**投影期**的注记，不该落盘（物理记录由 source 决定归属）。"""
+    rec = SecurityListRecord(id="ul_1", type="domain", pattern="a.com", match="exact",
+                             cells={"*": {"*": "deny"}}, origin="net_guard")
+    assert "origin" not in record_to_dict(rec)
+    assert record_from_dict({**record_to_dict(rec), "origin": "net_guard"}).origin == ""
 
 
 def test_project_net_guard_absent_or_malformed_is_empty():

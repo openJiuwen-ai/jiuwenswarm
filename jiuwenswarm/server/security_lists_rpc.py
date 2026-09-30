@@ -83,8 +83,11 @@ _CARD_SOURCES = ("user", "cloud", "user_approval")
 _SEVERITY = {"allow": 1, "ask": 2, "deny": 3}
 
 
-def _cell_view(action: str, source: str, *, scope: str = "global", overridden: dict | None = None) -> dict[str, Any]:
+def _cell_view(action: str, source: str, *, scope: str = "global",
+               overridden: dict | None = None, origin: str = "") -> dict[str, Any]:
     cell: dict[str, Any] = {"action": action, "source": source}
+    if origin:
+        cell["origin"] = origin
     if source == "user_approval":
         cell["scope"] = scope
     if overridden:
@@ -93,7 +96,13 @@ def _cell_view(action: str, source: str, *, scope: str = "global", overridden: d
 
 
 def _record_card(rec: Any, *, scope: str = "global") -> dict[str, Any]:
-    """SecurityListRecord → 卡片视图（格子带 source 徽标；审批格带 scope）。"""
+    """SecurityListRecord → 卡片视图（格子带 source 徽标；审批格带 scope）。
+
+    ``origin`` 与 ``source`` 一并下发：``source`` 决定优先级层，``origin`` 决定
+    **徽标文案**。只看 ``source`` 会把 ``file_guard.paths`` 的 legacy 兼容读
+    也显示成"审批记住"（来源标签是错的）。
+    """
+    origin = getattr(rec, "origin", "") or ""
     return {
         "id": rec.id,
         "type": rec.type,
@@ -102,9 +111,13 @@ def _record_card(rec: Any, *, scope: str = "global") -> dict[str, Any]:
         "enabled": rec.enabled,
         "note": rec.note,
         "source": rec.source,
+        "origin": origin,
         "scope": scope,
         "cells": {
-            mode: {op: _cell_view(action, rec.source, scope=scope) for op, action in row.items()}
+            mode: {
+                op: _cell_view(action, rec.source, scope=scope, origin=origin)
+                for op, action in row.items()
+            }
             for mode, row in rec.cells.items()
         },
         "created_at": rec.created_at,
@@ -114,22 +127,24 @@ def _record_card(rec: Any, *, scope: str = "global") -> dict[str, Any]:
 
 def _merge_approval_cells(card: dict[str, Any], approval: Any, *, scope: str) -> None:
     """把一条审批投影的格子合入对应卡片（user_approval > user/cloud 压制标记）。"""
+    origin = getattr(approval, "origin", "") or ""
     for mode, row in approval.cells.items():
         target_row = card["cells"].setdefault(mode, {})
         for op, action in row.items():
             existing = target_row.get(op)
             if existing is None:
-                target_row[op] = _cell_view(action, "user_approval", scope=scope)
+                target_row[op] = _cell_view(action, "user_approval", scope=scope, origin=origin)
                 continue
             if existing["source"] == "user_approval":
                 # 多审批条目同格：取最严（deny > ask > allow）
                 if _SEVERITY.get(action, 0) > _SEVERITY.get(existing["action"], 0):
-                    target_row[op] = _cell_view(action, "user_approval", scope=scope)
+                    target_row[op] = _cell_view(action, "user_approval", scope=scope, origin=origin)
                 continue
             if existing["action"] == action:
                 continue  # 同值不算压制，保留用户格
             # 用户/云格被审批压制 → 徽标"被审批记住规则覆盖"
-            target_row[op] = _cell_view(action, "user_approval", scope=scope, overridden=existing)
+            target_row[op] = _cell_view(action, "user_approval", scope=scope,
+                                        overridden=existing, origin=origin)
 
 
 def _approval_key(rec: Any) -> str:

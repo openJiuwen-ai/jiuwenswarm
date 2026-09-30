@@ -272,7 +272,8 @@ def test_get_card_approval_merge_and_override_badge(rpc_env):
     standalone = next(c for c in cards if c["pattern"] == "wget*")
     assert standalone["source"] == "user_approval"
     assert standalone["cells"] == {
-        "default": {"*": {"action": "allow", "source": "user_approval", "scope": "global"}}
+        "default": {"*": {"action": "allow", "source": "user_approval",
+                          "origin": "approval", "scope": "global"}}
     }
 
 
@@ -290,8 +291,39 @@ def test_get_card_file_guard_merge_multi_axis(rpc_env):
     card = next(c for c in got.payload["records"] if c["pattern"] == "D:/secrets")
     assert card["cells"]["*"]["read"] == {"action": "deny", "source": "user"}  # 用户格不受影响
     row = card["cells"]["auto_approve"]
-    assert row["read"] == {"action": "allow", "source": "user_approval", "scope": "global"}
-    assert row["write"] == {"action": "allow", "source": "user_approval", "scope": "global"}
+    assert row["read"] == {"action": "allow", "source": "user_approval",
+                           "origin": "file_guard", "scope": "global"}
+    assert row["write"] == {"action": "allow", "source": "user_approval",
+                            "origin": "file_guard", "scope": "global"}
+
+
+def test_get_card_origin_distinguishes_file_guard_from_approval(rpc_env):
+    """`file_guard.paths` 的投影 `source` 也是 user_approval，但**不是**审批记住。
+
+    只靠 source 选徽标会把「文件安全护栏」里配的路径规则显示成"审批记住"。
+    origin 让前端能正确取文案；source 不动（它决定优先级层）。
+    """
+    _write_permissions(rpc_env, {
+        "approval_overrides": [
+            {"id": "ap1", "match_type": "command", "pattern": "git *", "action": "allow"},
+        ],
+        "file_guard": {"paths": [{"path": "D:/secrets", "read": "allow"}]},
+    })
+
+    cards = call(ReqMethod.SECURITY_LISTS_GET).payload["records"]
+
+    approval_card = next(c for c in cards if c["pattern"] == "git *")
+    fg_card = next(c for c in cards if c["pattern"] == "D:/secrets")
+    assert approval_card["origin"] == "approval"
+    assert fg_card["origin"] == "file_guard"
+    assert approval_card["source"] == fg_card["source"] == "user_approval"
+    assert fg_card["cells"]["*"]["read"]["origin"] == "file_guard"
+
+    # 物理记录没有 origin（source 已自证）
+    call(ReqMethod.SECURITY_LISTS_UPSERT, {"record": rec_dict()})
+    user_card = next(c for c in call(ReqMethod.SECURITY_LISTS_GET).payload["records"]
+                     if c["pattern"] == "C:/data")
+    assert user_card["origin"] == ""
 
 
 def test_get_card_session_scope(rpc_env, monkeypatch):

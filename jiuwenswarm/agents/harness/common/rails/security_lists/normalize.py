@@ -176,6 +176,7 @@ def project_approvals(
             cells={_mode_key(entry.get("mode")): {"*": action}},
             created_at=str(entry.get("created_at") or ""),
             source="user_approval",
+            origin="approval",
         ))
 
     file_guard = perms.get("file_guard")
@@ -217,6 +218,7 @@ def project_approvals(
             cells={_mode_key(entry.get("mode")): row},
             created_at=str(entry.get("created_at") or ""),
             source="user_approval",
+            origin="file_guard",
         ))
     return out
 
@@ -281,6 +283,7 @@ def project_net_guard(
             note=f"兼容读：permissions.net_guard.urls（{raw_action}）",
             cells={"*": {"*": action}},
             source="user",
+            origin="net_guard",
         ))
     return out
 
