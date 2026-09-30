@@ -2953,8 +2953,8 @@ wheels = [
 
 [[package]]
 name = "openjiuwen"
-version = "0.1.18"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=4fd009e175515775af1d069978d833d7989d5fad#4fd009e175515775af1d069978d833d7989d5fad" }
+version = "0.1.19"
+source = { git = "https://github.com/openJiuwen-ai/agent-core.git?branch=release%2Fv0.1.19.post1#8f9f112698d5580b749158b21b1a89a54e16a8f9" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },
@@ -5868,11 +5868,11 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=4fd009e175515775af1d069978d833d7989d5fad" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=4fd009e175515775af1d069978d833d7989d5fad" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=4fd009e175515775af1d069978d833d7989d5fad" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=4fd009e175515775af1d069978d833d7989d5fad" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=4fd009e175515775af1d069978d833d7989d5fad" },
+    { name = "openjiuwen", git = "https://github.com/openJiuwen-ai/agent-core.git?branch=release%2Fv0.1.19.post1" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://github.com/openJiuwen-ai/agent-core.git?branch=release%2Fv0.1.19.post1" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://github.com/openJiuwen-ai/agent-core.git?branch=release%2Fv0.1.19.post1" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://github.com/openJiuwen-ai/agent-core.git?branch=release%2Fv0.1.19.post1" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://github.com/openJiuwen-ai/agent-core.git?branch=release%2Fv0.1.19.post1" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28.0,<1.42" },

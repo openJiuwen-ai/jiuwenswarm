@@ -1321,6 +1321,22 @@ permissions:
     "*": "ask"
 
 browser:
+  # Browser-only decisions. Existing LLM still handles fallback and final answers.
+  decision:
+    mode: llm # llm | shadow (observe only) | hybrid; shadow and hybrid need an openjiuwen with Jev
+    provider: openrouter # openrouter | typesafe
+    model: typesafe/jev-1.13
+    api_base: https://openrouter.ai/api/alpha
+    # Use a dedicated OpenRouter key, or explicitly reference API_KEY if it is already an OpenRouter key.
+    api_key_env: OPENROUTER_API_KEY
+    # TypeSafe direct: provider=typesafe, model=jev-1.13.0,
+    # api_base=https://api.typesafe.ai/v1, api_key_env=TYPESAFE_API_KEY.
+    request_timeout_ms: 3000
+    max_retries: 1
+    max_decisions: 40 # Shared across LLM handoffs and focused resume in the same task.
+    candidate_limit: 30 # Eligible controls, filtered and ranked before truncation.
+    min_confidence: 0.65 # Initial routing threshold; calibrate on your own tasks.
+    fallback_reserve_ms: 1000
   # chrome_path can be a string or per-OS map.
   # Example:
   # chrome_path:

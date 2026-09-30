@@ -2058,6 +2058,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
                     ),
                 )
+                from jiuwenswarm.agents.harness.common.browser_config import (
+                    apply_browser_decision_config,
+                )
+
+                apply_browser_decision_config(browser_spec, config_base)
                 self._prepare_browser_runtime_security(browser_spec)
                 # Electron 每会话隔离：把本会话 sideview 的 CDP TargetID 注入
                 # browser subagent 的 MCP env（与 swarm.browser_agent 同一契约；
