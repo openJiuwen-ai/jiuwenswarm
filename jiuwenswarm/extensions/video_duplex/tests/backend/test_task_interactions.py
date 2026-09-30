@@ -551,6 +551,37 @@ async def test_restart_expires_questions_without_replaying_answers(system):
         await restarted.close()
 
 
+async def test_shared_adapter_forwards_managed_task_to_session_agent():
+    request = SimpleNamespace(
+        channel_id="video_tool",
+        session_id="managed-task-" + "a" * 32,
+        request_id="task-forward",
+        params={},
+    )
+    shared = SimpleNamespace(_is_session_scoped_adapter=False)
+    inputs = {"query": "weather"}
+    async with bind_task_execution(request, shared, inputs):
+        assert "run" not in inputs
+    assert inputs == {"query": "weather"}
+
+
+async def test_session_adapter_without_agent_still_rejects_managed_task():
+    request = SimpleNamespace(
+        channel_id="video_tool",
+        session_id="managed-task-" + "b" * 32,
+        request_id="task-missing-agent",
+        params={"managed_task_binding": {"endpoint": "checkpoint", "task_id": "task-1"}},
+        user_id="user",
+    )
+    adapter = SimpleNamespace(
+        _is_session_scoped_adapter=True,
+        task_execution_binding=(SimpleNamespace(_react_agent=None), SimpleNamespace(managed_tasks={})),
+    )
+    with pytest.raises(RuntimeError, match="session-owned Agent"):
+        async with bind_task_execution(request, adapter, {}):
+            pytest.fail("A session adapter without its Agent must not run the task")
+
+
 async def test_managed_execution_without_authoritative_record_is_rejected(tmp_path):
     path = tmp_path / "missing.sqlite"
     request = SimpleNamespace(

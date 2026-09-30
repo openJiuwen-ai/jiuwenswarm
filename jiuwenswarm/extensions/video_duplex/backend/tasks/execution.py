@@ -54,10 +54,15 @@ async def bind_task_execution(request, adapter, inputs):
     if not managed:
         yield
         return
+    # The shared adapter receives the request first and forwards it to the
+    # session-owned child. Binding happens on that second call.
+    if not getattr(adapter, "_is_session_scoped_adapter", False):
+        yield
+        return
     endpoint = RemoteTaskEndpoint(request)
     harness, rail = adapter.task_execution_binding
     root = getattr(harness, "_react_agent", None)
-    if root is None or not getattr(adapter, "_is_session_scoped_adapter", False):
+    if root is None:
         raise RuntimeError("Managed tasks require the session-owned Agent")
     if rail is None:
         raise RuntimeError("Managed task callback rail is unavailable")
