@@ -22,6 +22,7 @@ from .models import SecurityListRecord
 from .normalize import (
     project_approvals,
     project_builtin,
+    project_net_guard,
 )
 
 
@@ -53,6 +54,7 @@ class SecurityListComposer:
         records += [r for r in lists["cloud"]["records"] if r.enabled]
         records += project_builtin()
         records += project_approvals(session_id)
+        records += project_net_guard()
         if list_type is not None:
             records = [r for r in records if r.type == list_type]
         return records

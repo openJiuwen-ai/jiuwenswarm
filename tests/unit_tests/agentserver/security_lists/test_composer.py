@@ -39,3 +39,31 @@ def test_collect_excludes_sandbox_runtime_copy(tmp_path, monkeypatch):
     assert not [r for r in records if r.migrated_from == "sandbox_copy"]
     assert not [r for r in records if r.pattern == "C:/probe-only-in-copy"]
     assert not [r for r in records if r.pattern == "*.probe-only-in-copy.com"]
+
+
+def test_collect_includes_net_guard_urls(monkeypatch):
+    """S1 域名读归一：存量 ``permissions.net_guard.urls`` 进统一视图（否则迁移后规则静默失效）。"""
+    import jiuwenswarm.common.config as config_mod
+    from jiuwenswarm.agents.harness.common.rails.security_lists import (
+        composer as composer_mod,
+    )
+    from jiuwenswarm.agents.harness.common.rails.security_lists.normalize import (
+        project_builtin as real_builtin,
+    )
+
+    monkeypatch.setattr(composer_mod, "project_builtin", real_builtin)
+    monkeypatch.setattr(
+        config_mod,
+        "get_config",
+        lambda: {
+            "permissions": {
+                "net_guard": {"enabled": True, "urls": {"evil.example": "deny"}}
+            }
+        },
+    )
+
+    records = SecurityListComposer().collect("domain")
+
+    hit = [r for r in records if r.pattern == "evil.example"]
+    assert len(hit) == 1
+    assert hit[0].cells == {"*": {"*": "deny"}} and hit[0].source == "user"

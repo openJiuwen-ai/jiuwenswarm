@@ -212,6 +212,59 @@ def project_approvals(
 
 
 # ---------------------------------------------------------------------------
+# net_guard 兼容投影（S1：域名双向可见）
+# ---------------------------------------------------------------------------
+
+
+def project_net_guard(
+    permissions: Mapping[str, Any] | None = None,
+) -> list[SecurityListRecord]:
+    """``permissions.net_guard.urls`` → domain 投影（``source=user``）。
+
+    存量「URL / 域名规则」面板写在这个段里；规则归属收敛到本名单后，这些条目
+    必须仍被求值，否则迁移期它们会**静默失效**（面板看着有、rail 不认）。
+
+    - net_guard 无模式档 → 全部落通用格 ``"*"``；只有 ``allow``/``deny``（无 ask）；
+    - ``net_guard.enabled is False``（面板总开关关）→ 不投影，与
+      :func:`project_approvals` 的 ``file_guard.enabled`` 同判据；
+    - ``source="user"``：是用户自己写的规则，按 ``user`` 层参与分层
+      （``source`` 必须落在 :data:`evaluate._SOURCE_ORDER` 内，否则 ask/allow 会被静默丢弃）。
+
+    ``net_guard.defaults`` **不投影**——那是执行面的"未命中兜底"，仍由出入管控侧
+    在收到本接口 ``none`` 时自行应用；本名单的 ``defaults``（v3）是它的迁移目标。
+    """
+    if permissions is None:
+        from jiuwenswarm.common.config import get_config
+
+        cfg = get_config()
+        permissions = cfg.get("permissions") if isinstance(cfg, Mapping) else None
+    perms = permissions if isinstance(permissions, Mapping) else {}
+    ng = perms.get("net_guard")
+    if not isinstance(ng, Mapping) or ng.get("enabled") is False:
+        return []
+    urls = ng.get("urls")
+    if not isinstance(urls, Mapping):
+        return []
+
+    out: list[SecurityListRecord] = []
+    for raw_pattern, raw_action in urls.items():
+        pattern = str(raw_pattern or "").strip().lower().rstrip(".")
+        action = _action(raw_action)
+        if not pattern or action is None:
+            continue
+        out.append(SecurityListRecord(
+            id="ng_" + hashlib.sha1(pattern.encode("utf-8")).hexdigest()[:8],
+            type="domain",
+            pattern=pattern,
+            match="wildcard" if pattern.startswith("*.") else "exact",
+            note=f"兼容读：permissions.net_guard.urls（{raw_action}）",
+            cells={"*": {"*": action}},
+            source="user",
+        ))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 沙箱副本（过渡投影）
 # ---------------------------------------------------------------------------
 

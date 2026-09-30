@@ -7,6 +7,7 @@ import yaml
 from jiuwenswarm.agents.harness.common.rails.security_lists.normalize import (
     project_approvals,
     project_builtin,
+    project_net_guard,
     project_sandbox_runtime_copy,
 )
 
@@ -150,3 +151,41 @@ def test_project_sandbox_runtime_copy_missing_or_empty(tmp_path):
     empty = tmp_path / "empty.yaml"
     empty.write_text("windows: {}\n", encoding="utf-8")
     assert project_sandbox_runtime_copy(empty) == []
+
+
+# ---------------------------------------------------------------------------
+# net_guard 兼容投影（S1：域名双向可见）
+# ---------------------------------------------------------------------------
+
+
+def test_project_net_guard_urls_as_user_domain_records():
+    perms = {
+        "net_guard": {
+            "enabled": True,
+            "urls": {
+                "evil.example": "deny",
+                "*.ok.example": "allow",
+                "widened.example": "block",   # 非法动作 → 跳过
+            },
+        },
+    }
+    records = {r.pattern: r for r in project_net_guard(permissions=perms)}
+    assert set(records) == {"evil.example", "*.ok.example"}
+    evil = records["evil.example"]
+    assert evil.type == "domain" and evil.match == "exact"
+    assert evil.cells == {"*": {"*": "deny"}}       # net_guard 无模式档 → 通用格
+    assert evil.source == "user"                     # 用户可删可改
+    assert records["*.ok.example"].match == "wildcard"
+
+
+def test_project_net_guard_disabled_skips_all():
+    """net_guard.enabled=false（面板总开关关）→ 不投影，与 file_guard.enabled 同判据。"""
+    perms = {"net_guard": {"enabled": False, "urls": {"evil.example": "deny"}}}
+    assert project_net_guard(permissions=perms) == []
+
+
+def test_project_net_guard_absent_or_malformed_is_empty():
+    assert project_net_guard(permissions={}) == []
+    assert project_net_guard(permissions={"net_guard": "oops"}) == []
+    assert project_net_guard(permissions={"net_guard": {"urls": ["x"]}}) == []
+    assert project_net_guard(permissions={"net_guard": {"urls": {"": "deny"}}}) == []

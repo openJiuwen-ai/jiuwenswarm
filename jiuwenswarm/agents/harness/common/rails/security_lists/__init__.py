@@ -33,6 +33,7 @@ from .models import (
 from .normalize import (
     project_approvals,
     project_builtin,
+    project_net_guard,
     project_sandbox_runtime_copy,
 )
 from .api import (
@@ -88,6 +89,7 @@ __all__ = [
     "patch_cells",
     "project_approvals",
     "project_builtin",
+    "project_net_guard",
     "project_sandbox_runtime_copy",
     "record_from_dict",
     "record_to_dict",
