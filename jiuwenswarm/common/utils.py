@@ -2928,6 +2928,16 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     json_formatter = JsonOnlyFormatter()
     _add_rotating("permissions.log", levels.agent_server, _ComponentNameFilter("permissions"), json_formatter)
 
+    # Prefer UTF-8 on Windows so Chinese log lines do not raise UnicodeEncodeError
+    # when the console code page is still cp1252/GBK (see issue #5870).
+    if sys.platform == "win32":
+        for _stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(_stream, "reconfigure", None)
+            if callable(reconfigure):
+                try:
+                    reconfigure(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
     stream_handler = logging.StreamHandler()
     stream_handler.setLevel(levels.console)
     stream_handler.setFormatter(formatter)
