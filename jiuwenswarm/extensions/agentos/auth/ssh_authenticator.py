@@ -8,6 +8,7 @@ from jiuwenswarm.extensions.agentos.auth.credential_authenticator import (
     AuthContext,
     AuthResult,
     CredentialAuthenticator,
+    remember_user_name,
 )
 from jiuwenswarm.extensions.agentos.auth.ssh_key_registry import KeyRegistry, KeyRegistryEntry
 
@@ -51,11 +52,14 @@ class SshPublicKeyAuthenticator(CredentialAuthenticator):
                     "expected_username": entry.username,
                 },
             )
+        user_name = str(entry.username or "").strip()
+        remember_user_name(entry.user_id, user_name)
         return AuthResult(
             success=True,
             user_id=entry.user_id,
+            user_name=user_name,
             extensions={
-                "username": entry.username,
+                "username": user_name,
                 "auth_method": "ssh_public_key",
                 "source": entry.source,
                 "session_id": entry.session_id,

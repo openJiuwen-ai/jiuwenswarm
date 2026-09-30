@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from jiuwenswarm.extensions.agentos.auth.credential_authenticator import lookup_user_name
 from jiuwenswarm.extensions.agentos.agentos_router.logutil import log_agentos
 from jiuwenswarm.extensions.yuanrong_frontend_client import bind_southbound_trace_id
 
@@ -218,8 +219,9 @@ class YuanrongSshRelay:
             raise
         except Exception as exc:  # noqa: BLE001 - report any relay failure to the client
             logger.exception(
-                "[AgentOS] ssh.south.fail user_id=%s session_id=%s sandbox_id=%s",
+                "[AgentOS] ssh.south.fail user_id=%s user_name=%s session_id=%s sandbox_id=%s",
                 user_id,
+                lookup_user_name(user_id),
                 session.session_id,
                 instance_id,
             )
@@ -314,10 +316,11 @@ class YuanrongSshRelay:
                 trace_id=trace_id,
             )
             logger.debug(
-                "[AgentOS] ssh.south.connect keys_dir=%s keys=%s user_id=%s sandbox_id=%s trace_id=%s",
+                "[AgentOS] ssh.south.connect keys_dir=%s keys=%s user_id=%s user_name=%s sandbox_id=%s trace_id=%s",
                 keys_dir,
                 len(client_keys),
                 user_id,
+                lookup_user_name(user_id),
                 instance_id,
                 trace_id,
             )

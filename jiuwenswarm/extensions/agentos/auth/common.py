@@ -9,7 +9,11 @@ from http import HTTPStatus
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthResult
+from jiuwenswarm.extensions.agentos.auth.credential_authenticator import (
+    AuthResult,
+    remember_user_name,
+    resolve_user_name,
+)
 
 _UNAUTHORIZED_BODY = b"Unauthorized\n"
 _HANDSHAKE_AUTH_TTL_S = 60.0
@@ -109,5 +113,9 @@ def apply_auth_result_to_ws(ws: Any, result: AuthResult) -> None:
     ws.user_id = result.user_id
     setattr(ws, "_gateway_user_id", result.user_id)
     setattr(ws, "_web_connection_user_id", result.user_id or None)
+    user_name = resolve_user_name(result)
+    if user_name:
+        remember_user_name(result.user_id, user_name)
+        setattr(ws, "_gateway_user_name", user_name)
     for key, value in (result.extensions or {}).items():
         setattr(ws, f"auth_{key}", value)

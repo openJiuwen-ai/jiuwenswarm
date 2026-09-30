@@ -8,6 +8,7 @@ import logging
 import time
 from typing import Protocol
 
+from jiuwenswarm.extensions.agentos.auth.credential_authenticator import remember_user_name
 from jiuwenswarm.extensions.agentos.auth.ssh_key_registry import (
     KeyRegistry,
     KeyRegistryEntry,
@@ -68,20 +69,23 @@ class AgentOSSshKeyIssuer:
         fingerprint = key.get_fingerprint()
         now = time.time()
         ttl = max(0.0, float(ttl_sec))
+        display_name = str(username or "").strip()
         self._registry.register(
             KeyRegistryEntry(
                 fingerprint=fingerprint,
                 user_id=str(user_id or "").strip(),
-                username=str(username or user_id or "").strip() or "unknown",
+                username=display_name or str(user_id or "").strip() or "unknown",
                 source="tui_switch",
                 session_id=str(session_id or "").strip() or None,
                 expires_at=(now + ttl) if ttl > 0 else None,
                 created_at=now,
             )
         )
+        remember_user_name(user_id, display_name)
         logger.info(
-            "[AgentOSAuth] issued ephemeral SSH key: user_id=%s session_id=%s ttl=%.0fs fp=%s",
+            "[AgentOSAuth] issued ephemeral SSH key: user_id=%s user_name=%s session_id=%s ttl=%.0fs fp=%s",
             user_id,
+            display_name,
             session_id,
             ttl,
             fingerprint,

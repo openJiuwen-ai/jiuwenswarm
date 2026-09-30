@@ -7,8 +7,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from jiuwenswarm.extensions.agentos.auth.credential_authenticator import (
+    lookup_user_name,
+    remember_user_name,
+)
+
 _PRIMARY_KEYS = (
     "user_id",
+    "user_name",
     "session_id",
     "request_id",
     "trace_id",
@@ -97,7 +103,20 @@ def log_agentos(
     event: str,
     **fields: Any,
 ) -> None:
-    """Emit ``format_agentos`` and pre-seed ``extra`` session/sandbox ids."""
+    """Emit ``format_agentos`` and pre-seed ``extra`` session/sandbox ids.
+
+    ``user_id`` is masked by the process log sanitizer. When a display name
+    was remembered at auth time, this fills ``user_name`` so the line stays
+    greppable.
+    """
+    uid = str(fields.get("user_id") or "").strip()
+    name = str(fields.get("user_name") or "").strip()
+    if uid and name:
+        remember_user_name(uid, name)
+    elif uid:
+        remembered = lookup_user_name(uid)
+        if remembered:
+            fields["user_name"] = remembered
     extra = agentos_extra(
         session_id=str(fields.get("session_id") or ""),
         sandbox_id=str(fields.get("sandbox_id") or ""),

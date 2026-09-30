@@ -9,6 +9,9 @@ from jiuwenswarm.extensions.agentos.auth.credential_authenticator import (
     AuthContext,
     AuthResult,
     CredentialAuthenticator,
+    clear_user_names,
+    lookup_user_name,
+    resolve_user_name,
 )
 
 
@@ -93,3 +96,62 @@ class TestAuthenticate:
         result = await auth.authenticate(context)
         assert result.success is False
         assert result.error == "No valid credentials"
+
+
+class TestResolveUserName:
+    def test_prefers_user_name_field(self):
+        result = AuthResult(
+            success=True,
+            user_id="uid-1",
+            user_name="alice",
+            extensions={"username": "bob"},
+        )
+        assert resolve_user_name(result) == "alice"
+
+    def test_falls_back_to_extensions_username(self):
+        result = AuthResult(
+            success=True,
+            user_id="uid-1",
+            extensions={"username": "admin"},
+        )
+        assert resolve_user_name(result) == "admin"
+
+    def test_none_result(self):
+        assert resolve_user_name(None) == ""
+
+
+class TestAuthenticateTokenValid:
+    @pytest.fixture
+    def auth(self):
+        return AgentOSAuthenticator(auth_service_url="http://test-auth:8000")
+
+    @pytest.mark.asyncio
+    async def test_valid_token_sets_user_name(self, auth):
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "data": {
+                        "valid": True,
+                        "user_id": "uid-1",
+                        "username": "alice",
+                        "role": "user",
+                    }
+                }
+
+        async def _post(*_args, **_kwargs):
+            return _Resp()
+
+        auth._auth_client.post = _post  # type: ignore[method-assign]
+        clear_user_names()
+        try:
+            result = await auth._authenticate_token("tok")
+            assert result.success is True
+            assert result.user_id == "uid-1"
+            assert result.user_name == "alice"
+            assert result.extensions["username"] == "alice"
+            assert result.extensions["auth_method"] == "token"
+            assert lookup_user_name("uid-1") == "alice"
+        finally:
+            clear_user_names()

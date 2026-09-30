@@ -50,6 +50,7 @@ def build_web_channel_app(channel: WebChannel) -> FastAPI:
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        redirect_slashes=False,
     )
     app.state.web_channel = channel
 

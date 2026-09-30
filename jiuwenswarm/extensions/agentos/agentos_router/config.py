@@ -63,7 +63,7 @@ class RouterConfig:
     agent_key_fields: tuple[str, ...] = DEFAULT_AGENT_KEY_FIELDS
     workspace_root: str = DEFAULT_AGENT_WORKSPACE_ROOT
     # Idle sandbox reclamation: delete the YuanRong instance once an agent
-    # has no held tasks (chat/SSH) for this long. <= 0 disables reclamation.
+    # has no held tasks (chat/SSH/web) for this long. <= 0 disables reclamation.
     sandbox_idle_timeout_seconds: float = 600.0
     sandbox_idle_check_interval_seconds: float = 30.0
     # Channel-disconnect cleanup: when a user has zero live channels, wait this

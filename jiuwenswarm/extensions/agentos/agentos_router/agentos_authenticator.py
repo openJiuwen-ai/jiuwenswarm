@@ -7,6 +7,7 @@ from jiuwenswarm.extensions.agentos.auth.credential_authenticator import (
     CredentialAuthenticator,
     AuthContext,
     AuthResult,
+    remember_user_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -17,8 +18,9 @@ class AgentOSAuthenticator(CredentialAuthenticator):
     门禁只依据响应中的 ``valid``（身份是否合法），不消费 ``authorized``
     （资源级授权留给后续能力）。
     成功时 ``AuthResult`` 字段约定（供后续会话路由 / 注册中心 / 实例创建贯通）：
-    - ``user_id``: IAM 返回的用户 ID（权威身份）
-    - ``extensions.username``: 用户名（可选）
+    - ``user_id``: IAM 返回的用户 ID（权威身份；日志中会被脱敏）
+    - ``user_name``: IAM 返回的用户名（日志可定位字段，不会被 ``user_id`` 规则掩码）
+    - ``extensions.username``: 用户名（可选，与 ``user_name`` 同源）
     - ``extensions.role``: 角色（可选）
     - ``extensions.auth_method``: 固定为 ``"token"``
     """
@@ -93,11 +95,15 @@ class AgentOSAuthenticator(CredentialAuthenticator):
 
         # 5. 仅校验身份合法性（valid）；authorized 不参与门禁决策
         if data.get("valid"):
+            user_id = str(data.get("user_id") or "")
+            user_name = str(data.get("username") or data.get("user_name") or "").strip()
+            remember_user_name(user_id, user_name)
             return AuthResult(
                 success=True,
-                user_id=str(data.get("user_id") or ""),
+                user_id=user_id,
+                user_name=user_name,
                 extensions={
-                    "username": data.get("username"),
+                    "username": user_name or data.get("username"),
                     "role": data.get("role"),
                     "auth_method": "token",
                 },
