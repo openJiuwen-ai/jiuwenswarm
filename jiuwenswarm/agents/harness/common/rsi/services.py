@@ -7,9 +7,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import shutil
+import tempfile
+import zipfile
 from dataclasses import asdict, is_dataclass
 from collections.abc import Mapping
 from pathlib import Path
@@ -668,8 +671,9 @@ class RsiUsageService:
 class RsiArtifactDownloadService:
     """``rsi.artifact.download`` 定位文件或产物目录。
 
-    文件继续返回 Gateway HTTP 下载链接；目录不伪造一个不可用的文件
-    链接，前端通过 artifact.files.list/get 浏览目录并下载其中的文件。
+    文件继续返回 Gateway HTTP 下载链接；Provider 的 artifact_package
+    目录先打包成 ZIP 再返回下载链接。其它目录仍由前端通过
+    artifact.files.list/get 浏览并下载其中的文件。
     """
 
     def __init__(self, artifact_service: Any, store: Any, *, adapter_resolver: Any = None) -> None:
@@ -721,14 +725,30 @@ class RsiArtifactDownloadService:
         scenario: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
+        task = self.store.get(task_id)
+        task_dir = (Path(self.store.tasks_root) / task_id).resolve()
+        best_node_id = None
         try:
             raw_artifact = adapter.locate_artifact(task_id, artifact_id)
+        except KeyError as exc:
+            if (
+                str(scenario).upper() != Scenario.ARTIFACT.value
+                or str(task.artifact_type or "").upper() != ArtifactType.PAPER.value
+            ):
+                raise RsiArtifactNotFound(str(exc)) from exc
+            logger.info(
+                "[RSI] Paper Provider registry unavailable; using persisted artifact index: task=%s",
+                task_id,
+            )
+            raw_artifact, best_node_id = self._locate_persisted_paper_artifact(
+                task_dir,
+                artifact_id,
+            )
         except OSError as exc:
             raise RsiArtifactNotFound(str(exc)) from exc
         raw = _plain_provider(raw_artifact)
         if not isinstance(raw, dict):
             raise RsiArtifactNotFound("Provider 返回了无法识别的产物引用")
-        task = self.store.get(task_id)
         path_value = raw.get("path")
         if path_value:
             candidate = Path(path_value).expanduser()
@@ -739,17 +759,16 @@ class RsiArtifactDownloadService:
             path = validate_provider_artifact_path(path_value)
         except RsiPathInvalid as exc:
             raise RsiArtifactNotFound(str(exc)) from exc
-        task_dir = (Path(self.store.tasks_root) / task_id).resolve()
         try:
             path.relative_to(task_dir)
         except ValueError as exc:
             raise RsiPathInvalid("Provider 产物路径超出任务目录") from exc
         if not path.is_file() and not path.is_dir():
             raise RsiArtifactNotFound(f"产物路径不存在: {path}")
-        best_node_id = None
-        report = _read_provider_snapshot(adapter, "read_report", task_id)
-        if report is not None:
-            best_node_id = _plain_provider(report).get("best_node_id")
+        if best_node_id is None:
+            report = _read_provider_snapshot(adapter, "read_report", task_id)
+            if report is not None:
+                best_node_id = _plain_provider(report).get("best_node_id")
         is_best = artifact_id is None or (
             best_node_id is not None and raw.get("node_id") == best_node_id
         )
@@ -769,9 +788,130 @@ class RsiArtifactDownloadService:
             "filename": path.name,
             "is_directory": path.is_dir(),
         }
+        if result["is_directory"] and result["kind"] == "artifact_package":
+            archive_path = self._package_provider_directory(task_dir, path)
+            result.update(
+                {
+                    "path": str(archive_path),
+                    "filename": archive_path.name,
+                    "is_directory": False,
+                }
+            )
         if not result["is_directory"]:
             result.update(_download_fields(result["path"], params))
         return result
+
+    @staticmethod
+    def _locate_persisted_paper_artifact(
+        task_dir: Path,
+        artifact_id: str | None,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Resolve Paper artifacts from TaskStorage after its process registry is lost."""
+        task_dir = task_dir.resolve()
+        run_dir = (task_dir / "run").resolve()
+        try:
+            run_dir.relative_to(task_dir)
+        except ValueError as exc:
+            raise RsiPathInvalid("Paper 任务运行目录超出任务目录") from exc
+
+        try:
+            artifact_index = json.loads(
+                (run_dir / "artifacts.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RsiArtifactNotFound("Paper Provider 持久化产物索引不可用") from exc
+        if not isinstance(artifact_index, dict):
+            raise RsiArtifactNotFound("Paper Provider 产物索引格式无效")
+
+        def read_snapshot(name: str) -> dict[str, Any]:
+            try:
+                value = json.loads((run_dir / name).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return {}
+            return value if isinstance(value, dict) else {}
+
+        report = read_snapshot("report.json")
+        state = read_snapshot("state.json")
+        best_node_id = report.get("best_node_id") or state.get("best_node_id")
+        if artifact_id:
+            ref = artifact_index.get(artifact_id)
+        else:
+            ref = next(
+                (
+                    item
+                    for item in artifact_index.values()
+                    if isinstance(item, dict) and item.get("node_id") == best_node_id
+                ),
+                None,
+            )
+        if not isinstance(ref, dict) or not ref.get("path"):
+            raise RsiArtifactNotFound(
+                f"Paper artifact not found: {artifact_id or '<best>'}"
+            )
+
+        ref = dict(ref)
+        artifact_path = Path(str(ref["path"])).expanduser()
+        if not artifact_path.is_absolute():
+            ref["path"] = str(run_dir / artifact_path)
+        return ref, str(best_node_id) if best_node_id else None
+
+    @staticmethod
+    def _package_provider_directory(task_dir: Path, source: Path) -> Path:
+        """Create a task-local ZIP so directory artifacts can use file download."""
+        task_dir = task_dir.resolve()
+        source = source.resolve()
+        try:
+            source.relative_to(task_dir)
+        except ValueError as exc:
+            raise RsiPathInvalid("Provider 产物路径超出任务目录") from exc
+        if source == task_dir:
+            raise RsiPathInvalid("不能下载整个 RSI 任务目录")
+
+        relative_source = source.relative_to(task_dir)
+        cache_key = hashlib.sha256(
+            relative_source.as_posix().encode("utf-8")
+        ).hexdigest()[:16]
+        download_dir = task_dir / ".rsi_downloads" / cache_key
+        download_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = download_dir / f"{source.name}.zip"
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                prefix=f".{archive_path.name}.",
+                suffix=".tmp",
+                dir=download_dir,
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+
+            file_count = 0
+            with zipfile.ZipFile(
+                temporary_path,
+                "w",
+                compression=zipfile.ZIP_DEFLATED,
+            ) as archive:
+                for item in sorted(source.rglob("*")):
+                    if item.is_symlink() or not item.is_file():
+                        continue
+                    try:
+                        resolved = item.resolve()
+                        relative = resolved.relative_to(source)
+                    except (OSError, ValueError):
+                        continue
+                    archive.write(
+                        resolved,
+                        arcname=(Path(source.name) / relative).as_posix(),
+                    )
+                    file_count += 1
+
+            if file_count == 0:
+                raise RsiArtifactNotFound("Provider 产物目录中没有可下载文件")
+            temporary_path.replace(archive_path)
+            return archive_path
+        except Exception:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+            raise
 
 
 def _download_fields(path: str, params: dict[str, Any]) -> dict[str, str]:
