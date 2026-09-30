@@ -148,8 +148,11 @@ def test_newly_installed_skill_is_visible_without_touching_metadata(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_team_skill_library_reload_rail_reloads_after_global_skill_write(tmp_path, monkeypatch):
-    """The after-tool rail reloads Skill views only when writes touch the library."""
+@pytest.mark.parametrize("tool_name", ["write", "write_file", "write_text_file", "edit", "edit_file", "delete"])
+async def test_team_skill_library_reload_rail_reloads_after_global_skill_write(
+    tmp_path, monkeypatch, tool_name
+):
+    """Every supported single-path mutation reloads views when it touches the library."""
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.team.rails.team_skill_library_reload_rail.get_cwd",
         lambda: str(tmp_path),
@@ -168,10 +171,50 @@ async def test_team_skill_library_reload_rail_reloads_after_global_skill_write(t
         (),
         {
             "inputs": ToolCallInputs(
-                tool_name="write_file",
+                tool_name=tool_name,
                 tool_args={"file_path": str(skill_md.relative_to(tmp_path))},
+                tool_result={"success": True},
             ),
             "agent": None,
+            "exception": None,
+        },
+    )()
+
+    await rail.after_tool_call(ctx)
+
+    assert reload_calls == ["reload"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["move", "rename"])
+@pytest.mark.parametrize("inside_key", ["source_path", "destination_path"])
+async def test_team_skill_library_reload_rail_checks_both_move_paths(
+    tmp_path, monkeypatch, tool_name, inside_key
+):
+    """Moving into or out of the library reloads the Skill view."""
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.rails.team_skill_library_reload_rail.get_cwd",
+        lambda: str(tmp_path),
+    )
+    global_skills_dir = tmp_path / "global_skills"
+    global_skills_dir.mkdir()
+    paths = {
+        "source_path": str(tmp_path / "outside" / "old-skill"),
+        "destination_path": str(tmp_path / "outside" / "new-skill"),
+    }
+    paths[inside_key] = str(global_skills_dir / "skill-a")
+    reload_calls = []
+    rail = TeamSkillLibraryReloadRail(
+        global_skills_dir=global_skills_dir,
+        reload_skill_views=lambda: reload_calls.append("reload"),
+    )
+    ctx = type(
+        "_Ctx",
+        (),
+        {
+            "inputs": ToolCallInputs(tool_name=tool_name, tool_args=paths, tool_result=None),
+            "agent": None,
+            "exception": None,
         },
     )()
 
@@ -207,12 +250,77 @@ async def test_team_skill_library_reload_rail_ignores_writes_outside_library(tmp
                 tool_args={"file_path": str(outside_file)},
             ),
             "agent": None,
+            "exception": None,
         },
     )()
 
     await rail.after_tool_call(ctx)
 
     assert reload_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exception", "tool_result"),
+    [(RuntimeError("write failed"), None), (None, {"success": False})],
+)
+async def test_team_skill_library_reload_rail_ignores_failed_mutations(
+    tmp_path, exception, tool_result
+):
+    """Failed tool calls cannot have changed the library and must not reload it."""
+    global_skills_dir = tmp_path / "global_skills"
+    global_skills_dir.mkdir()
+    reload_calls = []
+    rail = TeamSkillLibraryReloadRail(
+        global_skills_dir=global_skills_dir,
+        reload_skill_views=lambda: reload_calls.append("reload"),
+    )
+    ctx = type(
+        "_Ctx",
+        (),
+        {
+            "inputs": ToolCallInputs(
+                tool_name="delete",
+                tool_args={"path": str(global_skills_dir / "skill-a")},
+                tool_result=tool_result,
+            ),
+            "agent": None,
+            "exception": exception,
+        },
+    )()
+
+    await rail.after_tool_call(ctx)
+
+    assert reload_calls == []
+
+
+@pytest.mark.asyncio
+async def test_team_skill_library_reload_rail_keeps_unknown_results_compatible(tmp_path):
+    """Unstructured legacy tool results continue to trigger a reload."""
+    global_skills_dir = tmp_path / "global_skills"
+    global_skills_dir.mkdir()
+    reload_calls = []
+    rail = TeamSkillLibraryReloadRail(
+        global_skills_dir=global_skills_dir,
+        reload_skill_views=lambda: reload_calls.append("reload"),
+    )
+    ctx = type(
+        "_Ctx",
+        (),
+        {
+            "inputs": ToolCallInputs(
+                tool_name="write",
+                tool_args={"path": str(global_skills_dir / "skill-a" / "SKILL.md")},
+                tool_result="written",
+            ),
+            "agent": None,
+            "exception": None,
+        },
+    )()
+
+    await rail.after_tool_call(ctx)
+
+    assert reload_calls == ["reload"]
 
 
 def test_bootstrap_skill_visibility_seeds_member_allow_only_once(tmp_path):
