@@ -390,6 +390,16 @@
 .rsi-result__paper-button:hover {
   text-decoration: underline;
 }
+.rsi-provenance {
+  margin-top: 2px;
+  max-width: 320px;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .rsi-result__metric {
   flex: 1 1 0;
   min-width: 0;
