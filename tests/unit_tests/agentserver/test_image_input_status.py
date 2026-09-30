@@ -68,7 +68,7 @@ def test_notice_and_prompt_agree_without_changing_attachment_routing(
     request = _request()
     inputs = Adapter._prepare_multimodal_image_inputs(request, {"query": request.params["query"]})
     notice = Adapter._build_image_tool_fallback_notice(
-        request, enable_read_image_multimodal=False, model=model,
+        request, model=model,
         vision_tool_available=vision_tool_available, image_input_status=snapshot,
     )
     updated = Adapter._prepare_react_image_tool_prompt(
@@ -102,12 +102,12 @@ def test_supported_images_and_text_only_requests_have_no_fallback():
         vision_tool_available=False, image_input_status="supported",
     ) is inputs
     assert Adapter._build_image_tool_fallback_notice(
-        request, enable_read_image_multimodal=True, model=_model(), vision_tool_available=False,
+        request, model=_model(), vision_tool_available=False,
         image_input_status="supported",
     ) is None
     request.params.pop("media_items")
     assert Adapter._build_image_tool_fallback_notice(
-        request, enable_read_image_multimodal=False, model=_model(), vision_tool_available=False,
+        request, model=_model(), vision_tool_available=False,
     ) is None
     assert Adapter._prepare_react_image_tool_prompt(
         request, {"query": "hello"}, enable_read_image_multimodal=False, vision_tool_available=False,
@@ -126,7 +126,7 @@ async def test_existing_core_timeout_stays_unknown_and_recovery_enables_images()
         assert status == "unknown"
         assert not Adapter._native_image_input_enabled({}, model)
         notice = Adapter._build_image_tool_fallback_notice(
-            _request(), enable_read_image_multimodal=False, model=model,
+            _request(), model=model,
             vision_tool_available=False, image_input_status=status,
         )
         assert "尚未确认" in notice["content"]

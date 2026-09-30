@@ -817,6 +817,34 @@ _SKILL_RETRIEVAL_TOOL_NAMES = frozenset(
         "skill_index",
     }
 )
+# The fallback notice is read by the user, unlike the image-tool prompt that
+# ``_image_input_status_message`` also feeds, which the model reads and which
+# stays Chinese. So the English copy lives here rather than beside it.
+#
+# ``_native_image_input_status`` returns one of four values. ``supported`` never
+# reaches the notice, because a model that reads the image natively needs no
+# explanation, so the three below are the ones a reader can see. Each states a
+# different reason, and English must keep them apart exactly as Chinese does.
+_IMAGE_TOOL_FALLBACK_STATUS_EN = {
+    "disabled": (
+        "Native image input is disabled in configuration for the current "
+        "model{model_label}."
+    ),
+    "unsupported": (
+        "The current model{model_label} interface did not accept native image "
+        "input in the capability check."
+    ),
+}
+_IMAGE_TOOL_FALLBACK_UNKNOWN_EN = (
+    "It is not confirmed whether the current model{model_label} interface "
+    "accepts native image input."
+)
+_IMAGE_TOOL_FALLBACK_TOOL_EN = "An image understanding tool is used instead."
+_IMAGE_TOOL_FALLBACK_UNAVAILABLE_EN = (
+    "No vision model tool is configured; this image was not sent as native input."
+)
+_IMAGE_TOOL_FALLBACK_MODEL_LABEL_CN = "（{model_name}）"
+_IMAGE_TOOL_FALLBACK_MODEL_LABEL_EN = " ({model_name})"
 # Total ``_update_runtime_config`` cost above which its per-stage breakdown is
 # worth an INFO line. It runs once per turn ahead of the model call, so anything
 # at this scale is directly visible in time-to-first-token.
@@ -7023,12 +7051,15 @@ class JiuWenSwarmDeepAdapter:
     def _build_image_tool_fallback_notice(
         request: AgentRequest,
         *,
-        enable_read_image_multimodal: bool,
         model: Any | None,
         vision_tool_available: bool,
         image_input_status: str = "unknown",
+        language: str = "cn",
     ) -> dict[str, Any] | None:
-        if enable_read_image_multimodal:
+        # ``image_input_status`` already states whether the model reads images
+        # natively, so the notice reads that one value rather than a separate
+        # boolean that every call site derived from it.
+        if image_input_status == "supported":
             return None
 
         from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
@@ -7041,12 +7072,32 @@ class JiuWenSwarmDeepAdapter:
 
         model_config = getattr(model, "model_config", None)
         model_name = str(getattr(model_config, "model_name", "") or "").strip()
-        model_label = f"（{model_name}）" if model_name else ""
-        content = JiuWenSwarmDeepAdapter._image_input_status_message(image_input_status, model_label)
-        if vision_tool_available:
-            content += "已切换为图片理解工具处理。"
+        english = str(language or "").strip().lower() == "en"
+        label_template = (
+            _IMAGE_TOOL_FALLBACK_MODEL_LABEL_EN
+            if english
+            else _IMAGE_TOOL_FALLBACK_MODEL_LABEL_CN
+        )
+        model_label = label_template.format(model_name=model_name) if model_name else ""
+        if english:
+            template = _IMAGE_TOOL_FALLBACK_STATUS_EN.get(
+                image_input_status, _IMAGE_TOOL_FALLBACK_UNKNOWN_EN
+            )
+            content = template.format(model_label=model_label)
+            content += " " + (
+                _IMAGE_TOOL_FALLBACK_TOOL_EN
+                if vision_tool_available
+                else _IMAGE_TOOL_FALLBACK_UNAVAILABLE_EN
+            )
         else:
-            content += "未配置可用的视觉模型工具，本次图片未作为原生图片输入发送。"
+            content = JiuWenSwarmDeepAdapter._image_input_status_message(
+                image_input_status, model_label
+            )
+            content += (
+                "已切换为图片理解工具处理。"
+                if vision_tool_available
+                else "未配置可用的视觉模型工具，本次图片未作为原生图片输入发送。"
+            )
         notice = {
             "event_type": "chat.notice",
             "notice_type": "image_tool_fallback",
@@ -15380,6 +15431,7 @@ class JiuWenSwarmDeepAdapter:
         if self._stream_event_rail is not None:
             self._stream_event_rail.reset_abort(session_id)
         image_files_token = None
+        image_tool_fallback_notice: dict[str, Any] | None = None
         _run_span: Any = None
         _run_exception: BaseException | None = None
         _run_error_type = ""
@@ -15435,6 +15487,20 @@ class JiuWenSwarmDeepAdapter:
                 resolved_model,
             )
             enable_read_image_multimodal = image_input_status == "supported"
+            # Same notice the streaming paths yield as a ``chat.notice`` chunk.
+            # A non-streaming request has no chunk to carry it, so it is folded
+            # into the final payload below. The arguments match the streaming
+            # call sites, ``image_input_status`` included, so the three paths
+            # give the same reason for the same turn.
+            image_tool_fallback_notice = self._build_image_tool_fallback_notice(
+                request,
+                model=resolved_model,
+                image_input_status=image_input_status,
+                vision_tool_available=(
+                    getattr(self, "_vision_model_config", None) is not None
+                ),
+                language=self._resolve_runtime_language(),
+            )
             inputs = self._prepare_react_image_tool_prompt(
                 request,
                 inputs,
@@ -15628,22 +15694,35 @@ class JiuWenSwarmDeepAdapter:
         if error_text:
             # 模型/round 级错误：即使已流出部分内容，也按失败返回并透传错误消息，
             # 避免 cron 等调用方误判为"执行完成但未返回结果"。
-            payload: dict[str, Any] = {"error": error_text}
+            response_payload: dict[str, Any] = {"error": error_text}
             if content:
-                payload["content"] = content
-            return AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload=payload,
-                metadata=request.metadata,
-            )
+                response_payload["content"] = content
+            response_ok = False
+        else:
+            response_payload = {"content": content}
+            response_ok = True
+
+        if image_tool_fallback_notice is not None and "content" in response_payload:
+            # The streaming paths yield this as its own ``chat.notice`` chunk.
+            # A non-streaming reply has no chunk to carry a side event and every
+            # consumer renders ``payload["content"]`` and nothing else, so the
+            # notice is prepended to the text the reply already carries rather
+            # than put beside it under a key nothing reads. Folding it in once,
+            # after the payload has been chosen, is what lets a branch added
+            # above inherit it: a reply carrying ``content`` gets the notice, a
+            # reply with no user-facing text is left alone.
+            notice_text = str(image_tool_fallback_notice.get("content") or "").strip()
+            if notice_text:
+                answer = response_payload["content"]
+                response_payload["content"] = (
+                    f"{notice_text}\n\n{answer}" if answer else notice_text
+                )
 
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
-            ok=True,
-            payload={"content": content},
+            ok=response_ok,
+            payload=response_payload,
             metadata=request.metadata,
         )
 
@@ -15968,12 +16047,12 @@ class JiuWenSwarmDeepAdapter:
             enable_read_image_multimodal = image_input_status == "supported"
             image_tool_fallback_notice = self._build_image_tool_fallback_notice(
                 request,
-                enable_read_image_multimodal=enable_read_image_multimodal,
                 image_input_status=image_input_status,
                 model=resolved_model,
                 vision_tool_available=(
                     getattr(self, "_vision_model_config", None) is not None
                 ),
+                language=self._resolve_runtime_language(),
             )
             inputs = self._prepare_react_image_tool_prompt(
                 request,
@@ -16428,12 +16507,12 @@ class JiuWenSwarmDeepAdapter:
             enable_read_image_multimodal = image_input_status == "supported"
             image_tool_fallback_notice = self._build_image_tool_fallback_notice(
                 request,
-                enable_read_image_multimodal=enable_read_image_multimodal,
                 model=resolved_model,
                 image_input_status=image_input_status,
                 vision_tool_available=(
                     getattr(self, "_vision_model_config", None) is not None
                 ),
+                language=self._resolve_runtime_language(),
             )
             inputs = self._prepare_react_image_tool_prompt(
                 request,
