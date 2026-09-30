@@ -310,6 +310,18 @@ models:
         stream_idle_timeout: 120
         verify_ssl: true
         custom_headers: {}
+        # 该模型是否接受图片输入（原生多模态）。可选键，默认不填。
+        #   true： 直接按「支持」处理。
+        #   false：不向该模型发送原生图片输入，且服务启动时不再为该条目发探测请求。
+        #   不填： 视为「未声明」，交给 react.enable_read_image_multimodal，
+        #          再退回启动探测（image_modality_warmup）得出的结论。
+        # 优先级：supports_vision > react.enable_read_image_multimodal > 探测缓存。
+        # 纯文本模型建议显式填 false。探测会发一张纯红小图并问「这是什么颜色」，
+        # 判定标准是回答里是否出现该颜色词。收不到图的文本模型也可能猜中 red，
+        # 于是被误判成支持图片输入。
+        # 这里写成注释而非实体键：不填即「未声明」，填 null 同理。
+        # 留一行注释是为了让需要的人照抄，而不是让每个条目都多出一个空键。
+        # supports_vision: false
       model_config_obj: {}
         # 模型支持的上下文总长度（tokens）。每个模型条目均可配（与 timeout 一样，
         # defaults / agentos / video / audio / vision / image_gen 均可填）。
