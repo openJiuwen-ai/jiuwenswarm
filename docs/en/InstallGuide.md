@@ -55,6 +55,8 @@ curl -L --fail -o JiuwenSwarm-<version>.dmg \
 
 On first launch the app creates `~/.jiuwenswarm/`. Then follow [Post-start verification](#3-post-start-verification) to finish model configuration.
 
+> ⚠️ **Desktop-installer users should not run `jiuwenswarm-init` / `jiuwenswarm-start`:** those CLI entry points belong to [Option 2: pip install](#option-2-pip-install). After installing the `.exe` / `.dmg`, start the app from the desktop shortcut or Start menu (the Windows installer already initializes the workspace). Running those commands in a terminal will fail with “not recognized as an internal or external command”.
+
 > Match the version to the actual download link on the Release page. For desktop auto-update behavior (Windows and macOS), see [Desktop auto-update design](WindowsAutoUpdateDesign.md).
 
 ---
@@ -129,6 +131,8 @@ pip install jiuwenswarm==0.2.4b3
 ```
 
 #### 2. First launch
+
+> Applies to **pip / source installs only**. If you installed via the desktop `.exe` / `.dmg`, go back to [Option 1](#option-1-desktop-installer-dmg--exe) and launch from the GUI.
 
 ```bash
 # Initialize JiuwenSwarm (first run)
