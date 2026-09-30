@@ -8,7 +8,7 @@ import { computeMySkills, buildInstalledSkillNames, filterEnabledMySkills } from
 import { Input } from '../ui/Input/Input';
 import { Textarea } from '../ui/Textarea/Textarea';
 import { PageCard } from '../ui';
-import { PickerModal, type PickerItem } from './PickerModal';
+import { ConnectorPickerDrawer, type PickerItem } from './ConnectorPickerDrawer';
 import { FormPageLayout } from './FormPageLayout';
 
 const DESCRIPTION_MAX = 512;
@@ -103,6 +103,7 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [installedSkillNames, setInstalledSkillNames] = useState<Set<string>>(new Set());
   const [skillsLoading, setSkillsLoading] = useState(false);
+  const [skillsError, setSkillsError] = useState(false);
   const [skillIds, setSkillIds] = useState<string[]>([]);
   const [mcpIds, setMcpIds] = useState<string[]>([]);
   const [picker, setPicker] = useState<'skill' | 'mcp' | null>(null);
@@ -123,6 +124,7 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
   const connectors = useConnectorStore((s) => s.connectors);
   const myConnectors = useConnectorStore((s) => s.myConnectors);
   const connectorLoading = useConnectorStore((s) => s.isLoading);
+  const connectorError = useConnectorStore((s) => s.error);
   const loadConnectorList = useConnectorStore((s) => s.loadList);
   const createPlugin = usePluginPackageStore((s) => s.create);
 
@@ -136,6 +138,7 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
   // 装进来的那些（用户反馈的根因）。
   function loadSkills() {
     setSkillsLoading(true);
+    setSkillsError(false);
     webRequest<{ skills?: SkillItem[]; plugins?: InstalledPluginItem[] }>('skills.list', { with_installed: true })
       .then((payload) => {
         setSkills(payload.skills ?? []);
@@ -144,6 +147,7 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
       .catch(() => {
         setSkills([]);
         setInstalledSkillNames(new Set());
+        setSkillsError(true);
       })
       .finally(() => setSkillsLoading(false));
   }
@@ -211,228 +215,234 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
         confirmLabel={t('connectorMarket.common.confirm')}
         confirmLoading={submitting}
       >
-      <Section title={t('connectorMarket.create.basicInfo')}>
-        {AVATAR_UPLOAD_ENABLED && (
-          <div className="mb-4 flex items-center gap-3">
-            <label
-              className="flex h-14 w-14 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-2xl bg-bg-muted text-text-muted hover:bg-bg"
-              data-testid="connector-market-create-plugin-avatar"
-            >
-              {avatarPreviewUrl ? (
-                <img src={avatarPreviewUrl} alt="" className="h-full w-full object-cover" />
-              ) : (
-                <ImagePlus size={22} />
-              )}
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/gif"
-                className="hidden"
-                onChange={(event) => handleAvatarSelect(event.target.files?.[0])}
-              />
-            </label>
-            <div>
-              <p className="text-[12px] leading-[18px] text-text-muted">{t('connectorMarket.create.uploadHint')}</p>
-              {avatarPreviewUrl && (
-                <p className="mt-0.5 text-[11px] leading-4 text-[color:var(--color-text-placeholder)]">
-                  {t('connectorMarket.create.avatarNotPersisted')}
-                </p>
-              )}
+        <Section title={t('connectorMarket.create.basicInfo')}>
+          {AVATAR_UPLOAD_ENABLED && (
+            <div className="mb-4 flex items-center gap-3">
+              <label
+                className="flex h-14 w-14 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-2xl bg-bg-muted text-text-muted hover:bg-bg"
+                data-testid="connector-market-create-plugin-avatar"
+              >
+                {avatarPreviewUrl ? (
+                  <img src={avatarPreviewUrl} alt="" className="h-full w-full object-cover" />
+                ) : (
+                  <ImagePlus size={22} />
+                )}
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif"
+                  className="hidden"
+                  onChange={(event) => handleAvatarSelect(event.target.files?.[0])}
+                />
+              </label>
+              <div>
+                <p className="text-[12px] leading-[18px] text-text-muted">{t('connectorMarket.create.uploadHint')}</p>
+                {avatarPreviewUrl && (
+                  <p className="mt-0.5 text-[11px] leading-4 text-[color:var(--color-text-placeholder)]">
+                    {t('connectorMarket.create.avatarNotPersisted')}
+                  </p>
+                )}
+              </div>
             </div>
+          )}
+
+          <div className="mb-4">
+            <label className="mb-1.5 block text-[13px] font-medium text-text">{t('connectorMarket.create.name')}</label>
+            <Input
+              value={name}
+              onChange={(nextName) => {
+                setName(nextName);
+                clearFieldError('name');
+                if (!idTouched) {
+                  const nextId = slugify(nextName);
+                  setId(nextId);
+                  if (nextId) clearFieldError('id');
+                }
+              }}
+              invalid={fieldErrors.name}
+              data-testid="connector-market-create-plugin-name"
+            />
+            {fieldErrors.name && (
+              <p
+                className="mt-1 text-[11px] leading-4 text-danger"
+                data-testid="connector-market-create-plugin-field-error"
+                data-variant="name"
+              >
+                {t('connectorMarket.create.fieldRequired')}
+              </p>
+            )}
           </div>
-        )}
 
-        <div className="mb-4">
-          <label className="mb-1.5 block text-[13px] font-medium text-text">{t('connectorMarket.create.name')}</label>
-          <Input
-            value={name}
-            onChange={(nextName) => {
-              setName(nextName);
-              clearFieldError('name');
-              if (!idTouched) {
-                const nextId = slugify(nextName);
+          <div className="mb-4">
+            <label className="mb-1.5 block text-[13px] font-medium text-text">{t('connectorMarket.create.id')}</label>
+            <Input
+              value={id}
+              onChange={(nextId) => {
+                setIdTouched(true);
                 setId(nextId);
-                if (nextId) clearFieldError('id');
-              }
-            }}
-            invalid={fieldErrors.name}
-            data-testid="connector-market-create-plugin-name"
-          />
-          {fieldErrors.name && (
-            <p
-              className="mt-1 text-[11px] leading-4 text-danger"
-              data-testid="connector-market-create-plugin-field-error"
-              data-variant="name"
-            >
-              {t('connectorMarket.create.fieldRequired')}
+                clearFieldError('id');
+              }}
+              placeholder={t('connectorMarket.create.idPlaceholder')}
+              invalid={fieldErrors.id}
+              data-testid="connector-market-create-plugin-id"
+            />
+            <p className="text-[11px] leading-4 text-[color:var(--color-text-placeholder)]">
+              {t('connectorMarket.create.idHint')}
             </p>
-          )}
-        </div>
+            {fieldErrors.id && (
+              <p
+                className="mt-1 text-[11px] leading-4 text-danger"
+                data-testid="connector-market-create-plugin-field-error"
+                data-variant="id"
+              >
+                {t('connectorMarket.create.fieldRequired')}
+              </p>
+            )}
+          </div>
 
-        <div className="mb-4">
-          <label className="mb-1.5 block text-[13px] font-medium text-text">{t('connectorMarket.create.id')}</label>
-          <Input
-            value={id}
-            onChange={(nextId) => {
-              setIdTouched(true);
-              setId(nextId);
-              clearFieldError('id');
-            }}
-            placeholder={t('connectorMarket.create.idPlaceholder')}
-            invalid={fieldErrors.id}
-            data-testid="connector-market-create-plugin-id"
-          />
-          <p className="text-[11px] leading-4 text-[color:var(--color-text-placeholder)]">
-            {t('connectorMarket.create.idHint')}
-          </p>
-          {fieldErrors.id && (
-            <p
-              className="mt-1 text-[11px] leading-4 text-danger"
-              data-testid="connector-market-create-plugin-field-error"
-              data-variant="id"
+          <div className="mb-4">
+            <label className="mb-1.5 block text-[13px] font-medium text-text">
+              {t('connectorMarket.create.description')}
+            </label>
+            <Textarea
+              value={description}
+              maxLength={DESCRIPTION_MAX}
+              onChange={(nextDescription) => {
+                setDescription(nextDescription);
+                clearFieldError('description');
+              }}
+              rows={3}
+              invalid={fieldErrors.description}
+              data-testid="connector-market-create-plugin-description"
+              showCounter
+              counterTestId="connector-market-create-plugin-description-counter"
+            />
+            {fieldErrors.description && (
+              <p
+                className="mt-1 text-[11px] leading-4 text-danger"
+                data-testid="connector-market-create-plugin-field-error"
+                data-variant="description"
+              >
+                {t('connectorMarket.create.fieldRequired')}
+              </p>
+            )}
+          </div>
+        </Section>
+
+        <Section
+          title={t('connectorMarket.create.skillsOptional')}
+          action={
+            <button
+              type="button"
+              onClick={() => {
+                setPicker('skill');
+                loadSkills();
+              }}
+              className="flex items-center gap-1 rounded-full py-1 text-[13px] text-text hover:text-[color:var(--color-chat-accent)]"
+              data-testid="connector-market-create-plugin-add-skill"
             >
-              {t('connectorMarket.create.fieldRequired')}
-            </p>
-          )}
-        </div>
+              <Plus size={14} />
+              {t('connectorMarket.create.addSkill')}
+            </button>
+          }
+        >
+          <div className="card-grid-auto">
+            {selectedSkills.map((skill) => {
+              const label = skill.display_name || skill.name;
+              return (
+                <PageCard
+                  key={skill.name}
+                  testId="connector-market-create-plugin-skill-item"
+                  variant={skill.name}
+                  avatar={{ name: label }}
+                  title={label}
+                  description={skill.description}
+                  actionsHover
+                  action={{
+                    icon: <Trash2 size={15} />,
+                    onClick: () => setSkillIds((prev) => prev.filter((id) => id !== skill.name)),
+                  }}
+                />
+              );
+            })}
+          </div>
+        </Section>
 
-        <div className="mb-4">
-          <label className="mb-1.5 block text-[13px] font-medium text-text">
-            {t('connectorMarket.create.description')}
-          </label>
-          <Textarea
-            value={description}
-            maxLength={DESCRIPTION_MAX}
-            onChange={(nextDescription) => {
-              setDescription(nextDescription);
-              clearFieldError('description');
-            }}
-            rows={3}
-            invalid={fieldErrors.description}
-            data-testid="connector-market-create-plugin-description"
-            showCounter
-            counterTestId="connector-market-create-plugin-description-counter"
-          />
-          {fieldErrors.description && (
-            <p
-              className="mt-1 text-[11px] leading-4 text-danger"
-              data-testid="connector-market-create-plugin-field-error"
-              data-variant="description"
+        <Section
+          title={t('connectorMarket.create.mcpOptional')}
+          action={
+            <button
+              type="button"
+              onClick={() => {
+                setPicker('mcp');
+                loadConnectorList('local');
+              }}
+              className="flex items-center gap-1 rounded-full py-1 text-[13px] text-text hover:text-[color:var(--color-chat-accent)]"
+              data-testid="connector-market-create-plugin-add-mcp"
             >
-              {t('connectorMarket.create.fieldRequired')}
-            </p>
-          )}
-        </div>
-      </Section>
-
-      <Section
-        title={t('connectorMarket.create.skillsOptional')}
-        action={
-          <button
-            type="button"
-            onClick={() => {
-              setPicker('skill');
-              loadSkills();
-            }}
-            className="flex items-center gap-1 rounded-full px-2.5 py-1 text-[13px] text-text hover:bg-connector-add-hover-surface hover:text-[color:var(--color-chat-accent)]"
-            data-testid="connector-market-create-plugin-add-skill"
-          >
-            <Plus size={14} />
-            {t('connectorMarket.create.addSkill')}
-          </button>
-        }
-      >
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {selectedSkills.map((skill) => {
-            const label = skill.display_name || skill.name;
-            return (
+              <Plus size={14} />
+              {t('connectorMarket.create.addMcp')}
+            </button>
+          }
+        >
+          <div className="card-grid-auto">
+            {selectedMcps.map((mcp) => (
               <PageCard
-                key={skill.name}
-                testId="connector-market-create-plugin-skill-item"
-                variant={skill.name}
-                avatar={{ name: label }}
-                title={label}
-                description={skill.description}
+                key={mcp.name}
+                testId="connector-market-create-plugin-mcp-item"
+                variant={mcp.name}
+                avatar={{ name: mcp.displayName }}
+                title={mcp.displayName}
+                description={mcp.description}
                 actionsHover
                 action={{
                   icon: <Trash2 size={15} />,
-                  onClick: () => setSkillIds((prev) => prev.filter((id) => id !== skill.name)),
+                  onClick: () => setMcpIds((prev) => prev.filter((id) => id !== mcp.name)),
                 }}
               />
-            );
-          })}
-        </div>
-      </Section>
+            ))}
+          </div>
+        </Section>
 
-      <Section
-        title={t('connectorMarket.create.mcpOptional')}
-        action={
-          <button
-            type="button"
-            onClick={() => {
-              setPicker('mcp');
-              loadConnectorList('local');
-            }}
-            className="flex items-center gap-1 rounded-full px-2.5 py-1 text-[13px] text-text hover:bg-connector-add-hover-surface hover:text-[color:var(--color-chat-accent)]"
-            data-testid="connector-market-create-plugin-add-mcp"
-          >
-            <Plus size={14} />
-            {t('connectorMarket.create.addMcp')}
-          </button>
-        }
-      >
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {selectedMcps.map((mcp) => (
-            <PageCard
-              key={mcp.name}
-              testId="connector-market-create-plugin-mcp-item"
-              variant={mcp.name}
-              avatar={{ name: mcp.displayName }}
-              title={mcp.displayName}
-              description={mcp.description}
-              actionsHover
-              action={{
-                icon: <Trash2 size={15} />,
-                onClick: () => setMcpIds((prev) => prev.filter((id) => id !== mcp.name)),
-              }}
-            />
-          ))}
-        </div>
-      </Section>
+        {submitError && (
+          <p className="mb-3 text-[12px] text-danger" data-testid="connector-market-create-plugin-submit-error">
+            {submitError}
+          </p>
+        )}
+      </FormPageLayout>
 
-      {submitError && (
-        <p className="mb-3 text-[12px] text-danger" data-testid="connector-market-create-plugin-submit-error">
-          {submitError}
-        </p>
+      {picker === 'skill' && (
+        <ConnectorPickerDrawer
+          title={t('connectorMarket.create.pickSkillTitle')}
+          testId="connector-market-picker"
+          status={skillsLoading ? 'loading' : skillsError ? 'error' : 'success'}
+          items={toSkillPickerItems(myPickerSkills)}
+          getItemKey={(item) => item.id}
+          initialSelectedIds={skillIds}
+          onRetry={loadSkills}
+          onClose={() => setPicker(null)}
+          onConfirm={(ids) => {
+            setSkillIds(ids);
+            setPicker(null);
+          }}
+        />
       )}
-    </FormPageLayout>
 
-    {picker === 'skill' && (
-      <PickerModal
-        title={t('connectorMarket.create.pickSkillTitle')}
-        initialSelectedIds={skillIds}
-        items={toSkillPickerItems(myPickerSkills)}
-        loading={skillsLoading}
-        onCancel={() => setPicker(null)}
-        onConfirm={(ids) => {
-          setSkillIds(ids);
-          setPicker(null);
-        }}
-      />
-    )}
-
-    {picker === 'mcp' && (
-      <PickerModal
-        title={t('connectorMarket.create.pickMcpTitle')}
-        initialSelectedIds={mcpIds}
-        items={myConnectors.map(toMcpPickerItem)}
-        loading={connectorLoading}
-        onCancel={() => setPicker(null)}
-        onConfirm={(ids) => {
-          setMcpIds(ids);
-          setPicker(null);
-        }}
-      />
-    )}
+      {picker === 'mcp' && (
+        <ConnectorPickerDrawer
+          title={t('connectorMarket.create.pickMcpTitle')}
+          testId="connector-market-picker"
+          status={connectorLoading ? 'loading' : connectorError ? 'error' : 'success'}
+          items={myConnectors.map(toMcpPickerItem)}
+          getItemKey={(item) => item.id}
+          initialSelectedIds={mcpIds}
+          onRetry={() => loadConnectorList('local')}
+          onClose={() => setPicker(null)}
+          onConfirm={(ids) => {
+            setMcpIds(ids);
+            setPicker(null);
+          }}
+        />
+      )}
     </>
   );
 }

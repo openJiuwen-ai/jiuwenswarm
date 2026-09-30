@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Minus, Plus } from 'lucide-react';
 import { useConnectorStore } from '../../stores/connectorStore';
+import { Input } from '../ui/Input/Input';
 import { FormPageLayout } from './FormPageLayout';
 
 type McpConfigType = 'stdio' | 'streamable-http';
@@ -270,23 +271,21 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
         label={t('connectorMarket.registerMcp.name')}
         error={fieldErrors.name ? t('connectorMarket.create.fieldRequired') : undefined}
       >
-        <input
+        <Input
           value={name}
-          onChange={(event) => {
-            setName(event.target.value);
+          onChange={(nextName) => {
+            setName(nextName);
             clearFieldError('name');
           }}
           readOnly={!!editName}
           disabled={!!editName}
-          className={`h-9 w-full rounded-lg border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover disabled:cursor-not-allowed disabled:bg-bg-muted disabled:text-text-muted ${
-            fieldErrors.name ? 'border-danger' : 'border-border'
-          }`}
+          invalid={fieldErrors.name}
           data-testid="connector-market-register-mcp-name"
         />
       </Field>
 
       <Field label={t('connectorMarket.registerMcp.type')}>
-        <div className="flex gap-2">
+        <div className="flex gap-[2px]">
           {(
             [
               { key: 'stdio', label: t('connectorMarket.registerMcp.typeStdio') },
@@ -300,7 +299,7 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
               aria-pressed={type === opt.key}
               data-testid="connector-market-register-mcp-type"
               data-variant={opt.key}
-              className={`rounded-lg px-4 py-1.5 text-[13px] ${type === opt.key ? 'bg-[color:var(--color-chat-accent)] text-white' : 'bg-bg-muted text-text-muted'}`}
+              className={`rounded-[6px] px-6 py-[5px] text-[14px] leading-[22px] ${type === opt.key ? 'bg-[color:var(--color-chat-accent)] text-white' : 'bg-bg-muted text-text-weak'}`}
             >
               {opt.label}
             </button>
@@ -314,16 +313,14 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
             label={t('connectorMarket.registerMcp.command')}
             error={fieldErrors.command ? t('connectorMarket.create.fieldRequired') : undefined}
           >
-            <input
+            <Input
               value={command}
-              onChange={(event) => {
-                setCommand(event.target.value);
+              onChange={(nextCommand) => {
+                setCommand(nextCommand);
                 clearFieldError('command');
               }}
               placeholder="dev-mcp serve-sqlite"
-              className={`h-9 w-full rounded-lg border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover ${
-                fieldErrors.command ? 'border-danger' : 'border-border'
-              }`}
+              invalid={fieldErrors.command}
               data-testid="connector-market-register-mcp-command"
             />
           </Field>
@@ -333,6 +330,7 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
             rows={args}
             onChange={setArgs}
             placeholderKey={t('connectorMarket.registerMcp.pleaseInput')}
+            keyTestId="connector-market-register-mcp-args-key"
           />
           <KeyValueField
             label={t('connectorMarket.registerMcp.env')}
@@ -340,6 +338,8 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
             onChange={setEnv}
             placeholderKey={t('connectorMarket.registerMcp.key')}
             placeholderValue={t('connectorMarket.registerMcp.value')}
+            keyTestId="connector-market-register-mcp-env-key"
+            valueTestId="connector-market-register-mcp-env-value"
           />
           <KeyValueField
             label={t('connectorMarket.registerMcp.envPassthrough')}
@@ -347,30 +347,28 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
             rows={envPassthrough}
             onChange={setEnvPassthrough}
             placeholderKey={t('connectorMarket.registerMcp.pleaseInput')}
+            keyTestId="connector-market-register-mcp-env-passthrough-key"
           />
         </>
       ) : (
         <>
           <Field label="URL" error={fieldErrors.url ? t('connectorMarket.create.fieldRequired') : undefined}>
-            <input
+            <Input
               value={url}
-              onChange={(event) => {
-                setUrl(event.target.value);
+              onChange={(nextUrl) => {
+                setUrl(nextUrl);
                 clearFieldError('url');
               }}
               placeholder="https://mcp.example.com/mcp"
-              className={`h-9 w-full rounded-lg border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover ${
-                fieldErrors.url ? 'border-danger' : 'border-border'
-              }`}
+              invalid={fieldErrors.url}
               data-testid="connector-market-register-mcp-url"
             />
           </Field>
           <Field label={t('connectorMarket.registerMcp.bearerTokenEnvKey')}>
-            <input
+            <Input
               value={bearerEnvKey}
-              onChange={(event) => setBearerEnvKey(event.target.value)}
+              onChange={setBearerEnvKey}
               placeholder="MCP_BEARER_TOKEN"
-              className="h-9 w-full rounded-lg border border-border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover"
               data-testid="connector-market-register-mcp-bearer-key"
             />
           </Field>
@@ -380,6 +378,8 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
             onChange={setHttpHeaders}
             placeholderKey={t('connectorMarket.registerMcp.key')}
             placeholderValue={t('connectorMarket.registerMcp.value')}
+            keyTestId="connector-market-register-mcp-headers-key"
+            valueTestId="connector-market-register-mcp-headers-value"
           />
           <KeyValueField
             label={t('connectorMarket.registerMcp.headersFromEnv')}
@@ -387,6 +387,8 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
             onChange={setHttpHeadersFromEnv}
             placeholderKey={t('connectorMarket.registerMcp.key')}
             placeholderValue={t('connectorMarket.registerMcp.envVarName')}
+            keyTestId="connector-market-register-mcp-headers-from-env-key"
+            valueTestId="connector-market-register-mcp-headers-from-env-value"
           />
         </>
       )}
@@ -403,7 +405,7 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
           onChange={(event) => handleJsonPasteChange(event.target.value)}
           placeholder={JSON_EXAMPLE}
           rows={10}
-          className="w-full resize-none rounded-lg border border-border bg-bg-muted px-3 py-2 font-mono text-[12px] leading-5 text-text-muted outline-none focus:border-border-hover"
+          className="w-full resize-none rounded-[8px] border border-border bg-connector-json-paste-surface px-3 py-2 font-mono text-[12px] leading-5 text-text-muted outline-none focus:border-border-hover"
           data-testid="connector-market-register-mcp-json"
         />
       </div>
@@ -428,6 +430,8 @@ function KeyValueField({
   single,
   placeholderKey,
   placeholderValue,
+  keyTestId,
+  valueTestId,
 }: {
   label: string;
   rows: KeyValueRow[];
@@ -435,6 +439,8 @@ function KeyValueField({
   single?: boolean;
   placeholderKey: string;
   placeholderValue?: string;
+  keyTestId?: string;
+  valueTestId?: string;
 }) {
   return (
     <div className="mb-4">
@@ -442,20 +448,24 @@ function KeyValueField({
       <div className="flex flex-col gap-2">
         {rows.map((row) => (
           <div key={row.id} className="flex items-center gap-2">
-            <input
+            <Input
               value={row.key}
-              onChange={(event) => onChange(rows.map((r) => (r.id === row.id ? { ...r, key: event.target.value } : r)))}
+              onChange={(nextKey) => onChange(rows.map((r) => (r.id === row.id ? { ...r, key: nextKey } : r)))}
               placeholder={placeholderKey}
-              className="h-9 flex-1 rounded-lg border border-border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover"
+              rootClassName="min-w-0 flex-1"
+              data-testid={keyTestId}
+              data-variant={row.id}
             />
             {!single && (
-              <input
+              <Input
                 value={row.value}
-                onChange={(event) =>
-                  onChange(rows.map((r) => (r.id === row.id ? { ...r, value: event.target.value } : r)))
+                onChange={(nextValue) =>
+                  onChange(rows.map((r) => (r.id === row.id ? { ...r, value: nextValue } : r)))
                 }
                 placeholder={placeholderValue}
-                className="h-9 flex-1 rounded-lg border border-border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover"
+                rootClassName="min-w-0 flex-1"
+                data-testid={valueTestId}
+                data-variant={row.id}
               />
             )}
             <button

@@ -23,6 +23,7 @@
     "optional": "（可选）",
     "processing": "处理中…",
     "retry": "重试",
+    "selectedCount": "已选 {{count}} 个",
     "editMenu": {
       "actionFailed": "无法完成文本编辑操作，请重试。",
       "cut": "剪切",
@@ -2763,6 +2764,7 @@
     "source": { "builtin": "官方", "local": "我的", "hub": "Hub" },
     "categoryLabel": "专家分类",
     "categoryAll": "全部",
+    "loadMore": "加载更多内容",
     "categoryOther": "其他",
     "categoryScrollPrev": "向左滚动分类",
     "categoryScrollNext": "向右滚动分类",
@@ -2841,13 +2843,6 @@
       "catalogEmpty": "暂无可展示的专家",
       "mineEmpty": "还没有我的专家",
       "noMatch": "没有找到匹配的专家"
-    },
-    "pagination": {
-      "label": "专家列表分页",
-      "range": "显示 {{start}}-{{end}}，共 {{total}} 个",
-      "page": "第 {{page}} / {{total}} 页",
-      "previous": "上一页",
-      "next": "下一页"
     },
     "detail": {
       "ability": "能力介绍",
@@ -2940,7 +2935,6 @@
       "skillSourceTabsLabel": "技能来源",
       "installSkill": "安装",
       "installingSkill": "安装中…",
-      "selectedCount": "已选 {{count}} 个",
       "refreshSkills": "刷新技能",
       "skillsError": "技能列表加载失败，请重试。",
       "skillsEmpty": "暂无可用技能",
@@ -2957,7 +2951,6 @@
       "connectConnector": "连接",
       "connectingConnector": "连接中…",
       "selectionSearchPlaceholder": "请输入关键字搜索",
-      "selectionPaginationLabel": "选择列表分页",
       "mcpError": "连接器列表加载失败，请重试。",
       "mcpEmpty": "暂无可用连接器",
       "promptsLabel": "这样问我试试看（可选）",
@@ -3064,7 +3057,6 @@
         "leaderTitle": "选择负责人",
         "memberTitle": "选择成员",
         "empty": "没有匹配的专家",
-        "selectedCount": "已选 {{count}} 个",
         "localTab": "本地",
         "marketTab": "广场",
         "sourceTabsLabel": "专家来源",
@@ -3095,6 +3087,13 @@
     "forkFromMessage": "从此消息新建会话分支",
     "forkFromMessageFailed": "新建会话分支失败，请重试。",
     "fileExpired": "已过期",
+    "fileTypeDocument": "文档",
+    "fileTypeSpreadsheet": "电子表格",
+    "fileTypePresentation": "演示文件",
+    "fileTypePdf": "PDF",
+    "fileTypeImage": "图片",
+    "fileTypeSkill": "技能",
+    "fileTypeFile": "文件",
     "agentProcessing": "Agent 处理中",
     "thinking": "正在思考...",
     "processing": "正在处理...",
@@ -3846,13 +3845,7 @@
       "loadingMyPlugin": "加载我的插件中...",
       "loadingMyMcp": "加载我的连接器中..."
     },
-    "pagination": {
-      "pageSize": "每页显示",
-      "all": "全部",
-      "rangeInfo": "{{start}}-{{end}} / 共 {{total}} 条",
-      "prev": "上一页",
-      "next": "下一页"
-    },
+    "loadMore": "加载更多内容",
     "toast": {
       "mcpConnected": "连接器已连接成功。",
       "mcpInstalled": "连接器安装成功，请连接后使用。",
@@ -3918,6 +3911,7 @@
       "confirm": "确定",
       "search": "搜索",
       "noResult": "没有匹配结果",
+      "noDescription": "暂无描述",
       "loadFailed": "详情加载失败，请重试"
     }
   },

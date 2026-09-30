@@ -38,7 +38,10 @@
   cursor: not-allowed;
 }
 .ui-input--invalid {
-  border-color: var(--color-border-danger);
+  border-color: var(--color-field-invalid-border);
+}
+.ui-input--invalid:focus {
+  border-color: var(--color-field-invalid-border);
 }
 .ui-input--password {
   padding-right: 38px;
@@ -94,7 +97,10 @@
   border-color: var(--color-control-emphasis);
 }
 .ui-input-affix-wrapper--invalid {
-  border-color: var(--color-border-danger);
+  border-color: var(--color-field-invalid-border);
+}
+.ui-input-affix-wrapper--invalid:focus-within {
+  border-color: var(--color-field-invalid-border);
 }
 .ui-input-affix-wrapper--disabled {
   color: var(--color-text-tertiary);

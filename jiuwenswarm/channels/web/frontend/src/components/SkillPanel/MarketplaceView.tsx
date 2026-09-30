@@ -7,7 +7,7 @@ import { catalogAwaitingItems, type CatalogCacheMetadata } from '../../features/
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Loader2 } from 'lucide-react';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
-import { CategoryTabs, type PageCardActionProps } from '../ui';
+import { CategoryTabs, EmptyState, LoadingSpinner, type PageCardActionProps } from '../ui';
 import { MARKETPLACE_CATEGORIES, hubMarketplaceItemKey } from './skillPanelUtils';
 import { HubSkillCard } from './SkillPanelWidgets';
 import type { MarketplaceSubView } from './useHubMarketplace';
@@ -65,32 +65,33 @@ export function MarketplaceView({
         }
         className="mt-4 flex-1 flex flex-col min-h-0"
       >
-        <button
-          type="button"
-          className="detail-back"
-          onClick={onBackFromMore}
-          data-testid={
-            marketplaceSubView === 'team' ? 'skill-panel-team-skills-back-btn' : 'skill-panel-featured-skills-back-btn'
-          }
-        >
-          <BackIcon aria-hidden="true" />
-          {t('agentManagement.actions.back')}
-        </button>
-
+        <div className="page-shell flex items-center justify-between mb-3">
+          <span
+            data-testid={
+              marketplaceSubView === 'team'
+                ? 'skill-panel-team-skills-title'
+                : 'skill-panel-featured-skills-more-title'
+            }
+            className="font-bold text-text-strong"
+            style={{ fontSize: '16px' }}
+          >
+            {marketplaceSubView === 'team' ? t('skills.featuredTeamSkills') : t('skills.featuredSkills')}
+          </span>
+          <button
+            type="button"
+            onClick={onBackFromMore}
+            className="flex items-center gap-0.5 text-sm text-text"
+            data-testid={
+              marketplaceSubView === 'team'
+                ? 'skill-panel-team-skills-back-btn'
+                : 'skill-panel-featured-skills-back-btn'
+            }
+          >
+            <BackIcon aria-hidden="true" />
+            {t('agentManagement.actions.back')}
+          </button>
+        </div>
         <div className="page-scroll flex-1 min-h-0 overflow-y-auto">
-          <div className="flex items-center justify-between mb-3">
-            <span
-              data-testid={
-                marketplaceSubView === 'team'
-                  ? 'skill-panel-team-skills-title'
-                  : 'skill-panel-featured-skills-more-title'
-              }
-              className="font-bold text-text-strong"
-              style={{ fontSize: '16px' }}
-            >
-              {marketplaceSubView === 'team' ? t('skills.featuredTeamSkills') : t('skills.featuredSkills')}
-            </span>
-          </div>
           {hubMoreLoading || catalogAwaitingItems(moreItems.length, hubCache) ? (
             <div
               className="flex flex-1 min-h-[200px] items-center justify-center"
@@ -101,9 +102,7 @@ export function MarketplaceView({
               <Loader2 size={28} className="animate-spin text-text-muted" aria-hidden="true" />
             </div>
           ) : moreItems.length === 0 ? (
-            <div className="text-sm text-text-muted" data-testid="skill-panel-hub-more-empty">
-              {t('skills.noMatches')}
-            </div>
+            <EmptyState id="skill-panel-hub-more-empty" className="flex-1 min-h-[200px]" text={t('skills.noMatches')} />
           ) : (
             <div className="card-grid-auto">
               {moreItems.map((skill) => (
@@ -147,13 +146,11 @@ export function MarketplaceView({
           aria-label={t('common.loading')}
           data-testid="skill-panel-hub-list-loading"
         >
-          <Loader2 size={28} className="animate-spin text-text-muted" aria-hidden="true" />
+          <LoadingSpinner size={28} />
         </div>
       ) : searchKeyword ? (
         hubSkills.length === 0 ? (
-          <div className="page-shell mt-4 text-sm text-text-muted" data-testid="skill-panel-hub-list-empty">
-            {t('skills.noMatches')}
-          </div>
+          <EmptyState id="skill-panel-hub-list-empty" className="page-shell mt-4" text={t('skills.noMatches')} />
         ) : (
           <div className="page-scroll flex-1 min-h-0 overflow-y-auto">
             <div className="card-grid-auto">
@@ -169,9 +166,7 @@ export function MarketplaceView({
           </div>
         )
       ) : teamSkills.length === 0 && featuredSkills.length === 0 && skillPacks.length === 0 ? (
-        <div className="page-shell mt-4 text-sm text-text-muted" data-testid="skill-panel-hub-list-empty">
-          {t('skills.noMatches')}
-        </div>
+        <EmptyState id="skill-panel-hub-list-empty" className="page-shell mt-4" text={t('skills.noMatches')} />
       ) : (
         <div className="page-scroll flex-1 min-h-0 overflow-y-auto">
           {skillPacks.length > 0 && (
@@ -296,7 +291,7 @@ export function SkillPacksView({
           </span>
         </div>
         {skillPacks.length === 0 ? (
-          <div className="text-sm text-text-muted">{t('skills.noMatches')}</div>
+          <EmptyState id="skill-panel-all-packs-empty" text={t('skills.noMatches')} />
         ) : (
           <div className="card-grid-auto">
             {skillPacks.map((skill) => (

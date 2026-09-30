@@ -500,6 +500,7 @@ body.workspace-resize-active iframe {
     overflow: hidden;
     background: var(--color-surface-card);
     padding-top: var(--page-content-padding-top);
+    margin-bottom: 16px;
   }
 
   /* 限宽骨架：页面不滚动的固定区（header/toolbar 等）使用，
@@ -631,6 +632,11 @@ body.workspace-resize-active iframe {
     line-height: 22px;
   }
 
+  /* 弱化变体：文案与右侧 currentColor 图标统一用次级灰，hover 仍走 --link 的 accent 反馈 */
+  .detail-chip--weak {
+    color: var(--color-text-weak);
+  }
+
   /* 可点变体（扩展示例药丸等）：hover 复刻扩展模块原药丸的 accent 蓝反馈——
      底样式无边框，用 inset 描边等价原 border 变色 */
   .detail-chip--link {
@@ -675,6 +681,92 @@ body.workspace-resize-active iframe {
     align-items: center;
     justify-content: center;
     color: inherit;
+  }
+
+  /* 统一详情页头部操作区（agent/connector detail 共用）：规格源自 agent-management 详情页
+     操作区（.agent-management-detail__actions），2026-09-29 提升为共享类。容器只管排布；
+     按钮分文字链接态（发布/卸载 .detail-action）与 28px 药丸态（使用/安装） */
+  .detail-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+  }
+
+  /* 文字链接态动作按钮（发布/卸载）：透明底无边框、28px 命中区；hover 不变底色
+     （对齐 agent-management 详情操作区：发布/卸载在头部操作区内无 hover 底色反馈） */
+  .detail-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    border: 0;
+    border-radius: var(--radius-full);
+    background: transparent;
+    color: var(--color-text-primary);
+    padding: 0 8px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 20px;
+  }
+
+  .detail-action:disabled {
+    cursor: wait;
+    opacity: var(--opacity-agent-muted);
+  }
+
+  /* 带边框药丸动作（使用）：min-width 56px / 水平内边距 28px；hover 与底态同貌
+     （agent-management 详情操作区内 use 按钮 hover 不变貌），禁用为 not-allowed 弱化 */
+  .detail-action--use {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: 56px;
+    min-height: 28px;
+    border: 1px solid var(--color-button-border);
+    border-radius: var(--radius-full);
+    background: var(--color-surface-card);
+    color: var(--color-text-primary);
+    padding: 0 28px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 20px;
+    white-space: nowrap;
+  }
+
+  .detail-action--use:disabled {
+    cursor: not-allowed;
+    opacity: var(--opacity-agent-disabled);
+  }
+
+  /* 强调实底药丸动作（安装）：深色实底，hover 提亮为 action-primary，禁用为等待态弱化 */
+  .detail-action--install {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: 56px;
+    min-height: 28px;
+    border: 1px solid var(--color-text-strong);
+    border-radius: var(--radius-full);
+    background: var(--color-text-strong);
+    color: var(--color-text-inverse);
+    padding: 0 28px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 20px;
+    white-space: nowrap;
+  }
+
+  .detail-action--install:hover:not(:disabled) {
+    border-color: var(--color-action-primary);
+    background: var(--color-action-primary);
+  }
+
+  .detail-action--install:disabled {
+    cursor: wait;
+    opacity: var(--opacity-agent-muted);
   }
 
   .page-content .chat-picker-panel__tabs {
@@ -1700,8 +1792,8 @@ body.workspace-resize-active iframe {
     overflow-anchor: none;
   }
 
-  .chat-timeline > *,
-  .chat-timeline-row > * {
+  .chat-timeline>*,
+  .chat-timeline-row>* {
     margin-top: 0;
     margin-bottom: 0;
   }
@@ -1857,42 +1949,10 @@ body.workspace-resize-active iframe {
     width: fit-content;
   }
 
-  .turn-elapsed {
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 6px;
-    margin: 0;
-    font-size: var(--font-size-2xs, 11px);
-    color: rgba(var(--color-text-secondary-rgb), 0.72);
-  }
-
-  /* 不带头像的独立时间行（成员消息轮次）：team 模式与 920px 居中栅格对齐。 */
+  /* 轮次耗时行复用 completed-work-chip 样式；此处仅保留不带头像独立行的 team 栅格对齐。 */
   .turn-elapsed--team {
     width: min(100%, 920px);
     margin: 0 auto;
-  }
-
-  .turn-elapsed__spinner {
-    flex-shrink: 0;
-    color: var(--color-text-secondary);
-    animation: turn-elapsed-spin 0.8s linear infinite;
-  }
-
-  .turn-elapsed.is-active .turn-elapsed__label,
-  .turn-elapsed.is-active .turn-elapsed__value {
-    color: var(--color-text-secondary);
-  }
-
-  .turn-elapsed__value {
-    font-variant-numeric: tabular-nums;
-    color: var(--color-text-secondary);
-  }
-
-  @keyframes turn-elapsed-spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
 
   .completed-work-col {
@@ -1961,12 +2021,21 @@ body.workspace-resize-active iframe {
     height: 16px;
   }
 
+  /* active（进行中）：旋转加载图标用次级文本色，label/value 同步变暗（还原 turn-elapsed.is-active 规则） */
+  .completed-work-chip.is-active .completed-work-chip__icon {
+    color: var(--color-text-secondary);
+  }
+
   .completed-work-chip__label {
     font-variant-numeric: tabular-nums;
     min-width: 0;
     transition:
       opacity 0.28s ease,
       transform 0.28s ease;
+  }
+
+  .completed-work-chip.is-active .completed-work-chip__label {
+    color: var(--color-text-secondary);
   }
 
   .completed-work-chip .tool-tree-item__disclosure {

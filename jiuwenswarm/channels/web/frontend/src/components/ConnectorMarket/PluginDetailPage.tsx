@@ -3,14 +3,15 @@ import { openAssetPublish } from '../../features/assetPublishEvents';
 import { canShowAssetPublish } from '../../features/assetPublishState';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Trash2, Plus, Wrench, Link2, Plug, Loader2, X, ExternalLink, Pencil } from 'lucide-react';
+import { Wrench, Link2, Plug, X, ExternalLink, Pencil } from 'lucide-react';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
 import { localizedText } from '../../types/pluginPackage';
-import { NewConversationIcon } from './icons';
 import { DetailPromptChip, DetailSection, EntityHeader, PageCard } from '../ui';
-import { IconAvatar, PillButton, DetailLinkButton } from './Buttons';
+import { IconAvatar, DetailLinkButton } from './Buttons';
 import { ConfirmDialog } from './ConfirmDialog';
 import { usePendingConnectorFlow, PendingConnectorModals } from './usePendingConnectorFlow';
+import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
+import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 
 interface PluginDetailPageProps {
@@ -191,8 +192,23 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
           titleTestId="connector-market-plugin-detail-name"
           tags={detail.tags.length > 0 ? detail.tags.map((tag) => localizedText(tag, i18n.language)) : undefined}
           actions={
-            <div className="flex items-center gap-3" data-testid="connector-market-plugin-detail-actions">
-              {canShowAssetPublish(installed) && <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text" data-testid="connector-market-plugin-publish" onClick={() => openAssetPublish({ kind: 'plugin', local_id: id, avatar_url: detail.avatar || undefined })}>{t('skills.actions.publish')}</button>}
+            /* 对齐 agent-management 详情页头部操作区：容器/按钮统一走共享类
+            .detail-actions / .detail-action（见 index.css，规格源自
+            .agent-management-detail__actions，发布/卸载为文字链接态、使用/安装为 28px 药丸） */
+            <div className="detail-actions" data-testid="connector-market-plugin-detail-actions">
+              {canShowAssetPublish(installed) && (
+                <button
+                  type="button"
+                  className="detail-action"
+                  data-testid="connector-market-plugin-publish"
+                  onClick={() =>
+                    openAssetPublish({ kind: 'plugin', local_id: id, avatar_url: detail.avatar || undefined })
+                  }
+                >
+                  <PromptSendIcon aria-hidden="true" />
+                  {t('skills.actions.publish')}
+                </button>
+              )}
               {/* 自定义插件（source==='local'）的编辑——后端 plugin_packages.* 目前只有
               list/show/create/install/uninstall，没有任何 update/编辑接口（create 对已存在 id
               会直接拒绝，不是隐式 upsert，见 backend-requests.md 需求13），先做降级占位：按钮
@@ -208,39 +224,39 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
                 />
               )}
               {(installed || detail.source === 'local') && (
-                <DetailLinkButton
-                  icon={<Trash2 size={14} />}
-                  label={t('connectorMarket.card.uninstall')}
-                  onClick={() => setConfirmUninstall(true)}
-                  danger
+                <button
+                  type="button"
+                  className="detail-action"
                   disabled={uninstalling}
-                />
+                  onClick={() => setConfirmUninstall(true)}
+                  data-testid="connector-market-plugin-detail-uninstall"
+                >
+                  <UninstallIcon aria-hidden="true" />
+                  {uninstalling ? t('connectorMarket.card.uninstalling') : t('connectorMarket.card.uninstall')}
+                </button>
               )}
               {installed && (
                 <button
                   type="button"
+                  className="detail-action detail-action--use"
                   onClick={handleUse}
                   disabled={!linked || reconnectFlow.active}
-                  className="flex items-center gap-1 text-[13px] text-text hover:text-[color:var(--color-chat-accent)] disabled:cursor-not-allowed disabled:opacity-60"
                   data-testid="connector-market-plugin-detail-use"
                 >
-                  <NewConversationIcon size={14} />
                   {t('connectorMarket.card.use')}
                 </button>
               )}
-              {!installed && !installBusy && (
-                <PillButton
-                  icon={<Plus size={14} />}
-                  label={t('connectorMarket.card.install')}
+              {!installed && (
+                <button
+                  type="button"
+                  className="detail-action detail-action--install"
+                  disabled={installBusy}
+                  aria-busy={installBusy}
                   onClick={handleInstall}
-                />
-              )}
-              {!installed && installBusy && (
-                <PillButton
-                  icon={<Loader2 size={14} className="animate-spin" />}
-                  label={t('connectorMarket.card.installing')}
-                  disabled
-                />
+                  data-testid="connector-market-plugin-detail-install"
+                >
+                  {installBusy ? t('connectorMarket.card.installing') : t('connectorMarket.card.install')}
+                </button>
               )}
             </div>
           }
@@ -308,7 +324,6 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
                   <DetailPromptChip
                     key={text}
                     text={text}
-                    icon={<NewConversationIcon size={12} />}
                     onClick={() => onUseExample(text, detail.runtimePackageName)}
                     testId="connector-market-plugin-detail-example"
                     variant={text}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { webRequest } from "../../services/webClient";
+import { EmptyState } from "../../components/ui";
 
 type EvolutionChange = {
   section?: string;
@@ -254,9 +255,7 @@ export function SkillEvolutionModal({
             </div>
           )}
           {listState === "success" && !formatError && sortedEntries.length === 0 && (
-            <div data-testid="skill-evolution-modal-empty" className="text-sm text-text-muted">
-              {t("skills.evolution.empty")}
-            </div>
+            <EmptyState id="skill-evolution-modal-empty" text={t("skills.evolution.empty")} />
           )}
 
           {listState === "success" && !formatError && sortedEntries.length > 0 && (

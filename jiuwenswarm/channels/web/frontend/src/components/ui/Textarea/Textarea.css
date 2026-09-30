@@ -38,7 +38,11 @@
 }
 
 .ui-textarea--invalid {
-  border-color: var(--color-border-danger);
+  border-color: var(--color-field-invalid-border);
+}
+
+.ui-textarea--invalid:focus {
+  border-color: var(--color-field-invalid-border);
 }
 
 .ui-textarea-wrapper {
@@ -57,7 +61,11 @@
 }
 
 .ui-textarea-wrapper--invalid {
-  border-color: var(--color-border-danger);
+  border-color: var(--color-field-invalid-border);
+}
+
+.ui-textarea-wrapper--invalid:focus-within {
+  border-color: var(--color-field-invalid-border);
 }
 
 .ui-textarea-scroll-container {

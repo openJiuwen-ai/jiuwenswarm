@@ -23,6 +23,7 @@
     "optional": "(optional)",
     "processing": "Processing…",
     "retry": "Retry",
+    "selectedCount": "{{count}} selected",
     "editMenu": {
       "actionFailed": "Unable to complete the text editing action. Please try again.",
       "cut": "Cut",
@@ -2772,6 +2773,7 @@
     "source": { "builtin": "Official", "local": "Mine", "hub": "Hub" },
     "categoryLabel": "Expert categories",
     "categoryAll": "All",
+    "loadMore": "Load more content",
     "categoryOther": "Other",
     "categoryScrollPrev": "Scroll categories left",
     "categoryScrollNext": "Scroll categories right",
@@ -2854,13 +2856,6 @@
       "catalogEmpty": "No Experts to show",
       "mineEmpty": "You do not have any Experts yet",
       "noMatch": "No matching Experts found"
-    },
-    "pagination": {
-      "label": "Expert list pagination",
-      "range": "Showing {{start}}-{{end}} of {{total}}",
-      "page": "Page {{page}} / {{total}}",
-      "previous": "Previous page",
-      "next": "Next page"
     },
     "detail": {
       "ability": "Capability",
@@ -2953,7 +2948,6 @@
       "skillSourceTabsLabel": "Skill sources",
       "installSkill": "Install",
       "installingSkill": "Installing…",
-      "selectedCount": "{{count}} selected",
       "refreshSkills": "Refresh skills",
       "skillsError": "Unable to load the skill list. Try again.",
       "skillsEmpty": "No skills available",
@@ -2970,7 +2964,6 @@
       "connectConnector": "Connect",
       "connectingConnector": "Connecting…",
       "selectionSearchPlaceholder": "Search by keyword",
-      "selectionPaginationLabel": "Selection list pagination",
       "mcpError": "Unable to load the connector list. Try again.",
       "mcpEmpty": "No connectors available",
       "promptsLabel": "Try asking me (optional)",
@@ -3077,7 +3070,6 @@
         "leaderTitle": "Choose a leader",
         "memberTitle": "Choose members",
         "empty": "No matching Experts",
-        "selectedCount": "{{count}} selected",
         "localTab": "Local",
         "marketTab": "Marketplace",
         "sourceTabsLabel": "Expert sources",
@@ -3108,6 +3100,13 @@
     "forkFromMessage": "Create a conversation branch from this message",
     "forkFromMessageFailed": "Failed to create a conversation branch. Try again.",
     "fileExpired": "Expired",
+    "fileTypeDocument": "Document",
+    "fileTypeSpreadsheet": "Spreadsheet",
+    "fileTypePresentation": "Presentation",
+    "fileTypePdf": "PDF",
+    "fileTypeImage": "Image",
+    "fileTypeSkill": "Skill",
+    "fileTypeFile": "File",
     "agentProcessing": "Agent Processing",
     "thinking": "Thinking...",
     "processing": "Processing...",
@@ -3859,13 +3858,7 @@
       "loadingMyPlugin": "Loading my plugins...",
       "loadingMyMcp": "Loading my connectors..."
     },
-    "pagination": {
-      "pageSize": "Rows per page",
-      "all": "All",
-      "rangeInfo": "{{start}}-{{end}} of {{total}}",
-      "prev": "Previous page",
-      "next": "Next page"
-    },
+    "loadMore": "Load more content",
     "toast": {
       "mcpConnected": "Connector connected successfully.",
       "mcpInstalled": "Connector installed. Connect it before use.",
@@ -3931,6 +3924,7 @@
       "confirm": "Confirm",
       "search": "Search",
       "noResult": "No matches found",
+      "noDescription": "No description",
       "loadFailed": "Failed to load details. Please try again."
     }
   },

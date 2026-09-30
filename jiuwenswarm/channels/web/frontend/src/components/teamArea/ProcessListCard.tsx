@@ -1,7 +1,14 @@
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MessageSquare, Wrench } from 'lucide-react';
-import { Chevron, StatusIcon, getTaskStatusLabel, type ProcessDetailRow, type ProcessItem, type TaskStatus } from './shared';
+import {
+  Chevron,
+  StatusIcon,
+  getTaskStatusLabel,
+  type ProcessDetailRow,
+  type ProcessItem,
+  type TaskStatus,
+} from './shared';
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
@@ -133,7 +140,7 @@ export function ProcessListCard({
             ];
             if (index < items.length - 1) {
               nodes.push(
-                <div key={`divider-${item.id}`} className="flex h-4 py-px pl-[20px]">
+                <div key={`divider-${item.id}`} className="flex h-4 py-[3px] pl-[20px]">
                   <span className="w-[1px] h-[10px] -translate-x-1/2 rounded-full bg-border" />
                 </div>,
               );

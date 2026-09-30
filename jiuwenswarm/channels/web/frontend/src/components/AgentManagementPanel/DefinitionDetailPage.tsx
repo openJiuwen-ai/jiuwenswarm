@@ -28,7 +28,6 @@ type DefinitionDetailPageProps = {
   fileContent: AgentFileContent | null;
   fileStatus: RequestStatus;
   fileError: string | null;
-  actionError: string | null;
   actionNotice: string | null;
   busy: boolean;
   onBack: () => void;
@@ -57,7 +56,6 @@ export function DefinitionDetailPage({
   fileContent,
   fileStatus,
   fileError,
-  actionError,
   actionNotice,
   busy,
   onBack,
@@ -151,7 +149,7 @@ export function DefinitionDetailPage({
               {canShowAssetPublish(detail.installed) && (
                 <button
                   type="button"
-                  className="agent-management-button agent-management-button--secondary"
+                  className="agent-management-detail-action agent-management-detail-action--publish"
                   data-testid="agent-management-agent-template-publish"
                   onClick={() =>
                     openAssetPublish({
@@ -161,6 +159,7 @@ export function DefinitionDetailPage({
                     })
                   }
                 >
+                  <PromptSendIcon aria-hidden="true" />
                   {t('skills.actions.publish')}
                 </button>
               )}
@@ -241,15 +240,6 @@ export function DefinitionDetailPage({
             </div>
           }
         />
-        {actionError ? (
-          <div
-            className="agent-management-inline-error"
-            role="alert"
-            data-testid="agent-management-detail-action-error"
-          >
-            {actionError}
-          </div>
-        ) : null}
 
         {actionNotice ? (
           <div
@@ -310,7 +300,6 @@ export function DefinitionDetailPage({
                 <DetailPromptChip
                   key={prompt}
                   text={prompt}
-                  icon={<PromptSendIcon width={16} height={16} />}
                   disabled={!canUse || busy || !onUsePrompt}
                   onClick={() => onUsePrompt?.(detail.runtimePackageName, prompt)}
                   testId="agent-management-detail-prompt-send"

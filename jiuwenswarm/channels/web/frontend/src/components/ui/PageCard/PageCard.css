@@ -18,8 +18,9 @@
     border-color var(--duration-fast) ease;
 }
 
+/* hover 与键盘聚焦（:focus-visible）才提亮；不用 :focus-within——鼠标点击后卡片持有焦点会让样式滞留 */
 .page-card:hover,
-.page-card:focus-within {
+.page-card:focus-visible {
   border-color: transparent;
   box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.08);
 }
@@ -34,7 +35,7 @@
 }
 
 .page-card--disabled:hover,
-.page-card--disabled:focus-within {
+.page-card--disabled:focus-visible {
   box-shadow: none;
 }
 
@@ -44,7 +45,7 @@
 }
 
 .page-card--selected:hover,
-.page-card--selected:focus-within {
+.page-card--selected:focus-visible {
   border-color: var(--color-chat-accent);
   box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.08);
 }
@@ -84,6 +85,12 @@
   color: var(--color-chat-accent);
 }
 
+/* 图标自带默认色（如 text-text-meta 的 #808080 灰）时不继承按钮 hover 色，
+   显式跟随按钮 hover 提亮，保证"默认灰、hover 变色"的反馈一致 */
+.page-card-action:not(:disabled):hover svg {
+  color: var(--color-chat-accent);
+}
+
 .page-card-action:disabled {
   background: var(--color-skill-card-action-loading-surface, none);
   cursor: not-allowed;
@@ -108,4 +115,56 @@
 
 .page-card:hover .page-card-actions-hover {
   opacity: 1;
+}
+
+/* defaultButton 沉淀：右上角浮现的单个主操作按钮，
+   结构为 .page-card__actions > .page-card__default-button，
+   视觉与全局悬浮操作（胶囊主按钮）一致，业务差异通过调用方 className 追加 */
+.page-card__actions {
+  position: absolute;
+  top: 36px;
+  right: 24px;
+  display: flex;
+  gap: 8px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition:
+    opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.page-card:hover .page-card__actions,
+.page-card:focus-within .page-card__actions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.page-card__default-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 56px;
+  min-height: 28px;
+  border: 1px solid var(--color-text-strong);
+  border-radius: var(--radius-full);
+  padding: 0 12px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 20px;
+  white-space: nowrap;
+  background: var(--color-text-strong);
+  color: var(--color-text-inverse);
+}
+
+.page-card__default-button:hover:not(:disabled) {
+  border-color: var(--color-text-primary);
+  background: var(--color-text-primary);
+}
+
+/* 低特异性（:where）：调用方可用自有变体类覆盖 disabled 反馈（如 not-allowed） */
+.page-card__default-button:where(:disabled) {
+  cursor: wait;
+  opacity: var(--opacity-disabled);
 }

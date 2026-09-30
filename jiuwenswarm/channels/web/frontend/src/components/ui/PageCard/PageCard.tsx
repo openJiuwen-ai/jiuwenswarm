@@ -10,6 +10,16 @@ export interface PageCardActionProps {
   tooltip?: string;
 }
 
+export interface PageCardDefaultButton {
+  text: string;
+  onClick?: (e: MouseEvent<HTMLButtonElement>) => void;
+  disabled?: boolean;
+  busy?: boolean;
+  className?: string;
+  testId?: string;
+  variant?: string;
+}
+
 export type PageCardAvatar = EntityHeaderAvatar;
 
 export interface PageCardProps {
@@ -19,6 +29,7 @@ export interface PageCardProps {
   label?: string[];
   action?: PageCardActionProps;
   actionSlot?: ReactNode;
+  defaultButton?: PageCardDefaultButton;
   description?: string;
   onClick?: () => void;
   interactive?: boolean;
@@ -39,6 +50,7 @@ export function PageCard({
   label,
   action,
   actionSlot,
+  defaultButton,
   description,
   onClick,
   interactive = false,
@@ -66,6 +78,44 @@ export function PageCard({
     onClick();
   };
 
+  const iconAction = action ? (
+    <button
+      type="button"
+      className="page-card-action"
+      disabled={action.disabled}
+      onClick={(e) => {
+        e.stopPropagation();
+        action.onClick?.(e);
+      }}
+      data-tooltip={action.tooltip}
+      {...(action.tooltip ? tooltipHandlers : {})}
+    >
+      {action.icon}
+    </button>
+  ) : null;
+
+  const defaultButtonAction = defaultButton ? (
+    <div className="page-card__actions" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className={['page-card__default-button', defaultButton.className].filter(Boolean).join(' ')}
+        data-testid={defaultButton.testId ?? 'page-card-default-button'}
+        data-variant={defaultButton.variant ?? variant}
+        disabled={defaultButton.disabled}
+        aria-disabled={defaultButton.disabled || undefined}
+        aria-busy={defaultButton.busy || undefined}
+        onClick={(e) => {
+          e.stopPropagation();
+          defaultButton.onClick?.(e);
+        }}
+      >
+        {defaultButton.text}
+      </button>
+    </div>
+  ) : null;
+
+  const actionNode = action ? iconAction : (defaultButtonAction ?? actionSlot);
+
   return (
     <div
       onClick={disabled ? undefined : onClick}
@@ -86,45 +136,7 @@ export function PageCard({
         title={title}
         titleEnd={titleEnd}
         tags={hasLabel ? label : undefined}
-        actions={
-          actionsHover ? (
-            <div className="page-card-actions-hover">
-              {action ? (
-                <button
-                  type="button"
-                  className="page-card-action"
-                  disabled={action.disabled}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    action.onClick?.(e);
-                  }}
-                  data-tooltip={action.tooltip}
-                  {...(action.tooltip ? tooltipHandlers : {})}
-                >
-                  {action.icon}
-                </button>
-              ) : (
-                actionSlot
-              )}
-            </div>
-          ) : action ? (
-            <button
-              type="button"
-              className="page-card-action"
-              disabled={action.disabled}
-              onClick={(e) => {
-                e.stopPropagation();
-                action.onClick?.(e);
-              }}
-              data-tooltip={action.tooltip}
-              {...(action.tooltip ? tooltipHandlers : {})}
-            >
-              {action.icon}
-            </button>
-          ) : (
-            actionSlot
-          )
-        }
+        actions={actionsHover ? <div className="page-card-actions-hover">{actionNode}</div> : actionNode}
       />
       {description ? <div className="page-card__body">{description}</div> : null}
       {tooltip}
