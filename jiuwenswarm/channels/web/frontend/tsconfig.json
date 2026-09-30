@@ -19,7 +19,14 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+
+    /* Paths */
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
   },
-  "include": ["src", "tests/fixtures/settings-extension"]
+  "include": ["src", "tests/fixtures/settings-extension"],
+  "references": [{ "path": "./tsconfig.node.json" }]
 }
