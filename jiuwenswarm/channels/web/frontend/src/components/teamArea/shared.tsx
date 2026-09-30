@@ -1,5 +1,4 @@
-import { ChevronRight, Circle } from 'lucide-react';
-import CheckIcon from '../../assets/work-mode/check.svg?react';
+import { ChevronRight } from 'lucide-react';
 import i18n from '../../i18n';
 import { ParsedTeamEvent, parseTeamEventMessage } from '../ChatPanel/teamEventUtils';
 import type { Message, TodoItem } from '../../types';
@@ -7,6 +6,11 @@ import type { ReactNode } from 'react';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import type { TeamTask as SessionTeamTask, TeamMemberExecutionEvent, TeamTaskStatus } from '../../stores/sessionStore';
+import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
+import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
+import StatusSuccessIcon from '../../assets/work-mode/status-success.svg?react';
+import WarningCircleIcon from '../../assets/work-mode/warning-circle.svg?react';
+import CancelledIcon from '../../assets/work-mode/已取消.svg?react';
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
@@ -297,22 +301,6 @@ export const getTaskStatusLabel = (status: TaskStatus): string => {
   return i18n.t(`team.taskStatus.${status}`);
 };
 
-const getTaskStatusIconClass = (status: TaskStatus): string => {
-  switch (status) {
-    case 'completed':
-      return 'bg-emerald-500 text-text-inverse';
-    case 'in_progress':
-      return 'bg-blue-500 text-text-inverse';
-    case 'cancelled':
-      return 'bg-slate-300 text-text-inverse';
-    case 'error':
-      return 'bg-red-500 text-text-inverse';
-    case 'pending':
-    default:
-      return 'bg-card text-slate-400 ring-1 ring-slate-300';
-  }
-};
-
 const getTaskEventTitle = (event: TeamTaskEvent): string => {
   const type = event.type.toLowerCase();
   if (type.includes('completed')) return i18n.t('team.taskEvents.completed');
@@ -349,19 +337,21 @@ const buildTaskDetail = ({ title, content, fallback }: { title: string; content?
   return i18n.t('team.taskDetail.noDetail');
 };
 
+/** 与 CompactTaskList / SubagentStatusIcon 共用同一套状态图标（frame-time / spinner / success / warning-circle）。 */
 export function StatusIcon({ status }: { status: TaskStatus }) {
-  const completed = status === 'completed';
-  const inProgress = status === 'in_progress';
-
-  if (completed) {
-    return <CheckIcon className="h-4 w-4 shrink-0 text-[var(--color-team-status-completed)]" />;
+  if (status === 'completed') {
+    return <StatusSuccessIcon className="h-4 w-4 shrink-0 text-[var(--color-team-status-completed-icon)]" />;
   }
-
-  return (
-    <span className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${getTaskStatusIconClass(status)}`}>
-      {inProgress ? <Circle size={6} strokeWidth={2} /> : <Circle size={8} strokeWidth={1.5} />}
-    </span>
-  );
+  if (status === 'in_progress') {
+    return <LoadingSpinner />;
+  }
+  if (status === 'cancelled') {
+    return <CancelledIcon className="h-4 w-4 shrink-0 text-warn" />;
+  }
+  if (status === 'error') {
+    return <WarningCircleIcon className="h-4 w-4 shrink-0 text-danger" />;
+  }
+  return <FrameTimeIcon className="h-4 w-4 shrink-0 text-text-meta" />;
 }
 
 export function Chevron({ expanded }: { expanded?: boolean }) {

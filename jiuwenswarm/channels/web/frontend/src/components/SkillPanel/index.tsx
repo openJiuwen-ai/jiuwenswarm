@@ -275,9 +275,6 @@ export function SkillPanel({
     graphReading,
     symphonyEnabledDraft,
     symphonySaving,
-    symphonySaveError,
-    graphActionError,
-    clearGraphActionError,
     updateSymphonyEnabled,
     updateGraphReading,
   } = useSymphonyGraph({ isConnected, symphonyEnabled, onSymphonyEnabledChange });
@@ -1416,15 +1413,12 @@ export function SkillPanel({
   const renderGraphTab = () => (
     <SkillGraphTab
       isConnected={isConnected}
-      symphonySaveError={symphonySaveError}
       symphonySaving={symphonySaving}
       symphonyEnabledDraft={symphonyEnabledDraft}
       onUpdateSymphonyEnabled={(enabled) => void updateSymphonyEnabled(enabled)}
       skillGraphPanelRef={skillGraphPanelRef}
       onGraphReadingChange={updateGraphReading}
       onStartRetrievalIndexBuild={startRetrievalIndexBuild}
-      graphActionError={graphActionError}
-      onExternalErrorClear={clearGraphActionError}
     />
   );
 
@@ -1479,17 +1473,9 @@ export function SkillPanel({
       </>
     );
 
-  // 我的技能页签：错误提示条 / 已安装技能详情 / 技能列表（空态 + 内置分组）
+  // 我的技能页签：已安装技能详情 / 技能列表（空态 + 内置分组）
   const renderMySkills = () => (
     <>
-      {message && messageType === 'error' && (
-        <div
-          className="page-shell mt-3 px-3 py-2 rounded-md bg-secondary text-sm text-danger"
-          data-testid="skill-panel-my-error"
-        >
-          {message}
-        </div>
-      )}
       {selectedSkill ? (
         <SkillDetailView
           mode="installed"

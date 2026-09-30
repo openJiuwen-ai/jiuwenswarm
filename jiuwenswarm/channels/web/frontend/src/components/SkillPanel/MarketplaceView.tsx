@@ -65,32 +65,33 @@ export function MarketplaceView({
         }
         className="mt-4 flex-1 flex flex-col min-h-0"
       >
-        <button
-          type="button"
-          className="detail-back"
-          onClick={onBackFromMore}
-          data-testid={
-            marketplaceSubView === 'team' ? 'skill-panel-team-skills-back-btn' : 'skill-panel-featured-skills-back-btn'
-          }
-        >
-          <BackIcon aria-hidden="true" />
-          {t('agentManagement.actions.back')}
-        </button>
-
+        <div className="page-shell flex items-center justify-between mb-3">
+          <span
+            data-testid={
+              marketplaceSubView === 'team'
+                ? 'skill-panel-team-skills-title'
+                : 'skill-panel-featured-skills-more-title'
+            }
+            className="font-bold text-text-strong"
+            style={{ fontSize: '16px' }}
+          >
+            {marketplaceSubView === 'team' ? t('skills.featuredTeamSkills') : t('skills.featuredSkills')}
+          </span>
+          <button
+            type="button"
+            onClick={onBackFromMore}
+            className="flex items-center gap-0.5 text-sm text-text"
+            data-testid={
+              marketplaceSubView === 'team'
+                ? 'skill-panel-team-skills-back-btn'
+                : 'skill-panel-featured-skills-back-btn'
+            }
+          >
+            <BackIcon aria-hidden="true" />
+            {t('agentManagement.actions.back')}
+          </button>
+        </div>
         <div className="page-scroll flex-1 min-h-0 overflow-y-auto">
-          <div className="flex items-center justify-between mb-3">
-            <span
-              data-testid={
-                marketplaceSubView === 'team'
-                  ? 'skill-panel-team-skills-title'
-                  : 'skill-panel-featured-skills-more-title'
-              }
-              className="font-bold text-text-strong"
-              style={{ fontSize: '16px' }}
-            >
-              {marketplaceSubView === 'team' ? t('skills.featuredTeamSkills') : t('skills.featuredSkills')}
-            </span>
-          </div>
           {hubMoreLoading || catalogAwaitingItems(moreItems.length, hubCache) ? (
             <div
               className="flex flex-1 min-h-[200px] items-center justify-center"

@@ -51,6 +51,7 @@ import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
 import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 import { FileIcon } from '../FileIcon';
+import skillPackageIcon from '../../assets/skill.svg';
 import { webRequest } from '../../services/webClient';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
@@ -58,10 +59,21 @@ import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { extractTokenFromDownloadUrl } from '../../utils/fileDownloadDedup';
 import { writeClipboard } from '../../utils/writeClipboard';
 import { isSkillPackageFile } from '../../utils/skillPackageFile';
+import { resolveChatFileCategory, type ChatFileCategory } from '../../utils/chatFileCategory';
 import {
   resolveTeamLeaderDisplayName,
   type TeamLeaderIdentity,
 } from '../../features/teamLeaderIdentity';
+
+const CHAT_FILE_CATEGORY_LABEL_KEY: Record<ChatFileCategory, string> = {
+  skill: 'chatUi.fileTypeSkill',
+  pdf: 'chatUi.fileTypePdf',
+  spreadsheet: 'chatUi.fileTypeSpreadsheet',
+  presentation: 'chatUi.fileTypePresentation',
+  image: 'chatUi.fileTypeImage',
+  document: 'chatUi.fileTypeDocument',
+  file: 'chatUi.fileTypeFile',
+};
 
 function openArtifactPanelForActiveMode(selectedArtifactId: string): void {
   const sessionId = useChatStore.getState().activeSessionId;
@@ -958,18 +970,9 @@ export const MessageItem = memo(function MessageItem({
   );
 });
 
-function formatFileSize(bytes: number | undefined): string {
-  if (bytes === undefined || bytes === null || isNaN(bytes)) return '';
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const size = bytes / Math.pow(1024, i);
-  return `${size.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}
-
 function skillPackageDisplayName(file: FileDownloadItem): string {
   const raw = (file.name || file.path || '').replace(/\\/g, '/').split('/').pop() || '';
-  return raw.replace(/(\.skill)?\.zip$/i, '').replace(/\.skill$/i, '') || raw || 'skill';
+  return raw || 'skill';
 }
 
 function resolveFileDownloadToken(file: FileDownloadItem): string | undefined {
@@ -1003,12 +1006,6 @@ function getSavedSkillTokens(): Set<string> {
     const raw = localStorage.getItem(SAVED_SKILLS_KEY);
     return raw ? new Set<string>(JSON.parse(raw)) : new Set<string>();
   } catch { return new Set<string>(); }
-}
-
-function getFileExtension(name: string): string {
-  const parts = name.split('.');
-  if (parts.length < 2) return '';
-  return parts[parts.length - 1].toUpperCase();
 }
 
 function FileDownloadList({
@@ -1130,7 +1127,6 @@ function FileDownloadList({
     <div data-testid="chat-panel-file-download-list"
     className={clsx('mt-2 space-y-2', className)}>
       {files.map((file, index) => {
-        const ext = getFileExtension(file.name);
         const expired = expiredSet.has(index);
         const isSkill = isSkillPackageFile(file);
         const displayName = isSkill ? skillPackageDisplayName(file) : file.name;
@@ -1172,23 +1168,25 @@ function FileDownloadList({
               aria-label={onPreview ? t('artifacts.openPreview', { name: displayName }) : undefined}
             >
               {isSkill ? (
-                <div className="flex-shrink-0 w-6 h-6 rounded-lg bg-accent-subtle flex items-center justify-center">
-                  <svg className="w-5 h-5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
-                  </svg>
-                </div>
+                <img
+                  src={skillPackageIcon}
+                  alt=""
+                  aria-hidden="true"
+                  draggable={false}
+                  width={24}
+                  height={24}
+                  data-testid="file-icon"
+                  data-variant="skill"
+                  className="flex-shrink-0 select-none"
+                  style={{ width: 24, height: 24, display: 'block', flexShrink: 0 }}
+                />
               ) : (
                 <FileIcon fileName={file.name} size={24} className="flex-shrink-0 select-none" />
               )}
               <div className="flex-1 min-w-0" data-testid="chat-panel-file-download-info">
                 <div className="text-sm font-medium text-text leading-snug truncate" data-testid="chat-panel-file-download-name">{displayName}</div>
                 <div className="flex items-center gap-1.5 mt-0.5" data-testid="chat-panel-file-download-meta">
-                  {!isSkill && (
-                    <span className="inline-flex items-center px-1 py-px rounded text-[10px] font-mono font-medium text-text-muted bg-secondary leading-none" data-testid="chat-panel-file-download-ext">
-                      {ext || 'FILE'}
-                    </span>
-                  )}
-                  <span className="text-xs text-text-muted" data-testid="chat-panel-file-download-size">{formatFileSize(file.size)}</span>
+                  <span className="text-xs text-text-muted" data-testid="chat-panel-file-download-type">{t(CHAT_FILE_CATEGORY_LABEL_KEY[resolveChatFileCategory(file)])}</span>
                   {expired && (
                     <span className="inline-flex items-center px-1 py-px rounded text-[10px] font-mono font-medium text-danger bg-danger/10 leading-none" data-testid="chat-panel-file-download-expired">
                       {t('chatUi.fileExpired')}

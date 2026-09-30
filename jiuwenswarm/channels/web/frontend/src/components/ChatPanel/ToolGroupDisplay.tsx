@@ -13,6 +13,11 @@ import { AgentAvatar } from '../AgentAvatar';
 import { SkillTreePath } from './SkillTreePath';
 import { BeamSearchTree } from './BeamSearchTree';
 import { MarkdownRenderer } from '../MarkdownRenderer/MarkdownRenderer';
+import ToolFileIcon from '../../assets/work-mode/tool-file.svg?react';
+import ToolSearchIcon from '../../assets/work-mode/tool-search.svg?react';
+import ToolCodeIcon from '../../assets/work-mode/tool-code.svg?react';
+import ToolSystemIcon from '../../assets/work-mode/tool-system.svg?react';
+import ToolWrenchIcon from '../../assets/work-mode/tool-wrench.svg?react';
 import { classifyToolCall, describeToolCall, type ToolCategory } from './toolCategory';
 import {
   resolveTeamLeaderDisplayName,
@@ -359,36 +364,21 @@ function buildGroupLines(
   });
 }
 
-/** 五类任务各自的图标（file/search/code/system/other）。 */
+/** 五类任务各自的图标（file/search/code/system/other），均用 currentColor 跟随 .tool-tree__cat-icon 统一配色。 */
 function CategoryIcon({ category }: { category: ToolCategory }) {
+  const Icon =
+    category === 'file'
+      ? ToolFileIcon
+      : category === 'search'
+        ? ToolSearchIcon
+        : category === 'code'
+          ? ToolCodeIcon
+          : category === 'system'
+            ? ToolSystemIcon
+            : ToolWrenchIcon;
   return (
     <span className="tool-tree__cat-icon" aria-hidden="true" data-testid="chat-panel-tool-tree-cat-icon" data-variant={category}>
-      {category === 'file' ? (
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M5.5 3.5h5L15 8v8a.9.9 0 0 1-.9.9H5.5a.9.9 0 0 1-.9-.9V4.4a.9.9 0 0 1 .9-.9z" />
-          <path d="M10.3 3.5V8H15" />
-        </svg>
-      ) : category === 'search' ? (
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="9" cy="9" r="4.3" />
-          <path d="m12.3 12.3 3.4 3.4" />
-        </svg>
-      ) : category === 'code' ? (
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="m7.4 6.5-3.4 3.5 3.4 3.5" />
-          <path d="m12.6 6.5 3.4 3.5-3.4 3.5" />
-        </svg>
-      ) : category === 'system' ? (
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3.5" y="4.5" width="13" height="11" rx="1.6" />
-          <path d="m6.5 8.6 2.3 1.9-2.3 1.9" />
-          <path d="M10.8 12.7h3" />
-        </svg>
-      ) : (
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M13.4 4.6a2.7 2.7 0 0 0-3.3 3.4l-5 5a1.3 1.3 0 1 0 1.9 1.9l5-5a2.7 2.7 0 0 0 3.4-3.3l-2 2-1.9-.1-.1-1.9 2-2z" />
-        </svg>
-      )}
+      <Icon />
     </span>
   );
 }

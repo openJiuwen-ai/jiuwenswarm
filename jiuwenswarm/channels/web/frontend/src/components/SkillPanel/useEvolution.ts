@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { webRequest } from '../../services/webClient';
+import { toast } from '../ui/Toast/toastStore';
 import type { EvolutionEntry, EvolutionGetResponse, LoadState, SkillDetail } from './types';
 import type { WithSessionFn } from './useHubMarketplace';
 
@@ -103,8 +104,14 @@ export function useEvolution({ selectedSkill, detailTab, withSession, fetchSkill
         await fetchSkills();
       } catch (error) {
         console.error(error);
-        setEvolutionMessage(t('skills.evolution.errors.saveFailed'));
-        setEvolutionMessageType('error');
+        setEvolutionMessage(null);
+        setEvolutionMessageType(null);
+        toast.open({
+          id: 'skill-panel-action-error',
+          content: t('skills.evolution.errors.saveFailed'),
+          variant: 'error',
+          duration: 8,
+        });
       }
     },
     [selectedSkill, t, withSession, fetchSkills],

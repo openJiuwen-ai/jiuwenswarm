@@ -8,6 +8,7 @@ import { ToolGroupDisplay } from './ToolGroupDisplay';
 import { useNow, formatDurationPrecise } from './chatTimelineClock';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import WaitingStatusIcon from '../../assets/work-mode/status-waiting.svg?react';
+import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import { AgentAvatar } from '../AgentAvatar';
 import { useChatStore, useSessionStore } from '../../stores';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
@@ -299,7 +300,7 @@ function CompletedWorkChip({
         ? `${t('chatUi.turnElapsed')} ${formatDurationPrecise(elapsedMs)}`
         : t('chatUi.workCompletedFallback')
       : formatStreakSummaryLabel(t, thinkingCount, toolCount, outcomeTone);
-  // 图标统一用 status-waiting 时钟资源，状态色仍由 is-success/is-partial/is-error 通过 currentColor 区分。
+  // 图标统一用 frame-time 时钟资源，状态色仍由 is-success/is-partial/is-error 通过 currentColor 区分。
   const applyOutcome = variant === 'streak';
   const toneClass = !applyOutcome
     ? 'is-success'
@@ -328,7 +329,7 @@ function CompletedWorkChip({
         aria-hidden="true"
         data-testid="chat-panel-completed-work-chip-icon"
       >
-        <WaitingStatusIcon />
+        <FrameTimeIcon />
       </span>
       <span className="completed-work-chip__label" data-testid="chat-panel-completed-work-chip-label">
         {label}
