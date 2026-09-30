@@ -41,7 +41,7 @@ def resolve_env_vars(value: Any) -> Any:
     """递归解析配置中的环境变量替换语法 ${VAR:-default}.
 
     Args:
-        value: 配置值，可能是字符串、字典或列表test
+        value: 配置值，可能是字符串、字典或列表test11
 
     Returns:
         解析后的值
