@@ -20,7 +20,11 @@ from jiuwenswarm.channels.process_cli.machine_signals import (
     command_signals,
     defer_command_signals,
 )
-from jiuwenswarm.channels.process_cli.session_guard import SessionLease, bind_agent
+from jiuwenswarm.channels.process_cli.session_guard import (
+    SessionGuardError,
+    SessionLease,
+    bind_agent,
+)
 from jiuwenswarm.channels.process_cli.protocol import (
     OneShotRunInput,
     OneShotRunResult,
@@ -58,7 +62,7 @@ def _exception_info(error: Exception) -> RuntimeErrorInfo:
     # Unknown dependency exceptions may contain credentials or full requests.
     message = (
         str(error)
-        if isinstance(error, MachineRunError)
+        if isinstance(error, (MachineRunError, SessionGuardError))
         else "Runtime operation failed."
     )
     return RuntimeErrorInfo(
