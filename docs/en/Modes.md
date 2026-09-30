@@ -2,18 +2,22 @@
 
 JiuwenSwarm supports multiple runtime modes, each with its own tool set, permission policy, and memory behavior.
 
-> **Note**: In the Web frontend, users can switch between **Agent mode** and **Cluster mode** using the **mode selector** in the chat input area. The `/mode` command is primarily for IM controlled channels and TUI.
+> **Note**: In the Web frontend, users can select **Agent**, **Cluster**, or
+> **Auto** using the mode selector. Auto runs the MACRO classifier for each
+> query and routes it to the Agent or Cluster lane. The `/mode` command is
+> primarily for IM controlled channels and TUI.
 
 ---
 
 ## Web Frontend Modes
 
-The Web frontend provides two execution modes:
+The Web frontend provides two concrete execution lanes plus Auto routing:
 
 | Mode | Description | Use Cases |
 |------|-------------|-----------|
 | **Agent mode** | Single agent handles tasks independently, supports task planning and dynamic adjustment | Most daily tasks, Q&A, code generation, etc. |
 | **Cluster mode** | Multi-agent collaboration mode, with a Leader orchestrating multiple specialized agents | Large complex tasks, scenarios requiring multi-role collaboration |
+| **Auto** | MACRO classifies every query and routes it to Agent or Cluster while Auto remains selected | Conversations whose complexity varies between turns |
 
 ![Mode Selector](../assets/images/current-ui-en/02-Mode-Selector.png)
 
@@ -36,6 +40,7 @@ legacy clients may still send these alias strings.
 | Code (Normal) | `code.normal` | `agent.code.normal` | Code mode + coding memory, focused on code execution |
 | Code (Team) | `code.team` | `team.code.normal` | Team collaboration launched from the Code profile |
 | Team | `team` | `team.work.normal` | Multi-agent collaboration mode, based on the `team` definition in config |
+| Auto | `auto` (`agent.auto`, `macro.auto`) | `auto` selection | Runs MACRO per query; the scheduler chooses only `agent` or `team` |
 
 > **Compatibility**: Legacy strings are silently mapped to the new canonical
 > via `deprecate_mode()` (no error, no warning). In particular `agent.plan`
@@ -99,10 +104,11 @@ set; the cross-layer contract test is
 Use the following commands during a channel conversation:
 
 ```
-/mode agent          # Switch to Agent mode (defaults to agent.plan)
-/mode plan           # TUI local shorthand, equivalent to agent.plan
-/mode code           # Switch to Code mode (defaults to code.normal)
-/mode team           # Switch to Team mode
+/mode agent          # Switch to Agent mode (defaults to agent.work.normal)
+/mode auto           # MACRO Auto: Agent vs Cluster per query (same as Web Auto)
+/mode plan           # TUI local shorthand, equivalent to agent.work.plan
+/mode code           # Switch to Code mode (defaults to agent.code.normal)
+/mode team           # Switch to Team mode (defaults to team.work.normal)
 /mode agent.plan     # Switch directly to Agent Plan sub-mode
 /mode agent.fast     # Switch directly to Agent Fast sub-mode
 /mode code.normal    # Switch directly to Code Normal sub-mode
@@ -119,6 +125,7 @@ Use the following commands during a channel conversation:
 > - 8 new three-segment canonicals: `agent.work.normal`, `agent.work.plan`, `agent.code.normal`, `agent.code.plan`, `team.work.normal`, `team.work.plan`, `team.code.normal`, `team.code.plan`
 > - 10 legacy canonicals (`DEPRECATION_MAP` keys): `agent`, `agent.plan`, `agent.fast`, `code`, `code.normal`, `code.plan`, `code.team`, `team`, `team.plan.normal`, `team.plan.code`
 > - 2 formal aliases (`MODE_ALIASES` keys): `team.plan` (→ `team.work.plan`), `team.code` (→ `team.code.normal`)
+> - Auto selection: `auto` (with `agent.auto` and `macro.auto` accepted where mode canonicalization is used)
 >
 > Any string outside this set is rejected as an illegal command by the gateway pre-check (`_VALID_MODE_INPUTS` in `jiuwenswarm/gateway/message_handler/message_handler.py`). Legacy strings are silently mapped to the new canonical via `deprecate_mode()`.
 
@@ -250,11 +257,13 @@ is injected.
 | `agent` | Deep Agent (`mode=agent`) | Unified single-agent chat. Suitable for daily tasks, multi-step reasoning, skill use, and work that benefits from subagents. | Mounts the former plan-tier capabilities (such as `TaskPlanningRail` and `SubagentRail`; enables `SkillEvolutionRail` / `SkillCreateRail` when configured); keeps search, multimodal, skill, and other common Agent tools. | Uses `modes.agent.memory`; fixed passive memory, read/write on demand. |
 | `code.normal` | Code Adapter (`mode=code`, `sub_mode=normal`) | Execution phase for coding work. Useful for editing files, running commands, verifying changes, and delivering results. Skill self-evolution is currently not supported. | Uses the Code-specific English system prompt; fixed Rails include `LspRail`, `ProjectMemoryRail`, `CodingMemoryRail`, `AgentModeRail`, `StructuredAskUserRail`, `ConfirmInterruptRail`, filesystem/permission Rails; dynamic Rails/tools come from `modes.code.rails` / `modes.code.tools`. | Uses `CodingMemoryRail` and project memory files such as `JIUWENSWARM.md` / `CLAUDE.md`. |
 | `code.team` | Code Adapter + Team sub-mode (`mode=code`, `sub_mode=team`) | Team collaboration launched from the Code profile. Useful when a coding project needs multiple members to split work while preserving code-workspace semantics. | The main agent stays on the Code profile; TeamManager starts team members and attempts to inherit the Code-side project directory, code tooling, and member skill toolkit. | Team members follow Team config; code/project context is influenced by both the Code profile and Team runtime. |
-| `team` | Team runtime (`mode=team`) | Standard multi-agent collaboration. A leader decomposes, schedules, and summarizes work while role members execute subtasks. | Team members attach Rails such as `RuntimePromptRail`, `ResponsePromptRail`, `SysOperationRail`, `TaskPlanningRail`, `SecurityRail`, and `AvatarPromptRail`; the leader additionally supports Team skill evolution/creation; tools come from the inheritable whitelist and team config. | Controlled by `modes.team.<name>.memory`, including shared `TEAM_MEMORY.md`, auto-extraction, and member memory prompt injection. |
+| `team` | Team runtime (`mode=team`) | Standard multi-agent collaboration. A leader decomposes, schedules, and summarizes work while role members execute subtasks. | Team members attach Rails such as `RuntimePromptRail`, `ResponsePromptRail`, `SysOperationRail`, `TaskPlanningRail`, `SecurityRail`, `HeartbeatRail`, and `AvatarPromptRail`; the leader additionally supports Team skill evolution/creation; tools come from the inheritable whitelist and team config. | Controlled by `modes.team.<name>.memory`, including shared `TEAM_MEMORY.md`, auto-extraction, and member memory prompt injection. |
+| `auto` | Per-query MACRO routing selection | Classifies each query and dispatches it to the concrete `agent` or `team` lane; Auto remains selected for the next query. | Uses the selected lane's runtime and tools. Auto itself is not a scheduler lane and does not add a Plan variant. | Uses the selected Agent or Team lane's memory strategy. |
 
 ### Quick Mental Model
 
 - Former `agent.plan` / `agent.fast` modes are merged into unified `agent`: one Deep Agent profile, shared planning / subagent / skill-evolution capabilities, and fixed passive memory.
+- MACRO has exactly two scheduler lanes, Agent and Cluster (`team`). Auto is a persistent user selection that invokes that classifier again for each query.
 - In Web mode, `agent.plan` + `work_mode` enables hard Plan mode, which differs from executable unified `agent` chat.
 - `code.team` and `team` both enter team collaboration, but from different entry points: `code.team` starts from the Code profile and is better for code-project delegation; `team` is the standard Team runtime.
 

@@ -146,8 +146,13 @@ export function ToolPanel({
 }: ToolPanelProps) {
   const { t } = useTranslation();
   const isConnected = useSessionStore((state) => state.isConnected);
-  const activeSessionId = useChatStore(s => s.activeSessionId);
-  const mode = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
+  const lastMacroRoutedMode = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.lastMacroRoutedMode ?? null,
+  );
+  const effectiveMode =
+    mode === 'auto' && lastMacroRoutedMode ? lastMacroRoutedMode : mode;
   const resolvedSessionId = sessionId ?? activeSessionId ?? '';
   const teamMembers = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamMembers ?? []);
   const teamConnectionPresentation = useSessionStore((s) =>
@@ -432,10 +437,10 @@ export function ToolPanel({
     setTeamTasks,
   ]);
 
-  const panelExpanded = mode === 'team' ? teamAreaExpanded : singleAgentPanelExpanded;
+  const panelExpanded = effectiveMode === 'team' ? teamAreaExpanded : singleAgentPanelExpanded;
 
   if (panelExpanded && mode !== 'auto_harness') {
-    const isTeam = mode === 'team';
+    const isTeam = effectiveMode === 'team';
     const testId = isTeam ? 'tool-panel-expanded-team' : 'tool-panel-expanded-single-agent';
 
     return (
@@ -534,7 +539,7 @@ export function ToolPanel({
   }
 
   // 收起模式 - 悬浮面板
-  const isTeam = mode === 'team';
+  const isTeam = effectiveMode === 'team';
   const planningProps = isTeam
     ? {
         tasks: teamPlanningTasks,
@@ -693,7 +698,7 @@ export function ToolPanel({
               diffWatch={codeGitDiffWatch}
               onReview={() => {
                 setCodeReviewTarget?.({ source: 'working_tree' });
-                if (mode === 'team') {
+                if (effectiveMode === 'team') {
                   setTeamAreaActiveTab('review');
                   setTeamAreaExpanded(true);
                 } else {
