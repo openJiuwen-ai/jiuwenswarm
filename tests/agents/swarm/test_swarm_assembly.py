@@ -2398,6 +2398,7 @@ def test_swarm_build_context_seed_round_trip() -> None:
         team_ws_root="/tmp/ws",
         team_skills_dir="/tmp/ws/skills",
         global_skills_dir="/tmp/global",
+        shared_skills_dirs=["/tmp/office-claw-skills", "/tmp/relay-skills"],
         config={"team": {}},
     )
     seed = base.to_seed()
@@ -2423,6 +2424,7 @@ def test_swarm_build_context_seed_round_trip() -> None:
     assert restored.team_id == "t1"
     assert restored.team_ws_root == "/tmp/ws"
     assert restored.request_metadata == {"mode": "code.team"}
+    assert restored.shared_skills_dirs == ["/tmp/office-claw-skills", "/tmp/relay-skills"]
     assert restored.language == "cn"
     # Non-serializable handles are sourced from the receiver, not the seed.
     assert restored.config == {"k": "v"}

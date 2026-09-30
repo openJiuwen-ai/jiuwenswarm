@@ -55,7 +55,11 @@ from jiuwenswarm.agents.harness.team.distributed_runtime import (
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
 from jiuwenswarm.agents.harness.team import kv_cache_hooks
 from jiuwenswarm.agents.harness.team.remote_member_bootstrap import release_a2x_reservations_for_session
-from jiuwenswarm.agents.harness.team.team_skill_links import sync_skill_dir_links
+from jiuwenswarm.agents.harness.team.team_skill_links import (
+    ensure_skill_dir_links,
+    prune_skill_dir_links,
+    remove_skill_dir_link,
+)
 from jiuwenswarm.common.config import (
     get_config,
     get_default_models,
@@ -75,7 +79,7 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     TeamWorkspaceInfo,
     build_member_rails,
 )
-from jiuwenswarm.common.utils import get_agent_skills_dir
+from jiuwenswarm.common.utils import resolve_agent_registered_skill_dirs
 from jiuwenswarm.server.runtime.session.session_metadata import (
     get_session_metadata,
     get_session_team_template_snapshot,
@@ -1270,24 +1274,56 @@ class TeamManager:
         )
 
     @staticmethod
-    def _initialize_team_shared_skill_links(spec: TeamAgentSpec) -> None:
-        """Initialize team shared skill links from the global skill root."""
-        global_skills_dir = get_agent_skills_dir()
-        if not global_skills_dir.exists():
-            logger.warning("[TeamManager] global_skills_dir does not exist: %s", global_skills_dir)
+    def _enabled_skill_names() -> set[str] | None:
+        """Skill allowlist shared with the adapter SkillUseRail (``ENABLED_SKILLS``).
+
+        Accepts both ``,`` and ``;`` separators, mirroring
+        ``SkillUseRail._normalize_name_list``. Returns ``None`` when unset so
+        team link sync links every skill found in the source dirs, matching the
+        rail's no-allowlist behaviour.
+        """
+        from jiuwenswarm.server.runtime.skill.skill_manager import enabled_skills_from_environ
+
+        raw = enabled_skills_from_environ()
+        if raw is None:
+            return None
+        normalized = raw.replace(";", ",")
+        return {part.strip() for part in normalized.split(",") if part.strip()} or None
+
+    @staticmethod
+    def _sync_team_skills_from_sources(target: Path) -> None:
+        """Sync skill links into *target* from the runtime skill roots.
+
+        Uses ``resolve_agent_registered_skill_dirs`` (tip/env shared dirs) — the
+        same roots the adapter SkillUseRail scans — instead of the tenant
+        workspace ``skills`` folder, which is empty when ``SHARED_SKILLS_DIRS``
+        is set. All sources are pruned first, then all sources are linked:
+        interleaving per-source ``sync_skill_dir_links`` would let a later
+        source's prune pass delete the links the earlier source just created.
+        When ``ENABLED_SKILLS`` is set, links are pruned to that allowlist,
+        mirroring the rail's enabled view.
+        """
+        enabled = TeamManager._enabled_skill_names()
+        source_dirs = [d for d in resolve_agent_registered_skill_dirs() if d.exists()]
+        if not source_dirs:
+            logger.warning("[TeamManager] no skill source dirs exist for team link sync")
             return
+        target.mkdir(parents=True, exist_ok=True)
+        for source_dir in source_dirs:
+            prune_skill_dir_links(source_dir, target)
+        for source_dir in source_dirs:
+            ensure_skill_dir_links(source_dir, target)
+        if enabled is not None:
+            for entry in target.iterdir():
+                if entry.name not in enabled and entry.is_dir() and not entry.name.startswith("."):
+                    remove_skill_dir_link(entry)
 
-        # Resolve team workspace path
-        ws_config = spec.workspace
-        ws_path = ws_config.root_path if ws_config and ws_config.root_path else None
-        if not ws_path:
-            ws_path = str(team_home(spec.team_name) / "team-workspace")
-
-        team_shared_skills_dir = Path(ws_path) / "skills"
-
+    @staticmethod
+    def _initialize_team_shared_skill_links(spec: TeamAgentSpec) -> None:
+        """Initialize team shared skill links from the runtime skill roots."""
+        team_shared_skills_dir = TeamManager._resolve_team_shared_skills_dir(spec)
         team_shared_skills_dir.mkdir(parents=True, exist_ok=True)
-        sync_skill_dir_links(global_skills_dir, team_shared_skills_dir)
-
+        TeamManager._sync_team_skills_from_sources(team_shared_skills_dir)
         logger.info("[TeamManager] Initialized team shared skill links: %s", team_shared_skills_dir)
 
     @staticmethod
@@ -1316,16 +1352,12 @@ class TeamManager:
         self._team_shared_skill_link_targets[session_id] = target
 
     def refresh_team_shared_skill_links(self, session_id: str) -> bool:
-        """Refresh team shared skill links from global skills."""
+        """Refresh team shared skill links from the runtime skill roots."""
         target = self._team_shared_skill_link_targets.get(session_id)
         if target is None:
             logger.debug("[TeamManager] no team shared skill link target for session_id=%s", session_id)
             return False
-        global_skills_dir = get_agent_skills_dir()
-        if not global_skills_dir.exists():
-            logger.warning("[TeamManager] global_skills_dir does not exist: %s", global_skills_dir)
-            return False
-        sync_skill_dir_links(global_skills_dir, target)
+        TeamManager._sync_team_skills_from_sources(Path(target))
         logger.info("[TeamManager] Refreshed team shared skill links: session_id=%s target=%s", session_id, target)
         return True
 

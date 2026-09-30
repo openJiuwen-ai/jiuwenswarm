@@ -248,10 +248,18 @@ def _list_skill_dirs_for_context(ctx: SwarmBuildContext) -> list[str]:
 def visible_skill_names_for_list_skill(ctx: SwarmBuildContext) -> set[str]:
     """Return the skill names that the matching SkillUseRail would expose."""
     if ctx.mode in _CODE_MODES:
-        from jiuwenswarm.common.utils import get_agent_skills_dir
+        from jiuwenswarm.common.utils import resolve_agent_registered_skill_dirs
         from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 
-        skill_dirs = [str(Path(ctx.global_skills_dir) if ctx.global_skills_dir else get_agent_skills_dir())]
+        # Note: the adapter's _resolve_skill_dirs has a whitelist-tenant branch
+        # (scan only the tenant workspace), but SwarmBuildContext carries no
+        # agent_id/service_id, so this provider-side scan cannot apply it.
+        # Acceptable drift: whitelist tenants are enterprise-only and do not
+        # build swarm members through this path today.
+        if ctx.shared_skills_dirs:
+            skill_dirs = list(ctx.shared_skills_dirs)
+        else:
+            skill_dirs = [str(p) for p in resolve_agent_registered_skill_dirs()]
         return _scan_skill_names_from_dirs(skill_dirs, set(load_execution_disabled_skills()))
 
     skill_dirs = _list_skill_dirs_for_context(ctx)

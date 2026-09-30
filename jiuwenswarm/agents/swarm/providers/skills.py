@@ -51,45 +51,55 @@ MEMBER_SKILL_TOOLKIT = "swarm.member_skill_toolkit"
 def _link_member_configured_skills(
     member_skills_dir: Path,
     selected_skills: list[str],
-    global_skills_dir: Path,
+    source_skills_dirs: list[Path],
 ) -> None:
     """Link the member's configured skills into its own skills directory.
 
     Synchronizes the member ``skills`` directory so it holds exactly one
     directory link per selected skill, pruning links for skills no longer
     selected. Skills are linked (not copied) so runtime installs/uninstalls in
-    the shared store propagate without stale copies.
+    the shared stores propagate without stale copies. ``source_skills_dirs``
+    mirrors the runtime skill_tool resolution roots — the first directory that
+    contains a selected skill wins, matching ``_get_skill_by_name`` semantics.
 
     Args:
         member_skills_dir: Member workspace ``skills`` directory.
         selected_skills: Skill names selected for this member.
-        global_skills_dir: Global agent skills directory to link from.
+        source_skills_dirs: Skill source roots to link from.
     """
-    if not global_skills_dir.exists():
+    existing_source_dirs = [d for d in source_skills_dirs if d.exists()]
+    if not existing_source_dirs:
         logger.warning(
-            "[swarm.member_skill_toolkit] global_skills_dir does not exist: %s",
-            global_skills_dir,
+            "[swarm.member_skill_toolkit] no skill source dirs exist: %s",
+            [str(d) for d in source_skills_dirs],
         )
         return
 
     selected_skill_set = set(selected_skills)
     member_skills_dir.mkdir(parents=True, exist_ok=True)
-    prune_skill_dir_links(global_skills_dir, member_skills_dir, selected_skill_set)
+    for source_dir in existing_source_dirs:
+        prune_skill_dir_links(source_dir, member_skills_dir, selected_skill_set)
+
+    # First source that carries the skill wins, so link order matches the
+    # runtime resolution order across the same directory list.
     linked_count = 0
-    for skill_dir in global_skills_dir.iterdir():
-        if not is_valid_skill_dir(skill_dir):
-            continue
-        if skill_dir.name not in selected_skill_set:
-            continue
-        dest = member_skills_dir / skill_dir.name
-        if path_exists_or_link(dest):
-            continue
-        link_skill_dir(skill_dir, dest)
-        linked_count += 1
-        logger.info(
-            "[swarm.member_skill_toolkit] Linked skill '%s' to member workspace",
-            skill_dir.name,
-        )
+    seen: set[str] = set()
+    for source_dir in existing_source_dirs:
+        for skill_dir in source_dir.iterdir():
+            if not is_valid_skill_dir(skill_dir):
+                continue
+            if skill_dir.name not in selected_skill_set or skill_dir.name in seen:
+                continue
+            seen.add(skill_dir.name)
+            dest = member_skills_dir / skill_dir.name
+            if path_exists_or_link(dest):
+                continue
+            link_skill_dir(skill_dir, dest)
+            linked_count += 1
+            logger.info(
+                "[swarm.member_skill_toolkit] Linked skill '%s' to member workspace",
+                skill_dir.name,
+            )
 
     existing_skill_names = {
         path.name for path in member_skills_dir.iterdir() if path_exists_or_link(path)
@@ -97,7 +107,7 @@ def _link_member_configured_skills(
     missing = sorted(selected_skill_set - existing_skill_names)
     if missing:
         logger.warning(
-            "[swarm.member_skill_toolkit] configured skills not found in global dir: %s",
+            "[swarm.member_skill_toolkit] configured skills not found in shared dirs: %s",
             missing,
         )
 
@@ -145,6 +155,10 @@ class MemberSkillToolkitInput(ConstructionInput):
         attr="global_skills_dir",
         description="Global agent skills directory.",
     )
+    shared_skills_dirs: list[str] | None = context_field(
+        attr="shared_skills_dirs",
+        description="Ordered skill roots the runtime skill_tool resolves against.",
+    )
     session_id: str = context_field(
         attr="session_id",
         default="",
@@ -188,7 +202,12 @@ def build_member_skill_toolkit(params: dict, ctx: Any) -> object | None:
 
     member_skills_dir = Path(root_path) / "skills"
     selected_skills = [str(skill).strip() for skill in inp.skills if str(skill).strip()]
-    global_skills_dir = Path(inp.global_skills_dir) if inp.global_skills_dir else get_agent_skills_dir()
+    # Link from the same roots the runtime skill_tool resolves against; fall
+    # back to the global dir when the context predates shared_skills_dirs.
+    if inp.shared_skills_dirs:
+        source_skills_dirs = [Path(p) for p in inp.shared_skills_dirs]
+    else:
+        source_skills_dirs = [Path(inp.global_skills_dir)] if inp.global_skills_dir else [get_agent_skills_dir()]
     agent_workspace_dir = get_agent_workspace_dir()
     session_id = inp.session_id
     channel = inp.channel
@@ -199,7 +218,7 @@ def build_member_skill_toolkit(params: dict, ctx: Any) -> object | None:
         member_skills_dir.mkdir(parents=True, exist_ok=True)
         if selected_skills:
             _link_member_configured_skills(
-                member_skills_dir, selected_skills, global_skills_dir
+                member_skills_dir, selected_skills, source_skills_dirs
             )
     except Exception as exc:
         logger.warning(

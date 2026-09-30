@@ -1746,6 +1746,57 @@ async def test_officeclaw_team_chat_reads_binding_from_tenant_session_root(monke
 
 
 @pytest.mark.asyncio
+async def test_officeclaw_team_chat_with_request_team_name_does_not_auto_generate(monkeypatch, tmp_path):
+    """chat.send 自带 team_name 且元数据绑定丢失时：以请求为权威修复绑定，绝不自动生成团队。
+
+    根因回归：bind 控制 RPC 与 chat 适配器可能解析到不同租户 sessions 根，导致 spec 加载
+    读到空 team_name 后回退 modes.team 首个模板（预置团），把用户自定义团静默替换掉。
+    """
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        get_session_metadata,
+        init_session_metadata,
+    )
+
+    sessions_root = tmp_path / "tenant-sessions"
+    patch_shared_name(
+        monkeypatch,
+        "get_agent_sessions_dir",
+        lambda: tmp_path / "global-sessions",
+    )
+    patch_shared_name(
+        monkeypatch,
+        "_sessions_dir_for_request",
+        lambda request: sessions_root,
+    )
+    init_session_metadata(
+        session_id="sess-bind-lost",
+        channel_id="officeclaw",
+        mode="team",
+        sessions_root=sessions_root,
+    )
+
+    async def fail_auto_generate(**kwargs):
+        pytest.fail("an explicit params.team_name must not trigger auto team generation")
+
+    patch_shared_name(monkeypatch, "_create_generated_team_binding", fail_auto_generate)
+    request = AgentRequest(
+        request_id="req-bind-lost-chat",
+        channel_id="officeclaw",
+        session_id="sess-bind-lost",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "team", "query": "开始任务", "team_name": "oc_team_user-team"},
+    )
+
+    result = await AgentWebSocketServerHarness().ensure_auto_team_binding_for_chat_for_test(request)
+
+    assert result == "oc_team_user-team"
+    assert request.params["team_name"] == "oc_team_user-team"
+    persisted = get_session_metadata("sess-bind-lost", cache_bust=True, sessions_root=sessions_root)
+    assert persisted["team_name"] == "oc_team_user-team"
+    assert persisted["runtime_team_name"] == "oc_team_user-team_sess-bind-lost"
+
+
+@pytest.mark.asyncio
 async def test_handle_team_bindings_list_selects_entity_when_template_deleted(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
     from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStore

@@ -44,6 +44,8 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
     increment_session_round_count,
     update_session_metadata,
 )
+from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
+from jiuwenswarm.server.runtime.team_entity_store import ensure_team_entity_for_binding
 from jiuwenswarm.server.runtime.session.session_history import append_history_record
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
 from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
@@ -1592,6 +1594,101 @@ def _team_spec_monitor_roots(team_spec: Any, session_id: str | None = None) -> l
     return roots
 
 
+def _reconcile_request_team_binding(
+    request: Any,
+    *,
+    session_id: str,
+    mode: str | None,
+    sessions_root: str | Path | None,
+    config_base: dict[str, Any] | None,
+) -> None:
+    """Repair the session↔team binding from the authoritative ``params.team_name``.
+
+    The binding RPC (``team.session.bind``) and this chat stream may resolve
+    different tenant ``sessions_root`` values (the control RPC runs without the
+    tenant env-ns context that the chat adapter binds). When that happens the
+    spec loader reads metadata with an empty ``team_name`` and silently falls
+    back to the first ``modes.team`` template (a preset team) instead of the
+    user's own team. ``chat.send`` always carries the bound team name, so use
+    it to repair the metadata — with the *same* ``sessions_root`` the spec
+    loader will read — before the team spec is built. Best-effort: failures
+    are logged and never block the chat.
+
+    Fast path: the common case is an already-correct binding, so the in-memory
+    metadata cache is read first (no disk hit) and only a detected mismatch
+    pays the ``cache_bust`` disk re-read.
+    """
+    params = getattr(request, "params", None)
+    requested_team_name = (
+        str(params.get("team_name") or "").strip() if isinstance(params, dict) else ""
+    )
+    if not requested_team_name:
+        return
+    metadata = get_session_metadata(session_id, sessions_root=sessions_root)
+    current_team_name = str(metadata.get("team_name") or "").strip()
+    current_runtime = str(metadata.get("runtime_team_name") or "").strip()
+    if current_team_name == requested_team_name and (
+        current_runtime
+        and current_runtime.startswith(f"{requested_team_name}_")
+    ):
+        return
+    # In-memory cache may be stale (the binding RPC wrote another tenant root);
+    # re-read from disk before repairing so we do not clobber a fresh binding.
+    metadata = get_session_metadata(session_id, cache_bust=True, sessions_root=sessions_root)
+    current_team_name = str(metadata.get("team_name") or "").strip()
+    current_runtime = str(metadata.get("runtime_team_name") or "").strip()
+    if current_team_name == requested_team_name and (
+        current_runtime
+        and current_runtime.startswith(f"{requested_team_name}_")
+    ):
+        return
+    try:
+        binding_store = get_team_binding_store()
+        binding = binding_store.get(requested_team_name)
+        if binding is not None:
+            entity = ensure_team_entity_for_binding(binding, config_base=config_base)
+            if entity is not None:
+                binding_store.bind_session(
+                    team_name=requested_team_name,
+                    session_id=session_id,
+                )
+                update_session_metadata(
+                    session_id=session_id,
+                    mode=mode,
+                    team_name=requested_team_name,
+                    runtime_team_name=TeamManager.build_session_scoped_team_name(
+                        requested_team_name,
+                        session_id,
+                    ),
+                    team_template_id=binding.template_id,
+                    touch_last_message_at=False,
+                    sync_write=True,
+                    sessions_root=sessions_root,
+                )
+                logger.warning(
+                    "[TeamHelpers] reconciled session team binding from request params: "
+                    "session_id=%s requested_team=%s previous_team=%s previous_runtime=%s",
+                    session_id,
+                    requested_team_name,
+                    current_team_name or "<empty>",
+                    current_runtime or "<empty>",
+                )
+                return
+        if current_team_name and current_team_name != requested_team_name:
+            logger.warning(
+                "[TeamHelpers] request team %r not in binding store; keeping session binding %r",
+                requested_team_name,
+                current_team_name,
+            )
+    except Exception as exc:
+        logger.warning(
+            "[TeamHelpers] team binding reconcile failed (best-effort): session_id=%s team=%s error=%s",
+            session_id,
+            requested_team_name,
+            exc,
+        )
+
+
 def _persist_team_file_monitor_roots(session_id: str, team_spec: Any) -> None:
     roots = _team_spec_monitor_roots(team_spec, session_id=session_id)
     if not roots:
@@ -1776,6 +1873,19 @@ async def process_team_message_stream(
 
     try:
         request_metadata = dict(request.metadata or {})
+        if isinstance(getattr(request, "params", None), dict):
+            request_metadata.setdefault("mode", request.params.get("mode"))
+        resolved_mode = str(request_metadata.get("mode") or "").strip()
+        # Bind 阶段写入的会话团队元数据可能落在与本次流不同的租户 sessions 根
+        # （控制 RPC 与 chat 适配器的租户上下文不一致）。spec 加载前用请求自带的
+        # params.team_name（权威来源）修复绑定，否则会回退到 modes.team 首个模板（预置团）。
+        _reconcile_request_team_binding(
+            request,
+            session_id=session_id,
+            mode=resolved_mode,
+            sessions_root=sessions_root,
+            config_base=config_base,
+        )
         # V2: 若请求携带 member_name（由 Gateway resolve_member_by_user 反查注入），
         # 在前拼接 $sender，让 OpenJiuwen 识别发言人身份。
         # 规则：
@@ -1793,12 +1903,10 @@ async def process_team_message_stream(
                 _safe_query_preview(query),
             )
         if isinstance(getattr(request, "params", None), dict):
-            request_metadata.setdefault("mode", request.params.get("mode"))
             request_metadata.setdefault(
                 "supports_user_interaction",
                 request.params.get("supports_user_interaction") is not False,
             )
-        resolved_mode = str(request_metadata.get("mode") or "").strip()
         # Page-selected model name (from chat page model selector). Used as a
         # fallback for team members whose ``modes.team.agents.*.model`` is not
         # explicitly configured, so cluster mode honors the page model when no
