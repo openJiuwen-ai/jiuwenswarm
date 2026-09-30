@@ -48,12 +48,19 @@ test('Harness refs are installed through RSI, not imported as archives, and refr
   };
   const root = createRoot(document.getElementById('root'));
   const props = {
-    task: { task_id: 'task-1', name: 'Training', status: 'COMPLETED', scenario: 'HARNESS', config: {} },
+    task: { task_id: 'task-1', name: 'Training', status: 'COMPLETED', scenario: 'HARNESS', config: {},
+      harness_installable: true },
     tree: { nodes: [{ node_id: 'ROOT', type: 'ROOT' }, { node_id: 'e1', type: 'ADOPTED' }] },
     report: null, liveCost: null, createdAt: null,
     onOpenConfig() {}, onOpenArtifact() {},
   };
   try {
+    for (const ready of [false, undefined]) {
+      await act(async () => root.render(React.createElement(RsiDetailHeader, {
+        ...props, task: { ...props.task, harness_installable: ready },
+      })));
+      assert.equal(document.querySelector('[data-testid="rsi-action-install"]'), null);
+    }
     await act(async () => root.render(React.createElement(RsiDetailHeader, props)));
     await act(async () => document.querySelector('[data-testid="rsi-action-install"]').click());
     assert.deepEqual(calls, [

@@ -619,8 +619,9 @@ export function actionsForStatus(
   status: RsiTaskStatus,
   scenario: RsiScenario,
   installed = false,
-  tree: RsiTreeGetResult | null = null,
+  _tree: RsiTreeGetResult | null = null,
   _artifactType: RsiArtifactType | null = null,
+  harnessInstallable = false,
 ): RsiActionKind[] {
   const actions: RsiActionKind[] = ['config', 'delete'];
   switch (status) {
@@ -639,9 +640,7 @@ export function actionsForStatus(
     case 'COMPLETED':
       if (!installed) {
         if (scenario === 'HARNESS') {
-          // 仅有基线节点（没有真正展开优化）时，尚未生成可安装的 Harness 插件包。
-          const hasOptimizedNodes = (tree?.nodes.length ?? 0) > 1;
-          if (hasOptimizedNodes) actions.push('install');
+          if (harnessInstallable) actions.push('install');
         } else {
           actions.push('download');
         }
