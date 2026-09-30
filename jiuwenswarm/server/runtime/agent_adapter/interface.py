@@ -38,6 +38,14 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
 )
 from jiuwenswarm.server.runtime.session.session_manager import SessionManager
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+from jiuwenswarm.server.runtime.model_registry import ModelRegistry
+from jiuwenswarm.agents.harness.common.tools.third_agent_toolkits import handle_third_agents_list
+from jiuwenswarm.server.runtime.hardware.npu_monitor import handle_hardware_npu_status
+from jiuwenswarm.server.runtime.user_registry import (
+    handle_users_create,
+    handle_users_delete,
+    handle_users_list,
+)
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
@@ -744,6 +752,21 @@ _PLUGIN_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.PLUGINS_RELOAD: "handle_plugins_reload",
 }
 
+# 模型注册表 RPC（只读,运行状态由 ModelRegistry 实时健康检查合成）
+_MODEL_ROUTES: dict[ReqMethod, str] = {
+    ReqMethod.MODEL_REGISTRY_LIST: "handle_models_list",
+}
+
+# 无状态 RPC：handler 为模块级 async 函数（third_agent_toolkits / npu_monitor /
+# user_store）。三方 Agent、用户管理与聊天工具读同一状态文件，保证逻辑唯一来源。
+_STATELESS_FUNC_ROUTES: dict[ReqMethod, Any] = {
+    ReqMethod.THIRD_AGENTS_LIST: handle_third_agents_list,
+    ReqMethod.HARDWARE_NPU_STATUS: handle_hardware_npu_status,
+    ReqMethod.USERS_LIST: handle_users_list,
+    ReqMethod.USERS_CREATE: handle_users_create,
+    ReqMethod.USERS_DELETE: handle_users_delete,
+}
+
 _SKILL_COMMAND_REGEX = re.compile(
     r"^/skills use\s+(?P<skill_names>[^,]+)\s*,\s*(?P<query>.*)$"
 )
@@ -871,6 +894,7 @@ class JiuWenSwarm:
         self._adapter: AgentAdapter | None = None
         self._sdk_name: str | None = None
         self._skill_manager = SkillManager(workspace_dir=str(get_agent_workspace_dir()))
+        self._model_registry = ModelRegistry()
         self._session_manager = SessionManager()
         self._permissions_changed_notifier: Callable[[], None] | None = None
         self._permissions_external_input_context_builder: Callable[..., Any] | None = None
@@ -1617,6 +1641,36 @@ class JiuWenSwarm:
             metadata=request.metadata,
         )
 
+    async def _handle_models_request(self, request: AgentRequest) -> AgentResponse | None:
+        """处理模型注册表相关请求,返回 None 表示不是 models 请求.
+
+        与 skills 不同:注册/注销只发生在 harness 工具侧,RPC 只有只读 list,
+        处理后无需重建 agent 实例。
+        """
+        if request.req_method not in _MODEL_ROUTES:
+            return None
+
+        handler_name = _MODEL_ROUTES[request.req_method]
+        handler = getattr(self._model_registry, handler_name)
+        try:
+            payload = await handler(request.params)
+        except Exception as exc:
+            logger.error("[JiuWenSwarm] models 请求处理失败: %s", exc)
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc)},
+                metadata=request.metadata,
+            )
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload=payload,
+            metadata=request.metadata,
+        )
+
     async def _handle_plugins_request(self, request: AgentRequest) -> AgentResponse | None:
         """处理 Plugin 相关请求，返回 None 表示不是 Plugin 请求."""
         if request.req_method not in _PLUGIN_ROUTES:
@@ -1636,6 +1690,31 @@ class JiuWenSwarm:
                 await self.create_instance()
         except Exception as exc:
             logger.error("[JiuWenSwarm] plugins 请求处理失败: %s", exc)
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc)},
+                metadata=request.metadata,
+            )
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload=payload,
+            metadata=request.metadata,
+        )
+
+    async def _handle_stateless_func_request(self, request: AgentRequest) -> AgentResponse | None:
+        """处理无状态 RPC（三方 Agent / 硬件监控 / 用户管理），返回 None 表示未命中."""
+        if request.req_method not in _STATELESS_FUNC_ROUTES:
+            return None
+
+        handler = _STATELESS_FUNC_ROUTES[request.req_method]
+        try:
+            payload = await handler(request.params)
+        except Exception as exc:
+            logger.error("[JiuWenSwarm] stateless 请求处理失败(%s): %s", request.req_method, exc)
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -1966,6 +2045,14 @@ class JiuWenSwarm:
         if plugins_response is not None:
             return plugins_response
 
+        models_response = await self._handle_models_request(request)
+        if models_response is not None:
+            return models_response
+
+        stateless_response = await self._handle_stateless_func_request(request)
+        if stateless_response is not None:
+            return stateless_response
+
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
         validator = getattr(adapter, "validate_auto_permission_workspace_request", None)
         if callable(validator):
@@ -2213,6 +2300,8 @@ class JiuWenSwarm:
         for stateless_handler in (
             self._handle_skills_request,
             self._handle_plugins_request,
+            self._handle_models_request,
+            self._handle_stateless_func_request,
         ):
             stateless_response = await stateless_handler(request)
             if stateless_response is not None:

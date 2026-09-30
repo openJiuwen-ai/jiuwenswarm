@@ -21,6 +21,18 @@ from .send_file_to_user import (
 from .skill_toolkits import (
     SkillToolkit,
 )
+from .third_agent_toolkits import (
+    ThirdAgentToolkit,
+    get_third_agent_tools,
+)
+from .model_registry_toolkits import (
+    ModelRegistryToolkit,
+    get_model_registry_tools,
+)
+from .user_toolkits import (
+    UserToolkit,
+    get_user_tools,
+)
 from .skill_retrieval_toolkits import (
     is_skill_retrieval_enabled,
     SkillRetrievalToolkit,
@@ -64,6 +76,12 @@ __all__ = [
     "is_group_chat_mode",
     "SendFileToolkit",
     "SkillToolkit",
+    "ThirdAgentToolkit",
+    "get_third_agent_tools",
+    "ModelRegistryToolkit",
+    "get_model_registry_tools",
+    "UserToolkit",
+    "get_user_tools",
     "is_skill_retrieval_enabled",
     "SkillRetrievalToolkit",
     "SymphonyToolkit",
