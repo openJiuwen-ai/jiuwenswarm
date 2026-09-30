@@ -74,6 +74,17 @@ def test_domain(pattern, match, host, expected):
     assert match_record(rec(type="domain", pattern=pattern, match=match), host) is expected
 
 
+@pytest.mark.parametrize("pattern,match,host", [
+    ("evil.example", "exact", "evil.example."),       # DNS 尾点等价：不能绕过 deny
+    ("*.evil.example", "wildcard", "a.evil.example."),
+    ("evil.example.", "exact", "evil.example"),       # pattern 侧带尾点同样归一
+    ("evil.example.", "exact", "evil.example."),
+])
+def test_domain_trailing_dot_is_normalized(pattern, match, host):
+    """尾点与裸域在 DNS 上等价，必须归一——否则加个 '.' 就能绕过 deny 规则（设计 §7）。"""
+    assert match_record(rec(type="domain", pattern=pattern, match=match), host) is True
+
+
 # ---------------------------------------------------------------------------
 # command
 # ---------------------------------------------------------------------------

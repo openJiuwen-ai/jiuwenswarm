@@ -178,8 +178,9 @@ def _match_file_glob(pattern: str, target: str) -> bool:
 
 
 def _match_domain(rec: SecurityListRecord, host: str) -> bool:
-    pat = rec.pattern.strip().lower()
-    h = host.strip().lower()
+    # 尾点在 DNS 上与裸域等价 → 两侧都归一，否则 `evil.example.` 可绕过 deny 规则（设计 §7）
+    pat = rec.pattern.strip().lower().rstrip(".")
+    h = host.strip().lower().rstrip(".")
     if not pat or not h:
         return False
     if rec.match == "exact":
