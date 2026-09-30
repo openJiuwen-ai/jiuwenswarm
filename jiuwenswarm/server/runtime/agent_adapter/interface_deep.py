@@ -4779,8 +4779,49 @@ class JiuWenSwarmDeepAdapter:
         invocation_id: str,
         *,
         skip_office_claw: bool = False,
+        yield_to_existing: bool = False,
     ) -> str:
         for server_name, server_config in request_mcp_servers.items():
+            # 这里统一走 identity-pinned 注册（与 Source 1 同一代码路径），
+            # 校验命令/参数/工作目录、复用 schema cache、产物注册到同一 buffers。
+            if server_name == "office-claw" and not skip_office_claw:
+                try:
+                    new_invocation_id = (
+                        await self._append_identity_pinned_office_claw_tools(
+                            request,
+                            server_config,
+                            buffers,
+                            yield_to_existing=yield_to_existing,
+                        )
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "[JiuWenSwarmDeepAdapter] request-scoped MCP "
+                        "connector 'office-claw' identity-pinned "
+                        "registration failed; skipping it and "
+                        "continuing with the rest of this payload. "
+                        "The agent will have NO office_claw_* tools "
+                        "(no scheduled-task / task / rich-block "
+                        "capabilities). Validate sidecar env "
+                        "OFFICE_CLAW_MCP_COMMAND / ARGS_JSON / CWD "
+                        "and request env OFFICE_CLAW_API_URL / "
+                        "INVOCATION_ID / CALLBACK_TOKEN / USER_ID / "
+                        "AGENT_ID: request_id=%s error=%s",
+                        request.request_id,
+                        exc,
+                    )
+                    continue
+                if new_invocation_id and new_invocation_id != "-":
+                    invocation_id = new_invocation_id
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] request-scoped MCP "
+                    "connector 'office-claw' routed through "
+                    "identity-pinned registration (Source-2 fallback): "
+                    "request_id=%s",
+                    request.request_id,
+                )
+                continue
+            # office-claw 已由 Source1 处理。
             if server_name == "office-claw" and skip_office_claw:
                 continue
             try:
@@ -4792,9 +4833,6 @@ class JiuWenSwarmDeepAdapter:
                 )
                 continue
             self._stage_request_mcp_tools(request, server_name, tool_defs, params, buffers)
-            if server_name == "office-claw" and not invocation_id:
-                env = params.get("env") if isinstance(params.get("env"), dict) else {}
-                invocation_id = str(env.get("OFFICE_CLAW_INVOCATION_ID") or "").strip()
         return invocation_id
 
     def _install_staged_request_mcp_tools(self, buffers: _RequestMcpToolBuffers) -> None:
@@ -4897,6 +4935,7 @@ class JiuWenSwarmDeepAdapter:
                 invocation_id = await self._append_request_mcp_server_tools(
                     request, request_mcp_servers, buffers, invocation_id,
                     skip_office_claw=office_claw_config is not None,
+                    yield_to_existing=bool(server_names),
                 )
             if office_claw_config is not None and server_names:
                 invocation_id = await self._append_identity_pinned_office_claw_tools(
