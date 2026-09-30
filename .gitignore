@@ -77,6 +77,8 @@ logs/
 .browser/
 .browser-profiles/
 .playwright-mcp/
+# ui_e2e 运行产物（report.md/report.json/日志/截图），不入库
+tests/ui_e2e/artifacts/
 
 # workspace
 workspace/session
