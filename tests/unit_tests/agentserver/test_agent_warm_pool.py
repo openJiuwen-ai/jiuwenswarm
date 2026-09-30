@@ -83,14 +83,14 @@ def isolated_pool(monkeypatch, tmp_path: Path):
     )
 
     def factory(agent: _FakeRootAgent) -> AgentWarmPool:
-        # Prewarming is on by default; stay explicit so a developer environment
-        # that opts out cannot silently turn these cases into no-ops.
+        # Prewarming is off by default; stay explicit so a developer environment
+        # that opts in cannot silently turn these cases into no-ops.
         return AgentWarmPool(_FakeManager(agent), max_concurrency=4, enabled=True)
 
     yield factory
 
 
-def test_prewarm_is_enabled_unless_the_environment_opts_out(
+def test_prewarm_is_disabled_unless_the_environment_opts_in(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
@@ -103,7 +103,7 @@ def test_prewarm_is_enabled_unless_the_environment_opts_out(
         return AgentWarmPool(_FakeManager(_FakeRootAgent()))
 
     monkeypatch.delenv("JIUWENSWARM_AGENT_PREWARM", raising=False)
-    assert build()._enabled is True
+    assert build()._enabled is False
 
     monkeypatch.setenv("JIUWENSWARM_AGENT_PREWARM", " OFF ")
     assert build()._enabled is False

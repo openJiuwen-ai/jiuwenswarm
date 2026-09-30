@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Background prewarming is on by default and can be opted out of through the
+# Background prewarming is off by default and is only activated through the
 # environment. Once off, sessions are allocated an id immediately and initialize
 # lazily on their first request.
 _PREWARM_ENABLED_ENV_KEY = "JIUWENSWARM_AGENT_PREWARM"
@@ -42,8 +42,8 @@ def _prewarm_enabled_by_env() -> bool:
     """Return whether background session prewarming is switched on.
 
     Returns:
-        The explicit environment choice, or True when the switch is unset or
-        carries an unrecognized value.
+        True only when the environment explicitly opts in; False when the
+        switch is unset or carries an unrecognized value.
 
     企业版模型依赖请求 ``metadata.routing``（含 ``bot_id``）。预热路径没有
     identity，会落到空 ``config.yaml`` 并打 ERROR；因此企业版强制关闭会话预热，
@@ -52,15 +52,15 @@ def _prewarm_enabled_by_env() -> bool:
     if is_enterprise():
         return False
     raw = str(os.environ.get(_PREWARM_ENABLED_ENV_KEY, "") or "").strip().lower()
-    if raw in _PREWARM_OFF_VALUES:
-        return False
-    if raw not in _PREWARM_ON_VALUES and raw:
+    if raw in _PREWARM_ON_VALUES:
+        return True
+    if raw and raw not in _PREWARM_OFF_VALUES:
         logger.warning(
-            "Ignoring unrecognized %s value %r; keeping prewarming enabled.",
+            "Ignoring unrecognized %s value %r; keeping prewarming disabled.",
             _PREWARM_ENABLED_ENV_KEY,
             raw,
         )
-    return True
+    return False
 
 
 def _zero_stats() -> dict[str, int]:
