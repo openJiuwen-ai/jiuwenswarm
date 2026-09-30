@@ -50,6 +50,8 @@ export interface ToastRecord {
   testId?: string;
   style?: CSSProperties;
   closable: boolean;
+  /** 原地更新序号：每次 buildRecord 单调递增；ToastItem 依赖它复位自动消失计时器（对齐 antd update 语义）。 */
+  updatedAt: number;
   /** 退出动画播放中：记录仍留在列表里渲染，但不响应交互；动画结束后才真正移除。 */
   closing: boolean;
   onClose?: (key: number) => void;
@@ -61,6 +63,8 @@ export const TOAST_EXIT_ANIMATION_MS = 200;
 
 let records: ToastRecord[] = [];
 let nextKey = 1;
+/** 原地更新序号：同 id 复用 key 的 buildRecord 也会递增，驱动 ToastItem 复位计时器。 */
+let updateSeq = 0;
 const listeners = new Set<() => void>();
 
 function emit() {
@@ -110,6 +114,10 @@ export const toastStore = {
 };
 
 /** 由 config 构造记录：open 与同 id 原地更新共用，保证两条路径的字段口径一致。 */
+/** 同 id 语义：原地更新复用 key 并递增 updatedAt（ToastItem 计时器随之复位，对齐 antd update）；
+ *  closing 中的同 id 记录【不复活】——手动关闭后的下一次 open 视为全新条目（全新 key），
+ *  避免用户刚关掉又被业务代码复活。StrictMode 下 unmount-close 再 re-open 会短暂出现一条退场 +
+ *  一条新开（仅 dev，可接受），语义以此为准。 */
 function buildRecord(config: ToastConfig, key: number): ToastRecord {
   return {
     key,
@@ -124,6 +132,7 @@ function buildRecord(config: ToastConfig, key: number): ToastRecord {
     testId: config.testId,
     style: config.style,
     closable: config.closable ?? true,
+    updatedAt: ++updateSeq,
     closing: false,
     onClose: config.onClose,
   };

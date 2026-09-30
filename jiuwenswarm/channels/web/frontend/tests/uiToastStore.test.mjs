@@ -98,3 +98,18 @@ test('open 携带同 id 时原地更新并复用原 key；closing 中的条目�
   await waitForExit();
   assert.equal(toastStore.getSnapshot().length, 0);
 });
+
+test('同 id 原地更新递增 updatedAt（ToastItem 依据它复位计时器）', async () => {
+  const key1 = toast.open({ id: 'progress', content: 'a', duration: 5 });
+  const before = toastStore.getSnapshot().find((record) => record.key === key1).updatedAt;
+
+  const key2 = toast.open({ id: 'progress', content: 'b', duration: 5 });
+  const after = toastStore.getSnapshot().find((record) => record.key === key2).updatedAt;
+
+  assert.equal(key2, key1);
+  assert.ok(after > before, 'updatedAt 必须单调递增');
+
+  toast.closeAll();
+  await waitForExit();
+  assert.equal(toastStore.getSnapshot().length, 0);
+});

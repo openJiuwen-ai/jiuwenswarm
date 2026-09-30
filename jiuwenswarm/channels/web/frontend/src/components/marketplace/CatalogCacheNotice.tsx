@@ -10,8 +10,9 @@ import {
   type CatalogCacheMetadata,
 } from '../../features/catalogCache';
 
-/** 常驻缓存提示 toast 的业务去重 id:多实例/内容变化都原地更新同一条,始终只有一条。 */
+/** 常驻缓存提示 toast 的 testId(DOM 契约,保持稳定);业务去重 id 按实例派生,多实例互不干扰。 */
 const CACHE_NOTICE_TOAST_ID = 'marketplace-cache-notice';
+let cacheNoticeToastSeq = 0;
 
 /**
  * 目录缓存状态提示:stale/刷新失败时在右上角挂一条常驻 info toast(不自动消失,可手动关闭),
@@ -24,6 +25,8 @@ export function CatalogCacheNotice({ cache }: { cache?: CatalogCacheMetadata }) 
   const updatedAt = notice?.updatedAt;
   const language = i18n.language;
   const toastKeyRef = useRef<number | null>(null);
+  // 业务 id 按实例派生:同实例的原地更新共用一条;两个实例同时挂载时各持有一条,卸载互不影响
+  const toastIdRef = useRef(`${CACHE_NOTICE_TOAST_ID}:${++cacheNoticeToastSeq}`);
 
   useEffect(() => {
     if (!kind) {
@@ -44,7 +47,7 @@ export function CatalogCacheNotice({ cache }: { cache?: CatalogCacheMetadata }) 
     const updatedText = formatCatalogCacheUpdatedAt(updatedAt, language);
     const updatedTimestamp = catalogCacheTimestamp(updatedAt);
     toastKeyRef.current = toast.open({
-      id: CACHE_NOTICE_TOAST_ID,
+      id: toastIdRef.current,
       content: (
         <>
           {text}
