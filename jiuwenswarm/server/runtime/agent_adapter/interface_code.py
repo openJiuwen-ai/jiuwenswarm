@@ -22,6 +22,7 @@ from typing import Any
 
 from openjiuwen.core.foundation.llm import Model
 from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
+from openjiuwen.core.runner import Runner  # noqa: F401 - compatibility test seam
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness.factory import create_deep_agent
 from openjiuwen.harness.prompts import resolve_language
