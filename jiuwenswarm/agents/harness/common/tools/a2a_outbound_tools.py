@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any, Callable, Protocol
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
@@ -20,6 +21,24 @@ from jiuwenswarm.gateway.a2a_manager.tool_rpc import (
 
 from .acp_output_tools import get_acp_output_manager
 
+# Transport watchdog for RPCs whose budget is owned by the Gateway. Without it a
+# topology that never answers reverse RPCs (e.g. packaged sidecar where the
+# Gateway process is absent) would hold the ReAct turn until the outer tool
+# deadline (300s) instead of failing fast with a domain error.
+_ACP_OUTPUT_TIMEOUT_ENV = "A2A_OUTBOUND_TRANSPORT_TIMEOUT_SECONDS"
+_DEFAULT_LOCAL_RPC_TIMEOUT = 15.0
+
+
+def _local_rpc_timeout() -> float | None:
+    raw = os.getenv(_ACP_OUTPUT_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_LOCAL_RPC_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_LOCAL_RPC_TIMEOUT
+    return None if value <= 0 else value
+
 
 class A2AOutboundToolBackend(Protocol):
     @property
@@ -33,6 +52,7 @@ class A2AOutboundToolBackend(Protocol):
         *,
         session_id: str,
         channel_id: str,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -56,6 +76,7 @@ class GatewayA2AOutboundToolBackend:
         *,
         session_id: str,
         channel_id: str,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         if not self.ready:
             return _error(A2AOutboundErrorCode.MANAGER_UNAVAILABLE)
@@ -67,7 +88,9 @@ class GatewayA2AOutboundToolBackend:
                 channel_id=channel_id,
                 # The Gateway Manager owns operation budgets. In particular,
                 # sync_wait_seconds must not be preempted by a transport timer.
-                timeout=None,
+                # Local-only queries (find_agents/get_dispatch) carry their own
+                # watchdog so a silent topology cannot stall the tool deadline.
+                timeout=timeout,
                 log_params=False,
                 cancel_method=_RPC_CANCEL,
             )
@@ -150,11 +173,17 @@ class A2AOutboundToolkit:
             # No remote Agent has been contacted at this point. Report the
             # local routing failure instead of mislabeling it as a rejection.
             return _error(A2AOutboundErrorCode.MANAGER_UNAVAILABLE)
+        timeout = (
+            _local_rpc_timeout()
+            if method in (_RPC_FIND, _RPC_GET)
+            else None
+        )
         return await self._backend.call(
             method,
             params,
             session_id=session_id,
             channel_id=channel_id,
+            timeout=timeout,
         )
 
     def get_tools(self) -> list[Tool]:

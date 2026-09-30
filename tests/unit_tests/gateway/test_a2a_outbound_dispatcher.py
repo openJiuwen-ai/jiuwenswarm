@@ -844,8 +844,13 @@ async def test_dispatch_query_is_scoped_to_originating_session() -> None:
 class _Backend:
     ready = True
 
-    async def call(self, method, params, *, session_id, channel_id):
-        return {"method": method, "session_id": session_id, "channel_id": channel_id}
+    async def call(self, method, params, *, session_id, channel_id, timeout=None):
+        return {
+            "method": method,
+            "session_id": session_id,
+            "channel_id": channel_id,
+            "timeout": timeout,
+        }
 
 
 class _AbilityManager:
