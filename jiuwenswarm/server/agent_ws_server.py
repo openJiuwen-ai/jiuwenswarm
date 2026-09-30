@@ -3417,6 +3417,19 @@ class AgentWebSocketServer:
             and request.req_method == ReqMethod.CHAT_SEND
             and (request.metadata or {}).get("require_admission_ack") is True
         )
+        # 流式审计（诊断取证）：统计本轮模型增量块里"思考/正文"的条数与交替次数，
+        # 轮末输出一行汇总。只计数、不改帧、不新增日志文件。
+        # 背景：手机控制 PC 时正文被切成大量碎片（每片夹一行深度思考），需要证据判断
+        # 交替是否来自模型返回流本身；逐块日志会被日志轮转冲掉，轮级汇总不会。
+        stream_audit = {
+            "reasoning": 0,
+            "text": 0,
+            "switches": 0,
+            "last_kind": "",
+            "text_chars": 0,
+            "first_switch_seq": -1,
+            "samples": [],
+        }
         # 心跳控制：当有真实 chunk 发送时重置，空闲时发送心跳
         heartbeat_event = asyncio.Event()
         heartbeat_task: asyncio.Task | None = None
@@ -3526,6 +3539,26 @@ class AgentWebSocketServer:
                 _pl = getattr(chunk, "payload", None) or {}
                 _et = _pl.get("event_type", "") if isinstance(_pl, dict) else ""
                 _is_complete = bool(getattr(chunk, "is_complete", False))
+                # 思考/正文增量块计数（stream_audit：见上）
+                if _et in ("chat.reasoning", "chat.delta"):
+                    _audit_kind = "R" if _et == "chat.reasoning" else "T"
+                    _audit_text = (
+                        str(_pl.get("content", "") or "") if isinstance(_pl, dict) else ""
+                    )
+                    if stream_audit["last_kind"] and stream_audit["last_kind"] != _audit_kind:
+                        stream_audit["switches"] += 1
+                        if stream_audit["first_switch_seq"] < 0:
+                            stream_audit["first_switch_seq"] = chunk_count - 1
+                    stream_audit["last_kind"] = _audit_kind
+                    if _audit_kind == "R":
+                        stream_audit["reasoning"] += 1
+                    else:
+                        stream_audit["text"] += 1
+                        stream_audit["text_chars"] += len(_audit_text.strip())
+                        if len(stream_audit["samples"]) < 3:
+                            stream_audit["samples"].append(
+                                _audit_text.strip().replace("\n", " ")[:24]
+                            )
                 if not (_et in ("chat.reasoning", "chat.delta") and not _is_complete):
                     _pl_repr = repr(_pl)
                     if len(_pl_repr) > 8000:
@@ -3599,6 +3632,29 @@ class AgentWebSocketServer:
                     request.request_id,
                     session_id,
                     chunk_count,
+                )
+            # 流式审计汇总（每轮一行）：证明"思考/正文交替"发生在模型增量块序列里，
+            # 与我方网关/端侧渲染无关；switches 高即正文碎片的直接来源。
+            _audit_frames = stream_audit["reasoning"] + stream_audit["text"]
+            if _audit_frames:
+                logger.info(
+                    "[GUI_AGENT_DIAG] phase=AGENT_STREAM_AUDIT request_id=%s session_id=%s "
+                    "channel_id=%s frames=%s text=%s reasoning=%s switches=%s "
+                    "avg_text_chars=%.1f first_switch_seq=%s samples=%s",
+                    request.request_id,
+                    session_id,
+                    request.channel_id,
+                    _audit_frames,
+                    stream_audit["text"],
+                    stream_audit["reasoning"],
+                    stream_audit["switches"],
+                    (
+                        stream_audit["text_chars"] / stream_audit["text"]
+                        if stream_audit["text"]
+                        else 0.0
+                    ),
+                    stream_audit["first_switch_seq"],
+                    " | ".join(stream_audit["samples"]),
                 )
 
         logger.info(
