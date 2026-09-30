@@ -327,7 +327,7 @@ def test_import_asyncssh_raises_actionable_hint(monkeypatch: pytest.MonkeyPatch)
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _block_asyncssh)
-    with pytest.raises(RuntimeError, match=r"jiuwenswarm\[ssh\]"):
+    with pytest.raises(RuntimeError, match=r"workswarm\[ssh\]"):
         relay_mod._import_asyncssh()
 
 

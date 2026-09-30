@@ -43,7 +43,7 @@ Set these in `~/.jiuwenswarm/config/.env` or process environment (read by `app_g
 Before enabling A2A, make sure the optional dependency is installed:
 
 ```bash
-pip install "jiuwenswarm[a2a]"
+pip install "workswarm[a2a]"
 # or (repo/dev environment)
 uv sync --extra a2a
 ```
@@ -64,7 +64,7 @@ uv sync --extra a2a
 
 AgentServer connectivity still follows existing gateway config (for example `AGENT_SERVER_URL`) and is independent from the A2A listening endpoint.
 
-When `A2A_SERVER_ENABLED=true` but `jiuwenswarm[a2a]` (or `uv sync --extra a2a`) is not installed, Gateway startup remains non-blocking; A2A channel startup failure is reported in logs with actionable install hints.
+When `A2A_SERVER_ENABLED=true` but `workswarm[a2a]` (or `uv sync --extra a2a`) is not installed, Gateway startup remains non-blocking; A2A channel startup failure is reported in logs with actionable install hints.
 
 ---
 
