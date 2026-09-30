@@ -353,7 +353,10 @@
       "headless": "无头模式",
       "headlessDescription": "不显示浏览器窗口运行自动化任务。",
       "chromePath": "Chrome 可执行文件路径",
-      "chromePathPlaceholder": "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+      "chromePathPlaceholder": "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "decisionLlm": "仅 LLM",
+      "decisionShadow": "Jev 影子模式（仅观察）",
+      "decisionHybrid": "Jev 混合模式"
     },
     "experimental": {
       "taskAsr": "语音转写",
@@ -423,6 +426,10 @@
       "headless": {
         "title": "浏览器运行方式",
         "description": "选择在前台显示浏览器窗口或以无头模式运行。"
+      },
+      "decision_mode": {
+        "title": "浏览器决策",
+        "description": "选择由谁决定每一步浏览器操作。使用 Jev 需要在服务端配置其 API 密钥。"
       },
       "model_name": { "title": "模型名称", "placeholder": "例如：glm-4.7" },
       "alias": { "title": "自定义别名", "placeholder": "例如：GLM-4.7 生产环境" },

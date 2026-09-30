@@ -353,7 +353,10 @@
       "headless": "Headless mode",
       "headlessDescription": "Run browser automation without showing a browser window.",
       "chromePath": "Chrome executable path",
-      "chromePathPlaceholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+      "chromePathPlaceholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "decisionLlm": "LLM only",
+      "decisionShadow": "Jev shadow (observe only)",
+      "decisionHybrid": "Jev hybrid"
     },
     "experimental": {
       "taskAsr": "Speech transcription",
@@ -423,6 +426,10 @@
       "headless": {
         "title": "Browser run mode",
         "description": "Show the browser window in the foreground or run in headless mode."
+      },
+      "decision_mode": {
+        "title": "Browser decisions",
+        "description": "Choose who decides each browser step. Jev needs its API key configured on the server."
       },
       "model_name": { "title": "Model name", "placeholder": "e.g. glm-4.7" },
       "alias": { "title": "Custom alias", "placeholder": "e.g. GLM-4.7 Production" },

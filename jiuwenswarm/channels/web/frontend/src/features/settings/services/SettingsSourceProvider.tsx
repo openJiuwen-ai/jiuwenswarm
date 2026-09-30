@@ -87,15 +87,23 @@ function ConfigSourceProvider({ children }: { children: ReactNode }) {
   return <SettingsSourceContext.Provider value={value}>{children}</SettingsSourceContext.Provider>;
 }
 
+type BrowserDecisionMode = 'llm' | 'shadow' | 'hybrid';
+
 type BrowserSettingsState = {
   chrome_path: string;
   headless: boolean;
+  decision_mode: BrowserDecisionMode;
 };
+
+const BROWSER_DECISION_MODES: readonly unknown[] = ['llm', 'shadow', 'hybrid'];
 
 function normalizeBrowserState(value: Record<string, unknown> | undefined): BrowserSettingsState {
   return {
     chrome_path: typeof value?.chrome_path === 'string' ? value.chrome_path : '',
     headless: value?.headless === undefined ? true : value.headless === true,
+    decision_mode: BROWSER_DECISION_MODES.includes(value?.decision_mode)
+      ? (value?.decision_mode as BrowserDecisionMode)
+      : 'llm',
   };
 }
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from dataclasses import replace
 from typing import Any
@@ -11,6 +12,39 @@ from typing import Any
 from jiuwenswarm.common.config import resolve_env_vars
 
 logger = logging.getLogger(__name__)
+
+BROWSER_DECISION_MODES = ("llm", "shadow", "hybrid")
+
+
+def _decision_section(config: dict[str, Any] | None) -> dict[str, Any]:
+    browser = config.get("browser", {}) if isinstance(config, dict) else {}
+    raw = browser.get("decision") if isinstance(browser, dict) else None
+    return resolve_env_vars(raw) if isinstance(raw, dict) else {}
+
+
+def browser_decision_mode(config: dict[str, Any] | None) -> str:
+    """The saved browser decision mode; anything unrecognised reads as llm."""
+    mode = _decision_section(config).get("mode", "llm")
+    return mode if mode in BROWSER_DECISION_MODES else "llm"
+
+
+def browser_decision_mode_error(mode: Any, config: dict[str, Any] | None) -> str | None:
+    """Why the browser cannot switch to ``mode``, or None when it can."""
+    if mode not in BROWSER_DECISION_MODES:
+        return "decision_mode must be llm, shadow or hybrid"
+    if mode == "llm":
+        return None
+    try:
+        from openjiuwen.harness.tools.browser_move.decision import BrowserDecisionConfig
+    except ModuleNotFoundError:
+        return "installed openjiuwen has no Jev support"
+    try:
+        decision = BrowserDecisionConfig(**{**_decision_section(config), "mode": mode})
+    except (TypeError, ValueError) as exc:
+        return f"browser.decision is invalid: {exc}"
+    if not os.environ.get(decision.api_key_env, "").strip():
+        return f"{decision.api_key_env} is not set"
+    return None
 
 
 def apply_browser_decision_config(spec: Any, config: dict[str, Any] | None) -> Any:

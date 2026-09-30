@@ -192,7 +192,7 @@ export const SETTINGS_OTHER_PERSISTENCE = [
     id: 'browser',
     method: 'path.set',
     persistence: 'config.yaml',
-    path: 'browser.chrome_path, browser.headless',
+    path: 'browser.chrome_path, browser.headless, browser.decision.mode',
   },
   {
     id: 'permissions.tools',
