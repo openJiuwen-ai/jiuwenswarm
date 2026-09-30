@@ -1,0 +1,2239 @@
+{
+  "workspace": [
+    {
+      "name": "agent-data.json",
+      "path": "agent/workspace/agent-data.json",
+      "isMarkdown": false
+    },
+    {
+      "name": "AGENT.md",
+      "path": "agent/workspace/AGENT.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "IDENTITY.md",
+      "path": "agent/workspace/IDENTITY.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "mcp_builtins_v0.1.zip",
+      "path": "agent/workspace/mcp_builtins_v0.1.zip",
+      "isMarkdown": false
+    },
+    {
+      "name": "SOUL.md",
+      "path": "agent/workspace/SOUL.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "USER.md",
+      "path": "agent/workspace/USER.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/memory": [
+    {
+      "name": "MEMORY.md",
+      "path": "agent/workspace/memory/MEMORY.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_groups/sample-expert-group": [
+    {
+      "name": "manifest.json",
+      "path": "agent/workspace/plugins/agent_groups/sample-expert-group/manifest.json",
+      "isMarkdown": false
+    },
+    {
+      "name": "README.md",
+      "path": "agent/workspace/plugins/agent_groups/sample-expert-group/README.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_groups/sample-expert-group/agents/leader": [
+    {
+      "name": "AGENT.md",
+      "path": "agent/workspace/plugins/agent_groups/sample-expert-group/agents/leader/AGENT.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "manifest.json",
+      "path": "agent/workspace/plugins/agent_groups/sample-expert-group/agents/leader/manifest.json",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/plugins/agent_groups/sample-expert-group/agents/leader/persona": [
+    {
+      "name": "leader.md",
+      "path": "agent/workspace/plugins/agent_groups/sample-expert-group/agents/leader/persona/leader.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_groups/sample-expert-group/agents/member1": [
+    {
+      "name": "manifest.json",
+      "path": "agent/workspace/plugins/agent_groups/sample-expert-group/agents/member1/manifest.json",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/plugins/agent_groups/sample-expert-group/agents/member1/persona": [
+    {
+      "name": "member1.md",
+      "path": "agent/workspace/plugins/agent_groups/sample-expert-group/agents/member1/persona/member1.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_groups/sample-expert-group/agents/member2": [
+    {
+      "name": "manifest.json",
+      "path": "agent/workspace/plugins/agent_groups/sample-expert-group/agents/member2/manifest.json",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/plugins/agent_groups/sample-expert-group/agents/member2/persona": [
+    {
+      "name": "member2.md",
+      "path": "agent/workspace/plugins/agent_groups/sample-expert-group/agents/member2/persona/member2.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_groups/sample-expert-group/skills/skill_name_1": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/plugins/agent_groups/sample-expert-group/skills/skill_name_1/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/health-life-advisor": [
+    {
+      "name": "manifest.json",
+      "path": "agent/workspace/plugins/agent_templates/health-life-advisor/manifest.json",
+      "isMarkdown": false
+    },
+    {
+      "name": "README.md",
+      "path": "agent/workspace/plugins/agent_templates/health-life-advisor/README.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/health-life-advisor/persona": [
+    {
+      "name": "health-life-advisor.md",
+      "path": "agent/workspace/plugins/agent_templates/health-life-advisor/persona/health-life-advisor.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/health-life-advisor/rails": [
+    {
+      "name": "safety_guard_rail.py",
+      "path": "agent/workspace/plugins/agent_templates/health-life-advisor/rails/safety_guard_rail.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/plugins/agent_templates/health-life-advisor/skills/health-life-planning": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/plugins/agent_templates/health-life-advisor/skills/health-life-planning/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/health-life-advisor/skills/health-life-planning/references": [
+    {
+      "name": "local-map-planning.md",
+      "path": "agent/workspace/plugins/agent_templates/health-life-advisor/skills/health-life-planning/references/local-map-planning.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/health-life-advisor/tools": [
+    {
+      "name": "health_profile_tool.py",
+      "path": "agent/workspace/plugins/agent_templates/health-life-advisor/tools/health_profile_tool.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/plugins/agent_templates/personal-finance-expert": [
+    {
+      "name": "manifest.json",
+      "path": "agent/workspace/plugins/agent_templates/personal-finance-expert/manifest.json",
+      "isMarkdown": false
+    },
+    {
+      "name": "README.md",
+      "path": "agent/workspace/plugins/agent_templates/personal-finance-expert/README.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/personal-finance-expert/persona": [
+    {
+      "name": "personal-finance-expert.md",
+      "path": "agent/workspace/plugins/agent_templates/personal-finance-expert/persona/personal-finance-expert.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/personal-finance-expert/skills/a-share-analysis": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/plugins/agent_templates/personal-finance-expert/skills/a-share-analysis/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/personal-finance-expert/skills/fund-analysis": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/plugins/agent_templates/personal-finance-expert/skills/fund-analysis/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/personal-finance-expert/tools": [
+    {
+      "name": "a_share_market_tool.py",
+      "path": "agent/workspace/plugins/agent_templates/personal-finance-expert/tools/a_share_market_tool.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/plugins/agent_templates/system-architect": [
+    {
+      "name": "manifest.json",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/manifest.json",
+      "isMarkdown": false
+    },
+    {
+      "name": "README.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/README.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/system-architect/persona": [
+    {
+      "name": "system-architect.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/persona/system-architect.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/system-architect/skills/arch-assess": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-assess/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/system-architect/skills/arch-assess/references": [
+    {
+      "name": "assessment-guide.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-assess/references/assessment-guide.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/system-architect/skills/arch-design": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-design/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/system-architect/skills/arch-design/references": [
+    {
+      "name": "adr-guide.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-design/references/adr-guide.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "architecture-patterns.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-design/references/architecture-patterns.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "architecture-spec-template.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-design/references/architecture-spec-template.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "c4-conventions.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-design/references/c4-conventions.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/system-architect/skills/arch-engineering": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-engineering/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/system-architect/skills/arch-engineering/references": [
+    {
+      "name": "api-governance.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-engineering/references/api-governance.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "auth-flow.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-engineering/references/auth-flow.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "cloud-native-infra.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-engineering/references/cloud-native-infra.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "environment-management.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-engineering/references/environment-management.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "event-platform.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-engineering/references/event-platform.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "fullstack-practices.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-engineering/references/fullstack-practices.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "observability.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-engineering/references/observability.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "technology-selection.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-engineering/references/technology-selection.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/system-architect/skills/arch-evolution": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-evolution/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/system-architect/skills/arch-evolution/references": [
+    {
+      "name": "db-schema.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-evolution/references/db-schema.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "evolution-strategy.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-evolution/references/evolution-strategy.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "governance.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-evolution/references/governance.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/system-architect/skills/arch-review": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-review/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/agent_templates/system-architect/skills/arch-review/references": [
+    {
+      "name": "compliance-architecture.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-review/references/compliance-architecture.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "cost-architecture.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-review/references/cost-architecture.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "performance-engineering.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-review/references/performance-engineering.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "release-checklist.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-review/references/release-checklist.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "review-checklist.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-review/references/review-checklist.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "security-architecture.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-review/references/security-architecture.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "testing-strategy.md",
+      "path": "agent/workspace/plugins/agent_templates/system-architect/skills/arch-review/references/testing-strategy.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/plugin_packages/coding-guard": [
+    {
+      "name": "manifest.json",
+      "path": "agent/workspace/plugins/plugin_packages/coding-guard/manifest.json",
+      "isMarkdown": false
+    },
+    {
+      "name": "README.md",
+      "path": "agent/workspace/plugins/plugin_packages/coding-guard/README.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/plugin_packages/coding-guard/rails": [
+    {
+      "name": "execution_guard_rail.py",
+      "path": "agent/workspace/plugins/plugin_packages/coding-guard/rails/execution_guard_rail.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/plugins/plugin_packages/coding-guard/tools": [
+    {
+      "name": "security_review_tool.py",
+      "path": "agent/workspace/plugins/plugin_packages/coding-guard/tools/security_review_tool.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/plugins/plugin_packages/content-creation": [
+    {
+      "name": "manifest.json",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/manifest.json",
+      "isMarkdown": false
+    },
+    {
+      "name": "README.md",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/README.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/plugin_packages/content-creation/skills/content-drafting": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/skills/content-drafting/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/plugin_packages/content-creation/skills/content-drafting/references": [
+    {
+      "name": "first-value-writing.md",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/skills/content-drafting/references/first-value-writing.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "manuscript-writing.md",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/skills/content-drafting/references/manuscript-writing.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "visualization-guidelines.md",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/skills/content-drafting/references/visualization-guidelines.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/plugin_packages/content-creation/skills/content-enhancement": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/skills/content-enhancement/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/plugin_packages/content-creation/skills/content-enhancement/references": [
+    {
+      "name": "opening-optimization.md",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/skills/content-enhancement/references/opening-optimization.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "research-and-citation.md",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/skills/content-enhancement/references/research-and-citation.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "text-polishing.md",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/skills/content-enhancement/references/text-polishing.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "title-optimization.md",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/skills/content-enhancement/references/title-optimization.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/plugin_packages/content-creation/skills/content-review": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/skills/content-review/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/plugin_packages/content-creation/skills/content-review/references": [
+    {
+      "name": "paragraph-revision.md",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/skills/content-review/references/paragraph-revision.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "quality-and-safety.md",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/skills/content-review/references/quality-and-safety.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "structure-diagnosis.md",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/skills/content-review/references/structure-diagnosis.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/plugin_packages/content-creation/tools": [
+    {
+      "name": "citation_formatter.py",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/tools/citation_formatter.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "document_exporter.py",
+      "path": "agent/workspace/plugins/plugin_packages/content-creation/tools/document_exporter.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/plugins/plugin_packages/office-document-toolkit": [
+    {
+      "name": "manifest.json",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/manifest.json",
+      "isMarkdown": false
+    },
+    {
+      "name": "README.md",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/README.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/plugin_packages/office-document-toolkit/skills/office-document-workflow": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/skills/office-document-workflow/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/plugins/plugin_packages/office-document-toolkit/tools": [
+    {
+      "name": "archive_tool.py",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/tools/archive_tool.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "batch_processor.py",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/tools/batch_processor.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "data_summarizer.py",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/tools/data_summarizer.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "doc_comparator.py",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/tools/doc_comparator.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "document_editor.py",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/tools/document_editor.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "document_generator.py",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/tools/document_generator.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "document_parser.py",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/tools/document_parser.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "excel_transformer.py",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/tools/excel_transformer.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "format_converter.py",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/tools/format_converter.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "mail_merge_tool.py",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/tools/mail_merge_tool.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "pdf_font_utils.py",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/tools/pdf_font_utils.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "pdf_manipulator.py",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/tools/pdf_manipulator.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "redactor.py",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/tools/redactor.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "report_styler.py",
+      "path": "agent/workspace/plugins/plugin_packages/office-document-toolkit/tools/report_styler.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/advanced-daily-report": [
+    {
+      "name": "AI_ANALYSIS_TASKS.md",
+      "path": "agent/workspace/skills/advanced-daily-report/AI_ANALYSIS_TASKS.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "report_helper.py",
+      "path": "agent/workspace/skills/advanced-daily-report/report_helper.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "run_report.py",
+      "path": "agent/workspace/skills/advanced-daily-report/run_report.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/advanced-daily-report/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/advanced-daily-report/analyzers": [
+    {
+      "name": "__init__.py",
+      "path": "agent/workspace/skills/advanced-daily-report/analyzers/__init__.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "ai_analyzer.py",
+      "path": "agent/workspace/skills/advanced-daily-report/analyzers/ai_analyzer.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "work_analyzer.py",
+      "path": "agent/workspace/skills/advanced-daily-report/analyzers/work_analyzer.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/advanced-daily-report/collectors": [
+    {
+      "name": "__init__.py",
+      "path": "agent/workspace/skills/advanced-daily-report/collectors/__init__.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "aggregator.py",
+      "path": "agent/workspace/skills/advanced-daily-report/collectors/aggregator.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "email_collector.py",
+      "path": "agent/workspace/skills/advanced-daily-report/collectors/email_collector.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "git_collector.py",
+      "path": "agent/workspace/skills/advanced-daily-report/collectors/git_collector.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "memory_collector.py",
+      "path": "agent/workspace/skills/advanced-daily-report/collectors/memory_collector.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "todo_collector.py",
+      "path": "agent/workspace/skills/advanced-daily-report/collectors/todo_collector.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/advanced-daily-report/generators": [
+    {
+      "name": "__init__.py",
+      "path": "agent/workspace/skills/advanced-daily-report/generators/__init__.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "report_generator.py",
+      "path": "agent/workspace/skills/advanced-daily-report/generators/report_generator.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/agent-creator": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/agent-creator/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/agent-creator/references": [
+    {
+      "name": "code-quality.md",
+      "path": "agent/workspace/skills/agent-creator/references/code-quality.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "fill-package.md",
+      "path": "agent/workspace/skills/agent-creator/references/fill-package.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "manifest-spec.md",
+      "path": "agent/workspace/skills/agent-creator/references/manifest-spec.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "persona-spec.md",
+      "path": "agent/workspace/skills/agent-creator/references/persona-spec.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "rail-spec.md",
+      "path": "agent/workspace/skills/agent-creator/references/rail-spec.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "skill-spec.md",
+      "path": "agent/workspace/skills/agent-creator/references/skill-spec.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "tool-spec.md",
+      "path": "agent/workspace/skills/agent-creator/references/tool-spec.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/agent-creator/scripts": [
+    {
+      "name": "init_template.py",
+      "path": "agent/workspace/skills/agent-creator/scripts/init_template.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "register_template.py",
+      "path": "agent/workspace/skills/agent-creator/scripts/register_template.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "validate_hot_load_worker.py",
+      "path": "agent/workspace/skills/agent-creator/scripts/validate_hot_load_worker.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "validate_template.py",
+      "path": "agent/workspace/skills/agent-creator/scripts/validate_template.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/akg-agents": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/akg-agents/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/ascend-moe-optimizer-auto-trace": [
+    {
+      "name": "reference.md",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/reference.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/ascend-moe-optimizer-auto-trace/scripts": [
+    {
+      "name": "apply_trace_scaffold.sh",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts/apply_trace_scaffold.sh",
+      "isMarkdown": false
+    },
+    {
+      "name": "bootstrap_trace_toolchain.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts/bootstrap_trace_toolchain.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "check_compile_safety.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts/check_compile_safety.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "generate_instrumentation_plan.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts/generate_instrumentation_plan.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "inspect_rank_pt.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts/inspect_rank_pt.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "instrument_operator.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts/instrument_operator.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "patch_build_pipeline.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts/patch_build_pipeline.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "run_instrumentation_checks.sh",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts/run_instrumentation_checks.sh",
+      "isMarkdown": false
+    },
+    {
+      "name": "trace_collector.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts/trace_collector.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "trace_preprocessor.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts/trace_preprocessor.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "trace_save.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts/trace_save.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "trace_utils.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts/trace_utils.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "validate_trace_points.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts/validate_trace_points.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "verify_trace_scaffold.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts/verify_trace_scaffold.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/ascend-moe-optimizer-trace-analyzer": [
+    {
+      "name": "app.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-trace-analyzer/app.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-trace-analyzer/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/ascend-moe-optimizer-trace-analyzer/analyzers": [
+    {
+      "name": "__init__.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-trace-analyzer/analyzers/__init__.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "diagnosis.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-trace-analyzer/analyzers/diagnosis.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "llm_analysis.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-trace-analyzer/analyzers/llm_analysis.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "metrics.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-trace-analyzer/analyzers/metrics.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "parser.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-trace-analyzer/analyzers/parser.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "phase_mapper.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-trace-analyzer/analyzers/phase_mapper.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "plots.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-trace-analyzer/analyzers/plots.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "reporter.py",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-trace-analyzer/analyzers/reporter.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/ascend-moe-optimizer-trace-analyzer/config": [
+    {
+      "name": "phase_map.yaml",
+      "path": "agent/workspace/skills/ascend-moe-optimizer-trace-analyzer/config/phase_map.yaml",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/cross-channel-history-retrieval": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/cross-channel-history-retrieval/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/cross-channel-history-retrieval/scripts": [
+    {
+      "name": "search_history.py",
+      "path": "agent/workspace/skills/cross-channel-history-retrieval/scripts/search_history.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/deepep-to-cam-converter": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/deepep-to-cam-converter/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/deepep-to-cam-converter/references": [
+    {
+      "name": "cam_dispatch_and_combine_a2.md",
+      "path": "agent/workspace/skills/deepep-to-cam-converter/references/cam_dispatch_and_combine_a2.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "cam_dispatch_and_combine_a3.md",
+      "path": "agent/workspace/skills/deepep-to-cam-converter/references/cam_dispatch_and_combine_a3.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "cam_dispatch_and_combine_shmem.md",
+      "path": "agent/workspace/skills/deepep-to-cam-converter/references/cam_dispatch_and_combine_shmem.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "cam_fused_deep_moe.md",
+      "path": "agent/workspace/skills/deepep-to-cam-converter/references/cam_fused_deep_moe.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "nccl_to_hccl_converter.md",
+      "path": "agent/workspace/skills/deepep-to-cam-converter/references/nccl_to_hccl_converter.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/delayed-restart-app": [
+    {
+      "name": "launch_delayed_restart.py",
+      "path": "agent/workspace/skills/delayed-restart-app/launch_delayed_restart.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/delayed-restart-app/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/doc-update": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/doc-update/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/dynamic-memory-cli": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/dynamic-memory-cli/SKILL.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "SOURCE.json",
+      "path": "agent/workspace/skills/dynamic-memory-cli/SOURCE.json",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/dynamic-memory-cli/agents": [
+    {
+      "name": "openai.yaml",
+      "path": "agent/workspace/skills/dynamic-memory-cli/agents/openai.yaml",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/dynamic-memory-cli/references": [
+    {
+      "name": "dynamic-memory-contract.md",
+      "path": "agent/workspace/skills/dynamic-memory-cli/references/dynamic-memory-contract.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/dynamic-memory-cli/scripts": [
+    {
+      "name": "dynamic_memory_cli.py",
+      "path": "agent/workspace/skills/dynamic-memory-cli/scripts/dynamic_memory_cli.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/financial-document-parser": [
+    {
+      "name": "financial_parser.py",
+      "path": "agent/workspace/skills/financial-document-parser/financial_parser.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/financial-document-parser/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/gitcode-api": [
+    {
+      "name": "CHANGELOG.md",
+      "path": "agent/workspace/skills/gitcode-api/CHANGELOG.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/gitcode-api/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/gitcode-api/references": [
+    {
+      "name": "cli-usage.md",
+      "path": "agent/workspace/skills/gitcode-api/references/cli-usage.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "command-discovery.md",
+      "path": "agent/workspace/skills/gitcode-api/references/command-discovery.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "common-recipes.md",
+      "path": "agent/workspace/skills/gitcode-api/references/common-recipes.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "install-and-auth.md",
+      "path": "agent/workspace/skills/gitcode-api/references/install-and-auth.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "troubleshooting.md",
+      "path": "agent/workspace/skills/gitcode-api/references/troubleshooting.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/gitcode-api/scripts": [
+    {
+      "name": "gitcode_api_cli.py",
+      "path": "agent/workspace/skills/gitcode-api/scripts/gitcode_api_cli.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "open_github_issue.py",
+      "path": "agent/workspace/skills/gitcode-api/scripts/open_github_issue.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/gitcode-api/tasks": [
+    {
+      "name": "summarize-repo-changes.md",
+      "path": "agent/workspace/skills/gitcode-api/tasks/summarize-repo-changes.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/harmonyos-dev-suite": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/harmonyos-dev-suite/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/harmonyos-dev-suite/agents": [
+    {
+      "name": "openai.yaml",
+      "path": "agent/workspace/skills/harmonyos-dev-suite/agents/openai.yaml",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/harmonyos-dev-suite/assets": [
+    {
+      "name": "atomic-skills.json",
+      "path": "agent/workspace/skills/harmonyos-dev-suite/assets/atomic-skills.json",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/harmonyos-dev-suite/references": [
+    {
+      "name": "atomic-skills-catalog.md",
+      "path": "agent/workspace/skills/harmonyos-dev-suite/references/atomic-skills-catalog.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "workflows.md",
+      "path": "agent/workspace/skills/harmonyos-dev-suite/references/workflows.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/harmonyos-dev-suite/scripts": [
+    {
+      "name": "install_atomic_skill.py",
+      "path": "agent/workspace/skills/harmonyos-dev-suite/scripts/install_atomic_skill.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/huawei-cloud-maas-setup": [
+    {
+      "name": "models.json",
+      "path": "agent/workspace/skills/huawei-cloud-maas-setup/models.json",
+      "isMarkdown": false
+    },
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/huawei-cloud-maas-setup/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/huawei-cloud-maas-setup/references": [
+    {
+      "name": "huawei-cloud-purchase-flow.md",
+      "path": "agent/workspace/skills/huawei-cloud-maas-setup/references/huawei-cloud-purchase-flow.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/huawei-cloud-maas-setup/scripts": [
+    {
+      "name": "auto_authorize.py",
+      "path": "agent/workspace/skills/huawei-cloud-maas-setup/scripts/auto_authorize.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "auto_create_apikey.py",
+      "path": "agent/workspace/skills/huawei-cloud-maas-setup/scripts/auto_create_apikey.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "auto_open_model.py",
+      "path": "agent/workspace/skills/huawei-cloud-maas-setup/scripts/auto_open_model.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "check_account.py",
+      "path": "agent/workspace/skills/huawei-cloud-maas-setup/scripts/check_account.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "config_writer.py",
+      "path": "agent/workspace/skills/huawei-cloud-maas-setup/scripts/config_writer.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "ensure_browser.py",
+      "path": "agent/workspace/skills/huawei-cloud-maas-setup/scripts/ensure_browser.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "navigate.py",
+      "path": "agent/workspace/skills/huawei-cloud-maas-setup/scripts/navigate.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "validate_config.py",
+      "path": "agent/workspace/skills/huawei-cloud-maas-setup/scripts/validate_config.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/huawei-cloud-maas-setup/scripts/lib": [
+    {
+      "name": "__init__.py",
+      "path": "agent/workspace/skills/huawei-cloud-maas-setup/scripts/lib/__init__.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "cdp_client.py",
+      "path": "agent/workspace/skills/huawei-cloud-maas-setup/scripts/lib/cdp_client.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "flow_state.py",
+      "path": "agent/workspace/skills/huawei-cloud-maas-setup/scripts/lib/flow_state.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "huawei_selectors.py",
+      "path": "agent/workspace/skills/huawei-cloud-maas-setup/scripts/lib/huawei_selectors.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/llm-wiki": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/llm-wiki/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/mhqa-rag-optimizer": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/mhqa-rag-optimizer/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/mhqa-rag-optimizer/references": [
+    {
+      "name": "acl2025-masking-mhqa.md",
+      "path": "agent/workspace/skills/mhqa-rag-optimizer/references/acl2025-masking-mhqa.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/mhqa-rag-optimizer/scripts": [
+    {
+      "name": "permute_and_vote.py",
+      "path": "agent/workspace/skills/mhqa-rag-optimizer/scripts/permute_and_vote.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/openJiuwen-DeepSearch": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/openJiuwen-DeepSearch/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/openJiuwen-DeepSearch/scripts": [
+    {
+      "name": "convert_docx.py",
+      "path": "agent/workspace/skills/openJiuwen-DeepSearch/scripts/convert_docx.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "convert_html.py",
+      "path": "agent/workspace/skills/openJiuwen-DeepSearch/scripts/convert_html.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "main.py",
+      "path": "agent/workspace/skills/openJiuwen-DeepSearch/scripts/main.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "validate_environment.py",
+      "path": "agent/workspace/skills/openJiuwen-DeepSearch/scripts/validate_environment.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "verify_skill_structure.py",
+      "path": "agent/workspace/skills/openJiuwen-DeepSearch/scripts/verify_skill_structure.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/plugin-creator": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/plugin-creator/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/plugin-creator/references": [
+    {
+      "name": "code-quality.md",
+      "path": "agent/workspace/skills/plugin-creator/references/code-quality.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "fill-package.md",
+      "path": "agent/workspace/skills/plugin-creator/references/fill-package.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "manifest-spec.md",
+      "path": "agent/workspace/skills/plugin-creator/references/manifest-spec.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "rail-spec.md",
+      "path": "agent/workspace/skills/plugin-creator/references/rail-spec.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "skill-spec.md",
+      "path": "agent/workspace/skills/plugin-creator/references/skill-spec.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "tool-spec.md",
+      "path": "agent/workspace/skills/plugin-creator/references/tool-spec.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/plugin-creator/scripts": [
+    {
+      "name": "init_plugin.py",
+      "path": "agent/workspace/skills/plugin-creator/scripts/init_plugin.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "register_plugin.py",
+      "path": "agent/workspace/skills/plugin-creator/scripts/register_plugin.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "validate_plugin_hot_load_worker.py",
+      "path": "agent/workspace/skills/plugin-creator/scripts/validate_plugin_hot_load_worker.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "validate_plugin.py",
+      "path": "agent/workspace/skills/plugin-creator/scripts/validate_plugin.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/ppt-creation": [
+    {
+      "name": "editing.md",
+      "path": "agent/workspace/skills/ppt-creation/editing.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "pptxgenjs.md",
+      "path": "agent/workspace/skills/ppt-creation/pptxgenjs.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/ppt-creation/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/ppt-creation/base": [
+    {
+      "name": "design-spec-reference.md",
+      "path": "agent/workspace/skills/ppt-creation/base/design-spec-reference.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "evidence-plan.json",
+      "path": "agent/workspace/skills/ppt-creation/base/evidence-plan.json",
+      "isMarkdown": false
+    },
+    {
+      "name": "evidence-plan.schema.json",
+      "path": "agent/workspace/skills/ppt-creation/base/evidence-plan.schema.json",
+      "isMarkdown": false
+    },
+    {
+      "name": "execution-lock-reference.json",
+      "path": "agent/workspace/skills/ppt-creation/base/execution-lock-reference.json",
+      "isMarkdown": false
+    },
+    {
+      "name": "execution-lock.schema.json",
+      "path": "agent/workspace/skills/ppt-creation/base/execution-lock.schema.json",
+      "isMarkdown": false
+    },
+    {
+      "name": "pptx-safety.md",
+      "path": "agent/workspace/skills/ppt-creation/base/pptx-safety.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "quality-gates.md",
+      "path": "agent/workspace/skills/ppt-creation/base/quality-gates.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "sourcing.md",
+      "path": "agent/workspace/skills/ppt-creation/base/sourcing.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "template-contract.md",
+      "path": "agent/workspace/skills/ppt-creation/base/template-contract.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/ppt-creation/components": [
+    {
+      "name": "brand.js",
+      "path": "agent/workspace/skills/ppt-creation/components/brand.js",
+      "isMarkdown": false
+    },
+    {
+      "name": "charts.js",
+      "path": "agent/workspace/skills/ppt-creation/components/charts.js",
+      "isMarkdown": false
+    },
+    {
+      "name": "content.js",
+      "path": "agent/workspace/skills/ppt-creation/components/content.js",
+      "isMarkdown": false
+    },
+    {
+      "name": "diagrams.js",
+      "path": "agent/workspace/skills/ppt-creation/components/diagrams.js",
+      "isMarkdown": false
+    },
+    {
+      "name": "index.js",
+      "path": "agent/workspace/skills/ppt-creation/components/index.js",
+      "isMarkdown": false
+    },
+    {
+      "name": "index.md",
+      "path": "agent/workspace/skills/ppt-creation/components/index.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/ppt-creation/references": [
+    {
+      "name": "architecture-evidence.jpg",
+      "path": "agent/workspace/skills/ppt-creation/references/architecture-evidence.jpg",
+      "isMarkdown": false
+    },
+    {
+      "name": "complex-slide.jpg",
+      "path": "agent/workspace/skills/ppt-creation/references/complex-slide.jpg",
+      "isMarkdown": false
+    },
+    {
+      "name": "conclusion-editorial.jpg",
+      "path": "agent/workspace/skills/ppt-creation/references/conclusion-editorial.jpg",
+      "isMarkdown": false
+    },
+    {
+      "name": "evidence-workflow.jpg",
+      "path": "agent/workspace/skills/ppt-creation/references/evidence-workflow.jpg",
+      "isMarkdown": false
+    },
+    {
+      "name": "evolution-landscape.jpg",
+      "path": "agent/workspace/skills/ppt-creation/references/evolution-landscape.jpg",
+      "isMarkdown": false
+    },
+    {
+      "name": "index.yaml",
+      "path": "agent/workspace/skills/ppt-creation/references/index.yaml",
+      "isMarkdown": false
+    },
+    {
+      "name": "paper-reproduction.jpg",
+      "path": "agent/workspace/skills/ppt-creation/references/paper-reproduction.jpg",
+      "isMarkdown": false
+    },
+    {
+      "name": "problem-diagram-analysis.jpg",
+      "path": "agent/workspace/skills/ppt-creation/references/problem-diagram-analysis.jpg",
+      "isMarkdown": false
+    },
+    {
+      "name": "taxonomy-matrix.jpg",
+      "path": "agent/workspace/skills/ppt-creation/references/taxonomy-matrix.jpg",
+      "isMarkdown": false
+    },
+    {
+      "name": "template.pptx",
+      "path": "agent/workspace/skills/ppt-creation/references/template.pptx",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/ppt-creation/scripts": [
+    {
+      "name": "audit_pptx.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/audit_pptx.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "components.js",
+      "path": "agent/workspace/skills/ppt-creation/scripts/components.js",
+      "isMarkdown": false
+    },
+    {
+      "name": "demo_components.js",
+      "path": "agent/workspace/skills/ppt-creation/scripts/demo_components.js",
+      "isMarkdown": false
+    },
+    {
+      "name": "extract_arxiv_visuals_v2_2.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/extract_arxiv_visuals_v2_2.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "figure-panel.js",
+      "path": "agent/workspace/skills/ppt-creation/scripts/figure-panel.js",
+      "isMarkdown": false
+    },
+    {
+      "name": "fill_cover.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/fill_cover.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "finalize_deck.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/finalize_deck.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "make_blank_template.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/make_blank_template.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "merge_slides.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/merge_slides.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "prepare_evidence.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/prepare_evidence.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "qa_density.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/qa_density.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "qa_geometry.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/qa_geometry.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "sync-runtime-skill.js",
+      "path": "agent/workspace/skills/ppt-creation/scripts/sync-runtime-skill.js",
+      "isMarkdown": false
+    },
+    {
+      "name": "system-diagram.js",
+      "path": "agent/workspace/skills/ppt-creation/scripts/system-diagram.js",
+      "isMarkdown": false
+    },
+    {
+      "name": "validate-evidence-plan.js",
+      "path": "agent/workspace/skills/ppt-creation/scripts/validate-evidence-plan.js",
+      "isMarkdown": false
+    },
+    {
+      "name": "validate-execution-lock.js",
+      "path": "agent/workspace/skills/ppt-creation/scripts/validate-execution-lock.js",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/ppt-creation/scripts/opc": [
+    {
+      "name": "__init__.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/__init__.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "add_slide.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/add_slide.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "pack.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/pack.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "prune.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/prune.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "repair.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/repair.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "thumbnail.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/thumbnail.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "unpack.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/unpack.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "validate.py",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/validate.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/ppt-creation/scripts/opc/schemas": [
+    {
+      "name": "README.md",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/README.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/ppt-creation/scripts/opc/schemas/ecma/fouth-edition": [
+    {
+      "name": "opc-contentTypes.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ecma/fouth-edition/opc-contentTypes.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "opc-coreProperties.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ecma/fouth-edition/opc-coreProperties.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "opc-digSig.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ecma/fouth-edition/opc-digSig.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "opc-relationships.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ecma/fouth-edition/opc-relationships.xsd",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016": [
+    {
+      "name": "dml-chart.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/dml-chart.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "dml-chartDrawing.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/dml-chartDrawing.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "dml-diagram.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/dml-diagram.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "dml-lockedCanvas.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/dml-lockedCanvas.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "dml-main.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/dml-main.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "dml-picture.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/dml-picture.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "dml-spreadsheetDrawing.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/dml-spreadsheetDrawing.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "dml-wordprocessingDrawing.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/dml-wordprocessingDrawing.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "pml.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/pml.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "shared-additionalCharacteristics.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/shared-additionalCharacteristics.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "shared-bibliography.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/shared-bibliography.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "shared-commonSimpleTypes.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/shared-commonSimpleTypes.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "shared-customXmlDataProperties.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/shared-customXmlDataProperties.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "shared-customXmlSchemaProperties.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/shared-customXmlSchemaProperties.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "shared-documentPropertiesCustom.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/shared-documentPropertiesCustom.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "shared-documentPropertiesExtended.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/shared-documentPropertiesExtended.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "shared-documentPropertiesVariantTypes.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/shared-documentPropertiesVariantTypes.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "shared-math.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/shared-math.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "shared-relationshipReference.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/shared-relationshipReference.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "sml.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/sml.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "vml-main.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/vml-main.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "vml-officeDrawing.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/vml-officeDrawing.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "vml-presentationDrawing.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/vml-presentationDrawing.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "vml-spreadsheetDrawing.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/vml-spreadsheetDrawing.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "vml-wordprocessingDrawing.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/vml-wordprocessingDrawing.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "wml.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/wml.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "xml.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/ISO-IEC29500-4_2016/xml.xsd",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/ppt-creation/scripts/opc/schemas/mce": [
+    {
+      "name": "mc.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/mce/mc.xsd",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/ppt-creation/scripts/opc/schemas/microsoft": [
+    {
+      "name": "wml-2010.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/microsoft/wml-2010.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "wml-2012.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/microsoft/wml-2012.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "wml-2018.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/microsoft/wml-2018.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "wml-cex-2018.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/microsoft/wml-cex-2018.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "wml-cid-2016.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/microsoft/wml-cid-2016.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "wml-sdtdatahash-2020.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/microsoft/wml-sdtdatahash-2020.xsd",
+      "isMarkdown": false
+    },
+    {
+      "name": "wml-symex-2015.xsd",
+      "path": "agent/workspace/skills/ppt-creation/scripts/opc/schemas/microsoft/wml-symex-2015.xsd",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/ppt-creation/workflows": [
+    {
+      "name": "acquire-visuals.md",
+      "path": "agent/workspace/skills/ppt-creation/workflows/acquire-visuals.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "create-deck.md",
+      "path": "agent/workspace/skills/ppt-creation/workflows/create-deck.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "edit-existing.md",
+      "path": "agent/workspace/skills/ppt-creation/workflows/edit-existing.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/project-maintainer": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/project-maintainer/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/project-maintainer/agents": [
+    {
+      "name": "openai.yaml",
+      "path": "agent/workspace/skills/project-maintainer/agents/openai.yaml",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/project-maintainer/references": [
+    {
+      "name": "artifact-structure.md",
+      "path": "agent/workspace/skills/project-maintainer/references/artifact-structure.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "code-symbol-docs.md",
+      "path": "agent/workspace/skills/project-maintainer/references/code-symbol-docs.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "templates.md",
+      "path": "agent/workspace/skills/project-maintainer/references/templates.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/project-maintainer/scripts": [
+    {
+      "name": "audit_integrity.py",
+      "path": "agent/workspace/skills/project-maintainer/scripts/audit_integrity.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "check_doc_sizes.py",
+      "path": "agent/workspace/skills/project-maintainer/scripts/check_doc_sizes.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "inventory_symbols.py",
+      "path": "agent/workspace/skills/project-maintainer/scripts/inventory_symbols.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "render_audit_report.py",
+      "path": "agent/workspace/skills/project-maintainer/scripts/render_audit_report.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/skill-creator": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/skill-creator/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/skill-creator-normal": [
+    {
+      "name": "LICENSE.txt",
+      "path": "agent/workspace/skills/skill-creator-normal/LICENSE.txt",
+      "isMarkdown": false
+    },
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/skill-creator-normal/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/skill-creator-normal/agents": [
+    {
+      "name": "analyzer.md",
+      "path": "agent/workspace/skills/skill-creator-normal/agents/analyzer.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "comparator.md",
+      "path": "agent/workspace/skills/skill-creator-normal/agents/comparator.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "grader.md",
+      "path": "agent/workspace/skills/skill-creator-normal/agents/grader.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/skill-creator-normal/assets": [
+    {
+      "name": "eval_review.html",
+      "path": "agent/workspace/skills/skill-creator-normal/assets/eval_review.html",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/skill-creator-normal/eval-viewer": [
+    {
+      "name": "generate_review.py",
+      "path": "agent/workspace/skills/skill-creator-normal/eval-viewer/generate_review.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "viewer.html",
+      "path": "agent/workspace/skills/skill-creator-normal/eval-viewer/viewer.html",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/skill-creator-normal/references": [
+    {
+      "name": "schemas.md",
+      "path": "agent/workspace/skills/skill-creator-normal/references/schemas.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/skill-creator-normal/scripts": [
+    {
+      "name": "__init__.py",
+      "path": "agent/workspace/skills/skill-creator-normal/scripts/__init__.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "aggregate_benchmark.py",
+      "path": "agent/workspace/skills/skill-creator-normal/scripts/aggregate_benchmark.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "generate_report.py",
+      "path": "agent/workspace/skills/skill-creator-normal/scripts/generate_report.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "improve_description.py",
+      "path": "agent/workspace/skills/skill-creator-normal/scripts/improve_description.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "package_skill.py",
+      "path": "agent/workspace/skills/skill-creator-normal/scripts/package_skill.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "quick_validate.py",
+      "path": "agent/workspace/skills/skill-creator-normal/scripts/quick_validate.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "run_eval.py",
+      "path": "agent/workspace/skills/skill-creator-normal/scripts/run_eval.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "run_loop.py",
+      "path": "agent/workspace/skills/skill-creator-normal/scripts/run_loop.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "utils.py",
+      "path": "agent/workspace/skills/skill-creator-normal/scripts/utils.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/skill-gen-4-enterprise-doc": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/skill-gen-4-enterprise-doc/reference": [
+    {
+      "name": "generator-worker-spec.md",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/reference/generator-worker-spec.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "operator-playbook.md",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/reference/operator-playbook.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "sop-recovery-and-interview-fallback.md",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/reference/sop-recovery-and-interview-fallback.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "sop-structure-pipeline.md",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/reference/sop-structure-pipeline.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/skill-gen-4-enterprise-doc/scripts": [
+    {
+      "name": "skill_generator_cli.py",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_generator_cli.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen": [
+    {
+      "name": "__init__.py",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/__init__.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "models.py",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/models.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "sop_chunk_merge.py",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/sop_chunk_merge.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "sop_fallback.py",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/sop_fallback.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "sop_parser.py",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/sop_parser.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "validator.py",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/validator.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/url_ingest": [
+    {
+      "name": "__init__.py",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/url_ingest/__init__.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "models.py",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/url_ingest/models.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "router.py",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/url_ingest/router.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "url_safety.py",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/url_ingest/url_safety.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "web_page.py",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/url_ingest/web_page.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "wechat_article.py",
+      "path": "agent/workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/url_ingest/wechat_article.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/skill-omni-creation": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/skill-omni-creation/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/skill-omni-creation/agents": [
+    {
+      "name": "code-detector.md",
+      "path": "agent/workspace/skills/skill-omni-creation/agents/code-detector.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "code-verifier.md",
+      "path": "agent/workspace/skills/skill-omni-creation/agents/code-verifier.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "code-writer.md",
+      "path": "agent/workspace/skills/skill-omni-creation/agents/code-writer.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/skill-omni-creation/scripts": [
+    {
+      "name": "analyze_video.py",
+      "path": "agent/workspace/skills/skill-omni-creation/scripts/analyze_video.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "common.py",
+      "path": "agent/workspace/skills/skill-omni-creation/scripts/common.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "download_images.py",
+      "path": "agent/workspace/skills/skill-omni-creation/scripts/download_images.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "environment_gate.py",
+      "path": "agent/workspace/skills/skill-omni-creation/scripts/environment_gate.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "finalize_scripts.py",
+      "path": "agent/workspace/skills/skill-omni-creation/scripts/finalize_scripts.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "image_review.py",
+      "path": "agent/workspace/skills/skill-omni-creation/scripts/image_review.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "prepare_images.py",
+      "path": "agent/workspace/skills/skill-omni-creation/scripts/prepare_images.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "print_blocks.py",
+      "path": "agent/workspace/skills/skill-omni-creation/scripts/print_blocks.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "save_images.py",
+      "path": "agent/workspace/skills/skill-omni-creation/scripts/save_images.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "scrape_page.py",
+      "path": "agent/workspace/skills/skill-omni-creation/scripts/scrape_page.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/skvm-general": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/skvm-general/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/skvm-jit": [
+    {
+      "name": "adapter-skill-paths.md",
+      "path": "agent/workspace/skills/skvm-jit/adapter-skill-paths.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/skvm-jit/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/swarmskill-creator": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/swarmskill-creator/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/swarmskill-creator/reference": [
+    {
+      "name": "community-search.md",
+      "path": "agent/workspace/skills/swarmskill-creator/reference/community-search.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "compliance-checklist.md",
+      "path": "agent/workspace/skills/swarmskill-creator/reference/compliance-checklist.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "conversion-guide.md",
+      "path": "agent/workspace/skills/swarmskill-creator/reference/conversion-guide.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "pattern-selection.md",
+      "path": "agent/workspace/skills/swarmskill-creator/reference/pattern-selection.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "role-design.md",
+      "path": "agent/workspace/skills/swarmskill-creator/reference/role-design.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/swarmskill-creator/scripts": [
+    {
+      "name": "validate_swarmskill.py",
+      "path": "agent/workspace/skills/swarmskill-creator/scripts/validate_swarmskill.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/swarmskill-creator/templates": [
+    {
+      "name": "bind.md.template",
+      "path": "agent/workspace/skills/swarmskill-creator/templates/bind.md.template",
+      "isMarkdown": false
+    },
+    {
+      "name": "dependencies.yaml.template",
+      "path": "agent/workspace/skills/swarmskill-creator/templates/dependencies.yaml.template",
+      "isMarkdown": false
+    },
+    {
+      "name": "role.md.template",
+      "path": "agent/workspace/skills/swarmskill-creator/templates/role.md.template",
+      "isMarkdown": false
+    },
+    {
+      "name": "SKILL.md.template",
+      "path": "agent/workspace/skills/swarmskill-creator/templates/SKILL.md.template",
+      "isMarkdown": false
+    },
+    {
+      "name": "workflow.md.template",
+      "path": "agent/workspace/skills/swarmskill-creator/templates/workflow.md.template",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/swarmskill-creator/templates/scripts": [
+    {
+      "name": "workflow.py.template",
+      "path": "agent/workspace/skills/swarmskill-creator/templates/scripts/workflow.py.template",
+      "isMarkdown": false
+    }
+  ]
+}
