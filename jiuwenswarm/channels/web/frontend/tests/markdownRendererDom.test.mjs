@@ -62,6 +62,11 @@ function createI18n() {
             zoomOut: 'Zoom out',
             fitView: 'Fit view',
           },
+          markdown: {
+            copyInlineCode: 'Copy',
+            copiedInlineCode: 'Copied',
+            copyInlineCodeFailed: 'Copy failed',
+          },
         },
       },
     },
@@ -780,11 +785,148 @@ test('converts bounded SVG dimensions to PNG and rejects oversized exports', asy
     assert.deepEqual(revokedUrls, ['blob:test-image']);
 
     await assert.rejects(
-      convertSvgToPng(`<svg xmlns="${SVG_NAMESPACE}" viewBox="0 0 9000 100"><rect width="100%" height="100%" /></svg>`),
+      convertSvgToPng(`<svg xmlns="${SVG_NAMESPACE}" viewBox="0 0 9000 100"><rect width="100%" height="100%" />`),
       /SVG export dimensions are unsupported/,
     );
     assert.deepEqual(revokedUrls, ['blob:test-image', 'blob:test-image']);
   } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
+function setupMarkdownDom(clipboard) {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'https://example.test/' });
+  Object.defineProperty(dom.window.navigator, 'clipboard', {
+    configurable: true,
+    value: clipboard,
+  });
+  const restore = installGlobals({
+    IS_REACT_ACT_ENVIRONMENT: true,
+    document: dom.window.document,
+    navigator: dom.window.navigator,
+    window: dom.window,
+  });
+  const container = dom.window.document.querySelector('#root');
+  return { dom, container, restore };
+}
+
+test('inline code exposes a copy affordance that copies the full raw value', async () => {
+  const clipboardWrites = [];
+  const { dom, container, restore } = setupMarkdownDom({ writeText: async value => clipboardWrites.push(value) });
+  const i18n = createI18n();
+  const longPath = '/storage/Users/currentUser/.jiuwenswarm/agent/workspace/work/九问智能体/qiqi-deliverables-v2-20260916-final-report-with-a-very-long-suffix-abcdef0123456789.md';
+  let root;
+  try {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(I18nextProvider, { i18n }, createElement(MarkdownRenderer, { content: `报告已生成：\`${longPath}\`，请查收。` })));
+    });
+
+    const inline = container.querySelector('[data-testid="markdown-inline-code"]');
+    assert.ok(inline, 'inline code element should be marked');
+    const copyBtn = container.querySelector('[data-testid="markdown-inline-code-copy"]');
+    assert.ok(copyBtn, 'copy affordance must exist on inline code');
+    assert.equal(copyBtn.getAttribute('role'), 'button');
+
+    await act(async () => {
+      copyBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    });
+
+    // 闭环：剪贴板收到的必须是逐字节完整原文，而非界面截断文本
+    assert.deepEqual(clipboardWrites, [longPath]);
+    assert.equal(inline.getAttribute('data-state'), 'copied');
+  } finally {
+    await act(async () => root?.unmount());
+    restore();
+    dom.window.close();
+  }
+});
+
+test('inline code copy affordance reports failure when the clipboard rejects the write', async () => {
+  const { dom, container, restore } = setupMarkdownDom({ writeText: async () => { throw new Error('denied'); } });
+  const i18n = createI18n();
+  dom.window.document.execCommand = () => false;
+  let root;
+  try {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(I18nextProvider, { i18n }, createElement(MarkdownRenderer, { content: '路径 `/a/b/c.txt` 已生成' })));
+    });
+
+    const copyBtn = container.querySelector('[data-testid="markdown-inline-code-copy"]');
+    assert.ok(copyBtn);
+    await act(async () => {
+      copyBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    });
+
+    assert.equal(container.querySelector('[data-testid="markdown-inline-code"]').getAttribute('data-state'), 'failed');
+  } finally {
+    await act(async () => root?.unmount());
+    restore();
+    dom.window.close();
+  }
+});
+
+test('fenced code blocks keep the stock pre>code DOM without the inline copy affordance', async () => {
+  const clipboardWrites = [];
+  const { dom, container, restore } = setupMarkdownDom({ writeText: async value => clipboardWrites.push(value) });
+  const i18n = createI18n();
+  let root;
+  try {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(I18nextProvider, { i18n }, createElement(MarkdownRenderer, { content: '```js\nconst x = 1;\nconst y = 2;\n```' })));
+    });
+
+    const code = container.querySelector('pre > code');
+    assert.ok(code, 'fenced code must still render as pre > code');
+    assert.equal(code.className, 'language-js');
+    assert.equal(code.textContent, 'const x = 1;\nconst y = 2;\n');
+    assert.equal(container.querySelector('pre [data-testid="markdown-inline-code-copy"]'), null, 'no inline affordance inside fenced code');
+    assert.equal(clipboardWrites.length, 0);
+  } finally {
+    await act(async () => root?.unmount());
+    restore();
+    dom.window.close();
+  }
+});
+
+test('inline code inside a link keeps the affordance and copying does not bubble to the anchor', async () => {
+  const clipboardWrites = [];
+  const { dom, container, restore } = setupMarkdownDom({ writeText: async value => clipboardWrites.push(value) });
+  const i18n = createI18n();
+  let root;
+  // React 根在 #root 上代理合成事件：冒泡检验必须挂在 document（React 根之外），
+  // 否则原生监听先于合成 stopPropagation 触发，测不到隔离效果。
+  const documentClicks = [];
+  dom.window.document.addEventListener('click', () => documentClicks.push('document'));
+  try {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(I18nextProvider, { i18n }, createElement(MarkdownRenderer, { content: '参见 [`README.md`](https://example.test/docs) 说明' })));
+    });
+
+    const anchor = container.querySelector('a[href="https://example.test/docs"]');
+    assert.ok(anchor, 'link with inline code must render');
+    const copyBtn = anchor.querySelector('[data-testid="markdown-inline-code-copy"]');
+    assert.ok(copyBtn, 'affordance must exist inside link text');
+
+    // 对照：点击 code 文本本身（无 stopPropagation）必须能冒泡到 document，
+    // 证明下方"复制点击不冒泡"的断言不是空转。
+    await act(async () => {
+      container.querySelector('[data-testid="markdown-inline-code"]').firstChild
+        .dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+    assert.deepEqual(documentClicks, ['document'], 'sanity: plain text click bubbles to document');
+
+    await act(async () => {
+      copyBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+    assert.deepEqual(clipboardWrites, ['README.md']);
+    assert.deepEqual(documentClicks, ['document'], 'copy click must not bubble past the affordance');
+  } finally {
+    await act(async () => root?.unmount());
     restore();
     dom.window.close();
   }
