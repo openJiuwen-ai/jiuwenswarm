@@ -566,40 +566,6 @@
   margin: 16px 0 0;
 }
 
-.agent-management-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-top: 24px;
-  color: var(--color-text-secondary);
-  font-size: 13px;
-}
-
-.agent-management-pagination__buttons {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.agent-management-pagination__buttons button {
-  display: inline-flex;
-  width: 28px;
-  height: 28px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface-card);
-  color: var(--color-text-primary);
-  cursor: pointer;
-}
-
-.agent-management-pagination__buttons button:disabled {
-  cursor: not-allowed;
-  opacity: var(--opacity-agent-disabled);
-}
-
 .agent-management-editor {
   padding-bottom: 72px;
 }

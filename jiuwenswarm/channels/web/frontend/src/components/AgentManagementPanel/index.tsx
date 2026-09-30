@@ -10,7 +10,7 @@ import { DefinitionDetailPage } from './DefinitionDetailPage';
 import { AgentGroupEditor } from './AgentGroupEditor';
 import { AgentGroupDetailPage } from './AgentGroupDetailPage';
 import { DefinitionUploadDialog } from './AgentGroupUploadDialog';
-import { GroupCatalogPage, GROUP_PAGE_SIZE } from './GroupCatalogPage';
+import { GroupCatalogPage } from './GroupCatalogPage';
 import { CliAuthModal } from '../ConnectorMarket/CliAuthModal';
 import { ConnectTokenModal } from '../ConnectorMarket/ConnectTokenModal';
 import { PendingConnectorModals, usePendingConnectorFlow } from '../ConnectorMarket/usePendingConnectorFlow';
@@ -257,8 +257,6 @@ export function AgentManagementPanel({
   const [groupCategory, setGroupCategory] = useState('');
   const [groupCatalogQuery, setGroupCatalogQuery] = useState('');
   const [groupMineQuery, setGroupMineQuery] = useState('');
-  const [groupCatalogPage, setGroupCatalogPage] = useState(1);
-  const [groupMinePage, setGroupMinePage] = useState(1);
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
   const [busyMcpId, setBusyMcpId] = useState<string | null>(null);
@@ -339,7 +337,6 @@ export function AgentManagementPanel({
     setMineKind(request.target);
     if (request.target === 'group') {
       setGroupMineQuery('');
-      setGroupMinePage(1);
     } else {
       setMineQuery('');
     }
@@ -414,10 +411,8 @@ export function AgentManagementPanel({
       category: groupCategory,
       query: '',
       installation: groupInstallationFilter,
-      page: groupCatalogPage,
-      pageSize: GROUP_PAGE_SIZE,
     }),
-    [groupCatalog, groupCategory, groupInstallationFilter, groupCatalogPage],
+    [groupCatalog, groupCategory, groupInstallationFilter],
   );
   const groupMineView = useMemo(
     () => buildGroupCatalogViewModel(groupMine, {
@@ -425,11 +420,8 @@ export function AgentManagementPanel({
       category: '',
       query: groupMineQuery,
       installation: groupInstallationFilter,
-      page: groupMinePage,
-      pageSize: GROUP_PAGE_SIZE,
     }),
-    [groupMine, groupMineQuery, groupInstallationFilter, groupMinePage],
-
+    [groupMine, groupMineQuery, groupInstallationFilter],
   );
 
   const loadCatalog = useCallback(async (options: { includeTeamCompatibility?: boolean; query?: string } = {}) => {
@@ -458,7 +450,7 @@ export function AgentManagementPanel({
       withCatalogCache(catalog, cache);
       catalogRef.current = catalog;
       if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loaded' });
-      // 回填共享目录缓存：聊天输入区的专家 tag 依赖它首帧解析 displayName/头像。
+      // 鍥炲～鍏变韩鐩綍缂撳瓨锛氳亰澶╄緭鍏ュ尯鐨勪笓瀹?tag 渚濊禆瀹冮甯цВ鏋?displayName/澶村儚銆?
       if (!options.query) seedAgentCatalog(catalog);
       dispatch({ type: 'catalog.loaded', catalog });
     } catch (error) {
@@ -622,9 +614,9 @@ export function AgentManagementPanel({
     void loadMcps();
   }, [loadMcps]);
 
-  // 切换到专家页面时刷新目录（面板常驻挂载、切走仅隐藏，聊天里新建的专家
-  // 不会主动通知前端），沿用 SkillPanel 的激活转换检测；首次挂载也走此入口，
-  // 避免与旧的 mount-only 请求重复。
+  // 鍒囨崲鍒颁笓瀹堕〉闈㈡椂鍒锋柊鐩綍锛堥潰鏉垮父椹绘寕杞姐€佸垏璧颁粎闅愯棌锛岃亰澶╅噷鏂板缓鐨勪笓瀹?
+  // 涓嶄細涓诲姩閫氱煡鍓嶇锛夛紝娌跨敤 SkillPanel 鐨勬縺娲昏浆鎹㈡娴嬶紱棣栨鎸傝浇涔熻蛋姝ゅ叆鍙ｏ紝
+  // 閬垮厤涓庢棫鐨?mount-only 璇锋眰閲嶅銆?
   useEffect(() => {
     const prevIsActive = panelPrevActiveRef.current;
     const isInitialMount = !panelMountedRef.current;
@@ -1197,7 +1189,6 @@ export function AgentManagementPanel({
       await groupClient.installGroup(result.id);
       await loadGroups('mine');
       setGroupMineQuery('');
-      setGroupMinePage(1);
       setMineKind('group');
       setView('mine');
       showActionNotice(t('agentManagement.group.states.createSuccess', { id: result.id }));
@@ -1259,7 +1250,6 @@ export function AgentManagementPanel({
         await loadGroups('mine');
         setMineKind('group');
         setGroupMineQuery('');
-        setGroupMinePage(1);
       } else {
         await handleInstall(result.id);
         await loadCatalog();
@@ -1403,7 +1393,7 @@ export function AgentManagementPanel({
             ) : null}
             <div className="agent-management-primary-actions" data-testid="agent-management-primary-actions">
               {!isGroupView && <InstallationFilterSelect value={installationFilter} onChange={value => setInstallationFilter(value)} />}
-              {isGroupView && <InstallationFilterSelect value={groupInstallationFilter} onChange={value => { setGroupInstallationFilter(value); setGroupCatalogPage(1); setGroupMinePage(1); }} />}
+              {isGroupView && <InstallationFilterSelect value={groupInstallationFilter} onChange={value => setGroupInstallationFilter(value)} />}
               <PageToolbarSearch
                 wrapperTestId="agent-management-search"
                 inputTestId="agent-management-search-input"
@@ -1416,10 +1406,8 @@ export function AgentManagementPanel({
                   const nextValue = e.target.value;
                   if (view === 'teams') {
                     setGroupCatalogQuery(nextValue);
-                    setGroupCatalogPage(1);
                   } else if (isGroupView) {
                     setGroupMineQuery(nextValue);
-                    setGroupMinePage(1);
                   } else if (isMine) {
                     setMineQuery(nextValue);
                   } else {
@@ -1429,10 +1417,8 @@ export function AgentManagementPanel({
                 onClear={() => {
                   if (view === 'teams') {
                     setGroupCatalogQuery('');
-                    setGroupCatalogPage(1);
                   } else if (isGroupView) {
                     setGroupMineQuery('');
-                    setGroupMinePage(1);
                   } else if (isMine) {
                     setMineQuery('');
                   } else {
@@ -1504,17 +1490,13 @@ export function AgentManagementPanel({
             <GroupCatalogPage
               scope={view === 'teams' ? 'catalog' : 'mine'}
               items={view === 'teams' ? groupCatalogView.items : groupMineView.items}
-              totalItems={view === 'teams' ? groupCatalogView.totalItems : groupMineView.totalItems}
-              page={view === 'teams' ? groupCatalogView.page : groupMineView.page}
-              totalPages={view === 'teams' ? groupCatalogView.totalPages : groupMineView.totalPages}
               query={view === 'teams' ? groupCatalogQuery : groupMineQuery}
               category={view === 'teams' ? groupCategory : ''}
               installation={groupInstallationFilter}
               status={view === 'teams' ? groupCatalogStatus : groupMineStatus}
               error={view === 'teams' ? groupCatalogError : groupMineError}
               busyIds={busyIds}
-              onCategoryChange={value => { setGroupCategory(value); setGroupCatalogPage(1); }}
-              onPageChange={value => view === 'teams' ? setGroupCatalogPage(value) : setGroupMinePage(value)}
+              onCategoryChange={setGroupCategory}
               onRetry={() => void loadGroups(
                 view === 'teams' ? 'catalog' : 'mine',
                 view === 'teams' ? groupCatalogQuery.trim() : '',

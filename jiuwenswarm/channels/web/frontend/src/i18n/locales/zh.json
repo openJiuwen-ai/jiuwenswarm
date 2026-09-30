@@ -2843,13 +2843,6 @@
       "mineEmpty": "还没有我的专家",
       "noMatch": "没有找到匹配的专家"
     },
-    "pagination": {
-      "label": "专家列表分页",
-      "range": "显示 {{start}}-{{end}}，共 {{total}} 个",
-      "page": "第 {{page}} / {{total}} 页",
-      "previous": "上一页",
-      "next": "下一页"
-    },
     "detail": {
       "ability": "能力介绍",
       "sourcePrefix": "来源：{{source}}",

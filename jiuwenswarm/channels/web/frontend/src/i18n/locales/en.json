@@ -2856,13 +2856,6 @@
       "mineEmpty": "You do not have any Experts yet",
       "noMatch": "No matching Experts found"
     },
-    "pagination": {
-      "label": "Expert list pagination",
-      "range": "Showing {{start}}-{{end}} of {{total}}",
-      "page": "Page {{page}} / {{total}}",
-      "previous": "Previous page",
-      "next": "Next page"
-    },
     "detail": {
       "ability": "Capability",
       "sourcePrefix": "Source: {{source}}",

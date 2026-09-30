@@ -12,8 +12,6 @@ export type GroupCatalogScope = 'catalog' | 'mine';
 export type GroupCatalogViewModel = {
   items: AgentGroupCatalogItem[];
   totalItems: number;
-  page: number;
-  totalPages: number;
 };
 
 const CATEGORY_ALIASES: Record<string, ReadonlySet<string>> = {
@@ -158,8 +156,6 @@ export function buildGroupCatalogViewModel(
     category: string;
     query: string;
     installation?: 'all' | 'installed' | 'uninstalled';
-    page: number;
-    pageSize: number;
   },
 ): GroupCatalogViewModel {
   const query = options.query.trim().toLocaleLowerCase();
@@ -175,13 +171,8 @@ export function buildGroupCatalogViewModel(
       .toLocaleLowerCase()
       .includes(query);
   });
-  const totalPages = Math.max(1, Math.ceil(filtered.length / options.pageSize));
-  const page = Math.min(Math.max(options.page, 1), totalPages);
-  const start = (page - 1) * options.pageSize;
   return {
-    items: filtered.slice(start, start + options.pageSize),
+    items: filtered,
     totalItems: filtered.length,
-    page,
-    totalPages,
   };
 }
