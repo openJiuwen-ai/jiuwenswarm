@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { DrawerStateMessage } from '../DrawerStateMessage/DrawerStateMessage';
 import { LoadingSpinner } from '../LoadingSpinner/LoadingSpinner';
 
@@ -52,13 +52,18 @@ export function PickerListRegion<T>({
     setVisibleCount(pageSize);
   }, [items, pageSize]);
 
-  const handleScroll = () => {
+  // 时间戳节流：滚动事件高频触发，100ms 内只允许追加一次，避免一帧内连续追加多批。
+  const lastAppendAtRef = useRef(0);
+  const handleScroll = useCallback(() => {
+    const now = performance.now();
+    if (now - lastAppendAtRef.current < 100) return;
     const el = scrollRef.current;
     if (!el || !hasMore) return;
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - LOAD_MORE_THRESHOLD_PX) {
+      lastAppendAtRef.current = now;
       setVisibleCount((count) => Math.min(count + pageSize, items.length));
     }
-  };
+  }, [hasMore, pageSize, items.length]);
 
   const visibleItems = items.slice(0, visibleCount);
   const isEmpty = status === 'success' && items.length === 0;
