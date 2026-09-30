@@ -73,55 +73,6 @@ docs/ai/
 # logs
 logs/
 
-# Designer local eval / media outputs (never commit)
-pipeline_test_out/
-pipeline_ab_out/
-pipeline_validation_out/
-results_eval/
-designer_catalog_skills_reports_trajectory/
-designer_node_catalog.json
-designer_node_catalog.txt
-*.mp4
-*.mp3
-*.webm
-*.wav
-*.mov
-*.mkv
-
-# Local smoke / probe / AB scratch (not required to run the product)
-PLAN_A_*.md
-_smoke_*.py
-_smoke_*.json
-scripts/_smoke_*.py
-scripts/_probe_*.py
-scripts/_inspect_*.py
-scripts/_preview_*.py
-scripts/_check_*.py
-scripts/_ensure_*.py
-scripts/_extract_*.py
-scripts/_patch_*.py
-scripts/_review_*.py
-scripts/_run_*.bat
-scripts/_v4_*.txt
-scripts/run_ab_pipeline_compare.py
-scripts/run_consistency_suite.py
-scripts/church_*.py
-scripts/eval_6s_ai_clip*.py
-
-# Accidental local venv layout at repo root (Windows)
-/Lib/
-/pyvenv.cfg
-scripts/Activate.ps1
-scripts/activate
-scripts/activate.bat
-scripts/activate.fish
-scripts/deactivate.bat
-scripts/pip.exe
-scripts/pip3.exe
-scripts/pip3.14.exe
-scripts/python.exe
-scripts/pythonw.exe
-
 # Browser automation runtime artifacts
 .browser/
 .browser-profiles/
