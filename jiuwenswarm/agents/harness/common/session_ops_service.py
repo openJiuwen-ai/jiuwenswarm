@@ -1113,6 +1113,74 @@ def redo_session_files(
     }
 
 
+_COMPACT_BOUNDARY_EVENT = "context.compact_boundary"
+_COMPACT_SUMMARY_EVENT = "context.compact_summary"
+_REWIND_SUMMARY_EVENT = "context.rewind_summary"
+_REWIND_COMPACT_TRIGGER = "manual_rewind"
+
+
+def _is_rewind_boundary(record: dict[str, Any]) -> bool:
+    """True when a compact boundary came from /rewind rather than compaction.
+
+    ``compact_partial_session`` and the ``session.rewind`` compact path both
+    truncate history.jsonl first and then append the boundary at the new tail,
+    so the records *before* such a boundary are the ones deliberately kept and
+    the summary after it describes records that no longer exist in the file.
+    Replay must not slice there.  Both writers stamp
+    ``compact_metadata.trigger`` with ``manual_rewind``.
+    """
+    metadata = record.get("compact_metadata")
+    if not isinstance(metadata, dict):
+        return False
+    trigger = metadata.get("trigger")
+    return isinstance(trigger, str) and trigger.strip() == _REWIND_COMPACT_TRIGGER
+
+
+def _find_replay_start_index(history_records: list[Any]) -> int:
+    """Index of the first record a context replay has to read.
+
+    Compaction (``append_compact_history_records``) leaves history.jsonl
+    intact and appends ``context.compact_boundary`` followed by
+    ``context.compact_summary``.  The summary replaced everything before the
+    boundary in the live context, so replaying those records as well feeds the
+    model the summary *and* what the summary stands for — a restored context
+    larger than the one compaction produced.
+
+    Returns the index of the last boundary that supersedes what precedes it,
+    or ``0`` when there is none.  A boundary qualifies only when both of
+    these hold:
+
+      * it is not a rewind boundary (see ``_is_rewind_boundary``).
+      * a ``context.compact_summary`` follows it with no intervening
+        ``context.rewind_summary``.  A boundary whose summary a later
+        ``/rewind`` cut away describes nothing and must not be sliced at.
+
+    Falling back to ``0`` replays everything, which is what this function's
+    callers did unconditionally before.  Every uncertain case therefore keeps
+    the old, complete behaviour instead of dropping records.
+
+    Non-dict records and records with a non-string ``event_type`` are ignored
+    so that a malformed line cannot move the start index.
+    """
+    start = 0
+    pending: int | None = None
+    for index, record in enumerate(history_records):
+        if not isinstance(record, dict):
+            continue
+        event_type = record.get("event_type")
+        if not isinstance(event_type, str):
+            continue
+        event_type = event_type.strip()
+        if event_type == _COMPACT_BOUNDARY_EVENT:
+            pending = None if _is_rewind_boundary(record) else index
+        elif event_type == _REWIND_SUMMARY_EVENT:
+            pending = None
+        elif event_type == _COMPACT_SUMMARY_EVENT and pending is not None:
+            start = pending
+            pending = None
+    return start
+
+
 def _build_context_messages_from_history(
     history_records: list[dict[str, Any]],
 ) -> tuple[list[Any], int]:
@@ -1148,6 +1216,10 @@ def _build_context_messages_from_history(
       - Consecutive tool_calls without reasoning between them belong to
         the same LLM call (parallel tool execution)
 
+    Records that a compaction superseded are dropped before the walk starts:
+    see ``_find_replay_start_index``.  ``skipped_record_count`` counts only the
+    records that were walked.
+
     Returns ``(context_messages, skipped_record_count)``.
     """
     from openjiuwen.core.foundation.llm.schema.message import (
@@ -1158,6 +1230,16 @@ def _build_context_messages_from_history(
         AssistantMessage,
         ToolMessage,
     )
+
+    replay_start = _find_replay_start_index(history_records)
+    if replay_start:
+        logger.info(
+            "_build_context_messages_from_history: replaying from compact "
+            "boundary at index %d, dropping %d superseded record(s)",
+            replay_start,
+            replay_start,
+        )
+        history_records = history_records[replay_start:]
 
     context_messages: list[Any] = []
     skipped = 0
@@ -1354,7 +1436,8 @@ def _build_context_messages_from_history(
         else:
             # chat.delta, chat.tool_update, chat.usage_metadata,
             # chat.usage_summary, chat.ask_user_question,
-            # context.compact_boundary
+            # context.compact_boundary — the boundary itself has no content.
+            # _find_replay_start_index reads it before the walk starts.
             skipped += 1
 
     # Flush any remaining state (e.g. interrupted turn with only reasoning)
@@ -1451,6 +1534,11 @@ async def warmup_session_context(
     if not isinstance(history_records, list) or not history_records:
         return False
 
+    # Upper bound first, compact boundary second: the caller-supplied
+    # request_id says which records exist at all for this warmup, and
+    # _build_context_messages_from_history then looks for the last compact
+    # boundary *within* that range.  Scanning the whole file instead could
+    # select a boundary that this warmup is not allowed to see.
     boundary_request_id = str(history_before_request_id or "").strip()
     if boundary_request_id:
         for index, record in enumerate(history_records):
