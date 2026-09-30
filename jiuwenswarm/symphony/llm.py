@@ -19,7 +19,12 @@ from jiuwenswarm.common.model_config_validation import (
 from jiuwenswarm.common.reasoning_injector import inject_reasoning_params
 
 LLM_IDENTITY_SCHEMA_VERSION = "JiuwenSwarm-llm-identity-v1"
-_MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS = 25
+_MODEL_CONNECTION_PROBE_ATTEMPT_TIMEOUT_SECONDS = 60
+# The probe uses the model's default reasoning mode and performs one low-cost
+# invocation.  Reasoning-first endpoints can legitimately take longer than
+# the former 25s limit before returning their bounded completion, so keep a
+# small outer margin around the client-level deadline.
+_MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS = 65
 _MODEL_CONNECTION_PROBE_MAX_TOKENS = 16
 SYMPHONY_LLM_CONFIG_REF_KEY = "_symphony_llm_config_ref"
 
@@ -138,8 +143,11 @@ class LLMConfig:
                 "chat_template_kwargs",
             ):
                 extra_body.pop(key, None)
-        extra_body.update(thinking_disabled_request_overrides()["extra_body"])
-        request_config["extra_body"] = extra_body
+        if extra_body:
+            request_config["extra_body"] = extra_body
+        else:
+            request_config.pop("extra_body", None)
+        request_config.update(reasoning_disabled_request_overrides())
         request_config.pop("model_name", None)
         request_config["model"] = model
         return cls(
@@ -192,8 +200,8 @@ class LLMConfig:
         if self.base_url:
             client_config["api_base"] = self.base_url
         # 已知自建网关按 host 补全 endpoint_profile（与主路径
-        # build_model_from_entry 同源规则）。symphony 强制关闭思考，
-        # 方言错了会发官方 thinking.type 而被 vLLM 类网关忽略。
+        # build_model_from_entry 同源规则），让 core 将中立 reasoning
+        # intent 编码成该 endpoint 实际支持的请求方言。
         if not client_config.get("endpoint_profile"):
             from jiuwenswarm.common.reasoning_config import (
                 resolve_endpoint_profile_override,
@@ -448,7 +456,14 @@ async def probe_model_connection(config: LLMConfig) -> None:
         await probe_configured_model_connection(
             config.create_model(),
             token_limits=(_MODEL_CONNECTION_PROBE_MAX_TOKENS,),
-            invoke_kwargs={"timeout": _MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS},
+            invoke_kwargs={
+                "timeout": _MODEL_CONNECTION_PROBE_ATTEMPT_TIMEOUT_SECONDS,
+                # A connection probe validates reachability and credentials,
+                # not Symphony's preferred reasoning policy.  Let the model
+                # use its default so an unsupported disable control cannot
+                # block the build before the compatibility fallback can run.
+                "reasoning": {"mode": "auto"},
+            },
             timeout_seconds=_MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS,
             log_context="symphony model connection probe",
         )
@@ -486,15 +501,9 @@ def create_model_response_observer(config: LLMConfig):
     return observe
 
 
-def thinking_disabled_request_overrides() -> Dict[str, Any]:
-    """Return isolated provider-compatible controls that disable thinking."""
-    return {
-        "extra_body": {
-            "thinking": {"type": "disabled"},
-            "enable_thinking": False,
-            "chat_template_kwargs": {"enable_thinking": False},
-        }
-    }
+def reasoning_disabled_request_overrides() -> Dict[str, Any]:
+    """Return a provider-neutral request to disable reasoning when supported."""
+    return {"reasoning": {"mode": "disabled"}}
 
 
 class JiuwenSwarmChatClient:

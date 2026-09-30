@@ -7,8 +7,8 @@ from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
 from openjiuwen.symphony import (
-    CapabilityFingerprint,
     CapabilityDescriptor,
+    CapabilityFingerprint,
     FingerprintArtifact,
     FingerprintSettings,
     OrchestrationConfig,
@@ -19,8 +19,7 @@ from openjiuwen.symphony import (
 from jiuwenswarm.symphony.config import SymphonyConfig, evolution_flow_enabled
 from jiuwenswarm.symphony.llm import LLMConfig, create_model_response_observer
 
-
-_FINGERPRINT_LLM_POLICY_VERSION = "no-symphony-output-cap-v1"
+_FINGERPRINT_LLM_POLICY_VERSION = "capability-aware-reasoning-v2"
 
 
 @dataclass(frozen=True)
