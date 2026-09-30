@@ -1,4 +1,9 @@
-"""Extension public surface with transport adapters loaded lazily."""
+"""Extension public surface with transport adapters loaded lazily.
+
+纯契约符号（SDK 基类/数据类型）已迁 ``gateway_protocol.{sdk,types}``（支线
+计划 E 后 source of truth，转发别名同一对象）；ExtensionLoader/Manager/Registry
+为具体实现，仍由本仓扩展框架提供、待 gateway 仓迁移。
+"""
 
 from __future__ import annotations
 
@@ -10,24 +15,24 @@ _EXPORTS = {
     "ExtensionManager": ("jiuwenswarm.extensions.manager", "ExtensionManager"),
     "ExtensionRegistry": ("jiuwenswarm.extensions.registry", "ExtensionRegistry"),
     "AgentServerClientExtension": (
-        "jiuwenswarm.extensions.sdk.agent_server_client",
+        "gateway_protocol.sdk.agent_server_client",
         "AgentServerClientExtension",
     ),
     "ApplicationPluginExtension": (
-        "jiuwenswarm.extensions.sdk.application_plugin",
+        "gateway_protocol.sdk.application_plugin",
         "ApplicationPluginExtension",
     ),
-    "BaseExtension": ("jiuwenswarm.extensions.sdk.base", "BaseExtension"),
+    "BaseExtension": ("gateway_protocol.sdk.base", "BaseExtension"),
     "CryptoUtility": (
-        "jiuwenswarm.extensions.sdk.crypto_utility",
+        "gateway_protocol.sdk.crypto_utility",
         "CryptoUtility",
     ),
     "ThirdAgentExtension": (
-        "jiuwenswarm.extensions.sdk.third_agent",
+        "gateway_protocol.sdk.third_agent",
         "ThirdAgentExtension",
     ),
-    "ExtensionConfig": ("jiuwenswarm.extensions.types", "ExtensionConfig"),
-    "ExtensionMetadata": ("jiuwenswarm.extensions.types", "ExtensionMetadata"),
+    "ExtensionConfig": ("gateway_protocol.types", "ExtensionConfig"),
+    "ExtensionMetadata": ("gateway_protocol.types", "ExtensionMetadata"),
 }
 
 
