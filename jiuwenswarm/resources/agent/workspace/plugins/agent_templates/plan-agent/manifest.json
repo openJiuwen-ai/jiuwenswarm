@@ -1,0 +1,93 @@
+{
+  "version": "1.0.6",
+  "packageType": "agent_template",
+  "agentCard": {
+    "id": "plan-supervisor",
+    "name": "规划总管",
+    "description": "CCF BDCI 2026 论文生成系统「规划模块（模块二）」协调者。拥有长 session、跨模块 context、4 检查点人审、REPLAN 反馈聚合。把 planning-skill 当 subprocess 黑盒调，自身不写方法也不写代码。"
+  },
+  "persona": {
+    "dir": "./persona"
+  },
+  "skills": [
+    {
+      "dir": "./skills/planning-orchestration",
+      "mode": "all"
+    }
+  ],
+  "tools": [
+    {
+      "file": "tools/call_planning_skill.py",
+      "class": "CallPlanningSkillTool",
+      "displayName": {
+        "en": "call_planning_skill",
+        "zh": "call_planning_skill"
+      },
+      "displayDescription": {
+        "en": "Spawn the planning-skill as a subprocess. Inputs: input_dir / feedback_file (optional). Outputs: 5 .json + 5 .md artifacts + status.json in output_dir.",
+        "zh": "把 planning-skill 当黑盒当子进程跑。输入：input_dir（模块一产物）+ 可选 feedback_file（REPLAN 反馈）。输出：output_dir 下的 5 .json + 5 .md 产物 + status.json。"
+      }
+    }
+  ],
+  "rails": [
+    {
+      "file": "rails/input_validation_rail.py",
+      "class": "InputValidationRail",
+      "displayName": {
+        "en": "input_validation",
+        "zh": "input_validation"
+      },
+      "displayDescription": {
+        "en": "Input contract rail: before each model call, inject the 7 module-1 input file list + required-field list + PlanningFeedback category set. Guides the LLM to self-check input_dir / feedback_file before invoking call_planning_skill.",
+        "zh": "输入契约 rail：每次模型调用前注入模块一 7 个输入文件清单 + 各文件必填字段 + PlanningFeedback 合法 category 集合，引导 LLM 在调 call_planning_skill 前先自查 input_dir / feedback_file。"
+      }
+    }
+  ],
+  "displayName": {
+    "en": "Plan Supervisor",
+    "zh": "规划总管"
+  },
+  "displayDescription": {
+    "en": "Coordinator for the planning module of the CCF BDCI 2026 research paper generation system. Owns the long-lived session, cross-module context, four human-review checkpoints, and REPLAN feedback aggregation. Calls planning-skill as a subprocess black box.",
+    "zh": "CCF BDCI 2026 论文生成系统「规划模块」协调者。持长 session、接跨模块 context、做 4 检查点人审、聚合 REPLAN 反馈，把 planning-skill 当子进程调。"
+  },
+  "category": "Research",
+  "avatar": "",
+  "source": "local",
+  "defaultInitInput": {
+    "zh": "开始跑规划模块：基于模块一的研究问题、假设、gap 报告、关键论文，生成方法设计、实验方案、数据方案、算力估算与执行配置。",
+    "en": "Run the planning module: take research_question / hypotheses / gap_report / key_papers from module 1 and produce method_design / experiment_plan / data_plan / budget_report / execution_config."
+  },
+  "tags": [
+    {
+      "en": "Research Planning",
+      "zh": "科研规划"
+    },
+    {
+      "en": "Method Design",
+      "zh": "方法设计"
+    },
+    {
+      "en": "Experiment Planning",
+      "zh": "实验规划"
+    },
+    {
+      "en": "CCF BDCI 2026",
+      "zh": "CCF BDCI 2026"
+    }
+  ],
+  "quickInputs": [
+    {
+      "en": "Run planning module end-to-end and walk me through the 4 checkpoints.",
+      "zh": "端到端跑一遍规划模块，4 个检查点都带我过一遍。"
+    },
+    {
+      "en": "Replan only the experiment stage based on user feedback: baselines must use real paper_ids in key_papers.",
+      "zh": "基于用户反馈 REPLAN：仅重跑实验阶段，基线必须用 key_papers 里的真实 paper_id。"
+    },
+    {
+      "en": "Abort at the first checkpoint if the method_design adequacy_score is below 7.",
+      "zh": "若方法设计 adequacy_score < 7，在第一个检查点直接 abort。"
+    }
+  ]
+}

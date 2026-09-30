@@ -1,0 +1,34 @@
+\documentclass{article}
+\usepackage{iclr2024_conference,times}
+\input{math_commands.tex}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{float}
+% Keep workflow-owned figures and tables inside the section that cites them.
+\usepackage[section]{placeins}
+% The stock style uses \flushbottom, which stretches vertical float glue and
+% can create a conspicuous blank band above a figure near a section boundary.
+% Preserve the official margins and typography but leave any spare space at
+% the page bottom instead, where it is visually less disruptive.
+\raggedbottom
+\setlength{\textfloatsep}{10pt plus 2pt minus 3pt}
+\setlength{\intextsep}{8pt plus 2pt minus 2pt}
+\setlength{\floatsep}{8pt plus 2pt minus 2pt}
+% Keep citation links usable in the PDF without drawing coloured boxes around them.
+\hypersetup{hidelinks}
+
+\title{@@TITLE@@}
+\author{Anonymous Author(s)}
+% Keep anonymous submission mode by default. The final-copy switch is emitted
+% only when a camera-ready configuration is explicitly chosen.
+@@FINAL_COPY@@
+
+\begin{document}
+\maketitle
+
+@@BODY@@
+
+\end{document}

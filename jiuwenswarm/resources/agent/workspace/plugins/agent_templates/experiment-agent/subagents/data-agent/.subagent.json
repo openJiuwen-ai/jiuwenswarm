@@ -1,0 +1,28 @@
+{
+  "agent_name": "experiment-data-agent",
+  "agentName": "experiment-data-agent",
+  "display_description": {
+    "en": "Prepares and validates datasets without changing the research plan.",
+    "zh": "准备并验证数据集，不改变研究规划。"
+  },
+  "displayDescription": {
+    "en": "Prepares and validates datasets without changing the research plan.",
+    "zh": "准备并验证数据集，不改变研究规划。"
+  },
+  "persona": { "dir": "persona" },
+  "tools": [
+    {
+      "file": "../../tools/experiment_agent_tools.py",
+      "class": "ExperimentDataTool"
+    }
+  ],
+  "rails": [
+    {
+      "file": "../../tools/experiment_agent_rails.py",
+      "class": "ExperimentSpecialistSkillRail"
+    }
+  ],
+  "skills": [
+    { "dir": "../../skills/experiment-orchestration", "mode": "all" }
+  ]
+}

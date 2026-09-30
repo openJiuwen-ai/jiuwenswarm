@@ -1,0 +1,9 @@
+python: ">=3.11,<3.14"
+required:
+  jsonschema: ">=4.20,<5"
+  beautifulsoup4: ">=4.12,<5"
+  pdfplumber: ">=0.11,<1"
+
+# JiuwenSwarm/openJiuwen are supplied by the host runtime.  The packages
+# above are the only direct third-party imports added by the conception
+# skill for schema validation and bounded public full-text extraction.

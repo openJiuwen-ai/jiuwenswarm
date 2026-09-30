@@ -85,7 +85,14 @@ workspace/agent/memory/*.db-shm
 workspace/agent/memory/*.db-wal
 
 jiuwenswarm/workspace/.whatsapp-auth/
-jiuwenswarm/resources/agent/workspace/
+# Paper-Gen Agent source is versioned. Keep generated runtime artifacts out.
+jiuwenswarm/resources/agent/workspace/**/.writing-cache/
+jiuwenswarm/resources/agent/workspace/**/.papergen-data/
+jiuwenswarm/resources/agent/workspace/**/cache/
+jiuwenswarm/resources/agent/workspace/**/*.log
+jiuwenswarm/resources/agent/workspace/skills/writing/tools/tectonic/cache/
+# Bundled compiler binary is a local dependency, not source code for the PR.
+jiuwenswarm/resources/agent/workspace/skills/writing/tools/tectonic/tectonic.exe
 jiuwenswarm/resources/tui/bin/
 packages/jiuwenswarm-tui/jiuwenswarm_tui/resources/tui/bin/
 packages/jiuwenswarm-tui/jiuwenswarm_tui/resources/tui-bin/

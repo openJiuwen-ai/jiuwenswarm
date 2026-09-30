@@ -1,0 +1,38 @@
+# dependencies.yaml — writing 启动依赖检查
+#
+# 写作模块（模块四）的依赖声明。Agent 在 SKILL.md Workflow Step 0 读取本文件做 pre-flight。
+# 各条目的检查结果汇报给用户，由用户决定 go / no-go。
+#
+# 设计原则：直接复用 JiuwenSwarm 框架自带能力与现有 Skill；仅当 LaTeX 编译工具缺失时
+# 才要求额外环境项（latexmk / pdflatex），未配置时由 stage7 自动降级为 ReportLab 审阅预览，
+# 不阻塞主流程。
+
+skills:
+  - name: openjiuwen-deepsearch
+    source: local                       # 复用仓库内现有 Skill 的搜索能力（如可用）
+    required: false                     # 缺失时自动降级为纯推理，不阻塞
+    purpose: 数据集 / 基线 / 引用真实性核对（当前未集成；预留接口）
+
+tools:
+  - name: python
+    required: true
+    purpose: 执行写作流程、输入校验、产物落盘与预览渲染
+
+  - name: latexmk
+    required: false                     # LaTeX 编译首选工具；缺失自动降级 pdflatex / ReportLab 预览
+    purpose: stage7 第 1 档编译：latexmk -pdf 生成 paper.pdf
+
+  - name: pdflatex
+    required: false                     # LaTeX 编译次选工具；缺失再降级 ReportLab 预览
+    purpose: stage7 第 2 档编译：pdflatex 两轮生成 paper.pdf
+
+  - name: reportlab
+    source: python-pkg
+    required: false
+    purpose: stage7 第 3 档：生成可读审阅预览，不依赖 LaTeX 工具链
+
+# 说明：
+# - 需要新增依赖时在此登记，并保持与框架依赖（pydantic / httpx / yaml / dotenv）复用优先的原则。
+# - LLM 凭证统一放在 ~/.jiuwenswarm/config/.env；skill 内不维护单独 .env。
+#   缺失时 main.py 自动退到 MockBackend。
+# - stage7 回退顺序：① latexmk ② pdflatex ③ ReportLab 审阅预览；全败标 status="failed"。
