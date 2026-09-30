@@ -1850,9 +1850,16 @@ def _resolve_legacy_work_mode(
 def get_all_sessions_metadata(
     limit: int = 20,
     offset: int = 0,
+    user_id: str = "",
 ) -> tuple[list[dict[str, Any]], int]:
     """
     获取所有会话的元数据。
+
+    Args:
+        user_id: 调用方标识（``AgentRequest.user_id`` 透传）。非空时只返回
+            ``metadata.user_id`` 与之相同、或该字段为空（历史会话，归属未知）
+            的会话，供 session.list 按用户隔离。空串保持原行为（桌面/单用户
+            调用方没有可隔离的身份，兼容 TUI 等无身份通道）。
 
     Returns:
         (sessions, total): 当前页的会话列表 和 会话总数
@@ -1920,6 +1927,10 @@ def get_all_sessions_metadata(
 
         if metadata.get("ephemeral") is True:
             continue
+        if user_id:
+            owner = str(metadata.get("user_id") or "")
+            if owner and owner != user_id:
+                continue
         _apply_batch_projection(metadata, session_id, state, project_states,
                                 (dir_to_projects, id_to_work_mode))
         sessions.append(metadata)
