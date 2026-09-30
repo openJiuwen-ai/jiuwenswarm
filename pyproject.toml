@@ -41,6 +41,11 @@ dependencies = [
     "skillnet-ai==0.0.16",
     "mutagen>=1.47.0",
     "google-genai>=1.68.0",
+    # Anthropic 协议模型客户端（MODEL_PROVIDER=Anthropic → /v1/messages）
+    # 上限钉在 1.0.0 前：anthropic 1.0.0（2026-08-20）底层迁移到 httpx2 fork，
+    # 自定义 httpx.AsyncClient 的 http_client 会被 SDK 类型校验拒绝。
+    # 待模型客户端适配 httpx2 后再放开上限。
+    "anthropic>=0.40.0,<1.0.0",
     "opentelemetry-api>=1.28.0,<1.42",
     "opentelemetry-sdk>=1.28.0,<1.42",
     "opentelemetry-exporter-otlp-proto-grpc>=1.28.0,<1.42",
