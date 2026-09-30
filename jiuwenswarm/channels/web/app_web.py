@@ -56,6 +56,15 @@ _share_image_export_manager: ShareImageExportManager | None = None
 _share_image_export_manager_lock = threading.Lock()
 
 
+class _BadRequestError(ValueError):
+    """Client-supplied input the web handler cannot process.
+
+    Raised for values that must be rejected with ``400`` instead of letting the
+    exception escape the request handler (which drops the connection without a
+    response and logs a traceback for every malformed request).
+    """
+
+
 def _get_share_image_export_manager() -> ShareImageExportManager:
     """Create the share-image job registry on first use to keep startup lazy."""
     global _share_image_export_manager
@@ -988,6 +997,19 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         except ValueError:
             return False
 
+    def _resolve_project_path(self, rel_path: str) -> Path:
+        """Resolve ``rel_path`` under ``project_root``.
+
+        ``Path.resolve()`` raises ``ValueError`` for paths containing an
+        embedded NUL byte (``os.stat`` rejects them) and ``OSError`` for other
+        malformed inputs.  Surface those as ``_BadRequestError`` so the request
+        is answered with ``400`` instead of crashing the handler thread.
+        """
+        try:
+            return (self.project_root / rel_path).resolve()
+        except (OSError, ValueError) as exc:
+            raise _BadRequestError("invalid_path") from exc
+
     def _write_json(self, status: int, payload: dict) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -1255,7 +1277,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             if not dir_arg:
                 self._write_json(400, {"error": "missing_dir"})
                 return
-            full_dir = (self.project_root / dir_arg).resolve()
+            full_dir = self._resolve_project_path(dir_arg)
             if not self._is_path_under_allowed_root(full_dir):
                 self._write_json(403, {"error": "forbidden_dir"})
                 return
@@ -1280,7 +1302,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             if not dir_arg:
                 self._write_json(400, {"error": "missing_dir"})
                 return
-            full_dir = (self.project_root / dir_arg).resolve()
+            full_dir = self._resolve_project_path(dir_arg)
             if not self._is_path_under_allowed_root(full_dir):
                 self._write_json(403, {"error": "forbidden_dir"})
                 return
@@ -1309,7 +1331,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             if not file_arg:
                 self._write_json(400, {"error": "missing_file_path"})
                 return
-            full_path = (self.project_root / file_arg).resolve()
+            full_path = self._resolve_project_path(file_arg)
             if not self._is_path_under_allowed_root(full_path):
                 self._write_json(403, {"error": "forbidden_path"})
                 return
@@ -1338,7 +1360,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             if not file_arg:
                 self._write_json(400, {"error": "missing_file_path"})
                 return
-            full_path = (self.project_root / file_arg).resolve()
+            full_path = self._resolve_project_path(file_arg)
             if not self._is_path_under_allowed_root(full_path):
                 self._write_json(403, {"error": "forbidden_path"})
                 return
@@ -1376,6 +1398,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
             try:
                 data, used_encoding = read_file_with_encoding(full_path, encoding_arg)
+            except (LookupError, UnicodeDecodeError) as exc:
+                self._write_json(400, {"error": "invalid_encoding", "detail": str(exc)})
+                return
             except OSError as exc:
                 self._write_json(500, {"error": str(exc)})
                 return
@@ -1784,7 +1809,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/file-api/file-content":
-            length = int(self.headers.get("Content-Length", "0") or "0")
+            length = self._parse_content_length()
             raw = self.rfile.read(length) if length > 0 else b""
             try:
                 payload = json.loads(raw.decode("utf-8") if raw else "{}")
@@ -1801,7 +1826,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self._write_json(400, {"error": "missing_file_content"})
                 return
 
-            full_path = (self.project_root / request_path).resolve()
+            full_path = self._resolve_project_path(request_path)
             if not self._is_path_under_allowed_root(full_path):
                 self._write_json(403, {"error": "forbidden_path"})
                 return
@@ -1821,7 +1846,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/file-api/ws-debug-config":
-            length = int(self.headers.get("Content-Length", "0") or "0")
+            length = self._parse_content_length()
             raw = self.rfile.read(length) if length > 0 else b""
             try:
                 payload = json.loads(raw.decode("utf-8") if raw else "{}")
@@ -1844,8 +1869,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
         self._write_json(404, {"error": "not_found"})
 
+    def _parse_content_length(self) -> int:
+        raw = self.headers.get("Content-Length", "0") or "0"
+        try:
+            return int(raw)
+        except (TypeError, ValueError) as exc:
+            raise _BadRequestError("invalid_content_length") from exc
+
     def _read_request_body(self) -> bytes:
-        length = int(self.headers.get("Content-Length", "0") or "0")
+        length = self._parse_content_length()
         return self.rfile.read(length) if length > 0 else b""
 
     def _handle_skills_upload_temp(self) -> None:
@@ -1934,7 +1966,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self._handle_share_api_get(parsed)
             return
         if self._is_file_api_route():
-            self._handle_file_api_get(parsed)
+            try:
+                self._handle_file_api_get(parsed)
+            except _BadRequestError as exc:
+                self._write_json(400, {"error": str(exc)})
             return
         if self._dispatch_proxy():
             return
@@ -1971,7 +2006,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self._handle_share_api_post(parsed)
             return
         if self._is_file_api_route():
-            self._handle_file_api_post(parsed)
+            try:
+                self._handle_file_api_post(parsed)
+            except _BadRequestError as exc:
+                self._write_json(400, {"error": str(exc)})
             return
         if self._dispatch_proxy():
             return
@@ -2003,7 +2041,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self._handle_share_api_get(parsed)
             return
         if self._is_file_api_route():
-            self._handle_file_api_get(parsed)
+            try:
+                self._handle_file_api_get(parsed)
+            except _BadRequestError as exc:
+                self._write_json(400, {"error": str(exc)})
             return
         if self._dispatch_proxy():
             return
