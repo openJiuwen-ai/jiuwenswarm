@@ -91,6 +91,11 @@
       <td width="50%">定时触发任务的配置、运行与管理。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>Loop 任务</strong></td>
+      <td width="28%"><a href="zh/Loop任务.md">Loop 任务</a></td>
+      <td width="50%">Loop Engineering 编排：rubric 分解、maker/checker 验收循环与两种入口用法。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>技能</strong></td>
       <td width="28%"><a href="zh/技能.md">技能</a></td>
       <td width="50%">智能体技能挂载、调用与扩展机制。</td>

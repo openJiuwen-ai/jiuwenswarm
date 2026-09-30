@@ -473,6 +473,15 @@ FIRST_BATCH_REGISTRY: tuple[SlashCommandEntry, ...] = (
               "SET/RESUME triggers a streaming goal round; "
               "GET/PAUSE/CLEAR returns status immediately.",
     ),
+    SlashCommandEntry(
+        id="loop",
+        canonical_text="/loop [--verify \"cmd\"] [--max-iterations N] <task>",
+        scope="client",
+        req_method=None,
+        notes="Loop Engineering 编排：任务 → rubric 分解 → maker 执行 → "
+              "机器验证 → 独立 grader 验收，未达标自动带 gap 反馈回炉。"
+              "由 AgentServer 在 chat.send 流内解析执行（与 /goal 同链路）。",
+    ),
 )
 
 
