@@ -626,3 +626,125 @@ The output only includes basic items such as temperature, wind speed, precipitat
 
 ### After optimization
 When you call it again, the output includes not only temperature and wind speed, but also UV intensity.
+
+---
+
+## Split Server / Client Deployment: Skill Sync API
+
+This section is for **deployment operators and client SDK integrators**. When the Server and the Client are deployed separately, each side keeps its own skill library (`~/.jiuwenswarm/agent/workspace/skills/`). Three HTTP endpoints synchronize them:
+
+| Endpoint | Method | Path | Request | Response |
+|---|---|---|---|---|
+| Diff | POST | `/skill-sync/diff` | JSON | JSON |
+| Package | POST | `/skill-sync/package` | JSON (batch) | zip binary stream |
+| Apply | POST | `/skill-sync/apply` | multipart (batch) | JSON |
+
+**Enabling** (off by default; see Section 14 of the [Configuration doc](Configuration.md)): set `skill_sync.enabled: true` plus a non-empty `skill_sync.token` in the main config, or inject the environment variable `JIUWENSKILL_SYNC_TOKEN`. All three endpoints require `Authorization: Bearer <token>`.
+
+### Sync flow
+
+```
+Client                                          Server
+  │ 1. Scan local skills/ into SkillDigest[]       │
+  │ ──── POST /skill-sync/diff ─────────────────► │ 2. Scan server skills/
+  │ ◄────────── diff result (grouped) ───────────  │ 3. Compare via state machine
+  │ 4. Pick skills to pull                          │
+  │ ──── POST /skill-sync/package ──────────────► │ 5. Build zip (excludes derived artifacts)
+  │ ◄────────── zip stream + X-Package-Sha256 ────  │ 6. Verify sha256, extract
+  │ 7. Zip client-only / newer skills               │
+  │ ──── POST /skill-sync/apply ────────────────► │ 8. Verify + install
+  │ ◄────────── install result (JSON) ──────────   │ 9. On landed skills, notify
+  │                                              │    AgentServer to rebuild agent
+  │                                              │    (skills.sync.reload)
+```
+
+### Client report unit: SkillDigest
+
+Fields of each entry in the `client_skills` array of a `diff` request:
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | Yes | Identity key = skill directory name |
+| `category` | No | Normalized category: `builtin` / `local` / `marketplace` / `online` / `project` / `unknown` |
+| `source` | No | Raw source string (e.g. marketplace repo name); entries with `mcp` are excluded from sync (availability depends on local MCP connections) |
+| `skill_type` | No | `skill` / `skillpack` / `swarm_skill` / `multimodal_skill` |
+| `version` | No | Only the `current_version` from `.archive/versions/index.json`; empty string when absent (SKILL.md frontmatter is **not** consulted) |
+| `content_checksum` | Yes | Content checksum (algorithm below) |
+| `description` / `updated_at` / `builtin` | No | Display only |
+
+**`content_checksum` algorithm** (both ends must use the same version): sort files by relative path, then accumulate sha256 over `relative path + \0 + file bytes + \0` per file; excludes `.archive/`, `__pycache__/`, `*.pyc`, and symlinks. The current algorithm version is **v2** and is declared via the `checksum_algo_version` request field (integer). A mismatch returns `SKILL_SYNC_CHECKSUM_ALGO_MISMATCH` (400); the comparison result is then untrustworthy and the client must upgrade its SDK before retrying. The server-side truth lives in `archive_store.CHECKSUM_ALGO_VERSION`.
+
+### diff state machine and response
+
+| Status | Condition | Action |
+|---|---|---|
+| `server_only` | present on server only | client pulls via package |
+| `client_only` | present on client only | client pushes via apply |
+| `in_sync` | identical content_checksum | nothing to do |
+| `version_mismatch` | checksums differ, versions comparable | pull/push by version order |
+| `content_mismatch` | checksums differ, versions not comparable | **divergence**; manual decision, no auto-merge |
+
+The response is grouped by `category` (server-side category wins); each group carries a `summary` count and `items` with both sides' digests (category drift stays visible).
+
+### package: batch download
+
+Request: `{"skills": [{"name": "weather"}, {"name": "ppt", "version": "1.9.0"}], "include_archive": false}`
+
+- Omitted `version` packs current content; a specified version is read from the `.archive/versions/content/` history copy;
+- `include_archive: true` includes the `.archive/` version store — **backup/migration only**; such a package cannot be applied directly (root-level `.archive` is rejected);
+- Any missing skill/version fails the whole batch with 404 (fail-fast; the detail names `name@version`);
+- Batch quotas: 100 skills / 5000 files / 100MB uncompressed / 50MB response zip;
+- The `X-Package-Sha256` response header covers the entire body; the client should retry on mismatch.
+
+Zip layout (top-level directories are skills, compatible with single-skill import):
+
+```
+skills_sync_xxx.zip
+├── weather/           ← SKILL.md, scripts/, ...
+└── ppt-creation/
+```
+
+### apply: batch upload
+
+Multipart form fields:
+
+| Field | Required | Description |
+|---|---|---|
+| `file` | Yes | zip package (each top-level directory = one skill; the directory name must match the SKILL.md `name`) |
+| `sha256` | Yes | 64-char hex sha256 of `file`; a mismatch returns 400 without writing to disk |
+| `overwrite` | No | Default `false`; overwrite same-name skills |
+| `mode` | No | `strict` (default; any precheck failure rejects the whole batch and installs nothing) / `best_effort` (skip failures, continue with the rest) |
+
+The `origin` provenance marker is fixed server-side to `sync_client`; client-supplied form values are ignored.
+
+**v1 boundaries**: skillpack skills **cannot be pushed back** (visible in diff, packable, rejected by apply); MCP-bundled skills are excluded from sync; builtin skills cannot be overwritten via apply (403). Install semantics: a fresh install reports `version: null` (frontmatter version is not trusted); an overwrite preserves the server's existing `current_version`. Re-applying the same package: strict returns 409, best_effort records `skipped` — idempotent, no side effects.
+
+**Install-failure and rollback semantics**: per-item failures during the install stage (strict / best_effort) are **not reported via an error status** — the HTTP response stays 200 with `success: false` and details in `failed[]` (strict rejects the whole batch with 400/409 only at the precheck stage, installing nothing; once the precheck passes, an install-stage failure **does not roll back** — landed skills are listed in `applied[]`). A 500 `SKILL_SYNC_INSTALL_FAILED` is returned only for server-side exceptions (IO / runtime errors).
+
+> **Client SDK push rule**: never push a skill whose server-side digest in the diff response carries `builtin: true` (the server's builtin directory has a same-named skill) — apply always returns 403 for such entries, so pushing can never succeed. Builtin skills sync downward only (clients pull updates from the server); when builtin content diverges across ends, it converges via a server-side upgrade, never by pushing back from the client.
+>
+> Likewise, a server-side digest carrying `name_mismatch: true` (directory name differs from the SKILL.md `name`, e.g. the `skill-creator-normal` directory declaring `name: skill-creator`) **cannot be pushed back** — apply requires the directory name to match the frontmatter `name` and always returns 400 for such entries; they are pull-only, and client SDKs must skip pushing them.
+
+**Taking effect after install (server-side agent rebuild)**: apply lands skills on disk inside the web server process, while the AgentServer that owns the agent instances is a separate process. Whenever any skill actually lands (`applied` non-empty), the web process sends a `skills.sync.reload` notification over the AgentServer's internal WebSocket; the AgentServer then rebuilds its agent instance and refreshes skill listings, so **running sessions can use the new skills immediately**. The notification is best-effort: a failure (e.g. AgentServer not running) is only logged and never affects the apply response — the skills are already on disk and become effective on the next event that rebuilds the agent. No notification is sent when nothing lands (all `skipped` / install failures).
+
+**WebSocket methods**: only `skills.sync.reload` is registered on the WebSocket side (the inter-process notification sent by the web process after an HTTP apply lands skills — not an external API). `skills.sync.diff` / `package` / `apply` **have no WS route** — invoking them over WS would bypass the token auth, and the binary `zip_bytes` cannot cross JSON serialization anyway; external callers must use the authenticated HTTP `/skill-sync/*` endpoints.
+
+### Error codes
+
+| Code | HTTP | Scenario |
+|---|---|---|
+| `SKILL_SYNC_DISABLED` | 503 | API not enabled / no token configured |
+| `SKILL_SYNC_UNAUTHORIZED` | 401 | Missing or wrong Bearer token |
+| `SKILL_SYNC_INVALID_PAYLOAD` | 400 | Malformed payload / duplicate names / directory name mismatch with frontmatter name |
+| `SKILL_SYNC_CHECKSUM_MISMATCH` | 400 | apply upload sha256 mismatch |
+| `SKILL_SYNC_CHECKSUM_ALGO_MISMATCH` | 400 | diff `checksum_algo_version` differs from server; client must upgrade |
+| `SKILL_SYNC_EMPTY_PACKAGE` | 400 | package `skills` empty / apply zip has no valid skill directories |
+| `SKILL_SYNC_FILE_TOO_LARGE` | 413 | apply upload over 60MB (prechecked before reading the body; higher than the 50MB package limit to leave headroom for multipart overhead) |
+| `SKILL_SYNC_PACKAGE_TOO_LARGE` | 400 | package batch quota exceeded |
+| `SKILL_SYNC_INSTALL_FAILED` | 500 | apply server-side exception (IO / runtime error); **per-item install failures do not use this code** (200 + `success=false` + `failed[]`, see "Install-failure and rollback semantics") |
+| `SKILL_NOT_FOUND` / `SKILL_VERSION_NOT_FOUND` | 404 | package references a missing skill / version |
+| `SKILL_ALREADY_EXISTS` | 409 | apply name conflict (whole batch in strict mode) |
+| `SKILL_OPERATION_UNSUPPORTED` | 400 | apply contains a skillpack |
+| `SKILL_BUILTIN_READ_ONLY` | 403 | builtin skill cannot be overwritten |
+
+Other package-validation errors (`SKILL_INVALID_PACKAGE` / `SKILL_UNSAFE_PATH` / `SKILL_INVALID_METADATA` / `SKILL_RESERVED_PATH`, etc.) keep their existing semantics, all mapped to 400.
