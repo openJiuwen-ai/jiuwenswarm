@@ -23,7 +23,7 @@ import logging
 import sys
 from typing import Optional
 
-from jiuwenswarm.common.utils import get_user_home, init_user_workspace, get_user_workspace_dir
+from jiuwenswarm.common.utils import init_user_workspace, get_user_workspace_dir
 from jiuwenswarm.instance_manager import (
     create_bootstrap_env,
     get_default_instance_status,
@@ -66,7 +66,7 @@ def run_init(force: bool = False, name: Optional[str] = None) -> int:
         logging.info(f"[jiuwenswarm-init] Creating instance: {name}")
         logging.info(f"[jiuwenswarm-init] Workspace: {workspace_path}")
     else:
-        workspace_path = get_user_home() / ".jiuwenswarm"
+        workspace_path = get_user_workspace_dir()
         logging.info(f"[jiuwenswarm-init] Initializing default workspace")
         logging.info(f"[jiuwenswarm-init] Workspace: {workspace_path}")
 
