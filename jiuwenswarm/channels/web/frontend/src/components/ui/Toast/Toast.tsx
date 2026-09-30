@@ -13,7 +13,7 @@ const VARIANT_ICON: Partial<Record<ToastVariant, LucideIcon>> = {
 };
 
 function ToastItem({ record }: { record: ToastRecord }) {
-  const { key, content, actions, durationMs, variant, icon, wide, closing, testId, style } = record;
+  const { key, content, actions, durationMs, variant, icon, wide, closing, testId, style, closable } = record;
   useEffect(() => {
     if (durationMs <= 0) return undefined;
     const timerId = window.setTimeout(() => toast.close(key), durationMs);
@@ -56,16 +56,18 @@ function ToastItem({ record }: { record: ToastRecord }) {
           ))}
         </span>
       ) : null}
-      <button
-        type="button"
-        className="ui-toast__close"
-        aria-label="close"
-        title="close"
-        onClick={() => toast.close(key)}
-        data-testid="ui-toast-close"
-      >
-        <X aria-hidden="true" size={16} />
-      </button>
+      {closable ? (
+        <button
+          type="button"
+          className="ui-toast__close"
+          aria-label="close"
+          title="close"
+          onClick={() => toast.close(key)}
+          data-testid="ui-toast-close"
+        >
+          <X aria-hidden="true" size={16} />
+        </button>
+      ) : null}
     </div>
   );
 }

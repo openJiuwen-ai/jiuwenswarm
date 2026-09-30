@@ -30,6 +30,8 @@ export interface ToastConfig {
   testId?: string;
   /** 条目内联样式透传（如个别 toast 的定制 box-shadow，引用主题 token 而非硬编码色值）。 */
   style?: CSSProperties;
+  /** 是否显示关闭按钮；默认 true。常驻型提示（如连接状态）传 false 隐藏关闭入口。 */
+  closable?: boolean;
   /** 关闭回调：toast 真正移除（退出动画播完）时只触发一次；自动消失、点关闭按钮或 toast.close(key) 均会触发。 */
   onClose?: (key: number) => void;
 }
@@ -47,6 +49,7 @@ export interface ToastRecord {
   position: ToastPosition;
   testId?: string;
   style?: CSSProperties;
+  closable: boolean;
   /** 退出动画播放中：记录仍留在列表里渲染，但不响应交互；动画结束后才真正移除。 */
   closing: boolean;
   onClose?: (key: number) => void;
@@ -120,6 +123,7 @@ function buildRecord(config: ToastConfig, key: number): ToastRecord {
     position: config.position ?? 'center',
     testId: config.testId,
     style: config.style,
+    closable: config.closable ?? true,
     closing: false,
     onClose: config.onClose,
   };

@@ -2046,6 +2046,7 @@ function AppContent({
       position: 'right',
       variant: 'info',
       icon: <LoadingSpinner size={14} />,
+      closable: false,
       testId: 'app-connection-toast',
     });
   }, [isConnected, connectionStatusText]);
