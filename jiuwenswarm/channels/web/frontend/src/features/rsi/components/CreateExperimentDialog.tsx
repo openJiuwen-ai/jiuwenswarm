@@ -327,13 +327,17 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
       onClick={(event) => {
         if (event.target === dialogRef.current) onClose();
       }}
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
     >
       <div className="rsi-create-dialog__inner">
         <div className="rsi-create-dialog__header">
           <h2 id="rsi-create-title" style={{ fontSize: 16, fontWeight: 600 }}>
             {t('rsi.createDialog.title')}
           </h2>
-          <button type="button" className="rsi-create-dialog__close" onClick={onClose} aria-label="close">
+          <button type="button" className="rsi-create-dialog__close" onClick={onClose} aria-label={t('common.close')}>
             ×
           </button>
         </div>
