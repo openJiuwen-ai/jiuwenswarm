@@ -207,6 +207,28 @@ class TestConfigFunctions:
 
         assert temp_config_file.read_bytes() == original
 
+    @staticmethod
+    def test_default_config_template_has_permissions_enabled() -> None:
+        """Regression: init must default to ``permissions.enabled=true`` so the
+        Web/TUI safety selector resolves to ``default`` instead of
+        ``full_access``. See resources/config.yaml.
+        """
+        from jiuwenswarm.common.utils import _find_package_root
+
+        package_root = _find_package_root()
+        assert package_root is not None, "package root not found"
+        template_path = package_root / "resources" / "config.yaml"
+        assert template_path.is_file(), f"missing template: {template_path}"
+
+        raw = yaml.safe_load(template_path.read_text(encoding="utf-8"))
+        permissions = raw.get("permissions")
+        assert isinstance(permissions, dict), "permissions block must be a mapping"
+        assert permissions.get("enabled") is True, (
+            "resources/config.yaml must default permissions.enabled=true so the "
+            "post-init safety selector shows '默认权限' (default), not "
+            "'完全访问权限' (full_access)."
+        )
+
     @pytest.mark.parametrize(
         ("config", "expected"),
         [

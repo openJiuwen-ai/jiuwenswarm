@@ -983,7 +983,7 @@ channels:
 #
 # 三种动作: allow / ask / deny
 permissions:
-  enabled: false
+  enabled: true
   schema: tiered_policy
   permission_mode: normal
 
