@@ -295,6 +295,15 @@ async def _start_runtime_backend(front: object, host: str, port: int) -> object:
     install_subagent_observability_hook()
     log_startup_stage("observability_installed")
 
+    # LLM 花费归因（2026-09-23）：向 `Runner.callback_framework` 注册 transform 回调，让
+    # **每次** LLM 调用把 `X-Helix-Line`/`X-Helix-Session` 并入 `custom_headers`
+    # （值来自 `agent_ws_server` 每请求写入的上下文；关口据此把花费记到线与会话）。
+    # 必须早于任何 LLM 调用（含下面的图像模态预热 / 免费模型预热）。
+    from jiuwenswarm.common.llm_attribution import install_llm_attribution_hook
+
+    install_llm_attribution_hook()
+    log_startup_stage("llm_attribution_installed")
+
     schedule_warmup = getattr(server, "schedule_image_modality_warmup", None)
     if callable(schedule_warmup):
         schedule_warmup(reason="startup")
