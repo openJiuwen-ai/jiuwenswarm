@@ -235,6 +235,7 @@ def convert_code_config_to_deep_agent_spec(
     completion_timeout: float | None,
     session_id: str = "",
     channel_id: str | None = None,
+    add_general_purpose_agent: bool = False,
 ) -> tuple[DeepAgentSpec, CodeBuildContext]:
     """Convert one resolved ``config.yaml`` snapshot into a standard spec."""
     register_code_spec_providers()
@@ -290,6 +291,7 @@ def convert_code_config_to_deep_agent_spec(
                 factory_kwargs=subagent_factory_kwargs,
             )
         ],
+        add_general_purpose_agent=add_general_purpose_agent,
         enable_task_loop=(
             bool(react_snapshot.get("enable_task_loop", True))
             or get_skill_evolution_enabled(config_snapshot)
