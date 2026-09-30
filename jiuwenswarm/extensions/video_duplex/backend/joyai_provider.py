@@ -37,15 +37,28 @@ _USER_KNOWLEDGE_GUARD = (
     "天气、新闻、价格、公司或品牌背景等外部或时效事实需要搜索核实，不得凭记忆猜测。"
     "当且仅当搜索对象已经明确且需要外部核实时，必须在本次推理中一次性输出完整的 Delegate 动作："
     "</response> 简短说明 </delegation> 包含明确对象和查询事项的可独立执行搜索请求。"
+    "格式强制：</response> 与 </delegation> 必须出现在同一行，中间不得换行；"
+    "跨行拆开（例如 </response>… 换行后再写 </delegation>…）视为无效 Delegate。"
     "Delegate 是不可拆分的原子动作；只说‘需要搜索’、‘我来查询’或其他搜索承诺却没有在同一输出中给出 </delegation>，均为无效动作。"
     "不得先 Speak、再等待下一帧补发 Delegate，也不得用 </delegation> 询问‘这是什么’、‘哪个品牌’或‘请提供对象’。"
     "若画面和会话历史都无法确认搜索所需的关键对象，只选择 Speak，说明缺少的信息并请用户调整画面或补充，不要 Delegate。"
     "利用当前画面和会话历史解析‘这个品牌’、‘这个人’、‘这里’等指代。若先前因对象不明而追问，用户或后续清晰画面一旦补齐对象，"
     "立即结合先前搜索意图输出一个完整 Delegate 动作，不要只承诺搜索。纯视觉问答无需搜索。"
+    "对于用户提出的任务或操作请求：不得自行判断能否完成、是否有权限，也不得直接否认或拒绝。"
+    "必须把任务原样交给九问 Core Agent 执行；能否执行由 Core Agent 返回，不由你判断。"
+    "委派执行时同样必须在同一行输出完整 Delegate："
+    "</response> 简短说明 </delegation> 请执行：完整任务描述。"
 )
 _RESPONSE_MARKER = re.compile(r"</?response>", flags=re.IGNORECASE)
 _SILENCE_MARKER = re.compile(r"</?silence>", flags=re.IGNORECASE)
 _DELEGATION_MARKER = re.compile(r"</?delegation>", flags=re.IGNORECASE)
+
+
+def _markers_on_same_line(raw: str, left: re.Match[str], right: re.Match[str]) -> bool:
+    """True when both matches sit on one physical line (no newline between them)."""
+    start = min(left.start(), right.start())
+    end = max(left.end(), right.end())
+    return "\n" not in raw[start:end] and "\r" not in raw[start:end]
 
 
 class JoyAIRateLimitError(RuntimeError):
@@ -113,14 +126,21 @@ def parse_action(raw_content: str) -> dict[str, str]:
     """Normalize JoyAI's native silence/response/delegation action protocol."""
     raw = str(raw_content or "").strip()
     delegation_match = _DELEGATION_MARKER.search(raw)
-    if delegation_match:
+    response_match = _RESPONSE_MARKER.search(raw)
+    if (
+        delegation_match
+        and response_match
+        and _markers_on_same_line(raw, response_match, delegation_match)
+    ):
         response = _RESPONSE_MARKER.sub("", raw[:delegation_match.start()], count=1).strip()
         delegation = raw[delegation_match.end():].strip()
         return {"decision": "delegation", "response": response, "delegation": delegation}
     if _SILENCE_MARKER.search(raw):
         return {"decision": "silence", "response": "", "delegation": ""}
-    if _RESPONSE_MARKER.search(raw):
-        response = _RESPONSE_MARKER.sub("", raw, count=1).strip()
+    if response_match:
+        # Drop a broken cross-line </delegation>…payload so Speak text stays clean.
+        spoken = raw[:delegation_match.start()] if delegation_match else raw
+        response = _RESPONSE_MARKER.sub("", spoken, count=1).strip()
         return {"decision": "response", "response": response, "delegation": ""}
     if not raw:
         return {"decision": "silence", "response": "", "delegation": ""}

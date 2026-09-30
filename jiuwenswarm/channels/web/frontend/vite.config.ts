@@ -1450,6 +1450,12 @@ export default defineConfig({
   server: {
     host: true,
     allowedHosts: ['127.0.0.1'],
+    fs: {
+      allow: [
+        __dirname,
+        path.resolve(__dirname, '../../../extensions/video_duplex/frontend'),
+      ],
+    },
     port: frontendPort,
     strictPort: true,
     proxy: {
