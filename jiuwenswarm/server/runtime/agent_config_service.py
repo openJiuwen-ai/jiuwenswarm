@@ -79,7 +79,6 @@ class AgentDefinition:
     tools: list[str] = field(default_factory=lambda: ["*"])
     disallowed_tools: list[str] = field(default_factory=list)
     color: str | None = None
-    permission_mode: str | None = None
     memory_scope: str | None = None
     shadowed_by: AgentSource | None = None
     enabled: bool | None = None  # None = 不在 config.yaml 中（内置 agent 默认 None）
@@ -99,7 +98,6 @@ class CreateAgentParams:
     model: str | None = None
     tools: list[str] | None = None
     color: str | None = None
-    permission_mode: str | None = None
     memory_scope: str | None = None
     disallowed_tools: list[str] | None = None
     when_to_use: str | None = None
@@ -117,7 +115,6 @@ class UpdateAgentParams:
     model: str | None = None
     tools: list[str] | None = None
     color: str | None = None
-    permission_mode: str | None = None
     memory_scope: str | None = None
     disallowed_tools: list[str] | None = None
     max_iterations: int | None = None
@@ -316,7 +313,6 @@ class AgentConfigService:
             model=params.model,
             tools=params.tools or ["*"],
             color=params.color,
-            permission_mode=params.permission_mode,
             memory_scope=params.memory_scope,
             max_iterations=params.max_iterations,
             skills=params.skills,
@@ -474,7 +470,6 @@ def _parse_agent_file(file_path: Path, source: AgentSource) -> AgentDefinition |
         tools=frontmatter.get("tools", ["*"]),
         disallowed_tools=frontmatter.get("disallowed_tools", []),
         color=frontmatter.get("color"),
-        permission_mode=frontmatter.get("permission_mode"),
         memory_scope=frontmatter.get("memory_scope"),
         max_iterations=frontmatter.get("max_iterations"),
         skills=frontmatter.get("skills"),
@@ -497,8 +492,6 @@ def _format_agent_file(params: CreateAgentParams | AgentDefinition) -> str:
         frontmatter["tools"] = params.tools
     if hasattr(params, "color") and params.color:
         frontmatter["color"] = params.color
-    if hasattr(params, "permission_mode") and params.permission_mode:
-        frontmatter["permission_mode"] = params.permission_mode
     if hasattr(params, "memory_scope") and params.memory_scope:
         frontmatter["memory_scope"] = params.memory_scope
 
@@ -527,8 +520,6 @@ def _apply_update_params(agent: AgentDefinition, params: UpdateAgentParams) -> N
         agent.tools = params.tools
     if params.color is not None:
         agent.color = params.color
-    if params.permission_mode is not None:
-        agent.permission_mode = params.permission_mode
     if params.memory_scope is not None:
         agent.memory_scope = params.memory_scope
     if params.disallowed_tools is not None:

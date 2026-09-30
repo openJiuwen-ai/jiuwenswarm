@@ -901,7 +901,6 @@ Agents with the same name are resolved by `project > user > local > builtin` pri
 | `tools` | Available tool list |
 | `disallowed_tools` | Disallowed tool list |
 | `color` | Display color |
-| `permission_mode` | Permission mode |
 | `memory_scope` | Memory scope |
 | `when_to_use` | When-to-use description |
 | `max_iterations` | Max iterations (default 200) |
