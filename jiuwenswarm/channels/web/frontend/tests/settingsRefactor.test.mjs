@@ -1479,7 +1479,12 @@ test('SettingRow exposes a business-agnostic subSettings slot for dependent rows
   assert.deepEqual(findSettingDefinitionKeys(parseTsx('src/features/settings/modules/browser/definition.ts')), [
     'chrome_path',
     'headless',
+    'decision_mode',
   ]);
+  for (const mode of ['llm', 'shadow', 'hybrid']) {
+    assert.match(browserDefinition, new RegExp(`\{ value: '${mode}', labelKey: 'settingsPanel\.browser\.decision`));
+  }
+  assert.match(sourceContract, /\['decision_mode', 'select'\]/);
   assert.match(browserDefinition, /\{ value: false, labelKey: 'settingsPanel\.browser\.headed' \}/);
   assert.match(browserDefinition, /\{ value: true, labelKey: 'settingsPanel\.browser\.headless' \}/);
   assert.doesNotMatch(browserDefinition, /browser_type|browserType/);

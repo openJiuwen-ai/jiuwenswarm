@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import base64
+import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1242,7 +1243,7 @@ async def test_config_adapter_keeps_browser_config_in_agentserver_directory(monk
         _request(ReqMethod.PATH_SET, {"chrome_path": "/agent/new-chrome", "headless": True})
     )
 
-    assert got.payload == {"chrome_path": "/agent/chrome", "headless": False}
+    assert got.payload == {"chrome_path": "/agent/chrome", "headless": False, "decision_mode": "llm"}
     assert updates == [{"chrome_path": "/agent/new-chrome", "headless": True}]
     assert changed.metadata["config_changed"] is True
     assert changed.metadata["browser_runtime_restart"] is True
@@ -1266,6 +1267,7 @@ async def test_config_adapter_resolves_platform_browser_path_for_runtime_restart
     assert response.payload == {
         "chrome_path": "/agent/chrome",
         "headless": True,
+        "decision_mode": "llm",
     }
 
 
@@ -1284,6 +1286,95 @@ async def test_config_adapter_resolves_env_browser_path_for_runtime_restart(monk
     response = await ConfigAdapter().handle(_request(ReqMethod.PATH_GET))
 
     assert response.payload["chrome_path"] == "/agent/chrome"
+
+
+def _browser_writes(monkeypatch, current: dict) -> list[tuple[str, object]]:
+    from jiuwenswarm.common import config as config_module
+
+    writes: list[tuple[str, object]] = []
+    monkeypatch.setattr(config_module, "get_config", lambda: current)
+    monkeypatch.setattr(config_module, "update_browser_in_config", lambda p: writes.append(("browser", p)))
+    monkeypatch.setattr(
+        config_module, "update_browser_decision_mode_in_config", lambda m: writes.append(("mode", m))
+    )
+    return writes
+
+
+_JEV_CONFIG = {"browser": {"decision": {"mode": "llm", "provider": "openrouter", "api_key_env": "TEST_JEV_UI_KEY"}}}
+_requires_jev = pytest.mark.skipif(
+    importlib.util.find_spec("openjiuwen.harness.tools.browser_move.decision") is None,
+    reason="installed openjiuwen has no Jev decision support",
+)
+
+
+@pytest.mark.asyncio
+async def test_config_adapter_reports_the_saved_browser_decision_mode(monkeypatch) -> None:
+    """The Browser settings page shows the mode the next browser task will use."""
+    _browser_writes(monkeypatch, {"browser": {"decision": {"mode": "shadow"}}})
+    response = await ConfigAdapter().handle(_request(ReqMethod.PATH_GET))
+    assert response.payload["decision_mode"] == "shadow"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["shadow", "hybrid", "turbo"])
+async def test_config_adapter_refuses_a_jev_mode_that_cannot_run(monkeypatch, mode) -> None:
+    """Without a key (or an unknown mode) Jev would fail at every step: refuse and write nothing."""
+    monkeypatch.delenv("TEST_JEV_UI_KEY", raising=False)
+    writes = _browser_writes(monkeypatch, _JEV_CONFIG)
+    response = await ConfigAdapter().handle(
+        _request(ReqMethod.PATH_SET, {"chrome_path": "", "headless": True, "decision_mode": mode})
+    )
+    assert response.ok is False and response.payload["code"] == "BAD_REQUEST"
+    assert writes == []
+
+
+@_requires_jev
+@pytest.mark.asyncio
+async def test_config_adapter_switches_to_jev_when_its_key_is_set(monkeypatch) -> None:
+    monkeypatch.setenv("TEST_JEV_UI_KEY", "synthetic-not-used")
+    writes = _browser_writes(monkeypatch, _JEV_CONFIG)
+    response = await ConfigAdapter().handle(
+        _request(ReqMethod.PATH_SET, {"chrome_path": "", "headless": True, "decision_mode": "hybrid"})
+    )
+    assert response.ok is True and response.payload["decision_mode"] == "hybrid"
+    assert writes == [("browser", {"chrome_path": "", "headless": True}), ("mode", "hybrid")]
+    assert response.metadata["browser_runtime_restart"] is True
+
+
+@pytest.mark.asyncio
+async def test_config_adapter_switches_back_to_llm_without_a_key(monkeypatch) -> None:
+    """Turning Jev off must always work, even after its key was removed."""
+    monkeypatch.delenv("TEST_JEV_UI_KEY", raising=False)
+    writes = _browser_writes(monkeypatch, {"browser": {"decision": {"mode": "hybrid"}}})
+    response = await ConfigAdapter().handle(
+        _request(ReqMethod.PATH_SET, {"chrome_path": "", "headless": True, "decision_mode": "llm"})
+    )
+    assert response.ok is True
+    assert writes[-1] == ("mode", "llm")
+
+
+@pytest.mark.asyncio
+async def test_config_adapter_leaves_the_mode_alone_for_older_clients(monkeypatch) -> None:
+    writes = _browser_writes(monkeypatch, {"browser": {"decision": {"mode": "hybrid"}}})
+    response = await ConfigAdapter().handle(_request(ReqMethod.PATH_SET, {"chrome_path": "", "headless": True}))
+    assert response.ok is True and response.payload["decision_mode"] == "hybrid"
+    assert writes == [("browser", {"chrome_path": "", "headless": True})]
+
+
+def test_saving_the_decision_mode_keeps_the_rest_of_the_jev_settings(tmp_path, monkeypatch) -> None:
+    from jiuwenswarm.common import config as config_module
+
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "browser:\n  headless: false\n  decision:\n    mode: llm # keep me\n"
+        "    provider: openrouter\n    min_confidence: 0.55\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", path)
+    config_module.update_browser_decision_mode_in_config("hybrid")
+    saved = path.read_text(encoding="utf-8")
+    assert "mode: hybrid" in saved and "provider: openrouter" in saved
+    assert "min_confidence: 0.55" in saved and "headless: false" in saved
 
 
 class TestBuildErrorResponse:
