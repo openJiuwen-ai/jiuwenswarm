@@ -79,11 +79,18 @@ export function CatalogPage({
     setVisibleCount((count) => (count < items.length ? Math.min(count + CATALOG_BATCH_SIZE, items.length) : count));
   }, [items.length]);
 
-  // 滚动触底：底部加载组件已可见，追加下一批（数据在内存中，追加为同步展示）
+  // 滚动触底：底部加载组件已可见，追加下一批（数据在内存中，追加为同步展示）。
+  // 时间戳节流：滚动事件高频触发，100ms 内只允许追加一次，避免一帧内连续追加多批。
+  const lastAppendAtRef = useRef(0);
   const handleContentScroll = useCallback(() => {
+    const now = performance.now();
+    if (now - lastAppendAtRef.current < 100) return;
     const el = contentScrollRef.current;
     if (!el || !hasMore) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - LOAD_MORE_THRESHOLD_PX) appendNextBatch();
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - LOAD_MORE_THRESHOLD_PX) {
+      lastAppendAtRef.current = now;
+      appendNextBatch();
+    }
   }, [appendNextBatch, hasMore]);
 
   return (
