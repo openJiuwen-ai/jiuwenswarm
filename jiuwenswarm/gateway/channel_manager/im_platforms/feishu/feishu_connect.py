@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.message import Message, ReqMethod, EventType
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter, BaseChannel
+from jiuwenswarm.gateway.channel_manager.sdk.capabilities import ChannelCapabilities   
 from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_file_service import (
     FeishuFileService,
     is_image_file,
@@ -168,6 +169,12 @@ class FeishuChannel(BaseChannel):
     """
 
     name = "feishu"
+    capabilities = ChannelCapabilities(
+        buttons=True,
+        streaming=True,
+        file_upload=True,
+        rich_text=True,
+    )
     _ws_loop_proxy_lock = threading.Lock()
     _ws_loop_proxy_installed = False
 
