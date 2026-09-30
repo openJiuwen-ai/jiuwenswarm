@@ -21,6 +21,7 @@ import {
   MarkdownPane,
   PageCard,
   PageToolbar,
+  Select,
   Tabs,
   isPreviewableImagePath,
   type FilePreviewContentFile,
@@ -307,7 +308,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           <Tabs
             role="tablist"
             itemTestId={`${tid}-tab`}
-            className="text-base"
+            className="page-tabs"
             value={hubDetailTab}
             onChange={(tab) => setHubDetailTab(tab)}
             items={[
@@ -546,25 +547,28 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           </div>
         ) : (
           <div className="flex items-center gap-2 flex-wrap">
-            <select
+            <Select
+              aria-label={t('skills.detail.versionManage')}
               value={selectedSkill.version || skillVersionsDefault || ''}
-              onChange={(e) => {
-                const ver = e.target.value;
+              style={{ width: '360px' }}
+              options={buildSkillVersionOptions(skillVersions).map((option) => ({
+                value: option.version,
+                label: (
+                  <span className="skill-version-option">
+                    <span className="skill-version-option__version">{option.version}</span>
+                    {option.isDefault ? (
+                      <span className="skill-version-default-tag">{t('skills.detail.defaultVersion')}</span>
+                    ) : null}
+                  </span>
+                ),
+                disabled: option.disabled,
+                disabledReason: option.disabled ? t('skills.detail.unavailableVersion') : undefined,
+              }))}
+              onChange={(ver) => {
                 if (ver) onFetchSkillDetail(selectedSkill.name, ver);
               }}
-              className="appearance-none rounded-[6px] border border-border bg-panel text-xs text-text outline-none focus:outline-none focus:ring-0 focus:border-border"
-              style={{ width: '360px', height: '28px', paddingLeft: '12px', paddingRight: '12px' }}
               data-testid="skill-panel-my-detail-versions-select"
-            >
-              {buildSkillVersionOptions(skillVersions, {
-                defaultSuffix: ` (${t('skills.detail.defaultVersion')})`,
-                unavailableSuffix: ` (${t('skills.detail.unavailableVersion')})`,
-              }).map((option) => (
-                <option key={option.version} value={option.version} disabled={option.disabled} className="text-xs">
-                  {option.label}
-                </option>
-              ))}
-            </select>
+            />
             {selectedSkill.has_evolutions ? (
               <button
                 onClick={() => onRebuild(selectedSkill.name, selectedSkill.version || null)}
@@ -585,7 +589,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           <Tabs
             role="tablist"
             itemTestId={`${tid}-tab`}
-            className="text-base"
+            className="page-tabs"
             value={detailTab}
             onChange={(tab) => {
               setDetailTab(tab);

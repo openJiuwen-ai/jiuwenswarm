@@ -85,8 +85,6 @@
 
 .file-preview-tree__entry-icon {
   display: inline-flex;
-  width: 12px;
-  height: 12px;
   align-items: center;
   justify-content: center;
 }
@@ -155,11 +153,12 @@
   gap: 8px;
   border-bottom: 1px solid var(--color-border-default);
   padding: 16px 16px;
+  font-size: var(--font-size-lg);
   font-weight: 600;
 }
 
 .file-preview-content__header-title {
-  font-size: 18px;
+  font-size: var(--font-size-lg);
   font-weight: 600;
   height: 28px;
   color: var(--color-text-primary);
