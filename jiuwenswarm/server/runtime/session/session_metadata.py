@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
 
+from jiuwenswarm.common.audit_emit import emit_audit_ua
 from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir
 from jiuwenswarm.common.mode_matrix import NEW_AGENT_CODE_NORMAL, NEW_AGENT_WORK_NORMAL
 from jiuwenswarm.server.runtime.session.work_mode import (
@@ -1298,6 +1299,14 @@ def sync_session_request_metadata(
         session_id, cache_bust=True, sessions_root=root_s
     )
     effective_project_dir: str | None = None
+    # 本次实际落盘的 project 绑定字段（在下方真正赋值的分支里登记），仅供审计打点。
+    # project_dir/project_id 是「首次锁定，已锁定则忽略请求值」语义，调用方每轮请求
+    # 都会携带这两个候选值——若按入参是否非 None 判断，已绑定项目的会话每轮都会打点。
+    _written_fields: list[str] = []
+    # 本次读到的磁盘旧值（mode/model 在下方是覆盖式写入，赋值后就取不到旧值了），
+    # 仅用于审计判定「值是否真的变了」。
+    _old_mode = metadata.get("mode") if metadata else None
+    _old_model = metadata.get("model") if metadata else None
 
     if not metadata:
         # 会话元数据不存在：兜底新建（外部渠道隐式创建 session 的场景）
@@ -1332,6 +1341,11 @@ def sync_session_request_metadata(
             "work_mode": resolved_work_mode,
         }
         effective_project_dir = project_dir or None
+        # 新建会话：project 绑定值本次确实落盘
+        if metadata["project_dir"]:
+            _written_fields.append("project_dir")
+        if metadata["project_id"]:
+            _written_fields.append("project_id")
     else:
         _migrate_legacy_channel_id_lock(
             session_id, metadata, sessions_root=root_s
@@ -1351,10 +1365,12 @@ def sync_session_request_metadata(
             # 未锁定且请求带了值 → 首次锁定写入
             metadata["project_dir"] = project_dir.strip()
             effective_project_dir = project_dir.strip()
+            _written_fields.append("project_dir")
 
         # project_id：首次锁定，已锁定则忽略请求值（与 project_dir 一致，不可改）
         if project_id and not (isinstance(metadata.get("project_id"), str) and metadata.get("project_id", "").strip()):
             metadata["project_id"] = project_id
+            _written_fields.append("project_id")
         # cron_id：首次锁定，已锁定则忽略请求值（会话来源标记，与 project_id 一致不可改）
         if cron_id and not (isinstance(metadata.get("cron_id"), str) and metadata.get("cron_id", "").strip()):
             metadata["cron_id"] = cron_id
@@ -1389,6 +1405,38 @@ def sync_session_request_metadata(
         # 刷新成「现在」，导致旧会话被置顶。
         if is_chat_turn:
             metadata["last_message_at"] = _current_timestamp()
+
+    # 仅当本次**实际写入**业务字段（项目绑定/mode/model）时审计，
+    # 屏蔽每轮消息记账（消息计数自增、last_message_at 刷新等），避免审计洪泛。
+    # project_id/project_dir 以 _written_fields 为准——这两个字段是「首次锁定，已锁定
+    # 则忽略请求值」语义，调用方每轮请求都会携带候选值，按入参是否非 None 判断会让
+    # 已绑定项目的会话每轮都打一条审计。
+    # mode/model 仍由 explicit_*_provided 精确控制：未显式携带时保持磁盘原值，
+    # 不把默认推断值当作变更；显式携带时还要比对磁盘旧值——调用方（如企业版主客户端）
+    # 每轮都会带上 mode/model，值没变也计入会让审计量与聊天流量成正比。
+    # 注意：title/pinned/pin_order/accent_color/team_name/team_template_id 不由本函数
+    # 处理（由 Gateway 进程写入），不得在此引用——否则 NameError 会让整轮对话中断。
+    _changed_set = set(_written_fields)
+    if explicit_mode_provided and mode is not None and _old_mode != mode:
+        _changed_set.add("mode")
+    if explicit_model_provided and model is not None and _old_model != model:
+        _changed_set.add("model")
+    # 按固定顺序输出，保证审计字段顺序稳定
+    _changed = [
+        _name
+        for _name in ("project_id", "project_dir", "mode", "model")
+        if _name in _changed_set
+    ]
+    if _changed:
+        try:
+            emit_audit_ua(
+                SUBMDL="agent",
+                PROC="update_session_metadata",
+                UA="session metadata updated",
+                DETAIL=f"session_id={session_id};fields={_changed}",
+            )
+        except Exception as _emit_exc:  # noqa: BLE001
+            logger.debug("audit emit failed: %s", _emit_exc)
 
     _enqueue_write(
         session_id,

@@ -698,6 +698,17 @@ class SkillToolkit:
             resolved_source,
             installed_item["skill_dir"],
         )
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_ua
+
+            emit_audit_ua(
+                SUBMDL="agent",
+                PROC="skill_install",
+                RSPCD="0000",
+                UA=f"skill installed: name={installed_item['name']} source={resolved_source}",
+            )
+        except Exception as _emit_exc:  # noqa: BLE001
+            logger.debug("audit emit failed: %s", _emit_exc)
         return {
             "success": True,
             "source": resolved_source,
@@ -800,6 +811,17 @@ class SkillToolkit:
             payload = await self._manager.handle_skills_uninstall({"name": canonical_name})
         except Exception as exc:  # noqa: BLE001
             logger.exception("uninstall_skill failed")
+            try:
+                from jiuwenswarm.common.audit_emit import emit_audit_evt
+                emit_audit_evt(
+                    SUBMDL="agent",
+                    PROC="skill_uninstall",
+                    RSPCD="E005",
+                    EVT="skill uninstall error",
+                    DETAIL=f"name={str(name or '').strip()};error={str(exc)[:200]}",
+                )
+            except Exception as _emit_exc:  # noqa: BLE001
+                logger.debug("audit emit failed: %s", _emit_exc)
             return {
                 "success": False,
                 "removed": False,
