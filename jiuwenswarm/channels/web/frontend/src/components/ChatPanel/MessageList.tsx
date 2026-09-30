@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import clsx from 'clsx';
+import { LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Message, ToolExecution } from '../../types';
 import { MessageItem } from './MessageItem';
@@ -218,12 +219,19 @@ export function TurnElapsed({
   // 与 CompletedWorkChip 同构（is-success 时钟图标），只是不可展开、无 disclosure 箭头。
   const timeLine = (
     <div
-      className={clsx('completed-work-chip', !showAvatar && teamLayout && 'turn-elapsed--team')}
+      className={clsx('completed-work-chip', showActive && 'is-active', !showAvatar && teamLayout && 'turn-elapsed--team')}
       data-testid="chat-panel-turn-elapsed"
       data-variant={showActive ? 'active' : 'finished'}
     >
-      <span className="completed-work-chip__icon is-success" aria-hidden="true">
-        <WaitingStatusIcon />
+      <span
+        className={clsx('completed-work-chip__icon', showActive ? 'is-active' : 'is-success')}
+        aria-hidden="true"
+      >
+        {showActive ? (
+          <LoaderCircle className="animate-spin" size={12} strokeWidth={2.2} />
+        ) : (
+          <WaitingStatusIcon />
+        )}
       </span>
       <span className="completed-work-chip__label">
         <span data-testid="chat-panel-turn-elapsed-label">

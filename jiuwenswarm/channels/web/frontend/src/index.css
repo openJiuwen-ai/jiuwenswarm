@@ -1934,12 +1934,21 @@ body.workspace-resize-active iframe {
     height: 16px;
   }
 
+  /* active（进行中）：旋转加载图标用次级文本色，label/value 同步变暗（还原 turn-elapsed.is-active 规则） */
+  .completed-work-chip.is-active .completed-work-chip__icon {
+    color: var(--color-text-secondary);
+  }
+
   .completed-work-chip__label {
     font-variant-numeric: tabular-nums;
     min-width: 0;
     transition:
       opacity 0.28s ease,
       transform 0.28s ease;
+  }
+
+  .completed-work-chip.is-active .completed-work-chip__label {
+    color: var(--color-text-secondary);
   }
 
   .completed-work-chip .tool-tree-item__disclosure {
