@@ -140,6 +140,7 @@ from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import (
     PERMISSION_GROUP_TYPES, PERMISSION_RAIL_TYPES, PermissionRailGroup, build_permission_group,
 )
 from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import (
+    discard_pending_permission_interrupt_for_target,
     discard_permission_continuation, validate_manual_resume,
 )
 from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import (
@@ -3886,6 +3887,58 @@ class JiuWenSwarmDeepAdapter:
             self._instance, self._resolve_interrupt_session_id(session_id),
             self._deep_agent_loop_session_id(), frozen_keys,
         )
+
+    async def _discard_pending_core_interrupt_for_fresh_input(
+        self, request: AgentRequest, inputs: dict[str, Any],
+    ) -> bool:
+        """Discard pending Core permission interrupt when fresh user chat arrives.
+
+        Used both in Smart mode (when queue is empty but Core still has
+        INTERRUPTION_KEY) and in Manual mode (always). Conditions are the same
+        as ``_discard_superseded_permission_before_fresh_input``.
+        """
+        if self._wants_attach_goal(request.params):
+            return False
+        query = inputs.get("query")
+        stale_interactive_input = False
+        if isinstance(query, InteractiveInput):
+            loop_session = getattr(self._instance, "_loop_session", None)
+            if loop_session is not None:
+                state = loop_session.get_state(INTERRUPTION_KEY)
+                interrupted_tools = getattr(state, "interrupted_tools", None)
+                if isinstance(interrupted_tools, Mapping) and interrupted_tools:
+                    pending_inner_ids: set[str] = set()
+                    for entry in interrupted_tools.values():
+                        requests = getattr(entry, "interrupt_requests", None)
+                        if isinstance(requests, Mapping):
+                            pending_inner_ids.update(requests.keys())
+                    user_input_ids = set(getattr(query, "user_inputs", {}) or {})
+                    if user_input_ids and user_input_ids.intersection(pending_inner_ids):
+                        return False
+                    stale_interactive_input = True
+                else:
+                    return False
+            else:
+                return False
+        if not stale_interactive_input:
+            if self._should_inject_into_existing_interaction(request.params):
+                return False
+            if not self._is_host_permission_update_input(request):
+                return False
+        cleared = await discard_pending_permission_interrupt_for_target(
+            self._instance,
+            self._resolve_interrupt_session_id(request.session_id),
+            self._deep_agent_loop_session_id(),
+        )
+        if cleared:
+            try:
+                await self._instance.cancel_round(reason="host_fresh_user_input_drops_pending_permission")
+            except Exception:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] cancel_round after manual fresh-input discard failed "
+                    "session=%s", request.session_id, exc_info=True,
+                )
+        return cleared
 
     def _is_deep_agent_executing_for_session(self, session_id: str) -> bool:
         """True when the shared DeepAgent still runs stream/task-loop work for *session_id*."""
@@ -13188,6 +13241,8 @@ class JiuWenSwarmDeepAdapter:
         ) or not self._is_host_permission_update_input(request):
             return
         if not self._permission_dispatch.publish_cutover(handoff):
+            # Queue empty but Core may still hold INTERRUPTION_KEY — clear it.
+            await self._discard_pending_core_interrupt_for_fresh_input(request, inputs)
             return
         cancel_error: BaseException | None = None
         try:
@@ -13210,6 +13265,7 @@ class JiuWenSwarmDeepAdapter:
         inputs: dict[str, Any],
     ) -> dict[str, Any]:
         if not self._enable_auto_permission:
+            await self._discard_pending_core_interrupt_for_fresh_input(request, inputs)
             return inputs
         root_session_id = self._resolve_interrupt_session_id(request.session_id)
         handoff = await self._permission_dispatch.acquire(root_session_id)
