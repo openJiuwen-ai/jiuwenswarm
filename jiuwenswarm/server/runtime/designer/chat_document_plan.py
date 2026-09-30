@@ -21,8 +21,14 @@ from jiuwenswarm.common.schema.designer_graph import (
 )
 from jiuwenswarm.server.runtime.designer.chat_document_sync import (
     ChatDocument,
+    apply_text_replacements,
     map_shot_references,
     timeline_seconds,
+)
+from jiuwenswarm.server.runtime.designer.chat_document_sections import (
+    section_requirements,
+    shot_sections,
+    validate_shot_sections,
 )
 from jiuwenswarm.server.runtime.designer.chat_shot_references import (
     apply_node_reference_edits,
@@ -31,13 +37,19 @@ from jiuwenswarm.server.runtime.designer.chat_shot_references import (
 
 _DOCUMENT_SYSTEM = """You synchronize existing brief/storyboard documents after a workflow edit.
 Return a JSON object with documents and node_fields. Each blocks object maps the EXACT input block
-keys to complete text strings. For example:
-{"documents": [{"node_id": "n_brief", "blocks": {
-  "a78b25c312de": "complete updated paragraph",
-  "ef645db629a0": "unchanged original paragraph"
-}}], "node_fields": {"field_key": "complete updated node text"}}
+keys to complete text strings. required_document_ids is the COMPLETE list of documents to return:
+include exactly one entry for EVERY listed ID, even when its text stays unchanged.
+For example, an input listing n_brief AND n_storyboard requires BOTH entries:
+{"documents": [
+  {"node_id": "n_brief", "blocks": {"a78b25c312de": "complete updated brief block"}},
+  {"node_id": "n_storyboard", "blocks": {"ef645db629a0": "complete updated storyboard block"}}
+], "node_fields": {"field_key": "complete updated node text"}}
+Use the actual document IDs and block keys from the input, not these example values.
 
-Every input block key must appear exactly once. Copy unchanged text verbatim; return
+Every key in each document's required_block_keys must appear exactly once in its output
+blocks object. shot_block_ownership explicitly maps existing shot entries to their source
+keys. Keep each existing entry at its own key, including after renumbering; do not merge
+entries from different keys. Copy unchanged text verbatim; return
 an empty string to delete a block's content. Keys identify ORIGINAL SOURCE blocks and
 must never change, even when inserting or deleting shots. Do not add new keys.
 The server has already removed whole blocks headed solely by a deleted shot. Their keys
@@ -76,6 +88,15 @@ replace a marker with another surviving shot. No marker may remain in the final 
 When inserting a shot, preserve every existing shot section with its supplied NEW heading
 and original events/details. Insert the new shot section alongside an existing one inside
 that value. Never shift original content between block keys or replace it with a new shot.
+Each document's shot_sections lists REQUIRED coverage for existing per-shot sections.
+For EACH listed section, return exactly one entry for EVERY required_shot_index in order,
+including newly inserted shots. Each entry must contain all required_fields with complete
+content. Keep the heading_path unchanged. Existing shots ALREADY have their own source
+blocks: edit each entry IN ITS ORIGINAL BLOCK only, never copy it into another block.
+Only indices in inserted_shot_indices need a NEW entry; add those inside an adjacent block
+value in THAT section, separated by blank lines. When inserted_shot_indices is empty,
+DO NOT insert any shot entry. A row in the main table does not satisfy an auxiliary section.
+Before returning, check the combined section for missing OR duplicated entries and fields.
 Preserve all surviving auxiliary handoffs as well as the main table. Keep shared scene/prop
 descriptions that still apply. Update counts, durations, synopsis and other prose according
 to the request and the supplied facts.
@@ -89,6 +110,8 @@ Block keys are temporary editing coordinates for these original documents. Prese
 order and the existing Markdown format. Unchanged blocks are retained byte-for-byte.
 Do not return paths, node patches, media requests, or additional documents. Do not omit
 blocks or summarize a table/paragraph. Check all decisions against the structural facts.
+Before returning, compare your documents' node_id set with required_document_ids: they must
+match exactly. Completing the brief does not complete the storyboard; review and return both.
 """
 
 
@@ -168,7 +191,17 @@ def _document_context(doc: ChatDocument, reference_targets: dict[int, tuple[str,
             removed.append(block.key)
         else:
             blocks[block.key] = text
-    return {"node_id": doc.node_id, "pipeline": doc.pipeline, "blocks": blocks, "removed_shot_blocks": removed}
+    return {
+        "node_id": doc.node_id,
+        "pipeline": doc.pipeline,
+        "required_block_keys": list(blocks),
+        "shot_block_ownership": {
+            key: [entry.index for entries in shot_sections(text).values() for entry in entries]
+            for key, text in blocks.items() if shot_sections(text)
+        },
+        "blocks": blocks,
+        "removed_shot_blocks": removed,
+    }
 
 
 class ShotPosition(TypedDict):
@@ -227,6 +260,8 @@ def document_edit_context(
         index: (node_id, new_positions[node_id]["index"] if node_id in new_positions else None)
         for index, node_id in targets.items()
     }
+    original_indices = {position["index"] for position in old_positions.values()}
+    current_indices = {position["index"] for position in new_positions.values()}
     fields = node_reference_fields(before, candidate, reference_targets)
     reviewed = {node["id"]: set() for node in before["nodes"] + candidate["nodes"]}
     for field in fields:
@@ -245,11 +280,16 @@ def document_edit_context(
             for index, (node_id, current) in reference_targets.items()
         },
         "user": message,
+        "required_document_ids": list(documents),
         "documents": [
-            _document_context(doc, reference_targets)
+            {**_document_context(doc, reference_targets),
+             "shot_sections": section_requirements(doc.text, original_indices, current_indices)}
             for doc in documents.values()
         ],
         "description": {"before": before.get("description", ""), "after": candidate.get("description", "")},
+        "inserted_shot_indices": sorted(current_indices - {
+            new_positions[node_id]["index"] for node_id in old_positions.keys() & new_positions.keys()
+        }),
         "shot_totals": {"before": _shot_totals(old_positions), "after": _shot_totals(new_positions)},
         "shot_changes": [
             {"node_id": node_id, "before": old_positions.get(node_id), "after": new_positions.get(node_id)}
@@ -301,6 +341,11 @@ async def plan_document_edits(
     response = _extract_json_object(text)
     removed_shot_blocks = {doc["node_id"]: doc["removed_shot_blocks"] for doc in context["documents"]}
     edits = _document_replacements(response, documents, removed_shot_blocks)
+    requirements = {doc["node_id"]: doc["shot_sections"] for doc in context["documents"]}
+    for edit in edits:
+        node_id = edit["node_id"]
+        text = apply_text_replacements(documents[node_id].text, edit["replacements"])
+        validate_shot_sections(text, requirements[node_id], node_id)
     targets = {
         int(index): (target["node_id"], target["current_index"])
         for index, target in context["shot_reference_targets"].items()

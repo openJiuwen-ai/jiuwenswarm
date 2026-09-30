@@ -21,6 +21,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     DesignerGraphValidationError,
     apply_graph_patch,
     node_pipeline,
+    node_shot_index,
     utc_now_ms,
 )
 
@@ -29,6 +30,7 @@ from jiuwenswarm.server.runtime.designer.chat_document_sync import (
     ChatDocumentConflict,
     graph_content_changed,
     prepare_document_update,
+    validate_shot_topology,
 )
 
 from jiuwenswarm.server.runtime.designer.chat_document_plan import plan_document_edits
@@ -70,11 +72,12 @@ Schema:
   "thinking": "brief rationale: affected IDs, removed reference targets, and concrete details that must stay unchanged",
   "patch": {
     "description": "updated creative request, only when changed",
-    "upsert_nodes": [],
+    "upsert_nodes": [{"id": "affected_node_id", "config": {"prompt": "complete updated generation prompt"}}],
     "upsert_edges": [],
     "remove_node_ids": [],
     "remove_edge_ids": []
   },
+  "remove_shot_ids": [],
   "prompt_updates": [],
   "edit_documents": false,
   "run_node_ids": []
@@ -85,14 +88,24 @@ Rules:
 - refine_node: edit the existing node. Leave run_node_ids empty unless the user explicitly asks to generate/run.
 - answer: return intent, summary and thinking only. Omit patch and prompt_updates entirely; edit_documents=false. A run-only request may list run_node_ids.
 - Return ONE upsert_nodes entry per affected node, containing all its config changes. Leave prompt_updates empty. For existing nodes, config fields merge by ID. Include all required generation fields specified below even when some values stay unchanged; other unchanged fields may be omitted.
+- Input and output use the SAME config paths. The effective generation prompt is config.prompt;
+  update it there. The server also updates the execution prompt from that value. pipeline and
+  review_fields_if_action_changes describe the input; do not copy them into the output node.
 - Preserve existing node IDs and unrelated content. Renumber shot_index consecutively after inserting/deleting a shot, including its frame/clip; update each affected timeline, action, camera and prompt.
 - Set edit_documents=true for content edits, including requests that only change prose. A separate document editor will receive the original documents and the applied graph changes. Do not return text replacements in this plan.
 - Resolve the requested object before editing. Singular referents and background collections are distinct: e.g. changing one bicycle does not change other parked bicycles of the same color. Do not globally substitute color/material words in a sentence or record. In thinking, identify specific similar objects/details you will preserve.
+- For deleting an ENTIRE SHOT, put an existing clip/frame ID in remove_shot_ids. Use the
+  supplied shots inventory to resolve the target. The server removes ALL frame/clip nodes
+  belonging to that original shot and their edges. Do not rely on remove_node_ids or your
+  summary to express a whole-shot deletion. Use patch.remove_node_ids for explicit individual
+  node deletions and requested exclusive scene cleanup; never delete shared dependencies.
+  Leave remove_shot_ids empty when deleting only a scene/image/video node, keeping its shot.
 - When deleting a shot, REMOVE each continuity claim that refers to it. Do not replace its number with the previous or next surviving number. A surviving shot does not inherit the deleted shot's events or props. Renumber references only if their original target survives.
 - Keep description and brief/storyboard prompts consistent with the edited request. Do not create/remove brief/storyboard nodes unless explicitly requested; never edit output references or artifact paths.
 - Update generation prompts of affected downstream nodes when changing a character, scene or explicit dependency.
-- Generation uses the detailed config as well as prompt. Keep cast_actions, blocking, scene_specs, start_state, end_state, pose_holds, spatial_lock, costume_lock, continuity_lock, relationship_lock and director_task consistent with the edit, preserving unrelated details. Nested records replace the entire field; include unchanged members.
-- Whenever shot_action changes, explicitly include every field in that node's review_fields_if_action_changes in upsert_nodes.config. Return each complete field with updated action/prop details, preserving unrelated members. These fields feed generation directly; do not leave hidden old action/prop details. Whenever a scene prompt or scene_specs changes, explicitly include both its complete scene_specs and updated config.prompt. For clips too, return config.prompt when it is listed, even if the original prompt appears in generation_prompt.
+- Generation uses the detailed config as well as prompt. Keep camera, cast_actions, blocking, scene_specs, start_state, end_state, pose_holds, spatial_lock, costume_lock, continuity_lock, relationship_lock and director_task consistent with the edit, preserving unrelated details. Nested records replace the entire field; include unchanged members.
+- Camera descriptions may name the edited subject or prop. Update those details in config.camera while preserving framing, angle, focus target and camera motion unless the user asks to change them.
+- Whenever shot_action changes, explicitly include every field in that node's review_fields_if_action_changes in upsert_nodes.config. Return each complete field with updated action/prop details, preserving unrelated members. These fields feed generation directly; do not leave hidden old action/prop details. Whenever a scene prompt or scene_specs changes, explicitly include both its complete scene_specs and updated config.prompt. For clips too, return config.prompt when it is listed.
 - Costume/identity settings merge by field like other config. Update costume_lock when the request changes clothing or accessories; otherwise omit it to keep the original value. An action or prop edit alone does not require restating unchanged clothing.
 - positioning_lock, action_lock, occupancy.cast_actions, identity_refs mirrors and scene architecture prompts are derived by the server. Do not author these copies. Only return pose_holds for custom holds; Opening hold / Opening facing entries are rebuilt from start_state.
 - Before finishing each node entry, check its review_fields_if_action_changes list against the config keys you returned. If you changed shot_action, every listed key MUST be present with its complete value, including spatial_lock. Review nested landmarks, poses and cameras for the requested object as well as the main action.
@@ -101,9 +114,19 @@ Rules:
 
 
 _ACTION_DEPENDENT_FIELDS = (
-    "cast_actions", "blocking", "start_state", "end_state", "scene_specs",
+    "camera", "cast_actions", "blocking", "start_state", "end_state", "scene_specs",
     "spatial_lock", "continuity_lock", "director_task",
 )
+
+_LEADER_CONFIG_FIELDS = {
+    "prompt", "shot_index", "shot_action", "camera", "timeline", "shot_title",
+    "character_id", "character_ids", "setting_id", "on_screen", "offscreen",
+    "cast_actions", "scene_specs", "speech_line", "continuity_lock",
+    "blocking", "start_state", "end_state", "pose_holds", "spatial_lock",
+    "costume_lock", "relationship_lock", "director_task",
+    "inputs", "character_node_ids", "scene_node_id", "identity_refs",
+    "continuity_clip_node_id", "previous_clip_node_id", "continuity_frame_node_id",
+}
 
 
 _DONT_RUN = re.compile(
@@ -206,6 +229,23 @@ def _action_review_fields(config: dict[str, Any]) -> list[str]:
     return fields
 
 
+def _leader_node_context(node: DesignerGraphNode) -> dict[str, Any]:
+    """Expose the execution prompt at the same config path accepted by chat edits."""
+    config = node.get("config") or {}
+    editable_config = {key: value for key, value in config.items() if key in _LEADER_CONFIG_FIELDS}
+    prompt = (config.get("generate") or {}).get("prompt") or config.get("prompt")
+    if prompt:
+        editable_config["prompt"] = prompt
+    return {
+        "id": node["id"],
+        "type": node["type"],
+        "label": node.get("label"),
+        "pipeline": node_pipeline(node),
+        "review_fields_if_action_changes": _action_review_fields(config),
+        "config": editable_config,
+    }
+
+
 def _merge_prompt_updates(graph: DesignerExecutionGraph, plan: dict[str, Any]) -> dict[str, Any]:
     patch = deepcopy(plan.get("patch") or {})
     existing = {node["id"]: node for node in graph.get("nodes", [])}
@@ -249,6 +289,18 @@ def _merge_prompt_updates(graph: DesignerExecutionGraph, plan: dict[str, Any]) -
     return patch
 
 
+def _shot_removal_patch(graph: DesignerExecutionGraph, patch: dict[str, Any], shot_ids: list[str]) -> dict[str, Any]:
+    """Expand explicit whole-shot targets using the original stable identities."""
+    shots = {node["id"]: node_shot_index(node) for node in graph["nodes"]
+             if node_pipeline(node) in {"frame", "clip"}}
+    unknown = set(shot_ids) - shots.keys()
+    if unknown:
+        raise DesignerGraphValidationError(f"Shot deletion requires current clip/frame IDs: {sorted(unknown)}")
+    indices = {shots[node_id] for node_id in shot_ids}
+    removed = {node_id for node_id, index in shots.items() if index in indices}
+    return {**patch, "remove_node_ids": sorted(set(patch.get("remove_node_ids", [])) | removed)}
+
+
 def apply_leader_plan(
     graph: DesignerExecutionGraph,
     plan: dict[str, Any],
@@ -256,6 +308,8 @@ def apply_leader_plan(
     intent = str(plan.get("intent") or "answer").strip() or "answer"
     summary = str(plan.get("summary") or "").strip()
     patch = _merge_prompt_updates(graph, plan)
+    if plan.get("remove_shot_ids"):
+        patch = _shot_removal_patch(graph, patch, plan["remove_shot_ids"])
     has_patch = bool(patch)
     next_graph = apply_graph_patch(graph, patch) if has_patch else graph
     raw_run_ids = plan.get("run_node_ids") or []
@@ -278,6 +332,9 @@ def _sanitize_plan(plan: dict[str, Any] | None) -> dict[str, Any]:
     for key, kind in (("patch", dict), ("prompt_updates", list), ("run_node_ids", list), ("edit_documents", bool)):
         if key in plan and not isinstance(plan[key], kind):
             raise DesignerGraphValidationError(f"Leader returned invalid {key}")
+    shot_ids = plan.get("remove_shot_ids", [])
+    if not isinstance(shot_ids, list) or any(not isinstance(item, str) or not item.strip() for item in shot_ids):
+        raise DesignerGraphValidationError("remove_shot_ids must be an array of current clip/frame IDs")
     intent = str(plan.get("intent") or "answer").strip()
     if intent not in {"edit_graph", "refine_node", "answer"}:
         intent = "answer"
@@ -295,6 +352,7 @@ def _sanitize_plan(plan: dict[str, Any] | None) -> dict[str, Any]:
         "summary": str(plan.get("summary") or "").strip(),
         "thinking": str(plan.get("thinking") or "").strip(),
         "patch": patch,
+        "remove_shot_ids": shot_ids,
         "prompt_updates": prompt_updates,
         "edit_documents": plan.get("edit_documents", False),
         "run_node_ids": [str(item).strip() for item in run_ids if str(item).strip()],
@@ -322,25 +380,13 @@ async def _llm_leader_plan(
         "user_canvas_edits": list(meta.get("user_canvas_edits") or [])[-20:],
         "description": graph.get("description", ""),
         "documents": [{"node_id": doc.node_id, "pipeline": doc.pipeline, "text": doc.text} for doc in documents.values()],
-        "nodes": [
-            {
-                "id": node.get("id"),
-                "type": node.get("type"),
-                "label": node.get("label"),
-                "pipeline": node_pipeline(node),
-                "review_fields_if_action_changes": _action_review_fields(node.get("config") or {}),
-                "generation_prompt": (node.get("config") or {}).get("generate", {}).get("prompt", ""),
-                "config": {key: value for key, value in (node.get("config") or {}).items()
-                           if key in {"prompt", "shot_index", "shot_action", "camera", "timeline", "shot_title",
-                                      "character_id", "character_ids", "setting_id", "on_screen", "offscreen",
-                                      "cast_actions", "scene_specs", "speech_line", "continuity_lock",
-                                      "blocking", "start_state", "end_state", "pose_holds", "spatial_lock",
-                                      "costume_lock", "relationship_lock", "director_task",
-                                      "inputs", "character_node_ids", "scene_node_id", "identity_refs",
-                                      "continuity_clip_node_id", "previous_clip_node_id", "continuity_frame_node_id"}},
-            }
-            for node in graph.get("nodes") or []
+        "shots": [
+            {"index": index, "node_ids": [node["id"] for node in graph["nodes"]
+                                        if node_pipeline(node) in {"frame", "clip"} and node_shot_index(node) == index]}
+            for index in sorted({node_shot_index(node) for node in graph["nodes"]
+                                 if node_pipeline(node) in {"frame", "clip"}})
         ],
+        "nodes": [_leader_node_context(node) for node in graph["nodes"]],
         "edges": [
             {"id": edge.get("id"), "source": edge.get("source"), "target": edge.get("target")}
             for edge in graph.get("edges") or []
@@ -389,12 +435,12 @@ async def run_leader_chat(
     _emit(progress, ACTIVITY_KIND_THINKING, plan.get("thinking") or "preparing workflow edits")
     if not message_asks_to_run(text, run_new_nodes=run_new_nodes):
         plan["run_node_ids"] = []
-    if plan.get("intent") == "answer" and any(plan.get(key) for key in ("patch", "prompt_updates", "edit_documents")):
+    if plan.get("intent") == "answer" and any(plan.get(key) for key in ("patch", "remove_shot_ids", "prompt_updates", "edit_documents")):
         raise DesignerGraphValidationError("An answer cannot also modify the workflow")
 
     patch = plan.get("patch") or {}
     if pending_documents and (
-        plan["edit_documents"] or plan["prompt_updates"]
+        plan["edit_documents"] or plan["prompt_updates"] or plan.get("remove_shot_ids")
         or "description" in patch
         or any(patch.get(key) for key in ("remove_node_ids", "remove_edge_ids", "upsert_edges"))
         or any(set(node) - {"id", "label", "layout"} for node in patch.get("upsert_nodes", []))
@@ -403,6 +449,7 @@ async def run_leader_chat(
     next_graph, run_ids, summary = apply_leader_plan(deepcopy(graph), plan)
     text_edits = []
     if plan["edit_documents"] or graph_content_changed(graph, next_graph):
+        validate_shot_topology(next_graph)
         remaining_ids = {node["id"] for node in next_graph["nodes"]}
         remaining_documents = {
             key: doc for key, doc in documents.items() if key in remaining_ids and doc.text

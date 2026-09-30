@@ -175,9 +175,8 @@ def _candidate_shots(text: str) -> list[StoryboardShot]:
     return shots
 
 
-def validate_storyboard(graph: DesignerExecutionGraph, text: str) -> None:
-    """Compare shot order and timing without repairing or rebuilding the graph."""
-    shots = _candidate_shots(text)
+def validate_shot_topology(graph: DesignerExecutionGraph) -> dict[int, list[DesignerGraphNode]]:
+    """Reject invalid shot structure before spending a document-editing model call."""
     groups: dict[int, list[DesignerGraphNode]] = {}
     for node in graph.get("nodes", []):
         pipeline = node_pipeline(node)
@@ -191,6 +190,19 @@ def validate_storyboard(graph: DesignerExecutionGraph, text: str) -> None:
         if any(node_pipeline(member) == pipeline for member in group):
             raise DesignerGraphValidationError(f"Duplicate {pipeline} node for shot {index}")
         group.append(node)
+    if sorted(groups) != list(range(1, len(groups) + 1)):
+        raise DesignerGraphValidationError("Graph shot indices must be consecutive")
+    for group in groups.values():
+        timings = {timeline_seconds(str(node_config(node).get("timeline") or "")) for node in group}
+        if len(timings) != 1:
+            raise DesignerGraphValidationError("Frame and clip timelines must match within a shot")
+    return groups
+
+
+def validate_storyboard(graph: DesignerExecutionGraph, text: str) -> None:
+    """Compare shot order and timing without repairing or rebuilding the graph."""
+    shots = _candidate_shots(text)
+    groups = validate_shot_topology(graph)
     expected = list(range(1, len(shots) + 1))
     if not shots or sorted(groups) != expected:
         raise DesignerGraphValidationError("Storyboard count/order does not match consecutive graph shot indices")
