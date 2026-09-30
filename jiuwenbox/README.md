@@ -375,7 +375,7 @@ Each sandbox gets a veth pair (`jwbH{hash}` / `jwbS{hash}`), an address, a defau
 
 | Field | Default | Notes |
 | --- | --- | --- |
-| `subnet` | `""` (auto-select) | IPv4 CIDR pool for the uplink. When empty, jiuwenbox scans private pools (`100.64.0.0/10`, focused `10.200.x/16` ranges, `172.30.0.0/16`, `172.31.0.0/16`, `192.168.240.0/20`, then `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) and allocates a `/30` block that does not overlap any IPv4 route (`ip route show table all`). When set, the value is treated as an address pool and a free `/30` is chosen inside it. |
+| `subnet` | `""` (auto-select) | IPv4 CIDR pool for the uplink. When empty, jiuwenbox scans private pools (`100.64.0.0/10`, focused `10.200.x/16` ranges, `172.30.0.0/16`, `172.31.0.0/16`, `192.168.240.0/20`, then `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) and allocates a `/30` block that does not overlap local/direct routes, non-default main-table routes, or typed safety routes. Near-global policy-routing capture tables are not treated as local address conflicts, while their uncovered `/32` holes remain reserved. This filtering only affects allocation; actual forwarding still follows host routing policy. When set, the value is treated as an address pool and a free `/30` is chosen inside it. |
 | `nat` | `true` | Whether to MASQUERADE uplink traffic on the host side. Usually required in intranet deployments so sandboxes can reach external destinations through the host default route. |
 | `interface` | `""` (auto-detect) | Egress interface name. When empty, jiuwenbox auto-detects the interface used by the host default route. |
 

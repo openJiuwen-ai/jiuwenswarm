@@ -403,23 +403,173 @@ _UPLINK_DEFAULT_POOLS: tuple[str, ...] = (
 _LINK_LOCAL_NETWORK = ipaddress.ip_network("169.254.0.0/16")
 _MAX_UPLINK_BLOCK_SCAN = 4096
 _UPLINK_BLOCK_PREFIX = 30
-_SKIP_ROUTE_PREFIXES = frozenset({
-    "default",
-    "unreachable",
-    "blackhole",
-    "prohibit",
-    "throw",
-    "local",
-    "broadcast",
-    "multicast",
-    "anycast",
-    "nexthop",
-})
+_MAX_POLICY_ROUTE_HOLES = 16
+_MAIN_ROUTE_TABLES = frozenset({"main", "254"})
+_ROUTE_FIELD_NAMES = frozenset(
+    {
+        "dev",
+        "metric",
+        "nexthop",
+        "proto",
+        "scope",
+        "src",
+        "table",
+        "via",
+    }
+)
+_TYPED_ROUTE_PREFIXES = frozenset(
+    {
+        "unreachable",
+        "blackhole",
+        "prohibit",
+        "throw",
+        "local",
+        "broadcast",
+        "multicast",
+        "anycast",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _RouteRecord:
+    network: ipaddress.IPv4Network
+    table: str
+    via: str | None
+    dev: str | None
+    simple_next_hop: bool
+    capture_eligible: bool
 
 
 def _interface_names(sandbox_id: str) -> tuple[str, str]:
     digest = hashlib.sha256(sandbox_id.encode()).hexdigest()[:8]
     return f"jwbH{digest}", f"jwbS{digest}"
+
+
+def _single_route_value(parts: list[str], key: str) -> str | None:
+    indexes = [index for index, part in enumerate(parts) if part == key]
+    if len(indexes) != 1 or indexes[0] + 1 >= len(parts):
+        return None
+    return parts[indexes[0] + 1]
+
+
+def _parse_route_records(route_output: str) -> list[_RouteRecord]:
+    records: list[_RouteRecord] = []
+    for line in route_output.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0] == "nexthop":
+            raise NetworkSetupError(
+                f"Failed to parse IPv4 route for uplink subnet selection: {line!r}"
+            )
+        route_type = parts[0] if parts[0] in _TYPED_ROUTE_PREFIXES else None
+        destination_index = 1 if route_type else 0
+        if len(parts) <= destination_index:
+            raise NetworkSetupError(
+                f"Failed to parse IPv4 route for uplink subnet selection: {line!r}"
+            )
+        destination_token = parts[destination_index]
+        destination = "0.0.0.0/0" if destination_token == "default" else destination_token
+        try:
+            network = ipaddress.ip_network(destination, strict=False)
+        except ValueError as exc:
+            raise NetworkSetupError(
+                f"Failed to parse IPv4 route for uplink subnet selection: {line!r}"
+            ) from exc
+        if not isinstance(network, ipaddress.IPv4Network):
+            raise NetworkSetupError(
+                f"Failed to parse IPv4 route for uplink subnet selection: {line!r}"
+            )
+        table = _single_route_value(parts, "table")
+        via = _single_route_value(parts, "via")
+        dev = _single_route_value(parts, "dev")
+        table_is_valid = parts.count("table") == 0 or (
+            parts.count("table") == 1 and table is not None and table not in _ROUTE_FIELD_NAMES
+        )
+        if not table_is_valid:
+            raise NetworkSetupError(
+                f"Failed to parse IPv4 route for uplink subnet selection: {line!r}"
+            )
+        route_table = table if table else "main"
+        try:
+            via_is_valid = via is not None and bool(ipaddress.IPv4Address(via))
+        except ipaddress.AddressValueError:
+            via_is_valid = False
+        dev_is_valid = dev is not None and dev not in _ROUTE_FIELD_NAMES
+        records.append(
+            _RouteRecord(
+                network=network,
+                table=route_table,
+                via=via,
+                dev=dev,
+                simple_next_hop=(
+                    parts.count("via") == 1
+                    and parts.count("dev") == 1
+                    and via_is_valid
+                    and dev_is_valid
+                    and "nexthop" not in parts
+                ),
+                capture_eligible=route_type is None,
+            )
+        )
+    return records
+
+
+def _policy_capture_holes(
+    networks: list[ipaddress.IPv4Network],
+) -> list[ipaddress.IPv4Network] | None:
+    """Return small /32 holes when routes otherwise capture all IPv4 traffic."""
+    last_address = int(ipaddress.IPv4Address("255.255.255.255"))
+    cursor = 0
+    holes: list[ipaddress.IPv4Network] = []
+    for network in ipaddress.collapse_addresses(networks):
+        start = int(network.network_address)
+        end = int(network.broadcast_address)
+        if start > cursor:
+            if start - cursor != 1 or len(holes) >= _MAX_POLICY_ROUTE_HOLES:
+                return None
+            holes.append(ipaddress.ip_network(f"{ipaddress.IPv4Address(cursor)}/32"))
+        cursor = max(cursor, end + 1)
+        if cursor > last_address:
+            break
+    if cursor <= last_address:
+        if last_address - cursor != 0 or len(holes) >= _MAX_POLICY_ROUTE_HOLES:
+            return None
+        holes.append(ipaddress.ip_network(f"{ipaddress.IPv4Address(cursor)}/32"))
+    return holes
+
+
+def _capture_group_key(route: _RouteRecord) -> tuple[str, str, str] | None:
+    if not route.capture_eligible or route.table in _MAIN_ROUTE_TABLES:
+        return None
+    if not route.simple_next_hop:
+        return None
+    if route.via is None or route.dev is None:
+        return None
+    return route.table, route.via, route.dev
+
+
+def _conflicting_route_networks(route_output: str) -> list[ipaddress.IPv4Network]:
+    conflicts: list[ipaddress.IPv4Network] = []
+    capture_groups: dict[tuple[str, str, str], list[ipaddress.IPv4Network]] = {}
+    for route in _parse_route_records(route_output):
+        if (
+            route.capture_eligible
+            and route.table in _MAIN_ROUTE_TABLES
+            and route.network.prefixlen == 0
+        ):
+            continue
+        capture_group = _capture_group_key(route)
+        if capture_group is not None:
+            capture_groups.setdefault(capture_group, []).append(route.network)
+            continue
+        conflicts.append(route.network)
+
+    for networks in capture_groups.values():
+        holes = _policy_capture_holes(networks)
+        conflicts.extend(networks if holes is None else holes)
+    return conflicts
 
 
 def _route_networks() -> list[ipaddress.IPv4Network]:
@@ -431,17 +581,7 @@ def _route_networks() -> list[ipaddress.IPv4Network]:
     )
     if result.returncode != 0:
         raise NetworkSetupError("Failed to inspect IPv4 routes for uplink subnet selection")
-
-    networks: list[ipaddress.IPv4Network] = []
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if not parts or parts[0] in _SKIP_ROUTE_PREFIXES:
-            continue
-        try:
-            networks.append(ipaddress.ip_network(parts[0], strict=False))
-        except ValueError:
-            continue
-    return networks
+    return _conflicting_route_networks(result.stdout)
 
 
 def _resolve_uplink_pools(subnet: str) -> list[ipaddress.IPv4Network]:
