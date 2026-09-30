@@ -1398,7 +1398,11 @@ async def analyze_creative_brief(
             "You are the Designer Director. Domain-agnostic. "
             + story_enrichment_rule
             + "Do not alter explicit people, places, brand facts, claims, or requested events. "
-            "Extract EVERY named human into characters[]. Anonymous crowd is not a character. "
+            "Extract every on-screen human into characters[], including unnamed people and groups. "
+            "A group that shares one look (villagers, soldiers, children, elders) is one character "
+            "with a locked face, age, hair, and costume. Put that id in on_screen on every shot "
+            "where they are visible so later shots keep the same people. Do not leave them only "
+            "in the action prose. "
             "Each character description MUST lock wardrobe garments: shirt/top style+color, "
             "trousers/skirt/bottom style+color, footwear, outerwear/accessories if any "
             "(example: 'light blue short-sleeve shirt; dark charcoal trousers; black sneakers'). "
@@ -1447,7 +1451,7 @@ async def analyze_creative_brief(
             sys_msg = system
             payload: dict[str, Any] = {
                 "user_prompt": prompt[:3000] if not reinforce_json else prompt[:2000],
-                "instructions": "JSON only. Every named human in characters[].",
+                "instructions": "JSON only. Every on-screen person and recurring group is a character.",
             }
             if reinforce_json:
                 sys_msg = (

@@ -41,7 +41,7 @@ Write English Markdown with these sections:
 - Narrative / content arc (setup or hook → development/turn → payoff or CTA)
 - Timed shot plan spanning the full requested duration; every shot adds new content, no filler or repetition
 - Script / speech plan (speaker + timing + exact concise dialogue/voiceover when useful; explicitly visual-only if stronger; honor silence)
-- Cast (solo identity locks — face, hair, body, FULL costume for EACH character; never concatenate)
+- Cast (identity locks — face, hair, body, FULL costume for EACH on-screen person, including unnamed groups that share one look; never concatenate; list them on every shot where they are visible)
 - Setting / scene geography, lighting, landmarks, opening blocking (who sits/stands where)
 - Language / speech lock (film language; exact lines if the user gave them)
 - Consistency gates: character consistency, scene consistency, shot consistency, camera views covering every shot
@@ -50,7 +50,7 @@ Write English Markdown with these sections:
 - Audio policy (speech vs music)
 - Production specs (style, axis, occupancy, wardrobe) — copy locks, do not drop them
 - What to avoid
-Preserve every named character and shot from the user prompt in FULL DETAIL. Output Markdown only.
+Preserve every on-screen person, including unnamed groups that share one look, and every shot from the user prompt in FULL DETAIL. Output Markdown only.
 Explicit user facts and constraints are authoritative. For a sparse request, develop a coherent
 story, celebration, advertisement, or other fitting concept rather than stretching one premise.
 

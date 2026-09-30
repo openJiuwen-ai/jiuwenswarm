@@ -85,7 +85,7 @@ Use for solo character sheets and scene specs / stills.
 - PROMPT LENGTH: obey the IMAGE PROMPT LIMIT stamped from the configured VISUAL_GEN
   backend (Director / leaf context). Prefer dense shot-ready prose; do not pad.
 - COST: Prefer ~1K resolution (size 1K / 1024x1024 or aspect-matched ~1K). Do not request 2K/4K.
-- EVERY named character gets a solo identity sheet before any keyframe.
+- EVERY on-screen character gets an identity sheet before any keyframe, including an unnamed group that shares one look.
 - First KF of a setting_id: compose_from_solo_refs — GENERATE the setting AND place ONLY
   storyboard on_screen cast with cast_actions. Author a detailed SCENE SPECS (objects,
   lighting, crowd, hierarchical views: front/left/right/side/top/bottom).
