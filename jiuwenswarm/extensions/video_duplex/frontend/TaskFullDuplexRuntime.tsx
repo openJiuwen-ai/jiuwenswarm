@@ -1,75 +1,62 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from 'react';
 
-import type { ApplicationPluginTaskRuntimeProps } from "../../../channels/web/frontend/src/applicationPlugins/types";
-import { useTaskFullDuplexEnabled } from "../../../channels/web/frontend/src/features/taskFullDuplex/featureFlag";
-import {
-  webClient,
-  webRequest,
-} from "../../../channels/web/frontend/src/services/webClient";
+import type { ApplicationPluginTaskRuntimeProps } from '../../../channels/web/frontend/src/applicationPlugins/types';
+import { useTaskFullDuplexEnabled } from '../../../channels/web/frontend/src/features/taskFullDuplex/featureFlag';
+import { webClient, webRequest } from '../../../channels/web/frontend/src/services/webClient';
 import {
   registerApplicationTaskController,
   useApplicationTaskStore,
-} from "../../../channels/web/frontend/src/applicationPlugins/taskProgressStore";
-import { VideoLivePanel, type VideoLivePanelHandle } from "./VideoLivePanel";
-import type {
-  SearchJobPayload,
-  SearchProgressEntry,
-} from "./VideoLivePanel/types";
-import { TaskDuplexJobs } from "./taskDuplexJobs";
+} from '../../../channels/web/frontend/src/applicationPlugins/taskProgressStore';
+import { VideoLivePanel, type VideoLivePanelHandle } from './VideoLivePanel';
+import type { SearchJobPayload, SearchProgressEntry } from './VideoLivePanel/types';
+import { TaskDuplexJobs } from './taskDuplexJobs';
 import {
   registerTaskFullDuplexController,
   setTaskFullDuplexRuntimeError,
   setTaskFullDuplexRuntimeState,
   stopTaskFullDuplex,
-} from "./taskFullDuplexRuntimeStore";
+} from './taskFullDuplexRuntimeStore';
 
 const WAIT_REASON_LABELS: Record<string, string> = {
-  dependency_failed_or_cancelled: "前置任务已失败或取消，本任务暂不能执行",
-  dependency_pending: "等待前置任务完成",
-  capacity_order_or_resource: "等待执行名额、队列顺序或资源释放",
+  dependency_failed_or_cancelled: '前置任务已失败或取消，本任务暂不能执行',
+  dependency_pending: '等待前置任务完成',
+  capacity_order_or_resource: '等待执行名额、队列顺序或资源释放',
 };
 
 type PersistedTimelineEvent = Record<string, unknown> & {
-  kind:
-    "user" | "assistant" | "reasoning" | "tool_call" | "tool_result" | "file";
+  kind: 'user' | 'assistant' | 'reasoning' | 'tool_call' | 'tool_result' | 'file' | 'voice_playback';
   timestamp: number;
 };
 
 const historyQueues = new Map<string, Promise<void>>();
 
 function timelineEventId(): string {
-  return (
-    globalThis.crypto?.randomUUID?.() ??
-    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-  );
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 function timestampSeconds(value?: string | number): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value / 1_000;
-  if (typeof value === "string") {
+  if (typeof value === 'number' && Number.isFinite(value)) return value / 1_000;
+  if (typeof value === 'string') {
     const parsed = Date.parse(value);
     if (Number.isFinite(parsed)) return parsed / 1_000;
   }
   return Date.now() / 1_000;
 }
 
-function persistTimelineEvent(
-  sessionId: string,
-  event: PersistedTimelineEvent,
-): void {
-  if (!sessionId || sessionId === "new") return;
+function persistTimelineEvent(sessionId: string, event: PersistedTimelineEvent): void {
+  if (!sessionId || sessionId === 'new') return;
   const previous = historyQueues.get(sessionId) ?? Promise.resolve();
   const next = previous
     .catch(() => undefined)
     .then(async () => {
-      await webRequest("video.conversation.append", {
+      await webRequest('video.conversation.append', {
         session_id: sessionId,
         event_id: timelineEventId(),
         ...event,
       });
     })
     .catch((error) => {
-      console.warn("Failed to persist Full-duplex timeline event:", error);
+      console.warn('Failed to persist Full-duplex timeline event:', error);
     });
   historyQueues.set(sessionId, next);
   void next.finally(() => {
@@ -133,7 +120,7 @@ export function TaskFullDuplexRuntime({
       pendingReasoningRef.current.delete(targetSessionId);
       if (!pending.content.trim()) return;
       persistTimelineEvent(targetSessionId, {
-        kind: "reasoning",
+        kind: 'reasoning',
         content: pending.content,
         timestamp: pending.startedAt / 1_000,
         started_at: pending.startedAt,
@@ -144,14 +131,10 @@ export function TaskFullDuplexRuntime({
   );
 
   const emitToolCall = useCallback(
-    (
-      targetSessionId: string,
-      toolCall: Parameters<typeof onToolCall>[1],
-      startedAt?: string,
-    ) => {
+    (targetSessionId: string, toolCall: Parameters<typeof onToolCall>[1], startedAt?: string) => {
       onToolCall(targetSessionId, toolCall, startedAt);
       persistTimelineEvent(targetSessionId, {
-        kind: "tool_call",
+        kind: 'tool_call',
         timestamp: timestampSeconds(startedAt),
         tool_call: toolCall,
       });
@@ -160,14 +143,10 @@ export function TaskFullDuplexRuntime({
   );
 
   const emitToolResult = useCallback(
-    (
-      targetSessionId: string,
-      toolResult: Parameters<typeof onToolResult>[1],
-      updatedAt?: string,
-    ) => {
+    (targetSessionId: string, toolResult: Parameters<typeof onToolResult>[1], updatedAt?: string) => {
       onToolResult(targetSessionId, toolResult, updatedAt);
       persistTimelineEvent(targetSessionId, {
-        kind: "tool_result",
+        kind: 'tool_result',
         timestamp: timestampSeconds(updatedAt),
         tool_result: {
           ...toolResult,
@@ -180,8 +159,7 @@ export function TaskFullDuplexRuntime({
   );
 
   const progressAtMs = useCallback((entry: SearchProgressEntry): number => {
-    return typeof entry.timestamp === "number" &&
-      Number.isFinite(entry.timestamp)
+    return typeof entry.timestamp === 'number' && Number.isFinite(entry.timestamp)
       ? entry.timestamp * 1_000
       : Date.now();
   }, []);
@@ -193,49 +171,38 @@ export function TaskFullDuplexRuntime({
     [progressAtMs],
   );
 
-  const toolArguments = useCallback(
-    (value: unknown): Record<string, unknown> => {
-      if (value && typeof value === "object" && !Array.isArray(value)) {
-        return value as Record<string, unknown>;
-      }
-      if (typeof value === "string") {
-        try {
-          const parsed = JSON.parse(value);
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            return parsed as Record<string, unknown>;
-          }
-        } catch {
-          return value ? { input: value } : {};
-        }
-      }
-      return value == null ? {} : { input: value };
-    },
-    [],
-  );
-
-  const toolResultText = useCallback(
-    (value: unknown, fallback = ""): string => {
-      if (typeof value === "string") return value;
-      if (value == null) return fallback;
+  const toolArguments = useCallback((value: unknown): Record<string, unknown> => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+    if (typeof value === 'string') {
       try {
-        return JSON.stringify(value);
+        const parsed = JSON.parse(value);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>;
+        }
       } catch {
-        return String(value);
+        return value ? { input: value } : {};
       }
-    },
-    [],
-  );
+    }
+    return value == null ? {} : { input: value };
+  }, []);
+
+  const toolResultText = useCallback((value: unknown, fallback = ''): string => {
+    if (typeof value === 'string') return value;
+    if (value == null) return fallback;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }, []);
 
   const handleCoreAgentProgress = useCallback(
-    (
-      event: "started" | "progress" | "completed" | "failed" | "cancelled",
-      incoming: SearchJobPayload,
-    ) => {
+    (event: 'started' | 'progress' | 'completed' | 'failed' | 'cancelled', incoming: SearchJobPayload) => {
       const job = conversationJobsRef.current.accept({
         ...incoming,
-        status:
-          incoming.status ||
-          (event === "completed" || event === "failed" ? event : "running"),
+        status: incoming.status || (event === 'completed' || event === 'failed' ? event : 'running'),
       });
       if (!job) return;
       const { sessionId: targetSessionId, payload } = job;
@@ -246,31 +213,29 @@ export function TaskFullDuplexRuntime({
           ? [payload.progress]
           : [];
       const latest = entries.reduce<SearchProgressEntry | undefined>(
-        (last, entry) =>
-          !last || entry.sequence > last.sequence ? entry : last,
+        (last, entry) => (!last || entry.sequence > last.sequence ? entry : last),
         undefined,
       );
       const plan = [...entries].reverse().find((entry) => entry.todos)?.todos;
-      const status =
-        payload.status ||
-        (event === "completed" || event === "failed" ? event : "running");
+      const status = payload.status || (event === 'completed' || event === 'failed' ? event : 'running');
       const previousTask = useApplicationTaskStore
         .getState()
         .sessions[targetSessionId]?.find((task) => task.id === jobId);
       useApplicationTaskStore.getState().upsert(targetSessionId, {
         id: jobId,
-        pluginId: "video-duplex",
-        title:
-          payload.question?.trim() ||
-          payload.query?.trim() ||
-          previousTask?.title ||
-          "Jiuwen Core Agent",
-        status: status === "waiting_user" ? "running" : status,
+        pluginId: 'video-duplex',
+        title: payload.question?.trim() || payload.query?.trim() || previousTask?.title || 'Jiuwen Core Agent',
+        status: status === 'waiting_user' ? 'running' : status,
         sequence: payload.sequence ?? latest?.sequence ?? 0,
         detail:
-          (status === "waiting_user" ? "等待回答：" + (payload.interaction?.questions.map(q => q.question).join("；") || "") : "") ||
-          WAIT_REASON_LABELS[payload.wait_reason || ""] || payload.error || payload.display_result || payload.result ||
-          [latest?.title, latest?.detail].filter(Boolean).join("\n"),
+          (status === 'waiting_user'
+            ? '等待回答：' + (payload.interaction?.questions.map((q) => q.question).join('；') || '')
+            : '') ||
+          WAIT_REASON_LABELS[payload.wait_reason || ''] ||
+          payload.error ||
+          payload.display_result ||
+          payload.result ||
+          [latest?.title, latest?.detail].filter(Boolean).join('\n'),
         createdAt: (entries[0]?.timestamp || Date.now() / 1000) * 1000,
         steps: plan,
         searchSessionId: payload.search_session_id,
@@ -278,11 +243,9 @@ export function TaskFullDuplexRuntime({
         queueVersion: payload.queue_version ?? previousTask?.queueVersion,
       });
       if (payload.replay) return;
-      const processed =
-        processedCoreProgressRef.current.get(jobId) || new Set<number>();
+      const processed = processedCoreProgressRef.current.get(jobId) || new Set<number>();
       processedCoreProgressRef.current.set(jobId, processed);
-      const toolIds =
-        coreToolIdsRef.current.get(jobId) || new Map<string, string>();
+      const toolIds = coreToolIdsRef.current.get(jobId) || new Map<string, string>();
       coreToolIdsRef.current.set(jobId, toolIds);
 
       entries
@@ -293,31 +256,30 @@ export function TaskFullDuplexRuntime({
           processed.add(entry.sequence);
           const atMs = progressAtMs(entry);
 
-          if (entry.stage === "file" && entry.files?.length) {
+          if (entry.stage === 'file' && entry.files?.length) {
             onFileItems(targetSessionId, entry.files, progressAtIso(entry));
             persistTimelineEvent(targetSessionId, {
-              kind: "file",
+              kind: 'file',
               files: entry.files,
               timestamp: atMs / 1_000,
             });
             return;
           }
 
-          if (entry.stage === "reasoning" && entry.content) {
+          if (entry.stage === 'reasoning' && entry.content) {
             emitReasoning(targetSessionId, entry.content, atMs);
             return;
           }
-          if (entry.stage === "tool_call") {
+          if (entry.stage === 'tool_call') {
             closeReasoning(targetSessionId, atMs);
-            const rawId =
-              entry.tool_call_id?.trim() || `sequence-${entry.sequence}`;
+            const rawId = entry.tool_call_id?.trim() || `sequence-${entry.sequence}`;
             const id = `full-duplex-core-${jobId}-${rawId}`;
             toolIds.set(rawId, id);
             emitToolCall(
               targetSessionId,
               {
                 id,
-                name: entry.tool_name?.trim() || "unknown",
+                name: entry.tool_name?.trim() || 'unknown',
                 arguments: toolArguments(entry.tool_arguments),
                 description: entry.tool_description?.trim() || undefined,
                 formatted_args: entry.tool_formatted_args?.trim() || undefined,
@@ -327,19 +289,16 @@ export function TaskFullDuplexRuntime({
             );
             return;
           }
-          if (entry.stage === "tool_result") {
-            const rawId = entry.tool_call_id?.trim() || "";
-            const id =
-              toolIds.get(rawId) ||
-              `full-duplex-core-${jobId}-${rawId || `sequence-${entry.sequence}`}`;
+          if (entry.stage === 'tool_result') {
+            const rawId = entry.tool_call_id?.trim() || '';
+            const id = toolIds.get(rawId) || `full-duplex-core-${jobId}-${rawId || `sequence-${entry.sequence}`}`;
             emitToolResult(
               targetSessionId,
               {
-                toolName: entry.tool_name?.trim() || "unknown",
+                toolName: entry.tool_name?.trim() || 'unknown',
                 toolCallId: id,
-                result: toolResultText(entry.tool_result, entry.detail || ""),
-                success:
-                  entry.tool_success !== false && entry.status !== "failed",
+                result: toolResultText(entry.tool_result, entry.detail || ''),
+                success: entry.tool_success !== false && entry.status !== 'failed',
                 summary: entry.tool_summary?.trim() || undefined,
               },
               progressAtIso(entry),
@@ -347,29 +306,19 @@ export function TaskFullDuplexRuntime({
           }
         });
 
-      if (
-        status === "completed" ||
-        status === "failed" ||
-        status === "cancelled"
-      ) {
+      if (status === 'completed' || status === 'failed' || status === 'cancelled') {
         closeReasoning(targetSessionId);
         const result = conversationJobsRef.current.takeResult(jobId);
         if (result) {
-          onConversationItem(
-            targetSessionId,
-            "assistant",
-            result,
-            "tool_result",
-          );
+          onConversationItem(targetSessionId, 'assistant', result, 'tool_result');
           persistTimelineEvent(targetSessionId, {
-            kind: "assistant",
+            kind: 'assistant',
             content: result,
-            presentation: "tool_result",
+            presentation: 'tool_result',
             timestamp: Date.now() / 1_000,
           });
           // Display/persistence is authoritative. Playback is optional and connection-scoped.
-          if (runtimeSessionIdRef.current === targetSessionId)
-            panelRef.current?.deliverToolResult(payload);
+          if (runtimeSessionIdRef.current === targetSessionId) panelRef.current?.deliverToolResult(payload);
         }
       }
     },
@@ -388,23 +337,16 @@ export function TaskFullDuplexRuntime({
   );
 
   const acceptQueue = useCallback(
-    (snapshot: {
-      search_session_id: string;
-      queue_version: number;
-      jobs: SearchJobPayload[];
-    }) => {
+    (snapshot: { search_session_id: string; queue_version: number; jobs: SearchJobPayload[] }) => {
       for (const payload of snapshot.jobs) {
-        const existing = Object.values(
-          useApplicationTaskStore.getState().sessions,
-        )
+        const existing = Object.values(useApplicationTaskStore.getState().sessions)
           .flat()
           .find((task) => task.id === payload.job_id);
-        if (existing && (existing.queueVersion ?? -1) > snapshot.queue_version)
-          continue;
-        handleCoreAgentProgress("progress", payload);
-        const entry = Object.entries(
-          useApplicationTaskStore.getState().sessions,
-        ).find(([, tasks]) => tasks.some((item) => item.id === payload.job_id));
+        if (existing && (existing.queueVersion ?? -1) > snapshot.queue_version) continue;
+        handleCoreAgentProgress('progress', payload);
+        const entry = Object.entries(useApplicationTaskStore.getState().sessions).find(([, tasks]) =>
+          tasks.some((item) => item.id === payload.job_id),
+        );
         const task = entry?.[1].find((item) => item.id === payload.job_id);
         if (task && entry)
           useApplicationTaskStore.getState().upsert(entry[0], {
@@ -422,28 +364,25 @@ export function TaskFullDuplexRuntime({
       search_session_id: string;
       queue_version: number;
       jobs: SearchJobPayload[];
-    }>("video.search.queue", ({ payload }) => acceptQueue(payload));
-    const unregister = registerApplicationTaskController(
-      "video-duplex",
-      async (task, action, beforeId) => {
-        const result = await webRequest<{
-          search_session_id: string;
-          queue_version: number;
-          jobs: SearchJobPayload[];
-        }>(
-          "video.search.control",
-          {
-            job_id: task.id,
-            search_session_id: task.searchSessionId,
-            action,
-            queue_version: task.queueVersion,
-            before_job_id: beforeId,
-          },
-          { timeoutMs: 30_000 },
-        );
-        acceptQueue(result);
-      },
-    );
+    }>('video.search.queue', ({ payload }) => acceptQueue(payload));
+    const unregister = registerApplicationTaskController('video-duplex', async (task, action, beforeId) => {
+      const result = await webRequest<{
+        search_session_id: string;
+        queue_version: number;
+        jobs: SearchJobPayload[];
+      }>(
+        'video.search.control',
+        {
+          job_id: task.id,
+          search_session_id: task.searchSessionId,
+          action,
+          queue_version: task.queueVersion,
+          before_job_id: beforeId,
+        },
+        { timeoutMs: 30_000 },
+      );
+      acceptQueue(result);
+    });
     return () => {
       off();
       unregister();
@@ -453,12 +392,8 @@ export function TaskFullDuplexRuntime({
   // Subscribe and recover both progress and final answers independently of media lifetime.
   useEffect(() => {
     let disposed = false;
-    const unsubscribe = (
-      ["started", "progress", "completed", "failed", "cancelled"] as const
-    ).map((event) =>
-      webClient.on<SearchJobPayload>(`video.search.${event}`, ({ payload }) =>
-        handleCoreAgentProgress(event, payload),
-      ),
+    const unsubscribe = (['started', 'progress', 'completed', 'failed', 'cancelled'] as const).map((event) =>
+      webClient.on<SearchJobPayload>(`video.search.${event}`, ({ payload }) => handleCoreAgentProgress(event, payload)),
     );
     const timer = window.setInterval(() => {
       for (const { payload } of conversationJobsRef.current.pending()) {
@@ -466,7 +401,7 @@ export function TaskFullDuplexRuntime({
         if (pollingJobsRef.current.has(jobId)) continue;
         pollingJobsRef.current.add(jobId);
         void webRequest<SearchJobPayload>(
-          "video.search.status",
+          'video.search.status',
           {
             job_id: jobId,
             search_session_id: payload.search_session_id,
@@ -474,7 +409,7 @@ export function TaskFullDuplexRuntime({
           { timeoutMs: 5000 },
         )
           .then((payload) => {
-            if (!disposed) handleCoreAgentProgress("progress", payload);
+            if (!disposed) handleCoreAgentProgress('progress', payload);
           })
           .catch(() => undefined)
           .finally(() => pollingJobsRef.current.delete(jobId));
@@ -488,7 +423,7 @@ export function TaskFullDuplexRuntime({
   }, [handleCoreAgentProgress]);
 
   useEffect(() => {
-    if (!sessionId || sessionId === "new") return;
+    if (!sessionId || sessionId === 'new') return;
     let disposed = false;
     let loading = false;
     const scope = conversationJobsRef.current.bind(sessionId);
@@ -498,19 +433,27 @@ export function TaskFullDuplexRuntime({
       try {
         let offset: number | null = 0;
         while (offset !== null && !disposed) {
-          const page: { jobs: SearchJobPayload[]; next_offset: number | null } =
-            await webRequest("video.search.list", { search_session_id: scope, offset });
+          const page: { jobs: SearchJobPayload[]; next_offset: number | null } = await webRequest('video.search.list', {
+            search_session_id: scope,
+            offset,
+          });
           for (const job of page.jobs) {
-            if (!disposed) handleCoreAgentProgress("progress", { ...job, replay: true });
+            if (!disposed) handleCoreAgentProgress('progress', { ...job, replay: true });
           }
           offset = page.next_offset;
         }
-      } catch { /* Next connection/poll retries the persisted snapshot. */ }
-      finally { loading = false; }
+      } catch {
+        /* Next connection/poll retries the persisted snapshot. */
+      } finally {
+        loading = false;
+      }
     };
     void recover();
     const timer = window.setInterval(() => void recover(), 10000);
-    return () => { disposed = true; window.clearInterval(timer); };
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
   }, [sessionId, handleCoreAgentProgress]);
 
   const setPanelRef = useCallback((panel: VideoLivePanelHandle | null) => {
@@ -538,10 +481,7 @@ export function TaskFullDuplexRuntime({
 
   useEffect(() => {
     if (previousSessionIdRef.current === sessionId) return;
-    if (
-      runtimeSessionIdRef.current &&
-      runtimeSessionIdRef.current !== sessionId
-    ) {
+    if (runtimeSessionIdRef.current && runtimeSessionIdRef.current !== sessionId) {
       closeReasoning(runtimeSessionIdRef.current);
       stopTaskFullDuplex();
       runtimeSessionIdRef.current = null;
@@ -564,6 +504,15 @@ export function TaskFullDuplexRuntime({
           timestamp: Date.now() / 1_000,
         });
       }}
+      onPlayback={(update) => {
+        const targetSessionId = runtimeSessionIdRef.current || sessionId;
+        if (targetSessionId)
+          persistTimelineEvent(targetSessionId, {
+            kind: 'voice_playback',
+            playback: update,
+            timestamp: Date.now() / 1000,
+          });
+      }}
       onAssistantStream={(update) => {
         const targetSessionId = runtimeSessionIdRef.current || sessionId;
         if (!targetSessionId) return;
@@ -573,23 +522,22 @@ export function TaskFullDuplexRuntime({
         if (persistedAssistantStreamsRef.current.has(persistenceKey)) return;
         persistedAssistantStreamsRef.current.add(persistenceKey);
         if (persistedAssistantStreamsRef.current.size > 64) {
-          const oldest = persistedAssistantStreamsRef.current
-            .values()
-            .next().value;
+          const oldest = persistedAssistantStreamsRef.current.values().next().value;
           if (oldest) persistedAssistantStreamsRef.current.delete(oldest);
         }
         persistTimelineEvent(targetSessionId, {
-          kind: "assistant",
+          kind: 'assistant',
           content: update.content,
+          response_id: update.streamId,
           timestamp: Date.now() / 1_000,
         });
       }}
       onRuntimeState={(state) => {
-        if (state === "starting") persistedAssistantStreamsRef.current.clear();
-        if (state === "starting" || state === "active") {
+        if (state === 'starting') persistedAssistantStreamsRef.current.clear();
+        if (state === 'starting' || state === 'active') {
           runtimeSessionIdRef.current ||= sessionId;
         }
-        if (state === "idle") runtimeSessionIdRef.current = null;
+        if (state === 'idle') runtimeSessionIdRef.current = null;
         setTaskFullDuplexRuntimeState(state);
       }}
       onError={setTaskFullDuplexRuntimeError}

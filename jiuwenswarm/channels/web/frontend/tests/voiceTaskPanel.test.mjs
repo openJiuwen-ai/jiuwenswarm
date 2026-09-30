@@ -12,7 +12,7 @@ const outfile = resolve('node_modules/.cache/voice-task-panel/panel.mjs');
 await build({
   stdin: {
     contents: `export { VideoLivePanel } from ${JSON.stringify(`${panelRoot}/index.tsx`)};
-      export { RealtimeDuplexSession } from ${JSON.stringify(`${panelRoot}/qwenOmniSession.ts`)};`,
+      export { RealtimeDuplexSession } from ${JSON.stringify(`${panelRoot}/../realtime/session.ts`)};`,
     resolveDir: process.cwd(),
     loader: 'tsx',
   },
@@ -78,8 +78,8 @@ beforeEach(async () => {
     },
     async request(method, args) {
       requests.push({ method, args });
-      if (method === 'video.realtime.config') return { provider: 'qwen_omni', url: 'ws://127.0.0.1/realtime' };
-      if (method === 'video.qwen.tool') return new Promise((resolve) => pending.set(args.call_id, resolve));
+      if (method === 'video.realtime.session') return { provider: 'qwen_omni', media_session_id: 'media-test', url: 'ws://127.0.0.1/realtime' };
+      if (method === 'video.realtime.tool') return new Promise((resolve) => pending.set(args.call_id, resolve));
       return {};
     },
   };
@@ -123,7 +123,7 @@ async function call(name, args, id) {
       call_id: id,
     }),
   );
-  return requests.findLast((request) => request.method === 'video.qwen.tool').args;
+  return requests.findLast((request) => request.method === 'video.realtime.tool').args;
 }
 
 async function receipt(id, payload) {
@@ -151,6 +151,7 @@ test('page forwards captured input, acknowledges acceptance once, and delivers c
     session.handleEvent({ type: 'response.created', response: { id: 'response-a' } });
   });
   const args = await call('jiuwen_delegate', { task: '计算1到10的和' }, 'create');
+  assert.equal(args.media_session_id, 'media-test');
   assert.equal(args.question, '计算一到十');
   assert.equal(args.turn_id, 'input-a');
   assert.equal(outputs().length, 0, 'RPC has not accepted the task yet');
@@ -224,7 +225,7 @@ test('observed question and spoken answer retain exact task and interaction iden
   await receipt('answer', { tool_result: { state: 'accepted', task_id: 'trip' } });
   await finishResponse();
   assert.equal(
-    requests.filter((request) => request.method === 'video.qwen.tool' && request.args.name === 'jiuwen_delegate')
+    requests.filter((request) => request.method === 'video.realtime.tool' && request.args.name === 'jiuwen_delegate')
       .length,
     0,
   );

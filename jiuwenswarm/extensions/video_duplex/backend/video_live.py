@@ -34,6 +34,7 @@ _ALLOWED_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 _LOG_WRITE_LOCK = threading.Lock()
 
 _CONVERSATION_EVENT_KINDS = {
+    "voice_playback",
     "user",
     "assistant",
     "reasoning",
@@ -206,6 +207,21 @@ def register_video_live_handler(
         log_event=lambda event: _append_video_event_log(event),
         log_asr=lambda event: _append_asr_log(event),
     )
+
+    async def _create_realtime_session(ws, req_id, params, session_id):
+        from .realtime.sessions import media_sessions
+        try:
+            owner, scope = await search_manager.authorized_scope(ws, params.get("search_session_id", ""))
+            provider = settings._provider()
+            if provider == "joyai":
+                await _realtime_config(ws, req_id, params, session_id)
+                return
+            binding = media_sessions.create(owner, scope, provider, settings.reply_language())
+            payload = media_sessions.payload(binding)
+        except ValueError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="VIDEO_CONFIG_ERROR")
+            return
+        await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def _realtime_config(ws, req_id, params, session_id):
         del params, session_id
@@ -575,8 +591,23 @@ def register_video_live_handler(
         role = "user" if kind == "user" else "assistant"
         event_type: str | None = None
         extra: dict[str, Any] | None = None
-        if kind == "assistant":
+        if kind == "voice_playback":
+            playback = params.get("playback")
+            if (not isinstance(playback, dict) or not isinstance(playback.get("responseId"), str)
+                or not playback["responseId"] or len(playback["responseId"]) > 256
+                or type(playback.get("interrupted")) is not bool
+                or type(playback.get("playedMs")) not in {int, float}
+                or not 0 <= playback["playedMs"] <= 24 * 60 * 60 * 1000):
+                await channel.send_response(ws, req_id, ok=False, code="INVALID_PLAYBACK", error="Invalid playback record")
+                return
+            event_type = "chat.voice_playback"
+            extra = {"playback": {key: playback[key] for key in ("responseId", "interrupted", "playedMs")}}
+            content = ""
+        elif kind == "assistant":
             event_type = "chat.final"
+            response_id = params.get("response_id")
+            if isinstance(response_id, str) and len(response_id) <= 256:
+                extra = {"response_id": response_id, "voice_text_kind": "generated"}
             if params.get("presentation") == "tool_result":
                 extra = {"presentation": "tool_result"}
         elif kind == "reasoning":
@@ -672,6 +703,8 @@ def register_video_live_handler(
 
     handlers = {
         "video.realtime.config": _realtime_config,
+        "video.realtime.session": _create_realtime_session,
+        "video.realtime.tool": search_manager.handle_realtime_tool,
         "video.joyai.frame": _joyai_frame,
         "video.realtime.telemetry": _realtime_telemetry,
         "video.conversation.append": _append_conversation,

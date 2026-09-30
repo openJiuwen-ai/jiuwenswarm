@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "include": [
+    "src/vite-env.d.ts",
+    "../../../extensions/video_duplex/frontend/realtime/**/*.ts"
+  ],
+  "references": []
+}

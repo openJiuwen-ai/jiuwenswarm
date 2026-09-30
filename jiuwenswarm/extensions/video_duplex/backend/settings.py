@@ -12,6 +12,10 @@ from jiuwenswarm.dotenv_early import get_parsed_dotenv
 
 
 SETTING_ENV_KEYS = {
+    "openai_realtime_url": "OPENAI_REALTIME_URL",
+    "openai_realtime_api_key": "OPENAI_REALTIME_API_KEY",
+    "openai_realtime_model": "OPENAI_REALTIME_MODEL",
+    "openai_realtime_voice": "OPENAI_REALTIME_VOICE",
     "joyai_api_base": "JOYAI_API_BASE",
     "joyai_api_key": "JOYAI_API_KEY",
     "joyai_model": "JOYAI_MODEL_NAME",
@@ -28,9 +32,13 @@ SETTING_ENV_KEYS = {
     "voice_tts_model": "VOICE_TTS_MODEL",
     "voice_tts_voice": "VOICE_TTS_VOICE",
 }
-SECRET_SETTINGS = {"joyai_api_key", "qwen_omni_api_key", "voice_api_key"}
+SECRET_SETTINGS = {"openai_realtime_api_key", "joyai_api_key", "qwen_omni_api_key", "voice_api_key"}
 ALLOWED_REPLY_LANGUAGES = frozenset({"match", "zh-CN", "en"})
 DEFAULTS = {
+    "openai_realtime_url": "wss://api.openai.com/v1/realtime",
+    "openai_realtime_model": "gpt-realtime-2.1-mini",
+    "openai_realtime_voice": "marin",
+    "openai_realtime_api_key": "",
     "joyai_api_base": "",
     "joyai_api_key": "",
     "joyai_model": "jdopensource/JoyAI-VL-Interaction",
@@ -86,7 +94,7 @@ def _persist_env_updates(updates: Mapping[str, str]) -> None:
 def _provider() -> str:
     mode = (os.getenv("VIDEO_LIVE_MODE") or "joyai").strip().casefold()
     realtime_provider = (os.getenv("VIDEO_REALTIME_PROVIDER") or "").strip().casefold()
-    return "qwen_omni" if mode == "realtime" and realtime_provider == "qwen_omni" else "joyai"
+    return (realtime_provider if realtime_provider in {"qwen_omni", "openai"} else "qwen_omni") if mode == "realtime" else "joyai"
 
 
 def settings_payload(*, enabled: bool) -> dict[str, Any]:
@@ -95,6 +103,8 @@ def settings_payload(*, enabled: bool) -> dict[str, Any]:
     configured_secret_lengths: dict[str, int] = {}
     for key, env_key in SETTING_ENV_KEYS.items():
         raw = os.getenv(env_key)
+        if key == "openai_realtime_api_key" and not raw:
+            raw = os.getenv("OPENAI_API_KEY")
         if raw is None or not raw.strip():
             continue
         if key in SECRET_SETTINGS:
@@ -125,8 +135,8 @@ def _validated_values(values: Mapping[str, Any]) -> dict[str, str]:
         normalized[key] = value.strip()
 
     provider = normalized.get("video_live_provider", _provider())
-    if provider not in {"joyai", "qwen_omni"}:
-        raise ValueError("video_live_provider must be joyai or qwen_omni")
+    if provider not in {"joyai", "qwen_omni", "openai"}:
+        raise ValueError("video_live_provider must be joyai, qwen_omni, or openai")
     protocol = normalized.get(
         "voice_protocol",
         (os.getenv("VOICE_PROTOCOL") or "native_ws").strip().casefold(),
@@ -148,8 +158,8 @@ def update_settings(values: Mapping[str, Any], *, clear_secrets: bool = False) -
     normalized = _validated_values(values)
     provider = normalized.pop("video_live_provider", _provider())
     updates = {
-        "VIDEO_LIVE_MODE": "realtime" if provider == "qwen_omni" else "joyai",
-        "VIDEO_REALTIME_PROVIDER": "qwen_omni" if provider == "qwen_omni" else "",
+        "VIDEO_LIVE_MODE": "realtime" if provider != "joyai" else "joyai",
+        "VIDEO_REALTIME_PROVIDER": provider if provider != "joyai" else "",
     }
     for key, value in normalized.items():
         if key in SECRET_SETTINGS and not value and not clear_secrets:

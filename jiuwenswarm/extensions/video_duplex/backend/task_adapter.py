@@ -16,7 +16,9 @@ from .tasks.prompts import (
     REVISION_CONFLICT_INSTRUCTIONS,
     task_query_instructions,
 )
-from .qwen_omni_tools import parse_qwen_omni_tool_call
+from .task_tools import parse_realtime_tool_call
+from dataclasses import replace
+import hashlib
 
 logger = logging.getLogger(__name__)
 AGENT_QUERY_TIMEOUT = 20
@@ -502,6 +504,7 @@ class VideoSearchManager:
         turn_id="",
         command_id="",
         scheduling=None,
+        media_binding=None,
     ):
         owner, scope = await self.scope(ws, {"search_session_id": search_session_id})
         request = dict(
@@ -513,6 +516,9 @@ class VideoSearchManager:
             turn_id=turn_id,
         )
         request.update(scheduling or {})
+        if media_binding is not None:
+            from .realtime.sessions import media_sessions
+            media_sessions.require(media_binding.id, owner, scope)
         task = self.service.submit(
             owner, scope, command_id or tool_call_id, question or query, request
         )
@@ -529,11 +535,30 @@ class VideoSearchManager:
         await self.channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def handle_qwen_tool(self, ws, req_id, params, session_id):
+        await self._handle_tool(ws, req_id, params, session_id)
+
+    async def handle_realtime_tool(self, ws, req_id, params, session_id):
+        from .realtime.sessions import media_sessions
+        try:
+            owner, scope = await self.authorized_scope(ws, params.get("search_session_id", ""))
+            binding = media_sessions.require(params.get("media_session_id"), owner, scope)
+        except ValueError as exc:
+            await self.channel.send_response(ws, req_id, ok=False, error=str(exc), code="TASK_REQUEST_REJECTED")
+            return
+        await self._handle_tool(ws, req_id, params, session_id, binding=binding)
+
+    async def _handle_tool(self, ws, req_id, params, session_id, *, binding=None):
         async def run():
             owner, scope = await self.scope(ws, params)
-            if not self.qwen_active():
+            if binding is None and not self.qwen_active():
                 raise ValueError("Qwen Omni Realtime is not the active provider")
-            call = parse_qwen_omni_tool_call(params)
+            if binding is not None:
+                from .realtime.sessions import media_sessions
+                media_sessions.require(binding.id, owner, scope)
+            call = parse_realtime_tool_call(params)
+            command_id = call.call_id if binding is None else hashlib.sha256(
+                (binding.id + ":" + call.call_id).encode()
+            ).hexdigest()
             if call.name in {"jiuwen_delegate", "jiuwen_research"}:
                 from .video_search import _frame_media_item, MAX_FRAME_CHARS
 
@@ -549,6 +574,8 @@ class VideoSearchManager:
                     search_session_id=scope,
                     frame_data_url=frame,
                     tool_call_id=call.call_id,
+                    command_id=command_id,
+                    media_binding=binding,
                     tool_name=call.name,
                     turn_id=params.get("turn_id", ""),
                     scheduling={
@@ -559,7 +586,7 @@ class VideoSearchManager:
                 )
                 return {"search_job": task, "call_id": call.call_id}
             return {
-                "tool_result": await self.operate(owner, scope, call),
+                "tool_result": await self.operate(owner, scope, replace(call, call_id=command_id)),
                 "call_id": call.call_id,
             }
 

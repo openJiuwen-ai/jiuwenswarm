@@ -8,7 +8,6 @@ Supports ``--dotenv <path>`` for multi-instance isolation.
 from __future__ import annotations
 
 import argparse
-import errno
 import hmac
 import http.client
 import json
@@ -334,6 +333,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     _WS_HANDSHAKE_TIMEOUT = 10
     _WS_SELECT_TIMEOUT = 60
     _WS_RECV_BUFFER = 65536
+    _WS_PENDING_LIMIT = 256 * 1024
     _WS_HANDSHAKE_MAX_SIZE = 65536
     _WS_HANDSHAKE_RECV_SIZE = 4096
     _DEFAULT_HTTPS_PORT = 443
@@ -767,8 +767,23 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             sockets = [self.connection, upstream]
             client_parser = self._WsTextFrameParser()
             server_parser = self._WsTextFrameParser()
+            pending = {sock: bytearray() for sock in sockets}
+            peer_closed = False
             while True:
-                readable, _, errored = select.select(sockets, [], sockets, self._WS_SELECT_TIMEOUT)
+                # Apply backpressure per direction. Draining one socket in an
+                # inner send loop starves the reverse stream (including pings
+                # and model audio), and a brief stall must not abort the tunnel.
+                readers = [] if peer_closed else [
+                    sock for sock in sockets
+                    if len(pending[upstream if sock is self.connection else self.connection])
+                    < self._WS_PENDING_LIMIT
+                ]
+                writers = [sock for sock in sockets if pending[sock]]
+                if peer_closed and not writers:
+                    return
+                readable, writable, errored = select.select(
+                    readers, writers, sockets, self._WS_SELECT_TIMEOUT,
+                )
                 if errored:
                     self.log_error(
                         "proxy ws socket error, closing tunnel: %s",
@@ -785,12 +800,23 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                         ),
                     )
                     break
-                if not readable:
-                    continue
+                for target in writable:
+                    try:
+                        sent = target.send(pending[target])
+                    except (BlockingIOError, ssl.SSLWantReadError, ssl.SSLWantWriteError):
+                        continue
+                    if sent == 0:
+                        return
+                    del pending[target][:sent]
                 for sock in readable:
                     direction = "frontend->backend" if sock is self.connection else "backend->frontend"
                     try:
-                        data = sock.recv(self._WS_RECV_BUFFER)
+                        target = upstream if sock is self.connection else self.connection
+                        data = sock.recv(min(
+                            self._WS_RECV_BUFFER, self._WS_PENDING_LIMIT - len(pending[target]),
+                        ))
+                    except (BlockingIOError, ssl.SSLWantReadError, ssl.SSLWantWriteError):
+                        continue
                     except OSError as recv_exc:
                         self.log_error(
                             "proxy ws recv failed, closing tunnel: %s",
@@ -817,7 +843,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                                 }
                             ),
                         )
-                        return
+                        peer_closed = True
+                        continue
                     target = upstream if sock is self.connection else self.connection
                     if sock is self.connection:
                         for text_message in client_parser.feed(data):
@@ -825,37 +852,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     else:
                         for text_message in server_parser.feed(data):
                             self._log_ws_business_message("backend->frontend", text_message)
-                    # 非阻塞 socket 写入：循环增量 send，缓冲区满时等待可写后继续，
-                    # 跨平台覆盖 Windows WSAEWOULDBLOCK (10035) 与 POSIX EAGAIN/EWOULDBLOCK。
-                    pending = data
-                    while pending:
-                        try:
-                            sent = target.send(pending)
-                        except OSError as e:
-                            would_block = (
-                                getattr(e, "winerror", None) == 10035
-                                or e.errno in (errno.EAGAIN, errno.EWOULDBLOCK)
-                            )
-                            if not would_block:
-                                raise
-                            _, writable, _ = select.select([], [target], [], 1.0)
-                            if not writable:
-                                # 长时间不可写，对端疑似卡死，关闭隧道避免空转
-                                self.log_error(
-                                    "proxy ws write stalled, closing tunnel: %s",
-                                    _format_ws_diagnostics(
-                                        {
-                                            "client": self.client_address,
-                                            "upstream_host": upstream_host,
-                                            "upstream_port": upstream_port,
-                                            "direction": direction,
-                                            "pending_bytes": len(pending),
-                                        }
-                                    ),
-                                )
-                                return
-                            continue
-                        pending = pending[sent:]
+                    pending[target].extend(data)
         except Exception as exc:  # noqa: BLE001
             self.log_error(
                 "proxy ws error: %s",

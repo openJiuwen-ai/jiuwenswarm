@@ -680,3 +680,35 @@ async def test_untyped_validation_errors_are_never_treated_as_conflicts(queue, m
     reject.assert_called_once()
     assert queue.record(task_id) == before
     assert queue.executed == queue.cancels == []
+
+
+async def test_bound_realtime_tool_survives_provider_change_but_not_media_close(queue, monkeypatch):
+    from jiuwenswarm.extensions.video_duplex.backend.realtime import sessions
+    registry = sessions.MediaSessions()
+    monkeypatch.setattr(sessions, "media_sessions", registry)
+    monkeypatch.setenv("OPENAI_REALTIME_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_REALTIME_URL", "wss://api.openai.com/v1/realtime")
+    binding = registry.create("alice", "scope", "openai", "en")
+    registry.claim(binding.id, binding.ticket)
+    queue.manager.qwen_active = lambda: False
+    params = {"search_session_id": "scope", "media_session_id": binding.id,
+              "call_id": "same-call", "name": "jiuwen_delegate", "arguments": {"task": "A"}}
+    await queue.manager.handle_realtime_tool(None, "first", params, None)
+    assert queue.responses[-1]["ok"]
+    first = queue.responses[-1]["payload"]["search_job"]["id"]
+    await queue.manager.handle_realtime_tool(None, "duplicate", params, None)
+    assert queue.responses[-1]["payload"]["search_job"]["id"] == first
+    await until(lambda: queue.executed == ["A"])
+    await queue.manager.handle_realtime_tool(None, "wrong-scope", {**params, "search_session_id": "other"}, None)
+    assert not queue.responses[-1]["ok"]
+    registry.close(binding.id)
+    await queue.manager.handle_realtime_tool(None, "closed", params, None)
+    assert not queue.responses[-1]["ok"]
+    queue.gates["A"].set()
+    await until(lambda: queue.record(first)["status"] == "completed")
+    fresh = registry.create("alice", "scope", "openai", "en")
+    registry.claim(fresh.id, fresh.ticket)
+    await queue.manager.handle_realtime_tool(None, "fresh", {**params, "media_session_id": fresh.id, "arguments": {"task": "B"}}, None)
+    assert queue.responses[-1]["ok"]
+    assert queue.responses[-1]["payload"]["search_job"]["id"] != first
+    queue.gates["B"].set()
