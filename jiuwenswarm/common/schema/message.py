@@ -198,6 +198,8 @@ class ReqMethod(Enum):
     SECURITY_LISTS_DELETE = "security_lists.delete"
     SECURITY_LISTS_CLOUD_SYNC = "security_lists.cloud.sync"
     SECURITY_LISTS_AUDIT_QUERY = "security_lists.audit.query"
+    SECURITY_LISTS_DEFAULTS_GET = "security_lists.defaults.get"
+    SECURITY_LISTS_DEFAULTS_SET = "security_lists.defaults.set"
 
     CHANNEL_FEISHU_GET_CONF = "channel.feishu.get_conf"
     CHANNEL_FEISHU_SET_CONF = "channel.feishu.set_conf"

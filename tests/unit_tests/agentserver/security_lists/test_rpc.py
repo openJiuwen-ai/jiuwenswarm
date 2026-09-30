@@ -339,3 +339,62 @@ def test_corrupted_section_500(rpc_env):
         resp = call(method, params)
         assert not resp.ok
         assert resp.payload["code"] == "INTERNAL_ERROR"
+
+
+# ---------------------------------------------------------------------------
+# v3 兜底档 defaults：get / set / 随卡片视图下发 / 云端下发
+# ---------------------------------------------------------------------------
+
+
+def test_defaults_get_then_set_roundtrip(rpc_env):
+    assert call(ReqMethod.SECURITY_LISTS_DEFAULTS_GET).payload["defaults"] == {}
+
+    resp = call(
+        ReqMethod.SECURITY_LISTS_DEFAULTS_SET,
+        {"defaults": {"*": {"domain": "deny"}}},
+    )
+
+    assert resp.ok
+    assert resp.payload["defaults"] == {"*": {"domain": "deny"}}
+    assert call(ReqMethod.SECURITY_LISTS_DEFAULTS_GET).payload["defaults"] == {
+        "*": {"domain": "deny"}
+    }
+    assert rpc_env["sync_calls"] == ["sync"]   # 写后触发双端同步
+
+
+def test_defaults_set_rejects_illegal_keyspace(rpc_env):
+    resp = call(
+        ReqMethod.SECURITY_LISTS_DEFAULTS_SET,
+        {"defaults": {"*": {"domain": "block"}}},
+    )
+    assert not resp.ok
+    assert resp.payload["code"] == "BAD_REQUEST"
+    assert call(ReqMethod.SECURITY_LISTS_DEFAULTS_GET).payload["defaults"] == {}
+
+
+def test_defaults_set_requires_object(rpc_env):
+    resp = call(ReqMethod.SECURITY_LISTS_DEFAULTS_SET, {"defaults": "deny"})
+    assert not resp.ok and resp.payload["code"] == "BAD_REQUEST"
+
+
+def test_card_view_carries_defaults(rpc_env):
+    """前端一次 get 就能拿到当前兜底档（免二次请求）。"""
+    call(ReqMethod.SECURITY_LISTS_DEFAULTS_SET, {"defaults": {"*": {"domain": "deny"}}})
+    payload = call(ReqMethod.SECURITY_LISTS_GET).payload
+    assert payload["defaults"] == {"*": {"domain": "deny"}}
+
+
+def test_cloud_sync_can_carry_defaults(rpc_env):
+    resp = call(
+        ReqMethod.SECURITY_LISTS_CLOUD_SYNC,
+        {
+            "records": [],
+            "sync_version": "v1",
+            "synced_at": "2026-09-30T00:00:00+00:00",
+            "defaults": {"*": {"domain": "deny"}},
+        },
+    )
+    assert resp.ok
+    assert call(ReqMethod.SECURITY_LISTS_DEFAULTS_GET).payload["defaults"] == {
+        "*": {"domain": "deny"}
+    }

@@ -38,7 +38,90 @@ def rec(**kw) -> SecurityListRecord:
 
 def test_missing_section_returns_empty(cfg):
     result = store.get_security_lists()
-    assert result == {"user": [], "cloud": {"sync_version": "", "synced_at": "", "records": []}}
+    assert result == {
+        "version": 3,
+        "user": [],
+        "cloud": {"sync_version": "", "synced_at": "", "records": []},
+        "defaults": {},
+    }
+
+
+# ---------------------------------------------------------------------------
+# v3：段版本闸门 + 兜底档 defaults
+# ---------------------------------------------------------------------------
+
+
+def test_set_and_get_defaults_roundtrip(cfg):
+    store.set_defaults({"*": {"domain": "deny"}, "full_access": {"domain": "allow"}})
+    assert store.get_security_lists()["defaults"] == {
+        "*": {"domain": "deny"},
+        "full_access": {"domain": "allow"},
+    }
+    # 写入即盖章段版本（v2 → v3 迁移闸门）
+    data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    assert data["security_lists"]["version"] == 3
+
+
+def test_set_defaults_validates_keyspace(cfg):
+    with pytest.raises(ValueError):
+        store.set_defaults({"*": {"domain": "block"}})
+    assert store.get_security_lists()["defaults"] == {}   # 事务中止，未落盘
+
+
+def test_legacy_section_without_version_is_readable(cfg):
+    cfg.write_text(
+        yaml.safe_dump({"security_lists": {"user": [], "cloud": {}}}), encoding="utf-8"
+    )
+    result = store.get_security_lists()
+    assert result["defaults"] == {}
+
+
+def test_future_version_fails_closed(cfg):
+    cfg.write_text(
+        yaml.safe_dump({"security_lists": {"version": 99, "user": []}}), encoding="utf-8"
+    )
+    with pytest.raises(SecurityListsCorruptedError):
+        store.get_security_lists()
+
+
+@pytest.mark.parametrize("version", ["three", 3.5, True, [3]])
+def test_non_integer_version_fails_closed(cfg, version):
+    cfg.write_text(
+        yaml.safe_dump({"security_lists": {"version": version, "user": []}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(SecurityListsCorruptedError):
+        store.get_security_lists()
+
+
+def test_corrupted_defaults_fails_closed(cfg):
+    cfg.write_text(
+        yaml.safe_dump({"security_lists": {"defaults": {"*": {"domain": "block"}}}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(SecurityListsCorruptedError):
+        store.get_security_lists()
+
+
+def test_cloud_sync_can_set_defaults_and_keeps_them_when_absent(cfg):
+    """云侧可下发兜底档；不下发时保留现值（不被静默清空）。"""
+    store.cloud_sync(
+        sync_version="v1", synced_at="t1", records=[],
+        defaults={"*": {"domain": "deny"}},
+    )
+    assert store.get_defaults() == {"*": {"domain": "deny"}}
+
+    store.cloud_sync(sync_version="v2", synced_at="t2", records=[])
+    assert store.get_defaults() == {"*": {"domain": "deny"}}
+
+
+def test_cloud_sync_rejects_invalid_defaults(cfg):
+    with pytest.raises(ValueError):
+        store.cloud_sync(
+            sync_version="v1", synced_at="t1", records=[],
+            defaults={"*": {"domain": "block"}},
+        )
+    assert store.get_defaults() == {}
 
 
 def test_corrupted_yaml_fails_closed(cfg):
@@ -218,7 +301,7 @@ def write_copy(path):
     }, allow_unicode=True), encoding="utf-8")
 
 
-def test_migrate_sandbox_copy_aggregates_and_clears(cfg, tmp_path):
+def test_migrate_sandbox_copy_aggregates_and_keeps_copy(cfg, tmp_path):
     copy_path = tmp_path / "windows-policy.runtime.yaml"
     write_copy(copy_path)
 
@@ -237,12 +320,19 @@ def test_migrate_sandbox_copy_aggregates_and_clears(cfg, tmp_path):
     assert records["*.evil.com"].match == "wildcard"
     assert records["*.evil.com"].cells == {"*": {"*": "deny"}}
 
-    # 副本用户段清空，disable_all 总开关保留
+    # 副本用户段**保持原样**：它是 sandbox.files.set / sandbox.network.set 与
+    # FileGuard 同步（sandbox.files.sync）的活配置，清空等于抹掉沙箱 ACL / egress。
     copy = yaml.safe_load(copy_path.read_text(encoding="utf-8"))
     fs = copy["windows"]["filesystem"]
-    assert all(fs[k] == [] for k in ("allow_read", "allow_write", "deny_read", "deny_write"))
+    assert fs["allow_read"] == ["C:/data", "C:/shared"]
+    assert fs["allow_write"] == ["C:/data"]
+    assert fs["deny_read"] == ["C:/secret"]
+    assert fs["deny_write"] == ["C:/data"]
     egress = copy["windows"]["network"]["egress"]
-    assert egress == {"allowed_domains": [], "blocked_domains": []}
+    assert egress == {
+        "allowed_domains": ["example.com"],
+        "blocked_domains": ["*.evil.com"],
+    }
     assert copy["windows"]["network"]["disable_all"] is True
 
     # 幂等：第二次迁移返回 0，记录数不变

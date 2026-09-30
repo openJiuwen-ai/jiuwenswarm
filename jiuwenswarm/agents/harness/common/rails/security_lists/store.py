@@ -22,7 +22,6 @@ config.yaml 段结构::
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +30,7 @@ import yaml
 from jiuwenswarm.common.config import get_config, update_config
 
 from .models import (
+    SECURITY_LISTS_VERSION,
     SecurityListRecord,
     SecurityListsCorruptedError,
     has_glob_chars,
@@ -38,6 +38,7 @@ from .models import (
     record_from_dict,
     record_to_dict,
     utc_now_iso,
+    validate_defaults,
     validate_record,
 )
 
@@ -45,6 +46,9 @@ logger = logging.getLogger(__name__)
 
 _SECTION = "security_lists"
 _MIGRATION_SANDBOX_COPY = "sandbox_copy"
+
+#: 段内无 ``version`` 键时的兼容版本（本版之前的写法：无 defaults 段）
+_LEGACY_VERSION = 2
 
 #: 沙箱运行时副本文件名（与 server/sandbox_policy_render.py:_RUNTIME_COPY_NAME 保持一致）
 _RUNTIME_COPY_NAME = "windows-policy.runtime.yaml"
@@ -55,7 +59,29 @@ def _empty_cloud() -> dict[str, Any]:
 
 
 def _empty_section() -> dict[str, Any]:
-    return {"user": [], "cloud": _empty_cloud()}
+    return {
+        "version": SECURITY_LISTS_VERSION,
+        "user": [],
+        "cloud": _empty_cloud(),
+        "defaults": {},
+    }
+
+
+def _parse_version(raw: Any) -> int:
+    """段版本闸门：缺省 → :data:`_LEGACY_VERSION`（兼容读）；非法/过新 → :class:`ValueError`。
+
+    过新（``> SECURITY_LISTS_VERSION``）必须拒绝而不是尽力解析——按旧结构读新数据
+    会静默曲解规则语义，宁可 fail-closed。
+    """
+    if raw is None:
+        return _LEGACY_VERSION
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(f"security_lists.version 须为整数: {raw!r}")
+    if raw > SECURITY_LISTS_VERSION:
+        raise ValueError(
+            f"security_lists.version={raw} 高于本版支持（{SECURITY_LISTS_VERSION}），拒绝按旧结构解析"
+        )
+    return raw
 
 
 # ---------------------------------------------------------------------------
@@ -79,17 +105,25 @@ def _parse_section(section: Any) -> dict[str, Any]:
     """严格解析 security_lists 段（未知键如 migrations 忽略）。"""
     if not isinstance(section, dict):
         raise ValueError(f"security_lists 段须为映射: {type(section).__name__}")
+    version = _parse_version(section.get("version"))
     user = _parse_records(section.get("user") or [], default_source="user")
     cloud_raw = section.get("cloud") or {}
     if not isinstance(cloud_raw, dict):
         raise ValueError(f"security_lists.cloud 须为映射: {type(cloud_raw).__name__}")
     cloud_records = _parse_records(cloud_raw.get("records") or [], default_source="cloud")
+    defaults_raw = section.get("defaults") or {}
+    validate_defaults(defaults_raw)
     return {
+        "version": version,
         "user": user,
         "cloud": {
             "sync_version": str(cloud_raw.get("sync_version") or ""),
             "synced_at": str(cloud_raw.get("synced_at") or ""),
             "records": cloud_records,
+        },
+        "defaults": {
+            str(mode): {str(list_type): str(action) for list_type, action in row.items()}
+            for mode, row in defaults_raw.items()
         },
     }
 
@@ -137,7 +171,46 @@ def _ensure_section(data: dict[str, Any]) -> dict[str, Any]:
     if "cloud" in section and not isinstance(section["cloud"], dict):
         raise SecurityListsCorruptedError("security_lists.cloud 须为映射")
     section.setdefault("cloud", _empty_cloud())
+    # 非法/过新的存量版本先拒（事务中止，不覆盖用户数据）
+    if section.get("version") is not None:
+        try:
+            _parse_version(section.get("version"))
+        except ValueError as exc:
+            raise SecurityListsCorruptedError(f"security_lists.version 非法，拒绝写入: {exc}") from exc
+    # 存量 defaults 非法同样拒写（与读路径一致，不静默丢弃）
+    try:
+        validate_defaults(section.get("defaults") or {})
+    except ValueError as exc:
+        raise SecurityListsCorruptedError(f"security_lists.defaults 非法，拒绝写入: {exc}") from exc
+    section.setdefault("defaults", {})
+    # 写入即盖章当前结构版本（v2 → v3 迁移闸门；defaults 缺失＝保持现状）
+    section["version"] = SECURITY_LISTS_VERSION
     return section
+
+
+def get_defaults() -> dict[str, Any]:
+    """读兜底档（``security_lists.defaults``）；空映射＝无兜底（交权限管线）。"""
+    return dict(get_security_lists().get("defaults") or {})
+
+
+def set_defaults(defaults: dict[str, Any]) -> dict[str, Any]:
+    """整体替换兜底档（键空间校验；非法抛 :class:`ValueError` 且不落盘）。
+
+    白名单模式即 ``{"*": {"domain": "deny"}}``——"未列出即拒"。
+    """
+    validate_defaults(defaults)
+
+    def _mutate(data: dict[str, Any]) -> dict[str, Any]:
+        section = _ensure_section(data)
+        section["defaults"] = {
+            str(mode): {str(list_type): str(action) for list_type, action in row.items()}
+            for mode, row in defaults.items()
+        }
+        return data
+
+    update_config(_mutate)
+    logger.info("security_lists defaults set: modes=%s", sorted(str(m) for m in defaults))
+    return defaults
 
 
 def _parse_existing_user(section: dict[str, Any]) -> list[SecurityListRecord]:
@@ -240,11 +313,21 @@ def delete_record(record_id: str) -> bool:
     return found
 
 
-def cloud_sync(*, sync_version: str, records: list[dict[str, Any]], synced_at: str) -> int:
+def cloud_sync(
+    *,
+    sync_version: str,
+    records: list[dict[str, Any]],
+    synced_at: str,
+    defaults: dict[str, Any] | None = None,
+) -> int:
     """cloud 区整区替换（user 区不动）。
 
     records 逐条校验，**任一非法整批拒绝**（抛 :class:`ValueError`，RPC 映射 400）；
-    批次内 ``(type, pattern, match)`` 重复同样整批拒绝。返回应用条数。
+    批次内 ``(type, pattern, match)`` 重复同样整批拒绝。
+
+    ``defaults`` 非 ``None`` 时同时整区替换兜底档（云侧可下发"未列出即拒"白名单）；
+    为 ``None``（缺省）时**保留现值**——云侧不下发就不动用户/前次云侧的档位设置。
+    返回应用条数。
     """
     parsed: list[SecurityListRecord] = []
     for raw in records:
@@ -252,6 +335,8 @@ def cloud_sync(*, sync_version: str, records: list[dict[str, Any]], synced_at: s
         rec.source = "cloud"
         validate_record(rec, existing=parsed)
         parsed.append(rec)
+    if defaults is not None:
+        validate_defaults(defaults)   # 非法整批拒绝，不落盘
 
     def _mutate(data: dict[str, Any]) -> dict[str, Any]:
         section = _ensure_section(data)
@@ -266,6 +351,11 @@ def cloud_sync(*, sync_version: str, records: list[dict[str, Any]], synced_at: s
             "synced_at": str(synced_at or ""),
             "records": [record_to_dict(r) for r in parsed],
         }
+        if defaults is not None:
+            section["defaults"] = {
+                str(mode): {str(list_type): str(action) for list_type, action in row.items()}
+                for mode, row in defaults.items()
+            }
         return data
 
     update_config(_mutate)
@@ -385,31 +475,13 @@ def _build_migrated_records(copy: dict[str, Any], now: str) -> list[SecurityList
     return list(merged.values())
 
 
-def _clear_copy_user_sections(copy_path: Path, copy: dict[str, Any]) -> None:
-    """清空副本用户名单段（``disable_all`` 总开关保留不动）；原子写回。"""
-    win = copy.get("windows")
-    if isinstance(win, dict):
-        fs = win.get("filesystem")
-        if isinstance(fs, dict):
-            for key in ("allow_read", "allow_write", "deny_read", "deny_write"):
-                fs[key] = []
-        net = win.get("network")
-        if isinstance(net, dict):
-            egress = net.get("egress")
-            if isinstance(egress, dict):
-                egress["allowed_domains"] = []
-                egress["blocked_domains"] = []
-    tmp = copy_path.with_suffix(copy_path.suffix + ".tmp")
-    tmp.write_text(yaml.safe_dump(copy, allow_unicode=True, sort_keys=False), encoding="utf-8")
-    os.replace(tmp, copy_path)
-
-
 def migrate_sandbox_copy_once(copy_path: Path | None = None) -> int:
-    """windows-policy.runtime.yaml 用户副本 → user 区聚合记录（幂等）。
+    """windows-policy.runtime.yaml 用户副本 → user 区聚合记录（幂等，只读副本）。
 
     已迁移（``security_lists.migrations.sandbox_copy`` 有标记）→ 返回 0。
     与存量 user 记录同 ``(type, pattern, match)`` 的迁移条目跳过（用户显式
-    配置优先）。迁移成功后清空副本用户名单段。返回新建记录条数。
+    配置优先）。**不清空副本**（副本是沙箱侧活配置，见函数尾注释）。
+    返回新建记录条数。
     """
     copy_path = Path(copy_path) if copy_path is not None else _default_copy_path()
     if not copy_path.is_file():
@@ -452,11 +524,9 @@ def migrate_sandbox_copy_once(copy_path: Path | None = None) -> int:
     update_config(_mutate)
     if already_done:
         return 0
-    # 标记已落盘后再清副本：即使清副本失败，重启也不会重复迁移（幂等）。
-    if candidates:
-        try:
-            _clear_copy_user_sections(copy_path, copy)
-        except OSError as exc:
-            logger.warning("清空沙箱副本用户段失败（迁移标记已写，不会重复迁移）: %s", exc)
-    logger.info("沙箱副本迁移完成: 新建 %d 条名单记录", migrated)
+    # 副本用户段**不清空**：windows-policy.runtime.yaml 是 sandbox.files.set /
+    # sandbox.network.set（server/sandbox_policy_render.py 直接读写）与
+    # FileGuard 同步（sandbox.files.sync）的活配置，清空会抹掉沙箱 ACL / egress
+    # 规则。本名单运行时已不再投影该副本（见 composer），副本归属沙箱侧。
+    logger.info("沙箱副本迁移完成: 新建 %d 条名单记录（副本保留）", migrated)
     return migrated

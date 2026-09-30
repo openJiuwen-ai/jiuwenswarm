@@ -39,6 +39,8 @@ _SECURITY_LISTS_METHODS: frozenset[ReqMethod] = frozenset(
         ReqMethod.SECURITY_LISTS_DELETE,
         ReqMethod.SECURITY_LISTS_CLOUD_SYNC,
         ReqMethod.SECURITY_LISTS_AUDIT_QUERY,
+        ReqMethod.SECURITY_LISTS_DEFAULTS_GET,
+        ReqMethod.SECURITY_LISTS_DEFAULTS_SET,
     }
 )
 
@@ -305,6 +307,8 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
                     "builtin": builtin,
                     "mode": mode or current_permission_profile(),
                     "cloud_meta": cloud_meta,
+                    # v3 兜底档（白名单模式）：随卡片视图一并下发，前端免二次请求
+                    "defaults": store.get_defaults(),
                 },
             )
 
@@ -375,15 +379,31 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
                 sync_version=str(params.get("sync_version") or ""),
                 synced_at=str(params.get("synced_at") or ""),
                 records=records,
+                # 缺省不下发 → 保留现值（云侧不静默改档位）
+                defaults=params.get("defaults"),
             )  # ValueError → 400 整批拒绝
             _audit_change(
                 "cloud.sync",
                 scope="cloud",
                 sync_version=str(params.get("sync_version") or ""),
                 applied=applied,
+                defaults=params.get("defaults"),
             )
             _trigger_sandbox_sync()
             return _ok(request, {"applied": applied})
+
+        # ---- defaults.get / defaults.set：兜底档（白名单模式） ----
+        if m == ReqMethod.SECURITY_LISTS_DEFAULTS_GET:
+            return _ok(request, {"defaults": store.get_defaults()})
+
+        if m == ReqMethod.SECURITY_LISTS_DEFAULTS_SET:
+            defaults = params.get("defaults")
+            if not isinstance(defaults, dict):
+                return _err(request, "defaults must be object")
+            store.set_defaults(defaults)   # ValueError → 400，且不落盘
+            _audit_change("defaults.set", defaults=defaults)
+            _trigger_sandbox_sync()
+            return _ok(request, {"defaults": store.get_defaults()})
 
         # ---- audit.query：审计回溯 ----
         if m == ReqMethod.SECURITY_LISTS_AUDIT_QUERY:

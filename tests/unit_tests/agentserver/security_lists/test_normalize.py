@@ -95,6 +95,37 @@ def test_project_approvals_file_guard_partial_axes_and_defaults():
     assert records["C:/badmatch"].match == "prefix"
 
 
+def test_project_approvals_file_guard_disabled_skips_paths():
+    """file_guard.enabled=false（面板「启用文件安全护栏」关闭）→ 路径规则不投影。
+
+    引擎侧 ``build_file_guard_checker`` 在 enabled 为假时返回 None（路径层整层
+    不生效），名单侧若仍按 paths 判定，则用户关掉开关后引擎放行、rail 继续拦。
+    """
+    perms = {
+        "approval_overrides": [
+            {"id": "ov1", "match_type": "command", "pattern": "git status *",
+             "action": "allow"},
+        ],
+        "file_guard": {
+            "enabled": False,
+            "paths": [{"path": "C:/data", "read": "allow", "write": "deny",
+                       "match": "prefix"}],
+        },
+    }
+    records = project_approvals(permissions=perms)
+    assert [r.id for r in records] == ["ov1"]
+
+
+def test_project_approvals_file_guard_enabled_true_keeps_paths():
+    """显式 enabled=true 与键缺省都照旧投影（模板默认 true）。"""
+    for file_guard in (
+        {"enabled": True, "paths": [{"path": "C:/on", "read": "allow"}]},
+        {"paths": [{"path": "C:/absent", "read": "allow"}]},
+    ):
+        records = project_approvals(permissions={"file_guard": file_guard})
+        assert len(records) == 1, file_guard
+
+
 # ---------------------------------------------------------------------------
 # 沙箱副本投影
 # ---------------------------------------------------------------------------

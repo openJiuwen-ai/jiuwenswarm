@@ -69,6 +69,7 @@ _SOURCE_LABELS = {
     "user_approval": "审批记住",
     "builtin": "内置基线",
     "cloud": "云侧下发",
+    "default": "兜底档",
 }
 _TYPE_LABELS = {"file_path": "文件路径", "domain": "网络域名", "command": "命令"}
 
@@ -99,6 +100,18 @@ def _get_resume_user_input(ctx: AgentCallbackContext, tool_call_id: str) -> Any 
 
 def _hit_metadata(hit: _Hit) -> dict[str, Any]:
     rec = hit.verdict.record
+    if rec is None:
+        # v3 兜底档命中：不是记录，只有目标与动作（无 pattern/id 可记）
+        return {
+            "record_id": "",
+            "type": hit.list_type,
+            "pattern": "",
+            "match": "",
+            "op": hit.op,
+            "action": hit.verdict.action,
+            "source": hit.verdict.source,
+            "target": hit.target[:500],
+        }
     return {
         "record_id": rec.id,
         "type": hit.list_type,
@@ -109,6 +122,16 @@ def _hit_metadata(hit: _Hit) -> dict[str, Any]:
         "source": hit.verdict.source,
         "target": hit.target[:500],
     }
+
+
+def _hit_reason(hit: _Hit) -> str:
+    """命中项的人类可读描述（兜底档无记录 → 用类型 + 兜底说明）。"""
+    type_label = _TYPE_LABELS.get(hit.list_type, hit.list_type)
+    source_label = _SOURCE_LABELS.get(hit.verdict.source, hit.verdict.source)
+    rec = hit.verdict.record
+    if rec is None:
+        return f"兜底档（{type_label}未列出即拒，来源：{source_label}）"
+    return f"{type_label}: {rec.pattern}，来源：{source_label}"
 
 
 class UnifiedSecurityListRail(DeepAgentRail):
@@ -259,8 +282,12 @@ class UnifiedSecurityListRail(DeepAgentRail):
             if verdict is None:
                 continue
             # 同一记录被多个目标命中（整行/子命令/exe 名）只记首个 hit：
-            # 弹窗/审计/记住均按记录维度处置一次
-            key = (verdict.record.id, verdict.action)
+            # 弹窗/审计/记住均按记录维度处置一次。兜底档无 id，按类型去重。
+            rec = verdict.record
+            key = (
+                rec.id if rec is not None else f"default:{list_type}",
+                verdict.action,
+            )
             if key in seen:
                 continue
             seen.add(key)
@@ -356,15 +383,13 @@ class UnifiedSecurityListRail(DeepAgentRail):
         rec = hit.verdict.record
         message = (
             f"[SECURITY_LIST_DENIED] 命中安全名单规则"
-            f"（{_TYPE_LABELS.get(hit.list_type, hit.list_type)}: {rec.pattern}，"
-            f"来源：{_SOURCE_LABELS.get(hit.verdict.source, hit.verdict.source)}），"
-            f"已拒绝执行 {tool_name}。"
+            f"（{_hit_reason(hit)}），已拒绝执行 {tool_name}。"
         )
         logger.warning(
             "[security_lists] deny tool=%s record=%s pattern=%r source=%s mode=%s",
             tool_name,
-            rec.id,
-            rec.pattern,
+            rec.id if rec is not None else "",
+            rec.pattern if rec is not None else "",
             hit.verdict.source,
             mode,
         )
@@ -392,6 +417,9 @@ class UnifiedSecurityListRail(DeepAgentRail):
         lines = [f"工具 {tool_name} 命中安全名单规则，是否放行？"]
         for hit in pending[:3]:
             rec = hit.verdict.record
+            if rec is None:
+                lines.append(f"- {_hit_reason(hit)}")
+                continue
             lines.append(
                 f"- [{_SOURCE_LABELS.get(hit.verdict.source, hit.verdict.source)}] "
                 f"{_TYPE_LABELS.get(hit.list_type, hit.list_type)}: {rec.pattern}"
@@ -414,7 +442,9 @@ class UnifiedSecurityListRail(DeepAgentRail):
 
     @staticmethod
     def _is_auto_confirmed(auto_config: Optional[dict], hit: _Hit) -> bool:
-        record_id = hit.verdict.record.id
+        rec = hit.verdict.record
+        # 兜底档命中无记录 id，"会话内免重弹"无从记忆 → 每次照常询问
+        record_id = rec.id if rec is not None else ""
         if not auto_config or not record_id:
             return False
         return bool(auto_config.get(_AUTO_CONFIRM_PREFIX + record_id))
@@ -517,7 +547,8 @@ class UnifiedSecurityListRail(DeepAgentRail):
             config = {}
         changed = False
         for hit in ask_hits:
-            record_id = hit.verdict.record.id
+            rec = hit.verdict.record
+            record_id = rec.id if rec is not None else ""
             if record_id and not config.get(_AUTO_CONFIRM_PREFIX + record_id):
                 config[_AUTO_CONFIRM_PREFIX + record_id] = True
                 changed = True
@@ -546,6 +577,13 @@ class UnifiedSecurityListRail(DeepAgentRail):
         now = utc_now_iso()
         for hit in ask_hits:
             rec = hit.verdict.record
+            if rec is None:
+                # 兜底档命中没有记录可"记住"：绝不能按 pattern="*" 落盘（会把整类放开）
+                logger.warning(
+                    "[security_lists] 兜底档命中无记录可记住，按仅本次放行（type=%s）",
+                    hit.list_type,
+                )
+                continue
             entry_id = f"sl_{rec.id or new_record_id()}_{mode}"
             if rec.type == "command":
                 # glob 记录沿用原 pattern（同等语义）；exact/regex 落具体目标

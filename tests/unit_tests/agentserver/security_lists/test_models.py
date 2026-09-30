@@ -10,6 +10,8 @@ from jiuwenswarm.agents.harness.common.rails.security_lists.models import (
     record_from_dict,
     record_to_dict,
     resolve_cell,
+    resolve_default,
+    validate_defaults,
     validate_record,
 )
 
@@ -206,3 +208,39 @@ def test_record_from_dict_default_source():
     restored = record_from_dict({"type": "domain", "pattern": "example.com", "match": "exact"},
                                 default_source="cloud")
     assert restored.source == "cloud"
+
+
+# ---------------------------------------------------------------------------
+# v3 兜底档 defaults
+# ---------------------------------------------------------------------------
+
+
+def test_validate_defaults_accepts_legal_keyspace():
+    validate_defaults({})                                              # 无兜底＝保持现状
+    validate_defaults({"*": {"domain": "deny", "file_path": "allow", "command": "ask"}})
+    validate_defaults({"*": {"*": "allow"}})                           # 通用格：所有类型
+    validate_defaults({"full_access": {"domain": "allow"}})            # 模式特化格
+
+
+@pytest.mark.parametrize("defaults", [
+    "deny",                              # 整体不是映射
+    {"*": "deny"},                       # 模式行不是映射
+    {"weird_mode": {"domain": "deny"}},  # 未知模式键
+    {"*": {"ip": "deny"}},               # 未知类型键
+    {"*": {"domain": "block"}},          # 非法动作
+])
+def test_validate_defaults_rejects_illegal(defaults):
+    with pytest.raises(ValueError):
+        validate_defaults(defaults)
+
+
+def test_resolve_default_fallback_chain():
+    # defaults[mode][type] → defaults[mode]["*"] → defaults["*"][type] → defaults["*"]["*"]
+    defaults = {"*": {"*": "allow", "domain": "deny"}}
+    assert resolve_default(defaults, "default", "domain") == "deny"        # 类型特化格
+    assert resolve_default(defaults, "default", "file_path") == "allow"    # 落到通用格
+    assert resolve_default({}, "default", "domain") is None                # 无兜底＝无表态
+    # 模式隔离：别的模式的格子不泄漏
+    assert resolve_default({"full_access": {"domain": "allow"}}, "default", "domain") is None
+    # 通用模式格对所有模式命中
+    assert resolve_default({"*": {"domain": "deny"}}, "full_access", "domain") == "deny"

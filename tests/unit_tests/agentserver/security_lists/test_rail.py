@@ -56,16 +56,21 @@ def make_ctx(tool_name="bash", args=None, *, session=None, tool_call_id="tc1"):
     )
 
 
-def composer_of(records=None, error=None):
+def composer_of(records=None, error=None, defaults=None):
     if error is not None:
         def _raise(*a, **k):
             raise error
-        return SimpleNamespace(collect=_raise)
-    return SimpleNamespace(collect=lambda *a, **k: list(records or []))
+        return SimpleNamespace(collect=_raise, defaults=lambda: {})
+    return SimpleNamespace(
+        collect=lambda *a, **k: list(records or []),
+        defaults=lambda: dict(defaults or {}),
+    )
 
 
-def rail_of(records=None, *, error=None):
-    return UnifiedSecurityListRail(composer=composer_of(records, error=error))
+def rail_of(records=None, *, error=None, defaults=None):
+    return UnifiedSecurityListRail(
+        composer=composer_of(records, error=error, defaults=defaults)
+    )
 
 
 def rec(**kw) -> SecurityListRecord:
@@ -576,3 +581,57 @@ def test_resume_engine_deny_beats_user_approval(_isolated):
     assert SECURITY_LIST_APPROVED_KEY not in ctx.extra
     events = read_events(_isolated.audit_file)
     assert [e["resolution"] for e in events] == ["engine_deny_precheck"]
+
+
+# ---------------------------------------------------------------------------
+# v3 兜底档（白名单模式）——Verdict.record 为 None 的路径
+# ---------------------------------------------------------------------------
+
+
+def test_default_deny_blocks_unlisted(_isolated):
+    """白名单：未列出的命令被兜底档拦下（record 为 None 也不能崩）。"""
+    rail = rail_of([], defaults={"*": {"command": "deny"}})
+    ctx = make_ctx(args={"command": "curl http://unlisted.example"})
+
+    run(rail, ctx)
+
+    assert ctx.extra.get("_skip_tool") is True
+    assert "SECURITY_LIST_DENIED" in str(ctx.inputs.tool_result)
+    assert "兜底" in str(ctx.inputs.tool_result)
+    events = read_events(_isolated.audit_file)
+    assert events[0]["resolution"] == "deny"
+    assert events[0]["hits"][0]["source"] == "default"
+
+
+def test_default_deny_does_not_block_listed_allow(_isolated):
+    """白名单核心性质在 rail 层同样成立：命中的 allow 记录不被兜底 deny 抹掉。"""
+    rail = rail_of(
+        [rec(pattern="curl*", cells={"*": {"*": "allow"}})],
+        defaults={"*": {"command": "deny"}},
+    )
+    ctx = make_ctx(args={"command": "curl http://allowed.example"})
+
+    run(rail, ctx)
+
+    assert "_skip_tool" not in ctx.extra
+
+
+def test_default_ask_prompts_and_cannot_be_remembered(_isolated, monkeypatch):
+    """兜底档没有"记录"可记住：永久记住必须跳过，绝不能写出 pattern='*' 的规则。"""
+    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_persist
+
+    captured = {}
+    monkeypatch.setattr(
+        permissions_persist,
+        "persist_merged_allow_rule_snapshot",
+        lambda payload: captured.setdefault("payload", payload) is None or True,
+    )
+    rail = rail_of([], defaults={"*": {"command": "ask"}})
+    ctx = resume_ctx({"approved": True, "auto_confirm": False, "persist_allow": True})
+
+    run(rail, ctx)
+
+    assert "payload" not in captured                      # 无对象可持久化
+    assert "_skip_tool" not in ctx.extra                  # 用户批准 → 放行
+    events = read_events(_isolated.audit_file)
+    assert [e["resolution"] for e in events] == ["approve_once"]

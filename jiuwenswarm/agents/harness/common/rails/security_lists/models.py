@@ -39,6 +39,12 @@ GENERIC_OPS: tuple[str, ...] = ("*",)
 #: 合法格子值
 ACTIONS: tuple[str, ...] = ("allow", "ask", "deny")
 
+#: 段结构版本（v3 起含 ``defaults`` 兜底档；段内缺 ``version`` 视为 v2 兼容读）
+SECURITY_LISTS_VERSION: int = 3
+
+#: ``defaults`` 的「类型键」空间（含通用格 ``"*"``＝所有名单类型）
+DEFAULT_TYPE_KEYS: tuple[str, ...] = ("file_path", "domain", "command", "*")
+
 #: type → 合法 match 组合（设计文档 4.1）
 ALLOWED_MATCH: dict[str, tuple[str, ...]] = {
     "file_path": ("glob", "prefix"),
@@ -196,6 +202,38 @@ def resolve_cell(cells: dict[str, dict[str, str]], mode: str, op: str) -> str | 
             return action
         return star_row.get("*")
     return None
+
+
+def validate_defaults(defaults: Any) -> None:
+    """兜底档 ``defaults`` 键空间校验（结构须为 ``dict[模式, dict[类型, 动作]]``）。
+
+    与 :func:`validate_cells` 同构，只是「操作键」换成名单类型键：
+    ``defaults[模式|"*"][类型|"*"]``；空映射合法（无兜底＝保持现状）。
+    """
+    if not isinstance(defaults, dict):
+        raise ValueError(f"defaults 须为映射: {type(defaults).__name__}")
+    for mode, row in defaults.items():
+        if mode not in MODE_KEYS:
+            raise ValueError(f"未知模式键: {mode!r}")
+        if not isinstance(row, dict):
+            raise ValueError(f"defaults[{mode!r}] 须为映射: {type(row).__name__}")
+        for list_type, action in row.items():
+            if list_type not in DEFAULT_TYPE_KEYS:
+                raise ValueError(f"defaults 不支持类型键: {list_type!r}")
+            if action not in ACTIONS:
+                raise ValueError(f"未知兜底动作: {action!r}")
+
+
+def resolve_default(defaults: Any, mode: str, list_type: str) -> str | None:
+    """兜底档回退链解析（仅在所有记录都不匹配时调用）。
+
+    ``defaults[mode][type] → defaults[mode]["*"] → defaults["*"][type] → defaults["*"]["*"]``，
+    最具体者胜；全空/无 ``defaults`` 段返回 ``None``＝**无表态**（交权限管线，存量语义）。
+    与 :func:`resolve_cell` 同一条链——此处「操作键」即名单类型键。
+    """
+    if not isinstance(defaults, dict):
+        return None
+    return resolve_cell(defaults, mode, list_type)
 
 
 def record_to_dict(rec: SecurityListRecord) -> dict[str, Any]:

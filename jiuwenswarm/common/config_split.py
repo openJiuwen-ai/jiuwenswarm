@@ -51,6 +51,9 @@ _EXTRACT_LOCK = threading.Lock()
 _SCALAR_PATHS: tuple[tuple[str, ...], ...] = (
     ("sandbox", "enabled"),
     ("permissions", "shell_guard", "builtin_rules_enabled"),
+    # 沙箱本地回落三态（never|inline_only|always，设计 5.6）；Web 安全页与
+    # 手改 config.yaml 都可能设它，模板缺失 → 不登记会被模板重同步整键抹掉。
+    ("sandbox", "fallback_policy"),
 )
 
 # 小艺 PC/手机 HITL「永久记住」。按 id（路径条目按 path）upsert 回新模板 list。
@@ -58,12 +61,21 @@ _SCALAR_PATHS: tuple[tuple[str, ...], ...] = (
 LIST_PATHS: tuple[tuple[str, ...], ...] = (
     ("permissions", "approval_overrides"),
     ("permissions", "file_guard", "paths"),
+    # 统一安全名单的用户记录（按记录 id upsert）；含 M1 从沙箱副本迁移来的条目。
+    ("security_lists", "user"),
 )
 
 # 与 LIST_PATHS 同语义，但值是映射：按键 upsert，仅写回与模板不同的键。
 # 前端安全页「URL / 域名规则」写 net_guard.urls（pattern → allow|deny）。
 MAP_PATHS: tuple[tuple[str, ...], ...] = (
     ("permissions", "net_guard", "urls"),
+    # 云侧下发名单整段（sync_version / synced_at / records）；模板不含该段。
+    ("security_lists", "cloud"),
+    # 兜底档（v3）：白名单模式（"未列出即拒"）就写在这里，丢了等于白名单静默失效。
+    ("security_lists", "defaults"),
+    # 一次性迁移幂等标记（如 sandbox_copy）。丢失会让迁移在每次升级后重跑，
+    # 把用户已删掉的迁移条目再挂回来。
+    ("security_lists", "migrations"),
 )
 
 # 用户 config 目录；比的是包内模板哈希，不是用户 yaml 是否等于模板。

@@ -8,8 +8,10 @@
 - :func:`project_approvals`：``permissions.approval_overrides``（command 类）
   + ``file_guard.paths``（config ∪ 当前会话 overlay）→ ``source=user_approval``；
   条目 ``mode`` 字段 → 对应模式格，无 ``mode`` → 通用格（模式无关）；
-- :func:`project_sandbox_runtime_copy`：windows-policy 用户副本 → ``source=user``
-  （M1 迁移前的过渡投影；迁移清空副本后自然返回空）。
+- :func:`project_sandbox_runtime_copy`：windows-policy 用户副本 → ``source=user``。
+  **仅供迁移/排查使用**：该副本是 ``sandbox.files.set`` / ``sandbox.network.set``
+  与 FileGuard 同步的活配置，运行时收集已不投影它（旧内容由
+  :func:`store.migrate_sandbox_copy_once` 一次性搬进 ``security_lists.user``）。
 
 物理存储不动（引擎契约），此处只读。审批/副本单条畸形 → 跳过 + 告警
 （与引擎既有宽容语义一致）；YAML 整体不可读 → 异常上抛（rail fail-closed）。
@@ -171,6 +173,12 @@ def project_approvals(
         ))
 
     file_guard = perms.get("file_guard")
+    # 面板「启用文件安全护栏」关闭（enabled: false）时引擎 build_file_guard_checker
+    # 返回 None，路径层整层不生效；名单侧同样不投影其路径规则，否则会出现
+    # "开关已关、引擎放行，rail 仍按 paths 拦"的开关失灵。
+    # 键缺省按启用处理（包内模板恒为 true），保持既有投影不缩水。
+    if isinstance(file_guard, Mapping) and file_guard.get("enabled") is False:
+        file_guard = None
     paths = file_guard.get("paths") if isinstance(file_guard, Mapping) else None
     for entry in paths or []:
         if not isinstance(entry, dict):
@@ -209,10 +217,9 @@ def project_approvals(
 
 
 def project_sandbox_runtime_copy(copy_path: str | Path | None = None) -> list[SecurityListRecord]:
-    """windows-policy 用户副本 → user 投影（M1 迁移后副本被清空，自然返回空）。
+    """windows-policy 用户副本 → user 投影（**运行时收集不再调用**，见模块 docstring）。
 
-    与物理 user 记录同源同形；若迁移已落记录但副本清空失败，可能与物理记录
-    重复——求值对重复同语义记录天然安全（同 verdict），不做去重。
+    与物理 user 记录同源同形；仅保留给 M1 迁移排查与后续 UI 复用。
     """
     from . import store as _store  # 同包内部复用副本解析，避免环导入
 

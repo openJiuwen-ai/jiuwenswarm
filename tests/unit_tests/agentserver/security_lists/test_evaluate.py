@@ -18,13 +18,19 @@ def rec(pattern="C:/data", *, source="user", cells=None, list_type="file_path",
     )
 
 
-def composer_of(records):
-    return SimpleNamespace(collect=lambda *a, **k: list(records))
+def composer_of(records, defaults=None):
+    return SimpleNamespace(
+        collect=lambda *a, **k: list(records),
+        defaults=lambda: dict(defaults or {}),
+    )
 
 
 def run(records, *, mode="default", op="read", target="C:/data/sub/f.txt",
-        list_type="file_path"):
-    return evaluate(list_type, target, op=op, mode=mode, composer=composer_of(records))
+        list_type="file_path", defaults=None):
+    return evaluate(
+        list_type, target, op=op, mode=mode,
+        composer=composer_of(records, defaults),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -156,3 +162,48 @@ def test_disabled_record_skipped():
 def test_record_without_opinion_skipped():
     # 命中 pattern 但 cells 在当前 mode/op 下无表态 → NO_MATCH
     assert run([rec(cells={"default": {"write": "deny"}})], op="read") is None
+
+
+# ---------------------------------------------------------------------------
+# v3 兜底档 defaults（白名单模式）
+# ---------------------------------------------------------------------------
+
+
+def test_default_used_when_nothing_matches():
+    verdict = run([], defaults={"*": {"file_path": "deny"}})
+    assert verdict is not None
+    assert verdict.action == "deny" and verdict.source == "default"
+    assert verdict.record is None      # 兜底档不是记录，没有可"记住"的对象
+
+
+def test_default_does_not_override_matching_allow():
+    """白名单核心性质：命中 allow 记录时兜底 deny **不生效**。
+
+    若退化成"兜底 deny 一票否决"，白名单会变成全拒。
+    """
+    verdict = run(
+        [rec(pattern="C:/data", cells={"*": {"read": "allow"}})],
+        defaults={"*": {"file_path": "deny"}},
+    )
+    assert verdict is not None and verdict.action == "allow"
+    assert verdict.source == "user"
+
+
+def test_matching_deny_beats_default_allow():
+    verdict = run(
+        [rec(pattern="C:/data", cells={"*": {"read": "deny"}})],
+        defaults={"*": {"file_path": "allow"}},
+    )
+    assert verdict is not None and verdict.action == "deny"
+
+
+def test_no_defaults_keeps_no_match():
+    assert run([]) is None
+    assert run([], defaults={}) is None
+
+
+def test_default_is_mode_scoped():
+    defaults = {"full_access": {"file_path": "deny"}}
+    assert run([], mode="default", defaults=defaults) is None
+    verdict = run([], mode="full_access", defaults=defaults)
+    assert verdict is not None and verdict.action == "deny"
