@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRsiStore } from '../rsiStore';
+import { visibleRsiTree } from '../rsiPresentation';
 import { RsiDetailHeader } from './RsiDetailHeader';
 import { RsiResultSummary } from './RsiResultSummary';
 import { RsiCanvasArea } from './RsiCanvasArea';
@@ -53,13 +54,14 @@ export function RsiDetail() {
   }
 
   const createdAt = list.find((item) => item.task_id === selectedTaskId)?.created_at ?? null;
+  const tree = visibleRsiTree(detail.tree, detail.task.artifact_type);
 
   return (
     <>
       <RsiDetailHeader
         task={detail.task}
         report={detail.report}
-        tree={detail.tree}
+        tree={tree}
         createdAt={createdAt}
         onOpenConfig={() => setConfigOpen(true)}
         onOpenArtifact={(path, title) => {
@@ -87,7 +89,7 @@ export function RsiDetail() {
             setArtifactSource({ taskId: selectedTaskId, path, initialFilePath: null });
           }}
         />
-        <RsiCanvasArea task={detail.task} tree={detail.tree} />
+        <RsiCanvasArea task={detail.task} tree={tree} />
       </div>
       <ConfigInfoDialog open={configOpen} task={detail.task} onClose={() => setConfigOpen(false)} />
       {artifactSource && (
