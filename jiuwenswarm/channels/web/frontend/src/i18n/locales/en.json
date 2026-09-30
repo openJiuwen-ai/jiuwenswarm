@@ -218,6 +218,8 @@
       "save": "Save",
       "saving": "Saving…",
       "cancelEdit": "Cancel",
+      "externalChange": "The file has changed. Your draft is preserved; saving will overwrite the latest content.",
+      "overwriteWithDraft": "Overwrite with draft",
       "saveFailed": "Save failed",
       "placeholder": "Placeholder",
       "empty": "No outputs to preview yet",

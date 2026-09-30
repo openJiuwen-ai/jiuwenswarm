@@ -104,8 +104,8 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
     if (!runId || run?.status === 'running') return;
     for (const item of pendingRevisions) {
       const key = `${runId}:${item.nodeId}`;
-      if (autoPromotedRef.current.has(key)) continue;
-      // Always auto-accept new assets — never require one-by-one Continue/approval.
+      if (item.requiresSelection || autoPromotedRef.current.has(key)) continue;
+      // Brief/storyboard versions remain pending until the user chooses one.
       autoPromotedRef.current.add(key);
       void chooseOutput(item.nodeId, 'new').then(() => {
         if (chooserNodeId === item.nodeId) closeRevision();

@@ -633,7 +633,7 @@ def test_create_rerun_parks_orphaned_running_and_marks_single_node(
     source["node_states"]["n_character"] = {"status": "failed", "error": "image_gen failed"}
     designer_store.save_run(source)
     rerun = executor.create_rerun(graph, source_run=source, node_id="n_character")
-    assert rerun["metadata"]["single_node_rerun"] is True
+    assert rerun["metadata"]["target_node_id"] == "n_character"
     assert rerun["node_states"]["n_character"]["status"] == "pending"
     assert not rerun["node_states"]["n_character"].get("error")
     assert rerun["node_states"]["n_scene"]["status"] == "pending"

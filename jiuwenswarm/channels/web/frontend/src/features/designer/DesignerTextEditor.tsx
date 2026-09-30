@@ -1,11 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { saveDesignerTextFile } from './designerAssetUrl';
-import {
-  DESIGNER_MATERIAL_SAVED_EVENT,
-  isEditableDesignerMaterial,
-  type DesignerMaterial,
-} from './designerMaterials';
+import { DESIGNER_MATERIAL_SAVED_EVENT, isEditableDesignerMaterial, type DesignerMaterial } from './designerMaterials';
 
 type DesignerTextEditorProps = {
   material: DesignerMaterial;
@@ -14,6 +10,8 @@ type DesignerTextEditorProps = {
   startEditKey?: number;
   onEditingChange?: (editing: boolean) => void;
 };
+
+const EMPTY_EDITOR = { text: '', draft: '', editing: false, conflict: false };
 
 export function DesignerTextEditor({
   material,
@@ -24,49 +22,73 @@ export function DesignerTextEditor({
 }: DesignerTextEditorProps) {
   const { t } = useTranslation();
   const editable = isEditableDesignerMaterial(material);
-  const [text, setText] = useState('');
-  const [draft, setDraft] = useState('');
-  const [editing, setEditing] = useState(false);
+  const [{ text, draft, editing, conflict }, setEditor] = useState(EMPTY_EDITOR);
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [reloadAt, setReloadAt] = useState(0);
   const onEditingChangeRef = useRef(onEditingChange);
   onEditingChangeRef.current = onEditingChange;
+  const materialRef = useRef(material);
+  materialRef.current = material;
 
   useEffect(() => {
-    setText('');
-    setDraft('');
-    setEditing(false);
+    setEditor(EMPTY_EDITOR);
+    setSaving(false);
     setError('');
     onEditingChangeRef.current?.(false);
   }, [material.id]);
 
   useEffect(() => {
+    const onSaved = (event: Event) => {
+      if ((event as CustomEvent<{ uri: string }>).detail?.uri !== material.uri) return;
+      setEditor((current) => ({
+        ...current,
+        conflict: current.editing && current.draft !== current.text,
+      }));
+      setLoading(true);
+      setReloadAt((value) => value + 1);
+    };
+    window.addEventListener(DESIGNER_MATERIAL_SAVED_EVENT, onSaved);
+    return () => window.removeEventListener(DESIGNER_MATERIAL_SAVED_EVENT, onSaved);
+  }, [material.uri]);
+
+  useEffect(() => {
     if (!material.textUrl) return;
     let cancelled = false;
     const url = `${material.textUrl}${material.textUrl.includes('?') ? '&' : '?'}t=${reloadAt}`;
+    setLoading(true);
     setError('');
-    void fetch(url)
+    void fetch(url, { cache: 'no-store' })
       .then((response) => {
         if (!response.ok) throw new Error(String(response.status));
         return response.text();
       })
       .then((value) => {
         if (cancelled) return;
-        setText(value);
-        setDraft(value);
+        setEditor((current) => {
+          const dirty = current.editing && current.draft !== current.text;
+          return {
+            ...current,
+            text: value,
+            draft: dirty ? current.draft : value,
+            conflict: dirty && current.draft !== value && (current.conflict || value !== current.text),
+          };
+        });
       })
       .catch(() => {
         if (!cancelled) setError(t('designer.materials.textError'));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [material.textUrl, reloadAt, t]);
+  }, [material.id, material.textUrl, reloadAt, t]);
 
   const startEdit = () => {
-    setDraft(text);
-    setEditing(true);
+    setEditor((current) => ({ ...current, draft: current.text, editing: true, conflict: false }));
     setError('');
     onEditingChange?.(true);
   };
@@ -74,13 +96,12 @@ export function DesignerTextEditor({
   useEffect(() => {
     if (!startEditKey || !editable) return;
     startEdit();
-    // startEdit reads current text; only re-run when the viewer asks again.
+    // Only re-run when the viewer asks to edit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startEditKey]);
 
   const cancelEdit = () => {
-    setDraft(text);
-    setEditing(false);
+    setEditor((current) => ({ ...current, draft: current.text, editing: false, conflict: false }));
     setError('');
     onEditingChange?.(false);
   };
@@ -88,32 +109,28 @@ export function DesignerTextEditor({
   const saveEdit = async () => {
     setSaving(true);
     setError('');
+    const isCurrent = () => materialRef.current.id === material.id && materialRef.current.uri === material.uri;
     try {
       await saveDesignerTextFile(material.uri, draft);
-      setText(draft);
-      setEditing(false);
-      setReloadAt(Date.now());
-      onEditingChange?.(false);
-      window.dispatchEvent(
-        new CustomEvent(DESIGNER_MATERIAL_SAVED_EVENT, { detail: { uri: material.uri } }),
-      );
+      if (isCurrent()) {
+        setEditor({ text: draft, draft, editing: false, conflict: false });
+        onEditingChangeRef.current?.(false);
+      }
+      window.dispatchEvent(new CustomEvent(DESIGNER_MATERIAL_SAVED_EVENT, { detail: { uri: material.uri } }));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('designer.materials.saveFailed'));
+      if (isCurrent()) setError(cause instanceof Error ? cause.message : t('designer.materials.saveFailed'));
     } finally {
-      setSaving(false);
+      if (materialRef.current.id === material.id) setSaving(false);
     }
   };
 
-  if (!material.textUrl) return <p>{t('designer.materials.placeholderHint')}</p>;
-  if (error && !text && !editing) return <p>{error}</p>;
+  if (!material.textUrl)
+    return <p data-testid="designer-text-placeholder">{t('designer.materials.placeholderHint')}</p>;
+  if (error && !text && !editing) return <p data-testid="designer-text-error">{error}</p>;
 
   return (
     <div
-      className={
-        compact
-          ? 'designer-text-editor designer-text-editor--compact'
-          : 'designer-text-editor'
-      }
+      className={compact ? 'designer-text-editor designer-text-editor--compact' : 'designer-text-editor'}
       data-testid="designer-text-editor"
     >
       {editable && (editing || showStartButton) ? (
@@ -123,11 +140,14 @@ export function DesignerTextEditor({
               <button
                 type="button"
                 className="btn primary"
-                disabled={saving || draft === text}
+                disabled={saving || loading || draft === text}
                 onClick={() => void saveEdit()}
                 data-testid="designer-text-save"
+                data-variant={saving ? 'saving' : conflict ? 'overwrite' : 'save'}
               >
-                {saving ? t('designer.materials.saving') : t('designer.materials.save')}
+                {saving
+                  ? t('designer.materials.saving')
+                  : t(conflict ? 'designer.materials.overwriteWithDraft' : 'designer.materials.save')}
               </button>
               <button
                 type="button"
@@ -143,6 +163,7 @@ export function DesignerTextEditor({
             <button
               type="button"
               className="btn"
+              disabled={loading}
               onClick={startEdit}
               data-testid="designer-text-edit"
             >
@@ -151,11 +172,24 @@ export function DesignerTextEditor({
           )}
         </div>
       ) : null}
+      {conflict ? (
+        <p role="status" data-testid="designer-text-conflict">
+          {t('designer.materials.externalChange')}
+        </p>
+      ) : null}
       {editing ? (
         <textarea
           className="designer-text-editor__textarea"
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          disabled={saving}
+          onChange={(event) => {
+            const value = event.target.value;
+            setEditor((current) => ({
+              ...current,
+              draft: value,
+              conflict: current.conflict && value !== current.text,
+            }));
+          }}
           onKeyDown={(event) => {
             if (event.key === 'Escape') {
               event.stopPropagation();
@@ -164,16 +198,22 @@ export function DesignerTextEditor({
             if ((event.ctrlKey || event.metaKey) && event.key === 's') {
               event.preventDefault();
               event.stopPropagation();
-              if (!saving && draft !== text) void saveEdit();
+              if (!saving && !loading && !conflict && draft !== text) void saveEdit();
             }
           }}
           spellCheck={false}
           data-testid="designer-text-draft"
         />
       ) : (
-        <pre className="designer-text-editor__text">{text}</pre>
+        <pre className="designer-text-editor__text" data-testid="designer-text-preview">
+          {text}
+        </pre>
       )}
-      {error && editing ? <p className="designer-text-editor__error">{error}</p> : null}
+      {error ? (
+        <p className="designer-text-editor__error" data-testid="designer-text-error">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

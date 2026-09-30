@@ -1059,6 +1059,12 @@ def _start_run(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | Non
             except KeyError:
                 return None, "node not found", "NOT_FOUND"
             run_id = run["run_id"]
+        elif (existing.get("metadata") or {}).get("target_node_id"):
+            # The workflow Continue action explicitly leaves single-node scope.
+            if _executor.has_active_tasks(existing["graph_id"]):
+                return None, "任务正在运行或停止，请稍后继续工作流", "BAD_REQUEST"
+            existing["metadata"].pop("target_node_id")
+            _store.save_run(existing)
     elif graph is not None and node_id:
         source = _store.get_latest_run_for_graph(graph["graph_id"])
         # A ComfyUI node runs on its own, so it needs no earlier Play.
@@ -1141,6 +1147,11 @@ def _choose_output(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str |
 
 async def _chat_graph(request: AgentRequest, params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, str | None]:
     from jiuwenswarm.server.runtime.designer.leader_chat import run_leader_chat
+    from jiuwenswarm.server.runtime.designer.chat_document_sync import (
+        ChatDocumentConflict,
+        read_chat_documents,
+        save_document_update,
+    )
     from jiuwenswarm.server.runtime.designer.model_tools import (
         DesignerLlmError,
         require_llm,
@@ -1156,31 +1167,54 @@ async def _chat_graph(request: AgentRequest, params: dict[str, Any]) -> tuple[di
     graph = _store.get_graph(graph_id)
     if graph is None:
         return None, "graph not found", "NOT_FOUND"
-    graph = _executor.reconcile_loaded_graph(graph)
     selected_node_id = str(params.get("selected_node_id") or params.get("node_id") or "").strip()
     run_new_nodes = bool(params.get("run_new_nodes") or params.get("runNewNodes"))
     progress = _leader_progress_callback(request)
     try:
         require_llm()
+        run = _store.get_latest_run_for_graph(graph_id)
+        documents = read_chat_documents(graph, run)
+        pending_documents = any(
+            state.get("candidate_output_ref") or state.get("candidate_output_refs")
+            for node_id, state in ((run or {}).get("node_states") or {}).items() if node_id in documents
+        )
+        was_active = _executor.has_active_tasks(graph_id)
         preferred_model = str((graph.get("metadata") or {}).get("model_name") or "")
         with use_preferred_designer_model(preferred_model):
             result = await run_leader_chat(
                 graph,
                 message,
+                documents=documents,
+                pending_documents=pending_documents,
                 selected_node_id=selected_node_id,
                 run_new_nodes=run_new_nodes,
                 progress=progress,
             )
+        updated_text_uris = []
+        saved = graph
+        if result.get("changed") or result.get("run_node_ids"):
+            if was_active or _executor.has_active_tasks(graph_id):
+                return None, "工作流任务尚未结束；运行中请先停止，任务正在停止时请稍后重试。", "CONFLICT"
+            current_graph = _store.get_graph(graph_id)
+            current_run = _store.get_latest_run_for_graph(graph_id)
+            if (current_graph != graph or current_run != run
+                    or read_chat_documents(current_graph, current_run) != documents):
+                return None, "工作流或文本已在本次请求期间发生变化，请重新提交。", "CONFLICT"
+        if result.get("changed"):
+            saved, run, updated_text_uris = save_document_update(
+                _store, result["graph"], run, documents, result["texts"]
+            )
+        progress("stage", str(result.get("summary") or "done"))
     except DesignerLlmError as exc:
         return None, exc.user_message, exc.code
+    except ChatDocumentConflict as exc:
+        return None, str(exc), "CONFLICT"
     except DesignerGraphValidationError as exc:
         return None, str(exc), "BAD_REQUEST"
     except Exception as exc:  # noqa: BLE001
         logger.warning("[DesignerAdapter] graph chat failed: %s", exc)
         return None, str(exc), "INTERNAL_ERROR"
 
-    next_graph = result.get("graph") or graph
-    saved = _store.save_graph(next_graph) if result.get("changed") else graph
     summary = str(result.get("summary") or "")
     session_id = str((saved.get("metadata") or {}).get("session_id") or "").strip()
     if session_id:
@@ -1210,7 +1244,7 @@ async def _chat_graph(request: AgentRequest, params: dict[str, Any]) -> tuple[di
             extra={"design_kind": "chat_ack", "graph_id": graph_id},
             mode="designer",
         )
-    run_payload = None
+    run_payload = dict(run) if run is not None and result.get("changed") else None
     run_ids = list(result.get("run_node_ids") or [])
     if run_ids:
         start_params: dict[str, Any] = {"graph_id": saved["graph_id"], "node_id": run_ids[0]}
@@ -1235,6 +1269,7 @@ async def _chat_graph(request: AgentRequest, params: dict[str, Any]) -> tuple[di
             summary = str(result["summary"])
     return {
         "graph": dict(saved),
+        "updated_text_uris": updated_text_uris,
         "summary": summary,
         "intent": result.get("intent") or "answer",
         "run_node_ids": run_ids,

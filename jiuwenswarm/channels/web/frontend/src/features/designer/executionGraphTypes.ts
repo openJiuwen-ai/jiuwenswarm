@@ -340,8 +340,9 @@ export type DesignerExecutionRun = {
   error?: string | null;
   warning?: string | null;
   warnings?: string[] | null;
-  /** `scope_node_ids`: the run only drives these nodes (a ComfyUI generate). */
-  metadata?: { scope_node_ids?: string[] } & Record<string, unknown>;
+  /** `scope_node_ids`: the run only drives these nodes (a ComfyUI generate).
+   * `target_node_id`: a single-node generate; Continue leaves this scope explicitly. */
+  metadata?: { scope_node_ids?: string[]; target_node_id?: string } & Record<string, unknown>;
 };
 
 export type DesignerGraphSummary = {

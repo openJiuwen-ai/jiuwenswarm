@@ -692,6 +692,27 @@ class DesignerGraphToolkit:
     ctx: NodeExecutionContext
     completed: NodeResult | None = None
     spawned: list[str] = field(default_factory=list)
+    _media_error: Exception | None = field(default=None, init=False)
+    media_failed: asyncio.Event = field(default_factory=asyncio.Event, init=False)
+
+    def fail_media(self, error: Exception) -> None:
+        self._media_error = error
+        self.media_failed.set()
+
+    def raise_media_error(self) -> None:
+        """A failed generation ends this execution; retry requires a new run."""
+        if self._media_error is not None:
+            raise self._media_error
+
+    async def materialize_media(self, node: DesignerGraphNode) -> NodeResult:
+        from jiuwenswarm.server.runtime.designer.handlers import get_node_handler
+
+        self.raise_media_error()
+        try:
+            return await get_node_handler(node).execute(node, self.ctx)
+        except Exception as exc:
+            self.fail_media(exc)
+            raise
 
     def graph_get(self) -> dict[str, Any]:
         graph_id = str(self.ctx.graph.get("graph_id") or "")
@@ -727,6 +748,7 @@ class DesignerGraphToolkit:
         extra_uris: list[str] | None = None,
         text: str = "",
     ) -> str:
+        self.raise_media_error()
         refs: list[AssetRef] = []
         node = _node_from_ctx(self.ctx)
         # Prefer materializing `text` when present — agents often pass both a
@@ -739,8 +761,8 @@ class DesignerGraphToolkit:
             )
             ref = file_output_ref(
                 path,
-                kind=kind.strip() or str(node.get("type") or "text"),
-                mime_type=mime_type.strip() or "text/markdown",
+                kind="text",
+                mime_type="text/markdown",
             )
             if label.strip():
                 ref["label"] = label.strip()
@@ -766,6 +788,9 @@ class DesignerGraphToolkit:
                 )
         if not refs:
             return "complete requires uri or text"
+        for ref in refs:
+            if Path(ref["uri"]).suffix.lower() in {".md", ".markdown"}:
+                ref.update(kind="text", mime_type="text/markdown")
         agent_result = NodeResult(
             output_ref=refs[0],
             output_refs=refs,
@@ -800,18 +825,8 @@ class DesignerGraphToolkit:
         if _node_expects_media(node) and not _result_satisfies_required_media(
             agent_result, node, self.ctx
         ):
-            from jiuwenswarm.server.runtime.designer.handlers import get_node_handler
-
             _seed_handler_prompt(node, agent_result)
-            try:
-                media = await get_node_handler(node).execute(node, self.ctx)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "Eager media materialization failed node=%s: %s",
-                    self.ctx.node_id,
-                    exc,
-                )
-                return f"completed text; media materialization deferred: {exc}"
+            media = await self.materialize_media(node)
             if media is not None:
                 preferred = _prefer_media_primary(
                     media, agent_result, required=required_family
@@ -874,6 +889,7 @@ class DesignerGraphToolkit:
             generate_designer_image,
         )
 
+        self.raise_media_error()
         self.refresh_canvas()
         node = _node_from_ctx(self.ctx)
         text = str(prompt or "").strip() or str(
@@ -964,6 +980,7 @@ class DesignerGraphToolkit:
                 raise RuntimeError(detail or "call_image_model produced no file")
             out = f"Saved to: {path}"
         except Exception as exc:  # noqa: BLE001
+            self.fail_media(exc)
             logger.warning("call_image_model failed: %s", exc, exc_info=True)
             raise
         finally:
@@ -996,6 +1013,7 @@ class DesignerGraphToolkit:
         duration: int = 5,
         first_frame: str = "",  # kept for tool schema; Design always uses R2V refs
     ) -> str:
+        self.raise_media_error()
         _ = first_frame
         from jiuwenswarm.server.runtime.designer.handlers.clip import (
             _looks_like_contaminated_prompt,
@@ -1260,13 +1278,16 @@ class DesignerGraphToolkit:
                 resolution=video_res,
             )
         except Exception as exc:  # noqa: BLE001
+            self.fail_media(exc)
             logger.warning("call_video_model failed: %s", exc, exc_info=True)
-            return f"call_video_model error: {exc}"
+            raise
         finally:
             beat.cancel()
         video_path = str(result.get("video_path") or "").strip()
         if not video_path or not Path(video_path).is_file():
-            return f"call_video_model error: no video_path ({result!r})"
+            error = RuntimeError("call_video_model returned no video file")
+            self.fail_media(error)
+            raise error
         path = Path(video_path)
         cfg["last_wan_prompt"] = str(text)[:4000]
         cfg["last_approved_prompt"] = str(text)[:4000]
@@ -1829,9 +1850,25 @@ class NodeAgentHost:
         timeout = float(_node_execute_timeout_sec(node))
 
         async def _body() -> NodeResult:
-            if self._runner is not None:
-                return await self._runner(node, ctx, toolkit)
-            return await self._run_deep_agent(node, ctx, toolkit)
+            operation = (
+                self._runner(node, ctx, toolkit)
+                if self._runner is not None
+                else self._run_deep_agent(node, ctx, toolkit)
+            )
+            agent_task = asyncio.create_task(operation)
+            failure_task = asyncio.create_task(toolkit.media_failed.wait())
+            try:
+                # Tool frameworks can catch exceptions and ask the LLM to retry.
+                # End this execution as soon as a media call fails.
+                await asyncio.wait(
+                    (agent_task, failure_task), return_when=asyncio.FIRST_COMPLETED
+                )
+                toolkit.raise_media_error()
+                return await agent_task
+            finally:
+                agent_task.cancel()
+                failure_task.cancel()
+                await asyncio.gather(agent_task, failure_task, return_exceptions=True)
 
         try:
             try:
@@ -1848,6 +1885,7 @@ class NodeAgentHost:
                         f"node {ctx.node_id} timed out after {int(timeout)}s"
                     ) from None
         except Exception:
+            toolkit.raise_media_error()
             if toolkit.completed is not None:
                 logger.warning(
                     "Designer node agent failed after complete; keeping output. node=%s",
@@ -1858,6 +1896,7 @@ class NodeAgentHost:
             else:
                 raise
 
+        toolkit.raise_media_error()
         # Agents author creative direction via designer_* tools, but media
         # generation backends live on handlers. If the agent only submitted
         # text/markdown (or the wrong media family, e.g. PNG on a clip node),
@@ -1866,8 +1905,6 @@ class NodeAgentHost:
         if _node_expects_media(node) and not _result_satisfies_required_media(
             agent_result, node, ctx
         ):
-            from jiuwenswarm.server.runtime.designer.handlers import get_node_handler
-
             _seed_handler_prompt(node, agent_result)
             logger.info(
                 "Materializing media via handler after agent text output. "
@@ -1877,7 +1914,7 @@ class NodeAgentHost:
                 required_family,
             )
             try:
-                media = await get_node_handler(node).execute(node, ctx)
+                media = await toolkit.materialize_media(node)
             except Exception:
                 logger.exception(
                     "Media materialization failed; not keeping markdown stub. node=%s",
@@ -2027,6 +2064,7 @@ class NodeAgentHost:
             if hasattr(result, "__await__"):
                 result = await result
             span_payload["output"] = result
+        toolkit.raise_media_error()
         if toolkit.completed is not None:
             completed = toolkit.completed
             # Guarantee required media family even when agent completed with text/PNG only.
@@ -2034,16 +2072,8 @@ class NodeAgentHost:
             if _node_expects_media(node) and not _result_satisfies_required_media(
                 completed, node, ctx
             ):
-                from jiuwenswarm.server.runtime.designer.handlers import get_node_handler
-
                 _seed_handler_prompt(node, completed)
-                try:
-                    media = await get_node_handler(node).execute(node, ctx)
-                except Exception:
-                    logger.exception(
-                        "Post-complete media materialization failed. node=%s", ctx.node_id
-                    )
-                    media = None
+                media = await toolkit.materialize_media(node)
                 if media is not None and _result_satisfies_required_media(media, node, ctx):
                     preferred = _prefer_media_primary(
                         media, completed, required=required_family
@@ -2074,17 +2104,15 @@ class NodeAgentHost:
         agent_result = NodeResult(
             output_ref=file_output_ref(
                 path,
-                kind=str(node.get("type") or "text"),
+                kind="text",
                 mime_type="text/markdown",
             ),
             message="node agent text fallback",
         )
         required_family = _required_media_family(node)
         if _node_expects_media(node):
-            from jiuwenswarm.server.runtime.designer.handlers import get_node_handler
-
             _seed_handler_prompt(node, agent_result)
-            media = await get_node_handler(node).execute(node, ctx)
+            media = await toolkit.materialize_media(node)
             if not _result_satisfies_required_media(media, node, ctx):
                 raise RuntimeError(
                     f"node {ctx.node_id} handler did not produce required {required_family}"

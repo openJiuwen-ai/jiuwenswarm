@@ -70,6 +70,7 @@ export const designerGraphClient = {
       summary?: string;
       intent?: string;
       run_node_ids?: string[];
+      updated_text_uris?: string[];
       run?: DesignerExecutionRun | null;
     }>(
       'designer.graph.chat',

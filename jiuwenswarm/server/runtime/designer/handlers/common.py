@@ -17,8 +17,10 @@ from jiuwenswarm.common.schema.designer_graph import (
     NODE_ROLE_SCENE,
     AssetRef,
     DesignerExecutionGraph,
+    DesignerExecutionRun,
     DesignerGraphNode,
     edge_kind,
+    node_config,
     node_pipeline,
 )
 from jiuwenswarm.common.utils import get_agent_root_dir, get_agent_workspace_dir
@@ -715,29 +717,37 @@ def role_output_image_path(ctx: NodeExecutionContext, role: str) -> Path | None:
     return paths[0] if paths else None
 
 
+def text_output_path(ref: AssetRef | None) -> Path | None:
+    """Resolve a local text artifact, including an existing media sidecar."""
+    path = path_from_uri(str((ref or {}).get("uri") or ""))
+    if path is None:
+        return None
+    candidates = [path] if path.suffix.lower() in {".md", ".txt", ".markdown", ".csv"} else []
+    candidates.append(path.with_suffix(".md"))
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
+def read_node_text(
+    node: DesignerGraphNode, run: DesignerExecutionRun | None = None
+) -> tuple[str, Path | None]:
+    """Read accepted run output, graph output, then executable draft; never candidates."""
+    state = ((run or {}).get("node_states") or {}).get(node["id"]) or {}
+    refs = [state.get("output_ref"), *(state.get("output_refs") or []), node.get("output_ref")]
+    for ref in refs:
+        path = text_output_path(ref)
+        if path is not None:
+            with path.open(encoding="utf-8", newline="") as source:
+                return source.read(), path
+    cfg = node_config(node)
+    return str(cfg.get("prewritten") or cfg.get("draft_prewritten") or ""), None
+
+
 def role_output_text(ctx: NodeExecutionContext, role: str) -> str:
-    if ctx.run is None:
-        return ""
-    states = ctx.run.get("node_states") or {}
     for node in ctx.graph.get("nodes") or []:
-        if node_pipeline(node) != role:
-            continue
-        ref = (states.get(node["id"]) or {}).get("output_ref") or {}
-        path = path_from_uri(str(ref.get("uri") or ""))
-        if path is None or not path.is_file():
-            continue
-        text_suffixes = {".md", ".txt", ".markdown", ".csv"}
-        candidates = [path] if path.suffix.lower() in text_suffixes else []
-        sidecar = path.with_suffix(".md")
-        if sidecar not in candidates:
-            candidates.append(sidecar)
-        for candidate in candidates:
-            if not candidate.is_file():
-                continue
-            try:
-                return candidate.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
+        if node_pipeline(node) == role:
+            text, path = read_node_text(node, ctx.run)
+            if path is not None or text:
+                return text
     return ""
 
 

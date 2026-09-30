@@ -48,7 +48,6 @@ type DesignerRunStore = {
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let runtimeBound = false;
 let unbindRuntime: (() => void) | null = null;
-let autoContinueKey: string | null = null;
 
 function clearPoll() {
   if (pollTimer) {
@@ -139,24 +138,6 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
           .then((result) => get().applyRun(result.run))
           .catch(() => undefined);
       }, 400);
-    }
-    // Do NOT auto-press Continue / Regenerate — user chooses explicitly.
-    // Exception: a stall with pending work and no failed nodes auto-resumes once.
-    // Failed nodes stay visible; never auto-retry_failed.
-    if (run && !isActiveDesignerRun(run.status)) {
-      const graph = useDesignerStore.getState().domainGraph;
-      const primary = get().primaryAction;
-      const hasPending = Object.values(run.node_states || {}).some((s) => s?.status === DESIGNER_NODE_STATUS_PENDING);
-      const hasFailed = Object.values(run.node_states || {}).some((s) => s?.status === DESIGNER_NODE_STATUS_FAILED);
-      // A ComfyUI generate leaves the rest of the canvas pending on purpose.
-      const scoped = Boolean(run.metadata?.scope_node_ids?.length);
-      if (graph && hasPending && !hasFailed && !scoped && primary === 'continue' && run.status !== 'cancelled') {
-        const key = `${run.run_id}:${Object.keys(run.node_states || {}).length}`;
-        if (autoContinueKey !== key) {
-          autoContinueKey = key;
-          void get().advance(graph);
-        }
-      }
     }
   },
 

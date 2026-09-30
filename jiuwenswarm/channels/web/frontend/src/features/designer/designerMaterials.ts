@@ -225,6 +225,7 @@ export type DesignerPendingRevision = {
   label: string;
   original: DesignerMaterial[];
   incoming: DesignerMaterial[];
+  requiresSelection: boolean;
 };
 
 export function collectPendingRevisions(
@@ -238,7 +239,8 @@ export function collectPendingRevisions(
     const original = materialsFromRefs(node, refsFromState(state, 'accepted'), `${node.id}:orig`);
     const incoming = materialsFromRefs(node, refsFromState(state, 'candidate'), `${node.id}:new`);
     if (original.length === 0 || incoming.length === 0) return [];
-    return [{ nodeId: node.id, label: node.label, original, incoming }];
+    const requiresSelection = DESIGNER_EDITABLE_ROLES.has(String(node.config?.pipeline || node.config?.role || ''));
+    return [{ nodeId: node.id, label: node.label, original, incoming, requiresSelection }];
   });
 }
 

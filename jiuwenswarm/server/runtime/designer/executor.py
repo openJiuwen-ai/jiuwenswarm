@@ -127,6 +127,7 @@ class GraphExecutor:
     ) -> None:
         self._store = store or DesignerGraphStore()
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._graph_tasks: dict[asyncio.Task[None], tuple[str, str]] = {}
         self._node_workers: dict[str, dict[str, asyncio.Task[None]]] = {}
         self._pause_flags: dict[str, asyncio.Event] = {}
         self._cancel_flags: dict[str, asyncio.Event] = {}
@@ -136,6 +137,19 @@ class GraphExecutor:
         self._live_runs: dict[str, DesignerExecutionRun] = {}
         self._host = NodeAgentHost(self, runner=runner)
         self._handoff_wake: dict[str, asyncio.Event] = {}
+
+    def has_active_tasks(self, graph_id: str) -> bool:
+        """Include workers that are still exiting after pause/cancel/cleanup."""
+        return any(owner[0] == graph_id and not task.done() for task, owner in self._graph_tasks.items())
+
+    def _track_graph_task(self, graph_id: str, task: asyncio.Task[None], *, run_id: str) -> None:
+        self._graph_tasks[task] = (graph_id, run_id)
+
+        def finished(done: asyncio.Task[None]) -> None:
+            self._graph_tasks.pop(done, None)
+            self._cleanup_run(run_id)
+
+        task.add_done_callback(finished)
 
     def _get_handoff_wake(self, run_id: str) -> asyncio.Event:
         ev = self._handoff_wake.get(run_id)
@@ -305,7 +319,7 @@ class GraphExecutor:
         source_run: DesignerExecutionRun | None,
         node_id: str,
     ) -> DesignerExecutionRun:
-        """Copy a finished run and reset one node so only that node executes again."""
+        """Reuse available outputs and execute only the selected node."""
         node_ids = {node["id"] for node in graph.get("nodes", [])}
         if node_id not in node_ids:
             raise KeyError(f"node not found: {node_id}")
@@ -367,13 +381,8 @@ class GraphExecutor:
             "current_node_ids": [],
             "created_at": now,
             "updated_at": now,
-            "metadata": {"use_prior_feedback": True, "single_node_rerun": True},
+            "metadata": {"target_node_id": node_id},
         }
-        # Opt-in: Run again reuses stored prompts, images, and upstream outputs.
-        meta = dict(graph.get("metadata") or {})
-        meta["use_prior_feedback"] = True
-        meta["freeze_shot_topology"] = True
-        graph["metadata"] = meta
         try:
             from jiuwenswarm.server.runtime.designer.pipeline.wan_prompt_hygiene import (
                 capture_regenerate_packet,
@@ -461,11 +470,15 @@ class GraphExecutor:
         run = self._require_run(run_id)
         if run["status"] == RUN_STATUS_RUNNING:
             return run
-        # Resume one-pass execution when a prior wave ended early with pending nodes.
+        if self._is_cancelled(run_id) and self.has_active_tasks(run["graph_id"]):
+            raise ValueError("任务正在停止，请稍后重试")
+        target_node_id = _target_node_id(run)
+        # Completed node runs must not pick up unrelated pending work on restart.
         if run["status"] == RUN_STATUS_COMPLETED:
             pending = any(
                 (state or {}).get("status") == NODE_STATUS_PENDING
-                for state in graph_node_states(run).values()
+                for node_id, state in graph_node_states(run).items()
+                if target_node_id is None or node_id == target_node_id
             )
             if not pending:
                 return run
@@ -493,11 +506,13 @@ class GraphExecutor:
             run["metadata"] = meta
             scope = []
         scoped = bool(scope)
-        _reject_pending_audio_generation(
-            graph,
-            run,
-            node_ids=set(scope) if scoped else None,
-        )
+        if scoped:
+            limit: set[str] | None = set(scope)
+        elif target_node_id is not None:
+            limit = {target_node_id}
+        else:
+            limit = None
+        _reject_pending_audio_generation(graph, run, node_ids=limit)
         # One local credential gate at Play entry (Work/Code checks before
         # spawning agents). Billing/API failures still surface on the model call.
         # Scoped runs only drive ComfyUI nodes: no LLM, and their own vLLM-Omni URL.
@@ -505,9 +520,11 @@ class GraphExecutor:
             require_llm()
             # Incomplete image/video config blocks only when a yet-to-run leaf needs it.
             # Runtime failures (credit, bad endpoint) still surface on the model call.
-            require_media_models(**_pending_media_modalities(graph, run))
+            require_media_models(**_pending_media_modalities(graph, run, node_ids=limit))
         run.pop("error", None)
         for node in graph.get("nodes") or []:
+            if target_node_id is not None and node["id"] != target_node_id:
+                continue
             cfg = node.setdefault("config", {})
             if not isinstance(cfg, dict):
                 continue
@@ -523,7 +540,8 @@ class GraphExecutor:
             cfg.pop("skip_llm", None)
             cfg["delegate"] = CONFIG_DELEGATE_AGENT
             cfg["kind"] = "agent"
-        if not scoped:
+        # Single-node runs must not repair routes or change workflow metadata.
+        if not scoped and target_node_id is None:
             await ensure_user_reference_routes(graph)
             meta = dict(graph.get("metadata") or {})
             # Lock before nodes run so a saved graph with the lock off cannot
@@ -549,6 +567,7 @@ class GraphExecutor:
             name=f"designer-run-{run_id}",
         )
         self._tasks[run_id] = task
+        self._track_graph_task(graph["graph_id"], task, run_id=run_id)
         return run
 
     async def run(self, graph: DesignerExecutionGraph, run_id: str) -> AsyncIterator[NodeEvent]:
@@ -628,24 +647,22 @@ class GraphExecutor:
 
     def cancel_run(self, run_id: str) -> DesignerExecutionRun:
         run = self._require_run(run_id)
-        cancel_flag = self._cancel_flags.get(run_id)
-        if cancel_flag is not None:
-            cancel_flag.set()
-        workers = self._node_workers.pop(run_id, {})
-        for worker in workers.values():
-            if not worker.done():
-                worker.cancel()
-        self._host.drop_run(run_id)
-        task = self._tasks.pop(run_id, None)
-        if task is not None and not task.done():
-            task.cancel()
+        self._cancel_flags.setdefault(run_id, asyncio.Event()).set()
+        for task, (_, owner_run) in self._graph_tasks.items():
+            if owner_run == run_id and not task.done() and not task.cancelling():
+                task.cancel()
+        target_node_id = _target_node_id(run)
         for node_id, state in run.get("node_states", {}).items():
+            if target_node_id is not None and node_id != target_node_id:
+                continue
             if state.get("status") in {NODE_STATUS_PENDING, NODE_STATUS_RUNNING}:
                 state["status"] = NODE_STATUS_CANCELLED
         run["status"] = RUN_STATUS_CANCELLED
         run["current_node_ids"] = []
         run["updated_at"] = utc_now_ms()
-        return self._store.save_run(run)
+        saved = self._store.save_run(run)
+        self._cleanup_run(run_id)
+        return saved
 
     async def spawn_node_agent(self, run_id: str, node_id: str) -> str:
         """Start one node's Agent.
@@ -661,6 +678,9 @@ class GraphExecutor:
         run = self._require_run(run_id)
         if run.get("status") not in {RUN_STATUS_RUNNING, RUN_STATUS_PAUSED}:
             return f"run is {run.get('status')}"
+        target_node_id = _target_node_id(run)
+        if target_node_id is not None and target != target_node_id:
+            return f"this run only executes {target_node_id}"
         graph = self._require_graph(str(run.get("graph_id") or ""))
         try:
             target_node = _node_by_id(graph, target)
@@ -708,6 +728,7 @@ class GraphExecutor:
             name=f"designer-node-{run_id}-{target}",
         )
         workers[target] = task
+        self._track_graph_task(run["graph_id"], task, run_id=run_id)
         return f"started {target}"
 
     def apply_agent_graph_patch(
@@ -716,6 +737,11 @@ class GraphExecutor:
         patch: dict[str, Any],
     ) -> DesignerExecutionGraph:
         graph = self._require_graph(graph_id)
+        if any(
+            run["graph_id"] == graph_id and _target_node_id(run) is not None
+            for run in self._live_runs.values()
+        ):
+            raise ValueError("Graph edits are unavailable during single-node generation")
         meta = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
         locked = bool(meta.get("freeze_shot_topology"))
         failed = False
@@ -782,6 +808,10 @@ class GraphExecutor:
         *,
         on_update: RunUpdateCallback | None,
     ) -> None:
+        target_node_id = _target_node_id(run)
+        if target_node_id is not None:
+            await self._execute_node_run(graph, run, target_node_id, on_update=on_update)
+            return
         # Always use the continuous wave scheduler. The agent-spawn scheduler
         # dropped ready nodes past the concurrency cap (spawn returned
         # "too many concurrent" and was ignored), which left the run stalled
@@ -792,6 +822,50 @@ class GraphExecutor:
             await self._execute_scoped_run(graph, run, on_update=on_update)
             return
         await self._execute_wave_run(graph, run, on_update=on_update)
+
+    async def _execute_node_run(
+        self,
+        graph: DesignerExecutionGraph,
+        run: DesignerExecutionRun,
+        node_id: str,
+        *,
+        on_update: RunUpdateCallback | None,
+    ) -> None:
+        """Execute saved node content without whole-workflow planning or expansion."""
+        from jiuwenswarm.server.runtime.designer.trajectory import begin_trajectory, end_trajectory
+
+        run_id = run["run_id"]
+        begin_trajectory(graph["graph_id"], run_id, meta={"target_node_id": node_id})
+        try:
+            await self._await_pause(run_id)
+            if self._is_cancelled(run_id):
+                return
+            node = _node_by_id(graph, node_id)
+            if not _is_ready(node_id, run, execution_predecessors(graph), sync_groups(graph), graph):
+                raise ValueError(f"node is not ready: {node_id}")
+            run["current_node_ids"] = [node_id]
+            self._publish(run, on_update)
+            await self._run_single_node(graph, run, node, on_update=on_update)
+            if self._is_cancelled(run_id):
+                return
+            state = run["node_states"][node_id]
+            run["status"] = (
+                RUN_STATUS_COMPLETED if state["status"] == NODE_STATUS_COMPLETED else RUN_STATUS_FAILED
+            )
+        except asyncio.CancelledError:
+            run = self.cancel_run(run_id)
+            raise
+        except Exception as exc:
+            logger.exception("Designer node run %s failed", run_id)
+            self._set_node_state(run, node_id, {"status": NODE_STATUS_FAILED, "error": _exception_text(exc)})
+            _stamp_run_failure(run, exc)
+        finally:
+            run["current_node_ids"] = []
+            run["updated_at"] = utc_now_ms()
+            self._store.save_run(run)
+            self._publish(run, on_update)
+            end_trajectory(run_id)
+            self._cleanup_run(run_id)
 
     async def _execute_scoped_run(
         self,
@@ -1389,6 +1463,7 @@ class GraphExecutor:
                             _run_guarded(node_id),
                             name=f"designer-node-{node_id}",
                         )
+                        self._track_graph_task(graph["graph_id"], in_flight[node_id], run_id=run_id)
                     run["current_node_ids"] = list(in_flight.keys())
                     self._publish(run, on_update)
 
@@ -2012,6 +2087,8 @@ class GraphExecutor:
                 workers.pop(node_id, None)
 
     def _cleanup_run(self, run_id: str) -> None:
+        if any(owner[1] == run_id and not task.done() for task, owner in self._graph_tasks.items()):
+            return
         self._tasks.pop(run_id, None)
         self._node_workers.pop(run_id, None)
         self._pause_flags.pop(run_id, None)
@@ -2020,6 +2097,7 @@ class GraphExecutor:
         self._on_updates.pop(run_id, None)
         self._on_graph_updates.pop(run_id, None)
         self._live_runs.pop(run_id, None)
+        self._handoff_wake.pop(run_id, None)
         self._host.drop_run(run_id)
 
     async def _run_single_node(
@@ -2077,7 +2155,7 @@ class GraphExecutor:
                         str(cfg.get("skill_excerpt") or "") + "\n\n" + bit[:600]
                     ).strip()[:1800]
                     node["config"] = cfg
-        if (graph.get("metadata") or {}).get("use_prior_feedback"):
+        if _target_node_id(run) is None and (graph.get("metadata") or {}).get("use_prior_feedback"):
             cfg = dict(node.get("config") or {})
             prior_plan = str((graph.get("metadata") or {}).get("last_improvement_plan") or "")
             from jiuwenswarm.server.runtime.designer.feedback import (
@@ -2616,6 +2694,8 @@ def _reject_pending_audio_generation(
 def _pending_media_modalities(
     graph: DesignerExecutionGraph,
     run: DesignerExecutionRun,
+    *,
+    node_ids: set[str] | None = None,
 ) -> dict[str, bool]:
     """Which generation backends a Play needs, from yet-to-run node modalities.
 
@@ -2638,6 +2718,8 @@ def _pending_media_modalities(
         if not isinstance(node, dict):
             continue
         node_id = str(node.get("id") or "")
+        if node_ids is not None and node_id not in node_ids:
+            continue
         status = str((states.get(node_id) or {}).get("status") or NODE_STATUS_PENDING)
         if status in terminal:
             continue
@@ -2746,6 +2828,10 @@ def _exception_text(exc: BaseException) -> str:
     if isinstance(exc, TimeoutError):
         return "timed out"
     return type(exc).__name__
+
+
+def _target_node_id(run: DesignerExecutionRun) -> str | None:
+    return (run.get("metadata") or {}).get("target_node_id")
 
 
 def _stamp_run_failure(run: DesignerExecutionRun, exc: BaseException) -> None:

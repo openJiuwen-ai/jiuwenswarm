@@ -554,12 +554,13 @@ def infer_crowd_state(
     rule = str(crowd.get("rule") or prior_lock.get("rule") or bible.get("crowd") or "").strip()
 
     done_notes = " ".join(str(e.get("already_done") or "") for e in (events or []))
-    blob = " ".join(x for x in (prior_text, done_notes, rule) if x)
+    # Conditional lock rules constrain continuity; they do not describe past events.
+    story_history = " ".join(x for x in (prior_text, done_notes) if x)
 
     if any(str(e.get("type") or "") == "crowd_exit" for e in (events or [])):
         disposition = "exited"
         present = False
-    elif _CROWD_WORD_RE.search(blob) and _EXIT_RE.search(blob):
+    elif _CROWD_WORD_RE.search(story_history) and _EXIT_RE.search(story_history):
         disposition = "exited"
         present = False
     elif str(prior_crowd.get("disposition") or "").lower() == "exited":

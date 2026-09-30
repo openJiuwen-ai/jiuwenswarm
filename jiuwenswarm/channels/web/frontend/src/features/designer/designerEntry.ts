@@ -2,6 +2,7 @@ import { useWorkspaceStore } from '../../stores';
 import { useDesignerStore } from './designerStore';
 import { useDesignerChatStore } from './designerChatStore';
 import { designerGraphClient } from './designerGraphClient';
+import { DESIGNER_MATERIAL_SAVED_EVENT } from './designerMaterials';
 import { useDesignerRunStore } from './designerRunStore';
 import type { DesignerBootstrapReference, DesignerStoredReference } from './designerReferences';
 
@@ -177,6 +178,9 @@ export async function chatDesignerGraph(params: {
     }
     if (result.run) {
       useDesignerRunStore.getState().applyRun(result.run);
+    }
+    for (const uri of new Set(result.updated_text_uris ?? [])) {
+      window.dispatchEvent(new CustomEvent(DESIGNER_MATERIAL_SAVED_EVENT, { detail: { uri } }));
     }
     chatStore.appendMessage({
       role: 'assistant',

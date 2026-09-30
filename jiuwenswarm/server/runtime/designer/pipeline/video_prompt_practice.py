@@ -962,7 +962,7 @@ def compose_practice_prompt(
                 f"The camera {cam[0].lower() + cam[1:] if cam[:1].isupper() else cam}."
             )
 
-    if tokens and not any(_action_for(t, cfg, graph, "") for t in tokens):
+    if not any(_action_for(t, cfg, graph, "") for t in tokens):
         doing = _doing_line(cfg, graph, action)
         if doing:
             sentences.append(doing)

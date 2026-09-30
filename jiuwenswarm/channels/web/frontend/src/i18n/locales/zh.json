@@ -217,6 +217,8 @@
       "edit": "编辑",
       "save": "保存",
       "saving": "保存中…",
+      "externalChange": "文件已更新。你的草稿已保留，保存将覆盖最新内容。",
+      "overwriteWithDraft": "用草稿覆盖",
       "cancelEdit": "取消",
       "saveFailed": "保存失败",
       "placeholder": "占位",

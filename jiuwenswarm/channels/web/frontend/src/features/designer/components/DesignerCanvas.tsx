@@ -348,7 +348,7 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
               uri,
               mime_type: stored.mime_type || asset.mime_type,
             },
-          } as typeof node.config;
+          };
           addDomainNode(node);
           await useDesignerStore.getState().flushSave();
         } catch (error) {
