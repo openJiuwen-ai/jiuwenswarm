@@ -34,6 +34,28 @@ get_local_ip() {
     echo "127.0.0.1"
 }
 
+# 读取 config.yaml 的 ingress_virtual_ip（VIP）。gateway 监听端口统一绑定 VIP，
+# 使各服务对外可通过统一入口访问；无 VIP 配置时输出空串。
+_ingress_vip() {
+    local config_file="${HOME:-/root}/.agentos/deploy/config.yaml"
+    [ -f "${config_file}" ] || return 1
+    local py="python${DEPLOY_VARS["YR_PYTHON_VERSION"]:-3.11}" vip=""
+    if command -v "${py}" >/dev/null 2>&1 && "${py}" -c 'import yaml' >/dev/null 2>&1; then
+        vip=$("${py}" -c '
+import sys, yaml
+try:
+    with open(sys.argv[1]) as f:
+        cfg = yaml.safe_load(f)
+    print((cfg or {}).get("cluster", {}).get("ingress_virtual_ip", "") or "", end="")
+except Exception:
+    print("", end="")
+' "${config_file}" 2>/dev/null)
+    fi
+    if [ -n "${vip}" ] && echo "${vip}" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+        echo "${vip}"
+    fi
+}
+
 check_cmds() {
     for cmd in python3 jq; do
         check_cmd ${cmd}
@@ -113,10 +135,25 @@ check_gateway_up_dependency() {
         warning "SSH_PORT not set, using default: 2223"
     fi
 
-    # TUI (/tui on GatewayServer) bind host defaults to master node IP.
+    # INGRESS_VIP 用于 registry endpoint / ssh listen_host 等（见 gateway-config 模板）。
+    # 缺失时回退 MASTER_NODE_IP，避免渲染出 http://:4003 / 空 listen_host 等非法配置，
+    # 与下方 GATEWAY_HOST / WEB_HOST 的回退逻辑保持一致。
+    local ingress_vip
+    ingress_vip=$(_ingress_vip || true)
+    if [ -z "${ingress_vip}" ]; then
+        ingress_vip="${DEPLOY_VARS["MASTER_NODE_IP"]}"
+        info "INGRESS_VIP not set, using MASTER_NODE_IP: ${ingress_vip}"
+    fi
+    DEPLOY_VARS["INGRESS_VIP"]="${ingress_vip}"
+    # TUI (/tui on GatewayServer) bind host defaults to ingress VIP (fallback MASTER_NODE_IP).
     if [ -z "${DEPLOY_VARS["GATEWAY_HOST"]:-}" ]; then
-        DEPLOY_VARS["GATEWAY_HOST"]="${DEPLOY_VARS["MASTER_NODE_IP"]}"
-        info "GATEWAY_HOST not set, using MASTER_NODE_IP: ${DEPLOY_VARS["GATEWAY_HOST"]}"
+        if [ -n "${ingress_vip}" ]; then
+            DEPLOY_VARS["GATEWAY_HOST"]="${ingress_vip}"
+            info "GATEWAY_HOST defaulted to ingress_virtual_ip: ${ingress_vip}"
+        else
+            DEPLOY_VARS["GATEWAY_HOST"]="${DEPLOY_VARS["MASTER_NODE_IP"]}"
+            info "GATEWAY_HOST not set, using MASTER_NODE_IP: ${DEPLOY_VARS["GATEWAY_HOST"]}"
+        fi
     fi
 
     if [ -z "${DEPLOY_VARS["GATEWAY_PORT"]:-}" ]; then
@@ -124,10 +161,15 @@ check_gateway_up_dependency() {
         warning "GATEWAY_PORT not set, using default: 19001"
     fi
 
-    # WebChannel (/ws) bind host defaults to master node IP.
+    # WebChannel (/ws) bind host defaults to ingress VIP (fallback MASTER_NODE_IP).
     if [ -z "${DEPLOY_VARS["WEB_HOST"]:-}" ]; then
-        DEPLOY_VARS["WEB_HOST"]="${DEPLOY_VARS["MASTER_NODE_IP"]}"
-        info "WEB_HOST not set, using MASTER_NODE_IP: ${DEPLOY_VARS["WEB_HOST"]}"
+        if [ -n "${ingress_vip}" ]; then
+            DEPLOY_VARS["WEB_HOST"]="${ingress_vip}"
+            info "WEB_HOST defaulted to ingress_virtual_ip: ${ingress_vip}"
+        else
+            DEPLOY_VARS["WEB_HOST"]="${DEPLOY_VARS["MASTER_NODE_IP"]}"
+            info "WEB_HOST not set, using MASTER_NODE_IP: ${DEPLOY_VARS["WEB_HOST"]}"
+        fi
     fi
 
     if [ -z "${DEPLOY_VARS["WEB_PORT"]:-}" ]; then
