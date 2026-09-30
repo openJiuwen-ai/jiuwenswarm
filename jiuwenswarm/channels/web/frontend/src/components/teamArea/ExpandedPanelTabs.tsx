@@ -120,6 +120,9 @@ export function ExpandedPanelTabs({
               className={`single-agent-tool-tab group ${isActive ? 'single-agent-tool-tab--active' : ''}`}
               onClick={() => onTabChange(tab.key)}
               onKeyDown={(event) => {
+                // 仅响应标签自身聚焦时的 Enter/Space；事件若来自内部关闭按钮（会冒泡），
+                // 不能 preventDefault——否则按钮原生 click 不触发，关闭失效反而切页
+                if (event.target !== event.currentTarget) return;
                 if (event.key !== 'Enter' && event.key !== ' ') return;
                 event.preventDefault();
                 onTabChange(tab.key);
