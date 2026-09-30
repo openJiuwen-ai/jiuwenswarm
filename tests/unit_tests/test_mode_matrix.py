@@ -36,8 +36,11 @@ def test_request_uses_current_merged_agent_mode_semantics():
         params={"mode": "agent.plan", "work_mode": "code"},
     )
 
-    assert _apply_resolved_mode_to_request(request, work_mode="code") == ("code", "normal")
-    assert request.params["mode"] == "code.normal"
+    # MR 4413 起 _apply 走 Web 组合分支：plan 开关在 code profile 下保留为
+    # code.plan（与下方 test_web_composition_covers_all_supported_combinations
+    # 的 canonical 表一致），不再被 legacy 折叠回 code.normal。
+    assert _apply_resolved_mode_to_request(request, work_mode="code") == ("code", "plan")
+    assert request.params["mode"] == "code.plan"
 
 
 # ── Web 组合：work_mode 决定 profile，mode 决定是否 plan / team ─────────────

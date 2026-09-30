@@ -22,6 +22,7 @@ from jiuwenswarm.server.handlers._shared import (
     _apply_resolved_mode_to_request,
     _effective_config_for_request,
     _is_team_metadata_mode,
+    _plan_active_sessions,
     _plan_exited_sessions,
     _request_query_text,
     _session_team_binding_lock,
@@ -78,6 +79,7 @@ async def _cleanup_client_disconnect_session_runtime(ctx, request: AgentRequest)
         # locks are weakly cached and disappear automatically after their
         # last active/waiting user releases them.
         _plan_exited_sessions.discard(session_id)
+        _plan_active_sessions.discard(session_id)
 
 
 def _build_team_interrupt_response(

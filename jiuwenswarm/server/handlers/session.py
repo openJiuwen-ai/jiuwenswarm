@@ -23,6 +23,7 @@ from jiuwenswarm.server.handlers._shared import (
     _sessions_dir_for_request,
     _is_team_metadata_mode,
     _log_background_session_kvc_failure,
+    _plan_active_sessions,
     _plan_exited_sessions,
     send_error_wire,
 )
@@ -485,6 +486,7 @@ async def handle_session_delete(ctx: RequestContext) -> None:
                 else:
                     shutil.rmtree(session_dir)
                     _plan_exited_sessions.discard(target)
+                    _plan_active_sessions.discard(target)
                     remove_session_metadata_cache(
                         target,
                         sessions_root=sessions_root,

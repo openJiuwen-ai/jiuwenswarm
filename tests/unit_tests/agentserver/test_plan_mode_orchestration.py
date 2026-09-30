@@ -219,7 +219,7 @@ async def test_ensure_code_mode_state_syncs_plan_to_normal() -> None:
     session = MagicMock()
     create_session = MagicMock(return_value=session)
     pre_run = AsyncMock()
-    post_run = AsyncMock()
+    commit = AsyncMock()
 
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     request = _chat_request(session_id, "hello", mode="code.normal")
@@ -229,7 +229,9 @@ async def test_ensure_code_mode_state_syncs_plan_to_normal() -> None:
         create_session,
     ):
         session.pre_run = pre_run
-        session.post_run = post_run
+        # 落盘走 commit 而不是 post_run：这条路径也可能拿到正在跑的那个 session，
+        # post_run 会把它关掉。
+        session.commit = commit
         restored = await _default._ensure_code_mode_state(
             _default_ctx(server, request),
             request, "code", "normal", plan_agent
@@ -237,6 +239,7 @@ async def test_ensure_code_mode_state_syncs_plan_to_normal() -> None:
 
     assert restored is True
     plan_instance.switch_mode.assert_called_once_with(session=session, mode="normal")
+    commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -265,7 +268,7 @@ async def test_ensure_code_mode_state_skips_if_mode_already_matches() -> None:
         create_session,
     ):
         session.pre_run = AsyncMock()
-        session.post_run = AsyncMock()
+        session.commit = AsyncMock()
         restored = await _default._ensure_code_mode_state(
             _default_ctx(server, request),
             request, "code", "plan", plan_agent
@@ -310,7 +313,7 @@ async def test_ensure_code_mode_state_allows_explicit_plan_reentry_after_exit(mo
             create_session,
         ):
             session.pre_run = AsyncMock()
-            session.post_run = AsyncMock()
+            session.commit = AsyncMock()
             restored = await _default._ensure_code_mode_state(
                 _default_ctx(server, request),
                 request, "code", "plan", plan_agent
@@ -359,7 +362,7 @@ async def test_ensure_code_mode_state_allows_e2a_plan_reentry_after_exit(
             create_session,
         ):
             session.pre_run = AsyncMock()
-            session.post_run = AsyncMock()
+            session.commit = AsyncMock()
             restored = await _default._ensure_code_mode_state(
                 _default_ctx(server, request),
                 request, "code", "plan", plan_agent
@@ -649,7 +652,7 @@ async def test_disconnect_cleanup_then_stale_plan_reentry_blocked_by_slug(monkey
             create_session,
         ):
             session.pre_run = AsyncMock()
-            session.post_run = AsyncMock()
+            session.commit = AsyncMock()
             restored = await _default._ensure_code_mode_state(
                 _default_ctx(server, request),
                 request, "code", "plan", plan_agent
@@ -662,10 +665,89 @@ async def test_disconnect_cleanup_then_stale_plan_reentry_blocked_by_slug(monkey
     assert restored is False
     assert plan_state.plan_slug is None
     plan_instance.save_state.assert_called_once()
-    session.post_run.assert_awaited_once()
+    session.commit.assert_awaited_once()
     _push_mock.assert_awaited_once()
     plan_instance.switch_mode.assert_not_called()
     assert request.params["mode"] == "code.normal"
+
+
+@pytest.mark.asyncio
+async def test_plain_work_turn_skips_sync_without_touching_the_agent() -> None:
+    """work 的准入面覆盖 IM / cron / CLI / Web work 的每条普通消息。
+
+    这些会话绝大多数从未开过 Plan，不该为了同步 plan 状态去建 root DeepAgent
+    （重跑工具注册、rail 装配、MCP 注册）。
+    """
+    agent = MagicMock()
+    agent.ensure_instance = AsyncMock()
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    request = _chat_request(
+        "sess_plain_work", mode="agent", extra_params={"work_mode": "work"}
+    )
+
+    restored = await _default._ensure_code_mode_state(
+        _default_ctx(server, request), request, "agent", None, agent
+    )
+
+    assert restored is False
+    agent.ensure_instance.assert_not_awaited()
+    agent.get_live_session_instance.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_work_turn_with_previous_plan_mode_still_syncs() -> None:
+    """上一轮停在 plan 的会话（含服务重启后）必须被切回普通模式。"""
+    session_id = "sess_work_restart"
+
+    plan_agent = MagicMock()
+    plan_instance = MagicMock()
+    plan_agent.get_live_session_instance.return_value = None
+    plan_agent.ensure_instance = AsyncMock(return_value=plan_instance)
+    plan_instance.card = SimpleNamespace(id="deep-agent")
+    plan_instance.load_state.return_value = SimpleNamespace(
+        plan_mode=SimpleNamespace(mode="plan", plan_slug="slug")
+    )
+
+    session = MagicMock()
+    session.pre_run = AsyncMock()
+    session.commit = AsyncMock()
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    request = _chat_request(
+        session_id,
+        "继续",
+        mode="agent",
+        extra_params={
+            "work_mode": "work",
+            agent_ws_server_module._SESSION_PREVIOUS_MODE_KEY: "agent.plan",
+        },
+    )
+
+    with patch(
+        "openjiuwen.core.single_agent.create_agent_session",
+        MagicMock(return_value=session),
+    ):
+        restored = await _default._ensure_code_mode_state(
+            _default_ctx(server, request), request, "agent", None, plan_agent
+        )
+
+    assert restored is True
+    plan_instance.switch_mode.assert_called_once_with(session=session, mode="normal")
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_exited_push_uses_the_session_profile_mode() -> None:
+    """work 会话不能收到写死的 ``code.normal``——TUI 会消费这个字段。"""
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server.send_push = AsyncMock()
+    request = _chat_request(
+        "sess_work_exit", mode="agent", extra_params={"work_mode": "work"}
+    )
+
+    await _default._push_plan_mode_exited(_default_ctx(server, request), request)
+
+    pushed = server.send_push.await_args.args[0]
+    assert pushed["payload"]["mode"] == "agent"
 
 
 @pytest.mark.asyncio

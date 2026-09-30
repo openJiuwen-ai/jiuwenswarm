@@ -216,13 +216,20 @@ ask_user is only for clarifying requirements — do not use it for approval ques
 # Plan mode exit notification appended to exit_plan_mode tool_result.
 # Explicitly tells the model it can now edit files. Without this, the model only sees
 # MODE_INSTRUCTIONS removed from system prompt but receives no explicit signal.
+# The tool_result this is appended to carries the whole plan text, so a mild
+# "proceed with the plan" wording loses to that blob and the model just echoes the
+# plan back and asks whether to start. Hence the explicit do-NOT-restate wording.
 # ---------------------------------------------------------------------------
 
 _EXIT_PLAN_MODE_NOTIFICATION = """\
 <system-reminder>
-Plan mode has ended. You are now in normal mode. You can edit files,
-run write operations, and make changes to the system. Proceed with
-implementing the approved plan.
+The user approved this plan. Plan mode has ended and you are now in normal mode:
+you can edit files, run write operations, and make changes to the system.
+
+Start executing the first step now. Do NOT restate the plan and do NOT ask again
+whether to begin — the user has already read and approved it. This turn's output
+should be the work itself and its results. Use ask_user only if execution is
+genuinely blocked.
 </system-reminder>"""
 
 
@@ -627,7 +634,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     ) -> list[Any]:
         """Build rails for code mode: fixed rails + dynamic rails from config.
 
-        Code 模式固定包含 LspRail、ProjectMemoryRail、CodingMemoryRail。
+        Code 模式固定包含 LspRail、ProjectMemoryRail、CodingMemoryRail。plan 相关
+        的 rails 同样固定挂载，不按子模式分叉。
         """
         mode_config = config_base.get("modes", {}).get("code", {})
         artifact_config = mode_config.get("artifact_post_process") or {}
