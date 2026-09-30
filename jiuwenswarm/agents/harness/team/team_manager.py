@@ -295,6 +295,15 @@ class TeamManager:
         )
         # 当 cancel 请求到达时设置，通知正在执行的 pause 操作中止自身并让 cancel 执行
         self._cancel_requested: dict[str, bool] = {}
+        # session_id → 在途 cancel 拆除的剩余调用数与完成信号（方案 A 闭环缺口 3）。
+        # cancel_session_runtime 全程（含 settle/stop/finalize 慢 await）保持
+        # "拆除在途"：清理可达数十秒，期间到达的 follow-up 请求必须能识别该
+        # 状态并等待收尾（见 team_helpers 的 follow-up 归一化），不得 interact
+        # 进垂死旧回合——否则随后完成的拆除会把旧回合连同 follow-up waiter
+        # 一并带走（epoch 未递增 → 世代校验通过 → chat.error 误报"第一次
+        # 继续失败"）。
+        self._cancel_in_flight_counts: dict[str, int] = {}
+        self._cancel_in_flight_events: dict[str, asyncio.Event] = {}
         # session_id → 最近一次 runtime 被中断拆除的原因（"cancelled" / "paused"）。
         # 供 follow-up waiter 区分"流任务因中断拆除而退出"与"正常 team.completed"：
         # _cancel_requested 在 cancel_session_runtime 内即被 pop，活不到 waiter 醒来
@@ -393,6 +402,51 @@ class TeamManager:
     def _is_current_runtime_epoch(self, session_id: str, epoch: int) -> bool:
         """Return True when no new round has started since ``epoch`` was captured."""
         return self._session_runtime_epochs.get(session_id, 0) == epoch
+
+    def has_pending_cancel(self, session_id: str) -> bool:
+        """该 session 是否有 cancel 拆除尚未收尾（覆盖 settle/stop/finalize 全程）。"""
+        return self._cancel_in_flight_counts.get(session_id, 0) > 0
+
+    async def wait_for_cancel_settled(self, session_id: str, timeout_sec: float) -> bool:
+        """等待在途 cancel 拆除收尾。
+
+        Returns:
+            True: 无在途拆除，或已在时限内收尾。
+            False: 超时仍在途（调用方自行决定兜底策略，如回退 interact 路径）。
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout_sec)
+        while self.has_pending_cancel(session_id):
+            event = self._cancel_in_flight_events.get(session_id)
+            if event is None:
+                # 防御：计数与信号失配（正常不可能发生）时按已收尾处理
+                return True
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            try:
+                await asyncio.wait_for(event.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return False
+        return True
+
+    def _begin_cancel_in_flight(self, session_id: str) -> None:
+        """标记该 session 的 cancel 拆除在途（并发 cancel 计数累加）。"""
+        count = self._cancel_in_flight_counts.get(session_id, 0)
+        self._cancel_in_flight_counts[session_id] = count + 1
+        if count == 0:
+            self._cancel_in_flight_events[session_id] = asyncio.Event()
+
+    def _end_cancel_in_flight(self, session_id: str) -> None:
+        """收尾在途 cancel：最后一个调用结束时置位完成信号、清理跟踪状态。"""
+        count = self._cancel_in_flight_counts.get(session_id, 0)
+        if count <= 1:
+            self._cancel_in_flight_counts.pop(session_id, None)
+            event = self._cancel_in_flight_events.pop(session_id, None)
+            if event is not None:
+                event.set()
+        else:
+            self._cancel_in_flight_counts[session_id] = count - 1
 
     def is_session_initialized(self, session_id: str) -> bool:
         """Return whether the session has ever initialized a team runtime."""
@@ -2502,7 +2556,22 @@ class TeamManager:
         hitting "present in pool but missing from DB" reject_inconsistent errors.
 
         Used for team cancel intent where the session should not be resumed.
+
+        全程标记"拆除在途"（覆盖全部路径含异常）：清理可达数十秒，期间到达
+        的 follow-up 请求靠该状态识别清理窗口并等待收尾（见 team_helpers 的
+        follow-up 归一化），不得把新消息注入垂死旧回合。
         """
+        self._begin_cancel_in_flight(session_id)
+        try:
+            return await self._cancel_session_runtime_impl(session_id, reason)
+        finally:
+            # 兜底清除 cancel_requested：impl 异常退出也要解除对 pause 的
+            # 抑制，否则后续 pause 会被永久抢占
+            self._cancel_requested.pop(session_id, None)
+            self._end_cancel_in_flight(session_id)
+
+    async def _cancel_session_runtime_impl(self, session_id: str, reason: str = "") -> bool:
+        """cancel_session_runtime 的实现体（"拆除在途"跟踪由外层 wrapper 负责）。"""
         logger.info(
             "[TeamManager] cancel_session_runtime 入口: session_id=%s reason=%s",
             session_id, reason,

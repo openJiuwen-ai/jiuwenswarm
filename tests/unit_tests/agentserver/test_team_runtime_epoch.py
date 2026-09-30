@@ -109,11 +109,18 @@ async def test_late_cancel_superseded_keeps_new_round() -> None:
     )
     await asyncio.wait_for(settle_entered.wait(), timeout=1.0)
 
+    # 慢 settle 期间：拆除在途可见（follow-up 归一化据此等待收尾）
+    assert mgr.has_pending_cancel("sess-1") is True
+
     # 慢 settle 期间：新回合注册（relay-claw gate 放行后的"继续"）
     new_task = await _register_round(mgr, "sess-1", "team_t")
 
     release_settle.set()
     assert await asyncio.wait_for(cancel_task, timeout=1.0) is False
+
+    # 迟到 cancel 放弃拆除后：拆除在途状态必须解除（wrapper finally 兜底），
+    # 否则后续 follow-up 会被已死的清理窗口永久拖延
+    assert mgr.has_pending_cancel("sess-1") is False
 
     # 新回合存活：stream task 未被动过、无终态记录（waiter 不误报）
     assert new_task.done() is False
@@ -278,6 +285,58 @@ async def test_pause_abort_skips_teardown_when_new_round_registered(
 
     mgr._settle_persisted_cancelled_permission_interrupt.assert_awaited_once()
     await _cancel_round_tasks(new_task, pause_task)
+
+
+@pytest.mark.asyncio
+async def test_cancel_in_flight_tracked_through_slow_settle() -> None:
+    """拆除在途全生命周期（方案 A 闭环缺口 3）：settle→stop→finalize 全程可见。
+
+    生产事故时序：cancel 卡在慢 settle（~37s）期间"继续"到达——follow-up
+    归一化靠 has_pending_cancel 识别清理窗口并 wait_for_cancel_settled 等收尾；
+    时限内未收尾返回 False（回退 interact 路径），收尾后返回 True。
+    """
+    mgr = _manager()
+    mgr._settle_persisted_cancelled_permission_interrupt = AsyncMock()  # type: ignore[method-assign]
+
+    settle_entered = asyncio.Event()
+    release_settle = asyncio.Event()
+
+    async def slow_settle(*_args: object, **_kwargs: object) -> None:
+        settle_entered.set()
+        await release_settle.wait()
+
+    mgr._settle_live_cancelled_permission_interrupt = slow_settle  # type: ignore[method-assign]
+
+    async def fake_stop_runner(session_id: str, team_name: str, caller: str) -> bool:
+        return True
+
+    mgr._stop_runner_team_runtime = fake_stop_runner  # type: ignore[method-assign]
+
+    task = await _register_round(mgr, "sess-1", "team_t")
+    assert mgr.has_pending_cancel("sess-1") is False
+
+    cancel_task = asyncio.ensure_future(
+        mgr.cancel_session_runtime("sess-1", reason="test")
+    )
+    await asyncio.wait_for(settle_entered.wait(), timeout=1.0)
+
+    # 慢 settle 期间：拆除在途可见；短时限等待返回 False（仍在途）
+    assert mgr.has_pending_cancel("sess-1") is True
+    assert await mgr.wait_for_cancel_settled("sess-1", timeout_sec=0.01) is False
+
+    # 挂起的等待者：收尾信号唤醒后返回 True
+    waiter_task = asyncio.ensure_future(
+        mgr.wait_for_cancel_settled("sess-1", timeout_sec=5.0)
+    )
+    await asyncio.sleep(0)
+    assert waiter_task.done() is False
+
+    release_settle.set()
+    assert await asyncio.wait_for(cancel_task, timeout=1.0) is True
+    assert await asyncio.wait_for(waiter_task, timeout=1.0) is True
+    assert mgr.has_pending_cancel("sess-1") is False
+
+    await _cancel_round_tasks(task)
 
 
 @pytest.mark.asyncio
