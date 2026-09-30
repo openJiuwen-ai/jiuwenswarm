@@ -805,6 +805,9 @@ TUI 通过 `hooks.list` RPC 请求 Gateway，Gateway 从 `config.yaml` 的 `hook
 
 #### Hooks 概念速览
 
+用户配置的工具 hooks 也适用于子 Agent 和 swarm 成员的工具调用。
+此时 hook 输入包含子 Agent 的 `session_id` 和 `subagent_type`（未命名的 swarm 成员使用 `"swarm_member"`）。
+
 Hooks 是在特定事件触发时自动执行的扩展逻辑，支持以下 17 种事件：
 
 | 事件 | 执行层 | 触发时机 |
