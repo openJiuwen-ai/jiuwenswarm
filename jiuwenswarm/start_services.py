@@ -852,11 +852,31 @@ def _run(mode: str) -> int:
         if _sync_default_env_ports(cmd.config.ports) is not None:
             return 1
 
-    commands = _build_commands(mode)
+    # [Helix 贡献 2026-09-16] 默认实例也支持 --dotenv：把本次 launch 的配置
+    # 文件透传给子进程（agentserver/gateway）。**必须透传**——子进程若拿不到
+    # `--dotenv`，它自己的 early parse 就不会加载该文件，随后运行时仍会去读
+    # 公共 `<数据根>/config/.env`，项目 key 会被覆盖（配合 get_env_file 的修复）。
+    # **调用形态兼容**（2026-09-23 CI 修复）：未显式指定 `--dotenv` 时仍按
+    # 单参数调用 `_build_commands(mode)`——保持与既有调用方/测试替身一致
+    # （上游 `test_instance_manager.py` 用 `lambda mode: ...` 打桩，双参数会
+    # TypeError）；只有拿到 `--dotenv` 路径时才把该路径透传给子进程。
+    dotenv_path = _dotenv_path_from_args()
+    commands = (_build_commands(mode, dotenv_path) if dotenv_path
+                else _build_commands(mode))
     if not commands:
         logging.info(f"[start_services] no commands to run for mode: {mode}")
         return 2
     return _run_processes(commands, cmd.config.ports)
+
+
+def _dotenv_path_from_args() -> Path | None:
+    """本次 launch 显式指定的 --dotenv（early parse 记录，未指定则 None）。"""
+    try:
+        from jiuwenswarm.dotenv_early import get_parsed_dotenv
+
+        return get_parsed_dotenv()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _action_list() -> int:
@@ -1038,6 +1058,18 @@ def _parse_args() -> argparse.Namespace:
             "logs/swarm-<timestamp>.log; stop it with 'jiuwenswarm-stop', and "
             "pass --skip-build to reuse the existing frontend build."
         ),
+    )
+
+    # 本次 launch 的配置文件（项目/实例专属配置，不迁移数据目录）
+    # 注：parse_dotenv_early() 已在导入期按 sys.argv 加载过该文件；这里声明
+    # 参数只是让 argparse 不报 "unrecognized arguments"（原先文档声称支持，
+    # 实际 argparse 不认，`jiuwenswarm-start app --dotenv X` 必然失败）。
+    parser.add_argument(
+        "--dotenv",
+        metavar="<path>",
+        default=None,
+        help="Load environment from this .env file for this launch "
+             "(project-scoped config; data dir unchanged).",
     )
 
     # Instance specification parameter

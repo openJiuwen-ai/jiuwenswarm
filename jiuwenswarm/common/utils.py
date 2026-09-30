@@ -2430,6 +2430,29 @@ def get_xy_tmp_dir() -> Path:
 
 
 def get_env_file() -> Path:
+    """本次 launch 生效的 `.env` 文件。
+
+    **[Helix 贡献 2026-09-16] 显式 `--dotenv <path>` 时必须返回该文件。**
+
+    原实现恒返回 `<数据根>/config/.env`，于是 `app.py` 里
+    ``load_dotenv_runtime(get_env_file(), override=True)``（L58）会在 early
+    ``parse_dotenv_early()`` 之后**用公共配置再覆盖一遍**——`--dotenv` 表面被
+    "解析"了却对运行时不生效，只有走 `--name`（顺带把 `JIUWENSWARM_DATA_DIR`
+    指到实例目录）时才看起来生效。后果：**无法在不迁移数据目录的前提下做
+    "项目专属配置"**——多项目共用同一份 `~/.jiuwenswarm/config/.env` 的 key，
+    用量无法归因到项目（本仓实测：比赛 key 被同机其它项目共用）。
+
+    修法：`--dotenv` 明确指定时，该文件就是本次 launch 的配置源（`--name`
+    路径下 `get_parsed_dotenv()` 返回的正是实例 bootstrap .env，行为不变）。
+    """
+    try:  # 惰性导入：dotenv_early 为"最早可导入"模块，避免任何循环依赖
+        from jiuwenswarm.dotenv_early import get_parsed_dotenv
+
+        parsed = get_parsed_dotenv()
+        if parsed is not None:
+            return Path(parsed)
+    except Exception:  # noqa: BLE001 - 取不到就退回默认，不影响原有行为
+        pass
     return get_config_dir() / ".env"
 
 
