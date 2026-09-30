@@ -274,6 +274,60 @@ def test_voice_never_accepts_approval(source):
         )
 
 
+def test_native_approval_accepts_authorization_prompt_answers():
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.interactions import (
+        validate_native_approval_answers,
+    )
+
+    interaction = native_approval_question({
+        "request_id": "core-approval",
+        "source": "permission_interrupt",
+        "questions": [{"question": "允许执行？", "card_id": "card-1"}],
+    })
+    resolved = validate_native_approval_answers(
+        interaction,
+        [{"selected_options": ["allow_once"], "card_id": "card-1"}],
+    )
+    assert resolved == [{
+        "question": "允许执行？",
+        "answer": "",
+        "selected_options": ["allow_once"],
+        "card_id": "card-1",
+    }]
+    with pytest.raises(ValueError, match="does not match"):
+        validate_native_approval_answers(
+            interaction,
+            [{"question": "别的问题", "selected_options": ["allow_once"]}],
+        )
+
+
+def test_answer_input_preserves_permission_card_id():
+    from jiuwenswarm.extensions.video_duplex.backend.task_adapter import AgentTaskExecutor
+
+    request = AgentTaskExecutor.answer_input({
+        "request_id": "video-core-1",
+        "core_session_id": "core-session",
+        "resume_answer": True,
+        "interaction": {
+            "request_id": "core-approval",
+            "source": "permission_interrupt",
+            "operation_id": "op-1",
+            "answers": [{
+                "question": "允许执行？",
+                "answer": "",
+                "selected_options": ["allow_once"],
+                "card_id": "card-1",
+            }],
+        },
+    })
+    assert request.answers == ({
+        "question": "允许执行？",
+        "custom_input": "",
+        "selected_options": ["allow_once"],
+        "card_id": "card-1",
+    },)
+
+
 async def test_native_permission_answer_resumes_only_the_matching_task(tmp_path):
     store = TaskStore(tmp_path / "approval.sqlite")
     calls = []
@@ -312,6 +366,46 @@ async def test_native_permission_answer_resumes_only_the_matching_task(tmp_path)
                              answers=answer, native_ui=True)
         await until(lambda: store.read(task["id"])["status"] == "completed")
         assert len(calls) == 2
+        assert store.read(task["id"])["result"]["answer"] == "approved"
+    finally:
+        await service.close()
+
+
+async def test_native_permission_accepts_option_only_authorization_answers(tmp_path):
+    store = TaskStore(tmp_path / "auth-prompt.sqlite")
+
+    class ApprovalExecutor:
+        async def run(self, task, progress):
+            if task.get("resume_answer"):
+                assert task["interaction"]["answers"] == [{
+                    "question": "允许执行？",
+                    "answer": "",
+                    "selected_options": ["allow_once"],
+                    "card_id": "card-1",
+                }]
+                return {"answer": "approved"}
+            await progress(dict(stage="interaction", interaction=native_approval_question({
+                "request_id": "core-approval", "source": "permission_interrupt",
+                "questions": [{"question": "允许执行？", "card_id": "card-1"}],
+            })))
+            store.update(task["id"], lambda row: row.update(execution_settled=True))
+            raise InteractionPending()
+
+    service = TaskService(store, ApprovalExecutor())
+    try:
+        task = submit(service, "auth-prompt")
+        await until(lambda: store.read(task["id"])["status"] == "waiting_user"
+                    and store.read(task["id"])["output_closed"])
+        await service.answer(
+            "user",
+            "voice",
+            task["id"],
+            "ui-answer",
+            token(service, task),
+            answers=[{"selected_options": ["allow_once"], "card_id": "card-1"}],
+            native_ui=True,
+        )
+        await until(lambda: store.read(task["id"])["status"] == "completed")
         assert store.read(task["id"])["result"]["answer"] == "approved"
     finally:
         await service.close()
