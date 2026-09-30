@@ -411,6 +411,10 @@ export function AgentManagementPanel({
       category: groupCategory,
       query: '',
       installation: groupInstallationFilter,
+      // 沿用上游分页签名取全量列表（触底加载在 GroupCatalogPage 内部做增量）；
+      // 视图模型去分页化的重构随后续 MR 落地
+      page: 1,
+      pageSize: Number.MAX_SAFE_INTEGER,
     }),
     [groupCatalog, groupCategory, groupInstallationFilter],
   );
@@ -420,6 +424,8 @@ export function AgentManagementPanel({
       category: '',
       query: groupMineQuery,
       installation: groupInstallationFilter,
+      page: 1,
+      pageSize: Number.MAX_SAFE_INTEGER,
     }),
     [groupMine, groupMineQuery, groupInstallationFilter],
   );
