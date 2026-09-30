@@ -231,6 +231,28 @@ def _trigger_sandbox_sync() -> None:
         logger.warning("[security_lists] 触发沙箱重载失败: %s", exc)
 
 
+def _publish_enforcement() -> None:
+    """名单写后重发宿主出口策略（P3）。
+
+    不做的话，新加的域名 deny 只在新会话/新 rail 组建时才进 net_guard——
+    "热更新生效"就成了半截。单次开销只是合并一个 dict 列表，可忽略。
+    """
+    try:
+        from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
+            publish_host_exit_policy_from_config,
+        )
+
+        publish_host_exit_policy_from_config()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[security_lists] 重发宿主出口策略失败（rail 热读不受影响）: %s", exc)
+
+
+def _after_list_change() -> None:
+    """名单写后的强制点同步：沙箱副本 + 宿主出口策略。"""
+    _trigger_sandbox_sync()
+    _publish_enforcement()
+
+
 # ---------------------------------------------------------------------------
 # 参数解析
 # ---------------------------------------------------------------------------
@@ -333,7 +355,7 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
                 extra: dict[str, Any] = {"existing_id": existing_id} if existing_id else {}
                 return _err(request, str(exc), code="CONFLICT", **extra)
             _audit_change("upsert", record_id=stored.id, type=stored.type, pattern=stored.pattern)
-            _trigger_sandbox_sync()
+            _after_list_change()
             return _ok(request, {"record": record_to_dict(stored)})
 
         # ---- cells.patch：格子级增改删 ----
@@ -364,7 +386,7 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
                 set={f"{mode}.{op}": action for (mode, op), action in set_.items()},
                 unset=[f"{mode}.{op}" for mode, op in unset],
             )
-            _trigger_sandbox_sync()
+            _after_list_change()
             return _ok(request, {"record": record_to_dict(stored)})
 
         # ---- delete：user 区整卡片删除 ----
@@ -375,7 +397,7 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
             if not store.delete_record(record_id):
                 return _err(request, f"记录不存在: {record_id}", code="NOT_FOUND")
             _audit_change("delete", record_id=record_id)
-            _trigger_sandbox_sync()
+            _after_list_change()
             return _ok(request, {"ok": True})
 
         # ---- cloud.sync：cloud 区整区替换 ----
@@ -397,7 +419,7 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
                 applied=applied,
                 defaults=params.get("defaults"),
             )
-            _trigger_sandbox_sync()
+            _after_list_change()
             return _ok(request, {"applied": applied})
 
         # ---- defaults.get / defaults.set：兜底档（白名单模式） ----
@@ -410,7 +432,7 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
                 return _err(request, "defaults must be object")
             store.set_defaults(defaults)   # ValueError → 400，且不落盘
             _audit_change("defaults.set", defaults=defaults)
-            _trigger_sandbox_sync()
+            _after_list_change()
             return _ok(request, {"defaults": store.get_defaults()})
 
         # ---- migrate：legacy 段（net_guard.urls / file_guard.paths）一次性搬进 user 区 ----
@@ -436,7 +458,7 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
                     sources=result["sources"],
                 )
                 if result["created"]:
-                    _trigger_sandbox_sync()
+                    _after_list_change()
             return _ok(request, {
                 "created": result["created"],
                 "skipped": result["skipped"],

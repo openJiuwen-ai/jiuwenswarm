@@ -26,10 +26,20 @@ def rpc_env(tmp_path, monkeypatch):
     monkeypatch.setattr(audit, "_audit_file", lambda: tmp_path / "security_audit.jsonl")
     monkeypatch.setattr(normalize, "project_builtin", lambda: [])
     sync_calls: list[str] = []
+    publish_calls: list[str] = []
     monkeypatch.setattr(
         security_lists_rpc, "_trigger_sandbox_sync", lambda: sync_calls.append("sync")
     )
-    return {"cfg": cfg_path, "sync_calls": sync_calls, "tmp": tmp_path}
+    # P3 是进程级状态；测试里不能真发布（会污染其它用例），只记录调用
+    monkeypatch.setattr(
+        security_lists_rpc, "_publish_enforcement", lambda: publish_calls.append("publish")
+    )
+    return {
+        "cfg": cfg_path,
+        "sync_calls": sync_calls,
+        "publish_calls": publish_calls,
+        "tmp": tmp_path,
+    }
 
 
 def call(method: ReqMethod, params: dict | None = None):
@@ -322,6 +332,20 @@ def test_all_write_methods_trigger_sync(rpc_env):
     call(ReqMethod.SECURITY_LISTS_CLOUD_SYNC, {"sync_version": "v1", "records": []})
     call(ReqMethod.SECURITY_LISTS_DELETE, {"id": rid})
     assert len(rpc_env["sync_calls"]) == 4
+
+
+def test_write_republishes_host_exit_policy(rpc_env):
+    """名单写后必须重发 P3：否则新加的域名 deny 只在新会话组建 rail 时才进 net_guard，
+    "热更新生效"就成半截（S2）。"""
+    resp = call(ReqMethod.SECURITY_LISTS_UPSERT, {"record": rec_dict(
+        type="domain", pattern="evil.example", match="exact", cells={"*": {"*": "deny"}},
+    )})
+    assert resp.ok
+    assert rpc_env["publish_calls"] == ["publish"]
+
+    rpc_env["publish_calls"].clear()
+    call(ReqMethod.SECURITY_LISTS_GET)
+    assert rpc_env["publish_calls"] == []      # 读方法不触发
 
 
 # ---------------------------------------------------------------------------

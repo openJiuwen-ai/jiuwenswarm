@@ -5664,8 +5664,17 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         )
 
     def _update_permission_rail(self, config_base: dict[str, Any] | None) -> None:
-        """原地更新已有 PermissionRail 配置，或在首次启用时新建。"""
-        permission_config = config_base.get("permissions", {}) if config_base else {}
+        """原地更新已有 PermissionRail 配置，或在首次启用时新建。
+
+        热更新路径**也必须**经 ``permissions_for_enforcement`` 回流名单 domain 规则：
+        它绕过 ``build_permission_rail``，只走 ``rail.update_config`` → 引擎
+        ``update_config``，不同步回流就会把建 rail 时合并进去的规则在一次热更新后丢掉。
+        """
+        from jiuwenswarm.agents.harness.common.rails.security_lists.bridge import (
+            permissions_for_enforcement,
+        )
+
+        permission_config = permissions_for_enforcement(config_base)
         if self._permission_rail is not None:
             self._permission_rail.update_config(permission_config)
             logger.info("[JiuWenSwarmDeepAdapter] _permission_rail config hot-updated")

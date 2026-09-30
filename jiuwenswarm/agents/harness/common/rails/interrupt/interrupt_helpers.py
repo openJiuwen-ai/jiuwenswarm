@@ -295,7 +295,13 @@ def build_permission_rail(
     )
     behavior_enabled = desktop_security_active()
     defer_unmatched = cloud_authorization_enabled(config)
-    permission_config = dict(config.get("permissions", {}))
+    # 经 permissions_for_enforcement 回流名单 domain 规则：Pipeline C / P1 的引擎与
+    # 宿主出口（P3）必须看到同一份 urls，否则名单里的域名 deny 只在 rail 生效
+    from jiuwenswarm.agents.harness.common.rails.security_lists.bridge import (
+        permissions_for_enforcement,
+    )
+
+    permission_config = permissions_for_enforcement(config)
     if behavior_enabled:
         permission_config["defer_unmatched"] = defer_unmatched
     tools_config = permission_config.setdefault("tools", {})
