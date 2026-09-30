@@ -113,6 +113,10 @@ from jiuwenswarm.server.runtime.debug_trace.directives import (
 )
 _FOLLOWUP_INTERACT_BOUNDARY_TIMEOUT_SEC = 10.0
 _FOLLOWUP_INTERACT_POLL_INTERVAL_SEC = 0.05
+# 拆除在途等待上限：cancel 清理（settle→stop→finalize）事故实测 ~37s（30 人
+# 团队可达 ~53s），留足余量。超时则回退既有 interact 路径——仍有 reclassify
+# 归一化 + 终态如实报错两道兜底，不无限阻塞"继续"。
+_FOLLOWUP_CANCEL_SETTLE_TIMEOUT_SEC = 120.0
 
 
 def _safe_team_path_segment(value: str, fallback: str = "_") -> str:
@@ -323,6 +327,27 @@ async def _deliver_followup_interact_across_boundary(
         reason=last_reason,
         first_request_ready=first_request_ready,
     )
+
+
+def _team_manager_has_pending_cancel(team_manager: Any, session_id: str) -> bool:
+    """查询该 session 是否有 cancel 拆除在途（getattr 兜底测试 fake manager）。"""
+    checker = getattr(team_manager, "has_pending_cancel", None)
+    if not callable(checker):
+        return False
+    return bool(checker(session_id))
+
+
+async def _wait_team_cancel_settled(
+    team_manager: Any,
+    session_id: str,
+    *,
+    timeout_sec: float = _FOLLOWUP_CANCEL_SETTLE_TIMEOUT_SEC,
+) -> bool:
+    """等待 cancel 拆除收尾；返回是否已在时限内收尾（无该方法视为已收尾）。"""
+    waiter = getattr(team_manager, "wait_for_cancel_settled", None)
+    if not callable(waiter):
+        return True
+    return bool(await waiter(session_id, timeout_sec))
 
 
 def _build_team_event_chunk_meta(event: Any) -> tuple[dict | None, dict]:
@@ -2270,6 +2295,34 @@ async def process_team_message_stream(
                 # 与结尾快照同机制(_broadcast_team_state_snapshot→_broadcast_event→waiter→relay),
                 # onTask 按 taskId 去重,幂等。
                 await _broadcast_team_state_snapshot(channel_id, session_id)
+
+            # 拆除在途检查（方案 A 闭环缺口 3 修复）：cancel 清理（settle→
+            # stop→finalize）可达数十秒（事故实测 ~37s，30 人团队 ~53s），期间
+            # 到达的"继续"若直接 interact 进旧回合，会被随后完成的拆除一并
+            # 带走（epoch 未递增 → 世代校验通过 → 拆掉旧回合 + 挂在上面的
+            # follow-up waiter → chat.error 误报"第一次继续失败"）。检测到
+            # 拆除在途时先等收尾再走下方 interact 逻辑——等完/超时后 runtime
+            # 已拆则 interact 自然失败（not_active），既有 boundary/reclassify
+            # 归一化路径接管新回合启动（bump epoch），一次"继续"即恢复。
+            # 超时回退（120s，覆盖极端清理时长）同样落到 interact 路径，不破坏
+            # 既有兜底链。
+            if _team_manager_has_pending_cancel(team_manager, session_id):
+                logger.info(
+                    "[TeamHelpers] follow-up deferred by pending cancel teardown: "
+                    "channel_id=%s session_id=%s request_id=%s",
+                    _resolve_channel_id(channel_id),
+                    session_id,
+                    rid,
+                )
+                settled = await _wait_team_cancel_settled(team_manager, session_id)
+                logger.info(
+                    "[TeamHelpers] follow-up resume after cancel teardown wait: "
+                    "channel_id=%s session_id=%s request_id=%s settled=%s",
+                    _resolve_channel_id(channel_id),
+                    session_id,
+                    rid,
+                    settled,
+                )
 
             # Control continuations reuse the waiter that was active before
             # delivery. Other follow-ups already own the current request queue.
