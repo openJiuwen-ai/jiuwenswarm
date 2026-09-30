@@ -456,7 +456,7 @@ export function AgentManagementPanel({
       withCatalogCache(catalog, cache);
       catalogRef.current = catalog;
       if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loaded' });
-      // 鍥炲～鍏变韩鐩綍缂撳瓨锛氳亰澶╄緭鍏ュ尯鐨勪笓瀹?tag 渚濊禆瀹冮甯цВ鏋?displayName/澶村儚銆?
+      // 回填共享目录缓存：聊天输入区的专家 tag 依赖它首帧解析 displayName/头像。
       if (!options.query) seedAgentCatalog(catalog);
       dispatch({ type: 'catalog.loaded', catalog });
     } catch (error) {
