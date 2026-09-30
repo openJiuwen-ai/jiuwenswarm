@@ -40,7 +40,6 @@ from jiuwenswarm.common.schema.designer_graph import (
 )
 from jiuwenswarm.server.runtime.designer.skills_loader import attach_skills_metadata
 
-_MAX_LEAN_SHOTS = 16
 _MAX_SPLIT_CHARS = 12
 _IMAGE_SIZE = "1K"  # cost-save: ~1024 class, not 2K/4K
 
@@ -384,8 +383,8 @@ def _shot_budget(analysis: dict[str, Any], shots: list[dict[str, Any]]) -> int:
     except Exception:  # noqa: BLE001
         pass
     if target >= 1:
-        return max(1, min(_MAX_LEAN_SHOTS, target, n))
-    return max(1, min(_MAX_LEAN_SHOTS, n))
+        return max(1, min(target, n))
+    return max(1, n)
 
 
 def _ensure_characters_referenced(

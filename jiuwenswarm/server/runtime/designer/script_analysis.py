@@ -16,7 +16,6 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _MAX_CHARS = 12
-_MAX_SHOTS = 16
 _MAX_SCENES = 8
 # Keep under typical UI bootstrap budgets while still allowing a real LLM call.
 _DEFAULT_LLM_TIMEOUT_SEC = 90.0
@@ -480,7 +479,7 @@ def _split_prompt_beats(prompt: str) -> list[str]:
         if out and key in re.sub(r"\s+", " ", out[-1].lower()):
             continue
         out.append(p)
-    return _clamp_list(out, _MAX_SHOTS)
+    return out
 
 
 def _heuristic_shots(prompt: str, characters: list[dict[str, str]]) -> list[dict[str, Any]]:
@@ -518,9 +517,9 @@ def _heuristic_shots(prompt: str, characters: list[dict[str, str]]) -> list[dict
             _explicit_shot_count_from_prompt,
         )
 
-        shot_ceiling = _explicit_shot_count_from_prompt(prompt) or _MAX_SHOTS
+        shot_ceiling = _explicit_shot_count_from_prompt(prompt)
     except Exception:  # noqa: BLE001
-        shot_ceiling = _MAX_SHOTS
+        shot_ceiling = 0
     covered = {cid for s in shots for cid in s.get("character_ids") or []}
     for ch in characters:
         cid = str(ch.get("id") or "")
@@ -540,7 +539,7 @@ def _heuristic_shots(prompt: str, characters: list[dict[str, str]]) -> list[dict
             )
             covered.add(cid)
             continue
-        if len(shots) < min(_MAX_SHOTS, shot_ceiling):
+        if shot_ceiling < 1 or len(shots) < shot_ceiling:
             shots.append(
                 {
                     "shot_index": len(shots) + 1,
@@ -577,7 +576,9 @@ def _heuristic_shots(prompt: str, characters: list[dict[str, str]]) -> list[dict
             if ranked and ranked[0][0] > 0:
                 shot["character_ids"] = [ranked[0][1]]
             # else leave empty — fail closed; Director must fill on_screen
-    return _clamp_list(shots, min(_MAX_SHOTS, shot_ceiling))
+    if shot_ceiling >= 1:
+        return _clamp_list(shots, shot_ceiling)
+    return shots
 
 
 def _heuristic_scenes(prompt: str) -> list[dict[str, str]]:
@@ -707,7 +708,7 @@ def _director_pipeline_decisions(
             budget = explicit
     except Exception:  # noqa: BLE001
         pass
-    budget = max(1, min(_MAX_SHOTS, budget))
+    budget = max(1, budget)
 
     multi = any(len(s.get("character_ids") or []) >= 2 for s in shots if isinstance(s, dict))
     solo = any(len(s.get("character_ids") or []) == 1 for s in shots if isinstance(s, dict))
@@ -852,14 +853,14 @@ def heuristic_analysis(prompt: str) -> dict[str, Any]:
     if explicit >= 2:
         shots = _heuristic_shots(prompt, characters)
         decisions = _director_pipeline_decisions(prompt, characters, shots)
-        decisions["target_shot_count"] = max(1, min(_MAX_SHOTS, explicit))
+        decisions["target_shot_count"] = max(1, explicit)
         shots = _select_shots_for_budget(
             shots, int(decisions["target_shot_count"]), characters
         )
         for i, shot in enumerate(shots, start=1):
             shot["shot_index"] = i
         decisions = _director_pipeline_decisions(prompt, characters, shots)
-        decisions["target_shot_count"] = max(1, min(_MAX_SHOTS, explicit))
+        decisions["target_shot_count"] = max(1, explicit)
         if len(shots) > explicit:
             shots = shots[:explicit]
         _assign_heuristic_setting_ids(shots, scenes)
@@ -1090,7 +1091,7 @@ def _normalize_llm_analysis(
         # Derive placeholder scenes from shot setting_ids after the shot loop if needed.
         norm_scenes = []
     norm_shots: list[dict[str, Any]] = []
-    for i, sh in enumerate(shots[:_MAX_SHOTS], start=1):
+    for i, sh in enumerate(shots, start=1):
         if not isinstance(sh, dict):
             continue
         cids = resolve_cast_token_list(
@@ -1254,14 +1255,14 @@ def _normalize_llm_analysis(
         explicit = int(_explicit_shot_count_from_prompt(user_prompt) or 0)
     except Exception:  # noqa: BLE001
         explicit = 0
-    # LLM owns N via shots[] / target_shot_count. Explicit user N-shot is a hard ceiling.
-    # Soft safety only: never exceed _MAX_SHOTS. Heuristic budget is fallback when LLM omits N.
+    # The user's explicit N-shot is the only ceiling. Otherwise keep every shot.
+    # Heuristic budget is only a fallback when the model returned no shots.
     if explicit >= 1:
-        decisions["target_shot_count"] = max(1, min(_MAX_SHOTS, explicit))
-    elif 1 <= tsc <= _MAX_SHOTS:
-        decisions["target_shot_count"] = tsc
+        decisions["target_shot_count"] = max(1, explicit)
     elif norm_shots:
-        decisions["target_shot_count"] = max(1, min(_MAX_SHOTS, len(norm_shots)))
+        decisions["target_shot_count"] = max(1, len(norm_shots))
+    elif tsc >= 1:
+        decisions["target_shot_count"] = tsc
     else:
         decisions["target_shot_count"] = heuristic_budget
     # Honor explicit LLM layout only when it matches co-appearance reality.
@@ -1285,10 +1286,9 @@ def _normalize_llm_analysis(
             decisions["prefer_combined_cast"] = False
             decisions["prefer_split_cast"] = False
     # Prefer coverage-preserving selection over naive first-N truncate.
-    ceiling = max(1, min(int(decisions["target_shot_count"]), _MAX_SHOTS))
-    if explicit < 1 and len(norm_shots) > ceiling and 1 <= tsc <= _MAX_SHOTS:
-        # shots[] longer than declared target_shot_count → trust the longer list (soft max).
-        ceiling = max(1, min(len(norm_shots), _MAX_SHOTS))
+    ceiling = max(1, int(decisions["target_shot_count"]))
+    if explicit < 1 and len(norm_shots) > ceiling:
+        ceiling = len(norm_shots)
     decisions["target_shot_count"] = ceiling
     norm_shots = _select_shots_for_budget(norm_shots, ceiling, norm_chars)
     layout_decisions = _director_pipeline_decisions(user_prompt, norm_chars, norm_shots)
@@ -1297,9 +1297,9 @@ def _normalize_llm_analysis(
             decisions[key] = layout_decisions[key]
     # Keep LLM-owned N after layout refresh (do not re-clamp to heuristic 2–4).
     if explicit >= 1:
-        decisions["target_shot_count"] = max(1, min(explicit, _MAX_SHOTS))
+        decisions["target_shot_count"] = max(1, explicit)
     else:
-        decisions["target_shot_count"] = max(1, min(len(norm_shots) or ceiling, _MAX_SHOTS))
+        decisions["target_shot_count"] = max(1, len(norm_shots) or ceiling)
     if len(norm_shots) > int(decisions["target_shot_count"]):
         norm_shots = norm_shots[: int(decisions["target_shot_count"])]
     from jiuwenswarm.server.runtime.designer.pipeline.storyboard_shot_state import (
@@ -1383,7 +1383,8 @@ async def analyze_creative_brief(
             "Qwen KF: lock identity+wardrobe; first setting KF = compose_from_solo_refs, "
             "later same setting = edit_prior_keyframe; prefer ≤2–3 people with refs. "
             "Clip prompt = this shot's motion and camera only. "
-            "Explicit user N-shot / N分镜 is a HARD ceiling (hard max 16). "
+            "Explicit user N-shot / N分镜 is the only shot ceiling. "
+            "Do not drop shots to fit a fixed count. "
         )
         if target_duration_sec:
             duration_rule = (

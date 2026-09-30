@@ -875,7 +875,6 @@ def ensure_bootstrap_pipeline(graph: DesignerExecutionGraph) -> DesignerExecutio
     return repair_overlapping_pipeline_layout(graph)
 
 
-MAX_SHOT_CLIP_NODES = 16
 COMPOSE_NODE_ID = "n_compose"
 DEFAULT_NODE_WIDTH = 280.0
 DEFAULT_NODE_HEIGHT = 160.0
@@ -1305,7 +1304,7 @@ def expand_shot_nodes(
     shot_count: int,
 ) -> DesignerExecutionGraph:
     """One clip node per storyboard shot (scene-card R2V), plus compose."""
-    count = max(1, min(int(shot_count or 1), MAX_SHOT_CLIP_NODES))
+    count = max(1, int(shot_count or 1))
     raw = dict(graph)
     existing_by_id = {
         str(node.get("id") or ""): dict(node)

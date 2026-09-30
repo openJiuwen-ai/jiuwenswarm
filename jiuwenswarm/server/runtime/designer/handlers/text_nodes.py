@@ -72,7 +72,7 @@ Use a Markdown table whose columns MUST be:
 Shot | Timeline | Camera | Move | Character action | Shot consistency | Comment
 
 Rules:
-- Cover every major shot from the user prompt (typically 3-5 shots; duration ~12-24s total unless brief says shorter)
+- Cover every shot in the Brief. Do not stop at a fixed shot count
 - Materialize every beat in the Brief's narrative/content arc; fill the full requested duration
 - Every row advances action, information, product proof, or emotion; no filler, repeated action, or duplicate coverage
 - Preserve the arc's setup/hook, development/turn, and payoff/CTA as applicable
@@ -99,7 +99,6 @@ Do not output storyboard drawings. Do not explain.
 Brief:
 """
 
-_MAX_STORYBOARD_SHOTS = 16
 _TABLE_SEP_CELL = re.compile(r"^:?-{3,}:?$")
 
 
@@ -234,8 +233,6 @@ def _parse_storyboard_table(text: str) -> list[StoryboardShot]:
         if shot is None:
             continue
         shots.append(shot)
-        if len(shots) >= _MAX_STORYBOARD_SHOTS:
-            break
     return shots
 
 
@@ -257,8 +254,6 @@ def _parse_storyboard_hierarchical(text: str) -> list[StoryboardShot]:
         if head:
             if current is not None:
                 shots.append(current)
-                if len(shots) >= _MAX_STORYBOARD_SHOTS:
-                    return shots
             idx = int(head.group(1))
             title = str(head.group(2) or "").strip()
             current = {
@@ -294,7 +289,7 @@ def _parse_storyboard_hierarchical(text: str) -> list[StoryboardShot]:
             current["comment"] = val
         elif key == "speech" and not current.get("character_action"):
             current["character_action"] = val
-    if current is not None and len(shots) < _MAX_STORYBOARD_SHOTS:
+    if current is not None:
         shots.append(current)
     return shots
 

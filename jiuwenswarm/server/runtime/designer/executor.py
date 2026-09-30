@@ -18,7 +18,6 @@ from jiuwenswarm.common.schema.designer_graph import (
     DesignerExecutionRun,
     DesignerGraphNode,
     DesignerNodeState,
-    MAX_SHOT_CLIP_NODES,
     NODE_ROLE_BRIEF,
     NODE_ROLE_CLIP,
     NODE_ROLE_COMPOSE,
@@ -1716,7 +1715,7 @@ class GraphExecutor:
         shot_rows = self._completed_storyboard_shots(graph, run)
         if shot_rows is None:
             return graph, remaining, execution_predecessors(graph), sync_groups(graph)
-        shot_count = max(1, min(len(shot_rows) or 1, MAX_SHOT_CLIP_NODES))
+        shot_count = max(1, len(shot_rows) or 1)
         from jiuwenswarm.server.runtime.designer.handlers.text_nodes import shot_generate_prompt
 
         prompts = [shot_generate_prompt(shot) for shot in shot_rows]
@@ -2039,7 +2038,7 @@ class GraphExecutor:
         )
         text = role_output_text(ctx, NODE_ROLE_STORYBOARD)
         shots = parse_storyboard_shots(text)
-        return shots[:MAX_SHOT_CLIP_NODES]
+        return shots
 
     def _completed_storyboard_shot_count(
         self,
@@ -2049,7 +2048,7 @@ class GraphExecutor:
         shots = self._completed_storyboard_shots(graph, run)
         if shots is None:
             return None
-        return max(1, min(len(shots) or 1, MAX_SHOT_CLIP_NODES))
+        return max(1, len(shots) or 1)
 
     async def _wait_agent_workers(self, run_id: str) -> None:
         while True:
@@ -2628,7 +2627,7 @@ def _image_output_refs(state: dict[str, Any]) -> list[dict[str, Any]]:
 
 def redistribute_frame_node_states(run: DesignerExecutionRun, shot_count: int) -> None:
     """Split a bundled keyframe node (many PNGs) into one image per n_frame_i."""
-    count = max(1, min(int(shot_count or 1), MAX_SHOT_CLIP_NODES))
+    count = max(1, int(shot_count or 1))
     states = run.setdefault("node_states", {})
     bundled: list[dict[str, Any]] = []
     source_status = NODE_STATUS_PENDING

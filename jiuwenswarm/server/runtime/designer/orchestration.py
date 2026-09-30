@@ -1855,7 +1855,7 @@ class Director:
                 "already gave a shot stays that length. Keep the brief's character names and "
                 "wardrobe, place names, and continuity notes. Retain every storyboard "
                 "clip that provides distinct content. "
-                "YOU own target_shot_count (prefer ≤8, hard max 16). "
+                "Keep every distinct shot. Do not drop shots to fit a fixed count. "
                 "One clip = one continuous shot of that window's length. New KF on hard cut, new setting, "
                 "wardrobe/prop change, or on-screen cast change. "
                 "Qwen KF: lock identity+wardrobe; ≤2–3 people with refs; one variable "
@@ -1894,13 +1894,13 @@ class Director:
                         "current_shots": shots,
                         "target_shot_count": shot_ceiling or analysis.get("target_shot_count"),
                         "rule": (
-                            "Decide shot count wisely: prefer fewer; merge same-cast "
-                            "continuous motion into one beat. Explicit N-shot / "
-                            "target_shot_count from the user is a hard ceiling. Soft prefer "
-                            "≤8 shots. All solo cast cards before keyframes; compose "
-                            "first KF per setting_id; edit_prior only within the same "
-                            "setting_id. Per-shot on_screen is authoritative for who "
-                            "appears — not every solo in every frame."
+                            "Keep every distinct shot from the approved storyboard. "
+                            "Do not drop shots to fit a fixed count. Explicit N-shot / "
+                            "N分镜 from the user is the only ceiling. All solo cast "
+                            "cards before keyframes; compose first KF per setting_id; "
+                            "edit_prior only within the same setting_id. Per-shot "
+                            "on_screen is authoritative for who appears — not every "
+                            "solo in every frame."
                         ),
                     },
                     ensure_ascii=False,
@@ -1961,32 +1961,13 @@ class Director:
             analysis["source"] = "llm"
             notes = str(parsed.get("notes") or "")[:1000]
             from jiuwenswarm.server.runtime.designer.pipeline.director_contract import (
-                _HARD_MAX_SHOTS,
-                _SOFT_MAX_SHOTS,
                 _explicit_shot_count_from_prompt,
             )
 
             explicit_n = int(_explicit_shot_count_from_prompt(user_prompt) or 0)
-            try:
-                llm_tsc = int(parsed.get("target_shot_count") or 0)
-            except (TypeError, ValueError):
-                llm_tsc = 0
-            from jiuwenswarm.server.runtime.designer.pipeline.clip_shot_scope import (
-                needs_duration_slicing as _nds,
-            )
-
-            # LLM redesign owns N; explicit user language is the only hard ceiling
-            # unless requested runtime exceeds Wan max (then sequential slice count).
-            if _nds(user_prompt):
-                cap = _HARD_MAX_SHOTS
-                keep = min(cap, max(llm_tsc, explicit_n, len(shots), 1))
-                shots = shots[:keep]
-            elif explicit_n >= 1:
-                shots = shots[: min(explicit_n, _HARD_MAX_SHOTS)]
-            else:
-                cap = min(_SOFT_MAX_SHOTS, _HARD_MAX_SHOTS)
-                keep = min(cap, llm_tsc) if llm_tsc >= 1 else min(cap, len(shots))
-                shots = shots[:keep]
+            # The user's "N shots" is the only ceiling. Otherwise keep every shot.
+            if explicit_n >= 1 and len(shots) > explicit_n:
+                shots = shots[:explicit_n]
             for i, sh in enumerate(shots, start=1):
                 sh["shot_index"] = i
             analysis["target_shot_count"] = len(shots)
@@ -2008,35 +1989,15 @@ class Director:
                 code=LLM_API_ERROR,
             ) from exc
 
-        # Final clamp — soft max unless the user asked for an explicit count.
+        # Only an explicit user shot count may shorten the list.
         try:
             from jiuwenswarm.server.runtime.designer.pipeline.director_contract import (
-                _HARD_MAX_SHOTS,
-                _SOFT_MAX_SHOTS,
                 _explicit_shot_count_from_prompt,
-                infer_shot_budget,
             )
 
             explicit_n = int(_explicit_shot_count_from_prompt(user_prompt) or 0)
-            from jiuwenswarm.server.runtime.designer.pipeline.clip_shot_scope import (
-                needs_duration_slicing,
-            )
-
-            if needs_duration_slicing(user_prompt):
-                final_ceiling = min(
-                    _HARD_MAX_SHOTS,
-                    max(len(shots), int(infer_shot_budget(user_prompt, analysis) or 0), 1),
-                )
-            elif explicit_n >= 1:
-                final_ceiling = min(explicit_n, _HARD_MAX_SHOTS)
-            else:
-                # Prefer live shot list length; soft-cap only.
-                final_ceiling = min(
-                    _SOFT_MAX_SHOTS,
-                    max(len(shots), int(infer_shot_budget(user_prompt, analysis) or 0), 1),
-                )
-            if final_ceiling >= 1 and len(shots) > final_ceiling:
-                shots = shots[:final_ceiling]
+            if explicit_n >= 1 and len(shots) > explicit_n:
+                shots = shots[:explicit_n]
                 for i, sh in enumerate(shots, start=1):
                     if isinstance(sh, dict):
                         sh["shot_index"] = i

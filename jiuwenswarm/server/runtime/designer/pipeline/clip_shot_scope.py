@@ -11,7 +11,6 @@ import math
 import re
 from typing import Any
 
-from jiuwenswarm.common.schema.designer_graph import MAX_SHOT_CLIP_NODES
 
 # Historical single-clip cap (DashScope Wan / MiniMax 15s). No longer applied:
 # a clip uses its timeline length, and long films are not split to fit 15s.
@@ -116,11 +115,13 @@ def sequential_shot_count(
     total_sec: int,
     *,
     wan_max: int = WAN_MAX_CLIP_SEC,
-    max_shots: int = MAX_SHOT_CLIP_NODES,
+    max_shots: int | None = None,
 ) -> int:
+    """How many clips cover total_sec at wan_max each. max_shots is ignored."""
+    del max_shots
     span = max(1, int(total_sec or 1))
     cap = max(1, int(wan_max or WAN_MAX_CLIP_SEC))
-    return max(1, min(int(max_shots), math.ceil(span / cap)))
+    return max(1, math.ceil(span / cap))
 
 
 def film_duration_for_graph(prompt: str, analysis: dict[str, Any] | None = None) -> int:
@@ -402,13 +403,12 @@ def apply_shot_scope(
         except Exception:  # noqa: BLE001
             explicit = 0
         if explicit >= 1 and explicit * int(wan_max) >= int(asked):
-            n = min(explicit, MAX_SHOT_CLIP_NODES)
+            n = explicit
         elif shots:
             max_by_min_duration = max(1, int(asked) // MIN_CLIP_SEC)
             authored_n = min(
                 len(shots),
                 max_by_min_duration,
-                MAX_SHOT_CLIP_NODES,
             )
             n = max(n, authored_n)
         film_sec = min(int(asked), n * int(wan_max))

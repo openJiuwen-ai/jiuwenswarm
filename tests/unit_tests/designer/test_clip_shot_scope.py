@@ -40,7 +40,7 @@ def test_long_runtime_does_not_force_a_clip_split() -> None:
     assert needs_duration_slicing("15 second film") is False
     assert needs_duration_slicing("5 minute video") is False
     assert needs_duration_slicing(LONG_STORY) is False
-    assert sequential_shot_count(300) == 16
+    assert sequential_shot_count(300) == 20
     assert sequential_shot_count(45) == 3
 
 

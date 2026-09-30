@@ -141,22 +141,17 @@ def _explicit_shot_count_from_prompt(prompt: str) -> int:
     if m:
         raw = m.group("n")
         if raw.isdigit():
-            return max(1, min(_HARD_MAX_SHOTS, int(raw)))
+            return max(1, int(raw))
         if raw in _CN_NUM:
-            return max(1, min(_HARD_MAX_SHOTS, _CN_NUM[raw]))
+            return max(1, _CN_NUM[raw])
     m2 = re.search(
         r"\b(?P<n>\d+)\s*[- ]?(?:shot|shots|beat|beats|keyframe|keyframes|key\s+frames?)\b",
         text,
         re.I,
     )
     if m2:
-        return max(1, min(_HARD_MAX_SHOTS, int(m2.group("n"))))
+        return max(1, int(m2.group("n")))
     return 0
-
-
-# Soft safety for LLM-owned budgets (hard ceiling lives in script_analysis._MAX_SHOTS).
-_SOFT_MAX_SHOTS = 8
-_HARD_MAX_SHOTS = 16
 
 
 def is_placeholder_analysis(analysis: dict[str, Any] | None) -> bool:
@@ -182,7 +177,7 @@ def count_narrative_beats(prompt: str) -> int:
         len(_BEAT_CUE_RE.findall(text)) + 1,
         len(sentences) or 1,
     ]
-    return max(1, min(_SOFT_MAX_SHOTS, max(candidates)))
+    return max(1, max(candidates))
 
 
 def infer_shot_budget(prompt: str, analysis: dict[str, Any]) -> int:
@@ -199,10 +194,10 @@ def infer_shot_budget(prompt: str, analysis: dict[str, Any]) -> int:
         asked = int(requested_film_duration_sec(prompt) or 0)
         n_c = sequential_shot_count(asked)
         if explicit >= 1 and explicit * WAN_MAX_CLIP_SEC >= asked:
-            return max(1, min(_HARD_MAX_SHOTS, explicit))
-        return max(1, min(_HARD_MAX_SHOTS, max(n_c, explicit)))
+            return max(1, explicit)
+        return max(1, max(n_c, explicit))
     if explicit >= 1:
-        return max(1, min(_HARD_MAX_SHOTS, explicit))
+        return max(1, explicit)
     try:
         target = int(analysis.get("target_shot_count") or 0)
     except (TypeError, ValueError):
@@ -224,15 +219,15 @@ def infer_shot_budget(prompt: str, analysis: dict[str, Any]) -> int:
     # LLM call pins the whole film to its 1-shot placeholder.
     placeholder = is_placeholder_analysis(analysis)
     if authored >= 1 and not placeholder:
-        # LLM / prior analysis owns N — do not clamp back to 2–4.
-        return max(1, min(_SOFT_MAX_SHOTS, max(authored, style_floor)))
+        # LLM / prior analysis owns N — do not clamp it to a fixed shot count.
+        return max(1, max(authored, style_floor))
     floor = max(authored if placeholder else 0, style_floor)
     beats = _TIMELINE_BEAT_RE.findall(prompt or "")
     if beats:
-        return max(1, min(_SOFT_MAX_SHOTS, max(len(beats), floor)))
+        return max(1, max(len(beats), floor))
     cues = count_narrative_beats(prompt)
     if cues >= 2:
-        return max(1, min(_SOFT_MAX_SHOTS, max(cues, floor)))
+        return max(1, max(cues, floor))
     dur = None
     m = _DURATION_RE.search(prompt or "")
     if m:
@@ -243,8 +238,8 @@ def infer_shot_budget(prompt: str, analysis: dict[str, Any]) -> int:
     if dur and dur > 0:
         # ~7–8s per cinematic beat when no LLM plan yet.
         per_beat = int(round(dur / 8.0)) or 1
-        return max(1, min(_SOFT_MAX_SHOTS, max(per_beat, floor)))
-    return max(1, min(_SOFT_MAX_SHOTS, floor or 1))
+        return max(1, max(per_beat, floor))
+    return max(1, floor or 1)
 
 
 def _char_blob(ch: dict[str, Any]) -> str:
@@ -893,7 +888,12 @@ async def enrich_analysis_with_llm(
                 code=LLM_API_ERROR,
             )
         budget = int(parsed.get("target_shot_count") or base.get("target_shot_count") or len(new_shots))
-        budget = max(1, min(4, budget, infer_shot_budget(prompt, base)))
+        asked_n = _explicit_shot_count_from_prompt(prompt)
+        if asked_n >= 1:
+            budget = asked_n
+        else:
+            budget = max(budget, len(new_shots))
+        budget = max(1, budget)
         norm: list[dict[str, Any]] = []
         for i, sh in enumerate(new_shots[:budget], start=1):
             if not isinstance(sh, dict):
