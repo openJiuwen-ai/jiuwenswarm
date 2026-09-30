@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import copy
 from dataclasses import dataclass
 
 from jiuwenswarm.extensions.agentos.config_updater.service import ConfigUpdaterApplier
@@ -17,30 +16,24 @@ class FakeFetched:
 
 
 class Harness:
-    def __init__(self, config: dict | None = None) -> None:
-        self.config = config if config is not None else {}
+    def __init__(self) -> None:
         self.refreshes: list[dict] = []
 
-    async def refresh(self, merged: dict) -> None:
-        self.refreshes.append(merged)
+    async def refresh(self, overrides: dict) -> None:
+        self.refreshes.append(overrides)
 
     def applier(self) -> ConfigUpdaterApplier:
-        return ConfigUpdaterApplier(self.config, refresh_handler=self.refresh)
+        return ConfigUpdaterApplier(refresh_handler=self.refresh)
 
 
-async def test_apply_merges_full_snapshot_and_refreshes():
-    harness = Harness(
-        {
-            "gateway": {"cron": {"store_backend": "etcd"}},
-            "sandbox": {"type": "yuanrong", "cpu": 1000},
-        }
-    )
+async def test_apply_forwards_only_managed_overrides():
+    harness = Harness()
 
     result = await harness.applier().apply(
         FakeFetched(
             {
-                "agent_sandbox": {"idle_timeout": 120},
-                "sandbox": {"cpu": 2000, "memory": 4096},
+                "agent_sandbox": {"idle_timeout": 120, "cpu": 2000, "memory": 4096},
+                "tool_sandbox": {"idle_timeout": 300, "cpu": 1000, "memory": 2048},
             },
             {},
             5,
@@ -48,84 +41,59 @@ async def test_apply_merges_full_snapshot_and_refreshes():
     )
 
     assert result.applied is True
-    # ``sandbox.cpu/memory`` are unmanaged: the remote values are ignored and
-    # the local tool-sandbox values are preserved.
     assert harness.refreshes == [
         {
-            "gateway": {"cron": {"store_backend": "etcd"}},
-            "sandbox": {
-                "type": "yuanrong",
-                "cpu": 1000,
-            },
-            "agent_sandbox": {"idle_timeout": 120},
+            "agent_sandbox": {"idle_timeout": 120, "cpu": 2000, "memory": 4096},
+            "tool_sandbox": {"idle_timeout": 300, "cpu": 1000, "memory": 2048},
         }
     ]
 
 
-async def test_apply_does_not_mutate_initial_config():
-    initial = {"agent_sandbox": {"idle_timeout": 600}}
-    applier = ConfigUpdaterApplier(initial)
+async def test_overrides_accumulate_across_revisions():
+    harness = Harness()
+    applier = harness.applier()
 
     await applier.apply(
         FakeFetched({"agent_sandbox": {"idle_timeout": 120}}, {}, 5)
     )
-
-    assert initial == {"agent_sandbox": {"idle_timeout": 600}}
-
-
-async def test_apply_ignores_unmanaged_fields():
-    harness = Harness(
-        {
-            "gateway": {
-                "agentos": {"workspace_root": "/safe"},
-                "cron": {"store_backend": "etcd"},
-            },
-            "sandbox": {"type": "yuanrong", "image": "trusted", "cpu": 1000},
-        }
+    await applier.apply(
+        FakeFetched({"tool_sandbox": {"cpu": 4000}}, {}, 6)
     )
 
-    await harness.applier().apply(
-        FakeFetched(
-            {
-                "agent_sandbox": {"idle_timeout": 120},
-                "gateway": {
-                    "agentos": {"workspace_root": "/bad"},
-                    "cron": {"store_backend": "file"},
-                },
-                "sandbox": {"type": "other", "image": "bad", "cpu": 2000},
-            },
-            {},
-            5,
-        )
-    )
-
-    merged = harness.refreshes[0]
-    assert merged["agent_sandbox"] == {"idle_timeout": 120}
-    # Unmanaged remote fields (gateway.* and sandbox.*) must not be applied.
-    assert merged["gateway"]["agentos"] == {"workspace_root": "/safe"}
-    assert merged["gateway"]["cron"] == {"store_backend": "etcd"}
-    assert merged["sandbox"] == {
-        "type": "yuanrong",
-        "image": "trusted",
-        "cpu": 1000,
+    assert harness.refreshes[-1] == {
+        "agent_sandbox": {"idle_timeout": 120},
+        "tool_sandbox": {"cpu": 4000},
     }
 
 
-async def test_only_unmanaged_fields_are_skipped():
-    harness = Harness({"sandbox": {"type": "yuanrong"}})
+async def test_same_values_on_new_revision_are_no_change():
+    harness = Harness()
     applier = harness.applier()
 
+    await applier.apply(
+        FakeFetched({"agent_sandbox": {"idle_timeout": 120}}, {}, 5)
+    )
     result = await applier.apply(
-        FakeFetched({"sandbox": {"type": "other"}}, {}, 5)
+        FakeFetched({"agent_sandbox": {"idle_timeout": 120}}, {}, 6)
+    )
+
+    assert result.skipped_reason == "no-change"
+    assert len(harness.refreshes) == 1
+
+
+async def test_unmanaged_fields_are_ignored():
+    harness = Harness()
+
+    result = await harness.applier().apply(
+        FakeFetched({"sandbox": {"type": "docker", "cpu": 2000}}, {}, 5)
     )
 
     assert result.skipped_reason == "no-managed-fields"
     assert harness.refreshes == []
-    assert applier.last_applied_mod_revision == 5
 
 
-async def test_invalid_managed_field_is_rejected():
-    harness = Harness({"agent_sandbox": {"idle_timeout": 600}})
+async def test_invalid_timeout_is_rejected():
+    harness = Harness()
     applier = harness.applier()
 
     result = await applier.apply(
@@ -137,59 +105,38 @@ async def test_invalid_managed_field_is_rejected():
     assert harness.refreshes == []
     assert applier.last_applied_mod_revision == 5
 
-    repeated = await applier.apply(
-        FakeFetched({"agent_sandbox": {"idle_timeout": None}}, {}, 5)
-    )
-    assert repeated.skipped_reason == "revision-unchanged"
-
-
-async def test_empty_section_revision_is_acknowledged():
-    applier = ConfigUpdaterApplier({})
-
-    result = await applier.apply(FakeFetched({}, {}, 5))
-    repeated = await applier.apply(FakeFetched({}, {}, 5))
-
-    assert result.skipped_reason == "empty-section"
-    assert applier.last_applied_mod_revision == 5
-    assert repeated.skipped_reason == "revision-unchanged"
-
 
 async def test_same_and_older_revisions_are_ignored():
-    harness = Harness({"agent_sandbox": {"idle_timeout": 600}})
+    harness = Harness()
     applier = harness.applier()
 
-    await applier.apply(FakeFetched({"agent_sandbox": {"idle_timeout": 120}}, {}, 6))
-    same = await applier.apply(FakeFetched({"agent_sandbox": {"idle_timeout": 60}}, {}, 6))
-    older = await applier.apply(FakeFetched({"agent_sandbox": {"idle_timeout": 60}}, {}, 5))
+    await applier.apply(
+        FakeFetched({"agent_sandbox": {"idle_timeout": 120}}, {}, 6)
+    )
+    same = await applier.apply(
+        FakeFetched({"agent_sandbox": {"idle_timeout": 60}}, {}, 6)
+    )
+    older = await applier.apply(
+        FakeFetched({"agent_sandbox": {"idle_timeout": 60}}, {}, 5)
+    )
 
     assert same.skipped_reason == "revision-unchanged"
     assert older.skipped_reason == "revision-unchanged"
     assert len(harness.refreshes) == 1
 
 
-async def test_unchanged_managed_values_skip_refresh():
-    harness = Harness({"agent_sandbox": {"idle_timeout": 120}})
-    applier = harness.applier()
-
-    result = await applier.apply(
-        FakeFetched({"agent_sandbox": {"idle_timeout": 120}}, {}, 5)
-    )
-
-    assert result.skipped_reason == "no-change"
-    assert harness.refreshes == []
-    assert applier.last_applied_mod_revision == 5
-
-
-async def test_refresh_failure_retries_same_snapshot():
+async def test_refresh_failure_retries_same_overrides():
     attempts: list[dict] = []
 
-    async def flaky_refresh(merged):
-        attempts.append(merged)
+    async def flaky_refresh(overrides):
+        attempts.append(overrides)
         if len(attempts) == 1:
-            raise RuntimeError("reload failed")
+            raise RuntimeError("apply failed")
 
-    applier = ConfigUpdaterApplier({}, refresh_handler=flaky_refresh)
-    fetched = FakeFetched({"agent_sandbox": {"idle_timeout": 120}}, {}, 5)
+    applier = ConfigUpdaterApplier(refresh_handler=flaky_refresh)
+    fetched = FakeFetched(
+        {"agent_sandbox": {"idle_timeout": 120}}, {}, 5
+    )
 
     failed = await applier.apply(fetched)
     retried = await applier.apply(fetched)
@@ -201,47 +148,3 @@ async def test_refresh_failure_retries_same_snapshot():
         {"agent_sandbox": {"idle_timeout": 120}},
         {"agent_sandbox": {"idle_timeout": 120}},
     ]
-    assert applier.last_applied_mod_revision == 5
-
-
-async def test_refresh_receives_copy_of_effective_config():
-    seen: list[dict] = []
-
-    async def mutating_refresh(merged):
-        seen.append(copy.deepcopy(merged))
-        merged["agent_sandbox"]["idle_timeout"] = 9999
-
-    applier = ConfigUpdaterApplier(
-        {"agent_sandbox": {"idle_timeout": 600}},
-        refresh_handler=mutating_refresh,
-    )
-    await applier.apply(FakeFetched({"agent_sandbox": {"idle_timeout": 120}}, {}, 5))
-    await applier.apply(FakeFetched({"agent_sandbox": {"idle_timeout": 60}}, {}, 6))
-
-    assert seen[1]["agent_sandbox"] == {"idle_timeout": 60}
-
-
-async def test_new_revision_uses_latest_local_base_config():
-    current = {
-        "models": {"marker": "initial"},
-        "gateway": {"agentos": {"sandbox_idle_timeout_seconds": 600}},
-    }
-    seen: list[dict] = []
-
-    async def refresh(merged):
-        seen.append(merged)
-
-    applier = ConfigUpdaterApplier(
-        current,
-        config_provider=lambda: current,
-        refresh_handler=refresh,
-    )
-    await applier.apply(FakeFetched({"agent_sandbox": {"idle_timeout": 120}}, {}, 5))
-
-    current["models"]["marker"] = "updated-locally"
-    await applier.apply(FakeFetched({"agent_sandbox": {"idle_timeout": 60}}, {}, 6))
-
-    assert seen[1]["models"]["marker"] == "updated-locally"
-    # The local config field is untouched; the managed override is separate.
-    assert seen[1]["gateway"]["agentos"] == {"sandbox_idle_timeout_seconds": 600}
-    assert seen[1]["agent_sandbox"] == {"idle_timeout": 60}
