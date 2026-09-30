@@ -4,7 +4,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { webRequest } from "../../services/webClient";
-import { EmptyState } from "../../components/ui";
 import { getSkillAvatar } from "../../utils/skillAvatar";
 
 /** 与后端 TEAM_SKILLS_HUB_BASE_URL 默认值一致（info 请求失败时的回退） */
@@ -262,7 +261,7 @@ export function TeamSkillsHubModal({
           {loadState === "success" && (
             <div className={`mt-4 flex-1 min-h-0 overflow-y-auto ${viewMode === "grid" ? "flex flex-wrap gap-4 content-start" : "space-y-3"}`} data-testid="team-skills-hub-modal-results">
                 {results.length === 0 ? (
-                  <EmptyState id="team-skills-hub-modal-empty" text={t("skills.teamskillshub.noResults")} />
+<div className="text-sm text-text-muted" data-testid="team-skills-hub-modal-empty">{t("skills.teamskillshub.noResults")}</div>
                 ) : (
                   results.map((item) => {
                     const isInstalled =
@@ -465,7 +464,7 @@ export function TeamSkillsHubModal({
             <div className="mt-4 flex min-h-0 max-h-[50vh] flex-col gap-2" data-testid="team-skills-hub-modal-results">
               <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-0.5">
                 {results.length === 0 ? (
-                  <EmptyState id="team-skills-hub-modal-empty" text={t("skills.teamskillshub.noResults")} />
+<div className="text-xs text-text-muted" data-testid="team-skills-hub-modal-empty">{t("skills.teamskillshub.noResults")}</div>
                 ) : (
                   results.map((item) => {
                     const isInstalled =
