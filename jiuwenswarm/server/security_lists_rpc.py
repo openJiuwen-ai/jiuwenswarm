@@ -10,7 +10,9 @@ dispatch 形态仿 :mod:`permissions_config_rpc` / :mod:`sandbox_config_rpc`，
 | security_lists.upsert | ``{record}`` | ``{record}`` | 409 唯一性冲突（附 existing_id）；400 校验 |
 | security_lists.cells.patch | ``{id, set:{"mode.op":action}, unset:["mode.op"]}`` | ``{record}`` | 404/400 |
 | security_lists.delete | ``{id}`` | ``{ok}`` | 404 |
-| security_lists.cloud.sync | ``{sync_version, synced_at, records[]}`` | ``{applied}`` | 400 整批拒绝 |
+| security_lists.cloud.sync | ``{sync_version, synced_at, records[], defaults?}`` | ``{applied}`` | 400 整批拒绝 |
+| security_lists.defaults.get / .set | ``{}`` / ``{defaults}`` | ``{defaults}`` | 400 键空间非法 |
+| security_lists.migrate | ``{sources?: string[], dry_run?}`` | ``{created, skipped, candidates, sources, records}`` | 400 未知来源 |
 | security_lists.audit.query | ``{kind?, since?, limit?}`` | ``{events}`` | — |
 
 **写入路径分离**（可回溯性关键）：upsert/cells.patch/delete 仅操作 user 区
@@ -41,6 +43,7 @@ _SECURITY_LISTS_METHODS: frozenset[ReqMethod] = frozenset(
         ReqMethod.SECURITY_LISTS_AUDIT_QUERY,
         ReqMethod.SECURITY_LISTS_DEFAULTS_GET,
         ReqMethod.SECURITY_LISTS_DEFAULTS_SET,
+        ReqMethod.SECURITY_LISTS_MIGRATE,
     }
 )
 
@@ -404,6 +407,38 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
             _audit_change("defaults.set", defaults=defaults)
             _trigger_sandbox_sync()
             return _ok(request, {"defaults": store.get_defaults()})
+
+        # ---- migrate：legacy 段（net_guard.urls / file_guard.paths）一次性搬进 user 区 ----
+        if m == ReqMethod.SECURITY_LISTS_MIGRATE:
+            raw_sources = params.get("sources")
+            if raw_sources is None:
+                sources = None
+            elif isinstance(raw_sources, list) and all(isinstance(s, str) for s in raw_sources):
+                sources = tuple(raw_sources)
+            else:
+                return _err(request, "sources must be list[str]")
+            dry_run = bool(params.get("dry_run"))
+
+            kwargs: dict[str, Any] = {"dry_run": dry_run}
+            if sources is not None:
+                kwargs["sources"] = sources
+            result = store.migrate_legacy_once(**kwargs)  # ValueError → 400 未知来源
+            if not dry_run:
+                _audit_change(
+                    "migrate",
+                    created=result["created"],
+                    skipped=result["skipped"],
+                    sources=result["sources"],
+                )
+                if result["created"]:
+                    _trigger_sandbox_sync()
+            return _ok(request, {
+                "created": result["created"],
+                "skipped": result["skipped"],
+                "candidates": result["candidates"],
+                "sources": result["sources"],
+                "records": [record_to_dict(r) for r in result["records"]],
+            })
 
         # ---- audit.query：审计回溯 ----
         if m == ReqMethod.SECURITY_LISTS_AUDIT_QUERY:

@@ -136,11 +136,17 @@ def project_approvals(
     session_id: str | None = None,
     *,
     permissions: Mapping[str, Any] | None = None,
+    occupied: frozenset[tuple[str, str, str]] = frozenset(),
 ) -> list[SecurityListRecord]:
     """``approval_overrides`` + ``file_guard.paths`` → user_approval 投影。
 
     ``permissions`` 可注入（测试/复用既有快照）；缺省走
     :func:`get_permissions_with_session_overlay`（磁盘 ∪ 当前会话 overlay）。
+
+    ``occupied``：已被物理记录（``security_lists.user/cloud``）占用的操作对象键，
+    ``file_guard.paths`` 中这些键**让位**（写面收敛，见 :func:`project_net_guard`）。
+    审批条目（``approval_overrides``）不受让位影响——它是审批流自己产生的通道，
+    只有"永久/会话记住"会写它，不存在与新面板争夺同一对象的编辑面。
     """
     perms: Mapping[str, Any] = (
         permissions
@@ -196,6 +202,10 @@ def project_approvals(
         match = str(entry.get("match") or "prefix").strip().lower()
         if match not in ("glob", "prefix"):
             match = "prefix"
+        if ("file_path", fpath, match) in occupied:
+            # 已被物理记录接管的操作对象：legacy 让位，物理记录是唯一真源
+            logger.debug("[security_lists] file_guard 条目让位于物理记录: %r", fpath)
+            continue
         entry_id = str(entry.get("id") or "") or (
             "fg_" + hashlib.sha1(fpath.encode("utf-8")).hexdigest()[:8]
         )
@@ -218,6 +228,8 @@ def project_approvals(
 
 def project_net_guard(
     permissions: Mapping[str, Any] | None = None,
+    *,
+    occupied: frozenset[tuple[str, str, str]] = frozenset(),
 ) -> list[SecurityListRecord]:
     """``permissions.net_guard.urls`` → domain 投影（``source=user``）。
 
@@ -232,6 +244,11 @@ def project_net_guard(
 
     ``net_guard.defaults`` **不投影**——那是执行面的"未命中兜底"，仍由出入管控侧
     在收到本接口 ``none`` 时自行应用；本名单的 ``defaults``（v3）是它的迁移目标。
+
+    ``occupied``：已被物理记录占用的操作对象键 → **让位**。写面收敛后同一个域名
+    不该有"物理记录 + legacy 投影"两份：两份会让新面板删掉记录也拦不住（投影那份
+    还在），弹窗与审计也会出现同规则的两条 hit。让位只在物理记录存在时生效，
+    因此 legacy 的**新增**条目仍会被投影并强制，不存在静默失效。
     """
     if permissions is None:
         from jiuwenswarm.common.config import get_config
@@ -252,11 +269,15 @@ def project_net_guard(
         action = _action(raw_action)
         if not pattern or action is None:
             continue
+        match = "wildcard" if pattern.startswith("*.") else "exact"
+        if ("domain", pattern, match) in occupied:
+            logger.debug("[security_lists] net_guard 条目让位于物理记录: %r", pattern)
+            continue
         out.append(SecurityListRecord(
             id="ng_" + hashlib.sha1(pattern.encode("utf-8")).hexdigest()[:8],
             type="domain",
             pattern=pattern,
-            match="wildcard" if pattern.startswith("*.") else "exact",
+            match=match,
             note=f"兼容读：permissions.net_guard.urls（{raw_action}）",
             cells={"*": {"*": action}},
             source="user",

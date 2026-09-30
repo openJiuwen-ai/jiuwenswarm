@@ -67,3 +67,40 @@ def test_collect_includes_net_guard_urls(monkeypatch):
     hit = [r for r in records if r.pattern == "evil.example"]
     assert len(hit) == 1
     assert hit[0].cells == {"*": {"*": "deny"}} and hit[0].source == "user"
+
+
+def test_collect_user_record_shadows_projected_legacy(tmp_path, monkeypatch):
+    """S3 写面收敛：物理 user 记录接管同操作对象后，legacy 投影让位。
+
+    否则迁移后 legacy 段仍投影出第二条同名记录：新面板删掉物理记录也拦不住，
+    用户看到"删了还在拦"，且弹窗/审计会出现同一规则的两条 hit。
+    """
+    import jiuwenswarm.common.config as config_mod
+
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.safe_dump({
+            "security_lists": {
+                "version": 3,
+                "user": [{
+                    "id": "ul_takeover", "type": "domain", "pattern": "evil.example",
+                    "match": "exact", "enabled": True, "cells": {"*": {"*": "deny"}},
+                }],
+            },
+            "permissions": {
+                "net_guard": {"enabled": True, "urls": {"evil.example": "allow"}},
+            },
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_mod, "CONFIG_YAML_PATH", path)
+    monkeypatch.setattr(config_mod, "get_config_file", lambda: path)
+
+    hit = [
+        r for r in SecurityListComposer().collect("domain")
+        if r.type == "domain" and r.pattern == "evil.example"
+    ]
+
+    assert len(hit) == 1
+    assert hit[0].id == "ul_takeover"          # 物理记录为准
+    assert hit[0].cells == {"*": {"*": "deny"}}  # legacy 的 allow 不再参与

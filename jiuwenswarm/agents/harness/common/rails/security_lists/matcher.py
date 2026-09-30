@@ -6,9 +6,11 @@
   AST/重定向/解释器；``toolguard.shell_ast`` 子命令分段）；
 - 域名目标对齐引擎 netguard 覆盖范围（fetch 类工具）；shell 内网络访问
   （curl 等）走 command 规则，不在此展开 URL；
+- 工具名目标恒在首位（工具级并入，设计 §10.3）；
 - 匹配语义：file_path 大小写归一 + prefix/glob；domain 裸域+子域 /
   仅子域（对齐 EgressFilter.allow）；command exact 对 exe 名、
-  glob/regex 对整行（复用引擎 ``match_wildcard``，Windows 大小写不敏感）。
+  glob/regex 对整行（复用引擎 ``match_wildcard``，Windows 大小写不敏感）；
+  tool exact + 大小写不敏感。
 """
 from __future__ import annotations
 
@@ -85,6 +87,7 @@ def extract_targets(
 ) -> list[tuple[str, str, str]]:
     """工具调用 → ``[(type, target, op)]``（去重保序）。
 
+    - 工具名 → ``(tool, tool_name, "*")``（恒在首位；工具级规则与参数无关）；
     - 路径类工具/shell 路径参数/重定向 → ``(file_path, path, read|write|exec)``；
     - shell 工具 → ``(command, 整行, "*")`` + 各子命令段 + exe 名；
     - fetch 类工具 → ``(domain, host, "*")``。
@@ -95,6 +98,11 @@ def extract_targets(
         ws = Path(workspace) if workspace else Path.cwd()
     except (OSError, RuntimeError):
         ws = Path.cwd()
+
+    # 0. 工具名目标（工具级并入，设计 §10.3）：任何工具调用都带，与参数无关
+    name = str(tool_name or "").strip()
+    if name:
+        targets.append(("tool", name, "*"))
 
     # 1. 文件路径目标（引擎 native 抽取）
     try:
@@ -213,8 +221,18 @@ def _match_command(rec: SecurityListRecord, target: str) -> bool:
     return False
 
 
+def _match_tool(rec: SecurityListRecord, target: str) -> bool:
+    """工具名匹配：exact + 大小写不敏感（工具名是标识符，大小写不构成另一个对象）。
+
+    显式不用 :func:`_fold`——那是 Windows 路径语义；工具名在 Linux 上同样应大小写不敏感。
+    """
+    return bool(target) and target.strip().casefold() == rec.pattern.strip().casefold()
+
+
 def match_record(rec: SecurityListRecord, target: str) -> bool:
     """记录是否命中目标（type 不匹配直接 False）。"""
+    if rec.type == "tool":
+        return _match_tool(rec, target)
     if rec.type == "file_path":
         if rec.match == "prefix":
             return _match_file_prefix(rec.pattern, target)

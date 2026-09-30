@@ -11,7 +11,11 @@
 键空间：
 - 模式键：``default`` / ``auto_approve`` / ``full_access`` / ``"*"``
 - 操作键：``file_path`` → ``read`` / ``write`` / ``exec`` / ``"*"``；
-  ``domain`` / ``command`` → 仅 ``"*"``
+  ``domain`` / ``command`` / ``tool`` → 仅 ``"*"``
+
+四类名单类型：``file_path``（路径）/ ``domain``（域名）/ ``command``（命令）/
+``tool``（工具名，见功能设计 §10.3）。工具名是有限枚举字面量，故 ``match``
+只有 ``exact``，操作轴只有"是否允许调用"这一个通用格。
 """
 from __future__ import annotations
 
@@ -27,14 +31,14 @@ logger = logging.getLogger(__name__)
 ModeKey = Literal["default", "auto_approve", "full_access", "*"]
 OpKey = Literal["read", "write", "exec", "*"]
 Action = Literal["allow", "ask", "deny"]
-ListType = Literal["file_path", "domain", "command"]
+ListType = Literal["file_path", "domain", "command", "tool"]
 MatchKind = Literal["glob", "prefix", "exact", "wildcard", "regex"]
 
 #: 合法模式键（含通用格 "*"）
 MODE_KEYS: tuple[str, ...] = ("default", "auto_approve", "full_access", "*")
 #: file_path 合法操作键
 FILE_PATH_OPS: tuple[str, ...] = ("read", "write", "exec", "*")
-#: domain / command 合法操作键（仅通用格）
+#: domain / command / tool 合法操作键（仅通用格）
 GENERIC_OPS: tuple[str, ...] = ("*",)
 #: 合法格子值
 ACTIONS: tuple[str, ...] = ("allow", "ask", "deny")
@@ -43,13 +47,15 @@ ACTIONS: tuple[str, ...] = ("allow", "ask", "deny")
 SECURITY_LISTS_VERSION: int = 3
 
 #: ``defaults`` 的「类型键」空间（含通用格 ``"*"``＝所有名单类型）
-DEFAULT_TYPE_KEYS: tuple[str, ...] = ("file_path", "domain", "command", "*")
+DEFAULT_TYPE_KEYS: tuple[str, ...] = ("file_path", "domain", "command", "tool", "*")
 
-#: type → 合法 match 组合（设计文档 4.1）
+#: type → 合法 match 组合（设计文档 4.1 / 10.3）
 ALLOWED_MATCH: dict[str, tuple[str, ...]] = {
     "file_path": ("glob", "prefix"),
     "domain": ("exact", "wildcard"),
     "command": ("exact", "glob", "regex"),
+    # 工具名是有限枚举字面量：通配/正则会带来"哪些工具被管"不可枚举的审计盲区
+    "tool": ("exact",),
 }
 
 _GLOB_CHARS_RE = re.compile(r"[*?\[]")

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import yaml
 
@@ -46,6 +46,13 @@ logger = logging.getLogger(__name__)
 
 _SECTION = "security_lists"
 _MIGRATION_SANDBOX_COPY = "sandbox_copy"
+
+#: 特性开关式的 legacy 段迁移来源（写面收敛，S3）。
+#: 键 = ``permissions`` 下的段名，也是 ``migrated_from`` 与 ``migrations`` 标记名。
+#: ``approval_overrides`` 刻意**不在**其中：它是审批流自己产生的通道（只能由
+#: "永久/会话记住"写入），没有与新面板争夺同一编辑面的问题，且搬进 user 区会
+#: 把它从 ``user_approval`` 层降到 ``user`` 层（allow 可能被同层 ask 压过）。
+_LEGACY_SOURCES: tuple[str, ...] = ("net_guard", "file_guard")
 
 #: 段内无 ``version`` 键时的兼容版本（本版之前的写法：无 defaults 段）
 _LEGACY_VERSION = 2
@@ -530,3 +537,144 @@ def migrate_sandbox_copy_once(copy_path: Path | None = None) -> int:
     # 规则。本名单运行时已不再投影该副本（见 composer），副本归属沙箱侧。
     logger.info("沙箱副本迁移完成: 新建 %d 条名单记录（副本保留）", migrated)
     return migrated
+
+
+# ---------------------------------------------------------------------------
+# 一次性迁移：legacy 段（net_guard.urls / file_guard.paths）→ user 区
+# ---------------------------------------------------------------------------
+
+
+def _legacy_candidates(
+    permissions: Any,
+    sources: tuple[str, ...],
+) -> tuple[list[SecurityListRecord], dict[str, int]]:
+    """按来源投影出待搬记录（复用只读投影，保证cells/match 语义与展示完全一致）。"""
+    from .normalize import project_approvals, project_net_guard
+
+    perms = permissions if isinstance(permissions, Mapping) else {}
+    candidates: list[SecurityListRecord] = []
+    per_source: dict[str, int] = {}
+
+    if "net_guard" in sources:
+        net = project_net_guard(perms)
+        per_source["net_guard"] = len(net)
+        for rec in net:
+            rec.migrated_from = "net_guard"
+            candidates.append(rec)
+
+    if "file_guard" in sources:
+        # 投影会一并产出 approval_overrides（type=command），只要 file_path 那部分
+        files = [r for r in project_approvals(permissions=perms) if r.type == "file_path"]
+        per_source["file_guard"] = len(files)
+        for rec in files:
+            rec.migrated_from = "file_guard"
+            candidates.append(rec)
+
+    return candidates, per_source
+
+
+def migrate_legacy_once(
+    *,
+    sources: tuple[str, ...] = _LEGACY_SOURCES,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """把 legacy 段（``net_guard.urls`` / ``file_guard.paths``）一次性搬进 user 区。
+
+    **搬的是副本，legacy 段不动**。这样做的原因有二：
+
+    1. **强制点仍读 legacy**：core ``FileGuardChecker`` 读 ``file_guard.paths``、
+       ``NetGuardChecker`` 读 ``net_guard.urls``（含宿主 HTTP 出口的 P3 逐跳
+       3xx 校验——rail 只看得到工具参数，够不到那一层）。清空 legacy 段等于让
+       这些强制点掉规则，是安全回退。
+    2. **可回滚**：删掉本轮新建的记录（``migrated_from`` 标记）与 ``migrations``
+       标记即可回到迁移前状态。
+
+    搬完后由 :meth:`SecurityListComposer.collect` 的**让位**逻辑生效：同一操作
+    对象以物理记录为唯一真源，legacy 投影不再产出同名记录——新安全中心因此
+    能真正"删得掉、改得动"。
+
+    一次性（每来源独立 ``migrations.<source>`` 标记，便于灰度逐段放开）：搬迁后
+    用户在 legacy 段**新增**的条目仍会被投影并强制（其键未被占用），不存在静默失效。
+    ``dry_run`` 只返回候选，不落盘。
+
+    返回 ``{"candidates", "created", "skipped", "sources", "records"}``。
+    """
+    unknown = [s for s in sources if s not in _LEGACY_SOURCES]
+    if unknown:
+        raise ValueError(f"未知迁移来源: {unknown!r}（可选 {list(_LEGACY_SOURCES)}）")
+
+    from jiuwenswarm.common.config import get_config
+
+    try:
+        cfg = get_config()
+    except Exception as exc:  # noqa: BLE001
+        raise SecurityListsCorruptedError(f"config.yaml 解析失败，迁移中止: {exc}") from exc
+    permissions = cfg.get("permissions") if isinstance(cfg, Mapping) else None
+
+    candidates, per_source = _legacy_candidates(permissions, tuple(sources))
+    result: dict[str, Any] = {
+        "candidates": len(candidates),
+        "created": 0,
+        "skipped": 0,
+        "sources": per_source,
+        "records": candidates,
+    }
+    if dry_run or not candidates:
+        return result
+
+    created = 0
+    skipped = 0
+    now = utc_now_iso()
+
+    def _mutate(data: dict[str, Any]) -> dict[str, Any] | None:
+        nonlocal created, skipped
+        section = _ensure_section(data)
+        migrations = section.setdefault("migrations", {})
+        existing = _parse_existing_user(section)
+        user_raw = section["user"]
+        occupied = {(r.type, r.pattern, r.match) for r in existing}
+        known_ids = {r.id for r in existing if r.id}
+        changed = False
+
+        for rec in candidates:
+            source = rec.migrated_from or ""
+            if migrations.get(source):
+                continue          # 该来源已搬过（灰度下逐段放开）
+            key = (rec.type, rec.pattern, rec.match)
+            if key in occupied:
+                logger.info("legacy 迁移跳过（用户已配置同操作对象）: %s %r", rec.type, rec.pattern)
+                skipped += 1
+                continue
+            rec.source = "user"
+            rec.created_at = rec.created_at or now
+            rec.updated_at = now
+            if not rec.id or rec.id in known_ids:
+                rec.id = new_record_id()
+            validate_record(rec, existing=existing)
+            user_raw.append(record_to_dict(rec))
+            existing.append(rec)
+            occupied.add(key)
+            known_ids.add(rec.id)
+            created += 1
+            changed = True
+
+        for source in sources:
+            # 无候选（段缺失/总开关关）不盖章：等用户真正配了规则还能再搬
+            if per_source.get(source) and not migrations.get(source):
+                migrations[source] = now
+                changed = True
+        return data if changed else None
+
+    try:
+        update_config(_mutate)
+    except SecurityListsCorruptedError:
+        raise
+    result["created"] = created
+    result["skipped"] = skipped
+    logger.info(
+        "legacy 名单迁移完成: created=%d skipped=%d sources=%s（legacy 段保留）",
+        created,
+        skipped,
+        sorted(s for s in sources),
+    )
+    return result

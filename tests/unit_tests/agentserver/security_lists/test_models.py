@@ -56,6 +56,37 @@ def test_unknown_list_type():
         validate_record(rec(type="registry"))
 
 
+# ---------------------------------------------------------------------------
+# type="tool"（工具级并入，设计 §10.3）
+# ---------------------------------------------------------------------------
+
+
+def test_tool_record_is_legal():
+    """工具记录：pattern=工具名、match 仅 exact、操作键只有通用格 "*"。"""
+    validate_record(rec(type="tool", pattern="bash", match="exact", cells={"*": {"*": "ask"}}))
+
+
+@pytest.mark.parametrize("match", ["glob", "regex", "prefix", "wildcard"])
+def test_tool_rejects_non_exact_match(match):
+    """工具名是有限枚举字面量，通配/正则会让「工具安全护栏」的语义不可枚举。"""
+    with pytest.raises(ValueError, match="不支持 match"):
+        validate_record(rec(type="tool", pattern="bash", match=match, cells={"*": {"*": "allow"}}))
+
+
+def test_tool_rejects_path_ops():
+    """工具级只有"调用"这一个操作轴，用 read/write/exec 表达是误用。"""
+    with pytest.raises(ValueError, match="不支持操作键"):
+        validate_record(
+            rec(type="tool", pattern="bash", match="exact", cells={"*": {"read": "allow"}})
+        )
+
+
+def test_tool_is_a_legal_defaults_type_key():
+    """兜底档可对工具类表态（"未列出即拒"覆盖工具名）。"""
+    validate_defaults({"*": {"tool": "deny"}})
+    assert resolve_default({"*": {"tool": "deny"}}, "*", "tool") == "deny"
+
+
 @pytest.mark.parametrize("cells", [
     {"strict": {"read": "allow"}},            # 未知模式键
     {"*": {"delete": "allow"}},               # file_path 不支持的操作键

@@ -71,7 +71,12 @@ _SOURCE_LABELS = {
     "cloud": "云侧下发",
     "default": "兜底档",
 }
-_TYPE_LABELS = {"file_path": "文件路径", "domain": "网络域名", "command": "命令"}
+_TYPE_LABELS = {
+    "file_path": "文件路径",
+    "domain": "网络域名",
+    "command": "命令",
+    "tool": "工具",
+}
 
 
 @dataclass
@@ -569,8 +574,13 @@ class UnifiedSecurityListRail(DeepAgentRail):
     ) -> bool:
         """把 ask 命中记录写成与名单格子语义一致的审批条目（带 mode/created_at）。
 
-        domain 类无审批存储通道（引擎 NetGuard 无 ask 语义），跳过并告警——
-        该命中按"仅本次放行"处理。
+        ``domain`` 与 ``tool`` 类暂无审批存储通道，跳过并告警——按"仅本次放行"处理：
+
+        - domain：引擎 NetGuard 无 ask 语义；
+        - tool：``permissions.tools`` 是**模式无关**的全局开关，写它等于把"本档位
+          批准一次"放大成"所有档位永久放行"，且引擎自己的工具级"总是允许"走的是
+          ``permissions.rules`` 场景条目而非 ``tools``。语义对齐需要专项设计
+          （设计 §10.3 难点 1），本期宁可不记住也不越权记住。
         """
         overrides: list[dict[str, Any]] = []
         fg_paths: list[dict[str, Any]] = []
@@ -612,7 +622,8 @@ class UnifiedSecurityListRail(DeepAgentRail):
                 fg_paths.append(entry)
             else:
                 logger.warning(
-                    "[security_lists] domain 记录不支持审批记住（按仅本次放行）record=%s",
+                    "[security_lists] %s 记录不支持审批记住（按仅本次放行）record=%s",
+                    rec.type,
                     rec.id,
                 )
         if not overrides and not fg_paths:

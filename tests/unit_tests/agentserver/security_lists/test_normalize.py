@@ -189,3 +189,41 @@ def test_project_net_guard_absent_or_malformed_is_empty():
     assert project_net_guard(permissions={"net_guard": "oops"}) == []
     assert project_net_guard(permissions={"net_guard": {"urls": ["x"]}}) == []
     assert project_net_guard(permissions={"net_guard": {"urls": {"": "deny"}}}) == []
+
+
+# ---------------------------------------------------------------------------
+# occupied 让位（S3 写面收敛：物理记录接管后 legacy 投影不再生效）
+# ---------------------------------------------------------------------------
+
+
+def test_project_net_guard_skips_keys_occupied_by_physical_records():
+    """已被 security_lists.user 接管的操作对象，legacy 投影让位（否则新面板删不掉）。"""
+    perms = {"net_guard": {"enabled": True, "urls": {
+        "evil.example": "deny", "ok.example": "allow",
+    }}}
+    occupied = {("domain", "evil.example", "exact")}
+
+    records = project_net_guard(permissions=perms, occupied=occupied)
+
+    assert {r.pattern for r in records} == {"ok.example"}
+
+
+def test_project_approvals_skips_occupied_file_paths_but_keeps_overrides():
+    """让位只作用于被接管的操作对象；审批条目（另一类通道）不受影响。"""
+    perms = {
+        "approval_overrides": [
+            {"id": "ov1", "match_type": "command", "pattern": "git *", "action": "allow"},
+        ],
+        "file_guard": {"paths": [{"path": "C:/data", "read": "allow"}]},
+    }
+    occupied = {("file_path", "C:/data", "prefix")}
+
+    records = project_approvals(permissions=perms, occupied=occupied)
+
+    assert [r.id for r in records] == ["ov1"]
+
+
+def test_project_approvals_occupied_defaults_to_nothing_skipped():
+    """缺省 occupied（banner/RPC 卡片视图等只读消费方）→ 全量投影，行为不变。"""
+    perms = {"file_guard": {"paths": [{"path": "C:/data", "read": "allow"}]}}
+    assert len(project_approvals(permissions=perms)) == 1

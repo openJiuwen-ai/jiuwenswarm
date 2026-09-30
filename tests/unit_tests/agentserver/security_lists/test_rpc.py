@@ -398,3 +398,68 @@ def test_cloud_sync_can_carry_defaults(rpc_env):
     assert call(ReqMethod.SECURITY_LISTS_DEFAULTS_GET).payload["defaults"] == {
         "*": {"domain": "deny"}
     }
+
+
+# ---------------------------------------------------------------------------
+# type="tool"（工具级并入，设计 §10.3）
+# ---------------------------------------------------------------------------
+
+
+def test_upsert_and_get_tool_record(rpc_env):
+    resp = call(ReqMethod.SECURITY_LISTS_UPSERT, {"record": rec_dict(
+        type="tool", pattern="bash", match="exact", cells={"*": {"*": "ask"}},
+    )})
+    assert resp.ok and resp.payload["record"]["type"] == "tool"
+
+    payload = call(ReqMethod.SECURITY_LISTS_GET, {"type": "tool"}).payload
+    assert [c["pattern"] for c in payload["records"]] == ["bash"]
+
+
+def test_upsert_tool_rejects_non_exact_match(rpc_env):
+    resp = call(ReqMethod.SECURITY_LISTS_UPSERT, {"record": rec_dict(
+        type="tool", pattern="bash", match="glob", cells={"*": {"*": "ask"}},
+    )})
+    assert not resp.ok and resp.payload["code"] == "BAD_REQUEST"
+
+
+# ---------------------------------------------------------------------------
+# migrate：legacy 段一次性搬进 user 区
+# ---------------------------------------------------------------------------
+
+
+def _write_legacy(rpc_env):
+    import yaml
+
+    cfg = rpc_env["cfg"]
+    data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+    data["permissions"] = {
+        "net_guard": {"enabled": True, "urls": {"evil.example": "deny"}},
+        "file_guard": {"enabled": True, "paths": [{"path": "C:/data", "read": "allow"}]},
+    }
+    cfg.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+
+def test_migrate_dry_run_then_apply(rpc_env):
+    _write_legacy(rpc_env)
+
+    preview = call(ReqMethod.SECURITY_LISTS_MIGRATE, {"dry_run": True}).payload
+    assert preview["candidates"] == 2 and preview["created"] == 0
+    assert store.get_security_lists()["user"] == []   # 预览不落盘
+    assert rpc_env["sync_calls"] == []                # 预览不触发双端同步
+
+    applied = call(ReqMethod.SECURITY_LISTS_MIGRATE)
+    assert applied.ok and applied.payload["created"] == 2
+    assert {r["type"] for r in applied.payload["records"]} == {"domain", "file_path"}
+    assert rpc_env["sync_calls"] == ["sync"]
+    # 幂等：再搬为 0（标记已盖章）
+    assert call(ReqMethod.SECURITY_LISTS_MIGRATE).payload["created"] == 0
+
+
+def test_migrate_rejects_unknown_source(rpc_env):
+    resp = call(ReqMethod.SECURITY_LISTS_MIGRATE, {"sources": ["approval_overrides"]})
+    assert not resp.ok and resp.payload["code"] == "BAD_REQUEST"
+
+
+def test_migrate_rejects_malformed_sources(rpc_env):
+    resp = call(ReqMethod.SECURITY_LISTS_MIGRATE, {"sources": "net_guard"})
+    assert not resp.ok and resp.payload["code"] == "BAD_REQUEST"

@@ -364,3 +364,128 @@ def test_migrate_glob_path_match_kind(cfg, tmp_path):
 
 def test_migrate_no_copy_file(cfg, tmp_path):
     assert store.migrate_sandbox_copy_once(tmp_path / "nonexistent.yaml") == 0
+
+
+# ---------------------------------------------------------------------------
+# S3 写面收敛：legacy 段（net_guard.urls / file_guard.paths）一次性搬进 user 区
+# ---------------------------------------------------------------------------
+
+
+def _write_legacy_permissions(cfg, permissions):
+    data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+    data["permissions"] = permissions
+    cfg.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+
+
+LEGACY_PERMS = {
+    "net_guard": {
+        "enabled": True,
+        "defaults": "deny",
+        "urls": {"evil.example": "deny", "*.ok.example": "allow"},
+    },
+    "file_guard": {
+        "enabled": True,
+        "paths": [
+            {"path": "C:/data", "read": "allow", "write": "ask", "match": "prefix",
+             "mode": "default"},
+            {"path": "C:/dl/**", "read": "deny", "match": "glob"},
+        ],
+    },
+}
+
+
+def test_migrate_legacy_copies_rules_and_keeps_legacy_sections(cfg):
+    """搬的是**副本**：legacy 段不清空——强制点（core FileGuard/NetGuard）仍读它，
+    删掉等于让路径层/宿主出口层掉规则（P3 逐跳校验我们的 rail 够不到）。"""
+    _write_legacy_permissions(cfg, LEGACY_PERMS)
+
+    result = store.migrate_legacy_once()
+
+    assert result["created"] == 4 and result["candidates"] == 4
+    records = {(r.type, r.pattern): r for r in store.get_security_lists()["user"]}
+
+    evil = records[("domain", "evil.example")]
+    assert evil.match == "exact" and evil.cells == {"*": {"*": "deny"}}
+    assert evil.source == "user" and evil.migrated_from == "net_guard"
+    assert records[("domain", "*.ok.example")].match == "wildcard"
+
+    data = records[("file_path", "C:/data")]
+    assert data.match == "prefix" and data.migrated_from == "file_guard"
+    assert data.cells == {"default": {"read": "allow", "write": "ask"}}  # mode 格原样
+    assert records[("file_path", "C:/dl/**")].match == "glob"
+
+    # legacy 段原样保留
+    after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    assert after["permissions"]["net_guard"]["urls"] == LEGACY_PERMS["net_guard"]["urls"]
+    assert after["permissions"]["file_guard"]["paths"] == LEGACY_PERMS["file_guard"]["paths"]
+    # net_guard.defaults（执行面兜底，出入管控侧语义）不搬——它没有对应记录
+    assert after["permissions"]["net_guard"]["defaults"] == "deny"
+
+    # 幂等：第二次返回 0（markers 已盖章）
+    assert store.migrate_legacy_once()["created"] == 0
+    assert len(store.get_security_lists()["user"]) == 4
+
+
+def test_migrate_legacy_dry_run_writes_nothing(cfg):
+    _write_legacy_permissions(cfg, LEGACY_PERMS)
+
+    result = store.migrate_legacy_once(dry_run=True)
+
+    assert result["candidates"] == 4 and result["created"] == 0
+    assert {r.pattern for r in result["records"]} == {
+        "evil.example", "*.ok.example", "C:/data", "C:/dl/**",
+    }
+    assert store.get_security_lists()["user"] == []
+    assert store.get_security_lists()["version"] == 3
+
+
+def test_migrate_legacy_skips_keys_already_owned_by_user(cfg):
+    """用户已在名单里显式配过的操作对象不覆盖（用户配置优先）。"""
+    store.upsert_record(rec(
+        type="domain", pattern="evil.example", match="exact",
+        cells={"*": {"*": "allow"}},
+    ))
+    _write_legacy_permissions(cfg, LEGACY_PERMS)
+
+    result = store.migrate_legacy_once()
+
+    assert result["created"] == 3 and result["skipped"] == 1
+    records = {(r.type, r.pattern): r for r in store.get_security_lists()["user"]}
+    assert records[("domain", "evil.example")].cells == {"*": {"*": "allow"}}
+    assert records[("domain", "evil.example")].migrated_from is None
+
+
+def test_migrate_legacy_disabled_sections_are_not_migrated(cfg):
+    """面板总开关关掉（enabled=false）的段不搬——引擎整层不生效，搬了反而会拦。"""
+    _write_legacy_permissions(cfg, {
+        "net_guard": {"enabled": False, "urls": {"evil.example": "deny"}},
+        "file_guard": {"enabled": False, "paths": [{"path": "C:/data", "read": "deny"}]},
+    })
+
+    result = store.migrate_legacy_once()
+
+    assert result["candidates"] == 0 and store.get_security_lists()["user"] == []
+
+
+def test_migrate_legacy_without_permissions_section_is_noop(cfg):
+    assert store.migrate_legacy_once()["created"] == 0
+    assert store.get_security_lists()["user"] == []
+
+
+def test_migrate_legacy_sources_can_be_narrowed(cfg):
+    """灰度：逐段放开（先只搬域名，观察一轮再搬路径）。"""
+    _write_legacy_permissions(cfg, LEGACY_PERMS)
+
+    result = store.migrate_legacy_once(sources=("net_guard",))
+
+    assert result["created"] == 2
+    records = {(r.type, r.pattern): r for r in store.get_security_lists()["user"]}
+    assert set(records) == {("domain", "evil.example"), ("domain", "*.ok.example")}
+
+    # 未被本次迁移的段仍可单独补搬（各自的 marker 独立）
+    assert store.migrate_legacy_once(sources=("file_guard",))["created"] == 2
+
+
+def test_migrate_legacy_unknown_source_rejected(cfg):
+    with pytest.raises(ValueError, match="未知迁移来源"):
+        store.migrate_legacy_once(sources=("approval_overrides",))

@@ -107,21 +107,54 @@ def test_command(pattern, match, target, expected):
 
 
 # ---------------------------------------------------------------------------
+# tool（工具级并入，设计 §10.3）
+# ---------------------------------------------------------------------------
+
+
+def test_match_tool_exact_is_casefold():
+    r = rec(type="tool", pattern="bash", match="exact")
+    assert match_record(r, "bash") is True
+    assert match_record(r, "BASH") is True          # 工具名大小写不敏感（枚举同一对象）
+    assert match_record(r, "bash_extra") is False   # exact 不做前缀
+    assert match_record(r, "mcp_bash") is False
+
+
+def test_match_tool_does_not_match_other_targets():
+    """工具记录只吃工具目标：同名命令不得命中（"bash" 既是工具名也是 exe 名）。"""
+    r = rec(type="tool", pattern="bash", match="exact")
+    assert match_record(rec(type="command", pattern="bash", match="exact"), "bash") is True
+    assert match_record(r, "cat a.txt") is False   # 整行命令不是工具名
+
+
+# ---------------------------------------------------------------------------
 # extract_targets
 # ---------------------------------------------------------------------------
 
 
 def test_extract_read_file(tmp_path):
     targets = extract_targets("read_file", {"file_path": "a/b.txt"}, workspace=tmp_path)
-    assert len(targets) == 1
-    list_type, target, op = targets[0]
+    assert targets[0] == ("tool", "read_file", "*")   # 工具目标恒在首位
+    rest = targets[1:]
+    assert len(rest) == 1
+    list_type, target, op = rest[0]
     assert (list_type, op) == ("file_path", "read")
     assert target.replace("\\", "/").endswith("a/b.txt")
 
 
 def test_extract_write_file(tmp_path):
     targets = extract_targets("write_file", {"file_path": "out.txt"}, workspace=tmp_path)
-    assert [op for _, _, op in targets] == ["write"]
+    assert [op for ty, _, op in targets if ty == "file_path"] == ["write"]
+
+
+def test_extract_tool_target_always_present(tmp_path):
+    """任何工具的调用都带工具目标——工具级规则与参数无关。"""
+    for name, args in (
+        ("bash", {"command": "ls"}),
+        ("mcp_fetch_webpage", {"url": "https://x.example/a"}),
+        ("totally_unknown", {"anything": 1}),
+        ("bash", {}),
+    ):
+        assert ("tool", name, "*") in extract_targets(name, args, workspace=tmp_path), name
 
 
 def test_extract_shell_command_segments_and_paths(tmp_path):
@@ -155,5 +188,6 @@ def test_extract_non_fetch_tool_ignores_url():
 
 
 def test_extract_empty_args():
-    assert extract_targets("bash", {}) == []
-    assert extract_targets("bash", None) == []
+    # 工具目标恒存在（工具级规则不依赖参数）；参数缺失只影响参数级目标
+    assert extract_targets("bash", {}) == [("tool", "bash", "*")]
+    assert extract_targets("bash", None) == [("tool", "bash", "*")]
