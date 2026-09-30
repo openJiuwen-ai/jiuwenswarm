@@ -66,6 +66,43 @@ def test_add_target_stores_expert(tmp_path: Path):
     assert named["expert_persona"] == "## 人设\n- 语气：简短\n\n## 职责\n- 代回事务咨询"
 
 
+def test_patch_expert_none_stays_empty(tmp_path: Path):
+    store = HostingStore(tmp_path / "hosting.db")
+    target = store.add_target(
+        channel_id="feishu",
+        target_kind="user",
+        external_id="ou_exp",
+        title="用户甲",
+        expert_service_id="service_default",
+        expert_agent_id="agent_default",
+        expert_persona="简短",
+    )
+    updated = store.patch_target(
+        target["id"],
+        {
+            "expert_service_id": None,
+            "expert_agent_id": None,
+            "expert_persona": None,
+        },
+    )
+    assert updated is not None
+    assert updated["expert_service_id"] is None
+    assert updated["expert_agent_id"] is None
+    assert updated["expert_persona"] is None
+    blank = store.patch_target(
+        target["id"],
+        {
+            "expert_service_id": "  ",
+            "expert_agent_id": "",
+            "expert_persona": "",
+        },
+    )
+    assert blank is not None
+    assert blank["expert_service_id"] is None
+    assert blank["expert_agent_id"] is None
+    assert blank["expert_persona"] is None
+
+
 def test_claim_reply_turn_is_idempotent(tmp_path: Path):
     store = HostingStore(tmp_path / "hosting.db")
     assert store.claim_reply_turn("feishu", "group", "oc_1", "m1") is True

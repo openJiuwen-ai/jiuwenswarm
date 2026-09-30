@@ -91,13 +91,14 @@ async def _try_auto_reply(
     item: ImMessage,
     agent_manager: AgentManagerLike | None = None,
     channel_policy: dict[str, Any] | None = None,
-) -> bool:
+) -> Literal["sent", "duplicate", "failed"]:
+    """先占轮次避免并发双发；生成或发送失败则交回轮次，由调用方停住水位以便重试。"""
     channel_id = str(target["channel_id"])
     kind = str(target["target_kind"])
     external_id = str(target["external_id"])
     msg_id = str(item.msg_id or "")
     if not store.claim_reply_turn(channel_id, kind, external_id, msg_id):
-        return False
+        return "duplicate"
     try:
         try:
             reply_text = await generate_reply_via_expert(
@@ -108,10 +109,11 @@ async def _try_auto_reply(
             )
         except ValueError as exc:
             logger.warning("[im_hosting] skip reply target=%s: %s", target.get("id"), exc)
-            return False
+            store.release_reply_turn(channel_id, kind, external_id, msg_id)
+            return "failed"
         if not reply_text.strip():
-            return False
-        store.bump_inbound_total(str(target["id"]))
+            store.release_reply_turn(channel_id, kind, external_id, msg_id)
+            return "failed"
         send = await plugin.send_message(
             conv,
             reply_text,
@@ -127,15 +129,18 @@ async def _try_auto_reply(
                 msg_id,
                 send.error_message or send.error_code,
             )
-            return False
-        return True
+            store.release_reply_turn(channel_id, kind, external_id, msg_id)
+            return "failed"
+        store.bump_inbound_total(str(target["id"]))
+        return "sent"
     except Exception:
         logger.exception(
             "[im_hosting] auto-reply failed target=%s msg=%s",
             target.get("id"),
             msg_id,
         )
-        return False
+        store.release_reply_turn(channel_id, kind, external_id, msg_id)
+        return "failed"
 
 
 async def run_poll_once(
@@ -174,21 +179,25 @@ async def run_poll_once(
         base_wm = int(wm["last_processed_at_ms"] or 0)
     current_wm = base_wm
     judged = 0
+    hold_watermark = False
     inbound = sorted(
         _new_inbound(messages, base_wm),
         key=lambda m: (m.sent_at or 0, m.msg_id or ""),
     )
     for item in inbound:
         if judged >= MAX_RELEVANT_JUDGEMENTS and rule.get("match_mode") == "relevant":
-            passed, reason = False, "relevant_capped"
-        else:
-            passed, reason = await message_passes_gate(
-                item.content_text or "",
-                rule,
-                relevance_judge=relevance_judge,
-            )
-            if rule.get("match_mode") == "relevant":
-                judged += 1
+            # 本轮没判的消息不能推进水位，否则下一轮不会再看到它们。
+            if item.msg_id:
+                gated_by_id[item.msg_id] = {"passed": False, "reason": "relevant_capped"}
+            hold_watermark = True
+            break
+        passed, reason = await message_passes_gate(
+            item.content_text or "",
+            rule,
+            relevance_judge=relevance_judge,
+        )
+        if rule.get("match_mode") == "relevant":
+            judged += 1
         gate_row: dict[str, Any] = {"passed": passed, "reason": reason}
         if item.msg_id:
             gated_by_id[item.msg_id] = gate_row
@@ -196,7 +205,7 @@ async def run_poll_once(
         if passed:
             gated_in += 1
             if reply_enabled and replied < max_replies:
-                did_reply = await _try_auto_reply(
+                outcome = await _try_auto_reply(
                     store=store,
                     plugin=plugin,
                     target=target,
@@ -205,13 +214,19 @@ async def run_poll_once(
                     agent_manager=agent_manager,
                     channel_policy=policy,
                 )
-                if did_reply:
+                if outcome == "sent":
                     replied += 1
                     gate_row["replied"] = True
                     if item.msg_id:
                         gated_by_id[item.msg_id] = gate_row
+                elif outcome == "failed":
+                    hold_watermark = True
+                    break
         current_wm = max(current_wm, sent_at)
-    next_ms = advance_watermark_ms(current_wm, messages)
+    if hold_watermark:
+        next_ms = current_wm
+    else:
+        next_ms = advance_watermark_ms(current_wm, messages)
     last_id = None
     if messages:
         newest = max(messages, key=lambda m: (m.sent_at or 0, m.msg_id or ""))

@@ -64,6 +64,14 @@ CREATE TABLE IF NOT EXISTS im_hosting_policy (
 """
 
 
+def _patched_optional_text(value: Any) -> Optional[str]:
+    """补丁里的可选文本。``None`` 不能走 ``str()``，否则会存成字面量 ``\"None\"``。"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -279,17 +287,17 @@ class HostingStore:
                 rule = normalize_rule(incoming)
         rule_json = json.dumps(rule, ensure_ascii=False) if rule is not None else None
         expert_service_id = (
-            str(patch["expert_service_id"]).strip() or None
+            _patched_optional_text(patch["expert_service_id"])
             if "expert_service_id" in patch
             else current.get("expert_service_id")
         )
         expert_agent_id = (
-            str(patch["expert_agent_id"]).strip() or None
+            _patched_optional_text(patch["expert_agent_id"])
             if "expert_agent_id" in patch
             else current.get("expert_agent_id")
         )
         expert_persona = (
-            str(patch["expert_persona"]).strip() or None
+            _patched_optional_text(patch["expert_persona"])
             if "expert_persona" in patch
             else current.get("expert_persona")
         )
@@ -474,6 +482,27 @@ class HostingStore:
             )
             conn.commit()
             return cur.rowcount > 0
+
+    def release_reply_turn(
+        self,
+        channel_id: str,
+        scope: str,
+        scope_id: str,
+        source_msg_id: str,
+    ) -> None:
+        """代回或发送失败时交回轮次，下轮可以重试。"""
+        msg_id = (source_msg_id or "").strip()
+        if not msg_id:
+            return
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM im_hosting_reply_turns
+                WHERE channel_id=? AND scope=? AND scope_id=? AND source_msg_id=?
+                """,
+                (channel_id, scope, scope_id, msg_id),
+            )
+            conn.commit()
 
     def load_policy_payloads(self) -> dict[str, dict[str, Any]]:
         with self._lock, self._connect() as conn:

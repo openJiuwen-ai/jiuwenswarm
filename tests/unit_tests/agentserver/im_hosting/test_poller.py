@@ -192,3 +192,126 @@ async def test_auto_host_first_poll_replies_recent_trigger_messages(tmp_path: Pa
     assert gated["old"].get("gated") is None
     assert gated["hi1"].get("gated") is True
     assert gated["hi2"].get("gated") is True
+
+
+
+class _FailOncePlugin(_FakePlugin):
+    def __init__(self, messages: list[ImMessage]) -> None:
+        super().__init__(messages)
+        self.calls = 0
+
+    async def send_message(self, target, content, options: SendOptions | None = None) -> SendResult:
+        del target, content, options
+        self.calls += 1
+        if self.calls == 1:
+            return SendResult(ok=False, error_message="down")
+        return SendResult(ok=True)
+
+
+class _ReplyRuntime:
+    async def process_message(self, request):
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"content": "收到"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_send_failure_releases_turn_and_holds_watermark(tmp_path: Path):
+    store = HostingStore(tmp_path / "hosting.db")
+    target = store.add_target(
+        channel_id="feishu",
+        target_kind="group",
+        external_id="oc_retry",
+        title="测试群",
+    )
+    store.set_watermark("feishu", "group", "oc_retry", last_processed_at_ms=0)
+    messages = [
+        ImMessage(
+            channel_id="feishu",
+            msg_id="m1",
+            conversation_external_id="oc_retry",
+            sender_name="用户甲",
+            content_text="入职材料",
+            sent_at=1_000,
+        ),
+        ImMessage(
+            channel_id="feishu",
+            msg_id="m2",
+            conversation_external_id="oc_retry",
+            sender_name="用户甲",
+            content_text="入职地点",
+            sent_at=2_000,
+        ),
+    ]
+    policy = {
+        "default_group_rule": {"match_mode": "keyword", "keywords": ["入职"]},
+        "reply_enabled": True,
+    }
+    plugin = _FailOncePlugin(messages)
+    first = await run_poll_once(
+        store,
+        plugin,
+        target,
+        channel_policy=policy,
+        agent_manager=_ReplyRuntime(),
+    )
+    assert first["replied"] == 0
+    assert first["watermark_ms"] == 0
+    assert store.get_target(target["id"])["inbound_total"] == 0
+    second = await run_poll_once(
+        store,
+        plugin,
+        target,
+        channel_policy=policy,
+        agent_manager=_ReplyRuntime(),
+    )
+    assert second["replied"] == 2
+    assert store.get_target(target["id"])["inbound_total"] == 2
+    wm = store.get_watermark("feishu", "group", "oc_retry")
+    assert wm is not None
+    assert wm["last_processed_at_ms"] >= 2_000
+
+
+@pytest.mark.asyncio
+async def test_relevant_cap_does_not_skip_unjudged_messages(tmp_path: Path):
+    store = HostingStore(tmp_path / "hosting.db")
+    target = store.add_target(
+        channel_id="feishu",
+        target_kind="group",
+        external_id="oc_cap",
+        title="测试群",
+    )
+    store.set_watermark("feishu", "group", "oc_cap", last_processed_at_ms=0)
+    messages = [
+        ImMessage(
+            channel_id="feishu",
+            msg_id=f"m{index}",
+            conversation_external_id="oc_cap",
+            sender_name="用户甲",
+            content_text="入职咨询",
+            sent_at=index * 1_000,
+        )
+        for index in range(1, 10)
+    ]
+
+    async def _always_relevant(text: str, keywords: list[str]) -> bool:
+        del text, keywords
+        return True
+
+    summary = await run_poll_once(
+        store,
+        _FakePlugin(messages),
+        target,
+        channel_policy={
+            "default_group_rule": {"match_mode": "relevant", "keywords": ["入职"]},
+            "reply_enabled": False,
+        },
+        relevance_judge=_always_relevant,
+    )
+    assert summary["gated_in"] == 8
+    assert summary["watermark_ms"] == 8_000
+    reasons = {item["msg_id"]: item.get("gate_reason") for item in summary["preview"]}
+    assert reasons["m9"] == "relevant_capped"
