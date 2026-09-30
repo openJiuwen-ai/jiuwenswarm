@@ -32,7 +32,7 @@ def test_code_adapter_builds_acp_chat_when_profile_configured(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_code.Runner",
+        "jiuwenswarm.common.tool_ownership.Runner",
         SimpleNamespace(resource_mgr=_FakeResourceMgr()),
     )
 
@@ -50,7 +50,7 @@ def test_code_adapter_skips_acp_chat_without_profiles(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_code.Runner",
+        "jiuwenswarm.common.tool_ownership.Runner",
         SimpleNamespace(resource_mgr=_FakeResourceMgr()),
     )
 

@@ -22,7 +22,6 @@ from typing import Any
 
 from openjiuwen.core.foundation.llm import Model
 from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
-from openjiuwen.core.runner import Runner  # noqa: F401 - compatibility test seam
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness.factory import create_deep_agent
 from openjiuwen.harness.prompts import resolve_language
@@ -138,10 +137,11 @@ class CodingMemoryRail(_BaseCodingMemoryRail):
         except asyncio.CancelledError:
             cancelled = True
             raise
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:
             logger.warning(
                 "[CodingMemoryRail] background initialization failed: %s",
                 exc,
+                exc_info=True,
             )
         finally:
             if not cancelled and self._manager_init_task is asyncio.current_task():
