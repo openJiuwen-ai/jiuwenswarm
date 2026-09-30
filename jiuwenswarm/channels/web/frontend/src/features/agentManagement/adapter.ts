@@ -62,7 +62,9 @@ export function isPreviewableFile(relativePath: string): boolean {
     lowerPath.endsWith('.mdx') ||
     lowerPath.endsWith('.json') ||
     lowerPath.endsWith('.py') ||
-    lowerPath.endsWith('.pdf')
+    lowerPath.endsWith('.pdf') ||
+    // 图片格式通过 FilePreviewContent 的 <img> 分支预览，须在此放行
+    /\.(?:png|jpe?g|gif|webp|svg|bmp)$/.test(lowerPath)
   );
 }
 

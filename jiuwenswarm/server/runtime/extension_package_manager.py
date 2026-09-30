@@ -62,8 +62,25 @@ class AgentGroupPackageError(ValueError):
         self.code = code
 
 _CATALOG_PREVIEWABLE_EXTS: frozenset[str] = frozenset(
-    {".md", ".mdx", ".json", ".py", ".pdf"}
+    {".md", ".mdx", ".json", ".py", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
 )
+# 需以下载流方式提供的前端可预览图片扩展名
+_PREVIEW_IMAGE_EXTS: frozenset[str] = frozenset(
+    {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
+)
+_PREVIEW_IMAGE_MIME: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".bmp": "image/bmp",
+}
+
+
+def _preview_image_mime(suffix: str) -> str:
+    return _PREVIEW_IMAGE_MIME.get(suffix.lower(), "image/png")
 _MAX_PREVIEW_FILE_BYTES = 1 * 1024 * 1024
 _PREVIEW_SENSITIVE_KEY_PATTERN = re.compile(
     r"(?i)(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|"
@@ -3013,12 +3030,17 @@ def _read_previewable_file_from_zip(
     size = len(data)
     if size > _MAX_PREVIEW_FILE_BYTES:
         raise ValueError(f"file too large: {rel} ({size} bytes)")
-    if Path(rel).suffix.lower() == ".pdf":
+    suffix = Path(rel).suffix.lower()
+    if suffix == ".pdf" or suffix in _PREVIEW_IMAGE_EXTS:
         encoded = base64.b64encode(data).decode("ascii")
+        if suffix == ".pdf":
+            mime = "application/pdf"
+        else:
+            mime = _preview_image_mime(suffix)
         return {
             "path": rel,
             "content": None,
-            "download_url": f"data:application/pdf;base64,{encoded}",
+            "download_url": f"data:{mime};base64,{encoded}",
         }
     try:
         content = data.decode("utf-8")
@@ -3123,7 +3145,8 @@ def _read_previewable_file(pkg_dir: Path, rel_path: str) -> dict:
         raise ValueError(f"file not previewable: {rel}")
     full_path = _reject_preview_path_symlink(pkg_dir, rel)
     size = full_path.stat().st_size
-    if full_path.suffix.lower() == ".pdf":
+    # PDF 与图片为二进制/需下载流的内容，直接提供 download_url 供前端渲染或下载
+    if full_path.suffix.lower() in {".pdf"} | _PREVIEW_IMAGE_EXTS:
         from jiuwenswarm.agents.harness.common.tools.web_file_download import build_file_download_info
 
         download = build_file_download_info(
