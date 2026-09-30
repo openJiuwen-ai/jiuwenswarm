@@ -91,7 +91,7 @@ def _safe_brief(value: str) -> str:
     return brief
 
 
-def _fallback_realtime_brief(  # pylint: disable=unused-argument
+def _fallback_realtime_brief(
     *,
     display_result: str,
     result_kind: str,

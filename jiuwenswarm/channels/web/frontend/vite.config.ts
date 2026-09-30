@@ -1452,17 +1452,12 @@ export default defineConfig({
     fs: {
       allow: [
         searchForWorkspaceRoot(__dirname),
+        __dirname,
         // Full-duplex audio worklets live outside the web frontend root.
         path.resolve(__dirname, '../../../extensions/video_duplex/frontend'),
       ],
     },
     allowedHosts: ['127.0.0.1'],
-    fs: {
-      allow: [
-        __dirname,
-        path.resolve(__dirname, '../../../extensions/video_duplex/frontend'),
-      ],
-    },
     port: frontendPort,
     strictPort: true,
     proxy: {

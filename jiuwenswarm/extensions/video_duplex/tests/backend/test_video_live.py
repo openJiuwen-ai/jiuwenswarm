@@ -1865,7 +1865,9 @@ async def test_execute_core_agent_uses_unary_content_without_custom_wrapper(monk
     assert result["realtime_brief"]["source"] == "derived"
     assert len(requests) == 1
     assert "<final_answer>" not in requests[0].params["query"]
-    assert "same language as their latest utterance" in requests[0].params["query"]
+    assert "标记之前的完整答案必须使用简体中文。" in requests[0].params["query"]
+    assert "Speak to the user in Simplified Chinese." in requests[0].params["query"]
+    assert "same language as their latest utterance" not in requests[0].params["query"]
     assert "JIUWEN_BRIEF_BEGIN" in requests[0].params["query"]
 
 
