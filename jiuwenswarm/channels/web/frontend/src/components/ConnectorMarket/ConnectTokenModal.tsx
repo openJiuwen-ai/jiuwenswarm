@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { X, Loader2, ExternalLink } from 'lucide-react';
@@ -6,6 +6,7 @@ import { useConnectorStore } from '../../stores/connectorStore';
 import type { ConnectorConnectResponse } from '../../types/connector';
 import { getSkillAvatar } from '../../utils/skillAvatar';
 import { EntityAvatar } from './EntityAvatar';
+import { CliAuthModal } from './CliAuthModal';
 import logoIcon from '/logo.svg';
 
 interface ConnectTokenModalProps {
@@ -29,6 +30,22 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
   const { t } = useTranslation();
   const [tokens, setTokens] = useState<Record<string, string>>({});
   const [connecting, setConnecting] = useState(false);
+  const [useApiKey, setUseApiKey] = useState(!response.oauthAvailable);
+  const [oauth, setOAuth] = useState<ConnectorConnectResponse | null>(null);
+  const activeRef = useRef(true);
+  useEffect(() => { activeRef.current = true; return () => { activeRef.current = false; }; }, []);
+
+  async function handleOAuth() {
+    if (connecting) return;
+    setConnecting(true);
+    const result = await useConnectorStore.getState().connect(name, 'oauth');
+    if (!activeRef.current) {
+      if (result?.oauthSession) await useConnectorStore.getState().cancelOAuth(name, result.oauthSession);
+      return;
+    }
+    setConnecting(false);
+    if (result?.type === 'auth_required') setOAuth(result);
+  }
   const saveCredentialsAndConnect = useConnectorStore((s) => s.saveCredentialsAndConnect);
 
   const requiredTokens = response.requiredTokens ?? [];
@@ -71,6 +88,8 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
   // createPortal 到 document.body：见文件头注释——这个弹窗本就设计成 body 下的兄弟节点，且从
   // 详情页里弹出时若留在 `.detail-body` 内会被 index.css 的 `.detail-body > *` 限宽规则压窄遮罩
   // （bug 2026091001-001），挂到 body 下同时解决这两点。
+  if (oauth) return <CliAuthModal name={name} initial={oauth} onCancel={() => setOAuth(null)} onConnected={onConnected} />;
+
   return createPortal(
     <div data-connector-auth-modal="true" data-testid="connector-market-token-modal" className="fixed inset-0 z-[10100] flex items-center justify-center bg-overlay-cron-dialog">
       <div className="relative w-[400px] rounded-2xl bg-card p-6 shadow-xl">
@@ -97,11 +116,26 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
         <h2 className="mb-1 text-center text-[16px] font-semibold text-text">
           {response.title ?? t('connectorMarket.tokenModal.title', { name: displayName })}
         </h2>
-        {response.description && (
+        {(!response.oauthAvailable || useApiKey) && response.description && (
           <p className="mb-4 text-center text-[12px] leading-[18px] text-text-muted">{response.description}</p>
         )}
         {!response.description && <div className="mb-4" />}
 
+        {response.oauthAvailable && !useApiKey && (
+          <div data-testid="connector-market-oauth-choice">
+            <p className="mb-4 text-center text-[13px] text-text-muted" data-testid="connector-market-oauth-description">{t('connectorMarket.remoteOAuth.description')}</p>
+            <button type="button" disabled={connecting} onClick={handleOAuth}
+              className="mb-3 flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-text text-[13px] text-text-inverse disabled:opacity-40"
+              data-testid="connector-market-oauth-connect">
+              {connecting && <Loader2 size={14} className="animate-spin" />}
+              {t('connectorMarket.remoteOAuth.connect')}
+            </button>
+            <button type="button" disabled={connecting} onClick={() => setUseApiKey(true)}
+              className="w-full text-center text-[12px] text-text-muted hover:text-text"
+              data-testid="connector-market-oauth-use-api-key">{t('connectorMarket.remoteOAuth.useApiKey')}</button>
+          </div>
+        )}
+        {useApiKey && <>
         {requiredTokens.map((key) => {
           const field = fields[key];
           return (
@@ -148,6 +182,10 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
           {connecting && <Loader2 size={14} className="animate-spin" />}
           {t('connectorMarket.tokenModal.saveAndConnect')}
         </button>
+        {response.oauthAvailable && <button type="button" disabled={connecting} onClick={() => setUseApiKey(false)}
+          className="mt-3 w-full text-center text-[12px] text-text-muted hover:text-text"
+          data-testid="connector-market-oauth-use-oauth">{t('connectorMarket.remoteOAuth.useOAuth')}</button>}
+        </>}
       </div>
     </div>,
     document.body,
