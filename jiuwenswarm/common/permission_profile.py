@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from typing import Any, Optional
 
 PERMISSION_PROFILE_DEFAULT = "default"
@@ -123,7 +124,10 @@ def with_workspace_directive(text: str, workspace: str, profile: Optional[str]) 
     path = (workspace or "").strip()
     if not path:
         return text
-    payload = json.dumps({"path": path}, ensure_ascii=False)
+    payload = json.dumps(
+        {"path": path, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+        ensure_ascii=False,
+    )
     if profile == PERMISSION_PROFILE_FULL_ACCESS:
         # 位置提示（非权限约束）：完全访问档不设写入边界，但落盘默认位置要告知
         return (

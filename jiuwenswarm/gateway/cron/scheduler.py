@@ -71,7 +71,11 @@ def with_workspace_dir(text: str, workspace_dir: str | None) -> str:
         return text
     if _WORKSPACE_OPEN in text:
         return text
-    payload = json.dumps({"path": path}, ensure_ascii=False, separators=(",", ":"))
+    payload = json.dumps(
+        {"path": path, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     return (
         f"{text}\n\n"
         f"{_WORKSPACE_OPEN}{payload}{_WORKSPACE_CLOSE}\n"
