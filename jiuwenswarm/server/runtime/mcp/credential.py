@@ -332,7 +332,17 @@ class CredentialStore:
         self._needs_reencrypt: set[str] = set()
 
     def _path(self, name: str) -> Path:
-        return self._root / f"{str(name or '').strip()}.json"
+        connector_name = str(name or "").strip()
+        if (
+            not connector_name
+            or connector_name in {".", ".."}
+            or any(char in connector_name for char in "/\\:")
+        ):
+            raise ValueError("MCP credential name must be a single filename")
+        path = self._root / f"{connector_name}.json"
+        if path.is_symlink() or path.resolve().parent != self._root.resolve():
+            raise ValueError("MCP credential path must stay inside its storage directory")
+        return path
 
     def _load(self, name: str) -> dict[str, str]:
         p = self._path(name)
