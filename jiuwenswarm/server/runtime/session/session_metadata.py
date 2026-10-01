@@ -1847,12 +1847,34 @@ def _resolve_legacy_work_mode(
     return None
 
 
+def _metadata_owner_matches(stored_user_id: object, requested_user_id: str) -> bool:
+    """与 SessionMessage owner-scope 的匹配语义保持一致。
+
+    认证调用者（requested 非空）只匹配自己名下的会话；匿名调用者只匹配
+    无主（legacy）会话——request.user_id 在传输边界是可选的，匿名调用者
+    永远不能匹配带明确 owner 的会话。
+    """
+    stored = str(stored_user_id or "").strip()
+    requested = str(requested_user_id or "").strip()
+    if requested:
+        return stored == requested
+    return not stored
+
+
 def get_all_sessions_metadata(
     limit: int = 20,
     offset: int = 0,
+    user_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """
     获取所有会话的元数据。
+
+    Args:
+        limit: 每页数量
+        offset: 偏移量
+        user_id: 调用者标识。显式传入时（含空串）按 owner 隔离结果：
+            认证调用者只见自己名下的会话，匿名调用者只见无主（legacy）
+            会话；为 None（默认，内部扫描路径）时不过滤。
 
     Returns:
         (sessions, total): 当前页的会话列表 和 会话总数
@@ -1919,6 +1941,12 @@ def get_all_sessions_metadata(
             )
 
         if metadata.get("ephemeral") is True:
+            continue
+        if user_id is not None and not _metadata_owner_matches(
+            metadata.get("user_id"), user_id
+        ):
+            # 跨用户隔离：非本调用者名下的会话不进入列表与 total，
+            # 与 SessionMessage owner-scope 的匹配语义一致。
             continue
         _apply_batch_projection(metadata, session_id, state, project_states,
                                 (dir_to_projects, id_to_work_mode))
