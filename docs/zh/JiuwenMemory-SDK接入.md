@@ -146,7 +146,7 @@ pip install JiuwenMemory
 验证：
 
 ```bash
-python -c "from api import assemble; print('agent-memory OK')"
+python -c "from jiuwen_memory.api import assemble; print('agent-memory OK')"
 ```
 
 > ⚠️ 若未装或装错环境，启动时日志会出现 `RuntimeError` 提示安装 `JiuwenMemory`，记忆轨不挂载（主流程不阻塞）。如果你用 `uv`/虚拟环境启动，务必在**同一个环境**里执行 `pip install`。
@@ -400,7 +400,7 @@ Assistant: 根据记忆，您喜欢吃辣。
 
 ```bash
 # 1. 确认 agent-memory 内核已装
-python -c "from api import assemble; print('agent-memory OK')"
+python -c "from jiuwen_memory.api import assemble; print('agent-memory OK')"
 
 # 2. 确认顶层 Embedding 配置生效（SDK 模式必需）
 python -c "import os; print('EMBED_API_KEY:', bool(os.environ.get('EMBED_API_KEY'))); print('EMBED_API_BASE:', os.environ.get('EMBED_API_BASE')); print('EMBED_MODEL:', os.environ.get('EMBED_MODEL'))"
@@ -486,7 +486,7 @@ build_external_memory_rail(config)
 
 ```
 _SDKBackend.initialize()
-  ├─ from api import assemble
+  ├─ from jiuwen_memory.api import assemble
   ├─ cfg = Config.from_dict(config_dict)   # 空字典或失败回落默认，仅 warn
   ├─ self._api = assemble(config=cfg)       # 失败抛 RuntimeError，被 builder 兜住
   └─ 缓存 Scope / Modality / Context / DisclosureLevel 类型
@@ -565,7 +565,7 @@ add(content, infer, tags):
 按这个清单走即可完成接入：
 
 - [ ] 主程序 JiuwenSwarm 能正常对话（前提）
-- [ ] `pip install JiuwenMemory`，并 `python -c "from api import assemble"` 验证
+- [ ] `pip install JiuwenMemory`，并 `python -c "from jiuwen_memory.api import assemble"` 验证
 - [ ] 配好顶层 `EMBED_API_KEY` / `EMBED_API_BASE` / `EMBED_MODEL`（§4.1，SDK 必需）
 - [ ] 部署 Redis / Milvus / Elasticsearch 三服务并确认地址可达（§3.3）
 - [ ] 在 `config.yaml` 的 `memory` 段填好 SDK 配置，三个 `*_url` 换成实际地址（§4.2）
