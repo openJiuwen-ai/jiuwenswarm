@@ -2500,7 +2500,11 @@ class TestSingleAgentCronStream:
 
     @pytest.mark.asyncio
     async def test_plain_empty_stream_keeps_legacy_message(self, tmp_path):
-        """非中断的空结果仍走原文案，不被中断文案顶替。"""
+        """非中断的空结果仍走原文案，但不被中断文案顶替。
+
+        流正常结束（is_complete、无 chat.error、无中断）但未提取到非空文本时，
+        执行链路已完整走完，按成功对待以回写 last_session_id（issue #4983/#4980）。
+        """
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, targets="web")
 
@@ -2531,7 +2535,7 @@ class TestSingleAgentCronStream:
             envelope=envelope, timeout_seconds=30.0, state=state
         )
 
-        assert ok is False
+        assert ok is True
         assert text == "[cron] 任务执行完成但未返回结果内容"
 
 
