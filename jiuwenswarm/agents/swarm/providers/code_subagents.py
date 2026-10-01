@@ -50,6 +50,8 @@ from jiuwenswarm.agents.swarm.providers.code_rails import (
     code_runtime_language,
     CODING_MEMORY_EXTRAS_KEY,
 )
+from jiuwenswarm.common.hooks_config import load_hooks_config
+from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
 from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
     DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
     build_statusline_setup_agent_config,
@@ -64,6 +66,23 @@ STATUSLINE_SETUP_AGENT = "swarm.statusline_setup_agent"
 # Key under ``ctx.extras`` where ``DeepAgentSpec.build`` publishes the resolved
 # parent member model for sub-agent providers to reuse.
 _PARENT_MODEL_EXTRAS_KEY = "_parent_model"
+
+
+def _build_subagent_user_hook_rail(subagent_type: str) -> UserHookRail | None:
+    """Load user-configured hooks and wrap them in a UserHookRail for a sub-agent.
+
+    Returns None when no hooks are configured, so the caller can skip appending
+    an inert rail. The ``subagent_type`` is injected into every hook_input so
+    hook scripts can distinguish main-agent and sub-agent tool calls.
+    """
+    try:
+        hooks_config = load_hooks_config()
+        if not hooks_config.events:
+            return None
+        return UserHookRail(hooks_config, subagent_type=subagent_type)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[swarm.%s] Failed to load UserHookRail: %s", subagent_type, exc)
+        return None
 
 
 def _workspace_root(ctx: SwarmBuildContext) -> str | None:
@@ -117,6 +136,11 @@ def build_code_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildContext) -> 
         from openjiuwen.harness.rails import SysOperationRail
 
         rails = [SysOperationRail(), coding_memory_rail]
+    # 注入用户配置的 hooks，使子 agent 的工具调用（如 bash）也受 PreToolUse
+    # 拦截与审计覆盖（issue #4999）。
+    user_hook_rail = _build_subagent_user_hook_rail("code_agent")
+    if user_hook_rail is not None:
+        rails = [*(rails or []), user_hook_rail]
     spec = build_code_agent_config(
         model,
         rails=rails,
@@ -222,12 +246,17 @@ def build_swarm_browser_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildCon
         return None
 
     browser_key = _browser_key(inp.session_id, inp.member_name, inp.role)
+    # 注入用户配置的 hooks，使 browser 子 agent 的工具调用也受 PreToolUse
+    # 拦截与审计覆盖（issue #4999）。
+    user_hook_rail = _build_subagent_user_hook_rail("browser_agent")
+    rails = [user_hook_rail] if user_hook_rail is not None else None
     spec = build_browser_agent_config(
         model,
         workspace=str(inp.workspace_root or "./"),
         language=inp.language,
         max_iterations=inp.max_iterations,
         browser_key=browser_key,
+        rails=rails,
     )
     # build_browser_agent_config bakes the resolved RuntimeSettings (carrying the
     # per-key BrowserInstanceConfig) into spec.factory_kwargs; preserve it and
