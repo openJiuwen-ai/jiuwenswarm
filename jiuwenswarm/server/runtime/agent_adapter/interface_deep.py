@@ -367,6 +367,7 @@ from jiuwenswarm.agents.harness.common.rails import (
     RuntimePromptRail,
     StructuredAskUserRail,
     SymphonyOrchestrationRail,
+    UtilityBudgetContextRail,
 )
 from jiuwenswarm.agents.harness.common.rails.eternal_conversation import (
     EternalConversationRail,
@@ -8943,6 +8944,20 @@ class JiuWenSwarmDeepAdapter:
         return rail
 
     @staticmethod
+    def _build_utility_budget_context_rail() -> UtilityBudgetContextRail | None:
+        """Build UBCM utility-budget context rail (config-gated, default off)."""
+        try:
+            cfg = (get_config() or {}).get("utility_budget_context") or {}
+            if cfg.get("enabled") is not True:
+                return None
+            rail = UtilityBudgetContextRail(config=cfg)
+            logger.info("[JiuWenSwarmDeepAdapter] UtilityBudgetContextRail create success")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] UtilityBudgetContextRail create failed: %s", exc)
+            return None
+
+    @staticmethod
     def _build_eternal_conversation_rail() -> EternalConversationRail | None:
         """Mount an inert Rail; a Session request flag activates it later."""
         try:
@@ -9359,6 +9374,10 @@ class JiuWenSwarmDeepAdapter:
                 self._build_session_messaging_route_rail,
             ),
             _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
+            _RailBuildInfo(
+                "_utility_budget_context_rail",
+                self._build_utility_budget_context_rail,
+            ),
             _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
             _RailBuildInfo(
