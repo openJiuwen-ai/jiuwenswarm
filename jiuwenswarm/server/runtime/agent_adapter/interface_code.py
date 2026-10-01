@@ -1521,6 +1521,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 "_session_messaging_route_rail",
                 self._build_session_messaging_route_rail,
             ),
+            _RailBuildInfo(
+                "_utility_budget_context_rail",
+                self._build_utility_budget_context_rail,
+            ),
             _RailBuildInfo("_lsp_rail", self._build_lsp_rail_via_config),
             _RailBuildInfo("_project_memory_rail", self._build_project_memory_rail),
             *self._permission_interrupt_rail_infos(config_base),
