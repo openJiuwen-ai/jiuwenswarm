@@ -2349,11 +2349,13 @@ async def test_permanent_delete_quiesce_closes_team_execution_admission(
 
 
 @pytest.mark.asyncio
-async def test_team_running_window_follows_round_not_transport(
+async def test_team_running_window_follows_execution_not_round_or_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """归档闸门：运行中 = 请求在途或 round 存活，而非持久 stream/常驻运行时。"""
+    """Only executing members block, even if an old round still owns the stream."""
     from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
+    from openjiuwen.agent_teams.agent.member_activity import MemberActivityRegistry
+    from openjiuwen.agent_teams.schema.status import MemberStatus
 
     manager = TeamManager()
     monkeypatch.setattr(team_manager_module, "_team_manager", manager)
@@ -2361,12 +2363,26 @@ async def test_team_running_window_follows_round_not_transport(
 
     assert not team_manager_module.is_team_session_running(session_id)
 
-    # 进入适配器即算运行中：round 之前的 spec 组装/运行时激活阶段也必须挡住归档。
     manager.begin_request(session_id, "request-1")
-    assert team_manager_module.is_team_session_running(session_id)
+    assert not team_manager_module.is_team_session_running(session_id)
 
     manager.begin_round(session_id, "request-1")
+    assert not team_manager_module.is_team_session_running(session_id)
+
+    registry = MemberActivityRegistry("leader")
+    agent = SimpleNamespace(
+        is_agent_running=lambda: True,
+        _state=SimpleNamespace(member_registry=registry),
+    )
+    manager._runner_team_agents[session_id] = agent
     assert team_manager_module.is_team_session_running(session_id)
+    agent.is_agent_running = lambda: False
+    registry.record("leader", MemberStatus.BUSY)  # lagging leader projection
+    assert not team_manager_module.is_team_session_running(session_id)
+    registry.record("peer", MemberStatus.BUSY)
+    assert team_manager_module.is_team_session_running(session_id)
+    registry.record("peer", MemberStatus.PAUSED)
+    assert not team_manager_module.is_team_session_running(session_id)
 
     # 持久 stream 与常驻运行时在 round 结束后仍然存在，但不得继续算运行中。
     manager.commit_runtime_ready(session_id, "team-1")
@@ -2378,7 +2394,26 @@ async def test_team_running_window_follows_round_not_transport(
     assert manager.is_runtime_active(session_id)
     assert not team_manager_module.is_team_session_running(session_id)
 
-    # 提前退出的请求（校验失败等）由适配器兜底解除标记。
     manager.begin_request(session_id, "request-2")
     manager.end_request(session_id, "request-2")
     assert not team_manager_module.is_team_session_running(session_id)
+
+
+@pytest.mark.parametrize("status", ["running", "waiting_for_human", "completed", "failed"])
+@pytest.mark.parametrize("live", [False, True])
+def test_team_running_checks_workflow_execution_only(monkeypatch, status, live):
+    from jiuwenswarm.agents.harness.team import team_manager as module
+
+    manager = TeamManager()
+    monkeypatch.setattr(module, "_team_manager", manager)
+    run = SimpleNamespace(
+        status="running",
+        phases=[SimpleNamespace(agents=[SimpleNamespace(status=status)])],
+    )
+    manager._workflow_handlers["sid"] = SimpleNamespace(get_run_states=lambda: {"wf": run})
+    manager._background_task_controllers["sid"] = SimpleNamespace(
+        _active={"wf": object()} if live else {},
+    )
+    assert module.is_team_session_running("sid") is (live and status == "running")
+    run.status = "paused"
+    assert not module.is_team_session_running("sid")

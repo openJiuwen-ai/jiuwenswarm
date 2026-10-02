@@ -280,22 +280,6 @@ check_web_up_dependency() {
         DEPLOY_VARS["WEB_STATIC_PORT"]="5173"
         warning "WEB_STATIC_PORT not set, using default: 5173"
     fi
-
-    # jiuwenswarm-web 的 /auth-api 反代目标(IAM, 即 control-panel 8090)。
-    # 复用 check_gateway_up_dependency 已解析的 AGENTOS_AUTH_SERVICE_URL, 保证 gateway 与 web
-    # 两侧永远指向同一个 IAM 实例, 不会出现 gateway 认 master 而 web 认 localhost 的分叉;
-    # .env.custom 里若手动覆盖 AGENTOS_AUTH_SERVICE_URL, 两边一起跟着覆盖。
-    if [ -z "${DEPLOY_VARS["IAM_AUTH_SERVICE_URL"]:-}" ]; then
-        DEPLOY_VARS["IAM_AUTH_SERVICE_URL"]="${DEPLOY_VARS["AGENTOS_AUTH_SERVICE_URL"]}"
-        info "IAM_AUTH_SERVICE_URL not set, reusing AGENTOS_AUTH_SERVICE_URL: ${DEPLOY_VARS["IAM_AUTH_SERVICE_URL"]}"
-    fi
-
-    # 一体机模式开关: 仅 "true" 视为开启, 其余一律视为关闭 (默认不显示登出按钮)。
-    if [ "${DEPLOY_VARS["WEB_REMOTE_MODE"]:-}" != "true" ]; then
-        DEPLOY_VARS["WEB_REMOTE_MODE"]=""
-    else
-        info "WEB_REMOTE_MODE=true: all-in-one mode, frontend will show logout button"
-    fi
 }
 
 check_dependency() {

@@ -117,6 +117,9 @@
   --color-feedback-info-subtle: rgba(59, 130, 246, 0.08);
   --color-tag-info-text: #0f5ed4;
   --color-tag-info-surface: #deecff;
+  /* 技能版本管理“默认”徽标：2026-09-23 用户指定的精确色值 */
+  --color-skill-version-default-text: #0950de;
+  --color-skill-version-default-surface: #cedefd;
   --color-tag-neutral-text: #191919;
   --color-tag-neutral-surface: #f5f5f5;
   --color-feedback-success-toast: #d5f2dc;
@@ -196,6 +199,7 @@
   --color-skill-action-hover: #f0f0f0;
   --color-skill-card-action-surface: #f5f5f5;
   --color-skill-card-action-hover-surface: #f0f7ff;
+  --color-skill-card-action-loading-surface: #F0F7FF;
   --color-skill-badge-multimodal-surface: #d5f2dc;
   --color-skill-badge-multimodal-text: #029931;
   --color-skill-evolution-card-surface: #fafafa;

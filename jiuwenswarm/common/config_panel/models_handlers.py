@@ -29,6 +29,7 @@ from openjiuwen.core.foundation.llm.utils.provider_utils import is_openai_accoun
 
 from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
+    _ensure_model_business_ids,
     get_config,
     get_config_raw,
     get_available_models,
@@ -45,7 +46,8 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
     has_kv_cache_affinity_capability,
     is_affinity_enabled,
 )
-from jiuwenswarm.common.model_config_validation import probe_model_connection
+from jiuwenswarm.common.model_catalog import ModelCatalog
+from jiuwenswarm.common.model_config_validation import probe_model_connection, raise_if_invalid
 from jiuwenswarm.common.reasoning_config import (
     effective_endpoint_profile,
     validate_reasoning_level_for_model,
@@ -682,6 +684,9 @@ async def models_list_handler(
             is_default = entry.get("is_default", False)
             model_name = str(mcc.get("model_name", "") or "").strip()
             result_entry = {
+                # 模型稳定 ID（模型组路由依据）；由 _ensure_model_business_ids
+                # 迁移/校验后注入，前端据此关联模型组与路由。
+                "model_id": entry.get("model_id", ""),
                 "model_name": model_name,
                 "api_base": mcc.get("api_base", ""),
                 # 凭据绝不能随列表下发到浏览器
@@ -758,6 +763,7 @@ async def models_list_handler(
         active_model = result[0]["model_name"] if result else ""
         await channel.send_response(ws, req_id, ok=True, payload={
             "models": result,
+            "model_groups": ModelCatalog(config).list_public_groups(),
             "active_model": active_model,
         })
     except Exception as exc:  # noqa: BLE001
@@ -796,7 +802,13 @@ async def models_replace_all_handler(
             )
         ):
             update_kv_cache_affinity_enabled_in_config(False)
-        update_default_models_in_config(new_models)
+        # Replace only defaults inside a complete candidate so stable IDs,
+        # AgentOS entries and model groups are validated and preserved.
+        candidate_models = dict((get_config_raw().get("models") or {}))
+        candidate_models["defaults"] = new_models
+        _ensure_model_business_ids(candidate_models)
+        raise_if_invalid(candidate_models)
+        update_default_models_in_config(candidate_models["defaults"])
 
         applied_without_restart = await _apply_models_change(
             on_config_saved, agent_client, changed_keys=["models.defaults"], force=True

@@ -52,6 +52,18 @@ await build({
   plugins: [assetStubPlugin],
 });
 
+await build({
+  entryPoints: ['src/components/AgentManagementPanel/AgentGroupDetailPage.tsx'],
+  bundle: true,
+  packages: 'external',
+  platform: 'node',
+  format: 'esm',
+  outfile: 'node_modules/.cache/agent-management-layout/AgentGroupDetailPage.mjs',
+  loader: { '.css': 'empty', '.png': 'dataurl', '.svg': 'dataurl' },
+  define: { 'import.meta.env': '{}' },
+  plugins: [assetStubPlugin],
+});
+
 for (const name of ['MarketCard', 'MyMarketCard']) {
   await build({
     entryPoints: [`src/components/ConnectorMarket/${name}.tsx`], bundle: true,
@@ -74,6 +86,14 @@ await build({
   entryPoints: ['src/components/AgentManagementPanel/GroupCard.tsx'],
   bundle: true, packages: 'external', platform: 'node', format: 'esm',
   outfile: 'node_modules/.cache/agent-management-layout/GroupCard.mjs',
+  loader: { '.css': 'empty', '.png': 'dataurl', '.svg': 'dataurl' },
+  define: { 'import.meta.env': '{}' }, plugins: [assetStubPlugin],
+});
+
+await build({
+  entryPoints: ['src/components/AgentManagementPanel/AgentGroupEditor.tsx'],
+  bundle: true, packages: 'external', platform: 'node', format: 'esm',
+  outfile: 'node_modules/.cache/agent-management-layout/AgentGroupEditor.mjs',
   loader: { '.css': 'empty', '.png': 'dataurl', '.svg': 'dataurl' },
   define: { 'import.meta.env': '{}' }, plugins: [assetStubPlugin],
 });

@@ -93,6 +93,8 @@ class SessionExecutionHandle:
     generation: int
     work_kind: SessionWorkKind
     parent_execution_id: str | None = None
+    root_work_kind: SessionWorkKind | None = None
+    root_request_id: str | None = None
     waiting_control_id: str | None = None
     state: SessionExecutionState = SessionExecutionState.QUEUED
     created_at: float = field(default_factory=time.monotonic)
@@ -112,6 +114,8 @@ class SessionExecutionHandle:
             generation=self.generation,
             work_kind=self.work_kind,
             parent_execution_id=self.parent_execution_id,
+            root_work_kind=self.root_work_kind,
+            root_request_id=self.root_request_id,
             waiting_control_id=self.waiting_control_id,
             state=self.state,
             created_at=self.created_at,
@@ -130,6 +134,8 @@ class SessionExecutionSnapshot:
     generation: int
     work_kind: SessionWorkKind
     parent_execution_id: str | None
+    root_work_kind: SessionWorkKind | None
+    root_request_id: str | None
     waiting_control_id: str | None
     state: SessionExecutionState
     created_at: float

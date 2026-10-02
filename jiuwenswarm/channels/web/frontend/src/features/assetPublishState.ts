@@ -1,4 +1,9 @@
 import type { PublishMetadata, PublishRecord } from '../types/assetPublish';
+
+export function canShowAssetPublish(installed: boolean | undefined, capability = true): boolean {
+  return installed === true && capability;
+}
+
 export function publishOutcome(record: PublishRecord): string {
   if (record.execution_status === 'queued' || record.execution_status === 'uploading') return record.execution_status;
   if (record.execution_status === 'failed') return 'failed';

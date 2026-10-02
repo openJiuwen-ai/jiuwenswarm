@@ -1,30 +1,44 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for cron job model validation, incl. Opencode Zen free-model fallback.
+"""Tests for cron job model validation, incl. free-model fallbacks.
 
-The frontend appends Zen free models (in-memory only, never written to
-config.yaml) to ``models.list`` and lets the user pick one for a cron job.
+The frontend appends free models (in-memory only, never written to config.yaml)
+to ``models.list`` and lets the user pick one for a cron job.
 ``validate_cron_model`` must resolve such an id/alias so job creation does not
 fail with ``Unknown model``, while still rejecting genuinely unknown models.
+
+免费模型有两个来源：Opencode Zen 缓存（已停用）和华为账号登录送的模型
+（``common/auth/model_catalog``，Zen 停用后的唯一来源）。两者都要命中即放行，
+来源为空时仍拒绝。
 """
 
 from __future__ import annotations
 
 import pytest
 
+from jiuwenswarm.common.auth.model_catalog import LoginModel
 from jiuwenswarm.gateway.cron.models import (
     CronJob,
     normalize_cron_job_mcp,
+    resolve_cron_model,
     validate_cron_model,
 )
 
 
 @pytest.fixture(autouse=True)
-def _no_zen_free_models(monkeypatch: pytest.MonkeyPatch) -> None:
-    """By default no Zen free models are cached (clean baseline)."""
+def _no_free_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """By default no free models of any source are available (clean baseline).
+
+    Zen 缓存与登录模型目录都置空；需要免费模型的用例在自身内单独覆盖，
+    避免测试结果依赖本机登录状态。
+    """
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.opencode_zen.get_zen_free_model_entries",
         lambda: [],
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.auth.model_catalog.get_models",
+        lambda *args, **kwargs: [],
     )
 
 
@@ -218,6 +232,118 @@ def test_validate_cron_model_zen_cache_empty_still_rejected(
     monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
     with pytest.raises(ValueError, match="Unknown model 'deepseek-v4-flash-free'"):
         validate_cron_model("deepseek-v4-flash-free")
+
+
+# ---------------------------------------------------------------------------
+# 登录送的免费模型（华为账号登录，Zen 停用后的唯一免费来源）
+# ---------------------------------------------------------------------------
+
+
+def _login_catalog(names: list[str]) -> list[LoginModel]:
+    return [LoginModel(model_name=name, display_name=name) for name in names]
+
+
+def test_validate_cron_model_accepts_login_free_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """登录免费模型命中登录模型目录即放行，返回目录里的规范名。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_model_config",
+        lambda name, index=None: None,
+    )
+    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+    monkeypatch.setattr(
+        "jiuwenswarm.common.auth.model_catalog.get_models",
+        lambda *args, **kwargs: _login_catalog(["GLM-5.2", "Kimi-K2.6"]),
+    )
+    assert validate_cron_model("GLM-5.2") == "GLM-5.2"
+    assert validate_cron_model("Kimi-K2.6") == "Kimi-K2.6"
+
+
+def test_validate_cron_model_accepts_login_free_model_index_suffix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """名字带 "#index" 通道侧全局序号后缀时取前半段匹配（与 passthrough 一致）。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_model_config",
+        lambda name, index=None: None,
+    )
+    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+    monkeypatch.setattr(
+        "jiuwenswarm.common.auth.model_catalog.get_models",
+        lambda *args, **kwargs: _login_catalog(["GLM-5.2"]),
+    )
+    assert validate_cron_model("GLM-5.2#3") == "GLM-5.2"
+
+
+def test_validate_cron_model_login_catalog_empty_still_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未登录/活动未生效（登录模型目录为空）时，免费模型名仍被拒绝。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_model_config",
+        lambda name, index=None: None,
+    )
+    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+    with pytest.raises(ValueError, match="Unknown model 'GLM-5.2'"):
+        validate_cron_model("GLM-5.2")
+
+
+def test_validate_cron_model_config_model_wins_over_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同名时自配模型优先（与 get_available_models 的去重规则一致）。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_model_config",
+        lambda name, index=None: _user_model_entry(),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.auth.model_catalog.get_models",
+        lambda *args, **kwargs: _login_catalog(["my-model"]),
+    )
+    assert validate_cron_model("my-model") == "my-model"
+
+
+def test_resolve_cron_model_reports_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """resolve_cron_model 额外返回来源标记，供 controller 决定是否绑定登录凭据。"""
+    # 未指定模型
+    assert resolve_cron_model(None) == (None, "")
+    assert resolve_cron_model("   ") == (None, "")
+    # 自配模型
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_model_config",
+        lambda name, index=None: _user_model_entry(),
+    )
+    assert resolve_cron_model("my-model") == ("my-model", "config")
+    # 登录模型（自配查不到时）
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_model_config",
+        lambda name, index=None: None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.auth.model_catalog.get_models",
+        lambda *args, **kwargs: _login_catalog(["GLM-5.2"]),
+    )
+    assert resolve_cron_model("GLM-5.2") == ("GLM-5.2", "login")
+    # 同名时自配优先（来源仍是 config）
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_model_config",
+        lambda name, index=None: _user_model_entry(),
+    )
+    assert resolve_cron_model("my-model") == ("my-model", "config")
+    # Zen 免费模型
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_model_config",
+        lambda name, index=None: None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.opencode_zen.get_zen_free_model_entries",
+        lambda: [_zen_free_entry()],
+    )
+    assert resolve_cron_model("deepseek-v4-flash-free") == (
+        "deepseek-v4-flash-free",
+        "zen",
+    )
 
 
 # ---------------------------------------------------------------------------

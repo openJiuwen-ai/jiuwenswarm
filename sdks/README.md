@@ -129,8 +129,10 @@ No JSON-RPC endpoint or persistent stdio service is involved.
   grace is 30 seconds. Normal run cancellation uses protocol control. Force
   termination after grace is a failure fallback, not proof of Runtime cleanup.
 - Session queries return owned single-Agent metadata, not handles to another
-  process. Cross-process cancel/answer and concurrent same-Session scheduling
-  are not provided. Serialize calls modifying the same Session.
+  process. Cross-process cancel/answer is not provided. The Process CLI holds
+  an exclusive Session lock until Runtime cleanup finishes, so another process
+  receives retryable `SESSION_BUSY`. Resend the same Agent definition on resume;
+  changing or omitting it returns `AGENT_DEFINITION_SESSION_CONFLICT`.
 
 ## Tests
 

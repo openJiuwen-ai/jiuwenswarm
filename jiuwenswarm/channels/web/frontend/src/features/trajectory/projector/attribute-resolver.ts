@@ -102,6 +102,8 @@ export interface NormalizedTrajectoryAttributes {
   contextOperationId?: string
   langfuseObservationType?: string
   errorType?: string
+  /** What a turn was handed, stated on the span that ran it. */
+  spanInput?: string
 }
 
 /** One replayable stream event read from the OpenJiuwen stream-chunk events. */
@@ -765,6 +767,9 @@ function normalizeAttributeEntries(
   ]))
   assign(target, 'errorType', resolveString(raw, [
     STANDARD_ATTRIBUTES.errorType,
+  ]))
+  assign(target, 'spanInput', resolveString(raw, [
+    OPENJIUWEN_ATTRIBUTES.spanInput,
   ]))
 
   return target

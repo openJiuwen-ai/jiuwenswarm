@@ -201,7 +201,10 @@ async def test_real_core_nested_permission_resume(tmp_path, case, target_name):
     try:
         results = await execute(ctx, calls, session, None)
         assert all(isinstance(result, ToolInterruptException) for result, _ in results)
-        state, _ = handler.build_interrupt_state(results, calls, AssistantMessage(tool_calls=calls), 0)
+        state, _ = handler.build_interrupt_state(
+            results, calls, AssistantMessage(tool_calls=calls),
+            iteration=0,
+        )
         data[INTERRUPTION_KEY] = state
         cards = queue.reconcile(snapshot(state), root_session_id="session-a").cards
         assert len(cards) == 2 and executed == []

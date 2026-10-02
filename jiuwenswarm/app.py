@@ -9,9 +9,7 @@ Supports ``--dotenv <path>`` for multi-instance isolation.
 
 from __future__ import annotations
 import signal
-import subprocess
 import sys
-import time
 import os
 
 from jiuwenswarm.dotenv_early import parse_dotenv_early, get_parsed_dotenv, load_dotenv_runtime
@@ -22,6 +20,7 @@ from jiuwenswarm.common.debug_dump import install_async_dump_handler
 from jiuwenswarm.common.media_capability_config import (
     migrate_media_capability_switches,
 )
+from jiuwenswarm.common.process_supervision import SUPERVISOR_PID_ENV, supervise
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
     cleanup_stale_openjiuwen_descs,
@@ -65,7 +64,7 @@ def main() -> None:
     # Route SIGTERM through the same shutdown path as Ctrl-C.
     #
     # Python's default SIGTERM disposition kills this process outright, so the
-    # ``finally: _terminate_all()`` below never runs and the AgentServer /
+    # ``finally`` teardown in ``supervise()`` never runs and the AgentServer /
     # Gateway children keep running as orphans holding their ports. That is
     # exactly what happens when a launcher stops this process by PID (e.g.
     # ``jiuwenswarm-start --stop <name>``); Ctrl-C never showed the bug because
@@ -110,51 +109,16 @@ def main() -> None:
         "env": {
             **os.environ,
             "JIUWENSWARM_RUNTIME_WORKSPACE_READY": "1",
+            SUPERVISOR_PID_ENV: str(os.getpid()),
         }
     }
+    if os.name != "nt":
+        # Own process group per child so a crash respawn can killpg the dead
+        # child's lingering descendants (see process_supervision). Ctrl-C and
+        # SIGTERM still tear everything down through this supervisor's handlers.
+        _popen_kwargs["start_new_session"] = True
 
-    # Populated as each child spawns, so _terminate_all() always covers exactly
-    # what is currently running - including when the second spawn never happens.
-    procs: list[subprocess.Popen] = []
-
-    def _terminate_all() -> None:
-        for p in procs:
-            if p.poll() is None:
-                p.terminate()
-        deadline = time.time() + 12
-        while time.time() < deadline:
-            if all(p.poll() is not None for p in procs):
-                break
-            time.sleep(0.1)
-        for p in procs:
-            if p.poll() is None:
-                p.kill()
-
-    exit_code = 0
-    try:
-        # Spawning happens inside the try so that a signal (or a failing second
-        # Popen) arriving between the two spawns still tears the first one down.
-        # KeyboardInterrupt is a BaseException, so an `except Exception` guard
-        # around the second spawn would have let it orphan the AgentServer.
-        agent = subprocess.Popen(agent_cmd, **_popen_kwargs)
-        procs.append(agent)
-        gateway = subprocess.Popen(gateway_cmd, **_popen_kwargs)
-        procs.append(gateway)
-
-        while True:
-            if agent.poll() is not None:
-                exit_code = agent.returncode or 0
-                break
-            if gateway.poll() is not None:
-                exit_code = gateway.returncode or 0
-                break
-            time.sleep(0.25)
-    except KeyboardInterrupt:
-        exit_code = 130
-    finally:
-        _terminate_all()
-
-    raise SystemExit(exit_code)
+    raise SystemExit(supervise({"agentserver": agent_cmd, "gateway": gateway_cmd}, _popen_kwargs))
 
 
 if __name__ == "__main__":

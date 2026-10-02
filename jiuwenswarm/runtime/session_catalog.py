@@ -38,6 +38,7 @@ class SessionListInput:
     channel_id: str
     limit: int = _DEFAULT_LIMIT
     offset: int = 0
+    search: str = ""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -232,6 +233,9 @@ def list_sessions(request: SessionListInput) -> SessionListResult:
         raise SessionCatalogError("session list input is required", code="BAD_REQUEST")
     channel_id = _normalize_channel_id(request.channel_id)
     limit, offset = _validate_page(request.limit, request.offset)
+    if not isinstance(request.search, str) or len(request.search) > 200:
+        raise SessionCatalogError("invalid session search", code="BAD_REQUEST")
+    search_terms = request.search.casefold().split()
     try:
         raw_sessions = _collect_session_metadata()
         session_items: list[SessionSummary] = []
@@ -239,8 +243,21 @@ def list_sessions(request: SessionListInput) -> SessionListResult:
             if not isinstance(metadata, Mapping):
                 continue
             projected = _project_session(metadata, channel_id=channel_id)
-            if projected is not None:
-                session_items.append(projected)
+            if projected is None:
+                continue
+            if search_terms:
+                searchable = " ".join(
+                    (
+                        projected.session_id,
+                        projected.title,
+                        projected.project_id,
+                        projected.project_dir,
+                        projected.mode,
+                    )
+                ).casefold()
+                if not all(term in searchable for term in search_terms):
+                    continue
+            session_items.append(projected)
         filtered = tuple(session_items)
     except SessionCatalogError:
         raise

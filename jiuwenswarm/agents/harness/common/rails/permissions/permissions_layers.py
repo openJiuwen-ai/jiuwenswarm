@@ -118,16 +118,28 @@ def _str_names(raw: Any) -> list[str]:
     return names
 
 
-def _tool_names_at_level(layer: dict[str, Any], level: str) -> set[str]:
-    names: set[str] = set()
+def _ordered_tool_names_at_level(layer: dict[str, Any], level: str) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def _add(name: str) -> None:
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+
     tools = layer.get("tools")
     if isinstance(tools, dict):
         for name, raw in tools.items():
             if isinstance(name, str) and name.strip() and _scalar_level(raw) == level:
-                names.add(name.strip())
+                _add(name.strip())
     key = {"allow": "allow_tools", "ask": "ask_tools", "deny": "deny_tools"}[level]
-    names.update(_str_names(layer.get(key)))
+    for name in _str_names(layer.get(key)):
+        _add(name)
     return names
+
+
+def _tool_names_at_level(layer: dict[str, Any], level: str) -> set[str]:
+    return set(_ordered_tool_names_at_level(layer, level))
 
 
 def _override_ids(raw: Any) -> set[str]:
@@ -250,16 +262,23 @@ def overlay_from_effective(
     base_path_keys = _path_keys(global_layer) | _path_keys(user_layer) | _path_keys(skip_layer)
 
     out: dict[str, Any] = {}
-    allow = [name for name in _str_names(src.get("allow_tools")) if name not in base_allow]
-    allow = list(dict.fromkeys(allow))
+    src_allow = _ordered_tool_names_at_level(src, "allow")
+    src_allow_set = set(src_allow)
+    allow = [name for name in src_allow if name not in base_allow]
     if allow:
         out["allow_tools"] = allow
 
     if not session:
-        ask = [name for name in _str_names(src.get("ask_tools")) if name not in base_ask]
-        deny = [name for name in _str_names(src.get("deny_tools")) if name not in base_deny]
-        ask = list(dict.fromkeys(ask))
-        deny = list(dict.fromkeys(deny))
+        ask = [
+            name
+            for name in _ordered_tool_names_at_level(src, "ask")
+            if name not in base_ask and name not in src_allow_set
+        ]
+        deny = [
+            name
+            for name in _ordered_tool_names_at_level(src, "deny")
+            if name not in base_deny and name not in src_allow_set
+        ]
         if ask:
             out["ask_tools"] = ask
         if deny:

@@ -9,7 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+from jiuwenswarm.agents.swarm.agent_group import (
+    load_agent_group_package,
+)
+from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -109,6 +112,63 @@ def test_load_agent_group_merges_declared_and_discovered_skills(
             "declared_skill",
             "another_skill",
         ]
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "cli_agent"),
+    [("codex", "codex"), ("claudecode", "claude")],
+)
+def test_load_external_runtime_reuses_cli_config_and_manifest_skill_paths(
+    tmp_path: Path,
+    provider_name: str,
+    cli_agent: str,
+) -> None:
+    group = _minimal_group(tmp_path)
+    shared = group / "skills" / "shared"
+    shared.mkdir(parents=True)
+    (shared / "SKILL.md").write_text("# shared\n", encoding="utf-8")
+    manifest_path = group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["skills"] = [{"dir": "./skills/shared", "mode": "all"}]
+    _write_json(manifest_path, manifest)
+
+    member_skill = group / "agents" / "member1" / "skills" / "review"
+    member_skill.mkdir(parents=True)
+    (member_skill / "SKILL.md").write_text("# review\n", encoding="utf-8")
+    member_manifest_path = group / "agents" / "member1" / "manifest.json"
+    member_manifest = json.loads(member_manifest_path.read_text(encoding="utf-8"))
+    member_manifest["skills"] = [{"dir": "./skills/review", "mode": "all"}]
+    member_manifest["runtime"] = {
+        "provider_name": provider_name,
+        "provider_version": "0.1.0",
+        "config": {"skill_conflict": "replace"},
+    }
+    _write_json(member_manifest_path, member_manifest)
+
+    templates = load_agent_group_package(group)
+    template = templates["member1"]
+    assert template.runtime is not None
+    assert template.runtime.provider_name == provider_name
+    config = external_cli_agent_spec_from_template(template)
+    assert config is not None
+    assert config.cli_agent == cli_agent
+    assert config.skill_conflict == "replace"
+    assert [Path(skill["dir"]).name for skill in config.skills] == ["review", "shared"]
+
+
+def test_load_external_runtime_rejects_leader(tmp_path: Path) -> None:
+    group = _minimal_group(tmp_path)
+    leader_path = group / "agents" / "leader" / "manifest.json"
+    leader = json.loads(leader_path.read_text(encoding="utf-8"))
+    leader["runtime"] = {
+        "provider_name": "codex",
+        "provider_version": "0.1.0",
+        "config": {},
+    }
+    _write_json(leader_path, leader)
+
+    with pytest.raises(ValueError, match="leader does not support"):
+        load_agent_group_package(group)
 
 
 @pytest.mark.parametrize(

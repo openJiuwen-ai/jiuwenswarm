@@ -15,6 +15,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 import type { WorkflowAgent } from './workflowTypes';
+import { parseVerifyOutcome, verifyVoteText } from './workflowTypes';
 
 // ── 字数格式化 ────────────────────────────────────────────
 
@@ -63,13 +64,16 @@ export const accentTabActiveClass: Record<DetailAccent, string> = {
 };
 
 /** 根据 agent 字段汇总可用的详情 section，标签与弹窗共用同一数据源。 */
-export function buildDetailSections(agent: WorkflowAgent): DetailSection[] {
+export function buildDetailSections(
+  t: (key: string, opts?: Record<string, unknown>) => string,
+  agent: WorkflowAgent,
+): DetailSection[] {
   const secs: DetailSection[] = [];
-  if (agent.prompt) secs.push({ key: 'prompt', label: '输入', icon: '▶', content: agent.prompt, accent: 'blue' });
-  if (agent.human_prompt) secs.push({ key: 'human_prompt', label: '人工提问', icon: '☺', content: agent.human_prompt, accent: 'amber' });
-  if (agent.human_reply) secs.push({ key: 'human_reply', label: '人工回复', icon: '✓', content: agent.human_reply, accent: 'emerald' });
-  if (agent.outcome) secs.push({ key: 'outcome', label: '输出', icon: '◀', content: agent.outcome, accent: 'emerald' });
-  if (agent.error) secs.push({ key: 'error', label: '错误', icon: '✕', content: agent.error, accent: 'red' });
+  if (agent.prompt) secs.push({ key: 'prompt', label: t('swarmflow.sectionInput'), icon: '▶', content: agent.prompt, accent: 'blue' });
+  if (agent.human_prompt) secs.push({ key: 'human_prompt', label: t('swarmflow.sectionHumanPrompt'), icon: '☺', content: agent.human_prompt, accent: 'amber' });
+  if (agent.human_reply) secs.push({ key: 'human_reply', label: t('swarmflow.sectionHumanReply'), icon: '✓', content: agent.human_reply, accent: 'emerald' });
+  if (agent.outcome) secs.push({ key: 'outcome', label: t('swarmflow.sectionOutput'), icon: '◀', content: agent.outcome, accent: 'emerald' });
+  if (agent.error) secs.push({ key: 'error', label: t('swarmflow.sectionError'), icon: '✕', content: agent.error, accent: 'red' });
   return secs;
 }
 
@@ -87,9 +91,52 @@ function tryParseJson(content: string): unknown | null {
   }
 }
 
+// 块级 Markdown 标记（标题 / 列表 / 引用 / 表格 / 围栏代码块）。
+const MARKDOWN_HINT_RE = /(^|\n)\s{0,3}(#{1,6}\s|[-*+]\s|\d+[.)]\s|>\s|\|)|```/;
+
+/**
+ * 保守判定"值得按 Markdown 渲染"：多行且带块级标记。
+ * 多行纯散文不走这里（避免 Markdown 段落合并丢换行，仍按 pre-wrap 展示）；
+ * 单行短文本维持 JSON 字符串原样。
+ */
+function looksLikeMarkdown(text: string): boolean {
+  if (!text.includes('\n')) return false;
+  return MARKDOWN_HINT_RE.test(text);
+}
+
+/** Engine prefixes a completed workflow's structured result with this fixed banner. */
+const WORKFLOW_RESULT_PREFIX = 'Workflow completed, result: ';
+
+/** Parse a workflow result section, stripping the engine banner prefix when present. */
+function tryParseWorkflowResult(content: string): unknown | null {
+  const direct = tryParseJson(content);
+  if (direct !== null) return direct;
+  const idx = content.indexOf(WORKFLOW_RESULT_PREFIX);
+  if (idx === -1) return null;
+  return tryParseJson(content.slice(idx + WORKFLOW_RESULT_PREFIX.length));
+}
+
 function JsonValue({ value }: { value: unknown }) {
   if (value === null) return <span className="text-text">null</span>;
-  if (typeof value === 'string') return <span className="text-text">&quot;{value}&quot;</span>;
+  if (typeof value === 'string') {
+    // JSON 字段值里嵌的 Markdown（schema 结构化输出的 report / feedback 等）：
+    // 多行且带块级标记 → Markdown 卡片渲染；多行纯文本 → pre-wrap 保换行；
+    // 单行短文本 → 维持 "value" 引号原样。
+    if (looksLikeMarkdown(value)) {
+      return (
+        <div
+          className="my-1 w-full rounded-md border border-border/40 bg-secondary/30 px-2 py-1.5"
+          data-testid="team-area-swarmflow-detail-modal-json-markdown"
+        >
+          <MarkdownRenderer content={value} className="text-xs text-text max-w-none" />
+        </div>
+      );
+    }
+    if (value.includes('\n')) {
+      return <span className="text-text whitespace-pre-wrap break-words">&quot;{value}&quot;</span>;
+    }
+    return <span className="text-text">&quot;{value}&quot;</span>;
+  }
   if (typeof value === 'number') return <span className="text-text">{value}</span>;
   if (typeof value === 'boolean') return <span className="text-text">{String(value)}</span>;
   return <span className="text-text">{String(value)}</span>;
@@ -195,9 +242,14 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange }: Age
   const content = activeSection?.content ?? '';
   // 仅对输入/输出尝试 JSON 渲染
   const isJsonSection = activeSection?.key === 'prompt' || activeSection?.key === 'outcome';
-  // 错误/结果为纯文本（traceback / 摘要），不套 Markdown
-  const isPlainTextSection = activeSection?.key === 'error' || activeSection?.key === 'result';
-  const jsonData = isJsonSection ? tryParseJson(content) : null;
+  const isResultSection = activeSection?.key === 'result';
+  // 错误为纯文本（traceback），不套 Markdown
+  const isPlainTextSection = activeSection?.key === 'error';
+  const jsonData = isJsonSection
+    ? tryParseJson(content)
+    : isResultSection
+      ? tryParseWorkflowResult(content)
+      : null;
 
   return (
     <div
@@ -210,14 +262,30 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange }: Age
         type="button"
         className="absolute inset-0 bg-black/60"
         onClick={onClose}
-        aria-label="关闭"
+        aria-label={t('common.close')}
         data-testid="team-area-swarmflow-detail-modal-backdrop"
       />
       <div className="relative w-full max-w-4xl max-h-[85vh] overflow-hidden rounded-xl border border-border bg-card shadow-2xl animate-rise flex flex-col">
         {/* 标题：Agent 名 · 当前 section label */}
         <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-border bg-panel shrink-0">
           <div className="min-w-0 flex-1">
-            <h3 className="text-base font-semibold text-text truncate" data-testid="team-area-swarmflow-detail-modal-title">{agentName}</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-semibold text-text truncate" data-testid="team-area-swarmflow-detail-modal-title">{agentName}</h3>
+              {activeSection?.key === 'outcome' && (() => {
+                const verdict = parseVerifyOutcome(content);
+                if (!verdict) return null;
+                const badgeClass = verdict.type === 'pass' 
+                  ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                  : verdict.type === 'fail'
+                  ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800'
+                  : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800';
+                return (
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${badgeClass}`}>
+                    {verifyVoteText(t, verdict)}
+                  </span>
+                );
+              })()}
+            </div>
             <p className="text-xs text-text-muted mt-0.5" data-testid="team-area-swarmflow-detail-modal-section-label" data-variant={activeSection?.key}>{activeSection?.label}</p>
           </div>
           <button
@@ -293,7 +361,10 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange }: Age
             <pre className="text-xs text-text whitespace-pre-wrap break-words font-mono">{content}</pre>
           ) : jsonData !== null ? (
             <JsonTreeView data={jsonData} />
-          ) : isJsonSection || isPlainTextSection ? (
+          ) : isPlainTextSection ? (
+            <pre className="text-xs text-text whitespace-pre-wrap break-words font-mono">{content}</pre>
+          ) : isJsonSection && !looksLikeMarkdown(content) ? (
+            /* 解析失败的坏 JSON（以 {/[ 开头）或无块级标记的纯文本：等宽原文保真 */
             <pre className="text-xs text-text whitespace-pre-wrap break-words font-mono">{content}</pre>
           ) : (
             <MarkdownRenderer

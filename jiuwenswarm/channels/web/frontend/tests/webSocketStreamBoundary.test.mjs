@@ -154,6 +154,100 @@ async function mountConnection(context, sessionIds) {
   };
 }
 
+test('cross-session queue status is visible while the target is processing', async (context) => {
+  const sessionId = 'target-session';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    useChatStore.getState().setProcessing(sessionId, true);
+    const message = {
+      message_id: 'sm-1',
+      source_session_id: 'source-session',
+      source_title: 'Source',
+      target_session_id: sessionId,
+      content: 'Check the weather',
+      status: 'queued',
+    };
+    connection.receive('session.message.updated', { session_id: sessionId, message });
+    assert.equal(connection.runtime().isProcessing, true);
+    assert.deepEqual(connection.runtime().queuedSessionMessages, [{
+      messageId: 'sm-1',
+      sourceSessionId: 'source-session',
+      sourceTitle: 'Source',
+      content: 'Check the weather',
+    }]);
+
+    connection.receive('session.message.updated', {
+      session_id: sessionId,
+      message: { ...message, status: 'running' },
+    });
+    assert.deepEqual(connection.runtime().queuedSessionMessages, []);
+    assert.equal(connection.runtime().isProcessing, true);
+  } finally {
+    await connection.dispose();
+  }
+});
+
+test('late queued status cannot restore a message that already started', async (context) => {
+  const sessionId = 'target-session';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    const message = {
+      message_id: 'sm-late',
+      target_session_id: sessionId,
+      source_session_id: 'source-session',
+      source_title: 'Source',
+      content: 'Late message',
+    };
+    connection.receive('session.message.updated', {
+      session_id: sessionId,
+      message: { ...message, status: 'running' },
+    });
+    connection.receive('session.message.updated', {
+      session_id: sessionId,
+      message: { ...message, status: 'queued' },
+    });
+    assert.deepEqual(connection.runtime().queuedSessionMessages, []);
+  } finally {
+    await connection.dispose();
+  }
+});
+
+test('queue snapshot removes stale entries and preserves live updates', async (context) => {
+  const sessionId = 'target-session';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    const store = useChatStore.getState();
+    const stale = { messageId: 'sm-stale', sourceSessionId: 'source', sourceTitle: 'Source', content: 'Stale' };
+    const live = { messageId: 'sm-live', sourceSessionId: 'source', sourceTitle: 'Source', content: 'Live' };
+    const recovered = { messageId: 'sm-recovered', sourceSessionId: 'source', sourceTitle: 'Source', content: 'Recovered' };
+    const initialSnapshot = store.beginQueuedSessionMessageSnapshot(sessionId);
+    store.reconcileQueuedSessionMessageSnapshot(sessionId, initialSnapshot, [recovered]);
+    assert.deepEqual(connection.runtime().queuedSessionMessages, [recovered]);
+
+    store.upsertQueuedSessionMessage(sessionId, stale);
+    const snapshot = store.beginQueuedSessionMessageSnapshot(sessionId);
+    store.upsertQueuedSessionMessage(sessionId, live);
+    store.reconcileQueuedSessionMessageSnapshot(sessionId, snapshot, []);
+    assert.deepEqual(connection.runtime().queuedSessionMessages, [live]);
+
+    const nextSnapshot = store.beginQueuedSessionMessageSnapshot(sessionId);
+    connection.receive('session.message.updated', {
+      session_id: sessionId,
+      message: { message_id: live.messageId, target_session_id: sessionId, status: 'running' },
+    });
+    store.reconcileQueuedSessionMessageSnapshot(sessionId, nextSnapshot, [live]);
+    assert.deepEqual(connection.runtime().queuedSessionMessages, []);
+
+    const older = store.beginQueuedSessionMessageSnapshot(sessionId);
+    const newer = store.beginQueuedSessionMessageSnapshot(sessionId);
+    store.reconcileQueuedSessionMessageSnapshot(sessionId, newer, []);
+    store.reconcileQueuedSessionMessageSnapshot(sessionId, older, [stale]);
+    assert.deepEqual(connection.runtime().queuedSessionMessages, []);
+  } finally {
+    await connection.dispose();
+  }
+});
+
 test('tool call within the batch interval preserves the entire previous segment and isolates the next one', async (context) => {
   const sessionId = 'stream-boundary';
   const connection = await mountConnection(context, [sessionId]);

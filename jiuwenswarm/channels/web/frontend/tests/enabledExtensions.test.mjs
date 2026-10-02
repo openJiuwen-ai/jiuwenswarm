@@ -23,3 +23,22 @@ test('server equipment snapshot makes explicit empty and selected states disting
     mcp: ['filesystem'],
   });
 });
+
+test('restoring equipment selects the mounted Agent without replacing a local choice', () => {
+  const values = new Map();
+  const previousStorage = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
+  };
+  try {
+    restoreSessionEquipment('fork-agent', { agent_template_name: 'expert-a' });
+    assert.equal(JSON.parse(values.get('jiuwenclaw_agent_selection'))['fork-agent'], 'expert-a');
+
+    restoreSessionEquipment('fork-agent', { agent_template_name: 'expert-b' });
+    assert.equal(JSON.parse(values.get('jiuwenclaw_agent_selection'))['fork-agent'], 'expert-a');
+  } finally {
+    globalThis.localStorage = previousStorage;
+  }
+});

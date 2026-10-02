@@ -9,7 +9,10 @@ from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support impor
 
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import InteractionPending
-from jiuwenswarm.extensions.video_duplex.backend.tasks.interactions import information_question
+from jiuwenswarm.extensions.video_duplex.backend.tasks.interactions import (
+    information_question,
+    native_approval_question,
+)
 from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
 from jiuwenswarm.extensions.video_duplex.backend.task_adapter import AgentTaskExecutor
 from jiuwenswarm.extensions.video_duplex.backend.video_search import execute_core_agent
@@ -271,6 +274,90 @@ def test_voice_never_accepts_approval(source):
         )
 
 
+async def test_native_permission_answer_resumes_only_the_matching_task(tmp_path):
+    store = TaskStore(tmp_path / "approval.sqlite")
+    calls = []
+
+    class ApprovalExecutor:
+        async def run(self, task, progress):
+            calls.append(task["request_id"])
+            if task.get("resume_answer"):
+                assert task["interaction"]["answers"] == [{
+                    "question": "允许执行？", "answer": "", "selected_options": ["allow"],
+                }]
+                return {"answer": "approved"}
+            await progress(dict(stage="interaction", interaction=native_approval_question({
+                "request_id": "core-approval", "source": "permission_interrupt",
+                "questions": [{"question": "允许执行？"}],
+            })))
+            store.update(task["id"], lambda row: row.update(execution_settled=True))
+            raise InteractionPending()
+
+    service = TaskService(store, ApprovalExecutor())
+    try:
+        task = submit(service, "native-permission")
+        await until(lambda: store.read(task["id"])["status"] == "waiting_user"
+                    and store.read(task["id"])["output_closed"])
+        answer = [{"question": "允许执行？", "custom_input": "", "selected_options": ["allow"]}]
+        with pytest.raises(ValueError, match="native user interface"):
+            await service.answer("user", "voice", task["id"], "voice-answer", token(service, task), answers=answer)
+        with pytest.raises(ValueError):
+            await service.answer("other", "voice", task["id"], "wrong-owner", token(service, task),
+                                 answers=answer, native_ui=True)
+        with pytest.raises(ValueError):
+            await service.answer("user", "voice", task["id"], "wrong-question", "stale",
+                                 answers=answer, native_ui=True)
+        assert len(calls) == 1
+        await service.answer("user", "voice", task["id"], "ui-answer", token(service, task),
+                             answers=answer, native_ui=True)
+        await until(lambda: store.read(task["id"])["status"] == "completed")
+        assert len(calls) == 2
+        assert store.read(task["id"])["result"]["answer"] == "approved"
+    finally:
+        await service.close()
+
+
+async def test_native_permission_card_replays_and_closes_on_resolution():
+    from jiuwenswarm.extensions.video_duplex.backend.task_adapter import VideoSearchManager
+
+    events = []
+
+    class Channel:
+        async def send_event(self, ws, name, payload):
+            events.append((ws, name, payload))
+
+    manager = VideoSearchManager.__new__(VideoSearchManager)
+    manager.channel = Channel()
+    manager._approval_cards = {}  # pylint: disable=protected-access
+    task = {
+        "id": "job", "session": "task-duplex:web-session", "status": "waiting_user",
+        "interaction": {
+            **native_approval_question({
+                "request_id": "core-approval", "source": "permission_interrupt",
+                "questions": [{"question": "允许执行？"}],
+            }),
+            "id": "interaction-1",
+        },
+    }
+    ws = object()
+    key = ("owner", task["session"], id(ws))
+    await manager._sync_approval_card(ws, task, key)  # pylint: disable=protected-access
+    await manager._sync_approval_card(ws, task, key)  # pylint: disable=protected-access
+    assert [name for _, name, _ in events] == ["chat.ask_user_question"]
+    assert events[0][2]["session_id"] == "web-session"
+    assert events[0][2]["duplex_job_id"] == "job"
+    task["interaction"]["state"] = "accepted"
+    await manager._sync_approval_card(ws, task, key)  # pylint: disable=protected-access
+    assert events[-1][1] == "video.search.confirmation_closed"
+    task["interaction"]["state"] = "pending"
+    resumed_ws = object()
+    await manager._sync_approval_card(  # pylint: disable=protected-access
+        resumed_ws, task, ("owner", task["session"], id(resumed_ws))
+    )
+    assert events[-1][0] is resumed_ws
+    assert events[-1][1] == "chat.ask_user_question"
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -286,14 +373,15 @@ def test_ambiguous_or_destructive_queue_arguments_are_rejected(args):
         )
 
 
-async def test_agent_question_is_not_a_completed_result():
+@pytest.mark.parametrize("source", ["ask_user_interrupt", "permission_interrupt", "confirm_interrupt"])
+async def test_agent_question_is_not_a_completed_result(source):
     class Client:
         async def send_request_stream(self, env):
             yield SimpleNamespace(
                 payload=dict(
                     event_type="chat.ask_user_question",
                     request_id="q",
-                    source="ask_user_interrupt",
+                    source=source,
                     questions=[{"question": "预算是多少？"}],
                 )
             )
@@ -316,6 +404,7 @@ async def test_agent_question_is_not_a_completed_result():
             on_progress=observe,
         )
     assert progress[0]["interaction"]["request_id"] == "q"
+    assert progress[0]["interaction"]["source"] == source
 
 
 async def test_answer_ack_does_not_finish_the_original_live_stream(tmp_path):

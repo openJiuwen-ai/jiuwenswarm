@@ -225,7 +225,11 @@ export function ConnectorMarketPanel({
           id={view.id}
           fromMy={view.fromMy}
           onBack={() => setView({ name: 'market' })}
-          onDeleted={() => setView({ name: 'market' })}
+          onDeleted={() => {
+            setTopTab('my');
+            setMyKind('plugin');
+            setView({ name: 'market' });
+          }}
           onUse={
             onUseExtension
               ? (runtimePackageName) => onUseExtension({ kind: 'plugin', id: runtimePackageName })

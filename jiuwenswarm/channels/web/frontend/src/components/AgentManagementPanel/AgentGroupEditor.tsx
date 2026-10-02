@@ -33,7 +33,7 @@ type AgentGroupEditorProps = {
   onReloadAgents: () => void;
   onReloadSkills: () => void;
   onInstallAgent?: (id: string) => void | Promise<void>;
-  installingAgentId?: string | null;
+  installingAgentIds?: ReadonlySet<string>;
   onInstallSkill?: (skill: SkillOption) => void | Promise<void>;
   installingSkillId?: string | null;
   onCreateAgent?: () => void;
@@ -55,7 +55,7 @@ export function AgentGroupEditor({
   onReloadAgents,
   onReloadSkills,
   onInstallAgent,
-  installingAgentId,
+  installingAgentIds,
   onInstallSkill,
   installingSkillId,
   onCreateAgent,
@@ -83,8 +83,9 @@ export function AgentGroupEditor({
       description: !draft.description.trim() ? t('agentManagement.group.form.errors.descriptionRequired') : '',
       persona: !draft.persona.trim() ? t('agentManagement.group.form.errors.personaRequired') : '',
       leader: !draft.leaderId ? t('agentManagement.group.form.errors.leaderRequired') : '',
+      members: draft.memberIds.length === 0 ? t('agentManagement.group.form.errors.membersRequired') : '',
     }),
-    [draft.description, draft.leaderId, draft.name, draft.persona, t],
+    [draft.description, draft.leaderId, draft.memberIds.length, draft.name, draft.persona, t],
   );
   const hasErrors = Object.values(errors).some(Boolean);
   const uniqueAgentOptions = useMemo(() => dedupeAgentGroupOptions(agentOptions), [agentOptions]);
@@ -347,6 +348,10 @@ export function AgentGroupEditor({
                       />
                     ))}
                   </div>
+                ) : touched && errors.members ? (
+                  <p className="text-[11px] leading-4 text-danger" data-testid="agent-group-editor-members-error">
+                    {errors.members}
+                  </p>
                 ) : null}
               </div>
             </div>
@@ -451,7 +456,7 @@ export function AgentGroupEditor({
           restoreFocusRef={pickerMode === 'leader' ? leaderPickerTriggerRef : memberPickerTriggerRef}
           selectionError={selectionError}
           onInstallAgent={onInstallAgent}
-          installingAgentId={installingAgentId}
+          installingAgentIds={installingAgentIds}
           onReloadAgents={onReloadAgents}
           onCancel={() => setPickerMode(null)}
           onConfirm={(ids) => {

@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
 from fastmcp import FastMCP
 from google import genai
 from google.genai import types
@@ -28,7 +27,6 @@ from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_veri
 
 
 logger = logging.getLogger(__name__)
-load_dotenv(verbose=True, override=True)
 
 _SANDBOX_MARKER = "home/user"
 

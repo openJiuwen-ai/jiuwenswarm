@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """Unit tests for ``jiuwenswarm-start debug`` and ``jiuwenswarm-stop``."""
 
@@ -37,6 +37,8 @@ def debug_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     monkeypatch.setattr(debug_launcher, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(debug_launcher, "WEB_DEV_DIR", frontend)
+    # Keep the developer's real config.yaml out of the uv sync extras.
+    monkeypatch.setattr(debug_launcher, "get_config_file", lambda: tmp_path / "config.yaml")
     return tmp_path
 
 
@@ -442,6 +444,53 @@ def test_run_debug_skip_build_omits_npm_steps(debug_root: Path):
     assert executed[1] == [sys.executable, "-m", "jiuwenswarm.start_services", "all"]
     assert not any("npm" in part for cmd in executed for part in cmd)
     assert read_debug_state() is not None
+
+
+def test_run_debug_syncs_extras_for_enabled_external_cli_agents(debug_root: Path):
+    """Enabled external CLI agents keep their SDK extras across uv sync."""
+    (debug_root / "config.yaml").write_text(
+        "modes:\n"
+        "  team:\n"
+        "    jiuwen_team:\n"
+        "      external_cli_agents:\n"
+        "        - cli_agent: codex\n"
+        "          cli_path: /opt/homebrew/bin/codex\n"
+        "        - claude\n"
+        "    other_team:\n"
+        "      external_cli_agents:\n"
+        "        - cli_agent: claude\n",
+        encoding="utf-8",
+    )
+    (debug_launcher.WEB_DEV_DIR / "dist").mkdir()
+    (debug_launcher.WEB_DEV_DIR / "dist" / "index.html").write_text("x", encoding="utf-8")
+
+    patches, calls = _patch_pipeline(run_codes=[0])
+    _enter(patches)
+    try:
+        assert run_debug(skip_build=True) == 0
+    finally:
+        _exit(patches)
+
+    assert calls[0][0] == ["/usr/bin/uv", "sync", "--extra", "claude", "--extra", "codex"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "modes:\n  team:\n    jiuwen_team:\n      display_name: team\n",
+        "modes:\n  team:\n    jiuwen_team:\n      external_cli_agents:\n        - cli_agent: unknown\n",
+        "modes: [",
+        "- not a mapping\n",
+    ],
+)
+def test_resolve_sync_extras_ignores_configs_without_known_agents(debug_root: Path, content: str):
+    (debug_root / "config.yaml").write_text(content, encoding="utf-8")
+
+    assert debug_launcher._resolve_sync_extras() == []
+
+
+def test_resolve_sync_extras_without_config_file(debug_root: Path):
+    assert debug_launcher._resolve_sync_extras() == []
 
 
 def test_run_debug_skip_build_requires_existing_dist(debug_root: Path):

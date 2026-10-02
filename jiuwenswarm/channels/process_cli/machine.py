@@ -20,6 +20,11 @@ from jiuwenswarm.channels.process_cli.machine_signals import (
     command_signals,
     defer_command_signals,
 )
+from jiuwenswarm.channels.process_cli.session_guard import (
+    SessionGuardError,
+    SessionLease,
+    bind_agent,
+)
 from jiuwenswarm.channels.process_cli.protocol import (
     OneShotRunInput,
     OneShotRunResult,
@@ -57,7 +62,7 @@ def _exception_info(error: Exception) -> RuntimeErrorInfo:
     # Unknown dependency exceptions may contain credentials or full requests.
     message = (
         str(error)
-        if isinstance(error, MachineRunError)
+        if isinstance(error, (MachineRunError, SessionGuardError))
         else "Runtime operation failed."
     )
     return RuntimeErrorInfo(
@@ -136,6 +141,7 @@ class _MachineRun:
         self.exit_code = 0
         self.cleanup_errors: list[str] = []
         self.control = control
+        self.session_lease: SessionLease | None = None
 
     def fail(
         self,
@@ -153,6 +159,9 @@ class _MachineRun:
     async def execute(
         self, client_factory: Callable[[], InProcessRuntimeClient]
     ) -> None:
+        if self.run_input.session_id is not None:
+            self.session_lease = SessionLease(self.run_input.session_id)
+            self.session_lease.acquire()
         self.client = client_factory()
         await self.client.start()
         descriptor = None
@@ -177,6 +186,16 @@ class _MachineRun:
             session_id=self.run_input.session_id,
         )
         self.writer.session_id = session_id
+        if self.session_lease is None:
+            self.session_lease = SessionLease(session_id)
+            self.session_lease.acquire()
+        bind_agent(
+            session_id,
+            self.run_input.agent.to_dict()
+            if self.run_input.agent is not None
+            else None,
+            resumed=descriptor is not None,
+        )
         params = _workspace_params(self.run_input, resumed=descriptor is not None)
         params.update(
             {
@@ -377,7 +396,11 @@ async def run_machine(
         logger.warning("one-shot execution failed (%s)", type(error).__name__)
     finally:
         defer_command_signals()
-        await run.cleanup()
+        try:
+            await run.cleanup()
+        finally:
+            if run.session_lease is not None:
+                run.session_lease.release()
     return run.result()
 
 

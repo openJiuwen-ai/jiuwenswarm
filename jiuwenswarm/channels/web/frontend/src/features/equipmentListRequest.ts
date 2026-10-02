@@ -10,6 +10,11 @@ export function requestEquipmentList<T>(
   request: EquipmentListRequest,
   method: string,
   params: Record<string, unknown>,
+  preferCache = true,
 ): Promise<T> {
-  return request<T>(method, { ...params, cache_mode: 'prefer_cache' }, { timeoutMs: EQUIPMENT_LIST_TIMEOUT_MS });
+  return request<T>(
+    method,
+    { ...params, ...(preferCache ? { cache_mode: 'prefer_cache' } : {}) },
+    { timeoutMs: EQUIPMENT_LIST_TIMEOUT_MS },
+  );
 }

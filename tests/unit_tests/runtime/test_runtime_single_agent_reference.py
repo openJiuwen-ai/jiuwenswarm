@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -51,6 +52,24 @@ def _runtime():
         initializer=_initialize,
         plan_controller=_Plan(),
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_sessions_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Keep resume validation away from the machine's real session store.
+
+    create_or_resume_session validates an explicit session_id against
+    persisted metadata under get_agent_sessions_dir(); without isolation a
+    real or suite-mate session named "session" on another channel makes the
+    channel-consistency check fail these tests.
+    """
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    monkeypatch.setattr(utils, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: tmp_path)
 
 
 @pytest.mark.asyncio

@@ -2051,12 +2051,15 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
                       }}
                     >
                       <span>{edge.source === selectedNode.id ? '→' : '←'} {other?.label || labelFromId(otherId)}</span>
-                      <small>
-                        {t('skills.graph.linkStrength', { percent: Math.round(edge.confidence * 100) })}
-                        {edge.runtimeWeight === undefined
-                          ? ''
-                          : ` · runtime_weight ${edge.runtimeWeight.toFixed(2)}`}
-                      </small>
+                      {/* 技能包的 contains 边没有真实置信度，不展示关联强度 */}
+                      {selectedNode.type !== 'skill_pack' ? (
+                        <small>
+                          {t('skills.graph.linkStrength', { percent: Math.round(edge.confidence * 100) })}
+                          {edge.runtimeWeight === undefined
+                            ? ''
+                            : ` · runtime_weight ${edge.runtimeWeight.toFixed(2)}`}
+                        </small>
+                      ) : null}
                     </button>
                   );
                 })

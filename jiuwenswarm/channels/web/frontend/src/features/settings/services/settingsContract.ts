@@ -71,6 +71,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   yamlField('skill_evolution', 'agent', 'boolean', 'react.evolution.skill_evolution'),
   yamlField('skill_retrieval_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.enabled'),
   yamlField('skill_retrieval_index_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.index.enabled'),
+  yamlField('ttse_enabled', 'agent', 'boolean', 'react.ttse.enabled'),
   envField('free_search_ddg_enabled', 'agent', 'boolean', 'FREE_SEARCH_DDG_ENABLED'),
   envField('free_search_bing_enabled', 'agent', 'boolean', 'FREE_SEARCH_BING_ENABLED'),
   envField('jina_api_key', 'agent', 'text', 'JINA_API_KEY'),
@@ -85,6 +86,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('vision_endpoint_profile', 'agent', 'text', 'VISION_ENDPOINT_PROFILE'),
   envField('vision_vendor_key', 'agent', 'text', 'VISION_VENDOR_KEY'),
   envField('vision_plan', 'agent', 'text', 'VISION_PLAN'),
+  envField('vision_context_window_tokens', 'agent', 'text', 'VISION_CONTEXT_WINDOW_TOKENS'),
   envField('vision_enabled', 'agent', 'boolean', 'VISION_ENABLED'),
   envField('audio_api_base', 'agent', 'text', 'AUDIO_API_BASE'),
   envField('audio_api_key', 'agent', 'text', 'AUDIO_API_KEY'),
@@ -93,6 +95,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('audio_endpoint_profile', 'agent', 'text', 'AUDIO_ENDPOINT_PROFILE'),
   envField('audio_vendor_key', 'agent', 'text', 'AUDIO_VENDOR_KEY'),
   envField('audio_plan', 'agent', 'text', 'AUDIO_PLAN'),
+  envField('audio_context_window_tokens', 'agent', 'text', 'AUDIO_CONTEXT_WINDOW_TOKENS'),
   envField('audio_enabled', 'agent', 'boolean', 'AUDIO_ENABLED'),
   envField('video_api_base', 'agent', 'text', 'VIDEO_API_BASE'),
   envField('video_api_key', 'agent', 'text', 'VIDEO_API_KEY'),
@@ -101,6 +104,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('video_endpoint_profile', 'agent', 'text', 'VIDEO_ENDPOINT_PROFILE'),
   envField('video_vendor_key', 'agent', 'text', 'VIDEO_VENDOR_KEY'),
   envField('video_plan', 'agent', 'text', 'VIDEO_PLAN'),
+  envField('video_context_window_tokens', 'agent', 'text', 'VIDEO_CONTEXT_WINDOW_TOKENS'),
   envField('video_enabled', 'agent', 'boolean', 'VIDEO_ENABLED'),
   // Video processing (generation) - dedicated slot, separate from the video
   // understanding fields above.
@@ -109,6 +113,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('video_gen_model', 'agent', 'text', 'VIDEO_GEN_MODEL_NAME'),
   envField('video_gen_provider', 'agent', 'text', 'VIDEO_GEN_PROVIDER'),
   envField('video_gen_protocol', 'agent', 'text', 'VIDEO_GEN_PROTOCOL'),
+  envField('video_gen_context_window_tokens', 'agent', 'text', 'VIDEO_GEN_CONTEXT_WINDOW_TOKENS'),
   envField('video_gen_enabled', 'agent', 'boolean', 'VIDEO_GEN_ENABLED'),
   // Visual processing (image generation) - dedicated slot, independent of
   // both the Image processing (vision) fields above and image_tools.py's
@@ -119,6 +124,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('visual_gen_model', 'agent', 'text', 'VISUAL_GEN_MODEL_NAME'),
   envField('visual_gen_provider', 'agent', 'text', 'VISUAL_GEN_PROVIDER'),
   envField('visual_gen_protocol', 'agent', 'text', 'VISUAL_GEN_PROTOCOL'),
+  envField('visual_gen_context_window_tokens', 'agent', 'text', 'VISUAL_GEN_CONTEXT_WINDOW_TOKENS'),
   envField('visual_gen_enabled', 'agent', 'boolean', 'VISUAL_GEN_ENABLED'),
 
   yamlField('permissions_enabled', 'security', 'boolean', 'permissions.enabled'),

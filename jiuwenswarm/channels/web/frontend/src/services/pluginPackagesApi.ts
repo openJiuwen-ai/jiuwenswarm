@@ -133,11 +133,12 @@ function extractPendingConnectors(error: unknown): string[] | undefined {
 export const pluginPackagesApi = {
   // v2 §3.1：filter 值跟 mcp.list 保持一致用无连字符的 'builtin'（不是文档原文的 'built-in'，
   // 见文件头注释）；缺省/非法值后端按全量处理。
-  list: async (filter?: 'builtin+hub' | 'mine'): Promise<CatalogItems<PluginPackageSummary>> => {
+  list: async (filter?: 'builtin+hub' | 'mine', query = ''): Promise<CatalogItems<PluginPackageSummary>> => {
     const payload = await requestEquipmentList<{ packages: RawPluginPackageSummary[]; cache?: CatalogCacheMetadata }>(
       webRequest,
       'plugin_packages.list',
-      { ...(filter ? { filter } : {}) },
+      { ...(filter ? { filter } : {}), ...(query ? { query } : {}) },
+      !query,
     );
     return withCatalogCache(payload.packages.map(fromRawSummary), payload.cache);
   },

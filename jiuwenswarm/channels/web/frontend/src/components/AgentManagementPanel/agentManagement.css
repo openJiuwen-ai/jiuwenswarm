@@ -1772,10 +1772,12 @@
 }
 
 .agent-management-upload-dialog__error {
+  min-width: 0;
   margin: -12px 0 0;
   color: var(--color-feedback-danger);
   font-size: 12px;
   line-height: 18px;
+  overflow-wrap: anywhere;
 }
 
 .agent-management-upload-dialog > footer .agent-management-button {
@@ -2580,8 +2582,13 @@
   order: 3;
 }
 
-.agent-group-upload-dialog > footer {
+.agent-group-upload-dialog .agent-management-upload-dialog__error {
   order: 4;
+  margin: var(--space-agent-group-control) 0 0;
+}
+
+.agent-group-upload-dialog > footer {
+  order: 5;
 }
 
 @media (max-width: 900px) {
@@ -2694,7 +2701,7 @@
 }
 
 .agent-group-upload-dialog > footer {
-  order: 4;
+  order: 5;
   height: var(--size-agent-group-drawer-control);
   min-height: var(--size-agent-group-drawer-control);
   flex: 0 0 var(--size-agent-group-drawer-control);

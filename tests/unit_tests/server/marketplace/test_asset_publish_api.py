@@ -112,6 +112,44 @@ async def test_five_calls_and_request_scope_cannot_be_forged(api):
 
 
 @pytest.mark.asyncio
+async def test_prepare_blocks_same_completed_version_until_force_is_enabled(api):
+    server, _, _ = api
+    metadata = {
+        "asset_name": "demo",
+        "version": "1.0.0",
+        "description": "First release",
+        "tags": [],
+    }
+    first = await server.call(
+        "prepare",
+        params(kind="skill", local_id="demo", metadata=metadata),
+        gateway_user="browser-user",
+    )
+    await server.call(
+        "commit",
+        params(draft_id=first["draft_id"], request_id="first-release"),
+        gateway_user="browser-user",
+    )
+    await server.service.wait_idle()
+
+    duplicate = await server.call(
+        "prepare",
+        params(kind="skill", local_id="demo", metadata=metadata),
+        gateway_user="browser-user",
+    )
+    assert duplicate["can_submit"] is False
+    assert duplicate["errors"] == [{"code": "VERSION_CONFLICT", "field": "version"}]
+
+    forced = await server.call(
+        "prepare",
+        params(kind="skill", local_id="demo", metadata=metadata, force=True),
+        gateway_user="browser-user",
+    )
+    assert forced["can_submit"] is True
+    assert forced["errors"] == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "extra",
     [
@@ -263,6 +301,50 @@ async def test_agent_group_describe_uses_local_group_manifest(tmp_path):
             "tags": [],
             "visibility": "public",
         }
+    finally:
+        instance.store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,package_name,manifest_name,display_name",
+    [
+        ("agent_template", "agent-mudhsgoh", "手动专家", "手动专家"),
+        ("agent_group", "agent-group-mudhsgoh", "agent-group-mudhsgoh", "手动专家团"),
+    ],
+)
+async def test_agent_describe_uses_resolved_package_name_for_publish_identity(
+    tmp_path, kind, package_name, manifest_name, display_name
+):
+    root = tmp_path / package_name
+    root.mkdir()
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "package_type": kind,
+                "name": manifest_name,
+                "display_name": {"zh": display_name, "en": display_name},
+                "description": "Issue 4799 regression",
+            },
+            ensure_ascii=False,
+        )
+    )
+    instance = AssetPublishAPI(
+        tmp_path / "state",
+        publisher=Publisher(),
+        # A Hub-installed asset may be addressed by its remote UUID. The
+        # resolved package directory remains the canonical publish identity.
+        resolver=lambda requested_kind, local_id: root,
+        hub_url="https://example.com",
+    )
+    try:
+        result = await instance.call(
+            "describe",
+            params(kind=kind, local_id="b80afb7afff147bd801ed5f788fa767c"),
+            gateway_user="browser-user",
+        )
+        assert result["defaults"]["asset_name"] == package_name
+        assert result["defaults"]["display_name"] == display_name
     finally:
         instance.store.close()
 

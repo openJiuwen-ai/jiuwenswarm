@@ -132,14 +132,18 @@ class SessionAdapter(GatewayAdapter):
                 guard(str(params.get("session_id") or request.session_id or ""))
             except LifecycleError as exc:
                 return build_error_response(request, str(exc), code=exc.code)
-        if method == ReqMethod.SESSION_GET_METADATA:
-            return await self._handle_get_metadata(request)
-        if method == ReqMethod.SESSION_PIN:
-            return await self._handle_pin(request)
-        if method == ReqMethod.SESSION_COLOR_SET:
-            return await self._handle_color_set(request)
-        if method == ReqMethod.SESSION_PREVIEW:
-            return await self._handle_preview(request)
+        if method in {
+            ReqMethod.SESSION_LIST,
+            ReqMethod.SESSION_GET_METADATA,
+            ReqMethod.SESSION_PIN,
+            ReqMethod.SESSION_COLOR_SET,
+            ReqMethod.SESSION_PREVIEW,
+        }:
+            from jiuwenswarm.server.control.repositories.session_repository import (
+                handle_session_request,
+            )
+
+            return await handle_session_request(request)
         if method == ReqMethod.HISTORY_LIST_TURNS:
             return await self._handle_history_list_turns(request)
         if method == ReqMethod.SESSION_RESTORE_FILES:

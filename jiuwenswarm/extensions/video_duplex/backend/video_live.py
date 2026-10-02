@@ -14,6 +14,7 @@ import uuid
 
 from jiuwenswarm.extensions.video_duplex.backend import (
     joyai_provider,
+    settings,
     video_search,
     video_voice,
 )
@@ -219,7 +220,7 @@ def register_video_live_handler(
                 return
             await channel.send_response(
                 ws, req_id, ok=True,
-                payload={"provider": "joyai", "model": model},
+                payload={"provider": "joyai", "model": model, "reply_language": settings.reply_language()},
             )
             return
         config = QwenOmniRealtimeConfig.from_environment()
@@ -244,6 +245,7 @@ def register_video_live_handler(
                 "model": config.model,
                 "voice": config.voice,
                 "tools": qwen_omni_tools(),
+                "reply_language": settings.reply_language(),
             },
         )
 
@@ -256,6 +258,9 @@ def register_video_live_handler(
         question = str(params.get("question") or "").strip()
         tool_context = str(params.get("tool_context") or "").strip()
         frame_time_range = str(params.get("frame_time_range") or "").strip()
+        reply_language = joyai_provider.normalize_response_language(
+            params.get("reply_language", settings.reply_language())
+        )
         request_kind = str(params.get("request_kind") or "frame").strip().casefold()
         if not _is_allowed_image_data_url(frame_data_url):
             await channel.send_response(
@@ -336,7 +341,7 @@ def register_video_live_handler(
         await asyncio.to_thread(_append_joyai_log, {**request_log, "stage": "requested"})
         try:
             model_instruction = (
-                joyai_provider.ground_user_instruction(instruction, tool_context)
+                joyai_provider.ground_user_instruction(instruction, tool_context, reply_language)
                 if request_kind == "user"
                 else instruction
             )
@@ -673,6 +678,7 @@ def register_video_live_handler(
         **voice_handlers,
         "video.qwen.tool": search_manager.handle_qwen_tool,
         "video.search.status": search_manager.handle_status,
+        "video.search.answer": search_manager.handle_answer,
         "video.search.list": search_manager.handle_list,
         "video.search.control": search_manager.handle_control,
     }

@@ -20,6 +20,10 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from jiuwenswarm.common.schema.message import EventType
+from jiuwenswarm.common.session_message import (
+    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
+    SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
+)
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
 from jiuwenswarm.gateway.routing.base_ws_channel import BaseWsChannel
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
@@ -115,6 +119,34 @@ class TuiChannel(BaseWsChannel):
                 len(clients), getattr(msg, "id", ""),
                 (msg.payload.get("cron") or {}).get("run_id", ""),
             )
+            return
+
+        payload = getattr(msg, "payload", None)
+        if isinstance(payload, dict) and payload.get("event_type") == "session.message.updated":
+            metadata = getattr(msg, "metadata", None)
+            metadata = metadata if isinstance(metadata, dict) else {}
+            owner_scope_id = str(metadata.get(SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY) or "").strip()
+            session_id = getattr(msg, "session_id", None)
+            if not owner_scope_id or not session_id:
+                return
+            anonymous_owner = metadata.get(SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY)
+            if owner_scope_id == "local" and not isinstance(anonymous_owner, bool):
+                return
+            frame = self._serialize_frame(msg)
+            clients: set[Any] = set()
+            for rk, ws_list in self._clients_by_key.items():
+                if rk.session_id != session_id:
+                    continue
+                for ws in ws_list:
+                    user_id = self._extract_ws_user_id(ws)
+                    matches_owner = (
+                        not user_id if anonymous_owner
+                        else rk.user_id == owner_scope_id and user_id == owner_scope_id
+                    )
+                    if not getattr(ws, "closed", False) and matches_owner:
+                        clients.add(ws)
+            for ws in clients:
+                self._enqueue_send(ws, frame)
             return
 
         ws_set: set[Any] = set()

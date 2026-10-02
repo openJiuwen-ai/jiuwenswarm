@@ -9,6 +9,8 @@ import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from jiuwenswarm.observability.models import (
     AddressedSequenceData,
     SequenceNodeData,
@@ -253,95 +255,131 @@ def test_sequences_shared_by_several_records_are_walked_once(tmp_path: Path) -> 
     assert len(resolved["blobs"]) == 4
 
 
-def test_the_default_export_leaves_no_reference_behind(tmp_path: Path) -> None:
-    """An export is read by tools that know nothing of this addressing.
+def _referencing_record(span_id: str, sequence: AddressedSequenceData) -> TraceRecordData:
+    """A final record whose payload names *sequence* the way Agent Core stores it."""
+    record = _record(span_id, sequence)
+    return TraceRecordData(
+        **{
+            **{
+                field: getattr(record, field)
+                for field in record.__dataclass_fields__
+                if field not in {"raw_json", "lifecycle"}
+            },
+            "raw_json": (
+                b'{"resourceSpans":[{"scopeSpans":[{"spans":[{'
+                b'"traceId":"' + _TRACE_ID.encode() + b'","spanId":"'
+                + span_id.encode() + b'","name":"chat","attributes":[{'
+                b'"key":"gen_ai.input.messages","value":{"stringValue":"@oj-seq:1:'
+                + sequence.seq_hash.encode() + b":" + str(sequence.depth).encode() + b'"}}]}]}]}]}'
+            ),
+            "lifecycle": "final",
+        }
+    )
 
-    A reference they cannot resolve is worse than the bytes it saved, so the
-    default format states every attribute in full.
-    """
-    import asyncio
-    import base64
 
+async def _archive_lines(database_path: Path) -> list[dict]:
     from jiuwenswarm.observability.store import AsyncTrajectoryReader
 
+    reader = AsyncTrajectoryReader(database_path, session_scoped=False)
+    return [line async for line in reader.iter_session_archive_lines("session-1")]
+
+
+@pytest.mark.parametrize("batch_size", [1, 500])
+def test_archive_lines_define_content_once_before_its_first_use(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    batch_size: int,
+) -> None:
+    """A replay reads the archive top to bottom and never looks ahead.
+
+    Every element and chain node is therefore stated once, just before the
+    first record that needs it, and a later record sharing a prefix brings
+    only its increment -- whether or not both records fall in one read batch.
+    """
+    import asyncio
+
+    from jiuwenswarm.observability import store as store_module
+
+    monkeypatch.setattr(store_module, "_ARCHIVE_RECORD_BATCH", batch_size)
     database_path = tmp_path / "trajectory.sqlite3"
     store = TrajectoryStore(database_path)
     store.initialize()
-    sequence = _sequence("gen_ai.input.messages", ['{"role":"user"}', '{"role":"assistant"}'])
+    short = _sequence("gen_ai.input.messages", ["one", "two"])
+    long = _sequence("gen_ai.input.messages", ["one", "two", "three", "four"])
     try:
-        record = _record("a" * 16, sequence)
-        store.write_records(
-            [
-                TraceRecordData(
-                    **{
-                        **{
-                            field: getattr(record, field)
-                            for field in record.__dataclass_fields__
-                            if field not in {"raw_json", "lifecycle"}
-                        },
-                        "raw_json": (
-                            b'{"resourceSpans":[{"scopeSpans":[{"spans":[{'
-                            b'"traceId":"' + _TRACE_ID.encode() + b'","spanId":"'
-                            + (b"a" * 16) + b'","name":"chat","attributes":[{'
-                            b'"key":"gen_ai.input.messages","value":{"stringValue":"@oj-seq:1:'
-                            + sequence.seq_hash.encode() + b':2"}}]}]}]}]}'
-                        ),
-                        "lifecycle": "final",
-                    }
-                )
-            ],
-            (),
-        )
+        store.write_records([_referencing_record("a" * 16, short)], ())
+        store.write_records([_referencing_record("b" * 16, long)], ())
     finally:
         store.close()
 
-    reader = AsyncTrajectoryReader(database_path, session_scoped=False)
-    records, _epoch, _revision, resolved = asyncio.run(
-        reader.get_session_archive_records("session-1", rehydrate=True)
-    )
+    lines = asyncio.run(_archive_lines(database_path))
+    resolved = asyncio.run(_resolve(database_path, [short.seq_hash, long.seq_hash]))
 
-    assert records
-    import json
-
-    raw = base64.b64decode(records[0]["raw_json_base64"]).decode()
-    assert "@oj-seq:" not in raw
-    attribute = (
-        json.loads(raw)["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"][0]
-    )
-    assert json.loads(attribute["value"]["stringValue"]) == [
-        {"role": "user"},
-        {"role": "assistant"},
+    types = [line["type"] for line in lines]
+    assert types == [
+        "header",
+        "blob", "sequence", "blob", "sequence", "record",
+        "blob", "sequence", "blob", "sequence", "record",
+        "end",
     ]
-    # Nothing is left for the reader to resolve, so no dictionary is sent.
-    assert resolved == {"sequences": {}, "blobs": {}}
+    assert lines[-1] == {"type": "end", "records": 2, "lines": 11}
+    blobs: dict[str, str] = {}
+    nodes: dict[str, tuple[str | None, str]] = {}
+    for line in lines:
+        if line["type"] == "blob":
+            blobs[line["hash"]] = line["text"]
+        elif line["type"] == "sequence":
+            assert line["blob"] in blobs
+            assert line["prev"] is None or line["prev"] in nodes
+            nodes[line["hash"]] = (line["prev"], line["blob"])
+        elif line["type"] == "record":
+            assert "otlp" not in line
+            for reference in line["sequences"].values():
+                assert reference["hash"] in nodes
+    # Walking the archive's own lines rebuilds exactly what a live read resolves.
+    for head in (short.seq_hash, long.seq_hash):
+        elements: list[str] = []
+        cursor: str | None = head
+        while cursor is not None:
+            previous, blob_hash = nodes[cursor]
+            elements.append(blob_hash)
+            cursor = previous
+        elements.reverse()
+        assert elements == resolved["sequences"][head]
+        assert [blobs[element] for element in elements] == [
+            resolved["blobs"][element] for element in elements
+        ]
+    test_logger.info("archive stated %d elements for two overlapping chains", len(blobs))
 
 
-def test_the_addressed_export_is_self_contained(tmp_path: Path) -> None:
-    """The small format still carries everything needed to read it."""
+def test_archive_lines_skip_content_the_store_no_longer_holds(tmp_path: Path) -> None:
+    """A lost element leaves its reference unresolved rather than failing the export."""
     import asyncio
-
-    from jiuwenswarm.observability.store import AsyncTrajectoryReader
 
     database_path = tmp_path / "trajectory.sqlite3"
     store = TrajectoryStore(database_path)
     store.initialize()
     sequence = _sequence("gen_ai.input.messages", ["one", "two", "three"])
     try:
-        store.write_records([_record("b" * 16, sequence)], ())
+        store.write_records([_referencing_record("b" * 16, sequence)], ())
     finally:
         store.close()
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.execute(
+            "DELETE FROM trajectory_blobs WHERE blob_hash = ?",
+            (sequence.nodes[1].blob_hash,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
-    reader = AsyncTrajectoryReader(database_path, session_scoped=False)
-    records, _epoch, _revision, resolved = asyncio.run(
-        reader.get_session_archive_records("session-1", rehydrate=False)
-    )
+    lines = asyncio.run(_archive_lines(database_path))
 
-    heads = {
-        reference["hash"]
-        for record in records
-        for reference in (record.get("sequences") or {}).values()
+    assert [line["type"] for line in lines] == [
+        "header", "blob", "sequence", "sequence", "blob", "sequence", "record", "end",
+    ]
+    assert sequence.nodes[1].blob_hash not in {
+        line["hash"] for line in lines if line["type"] == "blob"
     }
-    assert heads <= set(resolved["sequences"])
-    for elements in resolved["sequences"].values():
-        assert all(element in resolved["blobs"] for element in elements)
-    test_logger.info("addressed export carried %d chains", len(resolved["sequences"]))
+    test_logger.info("archive exported a record whose chain lost one element")

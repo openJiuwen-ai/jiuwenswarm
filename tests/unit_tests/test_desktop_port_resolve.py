@@ -271,7 +271,7 @@ def test_build_child_env_injects_full_port_group(desktop_app, monkeypatch):
         assert key in env
 
 
-def test_cleanup_stale_update_artifacts_is_product_name_agnostic(
+def test_cleanup_stale_update_artifacts_preserves_completed_installers(
     desktop_app,
     tmp_path: Path,
     monkeypatch,
@@ -279,18 +279,26 @@ def test_cleanup_stale_update_artifacts_is_product_name_agnostic(
     workspace = tmp_path / "workspace"
     updates_dir = workspace / ".updates"
     updates_dir.mkdir(parents=True)
-    stale_names = (
+    completed_names = (
         "TomorrowDesk-preview.exe",
         "AnotherProduct-nightly.dmg",
-        "future-name.dmg.part",
+        "future-name.tar.gz",
     )
-    for name in stale_names:
-        (updates_dir / name).write_bytes(b"stale")
+    transient_names = (
+        "future-name.exe.part",
+        "future-name.dmg.part",
+        "future-name.tar.gz.part",
+        "_install_helper.ps1",
+        "_install_helper.sh",
+    )
+    for name in (*completed_names, *transient_names):
+        (updates_dir / name).write_bytes(b"update")
     keep = updates_dir / "release-notes.txt"
     keep.write_text("keep", encoding="utf-8")
     monkeypatch.setattr(desktop_app, "get_user_workspace_dir", lambda: workspace)
 
     desktop_app._cleanup_stale_update_artifacts()
 
-    assert all(not (updates_dir / name).exists() for name in stale_names)
+    assert all((updates_dir / name).exists() for name in completed_names)
+    assert all(not (updates_dir / name).exists() for name in transient_names)
     assert keep.exists()

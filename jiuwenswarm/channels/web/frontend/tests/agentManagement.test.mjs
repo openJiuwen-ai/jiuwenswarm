@@ -24,6 +24,8 @@ test('keeps Hub Expert Teams distinct from local groups', () => {
 import {
   buildDefinitionSelectionPayload,
   buildDefinitionSelectionPayloadForMode,
+  isAgentGroupSelected,
+  resolveSelectedSkillsForRequest,
 } from '../node_modules/.cache/agent-management/port.js';
 import { isAgentUploadFilename } from '../node_modules/.cache/agent-management/upload.js';
 import {
@@ -47,6 +49,37 @@ import {
   findFirstPreviewableFile,
   mergeAgentDetailWithCatalog,
 } from '../node_modules/.cache/agent-management/viewModel.js';
+import {
+  advancePendingInstallQueue,
+  createPendingInstallQueue,
+  enqueuePendingInstall,
+} from '../node_modules/.cache/agent-management/pendingInstallQueue.js';
+
+test('pending Expert installs keep target identity while connector flows run serially', () => {
+  const first = {
+    id: 'expert-a', mode: 'catalog', pendingConnectors: ['connector-a'],
+  };
+  const second = {
+    id: 'expert-b', mode: 'group-picker', pendingConnectors: ['connector-b'],
+  };
+  const queued = enqueuePendingInstall(
+    enqueuePendingInstall(createPendingInstallQueue(), first),
+    second,
+  );
+
+  assert.deepEqual(queued.active, first);
+  assert.deepEqual(queued.waiting, [second]);
+
+  const afterFirst = advancePendingInstallQueue(queued);
+  assert.deepEqual(afterFirst.finished, first);
+  assert.deepEqual(afterFirst.queue.active, second);
+  assert.deepEqual(afterFirst.queue.waiting, []);
+
+  const afterSecond = advancePendingInstallQueue(afterFirst.queue);
+  assert.deepEqual(afterSecond.finished, second);
+  assert.equal(afterSecond.queue.active, null);
+  assert.deepEqual(afterSecond.queue.waiting, []);
+});
 
 test('selection pickers share installed-first and label sorting', () => {
   const items = [
@@ -369,6 +402,23 @@ test('selection payload preserves keep, clear and select semantics', () => {
   assert.deepEqual(buildDefinitionSelectionPayload({ kind: 'select', id: 'content-creator' }), {
     agent_template_name: 'content-creator',
   });
+});
+
+test('Agent Group selection owns the Team skill slot across selection states', () => {
+  assert.equal(isAgentGroupSelected('agent', { kind: 'select', id: 'group-1' }), false);
+  assert.equal(isAgentGroupSelected('team', { kind: 'keep' }), false);
+  assert.equal(isAgentGroupSelected('team', { kind: 'select', id: 'group-1' }), true);
+  assert.equal(isAgentGroupSelected('team', { kind: 'keep' }, 'group-1'), true);
+  assert.equal(isAgentGroupSelected('team', { kind: 'keep' }, null, 'group-1'), true);
+  assert.equal(isAgentGroupSelected('team', { kind: 'select', id: '  ' }), false);
+  assert.deepEqual(
+    resolveSelectedSkillsForRequest('team', ['team-skill'], { kind: 'keep' }, 'group-1'),
+    [],
+  );
+  assert.deepEqual(
+    resolveSelectedSkillsForRequest('team', ['team-skill'], { kind: 'keep' }),
+    ['team-skill'],
+  );
 });
 
 test('Agent upload accepts only zip and tar archives', () => {

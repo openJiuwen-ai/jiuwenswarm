@@ -120,37 +120,60 @@ async def test_proxy_agent_unavailable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_proxy_uses_adapter_fallback_only_for_local_websocket_client(monkeypatch) -> None:
-    """A local shared-directory AgentServer outage must preserve Web behavior."""
+async def test_proxy_does_not_substitute_front_control_methods(monkeypatch) -> None:
+    """session.list is Front Control; Gateway must not run a local adapter."""
     local_client = WebSocketAgentServerClient()  # server_ready defaults to False
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.get_all_sessions_metadata",
+        "jiuwenswarm.server.control.repositories.session_repository.get_all_sessions_metadata",
         lambda *, limit, offset: ([{"session_id": "legacy", "mode": "agent"}], 1),
     )
     channel = FakeChannel()
 
     await _invoke(channel, local_client)
 
-    assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"]["sessions"][0]["session_id"] == "legacy"
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == SERVICE_UNAVAILABLE_CODE
+    assert not local_client.server_ready
 
 
 @pytest.mark.asyncio
-async def test_proxy_offline_session_delete_uses_maintenance_runtime(monkeypatch) -> None:
-    """The shared-directory fallback enters Runtime without enabling KVC."""
-    from jiuwenswarm.runtime.session_delete import SessionDeleteResult
-
-    async def _delete_offline_session(**kwargs):
-        return SessionDeleteResult(
-            ok=True,
-            session_id=kwargs["session_id"],
-            deleted=True,
-        )
-
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.offline_session_cleanup.delete_offline_session",
-        _delete_offline_session,
+async def test_proxy_forwards_control_methods_after_failed_ack(monkeypatch) -> None:
+    """FAILED ack keeps transport up so Front control RPCs are not blocked."""
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack(
+        {
+            "type": "event",
+            "event": "connection.ack",
+            "payload": {"status": "failed", "readiness": "FAILED"},
+        }
     )
+    envelopes: list[object] = []
+
+    async def _send(envelope):
+        envelopes.append(envelope)
+        return type("Resp", (), {"ok": True, "payload": {"state": "FAILED"}})()
+
+    monkeypatch.setattr(client, "send_request", _send)
+    channel = FakeChannel()
+
+    await _invoke(
+        channel,
+        client,
+        req_method=ReqMethod.HEALTH_CHECK_GET_CONF,
+        params={},
+        label="health_check.get_conf",
+    )
+
+    assert client.server_ready is True
+    assert client.agent_ready is False
+    assert len(envelopes) == 1
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"]["state"] == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_proxy_offline_session_delete_is_unavailable() -> None:
+    """Gateway must not load Runtime adapters when AgentServer is unreachable."""
     local_client = WebSocketAgentServerClient()  # server_ready defaults to False
     channel = FakeChannel()
 
@@ -163,32 +186,20 @@ async def test_proxy_offline_session_delete_uses_maintenance_runtime(monkeypatch
     )
 
     response = channel.responses[-1]
-    assert response["ok"] is True
-    assert response["payload"] == {"session_id": "legacy"}
+    assert response["ok"] is False
+    assert response["code"] == SERVICE_UNAVAILABLE_CODE
 
 
 @pytest.mark.asyncio
-async def test_proxy_keeps_permissions_fallback_for_local_websocket_client(monkeypatch) -> None:
-    """Permissions kept their pre-refactor shared-directory availability path."""
+async def test_proxy_offline_permissions_is_unavailable() -> None:
+    """Permissions are execution-plane; offline Gateway does not substitute them."""
     local_client = WebSocketAgentServerClient()  # server_ready defaults to False
-    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_config_rpc
-
-    monkeypatch.setattr(
-        permissions_config_rpc,
-        "get_permissions_config_req_methods",
-        lambda: frozenset({ReqMethod.PERMISSIONS_TOOLS_GET}),
-    )
-    monkeypatch.setattr(
-        permissions_config_rpc,
-        "dispatch_permissions_config_request",
-        lambda request: type("Resp", (), {"ok": True, "payload": {"tools": []}})(),
-    )
     channel = FakeChannel()
 
     await _invoke(channel, local_client, req_method=ReqMethod.PERMISSIONS_TOOLS_GET)
 
-    assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"] == {"tools": []}
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == SERVICE_UNAVAILABLE_CODE
 
 
 @pytest.mark.asyncio

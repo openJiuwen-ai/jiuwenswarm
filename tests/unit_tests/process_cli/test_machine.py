@@ -14,6 +14,7 @@ import pytest
 
 from jiuwenswarm.channels.process_cli import machine
 from jiuwenswarm.channels.process_cli.machine_io import OneShotWriter
+from jiuwenswarm.channels.process_cli.session_guard import SessionGuardError
 from jiuwenswarm.channels.process_cli.protocol import (
     AgentSpec,
     OneShotRunInput,
@@ -21,6 +22,24 @@ from jiuwenswarm.channels.process_cli.protocol import (
 )
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
+
+
+@pytest.fixture(autouse=True)
+def _isolate_persistent_session_guard(monkeypatch):
+    """Fake Runtime Sessions have no on-disk directory; guard has separate tests."""
+
+    class _Lease:
+        def __init__(self, session_id):
+            self.session_id = session_id
+
+        def acquire(self):
+            pass
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(machine, "SessionLease", _Lease)
+    monkeypatch.setattr(machine, "bind_agent", lambda *_args, **_kwargs: None)
 
 
 def _event(event_type: str, **payload) -> RuntimeEvent:
@@ -160,6 +179,52 @@ async def _run(client, run_input=None, *, writer=None):
         writer,
         client_factory=lambda: client,
     )
+
+
+@pytest.mark.asyncio
+async def test_session_guard_conflict_preserves_safe_error_message(monkeypatch) -> None:
+    def reject_binding(*_args, **_kwargs):
+        raise SessionGuardError(
+            "Session is bound to another Agent definition.",
+            code="AGENT_DEFINITION_SESSION_CONFLICT",
+        )
+
+    monkeypatch.setattr(machine, "bind_agent", reject_binding)
+
+    result = await _run(FakeClient())
+
+    assert result.status == "failed"
+    assert result.error.code == "AGENT_DEFINITION_SESSION_CONFLICT"
+    assert result.error.message == "Session is bound to another Agent definition."
+
+
+@pytest.mark.asyncio
+async def test_session_guard_busy_preserves_safe_retry_message(monkeypatch) -> None:
+    class BusyLease:
+        def __init__(self, _session_id):
+            pass
+
+        def acquire(self):
+            raise SessionGuardError(
+                "Session is already executing in another Process CLI call.",
+                code="SESSION_BUSY",
+                retryable=True,
+            )
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(machine, "SessionLease", BusyLease)
+
+    result = await _run(FakeClient(), OneShotRunInput(input="hello", session_id="busy"))
+
+    assert result.status == "failed"
+    assert result.error.code == "SESSION_BUSY"
+    assert (
+        result.error.message
+        == "Session is already executing in another Process CLI call."
+    )
+    assert result.error.retryable is True
 
 
 @pytest.mark.asyncio

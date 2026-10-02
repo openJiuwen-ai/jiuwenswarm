@@ -46,6 +46,8 @@ import logging
 from logging.handlers import BaseRotatingHandler
 from ruamel.yaml import YAML
 
+from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
+
 _LOG_FILE_MAX_BYTES = 20 * 1024 * 1024
 _LOG_FILE_BACKUP_COUNT = 20
 
@@ -1504,13 +1506,21 @@ def _ensure_mcp_builtins(
         pass  # 仅登记到 diff 摘要，文件已解压就位
 
 
-def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
+def prepare_runtime_workspace(
+    *,
+    cleanup_stale_descs: bool = True,
+    migrate_config: bool = True,
+) -> None:
     """Perform the idempotent workspace work required before runtime children start.
 
     Desktop and the ``jiuwenswarm.app`` supervisor call this once before they
     launch AgentServer and Gateway.  The children can then skip the same disk
     work via ``JIUWENSWARM_RUNTIME_WORKSPACE_READY=1``.  Standalone child
     entrypoints intentionally retain this function as their fallback.
+
+    AgentServer Front skips ``cleanup_stale_descs`` and ``migrate_config``
+    because both import OpenJiuwen / ``common.config``. Runtime backend
+    completes those steps after the port is listening.
     """
     if cleanup_stale_descs:
         cleanup_stale_openjiuwen_descs()
@@ -1535,7 +1545,8 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
     if workspace_preparation_needed:
         prepare_workspace(overwrite=False, workspace_dir=workspace_dir)
 
-    ensure_config_migrated_from_template(workspace_dir)
+    if migrate_config:
+        ensure_config_migrated_from_template(workspace_dir)
     ensure_default_builtin_skills()
 
 
@@ -2482,23 +2493,24 @@ _KV_SENSITIVE_PATTERN = re.compile(
     r"amap[_-]?key|map[_-]?ak)"
     r"(?![A-Za-z0-9])(\s*[:=]\s*)([\"']?)([^,\s\"'\]\}]+)([\"']?)"
 )
-# 匹配“键名包含敏感关键词”且“值被引号包裹”的场景，覆盖:
-# - 'CAT_CAFE_CALLBACK_TOKEN': 'xxxx'
-# - 'CAT_CAFE_USER_ID': 'CSDN-weixin'
-# - "my_private_key"="xxxx"
-# 分组说明：
-# 1) 完整的 key + 分隔符（含可选引号）
-# 2) 值的起始引号（' 或 "）
-# 3) 值内容（非贪婪）
-# 4) 结束引号（通过 (\2) 强制与起始引号一致）
-_NAMED_SENSITIVE_KV_PATTERN = re.compile(
-    r"(?i)([\"']?[A-Za-z0-9_.-]*"
-    r"(?:token|secret|password|passwd|pwd|api[_-]?key|access[_-]?key|"
+# 匹配被引号包裹的通用键值对起点；键是否敏感在 Python 代码中判断。
+#
+# 旧实现把两个无界 ``[A-Za-z0-9_.-]*``、关键词分支、``.*?`` 与反向
+# 引用组合在一个正则中。面对 10KB 连续标识符且最终不匹配时，Python ``re``
+# 会从大量位置反复回溯，呈近似 O(n²) 退化。这里用左边界保证每个 key token
+# 只尝试一次，并用单向扫描查找结束引号，避免日志输入阻塞事件循环。
+# 与 upstream 1236f407 的 lookbehind 单正则修复等价地消除该回溯，并在其
+# 之上额外修复未闭合引号场景的明文泄露——勿回退为单正则形态。
+_NAMED_QUOTED_KV_START_PATTERN = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.-])"
+    r"(?P<prefix>[\"']?(?P<key>[A-Za-z0-9_.-]+)[\"']?\s*[:=]\s*)"
+    r"(?P<quote>[\"'])"
+)
+_NAMED_SENSITIVE_KEY_PATTERN = re.compile(
+    r"(?i)(?:token|secret|password|passwd|pwd|api[_-]?key|access[_-]?key|"
     r"secret[_-]?key|authorization|auth[_-]?code|auth[_-]?token|"
-    r"credential|private[_-]?key|"
-    r"user[_-]?id|userid|project[_-]?id|"
+    r"credential|private[_-]?key|user[_-]?id|userid|project[_-]?id|"
     r"amap[_-]?key|map[_-]?ak)"
-    r"[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)([\"'])(.*?)(\2)"
 )
 # 匹配 Authorization Bearer 令牌，保留 "Bearer " 前缀，仅掩码后面的令牌值。
 # 分组：1) "Bearer " 前缀；2) 令牌值本体（用于算指纹）。
@@ -2583,6 +2595,58 @@ def _masked_with_fp(value: Any) -> str:
     return f"{_SENSITIVE_MASK}(fp:{fp})"
 
 
+def _mask_named_sensitive_kv(text: str) -> str:
+    """Mask quoted values whose key contains a sensitive keyword.
+
+    The scan advances monotonically.  In particular, a long identifier that
+    is not a quoted key/value pair is inspected once instead of being retried
+    from every character position by a backtracking regular expression.
+    The closing-quote lookup never crosses a newline: an unclosed quote masks
+    only to the end of the current line, and scanning resumes on the next
+    line so its sensitive pairs stay matchable and unrelated lines stay
+    readable.
+    """
+    chunks: list[str] = []
+    copy_from = 0
+    search_from = 0
+
+    while True:
+        match = _NAMED_QUOTED_KV_START_PATTERN.search(text, search_from)
+        if match is None:
+            break
+        search_from = match.end()
+        if _NAMED_SENSITIVE_KEY_PATTERN.search(match.group("key")) is None:
+            continue
+
+        quote = match.group("quote")
+        value_start = match.end()
+        line_end = text.find("\n", value_start)
+        if line_end < 0:
+            line_end = len(text)
+        value_end = text.find(quote, value_start, line_end)
+        if value_end < 0:
+            # A malformed quoted secret must not leak.  Mask the rest of the
+            # current line and resume after the newline instead of swallowing
+            # later lines: their quotes must remain available as value
+            # boundaries for their own sensitive keys.
+            chunks.append(text[copy_from:value_start])
+            chunks.append(_masked_with_fp(text[value_start:line_end]))
+            copy_from = line_end
+            search_from = line_end
+            continue
+
+        chunks.append(text[copy_from:value_start])
+        chunks.append(_masked_with_fp(text[value_start:value_end]))
+        chunks.append(quote)
+        copy_from = value_end + 1
+        search_from = copy_from
+
+    if not chunks:
+        return text
+    chunks.append(text[copy_from:])
+    return "".join(chunks)
+
+
 def _sanitize_log_text(text: str) -> str:
     if not text:
         return text
@@ -2604,10 +2668,7 @@ def _sanitize_log_text(text: str) -> str:
     masked = _KV_SENSITIVE_PATTERN.sub(
         lambda m: f"{m.group(1)}{m.group(2)}{_masked_with_fp(m.group(4))}", masked
     )
-    # _NAMED_SENSITIVE_KV_PATTERN: 组1=键+分隔符, 组2=起始引号, 组3=值, 组4=结束引号。
-    masked = _NAMED_SENSITIVE_KV_PATTERN.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}{_masked_with_fp(m.group(3))}{m.group(4)}", masked
-    )
+    masked = _mask_named_sensitive_kv(masked)
     # _BEARER_SENSITIVE_PATTERN: 组1=Bearer 前缀, 组2=令牌值。
     masked = _BEARER_SENSITIVE_PATTERN.sub(
         lambda m: f"{m.group(1)}{_masked_with_fp(m.group(2))}", masked
@@ -2643,13 +2704,17 @@ class SensitiveDataFilter(logging.Filter):
     """Mask sensitive data in all log messages and tracebacks."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        if getattr(record, "jiuwen_sensitive_sanitized", False):
+            return True
+
+        sanitized = True
         try:
             message = record.getMessage()
             record.msg = _sanitize_log_text(message)
             record.args = ()
         except Exception:
             # Never block logging because of desensitization failure.
-            pass
+            sanitized = False
 
         # Traceback 由 Formatter.formatException() 在 record.exc_text 中单独渲染，
         # 不经过 record.getMessage()，因此 message 脱敏覆盖不到。这里提前把
@@ -2673,7 +2738,9 @@ class SensitiveDataFilter(logging.Filter):
                 record.exc_text = _sanitize_log_text(record.exc_text)
         except Exception:
             # 同样不因脱敏失败而阻断日志输出。
-            pass
+            sanitized = False
+        if sanitized:
+            record.jiuwen_sensitive_sanitized = True
         return True
 
 
@@ -2734,6 +2801,7 @@ def install_source_record_masking() -> None:
                 record.exc_info = None
             elif record.exc_text:
                 record.exc_text = _sanitize_log_text(record.exc_text)
+            record.jiuwen_sensitive_sanitized = True
         except Exception:
             # 永不因脱敏失败而阻断日志输出。但记录失败（计数 + 首次 stderr 提示），
             # 避免静默吞掉异常导致 api_key 在无感知下明文泄露。
@@ -2790,6 +2858,7 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     级别由 ``config.yaml`` 的 ``logging`` 段控制；环境变量 ``LOG_LEVEL`` 仅覆盖**控制台**级别
     （``log_level`` 参数为 ``None`` 时）。若传入 ``log_level``（如单测），则控制台与各文件级别均为该值。
     """
+    install_runtime_log_filter()
     # 必须在创建 StreamHandler 之前完成：cp1252 → UTF-8，否则中文日志会触发 UnicodeEncodeError。
     _reconfigure_stdio_utf8()
     logs_root = get_logs_dir()
@@ -2826,9 +2895,9 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
         )
         h.setLevel(level)
         h.setFormatter(custom_formatter if custom_formatter is not None else formatter)
-        h.addFilter(privacy_filter)
         if name_filter is not None:
             h.addFilter(name_filter)
+        h.addFilter(privacy_filter)
         root.addHandler(h)
 
     # gateway 日志独立目录（仅当环境变量 AGENTOS_GATEWAY_LOG_DIR 指定时启用），

@@ -79,11 +79,13 @@ def _pick_level(global_lv: str | None, user_lv: str | None, session_lv: str | No
     for lv in (global_lv, user_lv):
         if lv == "deny":
             return "deny"
+    if session_lv == "allow":
+        return "allow"
+    if user_lv == "allow":
+        return "allow"
     for lv in (global_lv, user_lv):
         if lv == "ask":
             return "ask"
-    if session_lv == "allow" and global_lv not in ("deny", "ask") and user_lv not in ("deny", "ask"):
-        return "allow"
     for lv in (global_lv, user_lv, session_lv):
         if lv == "allow":
             return "allow"
@@ -242,7 +244,11 @@ def compose_host_effective_permissions(
     session_id: str | None = None,
     agent_permissions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Effective = Global ⊕ User ⊕ Session. ``agent_permissions`` is ignored in P1."""
+    """Effective = Global ⊕ User ⊕ Session. ``agent_permissions`` is ignored in P1.
+
+    Whole-tool deny still wins. User allow relaxes Global ask; Session allow
+    relaxes User/Global ask. Session deny/ask fields are dropped.
+    """
     _ = (session_id, agent_permissions)
     try:
         g = _as_dict(global_permissions)

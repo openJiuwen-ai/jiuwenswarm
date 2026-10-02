@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import json
 from argparse import Namespace
 import sys
@@ -72,6 +74,26 @@ class AcpChannelHarness(AcpChannel):
 
 def json_line(payload):
     return json.dumps(payload, ensure_ascii=False)
+
+
+@pytest.fixture(autouse=True)
+def _short_acp_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let ``start()`` return right after the scripted stdin is drained.
+
+    Production keeps the read loop alive for 5s after stdin EOF so late gateway
+    events still reach an interactive client, and ends an idle prompt turn only
+    after 3s without events. Every test here feeds a fixed stdin script and
+    emits its events synchronously, so those waits would only add seconds per
+    test. Tests that need a different value still override it locally.
+    """
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect._STDIN_EOF_GRACE_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect._PROMPT_IDLE_FINALIZE_SECONDS",
+        0.01,
+    )
 
 
 def _import_acp_channel_entry(monkeypatch: pytest.MonkeyPatch):
@@ -626,7 +648,6 @@ async def test_jsonrpc_session_prompt_merges_session_context(monkeypatch):
     monkeypatch.setattr("sys.stdin", fake_stdin)
     monkeypatch.setattr("sys.stdout", fake_stdout)
     monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect._ACP_STDOUT", fake_stdout)
-    monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect._STDIN_EOF_GRACE_SECONDS", 0.01)
 
     async def _on_message(msg):
         seen.append(msg)
@@ -692,9 +713,6 @@ async def test_jsonrpc_session_prompt_does_not_end_turn_from_chat_final_before_l
     monkeypatch.setattr("sys.stdin", fake_stdin)
     monkeypatch.setattr("sys.stdout", fake_stdout)
     monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect._ACP_STDOUT", fake_stdout)
-    monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect._PROMPT_IDLE_FINALIZE_SECONDS",
-                        0.01)
-    monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect._STDIN_EOF_GRACE_SECONDS", 0.01)
 
     async def _on_message(msg):
         await channel.send(
@@ -796,8 +814,6 @@ async def test_jsonrpc_session_prompt_does_not_auto_finalize_from_delta_only(mon
     monkeypatch.setattr("sys.stdin", fake_stdin)
     monkeypatch.setattr("sys.stdout", fake_stdout)
     monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect._ACP_STDOUT", fake_stdout)
-    monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect._PROMPT_IDLE_FINALIZE_SECONDS",
-                        0.01)
     monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect._STDIN_EOF_GRACE_SECONDS", 0.05)
 
     async def _on_message(msg):
@@ -861,7 +877,6 @@ async def test_jsonrpc_session_cancel_finalizes_active_prompt(monkeypatch):
     monkeypatch.setattr("sys.stdin", fake_stdin)
     monkeypatch.setattr("sys.stdout", fake_stdout)
     monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect._ACP_STDOUT", fake_stdout)
-    monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect._STDIN_EOF_GRACE_SECONDS", 0.01)
 
     async def _on_message(msg):
         if msg.req_method == ReqMethod.CHAT_SEND:

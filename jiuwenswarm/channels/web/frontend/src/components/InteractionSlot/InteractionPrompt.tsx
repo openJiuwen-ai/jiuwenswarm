@@ -13,6 +13,7 @@ import { FileText, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useChatStore } from '../../stores';
 import type { AskUserQuestionPayload, Message, Question, UserAnswer } from '../../types';
 import { buildQaSummaryContent, type QaSummaryData, type QaSummaryItem } from './qaSummary';
+import { isSkillPackagePrompt } from './promptRouting';
 
 /** 后端为「有选项的问题」追加的自定义输入占位项。 */
 const CUSTOM_OPTION_LABEL = 'Other';
@@ -59,6 +60,7 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
   const { t } = useTranslation();
   const addMessage = useChatStore((s) => s.addMessage);
   const isSwarmflowHuman = pending.source === 'swarmflow_human';
+  const isSkillPackage = isSkillPackagePrompt(pending);
 
   const questions = useMemo<Question[]>(
     () => (pending.questions ?? []).slice(0, MAX_PAGES),
@@ -70,6 +72,7 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
   const [reached, setReached] = useState(0);
   const [states, setStates] = useState<Record<number, PageState>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [submittingAction, setSubmittingAction] = useState<string | null>(null);
 
   const current = questions[page];
   const st = states[page] ?? emptyPage();
@@ -85,6 +88,14 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
   );
   const isMulti = !!current?.multi_select;
   const isFreeInput = normalOptions.length === 0; // 无选项 → 纯输入题
+  const skillPackageActions = useMemo(() => {
+    if (!isSkillPackage) return { create: undefined, defer: undefined };
+    const options = current?.options ?? [];
+    return {
+      create: options.find((option) => (option.value || option.label) === 'install'),
+      defer: options.find((option) => (option.value || option.label) === 'defer'),
+    };
+  }, [current, isSkillPackage]);
 
   const patch = useCallback(
     (updater: (prev: PageState) => PageState) => {
@@ -246,6 +257,24 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
     submit(false, undefined, forcedTextByIdx);
   }, [submit, questions]);
 
+  const submitSkillPackageAction = useCallback(
+    (action: Question['options'][number] | undefined) => {
+      if (!current || !action || submitting) return;
+      const value = action.value || action.label;
+      setSubmitting(true);
+      setSubmittingAction(value);
+      void onSubmit(
+        pending.request_id,
+        [{ question: current.question, selected_options: [value] }],
+        pending.source,
+      ).finally(() => {
+        setSubmitting(false);
+        setSubmittingAction(null);
+      });
+    },
+    [current, onSubmit, pending, submitting],
+  );
+
   if (!current) return null;
 
   return (
@@ -289,11 +318,12 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{current.question}</ReactMarkdown>
         </div>
 
-        <div
-          className={`ix-prompt__group${isMulti ? ' ix-prompt__group--multi' : ''}`}
-          data-testid="interaction-slot-ix-options"
-          data-variant={isMulti ? 'multi' : undefined}
-        >
+        {!isSkillPackage && (
+          <div
+            className={`ix-prompt__group${isMulti ? ' ix-prompt__group--multi' : ''}`}
+            data-testid="interaction-slot-ix-options"
+            data-variant={isMulti ? 'multi' : undefined}
+          >
           {normalOptions.map((option) => {
             const value = option.value || option.label;
             const selected = st.selected.includes(value) || st.selected.includes(option.label);
@@ -346,38 +376,69 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
               data-testid="interaction-slot-ix-custom-input"
             />
           )}
-        </div>
+          </div>
+        )}
       </div>
 
       <div className="ix-prompt__foot" data-testid="interaction-slot-ix-foot">
-        <button
-          type="button"
-          className="ix-btn ix-btn--ghost"
-          onClick={handleCancel}
-          disabled={submitting}
-          data-testid="interaction-slot-ix-cancel-button"
-        >
-          {isSwarmflowHuman ? t('interactionPrompt.replyLater') : t('interactionPrompt.cancel')}
-        </button>
-        <button
-          type="button"
-          className="ix-btn ix-btn--ghost"
-          onClick={handleSkip}
-          disabled={submitting}
-          data-testid="interaction-slot-ix-skip-button"
-        >
-          {t('interactionPrompt.skip')}
-        </button>
-        <button
-          type="button"
-          className="ix-btn ix-btn--primary"
-          onClick={handleNextOrConfirm}
-          disabled={submitting || incompleteCustom}
-          data-testid="interaction-slot-ix-confirm-button"
-          data-variant={isLast ? 'confirm' : 'next'}
-        >
-          {isLast ? t('interactionPrompt.confirm') : t('interactionPrompt.nextStep')}
-        </button>
+        {isSkillPackage ? (
+          <>
+            <button
+              type="button"
+              className="ix-btn ix-btn--ghost"
+              onClick={() => submitSkillPackageAction(skillPackageActions.defer)}
+              disabled={submitting}
+              data-testid="interaction-slot-skill-package-defer-button"
+            >
+              {skillPackageActions.defer?.label}
+            </button>
+            <button
+              type="button"
+              className="ix-btn ix-btn--primary"
+              onClick={() => submitSkillPackageAction(skillPackageActions.create)}
+              disabled={submitting}
+              data-testid="interaction-slot-skill-package-create-button"
+              data-variant={submittingAction === 'install' ? 'loading' : 'idle'}
+            >
+              {submittingAction === 'install'
+                ? t('skillPackagePrompt.creating')
+                : skillPackageActions.create?.label}
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="ix-btn ix-btn--ghost"
+              onClick={handleCancel}
+              disabled={submitting}
+              data-testid="interaction-slot-ix-cancel-button"
+            >
+              {isSwarmflowHuman
+                ? t('interactionPrompt.replyLater')
+                : t('interactionPrompt.cancel')}
+            </button>
+            <button
+              type="button"
+              className="ix-btn ix-btn--ghost"
+              onClick={handleSkip}
+              disabled={submitting}
+              data-testid="interaction-slot-ix-skip-button"
+            >
+              {t('interactionPrompt.skip')}
+            </button>
+            <button
+              type="button"
+              className="ix-btn ix-btn--primary"
+              onClick={handleNextOrConfirm}
+              disabled={submitting || incompleteCustom}
+              data-testid="interaction-slot-ix-confirm-button"
+              data-variant={isLast ? 'confirm' : 'next'}
+            >
+              {isLast ? t('interactionPrompt.confirm') : t('interactionPrompt.nextStep')}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

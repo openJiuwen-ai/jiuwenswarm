@@ -107,15 +107,8 @@ interface PluginPackageState {
   installingIds: Record<string, boolean>;
 
   loadList: (filter?: 'builtin+hub' | 'mine', options?: { silent?: boolean }) => Promise<void>;
-  // 返回是否成功——PluginDetailPage.tsx 卸载后要重新 show() 探测这个插件还在不在（新方案
-  // "我的插件"卸载后的收尾逻辑：还能读到就留在详情页，读不到才退出到列表页），需要知道结果。
+  // 返回是否成功，供详情页在加载失败时保留当前导航状态。
   loadDetail: (id: string) => Promise<boolean>;
-  /** 跟 loadDetail 几乎一样，唯一区别是失败时不 set 全局 error——2026-08-21 用户反馈根因确认：
-   * 卸载插件（uninstall_plugin_package）后端会把整个包目录删掉（不是只翻 installed 标记），
-   * 卸载后探测"这个包还在不在"时 show() 404 是预期中的正常结果（走 onDeleted 退出到列表页），
-   * 不该弹一条吓人的红色错误提示——真正的卸载结果反馈已经由 uninstall()/deletePackage() 自己的
-   * successMessage/error 负责，这个探测只是导航判断用。 */
-  probeExists: (id: string) => Promise<boolean>;
   create: (params: {
     id: string;
     name: string;
@@ -232,19 +225,6 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
     }
   },
 
-  probeExists: async (id: string) => {
-    try {
-      const detail = await pluginPackagesApi.show(id);
-      set((state) => ({
-        detailCache: { ...state.detailCache, [id]: detail },
-        connectionStateMap: { ...state.connectionStateMap, [id]: detail.connectionState },
-      }));
-      return true;
-    } catch {
-      return false;
-    }
-  },
-
   // 和 install 不同：create 产出的是一个全新实体，后续 show() 还要能读到它，前端没法安全地
   // "假装成功"——后端没实现这个接口时（backend-requests.md 需求2），这里如实失败，让调用方给
   // 用户看错误提示，而不是伪造一条本地数据后刷新就消失。
@@ -327,12 +307,8 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
     }
   },
 
-  // 2026-08-21 用户反馈根因确认：这条注释原来写的是"卸载只让 installed 变 false，不影响是否
-  // 还留在'我的'里"——实测发现是错的，后端 uninstall_plugin_package 会把整个包目录 rmtree 掉
-  // 并从 marketplace 名单里移除条目（不是只翻 installed 标记），卸载后这个包在 list/show 里
-  // 就是真的查不到了。PluginDetailPage.tsx 的"我的"视角卸载收尾（探测还在不在，不在就退出到
-  // 列表页）原来就是按这个真实行为写的，只是探测用的 loadDetail 会在探测失败时顺带弹一条红色
-  // 错误 Toast，把"预期内的 404"和"真错误"混在一起了，已经改成用不弹 error 的 probeExists。
+  // 后端卸载会删除插件的本地文件和市场记录。从“我的扩展”触发时使用 deletePackage，成功后
+  // 立即从本地列表移除卡片并返回列表页；广场视角仍使用 uninstall 保留广场资产卡片。
   //
   // 之前这里从来没有默认的"卸载成功"提示——只有后端返回 notice（该插件依赖的 connector 仍
   // 保持连接）时才会弹一条绿色 Toast，没有 notice 就什么反馈都没有，用户看不出卸载到底成没成功。
@@ -363,22 +339,27 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
 
   // 插件没有真正的"删除"接口（backend-requests.md 需求20，全文档没有 plugin_packages.delete），
   // 复用 plugin_packages.uninstall——和上面的 uninstall action 调用的是同一个后端方法，只是
-  // "我的插件"详情页调用这个入口，方便调用方（PluginDetailPage.tsx）在卸载后按需要做
-  // 探测收尾（见该组件注释）。等后端真的给出独立的删除接口再拆开。
+  // "我的插件"详情页调用这个入口，成功后同步清理本地列表与详情缓存。等后端真的给出独立的
+  // 删除接口再拆开。
   deletePackage: async (id: string) => {
     set({ busyId: id, error: null, successMessage: null });
     try {
       const { notice } = await pluginPackagesApi.uninstall(id);
       set((state) => {
         const nextInstalled = { ...state.installed, [id]: false };
+        const nextDetailCache = { ...state.detailCache };
+        delete nextDetailCache[id];
         persistLocalState({ installed: nextInstalled });
         return {
           installed: nextInstalled,
+          localPackages: state.localPackages.filter((item) => item.id !== id),
+          detailCache: nextDetailCache,
           busyId: null,
           noticeMessage: notice ?? null,
           successMessage: notice ? null : successKey.pluginUninstalled,
         };
       });
+      scheduleQuickRefresh();
       return true;
     } catch (error) {
       set({ busyId: null, error: error instanceof Error ? error.message : String(error) });

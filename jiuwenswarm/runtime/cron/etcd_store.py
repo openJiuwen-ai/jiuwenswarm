@@ -165,9 +165,12 @@ class EtcdCronJobStore:
         timeout_seconds: int | None = None,
         project_id: str = "",
         model_name: str | None = None,
+        model_selection: dict[str, str] | None = None,
+        mcp: list[str] | None = None,
         app_id: str = "",
         work_mode: str = DEFAULT_WEB_WORK_MODE,
         user_id: str = "",
+        credential_ref: str = "",
     ) -> CronJob:
         job = build_new_cron_job(
             job_id=job_id,
@@ -185,9 +188,12 @@ class EtcdCronJobStore:
             timeout_seconds=timeout_seconds,
             project_id=project_id,
             model_name=model_name,
+            model_selection=model_selection,
+            mcp=mcp,
             app_id=app_id,
             work_mode=work_mode,
             user_id=user_id,
+            credential_ref=credential_ref,
         )
         async with self._lock:
             try:

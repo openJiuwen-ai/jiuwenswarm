@@ -1,8 +1,0 @@
-{
-  "package_type": "agent_template",
-  "name": "方案分析专家",
-  "description": "负责主要专业分析、备选方案比较和落地规划",
-  "persona": {
-    "dir": "./persona"
-  }
-}

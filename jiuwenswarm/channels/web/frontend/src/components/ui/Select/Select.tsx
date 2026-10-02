@@ -9,13 +9,14 @@ import {
   type ButtonHTMLAttributes,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
 import './Select.css';
 
 export type SelectOption = {
   value: string;
-  label: string;
+  label: ReactNode;
   disabled?: boolean;
   disabledReason?: string;
 };

@@ -1,6 +1,8 @@
 import json
+import os
 import time
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -187,6 +189,126 @@ async def test_schedule_gateway_restart_sets_event_without_execv(monkeypatch):
     await asyncio.wait_for(restart_request.ready_event.wait(), timeout=1.0)
     assert restart_request.requested is True
     assert execv_calls == []
+
+
+class _ProcessExited(Exception):
+    pass
+
+
+def _install_fake_os(monkeypatch, gateway_module, exit_codes, execv_calls):
+    """Swap the module's ``os`` for a local stub.
+
+    Patching attributes on ``gateway_module.os`` mutates the real, process-wide
+    ``os`` module: every thread's ``os._exit`` would raise for the duration of
+    the test (breaking even pytest-timeout's hard-kill path). Replacing the
+    module reference keeps the patch local, like the sibling test file's
+    ``_fake_os`` pattern.
+    """
+
+    def fake_exit(code):
+        exit_codes.append(code)
+        raise _ProcessExited
+
+    monkeypatch.setattr(
+        gateway_module,
+        "os",
+        SimpleNamespace(
+            environ=os.environ,
+            getpid=os.getpid,
+            getppid=os.getppid,
+            _exit=fake_exit,
+            execv=lambda executable, argv: execv_calls.append(argv),
+        ),
+    )
+
+
+def test_exec_gateway_restart_exits_to_supervisor(monkeypatch):
+    import jiuwenswarm.gateway.app_gateway as gateway_module
+
+    exit_codes = []
+    execv_calls = []
+    _install_fake_os(monkeypatch, gateway_module, exit_codes, execv_calls)
+    # The real parent (pytest) is alive and older than us, so the live
+    # supervisor check passes without stubbing psutil.
+    monkeypatch.setenv(gateway_module.SUPERVISOR_PID_ENV, str(os.getppid()))
+
+    with pytest.raises(_ProcessExited):
+        gateway_module._exec_gateway_restart()
+
+    assert exit_codes == [gateway_module.GATEWAY_RESTART_EXIT_CODE]
+    assert execv_calls == []
+
+
+@pytest.mark.parametrize("supervisor_pid", [None, "0"])
+def test_exec_gateway_restart_execs_without_its_supervisor(monkeypatch, supervisor_pid):
+    import jiuwenswarm.gateway.app_gateway as gateway_module
+
+    exit_codes = []
+    execv_calls = []
+    _install_fake_os(monkeypatch, gateway_module, exit_codes, execv_calls)
+    if supervisor_pid is None:
+        monkeypatch.delenv(gateway_module.SUPERVISOR_PID_ENV, raising=False)
+    else:
+        # A PID leaked through a saved environment must not be mistaken for our parent.
+        monkeypatch.setenv(gateway_module.SUPERVISOR_PID_ENV, supervisor_pid)
+
+    gateway_module._exec_gateway_restart()
+
+    assert len(execv_calls) == 1
+    assert exit_codes == []
+
+
+def test_exec_gateway_restart_execs_when_the_supervisor_pid_is_dead(monkeypatch):
+    # Windows: os.getppid() keeps reporting a hard-killed supervisor's PID
+    # (no reparenting), so the env match alone must not trigger the
+    # exit-and-be-respawned path with nobody left to respawn us.
+    import psutil
+
+    import jiuwenswarm.gateway.app_gateway as gateway_module
+
+    exit_codes = []
+    execv_calls = []
+    _install_fake_os(monkeypatch, gateway_module, exit_codes, execv_calls)
+    monkeypatch.setenv(gateway_module.SUPERVISOR_PID_ENV, str(os.getppid()))
+
+    def dead_process(pid=None):
+        raise psutil.NoSuchProcess(pid if pid is not None else 0)
+
+    monkeypatch.setattr(psutil, "Process", dead_process)
+
+    gateway_module._exec_gateway_restart()
+
+    assert len(execv_calls) == 1
+    assert exit_codes == []
+
+
+def test_exec_gateway_restart_execs_when_the_supervisor_pid_was_recycled(monkeypatch):
+    # A recycled PID belongs to a process younger than us: the real supervisor
+    # always starts before the gateway it spawned.
+    import psutil
+
+    import jiuwenswarm.gateway.app_gateway as gateway_module
+
+    exit_codes = []
+    execv_calls = []
+    _install_fake_os(monkeypatch, gateway_module, exit_codes, execv_calls)
+    monkeypatch.setenv(gateway_module.SUPERVISOR_PID_ENV, str(os.getppid()))
+
+    class _RecycledProcess:
+        def __init__(self, pid=None):
+            self._pid = pid
+
+        def create_time(self):
+            # pid=None is psutil.Process() (ourselves); anything else is the
+            # "parent", recreated after us.
+            return time.time() + (60.0 if self._pid is not None else 0.0)
+
+    monkeypatch.setattr(psutil, "Process", _RecycledProcess)
+
+    gateway_module._exec_gateway_restart()
+
+    assert len(execv_calls) == 1
+    assert exit_codes == []
 
 
 @pytest.mark.asyncio

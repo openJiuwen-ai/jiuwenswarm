@@ -165,6 +165,23 @@ def test_desktop_drag_script_rejects_directories_before_dom_bridge():
     assert "jiuwen-desktop-directory-drop-rejected" in script
 
 
+def test_desktop_drag_script_rejects_virtual_files_before_dom_bridge():
+    runtime = _runtime()
+    scripts: list[str] = []
+
+    class FakeWindow:
+        def run_js(self, script: str):
+            scripts.append(script)
+
+    runtime.window = FakeWindow()
+    runtime._mark_desktop_shell()
+
+    script = scripts[0]
+    assert "function hasVirtualFiles(dt)" in script
+    assert "item.webkitGetAsEntry() === null" in script
+    assert "jiuwen-desktop-virtual-file-drop-rejected" in script
+
+
 def test_desktop_drop_rejects_directory_path_without_describing_files(tmp_path: Path):
     runtime = _runtime()
     scripts: list[str] = []

@@ -124,7 +124,7 @@ def test_expert_model_and_subagent_validation(tmp_path):
         run(root, "agent_template")
 
 
-def test_agent_group_becomes_hub_expert_team_without_mutating_source(tmp_path):
+def test_agent_group_preserves_native_package_shape_for_hub(tmp_path):
     root = package(
         tmp_path,
         "agent_group",
@@ -167,17 +167,19 @@ def test_agent_group_becomes_hub_expert_team_without_mutating_source(tmp_path):
     )
 
     manifest = json.loads((root / "manifest.json").read_text())
-    reviewer = json.loads((root / "agents/reviewer/.subagent.json").read_text())
-    assert manifest["package_type"] == "agent_template"
+    leader = json.loads((root / "agents/leader/manifest.json").read_text())
+    reviewer = json.loads((root / "agents/reviewer/manifest.json").read_text())
+    assert manifest["package_type"] == "agent_group"
     assert manifest["name"] == "demo" and manifest["version"] == "1.0.0"
     assert manifest["display_name"] == "Review Team"
-    assert manifest["persona"] == {"dir": "agents/leader"}
-    assert manifest["subagents"] == [{"dir": "agents/reviewer"}]
-    assert manifest["skills"] == [{"dir": "skills/shared", "mode": "all"}]
-    assert reviewer["agent_name"] == "reviewer"
+    assert manifest["description"] == "Published team"
+    assert manifest["instruction"] == "Coordinate the team"
+    assert manifest["agents"] == ["leader", "reviewer"]
+    assert manifest["skills"] == ["shared"]
+    assert leader["package_type"] == "agent_template"
+    assert reviewer["package_type"] == "agent_template"
     assert reviewer["persona"] == {"dir": "persona"}
-    assert not (root / "agents/leader/manifest.json").exists()
-    assert not (root / "agents/reviewer/manifest.json").exists()
+    assert not (root / "agents/reviewer/.subagent.json").exists()
     assert result["wrapper"] is None
 
 

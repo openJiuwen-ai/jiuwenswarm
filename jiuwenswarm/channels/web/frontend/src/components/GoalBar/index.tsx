@@ -20,6 +20,7 @@ import { useTranslation } from 'react-i18next';
 import { Pause, Pencil, Play, Target, Trash2 } from 'lucide-react';
 import { useChatStore, useGoalStore, useSessionStore } from '../../stores';
 import type { GoalRecord, GoalStatus } from '../../types';
+import { hasPendingGoalAction } from '../../features/goalMode/goalModeGate';
 import { EditGoalModal } from './EditGoalModal';
 import './GoalBar.css';
 
@@ -85,8 +86,8 @@ export function GoalBar({ onSetGoal, onPauseGoal, onResumeGoal, onClearGoal }: G
   const [editing, setEditing] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   // 暂停/恢复点击后的乐观图标翻转：只影响图标选哪个，不影响按钮是否可点（仍然沿用下面的
-  // isDisabled 整组置灰）、也不影响状态文字颜色（那个继续等权威数据）。pendingAction 落地
-  // （不管成功还是失败兜底完）后清空，让真实 goal.status 接管。
+  // isDisabled 置灰）、也不影响状态文字颜色（那个继续等权威数据）。pendingAction
+  // 落地（不管成功还是失败兜底完）后清空，让真实 goal.status 接管。
   const [optimisticPausable, setOptimisticPausable] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -136,8 +137,17 @@ export function GoalBar({ onSetGoal, onPauseGoal, onResumeGoal, onClearGoal }: G
   const tone: DisplayTone = degraded ?? STATUS_TONE[goal.status as GoalStatus] ?? 'active';
   const isPausable = goal.status === 'active';
   const isResumable = goal.status === 'paused' || goal.status === 'blocked';
-  const isBusy = pendingAction !== null;
-  const isDisabled = isBusy || degraded !== null;
+  // bugfix 2026092201 bug001 第9轮修订（第7轮的方向反了，这里改回来）：GoalBar 的编辑/
+  // 暂停(恢复)/删除三个按钮统一只用 hasPendingGoalAction 做"上一次操作还没回执"的双击
+  // 防护，都不受 isGoalStatusActive 限制——这也是 bugfix 之前的原始语义。
+  //
+  // 用户明确澄清过："+"菜单目标开关的关闭方向、目标 tag 的 × 关闭按钮是"轻量切换/随手一点"
+  // 的入口，active 时要挡，防止手滑关掉正在执行的目标；但 GoalBar 的"删除"按钮是用户专门
+  // 打开这个悬浮条、有意识点击的正式终止入口，语义是"我现在就要终止并删除这个正在执行的
+  // 目标"，不该被同一套"active 就算忙"的判断锁死——锁死了用户就没有任何正式渠道能主动
+  // 停掉一个正在跑偏的目标（"暂停"只是暂停，不是终止/清除）。第7轮把删除和"+"菜单/tag
+  // 归成一类、只把编辑和暂停摘出来，分类分错了，这次把删除也一起摘出来。
+  const isDisabled = hasPendingGoalAction(activeSessionId) || degraded !== null;
   // 图标显示用的"是否展示为可暂停"：乐观值优先，否则用真实状态。
   const displayAsPausable = optimisticPausable ?? isPausable;
 

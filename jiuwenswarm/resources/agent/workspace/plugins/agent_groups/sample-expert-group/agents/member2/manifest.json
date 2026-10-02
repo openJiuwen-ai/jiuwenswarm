@@ -1,8 +1,0 @@
-{
-  "package_type": "agent_template",
-  "name": "风险与质量复核专家",
-  "description": "负责独立检查方案风险、遗漏、反例和证据质量",
-  "persona": {
-    "dir": "./persona"
-  }
-}

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
 import re
 from collections.abc import Mapping
 from typing import Any, List, Optional
@@ -281,6 +282,35 @@ def _enrich_trusted_reviewer_result(
             return
 
 
+def _parse_pause_wait_timeout(default: float = 300.0) -> float:
+    """Parse JIUWEN_PAUSE_WAIT_TIMEOUT_SECONDS without ever raising.
+
+    The value is read at import time: a typo'd env var must not brick module
+    import, and a non-positive one must not silently disable pause (every
+    checkpoint would fail open immediately). Fall back to *default* instead.
+    """
+    raw = (os.getenv("JIUWEN_PAUSE_WAIT_TIMEOUT_SECONDS") or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "[StreamEventRail] invalid JIUWEN_PAUSE_WAIT_TIMEOUT_SECONDS=%r; using %s",
+            raw,
+            default,
+        )
+        return default
+    if value <= 0:
+        logger.warning(
+            "[StreamEventRail] non-positive JIUWEN_PAUSE_WAIT_TIMEOUT_SECONDS=%r; using %s",
+            raw,
+            default,
+        )
+        return default
+    return value
+
+
 class JiuSwarmStreamEventRail(DeepAgentRail):
     """Emit frontend stream events and enforce pause/abort checkpoints.
 
@@ -303,6 +333,13 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
     # checkpoints inherit the parent's session_id (correct: parent abort → sub stops).
     _SID_KEY = "__jiuwenswarm_session_id__"
     _SHELL_SID_TOKEN_KEY = "__jiuwenswarm_shell_session_token__"
+
+    # Pause checkpoints must never block forever: a lost resume (e.g. the
+    # session left the adapter's active counter before resume arrived) would
+    # park the agent until the host's hard timeout — observed as a cron run
+    # hanging 59 minutes on a cleared latch. Fail-open after this many
+    # seconds; pause is best-effort, hanging is not acceptable.
+    _PAUSE_WAIT_TIMEOUT_SECONDS = _parse_pause_wait_timeout()
 
     def __init__(
         self,
@@ -537,6 +574,18 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
     # -- pause / resume / abort API for interface.py --
     # All methods accept session_id to scope state per-session on shared adapters.
 
+    @staticmethod
+    def _sid_key(session_id: str | None) -> str:
+        """Single normalization point for every per-session state key.
+
+        Execution keys derive from ``conversation_id`` (the raw
+        request.session_id), while adapter-side control calls (pause/resume/
+        cleanup) arrive pre-stripped. Every store in this rail must collapse
+        the two, or a whitespace-padded session id leaves the pause latch and
+        the checkpoint waiter parked on different keys.
+        """
+        return str(session_id or "").strip() or "default"
+
     def _get_pause_event(self, sid: str) -> asyncio.Event:
         """Lazily get/create pause event for a session. Created events start in set (unpaused)."""
         event = self._pause_events.get(sid)
@@ -546,17 +595,56 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             self._pause_events[sid] = event
         return event
 
+    async def _wait_for_resume(self, sid: str, checkpoint: str) -> None:
+        """Await the pause latch with a fail-open timeout.
+
+        The latch is cleared by ``pause()`` and must be re-set by ``resume()``.
+        A bare ``event.wait()`` parks the checkpoint forever when the resume is
+        lost (skipped by the adapter's active-session guard, or the event is
+        swapped out by cleanup), so bound the wait and release it ourselves.
+        """
+        event = self._get_pause_event(sid)
+        if event.is_set():
+            return
+        logger.warning(
+            "[StreamEventRail] pause checkpoint blocked sid=%s at=%s", sid, checkpoint
+        )
+        try:
+            await asyncio.wait_for(event.wait(), timeout=self._PAUSE_WAIT_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.error(
+                "[StreamEventRail] pause latch stale (>%ss) at=%s sid=%s; fail-open",
+                self._PAUSE_WAIT_TIMEOUT_SECONDS,
+                checkpoint,
+                sid,
+            )
+            # 自愈：不 set 的话该 sid 后续每个 checkpoint 都会继续卡满超时。
+            event.set()
+
     def pause(self, session_id: str = "") -> None:
-        sid = session_id or "default"
-        self._get_pause_event(sid).clear()
+        # 空/纯空白 session_id 不得落到 "default"：那是所有解析不到 SID 的回调
+        # 共用的 latch，误 clear 会让无关会话在 checkpoint 上集体阻塞。
+        if not str(session_id or "").strip():
+            logger.warning(
+                "[StreamEventRail] pause ignored: empty session_id (would hit shared default latch)"
+            )
+            return
+        self._get_pause_event(self._sid_key(session_id)).clear()
 
     def resume(self, session_id: str = "") -> None:
-        sid = session_id or "default"
+        # resume 幂等且无害；空/纯空白 session_id 时宁可不动作，也不要碰共享
+        # "default" latch。
+        if not str(session_id or "").strip():
+            logger.warning(
+                "[StreamEventRail] resume ignored: empty session_id (would hit shared default latch)"
+            )
+            return
+        sid = self._sid_key(session_id)
         self._abort_requested.pop(sid, None)
         self._get_pause_event(sid).set()
 
     def abort(self, session_id: str = "") -> None:
-        sid = session_id or "default"
+        sid = self._sid_key(session_id)
         self._abort_requested[sid] = True
         self._get_pause_event(sid).set()
         if sid:
@@ -579,7 +667,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 )
 
     def reset_abort(self, session_id: str = "") -> None:
-        sid = session_id or "default"
+        sid = self._sid_key(session_id)
         self._abort_requested.pop(sid, None)
 
     def is_abort_requested(self, session_id: str = "") -> bool:
@@ -588,7 +676,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         Lets the adapter's 0-token empty-run guard tell a user-cancelled round
         (abort flag set) from a silently failed one (flag never set).
         """
-        sid = session_id or "default"
+        sid = self._sid_key(session_id)
         return bool(self._abort_requested.get(sid, False))
 
     def reset_for_new_task(self, session_id: str = "") -> None:
@@ -601,7 +689,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         in-flight checkpoint (before_model_call / before_tool_call) can still
         observe the flag and raise CancelledError.
         """
-        sid = session_id or "default"
+        sid = self._sid_key(session_id)
         self._get_pause_event(sid).set()
         self._conversation_ids.pop(sid, None)
         self._main_sessions.pop(sid, None)
@@ -613,9 +701,16 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         (Counter drops to 0). Prevents unbounded growth of the per-session
         dicts on long-lived adapters serving many unique sessions.
         """
-        sid = session_id or "default"
+        sid = self._sid_key(session_id)
         self._abort_requested.pop(sid, None)
-        self._pause_events.pop(sid, None)
+        # 摘除 latch 前必须放行仍在它上面 park 的协程：否则后续 resume 会新建
+        # 另一个 Event 并 set，旧等待者永远收不到通知（TOCTOU）。
+        stale = self._pause_events.pop(sid, None)
+        if stale is not None and not stale.is_set():
+            logger.warning(
+                "[StreamEventRail] cleanup: releasing stale pause latch sid=%s", sid
+            )
+            stale.set()
         self._conversation_ids.pop(sid, None)
         self._main_sessions.pop(sid, None)
         self._cancelled_tool_results.pop(sid, None)
@@ -633,7 +728,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
     ) -> None:
         """Permanently block a damaged runtime until its owning session is destroyed."""
 
-        sid = session_id or "default"
+        sid = self._sid_key(session_id)
         self._quarantined_sessions.add(sid)
         if session is not None:
             session.update_state({PERMISSION_RUNTIME_QUARANTINED_KEY: True})
@@ -646,7 +741,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
     ) -> None:
         """Reject new work after fail-closed interruption cleanup failed."""
 
-        sid = session_id or "default"
+        sid = self._sid_key(session_id)
         persisted = (
             session.get_state(PERMISSION_RUNTIME_QUARANTINED_KEY)
             if session is not None
@@ -664,12 +759,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
 
         Returns list of tool_result dicts for gateway to forward to frontend.
         """
-        sid = session_id or "default"
+        sid = self._sid_key(session_id)
         return list(self._cancelled_tool_results.get(sid, []))
 
     def clear_cancelled_tool_results(self, session_id: str = "") -> None:
         """Clear cancelled tool results after they've been retrieved."""
-        sid = session_id or "default"
+        sid = self._sid_key(session_id)
         self._cancelled_tool_results.pop(sid, None)
 
     def collect_cancelled_tool_updates(self, session_id: str = "") -> None:
@@ -678,11 +773,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         Args:
             session_id: Only collect tools for this session. If empty, collect all.
         """
-        sid = session_id or "default"
+        sid = self._sid_key(session_id)
         bucket = self._cancelled_tool_results.setdefault(sid, [])
         for tc_id, info in list(self._inflight_tool_calls.items()):
-            # Only collect tools matching the target session
-            if session_id and info.get("session_id") != session_id:
+            # Only collect tools matching the target session (in-flight entries
+            # store the rail's normalized sid).
+            if session_id and info.get("session_id") != sid:
                 continue
             tc = info.get("tool_call")
             if tc is None:
@@ -718,8 +814,11 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # "default" sentinel as a conversation_id value — after_tool_call uses
         # truthiness to decide whether to emit todo.updated, and a literal
         # "default" would trigger _emit_todo_updated with a bogus session key.
+        # The key must be stripped to match the adapter's control calls
+        # (pause/resume/cleanup arrive pre-normalized); the stored
+        # conversation_id value keeps its raw form for client-facing events.
         raw_conv_id = ctx.inputs.conversation_id or ""
-        sid = raw_conv_id or "default"
+        sid = raw_conv_id.strip() or "default"
         self.raise_if_quarantined(sid, ctx.session)
         if raw_conv_id:
             self._conversation_ids[sid] = raw_conv_id
@@ -883,7 +982,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         sid = self._resolve_sid(ctx, ctx.session)
-        await self._get_pause_event(sid).wait()
+        await self._wait_for_resume(sid, "before_model_call")
         if self._abort_requested.get(sid, False):
             raise asyncio.CancelledError("Agent abort requested")
 
@@ -975,7 +1074,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             getattr(ctx, "extra", None),
             tool_call_id=getattr(tc, "id", "") if tc is not None else "",
         )
-        await self._get_pause_event(sid).wait()
+        await self._wait_for_resume(sid, "before_tool_call")
         if self._abort_requested.get(sid, False):
             raise asyncio.CancelledError("Agent abort requested")
 

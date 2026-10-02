@@ -146,6 +146,60 @@ def test_has_persistable_assistant_payload_subagent_activity():
     ) is True
 
 
+def test_has_persistable_assistant_payload_ask_user_question():
+    # 问题澄清对话框载荷在 questions[] 里（无 content），必须落盘才能在刷新后恢复。
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.ask_user_question",
+        extra={
+            "request_id": "req-1",
+            "source": "ask_user_interrupt",
+            "questions": [
+                {"question": "用哪种方案?", "header": "Question", "options": []},
+            ],
+        },
+    ) is True
+    # 空 questions 列表仍应被拒绝（空壳）。
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.ask_user_question",
+        extra={"request_id": "req-2", "source": "ask_user_interrupt", "questions": []},
+    ) is False
+    # 缺少 questions 字段也应被拒绝。
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.ask_user_question",
+        extra={"request_id": "req-3", "source": "ask_user_interrupt"},
+    ) is False
+
+
+def test_has_persistable_assistant_payload_ask_user_answer():
+    # 问题澄清答案载荷在 answers[] 里（无 content），必须落盘才能在刷新后回显。
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.ask_user_answer",
+        extra={
+            "request_id": "req-1",
+            "source": "ask_user_interrupt",
+            "answers": [
+                {"question": "用哪种方案?", "selected_options": ["方案A"]},
+            ],
+        },
+    ) is True
+    # 空 answers 列表仍应被拒绝（空壳）。
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.ask_user_answer",
+        extra={"request_id": "req-2", "source": "ask_user_interrupt", "answers": []},
+    ) is False
+    # 缺少 answers 字段也应被拒绝。
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.ask_user_answer",
+        extra={"request_id": "req-3", "source": "ask_user_interrupt"},
+    ) is False
+
+
 def test_has_persistable_assistant_payload_usage_summary():
     assert session_history._has_persistable_assistant_payload(
         content_text="",

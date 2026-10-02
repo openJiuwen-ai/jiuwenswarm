@@ -1,3 +1,4 @@
+import { catalogAwaitingItems, type CatalogCacheMetadata } from '../../features/catalogCache';
 /**
  * 技能广场视图（默认列表 / 「更多」专页）
  *
@@ -21,6 +22,7 @@ interface MarketplaceViewProps {
   hubSkillMore: MarketplacePluginItem[];
   hubSkills: MarketplacePluginItem[];
   hubLoading: boolean;
+  hubCache?: CatalogCacheMetadata;
   hubMoreLoading: boolean;
   searchKeyword: string;
   marketplaceCategory: (typeof MARKETPLACE_CATEGORIES)[number];
@@ -41,6 +43,7 @@ export function MarketplaceView({
   hubSkillMore,
   hubSkills,
   hubLoading,
+  hubCache,
   hubMoreLoading,
   searchKeyword,
   marketplaceCategory,
@@ -88,7 +91,7 @@ export function MarketplaceView({
               {marketplaceSubView === 'team' ? t('skills.featuredTeamSkills') : t('skills.featuredSkills')}
             </span>
           </div>
-          {hubMoreLoading ? (
+          {hubMoreLoading || catalogAwaitingItems(moreItems.length, hubCache) ? (
             <div
               className="flex flex-1 min-h-[200px] items-center justify-center"
               role="status"
@@ -133,7 +136,11 @@ export function MarketplaceView({
         </div>
       ) : null}
 
-      {hubLoading ? (
+      {hubLoading ||
+      catalogAwaitingItems(
+        searchKeyword ? hubSkills.length : teamSkills.length + featuredSkills.length + skillPacks.length,
+        hubCache,
+      ) ? (
         <div
           className="flex flex-1 min-h-0 items-center justify-center"
           role="status"

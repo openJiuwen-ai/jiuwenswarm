@@ -64,7 +64,35 @@ interface ProjectedSpan {
   owningRequestRecordId?: string
 }
 
+/**
+ * What retention left behind for one execution subject: the state the
+ * session-wide derivations had reached over the turns it removed. Projecting
+ * the remaining records from it renders every remaining turn exactly as it
+ * rendered with the removed turns still loaded.
+ */
+export interface TrajectoryProjectionCheckpoint {
+  turns: {
+    /** Highest turn number a removed turn stated. */
+    maxNumber: number
+    /** Removed turns that were numbered after every stated number. */
+    unnumbered: number
+    /** Turn ids removed turns stated, by trace still holding records. */
+    traceTurnIds: ReadonlyMap<string, readonly string[]>
+  }
+  /** Model requests removed, by `conversation\u0000subject`. */
+  requestOffsets: ReadonlyMap<string, number>
+  /** Removed requests later schema-v1 requests are still compared against, oldest first. */
+  lineage: readonly TrajectoryLineageSeed[]
+}
+
+export interface TrajectoryLineageSeed {
+  record: OtlpExportTraceServiceRequest
+  /** Whether a schema-v2 commit handled the request, so only its output carries on. */
+  handledByV2: boolean
+}
+
 export interface TrajectoryProjectionOptions {
+  checkpoint?: TrajectoryProjectionCheckpoint
   lifecycleByRecordId?: ReadonlyMap<string, 'running' | 'completed' | 'error'>
   sessionCumulativeUsageByRequestIdentity?: ReadonlyMap<string, TrajectoryUsage>
   /**
@@ -121,8 +149,18 @@ interface TurnFact {
   // Whether the turn's traces named it by id or number. A trace naming
   // neither ran outside every turn, such as a manual /compact.
   stated: boolean
-  // When the earliest trace of the turn began.
+  // When the earliest record of the turn began.
   startedAt: bigint
+}
+
+// The turns every record of one projection belongs to, resolved once so legacy
+// spans and schema-v2 events land on one axis.
+interface TurnIndex {
+  byKey: ReadonlyMap<string, TurnFact>
+  // The turn one record belongs to, by its own span identity.
+  forRecord(traceId: string, spanId: string): TurnFact | undefined
+  // The turn a record states by id, or its trace's turn when it states none.
+  forTurn(traceId: string, turnId: string | undefined): TurnFact | undefined
 }
 
 // One rendered turn entry and when its turn began, so a run outside every
@@ -240,6 +278,11 @@ function requestRecordIdentity(span: ProjectedSpan): string | undefined {
 
 function startedAt(span: ProjectedSpan): number {
   return Number(span.startTimeUnixNano / NANOSECONDS_PER_MILLISECOND)
+}
+
+function endedAt(span: ProjectedSpan): number | undefined {
+  if (span.endTimeUnixNano === undefined) return undefined
+  return Number(span.endTimeUnixNano / NANOSECONDS_PER_MILLISECOND)
 }
 
 function durationSeconds(span: ProjectedSpan): number | null {
@@ -754,6 +797,62 @@ function spanCellBase(span: ProjectedSpan, suffix: string): Pick<
   }
 }
 
+// How a turn that ended in failure is shown. A native run records the failure
+// on the record that hit it — the inference or tool whose span carries the
+// error — and the row for that record is drawn in error. An external CLI has
+// no such record: the call the gateway throttled produced no response body, so
+// nothing was ever reported for it, and the only place the failure is stated
+// is the span the turn itself ran on. That span is therefore shown too, at the
+// end of the turn it closes.
+//
+// `withInput` is for the turn that failed before its first model call: it has
+// no rows at all, and a turn without rows is not drawn, so the numbers around
+// it appear to skip with no sign that a turn ran. Its input is stated only on
+// that same span; a turn that did reach a model call already shows what it was
+// handed, on the call that read it.
+function failedTurnCells(root: ProjectedSpan | undefined, withInput: boolean): TrajectoryCell[] {
+  if (root === undefined) return []
+  const reason = statusError(root)
+  if (reason === undefined) return []
+  const cells: TrajectoryCell[] = []
+  const input = root.attributes.spanInput
+  if (withInput && input !== undefined && input.trim() !== '') {
+    cells.push({
+      ...spanCellBase(root, 'turn:input'),
+      timeSeconds: null,
+      status: 'complete',
+      kind: 'user',
+      text: input,
+      inputDetail: input,
+    })
+  }
+  cells.push({
+    ...spanCellBase(root, 'turn:error'),
+    // The span opened with the turn, so its own start would sort this row
+    // ahead of everything the turn went on to do; it belongs where the turn
+    // ended.
+    startedAt: endedAt(root) ?? startedAt(root),
+    kind: 'message',
+    status: 'error',
+    text: reason,
+    outputDetail: reason,
+    isError: true,
+  })
+  return cells
+}
+
+// Place a turn's own failure at the end of the turn, in the last group it
+// reached, or in a group of its own when the turn never opened one.
+function withTurnFailure(
+  groups: readonly TrajectoryGroupModel[],
+  cells: readonly TrajectoryCell[],
+): TrajectoryGroupModel[] {
+  if (cells.length === 0) return [...groups]
+  if (groups.length === 0) return [{ title: 'Step 1', cells: [...cells] }]
+  const last = groups[groups.length - 1]
+  return [...groups.slice(0, -1), { ...last, cells: [...last.cells, ...cells] }]
+}
+
 function inputCells(
   span: ProjectedSpan,
   projection: InferenceInputProjection,
@@ -1060,7 +1159,10 @@ function behaviorLineage(
   return lineage.reverse()
 }
 
-function behaviorSessionKey(span: ProjectedSpan, lineage: readonly string[]): string {
+function behaviorSessionKey(
+  span: Pick<ProjectedSpan, 'attributes' | 'traceId'>,
+  lineage: readonly string[],
+): string {
   const conversation = span.attributes.conversationId ?? `trace:${span.traceId}`
   const subject = span.attributes.executionSubjectId ?? 'legacy-main'
   return `${conversation}\u0000${subject}\u0000${lineage.join('/')}`
@@ -1085,7 +1187,10 @@ function executionSubjectKey(span: ProjectedSpan): string {
   return `${session}\u0000${subject}`
 }
 
-function assignSubjectRequestNumbers(spans: readonly ProjectedSpan[]): ProjectedSpan[] {
+function assignSubjectRequestNumbers(
+  spans: readonly ProjectedSpan[],
+  requestOffsets: ReadonlyMap<string, number>,
+): ProjectedSpan[] {
   const inferenceGroups = new Map<string, ProjectedSpan[]>()
   for (const span of spans) {
     if (!isInference(span)) continue
@@ -1095,13 +1200,15 @@ function assignSubjectRequestNumbers(spans: readonly ProjectedSpan[]): Projected
     inferenceGroups.set(key, group)
   }
   const displayNumberByIdentity = new Map<string, number>()
-  for (const group of inferenceGroups.values()) {
+  for (const [key, group] of inferenceGroups) {
+    // Requests retention removed still count: numbering continues after them.
+    const offset = requestOffsets.get(key) ?? 0
     const ordered = [...group].sort(comparePhysicalInference)
     const explicitNumbers = ordered.map(span => (
       positiveSafeInteger(span.attributes.executionSubjectRequestNumber)
     ))
     const hasCompleteMonotonicSequence = explicitNumbers.every((number, index) => (
-      number === index + 1
+      number === offset + index + 1
     ))
     for (const [index, span] of ordered.entries()) {
       // A partially upgraded or malformed subject must be rebuilt as one
@@ -1109,7 +1216,7 @@ function assignSubjectRequestNumbers(spans: readonly ProjectedSpan[]): Projected
       // otherwise create duplicates or gaps while a live archive is loading.
       const number = hasCompleteMonotonicSequence
         ? explicitNumbers[index] as number
-        : index + 1
+        : offset + index + 1
       displayNumberByIdentity.set(spanIdentity(span), number)
     }
   }
@@ -1264,9 +1371,34 @@ function promptCellProjections(
   return changed
 }
 
+interface InferenceInputMessages {
+  /** Every input message the request states. */
+  currentInputs: readonly StructuredMessage[]
+  /** Indexes of the request-scoped prompt attachments among them. */
+  attachmentIndexSet: ReadonlySet<number>
+  /** The ordinary messages a later request of the lineage is compared against. */
+  currentOrdinary: readonly IndexedMessage[]
+}
+
+function inferenceInputMessages(attributes: NormalizedTrajectoryAttributes): InferenceInputMessages {
+  const currentInputs = structuredMessages(attributes.inputMessages)
+  const attachmentIndexes = provenanceAttachmentIndexes(attributes.inputMessageProvenance)
+  const attachmentIndexSet = new Set(currentInputs.flatMap((message, index): number[] => {
+    const attachment = attachmentIndexes === undefined
+      ? legacyRequestScopedAttachment(message)
+      : attachmentIndexes.has(index)
+    return attachment ? [index] : []
+  }))
+  const currentOrdinary = currentInputs.flatMap((message, inputIndex): IndexedMessage[] => (
+    attachmentIndexSet.has(inputIndex) ? [] : [{ inputIndex, message }]
+  ))
+  return { currentInputs, attachmentIndexSet, currentOrdinary }
+}
+
 function projectInferenceInputs(
   spans: readonly ProjectedSpan[],
   v2InferenceIds: ReadonlySet<string>,
+  lineageSeeds: readonly TrajectoryLineageSeed[],
 ): {
   inputsBySpanId: ReadonlyMap<string, InferenceInputProjection>
   toolResultById: ReadonlyMap<string, ToolResultFact>
@@ -1281,13 +1413,26 @@ function projectInferenceInputs(
   const diagnostics: TrajectoryDiagnostic[] = []
   const spanByIdentity = new Map(spans.map(span => [spanIdentity(span), span]))
 
+  // Requests retention removed leave what the next request of their root
+  // lineage is compared against, and nothing else: they render no cell and
+  // lend no tool result.
+  for (const seed of lineageSeeds) {
+    const span = soleSpan(seed.record)
+    const attributes = normalizeTrajectoryAttributes(span.attributes)
+    const sessionKey = behaviorSessionKey({ attributes, traceId: span.traceId }, [])
+    previousOutputsBySession.set(sessionKey, structuredMessages(attributes.outputMessages))
+    if (seed.handledByV2) continue
+    const prompt = promptSnapshot(attributes)
+    if (prompt !== undefined) previousPromptBySession.set(sessionKey, prompt)
+    previousInputsBySession.set(sessionKey, inferenceInputMessages(attributes).currentOrdinary)
+  }
+
   for (const span of spans.filter(isInference).sort(compareInferenceBehavior)) {
     const lineage = behaviorLineage(span, spanByIdentity)
     const sessionKey = behaviorSessionKey(span, lineage)
     const parentSessionKey = lineage.length === 0
       ? undefined
       : behaviorSessionKey(span, lineage.slice(0, -1))
-    const currentInputs = structuredMessages(span.attributes.inputMessages)
     const handledByV2 = v2InferenceIds.has(span.span.spanId)
       || (span.attributes.inferenceId !== undefined
         && v2InferenceIds.has(span.attributes.inferenceId))
@@ -1298,16 +1443,7 @@ function projectInferenceInputs(
     }
     const previousInputs = previousInputsBySession.get(sessionKey)
       ?? (parentSessionKey === undefined ? [] : previousInputsBySession.get(parentSessionKey) ?? [])
-    const attachmentIndexes = provenanceAttachmentIndexes(span.attributes.inputMessageProvenance)
-    const attachmentIndexSet = new Set(currentInputs.flatMap((message, index): number[] => {
-      const attachment = attachmentIndexes === undefined
-        ? legacyRequestScopedAttachment(message)
-        : attachmentIndexes.has(index)
-      return attachment ? [index] : []
-    }))
-    const currentOrdinary = currentInputs.flatMap((message, inputIndex): IndexedMessage[] => (
-      attachmentIndexSet.has(inputIndex) ? [] : [{ inputIndex, message }]
-    ))
+    const { currentInputs, attachmentIndexSet, currentOrdinary } = inferenceInputMessages(span.attributes)
     const insertedIndexes = lcsInsertedInputIndexes(previousInputs, currentOrdinary)
     const replayableOutputs = [...(
       previousOutputsBySession.get(sessionKey)
@@ -1482,53 +1618,87 @@ function requestFor(
 // A turn is one complete ReAct loop, and it can span several traces: when the
 // agent stops to ask (ask_user / permission / confirm), the answer arrives as
 // its own request and runs in its own trace while continuing the same loop.
+// It can also share a trace with other turns: a Team run keeps one trace for
+// every member, and each member takes on several turns inside it.
 //
 // Everything here is read from what the spans state. `openjiuwen.turn.id` is
-// the identity — traces sharing one are one turn however they are numbered, and
-// traces with different ids stay apart even if they claim the same number.
-// `openjiuwen.turn.number` is only what the turn is shown as. Traces predating
-// turn ids fall back to the number as identity, and a trace stating neither
-// belongs to no turn at all (a span opened outside any loop, such as a manual
-// /compact) and stands alone.
+// the identity, and it is read per span — spans sharing one are one turn
+// whichever traces they sit in and however they are numbered, and spans with
+// different ids stay apart even inside one trace or when they claim the same
+// number. `openjiuwen.turn.number` is only what the turn is shown as. A span
+// that states no id takes its nearest ancestor's, then the id its trace states
+// when the trace states exactly one. Traces predating turn ids fall back to the
+// number as identity, and a trace stating neither belongs to no turn at all (a
+// span opened outside any loop, such as a manual /compact) and stands alone.
 //
 // Schema-v2 events and legacy spans are projected down separate paths but share
 // one turn axis, so this is resolved once over every record and handed to both.
-function turnFactByTrace(
+function resolveTurns(
   records: readonly OtlpExportTraceServiceRequest[],
-): Map<string, TurnFact> {
-  const turnIdByTrace = new Map<string, string>()
+  checkpoint: TrajectoryProjectionCheckpoint['turns'] | undefined,
+): TurnIndex {
+  const statedById = new Map<string, { parentSpanId?: string, turnId?: string }>()
+  // Turn ids of removed turns still count for the traces they were stated in,
+  // so a span naming no turn stays apart from the turns its trace kept.
+  const turnIdsByTrace = new Map<string, Set<string>>(
+    [...checkpoint?.traceTurnIds ?? []].map(([traceId, turnIds]) => [traceId, new Set(turnIds)]),
+  )
   const numberByTrace = new Map<string, number>()
-  const traceStarts = new Map<string, bigint>()
-  for (const record of records) {
+  const spans = records.map((record) => {
     const span = soleSpan(record)
     const attributes = normalizeTrajectoryAttributes(span.attributes)
-    if (attributes.turnId !== undefined && !turnIdByTrace.has(span.traceId)) {
-      turnIdByTrace.set(span.traceId, attributes.turnId)
+    const recordId = `${span.traceId}:${span.spanId}`
+    statedById.set(recordId, { parentSpanId: span.parentSpanId, turnId: attributes.turnId })
+    if (attributes.turnId !== undefined) {
+      const turnIds = turnIdsByTrace.get(span.traceId) ?? new Set<string>()
+      turnIds.add(attributes.turnId)
+      turnIdsByTrace.set(span.traceId, turnIds)
     }
     const stated = positiveSafeInteger(attributes.turnNumber)
     if (stated !== undefined) numberByTrace.set(span.traceId, stated)
-    const startedAt = BigInt(span.startTimeUnixNano)
-    const prior = traceStarts.get(span.traceId)
-    if (prior === undefined || startedAt < prior) traceStarts.set(span.traceId, startedAt)
-  }
-  const keyByTrace = new Map([...traceStarts.keys()].map((traceId): [string, string] => {
-    const turnId = turnIdByTrace.get(traceId)
-    if (turnId !== undefined) return [traceId, `id:${turnId}`]
+    return { recordId, span, stated, startedAt: BigInt(span.startTimeUnixNano) }
+  })
+  const traceKey = (traceId: string): string => {
+    const turnIds = [...turnIdsByTrace.get(traceId) ?? []]
+    if (turnIds.length === 1) return `id:${turnIds[0]}`
+    // A trace holding several turns cannot vouch for a span that names none.
+    if (turnIds.length > 1) return `trace:${traceId}`
     const stated = numberByTrace.get(traceId)
-    return [traceId, stated === undefined ? `trace:${traceId}` : `number:${stated}`]
-  }))
+    return stated === undefined ? `trace:${traceId}` : `number:${stated}`
+  }
+  const ancestorTurnId = (traceId: string, parentSpanId: string | undefined): string | undefined => {
+    const visited = new Set<string>()
+    let current = parentSpanId
+    while (current !== undefined && !visited.has(current)) {
+      visited.add(current)
+      const stated = statedById.get(`${traceId}:${current}`)
+      if (stated === undefined) return undefined
+      if (stated.turnId !== undefined) return stated.turnId
+      current = stated.parentSpanId
+    }
+    return undefined
+  }
+  const keyByRecord = new Map<string, string>()
   const numberByKey = new Map<string, number>()
   const startByKey = new Map<string, bigint>()
-  for (const [traceId, startedAt] of traceStarts) {
-    const key = keyByTrace.get(traceId) ?? `trace:${traceId}`
+  for (const { recordId, span, stated, startedAt } of spans) {
+    const turnId = statedById.get(recordId)?.turnId ?? ancestorTurnId(span.traceId, span.parentSpanId)
+    const key = turnId === undefined ? traceKey(span.traceId) : `id:${turnId}`
+    keyByRecord.set(recordId, key)
     const prior = startByKey.get(key)
     if (prior === undefined || startedAt < prior) startByKey.set(key, startedAt)
-    const stated = numberByTrace.get(traceId)
-    if (stated !== undefined) numberByKey.set(key, stated)
+    if (key.startsWith('number:')) {
+      numberByKey.set(key, numberByTrace.get(span.traceId) ?? 1)
+    } else if (key.startsWith('id:') && stated !== undefined) {
+      numberByKey.set(key, stated)
+    }
   }
   // Only a turn that states no number of its own gets one here, and it is
   // placed after every stated number so it can never take one of theirs.
-  let unnumbered = Math.max(0, ...numberByKey.values())
+  // Removed turns keep their numbers: stated ones raise the floor, and the
+  // unnumbered ones were counted before any that remain.
+  let unnumbered = Math.max(0, checkpoint?.maxNumber ?? 0, ...numberByKey.values())
+    + (checkpoint?.unnumbered ?? 0)
   for (const [key] of [...startByKey].sort((left, right) =>
     compareBigint(left[1], right[1]) || left[0].localeCompare(right[0]))) {
     if (!numberByKey.has(key)) {
@@ -1536,23 +1706,29 @@ function turnFactByTrace(
       numberByKey.set(key, unnumbered)
     }
   }
-  return new Map([...traceStarts.keys()].map((traceId): [string, TurnFact] => {
-    const key = keyByTrace.get(traceId) ?? `trace:${traceId}`
-    return [traceId, {
-      key,
-      number: numberByKey.get(key) ?? 1,
-      stated: !key.startsWith('trace:'),
-      startedAt: startByKey.get(key) ?? 0n,
-    }]
-  }))
+  const byKey = new Map([...startByKey].map(([key, startedAt]): [string, TurnFact] => [key, {
+    key,
+    number: numberByKey.get(key) ?? 1,
+    stated: !key.startsWith('trace:'),
+    startedAt,
+  }]))
+  const factFor = (key: string): TurnFact | undefined => byKey.get(key)
+  return {
+    byKey,
+    forRecord: (traceId, spanId) => {
+      const key = keyByRecord.get(`${traceId}:${spanId}`)
+      return key === undefined ? undefined : factFor(key)
+    },
+    forTurn: (traceId, turnId) => factFor(turnId === undefined ? traceKey(traceId) : `id:${turnId}`),
+  }
 }
 
 function assignTurns(
   spans: readonly Omit<ProjectedSpan, 'turn' | 'turnKey'>[],
-  turnByTrace: ReadonlyMap<string, TurnFact>,
+  turns: TurnIndex,
 ): ProjectedSpan[] {
   return spans.map(span => {
-    const fact = turnByTrace.get(span.traceId)
+    const fact = turns.forRecord(span.traceId, span.span.spanId)
     return {
       ...span,
       turn: fact?.number ?? 1,
@@ -1564,7 +1740,7 @@ function assignTurns(
 function normalize(
   records: readonly OtlpExportTraceServiceRequest[],
   options: TrajectoryProjectionOptions,
-  turnByTrace: ReadonlyMap<string, TurnFact>,
+  turns: TurnIndex,
 ): ProjectedSpan[] {
   const spans = assignTurns(records.map((record): Omit<ProjectedSpan, 'turn' | 'turnKey'> => {
     const span = soleSpan(record)
@@ -1589,8 +1765,8 @@ function normalize(
         ?? NO_UNRESOLVED_ATTRIBUTES,
       lifecycle,
     }
-  }), turnByTrace).sort(compareSpans)
-  const numbered = assignSubjectRequestNumbers(spans)
+  }), turns).sort(compareSpans)
+  const numbered = assignSubjectRequestNumbers(spans, options.checkpoint?.requestOffsets ?? new Map())
   return assignRequestOwnership(numbered)
 }
 
@@ -1798,11 +1974,11 @@ export function projectOtelTrajectory(
   const v2InferenceIds = new Set(v2Subjects.flatMap(subject => (
     [...subject.handledInferenceIds]
   )))
-  const turnByTrace = turnFactByTrace(records)
-  const spans = normalize(legacyRecords, options, turnByTrace)
+  const turnIndex = resolveTurns(records, options.checkpoint?.turns)
+  const spans = normalize(legacyRecords, options, turnIndex)
   const mutableTurns = new Map<string, MutableTurn>()
   const requests: TrajectoryRequest[] = []
-  const inputProjection = projectInferenceInputs(spans, v2InferenceIds)
+  const inputProjection = projectInferenceInputs(spans, v2InferenceIds, options.checkpoint?.lineage ?? [])
   const modelToolResultByCallId = new Map(v2Subjects.flatMap(subject => (
     [...subject.modelToolResults]
   )))
@@ -1825,6 +2001,16 @@ export function projectOtelTrajectory(
         && span.startTimeUnixNano < existing.startTimeUnixNano
       )
     ) rootByTrace.set(span.traceId, span)
+  }
+  // The span each turn ran on. A turn that failed before its first model call
+  // recorded nothing else, and this is what states why it ended.
+  const turnRootByKey = new Map<string, ProjectedSpan>()
+  for (const span of spans) {
+    if (recordKind(span) !== 'turn') continue
+    const existing = turnRootByKey.get(span.turnKey)
+    if (existing === undefined || span.startTimeUnixNano < existing.startTimeUnixNano) {
+      turnRootByKey.set(span.turnKey, span)
+    }
   }
   const compactionInferences = new Map<string, ProjectedSpan[]>()
   // The number each compaction operation was given, read from its model calls.
@@ -1945,7 +2131,7 @@ export function projectOtelTrajectory(
   for (const event of v2Subjects.flatMap(subject => [...subject.events])) {
     for (const cell of event.cells) {
       if (cell.physicalInferenceId !== undefined) {
-        markedInferenceKeys.add(`${event.traceId} ${cell.physicalInferenceId}`)
+        markedInferenceKeys.add(`${event.traceId}\u0000${cell.physicalInferenceId}`)
       }
     }
     if (event.turn === null) {
@@ -1963,10 +2149,10 @@ export function projectOtelTrajectory(
         ? undefined
         : inferenceByToolCallId.get(`${event.traceId}\u0000${askUserCallId}`)
       : inferenceById.get(`${event.traceId}\u0000${anchorInferenceId}`)
-    // The turn this event's own trace states, so v2 events and legacy spans
-    // land on one axis. An anchoring inference already carries the resolved
+    // The turn this event states (its trace's, when it states none), so v2
+    // events and legacy spans land on one axis. An anchoring inference already carries the resolved
     // turn, so prefer it and keep the event beside the request it belongs to.
-    const eventFact = turnByTrace.get(event.traceId)
+    const eventFact = turnIndex.forTurn(event.traceId, event.turnId)
     const eventTurnKey = inference?.turnKey ?? eventFact?.key ?? `trace:${event.traceId}`
     const eventTurnNumber = inference?.turn ?? eventFact?.number ?? event.turn
     const eventStep = inference === undefined
@@ -2020,13 +2206,12 @@ export function projectOtelTrajectory(
   }
 
   const turns: TrajectoryTurnModel[] = []
-  const factByTurnKey = new Map([...turnByTrace.values()].map(fact => [fact.key, fact] as const))
   const turnEntries: TimedTurnEntry[] = []
   const betweenTurnEntries: TimedTurnEntry[] = []
   const orderedTurns = [...mutableTurns.entries()]
     .sort((left, right) => left[1].turn - right[1].turn || left[0].localeCompare(right[0]))
   for (const [turnKey, turn] of orderedTurns) {
-    const fact = factByTurnKey.get(turnKey)
+    const fact = turnIndex.byKey.get(turnKey)
     const startedAt = fact?.startedAt ?? 0n
     const groups = [...turn.groups.entries()]
       .sort((left, right) => left[1].order - right[1].order
@@ -2041,7 +2226,7 @@ export function projectOtelTrajectory(
     // Every attempt is kept, as a marker on its request, unless a compaction
     // event already marks that request.
     const requestCells = (compactionInferences.get(turnKey) ?? [])
-      .filter(span => !markedInferenceKeys.has(`${span.traceId} ${span.attributes.inferenceId}`))
+      .filter(span => !markedInferenceKeys.has(`${span.traceId}\u0000${span.attributes.inferenceId}`))
       .sort(comparePhysicalInference)
       .map(compactionRequestCell)
     if (fact?.stated === false && !conversationTurnKeys.has(turnKey)) {
@@ -2058,7 +2243,15 @@ export function projectOtelTrajectory(
       }
       continue
     }
-    if (groups.length > 0) turnEntries.push({ startedAt, model: { turn: turn.turn, groups } })
+    // A turn that ended in failure shows it, whether it failed on its first
+    // call or after several that answered.
+    const turnGroups = withTurnFailure(
+      groups,
+      failedTurnCells(turnRootByKey.get(turnKey), groups.length === 0),
+    )
+    if (turnGroups.length > 0) {
+      turnEntries.push({ startedAt, model: { turn: turn.turn, groups: turnGroups } })
+    }
     if (requestCells.length > 0) {
       turnEntries.push({
         startedAt,

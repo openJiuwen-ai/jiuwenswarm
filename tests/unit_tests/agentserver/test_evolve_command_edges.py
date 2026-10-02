@@ -961,7 +961,8 @@ async def test_agent_stream_slash_followup_continues_into_runner(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_team_stream_injects_image_tool_context_for_non_vision_model(monkeypatch):
+@pytest.mark.parametrize("image_status", ["unsupported", "disabled", "unknown"])
+async def test_team_stream_injects_image_tool_context_for_non_vision_model(monkeypatch, image_status):
     """Team mode must preserve the same local-image tool context as agent mode."""
     adapter = JiuWenSwarmDeepAdapter()
     adapter._instance = SimpleNamespace()  # pylint: disable=protected-access
@@ -976,7 +977,7 @@ async def test_team_stream_injects_image_tool_context_for_non_vision_model(monke
         lambda _model, **_kwargs: None,
     )
     monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "cn")
-    monkeypatch.setattr(adapter, "_native_image_input_enabled", lambda *_args: False)
+    monkeypatch.setattr(adapter, "_native_image_input_status", lambda *_args: image_status)
     monkeypatch.setattr(adapter, "_write_runtime_state", lambda **_kwargs: None)
 
     async def _capture_team_inputs(_request, inputs, _instance):
@@ -1007,8 +1008,16 @@ async def test_team_stream_injects_image_tool_context_for_non_vision_model(monke
         is_stream=True,
     )
 
-    async for _ in adapter.process_message_stream_impl(request, {"query": "解析图片内容"}):
-        pass
+    chunks = [chunk async for chunk in adapter.process_message_stream_impl(request, {"query": "解析图片内容"})]
 
     assert "jiuwenswarm_image_tool_context" in captured["query"]
     assert "agent/sessions/sess-team-image/uploads/persisted.png" in captured["query"]
+    assert f'"imageInputStatus": "{image_status}"' in captured["query"]
+    notices = [chunk.payload for chunk in chunks if chunk.payload.get("event_type") == "chat.notice"]
+    assert len(notices) == 1
+    assert notices[0]["image_input_status"] == image_status
+    if image_status == "unknown":
+        assert "尚未确认" in notices[0]["content"]
+        assert "尚未确认" in captured["query"]
+    if image_status != "unsupported":
+        assert "不支持" not in notices[0]["content"]

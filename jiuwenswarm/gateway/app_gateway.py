@@ -77,7 +77,11 @@ from jiuwenswarm.common.security.ws_origin import (
     get_header_value,
 )
 from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
-from jiuwenswarm.common.debug_dump import install_async_dump_handler
+from jiuwenswarm.common.debug_dump import (
+    install_async_dump_handler,
+    install_crash_exit_handler,
+)
+from jiuwenswarm.common.process_supervision import GATEWAY_RESTART_EXIT_CODE, SUPERVISOR_PID_ENV
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
     get_env_file,
@@ -251,6 +255,37 @@ def _normalize_model_auth(params: dict[str, Any], msg) -> None:
         logger.debug("[App] 模型凭据注入失败", exc_info=True)
 
 
+#: 转发前等登录凭据续期的上限。续期本身的 HTTP 超时是 15 秒，这里只是兜住排队等锁等意外。
+_LOGIN_REFRESH_WAIT_S = 20.0
+
+
+async def _refresh_expired_login_credential(msg) -> None:
+    """用登录模型、而凭据已过期时，先把凭据续好再转发。
+
+    放置超过id_token有效期1小时后发的第一条消息，转发时 token 已过期，挂不上
+    凭据，AgentServer会当成未登录；用户点一下账号再回来又好了。
+    这里把续期提前到转发之前：放线程里等，不卡事件循环；每条入站消息各自一个 task，
+    也不挡同一连接的其他请求；同一账号并发的几次续期在 ``try_refresh`` 里合并成一次。
+    续不了（refresh_token失效等）就照旧转发，由AgentServer提示重新登录。
+    """
+    try:
+        from jiuwenswarm.common.auth.passthrough import expired_login_session
+        from jiuwenswarm.common.auth.service import get_auth_service
+
+        params = msg.params if isinstance(msg.params, dict) else {}
+        session = expired_login_session(params, _auth_session_id(msg))
+        if session is None:
+            return
+        await asyncio.wait_for(
+            asyncio.to_thread(get_auth_service().try_refresh, session),
+            timeout=_LOGIN_REFRESH_WAIT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[App] 转发前续期登录凭据超时，本次按原凭据转发 id=%s", getattr(msg, "id", None))
+    except Exception:  # noqa: BLE001 — 续期失败不该让整条消息发不出去
+        logger.debug("[App] 转发前续期登录凭据失败", exc_info=True)
+
+
 def _normalize_gateway_message(msg):
 
     req_method = getattr(msg, "req_method", None) or ReqMethod.CHAT_SEND
@@ -289,6 +324,7 @@ def _normalize_gateway_message(msg):
 
 
 async def _normalize_and_forward_message(msg, channel_manager) -> bool:
+    await _refresh_expired_login_credential(msg)
     normalized = _normalize_gateway_message(msg)
     # ACP/直连转发路径(session.create 等)也需注入 work_mode 归一化,
     # 与 _norm_and_forward(Web/TUI 主路径)保持一致。否则直连 AgentServer 的
@@ -509,7 +545,34 @@ async def _wait_for_web_channel_listening(
     raise TimeoutError("WebChannel did not bind its listening socket within 5s")
 
 
+def _running_under_supervisor() -> bool:
+    """Whether our jiuwenswarm.app supervisor is alive right now and really is our parent.
+
+    On Windows os.getppid() keeps reporting the original PID even after the
+    supervisor dies (no reparenting), so a stale env match alone would make us
+    os._exit(GATEWAY_RESTART_EXIT_CODE) with nobody left to respawn. A recycled
+    PID necessarily belongs to a process younger than us, so requiring the
+    parent to be live and not created after us rejects both cases.
+    """
+    if os.environ.get(SUPERVISOR_PID_ENV) != str(os.getppid()):
+        return False
+    import psutil
+
+    try:
+        return psutil.Process(os.getppid()).create_time() <= psutil.Process().create_time()
+    except psutil.Error:
+        return False
+
+
 def _exec_gateway_restart() -> None:
+    if _running_under_supervisor():
+        # Under jiuwenswarm.app, let the supervisor respawn us. os.execv on
+        # Windows starts a new PID and exits this one with 0, which the
+        # supervisor reads as the Gateway stopping and tears the service down.
+        # os._exit keeps execv's no-cleanup semantics; the OS frees the ports
+        # and the gateway lock.
+        logger.info("[App] requesting Gateway restart from supervisor")
+        os._exit(GATEWAY_RESTART_EXIT_CODE)  # pylint: disable=protected-access  # public API; underscore is historical
     logger.info("[App] .env updated, restarting Gateway...")
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
@@ -2165,6 +2228,7 @@ async def _run(
             method_val = getattr(getattr(msg, "req_method", None), "value", None) or ""
             if method_val not in forward_methods:
                 return False
+            await _refresh_expired_login_credential(msg)
             normalized = _normalize_gateway_message(msg)
             # session.create 主路径注入 work_mode 归一化(与 fallback _session_create
             # 共用同一 helper resolve_session_work_mode_params,保持主路径/fallback 一致):
@@ -3510,6 +3574,7 @@ def main() -> None:
     web_port = args.port or int(os.getenv("WEB_PORT", "19000"))
     web_path = args.web_path or os.getenv("WEB_PATH", "/ws")
 
+    install_crash_exit_handler("gateway")
     install_async_dump_handler("gateway")
 
     # Per-workspace singleton lock: prevents a second Gateway process from

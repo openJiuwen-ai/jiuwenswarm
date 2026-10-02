@@ -173,6 +173,7 @@ test('all four kinds open the shared review, retain moderation result, and never
     );
     await tick();
     assert.ok(find('asset-publish-review'));
+    assert.equal(find('asset-publish-notice'), null);
     assert.equal(submits.at(-1)[2], '');
     assert.equal(submits.at(-1)[3], false);
     await act(async () => find('asset-publish-commit').click());
@@ -184,7 +185,8 @@ test('all four kinds open the shared review, retain moderation result, and never
     assert.match(find('asset-publish-result-metadata').textContent, /1\.0\.0/);
     assert.ok(find('asset-publish-result-footer'));
     assert.equal(find('asset-publish-new-version').closest('[data-testid="asset-publish-result-footer"]') !== null, true);
-    assert.match(find('asset-publish-visibility-unconfirmed').textContent, /Visibility is not yet confirmed/);
+    assert.equal(find('asset-publish-notice'), null);
+    assert.equal(find('asset-publish-visibility-unconfirmed'), null);
     await act(async () => find('asset-publish-close').click());
   }
   assert.deepEqual(
@@ -286,6 +288,31 @@ test('definitive expired draft rejection unlocks editing and requires a new pack
     assert.ok(find('asset-publish-prepare'));
     await act(async () => find('asset-publish-close').click());
   }
+});
+test('Hub request rejection identifies Hub and gives actionable guidance', async () => {
+  assetPublishApi.describe = async () => description;
+  assetPublishApi.prepare = async () => draft;
+  assetPublishApi.commit = async () => ({
+    operation_id: 'hub-rejected-operation',
+    draft_id: 'draft',
+    execution_status: 'failed',
+    result: null,
+    error: { code: 'hub_request_failed' },
+    updated_at: '2026-09-24T06:00:00Z',
+  });
+  await act(async () => openAssetPublish({ kind: 'agent_template', local_id: 'hub-rejected' }));
+  await tick();
+  await act(async () =>
+    find('asset-publish-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })),
+  );
+  await tick();
+  await act(async () => find('asset-publish-commit').click());
+  await tick();
+  const message = document.querySelector('.asset-publish-result-error').textContent;
+  assert.match(message, /Hub did not accept this publishing request/);
+  assert.match(message, /contact the Hub administrator/);
+  assert.doesNotMatch(message, /hub_request_failed/i);
+  await act(async () => find('asset-publish-close').click());
 });
 test('polling completion updates the matching history row', async () => {
   const queued = { operation_id: 'polled', draft_id: 'draft', execution_status: 'queued', result: null, error: null };

@@ -30,6 +30,24 @@ from jiuwenswarm.runtime.interaction import InteractionAnswerInput
 from tests.unit_tests.process_cli.test_machine import FakeClient
 
 
+@pytest.fixture(autouse=True)
+def _isolate_persistent_session_guard(monkeypatch):
+    """Fake Runtime Sessions have no on-disk directory; guard has separate tests."""
+
+    class _Lease:
+        def __init__(self, session_id):
+            self.session_id = session_id
+
+        def acquire(self):
+            pass
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(machine, "SessionLease", _Lease)
+    monkeypatch.setattr(machine, "bind_agent", lambda *_args, **_kwargs: None)
+
+
 def _event(event_type: str, **payload: Any) -> RuntimeEvent:
     return RuntimeEvent(
         request_id="internal-operation",

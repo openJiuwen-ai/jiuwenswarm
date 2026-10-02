@@ -138,6 +138,15 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
         user_input: Any,
         auto_confirm_config: dict | None = None,
     ) -> Any:
+        # Bug #4851 defense boundary: if the response slot received something
+        # we cannot parse (typically chat text accidentally routed in by the
+        # Host after a cold recovery), reject and audit-log instead of letting
+        # super().resolve_interrupt() silently re-issue the interrupt and skip
+        # the permission chain (which would bypass any session-layer allow rule).
+        rejected = self._reject_unparseable_resume(ctx, tool_call, user_input)
+        if rejected is not None:
+            return rejected
+
         if self._exact_persist_callback is None:
             return await super().resolve_interrupt(
                 ctx, tool_call, user_input, auto_confirm_config
@@ -199,6 +208,54 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
         updated = dict(config)
         updated.pop(key, None)
         session.update_state({INTERRUPT_AUTO_CONFIRM_KEY: updated})
+
+    def _reject_unparseable_resume(
+        self,
+        ctx: AgentCallbackContext,
+        tool_call: Any,
+        user_input: Any,
+    ) -> Any:
+        """Defense boundary for bug #4851 (jiuwenswarm-only fix).
+
+        Returns a ``RejectResult`` when ``user_input`` exists but cannot be
+        parsed into a ``ConfirmPayload`` (chat text, malformed dict, or any
+        other non-parseable shape). Returns ``None`` when ``user_input`` is
+        ``None`` (canonical first entry — pass through) or when it parses
+        cleanly (legitimate resume — pass through to the normal response
+        branch).
+
+        Privacy: the audit log records only the input type, the tool call's
+        name and id, and the session id. The raw user_input is **never**
+        logged.
+        """
+        if user_input is None:
+            return None
+        try:
+            payload = self.parse_confirm_payload(user_input)
+        except Exception:
+            payload = None
+        if payload is not None:
+            return None
+        tool_name = getattr(tool_call, "name", None)
+        tool_id = getattr(tool_call, "id", None)
+        session = getattr(ctx, "session", None)
+        session_id = getattr(session, "session_id", lambda: None)() if session is not None else None
+        logger.warning(
+            "[PermissionInterruptRail] invalid_permission_resume "
+            "reason=unparseable_payload user_input_type=%s tool_name=%s "
+            "tool_call_id=%s session_id=%s",
+            type(user_input).__name__,
+            tool_name,
+            tool_id,
+            session_id,
+        )
+        return self.reject(
+            tool_result=(
+                "[PERMISSION_DENIED] Invalid permission resume payload. "
+                "Only ConfirmPayload-shaped responses are accepted on the "
+                "approval slot."
+            )
+        )
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         if root_nonpermission_resume_from_context(ctx) is not None:

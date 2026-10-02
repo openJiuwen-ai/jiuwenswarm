@@ -83,8 +83,13 @@
 }
 
 .form-page-layout__footer-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
   padding: 0 16px;
-  width: 84px;
+  min-width: 84px;
   min-height: 32px;
   border: 1px solid var(--color-control-emphasis);
   border-radius: 16px;
@@ -93,6 +98,9 @@
   font-size: 14px;
   line-height: 20px;
   cursor: pointer;
+}
+.form-page-layout__footer-btn > svg {
+  flex: 0 0 auto;
 }
 
 .form-page-layout__footer-btn:hover {

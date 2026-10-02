@@ -735,14 +735,14 @@ export function typeDisplayLabel(scenario: 'HARNESS' | 'ARTIFACT', artifactType:
 }
 
 // 状态徽章信息：i18n 标签 key + 图标类型
-export type StatusBadgeKind = 'queued' | 'running' | 'paused' | 'completed' | 'installed' | 'failed';
+export type StatusBadgeKind = 'queued' | 'running' | 'paused' | 'completed' | 'failed';
 
 export interface StatusBadgeInfo {
   labelKey: string;
   kind: StatusBadgeKind | null;
 }
 
-export function statusBadgeInfo(status: RsiTaskStatus, installed = false): StatusBadgeInfo {
+export function statusBadgeInfo(status: RsiTaskStatus): StatusBadgeInfo {
   switch (status) {
     case 'QUEUED':
     case 'CREATED':
@@ -752,9 +752,7 @@ export function statusBadgeInfo(status: RsiTaskStatus, installed = false): Statu
     case 'PAUSED':
       return { labelKey: 'statusPaused', kind: 'paused' };
     case 'COMPLETED':
-      return installed
-        ? { labelKey: 'statusInstalled', kind: 'installed' }
-        : { labelKey: 'statusCompleted', kind: 'completed' };
+      return { labelKey: 'statusCompleted', kind: 'completed' };
     case 'FAILED':
     case 'TERMINATED':
       return { labelKey: statusLabelKey(status), kind: 'failed' };

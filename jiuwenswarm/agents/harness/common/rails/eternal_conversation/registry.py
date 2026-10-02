@@ -27,7 +27,7 @@ def get_session_coordinator(
     """
     key = (str(root.resolve()), session_id)
     coordinator = _COORDINATORS.get(key)
-    if coordinator is None:
+    if coordinator is None or coordinator.closed:
         coordinator = SessionCoordinator(root, session_id, model_supplier)
         _COORDINATORS[key] = coordinator
     else:
@@ -37,10 +37,10 @@ def get_session_coordinator(
 
 async def close_all_session_coordinators() -> None:
     """Explicit process-shutdown/test hook; ordinary Rail cleanup must not call it."""
-    coordinators = list(_COORDINATORS.values())
+    from .coordinator import close_live_coordinators
+
     _COORDINATORS.clear()
-    for coordinator in coordinators:
-        await coordinator.close()
+    await close_live_coordinators()
 
 
 __all__ = ["close_all_session_coordinators", "get_session_coordinator"]

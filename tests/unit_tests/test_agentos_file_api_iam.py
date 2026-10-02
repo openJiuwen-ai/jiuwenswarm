@@ -115,6 +115,32 @@ async def test_authenticate_http_skips_when_auth_disabled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_web_auth_preserves_query_identity_when_auth_disabled() -> None:
+    router = _make_router()
+    result = await router.authenticate_http(
+        path="/ws?user_id=query-user", headers={}, channel="web"
+    )
+    assert result.success is True
+    assert result.user_id == "query-user"
+
+    with_header = await router.authenticate_http(
+        path="/ws?user_id=query-user", headers={"X-User-Id": "header-user"}, channel="web"
+    )
+    assert with_header.user_id == "query-user"
+
+
+@pytest.mark.asyncio
+async def test_web_auth_rejects_missing_authenticated_identity() -> None:
+    router = _make_router()
+    _enable_auth(router, AuthResult(success=True, user_id=""))
+    result = await router.authenticate_http(
+        path="/ws?user_id=claimed-user", headers={"Authorization": "Bearer token"}, channel="web"
+    )
+    assert result.success is False
+    assert result.user_id == ""
+
+
+@pytest.mark.asyncio
 async def test_authenticate_http_download_ignores_query_token() -> None:
     router = _make_router()
     auth = _enable_auth(router, AuthResult(success=True, user_id="iam-user"))

@@ -215,20 +215,19 @@ async function writeClipboardText(text: string): Promise<boolean> {
 }
 
 async function readClipboardText(): Promise<string> {
-  try {
-    if (navigator.clipboard?.readText) {
-      return await navigator.clipboard.readText();
-    }
-  } catch {
-    // Ignore and try empty / legacy path.
-  }
-  return '';
+  return navigator.clipboard.readText();
 }
 
-function insertIntoContentEditable(target: HTMLElement, text: string): void {
+export function insertPlainText(target: HTMLElement, text: string): void {
   target.focus();
+  // Keep line breaks as literal text: insertText creates block elements whose
+  // textContent loses their separators when the composer serializes a message.
+  // DOM serialization escapes markup and retains the browser's undo history.
+  const span = target.ownerDocument.createElement('span');
+  span.style.whiteSpace = 'pre-wrap';
+  span.textContent = text;
   try {
-    if (document.execCommand('insertText', false, text)) return;
+    if (document.execCommand('insertHTML', false, span.outerHTML)) return;
   } catch {
     // Fall through.
   }
@@ -338,6 +337,14 @@ export async function runTextEditAction(target: TextEditTarget, action: TextEdit
   if (action === 'paste') {
     if (!caps.canPaste) return;
 
+    const nativePaste = window.pywebview?.api?.paste_clipboard;
+    if (nativePaste) {
+      // Native paste delivers clipboardData to the editor's normal paste handler.
+      // In WKWebView, async clipboard reads require a separate permission gesture.
+      await nativePaste();
+      return;
+    }
+
     const composer = isChatComposerTarget(target);
     if (composer) {
       // Native bridge first: Explorer/Finder files + screenshot bitmaps.
@@ -361,6 +368,6 @@ export async function runTextEditAction(target: TextEditTarget, action: TextEdit
       replaceInputSelection(target, text);
       return;
     }
-    insertIntoContentEditable(target, text);
+    insertPlainText(target, text);
   }
 }

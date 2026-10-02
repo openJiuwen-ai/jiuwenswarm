@@ -372,8 +372,10 @@ export function PersonalContextGraphPanel({
 
   // 空态引导
   const hasRunningFetch = useMemo(() => {
-    const states = status?.fetch_service_states ?? {};
-    return Object.values(states).some((st) => st === 'STARTING' || st === 'RUNNING' || st === 'STOPPING');
+    const progress = status?.fetch_run_progress ?? {};
+    return Object.values(progress).some(
+      (item) => item.run_state === 'running' || item.run_state === 'stopping',
+    );
   }, [status]);
   const hasEnabledService = config.fetch_services.some((s) => s.enabled);
   const hasFetchServices = config.fetch_services.length > 0;
@@ -1428,7 +1430,12 @@ export function PersonalContextGraphPanel({
             onWheel={handleWheel}
           />
           {!contextReady && nodeCount === 0 && (
-            <div className="pc-graph__empty pc-graph__empty--overlay">{t(emptyHintKey)}</div>
+            <div
+              className="pc-graph__empty pc-graph__empty--overlay"
+              data-testid="personal-context-graph-empty-hint-canvas"
+            >
+              {t(emptyHintKey)}
+            </div>
           )}
         </div>
 

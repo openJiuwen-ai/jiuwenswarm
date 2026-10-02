@@ -45,6 +45,49 @@ class TestCopySessionStateTransform:
     """Verify state transformation rules during copy."""
 
     @pytest.mark.asyncio
+    async def test_active_goal_is_forked_as_independent_paused_goal(self):
+        from openjiuwen.harness.goal.schema import GoalRecord
+        from openjiuwen.harness.goal.store import SESSION_GOAL_RECORD_KEY
+        from openjiuwen.harness.schema.state import _SESSION_STATE_KEY
+
+        source_goal = GoalRecord.create(
+            session_id="source",
+            objective="Finish the task",
+            max_attempts=5,
+            token_budget=1000,
+        ).to_dict()
+        source_mock = MagicMock()
+        source_mock.pre_run = AsyncMock(return_value=source_mock)
+        source_mock.post_run = AsyncMock(return_value=source_mock)
+        source_mock.get_state.side_effect = lambda key: {
+            _SESSION_STATE_KEY: {"iteration": 3},
+            SESSION_GOAL_RECORD_KEY: source_goal,
+        }.get(key)
+        target_mock = MagicMock()
+        target_mock.pre_run = AsyncMock(return_value=target_mock)
+        target_mock.post_run = AsyncMock(return_value=target_mock)
+
+        with patch(
+            "openjiuwen.core.single_agent.create_agent_session",
+            side_effect=[source_mock, target_mock],
+        ):
+            from jiuwenswarm.agents.harness.common.session_ops_service import copy_session_state
+
+            assert await copy_session_state("source", "fork", MagicMock()) is True
+
+        written = target_mock.update_state.call_args.args[0]
+        fork_goal = written[SESSION_GOAL_RECORD_KEY]
+        assert written[_SESSION_STATE_KEY]["iteration"] == 0
+        assert fork_goal["session_id"] == "fork"
+        assert fork_goal["goal_id"] != source_goal["goal_id"]
+        assert fork_goal["objective"] == "Finish the task"
+        assert fork_goal["status"] == "paused"
+        assert fork_goal["max_attempts"] == 5
+        assert fork_goal["token_budget"] == 1000
+        assert fork_goal["attempt_count"] == 0
+        assert source_goal["status"] == "active"
+
+    @pytest.mark.asyncio
     async def test_iteration_reset_to_zero(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "jiuwenswarm.agents.harness.common.session_ops_service.get_agent_sessions_dir",

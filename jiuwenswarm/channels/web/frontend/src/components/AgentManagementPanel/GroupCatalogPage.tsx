@@ -28,7 +28,7 @@ type GroupCatalogPageProps = {
   installation?: 'all' | 'installed' | 'uninstalled';
   status: RequestStatus;
   error: string | null;
-  busyId: string | null;
+  busyIds: ReadonlySet<string>;
   onCategoryChange: (value: string) => void;
   onPageChange: (page: number) => void;
   onRetry: () => void;
@@ -49,7 +49,7 @@ export function GroupCatalogPage({
   installation = 'all',
   status,
   error,
-  busyId,
+  busyIds,
   onCategoryChange,
   onPageChange,
   onRetry,
@@ -121,7 +121,7 @@ export function GroupCatalogPage({
                 <GroupCard
                   key={item.id}
                   item={item}
-                  busy={busyId === item.id}
+                  busy={busyIds.has(item.id)}
                   onOpen={onOpen}
                   onUse={onUse}
                   onInstall={onInstall}

@@ -82,31 +82,9 @@ def _fork_source_for_session(
     return _fork_source_from_history(history_records)
 
 
-def _side_parent_for_session(session_id: str) -> str:
-    """Return the parent id only when ``session_id`` is an ephemeral side chat."""
-    try:
-        from jiuwenswarm.server.runtime.session.session_metadata import (
-            get_session_metadata,
-        )
-
-        metadata = get_session_metadata(session_id, enable_writeback=False)
-    except Exception as exc:
-        logger.debug(
-            "failed to read side conversation metadata for %s: %s",
-            session_id,
-            exc,
-        )
-        return ""
-    if not isinstance(metadata, dict) or metadata.get("ephemeral") is not True:
-        return ""
-    return str(metadata.get("side_parent_session_id") or "").strip()
-
-
 def _mark_fork_context(
     messages: list[Any],
     source_session_id: str,
-    *,
-    side_conversation: bool = False,
 ) -> list[Any]:
     """Add model-visible fork provenance without duplicating ancestor markers."""
     from openjiuwen.core.foundation.llm.schema.message import SystemMessage
@@ -122,58 +100,15 @@ def _mark_fork_context(
             inherited_messages.append(message)
     marker = SystemMessage(
         content=(
-            (
-                "This is an ephemeral side conversation forked from chat "
-                f"{source_session_id}. Everything before this boundary is inherited "
-                "reference context, not an active task. Only user messages after this "
-                "boundary are active requests. Keep this side conversation focused on "
-                "lightweight exploration and do not modify files or external state unless "
-                "the user explicitly asks you to do so here. Do not spawn subagents."
-            )
-            if side_conversation
-            else (
-                "This conversation was forked from chat "
-                f"{source_session_id}. The messages that follow were inherited from "
-                "that source chat and are available as prior conversation context. "
-                "When the user refers to the previous or source chat, answer directly "
-                "from this inherited history."
-            )
+            "This conversation was forked from chat "
+            f"{source_session_id}. The messages that follow were inherited from "
+            "that source chat and are available as prior conversation context. "
+            "When the user refers to the previous or source chat, answer directly "
+            "from this inherited history."
         ),
         metadata={_FORK_CONTEXT_MARKER_METADATA_KEY: source_session_id},
     )
-    return [*inherited_messages, marker] if side_conversation else [marker, *inherited_messages]
-
-
-def _build_side_context_messages_from_history(
-    history_records: list[dict[str, Any]],
-    source_session_id: str,
-) -> tuple[list[Any], int]:
-    """Rebuild a side chat with its boundary between inherited and local turns."""
-    boundary = 0
-    for record in history_records:
-        marker = record.get("forked_from")
-        parent_id = marker.get("session_id") if isinstance(marker, dict) else marker
-        if str(parent_id or "").strip() != source_session_id:
-            break
-        boundary += 1
-
-    inherited, inherited_skipped = _build_context_messages_from_history(
-        history_records[:boundary]
-    )
-    local, local_skipped = _build_context_messages_from_history(
-        history_records[boundary:]
-    )
-    return (
-        [
-            *_mark_fork_context(
-                inherited,
-                source_session_id,
-                side_conversation=True,
-            ),
-            *local,
-        ],
-        inherited_skipped + local_skipped,
-    )
+    return [marker, *inherited_messages]
 
 
 def _get_context_processors(react_agent: Any) -> list[tuple[str, Any]] | None:
@@ -374,7 +309,7 @@ def fork_session(
     cutoff_role: str = "",
     cutoff_content: str = "",
     cutoff_timestamp: Any = None,
-    side_conversation: bool = False,
+    session_equipment_override: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     sessions_dir = get_agent_sessions_dir()
     source_dir = sessions_dir / source_session_id
@@ -444,18 +379,16 @@ def fork_session(
             logger.warning("fork: failed to add forked_from to history: %s", exc)
 
     from jiuwenswarm.server.runtime.session.session_metadata import (
+        _normalize_session_equipment_names,
         _current_timestamp,
         _enqueue_write,
-        get_all_sessions_metadata,
+        collect_all_sessions_metadata,
         get_session_metadata,
     )
 
     source_meta = get_session_metadata(source_session_id)
 
-    if side_conversation:
-        source_title = str(source_meta.get("title") or "").strip()
-        final_title = f"Side from {source_title}" if source_title else "Side chat"
-    elif title:
+    if title:
         base_name = title
     elif source_meta.get("title"):
         base_name = source_meta["title"]
@@ -464,19 +397,16 @@ def fork_session(
         # for the status bar. First prompt like "hi" makes an ugly title.
         base_name = ""
 
-    if not side_conversation:
-        existing_titles: set[str] = set()
-        try:
-            all_sessions = get_all_sessions_metadata(limit=500, offset=0)
-            if isinstance(all_sessions, list):
-                for s in all_sessions:
-                    t = s.get("title", "")
-                    if t:
-                        existing_titles.add(t)
-        except Exception as exc:
-            logger.debug("fork_session: failed to get existing titles: %s", exc)
+    existing_titles: set[str] = set()
+    try:
+        for session in collect_all_sessions_metadata():
+            existing_title = session.get("title", "")
+            if existing_title:
+                existing_titles.add(existing_title)
+    except Exception as exc:
+        logger.debug("fork_session: failed to get existing titles: %s", exc)
 
-        final_title = _get_unique_fork_name(base_name, existing_titles)
+    final_title = _get_unique_fork_name(base_name, existing_titles)
     source_mode = source_meta.get("mode", "code.normal")
     selected_timestamp = (
         _fork_timestamp_seconds(selected_record.get("timestamp"))
@@ -490,17 +420,13 @@ def fork_session(
         "user_id": source_meta.get("user_id", ""),
         "created_at": _current_timestamp(),
         "last_message_at": (
-            _current_timestamp()
-            if side_conversation
-            else selected_timestamp
+            selected_timestamp
             if selected_timestamp is not None
             else source_meta.get("last_message_at", 0)
         ),
         "title": final_title,
         "message_count": (
-            0
-            if side_conversation
-            else len(history_records)
+            len(history_records)
             if has_message_cutoff and history_records is not None
             else source_meta.get("message_count", 0)
         ),
@@ -510,12 +436,17 @@ def fork_session(
         "project_id": source_meta.get("project_id", ""),
         "project_dir": source_meta.get("project_dir", ""),
     }
-    if side_conversation:
-        metadata["ephemeral"] = True
-        metadata["side_parent_session_id"] = source_session_id
-        for key in ("model", "session_equipment"):
-            if key in source_meta:
-                metadata[key] = copy.deepcopy(source_meta[key])
+    if "model" in source_meta:
+        metadata["model"] = source_meta["model"]
+    source_equipment = source_meta.get("session_equipment")
+    if isinstance(source_equipment, dict) or session_equipment_override:
+        equipment = copy.deepcopy(source_equipment) if isinstance(source_equipment, dict) else {}
+        for key, value in (session_equipment_override or {}).items():
+            if key == "agent_template_name" and isinstance(value, str):
+                equipment[key] = value.strip()
+            elif key in ("plugin_names", "mcp"):
+                equipment[key] = _normalize_session_equipment_names(value)
+        metadata["session_equipment"] = equipment
     if selected_record is not None:
         metadata["forked_at"] = {
             "message_id": str(selected_record.get("id") or ""),
@@ -525,13 +456,12 @@ def fork_session(
     source_channel_meta = source_meta.get("channel_metadata")
     if source_channel_meta and isinstance(source_channel_meta, dict):
         metadata["channel_metadata"] = dict(source_channel_meta)
-    _enqueue_write(target_session_id, metadata)
+    _enqueue_write(target_session_id, metadata, sync_write=True)
 
     return {
         "session_id": target_session_id,
         "source_session_id": source_session_id,
         "title": final_title,
-        "ephemeral": side_conversation,
     }
 
 
@@ -1222,7 +1152,6 @@ def _build_context_messages_from_history(
     """
     from openjiuwen.core.foundation.llm.schema.message import (
         OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
-        OPENJIUWEN_MESSAGE_ORIGIN_HARNESS_INTERNAL,
         OPENJIUWEN_MESSAGE_ORIGIN_METADATA,
         OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA,
         UserMessage,
@@ -1238,6 +1167,17 @@ def _build_context_messages_from_history(
     # Used to detect orphaned tool_results (e.g. ask_user's preliminary
     # empty result that arrives before the actual chat.tool_call event).
     emitted_tool_call_ids: set[str] = set()
+    completed_tool_call_ids = {
+        record.get("tool_call_id")
+        for record in history_records
+        if record.get("role") == "assistant" and record.get("event_type") == "chat.tool_result"
+    }
+    open_tool_call_ids: set[str] = set()
+    pending_model_inputs: list[Any] = []
+
+    def _flush_model_inputs() -> None:
+        context_messages.extend(pending_model_inputs)
+        pending_model_inputs.clear()
 
     def _flush_pending_assistant() -> None:
         """Create an AssistantMessage from buffered reasoning + tool_calls."""
@@ -1251,6 +1191,8 @@ def _build_context_messages_from_history(
         # Record emitted tool_call_ids for orphan detection
         for tc in tool_calls:
             emitted_tool_call_ids.add(tc["id"])
+            if tc["id"] in completed_tool_call_ids:
+                open_tool_call_ids.add(tc["id"])
         context_messages.append(AssistantMessage(
             content="",
             reasoning_content=reasoning if reasoning else None,
@@ -1275,6 +1217,9 @@ def _build_context_messages_from_history(
                     record.get("message_origin") == SESSION_MESSAGE_ORIGIN
                 )
                 if internal_session_message:
+                    from jiuwenswarm.server.runtime.agent_adapter.session_message_input import (
+                        cross_session_model_messages,
+                    )
                     from jiuwenswarm.server.runtime.agent_adapter.user_turn import (
                         render_cross_session_history_content,
                     )
@@ -1291,23 +1236,25 @@ def _build_context_messages_from_history(
                         cross_session,
                         language=language,
                     )
-                source_kind = (
-                    "agent_session"
-                    if internal_session_message
-                    else str(record.get("channel_id") or "history").strip()
-                )
-                context_messages.append(UserMessage(
-                    content=content,
-                    metadata={
-                        OPENJIUWEN_MESSAGE_ORIGIN_METADATA:
-                            (
-                                OPENJIUWEN_MESSAGE_ORIGIN_HARNESS_INTERNAL
-                                if internal_session_message
-                                else OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER
-                            ),
-                        OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA: source_kind,
-                    },
-                ))
+                    messages = cross_session_model_messages(content, cross_session)
+                else:
+                    source_kind = str(record.get("channel_id") or "history").strip()
+                    messages = [UserMessage(
+                        content=content,
+                        metadata={
+                            OPENJIUWEN_MESSAGE_ORIGIN_METADATA: OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
+                            OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA: source_kind,
+                        },
+                    )]
+                # UI receipt order can place a supplement inside a parallel
+                # tool batch. Model consumption happens after its results.
+                if open_tool_call_ids or any(
+                    tc["id"] in completed_tool_call_ids for tc in current_tool_calls
+                ):
+                    pending_model_inputs.extend(messages)
+                else:
+                    _flush_pending_assistant()
+                    context_messages.extend(messages)
             continue
 
         # ── Only process assistant events below ──
@@ -1375,11 +1322,15 @@ def _build_context_messages_from_history(
                 tool_call_id=tc_id,
                 content=result_content,
             ))
+            open_tool_call_ids.discard(tc_id)
+            if not open_tool_call_ids:
+                _flush_model_inputs()
 
         elif event_type == "chat.final":
             # Final text response — flush any pending state first
             if current_tool_calls:
                 _flush_pending_assistant()
+            _flush_model_inputs()
             reasoning = "".join(reasoning_buffer).strip()
             reasoning_buffer = []
             if content.strip() or reasoning:
@@ -1409,6 +1360,9 @@ def _build_context_messages_from_history(
     # Flush any remaining state (e.g. interrupted turn with only reasoning)
     if reasoning_buffer or current_tool_calls:
         _flush_pending_assistant()
+    # Incomplete tool calls are removed below; retain inputs received before
+    # interruption without leaving their synthetic call/result pair split.
+    _flush_model_inputs()
 
     # --- Post-processing (aligned with claude-code's deserialization pipeline) ---
 
@@ -1504,14 +1458,7 @@ async def warmup_session_context(
                 history_records = history_records[:index]
                 break
 
-    side_parent_session_id = _side_parent_for_session(session_id)
-    if side_parent_session_id:
-        context_messages, skipped = _build_side_context_messages_from_history(
-            history_records,
-            side_parent_session_id,
-        )
-    else:
-        context_messages, skipped = _build_context_messages_from_history(history_records)
+    context_messages, skipped = _build_context_messages_from_history(history_records)
     if not context_messages:
         logger.info(
             "warmup_session_context: no rebuildable messages in history for %s", session_id
@@ -1519,7 +1466,7 @@ async def warmup_session_context(
         return False
 
     fork_source_session_id = _fork_source_for_session(session_id, history_records)
-    if fork_source_session_id and not side_parent_session_id:
+    if fork_source_session_id:
         context_messages = _mark_fork_context(
             context_messages,
             fork_source_session_id,
@@ -1823,15 +1770,19 @@ async def copy_session_state(
     card: Any,
     deep_agent: "DeepAgent | None" = None,
 ) -> bool:
-    """Copy DeepAgentState from source to target session via Checkpointer.
+    """Copy DeepAgentState and unfinished Goal config via Checkpointer.
 
     Reads source state from the Checkpointer SQLite database, transforms it
     for a branched session (reset iteration, clear transient state, generate
     new plan slug), and writes it to the target session's Checkpointer entry.
+    An active Goal becomes paused with a new identity so the fork does not
+    automatically run the same objective in parallel.
 
     Returns True on success, False if state copy was skipped or failed.
     """
     from openjiuwen.core.single_agent import create_agent_session
+    from openjiuwen.harness.goal.schema import GoalRecord, GoalStatus
+    from openjiuwen.harness.goal.store import SESSION_GOAL_RECORD_KEY
     from openjiuwen.harness.schema.state import _SESSION_STATE_KEY
 
     # Flush source runtime state to Checkpointer if deep_agent is available
@@ -1846,12 +1797,14 @@ async def copy_session_state(
     # Read source state from Checkpointer
     source_session = None
     source_state_dict: Any = None
+    source_goal_dict: Any = None
     try:
         source_session = create_agent_session(
             session_id=source_session_id, card=card
         )
         await source_session.pre_run()
         source_state_dict = source_session.get_state(_SESSION_STATE_KEY)
+        source_goal_dict = source_session.get_state(SESSION_GOAL_RECORD_KEY)
     except Exception as exc:
         logger.warning(
             "copy_session_state: cannot read source state from Checkpointer: %s",
@@ -1867,46 +1820,72 @@ async def copy_session_state(
                     "copy_session_state: error during source session cleanup: %s", exc
                 )
 
-    if not source_state_dict:
+    if not source_state_dict and not source_goal_dict:
         logger.info(
-            "copy_session_state: no DeepAgentState for %s, skipping",
+            "copy_session_state: no DeepAgentState or GoalRecord for %s, skipping",
             source_session_id,
         )
         return False
 
-    # Transform state for branched session (deep copy to avoid mutating source)
-    modified_state = copy.deepcopy(source_state_dict)
-    modified_state["iteration"] = 0
-    modified_state["stop_condition_state"] = None
-    modified_state["pending_follow_ups"] = []
+    target_state: dict[str, Any] = {}
+    if source_state_dict:
+        # Transform state for branched session (deep copy to avoid mutating source)
+        modified_state = copy.deepcopy(source_state_dict)
+        modified_state["iteration"] = 0
+        modified_state["stop_condition_state"] = None
+        modified_state["pending_follow_ups"] = []
 
-    # Generate new plan slug and copy plan file
-    plan_mode = modified_state.get("plan_mode") or {}
-    old_slug = plan_mode.get("plan_slug")
-    if old_slug:
+        # Generate new plan slug and copy plan file
+        plan_mode = modified_state.get("plan_mode") or {}
+        old_slug = plan_mode.get("plan_slug")
+        if old_slug:
+            try:
+                from openjiuwen.harness.tools.agent_mode_tools import (
+                    get_or_create_plan_slug,
+                    resolve_plan_file_path,
+                )
+
+                workspace_root = str(get_agent_workspace_dir())
+                new_slug = get_or_create_plan_slug(workspace_root)
+                old_plan_path = resolve_plan_file_path(workspace_root, old_slug)
+                new_plan_path = resolve_plan_file_path(workspace_root, new_slug)
+                if old_plan_path.exists():
+                    shutil.copy2(old_plan_path, new_plan_path)
+                plan_mode["plan_slug"] = new_slug
+                modified_state["plan_mode"] = plan_mode
+                logger.info(
+                    "copy_session_state: plan file copied: %s → %s",
+                    old_slug, new_slug,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "copy_session_state: plan file copy failed (non-critical): %s",
+                    exc,
+                )
+        target_state[_SESSION_STATE_KEY] = modified_state
+
+    if isinstance(source_goal_dict, dict) and source_goal_dict.get("goal_id"):
         try:
-            from openjiuwen.harness.tools.agent_mode_tools import (
-                get_or_create_plan_slug,
-                resolve_plan_file_path,
-            )
+            source_goal = GoalRecord.from_dict(source_goal_dict)
+            if source_goal.status is not GoalStatus.COMPLETED:
+                fork_goal = GoalRecord.create(
+                    session_id=target_session_id,
+                    objective=source_goal.objective,
+                    max_attempts=source_goal.max_attempts,
+                    token_budget=source_goal.token_budget,
+                )
+                fork_goal.status = (
+                    GoalStatus.PAUSED
+                    if source_goal.status is GoalStatus.ACTIVE
+                    else source_goal.status
+                )
+                fork_goal.active_started_at = None
+                target_state[SESSION_GOAL_RECORD_KEY] = fork_goal.to_dict()
+        except (KeyError, ValueError, TypeError) as exc:
+            logger.warning("copy_session_state: invalid source GoalRecord: %s", exc)
 
-            workspace_root = str(get_agent_workspace_dir())
-            new_slug = get_or_create_plan_slug(workspace_root)
-            old_plan_path = resolve_plan_file_path(workspace_root, old_slug)
-            new_plan_path = resolve_plan_file_path(workspace_root, new_slug)
-            if old_plan_path.exists():
-                shutil.copy2(old_plan_path, new_plan_path)
-            plan_mode["plan_slug"] = new_slug
-            modified_state["plan_mode"] = plan_mode
-            logger.info(
-                "copy_session_state: plan file copied: %s → %s",
-                old_slug, new_slug,
-            )
-        except Exception as exc:
-            logger.debug(
-                "copy_session_state: plan file copy failed (non-critical): %s",
-                exc,
-            )
+    if not target_state:
+        return False
 
     # Write transformed state to target via Checkpointer
     try:
@@ -1914,7 +1893,7 @@ async def copy_session_state(
             session_id=target_session_id, card=card
         )
         await target_session.pre_run()
-        target_session.update_state({_SESSION_STATE_KEY: modified_state})
+        target_session.update_state(target_state)
         await target_session.post_run()
         logger.info(
             "copy_session_state: copied DeepAgentState from %s to %s",
@@ -1934,7 +1913,6 @@ async def copy_session_context(
     target_session_id: str,
     *,
     force_history: bool = False,
-    side_conversation: bool = False,
 ) -> bool:
     """Copy conversation context from memory, falling back to forked history.
 
@@ -1987,11 +1965,7 @@ async def copy_session_context(
             )
             return False
 
-    messages = _mark_fork_context(
-        messages,
-        source_session_id,
-        side_conversation=side_conversation,
-    )
+    messages = _mark_fork_context(messages, source_session_id)
 
     try:
         await deep_agent.create_new_context_engine(

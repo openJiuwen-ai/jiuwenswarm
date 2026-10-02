@@ -138,22 +138,35 @@ test('a failed hint batch is requeued for the next recovery drain', async () => 
   await coordinator.drain(async hints => recovered.push([...hints]));
   assert.deepEqual(recovered, [[['e'.repeat(32), 7]]]);
 });
+import { readFileSync } from 'node:fs';
+import { zipSync } from 'fflate';
+
 import {
   getTrajectoryArchive,
+  getTrajectoryCheckpoints,
   getTrajectorySessionUsage,
   getTrajectorySubjectRecords,
   listTrajectorySubjects,
 } from '../node_modules/.cache/trajectory-window/trajectoryClient.mjs';
 import {
   exitTrajectoryReplay,
-  parseTrajectoryArchive,
+  isTrajectoryArchiveFormatError,
+  isTrajectoryArchiveLimitError,
+  readTrajectoryArchive,
   shouldCatchUpTrajectory,
-  trajectoryArchiveView,
+  TrajectoryArchiveLimitError,
+  trajectoryReplayTeamMode,
 } from '../node_modules/.cache/trajectory-window/trajectoryArchive.mjs';
 import {
   formatTokenCount,
   liveElapsedSeconds,
 } from '../node_modules/.cache/trajectory-window/record.mjs';
+import {
+  absorbSequencePage,
+  createSequenceCache,
+  rebuildRecord,
+} from '../node_modules/.cache/trajectory-window/trajectorySequences.mjs';
+import { groupTrajectorySubjects } from '../node_modules/.cache/trajectory-window/trajectorySubjects.mjs';
 
 test('token counts use grouped thousands for readability', () => {
   assert.equal(formatTokenCount(48111), '48,111 tok');
@@ -233,19 +246,23 @@ function backendArchiveRecord({
   traceId = hexId(91_000, 32),
   spanId = hexId(1, 16),
   lifecycle = 'final',
-  otlp = otlpRecord(traceId, spanId),
-  raw = otlp,
+  changeSeq = '9007199254740993',
+  subjectId = 'main',
+  raw = otlpRecord(traceId, spanId),
   rawValid = true,
+  sequences,
 } = {}) {
   return {
+    type: 'record',
     record_id: `${traceId}:${spanId}`,
     trace_id: traceId,
     span_id: spanId,
     parent_span_id: null,
+    subject_id: subjectId,
     record_revision: 3,
     lifecycle,
     operation: 'upsert',
-    change_seq: '9007199254740993',
+    change_seq: changeSeq,
     start_time_unix_nano: '1000000000',
     observed_time_unix_nano: '1500000000',
     end_time_unix_nano: lifecycle === 'running' ? '0' : '2000000000',
@@ -258,118 +275,497 @@ function backendArchiveRecord({
     created_at: 1,
     update_kind: lifecycle === 'final' ? 'span_end' : 'stream',
     raw_sha256: '0'.repeat(64),
-    raw_json_base64: Buffer.from(
-      typeof raw === 'string' ? raw : JSON.stringify(raw),
-      'utf8',
-    ).toString('base64'),
-    otlp,
+    raw_size_bytes: 256,
     raw_valid: rawValid,
+    raw_json: typeof raw === 'string' ? raw : JSON.stringify(raw),
+    ...(sequences === undefined ? {} : { sequences }),
   };
 }
 
-function backendArchive(records, dictionaries = {}) {
+function archiveHeader(overrides = {}) {
   return {
+    type: 'header',
     format: 'openjiuwen.trajectory.archive',
-    archive_version: 2,
+    archive_version: 3,
     session_id: SESSION_ID,
     exported_at: '2026-08-21T00:00:00Z',
     store_epoch: STORE_EPOCH,
     revision: '9007199254740995',
-    content_addressed: true,
-    sequences: dictionaries.sequences ?? {},
-    blobs: dictionaries.blobs ?? {},
-    records,
+    stream_frames: false,
+    ...overrides,
   };
 }
 
-test('frontend parses and replays the real backend Archive v2 wire payload', () => {
+/** Frame body lines the way the exporter does: header first, end counting the rest. */
+function archiveLines(body, headerOverrides = {}) {
+  const lines = [archiveHeader(headerOverrides), ...body];
+  return [
+    ...lines,
+    {
+      type: 'end',
+      records: body.filter(line => line.type === 'record').length,
+      lines: lines.length,
+    },
+  ];
+}
+
+function jsonlBytes(lines) {
+  return new TextEncoder().encode(lines.map(line => `${JSON.stringify(line)}\n`).join(''));
+}
+
+function zipBytes(jsonl, extraEntries = {}) {
+  return zipSync({ ...extraEntries, 'trajectory.jsonl': [jsonl, { level: 6 }] });
+}
+
+/** A file whose stream hands out the bytes cut exactly where *cuts* say. */
+function chunkedSource(bytes, cuts = []) {
+  const bounds = [...new Set([0, ...cuts.filter(cut => cut > 0 && cut < bytes.length), bytes.length])]
+    .sort((left, right) => left - right);
+  return {
+    size: bytes.length,
+    stream: () => new ReadableStream({
+      start(controller) {
+        for (let index = 1; index < bounds.length; index += 1) {
+          controller.enqueue(bytes.slice(bounds[index - 1], bounds[index]));
+        }
+        controller.close();
+      },
+    }),
+  };
+}
+
+function seededCuts(length, count, seed) {
+  let state = seed;
+  const cuts = [];
+  for (let index = 0; index < count; index += 1) {
+    state = (state * 1103515245 + 12345) % 2147483648;
+    cuts.push(1 + (state % Math.max(1, length - 1)));
+  }
+  return cuts;
+}
+
+function replayGroups(view) {
+  return groupTrajectorySubjects(view.records, view.rawRecords, view.lifecycleByRecordId);
+}
+
+test('frontend replays the backend Archive v3 record lines', async () => {
   const finalRecord = backendArchiveRecord();
   const invalidRecord = backendArchiveRecord({
     spanId: hexId(2, 16),
     lifecycle: 'abandoned',
-    otlp: null,
+    changeSeq: '9007199254740994',
     raw: '{invalid-json',
     rawValid: false,
   });
-  const archive = parseTrajectoryArchive(JSON.stringify(
-    backendArchive([finalRecord, invalidRecord]),
-  ));
-  const view = trajectoryArchiveView(archive);
+  const binaryRecord = backendArchiveRecord({
+    spanId: hexId(3, 16),
+    changeSeq: '9007199254740995',
+    rawValid: false,
+  });
+  delete binaryRecord.raw_json;
+  binaryRecord.raw_json_base64 = Buffer.from([0x7b, 0xff, 0xfe, 0x7d]).toString('base64');
+  const replay = await readTrajectoryArchive(chunkedSource(jsonlBytes(archiveLines(
+    [finalRecord, invalidRecord, binaryRecord],
+  ))));
+  const { view } = replay;
 
-  assert.equal(archive.revision, '9007199254740995');
-  assert.equal(archive.records[0].change_seq, '9007199254740993');
+  assert.equal(replay.container, 'jsonl');
+  assert.equal(replay.header.revision, '9007199254740995');
   assert.equal(view.traceCount, 1);
   assert.equal(view.records.length, 1);
-  assert.equal(view.rawRecords.length, 2);
-  assert.deepEqual(view.rawRecords.map(record => record.ingest_seq), [1, 2]);
+  assert.equal(view.rawRecords.length, 3);
+  // Change sequences beyond the safe integer range cannot be ingest cursors,
+  // so replay numbers the records in the order it read them.
+  assert.deepEqual(view.rawRecords.map(record => record.ingest_seq), [1, 2, 3]);
+  assert.equal(view.rawRecords[0].change_seq, undefined);
   assert.equal(view.lifecycleByRecordId.get(invalidRecord.record_id), 'error');
   assert.equal(view.rawDataByRecordId.get(invalidRecord.record_id), '{invalid-json');
+  assert.equal(view.rawDataByRecordId.get(binaryRecord.record_id), '{��}');
+  assert.equal(view.rawDataByRecordId.has(finalRecord.record_id), false);
+  assert.equal(view.invalidRecordSeen, true);
 });
 
-test('archive parser rejects frontend-only draft names and non-string cursors', () => {
+test('archive reader refuses earlier versions, foreign headers and non-string cursors', async () => {
   const record = backendArchiveRecord();
-  const wrongVersionField = {
-    ...backendArchive([record]),
-    archive_version: undefined,
-    format_version: 1,
+  const read = lines => readTrajectoryArchive(chunkedSource(jsonlBytes(lines)));
+  const versionTwo = {
+    format: 'openjiuwen.trajectory.archive',
+    archive_version: 2,
+    session_id: SESSION_ID,
+    records: [],
   };
-  const numericRevision = { ...backendArchive([record]), revision: 42 };
-  const numericChangeSeq = backendArchive([{ ...record, change_seq: 42 }]);
 
-  assert.throws(() => parseTrajectoryArchive(JSON.stringify(wrongVersionField)), /not supported/);
-  assert.throws(() => parseTrajectoryArchive(JSON.stringify(numericRevision)), /not supported/);
-  assert.throws(() => parseTrajectoryArchive(JSON.stringify(numericChangeSeq)), /invalid record/);
-});
-
-test('archive parser refuses version 1 and archives that are not content-addressed', () => {
-  const record = backendArchiveRecord();
-  const versionOne = { ...backendArchive([record]), archive_version: 1 };
-  const inline = { ...backendArchive([record]), content_addressed: undefined };
-
-  assert.throws(
-    () => parseTrajectoryArchive(JSON.stringify(versionOne)),
-    /version 1 is no longer supported/,
+  await assert.rejects(read([versionTwo]), /version 2 is no longer supported/);
+  await assert.rejects(read(archiveLines([record], { revision: 42 })), /not supported/);
+  await assert.rejects(read(archiveLines([record], { type: undefined })), /not supported/);
+  await assert.rejects(
+    read(archiveLines([{ ...record, change_seq: 42 }])),
+    /line 2 is an invalid record/,
   );
-  assert.throws(() => parseTrajectoryArchive(JSON.stringify(inline)), /not supported/);
+  await assert.rejects(
+    readTrajectoryArchive(chunkedSource(new TextEncoder().encode('not json\n'))),
+    /not supported/,
+  );
 });
 
-test('an addressed archive rebuilds its references from its own dictionaries', () => {
-  const head = 'd'.repeat(64);
-  const record = backendArchiveRecord();
-  const span = record.otlp.resourceSpans[0].scopeSpans[0].spans[0];
-  span.attributes = [
-    ...(span.attributes ?? []),
-    { key: 'gen_ai.input.messages', value: { stringValue: `@oj-seq:1:${head}:2` } },
+test('archive reader reports files that are not trajectory archives as format errors', async () => {
+  const encoder = new TextEncoder();
+  const invalidFiles = [
+    encoder.encode('{"broken": \n'),
+    encoder.encode('plain text notes\nsecond line\n'),
+    new Uint8Array(0),
+    new Uint8Array([0xff, 0xfe, 0xfd, 0x0a]),
+    zipSync({ 'notes.txt': encoder.encode('hello') }),
   ];
-  const archive = parseTrajectoryArchive(JSON.stringify(backendArchive(
-    [{ ...record, sequences: { 'gen_ai.input.messages': { hash: head, depth: 2 } } }],
-    {
-      sequences: { [head]: ['e1', 'e2'] },
-      blobs: {
-        e1: JSON.stringify({ role: 'user', parts: [] }),
-        e2: JSON.stringify({ role: 'assistant', parts: [] }),
-      },
-    },
-  )));
-  const rebuilt = archive.records[0].otlp.resourceSpans[0].scopeSpans[0].spans[0].attributes
+
+  for (const bytes of invalidFiles) {
+    await assert.rejects(
+      readTrajectoryArchive(chunkedSource(bytes)),
+      error => isTrajectoryArchiveFormatError(error) && !isTrajectoryArchiveLimitError(error),
+    );
+  }
+});
+
+test('archive replay keeps the mode its records were exported in', async () => {
+  const read = records => readTrajectoryArchive(chunkedSource(jsonlBytes(archiveLines(records))));
+  const leader = backendArchiveRecord({ changeSeq: '1' });
+  const member = backendArchiveRecord({ spanId: hexId(2, 16), changeSeq: '2', subjectId: 'member:alice' });
+  const withMode = (record, agentMode) => ({ ...record, agent_mode: agentMode });
+  const withoutMode = record => {
+    const { agent_mode: _omitted, ...rest } = record;
+    return rest;
+  };
+
+  assert.equal((await read([withMode(leader, 'agent.code.normal')])).mode, 'agent');
+  assert.equal((await read([withMode(leader, 'team'), withMode(member, 'team')])).mode, 'team');
+  assert.equal((await read([withMode(leader, 'team.work.plan')])).mode, 'team');
+  assert.equal((await read([withMode(leader, 'agent.work.normal'), withMode(member, 'team')])).mode, 'team');
+  assert.equal((await read([withoutMode(leader)])).mode, null);
+  assert.equal((await read([])).mode, null);
+
+  // A stated mode wins over the hosting session; only an unstated one follows it.
+  assert.equal(trajectoryReplayTeamMode('agent', true), false);
+  assert.equal(trajectoryReplayTeamMode('team', false), true);
+  assert.equal(trajectoryReplayTeamMode(null, true), true);
+  assert.equal(trajectoryReplayTeamMode(null, false), false);
+});
+
+test('archive reader rejects records out of commit order and unknown line types', async () => {
+  const first = backendArchiveRecord({ changeSeq: '5' });
+  const second = backendArchiveRecord({ spanId: hexId(2, 16), changeSeq: '4' });
+  const read = lines => readTrajectoryArchive(chunkedSource(jsonlBytes(lines)));
+
+  await assert.rejects(read(archiveLines([first, second])), /out of commit order/);
+  await assert.rejects(read(archiveLines([first, { ...first, change_seq: '6' }])), /duplicate/);
+  await assert.rejects(read(archiveLines([{ type: 'frame', text: 'w' }])), /unsupported type/);
+});
+
+test('an addressed archive rebuilds its references from lines defined before them', async () => {
+  const traceId = hexId(91_000, 32);
+  const spanId = hexId(1, 16);
+  const raw = otlpRecord(traceId, spanId);
+  raw.resourceSpans[0].scopeSpans[0].spans[0].attributes = [
+    { key: 'gen_ai.input.messages', value: { stringValue: `@oj-seq:1:${'d'.repeat(64)}:2` } },
+  ];
+  const replay = await readTrajectoryArchive(chunkedSource(jsonlBytes(archiveLines([
+    { type: 'blob', hash: 'e1', text: JSON.stringify({ role: 'user', parts: [] }) },
+    { type: 'sequence', hash: 'c'.repeat(64), prev: null, blob: 'e1', depth: 1 },
+    { type: 'blob', hash: 'e2', text: JSON.stringify({ role: 'assistant', parts: [] }) },
+    { type: 'sequence', hash: 'd'.repeat(64), prev: 'c'.repeat(64), blob: 'e2', depth: 2 },
+    backendArchiveRecord({
+      raw,
+      sequences: { 'gen_ai.input.messages': { hash: 'd'.repeat(64), depth: 2 } },
+    }),
+  ]))));
+  const record = replay.view.rawRecords[0];
+  const rebuilt = record.otlp.resourceSpans[0].scopeSpans[0].spans[0].attributes
     .find(attribute => attribute.key === 'gen_ai.input.messages').value.stringValue;
 
-  assert.equal(archive.records[0].incomplete_sequences, undefined);
+  assert.equal(record.incomplete_sequences, undefined);
   assert.deepEqual(JSON.parse(rebuilt).map(message => message.role), ['user', 'assistant']);
 });
 
-test('archive export client downloads the backend session archive endpoint', async () => {
+test('a reference the archive never defines stays marked as unresolved', async () => {
+  const traceId = hexId(91_000, 32);
+  const spanId = hexId(1, 16);
+  const raw = otlpRecord(traceId, spanId);
+  raw.resourceSpans[0].scopeSpans[0].spans[0].attributes = [
+    { key: 'gen_ai.input.messages', value: { stringValue: `@oj-seq:1:${'d'.repeat(64)}:1` } },
+  ];
+  const replay = await readTrajectoryArchive(chunkedSource(jsonlBytes(archiveLines([
+    { type: 'sequence', hash: 'd'.repeat(64), prev: null, blob: 'lost', depth: 1 },
+    backendArchiveRecord({
+      raw,
+      sequences: { 'gen_ai.input.messages': { hash: 'd'.repeat(64), depth: 1 } },
+    }),
+  ]))));
+
+  assert.deepEqual(replay.view.rawRecords[0].incomplete_sequences, ['gen_ai.input.messages']);
+});
+
+const FIXTURE_JSONL = readFileSync(new URL('./fixtures/trajectory-archive-subjects.jsonl', import.meta.url));
+const FIXTURE_ZIP = readFileSync(new URL('./fixtures/trajectory-archive-subjects.trajectory.zip', import.meta.url));
+
+/**
+ * What the live panel holds for the fixture session.
+ *
+ * The fixture was written by the backend exporter from a real store, so its
+ * lines state exactly the rows a live reader pages through. Each subject's
+ * records are fed in commit order as one detail page carrying the chains and
+ * content it refers to, the way the detail endpoint answers, and are rebuilt
+ * and applied by the same helpers the panel uses.
+ */
+function liveFixtureView() {
+  const lines = new TextDecoder().decode(FIXTURE_JSONL).trim().split('\n').map(line => JSON.parse(line));
+  const blobs = {};
+  const nodes = new Map();
+  const pages = new Map();
+  const usage = new Map();
+  for (const line of lines) {
+    if (line.type === 'blob') blobs[line.hash] = line.text;
+    if (line.type === 'sequence') nodes.set(line.hash, line);
+    if (line.type === 'usage') {
+      usage.set(`${line.trace_id}\0${line.inference_id}`, line.cumulative_usage);
+    }
+    if (line.type !== 'record') continue;
+    const sequences = {};
+    for (const reference of Object.values(line.sequences ?? {})) {
+      const elements = [];
+      for (let node = nodes.get(reference.hash); node !== undefined; node = nodes.get(node.prev)) {
+        elements.unshift(node.blob);
+      }
+      sequences[reference.hash] = elements;
+    }
+    const page = pages.get(line.subject_id) ?? { records: [], sequences: {} };
+    page.records.push({
+      ingest_seq: Number(line.change_seq),
+      otlp: JSON.parse(line.raw_json),
+      raw_valid: line.raw_valid,
+      record_id: line.record_id,
+      record_revision: line.record_revision,
+      lifecycle: line.lifecycle,
+      operation: line.operation,
+      change_seq: Number(line.change_seq),
+      observed_time_unix_nano: line.observed_time_unix_nano,
+      trace_id: line.trace_id,
+      span_id: line.span_id,
+      raw_size_bytes: line.raw_size_bytes,
+      ...(line.sequences === undefined ? {} : { sequences: line.sequences }),
+    });
+    Object.assign(page.sequences, sequences);
+    pages.set(line.subject_id, page);
+  }
+  const cache = createSequenceCache();
+  const buckets = [];
+  for (const [subjectId, page] of pages) {
+    absorbSequencePage(cache, { sequences: page.sequences, blobs });
+    const revision = page.records[page.records.length - 1].ingest_seq;
+    buckets.push(applyTrajectoryDetailRecords(undefined, {
+      schema_version: 1,
+      session_id: 'browser-subject-fixture',
+      subject_id: subjectId,
+      revision,
+      reset: false,
+      records: page.records.map(record => rebuildRecord(record, cache)),
+      has_more: false,
+      next_since_revision: revision,
+    }).bucket);
+  }
+  return {
+    records: buckets.flatMap(bucket => [...bucket.records.values()]),
+    rawRecords: buckets.flatMap(bucket => [...bucket.rawRecords.values()]),
+    lifecycleByRecordId: new Map(buckets.flatMap(bucket => [...bucket.versions].map(
+      ([identity, version]) => [identity, version.lifecycle],
+    ))),
+    usage,
+  };
+}
+
+test('zip and JSONL archives cut at any byte replay exactly the live view', async () => {
+  const live = liveFixtureView();
+  const liveGroups = replayGroups(live);
+  assert.ok(liveGroups.groups.length >= 2);
+  assert.ok(live.rawRecords.some(record => record.sequences !== undefined));
+  assert.ok(live.rawRecords.every(record => record.incomplete_sequences === undefined));
+  const zipped = zipBytes(new Uint8Array(FIXTURE_JSONL));
+  const sources = [
+    ['jsonl', FIXTURE_JSONL, []],
+    ['jsonl', FIXTURE_JSONL, Array.from({ length: FIXTURE_JSONL.length }, (_, index) => index)],
+    ['jsonl', FIXTURE_JSONL, seededCuts(FIXTURE_JSONL.length, 40, 7)],
+    ['zip', zipped, []],
+    ['zip', zipped, [1, 2, 3, 5, 31, 32, 33]],
+    ['zip', zipped, Array.from({ length: zipped.length }, (_, index) => index)],
+    ['zip', FIXTURE_ZIP, seededCuts(FIXTURE_ZIP.length, 25, 11)],
+    ['zip', FIXTURE_ZIP, [2]],
+  ];
+  for (const [container, bytes, cuts] of sources) {
+    const progress = [];
+    const replay = await readTrajectoryArchive(
+      chunkedSource(new Uint8Array(bytes), cuts),
+      update => progress.push(update),
+    );
+    assert.equal(replay.container, container);
+    assert.equal(replay.header.session_id, 'browser-subject-fixture');
+    assert.deepEqual(replayGroups(replay.view), liveGroups);
+    assert.deepEqual(replay.sessionCumulativeUsageByRequestIdentity, live.usage);
+    assert.deepEqual(progress.at(-1), {
+      bytesRead: bytes.length,
+      totalBytes: bytes.length,
+      records: live.rawRecords.length,
+    });
+  }
+});
+
+test('the backend zip writer produces an archive the streaming reader accepts', async () => {
+  // Written by the gateway's own zip writer: the local header states its sizes
+  // through a ZIP64 extra field rather than a trailing data descriptor.
+  assert.deepEqual([...FIXTURE_ZIP.subarray(0, 4)], [0x50, 0x4b, 0x03, 0x04]);
+  assert.equal(FIXTURE_ZIP.readUInt16LE(6) & 0x08, 0);
+  assert.equal(FIXTURE_ZIP.readUInt32LE(18), 0xffffffff);
+  const replay = await readTrajectoryArchive(chunkedSource(new Uint8Array(FIXTURE_ZIP)));
+
+  assert.equal(replay.view.rawRecords.length, 4);
+  assert.equal(replay.sessionCumulativeUsageByRequestIdentity.size, 2);
+});
+
+test('a truncated archive is refused rather than replayed in part', async () => {
+  const jsonl = new Uint8Array(FIXTURE_JSONL);
+  const withoutEnd = jsonl.slice(0, jsonl.lastIndexOf(0x7b));
+  const zipped = zipBytes(jsonl);
+  const miscounted = jsonlBytes(archiveLines([backendArchiveRecord()]).map(line => (
+    line.type === 'end' ? { ...line, records: 2 } : line
+  )));
+
+  await assert.rejects(readTrajectoryArchive(chunkedSource(withoutEnd)), /truncated: it has no end line/);
+  await assert.rejects(
+    readTrajectoryArchive(chunkedSource(jsonl.slice(0, Math.floor(jsonl.length / 2)))),
+    /line \d+ is not valid JSON/,
+  );
+  await assert.rejects(
+    readTrajectoryArchive(chunkedSource(zipped.slice(0, Math.floor(zipped.length / 2)))),
+    /truncated/,
+  );
+  await assert.rejects(
+    readTrajectoryArchive(chunkedSource(new Uint8Array(FIXTURE_ZIP).slice(0, 700))),
+    /truncated/,
+  );
+  await assert.rejects(readTrajectoryArchive(chunkedSource(miscounted)), /does not match the counts/);
+  await assert.rejects(readTrajectoryArchive(chunkedSource(new Uint8Array(0))), /empty/);
+});
+
+test('archive reader enforces its line, size, entry and record limits', async () => {
+  const jsonl = new Uint8Array(FIXTURE_JSONL);
+  const limitOf = async (source, limits) => {
+    try {
+      await readTrajectoryArchive(source, undefined, { limits });
+    } catch (error) {
+      assert.ok(error instanceof TrajectoryArchiveLimitError, String(error));
+      return error.limit;
+    }
+    assert.fail('the archive was accepted');
+  };
+
+  assert.equal(await limitOf(chunkedSource(jsonl, [7, 900]), { maxLineLength: 256 }), 'line-length');
+  assert.equal(
+    await limitOf(chunkedSource(zipBytes(jsonl), [100]), { maxUncompressedBytes: 4096 }),
+    'uncompressed-size',
+  );
+  assert.equal(
+    await limitOf(
+      chunkedSource(zipBytes(jsonl, { 'a.txt': new Uint8Array(3), 'b.txt': new Uint8Array(3) })),
+      { maxEntries: 2 },
+    ),
+    'entry-count',
+  );
+  assert.equal(await limitOf(chunkedSource(jsonl), { maxRecords: 3 }), 'record-count');
+  await assert.rejects(
+    readTrajectoryArchive(chunkedSource(zipSync({ 'other.jsonl': jsonl }))),
+    /no trajectory\.jsonl entry/,
+  );
+});
+
+test('checkpoint lines become view seeds and are accepted only before the first record', async () => {
+  const checkpoint = {
+    type: 'checkpoint',
+    subject_id: 'main',
+    boundary_turn_id: 'id:turn-2',
+    boundary_change_seq: '9',
+    state: {
+      version: 1,
+      subject: {
+        display_name: 'Main Agent',
+        kind: 'main_agent',
+        parent_id: null,
+        session_id: null,
+        projected: true,
+        first_observed_time_unix_nano: '5',
+      },
+      turns: { max_number: 2, unnumbered: 1, trace_turn_ids: { ['a'.repeat(32)]: ['turn-2'] } },
+      requests: { 'session|main': 3 },
+      lineage: [],
+      v2: {
+        main: {
+          event_count: 4,
+          sequence_epoch: 'epoch-1',
+          next_sequence: 5,
+          blocked: false,
+          window: { id: 'window-4', messages: { hash: null, depth: 0 } },
+          epoch_baseline_base: null,
+          held: null,
+        },
+      },
+      usage: { input: 10 },
+    },
+  };
+  const replay = await readTrajectoryArchive(
+    chunkedSource(jsonlBytes(archiveLines([checkpoint, backendArchiveRecord()]))),
+  );
+
+  const projection = replay.checkpoints.projections.get('main');
+  assert.deepEqual(projection.turns, {
+    maxNumber: 2,
+    unnumbered: 1,
+    traceTurnIds: new Map([['a'.repeat(32), ['turn-2']]]),
+  });
+  assert.deepEqual(projection.requestOffsets, new Map([['session|main', 3]]));
+  assert.equal(replay.checkpoints.retiredSubjects.get('main').firstObservedTimeUnixNano, '5');
+  assert.deepEqual(replay.checkpoints.v2Seeds.get('main'), {
+    eventCount: 4,
+    blocked: false,
+    sequenceEpoch: 'epoch-1',
+    nextSequence: 5,
+    window: { id: 'window-4', messages: [] },
+  });
+  await assert.rejects(
+    readTrajectoryArchive(chunkedSource(jsonlBytes(archiveLines([backendArchiveRecord(), checkpoint])))),
+    /checkpoint after the first record/,
+  );
+  const unresolved = {
+    ...checkpoint,
+    state: {
+      ...checkpoint.state,
+      v2: { main: { ...checkpoint.state.v2.main, window: { id: 'window-4', messages: { hash: 'f'.repeat(64), depth: 1 } } } },
+    },
+  };
+  await assert.rejects(
+    readTrajectoryArchive(chunkedSource(jsonlBytes(archiveLines([unresolved, backendArchiveRecord()])))),
+    /content is missing/,
+  );
+});
+
+test('archive export client downloads the backend session archive as a blob', async () => {
   const originalFetch = globalThis.fetch;
-  const payload = backendArchive([backendArchiveRecord()]);
+  const zipped = zipBytes(new Uint8Array(FIXTURE_JSONL));
   let requestedUrl = '';
   globalThis.fetch = async (input) => {
     requestedUrl = String(input);
-    return new Response(JSON.stringify(payload), { status: 200 });
+    return new Response(zipped, { status: 200, headers: { 'Content-Type': 'application/zip' } });
   };
   try {
-    const text = await getTrajectoryArchive('session / one');
-    assert.equal(parseTrajectoryArchive(text).records.length, 1);
-    assert.match(requestedUrl, /\/sessions\/session%20%2F%20one\/archive\?format=addressed$/);
+    const blob = await getTrajectoryArchive('session / one');
+    assert.deepEqual(new Uint8Array(await blob.arrayBuffer()), zipped);
+    assert.equal((await readTrajectoryArchive(blob)).view.rawRecords.length, 4);
+    assert.match(requestedUrl, /\/sessions\/session%20%2F%20one\/archive$/);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -383,10 +779,10 @@ test('only a recovered websocket connection triggers revision catch-up', () => {
   assert.equal(shouldCatchUpTrajectory('ready', 'reconnecting'), false);
 });
 
-test('exiting browser-only replay requests one live revision catch-up', () => {
-  const archive = parseTrajectoryArchive(JSON.stringify(
-    backendArchive([backendArchiveRecord()]),
-  ));
+test('exiting browser-only replay requests one live revision catch-up', async () => {
+  const archive = await readTrajectoryArchive(chunkedSource(jsonlBytes(
+    archiveLines([backendArchiveRecord()]),
+  )));
 
   assert.deepEqual(exitTrajectoryReplay(archive), {
     archive: null,
@@ -499,6 +895,30 @@ test('trajectory client reads session cumulative usage by physical request ident
       output: 3,
       total: 8,
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('trajectory client reads retention checkpoints with the content they refer to', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    const body = {
+      schema_version: 1,
+      session_id: SESSION_ID,
+      store_epoch: STORE_EPOCH,
+      checkpoints: [{ subject_id: 'main', boundary_turn_id: 'id:turn-1', boundary_change_seq: '4', state: {} }],
+      sequences: { ['a'.repeat(64)]: ['b'.repeat(64)] },
+      blobs: { ['b'.repeat(64)]: '{}' },
+    };
+    globalThis.fetch = async (input) => {
+      assert.match(String(input), /\/sessions\/session-1\/checkpoints$/);
+      return new Response(JSON.stringify(body), { status: 200 });
+    };
+    assert.deepEqual(await getTrajectoryCheckpoints(SESSION_ID), body);
+
+    globalThis.fetch = async () => new Response(JSON.stringify({ ...body, checkpoints: [null] }), { status: 200 });
+    await assert.rejects(getTrajectoryCheckpoints(SESSION_ID), /checkpoint response is invalid/);
   } finally {
     globalThis.fetch = originalFetch;
   }

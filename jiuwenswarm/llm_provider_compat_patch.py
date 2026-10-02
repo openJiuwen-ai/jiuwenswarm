@@ -12,6 +12,7 @@ from weakref import WeakSet
 logger = logging.getLogger("jiuwenswarm.llm_provider_compat_patch")
 
 _MODELARTS_TOOLS_NONE_MODELS = frozenset({"qwen3-30b-a3b", "qwen3-32b"})
+_MODELARTS_PANGU_MODELS = frozenset({"openpangu-2.0-pro", "openpangu-2.0-flash"})
 _ANTHROPIC_PATCHED_CLASSES: WeakSet[type] = WeakSet()
 _OPENAI_PATCHED_CLASSES: WeakSet[type] = WeakSet()
 _PROVIDER_PATCHES_APPLIED = False
@@ -47,9 +48,13 @@ def _flatten_text_blocks(value: Any) -> Any:
 def _patch_anthropic_modelarts(client_class: type) -> None:
     if client_class in _ANTHROPIC_PATCHED_CLASSES:
         return
-    original = client_class._build_request_params  # pylint: disable=protected-access
+    # AnthropicModelClient builds its final payload through
+    # ``_build_anthropic_params``.  Patching the inherited OpenAI-shaped
+    # ``_build_request_params`` does not affect real Anthropic calls because
+    # the implementation deliberately invokes ``super()._build_request_params``.
+    original = client_class._build_anthropic_params  # pylint: disable=protected-access
 
-    def _build_request_params(self, *args, **kwargs):
+    def _build_anthropic_params(self, *args, **kwargs):
         params = original(self, *args, **kwargs)
         if not _is_modelarts(self):
             return params
@@ -58,9 +63,22 @@ def _patch_anthropic_modelarts(client_class: type) -> None:
                 message["content"] = _flatten_text_blocks(message.get("content"))
         if "system" in params:
             params["system"] = _flatten_text_blocks(params.get("system"))
+
+        model_name = str(params.get("model") or "").strip().lower()
+        if model_name in _MODELARTS_PANGU_MODELS and "thinking" not in params:
+            # ModelArts enables thinking by default for openPangu.  In that
+            # mode every replayed assistant turn must contain the exact
+            # provider-issued thinking block and signature.  JiuwenSwarm's
+            # ordinary persisted chat history contains the visible answer,
+            # not that provider-private block, so a later turn otherwise
+            # fails with ModelArts.81001 (missing 'thinking' field).  Make the
+            # ordinary/no-explicit-reasoning path deterministic.  An explicit
+            # reasoning configuration already produces ``thinking`` and is
+            # intentionally preserved.
+            params["thinking"] = {"type": "disabled"}
         return params
 
-    client_class._build_request_params = _build_request_params  # type: ignore[method-assign]  # pylint: disable=protected-access
+    client_class._build_anthropic_params = _build_anthropic_params  # type: ignore[method-assign]  # pylint: disable=protected-access
     _ANTHROPIC_PATCHED_CLASSES.add(client_class)
 
 

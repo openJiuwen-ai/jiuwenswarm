@@ -2014,6 +2014,7 @@ class JiuWenSwarmDeepAdapter:
         self._memory_forbidden_rail: Any = None
         self._tool_cards = None
         self._evolution_watcher_tasks: set[asyncio.Task] = set()
+        self._ttse_cleanup_tasks: set[asyncio.Task] = set()
         self._sys_operation = None
         self._sys_operation_card: SysOperationCard | None = None
         # Ids of the sys operations this adapter currently holds a reference on,
@@ -2093,6 +2094,8 @@ class JiuWenSwarmDeepAdapter:
         self._is_proactive_memory: bool | None = None
         self._model_cache: dict[str, Model] = {}
         self._model_name_to_keys: dict[str, list[str]] = {}
+        self._model_id_to_key: dict[str, str] = {}
+        self._model_group_cache: dict[str, Model] = {}
         # 全局列表下标 → cache_key。通道侧（Web）用全局 origin_index 拼请求 key，
         # 与后端 per-name 的 cache_key 序号语义分叉；此映射在 _resolve_model_by_name
         # 回退分支把通道传入的全局序号换算成真实 cache_key，避免同名条目
@@ -4018,6 +4021,28 @@ class JiuWenSwarmDeepAdapter:
         bucket.discard(task)
         if not bucket:
             self._session_agent_tasks.pop(sid, None)
+
+    async def cancel_session_tasks(self, session_id: str) -> int:
+        """Cancel request tasks in the existing adapter for this session only."""
+        sid = self._session_adapter_key(session_id)
+        if self._is_session_scoped_adapter:
+            if self._session_adapter_key(self._parent_session_id) != sid:
+                return 0
+            return await self._cancel_session_agent_tasks(sid)
+        adapter = self._session_adapters.get(sid)
+        cancelled = await self._cancel_session_agent_tasks(sid)
+        if adapter is not None:
+            cancelled += await adapter.cancel_session_agent_tasks(sid)
+        return cancelled
+
+    async def cancel_session_agent_tasks(self, session_id: str) -> int:
+        """Cancel this adapter's tracked agent tasks for the session.
+
+        Public twin of :meth:`_cancel_session_agent_tasks` so a parent
+        adapter can drive a session-scoped child adapter without touching
+        its protected surface.
+        """
+        return await self._cancel_session_agent_tasks(session_id)
 
     async def _cancel_session_agent_tasks(self, session_id: str) -> int:
         sid = self._resolve_interrupt_session_id(session_id)
@@ -6351,6 +6376,10 @@ class JiuWenSwarmDeepAdapter:
             self._model_name_to_keys[model_name] = []
         self._model_name_to_keys[model_name].append(cache_key)
 
+        model_id = str(entry.get("model_id") or "").strip()
+        if model_id:
+            self._model_id_to_key[model_id] = cache_key
+
         # 同时用纯 model_name 作为 key 指向 is_default=true 的条目
         if entry.get("is_default") is True:
             self._model_cache[model_name] = self._model_cache[cache_key]
@@ -6371,6 +6400,7 @@ class JiuWenSwarmDeepAdapter:
         """
         self._model_name_to_keys.clear()
         self._global_index_to_cache_key.clear()
+        self._model_id_to_key.clear()
         name_counter: dict[str, int] = {}
 
         # 含登录后自动获得的模型
@@ -6428,6 +6458,8 @@ class JiuWenSwarmDeepAdapter:
         self._model_cache.clear()
         self._model_name_to_keys.clear()
         self._global_index_to_cache_key.clear()
+        self._model_id_to_key.clear()
+        self._model_group_cache.clear()
         self._inject_attribution_to_config(config)
         self._build_model_cache_from_defaults(config)
         if not self._model_cache:
@@ -6453,6 +6485,22 @@ class JiuWenSwarmDeepAdapter:
                     break
         if default_name is None:
             default_name = next(iter(self._model_cache))
+
+        # A configured default group outranks the default single model. The
+        # actual router is compiled by agent-core; JiuwenSwarm never builds it.
+        default_groups = [
+            group for group in (config.get("models", {}).get("groups") or [])
+            if isinstance(group, dict) and group.get("enabled", True) and group.get("is_default")
+        ]
+        if default_groups:
+            group_id = str(default_groups[0].get("model_group_id") or "")
+            from jiuwenswarm.common.model_selection import ModelSelection
+            from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
+            from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+            resolved = ModelSelectionResolver().resolve(ModelSelection(type="model_group", id=group_id))
+            self._model_group_cache[group_id] = build_model_from_selection(resolved)
+            default_name = f"model_group:{group_id}"
+            self._model_cache[default_name] = self._model_group_cache[group_id]
 
         # 首次启动兜底：config 默认条目仍为 .env 占位符时，改选 Zen 免费模型
         # （如 DeepSeek V4 Flash）作为默认，避免把占位模型发往厂商。
@@ -6635,11 +6683,28 @@ class JiuWenSwarmDeepAdapter:
         ``command.goal`` / interrupt resume can still hit the user's choice.
         """
         params = request.params if isinstance(request.params, dict) else {}
+        raw_selection = params.get("model_selection")
+        if isinstance(raw_selection, dict):
+            try:
+                from jiuwenswarm.common.model_selection import ModelSelection
+                selection = ModelSelection.model_validate(raw_selection)
+                suffix = f":{selection.route_id}" if selection.route_id else ""
+                return f"{selection.type}:{selection.id}{suffix}"
+            except ValidationError as exc:
+                raise ValueError(f"invalid model_selection: {exc}") from exc
         requested = str(params.get("model_name") or "").strip()
         if requested:
             return requested
-        if getattr(self, "_last_resolved_model", None) is not None:
-            return ""
+        session_id = str(getattr(request, "session_id", None) or "").strip()
+        if session_id:
+            try:
+                from jiuwenswarm.server.runtime.session.model_selection_store import get_session_model_selection
+                selection = get_session_model_selection(session_id)
+                if selection is not None:
+                    suffix = f":{selection.route_id}" if selection.route_id else ""
+                    return f"{selection.type}:{selection.id}{suffix}"
+            except ValueError:
+                logger.warning("invalid session id while resolving model selection: %r", session_id)
         return self._session_stored_model_name(getattr(request, "session_id", None))
 
     def _resolve_model_for_request(self, request: AgentRequest) -> Model:
@@ -6653,9 +6718,46 @@ class JiuWenSwarmDeepAdapter:
         → 适配器默认模型。避免 command.goal / 中断恢复在适配器重建后掉回默认。
         """
         requested = self._requested_model_name(request)
+        # 登录模型：Gateway 随请求带下凭据时优先构建，不进共享缓存（避免串号）。
         scoped = self._request_scoped_login_model(request, requested)
         if scoped is not None:
             return scoped
+        # 模型组 / 模型稳定 ID 路由（模型ID迁移后的 model_selection 语义）：
+        # requested 形如 "model:<model_id>" 或 "model_group:<group_id>[:<route_id>]"。
+        if requested.startswith(("model:", "model_group:")):
+            from jiuwenswarm.common.model_selection import ModelSelection
+            from jiuwenswarm.server.runtime.model_routing_registry import (
+                ModelExecutionContext,
+                ModelSelectionResolver,
+            )
+            selection_type, selection_id, *route_parts = requested.split(":", 2)
+            route_id = route_parts[0] if route_parts else None
+            selection = ModelSelection(type=selection_type, id=selection_id, route_id=route_id)
+            checker = getattr(self, "_model_selection_can_access", None)
+            can_access = None
+            if callable(checker):
+                def can_access(kind: str, resource_id: str) -> bool:
+                    return bool(checker(request, kind, resource_id))
+            resolved_selection = ModelSelectionResolver().resolve(
+                selection,
+                ModelExecutionContext(can_access=can_access),
+            )
+            if requested.startswith("model_group:"):
+                cache_key = requested.removeprefix("model_group:")
+                cached = self._model_group_cache.get(cache_key)
+                if cached is not None and getattr(self, "_model_selection_can_access", None) is None:
+                    return cached
+                from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
+                model = build_model_from_selection(resolved_selection)
+                self._model_group_cache[cache_key] = model
+                return model
+            # model:<model_id>
+            model_id = requested.split(":", 1)[1]
+            cache_key = self._model_id_to_key.get(model_id)
+            if cache_key is None or cache_key not in self._model_cache:
+                from jiuwenswarm.common.model_errors import MODEL_SELECTION_NOT_FOUND, ModelSelectionError
+                raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, f"unknown model_id {model_id!r}")
+            return self._model_cache[cache_key]
         if not requested:
             last = getattr(self, "_last_resolved_model", None)
             if last is not None:
@@ -6745,6 +6847,16 @@ class JiuWenSwarmDeepAdapter:
             logger.debug("[JiuWenSwarmDeepAdapter] login model catalog unavailable", exc_info=True)
             return False
 
+    @staticmethod
+    def _login_required_message(request: AgentRequest) -> str:
+        from jiuwenswarm.common.e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY
+
+        params = request.params if isinstance(request.params, dict) else {}
+        hint = params.get(E2A_LOGIN_REQUIRED_HINT_PARAM_KEY)
+        if isinstance(hint, str) and hint.strip():
+            return hint.strip()[:500]
+        return "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
+
     def _model_config_error(self, request: AgentRequest) -> tuple[str, str] | None:
         requested = self._requested_model_name(request)
         scoped = self._scoped_login_auth(request)
@@ -6752,7 +6864,7 @@ class JiuWenSwarmDeepAdapter:
         if scoped is not None:
             return None
         if self._is_uncredentialed_login_model(request, requested):
-            return "login_required", "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
+            return "login_required", self._login_required_message(request)
         if not self._has_valid_model_config(requested):
             # 包括默认模型还是 .env 模板占位值的情况（新装、没配过模型）。Opencode Zen 停用后
             # 没有免费模型兜底了，所以要把"登录拿免费模型"这条路也告诉用户。
@@ -6827,6 +6939,7 @@ class JiuWenSwarmDeepAdapter:
         *,
         enable_read_image_multimodal: bool,
         vision_tool_available: bool,
+        image_input_status: str = "unknown",
     ) -> dict[str, Any]:
         """Expose image paths when native image input is unavailable."""
         if enable_read_image_multimodal:
@@ -6871,21 +6984,28 @@ class JiuWenSwarmDeepAdapter:
         if not media_items:
             return inputs
 
+        status_message = JiuWenSwarmDeepAdapter._image_input_status_message(image_input_status)
         tool_context = {
             "marker": "jiuwenswarm_image_tool_context",
             "mediaPath": first_path,
             "mediaItems": media_items,
             "question": question,
+            "imageInputStatus": image_input_status,
             "toolHint": (
-                (
-                    "当前主模型不支持原生图片输入。请调用已配置的图片理解工具；"
-                    "优先使用 image_reading(local_url=mediaPath, prompt=question)，"
-                    "或使用 visual_question_answering(image_path_or_url=mediaPath, question=question)。"
-                )
-                if vision_tool_available
-                else (
-                    "当前主模型不支持原生图片输入，且没有配置可用的视觉模型工具。"
-                    "请直接向用户说明当前没有图片理解能力，不要猜测图片内容。"
+                status_message
+                + "本次图片未作为原生图片输入发送给主模型。"
+                + (
+                    (
+                        "请调用已配置的图片理解工具；"
+                        "优先使用 image_reading(local_url=mediaPath, prompt=question)，"
+                        "或使用 visual_question_answering(image_path_or_url=mediaPath, question=question)。"
+                    )
+                    if vision_tool_available
+                    else (
+                        "没有配置可用的视觉模型工具。"
+                        "请根据上述状态向用户说明本次无法直接读图的原因，不要猜测图片内容。"
+                        "能力未确认不等于模型不支持读图。"
+                    )
                 )
             ),
         }
@@ -6906,6 +7026,7 @@ class JiuWenSwarmDeepAdapter:
         enable_read_image_multimodal: bool,
         model: Any | None,
         vision_tool_available: bool,
+        image_input_status: str = "unknown",
     ) -> dict[str, Any] | None:
         if enable_read_image_multimodal:
             return None
@@ -6921,13 +7042,11 @@ class JiuWenSwarmDeepAdapter:
         model_config = getattr(model, "model_config", None)
         model_name = str(getattr(model_config, "model_name", "") or "").strip()
         model_label = f"（{model_name}）" if model_name else ""
+        content = JiuWenSwarmDeepAdapter._image_input_status_message(image_input_status, model_label)
         if vision_tool_available:
-            content = f"当前模型{model_label}不支持原生图片理解，已切换为图片理解工具处理。"
+            content += "已切换为图片理解工具处理。"
         else:
-            content = (
-                f"当前模型{model_label}不支持原生图片理解，"
-                "且未配置可用的视觉模型工具。"
-            )
+            content += "未配置可用的视觉模型工具，本次图片未作为原生图片输入发送。"
         notice = {
             "event_type": "chat.notice",
             "notice_type": "image_tool_fallback",
@@ -6936,6 +7055,7 @@ class JiuWenSwarmDeepAdapter:
             "request_id": request.request_id,
             "session_id": request.session_id,
             "image_count": len(image_files),
+            "image_input_status": image_input_status,
         }
         if model_name:
             notice["model_name"] = model_name
@@ -6943,6 +7063,20 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def _native_image_input_enabled(config: dict[str, Any], model: Any | None) -> bool:
+        return JiuWenSwarmDeepAdapter._native_image_input_status(config, model) == "supported"
+
+    @staticmethod
+    def _image_input_status_message(status: str, model_label: str = "") -> str:
+        model = f"当前模型{model_label}"
+        messages = {
+            "disabled": f"{model}已在配置中关闭原生图片输入。",
+            "unsupported": f"{model}的当前接口经检测不支持原生图片输入。",
+        }
+        return messages.get(status, f"尚未确认{model}的接口是否支持原生图片输入。")
+
+    @staticmethod
+    def _native_image_input_status(config: dict[str, Any], model: Any | None) -> str:
+        """Read a status snapshot; never start or wait for a probe here."""
         # Per-model declaration (``supports_vision`` on ModelClientConfig) takes
         # priority over the global react config and the probe cache.
         if model is not None:
@@ -6950,12 +7084,16 @@ class JiuWenSwarmDeepAdapter:
             if mcc is not None:
                 supports_vision = getattr(mcc, "supports_vision", None)
                 if isinstance(supports_vision, bool):
-                    return supports_vision
+                    return "supported" if supports_vision else "disabled"
 
         configured = config.get("enable_read_image_multimodal")
         if isinstance(configured, bool):
-            return configured
-        return get_cached_image_support(model) is True
+            return "supported" if configured else "disabled"
+        supported = get_cached_image_support(model)
+        if isinstance(supported, bool):
+            return "supported" if supported else "unsupported"
+        # None is inconclusive; the existing cache does not expose a reason.
+        return "unknown"
 
     @staticmethod
     def _resolve_enable_read_image_multimodal(
@@ -9023,7 +9161,7 @@ class JiuWenSwarmDeepAdapter:
         """Build the single-Agent execution-graph producer."""
 
         config = load_symphony_config(self._config_base_cache)
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not config.evolution.flow.enabled:
             return None
         try:
             from jiuwenswarm.symphony.experience import _build_graph_evolution_rail
@@ -11578,6 +11716,9 @@ class JiuWenSwarmDeepAdapter:
             and not is_team_mode(deprecate_mode(self._last_mode))
             and getattr(runtime, "session_message_service", None) is not None
         )
+        messaging_rail = getattr(self, "_session_messaging_route_rail", None)
+        if messaging_rail is not None:
+            messaging_rail.set_service(runtime.session_message_service if eligible else None)
         if not eligible:
             if self._session_messaging_toolkit is not None:
                 registered_tools = [
@@ -11594,6 +11735,8 @@ class JiuWenSwarmDeepAdapter:
                 "session_send_message",
                 "session_message_list",
                 "session_message_resolve",
+                "session_continue_queued",
+                "session_read",
             } & registered_names:
                 self._instance.ability_manager.remove(name)
             return
@@ -11602,6 +11745,8 @@ class JiuWenSwarmDeepAdapter:
             "session_send_message",
             "session_message_list",
             "session_message_resolve",
+            "session_continue_queued",
+            "session_read",
         }
         if self._session_messaging_toolkit is None:
             # A restored adapter may still carry the retired multi-session
@@ -12360,6 +12505,16 @@ class JiuWenSwarmDeepAdapter:
             self._mcp_prewarm_task.cancel()
         self._mcp_prewarm_task = None
         await self._close_a2x_client()
+        # 释放本实例在全局 RailManager 中的 per-agent 注册状态，避免会话
+        # adapter 销毁后状态泄漏（issue #3711）。
+        if self._instance is not None:
+            try:
+                get_rail_manager().release_agent_state(self._instance)
+            except Exception:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] release rail manager state failed",
+                    exc_info=True,
+                )
 
     async def _cleanup_evolution_background_tasks(self) -> None:
         """Drain detached evolution work before adapter-owned state is released."""
@@ -12487,15 +12642,17 @@ class JiuWenSwarmDeepAdapter:
         """
         if self._stream_event_rail is None:
             return []
+        # rail 内部按归一化 sid 存取（_sid_key），统一下发归一化值：raw 与
+        # stripped 的差异会让 cancel/pause 落到别的 key 上。
         sid = self._resolve_interrupt_session_id(session_id)
-        self._stream_event_rail.abort(session_id or sid)
-        self._stream_event_rail.collect_cancelled_tool_updates(session_id or sid)
+        self._stream_event_rail.abort(sid)
+        self._stream_event_rail.collect_cancelled_tool_updates(sid)
         cancelled_tool_results = self._stream_event_rail.get_cancelled_tool_results(
-            session_id or sid,
+            sid,
         )
-        self._stream_event_rail.clear_cancelled_tool_results(session_id or sid)
+        self._stream_event_rail.clear_cancelled_tool_results(sid)
         if reset_for_new_task:
-            self._stream_event_rail.reset_for_new_task(session_id or sid)
+            self._stream_event_rail.reset_for_new_task(sid)
         return cancelled_tool_results
 
     @staticmethod
@@ -12559,7 +12716,7 @@ class JiuWenSwarmDeepAdapter:
     def _goal_record_is_active(self) -> bool:
         """Whether GoalRecord is ACTIVE (persistent objective still running).
 
-        Unlike ``_has_active_goal_interaction``, this ignores an in-flight goal
+        Unlike ``has_active_goal_interaction``, this ignores an in-flight goal
         round.  Used when deciding whether to demote ``chat.final``: after user
         cancel/pause the record is no longer ACTIVE, so a terminal final must
         reach the frontend even while the aborted round is still unwinding.
@@ -12579,7 +12736,21 @@ class JiuWenSwarmDeepAdapter:
         status_value = getattr(status, "value", status)
         return status_value == "active"
 
-    def _has_active_goal_interaction(self) -> bool:
+    def has_active_goal(self, session_id: str) -> bool:
+        """Read the cached Goal owner, including between autonomous rounds."""
+        if (
+            self._is_session_scoped_adapter
+            and self._session_adapter_key(self._parent_session_id)
+            != self._session_adapter_key(session_id)
+        ):
+            return False
+        adapter = (
+            self if self._is_session_scoped_adapter
+            else self._get_cached_session_adapter(session_id)
+        )
+        return bool(adapter and adapter.has_active_goal_interaction())
+
+    def has_active_goal_interaction(self) -> bool:
         """Whether the shared DeepAgent still owns an active goal interaction."""
         if self._has_active_goal_round():
             return True
@@ -13376,11 +13547,13 @@ class JiuWenSwarmDeepAdapter:
         # an empty-string or None request.session_id doesn't bypass the guard.
         _normalized_sid = self._resolve_interrupt_session_id(request.session_id)
         _session_is_active = self._is_session_active(_normalized_sid)
-        if not _session_is_active and intent in ("pause", "resume"):
+        # 只有 pause 受活跃守卫限制：跳过 pause 无害（暂停只是不生效）。
+        # resume 不受限：它幂等且无害，若因会话不在活跃计数里被跳过，
+        # 已阻塞的 pause latch 将永久无人解除（cron 挂死 59 分钟的机制之一）。
+        if not _session_is_active and intent == "pause":
             logger.info(
-                "[JiuWenSwarmDeepAdapter] interrupt(%s):",
-                "session=%s not active on this adapter, ",
-                "skipping pause/resume (active_sessions=%s)",
+                "[JiuWenSwarmDeepAdapter] interrupt(%s): session=%s not active on "
+                "this adapter, skipping pause (active_sessions=%s)",
                 intent,
                 request.session_id,
                 dict(self._active_session_ids),
@@ -13402,9 +13575,11 @@ class JiuWenSwarmDeepAdapter:
         continuation_discarded = True
 
         if intent == "pause":
-            # 暂停：通过 StreamEventRail 在下一个 model_call/tool_call checkpoint 阻塞
+            # 暂停：通过 StreamEventRail 在下一个 model_call/tool_call checkpoint 阻塞。
+            # 下发必须用与守卫一致的 _normalized_sid，否则 strip/空值差异会让
+            # pause 落到别的 key 上，resume 永远对不上号。
             if _session_is_active and self._stream_event_rail is not None:
-                self._stream_event_rail.pause(request.session_id)
+                self._stream_event_rail.pause(_normalized_sid)
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] interrupt: 已暂停执行 request_id=%s",
                     request.request_id,
@@ -13412,12 +13587,16 @@ class JiuWenSwarmDeepAdapter:
             message = "任务已暂停"
 
         elif intent == "resume":
-            # 恢复：解除 StreamEventRail 的 pause 阻塞 + 清除 abort 标志
-            if _session_is_active and self._stream_event_rail is not None:
-                self._stream_event_rail.resume(request.session_id)
+            # 恢复：解除 StreamEventRail 的 pause 阻塞 + 清除 abort 标志。
+            # 不检查 _session_is_active：resume 到达时会话可能已离开活跃计数
+            # （stream 已回卷），跳过它会让 latch 卡死；resume 本身幂等无害。
+            if self._stream_event_rail is not None:
+                self._stream_event_rail.resume(_normalized_sid)
                 logger.info(
-                    "[JiuWenSwarmDeepAdapter] interrupt: 已恢复执行 request_id=%s",
+                    "[JiuWenSwarmDeepAdapter] interrupt: 已恢复执行 request_id=%s"
+                    " (session_active=%s)",
                     request.request_id,
+                    _session_is_active,
                 )
             message = "任务已恢复"
 
@@ -13862,7 +14041,11 @@ class JiuWenSwarmDeepAdapter:
             )
         except ValueError as exc:
             return {"accepted": False, "resolved": False, "reason": str(exc)}
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        service = get_swarm_symphony_service()
         if not answers_select_option(answers, ("安装", "install")):
+            service.defer_candidate(recipe_id, recipe_version)
             return {
                 "accepted": True,
                 "resolved": True,
@@ -13872,9 +14055,6 @@ class JiuWenSwarmDeepAdapter:
                 "recipe_version": recipe_version,
                 "request_id": request_id,
             }
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
-
-        service = get_swarm_symphony_service()
         receipt = await service.install_candidate(
             request_id=request_id,
             recipe_id=recipe_id,
@@ -15250,14 +15430,16 @@ class JiuWenSwarmDeepAdapter:
                 request,
                 inputs,
             )
-            enable_read_image_multimodal = self._native_image_input_enabled(
+            image_input_status = self._native_image_input_status(
                 self._config_cache,
                 resolved_model,
             )
+            enable_read_image_multimodal = image_input_status == "supported"
             inputs = self._prepare_react_image_tool_prompt(
                 request,
                 inputs,
                 enable_read_image_multimodal=enable_read_image_multimodal,
+                image_input_status=image_input_status,
                 vision_tool_available=(
                     getattr(self, "_vision_model_config", None) is not None
                 ),
@@ -15485,9 +15667,11 @@ class JiuWenSwarmDeepAdapter:
         else:
             self._session_input_guard = None
             await instance.unregister_rail(guard)
+            await instance.unregister_rail(guard.boundary_guard)
         await instance.ensure_initialized()
-        await register(guard)
         try:
+            await register(guard.boundary_guard)
+            await register(guard)
             # DeepAgent routes BEFORE_INVOKE to the outer agent only. Resume
             # queue binding must also run on the inner ReAct invocation.
             event = AgentCallbackEvent.BEFORE_INVOKE
@@ -15495,8 +15679,35 @@ class JiuWenSwarmDeepAdapter:
         except Exception as exc:
             # DeepAgent unregisters all of this rail's callbacks on both agents.
             await instance.unregister_rail(guard)
+            await instance.unregister_rail(guard.boundary_guard)
             raise exc
         self._session_input_guard = guard
+
+    def _require_cross_session_task_admission(self, request: AgentRequest) -> None:
+        """Refuse protected-mode steering before any SDK submission."""
+        from jiuwenswarm.agents.harness.common.session_ops_service import resolve_live_agent_session
+        from jiuwenswarm.common.mode_matrix import is_plan_mode
+        from jiuwenswarm.runtime.context import get_current_runtime
+        from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
+
+        runtime = get_current_runtime()
+        checker = getattr(runtime, "session_message_requires_queue", None)
+        protected = (
+            is_plan_mode(self._last_mode)
+            or is_plan_mode(request.params.get("mode"))
+            or self.has_active_goal_interaction()
+            or bool(callable(checker) and checker(request.session_id))
+        )
+        if not protected and self._instance is not None:
+            session = resolve_live_agent_session(self._instance, request.session_id)
+            if session is not None:
+                # enter_plan_mode may run after the request mode was selected.
+                protected = self._instance.load_state(session).plan_mode.mode == "plan"
+        if protected:
+            raise SessionInputQueueRequiredError(
+                "cross-session messages must queue while a plan or goal is active; "
+                "supplemental input was not sent"
+            )
 
     async def deliver_active_session_input(
         self, request: AgentRequest, inputs: dict[str, Any]
@@ -15511,20 +15722,29 @@ class JiuWenSwarmDeepAdapter:
             sdk_input_mode,
         )
 
+        from jiuwenswarm.runtime.session_input import SessionInputRejectedError
+
+        mode = sdk_input_mode(request.params)
+        cross_session_steer = mode is InputDispatchMode.STEER and isinstance(
+            request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict
+        )
+        if cross_session_steer:
+            self._require_cross_session_task_admission(request)
         instance = self._instance
         if instance is None or instance.active_round is None:
             return False
         if not instance.has_output_stream():
             return False
         if self._stream_completion_state(had_interaction=False) == "suspended":
-            raise RuntimeError(
+            raise SessionInputRejectedError(
                 "session is waiting for an interaction answer; "
                 "supplemental input was not sent"
             )
-        mode = sdk_input_mode(request.params)
         bound_round = instance.active_round
 
         def require_open_input() -> None:
+            if cross_session_steer:
+                self._require_cross_session_task_admission(request)
             if mode is InputDispatchMode.STEER:
                 guard = self._session_input_guard
                 if guard is None or guard.owner is not instance:
@@ -15532,7 +15752,7 @@ class JiuWenSwarmDeepAdapter:
                 else:
                     accepting = guard.accepting
                 if not accepting:
-                    raise RuntimeError(
+                    raise SessionInputRejectedError(
                         "session is finishing or changing execution state; "
                         "supplemental input was not sent, "
                         "retry after it settles"
@@ -15611,6 +15831,15 @@ class JiuWenSwarmDeepAdapter:
                 return
             # The original execution can finish between Runtime routing and
             # SDK admission. Reuse normal output ownership for the idle case.
+            if isinstance(request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict):
+                from jiuwenswarm.runtime.session_input import SessionInputRejectedError
+
+                # Runtime selected an active parent. Let the durable mailbox
+                # reacquire task admission rather than starting an unbound turn
+                # while that parent is starting or releasing its output owner.
+                raise SessionInputRejectedError(
+                    "target execution changed before submission; queue the message"
+                )
             if request.params.get("expected_execution_id"):
                 from jiuwenswarm.runtime.session_input import SessionInputTargetError
 
@@ -15732,13 +15961,15 @@ class JiuWenSwarmDeepAdapter:
             if rewrite_turn_text:
                 inputs["query"] = team_turn.text
             inputs = self._prepare_multimodal_image_inputs(request, inputs)
-            enable_read_image_multimodal = self._native_image_input_enabled(
+            image_input_status = self._native_image_input_status(
                 self._config_cache,
                 resolved_model,
             )
+            enable_read_image_multimodal = image_input_status == "supported"
             image_tool_fallback_notice = self._build_image_tool_fallback_notice(
                 request,
                 enable_read_image_multimodal=enable_read_image_multimodal,
+                image_input_status=image_input_status,
                 model=resolved_model,
                 vision_tool_available=(
                     getattr(self, "_vision_model_config", None) is not None
@@ -15751,6 +15982,7 @@ class JiuWenSwarmDeepAdapter:
                 vision_tool_available=(
                     getattr(self, "_vision_model_config", None) is not None
                 ),
+                image_input_status=image_input_status,
             )
             if rewrite_turn_text:
                 inputs[TEAM_USER_TURN_KEY] = team_turn.with_text(inputs["query"])
@@ -16189,14 +16421,16 @@ class JiuWenSwarmDeepAdapter:
                 request,
                 inputs,
             )
-            enable_read_image_multimodal = self._native_image_input_enabled(
+            image_input_status = self._native_image_input_status(
                 self._config_cache,
                 resolved_model,
             )
+            enable_read_image_multimodal = image_input_status == "supported"
             image_tool_fallback_notice = self._build_image_tool_fallback_notice(
                 request,
                 enable_read_image_multimodal=enable_read_image_multimodal,
                 model=resolved_model,
+                image_input_status=image_input_status,
                 vision_tool_available=(
                     getattr(self, "_vision_model_config", None) is not None
                 ),
@@ -16208,6 +16442,7 @@ class JiuWenSwarmDeepAdapter:
                 vision_tool_available=(
                     getattr(self, "_vision_model_config", None) is not None
                 ),
+                image_input_status=image_input_status,
             )
             if image_tool_fallback_notice is not None:
                 yield AgentResponseChunk(
@@ -16976,8 +17211,8 @@ class JiuWenSwarmDeepAdapter:
                 ttse_task = asyncio.create_task(
                     self._cleanup_ttse_background_tasks(rid, session_id)
                 )
-                ttse_task.add_done_callback(self._on_evolution_watcher_done)
-                self._evolution_watcher_tasks.add(ttse_task)
+                ttse_task.add_done_callback(self._on_ttse_cleanup_done)
+                self._ttse_cleanup_tasks.add(ttse_task)
             if _debug_logger is not None:
                 if run_failure is not None:
                     _debug_logger.end_run(
@@ -19275,6 +19510,14 @@ class JiuWenSwarmDeepAdapter:
             task.result()
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] evolution watcher task exception: %s", exc)
+
+    def _on_ttse_cleanup_done(self, task: asyncio.Task) -> None:
+        """Drop a finished TTSE cleanup task and log a normal failure."""
+        self._ttse_cleanup_tasks.discard(task)
+        try:
+            task.result()
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] TTSE cleanup task exception: %s", exc)
 
     @staticmethod
     def _is_approval_event(evt) -> bool:

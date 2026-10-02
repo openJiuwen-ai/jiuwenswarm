@@ -29,10 +29,6 @@ export interface Session {
   title_source?: 'auto' | 'user';
   /** Direct parent session when this conversation was created by fork. */
   forked_from?: string;
-  /** Temporary side conversations are omitted from the normal session list. */
-  ephemeral?: boolean;
-  /** Direct parent for an ephemeral side conversation. */
-  side_parent_session_id?: string;
   model?: string;
   mode: AgentMode;
   status: SessionStatus;
@@ -41,6 +37,14 @@ export interface Session {
   updated_at: string;
   is_active?: boolean;
   is_processing?: boolean;
+  queued_session_messages?: Array<{
+    message_id: string;
+    target_session_id: string;
+    source_session_id: string;
+    source_title: string;
+    content: string;
+    status: string;
+  }>;
   current_task?: string;
   tools?: string[];
   team_name?: string;

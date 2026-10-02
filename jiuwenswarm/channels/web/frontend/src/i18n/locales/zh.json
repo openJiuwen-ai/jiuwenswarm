@@ -24,6 +24,7 @@
     "processing": "处理中…",
     "retry": "重试",
     "editMenu": {
+      "actionFailed": "无法完成文本编辑操作，请重试。",
       "cut": "剪切",
       "copy": "复制",
       "paste": "粘贴",
@@ -335,6 +336,8 @@
       "toggleCapability": "切换{{name}}能力",
       "saveAndEnable": "保存并启用",
       "savedRestartRequired": "配置已保存，重启后生效。",
+      "regionalBaseHint": "密钥分区域：国际版密钥用 https://api.minimax.io/v1，国内版密钥用 https://api.minimaxi.com/v1。地址与密钥的区域不一致时，会自动尝试另一个区域。",
+      "regionalBaseHintModelark": "密钥和模型开通都分区域：国际版（BytePlus ModelArk）用 https://ark.ap-southeast.bytepluses.com/api/v3，国内版（火山引擎）用 https://ark.cn-beijing.volces.com/api/v3。模型需要先在 Ark 控制台开通，否则会提示 ModelNotOpen。",
       "deleteModelTitle": "删除模型配置",
       "deleteModelConfirm": "将删除{{name}}已保存的模型配置；如果该能力当前已启用，将同步关闭。",
       "team": "智能体团队"
@@ -399,6 +402,11 @@
       "ttsVoiceLabel": "语音播报音色",
       "qwenModelLabel": "Qwen 模型",
       "qwenVoiceLabel": "Qwen 音色",
+      "replyLanguageLabel": "回复语言",
+      "replyLanguageDescription": "控制语音与文字回复使用的语言。下次启动全双工后生效。",
+      "replyLanguageMatch": "跟随对话",
+      "replyLanguageZhCN": "简体中文",
+      "replyLanguageEn": "英语",
       "deleteTitle": "删除全双工模型配置",
       "deleteConfirm": "删除后将清除已保存的全双工模型地址、模型和密钥。"
     },
@@ -452,6 +460,10 @@
       "skill_retrieval_enabled": {
         "title": "技能自动检索",
         "description": "基于已安装技能数量，动态选择智能体的技能发现策略"
+      },
+      "ttse_enabled": {
+        "title": "本地环境事实与任务经验自动演进",
+        "description": "控制智能体对于环境事实和任务经验学习"
       },
       "free_search_ddg_enabled": { "title": "DuckDuckGo 搜索", "description": "启用 DuckDuckGo 免费搜索来源。" },
       "free_search_bing_enabled": { "title": "Bing 搜索", "description": "启用 Bing 免费搜索来源。" },
@@ -559,6 +571,10 @@
     "team": {
       "memberLanes": "成员轨迹泳道",
       "members": "成员"
+    },
+    "composer": {
+      "collapse": "收起输入框",
+      "expand": "展开输入框"
     },
     "layout": {
       "hideSessions": "收起会话栏",
@@ -789,6 +805,9 @@
     "placeholder": "需要帮你做些什么？输入“/”快速引用技能及指令",
     "placeholderCompacting": "压缩进行中，暂时无法发送消息",
     "modelNotConfigured": "还没有配置可用的模型。请在「设置 → 模型」里配置一个模型，或登录获取限时免费模型。",
+    "sessionArchived": "该会话已归档，无法继续对话。请恢复会话或新建会话。",
+    "sessionDeleted": "该会话已被删除，无法继续对话。",
+    "sessionOperationInProgress": "该会话正在执行归档或删除操作，请稍后再试。",
     "placeholderAwaitingApproval": "请先处理上方待确认项",
     "placeholderProcessing": "处理中，输入新指令可中断...",
     "placeholderProcessingQueue": "处理中，输入新指令将加入等待队列...",
@@ -905,6 +924,7 @@
     "agentGroupNoMatches": "没有找到匹配的专家团",
     "agentGroupRemove": "移除专家团",
     "agentGroupSkillsLocked": "已选择专家团，不能额外添加专家团技能",
+    "teamSkillsGroupLocked": "已选择团队技能，不能额外选择专家团",
     "agentGroupBinding": "当前对话已绑定专家团，暂不可更换",
     "agentGroupFirstBuildOnly": "专家团只能在首次创建 Team 时选择",
     "agentOnlyInSingleAgentMode": "专家仅支持在单 Agent 模式下选择",
@@ -957,16 +977,6 @@
     "historyLoadMore": "加载更多历史消息",
     "continuedFromChat": "从原会话继续",
     "openSourceChat": "打开原会话",
-    "sideConversation": {
-      "title": "侧会话",
-      "from": "来自 {{title}}",
-      "empty": "在不离开主会话的情况下提问",
-      "placeholder": "发送消息到侧会话",
-      "send": "发送消息",
-      "working": "处理中…",
-      "sendFailed": "消息发送失败，请重试。",
-      "close": "关闭侧会话"
-    },
     "config": {
       "mode": {
         "cluster": "集群模式",
@@ -1081,8 +1091,10 @@
     "toggleLabel": "追求目标",
     "toolbarUnavailable": "当前已有进行中的目标，请先完成或清除",
     "toolbarUnavailablePlan": "计划模式进行中，暂不可选择目标",
+    "toolbarUnavailableProcessing": "对话进行中，暂不可选择目标",
     "overwriteConfirm": "当前目标“{{currentObjective}}”尚未完成。是否替换为“{{requestedObjective}}”？",
     "closeTag": "取消目标",
+    "closeTagDisabled": "会话进行中，无法关闭目标",
     "badge": "目标",
     "status": {
       "active": "进行中",
@@ -1713,6 +1725,7 @@
       "updateFailed": "更新任务失败",
       "updateFailedWithReason": "更新任务失败：{{reason}}",
       "deleteFailed": "删除任务失败",
+      "deleteSessionBusy": "该定时任务关联的会话正在运行，无法删除。请先手动停止会话，再重试删除。",
       "toggleFailed": "更新任务状态失败",
       "previewFailed": "预览触发时间失败",
       "runNowFailed": "立即执行失败",
@@ -1797,6 +1810,7 @@
       "enable": "采集个人上下文内容",
       "enableHint": "支持自动周期性采集上下文内容并自动构建图谱。",
       "strategyProfile": "上下文采集模式",
+      "strategyLockedByFetch": "采集任务正在运行或停止中，结束后可切换模式。",
       "strategy_agent": "智能体处理",
       "strategy_balanced": "大模型处理",
       "strategy_rules": "规则处理",
@@ -1807,7 +1821,9 @@
       "modelHint": "选择已在 JiuwenSwarm 中配置的模型。",
       "collectionStopPending": "采集任务运行中，稍后生效",
       "collectionStoppingRetry": "采集任务仍在运行或停止中，请稍后再试",
-      "operationTimeout": "请求超时，请稍后重试"
+      "operationTimeout": "请求超时，请稍后重试",
+      "collectionTimeoutReconciling": "请求超时，正在核对实际采集状态",
+      "collectionReconciling": "请求结果尚未确认，正在核对实际采集状态"
     },
     "authorization": {
       "title": "内容采集授权",
@@ -1907,6 +1923,13 @@
       "colActions": "操作",
       "stateCollecting": "正在采集",
       "stateCompleted": "采集完成",
+      "stateCancelled": "已取消",
+      "createdNodes": "本次新增 {{nodes}} 个节点（{{files}} 个文件）",
+      "updatedNodes": "已更新 {{count}} 个节点",
+      "noNewContent": "无新增内容",
+      "collectionDisabledHint": "请先在上下文设置中开启总开关和内容采集，再立即采集。",
+      "collectionStoppingHint": "正在停止采集，请等待停止完成后重试。",
+      "statePartial": "部分成功：{{completed}}/{{total}}，{{failed}} 项失败",
       "stateFailed": "采集失败",
       "stateWaiting": "等待采集",
       "stateStopped": "已停止",
@@ -1932,10 +1955,10 @@
       "collectAll": "全部开始采集",
       "statSources": "来源",
       "statKnowledge": "上下文节点数",
-      "statCollecting": "正在采集",
+      "statCollecting": "进行中的采集任务",
       "knowledgeSource": "上下文来源",
       "lastRun": "上次采集",
-      "fetchTaskRunning": "当前有采集任务正在运行，请等待完成后再修改配置"
+      "fetchTaskRunning": "当前有采集任务正在运行或停止中，请等待结束后再修改配置"
     },
     "addContent": {
       "title": "添加内容",
@@ -1965,7 +1988,8 @@
       "maxItemsLabel": "单次最多采集条数",
       "maxItemsPlaceholder": "留空使用默认",
       "advancedConfig": "高级配置",
-      "maxItemsRangeError": "单次采集条数须在 1~40 之间，或留空使用默认",
+      "maxItemsRangeError": "单次采集条数须为 1~40 之间的整数，或留空使用默认",
+      "frequencyRangeError": "采集频率须为 1~{{max}} 之间的整数",
       "previousStep": "上一步",
       "submit": "添加",
       "save": "保存",
@@ -1977,7 +2001,8 @@
       "localFiles": {
         "rootDirLabel": "本地文件夹路径",
         "rootDirPlaceholder": "D:/my-notes",
-        "rootDirHint": "须为绝对路径"
+        "rootDirHint": "须为绝对路径",
+        "rootDirRequired": "请选择本地文件夹路径"
       },
       "zhihu": {
         "columnUrlLabel": "知乎专栏地址",
@@ -1997,7 +2022,7 @@
         "bookmarksPathLabel": "书签文件路径",
         "bookmarksPathPlaceholder": "留空使用 Edge 默认 Bookmarks 路径",
         "foldersLabel": "需采集的书签文件夹",
-        "foldersPlaceholder": "如 收藏栏/技术，多个用逗号分隔",
+        "foldersPlaceholder": "如 收藏夹栏/技术，多个用逗号分隔",
         "foldersHint": "可选，留空采集全部"
       },
       "github": {
@@ -2901,6 +2926,7 @@
       "webUploadPlaceholder": "点击上传文件",
       "uploadInvalidType": "仅支持 .zip 和 .tar 文件",
       "uploadDirectoryUnsupported": "不支持直接拖拽文件夹，请先将文件夹压缩为 .zip 或 .tar 文件后再上传",
+      "uploadVirtualFileUnsupported": "不支持直接从 WinRAR 等压缩软件中拖入文件，请先解压或复制到本地磁盘后再上传",
       "uploadPickerUnsupported": "当前环境暂不支持选择本地文件",
       "uploadPickerFailed": "打开文件选择器失败，请重试",
       "removeUpload": "移除已选文件",
@@ -3028,9 +3054,10 @@
         "uploadInvalidType": "仅支持 .zip、.tar 和 .tar.gz 专家团包",
         "errors": {
           "nameRequired": "请输入专家团名称",
-          "descriptionRequired": "请输入专家团介绍",
+          "descriptionRequired": "请输入专家团能力介绍",
           "personaRequired": "请输入专家团介绍",
-          "leaderRequired": "请选择负责人"
+          "leaderRequired": "请选择负责人",
+          "membersRequired": "请至少选择一名成员"
         }
       },
       "picker": {
@@ -3060,6 +3087,9 @@
   "chatUi": {
     "copyMessage": "复制消息",
     "copied": "已复制",
+    "usageInput": "输入",
+    "usageOutput": "输出",
+    "usageCacheHit": "缓存命中",
     "stopReading": "停止朗读",
     "readMessage": "朗读消息",
     "forkFromMessage": "从此消息新建会话分支",
@@ -3071,6 +3101,8 @@
     "paused": "已暂停",
     "waitingTasks": "等待任务",
     "messageQueue": "消息队列",
+    "crossSessionMessageQueue": "跨会话消息",
+    "localMessageQueue": "本地消息",
     "turnRunning": "任务执行",
     "turnElapsed": "任务用时",
     "workCompleted": "已完成 {{duration}}",
@@ -3513,11 +3545,13 @@
       "renamePlaceholder": "输入新名称",
       "archiveConversation": "归档",
       "conversationArchived": "已归档任务会话",
+      "conversationDeleted": "对话已删除",
       "archiveView": "查看",
       "archiveUndo": "撤销",
       "removeProject": "移除项目",
       "removeProjectConfirm": "移除",
       "removeProjectDescription": "从列表中移除“<name>{{projectName}}</name>”并隐藏其对话；已归档的对话仍可在归档页查看。其下的定时任务将停止并保留（恢复项目后默认保持停止，需手动重新启用），工作目录不受影响。可撤销，或通过同一目录重新创建项目恢复。",
+      "projectRemoved": "项目已移除",
       "projectRemovedSummary": "项目已移除，其定时任务已停止",
       "archiveSessions": "归档全部会话",
       "archiveConfirmTitle": "归档（{{count}}）个聊天",
@@ -3526,6 +3560,8 @@
       "archiveConfirmAll": "全部归档",
       "sessionsArchived": "已归档 {{count}} 个会话",
       "archiveBatchFailedRunning": "有 {{count}} 个聊天正在运行，无法归档",
+      "archiveBatchFailedFinishing": "有 {{count}} 个聊天的 swarm flow 已结束，回合收尾中，请稍后重试",
+      "archiveBatchFailedSubagentFinishing": "有 {{count}} 个聊天的子任务仍在收尾，会话稍后自动结束，请稍后重试",
       "archiveBatchFailed": "有 {{count}} 个聊天归档失败",
       "defaultProjectName": "默认项目",
       "absolutePathError": "请输入绝对路径，例如 /Users/name/work/project",
@@ -3535,12 +3571,17 @@
         "pathMissing": "项目目录不存在，请选择已存在的目录",
         "projectUnavailable": "项目不可用，请刷新后重试",
         "archiveSessionBusy": "对话正在运行，无法归档。请先手动停止，再重试归档。",
+        "archiveSessionFinishing": "swarm flow 已结束，会话回合收尾中，请稍后重试归档。",
+        "archiveSessionSubagentFinishing": "子任务仍在收尾，会话稍后自动结束，请稍后重试归档。",
         "deleteSessionBusy": "对话正在运行，无法删除。请先手动停止，再重试删除。",
+        "deleteSessionFinishing": "swarm flow 已结束，会话回合收尾中，请稍后重试删除。",
+        "deleteSessionSubagentFinishing": "子任务仍在收尾，会话稍后自动结束，请稍后重试删除。",
         "archiveForbidden": "该任务不支持归档",
         "archiveNotFound": "资源不存在或已发生变化，请刷新后重试",
         "archiveFailed": "归档操作失败，请稍后重试",
         "projectNameConflict": "已有同名项目占用了该名称，无法恢复项目。请先重命名同名项目。",
-        "cronStopFailed": "该项目的定时任务未能全部停止，项目保持可见未移除。请稍后重试。"
+        "cronStopFailed": "该项目的定时任务未能全部停止，项目保持可见未移除。请稍后重试。",
+        "removeSessionBusy": "项目下有对话正在运行，无法移除。请先停止相关对话，再重试移除。"
       },
       "cancel": "取消",
       "confirm": "确定"
@@ -3550,7 +3591,9 @@
     },
     "deleteDialog": {
       "title": "删除",
-      "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。"
+      "attention": "注意",
+      "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。",
+      "permanentConfirm": "确定要永久删除该任务吗？"
     },
     "notFound": {
       "title": "对话不存在或已删除",
@@ -3653,6 +3696,9 @@
     "customOption": "自定义",
     "customPlaceholder": "没有合适的选项？输入您的答案...",
     "skippedSummary": "已跳过"
+  },
+  "skillPackagePrompt": {
+    "creating": "正在创建…"
   },
   "qaSummary": {
     "title": "问题澄清"
@@ -3787,7 +3833,7 @@
       "message": "删除后该自定义连接器的配置、凭证与技能将被彻底清除，不可恢复；如果只是想以后还能重连，请用解绑而不是删除。"
     },
     "confirmUninstallPlugin": {
-      "message": "卸载后该插件将变为不可用状态，可以重新安装。"
+      "message": "卸载后将删除该插件在本地的相关文件，请确认是否继续。"
     },
     "empty": {
       "myMcp": "暂无我的连接器",
@@ -3876,19 +3922,6 @@
     }
   },
   "auth": {
-    "title": "登录 JiuwenSwarm",
-    "subtitle": "输入你的账号与密码以继续",
-    "username": "账号",
-    "usernamePlaceholder": "输入账号",
-    "password": "密码",
-    "passwordPlaceholder": "输入密码",
-    "login": "登录",
-    "loggingIn": "登录中…",
-    "invalidCredentials": "账号或密码错误",
-    "loginFailed": "登录失败,请稍后重试",
-    "authRequired": "需要登录后才能访问",
-    "secureHint": "登录后将自动保持登录状态",
-    "logout": "登出",
     "huawei": {
       "title": "登录华为账号",
       "subtitle": "登录后即可使用账号提供的模型，无需配置 API Key。",
@@ -4200,7 +4233,6 @@
       "statusFailed": "任务失败",
       "statusPaused": "已暂停",
       "statusTerminated": "已终止",
-      "statusInstalled": "已安装",
       "actionConfig": "配置信息",
       "actionDelete": "删除",
       "actionPause": "暂停任务",
@@ -4309,6 +4341,26 @@
     "budgetPanelHint": "设置本次会话的 Token 上限。",
     "budgetPlaceholder": "输入数字",
     "budgetActualHint": "本次配置上限：{{count}} tokens",
-    "workflowList": "工作流列表"
+    "workflowList": "工作流列表",
+    "verifyReviewing": "评审中…",
+    "verifyReviewingShort": "评审中",
+    "verifyPass": "✓ 通过",
+    "verifyFail": "✗ 不通过",
+    "verifyUndecided": "? 未裁决",
+    "verifyThreshold": "阈值 {{count}}",
+    "verifyUndecidedHint": "有 reviewer 未投票（undecided），建议重试",
+    "verifyVotesMissing": "{{count}} 票缺失 · 建议重试",
+    "verifyVoteUndecided": "? 未投",
+    "verifyScore": "{{score}} 分",
+    "verifyRound": "第{{count}}轮 · {{verdict}}",
+    "verifyGroupTitle": "verify 组 · {{label}}",
+    "verifyReviewersPending": "{{names}} 评审中…",
+    "sectionInput": "输入",
+    "sectionOutput": "输出",
+    "sectionHumanPrompt": "人工提问",
+    "sectionHumanReply": "人工回复",
+    "sectionError": "错误",
+    "charUnit": "字符",
+    "clickToViewDetail": "点击查看详情"
   }
 }

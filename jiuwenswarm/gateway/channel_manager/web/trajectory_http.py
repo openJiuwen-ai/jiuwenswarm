@@ -4,16 +4,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import io
+import json
 import logging
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from datetime import datetime, timezone
+import tempfile
+import zipfile
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import aclosing
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any
 from urllib.parse import SplitResult, urlsplit
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from jiuwenswarm.common.mode_matrix import (
     canonicalize_mode_text,
@@ -38,9 +43,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 TRAJECTORY_API_PREFIX = "/api/trajectory"
-# Archive envelope version. Version 2 is the store's schema-v4 contract; the
-# viewer imports only content-addressed archives of this version.
-TRAJECTORY_ARCHIVE_VERSION = 2
+# The one entry of an archive zip: the store's archive lines, one JSON object
+# per line, in the order the store yields them.
+TRAJECTORY_ARCHIVE_ENTRY_NAME = "trajectory.jsonl"
+# An archive this small stays in memory; a larger one moves to a temporary file.
+_ARCHIVE_SPOOL_MAX_BYTES = 16 * 1024 * 1024
+# Encoded lines are handed to the compressor in chunks of about this size, off
+# the event loop, so deflating a large session does not stall other requests.
+_ARCHIVE_WRITE_CHUNK_BYTES = 1024 * 1024
+_ARCHIVE_READ_CHUNK_BYTES = 64 * 1024
 _TRACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _SPAN_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 _NO_STORE_HEADERS = {"Cache-Control": "no-store"}
@@ -152,34 +163,37 @@ class TrajectoryHttpService:
             }
         )
 
-    async def export_archive(
-        self,
-        session_id: str,
-        *,
-        addressed: bool = False,
-    ) -> Response:
-        """Export a stable archive of every current record in one session.
+    async def export_archive(self, session_id: str) -> Response:
+        """Export one session's trajectory as a zipped, content-addressed JSONL archive.
+
+        The archive is written completely before the response starts, so a
+        failed query still answers with an error rather than a truncated
+        download. It is spooled to a temporary file, which keeps a large
+        session off the heap and leaves the zip seekable: every local header
+        then states its sizes, and a browser can inflate the entry as a
+        stream.
 
         Args:
             session_id: Session to export.
-            addressed: Export references plus the dictionaries that resolve
-                them, rather than putting every restated attribute back. This
-                is the self-contained, compact form the trajectory viewer
-                imports. Plain OTLP remains the default for other tools; it
-                is an interoperability export, not an importable archive.
+
+        Returns:
+            An ``application/zip`` download holding one ``trajectory.jsonl``
+            entry, or a JSON error response.
         """
         settings = self.settings
         error = self._validate_access(session_id, settings)
         if error is not None:
             return error
+        spool = tempfile.SpooledTemporaryFile(max_size=_ARCHIVE_SPOOL_MAX_BYTES)
         try:
-            records, store_epoch, revision, resolved = (
-                await self._reader_for(settings).get_session_archive_records(
-                    session_id,
-                    rehydrate=not addressed,
-                )
+            await _write_archive_zip(
+                self._reader_for(settings).iter_session_archive_lines(session_id),
+                spool,
             )
+            size = spool.seek(0, io.SEEK_END)
+            spool.seek(0)
         except Exception:
+            spool.close()
             logger.exception(
                 "Trajectory archive query failed: session_id=%s",
                 session_id,
@@ -189,30 +203,18 @@ class TrajectoryHttpService:
                 "TRAJECTORY_QUERY_FAILED",
                 500,
             )
-        response = _json_response(
-            {
-                "format": "openjiuwen.trajectory.archive",
-                "archive_version": TRAJECTORY_ARCHIVE_VERSION,
-                "session_id": session_id,
-                "exported_at": datetime.now(timezone.utc).isoformat().replace(
-                    "+00:00",
-                    "Z",
+        return StreamingResponse(
+            _iter_spooled_chunks(spool),
+            status_code=200,
+            media_type="application/zip",
+            headers={
+                **_NO_STORE_HEADERS,
+                "Content-Length": str(size),
+                "Content-Disposition": (
+                    f'attachment; filename="trajectory-{session_id}.trajectory.zip"'
                 ),
-                "store_epoch": store_epoch,
-                "revision": str(revision),
-                "records": records,
-                **({} if not addressed else {
-                    "content_addressed": True,
-                    "sequences": resolved.get("sequences", {}),
-                    "blobs": resolved.get("blobs", {}),
-                }),
-            }
+            },
         )
-        suffix = ".addressed" if addressed else ""
-        response.headers["Content-Disposition"] = (
-            f'attachment; filename="trajectory-{session_id}{suffix}.archive.json"'
-        )
-        return response
 
     async def get_session_usage(self, session_id: str) -> Response:
         """Return session-complete request usage partitioned by execution subject."""
@@ -240,6 +242,38 @@ class TrajectoryHttpService:
             "store_epoch": store_epoch,
             "scope": "session",
             "items": items,
+        })
+
+    async def get_checkpoints(self, session_id: str) -> Response:
+        """Return what retention left for one session's removed turns, with its content."""
+        settings = self.settings
+        error = self._validate_access(session_id, settings)
+        if error is not None:
+            return error
+        try:
+            result = await self._reader_for(settings).get_retention_checkpoints(session_id)
+        except Exception:
+            logger.exception(
+                "Trajectory checkpoint query failed: session_id=%s",
+                session_id,
+            )
+            return _error_response(
+                "trajectory query failed",
+                "TRAJECTORY_QUERY_FAILED",
+                500,
+            )
+        if result is None:
+            # No database is a session retention never touched: nothing to seed.
+            result = {
+                "store_epoch": "absent",
+                "checkpoints": [],
+                "sequences": {},
+                "blobs": {},
+            }
+        return _json_response({
+            "schema_version": 1,
+            "session_id": session_id,
+            **result,
         })
 
     async def get_subject(
@@ -666,19 +700,25 @@ def attach_trajectory_routes(
     async def export_trajectory_archive(
         session_id: str,
         request: Request,
-        archive_format: str = Query(default="otlp", alias="format"),
     ) -> Response:
-        """Export all current trajectory records for one session."""
+        """Export all current trajectory records for one session as a zip archive."""
         request.state.trajectory_route_handled = True
         origin_error = _validate_http_origin(request)
         if origin_error is not None:
             return origin_error
-        if archive_format not in ("otlp", "addressed"):
-            return _error_response("format must be otlp or addressed", "BAD_REQUEST", 400)
-        return await service.export_archive(
-            session_id,
-            addressed=archive_format == "addressed",
-        )
+        return await service.export_archive(session_id)
+
+    @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/checkpoints")
+    async def get_trajectory_checkpoints(
+        session_id: str,
+        request: Request,
+    ) -> Response:
+        """Read the retention checkpoints a session's views seed themselves from."""
+        request.state.trajectory_route_handled = True
+        origin_error = _validate_http_origin(request)
+        if origin_error is not None:
+            return origin_error
+        return await service.get_checkpoints(session_id)
 
     @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/usage")
     async def get_trajectory_session_usage(
@@ -866,6 +906,47 @@ def _validate_http_origin(request: Request) -> Response | None:
     return _error_response("origin not allowed", "FORBIDDEN_ORIGIN", 403)
 
 
+async def _write_archive_zip(
+    lines: AsyncGenerator[dict[str, Any], None],
+    target: IO[bytes],
+) -> None:
+    """Deflate archive lines into a one-entry zip written to *target*.
+
+    Args:
+        lines: Archive lines, written one JSON object per line. The generator
+            is closed on return or failure, which releases its read snapshot.
+        target: Seekable binary file receiving the zip.
+    """
+    async with aclosing(lines) as stream:
+        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            with archive.open(TRAJECTORY_ARCHIVE_ENTRY_NAME, "w", force_zip64=True) as entry:
+                pending = bytearray()
+                async for line in stream:
+                    pending += json.dumps(
+                        line,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    pending += b"\n"
+                    if len(pending) >= _ARCHIVE_WRITE_CHUNK_BYTES:
+                        await asyncio.to_thread(entry.write, bytes(pending))
+                        pending.clear()
+                if pending:
+                    await asyncio.to_thread(entry.write, bytes(pending))
+
+
+def _iter_spooled_chunks(spool: IO[bytes]) -> Iterator[bytes]:
+    """Read a spooled archive in chunks, closing it once the body is done."""
+    try:
+        while True:
+            chunk = spool.read(_ARCHIVE_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        spool.close()
+
+
 def _json_response(content: dict[str, Any], status_code: int = 200) -> JSONResponse:
     return JSONResponse(
         content=content,
@@ -883,6 +964,7 @@ def _error_response(error: str, code: str, status_code: int) -> JSONResponse:
 
 __all__ = [
     "TRAJECTORY_API_PREFIX",
+    "TRAJECTORY_ARCHIVE_ENTRY_NAME",
     "TrajectoryHttpService",
     "attach_trajectory_routes",
 ]

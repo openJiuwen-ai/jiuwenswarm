@@ -235,6 +235,23 @@ class BaseWebChannel(BaseChannel):
     def set_handshake_auth(self, callback: Callable[..., Any]) -> None:
         self._handshake_auth = callback
 
+    async def authenticate_handshake(
+        self,
+        *,
+        path: str,
+        headers: Any,
+        remote: str = "",
+        channel: str = "",
+    ) -> Any:
+        """Return the handshake result so callers can retain its user identity."""
+        hook = self._handshake_auth
+        if hook is None:
+            return None
+        result = hook(path=path, headers=headers, remote=remote, channel=channel)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
     async def handshake_auth_denied(
         self,
         *,
@@ -244,12 +261,9 @@ class BaseWebChannel(BaseChannel):
         channel: str = "",
     ) -> bool:
         """Return True when handshake auth is set and rejected the upgrade."""
-        hook = self._handshake_auth
-        if hook is None:
-            return False
-        result = hook(path=path, headers=headers, remote=remote, channel=channel)
-        if inspect.isawaitable(result):
-            result = await result
+        result = await self.authenticate_handshake(
+            path=path, headers=headers, remote=remote, channel=channel
+        )
         return result is not None and not bool(getattr(result, "success", True))
 
     @staticmethod
@@ -268,4 +282,3 @@ class BaseWebChannel(BaseChannel):
             return Response(status.value, status.phrase, Headers(headers), _UNAUTHORIZED_BODY)
 
         return status, headers, _UNAUTHORIZED_BODY
-

@@ -281,24 +281,53 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
     await rail.before_model_call(ctx)
 
     prompt = builder.build()
+    normalized_prompt = " ".join(prompt.split())
     assert "## Skill Orchestration Contract" in prompt
     assert "`symphony_compose_graph`" in prompt
-    assert "exact identifiers or names" in prompt
-    assert "when ANY of these conditions is true" in prompt
-    assert "two or more specialized capabilities" in prompt
-    assert "identified, inspected, selected, invoked, or recommended" in prompt
-    assert "Calling `skill_branch_explore` creates a mandatory orchestration follow-up" in prompt
-    assert "never pass every Skill returned by exploration" in prompt
-    assert "still call `symphony_compose_graph`" in prompt
-    assert "`planned_graph.graph.metadata.status`" in prompt
-    assert "`planned_graph.graph.nodes`" in prompt
-    assert "`planned_graph.graph.edges`" in prompt
-    assert "Do not present a planning" in prompt
+    assert "multiple selected Skills" in normalized_prompt
+    assert "an ordered or dependent workflow" in normalized_prompt
+    assert "selected exact Skill IDs are sufficient evidence" in normalized_prompt
+    assert (
+        "Calling `skill_index` alone is also not a compose trigger"
+        in normalized_prompt
+    )
+    assert "never pass all retrieval results" in normalized_prompt
+    assert "Do not call `symphony_compose_graph`" in prompt
+    assert "skill_branch_explore" not in prompt
+    assert "do not call `skill_tool`" in prompt
+    assert "SKILL.md" in prompt
+    assert "`planned_graph` status, nodes, and edges" in prompt
+    assert "do not present it" in prompt
     assert "search_skill" not in prompt
     assert "install_skill" not in prompt
     assert "returned\n`content` directly" not in prompt
-    assert "none of the three trigger conditions is true" in prompt
     assert "Symphony" not in prompt
+
+
+def test_symphony_orchestration_guidance_has_precise_compose_boundaries():
+    prompt = SymphonyOrchestrationRail._build_orchestration_guidance()
+    normalized_prompt = " ".join(prompt.split())
+
+    for positive in (
+        "explicitly requests combining or orchestrating multiple Skills",
+        "task needs multiple selected Skills",
+        "ordered or dependent workflow",
+        "Two or more selected exact Skill IDs are sufficient evidence",
+    ):
+        assert positive in normalized_prompt
+
+    assert (
+        "Do not call `symphony_compose_graph` for single Skill use, inspection, "
+        "or question, a simple single-Skill command, pure search, listing, "
+        "comparison, or recommendation, or when the user merely mentions a "
+        "Skill or 技能."
+    ) in normalized_prompt
+
+    assert "`skill_index`" in prompt
+    assert "skill_branch_explore" not in prompt
+    assert "only the selected exact Skill IDs" in prompt
+    assert "do not call `skill_tool`" in prompt
+    assert "read any SKILL.md" in prompt
 
 
 @pytest.mark.asyncio

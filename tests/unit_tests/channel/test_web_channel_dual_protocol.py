@@ -181,6 +181,91 @@ async def test_dual_protocol_ws_git_path_closes_without_registry() -> None:
 
 
 @pytest.mark.asyncio
+async def test_git_websocket_query_rejects_oversized_session_id_before_registration() -> None:
+    """/ws/git must reject an oversized query session_id like /ws does."""
+    channel = _make_channel()
+    oversized = "s" * 10_240
+    ws = _QueueWebSocket(f"/ws/git?user_id=alice&session_id={oversized}", [])
+
+    await channel.handle_connection(ws, path=ws.path)
+
+    assert ws.closed is True
+    assert ws.close_code == 1008
+    assert ws.close_reason == "session_id exceeds maximum length 80"
+    assert channel.clients == set()
+
+    # Rejection is connection-local; the channel remains responsive.
+    await _ping_roundtrip(channel, "/ws")
+
+
+@pytest.mark.asyncio
+async def test_websocket_query_rejects_oversized_session_id_before_registration() -> None:
+    channel = _make_channel()
+    oversized = "s" * 10_240
+    ws = _QueueWebSocket(f"/ws?user_id=alice&session_id={oversized}", [])
+
+    await channel.handle_connection(ws, path=ws.path)
+
+    assert ws.closed is True
+    assert ws.close_code == 1008
+    assert ws.close_reason == "session_id exceeds maximum length 80"
+    assert channel.clients == set()
+
+    # Rejection is connection-local; the channel remains responsive.
+    await _ping_roundtrip(channel, "/ws")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("params", "expected_error"),
+    [
+        (
+            {"session_id": "s" * 10_240, "run_id": "run-1"},
+            "session_id exceeds maximum length 80",
+        ),
+        (
+            {"session_id": "sess-1", "run_id": "r" * 10_240},
+            "run_id exceeds maximum length 256",
+        ),
+    ],
+)
+async def test_swarmflow_control_rejects_oversized_ids_before_forwarding(
+    params: dict[str, str], expected_error: str,
+) -> None:
+    channel = _make_channel()
+    forwarded: list[Any] = []
+    channel.on_message(lambda message: forwarded.append(message))
+    req = json.dumps(
+        {
+            "type": "req",
+            "id": "oversized-control",
+            "method": "swarmflow.pause",
+            "params": params,
+        }
+    )
+    ws = _QueueWebSocket("/ws?user_id=alice&session_id=sess-1", [req])
+
+    await channel.handle_connection(ws, path=ws.path)
+    await asyncio.sleep(0)
+
+    responses = [
+        frame for frame in ws.sent
+        if frame.get("type") == "res" and frame.get("id") == "oversized-control"
+    ]
+    assert responses == [
+        {
+            "type": "res",
+            "id": "oversized-control",
+            "ok": False,
+            "payload": {},
+            "error": expected_error,
+            "code": "BAD_REQUEST",
+        }
+    ]
+    assert forwarded == []
+
+
+@pytest.mark.asyncio
 async def test_origin_rejected_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JIUWENSWARM_ENABLE_ORIGIN_CHECK", "1")
     monkeypatch.setenv("JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS", "allowed.example")
@@ -229,3 +314,33 @@ async def test_serve_ws_does_not_accept_when_unauthorized() -> None:
     websocket.accept.assert_not_called()
     websocket.send_denial_response.assert_awaited_once()
     assert websocket.send_denial_response.await_args.args[0].status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_serve_ws_uses_authenticated_identity_over_query() -> None:
+    channel = _make_channel()
+    calls = []
+
+    async def authenticate(**_kwargs: Any) -> AuthResult:
+        calls.append("auth")
+        return AuthResult(success=True, user_id="owner")
+
+    async def handle_connection(adapter, *, path):
+        calls.append("connect")
+        assert path == "/ws?user_id=other"
+        assert channel._resolve_connection_user_id({"user_id": "other"}, adapter) == "owner"
+
+    channel.set_handshake_auth(authenticate)
+    channel.handle_connection = handle_connection
+    websocket = MagicMock()
+    websocket.headers = {}
+    websocket.url.path = "/ws"
+    websocket.url.query = "user_id=other"
+    websocket.client = MagicMock(host="127.0.0.1", port=9)
+    websocket.scope = {}
+    websocket.accept = AsyncMock()
+
+    await _serve_channel_websocket(channel, websocket)
+
+    assert calls == ["auth", "connect"]
+    websocket.accept.assert_awaited_once()

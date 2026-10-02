@@ -21,6 +21,7 @@ import uuid
 import webbrowser
 import weakref
 from contextlib import contextmanager
+from concurrent.futures import Future
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -278,9 +279,6 @@ ATTACHMENT_DIALOG_EXTENSIONS: tuple[str, ...] = (
     ".flv",
 )
 UPDATE_CLEANUP_PATTERNS = (
-    "*.exe",
-    "*.dmg",
-    "*.tar.gz",
     "*.exe.part",
     "*.dmg.part",
     "*.tar.gz.part",
@@ -712,6 +710,9 @@ def _launch_windows_installer_helper(
 class _WindowApi:
     def __init__(self, runtime: "DesktopRuntime") -> None:
         self._runtime = runtime
+        if sys.platform == "darwin":
+            # Expose only where the host implements the native paste command.
+            self.paste_clipboard = runtime.paste_clipboard
 
     def minimize_window(self) -> bool:
         return self._runtime.minimize_window()
@@ -1571,6 +1572,28 @@ class DesktopRuntime:
         threading.Thread(target=_delayed_destroy, daemon=True).start()
         return True
 
+    def paste_clipboard(self) -> None:
+        """Send the same Cocoa paste action as Cmd+V, on the UI thread."""
+        from PyObjCTools import AppHelper  # type: ignore[import-not-found]
+
+        result: Future[None] = Future()
+
+        def _paste() -> None:
+            try:
+                if self.window is None or self.window.native is None:
+                    raise RuntimeError("Desktop window is unavailable")
+                responder = self.window.native.firstResponder()
+                if responder is None or not responder.respondsToSelector_("paste:"):
+                    raise RuntimeError("Focused view does not support paste")
+                responder.paste_(None)
+                result.set_result(None)
+            except Exception as exc:
+                result.set_exception(exc)
+
+        # Exposed pywebview API methods run on a worker thread.
+        AppHelper.callAfter(_paste)
+        result.result()
+
     def _configure_macos_window_lifecycle(self) -> None:
         """Keep the macOS app alive when its main window is closed."""
         if sys.platform != "darwin" or self.window is None:
@@ -1681,7 +1704,6 @@ class DesktopRuntime:
 
             dialog = WinForms.Form()
             dialog.Text = f"关闭 {DISPLAY_NAME}"
-            dialog.ClientSize = Size(430, 238)
             dialog.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
             dialog.StartPosition = WinForms.FormStartPosition.CenterParent
             dialog.MaximizeBox = False
@@ -1694,37 +1716,39 @@ class DesktopRuntime:
             message = WinForms.Label()
             message.Text = "关闭窗口后，您希望隐藏到系统托盘，还是退出应用？"
             message.AutoSize = False
+            message.Size = Size(382, message.GetPreferredSize(Size(382, 0)).Height)
             message.Location = Point(24, 24)
-            message.Size = Size(382, 24)
+            first_option_top = max(62, message.Bottom + 14)
 
             hide_option = WinForms.RadioButton()
             hide_option.Text = "最小化到托盘"
             hide_option.Checked = True
             hide_option.AutoSize = True
-            hide_option.Location = Point(28, 62)
+            hide_option.Location = Point(28, first_option_top)
 
             quit_option = WinForms.RadioButton()
             quit_option.Text = "退出应用"
             quit_option.AutoSize = True
-            quit_option.Location = Point(28, 94)
+            quit_option.Location = Point(28, first_option_top + 32)
 
             remember = WinForms.CheckBox()
             remember.Text = "记住我的选择"
             remember.Checked = False
             remember.AutoSize = True
-            remember.Location = Point(24, 138)
+            remember.Location = Point(24, first_option_top + 76)
 
             confirm_button = WinForms.Button()
             confirm_button.Text = "确认"
             confirm_button.DialogResult = WinForms.DialogResult.OK
-            confirm_button.Location = Point(238, 186)
+            confirm_button.Location = Point(238, first_option_top + 124)
             confirm_button.Size = Size(80, 32)
 
             cancel_button = WinForms.Button()
             cancel_button.Text = "取消"
             cancel_button.DialogResult = WinForms.DialogResult.Cancel
-            cancel_button.Location = Point(326, 186)
+            cancel_button.Location = Point(326, first_option_top + 124)
             cancel_button.Size = Size(80, 32)
+            dialog.ClientSize = Size(430, cancel_button.Bottom + 20)
 
             dialog.Controls.Add(message)
             dialog.Controls.Add(hide_option)
@@ -2350,6 +2374,26 @@ class DesktopRuntime:
       return false;
     }
   }
+  // WinRAR and similar archive/mail clients expose dragged entries as Shell
+  // virtual files rather than real filesystem entries. Passing those objects to
+  // pywebview's document drop handler makes WebView2 call
+  // postMessageWithAdditionalObjects and can crash the renderer. Reject them
+  // before the pywebview listener serializes the DataTransfer.
+  function hasVirtualFiles(dt) {
+    if (!dt || !dt.items) return false;
+    try {
+      var fileItems = Array.from(dt.items).filter(function (item) {
+        return item && item.kind === 'file';
+      });
+      if (!fileItems.length) return false;
+      return fileItems.some(function (item) {
+        if (typeof item.webkitGetAsEntry !== 'function') return false;
+        return item.webkitGetAsEntry() === null;
+      });
+    } catch (err) {
+      return false;
+    }
+  }
   // Distinguish an app-internal HTML5 drag (queue reorder, etc.) from an OS file
   // drag. 'Files' alone is NOT reliable: dragging an <img> element makes Chromium
   // inject a spurious 'Files'/'text/uri-list' entry. Chromium tags every drag
@@ -2393,6 +2437,12 @@ class DesktopRuntime:
     window.addEventListener('drop', function (e) {
       if (!hasFiles(e.dataTransfer)) return;
       e.preventDefault();
+      if (hasVirtualFiles(e.dataTransfer)) {
+        e.stopImmediatePropagation();
+        window.dispatchEvent(new CustomEvent('jiuwen-desktop-virtual-file-drop-rejected'));
+        endDrag();
+        return;
+      }
       if (hasDirectory(e.dataTransfer)) {
         e.stopImmediatePropagation();
         window.dispatchEvent(new CustomEvent('jiuwen-desktop-directory-drop-rejected'));
@@ -2419,6 +2469,12 @@ class DesktopRuntime:
       e.stopImmediatePropagation();
       // Preserve the anti-navigation default prevention the bridge used to give.
       e.preventDefault();
+    }, false);
+    document.addEventListener('drop', function (e) {
+      if (!hasFiles(e.dataTransfer) || !hasVirtualFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      window.dispatchEvent(new CustomEvent('jiuwen-desktop-virtual-file-drop-rejected'));
     }, false);
   }
 })();

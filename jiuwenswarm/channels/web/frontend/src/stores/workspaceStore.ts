@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import i18n from '../i18n';
-import { projectRegistryClient } from '../features/workspace/projectRegistryClient';
+import { projectRegistryClient, ProjectRemoveResult } from '../features/workspace/projectRegistryClient';
 import { archivedTaskClient, findBatchSessionResult } from '../features/workspace/archivedTaskClient';
 import { persistWorkMode, readStoredWorkMode } from '../features/workspace/workModeStorage';
 import type { ProjectInfo, Session, WorkMode } from '../types';
@@ -58,7 +58,7 @@ interface WorkspaceState {
   createProject: (name: string, projectDir: string) => Promise<ProjectInfo>;
   renameProject: (projectId: string, name: string) => Promise<void>;
   pinProject: (projectId: string, pinned: boolean) => Promise<void>;
-  removeProject: (projectId: string) => Promise<void>;
+  removeProject: (projectId: string) => Promise<ProjectRemoveResult>;
   hideProjectLocally: (projectId: string) => void;
   restoreProject: (projectId: string) => Promise<void>;
   removeSessions: (sessionIds: string[]) => void;
@@ -463,7 +463,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   removeProject: async (projectId) => {
-    await projectRegistryClient.remove(projectId);
+    const result = await projectRegistryClient.remove(projectId);
     get().hideProjectLocally(projectId);
     await get().refreshWorkspaceAndCron();
     // 隐藏的项目不能再作为新建会话的默认归属：后端会拒绝它的会话绑定。
@@ -471,6 +471,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       const fallback = findProject(get().projects, findDefaultProjectId(get().projects));
       set({ selectedProject: fallback });
     }
+    return result;
   },
 
   restoreProject: async (projectId) => {
@@ -483,7 +484,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const result = findBatchSessionResult(response, sessionId);
     if (!result?.ok) {
       const error = new Error(result?.error || 'Failed to archive session');
-      Object.assign(error, { code: result?.code });
+      // finishing 透传给 UI：SESSION_BUSY 时区分「回合收尾中」与「运行中」文案。
+      Object.assign(error, { code: result?.code, finishing: result?.finishing === true });
       throw error;
     }
   },

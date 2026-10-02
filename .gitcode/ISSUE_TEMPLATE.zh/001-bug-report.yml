@@ -68,6 +68,7 @@ body:
         - 【dev-stable专属】 Code Agent
         - 【dev-stable专属】 记忆引擎
         - 【dev-stable专属】 DeepSearch
+        - 【dev-stable专属】 其他
     validations:
       required: true
   - type: checkboxes

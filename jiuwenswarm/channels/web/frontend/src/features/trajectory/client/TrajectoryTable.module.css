@@ -1297,6 +1297,42 @@
   min-height: 22px;
 }
 
+.compactionMessages {
+  padding: 4px 14px 8px;
+  font: var(--dsw-font-xs-13);
+}
+
+.compactionExplanation {
+  margin: 0 0 6px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.compactionMessages ul {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+}
+
+.compactionMessages li {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.compactionMessageLabel {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.compactionMessageMeta {
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  overflow-wrap: anywhere;
+}
+
 .markdownPreview,
 .markdownPayload {
   color: var(--dsw-alias-label-primary);

@@ -164,3 +164,40 @@ def test_explicit_macos_exit_allows_window_destruction(
     assert runtime.close_window() is True
     assert runtime._allow_window_close is True
     assert destroyed == [True]
+
+
+def test_macos_context_paste_dispatches_native_action_on_ui_thread(desktop_app, monkeypatch, tmp_path):
+    actions = []
+
+    class Responder:
+        def respondsToSelector_(self, selector):
+            return selector == "paste:"
+
+        def paste_(self, sender):
+            actions.append(("paste", sender))
+
+    def call_after(callback):
+        actions.append("ui-dispatch")
+        callback()
+
+    monkeypatch.setitem(sys.modules, "PyObjCTools", types.SimpleNamespace(
+        AppHelper=types.SimpleNamespace(callAfter=call_after),
+    ))
+    monkeypatch.setattr(desktop_app, "get_logs_dir", lambda: tmp_path / "logs")
+    runtime = desktop_app.DesktopRuntime(frontend_host="127.0.0.1", ports=calculate_instance_ports(0))
+    runtime.window = types.SimpleNamespace(native=types.SimpleNamespace(firstResponder=lambda: Responder()))
+    monkeypatch.setattr(desktop_app.sys, "platform", "darwin")
+    desktop_app._WindowApi(runtime).paste_clipboard()
+    assert actions == ["ui-dispatch", ("paste", None)]
+
+    runtime.window.native.firstResponder = lambda: None
+    with pytest.raises(RuntimeError, match="Focused view"):
+        runtime.paste_clipboard()
+
+
+def test_pywebview_native_paste_api_is_only_exposed_on_macos(desktop_app, monkeypatch):
+    runtime = types.SimpleNamespace(paste_clipboard=lambda: None)
+    monkeypatch.setattr(desktop_app.sys, "platform", "darwin")
+    assert callable(desktop_app._WindowApi(runtime).paste_clipboard)
+    monkeypatch.setattr(desktop_app.sys, "platform", "win32")
+    assert not hasattr(desktop_app._WindowApi(runtime), "paste_clipboard")

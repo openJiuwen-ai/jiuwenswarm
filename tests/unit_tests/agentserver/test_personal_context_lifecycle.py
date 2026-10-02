@@ -139,7 +139,7 @@ async def test_start_opens_websocket_without_waiting_for_personal_context(
     monkeypatch.setattr("websockets.legacy.server.serve", _serve)
     monkeypatch.setattr(server, "_bootstrap_internal_jiuwenbox", _noop_async)
 
-    await server.start()
+    await server.start(bind_transport=True)
     task = server._personal_context_start_task  # pylint: disable=protected-access
     try:
         await asyncio.wait_for(personal_context_started.wait(), timeout=1.0)
@@ -182,7 +182,7 @@ async def test_start_restores_enabled_personal_context_state_to_agent_manager(
     monkeypatch.setattr("websockets.legacy.server.serve", _serve)
     monkeypatch.setattr(server, "_bootstrap_internal_jiuwenbox", _noop_async)
 
-    await server.start()
+    await server.start(bind_transport=True)
     task = server._personal_context_start_task  # pylint: disable=protected-access
     assert task is not None
     await task
@@ -223,7 +223,7 @@ async def test_personal_context_start_failure_does_not_fail_agentserver_start(
     monkeypatch.setattr("websockets.legacy.server.serve", _serve)
     monkeypatch.setattr(server, "_bootstrap_internal_jiuwenbox", _noop_async)
 
-    await server.start()
+    await server.start(bind_transport=True)
     assert server._personal_context_start_task is not None  # pylint: disable=protected-access
     await server._personal_context_start_task  # pylint: disable=protected-access
 

@@ -117,7 +117,6 @@ async def test_process_message_stream_uses_bounded_handoff_queue(
 ) -> None:
     real_queue = asyncio.Queue
     created_queues: list[asyncio.Queue] = []
-    legacy_feedback_calls: list[tuple] = []
 
     def queue_factory(*args, **kwargs):
         queue = real_queue(*args, **kwargs)
@@ -151,10 +150,6 @@ async def test_process_message_stream_uses_bounded_handoff_queue(
     )
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
     monkeypatch.setattr(interface_module, "append_history_record", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.evolution.session_consumer.schedule_session_evolution_consume",
-        lambda *args, **kwargs: legacy_feedback_calls.append((args, kwargs)),
-    )
 
     swarm = interface_module.JiuWenSwarm()
     request = AgentRequest(
@@ -170,7 +165,6 @@ async def test_process_message_stream_uses_bounded_handoff_queue(
     await stream.aclose()
 
     assert final_chunk.payload["event_type"] == event_type
-    assert legacy_feedback_calls == []
     assert created_queues
     assert created_queues[0].maxsize == swarm.STREAM_QUEUE_MAXSIZE
     assert created_queues[0].maxsize > 0

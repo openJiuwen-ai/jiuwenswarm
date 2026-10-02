@@ -27,7 +27,7 @@ from jiuwenswarm.channels.process_cli.protocol.version import (
 
 QUERY_FIELDS = {
     "session.get": ({"session_id"}, {"session_id"}),
-    "session.list": ({"limit", "offset"}, set()),
+    "session.list": ({"limit", "offset", "search"}, set()),
     "model.list": (set(), set()),
     "model.resolve": ({"requested"}, {"requested"}),
     "mode.list": (set(), set()),
@@ -60,6 +60,10 @@ class OneShotQueryInput:
         for key in ("session_id", "requested"):
             if key in params:
                 _required_text(key, params[key])
+        if "search" in params:
+            search = params["search"]
+            if not isinstance(search, str) or len(search) > 200:
+                raise ValueError("search must be text of at most 200 characters")
         if "limit" in params:
             limit = _non_negative_integer("limit", params["limit"])
             if not 1 <= limit <= 200:

@@ -119,12 +119,22 @@ def _window_api_methods() -> set[str]:
     """pywebview 暴露给前端的 API 面 = _WindowApi 的公开方法。"""
     for node in ast.walk(_desktop_app_module()):
         if isinstance(node, ast.ClassDef) and node.name == "_WindowApi":
-            return {
+            methods = {
                 item.name
                 for item in node.body
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and not item.name.startswith("_")
             }
+            # Platform-specific native commands may be bound in __init__.
+            for item in ast.walk(node):
+                if isinstance(item, ast.Assign) and isinstance(item.value, ast.Attribute):
+                    for target in item.targets:
+                        if (isinstance(target, ast.Attribute)
+                                and isinstance(target.value, ast.Name)
+                                and target.value.id == "self"
+                                and not target.attr.startswith("_")):
+                            methods.add(target.attr)
+            return methods
     raise AssertionError("class _WindowApi not found in desktop_app.py")
 
 
@@ -620,6 +630,22 @@ def test_installers_recursively_pack_runtime_into_app_dir() -> None:
     assert re.search(
         r'\{#MyAppName\}-Electron\\\*".*recursesubdirs', _read(INSTALLER_ELECTRON_ISS), re.DOTALL
     ), "installer-electron.iss 不再递归打包 Electron 产物, resources\\backend\\runtime 将不会进安装包"
+
+
+def test_installers_use_versioned_shortcut_icon() -> None:
+    """升级后快捷方式应使用版本化图标路径，避免 Windows 复用旧图标缓存。"""
+    icon_path = r"{app}\logo-{#MyAppVersion}.ico"
+
+    for installer_path in (INSTALLER_PY_ISS, INSTALLER_ELECTRON_ISS):
+        source = _read(installer_path)
+        assert f"UninstallDisplayIcon={icon_path}" in source
+        assert 'DestName: "logo-{#MyAppVersion}.ico"' in source
+        assert source.count(f'IconFilename: "{icon_path}"') == 2
+
+    python_installer = _read(INSTALLER_PY_ISS)
+    assert 'Type: filesandordirs; Name: "{app}\\resources"' in python_installer
+    assert 'Type: files; Name: "{app}\\logo-*.ico"' in python_installer
+    assert 'Type: files; Name: "{app}\\logo-*.ico"' in _read(INSTALLER_ELECTRON_ISS)
 
 
 # ─── macOS 打包链路的 node 绑定对齐(build-macos.sh / build-electron-exe.sh) ─

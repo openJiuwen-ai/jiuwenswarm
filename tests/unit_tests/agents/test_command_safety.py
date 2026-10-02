@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
+from jiuwenswarm.agents.harness.common.tools import command_tools
 from jiuwenswarm.agents.harness.common.tools.command_tools import (
     _check_command_safety,
     _command_spawns_tui,
     _enforce_tui_spawn_budget,
+    _is_backend_cmdline,
     reset_tui_spawn_history,
     TUI_SPAWN_LIMIT,
 )
@@ -56,6 +60,169 @@ def test_does_not_block_engine_owned_patterns() -> None:
     assert _check_command_safety("rm -rf /tmp/x") is None
     assert _check_command_safety("shutdown -h now") is None
     assert _check_command_safety("Remove-Item -Recurse -Force C:\\temp\\build") is None
+
+
+# ── 按进程名 / PID 杀后端（Windows 下后端进程全是 python.exe）────
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "taskkill /F /IM python.exe",
+        "taskkill /im python.exe /t /f",
+        "taskkill /F /IM pythonw.exe",
+        'taskkill /F /IM "python*"',
+        "taskkill /F /IM py.exe",
+        'taskkill /F /FI "IMAGENAME eq python.exe"',
+        "Stop-Process -Name python -Force",
+        "stop-process -name 'python*' -force",
+        "spps -Name python",
+        "Get-Process python | Stop-Process -Force",
+        "Get-Process -Name python* | Stop-Process",
+        "gps python | kill",
+        "wmic process where name='python.exe' delete",
+        "wmic process where \"name like '%python%'\" call terminate",
+        "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Invoke-CimMethod -MethodName Terminate",
+        "pkill python",
+        "pkill -9 python3",
+        "pkill -f python",
+        "killall python3.13",
+        "killall -9 'python'",
+        # Sub-expression form: no literal PID, the pipe pattern never fires.
+        "Stop-Process -Id (Get-Process python).Id",
+        "stop-process -id (gps 'python*').id -force",
+    ],
+)
+def test_blocks_killing_python_by_name(command: str) -> None:
+    reason = _check_command_safety(command)
+    assert reason is not None
+    assert "python" in reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "tasklist | findstr python",
+        "Get-Process python",
+        "taskkill /F /IM chrome.exe",
+        "taskkill /F /IM node.exe /T",
+        "taskkill /F /IM pyinstaller.exe",
+        "Get-Process pyinstaller | Stop-Process",
+        "pkill -f 'python scrape_page.py'",
+        "pkill -f scrape_page.py",
+        "python -m pip install requests",
+        "killall chrome",
+        "grep -rn python docs/",
+        "wmic process where \"commandline like '%scrape_page%'\" call terminate",
+    ],
+)
+def test_allows_targeted_kills_and_python_mentions(command: str, monkeypatch) -> None:
+    monkeypatch.setattr(command_tools, "_backend_pids", lambda: set())
+    assert _check_command_safety(command) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "taskkill /F /PID 4242",
+        "taskkill /PID 7 /PID 4242 /T /F",
+        'taskkill /F /FI "PID eq 4242"',
+        "Stop-Process -Id 4242 -Force",
+        "Stop-Process -Id:4242",
+        "spps -Id 7,4242",
+        "Stop-Process 4242",
+        "Get-Process -Id 4242 | Stop-Process",
+        "wmic process where processid=4242 call terminate",
+        'Get-CimInstance Win32_Process -Filter "ProcessId=4242" | Invoke-CimMethod -MethodName Terminate',
+        "kill -9 4242",
+        "kill 7 4242",
+        "kill -s TERM 4242",
+        # A later sigspec overrides the -0 probe: bash really SIGKILLs here.
+        "kill -0 -n 9 4242",
+        "kill -n 0 -n 9 4242",
+        # Negative operand beyond signal range targets a process group.
+        "kill -9 -4242",
+        # Quoted forms must be seen through (the agent runs shells via bash -c).
+        "bash -c 'kill -0 -n 9 4242'",
+        '/bin/kill -TERM 4242',
+    ],
+)
+def test_blocks_killing_backend_pids(command: str, monkeypatch) -> None:
+    monkeypatch.setattr(command_tools, "_backend_pids", lambda: {4242})
+    reason = _check_command_safety(command)
+    assert reason is not None
+    assert "4242" in reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "taskkill /F /PID 5151",
+        "Stop-Process -Id 5151",
+        "kill -9 5151",
+        "kill -0 4242",
+        "kill -n 0 4242",
+        "kill -l",
+        "kill -9 -5151",
+    ],
+)
+def test_allows_killing_other_pids(command: str, monkeypatch) -> None:
+    monkeypatch.setattr(command_tools, "_backend_pids", lambda: {4242})
+    assert _check_command_safety(command) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("kill -9 4242", {4242}),
+        # The -n argument is a signal number, not a target.
+        ("kill -n 9 4242", {4242}),
+        # A pure signal-0 probe has no killable target.
+        ("kill -0 4242", set()),
+        # Last sigspec wins: -0 then -n 9 is SIGKILL.
+        ("kill -0 -n 9 4242", {4242}),
+        ("kill -s TERM 7 4242", {7, 4242}),
+        ("kill -TERM 4242", {4242}),
+        ("kill 7 4242", {7, 4242}),
+        ("kill -- -4242", {4242}),
+        # Scanning stops at shell separators; the probe stays exempt.
+        ("kill -9 123; kill -0 456", {123}),
+        # Job specs cannot be resolved to PIDs; nothing is extracted.
+        ("kill %1", set()),
+        ("bash -c 'kill -9 4242'", {4242}),
+        ("pkill -9 4242", set()),
+    ],
+)
+def test_posix_kill_pid_parsing(command: str, expected: set[int]) -> None:
+    assert command_tools._posix_kill_pids(command) == expected
+
+
+def test_backend_cmdline_detection() -> None:
+    assert _is_backend_cmdline(["python", "-m", "jiuwenswarm.gateway.app_gateway"])
+    assert _is_backend_cmdline(["C:\\env\\python.exe", "C:\\env\\Scripts\\jiuwenswarm-start.exe", "all"])
+    assert _is_backend_cmdline(["/usr/bin/python3", "/site-packages/jiuwenswarm/gateway/app_gateway.py"])
+    assert _is_backend_cmdline(["/usr/bin/python3", "-u", "/site-packages/jiuwenswarm/app.py"])
+    assert _is_backend_cmdline(["JiuwenSwarm.exe", "--desktop-run-agent"])
+    # Skill scripts live under ~/.jiuwenswarm but are the agent's own work, not the backend.
+    assert not _is_backend_cmdline(
+        ["python", "C:\\Users\\u\\.jiuwenswarm\\agent\\workspace\\skills\\demo\\scripts\\scrape_page.py"]
+    )
+
+
+def test_backend_cmdline_ignores_paths_that_are_merely_mentioned() -> None:
+    # Commands that only reference backend files as data must not classify the
+    # agent's own shell as backend — that made those shells unkillable by PID.
+    assert not _is_backend_cmdline(["bash", "-c", "git diff HEAD -- jiuwenswarm/gateway/app_gateway.py"])
+    assert not _is_backend_cmdline(["bash", "-lc", "grep -n TODO jiuwenswarm/app.py"])
+    assert not _is_backend_cmdline(["git", "log", "--oneline", "--", "jiuwenswarm/channels/web/app_web.py"])
+    assert not _is_backend_cmdline(["cmd", "/c", "type jiuwenswarm\\gateway\\app_gateway.py"])
+    assert not _is_backend_cmdline(["cmd", "/c", "type", "jiuwenswarm\\gateway\\app_gateway.py"])
+
+
+def test_backend_pids_cover_this_process_and_its_parent() -> None:
+    pids = command_tools._backend_pids()
+    assert os.getpid() in pids
+    assert os.getppid() in pids
 
 
 # ── jiuwenswarm-tui spawn 护栏 ────────────────────────────────

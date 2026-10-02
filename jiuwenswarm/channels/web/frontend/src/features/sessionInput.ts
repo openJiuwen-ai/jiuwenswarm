@@ -1,6 +1,7 @@
 import { useChatStore } from '../stores/chatStore';
 import { useSessionStore } from '../stores/sessionStore';
 import { readOutputOrder } from './sessionOutput';
+import { extractCrossSessionMessage } from '../utils/crossSessionMessage';
 import type { WebError, WebRequestOptions } from '../types/websocket';
 
 type SendRequest = (method: string, params: Record<string, unknown>, options: WebRequestOptions) => Promise<unknown>;
@@ -146,6 +147,7 @@ export function handleSessionOutputBoundary(event: string, payload: Record<strin
     content: payload.content,
     outputOrder: readOutputOrder(payload),
     timestamp: boundaryTimestamp,
+    crossSession: extractCrossSessionMessage(payload) ?? undefined,
     supplementalInput: {
       executionId: typeof payload.execution_id === 'string' ? payload.execution_id : '',
       requestId,

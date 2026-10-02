@@ -255,11 +255,6 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         if state is None:
             return
         tool_name = self._tool_name(ctx.inputs)
-        if self._is_skill_tool(tool_name) and (
-            state.awaiting_input or state.pending_recompose
-        ):
-            self._reject_skill_until_composed(ctx)
-            return
         if tool_name != self.COMPOSE_TOOL_NAME:
             return
         if state.awaiting_input:
@@ -293,22 +288,10 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             state.pending_recompose = False
             return
         if state.pending_recompose and status == "ready":
-            # A resumed invocation may execute Skills only after a complete,
-            # explicitly ready replacement plan. Invalid/no-plan/failure
-            # results retain the gate; graph timeout/preparing keep their
-            # existing terminal lifecycle below.
+            # Clear the recompose state only after an explicitly ready plan.
+            # Other results leave the candidate/query constraints in place.
             state.pending_recompose = False
             state.awaiting_input = False
-
-    def _reject_skill_until_composed(self, ctx: AgentCallbackContext) -> None:
-        payload = {
-            "success": False,
-            "reason": "symphony_plan_not_ready",
-            "retryable": True,
-            "required_tool": self.COMPOSE_TOOL_NAME,
-            "detail": "Call symphony_compose_graph before executing skill_tool.",
-        }
-        self._skip_tool(ctx, payload)
 
     def _reject_compose_until_input(self, ctx: AgentCallbackContext) -> None:
         payload = {
@@ -1052,43 +1035,31 @@ shortlist. Do not replace that shortlist or retry `needs_input` in this loop.
         return f"""
 ## Skill Orchestration Contract
 
-Before executing Skills or answering, you MUST call `symphony_compose_graph`
-with the original user task as `query` when ANY of these conditions is true:
+Call `symphony_compose_graph` with the original user task before executing
+Skills or answering when the user explicitly requests combining or
+orchestrating multiple Skills, the task needs multiple selected Skills, or
+those Skills form an ordered or dependent workflow. Two or more selected exact
+Skill IDs are sufficient evidence.
 
-1. The user explicitly requests using, selecting, combining, or orchestrating
-   Skills, including requests that mention skill(s) or 技能.
-2. The task requires two or more specialized capabilities or an ordered
-   toolchain.
-3. You have identified, inspected, selected, invoked, or recommended any
-   installed Skill for the task.
+Do not call `symphony_compose_graph` for single Skill use, inspection, or
+question, a simple single-Skill command, pure search, listing, comparison, or
+recommendation, or when the user merely mentions a Skill or 技能. Calling
+`skill_index` alone is also not a compose trigger.
 
-Calling `skill_branch_explore` creates a mandatory orchestration follow-up. After
-calling it, select only the few Skills relevant to the original user task and
-call `symphony_compose_graph` before executing any Skill or returning a final
-answer. Pass the selected Skills' exact identifiers or names as
-`candidate_skill_ids`; never pass every Skill returned by exploration. If no
-candidate can be selected confidently, still call `symphony_compose_graph`
-with the original query and omit `candidate_skill_ids`. Use retrieval metadata
-directly: between `skill_branch_explore` and `symphony_compose_graph`, do not call
-`skill_tool`, `read_file`, or read any SKILL.md.
+When composition is required, pass only the selected exact Skill IDs as
+`candidate_skill_ids`; never pass all retrieval results. If no candidate is
+known, omit `candidate_skill_ids`. Before composing, do not call `skill_tool`,
+`read_file`, or read any SKILL.md.
 
-Do not choose the execution chain yourself; the orchestration tool determines
-Skill ordering and graph composition. It returns `planned_graph`; read
-`planned_graph.graph.metadata.status`, `planned_graph.graph.nodes`, and
-`planned_graph.graph.edges`, then decide whether to execute, request more
-information, or take other appropriate next steps. Do not present a planning
-rendering for confirmation. When status is `ready`, use the graph to choose one
-currently executable Skill, read only that Skill's SKILL.md immediately before
-executing it, complete its execution, and then read the next executable Skill.
-Do not preload all selected Skill instructions. When status is `needs_input` or
-`no_plan`, do not read Skills merely for orchestration.
+Follow the returned `planned_graph` status, nodes, and edges; do not present it
+for confirmation. When status is `ready`, execute one currently executable
+Skill at a time and read its SKILL.md only immediately before use. Do not preload
+Skill instructions. For `needs_input` or `no_plan`, do not read Skills merely
+for orchestration.
 
 If either graph tool returns `graph_build_timeout` or `manual_graph_build`, do
 not call `symphony_compose_graph` or `symphony_refresh_graph` again in the
 current round. Tell the user to build the graph manually instead.
-
-Skip skill orchestration only when none of the three trigger conditions is true
-and `skill_branch_explore` was not called in the current round.
 {resume_guidance}"""
 
     @staticmethod

@@ -66,8 +66,4 @@ declare -A DEPLOY_VARS=(
     # AgentOS IAM; empty URL → http://MASTER_NODE_IP:8090 at deploy check time
     ["AGENTOS_AUTH_SERVICE_URL"]=""
     ["AGENTOS_AUTH_TIMEOUT"]=""
-    # jiuwenswarm-web 的 /auth-api 反代目标;空则 check_web_up_dependency 复用 AGENTOS_AUTH_SERVICE_URL
-    ["IAM_AUTH_SERVICE_URL"]=""
-    # 一体机模式开关; "true" 时启动 jiuwenswarm-web 带 --remote, 前端显示登出按钮
-    ["WEB_REMOTE_MODE"]=""
 )

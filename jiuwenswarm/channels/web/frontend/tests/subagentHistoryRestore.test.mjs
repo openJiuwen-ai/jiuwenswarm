@@ -22,6 +22,230 @@ test('existing full-duplex spoken replies stay expanded after history restore wi
   assert.deepEqual(messages.map((message) => message.keepExpanded), [true, true, undefined]);
 });
 
+test('history restores an unmatched chat.ask_user_question as a read-only qa.summary card (no live re-prompt)', () => {
+  const preview = parseHistoryJsonFileToTimelinePreview([
+    {
+      id: 'ask-1',
+      role: 'assistant',
+      event_type: 'chat.ask_user_question',
+      content: '',
+      request_id: 'req-ask-1',
+      source: 'ask_user_interrupt',
+      questions: [
+        {
+          question: '用哪种方案?',
+          header: 'Question',
+          options: [
+            { label: '方案A', value: 'a', description: 'desc-a' },
+            { label: '方案B', value: 'b' },
+            { label: 'Other' },
+          ],
+          multi_select: false,
+        },
+      ],
+      timestamp: 1,
+    },
+  ], sessionId);
+
+  // 未答问题渲染成只读 qa.summary 卡片（QaSummaryCard 在 answers 为空时显示「—」），
+  // 不进 pendingQuestions 弹框——web 重连后后端不重发挂起中断，弹框 + resume
+  // 会报 "session has no active execution"，所以历史里的未答问题只读展示。
+  assert.equal(preview.pendingQuestions.length, 0);
+  assert.equal(preview.messages.length, 1);
+  assert.equal(preview.messages[0].role, 'assistant');
+  assert.equal(preview.messages[0].content.startsWith('qa.summary:'), true);
+  const parsed = JSON.parse(preview.messages[0].content.slice('qa.summary:'.length));
+  assert.deepEqual(parsed.items, [
+    { header: 'Question', question: '用哪种方案?', answers: [] },
+  ]);
+});
+
+test('history skips chat.ask_user_question with empty or missing questions', () => {
+  const preview = parseHistoryJsonFileToTimelinePreview([
+    {
+      id: 'ask-empty',
+      role: 'assistant',
+      event_type: 'chat.ask_user_question',
+      content: '',
+      request_id: 'req-ask-empty',
+      questions: [],
+      timestamp: 1,
+    },
+    {
+      id: 'ask-missing',
+      role: 'assistant',
+      event_type: 'chat.ask_user_question',
+      content: '',
+      request_id: 'req-ask-missing',
+      timestamp: 2,
+    },
+  ], sessionId);
+
+  assert.equal(preview.messages.length, 0);
+  assert.equal(preview.pendingQuestions.length, 0);
+});
+
+test('history pairs chat.ask_user_answer with chat.ask_user_question by request_id, rendering a qa.summary card with answers', () => {
+  const preview = parseHistoryJsonFileToTimelinePreview([
+    {
+      id: 'ask-1',
+      role: 'assistant',
+      event_type: 'chat.ask_user_question',
+      content: '',
+      request_id: 'req-pair-1',
+      source: 'ask_user_interrupt',
+      questions: [
+        { question: '用哪种方案?', header: 'Question', options: [{ label: '方案A', value: 'a' }, { label: '方案B', value: 'b' }], multi_select: false },
+        { question: '备注?', header: 'Question', options: [], multi_select: false },
+      ],
+      timestamp: 1,
+    },
+    {
+      id: 'ans-1',
+      role: 'assistant',
+      event_type: 'chat.ask_user_answer',
+      content: '',
+      request_id: 'req-pair-1',
+      source: 'ask_user_interrupt',
+      answers: [
+        { question: '用哪种方案?', selected_options: ['方案A'] },
+        { question: '备注?', selected_options: [], custom_input: '加急' },
+      ],
+      timestamp: 2,
+    },
+  ], sessionId);
+
+  // 已答：不弹框，进 messages 渲染成 qa.summary 回显卡
+  assert.equal(preview.pendingQuestions.length, 0);
+  assert.equal(preview.messages.length, 1);
+  assert.equal(preview.messages[0].role, 'assistant');
+  assert.equal(preview.messages[0].content.startsWith('qa.summary:'), true);
+  const parsed = JSON.parse(preview.messages[0].content.slice('qa.summary:'.length));
+  assert.deepEqual(parsed.items, [
+    { header: 'Question', question: '用哪种方案?', answers: ['方案A'] },
+    { header: 'Question', question: '备注?', answers: ['加急'] },
+  ]);
+  assert.equal(preview.answeredQuestions.length, 1);
+  assert.equal(preview.answeredQuestions[0].payload.request_id, 'req-pair-1');
+});
+
+test('history leaves an unmatched chat.ask_user_question as a read-only qa.summary card (no answer record, no live prompt)', () => {
+  const preview = parseHistoryJsonFileToTimelinePreview([
+    {
+      id: 'ask-unmatched',
+      role: 'assistant',
+      event_type: 'chat.ask_user_question',
+      content: '',
+      request_id: 'req-unmatched',
+      source: 'ask_user_interrupt',
+      questions: [{ question: 'Q?', header: 'Question', options: [{ label: 'A', value: 'a' }], multi_select: false }],
+      timestamp: 1,
+    },
+  ], sessionId);
+
+  // 未答：渲染成只读 qa.summary 卡片（answers 为空，QaSummaryCard 显示「—」），
+  // 不进 pendingQuestions 弹框——web 重连后后端不重发挂起中断，弹框 + resume
+  // 会报 "session has no active execution"，所以历史里的未答问题只读展示。
+  assert.equal(preview.messages.length, 1);
+  assert.equal(preview.messages[0].role, 'assistant');
+  assert.equal(preview.messages[0].content.startsWith('qa.summary:'), true);
+  const parsed = JSON.parse(preview.messages[0].content.slice('qa.summary:'.length));
+  assert.deepEqual(parsed.items, [
+    { header: 'Question', question: 'Q?', answers: [] },
+  ]);
+  assert.equal(preview.pendingQuestions.length, 0);
+  assert.equal(preview.answeredQuestions.length, 0);
+});
+
+test('history sinks an unanswered qa.summary card to the turn end (after chat.final), not before it', () => {
+  // 实时侧未答问题框是 LLM 那轮产出全部完成后才弹出（吸附输入框底部）。但历史里
+  // chat.ask_user_question 的落盘时刻略早于同轮收尾的 chat.final（LLM 流式产出时
+  // question chunk 先到、final 后到），直接按时间戳排序会把未答 qa.summary 卡排到
+  // chat.final 前面，与实时反过来。历史恢复必须把未答卡沉到本轮末尾（chat.final
+  // 之后），与实时位置一致。
+  // 用真实 epoch 毫秒（sink 函数靠 timestampMsToIso 重新盖章，小 timestamp 会被
+  // looksLikePlausibleEpochMs 判为不合理而跳过，无法验证 sink 行为）。
+  const base = 1789975000000; // 2026 年附近
+  const preview = parseHistoryJsonFileToTimelinePreview([
+    {
+      id: 'ask-unmatched-2',
+      role: 'assistant',
+      event_type: 'chat.ask_user_question',
+      content: '',
+      request_id: 'req-unmatched-2',
+      source: 'ask_user_interrupt',
+      questions: [{ question: 'Q?', header: 'Question', options: [{ label: 'A', value: 'a' }], multi_select: false }],
+      timestamp: base,
+    },
+    {
+      id: 'final-2',
+      role: 'assistant',
+      event_type: 'chat.final',
+      content: '好的，我来确认一下。',
+      request_id: 'req-turn-2',
+      timestamp: base + 1000,
+    },
+  ], sessionId);
+
+  // 期望顺序：[chat.final, qa.summary 卡]——qa.summary 卡沉到本轮末尾。
+  // 旧逻辑（卡用 question 时间 base）会得到 [qa.summary 卡, chat.final]，与实时反。
+  assert.equal(preview.messages.length, 2);
+  assert.equal(preview.messages[0].content, '好的，我来确认一下。');
+  assert.equal(preview.messages[1].content.startsWith('qa.summary:'), true);
+  const parsed = JSON.parse(preview.messages[1].content.slice('qa.summary:'.length));
+  assert.deepEqual(parsed.items, [
+    { header: 'Question', question: 'Q?', answers: [] },
+  ]);
+  assert.equal(preview.pendingQuestions.length, 0);
+  assert.equal(preview.answeredQuestions.length, 0);
+});
+
+test('history places an answered qa.summary card at the answer-time position, not the question-time position', () => {
+  // 实时回显的 qa.summary 卡在用户点确认那一刻追加到列表末尾（答案提交时间），
+  // 而非问题出现时刻。历史恢复必须一致：已答卡用 chat.ask_user_answer 的落盘时间
+  // 定位，而非 chat.ask_user_question 的。否则卡会出现在问题后面、后续消息前面，
+  // 与实时回显位置不一致。
+  const preview = parseHistoryJsonFileToTimelinePreview([
+    {
+      id: 'ask-1',
+      role: 'assistant',
+      event_type: 'chat.ask_user_question',
+      content: '',
+      request_id: 'req-pos-1',
+      source: 'ask_user_interrupt',
+      questions: [{ question: '用哪种方案?', header: 'Question', options: [{ label: '方案A', value: 'a' }], multi_select: false }],
+      timestamp: 1,
+    },
+    {
+      id: 'mid-msg',
+      role: 'assistant',
+      event_type: 'chat.final',
+      content: '中间这条消息不该被 qa.summary 卡越过',
+      timestamp: 2,
+    },
+    {
+      id: 'ans-1',
+      role: 'assistant',
+      event_type: 'chat.ask_user_answer',
+      content: '',
+      request_id: 'req-pos-1',
+      source: 'ask_user_interrupt',
+      answers: [{ question: '用哪种方案?', selected_options: ['方案A'] }],
+      timestamp: 3,
+    },
+  ], sessionId);
+
+  // 期望顺序：[中间消息(t2), qa.summary 卡(t3)]——qa.summary 卡在答案时间位置。
+  // 旧逻辑（卡用问题时间 t1）会得到 [qa.summary 卡, 中间消息]，与实时回显不一致。
+  assert.equal(preview.messages.length, 2);
+  assert.equal(preview.messages[0].content, '中间这条消息不该被 qa.summary 卡越过');
+  assert.equal(preview.messages[1].content.startsWith('qa.summary:'), true);
+  const parsed = JSON.parse(preview.messages[1].content.slice('qa.summary:'.length));
+  assert.deepEqual(parsed.items, [
+    { header: 'Question', question: '用哪种方案?', answers: ['方案A'] },
+  ]);
+});
+
 test('history restores accepted supplemental user input metadata', () => {
   const messages = parseHistoryJsonFileToPreviewMessages([
     {
@@ -784,3 +1008,37 @@ for (const [format, supplementalFields] of [
     ]);
   });
 }
+
+test('history restores chat.error as a system message with the error text', () => {
+  // 后端 interface.py:4040 把 chat.error 落盘为 role=assistant, event_type=chat.error,
+  // content=str(data), error_type 在顶层（code 未落盘）。历史恢复转成 role=system 消息，
+  // 与实时 useWebSocket.ts chat.error 分支对齐（实时加 t('network.errorPrefix') 前缀，
+  // 历史层无 i18n，直接用错误原文）。刷新后错误不再凭空消失。
+  const messages = parseHistoryJsonFileToPreviewMessages([
+    {
+      id: 'err-1:assistant',
+      role: 'assistant',
+      event_type: 'chat.error',
+      content: '模型调用失败：超时',
+      error_type: 'TimeoutError',
+      timestamp: 1,
+    },
+  ], sessionId);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].role, 'system');
+  assert.equal(messages[0].content, '模型调用失败：超时');
+});
+
+test('history skips chat.error with empty content', () => {
+  const messages = parseHistoryJsonFileToPreviewMessages([
+    {
+      id: 'err-empty:assistant',
+      role: 'assistant',
+      event_type: 'chat.error',
+      content: '',
+      error_type: 'RuntimeError',
+      timestamp: 1,
+    },
+  ], sessionId);
+  assert.equal(messages.length, 0);
+});

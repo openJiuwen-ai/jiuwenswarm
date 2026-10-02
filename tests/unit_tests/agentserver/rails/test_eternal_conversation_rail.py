@@ -35,6 +35,7 @@ from jiuwenswarm.agents.harness.common.rails.eternal_conversation.prompts import
     EXTRACTOR_SYSTEM_PROMPT,
 )
 from jiuwenswarm.agents.harness.common.rails.eternal_conversation.registry import (
+    close_all_session_coordinators,
     get_session_coordinator,
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
@@ -54,6 +55,13 @@ from scripts.acceptance.eternal_conversation_200 import (
 
 def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+@pytest.fixture(autouse=True)
+async def _close_eternal_conversation_coordinators():
+    """Drop Session-owned Extractor/Builder Tasks before asyncio loop teardown."""
+    yield
+    await close_all_session_coordinators()
 
 
 def test_acceptance_renders_structured_conflict_question_with_option_evidence() -> None:
@@ -1071,6 +1079,49 @@ async def test_adapter_cleanup_does_not_cancel_session_owned_background_agents(
 
 
 @pytest.mark.asyncio
+async def test_coordinator_close_cancels_background_without_waiting_for_model(
+    tmp_path: Path,
+) -> None:
+    gate = asyncio.Event()
+    model = _ControlledModel(gate)
+    coordinator = SessionCoordinator(tmp_path, "session-a", lambda: model)
+    await coordinator.evidence.append("task-started", {"query": "first"}, task_id="t1")
+    finished = await coordinator.evidence.append(
+        "task-finished", {"result": "one"}, task_id="t1"
+    )
+    await coordinator.request_extract(finished["cursor"])
+    await asyncio.wait_for(model.entered.wait(), timeout=5)
+
+    await asyncio.wait_for(coordinator.close(), timeout=1)
+
+    assert coordinator._worker is not None
+    assert coordinator._worker.done()
+    assert not gate.is_set()
+
+
+@pytest.mark.asyncio
+async def test_memory_cli_cancel_kills_subprocess(tmp_path: Path) -> None:
+    script = tmp_path / "sleep_cli.py"
+    script.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
+    root = tmp_path / "memory"
+    root.mkdir()
+    (root / "memory.sqlite3").write_bytes(b"")
+    gateway = DynamicMemoryGateway(root, EvidenceWriter(tmp_path, "session-a"), script=script)
+    gateway._initialized = True
+    task = asyncio.create_task(gateway.call("search", "NimbusGate"))
+
+    async def _started() -> None:
+        while not gateway._processes:
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(_started(), timeout=2)
+    task.cancel()
+    await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=1)
+    assert task.cancelled() or task.done()
+    assert not gateway._processes
+
+
+@pytest.mark.asyncio
 async def test_pending_builder_work_resumes_from_durable_state_after_restart(
     tmp_path: Path,
 ) -> None:
@@ -1125,6 +1176,15 @@ def test_registry_reuses_coordinator_for_recreated_adapter(tmp_path: Path) -> No
     first = get_session_coordinator(tmp_path, "session-a", lambda: _FakeModel())
     second = get_session_coordinator(tmp_path, "session-a", lambda: _FakeModel())
     assert second is first
+
+
+@pytest.mark.asyncio
+async def test_registry_replaces_closed_coordinator(tmp_path: Path) -> None:
+    first = get_session_coordinator(tmp_path, "session-a", lambda: _FakeModel())
+    await first.close()
+    second = get_session_coordinator(tmp_path, "session-a", lambda: _FakeModel())
+    assert second is not first
+    assert not second.closed
 
 
 @pytest.mark.parametrize(
