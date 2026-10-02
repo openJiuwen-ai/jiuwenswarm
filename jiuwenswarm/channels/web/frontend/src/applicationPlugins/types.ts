@@ -7,12 +7,18 @@ export interface ApplicationPluginContribution {
   plugin_id: string;
   plugin_version: string;
   description?: string;
+  /** i18n key for the card's description; falls back to `description`. */
+  description_i18n_key?: string;
+  /** Data URI inlined by the server from the plugin's own directory. */
+  icon?: string;
   permissions?: string[];
   enabled?: boolean;
   id: string;
   nav_key: string;
   title: string;
   title_i18n_key?: string;
+  name_i18n_key?: string;
+  logo?: string;
   render_mode: 'bundled' | 'iframe' | 'none';
   component?: string;
   entry_url?: string;

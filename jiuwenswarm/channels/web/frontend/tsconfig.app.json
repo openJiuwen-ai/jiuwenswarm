@@ -1,0 +1,29 @@
+{
+  /* The type-check configuration for `npm run build`.
+   *
+   * It exists to carry one thing the root tsconfig must not: a `paths` entry
+   * that resolves the bare imports made by a bundled application plugin. A
+   * plugin's frontend lives outside this project root
+   * (../../../extensions/<name>/frontend) and has no node_modules of its own,
+   * and the app imports it directly, so `tsc` follows those files and has to
+   * resolve `react` and friends from here.
+   *
+   * Why not in tsconfig.json: esbuild discovers the nearest tsconfig from its
+   * working directory and honours `paths`. A mapping there stops
+   * `--packages=external` from treating a mapped package as external, so
+   * `tests/unit_tests/channel/test_input_change_on_blur.py` -- which bundles
+   * one host component and has nothing to do with plugins -- ended up with
+   * lucide-react inlined and threw `Dynamic require of "react"` at run time.
+   * Kept in a file only `tsc -p` is pointed at, the mapping reaches the type
+   * checker and not the bundler.
+   *
+   * Vite needs none of this: `resolveExtensionBareImports` in vite.config.ts
+   * re-resolves the same imports, keyed on the importer's directory. */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["src/*"],
+      "*": ["node_modules/@types/*", "node_modules/*"]
+    }
+  }
+}

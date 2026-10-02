@@ -1,0 +1,16 @@
+/* The About text's tables line up: every table spans the card and gives its
+   first column the same share, so the tools / harness / surfaces tables read
+   as one aligned system rather than three ragged widths. */
+.plugin-about-md table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+.plugin-about-md table th:first-child,
+.plugin-about-md table td:first-child {
+  width: 34%;
+}
+.plugin-about-md table th,
+.plugin-about-md table td {
+  overflow-wrap: break-word;
+}

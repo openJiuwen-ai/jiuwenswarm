@@ -85,6 +85,25 @@
   height: 16px;
 }
 
+/* A contributed plugin's mark, painted in the rail's own colour. Mask rather
+   than <img>, so it follows the theme like every built-in icon does. */
+.icon-rail-nav-item__mark {
+  width: 16px;
+  height: 16px;
+  display: block;
+  background: currentColor;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}
+
+/* Two lines, then ellipsis, breaking only where a break already exists.
+   One line truncated "Cloud Docs" to "Cloud D…", losing the word that says
+   what the page is; breaking inside words gave "Extension / s", which is
+   worse than either. A single long word ellipsizes on one line as before. */
 .icon-rail-nav-item__label {
   max-width: 44px;
   overflow: hidden;
@@ -94,7 +113,9 @@
   line-height: 1.15;
   text-align: center;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 /* 仅"个人上下文"等需要多行换行显示的标签使用（如「我的\n上下文」/「My\nContext」） */
@@ -122,6 +143,16 @@
 }
 
 /* Spacer pushes bottom items down */
+/* The rule between the built-in pages and the pages an installed plugin adds.
+   Inset so it reads as a separator inside the rail rather than a border of it. */
+.icon-rail-divider {
+  width: 32px;
+  height: 1px;
+  flex: 0 0 auto;
+  margin: 6px 0;
+  background: var(--color-border-default, rgba(0, 0, 0, 0.12));
+}
+
 .icon-rail-spacer {
   flex: 1 1;
   min-height: 8px;
