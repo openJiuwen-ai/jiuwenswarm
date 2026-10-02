@@ -249,7 +249,20 @@ Changing visibility only rewrites those two JSON documents — no file-system wo
 
 > For detailed usage and development of Team Skills, see [Swarm Skills](SwarmSkills.md).
 
-### 2.5 Team Memory
+### 2.5 Team Verification (Quality Assurance)
+
+The **Team Verification Layer** automatically reviews teammate task outputs for quality before the Leader consolidates results. It assesses each output across six dimensions (correctness, completeness, consistency, clarity, security, performance) and stores results in `TEAM_MEMORY.md`.
+
+**Key behaviors:**
+
+- **Automatic** — triggers on every `TASK_COMPLETED` event (async, non-blocking)
+- **Configurable** — enable/disable via `team.verification.enabled` in config
+- **Accountable** — full verification history persists in team memory
+- **Actionable** — provides per-dimension scores and improvement suggestions
+
+For full configuration options, quality dimensions, and architecture details, see the Team Verification Layer documentation in the agent-core SDK.
+
+### 2.6 Team Memory
 
 **Round definition**: In Agent Team, a round is one complete team collaboration cycle, typically including task assignment, execution, reporting, and consolidation.
 
