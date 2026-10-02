@@ -513,7 +513,8 @@ def test_assert_import_local_source_safe_rejects_unc_path_on_posix(tmp_path):
         manager._assert_import_local_source_safe(r"\\server\share\skill")
 
 
-def test_import_local_from_path_trusted_flag_bypasses_source_checks(tmp_path):
+@pytest.mark.asyncio
+async def test_import_local_from_path_trusted_flag_bypasses_source_checks(tmp_path):
     manager = _manager(tmp_path)
     with tempfile.TemporaryDirectory() as td:
         skill_dir = Path(td) / "remote-skill"
@@ -524,13 +525,13 @@ def test_import_local_from_path_trusted_flag_bypasses_source_checks(tmp_path):
             encoding="utf-8",
         )
 
-        result = manager._import_local_from_path(
+        result = await manager._import_local_from_path(
             skill_dir, force=False, origin="https://allowed-host/x.zip"
         )
         assert result["success"] is False
         assert "description" in result["detail"]
 
-        result = manager._import_local_from_path(
+        result = await manager._import_local_from_path(
             skill_dir,
             force=False,
             origin="https://allowed-host/x.zip",
