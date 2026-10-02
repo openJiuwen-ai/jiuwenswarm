@@ -146,7 +146,7 @@ def evaluate_paper_quality(paper_text: str) -> PaperQualityReport:
         issues.append(f"参考文献不足（{reference_count}条，建议≥5条）")
     if not has_latex:
         issues.append("未检测到数学公式，建议在Method部分添加公式描述")
-    if "failed" in text.lower() or "generation failed" in text.lower():
+    if "generation failed" in text.lower() or "error:" in text.lower():
         issues.append("检测到生成失败的章节内容")
 
     # 6. quality score
