@@ -12,6 +12,19 @@ from .qasper_experiment import make_request, ParagraphRanker, parse_prediction, 
 
 FILES=('pilot-requests.json','train/public-papers.json','train/public-questions.json','train/gold-references.json')
 PARAMS={'temperature':0,'max_tokens':512,'thinking':{'type':'disabled'},'response_format':{'type':'json_object'}}
+SHORT_ANSWER=(' In the answer field, return only the minimal direct answer, not an explanation. '
+    'For a yes/no question return exactly Yes or No when supported. '
+    'For an entity, number or list question return only the requested entity, number or list. '
+    'Prefer the wording used in the evidence. Put supporting paragraph IDs only in evidence_ids. '
+    'Do not replace an unsupported answer with a guess.')
+
+
+def short_answer_request(request):
+    result=json.loads(json.dumps(request))
+    result['messages'][0]['content']+=SHORT_ANSWER
+    result['content_utf8_bytes']=sum(len(m['content'].encode()) for m in result['messages'])
+    result['prompt_version']='short-answer-v1'
+    return result
 
 
 def read(path):return json.loads(Path(path).read_text(encoding='utf-8'))
@@ -28,6 +41,8 @@ def inputs(bundle):
     questions={q['question_id']:q for q in read(bundle/'train/public-questions.json')}
     keys=set()
     if not requests or len(requests)>36:raise ValueError('Invalid pilot size')
+    versions={r.get('prompt_version','original') for r in requests}
+    if len(versions)!=1 or not versions<={'original','short-answer-v1'}:raise ValueError('Mixed/unknown prompt versions')
     for r in requests:
         key=(r['question_id'],r['method'])
         if key in keys:raise ValueError('Duplicate request')
@@ -37,6 +52,7 @@ def inputs(bundle):
         if q['split']!='train':raise ValueError('Pilot must use train only')
         method,k=r['method'].split('@')
         expected={'method':r['method'],**make_request(q,paper,ParagraphRanker(paper['paragraphs']).rank(q['question'],method),int(k))}
+        if r.get('prompt_version')=='short-answer-v1':expected=short_answer_request(expected)
         if r!=expected:raise ValueError('Request differs from public reconstruction')
     return requests,papers
 
@@ -104,6 +120,9 @@ async def _run_batch(store,bundle,plan,key,*,transport=None):
     # Atomic mkdir also prevents a second local process from claiming this batch.
     folder.mkdir(parents=True,exist_ok=False)
     write(folder/'plan.json',plan)
+    (folder/'source-snapshot').mkdir()
+    for name in plan['code']:
+        (folder/'source-snapshot'/name).write_bytes(Path(__file__).with_name(name).read_bytes())
     batch={'plan_id':plan['id'],'status':'running','records':[]}
     store.change('Claim QASPER pilot once',lambda s:s.setdefault('qasper_batches',[]).append(batch))
     transport=transport or invoke

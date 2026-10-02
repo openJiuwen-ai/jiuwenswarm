@@ -9,7 +9,7 @@ from unittest.mock import patch
 from .app import Store
 from .execution import BudgetSettings, budget_view
 from .qasper_experiment import adapt,write,make_request,ParagraphRanker
-from .qasper_runner import make_plan,preflight,run_batch,score_batch,invoke
+from .qasper_runner import make_plan,preflight,run_batch,score_batch,invoke,short_answer_request,inputs
 from .test_qasper_experiment import fixture
 
 
@@ -37,6 +37,18 @@ def response(content=None,**change):
 
 
 class RunnerTests(unittest.TestCase):
+    def test_answer_style_changes_only_uniform_instruction(self):
+        with tempfile.TemporaryDirectory() as root:
+            store,bundle,plan=setup(root)
+            original=json.loads((bundle/'pilot-requests.json').read_text())
+            changed=[short_answer_request(r) for r in original]
+            self.assertEqual(original[0]['messages'][1],changed[0]['messages'][1])
+            self.assertEqual(original[0]['visible_ids'],changed[0]['visible_ids'])
+            write(bundle/'pilot-requests.json',changed)
+            self.assertEqual(len(inputs(bundle)[0]),3)
+            changed[0]['messages'][0]['content']+=' tampered'
+            write(bundle/'pilot-requests.json',changed)
+            with self.assertRaises(ValueError):inputs(bundle)
     def test_batch_once_hash_bound_and_scored_without_dropping_failures(self):
         with tempfile.TemporaryDirectory() as root:
             store,bundle,plan=setup(root);calls=[]
