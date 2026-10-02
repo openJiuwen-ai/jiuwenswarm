@@ -272,7 +272,7 @@ class TrajectoryCompressor:
             # determine the segment range
             start = key_indices[i - 1] + 1 if i > 0 else 0
             end = idx
-            seg_points = trajectory[start : end + 1]
+            seg_points = trajectory[start:end + 1]
 
             if not seg_points:
                 continue

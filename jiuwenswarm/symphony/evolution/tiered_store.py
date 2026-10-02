@@ -359,7 +359,8 @@ class TieredEvolutionStore:
     # -- optional SQLite mirror (long tier only) ----------------------------
 
     def _open_sqlite(self) -> None:
-        assert self._sqlite_path is not None
+        if self._sqlite_path is None:
+            raise RuntimeError("sqlite mirror path not configured")
         self._sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         # check_same_thread=False lets the connection be shared across the
         # agent framework's worker threads; concurrent access is serialised by
