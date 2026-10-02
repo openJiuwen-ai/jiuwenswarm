@@ -41,13 +41,15 @@ def test_require_llm_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     assert excinfo.value.code == LLM_NOT_CONFIGURED
 
 
-def test_require_llm_billing_block() -> None:
+def test_require_llm_clears_stale_billing_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Next chat/Play entry must re-probe after recharge; do not stick until restart."""
     model_tools._chat_billing_block = ""
     try:
         model_tools.note_chat_model_unavailable("Error code: 402 Insufficient Balance")
-        with pytest.raises(DesignerLlmError) as excinfo:
-            require_llm()
-        assert excinfo.value.code == LLM_BILLING
+        assert model_tools.chat_model_billing_block()
+        monkeypatch.setattr(model_tools, "llm_available", lambda: True)
+        require_llm()
+        assert model_tools.chat_model_billing_block() == ""
     finally:
         model_tools._chat_billing_block = ""
 

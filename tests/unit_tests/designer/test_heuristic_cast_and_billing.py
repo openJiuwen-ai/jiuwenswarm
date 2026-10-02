@@ -168,16 +168,15 @@ def test_402_marks_chat_unavailable_and_fails_closed() -> None:
             "Error code: 402 Insufficient Balance"
         )
         assert model_tools.llm_available() is False
-        with pytest.raises(model_tools.DesignerLlmError) as excinfo:
-            model_tools.require_llm()
-        assert excinfo.value.code == model_tools.LLM_BILLING
+        # Within the same turn, call_model_tool stays fail-closed on the latch.
+        # require_llm (next user entry) clears it — covered separately.
         graph = build_smart_video_graph(
             project_id="proj_402",
             prompt="A father reads a letter.",
             analysis=heuristic_analysis("A father reads a letter."),
         )
         # Graph stamping stays blunt — no demote-to-handler and no nested
-        # require_llm. Billing is enforced at entry gates / call_model_tool.
+        # require_llm. Billing is enforced at call_model_tool until the next entry.
         stamped = apply_runtime_delegate(graph)
         assert any(
             str((n.get("config") or {}).get("delegate")) == "agent"
@@ -189,6 +188,7 @@ def test_402_marks_chat_unavailable_and_fails_closed() -> None:
 
 @pytest.mark.asyncio
 async def test_call_model_tool_does_not_retry_after_402() -> None:
+    """Same user action: after 402, later model calls short-circuit."""
     model_tools._chat_billing_block = ""
     try:
         model_tools.note_chat_model_unavailable("Error code: 402 Insufficient Balance")
@@ -199,5 +199,43 @@ async def test_call_model_tool_does_not_retry_after_402() -> None:
         )
         assert result["ok"] is False
         assert result["unavailable"] is True
+    finally:
+        model_tools._chat_billing_block = ""
+
+
+@pytest.mark.asyncio
+async def test_require_llm_allows_retry_after_402_recharge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After recharge, the next chat/Play entry must probe again (no process-lifetime latch)."""
+    model_tools._chat_billing_block = ""
+    try:
+        model_tools.note_chat_model_unavailable("Error code: 402 Insufficient Balance")
+        blocked = await model_tools.call_model_tool(
+            prompt="hello",
+            system="reply",
+            optimize_for="cost",
+        )
+        assert blocked["ok"] is False
+        assert blocked["unavailable"] is True
+
+        monkeypatch.setattr(model_tools, "llm_available", lambda: True)
+        model_tools.require_llm()
+        assert model_tools.chat_model_billing_block() == ""
+
+        # Latch cleared: must not short-circuit as billing-unavailable.
+        monkeypatch.setattr(model_tools, "list_configured_models", lambda: [])
+        monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("API_BASE", raising=False)
+        monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+        result = await model_tools.call_model_tool(
+            prompt="hello",
+            system="reply",
+            optimize_for="cost",
+        )
+        assert result["ok"] is False
+        assert result.get("unavailable") is not True
+        assert result["code"] == model_tools.LLM_NOT_CONFIGURED
     finally:
         model_tools._chat_billing_block = ""
