@@ -1350,9 +1350,10 @@ class Director:
                 "For advertising, build hook → desire/problem → demonstration/proof → payoff/CTA. "
                 "Each timed shot must add new action, information, or emotion—no filler, repeated "
                 "action, or duplicate camera coverage. In Script/speech plan, write concise exact "
-                "dialogue or voiceover lines with speaker and timing when speech improves the "
-                "concept; explicitly choose visual-only storytelling when it does not. Never add "
-                "speech when the user requested silence. Also cover: character identity locks "
+                "dialogue or voiceover lines with speaker and timing. Speech is the default. "
+                "Do not choose visual-only storytelling, silent lip-sync, or 无声 unless the "
+                "user explicitly asked for mime, a silent film, or no dialogue. Never add "
+                "speech when the user requested that. Also cover: character identity locks "
                 "(face/hair/body/costume) for every on-screen person, including unnamed groups "
                 "that share one look; list that character on every shot where they are visible, "
                 "scene geography (spatial lock), motion consistency, time-coherent continuity "
@@ -1492,10 +1493,16 @@ class Director:
                 "beats written there stay in the shot; do not rename people, move the scene, "
                 "or replace the beat. "
                 "Materialize the Brief's Script/speech plan as exact speech_by_character and "
-                "speech_line values in the appropriate shots. Keep language_lock and exact "
-                "wording; use empty speech fields for deliberately silent shots and never add "
-                "speech when the user requested silence. The human-readable storyboard_markdown "
-                "must also show each exact spoken line or voiceover in its timed shot. "
+                "speech_line values so later clips can speak them. Speech is the default: "
+                "every shot where someone talks needs character_id→exact line in "
+                "speech_by_character and the joined speech_line, in language_lock. "
+                "Copy lines the Brief already wrote. If the Brief left them out and the user "
+                "did not ask for mime, a silent film, or no dialogue, write short exact lines "
+                "and put them in those fields. Do not leave speaking shots empty, and do not "
+                "substitute silent lip-sync, (silent), or 无声 for words. "
+                "Empty speech fields only when nobody speaks in that window, or the user asked "
+                "for no dialogue. The human-readable storyboard_markdown must show each exact "
+                "spoken line or voiceover, with its speaker, in its timed shot. "
                 "First shot of each setting: "
                 "keyframe_strategy=compose_from_solo_refs — composer places ONLY "
                 "on_screen cast with cast_actions (who is doing what). "
@@ -1509,8 +1516,8 @@ class Director:
                 "start_state {pose,seats,facing,on_screen,offscreen}, "
                 "end_state {pose,seats,facing,exited,speech_done,on_screen}, "
                 "continuity_lock, keyframe_prompt, exiting_character_ids, "
-                "speech_by_character (map character_id→exact spoken line for This shot; "
-                "empty {} if silent), speech_line (joined fallback). "
+                "speech_by_character (map character_id→exact spoken line for this shot; "
+                "empty {} only when nobody speaks in this window), speech_line (joined fallback). "
                 "Same setting_id: next shot start_state MUST match prior end_state. "
                 "Exactly one shot has emotion=climax. Each shot includes irreversible "
                 "(what is newly true at the last frame) and cast_states "
@@ -1549,7 +1556,11 @@ class Director:
                         "characters": characters,
                         "shots": shots,
                         "spatial_lock": meta.get("spatial_lock"),
-                        "rule": "Multi-shot storyboard required when multiple beats exist.",
+                        "rule": (
+                            "Multi-shot storyboard required when multiple beats exist. "
+                            "Write exact speech_by_character and speech_line on every shot "
+                            "where someone talks, so later clips can speak those lines."
+                        ),
                     },
                     ensure_ascii=False,
                 ),
@@ -1653,12 +1664,31 @@ class Director:
                 code=LLM_API_ERROR,
             ) from exc
 
-        from jiuwenswarm.server.runtime.designer.audio_locks import ensure_audio_locks_on_analysis
+        from jiuwenswarm.server.runtime.designer.audio_locks import (
+            ensure_audio_locks_on_analysis,
+            is_spoken_line,
+            user_declined_speech,
+        )
         from jiuwenswarm.server.runtime.designer.pipeline.clip_shot_scope import apply_shot_scope
 
         analysis = ensure_audio_locks_on_analysis(analysis, user_prompt)
         analysis = apply_shot_scope(analysis, user_prompt)
         shots = list(analysis.get("shots") or shots)
+        if shots and not user_declined_speech(user_prompt):
+            has_line = any(
+                is_spoken_line(str(s.get("speech_line") or ""))
+                or (
+                    isinstance(s.get("speech_by_character"), dict)
+                    and any(is_spoken_line(str(v)) for v in s["speech_by_character"].values())
+                )
+                for s in shots
+                if isinstance(s, dict)
+            )
+            if not has_line:
+                raise DesignerLlmError(
+                    "Chat model did not write spoken lines into the storyboard.",
+                    code=LLM_API_ERROR,
+                )
         try:
             from jiuwenswarm.server.runtime.designer.pipeline.storyboard_shot_state import (
                 ensure_shot_start_end_states,
@@ -1854,7 +1884,9 @@ class Director:
                 "into every clip. Preserve every distinct narrative/content shot from the "
                 "approved storyboard; each action must advance the story or message, not repeat "
                 "an earlier action as filler or alternate coverage. Preserve exact per-shot "
-                "speech_by_character and speech_line from the storyboard. "
+                "speech_by_character and speech_line from the storyboard. Do not drop those "
+                "lines. include_speech stays true unless the user asked for mime, a silent "
+                "film, or no dialogue. "
                 "story window needs, with contiguous timelines. A duration the approved brief "
                 "already gave a shot stays that length. Keep the brief's character names and "
                 "wardrobe, place names, and continuity notes. Retain every storyboard "
@@ -1983,6 +2015,11 @@ class Director:
                 audio["include_music"] = bool(parsed.get("include_music"))
             if audio.get("include_speech") and audio.get("include_music"):
                 audio["policy"] = "speech_and_music"
+            from jiuwenswarm.server.runtime.designer.audio_locks import (
+                apply_default_speech_policy,
+            )
+
+            audio = apply_default_speech_policy(audio, user_prompt)
             analysis["audio"] = audio
             analysis["scene_continuity_mode"] = "scene_card_plus_clip_shots"
         except DesignerLlmError:
@@ -3607,7 +3644,8 @@ class Director:
                 "names, wardrobe, places, and continuity notes, enforce time-coherent continuity, and "
                 "keep geography locked (same landmarks/layout/light across views). "
                 "Also approve/enforce film audio locks: language_lock (one language for all "
-                "speech), per-shot speech_by_character (exact lines or {} if silent), and "
+                "speech), per-shot speech_by_character (exact lines for every speaking shot; "
+                "{} only when that shot has no speaker or the user asked for mime or no dialogue), and "
                 "film-wide bgm_lock. Respond JSON only: "
                 '{"ok":true,"shot_fixes":[{"shot_index":1,"action":"...","camera":"...",'
                 '"timeline":"<copy this shot timeline from the approved brief>",'

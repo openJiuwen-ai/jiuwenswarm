@@ -127,50 +127,11 @@ def detect_audio_intent(prompt: str) -> dict[str, Any]:
     from jiuwenswarm.server.runtime.designer.audio_locks import (
         infer_bgm_lock,
         infer_language_lock,
+        prompt_requests_full_silence,
+        user_declined_speech,
     )
 
     text = (prompt or "").lower()
-    silent_markers = (
-        "no sound",
-        "no audio",
-        "silent",
-        "mute",
-        "without sound",
-        "without audio",
-        "无声",
-        "不要声音",
-        "不要配音",
-        "静音",
-        "无配音",
-    )
-    speech_markers = (
-        "speech",
-        "voiceover",
-        "voice-over",
-        "narration",
-        "dialogue",
-        "tts",
-        "spoken",
-        "say ",
-        "says ",
-        "said ",
-        "speaking",
-        "speaks",
-        "talking",
-        "talks",
-        "whisper",
-        "preach",
-        "sermon",
-        "quotes",
-        "lines",
-        "配音",
-        "旁白",
-        "对白",
-        "台词",
-        "语音",
-        "说",
-        "讲",
-    )
     music_markers = (
         "music",
         "bgm",
@@ -182,7 +143,7 @@ def detect_audio_intent(prompt: str) -> dict[str, Any]:
         "b gm",
     )
     language_lock = infer_language_lock(prompt or "")
-    if any(m in text for m in silent_markers):
+    if prompt_requests_full_silence(prompt or ""):
         return {
             "policy": "silent",
             "include_speech": False,
@@ -191,19 +152,15 @@ def detect_audio_intent(prompt: str) -> dict[str, Any]:
             "bgm_lock": {},
             "notes": "User requested silence / no audio.",
         }
-    include_speech = any(m in text for m in speech_markers)
-    include_music = any(m in text for m in music_markers)
-    if include_speech and include_music:
+    # Speech is the default. Only an explicit mime / no-dialogue request turns it off.
+    include_speech = not user_declined_speech(prompt or "")
+    include_music = True
+    if include_speech:
         policy = "speech_and_music"
-    elif include_speech:
-        include_music = True  # keep soft bed under dialogue unless silent
-        policy = "speech_and_music"
-    elif include_music:
+    elif any(m in text for m in music_markers):
         policy = "music"
     else:
-        # Video default: optional soft bed unless silent; speech lines come from storyboard.
         policy = "optional_music"
-        include_music = True
     bgm_lock = infer_bgm_lock(prompt or "", {"policy": policy, "include_music": include_music})
     return {
         "policy": policy,

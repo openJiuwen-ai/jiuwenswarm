@@ -40,7 +40,7 @@ Write English Markdown with these sections:
 - Creative concept (specific interpretation and promise; fill unspecified details creatively)
 - Narrative / content arc (setup or hook → development/turn → payoff or CTA)
 - Timed shot plan spanning the full requested duration; every shot adds new content, no filler or repetition
-- Script / speech plan (speaker + timing + exact concise dialogue/voiceover when useful; explicitly visual-only if stronger; honor silence)
+- Script / speech plan (speaker + timing + exact concise dialogue or voiceover; speech is the default; visual-only only when the user asked for mime, a silent film, or no dialogue)
 - Cast (identity locks — face, hair, body, FULL costume for EACH on-screen person, including unnamed groups that share one look; never concatenate; list them on every shot where they are visible)
 - Setting / scene geography, lighting, landmarks, opening blocking (who sits/stands where)
 - Language / speech lock (film language; exact lines if the user gave them)
@@ -90,7 +90,7 @@ Rules:
 - Comment is the composed-scene prompt: subjects, composition, light, action instant,
   environment, and the Brief's visual style — ready for image gen (composed scene with all
   opening-cast characters in the scene)
-- Language: keep every planned speech_line exact and visibly associate speaker, line, and timing with its row; empty = silent
+- Language: write every spoken line into the row (speaker, exact words, timing) so later clips can speak it. Speech is the default. Empty only when nobody speaks in that window, or the user asked for mime or no dialogue. Do not replace a line with silent lip-sync.
 - Enhance sparse prompts: crowd, atmosphere, lighting, wardrobe detail — without inventing new lead characters
 - Do not invent a new world that contradicts the brief
 

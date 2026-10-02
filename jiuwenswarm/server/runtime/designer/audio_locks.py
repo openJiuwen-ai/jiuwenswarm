@@ -211,6 +211,112 @@ def normalize_speech_by_character(
     return out
 
 
+# Full silence: no speech and no music. Substring match, same as before.
+_FULL_SILENCE_MARKERS = (
+    "no sound",
+    "no audio",
+    "silent",
+    "mute",
+    "without sound",
+    "without audio",
+    "无声",
+    "不要声音",
+    "不要配音",
+    "静音",
+    "无配音",
+)
+# Dialogue off, music may stay. Only an explicit mime / no-dialogue request.
+_NO_DIALOGUE_MARKERS = (
+    "mime",
+    "pantomime",
+    "no dialogue",
+    "no dialog",
+    "without dialogue",
+    "without dialog",
+    "no speech",
+    "without speech",
+    "no talking",
+    "visual-only",
+    "visual only",
+    "默剧",
+    "哑剧",
+    "无对白",
+    "不要对白",
+    "无台词",
+    "不要台词",
+    "不要说话",
+    "不说话",
+    "纯视觉",
+)
+
+
+def prompt_requests_full_silence(prompt: str) -> bool:
+    """True when the user asked for no audio at all."""
+    text = (prompt or "").lower()
+    return any(marker in text for marker in _FULL_SILENCE_MARKERS)
+
+
+def user_declined_speech(prompt: str) -> bool:
+    """True only when the user asked for silence or a mime-like performance."""
+    text = (prompt or "").lower()
+    if prompt_requests_full_silence(text):
+        return True
+    return any(marker in text for marker in _NO_DIALOGUE_MARKERS)
+
+
+def apply_default_speech_policy(audio: dict[str, Any], prompt: str = "") -> dict[str, Any]:
+    """Speech stays on unless the user asked for silence or mime.
+
+    An already-silent policy is left silent so a stored silent film is not
+    reopened. Otherwise include_speech is true and a music bed stays underneath.
+    """
+    out = dict(audio or {})
+    if str(out.get("policy") or "") == "silent" or user_declined_speech(prompt):
+        out["include_speech"] = False
+        if str(out.get("policy") or "") == "silent" or prompt_requests_full_silence(prompt):
+            out["include_music"] = False
+            out["policy"] = "silent"
+            return out
+        if out.get("policy") not in {"music", "optional_music"}:
+            out["policy"] = "optional_music"
+        return out
+    out["include_speech"] = True
+    if "include_music" not in out:
+        out["include_music"] = True
+    if out.get("include_music"):
+        out["policy"] = "speech_and_music"
+    else:
+        out["policy"] = "speech"
+    return out
+
+
+_PLACEHOLDER_SPEECH = {
+    "(silent)",
+    "silent",
+    "（silent）",
+    "无声",
+    "（无声）",
+    "(无声)",
+    "无对白",
+    "无台词",
+    "仅口型",
+    "仅口型与表情",
+    "lip-sync",
+    "lip sync",
+    "none",
+    "n/a",
+    "null",
+}
+
+
+def is_spoken_line(text: str) -> bool:
+    """False for empty values and silence placeholders such as '(silent)'."""
+    folded = str(text or "").strip().lower().strip(" .。")
+    if not folded:
+        return False
+    return folded not in _PLACEHOLDER_SPEECH
+
+
 def speech_line_from_by_character(by_char: dict[str, str]) -> str:
     parts = [f"{cid}: {line}" for cid, line in by_char.items() if str(line).strip()]
     return " | ".join(parts)[:500]
@@ -233,20 +339,7 @@ def ensure_audio_locks_on_analysis(
     bgm = infer_bgm_lock(user, {**audio, "bgm_lock": out.get("bgm_lock") or audio.get("bgm_lock")})
     out["bgm_lock"] = bgm
     audio["bgm_lock"] = bgm
-    if audio.get("policy") != "silent":
-        # Narrative default: keep music bed; speech when any dialogue field exists later.
-        if "include_music" not in audio:
-            audio["include_music"] = True
-        if audio.get("include_speech") and audio.get("include_music"):
-            audio["policy"] = "speech_and_music"
-        elif audio.get("include_speech"):
-            audio["policy"] = "speech"
-        elif audio.get("include_music") and audio.get("policy") not in {
-            "music",
-            "optional_music",
-            "speech_and_music",
-        }:
-            audio["policy"] = "optional_music"
+    audio = apply_default_speech_policy(audio, user)
     characters = [c for c in (out.get("characters") or []) if isinstance(c, dict)]
     shots = []
     any_speech = False
@@ -266,7 +359,11 @@ def ensure_audio_locks_on_analysis(
         shots.append(s)
     if shots:
         out["shots"] = shots
-    if any_speech and audio.get("policy") != "silent":
+    if (
+        any_speech
+        and audio.get("policy") != "silent"
+        and not user_declined_speech(user)
+    ):
         audio["include_speech"] = True
         if audio.get("include_music"):
             audio["policy"] = "speech_and_music"
@@ -424,7 +521,10 @@ def video_model_supports_native_audio(model: str | None = None) -> bool:
     """Whether the configured/requested video model can synthesize native audio.
 
     Capability gate only — never switches models. Known native-audio families
-    (wan3, Seedance/Doubao) return True; others require VIDEO_GEN_NATIVE_AUDIO=1.
+    (wan3, Seedance/Doubao, MiniMax/Hailuo) return True; others require
+    VIDEO_GEN_NATIVE_AUDIO=1. MiniMax H3 has no separate audio flag: its v2
+    tasks are already video-with-audio, so this gate only decides whether a
+    spoken line is requested.
     """
     chosen = (model or configured_video_gen_model() or "").strip().lower()
     if not chosen:
@@ -434,7 +534,7 @@ def video_model_supports_native_audio(model: str | None = None) -> bool:
         return True
     if explicit in {"0", "false", "no", "off"}:
         return False
-    return any(token in chosen for token in ("wan3", "seedance", "doubao"))
+    return any(token in chosen for token in ("wan3", "seedance", "doubao", "minimax", "hailuo"))
 
 
 def is_wan_video_model(model: str) -> bool:

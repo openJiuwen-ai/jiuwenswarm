@@ -15,6 +15,9 @@ from jiuwenswarm.server.runtime.designer.audio_locks import (
 def test_seedance_supports_native_audio() -> None:
     assert video_model_supports_native_audio("doubao-seedance-2-5-260628")
     assert video_model_supports_native_audio("wan3.0-video")
+    assert video_model_supports_native_audio("MiniMax-H3")
+    assert video_model_supports_native_audio("MiniMax-H3-Max")
+    assert video_model_supports_native_audio("Hailuo-02")
     assert not video_model_supports_native_audio("custom-silent-video")
 
 
@@ -272,4 +275,41 @@ def test_clip_audio_is_dialogue_only() -> None:
     assert "Do NOT generate music" in block
     assert "NATIVE DIALOGUE only" in block
     assert "speech + BGM" not in block
+
+
+def test_speech_is_default_unless_mime_or_silence() -> None:
+    from jiuwenswarm.server.runtime.designer.audio_locks import (
+        apply_default_speech_policy,
+        ensure_audio_locks_on_analysis,
+    )
+    from jiuwenswarm.server.runtime.designer.skills_loader import detect_audio_intent
+
+    crosstalk = detect_audio_intent("生成一段15秒的相声，两个人在舞台上身着长袍，气氛轻松愉快")
+    assert crosstalk["include_speech"] is True
+    assert crosstalk["policy"] == "speech_and_music"
+    assert crosstalk["language_lock"] == "zh"
+
+    mime = detect_audio_intent("一段默剧，两个人在舞台上")
+    assert mime["include_speech"] is False
+    assert mime["policy"] != "silent"
+    assert mime["include_music"] is True
+
+    silent = detect_audio_intent("请做一支无声短片")
+    assert silent["include_speech"] is False
+    assert silent["include_music"] is False
+    assert silent["policy"] == "silent"
+
+    kept = ensure_audio_locks_on_analysis(
+        {"audio": {"policy": "silent", "include_speech": False, "include_music": False}},
+        "A bear waves in a forest.",
+    )
+    assert kept["audio"]["include_speech"] is False
+    assert kept["audio"]["policy"] == "silent"
+
+    opened = apply_default_speech_policy(
+        {"policy": "optional_music", "include_speech": False, "include_music": True},
+        "生成一段15秒的相声",
+    )
+    assert opened["include_speech"] is True
+    assert opened["policy"] == "speech_and_music"
 

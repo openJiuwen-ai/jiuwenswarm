@@ -101,6 +101,7 @@ async def test_director_brief_prompt_requires_visible_story_and_script_plan(
     assert "Creative concept; Narrative/content arc" in system
     assert "timed shot plan spanning the full requested duration" in system
     assert "Script/speech plan" in system
+    assert "Speech is the default" in system
     assert "no filler, repeated action" in system
     assert "approved_brief" in graph["metadata"]
 
@@ -271,6 +272,7 @@ async def test_director_storyboard_materializes_enriched_speech_into_clip_config
     assert "Materialize the Brief's entire narrative/content arc" in system
     assert "no filler, repeated action" in system
     assert "speech_by_character and speech_line" in system
+    assert "later clips can speak them" in system
     analysis = graph["metadata"]["script_analysis"]
     assert len(analysis["shots"]) == 4
     assert graph["nodes"][1]["config"]["speech_line"] == (
