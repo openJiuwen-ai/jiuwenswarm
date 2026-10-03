@@ -8,10 +8,12 @@ import socket
 
 from .execution import BudgetSettings, budget_view, cost_units, reserve, settle, units
 from .qasper_experiment import make_request, ParagraphRanker, parse_prediction, evaluate, sha, write
+from .qasper_selection import checked_request
 
 
 FILES=('pilot-requests.json','train/public-papers.json','train/public-questions.json','train/gold-references.json')
 PARAMS={'temperature':0,'max_tokens':512,'thinking':{'type':'disabled'},'response_format':{'type':'json_object'}}
+TOTAL_TIMEOUT_SECONDS=90
 SHORT_ANSWER=(' In the answer field, return only the minimal direct answer, not an explanation. '
     'For a yes/no question return exactly Yes or No when supported. '
     'For an entity, number or list question return only the requested entity, number or list. '
@@ -31,7 +33,7 @@ def read(path):return json.loads(Path(path).read_text(encoding='utf-8'))
 def digest(value):return sha(json.dumps(value,sort_keys=True,ensure_ascii=False).encode())
 def code_hashes():
     return {name:sha(Path(__file__).with_name(name).read_bytes()) for name in
-            ('qasper_runner.py','qasper_experiment.py','retrieval_diagnostics.py','execution.py')}
+            ('qasper_runner.py','qasper_experiment.py','qasper_selection.py','retrieval_diagnostics.py','execution.py')}
 
 
 def inputs(bundle):
@@ -40,20 +42,30 @@ def inputs(bundle):
     papers=read(bundle/'train/public-papers.json')
     questions={q['question_id']:q for q in read(bundle/'train/public-questions.json')}
     keys=set()
-    if not requests or len(requests)>36:raise ValueError('Invalid pilot size')
+    if not requests or len(requests)>96:raise ValueError('Invalid pilot size')
     versions={r.get('prompt_version','original') for r in requests}
-    if len(versions)!=1 or not versions<={'original','short-answer-v1'}:raise ValueError('Mixed/unknown prompt versions')
+    if not versions<={'original','short-answer-v1','completeness-v1'}:raise ValueError('Unknown prompt versions')
+    if len(versions)>1 and not (versions=={'short-answer-v1','completeness-v1'} and {r['method'] for r in requests}=={'bm25@8','bm25-check@8'}):
+        raise ValueError('Mixed versions require a paired completeness study')
     for r in requests:
         key=(r['question_id'],r['method'])
         if key in keys:raise ValueError('Duplicate request')
         keys.add(key)
-        if r['method'] not in ('overlap@8','bm25@8','bm25@2'):raise ValueError('Unknown method')
+        if r['method'] not in ('overlap@8','bm25@8','bm25@2','bm25-check@8'):raise ValueError('Unknown method')
         q=questions[r['question_id']];paper=papers[q['paper_id']]
         if q['split']!='train':raise ValueError('Pilot must use train only')
         method,k=r['method'].split('@')
+        if method=='bm25-check':method='bm25'
         expected={'method':r['method'],**make_request(q,paper,ParagraphRanker(paper['paragraphs']).rank(q['question'],method),int(k))}
-        if r.get('prompt_version')=='short-answer-v1':expected=short_answer_request(expected)
+        if r.get('prompt_version') in ('short-answer-v1','completeness-v1'):expected=short_answer_request(expected)
+        if r.get('prompt_version')=='completeness-v1':expected=checked_request(expected)
+        if (r['method']=='bm25-check@8')!=(r.get('prompt_version')=='completeness-v1'):
+            raise ValueError('Completeness method/version mismatch')
         if r!=expected:raise ValueError('Request differs from public reconstruction')
+    if 'completeness-v1' in versions:
+        base={r['question_id'] for r in requests if r['method']=='bm25@8'}
+        check={r['question_id'] for r in requests if r['method']=='bm25-check@8'}
+        if base!=check:raise ValueError('Incomplete paired control')
     return requests,papers
 
 
@@ -61,7 +73,7 @@ def make_plan(bundle,cfg,batch_cny=.6):
     cfg=BudgetSettings(**cfg).model_dump()
     if not cfg['pricing_checked'] or cfg['max_output_tokens']!=512 or not 0<cfg['total_cny']<=15:
         raise ValueError('Need checked pricing, 512 output limit and total <=15 CNY')
-    if cfg['input_cny_per_million']<=0 or cfg['output_cny_per_million']<=0 or not 0<batch_cny<=1:
+    if cfg['input_cny_per_million']<=0 or cfg['output_cny_per_million']<=0 or not 0<batch_cny<=2:
         raise ValueError('Invalid pricing/batch bound')
     requests,_=inputs(bundle)
     upper=[len(json.dumps(r['messages'],ensure_ascii=False).encode())+1024 for r in requests]
@@ -76,7 +88,8 @@ def make_plan(bundle,cfg,batch_cny=.6):
           'output_cny_per_million':cfg['output_cny_per_million'],'total_cny':cfg['total_cny'],
           'max_input_upper':max(upper),'max_output_tokens':512,'parameters':PARAMS,
           'max_calls':len(requests),'reserve_upper_units':sum(holds),'batch_cap_units':units(batch_cny),
-          'automatic_retries':0,'order':'prepared deterministic question order; overlap8, bm25-8, bm25-2',
+          'client_total_timeout_seconds':TOTAL_TIMEOUT_SECONDS,
+          'automatic_retries':0,'order':'exact frozen pilot-requests order; see study protocol',
           'note':'Development smoke test, no randomization/confirmatory inference; billed cost may differ from peak-rate estimate.'}
     return plan|{'id':digest(plan)}
 
@@ -100,7 +113,9 @@ async def invoke(api_key,messages,cfg):
     model=Model(ModelClientConfig(client_provider='DeepSeek',api_key=api_key,api_base='https://api.deepseek.com',
         max_retries=0,timeout=60,verify_ssl=True,use_shared_llm_http_client=False),
         ModelRequestConfig(model=cfg['model'],temperature=0,max_tokens=512))
-    return await model.invoke(messages,timeout=60,**PARAMS)
+    # SDK inactivity timeout is not a total elapsed-time bound (e.g. keepalives).
+    # Cooperative event-loop deadline; cannot run while the computer is suspended.
+    return await asyncio.wait_for(model.invoke(messages,timeout=60,**PARAMS),timeout=TOTAL_TIMEOUT_SECONDS)
 
 
 async def run_batch(store,bundle,plan,key,*,transport=None):
@@ -153,11 +168,13 @@ async def _run_batch(store,bundle,plan,key,*,transport=None):
                     rec['prediction']=parse_prediction(content,r,papers[r['paper_id']])
                     rec['status']='completed'
                 except (ValueError,KeyError,TypeError):rec['status']='invalid_output'
-        except Exception:
+        except Exception as exc:
             # No raw SDK exception: it may contain credentials or headers.
             if reservation:
                 saved=next(x for x in store.read()['api_requests'] if x['id']==reservation['id'])
                 if saved['status']=='reserved':settle(store,reservation)
+            rec['status']='request_failed' if reservation else 'failed_before_request'
+            rec['error_category']='timeout' if isinstance(exc,TimeoutError) else 'request_or_artifact_failure'
             rec['error']='Request or artifact processing failed; no retry; budget held.'
         write(folder/f'{n:03}-record.json',rec)
         def append(state):
