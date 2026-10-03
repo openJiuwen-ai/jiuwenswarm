@@ -45,6 +45,7 @@ from jiuwenswarm.agents.swarm.providers import research_gate_rails
 from jiuwenswarm.agents.swarm.providers.research_gate_rails import (
     RESEARCH_GATE,
     ScientificVerificationRail,
+    _resolve_claims_path,
     approved_claim_ids,
     build_research_gate_rail,
     find_ledger_id_references,
@@ -175,6 +176,40 @@ def test_factory_loads_approved_claims_from_team_workspace(tmp_path: Path) -> No
         rails = build_research_gate_rail({}, ctx)
         assert len(rails) == 1
         assert rails[0].approved_ids == {"C-001", "C-002"}
+
+
+def test_resolve_claims_path_rejects_escape_attempts(tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    root.mkdir()
+    outside = tmp_path / "secret.yml"
+    outside.write_text("id: C-999\nstatus: supported\n", encoding="utf-8")
+
+    assert _resolve_claims_path(str(root), "../secret.yml") is None
+    assert _resolve_claims_path(str(root), str(outside)) is None
+    # Prefix-collision sibling directories are not inside the root either.
+    sibling = tmp_path / "ws_evil"
+    sibling.mkdir()
+    (sibling / "claims.yml").write_text("x", encoding="utf-8")
+    assert _resolve_claims_path(str(root), "../ws_evil/claims.yml") is None
+    # In-root resolution is unchanged.
+    (root / "claims.yml").write_text("x", encoding="utf-8")
+    assert _resolve_claims_path(str(root), "claims.yml") == str(root / "claims.yml")
+
+
+def test_factory_ignores_traversal_claims_file(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "claims.yml").write_text(
+        _claims_yaml([{"id": "C-001", "status": "supported"}]), encoding="utf-8"
+    )
+    root_ws = tmp_path / "root_ws"
+    root_ws.mkdir()
+    ctx = SwarmBuildContext(session_id="session-1", team_ws_root=str(root_ws))
+
+    rails = build_research_gate_rail({"claims_file": "../outside/claims.yml"}, ctx)
+
+    assert len(rails) == 1
+    assert rails[0].approved_ids == set()
 
 
 @pytest.mark.parametrize("mode", ["team", "code.team"])

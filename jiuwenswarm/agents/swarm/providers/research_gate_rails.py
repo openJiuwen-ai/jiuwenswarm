@@ -251,10 +251,20 @@ class ScientificVerificationRail(AgentRail):
 
 
 def _resolve_claims_path(team_ws_root: str, claims_file: str) -> str | None:
-    """Locate the claims ledger under the team workspace root."""
+    """Locate the claims ledger under the team workspace root.
+
+    The configured name must resolve to a path inside the workspace root:
+    traversal segments (``../``) or absolute paths are rejected so a crafted
+    ``claims_file`` can never make the rail read arbitrary files.
+    """
     name = str(claims_file or "").strip() or "claims.yml"
-    root = Path(team_ws_root)
+    root = Path(team_ws_root).resolve()
     for candidate in (root / name, root / "workspace" / name):
+        try:
+            if not candidate.resolve().is_relative_to(root):
+                continue
+        except OSError:
+            continue
         if candidate.is_file():
             return str(candidate)
     return None
