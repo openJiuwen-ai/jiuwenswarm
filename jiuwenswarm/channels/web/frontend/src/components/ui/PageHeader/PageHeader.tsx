@@ -17,7 +17,7 @@ export function PageHeader({ title, subtitle, children, titleTestId, subtitleTes
           <p className="text-sm text-text-muted mt-1" data-testid={subtitleTestId}>{subtitle}</p>
         )}
       </div>
-      {children && <div className="flex items-center">{children}</div>}
+      {children && <div className="flex items-center gap-4">{children}</div>}
     </div>
   );
 }

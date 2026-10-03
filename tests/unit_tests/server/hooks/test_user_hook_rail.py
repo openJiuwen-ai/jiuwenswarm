@@ -10,9 +10,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from openjiuwen.core.common.exception.codes import StatusCode
-from openjiuwen.core.foundation.llm import ToolMessage
+from openjiuwen.core.foundation.llm import ToolCall, ToolMessage
 from openjiuwen.core.foundation.tool import ToolOutput
 from openjiuwen.core.single_agent.ability_manager import AbilityExecutionError
+from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
 
 from jiuwenswarm.common.hooks_config import HooksConfig, HookMatcher
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
@@ -67,10 +68,19 @@ class TestBeforeToolCall:
             PreToolUse=[("*", [{"command": "echo block >&2; exit 2", "timeout": 5}])]
         )
         rail = UserHookRail(config)
-        ctx = MockCallbackContext(inputs=MockToolInputs(tool_name="Bash"))
+        ctx = AgentCallbackContext(agent=None, inputs=ToolCallInputs(
+            tool_name="Bash",
+            tool_call=ToolCall(id="tc-1", type="function", name="Bash", arguments="{}"),
+        ))
         await rail.before_tool_call(ctx)
         assert ctx.extra["_skip_tool"] is True
         assert "_hook_feedback" in ctx.extra
+        assert ctx.inputs.tool_result == {
+            "success": False, "status": "blocked", "reason": "block", "retryable": False,
+        }
+        assert ctx.inputs.tool_msg.tool_call_id == "tc-1"
+        assert "block" in ctx.inputs.tool_msg.content
+        assert ctx.consume_force_finish().result["stop_reason"] == "hook_blocked"
 
     @pytest.mark.asyncio
     async def test_modifying_hook_updates_tool_args(self):
@@ -148,7 +158,10 @@ class TestBeforeToolCall:
             )]
         )
         rail = UserHookRail(config)
-        ctx = MockCallbackContext(inputs=MockToolInputs(tool_name="Bash"))
+        ctx = AgentCallbackContext(agent=None, inputs=ToolCallInputs(
+            tool_name="Bash",
+            tool_call=ToolCall(id="tc-1", type="function", name="Bash", arguments="{}"),
+        ))
         await rail.before_tool_call(ctx)
         assert ctx.extra["_skip_tool"] is True
         # modifiedInput 不应该被应用（因为早已 return）
