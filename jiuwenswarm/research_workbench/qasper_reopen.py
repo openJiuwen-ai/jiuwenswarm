@@ -90,7 +90,7 @@ def preflight(store,bundle,plan):
             'combined_upper_cny':view['held_cny']+plan['reserve_upper_units']/1e6,'max_calls':plan['max_calls']}
 
 
-async def call_one(store,key,plan,folder,job,slot,paper,transport):
+async def call_one(store,key,plan,folder,job,slot,paper,transport,parser=parse_prediction):
     r=job['slots'][slot];stem=f'{job["question_id"]}-{slot}';res=None
     rec={'question_id':job['question_id'],'slot':slot,'request_sha256':digest(r),'status':'failed'}
     write(folder/(stem+'-request.json'),r)
@@ -103,7 +103,7 @@ async def call_one(store,key,plan,folder,job,slot,paper,transport):
             input_tokens=settled.get('input_tokens'),output_tokens=settled.get('output_tokens'),
             response_model=getattr(response,'response_model',None),finish_reason=getattr(response,'finish_reason',None))
         if settled['status']!='completed' or rec['finish_reason']!='stop':raise ValueError('Incomplete response/usage')
-        rec['prediction']=parse_prediction(response.content,r,paper);rec['status']='completed'
+        rec['prediction']=parser(response.content,r,paper);rec['status']='completed'
     except Exception:
         if res and next(x for x in store.read()['api_requests'] if x['id']==res['id'])['status']=='reserved':settle(store,res)
         rec['error']='Stopped on request/output failure; no automatic retry.'
