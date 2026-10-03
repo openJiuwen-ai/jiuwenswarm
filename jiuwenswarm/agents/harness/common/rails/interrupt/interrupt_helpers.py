@@ -1065,6 +1065,69 @@ def _is_permission_interaction(interaction: Any) -> bool:
     return _resolve_interrupt_source(tool_name, message) == "permission_interrupt"
 
 
+def pending_interrupt_ask_payload_from_state(state: Any) -> dict | None:
+    """Rebuild the ``chat.ask_user_question`` payload for a parked tool interrupt.
+
+    The approval prompt is emitted exactly once, as a transient chunk inside the
+    live response stream, while the engine's ``ToolInterruptionState`` stays
+    parked in the session until the answer arrives. Those two lifetimes race:
+    when the web client is between WebSocket connections at the moment the
+    chunk is published (a dev-server reload, a page refresh mid-turn), the
+    prompt lands on zero subscribers, history never persisted it, and nothing
+    re-delivers it — the tool call then waits forever and the turn dies
+    silently. This helper closes the race from the durable side: the parked
+    state is the single source of truth for "a prompt is still owed to the
+    user", so a reconnecting client can have the exact same ask payload rebuilt
+    and re-pushed. The state is cleared the moment a resume answer is consumed,
+    which makes "state present" equivalent to "prompt unanswered".
+
+    Returns ``None`` when the state carries no interrupted tools (nothing owed).
+    """
+    interrupted_tools = getattr(state, "interrupted_tools", None)
+    if not isinstance(interrupted_tools, dict) or not interrupted_tools:
+        return None
+
+    interactions: list[Any] = []
+    for entry in interrupted_tools.values():
+        tool_call = getattr(entry, "tool_call", None)
+        requests = getattr(entry, "interrupt_requests", None)
+        if not isinstance(requests, dict):
+            continue
+        for inner_id, request in requests.items():
+            value: Any = request
+            # Mirror the engine's original emit: a bare InterruptRequest is
+            # wrapped with the tool-call context (tool_name / tool_args /
+            # tool_call_id) exactly like ToolInterruptHandler did when the
+            # interrupt was first raised, so the rebuilt prompt classifies to
+            # the same source (permission/confirm/ask_user) as the lost one.
+            try:
+                from openjiuwen.core.single_agent.interrupt.response import (
+                    InterruptRequest,
+                    ToolCallInterruptRequest,
+                )
+
+                if (
+                    isinstance(request, InterruptRequest)
+                    and not isinstance(request, ToolCallInterruptRequest)
+                    and tool_call is not None
+                ):
+                    value = ToolCallInterruptRequest.from_tool_call(
+                        request=request,
+                        tool_call=tool_call,
+                    )
+            except Exception:
+                logger.debug(
+                    "[interrupt_helpers] pending ask rebuild: tool-call wrap failed",
+                    exc_info=True,
+                )
+                value = request
+            interactions.append({"id": str(inner_id or ""), "value": value})
+
+    if not interactions:
+        return None
+    return convert_interactions_to_ask_user_question(interactions)
+
+
 def _iter_interactions(state_outputs: list) -> Any:
     """Yield interaction objects, flattening nested interaction lists."""
     for interaction in state_outputs:
