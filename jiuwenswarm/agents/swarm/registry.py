@@ -51,6 +51,7 @@ from jiuwenswarm.agents.swarm.providers import (
     code_subagents as _code_subagents,
     evolution_rails as _evolution_rails,
     member_rails as _member_rails,
+    research_gate_rails as _research_gate_rails,
     runtime_tools as _runtime_tools,
     skills as _skills,
     tools as _tools,
@@ -94,6 +95,7 @@ TEAM_SKILL_CREATE = _evolution_rails.TEAM_SKILL_CREATE
 MEMBER_SKILL_EVOLUTION = _evolution_rails.MEMBER_SKILL_EVOLUTION
 EVOLUTION_INTERRUPT = _evolution_rails.EVOLUTION_INTERRUPT
 SYMPHONY_GRAPH_EVOLUTION = _evolution_rails.SYMPHONY_GRAPH_EVOLUTION
+RESEARCH_GATE = _research_gate_rails.RESEARCH_GATE
 
 # Code-profile (code.team / team.plan.code) swarm-owned rail provider names.
 CODE_EXTRA_TOOLS = _tools.CODE_EXTRA_TOOLS
@@ -217,6 +219,7 @@ __all__ = [
     "TEAM_SKILL_EVOLUTION",
     "TEAM_SKILL_CREATE",
     "MEMBER_SKILL_EVOLUTION",
+    "RESEARCH_GATE",
     "RESPONSE_PROMPT",
     "SYS_OPERATION",
     "STREAM_EVENT",
