@@ -660,9 +660,10 @@ test('isolates LaTeX parsing from code and incomplete streaming delimiters', asy
   }
 });
 
-test('downloads a blob through a temporary anchor and always revokes its object URL', () => {
+test('downloads a blob through a temporary anchor and revokes its object URL after the timer', () => {
   const dom = new JSDOM('<!doctype html><html><body></body></html>');
   const calls = [];
+  const timers = [];
   const objectUrl = 'blob:test-download';
   const originalClick = dom.window.HTMLAnchorElement.prototype.click;
   dom.window.HTMLAnchorElement.prototype.click = function click() {
@@ -677,14 +678,25 @@ test('downloads a blob through a temporary anchor and always revokes its object 
       revokeObjectURL: url => calls.push({ revoked: url }),
     },
     document: dom.window.document,
+    window: {
+      setTimeout: (callback, delay) => {
+        timers.push({ callback, delay });
+        return 1;
+      },
+    },
   });
   const blob = new Blob(['source'], { type: 'image/svg+xml' });
   try {
     downloadBlob(blob, 'diagram.svg');
     assert.strictEqual(calls[0].created, blob);
     assert.deepEqual(calls[1], { connected: true, download: 'diagram.svg', href: objectUrl });
-    assert.deepEqual(calls[2], { revoked: objectUrl });
+    assert.equal(calls.length, 2);
     assert.equal(dom.window.document.body.children.length, 0);
+    assert.equal(timers.length, 1);
+    assert.equal(timers[0].delay, 1000);
+    timers[0].callback();
+    assert.deepEqual(calls[2], { revoked: objectUrl });
+    assert.equal(calls.length, 3);
   } finally {
     restore();
     dom.window.HTMLAnchorElement.prototype.click = originalClick;
