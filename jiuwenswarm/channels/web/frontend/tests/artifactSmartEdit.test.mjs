@@ -21,6 +21,7 @@ import {
 import {
   findNthOccurrence,
   hasStyleAtOccurrence,
+  sanitizeMarkdownLinkUrl,
   toggleStyleAtOccurrence,
   wrapFirstOccurrence,
   wrapTextSelection,
@@ -40,8 +41,9 @@ test('supports selection on text, html, and office kinds', () => {
   assert.equal(supportsPreviewSelection('image'), false);
 });
 
-test('style bar only for markdown/text; local edit for text-like kinds', () => {
+test('style bar only for markdown; local edit for text-like kinds', () => {
   assert.equal(isPreviewStyleEditable('markdown'), true);
+  assert.equal(isPreviewStyleEditable('text'), false);
   assert.equal(isPreviewStyleEditable('html'), false);
   assert.equal(isPreviewLocallyEditable('code'), true);
   assert.equal(isPreviewLocallyEditable('docx'), false);
@@ -262,6 +264,16 @@ test('link style uses provided URL', () => {
   const linked = toggleStyleAtOccurrence('官网', '官网', 0, 'link', 'https://example.com');
   assert.ok(linked);
   assert.equal(linked.value, '[官网](https://example.com)');
+});
+
+test('sanitizeMarkdownLinkUrl keeps safe schemes and drops others', () => {
+  assert.equal(sanitizeMarkdownLinkUrl('https://example.com'), 'https://example.com');
+  assert.equal(sanitizeMarkdownLinkUrl('/docs/a'), '/docs/a');
+  assert.equal(sanitizeMarkdownLinkUrl('#section'), '#section');
+  assert.equal(sanitizeMarkdownLinkUrl('javascript:alert(1)'), 'https://');
+  const rejected = toggleStyleAtOccurrence('x', 'x', 0, 'link', 'javascript:alert(1)');
+  assert.ok(rejected);
+  assert.equal(rejected.value, '[x](https://)');
 });
 
 test('toWritableFileApiPath keeps absolute paths and maps relative workspace paths', () => {

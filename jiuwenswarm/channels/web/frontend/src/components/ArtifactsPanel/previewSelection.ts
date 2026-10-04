@@ -24,7 +24,9 @@ export function selectionKindFromPreview(kind: PreviewKind): SelectionKind | nul
 }
 
 export function isPreviewStyleEditable(kind: PreviewKind): boolean {
-  return kind === 'markdown' || kind === 'text';
+  // Style bar persists to disk for markdown only; keep text out to avoid
+  // in-memory-only edits that disappear on reload.
+  return kind === 'markdown';
 }
 
 export function supportsPreviewSelection(kind: PreviewKind): boolean {

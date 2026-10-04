@@ -1798,8 +1798,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
             full_path = (self.project_root / request_path).resolve()
             allowed = self._is_path_under_allowed_root(full_path)
-            # Artifact smart-edit: allow writes to the exact path sealed in a
-            # valid download token (same trust boundary as /file-api/download).
+            # Artifact smart-edit: a plain file-download token (no purpose) for
+            # this exact path may authorize the write. Reject purpose-scoped
+            # tokens (e.g. skill_content_image) and expired tokens.
             if not allowed:
                 download_token = payload.get("download_token")
                 if isinstance(download_token, str) and download_token.strip():
@@ -1809,12 +1810,13 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                         )
 
                         token_payload = validate_file_download_token(
-                            download_token.strip(), check_expiry=False
+                            download_token.strip(), check_expiry=True
                         )
                     except Exception:  # noqa: BLE001
                         token_payload = None
+                    purpose = str((token_payload or {}).get("purpose") or "").strip()
                     token_path = str((token_payload or {}).get("path") or "").strip()
-                    if token_path:
+                    if token_payload and not purpose and token_path:
                         try:
                             if Path(token_path).resolve() == full_path:
                                 allowed = True

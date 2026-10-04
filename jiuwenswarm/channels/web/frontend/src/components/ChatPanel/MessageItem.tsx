@@ -17,6 +17,7 @@ import {
   Volume2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import i18n from '../../i18n';
 import { contextCompressionRunningText } from '../../utils/contextCompression';
 import {
   Message,
@@ -329,7 +330,7 @@ function renderRichContent(content: string): ReactNode[] {
           >
             <div className="chat-message-selection-card__header">
               <Sparkles size={14} className="chat-message-selection-card__icon" aria-hidden="true" />
-              <span className="chat-message-selection-card__title">文字选区</span>
+              <span className="chat-message-selection-card__title">{i18n.t('artifacts.selectionCardTitle')}</span>
               <span className="chat-message-selection-card__meta">
                 {payload.source}
                 {payload.range ? ` · ${payload.range}` : ''}

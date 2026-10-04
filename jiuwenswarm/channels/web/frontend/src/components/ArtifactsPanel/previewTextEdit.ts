@@ -295,8 +295,16 @@ function toggleLinkAt(
 ): TextWrapResult {
   const removed = removeLayerClean(value, coreStart, coreEnd, layers, 'link');
   if (removed) return removed;
-  const safe = (linkUrl || '').trim() || 'https://';
+  const safe = sanitizeMarkdownLinkUrl(linkUrl);
   return addInnermost(value, coreStart, coreEnd, layers, { style: 'link', left: '[', right: `](${safe})` });
+}
+
+/** Allow http(s), mailto, anchors, and relative paths; drop other schemes. */
+export function sanitizeMarkdownLinkUrl(linkUrl: string): string {
+  const trimmed = (linkUrl || '').trim() || 'https://';
+  if (/^(https?:\/\/|mailto:|#|\/|\.\/|\.\.\/)/i.test(trimmed)) return trimmed;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return 'https://';
+  return trimmed;
 }
 
 export function wrapTextSelection(

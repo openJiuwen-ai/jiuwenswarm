@@ -87,6 +87,7 @@ function TextPreviewSurface({
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const saveSeqRef = useRef(0);
+  const saveChainRef = useRef(Promise.resolve());
 
   useEffect(() => {
     const url = artifactTextPreviewUrl(artifact, window.location.origin);
@@ -144,8 +145,7 @@ function TextPreviewSurface({
       setDraft(result.value);
 
       // Persist markdown to disk (path allow-list or matching download token).
-      const looksMarkdown = /\.mdx?$/i.test(artifact.path || '') || /\.mdx?$/i.test(artifact.name || '');
-      if (looksMarkdown) {
+      if (kind === 'markdown') {
         const writablePath = toWritableFileApiPath(artifact.path);
         const downloadToken =
           artifact.downloadToken?.trim() ||
@@ -161,12 +161,17 @@ function TextPreviewSurface({
           window.alert(t('artifacts.saveFailed'));
         } else {
           const seq = ++saveSeqRef.current;
-          void persistTextContent(writablePath, result.value, downloadToken).then(status => {
-            if (seq !== saveSeqRef.current) return;
-            if (status !== 'ok') {
-              window.alert(t('artifacts.saveFailed'));
-            }
-          });
+          const contentToSave = result.value;
+          // Serialize writes so an older in-flight POST cannot clobber a newer edit.
+          saveChainRef.current = saveChainRef.current
+            .catch(() => undefined)
+            .then(() => persistTextContent(writablePath, contentToSave, downloadToken))
+            .then(status => {
+              if (seq !== saveSeqRef.current) return;
+              if (status !== 'ok') {
+                window.alert(t('artifacts.saveFailed'));
+              }
+            });
         }
       }
       return result.innerText;

@@ -1019,6 +1019,7 @@
     "codeLanguagePlaceholder": "搜索或输入语言，如 bash、js",
     "codeLanguageConfirm": "确定",
     "codeLanguagePlain": "纯文本（无语言）",
+    "selectionCardTitle": "文字选区",
     "edit": "编辑",
     "done": "完成",
     "save": "保存",

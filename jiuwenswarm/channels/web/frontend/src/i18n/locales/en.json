@@ -1028,6 +1028,7 @@
     "codeLanguagePlaceholder": "Search or type a language, e.g. bash, js",
     "codeLanguageConfirm": "Apply",
     "codeLanguagePlain": "Plain text (no language)",
+    "selectionCardTitle": "Text selection",
     "edit": "Edit",
     "done": "Done",
     "save": "Save",

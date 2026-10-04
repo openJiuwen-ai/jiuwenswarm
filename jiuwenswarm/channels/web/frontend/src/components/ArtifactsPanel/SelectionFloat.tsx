@@ -81,7 +81,8 @@ export function SelectionFloat({
   const [instruction, setInstruction] = useState('');
   const [linkUrl, setLinkUrl] = useState('https://');
   const [codeQuery, setCodeQuery] = useState('');
-  const [codeHighlight, setCodeHighlight] = useState(0);
+  /** -1 = Plain text row; >=0 indexes into filtered language options. */
+  const [codeHighlight, setCodeHighlight] = useState(-1);
   const floatRef = useRef(float);
   floatRef.current = float;
   const panelOpen = panelMode != null;
@@ -92,7 +93,7 @@ export function SelectionFloat({
     setInstruction('');
     setLinkUrl('https://');
     setCodeQuery('');
-    setCodeHighlight(0);
+    setCodeHighlight(-1);
   }, []);
 
   const applySelection = useCallback(
@@ -248,7 +249,7 @@ export function SelectionFloat({
       setPanelMode(null);
       setLinkUrl('https://');
       setCodeQuery('');
-      setCodeHighlight(0);
+      setCodeHighlight(-1);
     } else if (nextInner !== null) {
       setFloat(current => (current ? { ...current, pinned: true } : current));
     }
@@ -273,7 +274,7 @@ export function SelectionFloat({
       setPanelMode('code');
       setInstruction('');
       setCodeQuery('');
-      setCodeHighlight(0);
+      setCodeHighlight(-1);
       return;
     }
     setPanelMode(null);
@@ -407,8 +408,9 @@ export function SelectionFloat({
               placeholder={t('artifacts.codeLanguagePlaceholder')}
               value={codeQuery}
               onChange={event => {
-                setCodeQuery(event.target.value);
-                setCodeHighlight(0);
+                const next = event.target.value;
+                setCodeQuery(next);
+                setCodeHighlight(next.trim() ? 0 : -1);
               }}
               onKeyDown={event => {
                 if (event.key === 'ArrowDown') {
@@ -416,15 +418,20 @@ export function SelectionFloat({
                   setCodeHighlight(current => Math.min(current + 1, Math.max(codeOptions.length - 1, 0)));
                 } else if (event.key === 'ArrowUp') {
                   event.preventDefault();
-                  setCodeHighlight(current => Math.max(current - 1, 0));
+                  setCodeHighlight(current => Math.max(current - 1, -1));
                 } else if (event.key === 'Enter') {
                   event.preventDefault();
-                  const picked = codeOptions[codeHighlight] ?? codeQuery.trim();
-                  confirmCode(picked);
+                  if (codeHighlight < 0) {
+                    confirmCode(codeQuery.trim() || '');
+                  } else {
+                    const picked = codeOptions[codeHighlight] ?? codeQuery.trim();
+                    confirmCode(picked);
+                  }
                 } else if (event.key === 'Escape') {
                   event.preventDefault();
                   setPanelMode(null);
                   setCodeQuery('');
+                  setCodeHighlight(-1);
                 }
               }}
               autoFocus
@@ -433,7 +440,9 @@ export function SelectionFloat({
               type="button"
               className="shrink-0 rounded-md bg-accent px-2.5 py-1 text-xs text-accent-foreground"
               data-testid="artifact-code-language-confirm"
-              onClick={() => confirmCode(codeOptions[codeHighlight] ?? codeQuery.trim())}
+              onClick={() =>
+                confirmCode(codeHighlight < 0 ? codeQuery.trim() || '' : (codeOptions[codeHighlight] ?? codeQuery.trim()))
+              }
             >
               {t('artifacts.codeLanguageConfirm')}
             </button>
@@ -448,9 +457,12 @@ export function SelectionFloat({
               <button
                 type="button"
                 role="option"
-                aria-selected={codeQuery.trim() === '' && codeHighlight < 0}
-                className="flex w-full px-2 py-1 text-left text-xs text-text-muted hover:bg-secondary"
+                aria-selected={codeHighlight < 0}
+                className={`flex w-full px-2 py-1 text-left text-xs hover:bg-secondary ${
+                  codeHighlight < 0 ? 'bg-secondary text-text' : 'text-text-muted'
+                }`}
                 data-testid="artifact-code-language-plain"
+                onMouseEnter={() => setCodeHighlight(-1)}
                 onClick={() => confirmCode('')}
               >
                 {t('artifacts.codeLanguagePlain')}
