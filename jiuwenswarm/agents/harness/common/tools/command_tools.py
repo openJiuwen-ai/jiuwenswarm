@@ -1121,6 +1121,21 @@ async def mcp_exec_command(
     if spawn_block:
         return f"[ERROR]: {spawn_block}"
 
+    # cron_guard L1 (issue #5018): sleep/poll interception for cron scheduled
+    # runs only.  Fail-open on guard errors; interactive requests unaffected.
+    try:
+        from jiuwenswarm.agents.harness.common.cron_guard.sleep_guard import (
+            guard_shell_command,
+        )
+
+        cron_block = guard_shell_command(
+            command, background=background, session_id=resolve_shell_session_id() or ""
+        )
+        if cron_block:
+            return cron_block
+    except Exception:  # noqa: BLE001 — guard failure must not break the command tool
+        pass
+
     try:
         resolved_workdir = _resolve_command_workdir(workdir)
     except Exception:
@@ -1169,6 +1184,19 @@ async def mcp_exec_command(
             return f"[ERROR]: command failed to start: {exc}"
         if err:
             return f"[ERROR]: background command failed: {err}"
+        # cron_guard (issue #5018): register background pids under the active
+        # cron run so the request-entry reaper terminates them on run end.
+        try:
+            from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+                get_current_or_registered_run,
+                get_run_registry,
+            )
+
+            _cron_ctx = get_current_or_registered_run(resolve_shell_session_id() or "")
+            if _cron_ctx is not None and pid:
+                get_run_registry().register_proc(_cron_ctx.run_id, int(pid))
+        except Exception:  # noqa: BLE001 — registration failure never blocks start
+            pass
         payload = {
             "command": command,
             "cwd": str(resolved_workdir),
