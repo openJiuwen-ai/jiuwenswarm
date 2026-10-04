@@ -1010,7 +1010,15 @@
     "spreadsheetEmptySheet": "此工作表为空",
     "spreadsheetSheetTabsLabel": "工作表",
     "spreadsheetTableLabel": "{{sheet}} 工作表预览",
-    "invalidJson": "JSON 或 JSONL 内容无效"
+    "invalidJson": "JSON 或 JSONL 内容无效",
+    "aiEdit": "AI 编辑",
+    "aiEditPlaceholder": "描述如何修改选中内容",
+    "aiEditSend": "发送",
+    "edit": "编辑",
+    "done": "完成",
+    "save": "保存",
+    "saveFailed": "保存失败，请重试",
+    "unsavedConfirm": "有未保存的修改，确定离开吗？"
   },
   "references": {
     "tab": "参考信息",

@@ -17,6 +17,10 @@ import {
   submitPreviewAiEdit,
   subscribePreviewAiEdit,
 } from '../node_modules/.cache/artifact-smart-edit/previewAiEditBridge.js';
+import {
+  wrapFirstOccurrence,
+  wrapTextSelection,
+} from '../node_modules/.cache/artifact-smart-edit/previewTextEdit.js';
 
 test('supports selection on text, html, and office kinds', () => {
   for (const kind of ['markdown', 'text', 'code', 'json', 'html', 'docx', 'spreadsheet', 'presentation']) {
@@ -126,4 +130,17 @@ test('bridge delivers one-shot request and notifies subscribers', () => {
   assert.equal(req.mode, 'fill_only');
   assert.equal(consumePreviewAiEditRequest(), null);
   unsub();
+});
+
+test('wrapTextSelection bold wraps selection', () => {
+  const r = wrapTextSelection('hello world', 0, 5, 'bold');
+  assert.equal(r.value, '**hello** world');
+  assert.equal(r.selectionStart, 2);
+  assert.equal(r.selectionEnd, 7);
+});
+
+test('wrapFirstOccurrence finds needle', () => {
+  const r = wrapFirstOccurrence('aaa bbb aaa', 'bbb', 'italic');
+  assert.ok(r);
+  assert.equal(r.value, 'aaa _bbb_ aaa');
 });

@@ -1019,7 +1019,15 @@
     "spreadsheetEmptySheet": "This worksheet is empty",
     "spreadsheetSheetTabsLabel": "Worksheets",
     "spreadsheetTableLabel": "{{sheet}} worksheet preview",
-    "invalidJson": "The JSON or JSONL content is invalid"
+    "invalidJson": "The JSON or JSONL content is invalid",
+    "aiEdit": "AI edit",
+    "aiEditPlaceholder": "Describe how to change the selection",
+    "aiEditSend": "Send",
+    "edit": "Edit",
+    "done": "Done",
+    "save": "Save",
+    "saveFailed": "Save failed. Please try again.",
+    "unsavedConfirm": "You have unsaved changes. Leave anyway?"
   },
   "references": {
     "tab": "References",
