@@ -1,7 +1,7 @@
 # Artifact Preview Smart Edit (产物预览智能编辑)
 
 **Date:** 2026-10-04  
-**Status:** Draft for review  
+**Status:** Implemented (in-controller; HTML iframe selection deferred)  
 **Source parity:** agent-wb preview 「AI 编辑」(+ optional local MD style bar)  
 **Host surface:** WorkSwarm web `ArtifactsPanel` (产物预览)
 
