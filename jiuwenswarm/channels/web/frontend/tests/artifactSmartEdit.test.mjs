@@ -12,6 +12,11 @@ import {
   persistArtifactAiEditSubmitMode,
   readArtifactAiEditSubmitMode,
 } from '../node_modules/.cache/artifact-smart-edit/artifactAiEditPreference.js';
+import {
+  consumePreviewAiEditRequest,
+  submitPreviewAiEdit,
+  subscribePreviewAiEdit,
+} from '../node_modules/.cache/artifact-smart-edit/previewAiEditBridge.js';
 
 test('supports selection on text, html, and office kinds', () => {
   for (const kind of ['markdown', 'text', 'code', 'json', 'html', 'docx', 'spreadsheet', 'presentation']) {
@@ -84,7 +89,7 @@ test('needSwitchConfirm only across different files', () => {
   assert.equal(needSwitchConfirm(a, c), true);
 });
 
-test('artifact AI edit submit mode defaults to auto_send and persists', () => {
+function installMemoryLocalStorage() {
   const memory = new Map();
   globalThis.localStorage = {
     getItem: (k) => (memory.has(k) ? memory.get(k) : null),
@@ -95,9 +100,30 @@ test('artifact AI edit submit mode defaults to auto_send and persists', () => {
       memory.delete(k);
     },
   };
+}
+
+test('artifact AI edit submit mode defaults to auto_send and persists', () => {
+  installMemoryLocalStorage();
   assert.equal(readArtifactAiEditSubmitMode(), 'auto_send');
   persistArtifactAiEditSubmitMode('fill_only');
   assert.equal(readArtifactAiEditSubmitMode(), 'fill_only');
   persistArtifactAiEditSubmitMode('auto_send');
   assert.equal(readArtifactAiEditSubmitMode(), 'auto_send');
+});
+
+test('bridge delivers one-shot request and notifies subscribers', () => {
+  installMemoryLocalStorage();
+  let ticks = 0;
+  const unsub = subscribePreviewAiEdit(() => {
+    ticks += 1;
+  });
+  persistArtifactAiEditSubmitMode('fill_only');
+  submitPreviewAiEdit('hello');
+  assert.equal(ticks, 1);
+  const req = consumePreviewAiEditRequest();
+  assert.ok(req);
+  assert.equal(req.prompt, 'hello');
+  assert.equal(req.mode, 'fill_only');
+  assert.equal(consumePreviewAiEditRequest(), null);
+  unsub();
 });
