@@ -11,11 +11,13 @@ import {
   Copy,
   GitFork,
   Info,
+  Sparkles,
   Square,
   Target,
   Volume2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import i18n from '../../i18n';
 import { contextCompressionRunningText } from '../../utils/contextCompression';
 import {
   Message,
@@ -45,6 +47,7 @@ import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { isTeamLeaderMember } from '../../utils/teamMemberAvatar';
 import { AgentAvatar } from '../AgentAvatar';
 import { ProactiveRecommendationCard } from './ProactiveRecommendationCard';
+import { parseArtifactSelectionPayload } from '../ArtifactsPanel/artifactSelectionMessage';
 import { fileArtifactId } from '../ArtifactsPanel';
 import { openArtifactPanel } from '../../features/teamPanelState';
 import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
@@ -283,32 +286,83 @@ export function ContextCompressionLines({
   );
 }
 
-/** 解析 content 里的 {{skill:名称}} 标记，返回 chip 与文字交织的节点数组 */
+/** 解析 content 里的 {{skill:名称}} / 选区标记，返回 chip、选区卡片与文字交织的节点 */
 function renderRichContent(content: string): ReactNode[] {
   const parts: ReactNode[] = [];
-  const regex = /\{\{skill:([^}]+)\}\}/g;
+  const regex = /\{\{(?:skill:([^}]+)|artifact-selection:([A-Za-z0-9+/=]+))\}\}/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   let key = 0;
+
+  const pushText = (raw: string) => {
+    const text = raw.replace(/^\n+/, '').replace(/\n+$/, '');
+    if (text) parts.push(text);
+  };
+
   while ((match = regex.exec(content)) !== null) {
     if (match.index > lastIndex) {
-      parts.push(content.slice(lastIndex, match.index));
+      pushText(content.slice(lastIndex, match.index));
     }
-    parts.push(
-      <span
-        key={`skill-${key++}`}
-        className="chat-message-skill-chip"
-        data-testid="chat-panel-message-skill-chip"
-        data-variant={match[1]}
-      >
-        <span className="chat-message-skill-chip__icon" aria-hidden="true" />
-        <span className="chat-message-skill-chip__label">{match[1]}</span>
-      </span>
-    );
+    if (match[2]) {
+      const payload = parseArtifactSelectionPayload(match[2]);
+      if (payload) {
+        // Prefer instruction embedded in the marker; absorb legacy trailing text after the marker.
+        let instruction = (payload.instruction || '').trim();
+        let consumedUntil = regex.lastIndex;
+        const after = content.slice(consumedUntil);
+        const nextMarker = after.search(/\{\{(?:skill:|artifact-selection:)/);
+        const segment = nextMarker < 0 ? after : after.slice(0, nextMarker);
+        if (!instruction && segment.trim()) {
+          instruction = segment.trim();
+          consumedUntil += segment.length;
+        } else {
+          const leadingWs = segment.match(/^\s*/)?.[0].length ?? 0;
+          consumedUntil += leadingWs;
+        }
+        lastIndex = consumedUntil;
+        regex.lastIndex = consumedUntil;
+
+        parts.push(
+          <div
+            key={`selection-${key++}`}
+            className="chat-message-selection-card"
+            data-testid="chat-panel-message-selection-card"
+          >
+            <div className="chat-message-selection-card__header">
+              <Sparkles size={14} className="chat-message-selection-card__icon" aria-hidden="true" />
+              <span className="chat-message-selection-card__title">{i18n.t('artifacts.selectionCardTitle')}</span>
+              <span className="chat-message-selection-card__meta">
+                {payload.source}
+                {payload.range ? ` · ${payload.range}` : ''}
+              </span>
+            </div>
+            <blockquote className="chat-message-selection-card__quote">{payload.quote}</blockquote>
+            {instruction ? (
+              <div className="chat-message-selection-card__instruction" data-testid="chat-panel-message-selection-instruction">
+                {instruction}
+              </div>
+            ) : null}
+          </div>,
+        );
+        continue;
+      }
+    } else if (match[1]) {
+      parts.push(
+        <span
+          key={`skill-${key++}`}
+          className="chat-message-skill-chip"
+          data-testid="chat-panel-message-skill-chip"
+          data-variant={match[1]}
+        >
+          <span className="chat-message-skill-chip__icon" aria-hidden="true" />
+          <span className="chat-message-skill-chip__label">{match[1]}</span>
+        </span>,
+      );
+    }
     lastIndex = regex.lastIndex;
   }
   if (lastIndex < content.length) {
-    parts.push(content.slice(lastIndex));
+    pushText(content.slice(lastIndex));
   }
   return parts;
 }
@@ -834,8 +888,8 @@ export const MessageItem = memo(function MessageItem({
               <>
                 {isUser ? (
                   hasDisplayText ? (
-                    <div className="chat-text" data-testid="chat-panel-message-text">
-                      <span className="whitespace-pre-wrap">{renderRichContent(displayContent)}</span>
+                    <div className="chat-text whitespace-pre-wrap" data-testid="chat-panel-message-text">
+                      {renderRichContent(displayContent)}
                     </div>
                   ) : null
                 ) : (

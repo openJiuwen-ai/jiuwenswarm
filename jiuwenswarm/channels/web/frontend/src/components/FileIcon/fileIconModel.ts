@@ -58,7 +58,7 @@ const EXTENSION_TO_TYPE: Readonly<Record<string, FileIconType>> = Object.freeze(
 );
 
 function basename(fileName: string): string {
-  const parts = fileName.trim().split(/[\\/]/);
+  const parts = String(fileName ?? '').trim().split(/[\\/]/);
   return parts[parts.length - 1] ?? '';
 }
 

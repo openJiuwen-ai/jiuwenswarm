@@ -1,6 +1,6 @@
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
-import { ConnectionStatusSetting } from './GeneralSettings';
+import { ArtifactAiEditSubmitModeSetting, ConnectionStatusSetting } from './GeneralSettings';
 
 export const generalModule: SettingsModuleDefinition = {
   id: 'general',
@@ -21,6 +21,7 @@ export const generalModule: SettingsModuleDefinition = {
           ],
         },
         { id: 'connection-status', component: 'custom', render: ConnectionStatusSetting },
+        { id: 'artifact-ai-edit-submit-mode', component: 'custom', render: ArtifactAiEditSubmitModeSetting },
       ],
     },
   ],

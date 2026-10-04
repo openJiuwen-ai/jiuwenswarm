@@ -319,6 +319,33 @@ function validateFileDownloadToken(token: string): { path: string } | null {
   }
 }
 
+/** Write auth: plain file-download tokens only (path+sid, no purpose, not expired). */
+function validatePlainFileDownloadTokenForWrite(token: string): { path: string } | null {
+  const parts = token.split('.')
+  if (parts.length !== 2) return null
+  const [payloadBase64, signature] = parts
+
+  const secret = resolveFileDownloadSecret()
+  if (!secret) return null
+  const expected = createHmac('sha256', secret).update(payloadBase64).digest('hex')
+  const actual = Buffer.from(signature, 'hex')
+  const expectedBuffer = Buffer.from(expected, 'hex')
+  if (actual.length !== expectedBuffer.length || !timingSafeEqual(actual, expectedBuffer)) return null
+
+  try {
+    const payload = JSON.parse(Buffer.from(payloadBase64, 'base64url').toString('utf8')) as Record<string, unknown>
+    if (String(payload.purpose || '').trim()) return null
+    if (typeof payload.path !== 'string' || !payload.path || typeof payload.sid !== 'string') return null
+    const exp = payload.exp
+    if (typeof exp === 'number' && Number.isFinite(exp) && exp > 0 && Date.now() / 1000 > exp) {
+      return null
+    }
+    return { path: payload.path }
+  } catch {
+    return null
+  }
+}
+
 /** WS proxy 中常见的、可安全忽略的 socket 错误码（跨平台） */
 const WS_PROXY_IGNORABLE_CODES = new Set([
   'EPIPE',          // 对端已关闭
@@ -1450,7 +1477,7 @@ function devFileContentApi(): Plugin {
           raw += chunk.toString()
         })
         req.on('end', () => {
-          let payload: { path?: unknown; content?: unknown } = {}
+          let payload: { path?: unknown; content?: unknown; download_token?: unknown } = {}
           try {
             payload = raw ? JSON.parse(raw) : {}
           } catch {
@@ -1476,7 +1503,17 @@ function devFileContentApi(): Plugin {
           }
 
           const fullPath = path.resolve(projectRootDir, requestPath)
-          if (!isPathUnderAllowedRoot(fullPath)) {
+          let allowed = isPathUnderAllowedRoot(fullPath)
+          // Match app_web: plain file-download tokens (path+sid, no purpose) only.
+          // Do not accept purpose-scoped tokens such as skill_content_image.
+          if (!allowed && typeof payload.download_token === 'string' && payload.download_token.trim()) {
+            const tokenPayload = validatePlainFileDownloadTokenForWrite(payload.download_token.trim())
+            const tokenPath = tokenPayload?.path?.trim()
+            if (tokenPath && path.resolve(tokenPath) === fullPath) {
+              allowed = true
+            }
+          }
+          if (!allowed) {
             res.statusCode = 403
             res.setHeader('content-type', 'application/json; charset=utf-8')
             res.end(JSON.stringify({ error: 'forbidden_path' }))

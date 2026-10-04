@@ -394,6 +394,12 @@
         "connected": "Connected",
         "connecting": "Connecting",
         "disconnected": "Disconnected"
+      },
+      "artifactAiEditSubmitMode": "Artifact AI edit submit mode",
+      "artifactAiEditSubmitModeDescription": "Choose whether AI edit from artifact preview auto-sends or only fills the composer.",
+      "artifactAiEditSubmitModeOptions": {
+        "autoSend": "Auto-send",
+        "fillOnly": "Fill only"
       }
     },
     "models": {
@@ -1013,7 +1019,21 @@
     "spreadsheetEmptySheet": "This worksheet is empty",
     "spreadsheetSheetTabsLabel": "Worksheets",
     "spreadsheetTableLabel": "{{sheet}} worksheet preview",
-    "invalidJson": "The JSON or JSONL content is invalid"
+    "invalidJson": "The JSON or JSONL content is invalid",
+    "aiEdit": "AI edit",
+    "aiEditPlaceholder": "Describe how to change the selection",
+    "aiEditSend": "Send",
+    "linkUrlPlaceholder": "Enter URL, e.g. https://example.com",
+    "linkUrlConfirm": "Apply",
+    "codeLanguagePlaceholder": "Search or type a language, e.g. bash, js",
+    "codeLanguageConfirm": "Apply",
+    "codeLanguagePlain": "Plain text (no language)",
+    "selectionCardTitle": "Text selection",
+    "edit": "Edit",
+    "done": "Done",
+    "save": "Save",
+    "saveFailed": "Save failed. Please try again.",
+    "unsavedConfirm": "You have unsaved changes. Leave anyway?"
   },
   "references": {
     "tab": "References",
