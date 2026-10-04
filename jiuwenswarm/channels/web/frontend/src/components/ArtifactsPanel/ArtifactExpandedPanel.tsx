@@ -91,7 +91,7 @@ export function ArtifactExpandedPanel({
                 type="button"
                 className="shrink-0 rounded px-2 py-1 text-xs text-text hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-40"
                 data-testid="artifact-save"
-                disabled={!dirty || !editing}
+                disabled={!dirty}
                 onClick={() => setSaveRequestId(value => value + 1)}
               >
                 {t('artifacts.save')}

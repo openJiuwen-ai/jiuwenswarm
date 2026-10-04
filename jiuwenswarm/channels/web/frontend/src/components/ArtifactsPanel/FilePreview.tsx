@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
 import { AlertCircle, LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { MarkdownRenderer } from '../MarkdownRenderer';
@@ -8,8 +8,8 @@ import { PresentationPreview } from './PresentationPreview';
 import { SelectionFloat, type SelectionStyleAction } from './SelectionFloat';
 import { SpreadsheetPreview } from './SpreadsheetPreview';
 import { artifactBinaryPreviewUrl, artifactTextPreviewUrl, previewKind, type PreviewKind } from './filePreviewModel';
-import { isPreviewLocallyEditable, supportsPreviewSelection } from './previewSelection';
-import { wrapFirstOccurrence, type TextWrapStyle } from './previewTextEdit';
+import { isPreviewLocallyEditable, isPreviewStyleEditable, supportsPreviewSelection } from './previewSelection';
+import { stripHtmlScripts, wrapFirstOccurrence, type TextWrapStyle } from './previewTextEdit';
 
 export type PreviewArtifact = {
   id: string;
@@ -101,7 +101,8 @@ function TextPreviewSurface({
   }, [dirty, onDirtyChange]);
 
   useEffect(() => {
-    if (!editing) {
+    const canStyle = Boolean(artifact.path?.trim()) && isPreviewStyleEditable(kind);
+    if (!canStyle) {
       onRegisterStyleHandler(null);
       return;
     }
@@ -110,7 +111,7 @@ function TextPreviewSurface({
       if (wrapped) setDraft(wrapped.value);
     });
     return () => onRegisterStyleHandler(null);
-  }, [editing, onRegisterStyleHandler]);
+  }, [artifact.path, kind, onRegisterStyleHandler]);
 
   useEffect(() => {
     if (!saveRequestId || saveRequestId === lastSaveRequestId.current) return;
@@ -206,14 +207,13 @@ export function FilePreview({
   const kind = previewKind(artifact);
   const url = artifactBinaryPreviewUrl(artifact, window.location.origin);
   const panelRef = useRef<HTMLDivElement>(null);
+  const htmlIframeRef = useRef<HTMLIFrameElement>(null);
   const [textStyleHandler, setTextStyleHandler] = useState<((action: SelectionStyleAction, selectedText: string) => void) | null>(null);
 
   if (!url) return <Notice>{t('artifacts.previewMissingPath')}</Notice>;
   if (kind === 'unsupported') return <Notice>{t('artifacts.previewUnsupported')}</Notice>;
 
   const selectionEnabled = supportsPreviewSelection(kind);
-  // HTML iframe uses sandbox="" without allow-same-origin; parent cannot read selection (Task 5 limitation).
-  const htmlSelectionUnsupported = kind === 'html';
 
   let body: ReactNode;
   switch (kind) {
@@ -235,15 +235,7 @@ export function FilePreview({
       );
       break;
     case 'html':
-      body = (
-        <iframe
-          title={artifact.name}
-          src={url}
-          sandbox=""
-          className="block h-full min-h-full w-full border-0 bg-transparent"
-          data-testid="artifact-html-preview"
-        />
-      );
+      body = <HtmlPreview artifact={artifact} title={artifact.name} iframeRef={htmlIframeRef} />;
       break;
     case 'image':
       body = (
@@ -290,16 +282,84 @@ export function FilePreview({
   return (
     <div ref={panelRef} className="relative h-full min-h-0 w-full overflow-hidden" data-testid="artifact-preview-selection-root">
       {body}
-      {selectionEnabled && !htmlSelectionUnsupported ? (
+      {selectionEnabled ? (
         <SelectionFloat
           kind={kind}
           path={artifact.path ?? ''}
           title={artifact.name}
           panelRef={panelRef}
-          editing={editing}
+          iframeRef={kind === 'html' ? htmlIframeRef : undefined}
           onStyleAction={textStyleHandler ?? undefined}
         />
       ) : null}
     </div>
+  );
+}
+
+function HtmlPreview({
+  artifact,
+  title,
+  iframeRef,
+}: {
+  artifact: PreviewArtifact;
+  title: string;
+  iframeRef: MutableRefObject<HTMLIFrameElement | null>;
+}) {
+  const { t } = useTranslation();
+  const [srcDoc, setSrcDoc] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const url = artifactBinaryPreviewUrl(artifact, window.location.origin) || artifactTextPreviewUrl(artifact, window.location.origin);
+    if (!url) {
+      setError(true);
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setError(false);
+    void fetch(url, { cache: 'no-store' })
+      .then(response => {
+        if (!response.ok) throw new Error('read_failed');
+        return response.text();
+      })
+      .then(html => {
+        if (cancelled) return;
+        setSrcDoc(stripHtmlScripts(html));
+        setLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setError(true);
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [artifact.downloadUrl, artifact.path]);
+
+  if (loading) {
+    return (
+      <div className="flex min-h-[240px] items-center justify-center gap-2 text-sm text-text-muted" data-testid="artifact-html-preview-status" data-variant="loading">
+        <LoaderCircle className="animate-spin" size={16} />
+        {t('common.loading')}
+      </div>
+    );
+  }
+  if (error || srcDoc == null) return <Notice>{t('artifacts.previewFailed')}</Notice>;
+
+  return (
+    <iframe
+      ref={node => {
+        iframeRef.current = node;
+      }}
+      title={title}
+      srcDoc={srcDoc}
+      sandbox="allow-same-origin"
+      className="block h-full min-h-full w-full border-0 bg-transparent"
+      data-testid="artifact-html-preview"
+    />
   );
 }

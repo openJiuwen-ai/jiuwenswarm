@@ -11,6 +11,7 @@ import {
   Copy,
   GitFork,
   Info,
+  Sparkles,
   Square,
   Target,
   Volume2,
@@ -45,6 +46,7 @@ import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { isTeamLeaderMember } from '../../utils/teamMemberAvatar';
 import { AgentAvatar } from '../AgentAvatar';
 import { ProactiveRecommendationCard } from './ProactiveRecommendationCard';
+import { parseArtifactSelectionPayload } from '../ArtifactsPanel/artifactSelectionMessage';
 import { fileArtifactId } from '../ArtifactsPanel';
 import { openArtifactPanel } from '../../features/teamPanelState';
 import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
@@ -286,7 +288,7 @@ export function ContextCompressionLines({
 /** 解析 content 里的 {{skill:名称}} 标记，返回 chip 与文字交织的节点数组 */
 function renderRichContent(content: string): ReactNode[] {
   const parts: ReactNode[] = [];
-  const regex = /\{\{skill:([^}]+)\}\}/g;
+  const regex = /\{\{(?:skill:([^}]+)|artifact-selection:([A-Za-z0-9+/=]+))\}\}/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   let key = 0;
@@ -294,17 +296,40 @@ function renderRichContent(content: string): ReactNode[] {
     if (match.index > lastIndex) {
       parts.push(content.slice(lastIndex, match.index));
     }
-    parts.push(
-      <span
-        key={`skill-${key++}`}
-        className="chat-message-skill-chip"
-        data-testid="chat-panel-message-skill-chip"
-        data-variant={match[1]}
-      >
-        <span className="chat-message-skill-chip__icon" aria-hidden="true" />
-        <span className="chat-message-skill-chip__label">{match[1]}</span>
-      </span>
-    );
+    if (match[2]) {
+      const payload = parseArtifactSelectionPayload(match[2]);
+      if (payload) {
+        parts.push(
+          <div
+            key={`selection-${key++}`}
+            className="chat-message-selection-card"
+            data-testid="chat-panel-message-selection-card"
+          >
+            <div className="chat-message-selection-card__header">
+              <Sparkles size={14} className="chat-message-selection-card__icon" aria-hidden="true" />
+              <span className="chat-message-selection-card__title">文字选区</span>
+              <span className="chat-message-selection-card__meta">
+                {payload.source}
+                {payload.range ? ` · ${payload.range}` : ''}
+              </span>
+            </div>
+            <blockquote className="chat-message-selection-card__quote">{payload.quote}</blockquote>
+          </div>,
+        );
+      }
+    } else if (match[1]) {
+      parts.push(
+        <span
+          key={`skill-${key++}`}
+          className="chat-message-skill-chip"
+          data-testid="chat-panel-message-skill-chip"
+          data-variant={match[1]}
+        >
+          <span className="chat-message-skill-chip__icon" aria-hidden="true" />
+          <span className="chat-message-skill-chip__label">{match[1]}</span>
+        </span>,
+      );
+    }
     lastIndex = regex.lastIndex;
   }
   if (lastIndex < content.length) {
@@ -834,8 +859,8 @@ export const MessageItem = memo(function MessageItem({
               <>
                 {isUser ? (
                   hasDisplayText ? (
-                    <div className="chat-text" data-testid="chat-panel-message-text">
-                      <span className="whitespace-pre-wrap">{renderRichContent(displayContent)}</span>
+                    <div className="chat-text whitespace-pre-wrap" data-testid="chat-panel-message-text">
+                      {renderRichContent(displayContent)}
                     </div>
                   ) : null
                 ) : (

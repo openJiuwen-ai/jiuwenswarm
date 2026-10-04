@@ -16,11 +16,17 @@ import {
   consumePreviewAiEditRequest,
   submitPreviewAiEdit,
   subscribePreviewAiEdit,
+  takePendingArtifactSelection,
 } from '../node_modules/.cache/artifact-smart-edit/previewAiEditBridge.js';
 import {
   wrapFirstOccurrence,
   wrapTextSelection,
 } from '../node_modules/.cache/artifact-smart-edit/previewTextEdit.js';
+import {
+  encodeArtifactSelectionMessage,
+  expandArtifactSelectionForModel,
+  parseArtifactSelectionPayload,
+} from '../node_modules/.cache/artifact-smart-edit/artifactSelectionMessage.js';
 
 test('supports selection on text, html, and office kinds', () => {
   for (const kind of ['markdown', 'text', 'code', 'json', 'html', 'docx', 'spreadsheet', 'presentation']) {
@@ -122,14 +128,40 @@ test('bridge delivers one-shot request and notifies subscribers', () => {
     ticks += 1;
   });
   persistArtifactAiEditSubmitMode('fill_only');
-  submitPreviewAiEdit('hello');
+  const sel = buildDocSelection({
+    kind: 'markdown',
+    path: 'a.md',
+    selectedText: 'hello',
+  });
+  submitPreviewAiEdit(sel, '改短一点');
   assert.equal(ticks, 1);
   const req = consumePreviewAiEditRequest();
   assert.ok(req);
-  assert.equal(req.prompt, 'hello');
+  assert.equal(req.instruction, '改短一点');
+  assert.match(req.displayContent, /\{\{artifact-selection:/);
   assert.equal(req.mode, 'fill_only');
+  assert.ok(takePendingArtifactSelection());
   assert.equal(consumePreviewAiEditRequest(), null);
   unsub();
+});
+
+test('selection message encodes for bubble and expands for model', () => {
+  const sel = buildDocSelection({
+    kind: 'text',
+    path: 'src/a.py',
+    selectedText: 'print(1)',
+    range: '文本选区',
+  });
+  const display = encodeArtifactSelectionMessage(sel, '改成 print(2)');
+  assert.match(display, /\{\{artifact-selection:/);
+  assert.match(display, /改成 print\(2\)/);
+  const encoded = display.match(/\{\{artifact-selection:([A-Za-z0-9+/=]+)\}\}/)[1];
+  const payload = parseArtifactSelectionPayload(encoded);
+  assert.equal(payload.quote, 'print(1)');
+  const model = expandArtifactSelectionForModel(display);
+  assert.match(model, /@file:src\/a\.py/);
+  assert.match(model, /> print\(1\)/);
+  assert.match(model, /改成 print\(2\)/);
 });
 
 test('wrapTextSelection bold wraps selection', () => {

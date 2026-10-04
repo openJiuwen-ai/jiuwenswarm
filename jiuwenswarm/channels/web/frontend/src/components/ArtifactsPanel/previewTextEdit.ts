@@ -50,3 +50,11 @@ export function wrapFirstOccurrence(
   if (idx < 0) return null;
   return wrapTextSelection(value, idx, idx + needle.length, style, linkUrl);
 }
+
+/** Strip script / on* handlers for safer HTML preview srcdoc. */
+export function stripHtmlScripts(html: string): string {
+  let out = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  out = out.replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  out = out.replace(/javascript:/gi, '');
+  return out;
+}
