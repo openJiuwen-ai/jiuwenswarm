@@ -37,6 +37,20 @@ def _pre_execute_shell_command(command: str) -> str | None:
     spawn_block = _enforce_tui_spawn_budget(command, resolve_shell_session_id() or "")
     if spawn_block:
         return f"[ERROR]: {spawn_block}"
+    # cron_guard L1 (issue #5018): sleep/poll interception for cron scheduled
+    # runs only.  Fail-open: guard errors never block interactive requests.
+    try:
+        from jiuwenswarm.agents.harness.common.cron_guard.sleep_guard import (
+            guard_shell_command,
+        )
+
+        cron_block = guard_shell_command(
+            command, session_id=resolve_shell_session_id() or ""
+        )
+        if cron_block:
+            return cron_block
+    except Exception:  # noqa: BLE001 — guard failure must not break the shell tool
+        pass
     return None
 
 
