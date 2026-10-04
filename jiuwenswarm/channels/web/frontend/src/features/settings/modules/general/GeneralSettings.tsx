@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Select, Tag, type TagVariant } from '../../../../components/ui';
+import {
+  persistArtifactAiEditSubmitMode,
+  readArtifactAiEditSubmitMode,
+  type ArtifactAiEditSubmitMode,
+} from '../../../artifactAiEditPreference';
 import { SettingRow } from '../../components';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 
@@ -102,6 +107,35 @@ function DesktopCloseBehaviorSetting() {
             .finally(() => setSaving(false));
         }}
         data-testid="settings-desktop-close-behavior"
+      />
+    </SettingRow>
+  );
+}
+
+export function ArtifactAiEditSubmitModeSetting() {
+  const { t } = useTranslation();
+  const [mode, setMode] = useState<ArtifactAiEditSubmitMode>(() => readArtifactAiEditSubmitMode());
+
+  return (
+    <SettingRow
+      title={t('settingsPanel.general.artifactAiEditSubmitMode')}
+      description={t('settingsPanel.general.artifactAiEditSubmitModeDescription')}
+    >
+      <Select
+        aria-label={t('settingsPanel.general.artifactAiEditSubmitMode')}
+        value={mode}
+        options={(
+          [
+            ['auto_send', t('settingsPanel.general.artifactAiEditSubmitModeOptions.autoSend')],
+            ['fill_only', t('settingsPanel.general.artifactAiEditSubmitModeOptions.fillOnly')],
+          ] as const
+        ).map(([value, label]) => ({ value, label }))}
+        onChange={(next) => {
+          const selected = next as ArtifactAiEditSubmitMode;
+          setMode(selected);
+          persistArtifactAiEditSubmitMode(selected);
+        }}
+        data-testid="settings-artifact-ai-edit-submit-mode"
       />
     </SettingRow>
   );

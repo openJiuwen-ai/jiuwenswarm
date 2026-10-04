@@ -37,9 +37,23 @@ const lightPreviewTheme = EditorView.theme(
 
 type LoadState = 'loading' | 'ready' | 'error';
 
-export function CodePreview({ content, name, mimeType }: { content: string; name: string; mimeType?: string }) {
+export function CodePreview({
+  content,
+  name,
+  mimeType,
+  editable = false,
+  onChange,
+}: {
+  content: string;
+  name: string;
+  mimeType?: string;
+  editable?: boolean;
+  onChange?: (value: string) => void;
+}) {
   const { t } = useTranslation();
   const hostRef = useRef<HTMLDivElement>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
   const [loadState, setLoadState] = useState<LoadState>('loading');
 
   useEffect(() => {
@@ -55,8 +69,8 @@ export function CodePreview({ content, name, mimeType }: { content: string; name
           state: EditorState.create({
             doc: content,
             extensions: [
-              EditorState.readOnly.of(true),
-              EditorView.editable.of(false),
+              EditorState.readOnly.of(!editable),
+              EditorView.editable.of(editable),
               EditorView.contentAttributes.of({
                 'aria-label': name,
                 tabindex: '0',
@@ -65,6 +79,11 @@ export function CodePreview({ content, name, mimeType }: { content: string; name
               syntaxHighlighting(defaultHighlightStyle),
               language,
               lightPreviewTheme,
+              EditorView.updateListener.of(update => {
+                if (update.docChanged) {
+                  onChangeRef.current?.(update.state.doc.toString());
+                }
+              }),
             ],
           }),
         });
@@ -78,7 +97,10 @@ export function CodePreview({ content, name, mimeType }: { content: string; name
       disposed = true;
       view?.destroy();
     };
-  }, [content, mimeType, name]);
+    // Omit `content` from deps: parent draft updates on every keystroke would remount and steal focus.
+    // Artifact/mode changes still remount via name/mimeType/editable (and parent keys).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editable, mimeType, name]);
 
   return (
     <div className="relative h-full min-h-0 w-full overflow-hidden" data-testid="artifact-code-preview">
@@ -89,7 +111,11 @@ export function CodePreview({ content, name, mimeType }: { content: string; name
           {t('common.loading')}
         </div>
       )}
-      {loadState === 'error' && <div className="absolute inset-0 flex items-center justify-center text-sm text-text-muted" data-testid="artifact-code-preview-overlay" data-variant="error">{t('artifacts.previewFailed')}</div>}
+      {loadState === 'error' && (
+        <div className="absolute inset-0 flex items-center justify-center text-sm text-text-muted" data-testid="artifact-code-preview-overlay" data-variant="error">
+          {t('artifacts.previewFailed')}
+        </div>
+      )}
     </div>
   );
 }

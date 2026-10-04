@@ -41,8 +41,9 @@ export type CodeLanguageExtension = (typeof CODE_LANGUAGE_EXTENSIONS)[number];
 const CODE_LANGUAGE_EXTENSION_SET: ReadonlySet<string> = new Set(CODE_LANGUAGE_EXTENSIONS);
 
 export function fileExtension(name: string): string {
-  const value = name.split('.').pop()?.trim().toLowerCase() ?? '';
-  return value === name.toLowerCase() ? '' : value;
+  const safeName = name ?? '';
+  const value = safeName.split('.').pop()?.trim().toLowerCase() ?? '';
+  return value === safeName.toLowerCase() ? '' : value;
 }
 
 export function isCodeLanguageExtension(value: string): value is CodeLanguageExtension {

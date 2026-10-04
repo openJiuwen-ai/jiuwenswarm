@@ -46,6 +46,9 @@ const LANGUAGE_LOADERS = {
   yml: async () => (await import('@codemirror/lang-yaml')).yaml(),
 } satisfies Record<CodeLanguageExtension, LanguageLoader>;
 
+/** Empty extension — plain text / markdown / unknown types edit without a language pack. */
+const PLAIN_TEXT_LANGUAGE: Extension = [];
+
 export async function loadCodeLanguage(name: string, mimeType?: string): Promise<Extension> {
   const extension = fileExtension(name);
   if (isCodeLanguageExtension(extension)) return LANGUAGE_LOADERS[extension]();
@@ -53,5 +56,6 @@ export async function loadCodeLanguage(name: string, mimeType?: string): Promise
   const mime = (mimeType ?? '').toLowerCase();
   if (mime === 'application/typescript') return LANGUAGE_LOADERS.ts();
   if (mime === 'application/javascript' || mime === 'text/javascript') return LANGUAGE_LOADERS.js();
-  throw new Error(`unsupported_code_language:${extension || mime || 'unknown'}`);
+  // Markdown / plain text / unknown: still open an editable editor instead of failing the preview.
+  return PLAIN_TEXT_LANGUAGE;
 }

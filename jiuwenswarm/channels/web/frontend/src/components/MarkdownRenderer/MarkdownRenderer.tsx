@@ -95,7 +95,7 @@ const MARKDOWN_COMPONENTS = {
 };
 
 export function MarkdownRenderer({ content, className, testId, isStreaming = false, mermaidCanvasMinHeight, onLinkClick }: MarkdownRendererProps): JSX.Element {
-  const markdown = useMemo(() => repairCollapsedGfmTables(unescapeLiteralNewlines(content)), [content]);
+  const markdown = useMemo(() => repairCollapsedGfmTables(unescapeLiteralNewlines(content ?? '')), [content]);
   const contentLines = useMemo(() => markdown.split(/\r\n|\n|\r/), [markdown]);
   const includeMathML = useContext(MarkdownIncludeMathMLContext);
 

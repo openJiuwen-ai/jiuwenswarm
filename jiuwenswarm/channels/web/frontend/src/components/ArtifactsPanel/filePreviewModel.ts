@@ -66,6 +66,45 @@ export function artifactTextPreviewUrl(resource: PreviewResource, origin: string
   return resource.path ? `/file-api/file-content?path=${encodeURIComponent(resource.path)}&encoding=auto` : null;
 }
 
+/**
+ * Normalize an artifact path for `/file-api/file-content` writes.
+ * Returns null only when there is no usable path string.
+ *
+ * Absolute token/project paths are kept as-is — the file-api authorizes either
+ * the classic allow-list roots or a matching `download_token` for that path.
+ * Relative paths are mapped into the user/project root layout when possible.
+ *
+ * When writing with a `download_token`, pass `{ keepRawForToken: true }` so the
+ * request path stays identical to the path sealed in the token (do not remap
+ * `workspace/` → `agent/workspace/`, etc.).
+ */
+export function toWritableFileApiPath(
+  path: string | undefined | null,
+  options?: { keepRawForToken?: boolean },
+): string | null {
+  const raw = (path ?? '').trim().replace(/\\/g, '/');
+  if (!raw) return null;
+
+  // Token auth compares request path to the sealed token path — keep raw.
+  if (options?.keepRawForToken) return raw;
+
+  const isAbsolute = raw.startsWith('/') || /^[A-Za-z]:\//.test(raw);
+  if (isAbsolute) return raw;
+
+  if (
+    raw.startsWith('agent/') ||
+    raw.startsWith('.agent_teams/') ||
+    raw.startsWith('auto-harness/') ||
+    raw.startsWith('logs/')
+  ) {
+    return raw;
+  }
+  // Bare workspace / sessions paths from older tokens.
+  if (raw.startsWith('workspace/') || raw.startsWith('sessions/')) return `agent/${raw}`;
+  if (raw.startsWith('work/') || raw.startsWith('code/')) return `agent/workspace/${raw}`;
+  return raw;
+}
+
 export function previewKind(file: PreviewFile): PreviewKind {
   const mime = (file.mimeType ?? '').toLowerCase();
   const ext = fileExtension(file.name);

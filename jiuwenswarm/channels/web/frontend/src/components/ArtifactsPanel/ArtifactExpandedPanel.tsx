@@ -1,5 +1,4 @@
 import { useCallback, useState } from 'react';
-import { useTranslation } from 'react-i18next';
 import { useSessionArtifacts } from '.';
 import { ArtifactList } from '.';
 import { FilePreview } from './FilePreview';
@@ -14,13 +13,13 @@ export function ArtifactExpandedPanel({
   selectedArtifactId?: string;
   onSelectArtifact: (artifactId: string) => void;
 }) {
-  const { t } = useTranslation();
   const artifacts = useSessionArtifacts();
   const selectedArtifact = artifacts.find(a => a.id === selectedArtifactId) ?? null;
   const selectedIndex = selectedArtifact ? artifacts.findIndex(a => a.id === selectedArtifact.id) : -1;
   const hasPrev = selectedIndex > 0;
   const hasNext = selectedArtifact && selectedIndex < artifacts.length - 1;
   const [, setInvalidPresentationIds] = useState<Set<string>>(() => new Set());
+
   const handlePresentationStructureInvalidChange = useCallback((artifactId: string, invalid: boolean) => {
     setInvalidPresentationIds(current => {
       if (current.has(artifactId) === invalid) return current;
@@ -31,6 +30,13 @@ export function ArtifactExpandedPanel({
     });
   }, []);
 
+  const navigateTo = useCallback(
+    (artifactId: string) => {
+      onSelectArtifact(artifactId);
+    },
+    [onSelectArtifact],
+  );
+
   if (selectedArtifact) {
     return (
       <div data-variant="artifacts-preview" className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -39,7 +45,7 @@ export function ArtifactExpandedPanel({
           data-testid="artifact-preview-toolbar"
           style={{ color: 'var(--color-artifact-toolbar-icon)' }}
         >
-          <button type="button" className="shrink-0" data-testid="artifact-back" onClick={() => onSelectArtifact('')} style={{ display: 'flex' }}>
+          <button type="button" className="shrink-0" data-testid="artifact-back" onClick={() => navigateTo('')} style={{ display: 'flex' }}>
             <BackIcon width={16} height={16} />
           </button>
           <div className="w-px h-4 shrink-0" style={{ backgroundColor: 'var(--color-artifact-toolbar-divider)' }} />
@@ -51,7 +57,7 @@ export function ArtifactExpandedPanel({
             className="shrink-0"
             data-testid="artifact-prev"
             disabled={!hasPrev}
-            onClick={() => hasPrev && onSelectArtifact(artifacts[selectedIndex - 1].id)}
+            onClick={() => hasPrev && navigateTo(artifacts[selectedIndex - 1].id)}
             style={{
               color: hasPrev ? 'var(--color-artifact-toolbar-icon)' : 'var(--color-artifact-toolbar-icon-disabled)',
               cursor: hasPrev ? 'pointer' : 'default',
@@ -65,7 +71,7 @@ export function ArtifactExpandedPanel({
             className="shrink-0"
             data-testid="artifact-next"
             disabled={!hasNext}
-            onClick={() => hasNext && onSelectArtifact(artifacts[selectedIndex + 1].id)}
+            onClick={() => hasNext && navigateTo(artifacts[selectedIndex + 1].id)}
             style={{
               color: hasNext ? 'var(--color-artifact-toolbar-icon)' : 'var(--color-artifact-toolbar-icon-disabled)',
               cursor: hasNext ? 'pointer' : 'default',
@@ -76,21 +82,18 @@ export function ArtifactExpandedPanel({
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-hidden bg-transparent p-3" data-testid="artifact-preview-surface">
-          <FilePreview artifact={selectedArtifact} onPresentationStructureInvalidChange={handlePresentationStructureInvalidChange} />
+          <FilePreview
+            artifact={selectedArtifact}
+            onPresentationStructureInvalidChange={handlePresentationStructureInvalidChange}
+          />
         </div>
       </div>
     );
   }
 
   return (
-    <div data-variant="artifacts" className="flex min-w-0 flex-1 flex-col overflow-hidden px-6 pb-6">
-      <div className="flex h-8 items-center justify-between gap-3 my-6">
-        <h2 className="text-sm font-semibold leading-5 text-text-strong" data-testid="tool-panel-artifacts-title">
-          {t('artifacts.title')}
-        </h2>
-      </div>
-      {/* 负 margin 让滚动容器延伸到面板右缘，滚动条贴到最右侧；pr-6 保持列表内容与滚动条之间原有的右侧间距 */}
-      <ArtifactList selectedArtifactId={selectedArtifactId} onSelectArtifact={onSelectArtifact} className="-mr-6 flex-1 pr-6" />
+    <div data-variant="artifacts-list" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <ArtifactList selectedArtifactId={selectedArtifactId} onSelectArtifact={navigateTo} className="flex-1" />
     </div>
   );
 }

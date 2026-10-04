@@ -6,6 +6,7 @@
 
 import { readOutputOrder } from '../features/sessionOutput';
 import { handleTaskInputReceipt, sendQueuedTaskInput, handleSessionOutputBoundary, shouldIgnoreSessionOutput } from '../features/sessionInput';
+import { expandArtifactSelectionForModel } from '../components/ArtifactsPanel/artifactSelectionMessage';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -1980,7 +1981,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useChatStore.getState().closeReasoning(sessionId);
       }
       try {
-        let outgoingContent = content.replace(/\{\{skill:([^}]+)\}\}/g, '$1');
+        let outgoingContent = expandArtifactSelectionForModel(content.replace(/\{\{skill:([^}]+)\}\}/g, '$1'));
         let outgoingMediaItems: Record<string, unknown>[] | undefined;
         let outgoingFiles: Record<string, unknown> | undefined;
         if (hasMedia) {

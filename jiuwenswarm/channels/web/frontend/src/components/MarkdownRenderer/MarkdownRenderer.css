@@ -315,3 +315,7 @@
 .chat-markdown .katex-display > .katex {
   min-width: max-content;
 }
+
+.chat-markdown u {
+  text-decoration: underline;
+}

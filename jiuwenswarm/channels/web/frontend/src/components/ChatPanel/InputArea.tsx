@@ -67,6 +67,15 @@ import {
   shouldExecuteRegisteredSlashCommand,
 } from './slashCommands/semantics';
 import { withUploadDocumentBlock } from '../../utils/documentMessage';
+import {
+  encodeArtifactSelectionMessage,
+  hasArtifactSelectionMarker,
+} from '../ArtifactsPanel/artifactSelectionMessage';
+import {
+  consumePreviewAiEditRequest,
+  subscribePreviewAiEdit,
+  takePendingArtifactSelection,
+} from '../../features/previewAiEditBridge';
 import { planUnsentImageDiscard, type UnsentImageDraft } from './unsentImageDiscard';
 import { ExtensionPickerPanel } from './ExtensionPickerPanel';
 import { SkillPickerPanel } from './SkillPickerPanel';
@@ -2266,7 +2275,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         attachment.status === 'ready' &&
         (Boolean(pickString(attachment.persistedMediaItem?.path)) || Boolean(attachment.base64Data)),
     );
-    const trimmed = buildSubmitContent(trimmedBase, readyDrafts);
+    const pendingSelection = takePendingArtifactSelection();
+    const selectionAwareBase =
+      hasArtifactSelectionMarker(trimmedBase)
+        ? trimmedBase
+        : pendingSelection
+          ? encodeArtifactSelectionMessage(pendingSelection, trimmedBase)
+          : trimmedBase;
+    const trimmed = buildSubmitContent(selectionAwareBase, readyDrafts);
     const hasReadyMedia = readyMediaItems.length > 0;
     // Block only when there is neither text nor a ready attachment to send.
     if ((!trimmedBase && !hasReadyMedia) || hasUploadingAttachments || hasAttachmentErrors) return;
@@ -2369,6 +2385,30 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     releaseUnsentUploads,
     t,
   ]);
+
+  const handleSubmitRef = useRef(handleSubmit);
+  handleSubmitRef.current = handleSubmit;
+
+  useEffect(() => {
+    return subscribePreviewAiEdit(() => {
+      const req = consumePreviewAiEditRequest();
+      if (!req) return;
+      const sid = useChatStore.getState().activeSessionId;
+      if (!sid) return;
+      // fill_only: put instruction in the composer; selection is re-wrapped on submit.
+      // auto_send: put full display marker content then submit immediately.
+      const draft = req.mode === 'fill_only' ? req.instruction : req.displayContent;
+      useChatStore.getState().setInputValue(sid, draft);
+      if (inputRef.current) {
+        inputRef.current.textContent = draft;
+      }
+      if (req.mode === 'auto_send') {
+        queueMicrotask(() => {
+          handleSubmitRef.current?.();
+        });
+      }
+    });
+  }, []);
 
   const trimmedDraft = inputValue.trim();
   const hasTextDraft = trimmedDraft.length > 0;
