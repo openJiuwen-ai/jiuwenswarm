@@ -86,6 +86,8 @@ function TextPreviewSurface({
   const [loading, setLoading] = useState(true);
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  /** Last content known to match disk (loaded or last successful save). */
+  const persistedRef = useRef('');
   const saveSeqRef = useRef(0);
   const saveChainRef = useRef(Promise.resolve());
 
@@ -93,6 +95,7 @@ function TextPreviewSurface({
     const url = artifactTextPreviewUrl(artifact, window.location.origin);
     if (!url) {
       setDraft('');
+      persistedRef.current = '';
       setError(true);
       setLoading(false);
       return;
@@ -108,11 +111,13 @@ function TextPreviewSurface({
       })
       .then(content => {
         if (cancelled) return;
+        persistedRef.current = content;
         setDraft(content);
         setLoading(false);
       })
       .catch(() => {
         if (cancelled) return;
+        persistedRef.current = '';
         setDraft('');
         setError(true);
         setLoading(false);
@@ -146,7 +151,6 @@ function TextPreviewSurface({
 
       // Persist markdown to disk (path allow-list or matching download token).
       if (kind === 'markdown') {
-        const writablePath = toWritableFileApiPath(artifact.path);
         const downloadToken =
           artifact.downloadToken?.trim() ||
           (() => {
@@ -157,22 +161,33 @@ function TextPreviewSurface({
               return undefined;
             }
           })();
+        // With a download token, keep the raw artifact path so it matches the
+        // path sealed in the token (avoid workspace/ → agent/workspace/ remap).
+        const writablePath = toWritableFileApiPath(artifact.path, {
+          keepRawForToken: Boolean(downloadToken),
+        });
         if (!writablePath) {
+          draftRef.current = persistedRef.current;
+          setDraft(persistedRef.current);
           window.alert(t('artifacts.saveFailed'));
-        } else {
-          const seq = ++saveSeqRef.current;
-          const contentToSave = result.value;
-          // Serialize writes so an older in-flight POST cannot clobber a newer edit.
-          saveChainRef.current = saveChainRef.current
-            .catch(() => undefined)
-            .then(() => persistTextContent(writablePath, contentToSave, downloadToken))
-            .then(status => {
-              if (seq !== saveSeqRef.current) return;
-              if (status !== 'ok') {
-                window.alert(t('artifacts.saveFailed'));
-              }
-            });
+          return null;
         }
+        const seq = ++saveSeqRef.current;
+        const contentToSave = result.value;
+        // Serialize writes so an older in-flight POST cannot clobber a newer edit.
+        saveChainRef.current = saveChainRef.current
+          .catch(() => undefined)
+          .then(() => persistTextContent(writablePath, contentToSave, downloadToken))
+          .then(status => {
+            if (status === 'ok') {
+              persistedRef.current = contentToSave;
+              return;
+            }
+            if (seq !== saveSeqRef.current) return;
+            draftRef.current = persistedRef.current;
+            setDraft(persistedRef.current);
+            window.alert(t('artifacts.saveFailed'));
+          });
       }
       return result.innerText;
     });

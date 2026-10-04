@@ -1509,7 +1509,8 @@ function devFileContentApi(): Plugin {
           if (!allowed && typeof payload.download_token === 'string' && payload.download_token.trim()) {
             const tokenPayload = validatePlainFileDownloadTokenForWrite(payload.download_token.trim())
             const tokenPath = tokenPayload?.path?.trim()
-            if (tokenPath && path.resolve(tokenPath) === fullPath) {
+            // Match app_web: resolve relative token paths against project root.
+            if (tokenPath && path.resolve(projectRootDir, tokenPath) === fullPath) {
               allowed = true
             }
           }

@@ -1818,7 +1818,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     token_path = str((token_payload or {}).get("path") or "").strip()
                     if token_payload and not purpose and token_path:
                         try:
-                            if Path(token_path).resolve() == full_path:
+                            # Resolve relative token paths against project_root
+                            # (same base as request_path), not process CWD.
+                            if (self.project_root / token_path).resolve() == full_path:
                                 allowed = True
                         except OSError:
                             allowed = False

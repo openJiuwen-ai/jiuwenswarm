@@ -289,4 +289,7 @@ test('toWritableFileApiPath keeps absolute paths and maps relative workspace pat
   assert.equal(toWritableFileApiPath('workspace/a.md'), 'agent/workspace/a.md');
   assert.equal(toWritableFileApiPath('work/demo/a.md'), 'agent/workspace/work/demo/a.md');
   assert.equal(toWritableFileApiPath(''), null);
+  // Token writes must keep the sealed path (no remap).
+  assert.equal(toWritableFileApiPath('workspace/a.md', { keepRawForToken: true }), 'workspace/a.md');
+  assert.equal(toWritableFileApiPath('sessions/x/a.md', { keepRawForToken: true }), 'sessions/x/a.md');
 });
