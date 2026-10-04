@@ -394,6 +394,12 @@
         "connected": "Connected",
         "connecting": "Connecting",
         "disconnected": "Disconnected"
+      },
+      "artifactAiEditSubmitMode": "Artifact AI edit submit mode",
+      "artifactAiEditSubmitModeDescription": "Choose whether AI edit from artifact preview auto-sends or only fills the composer.",
+      "artifactAiEditSubmitModeOptions": {
+        "autoSend": "Auto-send",
+        "fillOnly": "Fill only"
       }
     },
     "models": {

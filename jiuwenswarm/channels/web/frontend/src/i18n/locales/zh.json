@@ -394,6 +394,12 @@
         "connected": "已连接",
         "connecting": "连接中",
         "disconnected": "未连接"
+      },
+      "artifactAiEditSubmitMode": "产物 AI 编辑提交方式",
+      "artifactAiEditSubmitModeDescription": "选择划选 AI 编辑后是自动发送还是仅填入输入框。",
+      "artifactAiEditSubmitModeOptions": {
+        "autoSend": "自动发送",
+        "fillOnly": "仅填入输入框"
       }
     },
     "models": {

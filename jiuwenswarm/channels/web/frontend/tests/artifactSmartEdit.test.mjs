@@ -8,6 +8,10 @@ import {
   supportsPreviewSelection,
 } from '../node_modules/.cache/artifact-smart-edit/previewSelection.js';
 import { capSelectionPreview, needSwitchConfirm } from '../node_modules/.cache/artifact-smart-edit/docSelection.js';
+import {
+  persistArtifactAiEditSubmitMode,
+  readArtifactAiEditSubmitMode,
+} from '../node_modules/.cache/artifact-smart-edit/artifactAiEditPreference.js';
 
 test('supports selection on text, html, and office kinds', () => {
   for (const kind of ['markdown', 'text', 'code', 'json', 'html', 'docx', 'spreadsheet', 'presentation']) {
@@ -78,4 +82,22 @@ test('needSwitchConfirm only across different files', () => {
   assert.equal(needSwitchConfirm(null, a), false);
   assert.equal(needSwitchConfirm(a, b), false);
   assert.equal(needSwitchConfirm(a, c), true);
+});
+
+test('artifact AI edit submit mode defaults to auto_send and persists', () => {
+  const memory = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (memory.has(k) ? memory.get(k) : null),
+    setItem: (k, v) => {
+      memory.set(k, String(v));
+    },
+    removeItem: (k) => {
+      memory.delete(k);
+    },
+  };
+  assert.equal(readArtifactAiEditSubmitMode(), 'auto_send');
+  persistArtifactAiEditSubmitMode('fill_only');
+  assert.equal(readArtifactAiEditSubmitMode(), 'fill_only');
+  persistArtifactAiEditSubmitMode('auto_send');
+  assert.equal(readArtifactAiEditSubmitMode(), 'auto_send');
 });
