@@ -1,5 +1,6 @@
 /** 字面量 `\\n` 明显多于真换行时还原，避免 GFM 表格解析失败。 */
 export function unescapeLiteralNewlines(text: string): string {
+  if (typeof text !== 'string') return '';
   const realNl = (text.match(/\n/g) || []).length;
   const litNl = (text.match(/\\n/g) || []).length;
   if (litNl > 0 && litNl > realNl) {

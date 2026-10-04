@@ -1,21 +1,33 @@
-import { useEffect, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
 import { AlertCircle, LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 import { CodePreview } from './CodePreview';
 import { DocxPreview } from './DocxPreview';
 import { PresentationPreview } from './PresentationPreview';
-import { SelectionFloat, type SelectionStyleAction } from './SelectionFloat';
+import {
+  SelectionFloat,
+  type SelectionStyleAction,
+  type StyleActionHandler,
+  type StyleProbeHandler,
+} from './SelectionFloat';
 import { SpreadsheetPreview } from './SpreadsheetPreview';
-import { artifactBinaryPreviewUrl, artifactTextPreviewUrl, previewKind, type PreviewKind } from './filePreviewModel';
-import { isPreviewLocallyEditable, isPreviewStyleEditable, supportsPreviewSelection } from './previewSelection';
-import { stripHtmlScripts, wrapFirstOccurrence, type TextWrapStyle } from './previewTextEdit';
+import {
+  artifactBinaryPreviewUrl,
+  artifactTextPreviewUrl,
+  previewKind,
+  toWritableFileApiPath,
+  type PreviewKind,
+} from './filePreviewModel';
+import { isPreviewStyleEditable, supportsPreviewSelection } from './previewSelection';
+import { hasStyleAtOccurrence, stripHtmlScripts, toggleStyleAtOccurrence } from './previewTextEdit';
 
 export type PreviewArtifact = {
   id: string;
   name: string;
   mimeType?: string;
   downloadUrl?: string;
+  downloadToken?: string;
   path?: string;
   size?: number;
 };
@@ -33,36 +45,52 @@ function Notice({ children }: { children: string }) {
   );
 }
 
+async function persistTextContent(
+  path: string,
+  content: string,
+  downloadToken?: string,
+): Promise<'ok' | 'forbidden' | 'error'> {
+  try {
+    const response = await fetch('/file-api/file-content', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        path,
+        content,
+        ...(downloadToken ? { download_token: downloadToken } : {}),
+      }),
+    });
+    if (response.ok) return 'ok';
+    const errorText = await response.text();
+    if (response.status === 403 || errorText.includes('forbidden_path')) return 'forbidden';
+    return 'error';
+  } catch {
+    return 'error';
+  }
+}
+
 function TextPreviewSurface({
   artifact,
   kind,
-  editing,
-  onDirtyChange,
-  saveRequestId,
-  onSaveResult,
   onRegisterStyleHandler,
+  onRegisterStyleProbe,
 }: {
   artifact: PreviewArtifact;
   kind: TextKind;
-  editing: boolean;
-  onDirtyChange?: (dirty: boolean) => void;
-  saveRequestId?: number;
-  onSaveResult?: (ok: boolean, error?: string) => void;
-  onRegisterStyleHandler: (handler: ((action: SelectionStyleAction, selectedText: string) => void) | null) => void;
+  onRegisterStyleHandler: (handler: StyleActionHandler | null) => void;
+  onRegisterStyleProbe: (handler: StyleProbeHandler | null) => void;
 }) {
   const { t } = useTranslation();
-  const [baseline, setBaseline] = useState('');
   const [draft, setDraft] = useState('');
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
-  const lastSaveRequestId = useRef(0);
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  const saveSeqRef = useRef(0);
 
   useEffect(() => {
     const url = artifactTextPreviewUrl(artifact, window.location.origin);
     if (!url) {
-      setBaseline('');
       setDraft('');
       setError(true);
       setLoading(false);
@@ -79,13 +107,11 @@ function TextPreviewSurface({
       })
       .then(content => {
         if (cancelled) return;
-        setBaseline(content);
         setDraft(content);
         setLoading(false);
       })
       .catch(() => {
         if (cancelled) return;
-        setBaseline('');
         setDraft('');
         setError(true);
         setLoading(false);
@@ -95,49 +121,70 @@ function TextPreviewSurface({
     };
   }, [artifact.downloadUrl, artifact.path]);
 
-  const dirty = draft !== baseline;
   useEffect(() => {
-    onDirtyChange?.(dirty);
-  }, [dirty, onDirtyChange]);
-
-  useEffect(() => {
-    const canStyle = Boolean(artifact.path?.trim()) && isPreviewStyleEditable(kind);
-    if (!canStyle) {
+    if (!isPreviewStyleEditable(kind)) {
       onRegisterStyleHandler(null);
+      onRegisterStyleProbe(null);
       return;
     }
-    onRegisterStyleHandler((action, selectedText) => {
-      const wrapped = wrapFirstOccurrence(draftRef.current, selectedText, action as TextWrapStyle);
-      if (wrapped) setDraft(wrapped.value);
-    });
-    return () => onRegisterStyleHandler(null);
-  }, [artifact.path, kind, onRegisterStyleHandler]);
+    onRegisterStyleProbe((action, selectedText, occurrenceIndex) =>
+      hasStyleAtOccurrence(draftRef.current, selectedText, occurrenceIndex, action as SelectionStyleAction),
+    );
+    onRegisterStyleHandler((action, selectedText, occurrenceIndex, options) => {
+      const result = toggleStyleAtOccurrence(
+        draftRef.current,
+        selectedText,
+        occurrenceIndex,
+        action as SelectionStyleAction,
+        options?.linkUrl ?? 'https://',
+        options?.codeLanguage ?? '',
+      );
+      if (!result) return null;
+      draftRef.current = result.value;
+      setDraft(result.value);
 
-  useEffect(() => {
-    if (!saveRequestId || saveRequestId === lastSaveRequestId.current) return;
-    lastSaveRequestId.current = saveRequestId;
-    const path = artifact.path?.trim();
-    if (!path) {
-      onSaveResult?.(false, t('artifacts.previewMissingPath'));
-      return;
-    }
-    void fetch('/file-api/file-content', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ path, content: draft }),
-    })
-      .then(async response => {
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`HTTP ${response.status}: ${errorText.substring(0, 120)}`);
+      // Persist markdown to disk (path allow-list or matching download token).
+      const looksMarkdown = /\.mdx?$/i.test(artifact.path || '') || /\.mdx?$/i.test(artifact.name || '');
+      if (looksMarkdown) {
+        const writablePath = toWritableFileApiPath(artifact.path);
+        const downloadToken =
+          artifact.downloadToken?.trim() ||
+          (() => {
+            try {
+              if (!artifact.downloadUrl) return undefined;
+              return new URL(artifact.downloadUrl, window.location.origin).searchParams.get('token') || undefined;
+            } catch {
+              return undefined;
+            }
+          })();
+        if (!writablePath) {
+          window.alert(t('artifacts.saveFailed'));
+        } else {
+          const seq = ++saveSeqRef.current;
+          void persistTextContent(writablePath, result.value, downloadToken).then(status => {
+            if (seq !== saveSeqRef.current) return;
+            if (status !== 'ok') {
+              window.alert(t('artifacts.saveFailed'));
+            }
+          });
         }
-        setBaseline(draft);
-        onSaveResult?.(true);
-      })
-      .catch(err => {
-        onSaveResult?.(false, err instanceof Error ? err.message : t('artifacts.saveFailed'));
-      });
-  }, [artifact.path, draft, onSaveResult, saveRequestId, t]);
+      }
+      return result.innerText;
+    });
+    return () => {
+      onRegisterStyleHandler(null);
+      onRegisterStyleProbe(null);
+    };
+  }, [
+    artifact.downloadToken,
+    artifact.downloadUrl,
+    artifact.name,
+    artifact.path,
+    kind,
+    onRegisterStyleHandler,
+    onRegisterStyleProbe,
+    t,
+  ]);
 
   if (loading)
     return (
@@ -147,18 +194,6 @@ function TextPreviewSurface({
       </div>
     );
   if (error) return <Notice>{t('artifacts.previewFailed')}</Notice>;
-
-  if (editing && isPreviewLocallyEditable(kind)) {
-    return (
-      <CodePreview
-        content={draft}
-        name={artifact.name}
-        mimeType={artifact.mimeType}
-        editable
-        onChange={setDraft}
-      />
-    );
-  }
 
   if (kind === 'markdown')
     return <MarkdownRenderer content={draft} className="chat-text chat-markdown h-full max-w-none overflow-auto" testId="artifact-markdown-preview" />;
@@ -191,24 +226,24 @@ function TextPreviewSurface({
 export function FilePreview({
   artifact,
   onPresentationStructureInvalidChange,
-  editing = false,
-  onDirtyChange,
-  saveRequestId,
-  onSaveResult,
 }: {
   artifact: PreviewArtifact;
   onPresentationStructureInvalidChange?: (artifactId: string, invalid: boolean) => void;
-  editing?: boolean;
-  onDirtyChange?: (dirty: boolean) => void;
-  saveRequestId?: number;
-  onSaveResult?: (ok: boolean, error?: string) => void;
 }) {
   const { t } = useTranslation();
   const kind = previewKind(artifact);
   const url = artifactBinaryPreviewUrl(artifact, window.location.origin);
   const panelRef = useRef<HTMLDivElement>(null);
   const htmlIframeRef = useRef<HTMLIFrameElement>(null);
-  const [textStyleHandler, setTextStyleHandler] = useState<((action: SelectionStyleAction, selectedText: string) => void) | null>(null);
+  const [textStyleHandler, setTextStyleHandler] = useState<StyleActionHandler | null>(null);
+  const [textStyleProbe, setTextStyleProbe] = useState<StyleProbeHandler | null>(null);
+  // React treats setState(fn) as a functional updater — wrap so the handler itself is stored.
+  const registerStyleHandler = useCallback((handler: StyleActionHandler | null) => {
+    setTextStyleHandler(() => handler);
+  }, []);
+  const registerStyleProbe = useCallback((handler: StyleProbeHandler | null) => {
+    setTextStyleProbe(() => handler);
+  }, []);
 
   if (!url) return <Notice>{t('artifacts.previewMissingPath')}</Notice>;
   if (kind === 'unsupported') return <Notice>{t('artifacts.previewUnsupported')}</Notice>;
@@ -226,11 +261,8 @@ export function FilePreview({
         <TextPreviewSurface
           artifact={artifact}
           kind={kind}
-          editing={editing}
-          onDirtyChange={onDirtyChange}
-          saveRequestId={saveRequestId}
-          onSaveResult={onSaveResult}
-          onRegisterStyleHandler={setTextStyleHandler}
+          onRegisterStyleHandler={registerStyleHandler}
+          onRegisterStyleProbe={registerStyleProbe}
         />
       );
       break;
@@ -286,10 +318,11 @@ export function FilePreview({
         <SelectionFloat
           kind={kind}
           path={artifact.path ?? ''}
-          title={artifact.name}
+          title={artifact.name ?? ''}
           panelRef={panelRef}
           iframeRef={kind === 'html' ? htmlIframeRef : undefined}
           onStyleAction={textStyleHandler ?? undefined}
+          onStyleProbe={textStyleProbe ?? undefined}
         />
       ) : null}
     </div>

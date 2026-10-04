@@ -19,6 +19,9 @@ import {
   takePendingArtifactSelection,
 } from '../node_modules/.cache/artifact-smart-edit/previewAiEditBridge.js';
 import {
+  findNthOccurrence,
+  hasStyleAtOccurrence,
+  toggleStyleAtOccurrence,
   wrapFirstOccurrence,
   wrapTextSelection,
 } from '../node_modules/.cache/artifact-smart-edit/previewTextEdit.js';
@@ -27,6 +30,7 @@ import {
   expandArtifactSelectionForModel,
   parseArtifactSelectionPayload,
 } from '../node_modules/.cache/artifact-smart-edit/artifactSelectionMessage.js';
+import { toWritableFileApiPath } from '../node_modules/.cache/artifact-smart-edit/filePreviewModel.js';
 
 test('supports selection on text, html, and office kinds', () => {
   for (const kind of ['markdown', 'text', 'code', 'json', 'html', 'docx', 'spreadsheet', 'presentation']) {
@@ -66,8 +70,10 @@ test('composeAiEditPrompt uses @file when path present', () => {
   });
   const prompt = composeAiEditPrompt(sel, '改成 print(2)');
   assert.match(prompt, /@file:src\/a\.py/);
+  assert.match(prompt, /文本选区/);
   assert.match(prompt, /> print\(1\)/);
   assert.match(prompt, /改成 print\(2\)/);
+  assert.doesNotMatch(prompt, /\n{3,}/);
 });
 
 test('composeAiEditPrompt falls back to filename when path empty', () => {
@@ -81,6 +87,26 @@ test('composeAiEditPrompt falls back to filename when path empty', () => {
   assert.doesNotMatch(prompt, /@file:/);
   assert.match(prompt, /report\.docx/);
   assert.match(prompt, /> 段落/);
+});
+
+test('composeAiEditPrompt and buildDocSelection tolerate undefined path/title', () => {
+  const sel = buildDocSelection({
+    kind: 'markdown',
+    path: undefined,
+    title: undefined,
+    selectedText: 'hello',
+  });
+  assert.ok(sel);
+  assert.equal(sel.path, '');
+  assert.equal(sel.source, 'file');
+  const prompt = composeAiEditPrompt(
+    { kind: 'markdown', source: 'notes.md', path: undefined, range: 'Markdown 选区', preview: 'hello' },
+    '润色',
+  );
+  assert.doesNotMatch(prompt, /@file:/);
+  assert.match(prompt, /notes\.md/);
+  assert.match(prompt, /> hello/);
+  assert.match(prompt, /润色/);
 });
 
 test('capSelectionPreview truncates with ellipsis', () => {
@@ -153,26 +179,102 @@ test('selection message encodes for bubble and expands for model', () => {
     range: '文本选区',
   });
   const display = encodeArtifactSelectionMessage(sel, '改成 print(2)');
-  assert.match(display, /\{\{artifact-selection:/);
-  assert.match(display, /改成 print\(2\)/);
+  assert.match(display, /^\{\{artifact-selection:[A-Za-z0-9+/=]+\}\}$/);
+  assert.doesNotMatch(display, /\n/);
   const encoded = display.match(/\{\{artifact-selection:([A-Za-z0-9+/=]+)\}\}/)[1];
   const payload = parseArtifactSelectionPayload(encoded);
   assert.equal(payload.quote, 'print(1)');
+  assert.equal(payload.instruction, '改成 print(2)');
   const model = expandArtifactSelectionForModel(display);
   assert.match(model, /@file:src\/a\.py/);
   assert.match(model, /> print\(1\)/);
   assert.match(model, /改成 print\(2\)/);
 });
 
+test('legacy selection messages with trailing instruction still expand', () => {
+  const sel = buildDocSelection({
+    kind: 'markdown',
+    path: 'a.md',
+    selectedText: 'hello',
+  });
+  const marker = encodeArtifactSelectionMessage(sel, '');
+  const legacy = `${marker}\n\n改短一点`;
+  const model = expandArtifactSelectionForModel(legacy);
+  assert.match(model, /@file:a\.md/);
+  assert.match(model, /> hello/);
+  assert.match(model, /改短一点/);
+});
+
 test('wrapTextSelection bold wraps selection', () => {
   const r = wrapTextSelection('hello world', 0, 5, 'bold');
   assert.equal(r.value, '**hello** world');
-  assert.equal(r.selectionStart, 2);
-  assert.equal(r.selectionEnd, 7);
+  assert.equal(r.innerText, 'hello');
 });
 
-test('wrapFirstOccurrence finds needle', () => {
+test('wrapFirstOccurrence finds needle with italic star markers', () => {
   const r = wrapFirstOccurrence('aaa bbb aaa', 'bbb', 'italic');
   assert.ok(r);
-  assert.equal(r.value, 'aaa _bbb_ aaa');
+  assert.equal(r.value, 'aaa *bbb* aaa');
+});
+
+test('toggleStyleAtOccurrence uses n-th match and toggles off', () => {
+  assert.equal(findNthOccurrence('aaa bbb aaa bbb', 'bbb', 1), 12);
+  const bold = toggleStyleAtOccurrence('aaa bbb aaa bbb', 'bbb', 1, 'bold');
+  assert.ok(bold);
+  assert.equal(bold.value, 'aaa bbb aaa **bbb**');
+  const again = toggleStyleAtOccurrence(bold.value, 'bbb', 1, 'bold');
+  assert.ok(again);
+  assert.equal(again.value, 'aaa bbb aaa bbb');
+});
+
+test('bold then underline nests cleanly and toggles independently', () => {
+  let doc = '本报告的核心判断有四条。';
+  const bold = toggleStyleAtOccurrence(doc, '本报告的核心判断有四条。', 0, 'bold');
+  assert.equal(bold.value, '**本报告的核心判断有四条。**');
+  const under = toggleStyleAtOccurrence(bold.value, '本报告的核心判断有四条。', 0, 'underline');
+  assert.equal(under.value, '**<u>本报告的核心判断有四条。</u>**');
+  const unbold = toggleStyleAtOccurrence(under.value, '本报告的核心判断有四条。', 0, 'bold');
+  assert.equal(unbold.value, '<u>本报告的核心判断有四条。</u>');
+});
+
+test('code style formats a fenced code block with language and toggles off', () => {
+  const fenced = toggleStyleAtOccurrence('print(1)', 'print(1)', 0, 'code', 'https://', 'python');
+  assert.ok(fenced);
+  assert.equal(fenced.value, '```python\nprint(1)\n```');
+  assert.equal(hasStyleAtOccurrence(fenced.value, 'print(1)', 0, 'code'), true);
+  const undone = toggleStyleAtOccurrence(fenced.value, 'print(1)', 0, 'code');
+  assert.ok(undone);
+  assert.equal(undone.value, 'print(1)');
+});
+
+test('code style isolates mid-paragraph fences so markdown can parse them', () => {
+  const fenced = toggleStyleAtOccurrence('前文print(1)后文', 'print(1)', 0, 'code', 'https://', 'bash');
+  assert.ok(fenced);
+  assert.equal(fenced.value, '前文\n\n```bash\nprint(1)\n```\n\n后文');
+  const undone = toggleStyleAtOccurrence(fenced.value, 'print(1)', 0, 'code');
+  assert.ok(undone);
+  assert.match(undone.value, /前文/);
+  assert.match(undone.value, /后文/);
+  assert.ok(!undone.value.includes('```'));
+});
+
+test('link style uses provided URL', () => {
+  const linked = toggleStyleAtOccurrence('官网', '官网', 0, 'link', 'https://example.com');
+  assert.ok(linked);
+  assert.equal(linked.value, '[官网](https://example.com)');
+});
+
+test('toWritableFileApiPath keeps absolute paths and maps relative workspace paths', () => {
+  assert.equal(
+    toWritableFileApiPath('/home/u/.jiuwenswarm/agent/workspace/work/demo/a.md'),
+    '/home/u/.jiuwenswarm/agent/workspace/work/demo/a.md',
+  );
+  assert.equal(
+    toWritableFileApiPath('/home/u/Documents/JiuwenSwarm/chat/outputs/a.md'),
+    '/home/u/Documents/JiuwenSwarm/chat/outputs/a.md',
+  );
+  assert.equal(toWritableFileApiPath('agent/workspace/a.md'), 'agent/workspace/a.md');
+  assert.equal(toWritableFileApiPath('workspace/a.md'), 'agent/workspace/a.md');
+  assert.equal(toWritableFileApiPath('work/demo/a.md'), 'agent/workspace/work/demo/a.md');
+  assert.equal(toWritableFileApiPath(''), null);
 });

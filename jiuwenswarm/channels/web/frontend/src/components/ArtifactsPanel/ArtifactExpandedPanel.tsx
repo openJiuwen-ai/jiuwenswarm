@@ -1,10 +1,7 @@
 import { useCallback, useState } from 'react';
-import { useTranslation } from 'react-i18next';
 import { useSessionArtifacts } from '.';
 import { ArtifactList } from '.';
 import { FilePreview } from './FilePreview';
-import { previewKind } from './filePreviewModel';
-import { isPreviewLocallyEditable } from './previewSelection';
 import BackIcon from '../../assets/work-mode/back.svg?react';
 import ArrowLeftIcon from '../../assets/work-mode/arrow-left.svg?react';
 import ArrowRightIcon from '../../assets/work-mode/arrow-right.svg?react';
@@ -16,16 +13,12 @@ export function ArtifactExpandedPanel({
   selectedArtifactId?: string;
   onSelectArtifact: (artifactId: string) => void;
 }) {
-  const { t } = useTranslation();
   const artifacts = useSessionArtifacts();
   const selectedArtifact = artifacts.find(a => a.id === selectedArtifactId) ?? null;
   const selectedIndex = selectedArtifact ? artifacts.findIndex(a => a.id === selectedArtifact.id) : -1;
   const hasPrev = selectedIndex > 0;
   const hasNext = selectedArtifact && selectedIndex < artifacts.length - 1;
   const [, setInvalidPresentationIds] = useState<Set<string>>(() => new Set());
-  const [editing, setEditing] = useState(false);
-  const [dirty, setDirty] = useState(false);
-  const [saveRequestId, setSaveRequestId] = useState(0);
 
   const handlePresentationStructureInvalidChange = useCallback((artifactId: string, invalid: boolean) => {
     setInvalidPresentationIds(current => {
@@ -37,25 +30,12 @@ export function ArtifactExpandedPanel({
     });
   }, []);
 
-  const confirmLeaveIfDirty = useCallback(() => {
-    if (!dirty) return true;
-    return window.confirm(t('artifacts.unsavedConfirm'));
-  }, [dirty, t]);
-
   const navigateTo = useCallback(
     (artifactId: string) => {
-      if (!confirmLeaveIfDirty()) return;
-      setEditing(false);
-      setDirty(false);
       onSelectArtifact(artifactId);
     },
-    [confirmLeaveIfDirty, onSelectArtifact],
+    [onSelectArtifact],
   );
-
-  const canLocalEdit =
-    Boolean(selectedArtifact?.path?.trim()) &&
-    selectedArtifact != null &&
-    isPreviewLocallyEditable(previewKind(selectedArtifact));
 
   if (selectedArtifact) {
     return (
@@ -72,32 +52,6 @@ export function ArtifactExpandedPanel({
           <div className="flex min-w-0 flex-1 items-center gap-2" data-testid="artifact-preview-name">
             <span className="min-w-0 truncate text-sm font-medium text-text">{selectedArtifact.name}</span>
           </div>
-          {canLocalEdit ? (
-            <>
-              <button
-                type="button"
-                className="shrink-0 rounded px-2 py-1 text-xs text-text hover:bg-secondary"
-                data-testid="artifact-edit-toggle"
-                aria-pressed={editing}
-                onClick={() => {
-                  if (editing && dirty && !window.confirm(t('artifacts.unsavedConfirm'))) return;
-                  setEditing(current => !current);
-                  if (editing) setDirty(false);
-                }}
-              >
-                {editing ? t('artifacts.done') : t('artifacts.edit')}
-              </button>
-              <button
-                type="button"
-                className="shrink-0 rounded px-2 py-1 text-xs text-text hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-40"
-                data-testid="artifact-save"
-                disabled={!dirty}
-                onClick={() => setSaveRequestId(value => value + 1)}
-              >
-                {t('artifacts.save')}
-              </button>
-            </>
-          ) : null}
           <button
             type="button"
             className="shrink-0"
@@ -130,12 +84,6 @@ export function ArtifactExpandedPanel({
         <div className="min-h-0 flex-1 overflow-hidden bg-transparent p-3" data-testid="artifact-preview-surface">
           <FilePreview
             artifact={selectedArtifact}
-            editing={editing && canLocalEdit}
-            onDirtyChange={setDirty}
-            saveRequestId={saveRequestId}
-            onSaveResult={(ok, error) => {
-              if (!ok) window.alert(error || t('artifacts.saveFailed'));
-            }}
             onPresentationStructureInvalidChange={handlePresentationStructureInvalidChange}
           />
         </div>

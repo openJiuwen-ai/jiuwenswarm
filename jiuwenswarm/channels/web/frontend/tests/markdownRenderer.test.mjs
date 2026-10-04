@@ -68,6 +68,8 @@ test('extracts one typed fenced-code descriptor from one code element', () => {
   const multipleChildren = [svgCode, createElement('code', { className: 'language-svg' }, '<svg />')];
   assert.equal(getFencedCodeBlock(multipleChildren, contentLines, node), null);
   assert.equal(getFencedCodeBlock(createElement('code', null, '<svg />'), contentLines, node), null);
+  assert.equal(getFencedCodeBlock(createElement('code', { className: '' }, 'plain\n'), contentLines, node), null);
+  assert.equal(getFencedCodeBlock(createElement('code', { className: 'highlight' }, 'plain\n'), contentLines, node), null);
 });
 
 test('selects adapters by language and explicit streaming policy', () => {

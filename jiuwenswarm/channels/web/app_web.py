@@ -1797,7 +1797,30 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 return
 
             full_path = (self.project_root / request_path).resolve()
-            if not self._is_path_under_allowed_root(full_path):
+            allowed = self._is_path_under_allowed_root(full_path)
+            # Artifact smart-edit: allow writes to the exact path sealed in a
+            # valid download token (same trust boundary as /file-api/download).
+            if not allowed:
+                download_token = payload.get("download_token")
+                if isinstance(download_token, str) and download_token.strip():
+                    try:
+                        from jiuwenswarm.agents.harness.common.tools.web_file_download import (
+                            validate_file_download_token,
+                        )
+
+                        token_payload = validate_file_download_token(
+                            download_token.strip(), check_expiry=False
+                        )
+                    except Exception:  # noqa: BLE001
+                        token_payload = None
+                    token_path = str((token_payload or {}).get("path") or "").strip()
+                    if token_path:
+                        try:
+                            if Path(token_path).resolve() == full_path:
+                                allowed = True
+                        except OSError:
+                            allowed = False
+            if not allowed:
                 self._write_json(403, {"error": "forbidden_path"})
                 return
             if not self._is_markdown(full_path):

@@ -97,7 +97,10 @@ export function CodePreview({
       disposed = true;
       view?.destroy();
     };
-  }, [content, editable, mimeType, name]);
+    // Omit `content` from deps: parent draft updates on every keystroke would remount and steal focus.
+    // Artifact/mode changes still remount via name/mimeType/editable (and parent keys).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editable, mimeType, name]);
 
   return (
     <div className="relative h-full min-h-0 w-full overflow-hidden" data-testid="artifact-code-preview">

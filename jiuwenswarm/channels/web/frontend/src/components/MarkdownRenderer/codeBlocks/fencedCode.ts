@@ -23,7 +23,8 @@ function getCodeElement(children: ReactNode): ReactElement<HTMLAttributes<HTMLEl
 
 function getCodeLanguage(className: string): string | null {
   const languageClass = className.split(/\s+/).find(value => value.startsWith('language-'));
-  const language = languageClass?.slice('language-'.length).trim();
+  if (!languageClass) return null;
+  const language = languageClass.slice('language-'.length).trim();
   return language || null;
 }
 

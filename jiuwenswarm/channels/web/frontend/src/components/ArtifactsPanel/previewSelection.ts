@@ -37,8 +37,9 @@ export function isPreviewLocallyEditable(kind: PreviewKind): boolean {
 
 export function fileSourceName(path: string, title?: string): string {
   if (title?.trim()) return title.trim();
-  const base = path.split(/[?#]/)[0].split('/').pop();
-  return base || path || 'file';
+  const safePath = path ?? '';
+  const base = safePath.split(/[?#]/)[0].split('/').pop();
+  return base || safePath || 'file';
 }
 
 export function defaultRangeLabel(kind: SelectionKind, extra?: string): string {
@@ -72,21 +73,32 @@ export function buildDocSelection(input: BuildDocSelectionInput): DocSelection |
   if (!sk) return null;
   const preview = capSelectionPreview(input.selectedText);
   if (!preview) return null;
+  const path = input.path ?? '';
   return {
     kind: sk,
-    source: fileSourceName(input.path, input.title),
-    path: input.path,
+    source: fileSourceName(path, input.title),
+    path,
     range: defaultRangeLabel(sk, input.range),
     preview,
   };
 }
 
 export function composeAiEditPrompt(sel: DocSelection, instruction: string): string {
-  const quote = sel.preview;
-  const range = sel.range ? ` [${sel.range}]` : '';
-  const header = sel.path.trim() ? `@file:${sel.path}${range}` : `文件「${sel.source}」${range}`;
+  const quote = (sel.preview ?? '').trim();
+  const path = (sel.path ?? '').trim();
+  const source = (sel.source || 'file').trim() || 'file';
+  const range = (sel.range ?? '').trim();
   const body = (instruction || '').trim();
-  return `${header}\n> ${quote}${body ? `\n\n${body}` : ''}`;
+  const fileRef = path ? `@file:${path}` : `文件「${source}」`;
+  const quoted = quote
+    ? quote
+        .split(/\r?\n/)
+        .map(line => `> ${line}`)
+        .join('\n')
+    : '> ';
+  const parts = [fileRef + (range ? `（${range}）` : ''), '', quoted];
+  if (body) parts.push('', body);
+  return parts.join('\n');
 }
 
 export function readDomSelectionText(sel: Selection | null | undefined): string | null {

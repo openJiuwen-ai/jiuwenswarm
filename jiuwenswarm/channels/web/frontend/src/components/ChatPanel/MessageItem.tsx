@@ -285,20 +285,42 @@ export function ContextCompressionLines({
   );
 }
 
-/** 解析 content 里的 {{skill:名称}} 标记，返回 chip 与文字交织的节点数组 */
+/** 解析 content 里的 {{skill:名称}} / 选区标记，返回 chip、选区卡片与文字交织的节点 */
 function renderRichContent(content: string): ReactNode[] {
   const parts: ReactNode[] = [];
   const regex = /\{\{(?:skill:([^}]+)|artifact-selection:([A-Za-z0-9+/=]+))\}\}/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   let key = 0;
+
+  const pushText = (raw: string) => {
+    const text = raw.replace(/^\n+/, '').replace(/\n+$/, '');
+    if (text) parts.push(text);
+  };
+
   while ((match = regex.exec(content)) !== null) {
     if (match.index > lastIndex) {
-      parts.push(content.slice(lastIndex, match.index));
+      pushText(content.slice(lastIndex, match.index));
     }
     if (match[2]) {
       const payload = parseArtifactSelectionPayload(match[2]);
       if (payload) {
+        // Prefer instruction embedded in the marker; absorb legacy trailing text after the marker.
+        let instruction = (payload.instruction || '').trim();
+        let consumedUntil = regex.lastIndex;
+        const after = content.slice(consumedUntil);
+        const nextMarker = after.search(/\{\{(?:skill:|artifact-selection:)/);
+        const segment = nextMarker < 0 ? after : after.slice(0, nextMarker);
+        if (!instruction && segment.trim()) {
+          instruction = segment.trim();
+          consumedUntil += segment.length;
+        } else {
+          const leadingWs = segment.match(/^\s*/)?.[0].length ?? 0;
+          consumedUntil += leadingWs;
+        }
+        lastIndex = consumedUntil;
+        regex.lastIndex = consumedUntil;
+
         parts.push(
           <div
             key={`selection-${key++}`}
@@ -314,8 +336,14 @@ function renderRichContent(content: string): ReactNode[] {
               </span>
             </div>
             <blockquote className="chat-message-selection-card__quote">{payload.quote}</blockquote>
+            {instruction ? (
+              <div className="chat-message-selection-card__instruction" data-testid="chat-panel-message-selection-instruction">
+                {instruction}
+              </div>
+            ) : null}
           </div>,
         );
+        continue;
       }
     } else if (match[1]) {
       parts.push(
@@ -333,7 +361,7 @@ function renderRichContent(content: string): ReactNode[] {
     lastIndex = regex.lastIndex;
   }
   if (lastIndex < content.length) {
-    parts.push(content.slice(lastIndex));
+    pushText(content.slice(lastIndex));
   }
   return parts;
 }

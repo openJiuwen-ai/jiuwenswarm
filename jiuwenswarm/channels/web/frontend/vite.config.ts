@@ -1450,7 +1450,7 @@ function devFileContentApi(): Plugin {
           raw += chunk.toString()
         })
         req.on('end', () => {
-          let payload: { path?: unknown; content?: unknown } = {}
+          let payload: { path?: unknown; content?: unknown; download_token?: unknown } = {}
           try {
             payload = raw ? JSON.parse(raw) : {}
           } catch {
@@ -1476,7 +1476,16 @@ function devFileContentApi(): Plugin {
           }
 
           const fullPath = path.resolve(projectRootDir, requestPath)
-          if (!isPathUnderAllowedRoot(fullPath)) {
+          let allowed = isPathUnderAllowedRoot(fullPath)
+          // Match app_web: a valid download token for this exact path authorizes the write.
+          if (!allowed && typeof payload.download_token === 'string' && payload.download_token.trim()) {
+            const tokenPayload = validateFileDownloadToken(payload.download_token.trim())
+            const tokenPath = tokenPayload?.path?.trim()
+            if (tokenPath && path.resolve(tokenPath) === fullPath) {
+              allowed = true
+            }
+          }
+          if (!allowed) {
             res.statusCode = 403
             res.setHeader('content-type', 'application/json; charset=utf-8')
             res.end(JSON.stringify({ error: 'forbidden_path' }))

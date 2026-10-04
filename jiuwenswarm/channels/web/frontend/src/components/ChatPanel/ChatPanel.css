@@ -1356,14 +1356,24 @@
 .chat-message-selection-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin: 0 0 8px;
+  gap: 8px;
+  margin: 0;
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid var(--color-border-default);
-  background: var(--color-secondary);
-  color: var(--color-text);
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
   max-width: min(420px, 100%);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.chat-message-selection-card + .chat-message-selection-card,
+.chat-message-selection-card + .chat-message-skill-chip {
+  margin-top: 8px;
+}
+
+.chat-text:has(> .chat-message-selection-card:only-child) {
+  white-space: normal;
 }
 
 .chat-message-selection-card__header {
@@ -1391,7 +1401,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
 }
 
 .chat-message-selection-card__quote {
@@ -1399,14 +1409,23 @@
   padding: 6px 10px;
   border-left: 2px solid var(--color-chat-accent, var(--color-text-link));
   border-radius: 0 6px 6px 0;
-  background: var(--color-background, transparent);
-  color: var(--color-text);
+  background: var(--color-surface-muted, var(--color-surface-page));
+  color: var(--color-text-primary);
   font-size: 12px;
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 8.5em;
   overflow: auto;
+}
+
+.chat-message-selection-card__instruction {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--color-text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* 输入栏内已选技能 chips（与 textarea 同行） */

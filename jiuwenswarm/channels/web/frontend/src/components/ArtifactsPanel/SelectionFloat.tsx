@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link2, Sparkles } from 'lucide-react';
 import { submitPreviewAiEdit } from '../../features/previewAiEditBridge';
 import type { DocSelection } from './docSelection';
 import type { PreviewKind } from './filePreviewModel';
+import { filterCodeFenceLanguages } from './codeFenceLanguages';
 import {
   buildDocSelection,
   floatingBarPosition,
@@ -11,9 +12,28 @@ import {
   readDomSelectionText,
   supportsPreviewSelection,
 } from './previewSelection';
+import { countOccurrencesBeforeRange } from './previewTextEdit';
 import type { TextWrapStyle } from './previewTextEdit';
 
 export type SelectionStyleAction = TextWrapStyle;
+
+export type StyleActionOptions = {
+  linkUrl?: string;
+  codeLanguage?: string;
+};
+
+export type StyleActionHandler = (
+  action: SelectionStyleAction,
+  selectedText: string,
+  occurrenceIndex: number,
+  options?: StyleActionOptions,
+) => string | null | void;
+
+export type StyleProbeHandler = (
+  action: SelectionStyleAction,
+  selectedText: string,
+  occurrenceIndex: number,
+) => boolean;
 
 type SelectionFloatProps = {
   kind: PreviewKind;
@@ -22,7 +42,9 @@ type SelectionFloatProps = {
   panelRef: RefObject<HTMLElement | null>;
   /** When set, also listen for selections inside this iframe document. */
   iframeRef?: RefObject<HTMLIFrameElement | null>;
-  onStyleAction?: (action: SelectionStyleAction, selectedText: string) => void;
+  onStyleAction?: StyleActionHandler;
+  /** Returns true when the style is already applied (used to toggle off without a panel). */
+  onStyleProbe?: StyleProbeHandler;
   rangeHint?: string;
 };
 
@@ -30,7 +52,12 @@ type FloatState = {
   sel: DocSelection;
   top: number;
   left: number;
+  occurrenceIndex: number;
+  /** Keep bar visible after a style click until the user clicks outside. */
+  pinned: boolean;
 };
+
+type PanelMode = 'ai' | 'link' | 'code' | null;
 
 function selectionInside(panel: HTMLElement, node: Node | null): boolean {
   if (!node) return false;
@@ -40,22 +67,32 @@ function selectionInside(panel: HTMLElement, node: Node | null): boolean {
 
 export function SelectionFloat({
   kind,
-  path,
-  title,
+  path = '',
+  title = '',
   panelRef,
   iframeRef,
   onStyleAction,
+  onStyleProbe,
   rangeHint,
 }: SelectionFloatProps) {
   const { t } = useTranslation();
   const [float, setFloat] = useState<FloatState | null>(null);
-  const [composing, setComposing] = useState(false);
+  const [panelMode, setPanelMode] = useState<PanelMode>(null);
   const [instruction, setInstruction] = useState('');
+  const [linkUrl, setLinkUrl] = useState('https://');
+  const [codeQuery, setCodeQuery] = useState('');
+  const [codeHighlight, setCodeHighlight] = useState(0);
+  const floatRef = useRef(float);
+  floatRef.current = float;
+  const panelOpen = panelMode != null;
 
   const clear = useCallback(() => {
     setFloat(null);
-    setComposing(false);
+    setPanelMode(null);
     setInstruction('');
+    setLinkUrl('https://');
+    setCodeQuery('');
+    setCodeHighlight(0);
   }, []);
 
   const applySelection = useCallback(
@@ -66,9 +103,11 @@ export function SelectionFloat({
       }
       const text = readDomSelectionText(domSel);
       if (!text || !domSel || domSel.rangeCount === 0 || !clientRect) {
-        if (!composing) clear();
+        if (!panelOpen && !floatRef.current?.pinned) clear();
         return;
       }
+      const range = domSel.getRangeAt(0);
+      const occurrenceIndex = countOccurrencesBeforeRange(root, range, text);
       const next = buildDocSelection({
         kind,
         path,
@@ -77,13 +116,13 @@ export function SelectionFloat({
         range: rangeHint,
       });
       if (!next) {
-        if (!composing) clear();
+        if (!panelOpen && !floatRef.current?.pinned) clear();
         return;
       }
       const pos = floatingBarPosition(clientRect, root.getBoundingClientRect(), { barHalfWidth: 160 });
-      setFloat({ sel: next, top: pos.top, left: pos.left });
+      setFloat({ sel: next, top: pos.top, left: pos.left, occurrenceIndex, pinned: false });
     },
-    [clear, composing, kind, path, rangeHint, title],
+    [clear, kind, panelOpen, path, rangeHint, title],
   );
 
   const refreshFromDom = useCallback(() => {
@@ -105,16 +144,16 @@ export function SelectionFloat({
     const domSel = window.getSelection();
     const text = readDomSelectionText(domSel);
     if (!text || !domSel || domSel.rangeCount === 0) {
-      if (!composing) clear();
+      if (!panelOpen && !floatRef.current?.pinned) clear();
       return;
     }
     const range = domSel.getRangeAt(0);
     if (!selectionInside(panel, range.commonAncestorContainer)) {
-      if (!composing) clear();
+      if (!panelOpen && !floatRef.current?.pinned) clear();
       return;
     }
     applySelection(domSel, range.getBoundingClientRect(), panel);
-  }, [applySelection, clear, composing, iframeRef, panelRef]);
+  }, [applySelection, clear, iframeRef, panelOpen, panelRef]);
 
   useEffect(() => {
     const panel = panelRef.current;
@@ -163,7 +202,6 @@ export function SelectionFloat({
       const target = event.target as Node | null;
       const floatEl = document.querySelector('[data-testid="artifact-selection-float"]');
       if (floatEl && target && floatEl.contains(target)) return;
-      // Dismiss on any outside click; a new selection's mouseup will reopen the float.
       clear();
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -175,13 +213,15 @@ export function SelectionFloat({
       document.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [clear, iframeRef, panelRef]);
+  }, [clear]);
+
+  const codeOptions = useMemo(() => filterCodeFenceLanguages(codeQuery), [codeQuery]);
 
   if (!float) return null;
 
-  const showStyle = Boolean(path.trim() && isPreviewStyleEditable(kind) && onStyleAction);
+  const showStyle = Boolean(isPreviewStyleEditable(kind) && onStyleAction);
 
-  const send = () => {
+  const sendAi = () => {
     submitPreviewAiEdit(float.sel, instruction);
     window.getSelection()?.removeAllRanges();
     try {
@@ -192,12 +232,70 @@ export function SelectionFloat({
     clear();
   };
 
+  const applyStyle = (action: SelectionStyleAction, options?: StyleActionOptions) => {
+    const nextInner = onStyleAction?.(action, float.sel.preview, float.occurrenceIndex, options);
+    if (typeof nextInner === 'string') {
+      setFloat(current =>
+        current
+          ? {
+              ...current,
+              pinned: true,
+              sel: { ...current.sel, preview: nextInner },
+              occurrenceIndex: current.occurrenceIndex,
+            }
+          : current,
+      );
+      setPanelMode(null);
+      setLinkUrl('https://');
+      setCodeQuery('');
+      setCodeHighlight(0);
+    } else if (nextInner !== null) {
+      setFloat(current => (current ? { ...current, pinned: true } : current));
+    }
+  };
+
+  const onStyleClick = (action: SelectionStyleAction) => {
+    if (action === 'link') {
+      if (onStyleProbe?.('link', float.sel.preview, float.occurrenceIndex)) {
+        applyStyle('link');
+        return;
+      }
+      setPanelMode('link');
+      setInstruction('');
+      setCodeQuery('');
+      return;
+    }
+    if (action === 'code') {
+      if (onStyleProbe?.('code', float.sel.preview, float.occurrenceIndex)) {
+        applyStyle('code');
+        return;
+      }
+      setPanelMode('code');
+      setInstruction('');
+      setCodeQuery('');
+      setCodeHighlight(0);
+      return;
+    }
+    setPanelMode(null);
+    applyStyle(action);
+  };
+
+  const confirmLink = () => {
+    const url = linkUrl.trim();
+    if (!url) return;
+    applyStyle('link', { linkUrl: url });
+  };
+
+  const confirmCode = (language: string) => {
+    applyStyle('code', { codeLanguage: language.trim() });
+  };
+
   const styleBtn = (action: SelectionStyleAction, label: ReactNode, testId: string, className = '') => (
     <button
       type="button"
-      className={`inline-flex h-7 w-7 items-center justify-center rounded text-xs text-text hover:bg-secondary ${className}`}
+      className={`inline-flex h-7 w-7 items-center justify-center rounded-lg text-xs text-text hover:bg-secondary ${className}`}
       data-testid={testId}
-      onClick={() => onStyleAction?.(action, float.sel.preview)}
+      onClick={() => onStyleClick(action)}
     >
       {label}
     </button>
@@ -205,17 +303,20 @@ export function SelectionFloat({
 
   return (
     <div
-      className="artifact-selection-float fixed z-50 flex -translate-x-1/2 flex-col gap-1.5 rounded-full border border-border bg-background px-2 py-1 shadow-md"
+      className="artifact-selection-float fixed z-50 flex -translate-x-1/2 flex-col gap-1 rounded-xl border border-border bg-card p-1.5 shadow-lg"
       style={{ top: float.top, left: float.left }}
       data-testid="artifact-selection-float"
       onMouseDown={event => event.preventDefault()}
     >
-      <div className="flex items-center gap-0.5">
+      <div className="flex items-center gap-0.5 px-0.5">
         <button
           type="button"
-          className="inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-xs font-medium text-text-link hover:bg-secondary"
+          className="inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-xs font-medium text-text-link hover:bg-secondary"
           data-testid="artifact-ai-edit-btn"
-          onClick={() => setComposing(true)}
+          onClick={() => {
+            setPanelMode('ai');
+            setCodeQuery('');
+          }}
         >
           <Sparkles size={14} aria-hidden="true" />
           {t('artifacts.aiEdit')}
@@ -232,10 +333,10 @@ export function SelectionFloat({
           </>
         ) : null}
       </div>
-      {composing ? (
-        <div className="flex min-w-[240px] items-center gap-1 rounded-full border border-border bg-background px-2 py-1">
+      {panelMode === 'ai' ? (
+        <div className="flex min-w-[260px] items-center gap-1.5 rounded-lg bg-bg px-1.5 py-1">
           <input
-            className="min-w-0 flex-1 border-0 bg-transparent px-1 py-0.5 text-xs text-text outline-none"
+            className="min-w-0 flex-1 rounded-md border-0 bg-transparent px-2 py-1 text-xs text-text outline-none placeholder:text-text-muted"
             data-testid="artifact-ai-edit-input"
             placeholder={t('artifacts.aiEditPlaceholder')}
             value={instruction}
@@ -243,11 +344,11 @@ export function SelectionFloat({
             onKeyDown={event => {
               if (event.key === 'Enter') {
                 event.preventDefault();
-                send();
+                sendAi();
               }
               if (event.key === 'Escape') {
                 event.preventDefault();
-                setComposing(false);
+                setPanelMode(null);
                 setInstruction('');
               }
             }}
@@ -255,12 +356,138 @@ export function SelectionFloat({
           />
           <button
             type="button"
-            className="shrink-0 rounded-full bg-accent px-2.5 py-1 text-xs text-text"
+            className="shrink-0 rounded-md bg-accent px-2.5 py-1 text-xs text-accent-foreground"
             data-testid="artifact-ai-edit-send"
-            onClick={send}
+            onClick={sendAi}
           >
             {t('artifacts.aiEditSend')}
           </button>
+        </div>
+      ) : null}
+      {panelMode === 'link' ? (
+        <div className="flex min-w-[260px] items-center gap-1.5 rounded-lg bg-bg px-1.5 py-1">
+          <input
+            className="min-w-0 flex-1 rounded-md border-0 bg-transparent px-2 py-1 text-xs text-text outline-none placeholder:text-text-muted"
+            data-testid="artifact-link-url-input"
+            placeholder={t('artifacts.linkUrlPlaceholder')}
+            value={linkUrl}
+            onChange={event => setLinkUrl(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                confirmLink();
+              }
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                setPanelMode(null);
+                setLinkUrl('https://');
+              }
+            }}
+            autoFocus
+          />
+          <button
+            type="button"
+            className="shrink-0 rounded-md bg-accent px-2.5 py-1 text-xs text-accent-foreground"
+            data-testid="artifact-link-url-confirm"
+            onClick={confirmLink}
+          >
+            {t('artifacts.linkUrlConfirm')}
+          </button>
+        </div>
+      ) : null}
+      {panelMode === 'code' ? (
+        <div className="flex min-w-[260px] flex-col gap-1 rounded-lg bg-bg px-1.5 py-1" data-testid="artifact-code-language-panel">
+          <div className="flex items-center gap-1.5">
+            <input
+              className="min-w-0 flex-1 rounded-md border-0 bg-transparent px-2 py-1 text-xs text-text outline-none placeholder:text-text-muted"
+              data-testid="artifact-code-language-input"
+              role="combobox"
+              aria-expanded="true"
+              aria-controls="artifact-code-language-list"
+              placeholder={t('artifacts.codeLanguagePlaceholder')}
+              value={codeQuery}
+              onChange={event => {
+                setCodeQuery(event.target.value);
+                setCodeHighlight(0);
+              }}
+              onKeyDown={event => {
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault();
+                  setCodeHighlight(current => Math.min(current + 1, Math.max(codeOptions.length - 1, 0)));
+                } else if (event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  setCodeHighlight(current => Math.max(current - 1, 0));
+                } else if (event.key === 'Enter') {
+                  event.preventDefault();
+                  const picked = codeOptions[codeHighlight] ?? codeQuery.trim();
+                  confirmCode(picked);
+                } else if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setPanelMode(null);
+                  setCodeQuery('');
+                }
+              }}
+              autoFocus
+            />
+            <button
+              type="button"
+              className="shrink-0 rounded-md bg-accent px-2.5 py-1 text-xs text-accent-foreground"
+              data-testid="artifact-code-language-confirm"
+              onClick={() => confirmCode(codeOptions[codeHighlight] ?? codeQuery.trim())}
+            >
+              {t('artifacts.codeLanguageConfirm')}
+            </button>
+          </div>
+          <ul
+            id="artifact-code-language-list"
+            role="listbox"
+            className="max-h-36 overflow-auto rounded-md border border-border bg-card py-0.5"
+            data-testid="artifact-code-language-list"
+          >
+            <li>
+              <button
+                type="button"
+                role="option"
+                aria-selected={codeQuery.trim() === '' && codeHighlight < 0}
+                className="flex w-full px-2 py-1 text-left text-xs text-text-muted hover:bg-secondary"
+                data-testid="artifact-code-language-plain"
+                onClick={() => confirmCode('')}
+              >
+                {t('artifacts.codeLanguagePlain')}
+              </button>
+            </li>
+            {codeOptions.map((lang, index) => (
+              <li key={lang}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={index === codeHighlight}
+                  className={`flex w-full px-2 py-1 text-left font-mono text-xs hover:bg-secondary ${
+                    index === codeHighlight ? 'bg-secondary text-text' : 'text-text'
+                  }`}
+                  data-testid={`artifact-code-language-option-${lang}`}
+                  onMouseEnter={() => setCodeHighlight(index)}
+                  onClick={() => confirmCode(lang)}
+                >
+                  {lang}
+                </button>
+              </li>
+            ))}
+            {codeOptions.length === 0 && codeQuery.trim() ? (
+              <li>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected
+                  className="flex w-full px-2 py-1 text-left font-mono text-xs text-text hover:bg-secondary"
+                  data-testid="artifact-code-language-custom"
+                  onClick={() => confirmCode(codeQuery.trim())}
+                >
+                  {codeQuery.trim()}
+                </button>
+              </li>
+            ) : null}
+          </ul>
         </div>
       ) : null}
     </div>
