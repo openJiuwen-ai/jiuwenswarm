@@ -29,7 +29,10 @@ await build({
       setup(builder) {
         builder.onResolve({ filter: /services\/webClient$/ }, () => ({ path: 'rpc', namespace: 'test' }));
         builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-          contents: `export const webClient = { on: (...args) => globalThis.__panel.on(...args) };
+          contents: `export const webClient = {
+            on: (...args) => globalThis.__panel.on(...args),
+            onStateChange: (...args) => globalThis.__panel.onStateChange(...args),
+          };
           export const webRequest = (...args) => globalThis.__panel.request(...args);`,
           loader: 'js',
         }));
@@ -69,6 +72,10 @@ beforeEach(async () => {
       listeners.set(name, callback);
       return () => listeners.delete(name);
     },
+    onStateChange(callback) {
+      listeners.set('connection-state', callback);
+      return () => listeners.delete('connection-state');
+    },
     async request(method, args) {
       requests.push({ method, args });
       if (method === 'video.realtime.config') return { provider: 'qwen_omni', url: 'ws://127.0.0.1/realtime' };
@@ -103,7 +110,7 @@ afterEach(async () => {
 });
 
 async function start() {
-  await act(async () => document.querySelector('[aria-label="开启 Full-duplex 会话"]').click());
+  await act(async () => document.querySelector('[data-testid="video-live-session-toggle"]').click());
   assert.ok(session);
 }
 

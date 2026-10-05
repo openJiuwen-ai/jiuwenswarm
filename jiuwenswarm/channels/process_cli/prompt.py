@@ -68,6 +68,7 @@ _LIVE_PROMPT_STYLE = Style.from_dict(
         "accepted": "fg:ansigreen",
         "rejected": "fg:ansired",
         "unknown": "fg:ansiyellow",
+        "notice": "fg:ansiyellow",
         "assistant": "fg:ansicyan bold",
         "processing": "fg:ansibrightblack",
         "input-prefix": "fg:ansicyan bold",

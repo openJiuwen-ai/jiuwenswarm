@@ -336,6 +336,8 @@
       "toggleCapability": "Toggle {{name}} capability",
       "saveAndEnable": "Save and enable",
       "savedRestartRequired": "Saved; takes effect after restart.",
+      "regionalBaseHint": "Keys are region-bound: use https://api.minimax.io/v1 for a global key and https://api.minimaxi.com/v1 for a China key. If the address and the key's region differ, the other region is tried automatically.",
+      "regionalBaseHintModelark": "Keys and model activation are region-bound: use https://ark.ap-southeast.bytepluses.com/api/v3 for BytePlus ModelArk (international) and https://ark.cn-beijing.volces.com/api/v3 for Volcengine (China). Models must be activated in the Ark console first, otherwise calls fail with ModelNotOpen.",
       "deleteModelTitle": "Delete model configuration",
       "deleteModelConfirm": "This deletes the saved model configuration for {{name}} and turns the capability off if it is currently enabled.",
       "team": "Agent team"
@@ -400,6 +402,11 @@
       "ttsVoiceLabel": "Speech synthesis voice",
       "qwenModelLabel": "Qwen model",
       "qwenVoiceLabel": "Qwen voice",
+      "replyLanguageLabel": "Reply language",
+      "replyLanguageDescription": "Controls the spoken and written reply language. Takes effect the next time Full-duplex starts.",
+      "replyLanguageMatch": "Match conversation",
+      "replyLanguageZhCN": "Simplified Chinese",
+      "replyLanguageEn": "English",
       "deleteTitle": "Delete full-duplex model settings",
       "deleteConfirm": "This clears the saved full-duplex endpoint, model, and API key."
     },
@@ -1093,6 +1100,7 @@
     "toggleLabel": "Pursue Goal",
     "toolbarUnavailable": "A goal is already in progress. Finish or clear it first.",
     "toolbarUnavailablePlan": "Plan mode is in progress, so Goal isn't available",
+    "toolbarUnavailableProcessing": "A reply is in progress, so Goal isn't available",
     "overwriteConfirm": "The current goal \"{{currentObjective}}\" is unfinished. Replace it with \"{{requestedObjective}}\"?",
     "closeTag": "Cancel goal",
     "closeTagDisabled": "Cannot close the goal while the session is busy",
@@ -1924,6 +1932,12 @@
       "colActions": "Actions",
       "stateCollecting": "Fetching",
       "stateCompleted": "Completed",
+      "stateCancelled": "Cancelled",
+      "createdNodes": "Added {{nodes}} nodes ({{files}} files) in this run",
+      "updatedNodes": "Updated {{count}} nodes",
+      "noNewContent": "No new content",
+      "collectionDisabledHint": "Enable Personal Context and content collection in settings before fetching now.",
+      "collectionStoppingHint": "Collection is stopping. Wait until it has stopped and try again.",
       "statePartial": "Partially completed: {{completed}}/{{total}}, {{failed}} failed",
       "stateFailed": "Failed",
       "stateWaiting": "Waiting",
@@ -1983,7 +1997,8 @@
       "maxItemsLabel": "Max items per run",
       "maxItemsPlaceholder": "Leave empty for default",
       "advancedConfig": "Advanced Settings",
-      "maxItemsRangeError": "Max items must be 1-40, or empty for default",
+      "maxItemsRangeError": "Max items must be an integer from 1 to 40, or empty for default",
+      "frequencyRangeError": "Frequency must be an integer from 1 to {{max}}",
       "previousStep": "Previous",
       "submit": "Add",
       "save": "Save",
@@ -2924,6 +2939,7 @@
       "webUploadPlaceholder": "Click to upload a file",
       "uploadInvalidType": "Only .zip and .tar files are supported",
       "uploadDirectoryUnsupported": "Folders cannot be dragged here. Compress the folder into a .zip or .tar file before uploading.",
+      "uploadVirtualFileUnsupported": "Files cannot be dragged directly from WinRAR or another archive app. Extract or copy the file to a local folder before uploading.",
       "uploadPickerUnsupported": "Local file selection is not supported in this environment",
       "uploadPickerFailed": "Failed to open the local file picker. Try again.",
       "removeUpload": "Remove selected file",
@@ -3084,6 +3100,9 @@
   "chatUi": {
     "copyMessage": "Copy message",
     "copied": "Copied",
+    "usageInput": "Input",
+    "usageOutput": "Output",
+    "usageCacheHit": "Cache hit",
     "stopReading": "Stop reading",
     "readMessage": "Read message",
     "forkFromMessage": "Create a conversation branch from this message",
@@ -3539,6 +3558,7 @@
       "renamePlaceholder": "Enter a new name",
       "archiveConversation": "Archive",
       "conversationArchived": "Task session archived",
+      "conversationDeleted": "Conversation deleted",
       "archiveView": "View",
       "archiveUndo": "Undo",
       "removeProject": "Remove project",
@@ -3584,7 +3604,9 @@
     },
     "deleteDialog": {
       "title": "Delete",
-      "description": "Delete “<name>{{title}}</name>”? This action cannot be undone."
+      "attention": "Attention",
+      "description": "Delete “<name>{{title}}</name>”? This action cannot be undone.",
+      "permanentConfirm": "Are you sure you want to permanently delete this task?"
     },
     "notFound": {
       "title": "Conversation not found or deleted",
@@ -3824,7 +3846,7 @@
       "message": "Deleting this custom connector removes its configuration, credentials, and skills for good — this cannot be undone. If you just want to reconnect later, disconnect instead of deleting."
     },
     "confirmUninstallPlugin": {
-      "message": "This plugin will become unavailable — you can reinstall it anytime."
+      "message": "Uninstalling will delete this plugin's related local files. Please confirm whether you want to continue."
     },
     "empty": {
       "myMcp": "No connectors yet",
@@ -4334,7 +4356,27 @@
     "budgetPanelHint": "Set the Token limit for this session.",
     "budgetPlaceholder": "Enter number",
     "budgetActualHint": "Configured limit: {{count}} tokens",
-    "workflowList": "Workflow List"
+    "workflowList": "Workflow List",
+    "verifyReviewing": "Reviewing…",
+    "verifyReviewingShort": "Reviewing",
+    "verifyPass": "✓ Pass",
+    "verifyFail": "✗ Fail",
+    "verifyUndecided": "? Undecided",
+    "verifyThreshold": "Threshold {{count}}",
+    "verifyUndecidedHint": "Some reviewer(s) did not vote (undecided); retry recommended",
+    "verifyVotesMissing": "{{count}} vote(s) missing · retry recommended",
+    "verifyVoteUndecided": "? No vote",
+    "verifyScore": "{{score}} pts",
+    "verifyRound": "Round {{count}} · {{verdict}}",
+    "verifyGroupTitle": "verify · {{label}}",
+    "verifyReviewersPending": "{{names}} reviewing…",
+    "sectionInput": "Input",
+    "sectionOutput": "Output",
+    "sectionHumanPrompt": "Human question",
+    "sectionHumanReply": "Human reply",
+    "sectionError": "Error",
+    "charUnit": "chars",
+    "clickToViewDetail": "Click to view details"
   },
   "mcpApp": {
     "loading": "Loading app…",

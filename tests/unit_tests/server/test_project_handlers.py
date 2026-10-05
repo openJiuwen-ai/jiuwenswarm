@@ -188,8 +188,7 @@ class _FakeSessionCreateAgentClient:
 class _FakeRemoveRuntime:
     """project.remove busy 扫描的 AgentRuntime 桩。
 
-    ``running``/``parked`` 分别控制 ``is_session_running`` 与
-    ``has_parked_team_streams`` 的应答,模拟执行中会话与 parked 的
+    ``running``/``parked`` 控制 ``is_session_running`` 的应答,模拟执行中会话与 parked 的
     Team 常驻流。``heartbeats`` 是"仅因后台心跳在跑"的会话子集:
     ``ignore_heartbeats`` 读时排除它们,``stop_heartbeat_runs`` 停掉它们。
     """
@@ -209,10 +208,7 @@ class _FakeRemoveRuntime:
     def is_session_running(self, session_id, *, ignore_heartbeats=False):
         if ignore_heartbeats and session_id in self._heartbeats:
             return False
-        return session_id in self._running
-
-    def has_parked_team_streams(self, session_id):
-        return session_id in self._parked
+        return session_id in self._running and session_id not in self._parked
 
     async def stop_heartbeat_runs(self, session_id):
         if session_id not in self._heartbeats or not self._stop_heartbeats:
@@ -1487,7 +1483,9 @@ class TestProjectRemoveRestore:
 
     @staticmethod
     @pytest.mark.asyncio
-    async def test_remove_stops_heartbeat_instead_of_reporting_busy(tmp_path):
+    async def test_remove_stops_heartbeat_instead_of_reporting_busy(
+        sessions_dir, project_store_dir, tmp_path,
+    ):
         """后台心跳不阻塞移除:移除停掉心跳,再读到已落定的会话。"""
         from jiuwenswarm.common.schema.agent import AgentRequest
         from jiuwenswarm.common.schema.message import ReqMethod
@@ -1518,7 +1516,9 @@ class TestProjectRemoveRestore:
 
     @staticmethod
     @pytest.mark.asyncio
-    async def test_remove_keeps_heartbeat_when_real_work_also_runs(tmp_path):
+    async def test_remove_keeps_heartbeat_when_real_work_also_runs(
+        sessions_dir, project_store_dir, tmp_path,
+    ):
         """真实工作仍在跑时移除照旧被挡,且不为注定被拒的移除取消心跳。"""
         from jiuwenswarm.common.schema.agent import AgentRequest
         from jiuwenswarm.common.schema.message import ReqMethod
@@ -1550,7 +1550,9 @@ class TestProjectRemoveRestore:
 
     @staticmethod
     @pytest.mark.asyncio
-    async def test_remove_stays_busy_when_heartbeat_refuses_to_stop(tmp_path):
+    async def test_remove_stays_busy_when_heartbeat_refuses_to_stop(
+        sessions_dir, project_store_dir, tmp_path,
+    ):
         """心跳停不掉时移除仍报 SESSION_BUSY,不隐藏还在跑的工作。"""
         from jiuwenswarm.common.schema.agent import AgentRequest
         from jiuwenswarm.common.schema.message import ReqMethod

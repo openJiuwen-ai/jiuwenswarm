@@ -35,6 +35,29 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# chat.delta 在线上被拆成 delta + 白名单字段，再在网关侧按同一份名单还原。
+# chat.final 走整包透传，不经过这份名单。主动推荐标记若只留在 final 上，
+# 流式增量会被前端当成上一轮普通回复，卡片正文出现两遍，上一轮结束时间也被藏掉。
+_CHAT_DELTA_PASSTHROUGH_KEYS = (
+    "rid",
+    "role",
+    "member_name",
+    "agent_template_name",
+    "execution_id",
+    "output_phase_id",
+    "output_suppressed",
+    "output_order",
+    "timestamp",
+    "turn_request_id",
+    "message_origin",
+    "session_message_id",
+    "cross_session",
+    "source",
+    "proactive_type",
+    "proactive_target",
+    "proactive_rec_id",
+)
+
 # 与 E2A-AgentRequest-log-migration.md §7.4 一致；通道业务勿占用此前缀。
 E2A_INTERNAL_CONTEXT_KEY = "_jiuwenswarm"
 E2A_FALLBACK_FAILED_KEY = "normalize_failed"
@@ -394,11 +417,9 @@ def e2a_response_from_agent_chunk(
             "event_type": event_type,
             "source_chunk_type": sct,
         }
-        # Preserve round, cross-session, and team-member identity for frontend
-        # display. ``rid`` must survive so Team delta and final share one key.
-        for _key in ("rid", "role", "member_name", "agent_template_name", "execution_id",
-                     "output_phase_id", "output_suppressed", "output_order", "timestamp",
-                     "turn_request_id", "message_origin", "session_message_id", "cross_session"):
+        # Preserve round, cross-session, team-member, and proactive identity.
+        # ``rid`` must survive so Team delta and final share one key.
+        for _key in _CHAT_DELTA_PASSTHROUGH_KEYS:
             _val = pl.get(_key)
             if _val is not None:
                 body_chunk[_key] = _val
@@ -543,11 +564,8 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
             }
             if sct is not None:
                 pl["source_chunk_type"] = sct
-            # Restore round, cross-session, and team-member identity for the
-            # frontend, including Team's ``rid``.
-            for _key in ("rid", "role", "member_name", "agent_template_name", "execution_id",
-                         "output_phase_id", "output_suppressed", "output_order", "timestamp",
-                         "turn_request_id", "message_origin", "session_message_id", "cross_session"):
+            # Restore the same passthrough set written by e2a_response_from_agent_chunk.
+            for _key in _CHAT_DELTA_PASSTHROUGH_KEYS:
                 _val = body.get(_key)
                 if _val is not None:
                     pl[_key] = _val

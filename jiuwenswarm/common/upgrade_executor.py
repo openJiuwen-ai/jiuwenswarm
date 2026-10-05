@@ -26,6 +26,11 @@ def _updates_dir() -> Path:
     return path
 
 
+def restart_pending_path() -> Path:
+    """Marker written before the upgrading Gateway stops itself for a relaunch."""
+    return _updates_dir() / ".restart_pending.json"
+
+
 class UpgradeExecutor(ABC):
     upgrade_mode: str = ""
     is_platform_supported: bool = True
@@ -391,7 +396,7 @@ class PipExecutor(UpgradeExecutor):
             "frontend_port": frontend_port,
             "timestamp": time.time(),
         }
-        restart_file = _updates_dir() / ".restart_pending.json"
+        restart_file = restart_pending_path()
         with open(restart_file, "w", encoding="utf-8") as f:
             f.write(json.dumps(restart_data, indent=2))
             f.flush()

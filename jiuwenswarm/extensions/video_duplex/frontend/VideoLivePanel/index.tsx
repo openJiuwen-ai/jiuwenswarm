@@ -246,7 +246,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     setSearchStatus('');
   };
 
-  const getJoyAIProvider = (): JoyAIProvider => {
+  const getJoyAIProvider = (replyLanguage?: VideoSessionConfig['reply_language']): JoyAIProvider => {
     const callbacks = {
       getLatestFrameDataUrl: () => framesRef.current.at(-1)?.data_url || '',
       getFrameCount: () => framesRef.current.length,
@@ -279,9 +279,10 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       report: reportRealtimeEvent,
     };
     if (!joyaiProviderRef.current) {
-      joyaiProviderRef.current = new JoyAIProvider(callbacks);
+      joyaiProviderRef.current = new JoyAIProvider(callbacks, replyLanguage);
     } else {
       joyaiProviderRef.current.updateCallbacks(callbacks);
+      if (replyLanguage) joyaiProviderRef.current.setPreferredLanguage(replyLanguage);
     }
     return joyaiProviderRef.current;
   };
@@ -825,7 +826,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         });
         setModel(config.model);
         if (config.provider === 'joyai') {
-          await getJoyAIProvider().start();
+          await getJoyAIProvider(config.reply_language).start();
           return;
         }
         const videoFrames = new RealtimeVideoFrameScheduler(1_000);
@@ -834,6 +835,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             url: config.url || '',
             voice: config.voice,
             tools: config.tools,
+            replyLanguage: config.reply_language,
           },
           {
             getVideoFrame: () => {
@@ -1025,6 +1027,15 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     hadHeadlessScreenRef.current = false;
     stopRealtime();
   }, [headless, screens.length]);
+
+  useEffect(() => {
+    if (!isRecording && !isRealtimeStarting) return;
+    return webClient.onStateChange((state) => {
+      if (state !== 'closed' && state !== 'reconnecting') return;
+      setError((previous) => previous || 'Jiuwen 服务连接已断开，未提供具体原因。请检查网络或本地服务后重新启动全双工。');
+      stopRealtime();
+    });
+  }, [isRecording, isRealtimeStarting]);
 
   useEffect(() => {
     onRuntimeState?.(isRealtimeStarting ? 'starting' : isRecording ? 'active' : 'idle');
@@ -1383,6 +1394,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             <button
               type="button"
               className={`video-live__mic${isRecording ? ' is-recording' : ''}`}
+              data-testid="video-live-session-toggle"
               onClick={isRecording ? stopRealtime : () => void startRealtime()}
               disabled={isRealtimeStarting && !isRecording}
               aria-label={

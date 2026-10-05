@@ -980,3 +980,73 @@ for (const sample of contractCases) {
     // The browser transports control arguments; the server owns their validation.
   });
 }
+
+
+async function createConnectedSocketSession() {
+  let socket;
+  class FakeSocket {
+    static OPEN = 1;
+    readyState = 1;
+    constructor() { socket = this; }
+    send() {}
+    close() { this.readyState = 3; }
+  }
+  globalThis.window = globalThis;
+  globalThis.WebSocket = FakeSocket;
+  const errors = [];
+  const session = new RealtimeDuplexSession({ url: 'ws://example.test/realtime' }, {
+    getVideoFrame: () => null, onAssistantText() {}, onUserText() {}, onState() {},
+    onError: (message) => errors.push(message),
+  });
+  const opening = session.openSocket();
+  socket.onopen();
+  await opening;
+  session.sessionReady = true;
+  return { session, socket, errors };
+}
+
+for (const code of [1000, 1006, 1011]) {
+  test(`remote close ${code} always displays a reason`, async () => {
+    const { socket, errors } = await createConnectedSocketSession();
+    socket.onclose({ code, reason: 'quota exhausted' });
+    assert.match(errors.at(-1), /quota exhausted/);
+  });
+}
+
+test('quota error survives gateway closure and a subsequent generic socket close', async () => {
+  const { socket, errors } = await createConnectedSocketSession();
+  socket.onmessage({ data: JSON.stringify({ type: 'error', error: { message: 'quota exhausted' } }) });
+  socket.onmessage({ data: JSON.stringify({ type: 'error', error: { code: 'qwen_gateway_upstream_closed', message: 'closed' } }) });
+  socket.onclose({ code: 1000, reason: '' });
+  assert.equal(errors.at(-1), 'quota exhausted');
+});
+
+test('session.closed after startup displays the provider reason and releases the session', async () => {
+  const { session, socket, errors } = await createConnectedSocketSession();
+  socket.onmessage({ data: JSON.stringify({ type: 'session.closed', reason: 'quota exhausted' }) });
+  assert.match(errors.at(-1), /quota exhausted/);
+  assert.equal(session.socket, null);
+});
+
+test('failed response and socket error after startup are visible', async () => {
+  const { session, socket, errors } = await createConnectedSocketSession();
+  socket.onerror();
+  assert.equal(errors.length, 1);
+  socket.onmessage({ data: JSON.stringify({ type: 'response.done', response: {
+    status: 'failed', status_details: { error: { message: 'insufficient_quota' } },
+  } }) });
+  socket.onclose({ code: 1000, reason: '' });
+  assert.equal(errors.at(-1), 'insufficient_quota');
+  assert.equal(session.socket, null);
+});
+
+test('remote close without a reason has a fallback, while manual stop stays silent', async () => {
+  const remote = await createConnectedSocketSession();
+  remote.socket.onclose({ code: 1000, reason: '' });
+  assert.match(remote.errors.at(-1), /1000/);
+  assert.ok(remote.errors.at(-1).length > 20);
+  const local = await createConnectedSocketSession();
+  local.session.stop();
+  local.socket.onclose({ code: 1000, reason: '' });
+  assert.deepEqual(local.errors, []);
+});

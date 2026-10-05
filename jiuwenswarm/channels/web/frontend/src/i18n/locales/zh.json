@@ -336,6 +336,8 @@
       "toggleCapability": "切换{{name}}能力",
       "saveAndEnable": "保存并启用",
       "savedRestartRequired": "配置已保存，重启后生效。",
+      "regionalBaseHint": "密钥分区域：国际版密钥用 https://api.minimax.io/v1，国内版密钥用 https://api.minimaxi.com/v1。地址与密钥的区域不一致时，会自动尝试另一个区域。",
+      "regionalBaseHintModelark": "密钥和模型开通都分区域：国际版（BytePlus ModelArk）用 https://ark.ap-southeast.bytepluses.com/api/v3，国内版（火山引擎）用 https://ark.cn-beijing.volces.com/api/v3。模型需要先在 Ark 控制台开通，否则会提示 ModelNotOpen。",
       "deleteModelTitle": "删除模型配置",
       "deleteModelConfirm": "将删除{{name}}已保存的模型配置；如果该能力当前已启用，将同步关闭。",
       "team": "智能体团队"
@@ -400,6 +402,11 @@
       "ttsVoiceLabel": "语音播报音色",
       "qwenModelLabel": "Qwen 模型",
       "qwenVoiceLabel": "Qwen 音色",
+      "replyLanguageLabel": "回复语言",
+      "replyLanguageDescription": "控制语音与文字回复使用的语言。下次启动全双工后生效。",
+      "replyLanguageMatch": "跟随对话",
+      "replyLanguageZhCN": "简体中文",
+      "replyLanguageEn": "英语",
       "deleteTitle": "删除全双工模型配置",
       "deleteConfirm": "删除后将清除已保存的全双工模型地址、模型和密钥。"
     },
@@ -1084,6 +1091,7 @@
     "toggleLabel": "追求目标",
     "toolbarUnavailable": "当前已有进行中的目标，请先完成或清除",
     "toolbarUnavailablePlan": "计划模式进行中，暂不可选择目标",
+    "toolbarUnavailableProcessing": "对话进行中，暂不可选择目标",
     "overwriteConfirm": "当前目标“{{currentObjective}}”尚未完成。是否替换为“{{requestedObjective}}”？",
     "closeTag": "取消目标",
     "closeTagDisabled": "会话进行中，无法关闭目标",
@@ -1915,6 +1923,12 @@
       "colActions": "操作",
       "stateCollecting": "正在采集",
       "stateCompleted": "采集完成",
+      "stateCancelled": "已取消",
+      "createdNodes": "本次新增 {{nodes}} 个节点（{{files}} 个文件）",
+      "updatedNodes": "已更新 {{count}} 个节点",
+      "noNewContent": "无新增内容",
+      "collectionDisabledHint": "请先在上下文设置中开启总开关和内容采集，再立即采集。",
+      "collectionStoppingHint": "正在停止采集，请等待停止完成后重试。",
       "statePartial": "部分成功：{{completed}}/{{total}}，{{failed}} 项失败",
       "stateFailed": "采集失败",
       "stateWaiting": "等待采集",
@@ -1974,7 +1988,8 @@
       "maxItemsLabel": "单次最多采集条数",
       "maxItemsPlaceholder": "留空使用默认",
       "advancedConfig": "高级配置",
-      "maxItemsRangeError": "单次采集条数须在 1~40 之间，或留空使用默认",
+      "maxItemsRangeError": "单次采集条数须为 1~40 之间的整数，或留空使用默认",
+      "frequencyRangeError": "采集频率须为 1~{{max}} 之间的整数",
       "previousStep": "上一步",
       "submit": "添加",
       "save": "保存",
@@ -1986,7 +2001,8 @@
       "localFiles": {
         "rootDirLabel": "本地文件夹路径",
         "rootDirPlaceholder": "D:/my-notes",
-        "rootDirHint": "须为绝对路径"
+        "rootDirHint": "须为绝对路径",
+        "rootDirRequired": "请选择本地文件夹路径"
       },
       "zhihu": {
         "columnUrlLabel": "知乎专栏地址",
@@ -2910,6 +2926,7 @@
       "webUploadPlaceholder": "点击上传文件",
       "uploadInvalidType": "仅支持 .zip 和 .tar 文件",
       "uploadDirectoryUnsupported": "不支持直接拖拽文件夹，请先将文件夹压缩为 .zip 或 .tar 文件后再上传",
+      "uploadVirtualFileUnsupported": "不支持直接从 WinRAR 等压缩软件中拖入文件，请先解压或复制到本地磁盘后再上传",
       "uploadPickerUnsupported": "当前环境暂不支持选择本地文件",
       "uploadPickerFailed": "打开文件选择器失败，请重试",
       "removeUpload": "移除已选文件",
@@ -3070,6 +3087,9 @@
   "chatUi": {
     "copyMessage": "复制消息",
     "copied": "已复制",
+    "usageInput": "输入",
+    "usageOutput": "输出",
+    "usageCacheHit": "缓存命中",
     "stopReading": "停止朗读",
     "readMessage": "朗读消息",
     "forkFromMessage": "从此消息新建会话分支",
@@ -3525,6 +3545,7 @@
       "renamePlaceholder": "输入新名称",
       "archiveConversation": "归档",
       "conversationArchived": "已归档任务会话",
+      "conversationDeleted": "对话已删除",
       "archiveView": "查看",
       "archiveUndo": "撤销",
       "removeProject": "移除项目",
@@ -3570,7 +3591,9 @@
     },
     "deleteDialog": {
       "title": "删除",
-      "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。"
+      "attention": "注意",
+      "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。",
+      "permanentConfirm": "确定要永久删除该任务吗？"
     },
     "notFound": {
       "title": "对话不存在或已删除",
@@ -3810,7 +3833,7 @@
       "message": "删除后该自定义连接器的配置、凭证与技能将被彻底清除，不可恢复；如果只是想以后还能重连，请用解绑而不是删除。"
     },
     "confirmUninstallPlugin": {
-      "message": "卸载后该插件将变为不可用状态，可以重新安装。"
+      "message": "卸载后将删除该插件在本地的相关文件，请确认是否继续。"
     },
     "empty": {
       "myMcp": "暂无我的连接器",
@@ -4318,7 +4341,27 @@
     "budgetPanelHint": "设置本次会话的 Token 上限。",
     "budgetPlaceholder": "输入数字",
     "budgetActualHint": "本次配置上限：{{count}} tokens",
-    "workflowList": "工作流列表"
+    "workflowList": "工作流列表",
+    "verifyReviewing": "评审中…",
+    "verifyReviewingShort": "评审中",
+    "verifyPass": "✓ 通过",
+    "verifyFail": "✗ 不通过",
+    "verifyUndecided": "? 未裁决",
+    "verifyThreshold": "阈值 {{count}}",
+    "verifyUndecidedHint": "有 reviewer 未投票（undecided），建议重试",
+    "verifyVotesMissing": "{{count}} 票缺失 · 建议重试",
+    "verifyVoteUndecided": "? 未投",
+    "verifyScore": "{{score}} 分",
+    "verifyRound": "第{{count}}轮 · {{verdict}}",
+    "verifyGroupTitle": "verify 组 · {{label}}",
+    "verifyReviewersPending": "{{names}} 评审中…",
+    "sectionInput": "输入",
+    "sectionOutput": "输出",
+    "sectionHumanPrompt": "人工提问",
+    "sectionHumanReply": "人工回复",
+    "sectionError": "错误",
+    "charUnit": "字符",
+    "clickToViewDetail": "点击查看详情"
   },
   "mcpApp": {
     "loading": "正在加载应用…",

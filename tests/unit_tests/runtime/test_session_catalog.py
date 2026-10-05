@@ -72,6 +72,26 @@ def test_list_filters_before_sorting_and_pagination(
     assert "must-not-leak" not in str(result.to_dict())
 
 
+def test_list_searches_owned_sessions_before_pagination(monkeypatch):
+    items = [
+        _metadata("foreign", channel_id="tui", last_message_at=100),
+        _metadata("first", last_message_at=10),
+        _metadata("second", last_message_at=20),
+        _metadata("third", last_message_at=30),
+    ]
+    items[1]["title"] = "Project Alpha"
+    items[2]["title"] = "Project Alpha"
+    items[3]["title"] = "Something else"
+    monkeypatch.setattr(session_catalog, "_collect_session_metadata", lambda: items)
+
+    result = list_sessions(
+        SessionListInput(channel_id="process_cli", search="project ALPHA", limit=1)
+    )
+
+    assert result.total == 2
+    assert [item.session_id for item in result.sessions] == ["second"]
+
+
 @pytest.mark.parametrize(
     ("metadata", "expected"),
     [
@@ -121,6 +141,8 @@ def test_get_uses_cache_bust_without_writeback(
         SessionListInput(channel_id="process_cli", limit=True, offset=0),
         SessionListInput(channel_id="process_cli", limit=201, offset=0),
         SessionListInput(channel_id="process_cli", limit=20, offset=-1),
+        SessionListInput(channel_id="process_cli", search=123),
+        SessionListInput(channel_id="process_cli", search="x" * 201),
     ],
 )
 def test_list_rejects_invalid_scope_or_page_before_storage(

@@ -184,6 +184,13 @@ class ProcessCliUI:
     def notice(self, message: str) -> None:
         self._write(self._styled(f"\n! {message}\n\n", _ANSI_YELLOW))
 
+    def details(self, title: str, lines: Iterable[str]) -> None:
+        self._write("\n")
+        self._write_wrapped(title, style=_ANSI_BOLD_CYAN)
+        for line in lines:
+            self._write_wrapped(str(line), indent="  ")
+        self._write("\n")
+
     def live_execution_layout(self, request_text: str) -> None:
         """Render the stable sections above a parent-owned input prompt."""
 

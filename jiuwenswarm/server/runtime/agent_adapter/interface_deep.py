@@ -2018,6 +2018,7 @@ class JiuWenSwarmDeepAdapter:
         self._memory_forbidden_rail: Any = None
         self._tool_cards = None
         self._evolution_watcher_tasks: set[asyncio.Task] = set()
+        self._ttse_cleanup_tasks: set[asyncio.Task] = set()
         self._sys_operation = None
         self._sys_operation_card: SysOperationCard | None = None
         # Ids of the sys operations this adapter currently holds a reference on,
@@ -4024,6 +4025,28 @@ class JiuWenSwarmDeepAdapter:
         bucket.discard(task)
         if not bucket:
             self._session_agent_tasks.pop(sid, None)
+
+    async def cancel_session_tasks(self, session_id: str) -> int:
+        """Cancel request tasks in the existing adapter for this session only."""
+        sid = self._session_adapter_key(session_id)
+        if self._is_session_scoped_adapter:
+            if self._session_adapter_key(self._parent_session_id) != sid:
+                return 0
+            return await self._cancel_session_agent_tasks(sid)
+        adapter = self._session_adapters.get(sid)
+        cancelled = await self._cancel_session_agent_tasks(sid)
+        if adapter is not None:
+            cancelled += await adapter.cancel_session_agent_tasks(sid)
+        return cancelled
+
+    async def cancel_session_agent_tasks(self, session_id: str) -> int:
+        """Cancel this adapter's tracked agent tasks for the session.
+
+        Public twin of :meth:`_cancel_session_agent_tasks` so a parent
+        adapter can drive a session-scoped child adapter without touching
+        its protected surface.
+        """
+        return await self._cancel_session_agent_tasks(session_id)
 
     async def _cancel_session_agent_tasks(self, session_id: str) -> int:
         sid = self._resolve_interrupt_session_id(session_id)
@@ -6828,6 +6851,16 @@ class JiuWenSwarmDeepAdapter:
             logger.debug("[JiuWenSwarmDeepAdapter] login model catalog unavailable", exc_info=True)
             return False
 
+    @staticmethod
+    def _login_required_message(request: AgentRequest) -> str:
+        from jiuwenswarm.common.e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY
+
+        params = request.params if isinstance(request.params, dict) else {}
+        hint = params.get(E2A_LOGIN_REQUIRED_HINT_PARAM_KEY)
+        if isinstance(hint, str) and hint.strip():
+            return hint.strip()[:500]
+        return "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
+
     def _model_config_error(self, request: AgentRequest) -> tuple[str, str] | None:
         requested = self._requested_model_name(request)
         scoped = self._scoped_login_auth(request)
@@ -6835,7 +6868,7 @@ class JiuWenSwarmDeepAdapter:
         if scoped is not None:
             return None
         if self._is_uncredentialed_login_model(request, requested):
-            return "login_required", "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
+            return "login_required", self._login_required_message(request)
         if not self._has_valid_model_config(requested):
             # 包括默认模型还是 .env 模板占位值的情况（新装、没配过模型）。Opencode Zen 停用后
             # 没有免费模型兜底了，所以要把"登录拿免费模型"这条路也告诉用户。
@@ -17182,8 +17215,8 @@ class JiuWenSwarmDeepAdapter:
                 ttse_task = asyncio.create_task(
                     self._cleanup_ttse_background_tasks(rid, session_id)
                 )
-                ttse_task.add_done_callback(self._on_evolution_watcher_done)
-                self._evolution_watcher_tasks.add(ttse_task)
+                ttse_task.add_done_callback(self._on_ttse_cleanup_done)
+                self._ttse_cleanup_tasks.add(ttse_task)
             if _debug_logger is not None:
                 if run_failure is not None:
                     _debug_logger.end_run(
@@ -19481,6 +19514,14 @@ class JiuWenSwarmDeepAdapter:
             task.result()
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] evolution watcher task exception: %s", exc)
+
+    def _on_ttse_cleanup_done(self, task: asyncio.Task) -> None:
+        """Drop a finished TTSE cleanup task and log a normal failure."""
+        self._ttse_cleanup_tasks.discard(task)
+        try:
+            task.result()
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] TTSE cleanup task exception: %s", exc)
 
     @staticmethod
     def _is_approval_event(evt) -> bool:

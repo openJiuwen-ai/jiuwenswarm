@@ -26,6 +26,7 @@ class LiveTurnLayout:
     def __init__(self, request_text: str) -> None:
         self.request_text = request_text.strip() or "（空请求）"
         self.supplements: list[_Supplement] = []
+        self.notices: list[str] = []
         self.output_text = ""
         self._session: PromptSession[str] | None = None
 
@@ -34,6 +35,10 @@ class LiveTurnLayout:
 
     def add_supplement(self, text: str) -> None:
         self.supplements.append(_Supplement(text=text))
+        self.invalidate()
+
+    def add_notice(self, text: str) -> None:
+        self.notices.append(text)
         self.invalidate()
 
     def apply_receipt(self, status: str) -> None:
@@ -77,6 +82,8 @@ class LiveTurnLayout:
                 "unknown": "class:unknown",
             }[supplement.status]
             self._append_multiline(parts, style, f"  {marker} ", supplement.text)
+        for notice in self.notices:
+            self._append_multiline(parts, "class:notice", "  ! ", notice)
         parts.append(("", "\n"))
         if self.output_text:
             parts.append(("class:assistant", "• JiuwenSwarm\n"))
@@ -101,6 +108,8 @@ class LiveTurnLayout:
                 "unknown": "!",
             }[supplement.status]
             parts.append(f"  {marker} {supplement.text}\n")
+        for notice in self.notices:
+            parts.append(f"  ! {notice}\n")
         parts.append("\n")
         if self.output_text:
             parts.extend(("• JiuwenSwarm\n", self.output_text))

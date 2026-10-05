@@ -544,7 +544,10 @@ def _resolve_bind_host() -> str:
 
 
 def main() -> None:
-    from jiuwenswarm.common.debug_dump import install_async_dump_handler
+    from jiuwenswarm.common.debug_dump import (
+        install_async_dump_handler,
+        install_crash_exit_handler,
+    )
     from jiuwenswarm.dotenv_early import get_parsed_dotenv
 
     parser = argparse.ArgumentParser(
@@ -585,6 +588,7 @@ def main() -> None:
         else:
             port = 18092
 
+    install_crash_exit_handler("agentserver")
     install_async_dump_handler("agentserver")
     asyncio.run(_run(host=host, port=port))
 

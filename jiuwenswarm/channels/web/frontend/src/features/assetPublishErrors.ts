@@ -5,6 +5,7 @@ const SAFE_FAILURE_KEYS = {
   AUTH_REQUIRED: 'authRequired',
   RESOURCE_NOT_FOUND: 'resourceNotFound',
   VERSION_CONFLICT: 'versionConflict',
+  HUB_REQUEST_FAILED: 'hubRequestFailed',
 } as const;
 
 export type PublishFailureKey = (typeof SAFE_FAILURE_KEYS)[keyof typeof SAFE_FAILURE_KEYS] | 'requestFailed';

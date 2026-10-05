@@ -2223,7 +2223,7 @@ def _build_agent_group_card(
             "canUninstall": installed or source == "local",
             "canPreviewFiles": True,
             "canEdit": False,
-            "canPublish": True,
+            "canPublish": installed,
         },
     }
     if include_details:

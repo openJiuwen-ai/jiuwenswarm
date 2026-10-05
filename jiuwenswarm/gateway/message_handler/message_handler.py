@@ -132,6 +132,16 @@ _BEFORE_CHAT_HOOK_WATCH_PARAM_KEYS = ("query", "model_name")
 # Shown when a channel with streaming disabled asks for a team round. The team
 # runtime streams member events as they happen and has no non-streaming entry
 # point, so the request is refused rather than silently downgraded.
+_SESSION_OWNER_AUTH_WAIT_S = 20.0
+_LOGIN_HINT_NO_OWNER = (
+    "该会话使用的是登录华为账号获得的限时免费模型。"
+    "请先在网页端打开这个会话，用该模型发送一条消息，之后即可在这里继续使用。"
+)
+_LOGIN_HINT_OWNER_LOGGED_OUT = (
+    "该会话的免费模型使用网页端登录的华为账号额度，但该账号已退出或登录已过期。"
+    "请在网页端重新登录后再试。"
+)
+_LOGIN_HINT_RETRY = "暂时无法获取网页端登录的华为账号凭据，请稍后重试。"
 _NON_STREAM_TEAM_NOTICE = (
     "集群模式需要开启流式输出才能运行（成员协作事件是流式下发的）。"
     "请在该通道配置中开启 enable_streaming，或改用单 Agent 模式。"
@@ -3431,6 +3441,19 @@ class MessageHandler(ABC):
         params = payload.get("data") or {}
         if not isinstance(params, dict):
             params = {}
+        # 对话里的 cron 工具也使用原始请求的华为登录会话。只读 Gateway
+        # 保存的请求上下文，不信任工具参数或响应 metadata 里的登录身份。
+        request_metadata = self._stream_metadata.get(request_id)
+        if not isinstance(request_metadata, dict):
+            original_message = getattr(
+                self, "_non_stream_chat_messages", {}
+            ).get(request_id)
+            request_metadata = getattr(original_message, "metadata", None)
+        auth_session = (
+            str(request_metadata.get("auth_session") or "").strip()
+            if isinstance(request_metadata, dict)
+            else ""
+        )
         from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
 
         is_agentos = is_agentos_routing_client(self.agent_client)
@@ -3463,6 +3486,10 @@ class MessageHandler(ABC):
                 if data is None:
                     raise KeyError("job not found")
             elif action == "create":
+                params = dict(params)
+                params.pop("_auth_session", None)
+                if auth_session:
+                    params["_auth_session"] = auth_session
                 # Gateway, rather than an AgentServer payload, is authoritative
                 # for the authenticated owner in AgentOS.
                 if owner_user_id:
@@ -3481,6 +3508,9 @@ class MessageHandler(ABC):
                 if await _get_owned_job(job_id) is None:
                     raise KeyError("job not found")
                 patch = dict(params.get("patch") or {})
+                patch.pop("_auth_session", None)
+                if auth_session:
+                    patch["_auth_session"] = auth_session
                 if is_agentos:
                     patch["_agentos_project_binding_verified"] = True
                 data = await cc.update_job(job_id, patch)
@@ -4124,10 +4154,95 @@ class MessageHandler(ABC):
             user_id=getattr(msg, "user_id", None),
         )
 
+    def _effective_session_model(self, session_id: str, params: dict[str, Any]) -> str:
+        if isinstance(params.get("model_selection"), dict):
+            return ""
+        explicit = str(params.get("model_name") or "").strip()
+        if explicit:
+            return explicit
+        from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client
+
+        if not is_legacy_shared_directory_client(self.agent_client):
+            return ""
+        try:
+            from jiuwenswarm.server.runtime.session.model_selection_store import (
+                get_session_model_selection,
+            )
+            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+            if get_session_model_selection(session_id) is not None:
+                return ""
+            metadata = get_session_metadata(session_id, cache_bust=True, enable_writeback=False)
+        except Exception:  # noqa: BLE001 — 读不到就当没有
+            logger.debug("[MessageHandler] 读取会话模型失败 session=%s", session_id, exc_info=True)
+            return ""
+        stored = metadata.get("model") if isinstance(metadata, dict) else None
+        return stored.strip() if isinstance(stored, str) else ""
+
+    async def _apply_session_login_owner(self, env: "E2AEnvelope") -> None:
+        from jiuwenswarm.common.e2a.constants import (
+            E2A_LOGIN_REQUIRED_HINT_PARAM_KEY,
+            E2A_MODEL_AUTH_PARAM_KEY,
+        )
+
+        params = getattr(env, "params", None)
+        session_id = str(getattr(env, "session_id", None) or "").strip()
+        if not isinstance(params, dict) or getattr(env, "method", None) != "chat.send":
+            return
+        params.pop(E2A_LOGIN_REQUIRED_HINT_PARAM_KEY, None)
+        if not session_id:
+            return
+        auth = params.get(E2A_MODEL_AUTH_PARAM_KEY)
+        if isinstance(auth, dict):
+            # 凭据是 Gateway 按登录会话挂的：记下会话主人
+            try:
+                from jiuwenswarm.common.auth import session_owners
+
+                session_owners.remember(
+                    session_id,
+                    str(auth.get("credential_ref") or ""),
+                    str(params.get("model_name") or ""),
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("[MessageHandler] 记录会话主人失败 session=%s", session_id, exc_info=True)
+            return
+        if str(getattr(env, "channel", None) or "") == "web":
+            return
+
+        try:
+            from jiuwenswarm.common.auth import session_owners
+            from jiuwenswarm.common.auth.login_credentials import bare_model_name
+
+            owner = session_owners.lookup(session_id)
+            if owner is None or (
+                bare_model_name(self._effective_session_model(session_id, params)) != owner.model_name
+            ):
+                params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_NO_OWNER
+                return
+            auth = await asyncio.wait_for(
+                asyncio.to_thread(session_owners.login_auth_for_owner, owner),
+                timeout=_SESSION_OWNER_AUTH_WAIT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[MessageHandler] 取会话主人的登录凭据超时 session=%s", session_id)
+            params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_RETRY
+            return
+        except Exception:  # noqa: BLE001 — 凭据取不到照常转发，由 AgentServer 提示
+            logger.warning("[MessageHandler] 取会话主人的登录凭据失败 session=%s", session_id, exc_info=True)
+            params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_RETRY
+            return
+        if auth is None:
+            logger.info("[MessageHandler] 会话主人未登录或登录已过期，免费模型不可用 session=%s", session_id)
+            params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_OWNER_LOGGED_OUT
+            return
+        params[E2A_MODEL_AUTH_PARAM_KEY] = auth
+        params.setdefault("model_name", owner.model_name)
+
     async def _send_non_stream_agent_request(
         self,
         env: "E2AEnvelope",
     ) -> "AgentResponse":
+        await self._apply_session_login_owner(env)
         return await send_agent_request_with_timeout(
             self.agent_client,
             env,
@@ -4826,6 +4941,7 @@ class MessageHandler(ABC):
         )
         try:
             await self._sync_agentos_cron_jobs(env)
+            await self._apply_session_login_owner(env)
             async for chunk in self.agent_client.send_request_stream(env):
                 _proc_count += 1
                 if _proc_count <= 3:

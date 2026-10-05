@@ -83,7 +83,7 @@ def build_execution_prompt(
         "the filesystem, fetch pages again or recognize unrelated video frames. Verify "
         "external or time-sensitive facts using "
         "search and page contents.\n\n"
-        "Final answer: use Simplified Chinese. After the necessary actions, respond "
+        "Final answer: follow the reply language instruction below. After the necessary actions, respond "
         "directly to the original instruction with "
         "results, necessary evidence and sources. Do not narrate tool calls, fetching, "
         "retries or verification. Follow the user's "
@@ -92,11 +92,11 @@ def build_execution_prompt(
     )
 
 
-def build_brief_prompt(begin, end):
+def build_brief_prompt(begin, end, language_rule="Speak to the user in Simplified Chinese."):
     return (
         "\n\nVoice receipt protocol (place after the full answer):\n"
         f"{begin}\n"
-        "Write a separate, natural, brief receipt in one or two sentences of Simplified Chinese, summarizing the "
+        f"Write a separate, natural, brief receipt in one or two sentences. {language_rule} Summarize the "
         "task result for the realtime model to announce. Do not include code, JSON, URLs, Markdown links or full "
         "page contents, and do not claim the task is still unfinished.\n"
         f"{end}\n"

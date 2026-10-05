@@ -38,14 +38,19 @@ def test_slash_command_registry_has_unique_canonical_names() -> None:
 
     assert names == [
         "/help",
+        "/sessions",
         "/mode",
+        "/model",
+        "/plan",
         "/status",
         "/skills",
+        "/permissions",
         "/new",
         "/resume",
         "/branch",
         "/delete",
         "/session",
+        "/cancel",
         "/exit",
     ]
     assert len(names) == len(set(names))
@@ -91,7 +96,10 @@ def test_mode_target_supports_only_normal_runtime_modes(
 
 def test_slash_prefix_filters_command_index() -> None:
     assert matching_slash_commands("/") == SLASH_COMMANDS
-    assert [command.name for command in matching_slash_commands("/se")] == ["/session"]
+    assert [command.name for command in matching_slash_commands("/se")] == [
+        "/sessions",
+        "/session",
+    ]
     assert matching_slash_commands("ask /") == ()
     assert matching_slash_commands("/session now") == ()
 
@@ -102,14 +110,17 @@ def test_slash_argument_index_filters_mode_and_skills_options() -> None:
         "team.work",
         "team.code",
     ]
-    assert [item.value for item in matching_slash_arguments("/skills l")] == [
-        "list"
-    ]
+    assert [item.value for item in matching_slash_arguments("/skills l")] == ["list"]
     assert [item.value for item in matching_slash_arguments("/new --p")] == [
         "--persist",
         "--persist-session",
     ]
     assert matching_slash_arguments("/status ") == ()
+    assert [item.value for item in matching_slash_arguments("/plan ")] == [
+        "on",
+        "off",
+        "status",
+    ]
 
 
 def test_completer_displays_all_commands_and_chinese_descriptions_for_slash() -> None:
@@ -117,29 +128,41 @@ def test_completer_displays_all_commands_and_chinese_descriptions_for_slash() ->
 
     assert [completion.text for completion in completions] == [
         "/help",
+        "/sessions",
         "/mode",
+        "/model",
+        "/plan",
         "/status",
         "/skills",
+        "/permissions",
         "/new",
         "/resume",
         "/branch",
         "/delete",
         "/session",
+        "/cancel",
         "/exit",
     ]
-    assert [completion.start_position for completion in completions] == [-1] * 10
+    assert [completion.start_position for completion in completions] == [-1] * len(
+        SLASH_COMMANDS
+    )
     assert all(len(completion.display_text) == 22 for completion in completions)
     assert completions[0].display_text.startswith("/help")
     assert [completion.display_meta_text for completion in completions] == [
         "查看所有命令",
+        "搜索并选择进程式 CLI 会话",
         "查看或切换运行模式",
+        "查看或选择下一轮模型",
+        "切换单 Agent 规划模式",
         "查看当前状态",
         "查看可用技能",
+        "查看有效权限（只读）",
         "创建并切换到新会话",
-        "按 ID 恢复会话",
+        "选择会话或按 ID 恢复",
         "从当前会话创建分支",
         "删除指定会话",
         "查看当前会话",
+        "中断当前任务",
         "退出 JiuwenSwarm",
     ]
 
