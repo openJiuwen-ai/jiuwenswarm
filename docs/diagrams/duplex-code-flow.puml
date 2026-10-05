@@ -84,9 +84,10 @@ else 当前任务运行中，执行一次快模型判断
   note over adapter, native
     <b>这一步只是读现有信息，不调用模型，也不修改慢模型上下文。</b>
     goal：当前任务目标。优先读已有计划，没有则用原始任务 active.original_query。
-    next_action：当前计划项的描述；没有计划项时为空，不让慢模型额外总结。
+    next_action：当前计划项的描述；执行适配器可附上实际操作，没有信息时为空。
+    last_action：执行适配器提供的最近已完成操作；未提供时为空。
     phase：目前处在模型生成、工具执行等哪个阶段。
-    这三个字段会发给快模型，帮助它判断新消息是否推翻当前工作。
+    这四个字段会发给快模型，帮助它判断新消息是否推翻当前工作。
     例：目标“实现订单系统”，当前项“使用 Kafka”；新消息“禁止使用 Kafka” → 倾向 INTERRUPT。
 
     context_version：本地比较标识，用于判断“等待快模型期间，慢 Agent 状态是否已变化”。
@@ -113,12 +114,13 @@ else 当前任务运行中，执行一次快模型判断
   fast -[#2563EB]> fast : <color:#2563EB>【新增】</color> 拼好输入并提交判断请求\nagent.run(prompt_for(snapshot, messages))
   note right of fast
     prompt_for() 把数据写成 JSON 字符串：
-    snapshot = {goal, next_action, phase}
+    snapshot = {goal, next_action, last_action, phase}
     messages = [{message_id, sender, content}]
     例如 content = “禁止使用 Kafka”。
     快模型只判断，不接管原任务，也不获得完整慢模型对话。
     期望回复：{"action":"INTERRUPT"} 或 {"action":"APPEND"}。
-    超时时间默认沿用该快模型的 SDK 配置。
+    仓库默认 timeout_seconds=2.0 秒，可按接口延迟调整。
+    未设置该字段或设置为 null 时，沿用该快模型的 SDK timeout。
   end note
   fast -[#2563EB]-> policy : <color:#2563EB>【新增】</color> 返回建议：增量注入 或 打断\n{action: APPEND / INTERRUPT}
   policy -[#2563EB]> policy : <color:#2563EB>【新增】</color> 检查回复格式，再确认判断依据有没有过期\nvalidate_decision()；current_snapshot() 与请求前的信息比较
