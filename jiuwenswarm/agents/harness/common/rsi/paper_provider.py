@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import threading
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -438,6 +439,10 @@ class PaperProvider:
         staged_paths = self._stage_input_file(request.artifact_path, run_dir)
         staged_artifact_path = str(staged_paths[0]) if staged_paths else None
         base_research_paths = [self._relative_to(run_dir, path) for path in staged_paths]
+        if staged_paths and staged_paths[0].is_dir():
+            summary_path = staged_paths[0] / "research_summary.md"
+            if summary_path.is_file():
+                base_research_paths.insert(0, self._relative_to(run_dir, summary_path))
         topic = (request.optimization_instruction or "").strip()
         if not topic:
             topic = "Improve the supplied paper artifact and validate the improvement."
@@ -521,6 +526,25 @@ class PaperProvider:
 
         config = self._load_config(load_config)
         config = self._configure_for_model(config, request.model)
+        prepared_source = (config.get("code_implementation") or {}).get("prepared_source_dir")
+        code_implementation = None
+        if prepared_source:
+            from jiuwenswarm.agents.harness.common.rsi.prepared_code import PreparedCodeAgent
+
+            source_dir = Path(prepared_source)
+            if not source_dir.is_absolute() and self.config_path is not None:
+                source_dir = self.config_path.resolve().parent / source_dir
+            code_implementation = PreparedCodeAgent(source_dir, task_id=str(request.task_id))
+        template_dir = (config.get("reporting") or {}).get("template_dir")
+        if template_dir:
+            from jiuwenswarm.agents.harness.common.rsi.iclr_reporting import IclrReportingAgent
+
+            template_path = Path(template_dir)
+            if not template_path.is_absolute() and self.config_path is not None:
+                template_path = self.config_path.resolve().parent / template_path
+            reporting = IclrReportingAgent(config, template_dir=template_path, model=request.model)
+        else:
+            reporting = ReportingAgent(config, model=request.model)
         topic_config = dict(config.get("topic_survey") or {})
         topic_config["web_proxy"] = str(request.web_proxy or "").strip() or None
         configured_scope = str(topic_config.get("search_scope") or "").strip().lower()
@@ -536,14 +560,16 @@ class PaperProvider:
         runtime = ManagerRuntime(
             config,
             manager=manager,
+            model=request.model,
             topic_survey=TopicSurveyAgent(config, model=request.model),
             experiment_design=ExperimentDesignAgent(
                 config,
                 model=request.model,
                 project_root_path=run_dir,
             ),
-            reflection=ReflectionAgent(config),
-            reporting=_ReportingAgentBoundaryAdapter(ReportingAgent(config)),
+            code_implementation=code_implementation,
+            reflection=ReflectionAgent(config, model=request.model),
+            reporting=_ReportingAgentBoundaryAdapter(reporting),
             artifact_path=artifact_path if artifact_path is not None else request.artifact_path,
         )
         with self._temporary_model_environment(request.model, task_id=request.task_id):
@@ -613,7 +639,6 @@ class PaperProvider:
             "API_BASE": _model_value(client, "api_base"),
             "MODEL_PROVIDER": _model_value(client, "client_provider"),
             "MODEL_NAME": _model_value(request_config, "model_name"),
-            "MODEL_TIMEOUT": _model_value(client, "timeout"),
         }
         values = {key: str(value) for key, value in values.items() if value not in (None, "")}
         acquired_without_wait = cls._MODEL_ENV_LOCK.acquire(blocking=False)
@@ -625,6 +650,11 @@ class PaperProvider:
             )
             cls._MODEL_ENV_LOCK.acquire()
         try:
+            host_paths = [
+                entry for entry in os.environ.get("PATH", "").split(os.pathsep)
+                if entry and os.path.isdir(entry)
+            ]
+            values["PATH"] = os.pathsep.join([str(Path(sys.executable).parent), *host_paths])
             previous: dict[str, object] = {}
             for key, value in values.items():
                 previous[key] = os.environ.get(key, _MISSING)
@@ -1024,7 +1054,65 @@ class PaperProvider:
         self._remove_staging_path(destination.with_suffix(".zip"))
         destination.mkdir(parents=True, exist_ok=True)
         if source_root.is_dir():
-            shutil.copytree(source_root, destination, dirs_exist_ok=True)
+            excluded = []
+            relocated = []
+            declared = {
+                os.path.normcase(os.path.abspath(run_dir / raw))
+                for report in _read_json_file(source_root / "manager" / "state.json").get("reports", [])
+                if isinstance(report, dict)
+                for raw in report.get("artifact_paths", []) or []
+                if isinstance(raw, str)
+            }
+
+            def ignore_nul_tool_outputs(directory: str, names: list[str]) -> list[str]:
+                ignored = []
+                for name in names:
+                    if os.name != "nt" or name.upper() != "NUL":
+                        continue
+                    path = Path(directory) / name
+                    if os.path.normcase(os.path.abspath(path)) in declared:
+                        continue
+                    physical = Path("\\\\?\\" + str(path.absolute()))
+                    try:
+                        size = physical.stat().st_size if physical.is_file() else None
+                    except OSError:
+                        size = None
+                    if size == 0:
+                        relative = path.relative_to(source_root).as_posix()
+                        excluded.append(relative)
+                        ignored.append(name)
+                        logger.warning("[RSI] excluded zero-byte Windows NUL tool output from package: %s", relative)
+                    elif size is not None:
+                        relative = path.relative_to(source_root).as_posix()
+                        target_relative = (
+                            Path("__rsi_artifact__/windows_reserved_outputs")
+                            / path.relative_to(source_root).with_name(f"reserved-{name}.bin")
+                        ).as_posix()
+                        target = destination / target_relative
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        content = physical.read_bytes()
+                        target.write_bytes(content)
+                        relocated.append({
+                            "source_relative_path": relative, "relocated_relative_path": target_relative,
+                            "size": len(content), "sha256": hashlib.sha256(content).hexdigest(),
+                        })
+                        ignored.append(name)
+                        logger.warning("[RSI] preserved nonempty Windows NUL tool output as package bytes: %s", relative)
+                return ignored
+
+            shutil.copytree(source_root, destination, dirs_exist_ok=True, ignore=ignore_nul_tool_outputs)
+            if excluded:
+                record = destination / "__rsi_artifact__" / "packaging_exclusions.json"
+                record.parent.mkdir(parents=True, exist_ok=True)
+                record.write_text(json.dumps({
+                    "reason": "zero_byte_windows_NUL_tool_output", "source_relative_paths": excluded,
+                }, indent=2) + "\n", encoding="utf-8")
+            if relocated:
+                record = destination / "__rsi_artifact__" / "packaging_reserved_outputs.json"
+                record.parent.mkdir(parents=True, exist_ok=True)
+                record.write_text(json.dumps({
+                    "reason": "nonempty_windows_NUL_tool_output", "files": relocated,
+                }, indent=2) + "\n", encoding="utf-8")
         else:
             (destination / "README.txt").write_text(
                 "autoResearch did not create a workspace\n", encoding="utf-8"

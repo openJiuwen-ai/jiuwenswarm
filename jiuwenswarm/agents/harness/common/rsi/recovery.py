@@ -45,8 +45,22 @@ class RsiWorkspaceRecovery:
             try:
                 self.projector.load_from_disk(task.task_id)
                 self.projector.register_root(task.task_id)
-                target, cause = self._target_status(task)
-                self.store.update_status(task.task_id, [task.status], target, cause=cause)
+                target, cause, results = self._target_status(task)
+                if results is None:
+                    self.store.update_status(task.task_id, [task.status], target, cause=cause)
+                else:
+                    try:
+                        self.store.update_status_with_results(
+                            task.task_id, [task.status], target, results, cause=cause
+                        )
+                    except Exception:  # noqa: BLE001 - never publish incomplete terminal evidence
+                        target = TaskStatus.FAILED.value
+                        self.store.update_status(
+                            task.task_id,
+                            [task.status],
+                            target,
+                            cause="worker.terminal_evidence_persist_failed",
+                        )
             except Exception as exc:  # noqa: BLE001 - isolate one corrupt task at startup
                 logger.exception("[RSI] workspace recovery failed: task=%s", task.task_id)
                 summary["errors"].append({"task_id": task.task_id, "error": str(exc)})
@@ -68,21 +82,35 @@ class RsiWorkspaceRecovery:
         )
         return summary
 
-    def _target_status(self, task: Any) -> tuple[str, str]:
+    def _target_status(self, task: Any) -> tuple[str, str, dict[str, Any] | None]:
         if task.status == TaskStatus.QUEUED.value:
-            return TaskStatus.PAUSED.value, "agentserver_restart.queue_lost"
+            return TaskStatus.PAUSED.value, "agentserver_restart.queue_lost", None
 
         adapter = self.adapter_resolver(task.scenario, task.artifact_type)
         provider_state = _read_provider_state(adapter, task.task_id)
         provider_status = _provider_status(provider_state)
+        results = None
+        finalize_terminal = getattr(adapter, "finalize_terminal", None)
+        if provider_status == "COMPLETED" and callable(finalize_terminal):
+            try:
+                provider_state = finalize_terminal(task.task_id, provider_state)
+                results = {
+                    key: str(value)
+                    for key in ("best_artifact_path", "final_node_id", "error_code", "error_message")
+                    if (value := getattr(provider_state, key, None)) is not None
+                }
+            except Exception as exc:  # noqa: BLE001 - match the worker's fail-closed terminal boundary
+                reason = failure_reason(exc, fallback="PAPER terminal finalization failed")
+                return TaskStatus.FAILED.value, reason, {"error_message": reason}
+            provider_status = _provider_status(provider_state)
         terminal = _PROVIDER_TERMINAL_STATUS.get(provider_status)
         if terminal is not None:
             if terminal == TaskStatus.FAILED.value:
                 reason = failure_reason(provider_state)
                 if reason:
-                    return terminal, reason
-            return terminal, f"provider_snapshot.{terminal.lower()}"
-        return TaskStatus.PAUSED.value, "agentserver_restart.execution_detached"
+                    return terminal, reason, results
+            return terminal, f"provider_snapshot.{terminal.lower()}", results
+        return TaskStatus.PAUSED.value, "agentserver_restart.execution_detached", results
 
 
 def _read_provider_state(adapter: Any, task_id: str) -> Any:

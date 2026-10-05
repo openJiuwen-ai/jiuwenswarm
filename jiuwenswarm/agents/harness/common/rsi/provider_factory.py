@@ -84,14 +84,11 @@ def build_rsi_adapters(
                 tasks_root=tasks_root,
             )
         if paper_provider is None and "ARTIFACT:PAPER" not in adapters:
-            # The implementation is intentionally owned by agent-core.  The
-            # public ``paper_opt.provider`` module is only the Protocol; the
-            # concrete implementation lives under the autoResearch tree provider.
-            from openjiuwen.rsi.artifact_rsi.paper_opt.auto_research.tree_provider.provider import (
-                PaperArtifactProviderImpl,
-            )
+            # The bridge runs agent-core's ManagerRuntime and publishes the
+            # iteration packages required by PAPER terminal auditing.
+            from jiuwenswarm.agents.harness.common.rsi.paper_provider import PaperProvider
 
-            paper_provider = PaperArtifactProviderImpl()
+            paper_provider = PaperProvider(tasks_root)
         if paper_provider is not None:
             adapters["ARTIFACT:PAPER"] = ArtifactEngineAdapter(
                 "PAPER",

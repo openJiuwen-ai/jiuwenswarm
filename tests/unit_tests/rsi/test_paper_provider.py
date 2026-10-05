@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import os
+import shutil
+import sys
 import threading
 import time
-from pathlib import Path
+from contextlib import nullcontext
+from dataclasses import replace
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -13,14 +19,12 @@ import pytest
 from jiuwenswarm.agents.harness.common.rsi.paper_provider import (
     PaperProvider,
     _ExecutionOutcome,
+    _NodeArtifactRequest,
     _read_usage_ledger,
     _safe_reporting_resource_paths,
 )
 from jiuwenswarm.agents.harness.common.rsi.provider_factory import build_rsi_adapters
 from openjiuwen.rsi.artifact_rsi.request import ArtifactEngineRequest
-from openjiuwen.rsi.artifact_rsi.paper_opt.auto_research.tree_provider.provider import (
-    PaperArtifactProviderImpl,
-)
 from openjiuwen.rsi.artifact_rsi.program_opt import PuctProgramArtifactProvider
 
 
@@ -36,17 +40,37 @@ def _request(tasks_root: Path, task_id: str = "rsi-paper") -> ArtifactEngineRequ
     )
 
 
+def test_supplied_research_summary_precedes_directory_for_reporting(tmp_path: Path):
+    source = tmp_path / "research"
+    source.mkdir()
+    (source / "research_summary.md").write_text("# Curated primary sources", encoding="utf-8")
+    tasks_root = tmp_path / "tasks"
+    provider = PaperProvider(tasks_root)
+    request = replace(_request(tasks_root), artifact_path=str(source))
+    captured = {}
+
+    def manager(*args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(status="failed", summary="stop after observing inputs")
+
+    provider._run_manager = manager
+    provider._execute_request(request, threading.Event())
+    assert captured["research_paths"][0] == "input/paper/research/research_summary.md"
+
+
 def test_real_factory_registers_paper_provider(tmp_path: Path):
     adapters = build_rsi_adapters(tmp_path / "tasks", mode="real")
 
     assert set(adapters) == {"ARTIFACT:PAPER", "ARTIFACT:PROGRAM"}
-    assert isinstance(adapters["ARTIFACT:PAPER"].provider, PaperArtifactProviderImpl)
+    assert isinstance(adapters["ARTIFACT:PAPER"].provider, PaperProvider)
     assert isinstance(adapters["ARTIFACT:PROGRAM"].provider, PuctProgramArtifactProvider)
-    assert adapters["ARTIFACT:PAPER"].supports_pause is True
+    assert adapters["ARTIFACT:PAPER"].supports_pause is False
     assert adapters["ARTIFACT:PAPER"].supports_resume is False
 
 
-def test_paper_provider_wires_the_bundled_autoresearch_runtime(tmp_path: Path):
+@pytest.mark.parametrize("prepared", [False, True])
+@pytest.mark.parametrize("iclr", [False, True])
+def test_paper_provider_wires_the_bundled_autoresearch_runtime(tmp_path: Path, prepared: bool, iclr: bool):
     captured: dict[str, object] = {}
 
     class FakeRuntime:
@@ -87,7 +111,18 @@ def test_paper_provider_wires_the_bundled_autoresearch_runtime(tmp_path: Path):
         web_proxy="http://proxy.example.test:7890",
     )
 
-    provider = PaperProvider(tasks_root)
+    provider = PaperProvider(tasks_root, config_path=tmp_path / "pipeline.yaml")
+    original_load = PaperProvider(tasks_root)._load_config
+
+    def prepared_config(loader):
+        config = original_load(loader)
+        if prepared:
+            config["code_implementation"]["prepared_source_dir"] = str(tmp_path / "prepared")
+        if iclr:
+            config["reporting"]["template_dir"] = "iclr-template"
+        return config
+
+    provider._load_config = prepared_config
     with patch(
         "openjiuwen.rsi.artifact_rsi.paper_opt.auto_research.pipeline.manager.ManagerRuntime",
         FakeRuntime,
@@ -103,6 +138,12 @@ def test_paper_provider_wires_the_bundled_autoresearch_runtime(tmp_path: Path):
         )
 
     assert terminal.status == "complete"
+    code_agent = captured["components"].get("code_implementation")
+    assert (type(code_agent).__name__ == "PreparedCodeAgent") is prepared
+    reporter = captured["components"]["reporting"]._delegate
+    assert (type(reporter).__name__ == "IclrReportingAgent") is iclr
+    if iclr:
+        assert reporter.template_dir == (tmp_path / "iclr-template").resolve()
     assert captured["components"]["artifact_path"] == "/staged/paper"  # type: ignore[index]
     assert captured["config"]["openjiuwen"] == {  # type: ignore[index]
         "base_url": "http://127.0.0.1/v1",
@@ -274,6 +315,63 @@ def test_paper_provider_warns_before_truncating_node_files(tmp_path: Path):
     assert warning.call_args.args[1:] == ("node-1", 130, 2, 128)
 
 
+@pytest.mark.parametrize("raises_inside", [False, True])
+def test_model_environment_filters_inaccessible_path_and_restores_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raises_inside: bool,
+):
+    from openjiuwen.rsi.artifact_rsi.paper_opt.auto_research.modules.reporting.latex_runtime import (
+        LatexRuntime,
+    )
+
+    accessible = tmp_path / "tools"
+    accessible.mkdir()
+    denied = tmp_path / "WindowsApps"
+    denied.mkdir()
+    original_path = os.pathsep.join([str(accessible), str(denied), str(tmp_path / "missing")])
+    monkeypatch.setenv("PATH", original_path)
+    original_is_dir = Path.is_dir
+    original_isdir = os.path.isdir
+
+    def is_dir(path):
+        if path == denied:
+            raise PermissionError("WindowsApps directory is inaccessible")
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    monkeypatch.setattr(os.path, "isdir", lambda path: False if Path(path) == denied else original_isdir(path))
+    expected = pytest.raises(RuntimeError, match="test context failure") if raises_inside else nullcontext()
+    with expected:
+        with PaperProvider._temporary_model_environment(object()):  # noqa: SLF001 - production PATH boundary
+            runtime = LatexRuntime(None, None, tuple(Path(entry) for entry in os.environ["PATH"].split(os.pathsep)))
+            runtime.with_environment()
+            assert os.environ["PATH"].split(os.pathsep)[0] == str(Path(sys.executable).parent)
+            assert str(accessible) in os.environ["PATH"].split(os.pathsep)
+            if raises_inside:
+                raise RuntimeError("test context failure")
+    assert os.environ["PATH"] == original_path
+
+
+@pytest.mark.parametrize("host_timeout", [None, "1200"])
+def test_model_environment_preserves_reporting_deadline(
+    monkeypatch: pytest.MonkeyPatch, host_timeout: str | None,
+):
+    from openjiuwen.rsi.artifact_rsi.paper_opt.auto_research.modules.reporting.agent import ReportingAgent
+
+    if host_timeout is None:
+        monkeypatch.delenv("MODEL_TIMEOUT", raising=False)
+    else:
+        monkeypatch.setenv("MODEL_TIMEOUT", host_timeout)
+    model = SimpleNamespace(model_client_config=SimpleNamespace(timeout=300))
+    config = PaperProvider._configure_for_model(  # noqa: SLF001 - real SDK timeout precedence
+        {"reporting": {"timeout": 900}}, model,
+    )
+    assert config["openjiuwen"]["timeout"] == 300
+    reporting = ReportingAgent(config, model=model)
+    with PaperProvider._temporary_model_environment(model):  # noqa: SLF001 - module-specific deadline
+        assert int(reporting._setting("timeout", "MODEL_TIMEOUT", default="600")) == int(host_timeout or 900)
+    assert os.environ.get("MODEL_TIMEOUT") == host_timeout
+
+
 def test_paper_provider_logs_when_model_environment_lock_is_busy():
     model = SimpleNamespace(
         model_client_config=SimpleNamespace(api_key="key", api_base="http://localhost"),
@@ -397,3 +495,118 @@ async def test_paper_provider_projects_live_manager_reports_and_downloadable_pac
     assert artifact.name == "paper-optimization-001"
     assert Path(artifact.path).is_dir()
     assert provider.read_state(task_id).best_node_id != "ROOT"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Physical NUL files are a Windows tool-output issue")
+@pytest.mark.parametrize("declare_nul", [False, True])
+def test_iteration_package_records_empty_physical_nul_exclusion(tmp_path: Path, declare_nul: bool):
+    from jiuwenswarm.agents.harness.common.rsi.artifact_provenance_gate import ArtifactProvenanceGate, GateContext
+
+    run_dir = tmp_path / "tasks" / "rsi-paper" / "run"
+    manager_id = "rsi-paper-iteration-001"
+    paper = run_dir / "experiments" / manager_id / "paper"
+    paper.mkdir(parents=True)
+    (paper / "main.pdf").write_bytes(b"%PDF-1.4\nretained real paper")
+    physical_nul = Path("\\\\?\\" + str(paper / "NUL"))
+    physical_nul.write_bytes(b"")
+    state_path = paper.parent / "manager" / "state.json"
+    state_path.parent.mkdir()
+    declared = [paper.relative_to(run_dir).as_posix(), (paper / "main.pdf").relative_to(run_dir).as_posix()]
+    if declare_nul:
+        declared.append((paper / "NUL").relative_to(run_dir).as_posix())
+    state = json.dumps({"reports":[{"module":"reporting", "mode":"run", "outcome":"succeeded", "artifact_paths":declared}]})
+    state_path.write_text(state, encoding="utf-8")
+    (run_dir / "model_calls.jsonl").write_text(json.dumps({"call_id":"actual-fixture", "model_call":{"tokens":{"input":19, "output":5}}}) + "\n", encoding="utf-8")
+    try:
+        provider = PaperProvider(tmp_path / "tasks")
+        if declare_nul:
+            with pytest.raises(shutil.Error, match="NUL"):
+                provider._make_iteration_package(run_dir, manager_id, 1)
+            assert physical_nul.is_file() and physical_nul.stat().st_size == 0
+            assert state_path.read_text(encoding="utf-8") == state
+            return
+        with patch("jiuwenswarm.agents.harness.common.rsi.paper_provider.logger.warning") as warning:
+            package = provider._make_iteration_package(run_dir, manager_id, 1)
+        assert (package / "paper" / "main.pdf").read_bytes() == (paper / "main.pdf").read_bytes()
+        assert "NUL" not in {path.name for path in (package / "paper").iterdir()}
+        assert physical_nul.is_file() and physical_nul.stat().st_size == 0
+        exclusions = json.loads((package / "__rsi_artifact__" / "packaging_exclusions.json").read_text())
+        assert exclusions == {"reason":"zero_byte_windows_NUL_tool_output", "source_relative_paths":["paper/NUL"]}
+        assert "zero-byte Windows NUL" in warning.call_args.args[0]
+        assert state_path.read_text(encoding="utf-8") == state
+        assert (package / "manager" / "state.json").read_text(encoding="utf-8") == state
+        audit = ArtifactProvenanceGate().evaluate(GateContext("rsi-paper", manager_id, 1, run_dir))
+        assert audit.decision == "PASS"
+        artifact_check = next(check for check in audit.checks if check.id == "APG003")
+        assert artifact_check.status == "PASS"
+        state_path.write_text(json.dumps({"reports":[{"module":"reporting", "mode":"run", "outcome":"succeeded", "artifact_paths":declared+["missing.pdf"]}]}), encoding="utf-8")
+        blocked = ArtifactProvenanceGate().evaluate(GateContext("rsi-paper", manager_id, 1, run_dir))
+        assert blocked.decision == "BLOCKED"
+        assert next(check for check in blocked.checks if check.id == "APG003").status == "FAIL"
+    finally:
+        physical_nul.unlink()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Physical NUL files are a Windows tool-output issue")
+@pytest.mark.parametrize("declare_nul", [False, True])
+def test_iteration_package_preserves_nonempty_physical_nul(tmp_path: Path, declare_nul: bool):
+    run_dir = tmp_path / "tasks" / "rsi-paper" / "run"
+    manager_id = "rsi-paper-iteration-001"
+    paper = run_dir / "experiments" / manager_id / "paper"
+    paper.mkdir(parents=True)
+    physical_nul = Path("\\\\?\\" + str(paper / "NUL"))
+    payload = b"meaningful artifact cannot be silently dropped"
+    physical_nul.write_bytes(payload)
+    (paper / "main.pdf").write_bytes(b"%PDF-1.4\nretained real paper")
+    state_path = paper.parent / "manager" / "state.json"
+    state_path.parent.mkdir()
+    declared = [(paper / "NUL").relative_to(run_dir).as_posix()] if declare_nul else []
+    state = json.dumps({"reports": [{"module": "reporting", "outcome": "succeeded", "artifact_paths": declared}]})
+    state_path.write_text(state, encoding="utf-8")
+    try:
+        provider = PaperProvider(tmp_path / "tasks")
+        if declare_nul:
+            with pytest.raises(shutil.Error, match="NUL"):
+                provider._make_iteration_package(run_dir, manager_id, 1)
+        else:
+            package = provider._make_iteration_package(run_dir, manager_id, 1)
+            relocated = "__rsi_artifact__/windows_reserved_outputs/paper/reserved-NUL.bin"
+            assert not PureWindowsPath(relocated).is_reserved()
+            assert (package / relocated).read_bytes() == payload
+            assert (package / "paper" / "main.pdf").read_bytes() == (paper / "main.pdf").read_bytes()
+            assert "NUL" not in {path.name for path in (package / "paper").iterdir()}
+            record = json.loads((package / "__rsi_artifact__" / "packaging_reserved_outputs.json").read_text())
+            assert record == {"reason": "nonempty_windows_NUL_tool_output", "files": [{
+                "source_relative_path": "paper/NUL", "relocated_relative_path": relocated,
+                "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest(),
+            }]}
+            assert not (package / "__rsi_artifact__" / "packaging_exclusions.json").exists()
+            assert (package / "manager" / "state.json").read_text(encoding="utf-8") == state
+        assert physical_nul.read_bytes() == payload
+        assert state_path.read_text(encoding="utf-8") == state
+    finally:
+        physical_nul.unlink()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Physical NUL files are a Windows tool-output issue")
+def test_node_package_keeps_reporting_directory_files_with_physical_nul(tmp_path: Path):
+    run_dir = tmp_path / "tasks" / "rsi-paper" / "run"
+    paper = run_dir / "experiments" / "rsi-paper-iteration-001" / "paper"
+    paper.mkdir(parents=True)
+    (paper / "main.pdf").write_bytes(b"%PDF-1.4\nnode real artifact")
+    physical_nul = Path("\\\\?\\" + str(paper / "NUL"))
+    physical_nul.write_bytes(b"")
+    try:
+        provider = PaperProvider(tmp_path / "tasks")
+        declared = [paper.relative_to(run_dir).as_posix()]
+        package = provider._make_node_package(_NodeArtifactRequest(
+            task_id="rsi-paper", run_dir=run_dir, iteration=1, report_index=1,
+            module="reporting", node_id="reporting:1:1", raw_paths=declared,
+        ))
+        assert package is not None
+        copied = package / paper.relative_to(run_dir) / "main.pdf"
+        assert copied.read_bytes() == (paper / "main.pdf").read_bytes()
+        assert declared == ["experiments/rsi-paper-iteration-001/paper"]
+        assert "NUL" not in {path.name for path in copied.parent.iterdir()}
+    finally:
+        physical_nul.unlink()

@@ -10,10 +10,15 @@ does not need another change when the Provider implementation lands.
 
 from __future__ import annotations
 
-from dataclasses import asdict, fields, is_dataclass
+import json
+from dataclasses import asdict, dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from jiuwenswarm.agents.harness.common.rsi.artifact_provenance_gate import (
+    ArtifactProvenanceGate,
+    GateContext,
+)
 from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiNotReady,
     RsiPathInvalid,
@@ -23,6 +28,15 @@ from jiuwenswarm.agents.harness.common.rsi.models import (
     RsiDatasetResult,
     RsiTaskView,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalFinalizationResult:
+    status: str
+    final_node_id: str | None
+    best_artifact_path: str
+    error_code: str | None = None
+    error_message: str | None = None
 
 
 def _plain(value: Any) -> Any:
@@ -433,6 +447,102 @@ class ArtifactEngineAdapter:
         self._register_program_run_dir(task_id)
         return self.provider.locate_artifact(task_id, artifact_id)
 
+    def finalize_terminal(self, task_id: str, result: Any) -> Any:
+        """Audit a durable completed PAPER result before public completion."""
+
+        if self.artifact_type != "PAPER" or provider_status(
+            getattr(result, "status", None)
+        ) != "COMPLETED":
+            return result
+
+        state = _plain(self.read_state(task_id))
+        report = _plain(self.read_report(task_id))
+        if not isinstance(state, dict) or provider_status(state.get("status")) != "COMPLETED":
+            raise RuntimeError("PAPER Provider durable state is not completed")
+        if not isinstance(report, dict) or provider_status(report.get("status")) != "COMPLETED":
+            raise RuntimeError("PAPER Provider durable report is not completed")
+
+        artifact = _plain(self.locate_artifact(task_id))
+        if not isinstance(artifact, dict) or not artifact.get("path"):
+            raise RuntimeError("PAPER Provider completed without a final artifact")
+        run_dir = self._task_run_dir(task_id)
+        if run_dir is None:
+            raise RuntimeError("PAPER task run directory is unavailable")
+        run_dir = run_dir.resolve()
+        artifact_path = Path(str(artifact["path"])).expanduser().resolve()
+        try:
+            artifact_relative = artifact_path.relative_to(run_dir / "artifacts")
+        except ValueError as exc:
+            raise RuntimeError("PAPER final artifact is outside the task run directory") from exc
+        package_name = artifact_relative.as_posix()
+        prefix = "paper-optimization-"
+        if (
+            len(artifact_relative.parts) != 1
+            or not artifact_path.is_dir()
+            or not package_name.startswith(prefix)
+            or not package_name[len(prefix) :].isdigit()
+        ):
+            raise RuntimeError("PAPER final artifact is not an iteration package")
+
+        tree = _plain(self.get_tree(task_id))
+        nodes = tree.get("nodes") if isinstance(tree, dict) else None
+        node_id = artifact.get("node_id")
+        manager_run_id = None
+        for node in nodes if isinstance(nodes, list) else []:
+            if not isinstance(node, dict) or node.get("node_id") != node_id:
+                continue
+            extra = node.get("extra")
+            if isinstance(extra, dict) and extra.get("manager_run_id"):
+                manager_run_id = str(extra["manager_run_id"])
+                break
+        if not manager_run_id:
+            raise RuntimeError("PAPER final artifact does not identify a Manager run")
+        manager_dir = (run_dir / "experiments" / manager_run_id).resolve()
+        try:
+            manager_dir.relative_to(run_dir / "experiments")
+        except ValueError as exc:
+            raise RuntimeError("PAPER Manager run is outside the task run directory") from exc
+        if not manager_dir.is_dir():
+            raise RuntimeError("PAPER Manager run directory is unavailable")
+
+        iteration = int(package_name[len(prefix) :])
+
+        context = GateContext(
+            task_id=task_id,
+            manager_run_id=manager_run_id,
+            iteration=iteration,
+            run_dir=run_dir,
+        )
+        audit = ArtifactProvenanceGate().evaluate(context)
+        audit_payload = audit.as_dict()
+        _atomic_write_json(run_dir / "audit.json", audit_payload)
+        _atomic_write_json(artifact_path / "audit.json", audit_payload)
+
+        final_node_id = (
+            getattr(result, "final_node_id", None)
+            or report.get("best_node_id")
+            or state.get("best_node_id")
+        )
+        if audit.decision == "BLOCKED":
+            failed_rules = ", ".join(
+                check.id
+                for check in audit.checks
+                if check.severity == "blocker" and check.status == "FAIL"
+            )
+            message = f"Artifact provenance gate blocked PAPER completion: {failed_rules}."
+            return TerminalFinalizationResult(
+                status="failed",
+                final_node_id=final_node_id,
+                best_artifact_path=str(artifact_path),
+                error_code="PAPER_PROVENANCE_BLOCKED",
+                error_message=message[:500],
+            )
+        return TerminalFinalizationResult(
+            status="completed",
+            final_node_id=final_node_id,
+            best_artifact_path=str(artifact_path),
+        )
+
 
 def validate_provider_artifact_path(path: str | None, *, allow_missing: bool = False) -> Path | None:
     """Validate a Provider artifact path for the AgentServer download seam."""
@@ -470,8 +580,19 @@ def _safe_float_or_none(value: Any) -> float | None:
         return None
 
 
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
 __all__ = [
     "ArtifactEngineAdapter",
+    "TerminalFinalizationResult",
     "provider_artifact_to_dict",
     "provider_best_artifact",
     "provider_node_to_dict",
