@@ -16,10 +16,13 @@ from jiuwenswarm.common.schema.designer_graph import (
     ACTIVITY_KIND_TOOL_CALL,
     NODE_TYPE_IMAGE,
     NODE_TYPE_VIDEO,
+    PIPELINES,
+    PIPELINE_TO_TYPE,
     DesignerExecutionGraph,
     DesignerGraphNode,
     DesignerGraphValidationError,
     apply_graph_patch,
+    infer_pipeline_from_id,
     node_pipeline,
     node_shot_index,
     utc_now_ms,
@@ -246,6 +249,32 @@ def _leader_node_context(node: DesignerGraphNode) -> dict[str, Any]:
     }
 
 
+def _stamp_missing_node_type(node: dict[str, Any]) -> None:
+    """Fill canvas type for a new chat node the model described only by id.
+
+    Existing nodes already carry type from the saved graph. Inserted shots such
+    as n_scene_4 / n_clip_4 often omit it, and normalize_node rejects that
+    before the rest of the edit is saved.
+    """
+    if str(node.get("type") or "").strip():
+        return
+    config = node.get("config") if isinstance(node.get("config"), dict) else {}
+    pipeline = str(config.get("pipeline") or "").strip()
+    if pipeline not in PIPELINES:
+        role = str(config.get("role") or "").strip()
+        pipeline = role if role in PIPELINES else infer_pipeline_from_id(str(node.get("id") or ""))
+    node_type = PIPELINE_TO_TYPE.get(pipeline, "")
+    if not node_type:
+        node_id = str(node.get("id") or "").strip() or "new node"
+        raise DesignerGraphValidationError(
+            f"node.type must be a non-empty string ({node_id})"
+        )
+    node["type"] = node_type
+    if not str(config.get("pipeline") or "").strip():
+        config["pipeline"] = pipeline
+    node["config"] = config
+
+
 def _merge_prompt_updates(graph: DesignerExecutionGraph, plan: dict[str, Any]) -> dict[str, Any]:
     patch = deepcopy(plan.get("patch") or {})
     existing = {node["id"]: node for node in graph.get("nodes", [])}
@@ -271,6 +300,7 @@ def _merge_prompt_updates(graph: DesignerExecutionGraph, plan: dict[str, Any]) -
         if node.get("output_ref") != old.get("output_ref"):
             raise DesignerGraphValidationError("Chat plans cannot change artifact references")
         node["config"] = config
+        _stamp_missing_node_type(node)
         merged[node_id] = node
     for node_id, node in merged.items():
         old_cfg = existing.get(node_id, {}).get("config") or {}

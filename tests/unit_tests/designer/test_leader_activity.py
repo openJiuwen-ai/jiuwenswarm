@@ -167,6 +167,63 @@ def test_apply_leader_plan_refine_selected_node() -> None:
     assert "Updated" in summary or "Character" in summary
 
 
+def test_apply_leader_plan_stamps_type_for_inserted_scene_and_clip() -> None:
+    from jiuwenswarm.common.schema.designer_graph import DesignerGraphValidationError
+
+    graph = _sample_graph()
+    plan = {
+        "intent": "edit_graph",
+        "summary": "插入咖啡豆特写",
+        "patch": {
+            "upsert_nodes": [
+                {
+                    "id": "n_scene_4",
+                    "config": {"prompt": "咖啡豆特写，无人物", "setting_id": "set_4"},
+                },
+                {
+                    "id": "n_clip_4",
+                    "config": {
+                        "shot_index": 2,
+                        "timeline": "5-8s",
+                        "shot_action": "咖啡豆静置，画面中无人物",
+                        "prompt": "咖啡豆特写",
+                    },
+                },
+            ],
+            "upsert_edges": [
+                {"id": "e_scene4_clip4", "source": "n_scene_4", "target": "n_clip_4"},
+            ],
+        },
+    }
+    next_graph, run_ids, _summary = apply_leader_plan(graph, plan)
+    assert run_ids == []
+    scene = next(node for node in next_graph["nodes"] if node["id"] == "n_scene_4")
+    clip = next(node for node in next_graph["nodes"] if node["id"] == "n_clip_4")
+    assert scene["type"] == "image"
+    assert scene["config"]["pipeline"] == "scene"
+    assert clip["type"] == "video"
+    assert clip["config"]["pipeline"] == "clip"
+    assert clip["config"]["timeline"] == "5-8s"
+    assert any(
+        edge.get("source") == "n_scene_4" and edge.get("target") == "n_clip_4"
+        for edge in next_graph.get("edges") or []
+    )
+
+    try:
+        apply_leader_plan(
+            graph,
+            {
+                "intent": "edit_graph",
+                "summary": "未知节点",
+                "patch": {"upsert_nodes": [{"id": "n_extra", "config": {"prompt": "x"}}]},
+            },
+        )
+    except DesignerGraphValidationError as exc:
+        assert "n_extra" in str(exc)
+    else:
+        raise AssertionError("untyped unknown node should be rejected")
+
+
 def test_apply_leader_plan_add_node_without_run() -> None:
     graph = _sample_graph()
     plan = {

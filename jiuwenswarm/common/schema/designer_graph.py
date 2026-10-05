@@ -191,9 +191,9 @@ def infer_pipeline_from_id(node_id: str) -> str:
     value = str(node_id or "").strip()
     if value == "n_brief":
         return PIPELINE_BRIEF
-    if value == "n_character":
+    if value == "n_character" or value.startswith("n_character_"):
         return PIPELINE_CHARACTER_DESIGN
-    if value == "n_scene":
+    if value == "n_scene" or value.startswith("n_scene_"):
         return PIPELINE_SCENE
     if value == "n_storyboard":
         return PIPELINE_STORYBOARD
