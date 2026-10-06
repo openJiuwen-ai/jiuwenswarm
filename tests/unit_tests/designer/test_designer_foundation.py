@@ -202,6 +202,64 @@ def test_graph_store_roundtrip(designer_store: DesignerGraphStore) -> None:
     assert loaded["project_id"] == "proj_test01"
 
 
+def test_graph_and_run_ids_cannot_escape_their_directories(
+    designer_store: DesignerGraphStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Path separators in graph_id / run_id must not read, write, or delete outside the store."""
+    from jiuwenswarm.server.runtime.designer.feedback import save_feedback
+
+    graph = build_bootstrap_graph(project_id="proj_path01", prompt="path confinement")
+    saved = designer_store.save_graph(graph)
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps(saved), encoding="utf-8")
+    absolute_id = str(outside.with_suffix(""))
+
+    assert designer_store.get_graph(absolute_id) is None
+    assert designer_store.delete_graph(absolute_id) is False
+    assert outside.is_file()
+
+    for bad_id in (absolute_id, "../escaped", "..", ".", "C:\\Windows\\win.ini", "proj:1", "a/b", "ok\x00id"):
+        payload = deepcopy(graph)
+        payload["graph_id"] = bad_id
+        with pytest.raises(DesignerGraphValidationError, match="path separators"):
+            designer_store.save_graph(payload)
+        assert designer_store.get_graph(bad_id) is None
+        assert designer_store.delete_graph(bad_id) is False
+        run = {
+            "schema_version": "designer-execution-run.v1",
+            "run_id": bad_id,
+            "graph_id": saved["graph_id"],
+            "project_id": "proj_path01",
+            "status": "draft",
+            "node_states": {},
+            "current_node_ids": [],
+        }
+        with pytest.raises(DesignerGraphValidationError, match="path separators"):
+            designer_store.save_run(run)
+        assert designer_store.get_run(bad_id) is None
+
+    assert not (tmp_path / "designer" / "escaped.json").exists()
+    assert designer_store.get_graph(saved["graph_id"]) is not None
+
+    localized = deepcopy(graph)
+    localized["graph_id"] = "镜头.甲-1"
+    stored = designer_store.save_graph(localized)
+    assert stored["graph_id"] == "镜头.甲-1"
+    assert designer_store.get_graph("镜头.甲-1")["project_id"] == "proj_path01"
+    assert (tmp_path / "designer" / "graphs" / "镜头.甲-1.json").is_file()
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.feedback.get_agent_root_dir",
+        lambda: tmp_path,
+    )
+    with pytest.raises(DesignerGraphValidationError, match="path separators"):
+        save_feedback("..", "run_ok", {"ok": True})
+    assert not (tmp_path / "designer" / "run_ok.json").exists()
+    feedback_file = save_feedback("镜头.甲-1", "运行_1", {"ok": True})
+    assert feedback_file == (tmp_path / "designer" / "feedback" / "镜头.甲-1" / "运行_1.json").resolve()
+    assert feedback_file.is_file()
+
+
 def test_fixture_file_normalizes() -> None:
     fixture = (
         Path(__file__).resolve().parents[3]

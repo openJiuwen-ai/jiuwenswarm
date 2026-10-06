@@ -492,6 +492,38 @@ def _require_str(value: Any, field: str) -> str:
     return value.strip()
 
 
+# Separators and relative segments that Windows, macOS, and Linux treat as
+# part of a path. Other characters, including non-ASCII names, stay allowed.
+_STORAGE_ID_PATH_CHARS = frozenset("/\\:\x00")
+_STORAGE_ID_DOT_SEGMENTS = frozenset({".", ".."})
+
+
+def storage_component(value: str) -> str | None:
+    """One directory or file component, or None when ``value`` can escape a directory.
+
+    ``/`` and ``\\`` are path separators. ``:`` is a Windows drive / alternate-data-stream
+    marker and the classic Mac path separator. NUL terminates a path. ``.`` and ``..``
+    are relative segments when the id is used as a directory name.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or text in _STORAGE_ID_DOT_SEGMENTS:
+        return None
+    if any(char in _STORAGE_ID_PATH_CHARS for char in text):
+        return None
+    return text
+
+
+def _require_storage_id(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise DesignerGraphValidationError(f"{field} must be a non-empty string")
+    component = storage_component(value)
+    if component is None:
+        raise DesignerGraphValidationError(f"{field} must not contain path separators")
+    return component
+
+
 def normalize_layout(raw: Any) -> NodeLayout:
     layout: NodeLayout = {}
     if not isinstance(raw, dict):
@@ -680,7 +712,7 @@ def normalize_execution_graph(raw: Any) -> DesignerExecutionGraph:
         raise DesignerGraphValidationError(
             f"unsupported schema_version: {schema_version!r} (expected {SCHEMA_VERSION!r})"
         )
-    graph_id = _require_str(raw.get("graph_id"), "graph_id")
+    graph_id = _require_storage_id(raw.get("graph_id"), "graph_id")
     project_id = _require_str(raw.get("project_id"), "project_id")
     title = raw.get("title")
     description = raw.get("description")
@@ -1759,8 +1791,8 @@ def normalize_execution_run(raw: Any) -> DesignerExecutionRun:
             f"unsupported run schema_version: {schema_version!r} "
             f"(expected {RUN_SCHEMA_VERSION!r})"
         )
-    run_id = _require_str(raw.get("run_id"), "run_id")
-    graph_id = _require_str(raw.get("graph_id"), "graph_id")
+    run_id = _require_storage_id(raw.get("run_id"), "run_id")
+    graph_id = _require_storage_id(raw.get("graph_id"), "graph_id")
     project_id = _require_str(raw.get("project_id"), "project_id")
     status = _require_str(raw.get("status"), "status")
     if status not in RUN_STATUSES:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -234,3 +235,37 @@ async def test_chat_auto_run_failure_is_returned_in_summary(monkeypatch):
     assert code is None
     assert payload is not None
     assert payload["summary"] == "Updated workflow (unable to start)"
+
+
+def test_bootstrap_rejects_project_dir_outside_the_design_root(tmp_path, monkeypatch):
+    managed = tmp_path / "agent"
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    monkeypatch.setattr(designer_adapter, "get_agent_root_dir", lambda: managed)
+    design_root = managed / "workspace" / "design"
+    design_root.mkdir(parents=True)
+    good = design_root / "my-film"
+    good.mkdir()
+
+    assert designer_adapter._is_managed_design_project_dir(str(good)) is True
+    assert designer_adapter._is_managed_design_project_dir(str(design_root)) is False
+    assert designer_adapter._is_managed_design_project_dir(str(outside)) is False
+    assert designer_adapter._is_managed_design_project_dir("/tmp") is False
+
+    created: list[str] = []
+    monkeypatch.setattr(
+        designer_adapter.project_store,
+        "create_project_checked",
+        lambda name, project_dir, work_mode: created.append(project_dir)
+        or (SimpleNamespace(project_id="p1", project_dir=project_dir, work_mode=work_mode), False),
+    )
+    payload, error, code = designer_adapter._bootstrap_graph(
+        {"prompt": "a film", "project_dir": str(outside), "work_mode": "design"},
+        "web",
+        {"source": "llm"},
+    )
+
+    assert payload is None
+    assert code == "BAD_REQUEST"
+    assert "managed workspace" in str(error)
+    assert created == []

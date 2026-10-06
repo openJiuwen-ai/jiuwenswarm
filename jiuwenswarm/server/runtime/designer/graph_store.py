@@ -26,6 +26,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     preserve_expanded_shot_nodes,
     preserve_nodes_added_since,
     preserve_node_output_refs,
+    storage_component,
     utc_now_ms,
 )
 from jiuwenswarm.common.utils import get_agent_root_dir
@@ -50,6 +51,22 @@ def _graphs_dir() -> Path:
 def _runs_dir() -> Path:
     path = _designer_root() / "runs"
     path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _record_path(directory: Path, storage_id: str) -> Path | None:
+    """``directory/{storage_id}.json`` when the id cannot leave ``directory``."""
+    component = storage_component(storage_id)
+    if component is None:
+        return None
+    root = directory.resolve()
+    path = root / f"{component}.json"
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError):
+        return None
+    if resolved.parent != root:
+        return None
     return path
 
 
@@ -102,7 +119,9 @@ class DesignerGraphStore:
 
     def save_graph(self, graph: DesignerExecutionGraph) -> DesignerExecutionGraph:
         normalized = normalize_execution_graph(graph)
-        path = _graphs_dir() / f"{normalized['graph_id']}.json"
+        path = _record_path(_graphs_dir(), normalized["graph_id"])
+        if path is None:
+            raise DesignerGraphValidationError("graph_id must not contain path separators")
         with _STORE_LOCK:
             if path.is_file():
                 try:
@@ -122,11 +141,8 @@ class DesignerGraphStore:
         return normalized
 
     def get_graph(self, graph_id: str) -> DesignerExecutionGraph | None:
-        graph_id = str(graph_id or "").strip()
-        if not graph_id:
-            return None
-        path = _graphs_dir() / f"{graph_id}.json"
-        if not path.is_file():
+        path = _record_path(_graphs_dir(), str(graph_id or ""))
+        if path is None or not path.is_file():
             return None
         with _STORE_LOCK:
             try:
@@ -164,10 +180,9 @@ class DesignerGraphStore:
 
     def delete_graph(self, graph_id: str) -> bool:
         """Delete a graph created by an uncommitted workspace transaction."""
-        graph_id = str(graph_id or "").strip()
-        if not graph_id:
+        path = _record_path(_graphs_dir(), str(graph_id or ""))
+        if path is None:
             return False
-        path = _graphs_dir() / f"{graph_id}.json"
         with _STORE_LOCK:
             try:
                 path.unlink()
@@ -178,17 +193,16 @@ class DesignerGraphStore:
     def save_run(self, run: DesignerExecutionRun) -> DesignerExecutionRun:
         normalized = normalize_execution_run(run)
         normalized["updated_at"] = utc_now_ms()
-        path = _runs_dir() / f"{normalized['run_id']}.json"
+        path = _record_path(_runs_dir(), normalized["run_id"])
+        if path is None:
+            raise DesignerGraphValidationError("run_id must not contain path separators")
         with _STORE_LOCK:
             _atomic_write_json(path, dict(normalized))
         return normalized
 
     def get_run(self, run_id: str) -> DesignerExecutionRun | None:
-        run_id = str(run_id or "").strip()
-        if not run_id:
-            return None
-        path = _runs_dir() / f"{run_id}.json"
-        if not path.is_file():
+        path = _record_path(_runs_dir(), str(run_id or ""))
+        if path is None or not path.is_file():
             return None
         with _STORE_LOCK:
             try:

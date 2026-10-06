@@ -599,3 +599,139 @@ def test_invoke_image_comfyui_extras_join_the_json_payload(
     assert payload["seed"] == 7
     assert payload["guidance_scale"] == 4.0
     assert payload["vae_use_slicing"] is False
+
+
+def _video_fake_request(posts: list[dict], served: str, video_id: str):
+    def fake_request(method: str, url: str, **kwargs):
+        if method == "GET" and url.endswith("/models"):
+            return _Resp(True, {"data": [{"id": served}]})
+        if method == "POST" and url.endswith("/videos"):
+            posts.append(kwargs)
+            return _Resp(True, {"id": video_id, "status": "queued"})
+        if method == "GET" and url.endswith(f"/videos/{video_id}"):
+            return _Resp(True, {"id": video_id, "status": "completed"})
+        if method == "GET" and url.endswith(f"/videos/{video_id}/content"):
+            return _Resp(True, {}, content=b"mp4-bytes")
+        raise AssertionError(f"unexpected request {method} {url}")
+
+    return fake_request
+
+
+def test_invoke_video_remote_reference_url_is_passed_to_the_server(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    posts: list[dict] = []
+    monkeypatch.setattr(
+        vllm_omni_gen, "_http_request", _video_fake_request(posts, "MiniMaxAI/MiniMax-H3", "v-7")
+    )
+    monkeypatch.setattr(vllm_omni_gen, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(vllm_omni_gen.time, "sleep", lambda *_: None)
+
+    result = vllm_omni_gen.invoke_vllm_omni_video_generation_sync(
+        "animate this",
+        api_key="",
+        api_base="http://127.0.0.1:8091/v1",
+        model="",
+        size=None,
+        duration=5,
+        resolution=None,
+        first_frame="http://169.254.169.254/latest/meta-data/face.png",
+    )
+
+    assert "video_path" in result
+    fields = posts[0]["data"]
+    assert json.loads(fields["image_reference"]) == {
+        "image_url": "http://169.254.169.254/latest/meta-data/face.png"
+    }
+    assert not posts[0]["files"]
+    assert json.loads(fields["extra_params"])["task"] == "ref2va"
+
+
+def test_invoke_video_rejects_uploaded_file_mixed_with_visual_url(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    ref = tmp_path / "ref.png"
+    ref.write_bytes(b"png-bytes")
+    monkeypatch.setattr(vllm_omni_gen, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(vllm_omni_gen, "fetch_served_model_id", lambda *_: None)
+
+    with pytest.raises(ValueError, match="cannot mix uploaded files"):
+        vllm_omni_gen.invoke_vllm_omni_video_generation_sync(
+            "two refs",
+            api_key="",
+            api_base="http://127.0.0.1:8091/v1",
+            model="",
+            size=None,
+            duration=5,
+            resolution=None,
+            reference_images=[str(ref), "https://example.com/b.png"],
+        )
+
+
+def test_invoke_video_url_audio_accompanies_uploaded_image(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    ref = tmp_path / "ref.png"
+    ref.write_bytes(b"png-bytes")
+    posts: list[dict] = []
+    monkeypatch.setattr(
+        vllm_omni_gen, "_http_request", _video_fake_request(posts, "MiniMaxAI/MiniMax-H3", "v-9")
+    )
+    monkeypatch.setattr(vllm_omni_gen, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(vllm_omni_gen.time, "sleep", lambda *_: None)
+
+    vllm_omni_gen.invoke_vllm_omni_video_generation_sync(
+        "lip sync",
+        api_key="",
+        api_base="http://127.0.0.1:8091/v1",
+        model="",
+        size=None,
+        duration=5,
+        resolution=None,
+        reference_images=[str(ref)],
+        reference_audios=["https://example.com/speech.mp3"],
+    )
+
+    fields = posts[0]["data"]
+    files = posts[0]["files"]
+    assert [item[0] for item in files] == ["input_reference"]
+    assert files[0][1][0] == "ref.png"
+    assert json.loads(fields["audio_reference"]) == {"audio_url": "https://example.com/speech.mp3"}
+    assert "image_reference" not in fields
+
+
+def test_invoke_image_edits_pass_reference_urls_to_the_server(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    ref = tmp_path / "a.png"
+    ref.write_bytes(b"png-bytes")
+    posts: list[dict] = []
+    png_b64 = base64.b64encode(b"edited-png").decode("ascii")
+
+    def fake_request(method: str, url: str, **kwargs):
+        if method == "POST" and url.endswith("/images/edits"):
+            posts.append(kwargs)
+            return _Resp(True, {"data": [{"b64_json": png_b64}]})
+        raise AssertionError(f"unexpected request {method} {url}")
+
+    monkeypatch.setattr(vllm_omni_gen, "_http_request", fake_request)
+    monkeypatch.setattr(vllm_omni_gen, "get_agent_workspace_dir", lambda: tmp_path)
+
+    vllm_omni_gen.invoke_vllm_omni_image_generation_sync(
+        "merge them",
+        api_key="",
+        api_base="http://127.0.0.1:8000/v1",
+        model="Qwen-Image-Edit",
+        size=None,
+        reference_images=["http://127.0.0.1:8080/admin/a.png", str(ref)],
+    )
+
+    fields = posts[0]["data"]
+    assert fields["url"] == ["http://127.0.0.1:8080/admin/a.png"]
+    files = posts[0]["files"]
+    assert [item[0] for item in files] == ["image"]
+    assert files[0][1][0] == "a.png"
+
+
+def test_video_poll_timeout_is_bounded_to_thirty_minutes() -> None:
+    assert vllm_omni_gen._POLL_TIMEOUT_SECONDS == 1800.0

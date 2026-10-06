@@ -10,6 +10,10 @@ import os
 from pathlib import Path
 from typing import Any
 
+from jiuwenswarm.common.schema.designer_graph import (
+    DesignerGraphValidationError,
+    storage_component,
+)
 from jiuwenswarm.common.utils import get_agent_root_dir
 
 logger = logging.getLogger(__name__)
@@ -17,18 +21,39 @@ logger = logging.getLogger(__name__)
 FEEDBACK_SCHEMA = "designer-feedback.v1"
 
 
-def _feedback_dir(graph_id: str) -> Path:
-    path = get_agent_root_dir() / "designer" / "feedback" / graph_id
-    path.mkdir(parents=True, exist_ok=True)
+def _feedback_dir(graph_id: str) -> Path | None:
+    component = storage_component(graph_id)
+    if component is None:
+        return None
+    root = (get_agent_root_dir() / "designer" / "feedback").resolve()
+    path = root / component
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError):
+        return None
+    if resolved.parent != root:
+        return None
     return path
 
 
 def feedback_path(graph_id: str, run_id: str) -> Path:
-    return _feedback_dir(graph_id) / f"{run_id}.json"
+    directory = _feedback_dir(graph_id)
+    component = storage_component(run_id)
+    if directory is None or component is None:
+        raise DesignerGraphValidationError(
+            "graph_id and run_id must not contain path separators"
+        )
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{component}.json"
+    if path.resolve().parent != directory.resolve():
+        raise DesignerGraphValidationError("run_id must not contain path separators")
+    return path
 
 
 def latest_feedback_path(graph_id: str) -> Path | None:
     directory = _feedback_dir(graph_id)
+    if directory is None or not directory.is_dir():
+        return None
     # ``latest.json`` is a pointer file left behind by older versions.
     files = sorted(
         (p for p in directory.glob("*.json") if p.name != "latest.json"),

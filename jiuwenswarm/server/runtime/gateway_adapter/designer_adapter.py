@@ -781,6 +781,16 @@ def _patch_graph(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | N
     return {"graph": dict(saved)}, None, None
 
 
+def _is_managed_design_project_dir(project_dir: str) -> bool:
+    """True when ``project_dir`` is inside the Design workspace root."""
+    design_root = (get_agent_root_dir() / "workspace" / DESIGN_WORK_MODE).resolve()
+    try:
+        resolved = Path(project_dir).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    return resolved != design_root and resolved.is_relative_to(design_root)
+
+
 def _bootstrap_graph(
     params: dict[str, Any],
     channel_id: str,
@@ -835,6 +845,8 @@ def _bootstrap_graph(
             return None, "project_dir must be an absolute path", "BAD_REQUEST"
         if project_dir and not os.path.isdir(project_dir):
             return None, "project directory does not exist", "PROJECT_DIR_MISSING"
+        if project_dir and not _is_managed_design_project_dir(project_dir):
+            return None, "project_dir must be within the managed workspace", "BAD_REQUEST"
         if not project_dir:
             try:
                 project_dir = project_store.resolve_default_project_dir(name, work_mode)

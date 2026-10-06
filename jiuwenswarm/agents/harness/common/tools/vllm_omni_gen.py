@@ -52,14 +52,12 @@ _USER_AGENT = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
-# A 50-step H3 generation takes ~9 min on 2xRTX5090 and much longer on
-# capacity-oriented single-GPU profiles, so poll generously.
+# A 50-step H3 generation takes ~9 min on 2xRTX5090.
 _POLL_INTERVAL_SECONDS = 5.0
-_POLL_TIMEOUT_SECONDS = 7200.0
+_POLL_TIMEOUT_SECONDS = 1800.0
 _MODELS_TIMEOUT_SECONDS = 15.0
 _CREATE_TIMEOUT_SECONDS = 120.0
 _DOWNLOAD_TIMEOUT_SECONDS = 300.0
-_REFERENCE_DOWNLOAD_TIMEOUT_SECONDS = 60.0
 
 # Provider-level default: every vLLM-Omni video request pins fps=24. This is
 # deliberately not user-facing; H3 output is fixed at 24 FPS anyway.
@@ -76,8 +74,22 @@ _MAX_TOTAL_REFERENCES = 12
 
 # Fields the request builders own; ``extra_fields`` may not replace them.
 _RESERVED_REQUEST_FIELDS = frozenset(
-    {"prompt", "model", "extra_params", "input_reference", "input_references", "image"}
+    {
+        "prompt",
+        "model",
+        "extra_params",
+        "input_reference",
+        "input_references",
+        "image_reference",
+        "video_reference",
+        "audio_reference",
+        "image",
+        "url",
+    }
 )
+
+ReferenceUpload = tuple[str, bytes, str]
+Reference = ReferenceUpload | str
 
 
 def _form_value(value: Any) -> str:
@@ -338,7 +350,7 @@ def _build_generic_video_form(inputs: VllmOmniVideoInputs) -> VllmOmniVideoForm:
 
 
 # ---------------------------------------------------------------------------
-# Reference media loading (multipart uploads)
+# Reference media loading
 # ---------------------------------------------------------------------------
 
 
@@ -365,11 +377,11 @@ def _local_reference_path(value: str) -> Path | None:
     return candidate.resolve()
 
 
-def _read_reference_bytes(
+def _read_reference(
     reference: str,
     default_mime: str = "image/png",
-) -> tuple[str, bytes, str] | None:
-    """Load one reference file as ``(filename, bytes, mime)``; None if unreadable."""
+) -> Reference | None:
+    """Upload ``(filename, bytes, mime)``, an http(s) URL, or None."""
     value = (reference or "").strip()
     if not value:
         return None
@@ -384,20 +396,7 @@ def _read_reference_bytes(
         ext = mimetypes.guess_extension(mime) or ""
         return (f"reference{ext}", raw, mime)
     if value.startswith(("http://", "https://")):
-        try:
-            response = _http_request(
-                "GET",
-                value,
-                headers={"User-Agent": _USER_AGENT},
-                timeout=_REFERENCE_DOWNLOAD_TIMEOUT_SECONDS,
-            )
-            response.raise_for_status()
-        except Exception:
-            logger.warning("[vLLM-Omni] reference download failed: %s", value[:120])
-            return None
-        raw = response.content
-        name = Path(unquote(urlparse(value).path)).name or "reference"
-        return (name, raw, _guess_mime(name, default_mime))
+        return value
     local = _local_reference_path(value)
     if local is None:
         logger.warning("[vLLM-Omni] reference is not a readable local file: %s", value[:120])
@@ -410,14 +409,20 @@ def _read_reference_bytes(
     return (local.name, raw, _guess_mime(str(local), default_mime))
 
 
+def _json_reference_field(urls: list[str], url_key: str) -> str:
+    """One ``{url_key: url}`` object, or an ordered list of them."""
+    items = [{url_key: url} for url in urls]
+    return json.dumps(items[0] if len(items) == 1 else items, ensure_ascii=False)
+
+
 def _load_media_references(
     items: list[str | None],
     *,
     limit: int,
     default_mime: str,
     max_bytes: int | None = _MAX_REFERENCE_BYTES,
-) -> list[tuple[str, bytes, str]]:
-    """Deduped readable references of one media kind, capped at ``limit``."""
+) -> list[Reference]:
+    """Deduped usable references of one media kind, capped at ``limit``."""
     ordered: list[str] = []
     seen: set[str] = set()
     for item in items:
@@ -425,12 +430,12 @@ def _load_media_references(
         if value and value not in seen:
             seen.add(value)
             ordered.append(value)
-    references: list[tuple[str, bytes, str]] = []
+    references: list[Reference] = []
     for item in ordered:
-        loaded = _read_reference_bytes(item, default_mime)
+        loaded = _read_reference(item, default_mime)
         if loaded is None:
             continue
-        if max_bytes is not None and len(loaded[1]) > max_bytes:
+        if max_bytes is not None and not isinstance(loaded, str) and len(loaded[1]) > max_bytes:
             logger.warning("[vLLM-Omni] reference exceeds 30 MiB, skipped: %s", loaded[0])
             continue
         references.append(loaded)
@@ -442,7 +447,7 @@ def _load_media_references(
 def _load_video_references(
     first_frame: str | None,
     reference_images: list[str] | None,
-) -> list[tuple[str, bytes, str]]:
+) -> list[Reference]:
     """First frame + reference images, deduped, capped at the H3 image limit."""
     return _load_media_references(
         [first_frame, *(reference_images or [])],
@@ -451,12 +456,46 @@ def _load_video_references(
     )
 
 
-def _reference_files_payload(
-    references: list[tuple[str, bytes, str]],
-) -> list[tuple[str, tuple[str, bytes, str]]]:
-    """One reference rides ``input_reference``; several ride repeated ``input_references``."""
-    field = "input_reference" if len(references) == 1 else "input_references"
-    return [(field, item) for item in references]
+def _cap_total_references(
+    images: list[Reference],
+    videos: list[Reference],
+    audios: list[Reference],
+) -> tuple[list[Reference], list[Reference], list[Reference]]:
+    """Trim to the Ref2VA total, dropping audios first, then videos."""
+    budget = _MAX_TOTAL_REFERENCES
+    images = images[:budget]
+    budget -= len(images)
+    videos = videos[:budget]
+    budget -= len(videos)
+    audios = audios[:budget]
+    return images, videos, audios
+
+
+def _video_reference_parts(
+    images: list[Reference],
+    videos: list[Reference],
+    audios: list[Reference],
+) -> tuple[dict[str, str], list[tuple[str, ReferenceUpload]]]:
+    """Form fields and multipart files for one video request's references."""
+    url_images = [item for item in images if isinstance(item, str)]
+    url_videos = [item for item in videos if isinstance(item, str)]
+    url_audios = [item for item in audios if isinstance(item, str)]
+    uploads = [item for item in (*images, *videos, *audios) if not isinstance(item, str)]
+    if uploads and (url_images or url_videos):
+        raise ValueError(
+            "vLLM-Omni video references cannot mix uploaded files with image or video URLs."
+        )
+    fields: dict[str, str] = {}
+    if url_images:
+        fields["image_reference"] = _json_reference_field(url_images, "image_url")
+    if url_videos:
+        fields["video_reference"] = _json_reference_field(url_videos, "video_url")
+    if url_audios:
+        fields["audio_reference"] = _json_reference_field(url_audios, "audio_url")
+    if not uploads:
+        return fields, []
+    field = "input_reference" if len(uploads) == 1 else "input_references"
+    return fields, [(field, item) for item in uploads]
 
 
 # ---------------------------------------------------------------------------
@@ -551,12 +590,13 @@ def submit_vllm_omni_video_sync(
         raise ValueError(
             "vLLM-Omni references need at least one image or video; audio-only is not supported."
         )
-    references = [*images, *videos, *audios][:_MAX_TOTAL_REFERENCES]
+    images, videos, audios = _cap_total_references(images, videos, audios)
+    reference_count = len(images) + len(videos) + len(audios)
     inputs = VllmOmniVideoInputs(
         size=size,
         duration=duration,
         resolution=resolution,
-        has_references=bool(references),
+        has_references=reference_count > 0,
         fps=fps,
     )
     form = spec.build(inputs) if spec else _build_generic_video_form(inputs)
@@ -576,14 +616,16 @@ def submit_vllm_omni_video_sync(
         # Without explicit extra fields there is no seed / quality: reproducibility
         # and cache policies stay server-side.
         fields["extra_params"] = json.dumps(merged_extra_params, ensure_ascii=False)
-    files = _reference_files_payload(references)
+    reference_fields, files = _video_reference_parts(images, videos, audios)
+    fields.update(reference_fields)
 
     logger.info(
-        "[vLLM-Omni] video create model=%s spec=%s fields=%s refs=%d",
+        "[vLLM-Omni] video create model=%s spec=%s fields=%s refs=%d uploads=%d",
         model_to_send,
         spec.key if spec else None,
         sorted(fields),
-        len(references),
+        reference_count,
+        len(files),
     )
     response = _http_request(
         "POST",
@@ -704,8 +746,8 @@ def invoke_vllm_omni_video_generation_sync(
 
 def _load_image_references(
     reference_images: list[str] | None,
-) -> list[tuple[str, bytes, str]]:
-    """Deduped edit input images; unreadable or oversized ones are skipped."""
+) -> list[Reference]:
+    """Deduped edit input images; unreadable or oversized local ones are skipped."""
     ordered: list[str] = []
     seen: set[str] = set()
     for item in reference_images or []:
@@ -713,16 +755,25 @@ def _load_image_references(
         if value and value not in seen:
             seen.add(value)
             ordered.append(value)
-    references: list[tuple[str, bytes, str]] = []
+    references: list[Reference] = []
     for item in ordered:
-        loaded = _read_reference_bytes(item)
+        loaded = _read_reference(item)
         if loaded is None:
             continue
-        if len(loaded[1]) > _MAX_REFERENCE_BYTES:
+        if not isinstance(loaded, str) and len(loaded[1]) > _MAX_REFERENCE_BYTES:
             logger.warning("[vLLM-Omni] reference exceeds 30 MiB, skipped: %s", loaded[0])
             continue
         references.append(loaded)
     return references
+
+
+def _image_edit_reference_parts(
+    references: list[Reference],
+) -> tuple[dict[str, Any], list[tuple[str, ReferenceUpload]] | None]:
+    """Form fields and multipart files for one image-edit request."""
+    files = [("image", item) for item in references if not isinstance(item, str)]
+    urls = [item for item in references if isinstance(item, str)]
+    return ({"url": urls} if urls else {}), (files or None)
 
 
 def _save_image_response_body(
@@ -794,7 +845,7 @@ def invoke_vllm_omni_image_generation_sync(
     if references:
         # Image-to-image. Without an explicit size the server keeps "auto" and
         # infers dimensions from the first input image.
-        fields: dict[str, str] = {"prompt": prompt}
+        fields: dict[str, Any] = {"prompt": prompt}
         if model_to_send:
             fields["model"] = model_to_send
         if parsed is not None:
@@ -802,12 +853,14 @@ def invoke_vllm_omni_image_generation_sync(
         if negative_prompt:
             fields["negative_prompt"] = negative_prompt
         fields.update({key: _form_value(value) for key, value in overrides.items()})
-        files = [("image", item) for item in references]
+        reference_fields, files = _image_edit_reference_parts(references)
+        fields.update(reference_fields)
         logger.info(
-            "[vLLM-Omni] image edit model=%s size=%s refs=%d",
+            "[vLLM-Omni] image edit model=%s size=%s refs=%d uploads=%d",
             model_to_send,
             fields.get("size"),
             len(references),
+            len(files or []),
         )
         response = _http_request(
             "POST",
