@@ -22,6 +22,16 @@
 
 ---
 
+## 全双工评测记录
+
+- [SpreadsheetBench 13-1：DS v4.1 整题重跑](duplex-13-1-dsv41-rerun-20260918.md)：普通 92.0 秒、全双工 62.1 秒，均 120/120，实际打断均 0。
+- [默认评测模型切换到 DS v4.1](duplex-model-dsv41-20260917.md)：执行/确认模型配置和真实接口验证。
+- [SpreadsheetBench 13-1 耗时波动与重复测试](duplex-13-1-stability-20260917.md)：相同输入核对、最终提交工具与真实短测限制。
+- [办公与开发数据集选型](duplex-office-development-datasets.md)：新增真实编程、表格和桌面任务的来源、评分方式及推荐顺序（2026-09-16）。
+- [SpreadsheetBench / Multi-SWE-bench 复核对照](duplex-review-datasets-20260916.md)：加入复核 Agent 后的耗时、质量和实际打断。
+- [InterruptBench 用户更新回放（2026-09-16）](duplex-interruptbench-replay-20260916.md)：24 次试验的设置、耗时、质量、实际打断与原始日志位置。
+- [办公与开发测试题对照](duplex-office-code-run.md)：静态题的产物质量、超时和调用预算记录。
+
 <table width="100%" style="display: table; width: 100%; table-layout: fixed;">
   <colgroup>
     <col width="22%">

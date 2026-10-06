@@ -1,0 +1,13 @@
+{
+  "benchmark": "agentradio",
+  "repo": "D:/jiusi_agent/_repos/AgentRadio",
+  "python": "D:/jiusi_agent/.venv/Scripts/python.exe",
+  "harbor": "harbor",
+  "models": "D:/private/duplex-models.json",
+  "environment_file": "D:/private/agentradio-env.json",
+  "environment": "docker",
+  "model": "anthropic/your-shared-model",
+  "task_ids": ["task-6905333b74f22949d97ba998"],
+  "repeats": 3,
+  "policies": ["L2", "L3", "steer", "abort_restart", "model"]
+}

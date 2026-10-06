@@ -1,0 +1,420 @@
+{
+  "status": "adapters_added_container_execution_blocked",
+  "review_date": "2026-09-15",
+  "scope": "office collaboration and real code fixes, with multiple Jiuwen agents",
+  "office": {
+    "dataset": "TheAgentCompany",
+    "source": "https://github.com/TheAgentCompany/TheAgentCompany",
+    "revision": "98b68ef82a47690c316f42fddb05baafaab56851",
+    "official_task_count": 175,
+    "selection_rule": "task prefix admin/finance/hr/pm and at least 2 configured original NPCs",
+    "selected_task_count": 21,
+    "tasks": [
+      {
+        "task_id": "admin-ask-for-meeting-feedback",
+        "npc_count": 5,
+        "instruction_path": "workspaces/tasks/admin-ask-for-meeting-feedback/task.md",
+        "files_sha256": {
+          "task.md": "6a4cb9b759c96a225283328c9882c2b7615ce5663f3771a3bb12bbbe4a90e2ef",
+          "scenarios.json": "74fb6bd0e9b72756f1cff38b900cf78bb22035f6cec46704fb475e5e78911a5f",
+          "evaluator.py": "e63f6347313dc7a8ee35e2cd9c177cb0e941c32cbc346c9af552532c1d1be4f1",
+          "checkpoints.md": "9680b3d3a575525ea66b10d441698a4f79d86ab00a903080c198903dac2798fd",
+          "Dockerfile": "dee88618b51156e946234ec6a17d2c5e5d6e0865b6837ee602cbf2cce79a5cdf"
+        }
+      },
+      {
+        "task_id": "admin-ask-for-upgrade-reimbursement",
+        "npc_count": 2,
+        "instruction_path": "workspaces/tasks/admin-ask-for-upgrade-reimbursement/task.md",
+        "files_sha256": {
+          "task.md": "43bb29cc8ece2c045300a85867cf5acf79265b4ba0a0cc893bab859e11632985",
+          "scenarios.json": "0d16307d3e2ffc982f1605dafb5725266ca5bca51d17a42cf843cc1cf954fa40",
+          "evaluator.py": "35cc68e7070746d74048deb258d6ddf17adc617d40b0f75f62f10eb872b93b3b",
+          "checkpoints.md": "9d9809e61a016d3f58da315bdc7824f3e3edfdc6d2b882e7ab4115bed9dd3513",
+          "Dockerfile": "c784f259f5ed55bd08df9b492cb7f6fd40f54898d42f2b39bed08e566b98d5ed"
+        }
+      },
+      {
+        "task_id": "admin-check-employees-budget-and-reply",
+        "npc_count": 3,
+        "instruction_path": "workspaces/tasks/admin-check-employees-budget-and-reply/task.md",
+        "files_sha256": {
+          "task.md": "03b18f448679c0fffa2c82fdcfb218dfe2640195ddcec793210acaf4e9b14c7b",
+          "scenarios.json": "f2245678cdeaf5a84a5ff6c8204b5029d8a7f4c7baecff2c10284fbffd3b43c7",
+          "evaluator.py": "ee6f77e01b2a672162e55828bd4ad486b2dd7b101c1dfc477efe16640687585d",
+          "checkpoints.md": "40d9a9bc68d0399ae7534ac6acee832afea7e1454f61b2cc8a0708e9187a4d23",
+          "Dockerfile": "a810abdbdbd3a03f7464f85bf4bf2dcb48fd5c4db3e74b8c6905c8a0e778759a"
+        }
+      },
+      {
+        "task_id": "admin-check-employees-budget-and-reply-2",
+        "npc_count": 4,
+        "instruction_path": "workspaces/tasks/admin-check-employees-budget-and-reply-2/task.md",
+        "files_sha256": {
+          "task.md": "761a7df32e302b91c4051a6ab2f8464aca3c144d698bddbd865ce040b55af448",
+          "scenarios.json": "4af1747b5809eb2fd789dff0981bb01a83c88652da44467e3571ae331b7f8b6b",
+          "evaluator.py": "e768ea96c5e8635a07452e7699c13ba6691ef4ad0424072c9bec54018e814168",
+          "checkpoints.md": "48f009135b4a777dcf85fa2c59a950d0705d09c871835c9f250a353660742ade",
+          "Dockerfile": "a810abdbdbd3a03f7464f85bf4bf2dcb48fd5c4db3e74b8c6905c8a0e778759a"
+        }
+      },
+      {
+        "task_id": "admin-check-employees-budget-and-reply-and-record",
+        "npc_count": 4,
+        "instruction_path": "workspaces/tasks/admin-check-employees-budget-and-reply-and-record/task.md",
+        "files_sha256": {
+          "task.md": "df16ec9865535b4b230ee32c89493b69ede60a1c058a3a43a4f9a391287051ac",
+          "scenarios.json": "4b87918e1a0b4e4bc9c630cdb240cb64240e845c865922a353afa9f772041dea",
+          "evaluator.py": "fd4baf1c72191a520f9de3646f88478323e1ed559e7e34f29099b9ea9333fbd5",
+          "checkpoints.md": "560df84e264eda8fb042fae30f8f1df15be8d14f78656e3e9b6d04c6a76ebd2a",
+          "Dockerfile": "a810abdbdbd3a03f7464f85bf4bf2dcb48fd5c4db3e74b8c6905c8a0e778759a"
+        }
+      },
+      {
+        "task_id": "admin-collect-requests-and-compute-total-price",
+        "npc_count": 4,
+        "instruction_path": "workspaces/tasks/admin-collect-requests-and-compute-total-price/task.md",
+        "files_sha256": {
+          "task.md": "f4406755551ef673d18356636468fa8612fc0d03967c11cf24e1e493adfa4267",
+          "scenarios.json": "4b54a250f705138d659c0ac1ac610fb6b24c4c13eeb02e5d6db66ef4ff6e385a",
+          "evaluator.py": "ec798a9e9a067743673611d63cf60df58c916e0d5e925345b21b89af6f09caf7",
+          "checkpoints.md": "f060897a4b5ecc8044549ccfa7972825b52fe0866be7613ea4211da776b30c3f",
+          "Dockerfile": "a810abdbdbd3a03f7464f85bf4bf2dcb48fd5c4db3e74b8c6905c8a0e778759a"
+        }
+      },
+      {
+        "task_id": "admin-employee-info-reconciliation",
+        "npc_count": 3,
+        "instruction_path": "workspaces/tasks/admin-employee-info-reconciliation/task.md",
+        "files_sha256": {
+          "task.md": "6c10932756d7472883a8ca61a1994bc201e3c0b8a71b8b801f2fb53aadf74154",
+          "scenarios.json": "224e0857368a6c24134e80be205e9c982f0bf29da393f0f9d5adda7c35e91137",
+          "evaluator.py": "09c8df91820522bd22c43fa56197e73d385938e2de52056503e812cf3ff17606",
+          "checkpoints.md": "5d7cb5803ab93820c3318a730698803cd5f417204ae71fea465c672130b19237",
+          "Dockerfile": "9a5d10224053638c3611b87e54d431ec1cb695b7f2918c657321e2dadca52059"
+        }
+      },
+      {
+        "task_id": "admin-get-best-vendor-quote",
+        "npc_count": 2,
+        "instruction_path": "workspaces/tasks/admin-get-best-vendor-quote/task.md",
+        "files_sha256": {
+          "task.md": "7863b1ea79f97ce9d0b4b83cdb728d96962fa02ff36f6873d0715046c8bf341a",
+          "scenarios.json": "d420fc1de1b61600017fa42fd11245cb46f23788b77c663cb52bb8d4cb27ffa2",
+          "evaluator.py": "5f8bf71d8455bdfeb8260161fae66c6af0298c7963f534863d8ddad537151bdb",
+          "checkpoints.md": "ae9c3bda27529d25f843463cf2bf3c897cb697c6b4ef84f7905e98bbc4f23713",
+          "Dockerfile": "a810abdbdbd3a03f7464f85bf4bf2dcb48fd5c4db3e74b8c6905c8a0e778759a"
+        }
+      },
+      {
+        "task_id": "finance-r-d-activities",
+        "npc_count": 17,
+        "instruction_path": "workspaces/tasks/finance-r-d-activities/task.md",
+        "files_sha256": {
+          "task.md": "4a8a2ac7a543b9d2750f245df2c581b20c96f110a178a7c3a569a8d2b8eb7cb6",
+          "scenarios.json": "c62e05856ea0b715b798e0e9cd554dedac33d7a31b14c4e086e32c74ef790970",
+          "evaluator.py": "92eabe3295d2d3b9698a59824dd21182325b4aed468295b4f5da8e4315704e5c",
+          "checkpoints.md": "99832609c39bd8d951264c43432835a82bca5ca16cf6960654d98ccbe6d02b19",
+          "Dockerfile": "34dca9c72df5808417257c984c925bdbd3819949dc03a26689b77df51939c4dc"
+        }
+      },
+      {
+        "task_id": "hr-check-attendance-multiple-days-department-with-chat",
+        "npc_count": 3,
+        "instruction_path": "workspaces/tasks/hr-check-attendance-multiple-days-department-with-chat/task.md",
+        "files_sha256": {
+          "task.md": "cf1a946522a0a08d8e263069ec9ba1370ebfad659e3c5365d612bfc435b8a023",
+          "scenarios.json": "234f601982b34c3b0f958e86dd66efb7edee24f9bb3c2b3a85221aa776175d6e",
+          "evaluator.py": "69b91e063a0f0151929bcb56713221dc2b6fda59dbb9470b15ce7590978dcf66",
+          "checkpoints.md": "cc69ea6302c33fe44f4b4d7d98ebfe9e928321ebfee1723b3c3659eaf492f310",
+          "Dockerfile": "6bd22dd7795130bdc14d32cfd60f6362794b0f8f4d0175076df25884517ccc42"
+        }
+      },
+      {
+        "task_id": "hr-check-for-invalid-passwords-and-ask-for-valid-passwords",
+        "npc_count": 2,
+        "instruction_path": "workspaces/tasks/hr-check-for-invalid-passwords-and-ask-for-valid-passwords/task.md",
+        "files_sha256": {
+          "task.md": "05be934bddfd6e47590fb2727f7341e7da07db99768d4d2803e3b7fbe4112a39",
+          "scenarios.json": "c2e1d85c1ecf02a181d02066662619e4a6ae7b53c5dd00d075715cfe7460dc35",
+          "evaluator.py": "c638f418f4cfd9a9e0271abdb36e4841e70be2411f9f0e76d832db79a0af93a1",
+          "checkpoints.md": "ab6e0d39bce950a2877968565e2c6ebff13d6c50f67fc13eef99b3da6d7934a7",
+          "Dockerfile": "0f02e3cce514700dbe96521deeafa5c6dd4e5595bc4cede59b07eafe989f6fc3"
+        }
+      },
+      {
+        "task_id": "hr-collect-feedbacks",
+        "npc_count": 3,
+        "instruction_path": "workspaces/tasks/hr-collect-feedbacks/task.md",
+        "files_sha256": {
+          "task.md": "baa9d6e41daa26d71b6e129d7a0b5c2fb88555af0354820db960455a88eea0b8",
+          "scenarios.json": "3292bef6b9916ffb196ac417992ec9e60c0bbf05365aebf43679c132829cfeab",
+          "evaluator.py": "c92b16f5539ffd0f5711e8bebbd09f2904b0eee05dc4ccb7ff909f55e2f07a32",
+          "checkpoints.md": "135d609169b41b39d40db3288e492c730af2672845006f168522aadd5b36c581",
+          "Dockerfile": "cff1e407fcddfb8a7d78bcaec1adc6365a6276b84a4d5373db7f3e263573cd23"
+        }
+      },
+      {
+        "task_id": "hr-collect-multiple-valid-passwords",
+        "npc_count": 5,
+        "instruction_path": "workspaces/tasks/hr-collect-multiple-valid-passwords/task.md",
+        "files_sha256": {
+          "task.md": "fe6202cd2b277d91abd52221855b5f0324294157a6e648484c8122916cc98c1e",
+          "scenarios.json": "3fa4ca476b27ba9e8f4856911a8f249b3b609b29cfb476f249c3b942cfb86353",
+          "evaluator.py": "10b32ba9fa12d4b4f764de9829d6a84be09c463c00ca60f7a32e5386c51da7a8",
+          "checkpoints.md": "c325a9d9c761b372c82112d2be07db8488594631a2956ac81317b7aad68b2e4a",
+          "Dockerfile": "8d30f4bf4604845a0880ee97843bb0080539979edf1e39f2edbd468f572b7850"
+        }
+      },
+      {
+        "task_id": "hr-mass-survey",
+        "npc_count": 17,
+        "instruction_path": "workspaces/tasks/hr-mass-survey/task.md",
+        "files_sha256": {
+          "task.md": "bb6f827887004008ac99c16fa1ffb2a9d3339f8b95c97daca5b906ea35dbf75e",
+          "scenarios.json": "c0837cea99f6a586cbc9ab35ffb709de29098ee6704e4246538d9037379e3c66",
+          "evaluator.py": "66b19c1f6527b4354c731efafc9eec3a21a5068132dffbc5e9ec8ebd523e92e4",
+          "checkpoints.md": "4453571d105d0fc36c16ba306c6c71f208587c682408aea38bc5147e4ab1ecf6",
+          "Dockerfile": "96e4884c9076f9709ca45e0de113ffde8fe78fb61f82a6a756c39dec2ae3167c"
+        }
+      },
+      {
+        "task_id": "hr-new-grad-job-description-3",
+        "npc_count": 2,
+        "instruction_path": "workspaces/tasks/hr-new-grad-job-description-3/task.md",
+        "files_sha256": {
+          "task.md": "858ecb69bc2446c71808a544dedd612f0cc81703955c47c35f9c44927120c85f",
+          "scenarios.json": "7818052e85507a37a86dad16dd16cc105b5b126daaf31368d6b196caa1e7e8e9",
+          "evaluator.py": "b0d14d4b5260a4f068eb62f522bb2566bf416fb1e218feea0f7d6f163ad78c54",
+          "checkpoints.md": "2e86d9d6aba92c960fae1d7a8c33e8b420c4989923386de2694129f3aca102d1",
+          "Dockerfile": "6c5a9f71fd53d3a35aa40e8a0fce0930578892046eecfa7f8d710d5bfed8455a"
+        }
+      },
+      {
+        "task_id": "hr-pick-interviewer-2",
+        "npc_count": 4,
+        "instruction_path": "workspaces/tasks/hr-pick-interviewer-2/task.md",
+        "files_sha256": {
+          "task.md": "6778f7374df641e6238db65ab036e210dd3de3282313d10e1ab73b3dd510aa4b",
+          "scenarios.json": "4d635dd08752c88b452ebef8f355cf4b83579b68c80f94aea217505c1f591b48",
+          "evaluator.py": "2b881b3f3a70346bf17c369767031cc9c4a33ece9b384155a2e97c879a6f0089",
+          "checkpoints.md": "7a808ec8b27dd246557690c60acf2ce04cf73dba88857fa3a7b1c551843cc65d",
+          "Dockerfile": "c784f259f5ed55bd08df9b492cb7f6fd40f54898d42f2b39bed08e566b98d5ed"
+        }
+      },
+      {
+        "task_id": "hr-pick-interviewer-3",
+        "npc_count": 2,
+        "instruction_path": "workspaces/tasks/hr-pick-interviewer-3/task.md",
+        "files_sha256": {
+          "task.md": "58445aeee22689d968f8b4eaeb56a825b5b8fc3b3ea158409b598e0d5308c328",
+          "scenarios.json": "475f2b42c2f7dc842285afd6723f9994abf12561c474f61b63ef2e0711fddcd3",
+          "evaluator.py": "52c40c155537e24ae55c9ba488a1722b5d8ea85bbf2355c251765f3c93351bb4",
+          "checkpoints.md": "6ae7acb1afb09ea7d56c459235f5278c14e36d5c87f4389fe2105c7aa970eeeb",
+          "Dockerfile": "c784f259f5ed55bd08df9b492cb7f6fd40f54898d42f2b39bed08e566b98d5ed"
+        }
+      },
+      {
+        "task_id": "pm-ask-for-issue-and-create-in-gitlab",
+        "npc_count": 3,
+        "instruction_path": "workspaces/tasks/pm-ask-for-issue-and-create-in-gitlab/task.md",
+        "files_sha256": {
+          "task.md": "3442d2f74e831816dfca7ac8fe31e3d6b7e2d4f8918e2984b1360c2bfe2d0cb4",
+          "scenarios.json": "7f7a5b2c14049e067f3862541c01849109cd77db83f6592eaefb6eb0682f727f",
+          "evaluator.py": "474984d7489d28748341e23ffc98cd6232718972e3a0712c82b78579178fdac1",
+          "checkpoints.md": "0df5ddd976f1103ca938ae9a1d529f41200d2875945ee1636812269c01b11ef4",
+          "Dockerfile": "8d30f4bf4604845a0880ee97843bb0080539979edf1e39f2edbd468f572b7850"
+        }
+      },
+      {
+        "task_id": "pm-schedule-meeting-1",
+        "npc_count": 2,
+        "instruction_path": "workspaces/tasks/pm-schedule-meeting-1/task.md",
+        "files_sha256": {
+          "task.md": "2e754e18e2bf134cdc073f9604e5ae0344abe450d729f62b731c212c375695c8",
+          "scenarios.json": "86b85d6801860690e1994566b8def4719af1432df3e2a1faf1ba2f83223ea8f6",
+          "evaluator.py": "979123ee16beb81134285015e402afde8ce5d35768899953e01a2abf2c75ed2d",
+          "checkpoints.md": "be4372e8034f271da1163f953f44cdd6fefe7568afd5991009ffecd9bb803ccc",
+          "Dockerfile": "a810abdbdbd3a03f7464f85bf4bf2dcb48fd5c4db3e74b8c6905c8a0e778759a"
+        }
+      },
+      {
+        "task_id": "pm-schedule-meeting-2",
+        "npc_count": 2,
+        "instruction_path": "workspaces/tasks/pm-schedule-meeting-2/task.md",
+        "files_sha256": {
+          "task.md": "2e754e18e2bf134cdc073f9604e5ae0344abe450d729f62b731c212c375695c8",
+          "scenarios.json": "98345046c96aa1d2b5f0aff51085595519dce6e77790478d4cff168cbc9cc86e",
+          "evaluator.py": "cd2e79128db45c682829aeed1ae0fa8e39bee3fd986d7a3c4bb4170a2ffde185",
+          "checkpoints.md": "4f094acba199a59a010b6259c6c28858db4e47448a26cadd77f1af89878e36fa",
+          "Dockerfile": "a810abdbdbd3a03f7464f85bf4bf2dcb48fd5c4db3e74b8c6905c8a0e778759a"
+        }
+      },
+      {
+        "task_id": "pm-send-notification-to-corresponding-user",
+        "npc_count": 4,
+        "instruction_path": "workspaces/tasks/pm-send-notification-to-corresponding-user/task.md",
+        "files_sha256": {
+          "task.md": "922cbb3a7de57500f61a6f2f9a581020fd0a9db84154a342b112ab99f22d1f1b",
+          "scenarios.json": "1a02fd8fbde5c4b2ec68b9702ad0bcc612b2ed285351850a00a46223e2c1863a",
+          "evaluator.py": "56f05f8df3891a41662c30e3680130feb7a1a61b0f1634c19b5e2c1272465292",
+          "checkpoints.md": "971ec11a79b4cedbb335dce403c67ec47bb4d992ba9844d95172905a40e2b62f",
+          "Dockerfile": "a810abdbdbd3a03f7464f85bf4bf2dcb48fd5c4db3e74b8c6905c8a0e778759a"
+        }
+      }
+    ],
+    "pilot_task_ids": [
+      "admin-get-best-vendor-quote",
+      "admin-collect-requests-and-compute-total-price",
+      "admin-check-employees-budget-and-reply-and-record",
+      "admin-employee-info-reconciliation",
+      "hr-new-grad-job-description-3",
+      "pm-schedule-meeting-1"
+    ],
+    "pilot_selection": "six task types selected for workflow coverage before any run; not a random leaderboard sample",
+    "native_interaction": "one examinee interacts with original LLM coworker NPCs via RocketChat",
+    "jiuwen_extension": "coordinator + document/data worker + reviewer; preserve original NPCs and evaluator account",
+    "integration_status": "adapter_added_not_container_validated",
+    "official_evaluator": "/utils/eval.py inside the task image; aggregate all Jiuwen actions into its trajectory"
+  },
+  "development": {
+    "dataset": "SWE-bench Verified",
+    "source": "https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified",
+    "revision": "c104f840cc67f8b6eec6f759ebc8b2693d585d4a",
+    "split": "test",
+    "task_count": 500,
+    "repo_counts": {
+      "astropy/astropy": 22,
+      "django/django": 231,
+      "matplotlib/matplotlib": 34,
+      "mwaskom/seaborn": 2,
+      "pallets/flask": 1,
+      "psf/requests": 8,
+      "pydata/xarray": 22,
+      "pylint-dev/pylint": 10,
+      "pytest-dev/pytest": 19,
+      "scikit-learn/scikit-learn": 32,
+      "sphinx-doc/sphinx": 44,
+      "sympy/sympy": 75
+    },
+    "source_file": "data/test-00000-of-00001.parquet",
+    "source_sha256": "a45b1fe4e2f0c8390b2b2938ac83e92ed5979000856808f3679c07812e9e6dcd",
+    "pilot_selection": "one task per repo minimizing SHA256(jiuwen-duplex-20260915: + instance_id); selected before any run",
+    "pilot_tasks": [
+      {
+        "instance_id": "astropy__astropy-7606",
+        "repo": "astropy/astropy",
+        "base_commit": "3cedd79e6c121910220f8e6df77c54a0b344ea94"
+      },
+      {
+        "instance_id": "django__django-11532",
+        "repo": "django/django",
+        "base_commit": "a5308514fb4bc5086c9a16a8a24a945eeebb073c"
+      },
+      {
+        "instance_id": "matplotlib__matplotlib-26208",
+        "repo": "matplotlib/matplotlib",
+        "base_commit": "f0f133943d3e4f1e2e665291fe1c8f658a84cc09"
+      },
+      {
+        "instance_id": "mwaskom__seaborn-3069",
+        "repo": "mwaskom/seaborn",
+        "base_commit": "54cab15bdacfaa05a88fbc5502a5b322d99f148e"
+      },
+      {
+        "instance_id": "pallets__flask-5014",
+        "repo": "pallets/flask",
+        "base_commit": "7ee9ceb71e868944a46e1ff00b506772a53a4f1d"
+      },
+      {
+        "instance_id": "psf__requests-6028",
+        "repo": "psf/requests",
+        "base_commit": "0192aac24123735b3eaf9b08df46429bb770c283"
+      },
+      {
+        "instance_id": "pydata__xarray-4356",
+        "repo": "pydata/xarray",
+        "base_commit": "e05fddea852d08fc0845f954b79deb9e9f9ff883"
+      },
+      {
+        "instance_id": "pylint-dev__pylint-6903",
+        "repo": "pylint-dev/pylint",
+        "base_commit": "ca80f03a43bc39e4cc2c67dc99817b3c9f13b8a6"
+      },
+      {
+        "instance_id": "pytest-dev__pytest-10356",
+        "repo": "pytest-dev/pytest",
+        "base_commit": "3c1534944cbd34e8a41bc9e76818018fadefc9a1"
+      },
+      {
+        "instance_id": "scikit-learn__scikit-learn-11310",
+        "repo": "scikit-learn/scikit-learn",
+        "base_commit": "553b5fb8f84ba05c8397f26dd079deece2b05029"
+      },
+      {
+        "instance_id": "sphinx-doc__sphinx-9602",
+        "repo": "sphinx-doc/sphinx",
+        "base_commit": "6c38f68dae221e8cfc70c137974b8b88bd3baaab"
+      },
+      {
+        "instance_id": "sympy__sympy-18199",
+        "repo": "sympy/sympy",
+        "base_commit": "ba80d1e493f21431b4bf729b3e0452cd47eb9566"
+      }
+    ],
+    "native_interaction": "no built-in multi-agent protocol or intermediate messages",
+    "jiuwen_extension": "diagnosis/reproduction + implementation + tests/review, exchanging actual findings over Jiuwen DB",
+    "integration_status": "adapter_added_not_container_validated",
+    "agent_input_fields": [
+      "instance_id",
+      "repo",
+      "base_commit",
+      "problem_statement",
+      "version",
+      "environment_setup_commit"
+    ],
+    "evaluator_only_fields": [
+      "patch",
+      "test_patch",
+      "FAIL_TO_PASS",
+      "PASS_TO_PASS"
+    ],
+    "official_evaluator": "SWE-bench Docker harness, original FAIL_TO_PASS and PASS_TO_PASS tests",
+    "evaluator_revision": "3f01bd622c0a22c00406139f69a234ef08225f22",
+    "evaluator_release": "v3.0.17"
+  },
+  "comparison": {
+    "policies": [
+      "steer",
+      "model"
+    ],
+    "baseline": "steer",
+    "fixed": [
+      "task",
+      "base environment",
+      "three Jiuwen roles",
+      "models",
+      "budget",
+      "tools",
+      "role prompts",
+      "NPC settings"
+    ],
+    "messages": "generated by actual agent work, not handwritten or forced; live messages can differ across policies",
+    "metrics": [
+      "official outcome",
+      "elapsed time",
+      "all agent and router tokens",
+      "A2A arrivals by execution phase",
+      "effective routing action",
+      "message-to-relevant-action latency when observable",
+      "tool/test repetitions"
+    ],
+    "missing_metrics": "null with reason",
+    "completed_evaluations": 0
+  },
+  "prior_inputs": {
+    "routing_cases": "6 handcrafted mechanism tests; not an office/development task dataset",
+    "agentradio": "124 four-agent repository Q&A tasks; retain for communication regression, not code-fix claims",
+    "interruptbench": "retain for user-update regression; not the primary multi-agent office benchmark"
+  }
+}

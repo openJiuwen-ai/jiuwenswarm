@@ -1,0 +1,28 @@
+{
+  "slow": {
+    "model_client_config": {
+      "client_provider": "OpenAI",
+      "api_base": "https://api.siliconflow.cn/v1",
+      "api_key": ""
+    },
+    "model_request_config": {
+      "model_name": "deepseek-ai/DeepSeek-V3.2",
+      "temperature": 0,
+      "max_tokens": 2048,
+      "extra_body": {"enable_thinking": false}
+    }
+  },
+  "fast": {
+    "model_client_config": {
+      "client_provider": "OpenAI",
+      "api_base": "https://api.siliconflow.cn/v1",
+      "api_key": ""
+    },
+    "model_request_config": {
+      "model_name": "Qwen/Qwen3.5-9B",
+      "temperature": 0,
+      "max_tokens": 256,
+      "extra_body": {"enable_thinking": false}
+    }
+  }
+}

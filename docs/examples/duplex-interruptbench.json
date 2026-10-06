@@ -1,0 +1,19 @@
+{
+  "benchmark": "interruptbench",
+  "repo": "D:/jiusi_agent/_repos/InterruptBench",
+  "python": "D:/jiusi_agent/_venvs/interruptbench/Scripts/python.exe",
+  "native_python": "D:/jiusi_agent/.venv/Scripts/python.exe",
+  "models": "D:/private/duplex-models.json",
+  "environment_file": "D:/private/webarena-env.json",
+  "suite": "3mixed",
+  "task_ids": [0],
+  "repeats": 3,
+  "policies": ["official", "steer", "abort_restart", "model"],
+  "runner_args": [
+    "--provider", "openai", "--model", "slow-model", "--mode", "chat",
+    "--instruction_path", "agent/prompts/jsons/p_webrl_chat_think.json",
+    "--action_set_tag", "webrl_id", "--observation_type", "webrl",
+    "--max_obs_length", "0", "--max_tokens", "2048", "--max_steps", "30",
+    "--reset_server_url", "http://127.0.0.1:7565", "--reset_before_each_task"
+  ]
+}

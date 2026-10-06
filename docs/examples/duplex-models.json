@@ -1,0 +1,10 @@
+{
+  "slow": {
+    "model_client_config": {"client_provider": "OpenAI", "api_base": "http://127.0.0.1:8000/v1", "api_key": ""},
+    "model_request_config": {"model_name": "slow-model", "temperature": 0, "max_tokens": 2048}
+  },
+  "fast": {
+    "model_client_config": {"client_provider": "OpenAI", "api_base": "http://127.0.0.1:8001/v1", "api_key": ""},
+    "model_request_config": {"model_name": "fast-model", "temperature": 0, "max_tokens": 256}
+  }
+}

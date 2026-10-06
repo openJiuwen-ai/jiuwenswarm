@@ -1,0 +1,28 @@
+@startuml duplex-architecture
+!pragma layout smetana
+top to bottom direction
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 16
+skinparam shadowing false
+skinparam backgroundColor white
+skinparam componentStyle rectangle
+skinparam ArrowColor #52647A
+skinparam componentBackgroundColor #F2F5F8
+title 双工架构：快模型路由与打断后重新规划
+actor "用户 / 其他 Agent" as sender
+component "原 A2A / 用户入口\n消息接收与已读确认" as inlet
+component "新增：快模型路由器\n原消息 + 已有任务 / 计划\n每条消息只判断一次" as router #D9ECFF
+component "原 steer\n不取消当前计算" as steer
+component "原 SDK 安全暂停\n适配层作废旧计划，要求重新规划" as pause
+component "慢 Agent\n原任务、原提示、原工具" as slow
+sender --> inlet : 新消息
+inlet --> router
+router --> steer : APPEND\n或失败 / 超时 / 过期
+router --> pause : INTERRUPT
+steer --> slow : 下一次原有模型调用前注入
+pause --> slow : 保留有效需求和结果\n按纠正信息重新规划
+note bottom of slow
+  快模型判断期间，慢 Agent 继续运行。
+  模型阶段可取消；已开始的工具由 SDK 等待完成。
+end note
+@enduml
