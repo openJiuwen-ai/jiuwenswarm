@@ -76,7 +76,8 @@ Rules:
 - Materialize every beat in the Brief's narrative/content arc; fill the full requested duration
 - Every row advances action, information, product proof, or emotion; no filler, repeated action, or duplicate coverage
 - Preserve the arc's setup/hook, development/turn, and payoff/CTA as applicable
-- Timeline as start-end seconds, e.g. 0.0-4.0s — durations must sum coherently
+- Timeline as start-end seconds, e.g. 0.0-5.0s — each window must meet the
+  configured video model's minimum duration (see capacity catalog); durations must sum coherently
 - If the Brief already gives a shot a duration, copy that duration exactly
 - If the Brief names a character, place, wardrobe, spoken line, or continuity rule, copy it exactly
 - Camera is shot size + angle, e.g. wide/establishing, medium/eye-level, close-up/eye-level, medium/slow pan

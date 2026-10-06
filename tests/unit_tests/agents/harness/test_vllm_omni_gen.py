@@ -81,17 +81,40 @@ def test_minimax_h3_ref2va_form_without_size_uses_adaptive_canvas() -> None:
     assert form.fields["aspect_ratio"] == "adaptive"
     assert form.fields["short_edge"] == "768"
     assert form.extra_params is not None
-    # Duration defaults to the H3 contract minimum of 4 seconds.
-    assert form.extra_params["duration"] == 4.0
+    # Unspecified duration uses the catalog default (H3 default_sec=5).
+    assert form.extra_params["duration"] == 5.0
 
 
-def test_minimax_h3_duration_keeps_the_4s_floor_and_requested_length() -> None:
+def test_minimax_h3_duration_keeps_the_4s_floor_and_snaps_to_catalog_max() -> None:
     spec = _h3_spec()
-    low = spec.build(VllmOmniVideoInputs(size=None, duration=1, resolution=None, has_references=False))
-    high = spec.build(VllmOmniVideoInputs(size=None, duration=30, resolution=None, has_references=False))
+    low = spec.build(
+        VllmOmniVideoInputs(
+            size=None, duration=1, resolution=None, has_references=False, model_id="MiniMax-H3"
+        )
+    )
+    high = spec.build(
+        VllmOmniVideoInputs(
+            size=None, duration=30, resolution=None, has_references=False, model_id="MiniMax-H3"
+        )
+    )
 
     assert low.extra_params is not None and low.extra_params["duration"] == 4.0
-    assert high.extra_params is not None and high.extra_params["duration"] == 30.0
+    assert high.extra_params is not None and high.extra_params["duration"] == 15.0
+
+
+def test_minimax_h3_max_vllm_form_snaps_duration_to_5() -> None:
+    spec = vllm_omni_gen.match_video_spec("MiniMaxAI/MiniMax-H3-Max")
+    assert spec is not None and spec.key == "minimax-h3-max"
+    form = spec.build(
+        VllmOmniVideoInputs(
+            size=None,
+            duration=4,
+            resolution=None,
+            has_references=False,
+            model_id="MiniMax-H3-Max",
+        )
+    )
+    assert form.extra_params is not None and form.extra_params["duration"] == 5.0
 
 
 def test_generic_video_form_never_builds_extra_params() -> None:

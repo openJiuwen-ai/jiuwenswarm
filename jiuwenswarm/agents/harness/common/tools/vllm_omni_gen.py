@@ -189,6 +189,7 @@ class VllmOmniVideoInputs:
     resolution: str | None
     has_references: bool
     fps: int | None = None
+    model_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -229,7 +230,6 @@ def _parse_size(size: str | None) -> tuple[int, int] | None:
 _MINIMAX_H3_NUM_INFERENCE_STEPS = 50  # matches the reference accuracy workloads
 _MINIMAX_H3_FLOW_SHIFT = 12.0  # video sigma shift
 _MINIMAX_H3_AUDIO_FLOW_SHIFT = 3.0  # audio sigma shift; H3 output always has audio
-_MINIMAX_H3_MIN_DURATION_SECONDS = 4.0  # H3 output floor; no upper duration cap
 _MINIMAX_H3_SHORT_EDGE = 768  # H3 shape policy requires exactly 768 when used
 _MINIMAX_H3_NAMED_RATIOS: tuple[tuple[int, int], ...] = (
     (21, 9),
@@ -241,11 +241,29 @@ _MINIMAX_H3_NAMED_RATIOS: tuple[tuple[int, int], ...] = (
 )
 
 
+def _matches_minimax_h3_max(served_model_id: str) -> bool:
+    normalized = (served_model_id or "").strip().lower().replace("\\", "/")
+    compact = normalized.replace("-", "").replace("_", "")
+    return "h3max" in compact or "minimaxh3max" in compact
+
+
 def _matches_minimax_h3(served_model_id: str) -> bool:
     # Covers "MiniMaxAI/MiniMax-H3", local paths like "/models/MiniMax-H3" and
-    # task-partition paths like "/models/MiniMax-H3/FL2VA".
+    # task-partition paths like "/models/MiniMax-H3/FL2VA". H3-Max is a
+    # separate matcher so duration capacity is not the H3 4s floor.
+    if _matches_minimax_h3_max(served_model_id):
+        return False
     normalized = (served_model_id or "").strip().lower().replace("\\", "/")
     return "minimax-h3" in normalized
+
+
+def _snap_vllm_duration(model_id: str | None, duration: int | float | None) -> int:
+    from jiuwenswarm.server.runtime.designer.pipeline.model_capacity import (
+        capacity_for_model,
+        snap_duration,
+    )
+
+    return snap_duration(duration, capacity_for_model(model_id or ""))
 
 
 def _snap_to_canvas_multiple(value: int, multiple: int = 32) -> int:
@@ -285,12 +303,9 @@ def _build_minimax_h3_video_form(inputs: VllmOmniVideoInputs) -> VllmOmniVideoFo
         fields["short_edge"] = str(_MINIMAX_H3_SHORT_EDGE)
     # H3 has no resolution knob beyond the fixed 768px canvas; ``resolution``
     # is intentionally not forwarded.
-    duration = (
-        _MINIMAX_H3_MIN_DURATION_SECONDS
-        if inputs.duration is None
-        else float(inputs.duration)
+    duration = float(
+        _snap_vllm_duration(inputs.model_id or "MiniMax-H3", inputs.duration)
     )
-    duration = max(_MINIMAX_H3_MIN_DURATION_SECONDS, duration)
     extra_params = {
         "task": task,
         "duration": duration,
@@ -300,6 +315,11 @@ def _build_minimax_h3_video_form(inputs: VllmOmniVideoInputs) -> VllmOmniVideoFo
 
 
 _VIDEO_SPECS: tuple[VllmOmniVideoSpec, ...] = (
+    VllmOmniVideoSpec(
+        key="minimax-h3-max",
+        matches=_matches_minimax_h3_max,
+        build=_build_minimax_h3_video_form,
+    ),
     VllmOmniVideoSpec(
         key="minimax-h3",
         matches=_matches_minimax_h3,
@@ -328,12 +348,14 @@ def _build_generic_video_form(inputs: VllmOmniVideoInputs) -> VllmOmniVideoForm:
             fields["width"] = str(parsed[0])
             fields["height"] = str(parsed[1])
         if inputs.duration:
-            fields["num_frames"] = str(max(1, round(float(inputs.duration) * inputs.fps)))
+            fields["num_frames"] = str(
+                max(1, round(float(_snap_vllm_duration(inputs.model_id, inputs.duration)) * inputs.fps))
+            )
         return VllmOmniVideoForm(fields=fields, extra_params=None)
     if parsed is not None:
         fields["size"] = f"{parsed[0]}x{parsed[1]}"
     if inputs.duration:
-        fields["seconds"] = str(max(1, int(inputs.duration)))
+        fields["seconds"] = str(_snap_vllm_duration(inputs.model_id, inputs.duration))
     return VllmOmniVideoForm(fields=fields, extra_params=None)
 
 
@@ -558,6 +580,7 @@ def submit_vllm_omni_video_sync(
         resolution=resolution,
         has_references=bool(references),
         fps=fps,
+        model_id=served_model_id or model,
     )
     form = spec.build(inputs) if spec else _build_generic_video_form(inputs)
 

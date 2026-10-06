@@ -1,8 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Per-clip plot scope: this storyboard window only — never the full user prompt.
 
-A clip keeps the duration of its own timeline. Runtime longer than 15s does not
-force a split, and generation is not shortened to that old model cap.
+A clip keeps the duration of its own timeline, then generation/submit snap that
+length onto the configured video model's ``min_sec``–``max_sec`` (same catalog
+as resolution). Long films are not split to fit a stale 15s cap.
 """
 
 from __future__ import annotations
@@ -50,11 +51,16 @@ _COVERAGE_RE = re.compile(
 
 
 def clamp_clip_duration(seconds: int | float | None, *, default: int = 5) -> int:
-    try:
-        raw = int(round(float(seconds if seconds is not None else default)))
-    except (TypeError, ValueError):
-        raw = int(default)
-    return max(MIN_CLIP_SEC, raw if raw > 0 else int(default))
+    """Clamp a clip to the configured video model's duration capacity.
+
+    Narrative helpers still use ``MIN_CLIP_SEC`` as a floor only when capacity
+    is unavailable; generation and submit also snap again via ``snap_duration``.
+    """
+    from jiuwenswarm.server.runtime.designer.pipeline.axis_locks import (
+        resolve_clip_video_duration,
+    )
+
+    return resolve_clip_video_duration(seconds, default=default)
 
 
 def duration_from_timeline(timeline: str, *, default: int = 5) -> int:
@@ -319,23 +325,30 @@ def storyboard_fallback_beat(sb_text: str, shot_index: int = 1) -> str:
     return pick[:200]
 
 
-def sequential_windows(total_sec: int, n: int, *, wan_max: int = WAN_MAX_CLIP_SEC) -> list[tuple[int, int]]:
-    """Contiguous [start, end) seconds summing to min(total, n*wan_max)."""
+def sequential_windows(total_sec: int, n: int, *, wan_max: int | None = None) -> list[tuple[int, int]]:
+    """Contiguous [start, end) seconds summing to min(total, n*model_max)."""
+    from jiuwenswarm.server.runtime.designer.pipeline.model_capacity import (
+        active_video_capacity,
+    )
+
     n = max(1, int(n))
-    cap = max(1, int(wan_max or WAN_MAX_CLIP_SEC))
-    total = min(max(1, int(total_sec or 1)), n * cap)
-    base = min(cap, max(MIN_CLIP_SEC, total // n or MIN_CLIP_SEC))
+    cap = active_video_capacity()
+    floor = int(cap.min_sec)
+    model_max = int(wan_max) if wan_max is not None else int(cap.max_sec)
+    model_max = max(1, model_max)
+    total = min(max(1, int(total_sec or 1)), n * model_max)
+    base = min(model_max, max(floor, total // n or floor))
     leftover = total - base * n
     out: list[tuple[int, int]] = []
     t = 0
     for i in range(n):
         extra = 1 if leftover > 0 and i >= n - leftover else 0
-        span = min(cap, base + extra)
+        span = min(model_max, base + extra)
         out.append((t, t + span))
         t += span
     if out and t < total:
         s, _e = out[-1]
-        out[-1] = (s, min(s + cap, total))
+        out[-1] = (s, min(s + model_max, total))
     return out
 
 

@@ -96,6 +96,22 @@ def resolve_clip_video_format(
     return size_for_resolution(chosen, ratio), chosen
 
 
+def resolve_clip_video_duration(
+    requested: int | float | None = None,
+    *,
+    default: int | None = None,
+) -> int:
+    """Clip seconds for the configured video model. Same ownership as resolution."""
+    from jiuwenswarm.server.runtime.designer.pipeline.model_capacity import (
+        active_video_capacity,
+        snap_duration,
+    )
+
+    cap = active_video_capacity()
+    value = requested if requested is not None else default
+    return snap_duration(value, cap)
+
+
 def video_format_for_node(
     graph: dict[str, Any] | None,
     cfg: dict[str, Any] | None = None,

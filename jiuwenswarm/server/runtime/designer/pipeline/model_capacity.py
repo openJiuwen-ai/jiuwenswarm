@@ -159,6 +159,25 @@ def active_video_capacity() -> VideoModelCapacity:
     return capacity_for_model(configured_video_model_id())
 
 
+def snap_duration(requested: int | float | None, capacity: VideoModelCapacity) -> int:
+    """Map a requested clip length onto seconds this model accepts.
+
+    Mirrors ``snap_resolution``: missing or invalid values become the model
+    default; otherwise the value is clamped to ``min_sec``–``max_sec``.
+    """
+    try:
+        raw = int(round(float(requested))) if requested is not None else 0
+    except (TypeError, ValueError):
+        raw = 0
+    if raw <= 0:
+        return int(capacity.default_sec)
+    lo = int(capacity.min_sec)
+    hi = int(capacity.max_sec)
+    if hi < lo:
+        hi = lo
+    return max(lo, min(hi, raw))
+
+
 def snap_resolution(requested: str, capacity: VideoModelCapacity) -> str:
     """Map a free-form resolution onto a tier this model accepts."""
     raw = str(requested or "").strip()

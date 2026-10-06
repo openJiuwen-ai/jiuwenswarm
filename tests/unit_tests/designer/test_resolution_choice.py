@@ -62,6 +62,42 @@ def test_resolution_follows_user_then_director_then_model_default(monkeypatch) -
     assert snap_resolution("", capacity_for_model("wan3.0-video")) == "1080P"
 
 
+def test_duration_snaps_like_resolution_per_model() -> None:
+    from jiuwenswarm.server.runtime.designer.pipeline.model_capacity import snap_duration
+
+    h3 = capacity_for_model("MiniMax-H3")
+    h3_max = capacity_for_model("MiniMax-H3-Max")
+    wan = capacity_for_model("wan3.0-video")
+    seedance25 = capacity_for_model("doubao-seedance-2-5-260628")
+    seedance20 = capacity_for_model("doubao-seedance-2-0-260128")
+    assert snap_duration(4, h3) == 4
+    assert snap_duration(4, h3_max) == 5
+    assert snap_duration(None, h3_max) == 6
+    assert snap_duration(2, wan) == 2
+    assert snap_duration(1, wan) == 2
+    assert snap_duration(99, seedance20) == 15
+    assert snap_duration(99, seedance25) == 30
+    assert snap_duration(4, seedance25) == 4
+
+
+def test_resolve_clip_video_duration_uses_active_model(monkeypatch) -> None:
+    from jiuwenswarm.server.runtime.designer.pipeline.axis_locks import (
+        resolve_clip_video_duration,
+    )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.pipeline.model_capacity.configured_video_model_id",
+        lambda: "MiniMax-H3-Max",
+    )
+    assert resolve_clip_video_duration(4) == 5
+    assert resolve_clip_video_duration(None, default=4) == 5
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.pipeline.model_capacity.configured_video_model_id",
+        lambda: "wan3.0-video",
+    )
+    assert resolve_clip_video_duration(2) == 2
+
+
 def test_user_resolution_wins_on_every_image_and_video_node(monkeypatch) -> None:
     _use_wan(monkeypatch)
     graph = _graph("请做 720p 横屏短片", director="1080P")

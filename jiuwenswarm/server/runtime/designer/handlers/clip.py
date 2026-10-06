@@ -878,9 +878,9 @@ async def generate_clip_video(
         logger.debug("Failed to reload video generation env before generation", exc_info=True)
 
     from jiuwenswarm.server.runtime.designer.pipeline.axis_locks import (
+        resolve_clip_video_duration,
         resolve_clip_video_format,
     )
-    from jiuwenswarm.server.runtime.designer.pipeline.clip_shot_scope import clamp_clip_duration
 
     if size or resolution:
         video_size, video_res = resolve_clip_video_format(
@@ -891,7 +891,7 @@ async def generate_clip_video(
             video_size = str(size).replace("x", "*").replace("X", "*")
     else:
         video_size, video_res = resolve_clip_video_format()
-    clamped_duration = clamp_clip_duration(duration, default=5)
+    clamped_duration = resolve_clip_video_duration(duration, default=5)
     resolved_model = (str(model).strip() or None) if model else None
     tool_input = {
         "prompt": prompt,

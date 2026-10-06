@@ -185,6 +185,27 @@ async def test_minimax_video_submit_poll_download(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_minimax_h3_max_snaps_duration_4_to_5(monkeypatch, tmp_path):
+    seen = _patch_client(monkeypatch, _mm_video_handler(["succeeded"]))
+    result = await _submit(
+        "minimax", "k", _MM_GLOBAL, "MiniMax-H3-Max", "fox", "16:9", "768P", 4, False,
+        None, str(tmp_path),
+    )
+    assert result.startswith("Video generated successfully!")
+    assert _body(seen[0])["duration"] == 5
+
+
+@pytest.mark.asyncio
+async def test_minimax_h3_keeps_duration_4(monkeypatch, tmp_path):
+    seen = _patch_client(monkeypatch, _mm_video_handler(["succeeded"]))
+    await _submit(
+        "minimax", "k", _MM_GLOBAL, "MiniMax-H3", "fox", "16:9", "768P", 4, False,
+        None, str(tmp_path),
+    )
+    assert _body(seen[0])["duration"] == 4
+
+
+@pytest.mark.asyncio
 async def test_minimax_video_pending_and_failed(monkeypatch, tmp_path):
     _patch_client(monkeypatch, _mm_video_handler(["running"]))
     pending = await _submit("minimax", "k", _MM_GLOBAL, "m", "p", "16:9", "720p", 5, False, None, str(tmp_path))
@@ -281,6 +302,16 @@ async def test_modelark_video_submit_poll_download(monkeypatch, tmp_path):
     assert body["ratio"] == "adaptive"  # with a first frame the output follows that frame
     assert body["generate_audio"] is True and body["watermark"] is False and body["resolution"] == "1080p"
     assert "authorization" not in seen[-1].headers
+
+
+@pytest.mark.asyncio
+async def test_modelark_seedance_25_allows_duration_above_15(monkeypatch, tmp_path):
+    seen = _patch_client(monkeypatch, _ark_video_handler(["succeeded"]))
+    await _submit(
+        "modelark", "ak", _ARK_INTL, "doubao-seedance-2-5-260628", "fox", "16:9", "720p", 25, False,
+        None, str(tmp_path),
+    )
+    assert _body(seen[0])["duration"] == 25
 
 
 @pytest.mark.asyncio
@@ -467,6 +498,12 @@ def test_dashscope_video_body_modes(model, first_frame, reference_uris, expected
     body = gt._dashscope_video_body(model, request, None)
     assert body["input"] == {"prompt": "fox", **expected_input}
     assert body["parameters"] == expected_parameters
+
+
+def test_dashscope_wan_snaps_duration_below_min():
+    request = gt.VideoRequest("fox", "16:9", "720p", 1)
+    body = gt._dashscope_video_body("wan3.0-video", request, None)
+    assert body["parameters"]["duration"] == 2
 
 
 def test_dashscope_video_size_snaps_480p():

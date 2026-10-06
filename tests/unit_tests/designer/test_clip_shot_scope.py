@@ -98,7 +98,11 @@ def test_restatement_detector() -> None:
     assert looks_like_full_story_restatement("Child walks to the door.", LONG_STORY) is False
 
 
-def test_sequential_windows_sum() -> None:
+def test_sequential_windows_sum(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.pipeline.model_capacity.configured_video_model_id",
+        lambda: "wan3.0-video",
+    )
     wins = sequential_windows(45, 3)
     assert wins[0] == (0, 15)
     assert wins[-1][1] == 45
