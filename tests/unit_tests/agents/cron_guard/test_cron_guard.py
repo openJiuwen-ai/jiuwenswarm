@@ -825,6 +825,51 @@ def test_parser_nested_substitution_counted_once():
     assert r.sleep_seconds == pytest.approx(8.0)
 
 
+def test_parser_multiline_sleep_segmented():
+    """A sleep on its own line must not hide as an argument of the previous command.
+
+    shlex consumes ``\\n`` as whitespace, so without newline segmentation
+    ``echo done\\nsleep 120`` lexed as a single ``echo`` command and the
+    sleep escaped interception entirely.
+    """
+    r = sleep_guard.parse_shell_command("echo done\nsleep 120")
+    assert r.sleep_calls == 1
+    assert r.sleep_seconds == pytest.approx(120.0)
+    r = sleep_guard.parse_shell_command("cd /tmp\nsleep 600")
+    assert r.sleep_seconds == pytest.approx(600.0)
+    r = sleep_guard.parse_shell_command("export A=1\nsleep 900")
+    assert r.sleep_seconds == pytest.approx(900.0)
+    # multi-line loop polling is still flagged as loop_poll
+    r = sleep_guard.parse_shell_command("while true\ndo\nsleep 60\ndone")
+    assert r.loop_poll is True
+    assert r.sleep_seconds == pytest.approx(60.0)
+
+
+def test_parser_quoted_multiline_text_not_blocked():
+    """Newlines inside quotes are data — no segmentation, no detection."""
+    r = sleep_guard.parse_shell_command('grep "foo\nsleep 120" /var/log/x.log')
+    assert r.sleep_calls == 0
+    assert r.sleep_seconds == 0.0
+
+
+def test_parser_heredoc_body_not_blocked():
+    """Heredoc bodies are data: sleeps written into a file must not block."""
+    r = sleep_guard.parse_shell_command("cat > f.txt <<EOF\nsleep 999\nEOF\nls")
+    assert r.sleep_calls == 0
+    r = sleep_guard.parse_shell_command("cat > f.txt <<'EOF'\nsleep 999\nEOF")
+    assert r.sleep_calls == 0
+    # but a real sleep following the heredoc is still caught
+    r = sleep_guard.parse_shell_command("cat > f.txt <<EOF\ndata here\nEOF\nsleep 888")
+    assert r.sleep_seconds == pytest.approx(888.0)
+
+
+def test_parser_line_continuation_not_blocked():
+    """Backslash-newline continuation joins lines — no separator inserted."""
+    r = sleep_guard.parse_shell_command("echo run\\\nsleep 1")
+    assert r.sleep_calls == 0
+    assert r.sleep_seconds == 0.0
+
+
 def test_budget_add_sleep_counts_calls():
     b = RunBudget(run_id="rb")
     b.add_sleep(5.0, calls=2)

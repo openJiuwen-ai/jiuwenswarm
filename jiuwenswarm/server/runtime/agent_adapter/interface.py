@@ -3677,6 +3677,9 @@ class JiuWenSwarm:
             from jiuwenswarm.agents.harness.common.cron_guard.checkpoint_guard import (
                 CronCheckpointQuarantined,
             )
+            from jiuwenswarm.agents.harness.common.cron_guard.budget_rail import (
+                CronBudgetExceeded,
+            )
 
             try:
                 cron_ctx, cron_ctxvar_token, cron_soft_timer = cron_guard_begin(
@@ -3956,6 +3959,21 @@ class JiuWenSwarm:
                             f"({cron_ctx.base_timeout_seconds:g}s base)"
                         ),
                     ))
+                except asyncio.CancelledError as cancel_exc:
+                    producer_cancellation = cancel_exc
+                    raise
+            except CronBudgetExceeded as bud_exc:
+                # Budget rail fallback raise (request_force_finish unavailable):
+                # the ledger must record a trip, not a normal finish.
+                if cron_ctx is None:
+                    raise
+                cron_trip_reason = "budget_exceeded"
+                logger.warning(
+                    "[cron_guard] budget rail tripped: request_id=%s run_id=%s",
+                    rid, cron_ctx.run_id,
+                )
+                try:
+                    await stream_queue.put(("error", bud_exc))
                 except asyncio.CancelledError as cancel_exc:
                     producer_cancellation = cancel_exc
                     raise
