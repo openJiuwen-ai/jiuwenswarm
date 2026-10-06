@@ -1777,7 +1777,20 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(raw)
 
+    def _is_cross_site_request(self) -> bool:
+        """返回该请求是否来自另一站点的页面(Fetch Metadata)。
+
+        现代浏览器在每个请求上自动发送 ``Sec-Fetch-Site``, 页面脚本无法伪造。
+        仅在其取值明确为 ``cross-site`` 时判定跨站: 旧浏览器/非浏览器客户端
+        (无该 header)以及 ``same-origin``/``same-site``/``none`` 均放行,
+        避免误伤现有调用方。
+        """
+        return self.headers.get("Sec-Fetch-Site", "") == "cross-site"
+
     def _handle_file_api_post(self, parsed) -> None:
+        if self._is_cross_site_request():
+            self._write_json(403, {"error": "cross_site_request_forbidden"})
+            return
         if parsed.path == "/file-api/skills/upload-temp":
             self._handle_skills_upload_temp()
             return
