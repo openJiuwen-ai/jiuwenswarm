@@ -134,6 +134,7 @@ test = [
 [project.scripts]
 jiuwenswarm = "jiuwenswarm.channels.cli.main:main"
 jiuwenswarm-process = "jiuwenswarm.channels.process_cli.main:main"
+jiuwenswarm-paper = "jiuwenswarm.agents.harness.common.paper_pipeline.cli:main"
 jiuwenswarm-app = "jiuwenswarm.app:main"
 jiuwenswarm-agentserver = "jiuwenswarm.server.app_agentserver:main"
 jiuwenswarm-gateway = "jiuwenswarm.gateway.app_gateway:main"
@@ -166,6 +167,7 @@ jiuwenswarm = [
     "channels/web/frontend/dist/**/*",
     "channels/web/frontend/dist/*",
     "agents/harness/common/rsi/harness_config.yaml",
+    "agents/harness/common/paper_pipeline/templates/**/*",
     # config / env 模板放在 resources 目录
     "resources/**/*",
     "resources/*",
