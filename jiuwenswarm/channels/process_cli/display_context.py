@@ -77,7 +77,12 @@ def _resolve_env_text(value: object, dotenv: Mapping[str, str | None]) -> str:
     def replace(match: re.Match[str]) -> str:
         name = match.group(1)
         default = match.group(2)
-        current = dotenv.get(name) if name in dotenv else os.getenv(name)
+        current = dotenv.get(name)
+        # python-dotenv ignores bare keys (value None) when loading a process
+        # environment. Preserve the shell value in that case, but not for an
+        # explicit empty assignment (NAME=), which really overrides the shell.
+        if current is None:
+            current = os.getenv(name)
         if default is not None and (current is None or current == ""):
             return default
         return str(current or "")
