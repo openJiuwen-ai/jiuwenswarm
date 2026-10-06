@@ -27,7 +27,7 @@ export type DesignerStoredReference = {
 };
 
 export const DESIGNER_REF_LIMITS: Record<DesignerReferenceKind, number> = {
-  image: 3,
+  image: 5,
   video: 1,
   audio: 1,
 };

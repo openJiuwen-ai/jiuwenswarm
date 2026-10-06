@@ -1418,8 +1418,9 @@ async def analyze_creative_brief(
             + duration_rule
             + (
                 "Attached images are image 1, image 2, ... in that order. Look at each one. "
-                "reference_reads.subject is character when the image is a person who still "
-                "needs a character-sheet pass (set character_id to that characters[].id); "
+                "reference_reads.subject is character when the image is a person who will "
+                "perform (set character_id to that characters[].id) — default is use the "
+                "file as-is, not an automatic character-sheet pass; "
                 "scene when it is a place (set setting_id to the matching shot setting_id); "
                 "object when it is a prop or product that must appear inside the clips. "
                 if reference_images

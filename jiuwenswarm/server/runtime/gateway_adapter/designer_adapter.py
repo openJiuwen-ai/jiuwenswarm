@@ -884,7 +884,9 @@ def _bootstrap_graph(
     from jiuwenswarm.server.runtime.designer.user_references import (
         UserReferenceError,
         attach_user_references_to_graph,
+        image_reference_records,
         normalize_user_references,
+        rebase_creative_intent_paths,
     )
 
     try:
@@ -909,6 +911,30 @@ def _bootstrap_graph(
             "Designer requires a successful LLM cast/shot analysis before building the graph.",
             LLM_REQUIRED,
         )
+    # Classify may have stamped temp analysis paths; point slots at project refs
+    # before topology reads those paths into n_ref / reference_image_plan.
+    if user_refs:
+        analysis = rebase_creative_intent_paths(analysis, user_refs) or analysis
+        # Safety net: if classify already produced reference_reads but stamp was
+        # lost, fail closed (do not silently fall into quality.v5 sheets).
+        # Image uploads without reference_reads may still attach onto classic
+        # graphs — Enter always classifies+stamps when paths exist.
+        from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+            reference_led_active,
+        )
+
+        reads = analysis.get("reference_reads") if isinstance(analysis, dict) else None
+        if (
+            image_reference_records(user_refs)
+            and isinstance(reads, list)
+            and reads
+            and not reference_led_active(analysis)
+        ):
+            return (
+                None,
+                "Attached stills did not enter reference-led mode; retry Enter.",
+                "LLM_API_ERROR",
+            )
     if callable(on_progress):
         on_progress(
             "tool_call",
@@ -1309,9 +1335,11 @@ async def _bootstrap_graph_with_director_impl(
     )
     from jiuwenswarm.server.runtime.designer.script_analysis import analyze_creative_brief
     from jiuwenswarm.server.runtime.designer.user_references import (
+        UserReferenceError,
         analysis_prompt_with_references,
         classify_reference_images,
-        normalize_user_references,
+        image_reference_records,
+        materialize_user_references_for_analysis,
     )
 
     prompt = str(params.get("prompt") or "").strip() or "根据参考素材创作"
@@ -1324,15 +1352,20 @@ async def _bootstrap_graph_with_director_impl(
         require_llm()
     except DesignerLlmError as exc:
         return None, exc.user_message, exc.code
+    # Materialize base64/path uploads to a temp dir BEFORE classify/stamp.
+    # Preview-only normalize left base64 with path="" and skipped reference-led.
     try:
         user_refs_preview = (
-            normalize_user_references(raw_references, dest_dir=None)
+            materialize_user_references_for_analysis(raw_references)
             if isinstance(raw_references, list) and raw_references
             else []
         )
+    except UserReferenceError as exc:
+        return None, str(exc), getattr(exc, "code", None) or "BAD_REQUEST"
     except Exception:  # noqa: BLE001
         user_refs_preview = []
     analysis_prompt = analysis_prompt_with_references(prompt, user_refs_preview)
+    image_refs = image_reference_records(user_refs_preview)
 
     if callable(on_progress):
         on_progress("thinking", "Director · Extracting cast and scenes (LLM)")
@@ -1340,12 +1373,7 @@ async def _bootstrap_graph_with_director_impl(
         analysis = await analyze_creative_brief(
             analysis_prompt,
             timeout_sec=120.0,
-            reference_images=[
-                str(item.get("path") or "")
-                for item in user_refs_preview
-                if str(item.get("kind") or "") == "image"
-                and str(item.get("path") or "").strip()
-            ],
+            reference_images=[str(item.get("path") or "") for item in image_refs],
         )
     except DesignerLlmError as exc:
         return None, exc.user_message, exc.code
@@ -1361,15 +1389,10 @@ async def _bootstrap_graph_with_director_impl(
             "stage",
             f"Director · LLM cast locked ({n} characters)",
         )
-    image_refs = [
-        item
-        for item in user_refs_preview
-        if str(item.get("kind") or "") == "image" and str(item.get("path") or "").strip()
-    ]
     if image_refs:
         if callable(on_progress):
             on_progress("thinking", "Supervisor · Reading reference images")
-        reads = await classify_reference_images(prompt, image_refs)
+        reads = await classify_reference_images(prompt, image_refs, analysis)
         if not reads:
             return (
                 None,

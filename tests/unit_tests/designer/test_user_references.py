@@ -13,8 +13,11 @@ from jiuwenswarm.server.runtime.designer.user_references import (
     UserReferenceError,
     analysis_prompt_with_references,
     attach_user_references_to_graph,
+    image_reference_records,
+    materialize_user_references_for_analysis,
     normalize_user_references,
     prompt_slot_roster,
+    rebase_creative_intent_paths,
     user_reference_image_paths,
 )
 
@@ -61,14 +64,129 @@ def test_normalize_decodes_base64_and_rejects_over_limit(tmp_path: Path) -> None
         dest_dir=dest,
     )
     assert Path(refs[0]["path"]).read_bytes() == _png_bytes()
-    with pytest.raises(UserReferenceError, match="at most 3 image"):
+    five = normalize_user_references(
+        [
+            {"kind": "image", "filename": f"{index}.png", "base64_data": payload}
+            for index in range(5)
+        ],
+        dest_dir=dest,
+    )
+    assert len(five) == 5
+    with pytest.raises(UserReferenceError, match="at most 5 image"):
         normalize_user_references(
             [
                 {"kind": "image", "filename": f"{index}.png", "base64_data": payload}
-                for index in range(4)
+                for index in range(6)
             ],
             dest_dir=dest,
         )
+
+
+def test_materialize_for_analysis_gives_path_to_base64_only_upload() -> None:
+    """Enter must not skip classify because base64 preview left path empty."""
+    payload = base64.b64encode(_png_bytes()).decode("ascii")
+    preview = normalize_user_references(
+        [
+            {
+                "kind": "image",
+                "filename": "xiaoyue.png",
+                "base64_data": payload,
+                "mime_type": "image/png",
+            }
+        ],
+        dest_dir=None,
+    )
+    assert preview[0]["path"] == ""
+
+    refs = materialize_user_references_for_analysis(
+        [
+            {
+                "kind": "image",
+                "filename": "xiaoyue.png",
+                "base64_data": payload,
+                "mime_type": "image/png",
+            }
+        ]
+    )
+    assert len(image_reference_records(refs)) == 1
+    path = Path(refs[0]["path"])
+    assert path.is_file()
+    assert path.read_bytes() == _png_bytes()
+
+
+def test_rebase_creative_intent_paths_onto_project_refs(tmp_path: Path) -> None:
+    payload = base64.b64encode(_png_bytes()).decode("ascii")
+    analysis = {
+        "creative_intent": {
+            "mode": "reference_led",
+            "slots": [
+                {
+                    "slot": 1,
+                    "path": "/tmp/analysis-only/xiaoyue.png",
+                    "roles": ["character_identity"],
+                    "bindings": {"character_identity": "verbatim"},
+                    "node_id": "n_ref_01",
+                }
+            ],
+        }
+    }
+    project_refs = normalize_user_references(
+        [
+            {
+                "kind": "image",
+                "filename": "xiaoyue.png",
+                "base64_data": payload,
+                "mime_type": "image/png",
+            }
+        ],
+        dest_dir=tmp_path / "refs",
+    )
+    rebase_creative_intent_paths(analysis, project_refs)
+    assert analysis["creative_intent"]["slots"][0]["path"] == project_refs[0]["path"]
+
+
+def test_attach_rebases_existing_n_ref_path(tmp_path: Path) -> None:
+    payload = base64.b64encode(_png_bytes()).decode("ascii")
+    project_refs = normalize_user_references(
+        [
+            {
+                "kind": "image",
+                "filename": "xiaoyue.png",
+                "base64_data": payload,
+                "mime_type": "image/png",
+            }
+        ],
+        dest_dir=tmp_path / "refs",
+    )
+    graph = {
+        "nodes": [
+            {
+                "id": "n_brief",
+                "type": "text",
+                "config": {"role": "brief", "prompt": "hi"},
+            },
+            {
+                "id": "n_ref_01",
+                "type": "image",
+                "config": {
+                    "role": "image",
+                    "user_reference_id": "ref_01",
+                    "user_reference_path": "/tmp/stale/xiaoyue.png",
+                    "force_handler": True,
+                    "skip_llm": True,
+                    "immutable_source": True,
+                },
+                "output_ref": {"kind": "image", "uri": "file:///tmp/stale/xiaoyue.png"},
+            },
+        ],
+        "edges": [],
+        "metadata": {},
+    }
+    attach_user_references_to_graph(graph, project_refs)
+    ref = next(n for n in graph["nodes"] if n["id"] == "n_ref_01")
+    assert ref["config"]["user_reference_path"] == project_refs[0]["path"]
+    assert ref["output_ref"]["uri"].endswith("xiaoyue.png")
+    assert "stale" not in ref["config"]["user_reference_path"]
 
 
 def test_attach_user_references_stays_on_metadata_not_brief_body(tmp_path: Path) -> None:
@@ -459,6 +577,8 @@ async def test_classify_reference_images_marks_a_product_as_an_object(
 
     async def fake_call_model_tool(**kwargs):
         seen["images"] = kwargs.get("images")
+        seen["system"] = kwargs.get("system")
+        seen["prompt"] = kwargs.get("prompt")
         return {
             "ok": True,
             "fallback": False,
@@ -472,9 +592,53 @@ async def test_classify_reference_images_marks_a_product_as_an_object(
     reads = await classify_reference_images(
         "给我的产品做30秒中文koc视频",
         [{"kind": "image", "path": str(image), "filename": "01_reference.jpg"}],
+        {"characters": [{"id": "char_1", "name": "Lead", "match_terms": ["xiaoyue"]}],
+         "scenes": [{"id": "set_1", "name": "Dining"}]},
     )
     assert reads[0]["subject"] == "object"
     assert seen["images"] == [str(image)]
+    system = str(seen.get("system") or "")
+    assert "suppress_companions" not in system
+    assert "solo_subject" not in system
+    assert "keyframe_complete" not in system
+    body = str(seen.get("prompt") or "")
+    assert "char_1" in body
+    assert "set_1" in body
+
+
+@pytest.mark.asyncio
+async def test_classify_reference_images_carries_enriched_intent_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jiuwenswarm.server.runtime.designer.user_references import classify_reference_images
+
+    image = tmp_path / "room.png"
+    image.write_bytes(_png_bytes())
+
+    async def fake_call_model_tool(**kwargs):
+        return {
+            "ok": True,
+            "fallback": False,
+            "text": (
+                '{"reference_reads":[{"slot":1,"subject":"scene",'
+                '"roles":["scene_source"],"binding":"verbatim","set_lock":true,'
+                '"style_authority":true,"medium":"anime","look":"cel-shaded",'
+                '"palette":"pastel","rationale":"locked cartoon set"}]}'
+            ),
+        }
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.model_tools.call_model_tool",
+        fake_call_model_tool,
+    )
+    reads = await classify_reference_images(
+        "advertise the dinner setting attached",
+        [{"kind": "image", "path": str(image), "filename": "room.png"}],
+    )
+    assert reads[0]["set_lock"] is True
+    assert reads[0]["style_authority"] is True
+    assert reads[0]["bindings"]["scene_source"] == "verbatim"
+    assert reads[0]["style_read"]["medium"] == "anime"
 
 
 def test_wiped_product_edge_is_restored_as_a_clip_input(tmp_path: Path) -> None:

@@ -103,7 +103,7 @@
       "attach": "添加参考素材",
       "removeAttachment": "移除参考素材",
       "attachHint": "支持图片、视频、音频。最多 3 张图、1 个视频、1 段音频。",
-      "limitImages": "最多只能附 3 张参考图。",
+      "limitImages": "最多只能附 5 张参考图。",
       "limitVideo": "最多只能附 1 个参考视频。",
       "limitAudio": "最多只能附 1 段参考音频。",
       "tooLarge": "文件超过 6MB，请改用更小的文件，或从本机路径添加。",

@@ -103,7 +103,7 @@
       "attach": "Add reference media",
       "removeAttachment": "Remove reference",
       "attachHint": "Images, video, or audio. Up to 3 images, 1 video, and 1 audio file.",
-      "limitImages": "You can attach at most 3 reference images.",
+      "limitImages": "You can attach at most 5 reference images.",
       "limitVideo": "You can attach at most 1 reference video.",
       "limitAudio": "You can attach at most 1 reference audio file.",
       "tooLarge": "File is larger than 6MB. Use a smaller file or a local path.",
