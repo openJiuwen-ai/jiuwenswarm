@@ -82,7 +82,7 @@ def migrate_media_capability_switches(
     lock_path = target.with_name(f"{target.name}.media-capability.lock")
 
     with portalocker.Lock(str(lock_path), timeout=lock_timeout):
-        persisted = dict(dotenv_values(target)) if target.is_file() else {}
+        persisted = dict(dotenv_values(target, encoding="utf-8-sig")) if target.is_file() else {}
         updates: dict[str, str] = {}
         for enabled_key, config_fields in MEDIA_CAPABILITY_ENV_FIELDS.items():
             if enabled_key in runtime_env:
