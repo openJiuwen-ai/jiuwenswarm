@@ -31,14 +31,18 @@ def short_answer_request(request):
 
 def read(path):return json.loads(Path(path).read_text(encoding='utf-8'))
 def digest(value):return sha(json.dumps(value,sort_keys=True,ensure_ascii=False).encode())
-def code_hashes(dense=False):
+def code_hashes(dense=False,memory=False):
     return {name:sha(Path(__file__).with_name(name).read_bytes()) for name in
             ('qasper_runner.py','qasper_experiment.py','qasper_selection.py','retrieval_diagnostics.py','execution.py')+
-            (('qasper_dense.py','qasper_dense_bundle.py') if dense else ())}
+            (('qasper_dense.py','qasper_dense_bundle.py') if dense else ())+
+            (('qasper_memory.py',) if memory else ())}
 
 
 def inputs(bundle):
     """Rebuild each prompt from public fields; never load answers into requests."""
+    if (Path(bundle)/'memory-mode.json').exists():
+        from .qasper_memory import memory_inputs
+        return memory_inputs(bundle)
     if (Path(bundle)/'dense-cache.json').exists():
         from .qasper_dense_bundle import validated_inputs
         return validated_inputs(bundle)
@@ -88,12 +92,14 @@ def make_plan(bundle,cfg,batch_cny=.6):
         if len(indices)>cfg['calls_per_task'] or sum(holds[i] for i in indices)>units(cfg['task_cny']):
             raise ValueError('Per-question task bound exceeded')
     dense=(Path(bundle)/'dense-cache.json').exists()
+    memory=(Path(bundle)/'memory-mode.json').exists()
     files=list(FILES)
     if dense:
         from .qasper_dense_bundle import cache_files
         files+=cache_files(bundle)
+    if memory:files+=['memory-mode.json']
     plan={'kind':'qasper_train_development','files':{name:sha((Path(bundle)/name).read_bytes()) for name in files},
-          'code':code_hashes(dense),'model':cfg['model'],'input_cny_per_million':cfg['input_cny_per_million'],
+          'code':code_hashes(dense,memory),'model':cfg['model'],'input_cny_per_million':cfg['input_cny_per_million'],
           'output_cny_per_million':cfg['output_cny_per_million'],'total_cny':cfg['total_cny'],
           'max_input_upper':max(upper),'max_output_tokens':512,'parameters':PARAMS,
           'max_calls':len(requests),'reserve_upper_units':sum(holds),'batch_cap_units':units(batch_cny),
