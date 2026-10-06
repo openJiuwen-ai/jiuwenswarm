@@ -180,7 +180,6 @@ class CronRunLedger:
                 )
                 conn.commit()
                 return cur.rowcount
-            return 0
         except Exception as exc:  # noqa: BLE001
             logger.warning("[cron_guard] ledger mark_orphans failed: %s", exc)
             return 0
@@ -244,6 +243,18 @@ def get_run_ledger(path: str | os.PathLike[str] | None = None) -> CronRunLedger:
                     cfg_path = None
             _ledger = CronRunLedger(path or cfg_path)
         return _ledger
+
+
+def sync_budget_to_ledger(ctx: Any) -> None:
+    """Best-effort write of a run's budget snapshot to the ledger (never raises).
+
+    Single shared helper for the sleep guard and the budget rail so both stay
+    in step (run_id + snapshot format).
+    """
+    try:
+        get_run_ledger().update_budget(ctx.run_id, ctx.budget.snapshot())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[cron_guard] ledger sync failed: %s", exc)
 
 
 def reset_run_ledger() -> None:

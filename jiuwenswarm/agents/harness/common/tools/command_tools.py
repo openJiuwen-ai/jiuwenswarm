@@ -1161,16 +1161,26 @@ async def mcp_exec_command(
     normalized_shell_type = _normalize_shell_type(shell_type)
     execution_binding = current_command_execution()
 
+    # cron_guard L3/L4 (issue #5018): accumulate foreground shell wait into
+    # the cron run budget (no-op for interactive requests; never raises).
+    from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+        record_shell_wait,
+    )
+
     if execution_binding is not None and execution_binding.sandboxed:
-        return await _run_command_in_bound_sandbox(
-            sys_operation=execution_binding.sys_operation,
-            command=command,
-            timeout_seconds=timeout_seconds,
-            workdir=resolved_workdir,
-            max_output_chars=max_output_chars,
-            shell_type=normalized_shell_type,
-            background=background,
-        )
+        _shell_started = time.monotonic()
+        try:
+            return await _run_command_in_bound_sandbox(
+                sys_operation=execution_binding.sys_operation,
+                command=command,
+                timeout_seconds=timeout_seconds,
+                workdir=resolved_workdir,
+                max_output_chars=max_output_chars,
+                shell_type=normalized_shell_type,
+                background=background,
+            )
+        finally:
+            record_shell_wait(_shell_started)
 
     if background:
         try:
@@ -1208,15 +1218,20 @@ async def mcp_exec_command(
         }
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
+    # Time the wait even on timeout/cancel — the tool really waited that long.
+    _shell_started = time.monotonic()
     try:
-        result, resolved_shell = await asyncio.to_thread(
-            _run_command_sync,
-            command,
-            timeout_seconds,
-            resolved_workdir,
-            normalized_shell_type,
-            resolve_shell_session_id(),
-        )
+        try:
+            result, resolved_shell = await asyncio.to_thread(
+                _run_command_sync,
+                command,
+                timeout_seconds,
+                resolved_workdir,
+                normalized_shell_type,
+                resolve_shell_session_id(),
+            )
+        finally:
+            record_shell_wait(_shell_started)
     except CommandCancelled:
         payload = {
             "command": command,

@@ -3602,51 +3602,12 @@ class JiuWenSwarm:
         rid = request.request_id
         cid = request.channel_id
 
-        # cron_guard L-WD (issue #5018): resolve the trusted cron run
-        # identity before the producer starts.  Interactive requests return
-        # (None, None, None) and are completely unaffected.
+        # cron_guard L-WD (issue #5018) state — armed later, right before the
+        # stream producer starts (after all pre-stream awaits), so a failure
+        # in input building can never leave a registered run behind.
         cron_ctx, cron_ctxvar_token, cron_soft_timer = (None, None, None)
         cron_trip_reason = None
         cron_deadline_on = False
-        try:
-            from jiuwenswarm.agents.harness.common.cron_guard.watchdog import (
-                cron_guard_begin,
-                cron_guard_end,
-            )
-            from jiuwenswarm.agents.harness.common.cron_guard.checkpoint_guard import (
-                CronCheckpointQuarantined,
-            )
-
-            try:
-                cron_ctx, cron_ctxvar_token, cron_soft_timer = cron_guard_begin(
-                    request, session_id
-                )
-            except CronCheckpointQuarantined as q_exc:
-                logger.warning(
-                    "[cron_guard] scheduled run refused at entry: request_id=%s %s",
-                    rid, q_exc,
-                )
-                yield AgentResponseChunk(
-                    request_id=rid,
-                    channel_id=cid,
-                    payload={
-                        "event_type": "chat.error",
-                        "reason": "checkpoint_quarantined",
-                        "error": str(q_exc),
-                    },
-                    is_complete=True,
-                )
-                return
-            if cron_ctx is not None:
-                from jiuwenswarm.agents.harness.common.cron_guard.config import (
-                    get_cron_guard_config as _cg_cfg,
-                )
-
-                cron_deadline_on = bool(
-                    (_cg_cfg().get("deadline") or {}).get("enabled", True)
-                )
-        except Exception as cg_exc:  # noqa: BLE001 — guard failure = run unguarded
-            logger.warning("[cron_guard] entry hook failed (fail-open): %s", cg_exc)
 
         try:
             inputs, memory_mode, user_turn = self._build_inputs(request)
@@ -3702,6 +3663,51 @@ class JiuWenSwarm:
             await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_BEFORE_CHAT, mem_ctx)
             memory_block = "\n\n".join(b for b in mem_ctx.memory_blocks if b)
             inputs["memory_block"] = memory_block
+
+        # cron_guard L-WD (issue #5018): resolve the trusted cron run identity
+        # here — after every pre-stream await, right before the producer task
+        # is created (the task copies the contextvar at create_task time) — so
+        # an exception in input building never leaves a registered run behind.
+        # Interactive requests return (None, None, None) and are unaffected.
+        try:
+            from jiuwenswarm.agents.harness.common.cron_guard.watchdog import (
+                cron_guard_begin,
+                cron_guard_end,
+            )
+            from jiuwenswarm.agents.harness.common.cron_guard.checkpoint_guard import (
+                CronCheckpointQuarantined,
+            )
+
+            try:
+                cron_ctx, cron_ctxvar_token, cron_soft_timer = cron_guard_begin(
+                    request, session_id
+                )
+            except CronCheckpointQuarantined as q_exc:
+                logger.warning(
+                    "[cron_guard] scheduled run refused at entry: request_id=%s %s",
+                    rid, q_exc,
+                )
+                yield AgentResponseChunk(
+                    request_id=rid,
+                    channel_id=cid,
+                    payload={
+                        "event_type": "chat.error",
+                        "reason": "checkpoint_quarantined",
+                        "error": str(q_exc),
+                    },
+                    is_complete=True,
+                )
+                return
+            if cron_ctx is not None:
+                from jiuwenswarm.agents.harness.common.cron_guard.config import (
+                    get_cron_guard_config as _cg_cfg,
+                )
+
+                cron_deadline_on = bool(
+                    (_cg_cfg().get("deadline") or {}).get("enabled", True)
+                )
+        except Exception as cg_exc:  # noqa: BLE001 — guard failure = run unguarded
+            logger.warning("[cron_guard] entry hook failed (fail-open): %s", cg_exc)
 
         stream_queue = asyncio.Queue(maxsize=self.STREAM_QUEUE_MAXSIZE)
         stream_done = asyncio.Event()
@@ -3895,6 +3901,20 @@ class JiuWenSwarm:
             logger.info("[JiuWenSwarm] run_stream_task started: request_id=%s session_id=%s", rid, session_id)
             _put_count = 0
             producer_stream: AsyncIterator[AgentResponseChunk] | None = None
+
+            async def _relay_chunks(producer_stream: AsyncIterator[AgentResponseChunk]) -> None:
+                nonlocal _put_count
+                async for chunk in producer_stream:
+                    _put_count += 1
+                    if _put_count <= 3:
+                        _pl = getattr(chunk, "payload", None) or {}
+                        _et = _pl.get("event_type", "") if isinstance(_pl, dict) else ""
+                        logger.info(
+                            "[JiuWenSwarm] run_stream_task chunk #%s: request_id=%s event_type=%s",
+                            _put_count, rid, _et,
+                        )
+                    await stream_queue.put(("chunk", chunk))
+
             try:
                 producer_stream = adapter.process_message_stream_impl(request, inputs)
                 if cron_ctx is not None and cron_deadline_on:
@@ -3903,27 +3923,9 @@ class JiuWenSwarm:
                     # (model call, subprocess wait, MCP call) — the only
                     # real-time bound on an in-flight blocking batch.
                     async with asyncio.timeout_at(cron_ctx.deadline_hard):
-                        async for chunk in producer_stream:
-                            _put_count += 1
-                            if _put_count <= 3:
-                                _pl = getattr(chunk, "payload", None) or {}
-                                _et = _pl.get("event_type", "") if isinstance(_pl, dict) else ""
-                                logger.info(
-                                    "[JiuWenSwarm] run_stream_task chunk #%s: request_id=%s event_type=%s",
-                                    _put_count, rid, _et,
-                                )
-                            await stream_queue.put(("chunk", chunk))
+                        await _relay_chunks(producer_stream)
                 else:
-                    async for chunk in producer_stream:
-                        _put_count += 1
-                        if _put_count <= 3:
-                            _pl = getattr(chunk, "payload", None) or {}
-                            _et = _pl.get("event_type", "") if isinstance(_pl, dict) else ""
-                            logger.info(
-                                "[JiuWenSwarm] run_stream_task chunk #%s: request_id=%s event_type=%s",
-                                _put_count, rid, _et,
-                            )
-                        await stream_queue.put(("chunk", chunk))
+                    await _relay_chunks(producer_stream)
             except asyncio.CancelledError as exc:
                 producer_cancellation = exc
                 logger.info("[JiuWenSwarm] 流式任务被取消: request_id=%s session_id=%s", rid, session_id)
@@ -3936,6 +3938,11 @@ class JiuWenSwarm:
                 if cron_ctx is None:
                     raise
                 cron_trip_reason = "deadline_exceeded"
+                # The deadline's own cancellation was already captured above
+                # as ``producer_cancellation`` before the timeout context
+                # converted it; it is not a user cancel and must not be
+                # re-raised to the consumer afterwards.
+                producer_cancellation = None
                 logger.warning(
                     "[cron_guard] hard deadline fired: request_id=%s run_id=%s base=%ss",
                     rid, cron_ctx.run_id, cron_ctx.base_timeout_seconds,

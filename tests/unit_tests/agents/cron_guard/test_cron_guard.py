@@ -804,3 +804,109 @@ def test_watchdog_begin_end_lifecycle(tmp_path, monkeypatch):
         assert wd.get_run_registry().get("rW") is None
     finally:
         led_mod.reset_run_ledger()
+
+
+# ---------------------------------------------------------------- review fixes (static scan + code review)
+
+def test_parser_nested_substitution_counted_once():
+    """Nested $(...) / backtick-in-$(...) sleeps count exactly once."""
+    r = sleep_guard.parse_shell_command("echo $(cat $(sleep 8))")
+    assert r.sleep_calls == 1
+    assert r.sleep_seconds == pytest.approx(8.0)
+    r = sleep_guard.parse_shell_command("echo $(echo $(sleep 8))")
+    assert r.sleep_calls == 1
+    assert r.sleep_seconds == pytest.approx(8.0)
+    r = sleep_guard.parse_shell_command("echo $(cat `sleep 8`)")
+    assert r.sleep_calls == 1
+    assert r.sleep_seconds == pytest.approx(8.0)
+    # plain backticks are still detected on their own
+    r = sleep_guard.parse_shell_command("echo `sleep 8`")
+    assert r.sleep_calls == 1
+    assert r.sleep_seconds == pytest.approx(8.0)
+
+
+def test_budget_add_sleep_counts_calls():
+    b = RunBudget(run_id="rb")
+    b.add_sleep(5.0, calls=2)
+    b.add_sleep(5.0)
+    assert b.sleep_calls == 3
+    assert b.sleep_seconds == pytest.approx(10.0)
+
+
+def test_guard_budget_counts_sleep_calls_not_commands(guard_enabled):
+    """max_sleep_calls bounds sleep invocations, not shell commands."""
+    ctx = CronRunContext(
+        run_id="rc", job_id="j", sid="s", trusted=True,
+        budget=RunBudget(run_id="rc"),
+    )
+    token = current_cron_run.set(ctx)
+    try:
+        # one command, two sleep calls → 2 of the 3-call budget
+        assert sleep_guard.guard_shell_command("sleep 2; sleep 2") is None
+        assert ctx.budget.sleep_calls == 2
+        # the second command's two calls push past max_sleep_calls=3
+        assert sleep_guard.guard_shell_command("sleep 2; sleep 2") is not None
+    finally:
+        current_cron_run.reset(token)
+
+
+def test_record_shell_wait_accumulates_and_exceeds(guard_enabled, cron_ctx):
+    from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+        record_shell_wait,
+    )
+
+    cron_ctx.budget.tool_wait_budget_seconds = 10.0
+    record_shell_wait(time.monotonic() - 12.0)
+    assert cron_ctx.budget.shell_seconds >= 12.0
+    assert cron_ctx.budget.tool_wait_exceeded() is True
+
+
+def test_record_shell_wait_no_run_noop(guard_enabled):
+    from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+        record_shell_wait,
+    )
+
+    # no cron run in the contextvar and no session registry hit → silent no-op
+    record_shell_wait(time.monotonic() - 5.0)
+
+
+def test_watchdog_begin_quarantine_rolls_back_registry(tmp_path, monkeypatch):
+    """A quarantined entry must not leave the run registered forever."""
+    import copy
+
+    base = copy.deepcopy(cfg_mod.DEFAULTS)
+    base["enabled"] = True
+    base["budget_ledger"]["path"] = str(tmp_path / "ledger.db")
+    monkeypatch.setattr(cfg_mod, "get_cron_guard_config", lambda: base)
+    monkeypatch.setenv("JIUWENSWARM_CRON_RUN_SECRET", "sec")
+    from jiuwenswarm.agents.harness.common.cron_guard import checkpoint_guard as cg
+    from jiuwenswarm.agents.harness.common.cron_guard import ledger as led_mod
+    from jiuwenswarm.agents.harness.common.cron_guard import watchdog as wd
+
+    led_mod.reset_run_ledger()
+    try:
+        monkeypatch.setattr(wd, "_orphans_marked", True)
+
+        def _quarantine(ctx):
+            raise cg.CronCheckpointQuarantined("quarantined in test")
+
+        monkeypatch.setattr(cg, "govern_restore_at_entry", _quarantine)
+        tok = sign_run_token("rQ", "jQ", "sQ", b"sec")
+        req = SimpleNamespace(
+            metadata={
+                "cron": {
+                    "job_id": "jQ",
+                    "run_id": "rQ",
+                    "run_token": tok,
+                    "timeout_seconds": 3600,
+                }
+            },
+            params={},
+        )
+        with pytest.raises(cg.CronCheckpointQuarantined):
+            wd.cron_guard_begin(req, "sQ")
+        assert wd.get_run_registry().get("rQ") is None
+        assert wd.get_run_registry().get_by_session("sQ") is None
+        assert led_mod.get_run_ledger().lookup_run("rQ")["state"] == STATE_TRIPPED
+    finally:
+        led_mod.reset_run_ledger()

@@ -102,6 +102,10 @@ def cron_guard_begin(
             govern_restore_at_entry(ctx)
         except CronCheckpointQuarantined:
             _finish(ctx, STATE_TRIPPED, "checkpoint_quarantined", reaped=False)
+            # Roll the registration back: the request entry returns early on
+            # this exception and never reaches its cron_guard_end cleanup, so
+            # a leftover registry entry would pin the sid forever.
+            registry.unregister(ctx.run_id)
             raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("[cron_guard] checkpoint governance failed (fail-open): %s", exc)
@@ -191,10 +195,3 @@ def _finish(ctx: CronRunContext, state: str, trip_reason: str | None, reaped: bo
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[cron_guard] ledger finish failed (non-blocking): %s", exc)
-
-
-def _ledger_sync_safe(ctx: CronRunContext) -> None:
-    try:
-        get_run_ledger().update_budget(ctx.run_id, ctx.budget.snapshot())
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[cron_guard] ledger sync failed: %s", exc)

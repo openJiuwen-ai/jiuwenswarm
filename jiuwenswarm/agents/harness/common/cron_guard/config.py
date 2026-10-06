@@ -106,7 +106,13 @@ def _validate(cfg: dict[str, Any]) -> None:
         ),
         (
             "sleep",
-            ("max_single_seconds", "max_total_seconds", "max_sleep_calls", "unknown_assumed_seconds", "max_nesting_depth"),
+            (
+                "max_single_seconds",
+                "max_total_seconds",
+                "max_sleep_calls",
+                "unknown_assumed_seconds",
+                "max_nesting_depth",
+            ),
         ),
         ("wall_clock", ("tool_wait_budget_seconds",)),
     ):
@@ -139,7 +145,9 @@ def clamp_deadlines(
     * ``hard = max(base * hard_ratio, base - 30)`` clamped to ``[1, base]``
     * ``soft = min(base * soft_ratio, hard - 10)`` clamped to ``[1, hard - 1]``
 
-    Returns ``(hard_seconds, soft_seconds)`` with ``0 < soft < hard <= base``.
+    Returns ``(hard_seconds, soft_seconds)`` with ``0 < soft < hard`` and
+    ``hard <= max(base, 2.0)`` (bases ``<= 2`` get the smallest legal window
+    ``(2.0, 1.0)``, which may exceed the base itself by design).
     """
     cfg = cfg or get_cron_guard_config()
     dl = cfg.get("deadline") or {}

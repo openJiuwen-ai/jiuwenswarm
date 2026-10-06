@@ -8928,7 +8928,8 @@ class JiuWenSwarmDeepAdapter:
             )
             return None
 
-    def _build_cron_budget_rail(self):
+    @staticmethod
+    def _build_cron_budget_rail():
         """Build the cron budget rail (issue #5018, L3/L4).
 
         Always constructed when the package is importable; the rail itself is a

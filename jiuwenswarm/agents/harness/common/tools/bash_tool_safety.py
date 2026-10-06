@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import time
 from typing import Any, Awaitable, Callable
 
 _installed = False
@@ -60,12 +61,22 @@ def _wrap_invoke(
     from openjiuwen.harness.tools.base_tool import ToolOutput
 
     async def invoke(self: Any, inputs: dict[str, Any], **kwargs: Any) -> Any:
+        from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+            record_shell_wait,
+        )
+
         parsed = getattr(self, "_parse_inputs")(inputs)
         if parsed.command:
             err = _pre_execute_shell_command(parsed.command)
             if err:
                 return ToolOutput(success=False, error=err)
-        return await original(self, inputs, **kwargs)
+        # cron_guard L3/L4 (issue #5018): accumulate the tool wait into the
+        # cron run budget (no-op for interactive requests; never raises).
+        started = time.monotonic()
+        try:
+            return await original(self, inputs, **kwargs)
+        finally:
+            record_shell_wait(started)
 
     invoke.jiuwenswarm_safety_wrapped = True
     return invoke
@@ -77,14 +88,22 @@ def _wrap_stream(
     from openjiuwen.harness.tools.base_tool import ToolOutput
 
     async def stream(self: Any, inputs: dict[str, Any], **kwargs: Any):
+        from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+            record_shell_wait,
+        )
+
         parsed = getattr(self, "_parse_inputs")(inputs)
         if parsed.command:
             err = _pre_execute_shell_command(parsed.command)
             if err:
                 yield ToolOutput(success=False, error=err)
                 return
-        async for item in original(self, inputs, **kwargs):
-            yield item
+        started = time.monotonic()
+        try:
+            async for item in original(self, inputs, **kwargs):
+                yield item
+        finally:
+            record_shell_wait(started)
 
     stream.jiuwenswarm_safety_wrapped = True
     return stream
