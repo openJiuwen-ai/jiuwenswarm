@@ -4,10 +4,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-RUN echo "sslverify=false" >> /etc/yum.conf
-RUN echo "insecure" >> ~/.curlrc
-RUN sed -i 's/gpgcheck=1/gpgcheck=0/g' /etc/yum.conf /etc/yum.repos.d/openEuler.repo
-
 RUN yum makecache
 # JDK 17 uses the headless + devel pair (BiSheng OpenJDK 17 on openEuler 24.03):
 # headless gives `java` without X11 deps, devel gives `javac`/`jar`.
@@ -57,5 +53,8 @@ EXPOSE 8322
 # 默认走 HTTP; UDS 模式由调用方覆盖 JIUWENBOX_LISTEN, 例如
 # `docker run -e JIUWENBOX_LISTEN=unix:///run/jiuwenbox/jiuwenbox.sock \
 #             -v /tmp/jiuwenbox-sock:/run/jiuwenbox jiuwenbox`。
+# 0.0.0.0 监听 + 未配置 JIUWENBOX_API_TOKEN 时 launcher 会拒绝启动 (sandbox
+# exec 等价于主机命令执行); 需要 `docker run -e JIUWENBOX_API_TOKEN=<token>`,
+# 或改用上面的 UDS 方式, 或显式传 JIUWENBOX_ALLOW_INSECURE_NETWORK_BIND=1。
 ENV JIUWENBOX_LISTEN=http://0.0.0.0:8321
 CMD ["python3", "-m", "jiuwenbox.server.launcher"]
