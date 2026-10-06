@@ -300,6 +300,15 @@ def _report(module: str, round_index: int):
 
 
 # --------------------------------------------------------------------------- frozen cells + cap
+def _design(results: Path, text: str = "- Metric answer_em") -> tuple[str, Path]:
+    """The run's design file, where the pipeline keeps it (``verify`` reads it from there)."""
+    path = results.parent / "design" / "experiment_design.md"
+    if not path.is_file():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return path.read_text(encoding="utf-8"), path
+
+
 def _impl(names: list[str]):
     return SimpleNamespace(workspace_dir="", variants=[SimpleNamespace(name=n, invocation=["x"]) for n in names])
 
@@ -364,7 +373,7 @@ def test_run_audited_executes_only_new_cells_and_writes_a_verdict(tmp_path: Path
     manifest = revision_state.load_manifest(state.folder(tmp_path))
     monkeypatch.setattr(revision_state, "_ACTIVE", revision_state.ExecutionGuard(tmp_path, state, manifest))
     monkeypatch.setattr(execution_audit, "_results_dir", lambda plan: results)
-    monkeypatch.setattr(execution_audit, "_read_design", lambda plan: "- Metric answer_em")
+    monkeypatch.setattr(execution_audit, "_read_design", lambda plan: _design(results))
     ran: list[str] = []
     inputs = SimpleNamespace(plan=SimpleNamespace(metrics=[], run_id="r1"),
                              implementation=_impl(["proposed_T1", "relevance_select_T1", "abl_T1"]))
@@ -379,16 +388,16 @@ def test_run_audited_executes_only_new_cells_and_writes_a_verdict(tmp_path: Path
 
 def test_crashed_audit_is_unverified_not_passed(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(revision_state, "_ACTIVE", None)
-    monkeypatch.setattr(execution_audit, "_results_dir", lambda plan: tmp_path)
+    monkeypatch.setattr(execution_audit, "_results_dir", lambda plan: tmp_path / "results")
 
     def boom(*args, **kwargs):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(execution_audit, "post_process", boom)
     inputs = SimpleNamespace(plan=SimpleNamespace(metrics=[]), implementation=_impl([]))
-    output = execution_audit.run_audited(_fake_execution(tmp_path, []), None, inputs)
+    output = execution_audit.run_audited(_fake_execution(tmp_path / "results", []), None, inputs)
     assert "AUDIT VERDICT UNVERIFIED" in output.result.notes
-    assert json.loads((tmp_path / "audit.json").read_text())["verdict"] == "unverified"
+    assert json.loads((tmp_path / "results" / "audit.json").read_text())["verdict"] == "unverified"
 
 
 # --------------------------------------------------------------------------- 4. audit + acceptance
@@ -406,18 +415,25 @@ def test_missing_primary_metric_is_an_error_even_with_secondaries_present():
     assert ("warn", "MISSING_DECLARED_METRIC") in codes and ("error", "MISSING_PRIMARY_METRIC") not in codes
 
 
-def test_activation_threshold_comes_from_the_frozen_protocol():
-    def cell(tier: str) -> dict:
+def test_activation_threshold_comes_from_the_host_protocol_only():
+    def cell(tier: str, **extra) -> dict:
         records = _records(_pattern(60, 120))
         for i, r in enumerate(records):
             r["constraint_active"] = i < 60  # 50%
-        return {"answer_em": 0.5, "tier": tier, "tier_gates": {"T1": 0.6, "T3": 0.2}, "per_question": records}
+        return {"answer_em": 0.5, "tier": tier, "per_question": records, **extra}
 
+    protocol = {"tier_gates": {"t1": 0.6, "t3": 0.2}, "tier_gates_source": "design"}
     assert ("error", "CONSTRAINT_INACTIVE") in _codes(execution_audit.audit(
-        {"proposed_T1": cell("T1")}, declared=["answer_em"], started_at=0, metrics_paths={}))
+        {"proposed_T1": cell("T1")}, declared=["answer_em"], started_at=0, metrics_paths={}, protocol=protocol))
     assert ("error", "CONSTRAINT_INACTIVE") not in _codes(execution_audit.audit(
-        {"proposed_T3": cell("T3")}, declared=["answer_em"], started_at=0, metrics_paths={}))
-    assert execution_audit.activation_gate("x_T2", {"tier": "T2"}) == (0.3, "default")
+        {"proposed_T3": cell("T3")}, declared=["answer_em"], started_at=0, metrics_paths={}, protocol=protocol))
+    # the output lowering its own gate to 0 changes nothing: it is reported, not applied
+    lowered = _codes(execution_audit.audit(
+        {"proposed_T1": cell("T1", tier_gates={"T1": 0.0}, tier_calibration={"activation_gates": {"T1": 0.0}})},
+        declared=["answer_em"], started_at=0, metrics_paths={}, protocol=protocol))
+    assert ("error", "CONSTRAINT_INACTIVE") in lowered and ("warn", "OUTPUT_GATE_IGNORED") in lowered
+    assert execution_audit.activation_gate("x_T2", protocol)[0] == 0.3
+    assert execution_audit.activation_gate("x_T2", None)[1].startswith("default")
 
 
 def test_identical_predictions_are_classified():
@@ -460,17 +476,29 @@ def test_gate_separates_finished_from_accepted():
     assert revision.REQ_EVIDENCE not in revision.gate_rows("e", "r", None)  # legacy gate unchanged
 
 
-def test_evidence_status_needs_a_fresh_passing_audit(tmp_path: Path):
-    state, results, _ = _open_revision(tmp_path)
+def test_evidence_status_needs_a_fresh_passing_audit(tmp_path: Path, monkeypatch):
+    state, results, _ = _open_revision(tmp_path, cap=5)
     state.executed_new_cells = ["abl_T1"]
-    (results / "audit.json").write_text(json.dumps({"verdict": "passed", "audited_at": 0}), encoding="utf-8")
-    assert revision_state.evidence_status(tmp_path, state) == (False, "the latest audit predates this revision")
-    (results / "audit.json").write_text(json.dumps({"verdict": "unverified", "audited_at": time.time() + 5,
-                                                    "blocking": ["AUDIT_CRASHED"]}), encoding="utf-8")
-    assert not revision_state.evidence_status(tmp_path, state)[0]
+    # a fresh "passed" audit.json alone is not evidence: no protocol, no manifest, nothing hashed
     (results / "audit.json").write_text(json.dumps({"verdict": "passed", "audited_at": time.time() + 5}),
                                         encoding="utf-8")
+    ok, detail = revision_state.evidence_status(tmp_path, state)
+    assert not ok and "NO_PROTOCOL" in detail and "NO_EVIDENCE_MANIFEST" in detail
+    _execute_in_revision(tmp_path, state, results, monkeypatch, ["abl_T1"])
     assert revision_state.evidence_status(tmp_path, state)[0]
+    execution_audit.write_unverified(SimpleNamespace(plan=None), RuntimeError("boom"), results=results)
+    assert not revision_state.evidence_status(tmp_path, state)[0]
+
+
+def _execute_in_revision(tmp_path: Path, state, results: Path, monkeypatch, new: list[str]):
+    """One real guarded + audited execution of the frozen cells plus ``new`` inside the revision."""
+    manifest = revision_state.load_manifest(state.folder(tmp_path))
+    monkeypatch.setattr(revision_state, "_ACTIVE", revision_state.ExecutionGuard(tmp_path, state, manifest))
+    monkeypatch.setattr(execution_audit, "_results_dir", lambda plan: results)
+    monkeypatch.setattr(execution_audit, "_read_design", lambda plan: _design(results))
+    names = ["proposed_T1", "relevance_select_T1", "adaptive_retain_only", *new]
+    inputs = SimpleNamespace(plan=SimpleNamespace(metrics=[], run_id="r1"), implementation=_impl(names))
+    return execution_audit.run_audited(_fake_execution(results, []), None, inputs)
 
 
 def _fake_latex(tmp_path: Path, monkeypatch, *, codes=None, log="", pdf=b"%PDF-1.5 x"):
@@ -511,21 +539,19 @@ def test_final_check_requires_clean_exit_codes_and_log(tmp_path: Path, monkeypat
     assert latex_check.final_check(paper).status == "unverified"
 
 
-def test_acceptance_closes_revision_only_when_everything_passes(tmp_path: Path):
-    state, results, _ = _open_revision(tmp_path)
-    state.executed_new_cells = ["abl_T1"]
-    (results / "audit.json").write_text(json.dumps({"verdict": "passed", "audited_at": time.time() + 5}),
-                                        encoding="utf-8")
+def test_acceptance_closes_revision_only_when_everything_passes(tmp_path: Path, monkeypatch):
+    state, results, _ = _open_revision(tmp_path, cap=5)
+    _execute_in_revision(tmp_path, state, results, monkeypatch, ["abl_T1"])
     failed_pdf = latex_check.FinalCheck("failed", ["pdflatex_3 exited with 1"])
     record = runner.write_acceptance(tmp_path, results, pipeline_status="complete", paper_check=failed_pdf,
                                      revision=state)
     assert record["deliverable"] is False and record["checks"]["evidence_passed"]
-    assert revision_state.load(state.folder(tmp_path) / "revision.json").status == revision_state.NOT_ACCEPTED
+    # not accepted is not closed: the revision stays active for its repair
+    assert revision_state.load(state.folder(tmp_path) / "revision.json").status == revision_state.NEEDS_REPAIR
 
-    state.status = revision_state.OPEN
     record = runner.write_acceptance(tmp_path, results, pipeline_status="blocked",
                                      paper_check=latex_check.FinalCheck("passed"), revision=state)
-    assert record["deliverable"] is False and state.status == revision_state.OPEN  # not finished: stays open
+    assert record["deliverable"] is False and state.status == revision_state.NEEDS_REPAIR  # not finished
     record = runner.write_acceptance(tmp_path, results, pipeline_status="complete",
                                      paper_check=latex_check.FinalCheck("passed"), revision=state)
     assert record["deliverable"] and state.status == revision_state.ACCEPTED

@@ -29,8 +29,12 @@ IDENTICAL_OUTPUTS           error  identical predictions *and* identical per-ite
 IDENTICAL_PREDICTIONS       warn   identical predictions although the per-item process differed —
                                    a genuine negative result is possible; do not credit a mechanism
 IDENTICAL_ALIAS             warn   two names for the same configuration (same policy and budget)
-CONSTRAINT_INACTIVE         error  a constrained variant's activation flag is below the frozen
-                                   protocol's gate for its tier (``tier_gates``), else 30%
+CONSTRAINT_INACTIVE         error  a constrained variant's activation flag is below the host
+                                   protocol's gate for its tier (frozen before execution), else 30%
+OUTPUT_GATE_IGNORED         warn   the experiment output reports its own activation gates; only the
+                                   protocol's count (the output reports the actual rate)
+REUSED_EVIDENCE_CHANGED     error  (revision) a ledger version selected for reuse no longer matches
+                                   its hash; it is not attached
 ITEM_SET_MISMATCH           warn   variants were scored on different item sets
 NO_ITEM_RECORDS             warn   no per-item records, no interval possible
 UNDERPOWERED                warn   fewer paired items than ``MIN_ITEMS``
@@ -40,13 +44,25 @@ CONDITION_UNRESOLVED        error  a variant's model / budget / dataset cannot b
 PRIMARY_METRIC_UNMAPPED     error  the primary metric has no verified per-item field
 FROZEN_RESULT_CHANGED       error  (revision) a frozen result file changed after it was frozen
 CELL_CAP_REFUSED            error  (revision) new cells beyond the host cap were not executed
+CELL_RERUN_LIMIT            error  (revision) a cell reached its execution limit and was not re-run
 INVALID_EXCEPTION           warn   an ``audit_exceptions.json`` entry lacks the required fields
+CELL_FAILED                 error  a planned cell did not complete with metrics
+PRIMARY_COMPARISON_FAILED   error  a required primary comparison lost a cell (warn under the
+                                   ``descriptive`` delivery policy)
+PRIMARY_COMPARISON_UNVERIFIED error a required primary comparison could not be validly computed
+                                   (budget / model / dataset mismatch, item ids, incomplete
+                                   primary metric); warn under ``descriptive``
 ==========================  =====  ==========================================================
 
 An error can be waived only by a structured entry in ``audit_exceptions.json`` (experiment code
 directory or results directory): ``{"exceptions": [{"code", "variants", "reason",
 "affected_comparisons", "affected_claims"}]}``. Integrity errors (non-finite, stale, changed frozen
-results) cannot be waived.
+results) and missing evidence (failed cells, unverified primary comparisons) cannot be waived: a
+waiver written by the experiment code must not lower the host's bar.
+
+The protocol the audit applies (primary metric, required cells and comparisons, missing-value rule,
+delivery policy) is frozen by the host *before* the execution runs (``evidence.save_protocol``), and
+every audit is recorded as an evidence manifest (``evidence.record_execution``).
 """
 
 from __future__ import annotations
@@ -59,12 +75,14 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.agents.harness.common.paper_pipeline import rigor_stats
+from jiuwenswarm.agents.harness.common.paper_pipeline import evidence, experiment_protocol, rigor_stats
+from jiuwenswarm.agents.harness.common.paper_pipeline.experiment_protocol import declared_metrics  # noqa: F401
 
 MIN_ITEMS = 100
-MIN_ACTIVE_RATE = 0.30
+MIN_ACTIVE_RATE = evidence.DEFAULT_GATE
 EXCEPTIONS_FILE = "audit_exceptions.json"
-UNWAIVABLE = ("NON_FINITE_METRIC", "STALE_METRICS", "FROZEN_RESULT_CHANGED", "AUDIT_CRASHED")
+UNWAIVABLE = ("NON_FINITE_METRIC", "STALE_METRICS", "FROZEN_RESULT_CHANGED", "AUDIT_CRASHED", "CELL_FAILED",
+              "PRIMARY_COMPARISON_FAILED", "PRIMARY_COMPARISON_UNVERIFIED", "REUSED_EVIDENCE_CHANGED")
 _WAIVER_FIELDS = ("reason", "affected_comparisons", "affected_claims", "source")
 _PRED_KEYS = ("predicted_answer", "predicted", "prediction", "pred", "answer", "output", "response")
 # per-item "was the constraint under study active" flags the code protocol asks for
@@ -73,6 +91,8 @@ _REFERENCE_HINTS = ("full", "unbounded", "unconstrained", "oracle", "no_compress
 # per-item fields that vary run to run without the policy doing anything different
 _NOISY_TRACE = ("latency", "time", "duration", "seed", "timestamp")
 _NAME_KEYS = ("method", "variant", "design_name", "variant_with_cap", "post_hoc")
+# called as hook(results_dir, manifest) after each execution is recorded (e.g. PaperEvidenceRail)
+AFTER_RECORD_HOOKS: list = []
 
 
 def _is_reference(name: str, metrics: dict[str, Any]) -> bool:
@@ -82,9 +102,6 @@ def _is_reference(name: str, metrics: dict[str, Any]) -> bool:
     return explicit_unbudgeted or any(h in lowered for h in _REFERENCE_HINTS)
 
 
-_METRIC_LINE = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?Metric\s+`?([A-Za-z][A-Za-z0-9_]*)`?", re.MULTILINE)
-
-
 @dataclass
 class Finding:
     level: str  # error | warn
@@ -92,16 +109,6 @@ class Finding:
     detail: str
     variants: list[str] = field(default_factory=list)
     waived_by: dict[str, Any] | None = None
-
-
-def declared_metrics(design_text: str, fallback: list[str]) -> list[str]:
-    names = [m for m in _METRIC_LINE.findall(design_text or "")]
-    names += [m for m in fallback if m]
-    seen: list[str] = []
-    for name in names:
-        if name not in seen:
-            seen.append(name)
-    return seen
 
 
 def _prediction_signature(records: list[dict[str, Any]]) -> dict[str, str] | None:
@@ -131,20 +138,22 @@ def _is_trace_field(key: str, value: Any) -> bool:
     return not any(n in key.lower() for n in _NOISY_TRACE)
 
 
-def activation_gate(name: str, metrics: dict[str, Any]) -> tuple[float, str]:
-    """Minimum activation rate for this variant: the frozen protocol's gate for its tier if the
-    experiment recorded one (``tier_gates`` or ``tier_calibration.activation_gates``), else 30%.
+def activation_gate(name: str, protocol: dict[str, Any] | None = None) -> tuple[float, str]:
+    """Minimum activation rate for this variant, from the host protocol frozen before execution (the
+    gate of its tier, else 30%). What the experiment output says its gate was is never read here.
     """
-    tier = metrics.get("tier") or rigor_stats.split_condition(rigor_stats.split_setting(name)[1])[1]
+    return evidence.gate_for(protocol or {}, name)
+
+
+def output_gates(metrics: dict[str, Any]) -> dict[str, Any] | None:
+    """Gates an experiment output reports for itself (legacy ``tier_gates`` /
+    ``tier_calibration.activation_gates``): reported, compared, never applied.
+    """
     calibration = metrics.get("tier_calibration") if isinstance(metrics.get("tier_calibration"), dict) else {}
-    for source, gates in (("tier_gates", metrics.get("tier_gates")),
-                          ("tier_calibration.activation_gates", calibration.get("activation_gates"))):
-        if isinstance(gates, dict) and tier:
-            lookup = {str(k).lower(): v for k, v in gates.items()}
-            value = rigor_stats.as_number(lookup.get(str(tier).lower()))
-            if value is not None:
-                return value, f"frozen protocol {source}[{tier}]"
-    return MIN_ACTIVE_RATE, "default"
+    for gates in (metrics.get("tier_gates"), calibration.get("activation_gates")):
+        if isinstance(gates, dict) and gates:
+            return gates
+    return None
 
 
 def _written_before(path: Path | None, started_at: float) -> bool:
@@ -158,7 +167,11 @@ def audit(
     started_at: float,
     metrics_paths: dict[str, Path],
     frozen: set[str] | frozenset[str] = frozenset(),
+    protocol: dict[str, Any] | None = None,
 ) -> list[Finding]:
+    """``frozen``: referenced cells (pre-revision frozen or reused ledger versions), exempt from the
+    freshness check. ``protocol``: the host protocol whose activation gates apply.
+    """
     findings: list[Finding] = []
     item_sets: dict[str, set[str]] = {}
     signatures: dict[str, dict[str, str]] = {}
@@ -193,9 +206,14 @@ def audit(
             signatures[name] = sig
             traces[name] = _trace_signature(records)
         active_key = next((k for k in _ACTIVE_KEYS if any(k in r for r in records)), None)
+        reported = output_gates(metrics)
+        if reported is not None:
+            findings.append(Finding("warn", "OUTPUT_GATE_IGNORED",
+                                    f"{name}: the output reports activation gates {json.dumps(reported)[:160]}; the "
+                                    "host applies only the protocol's gate (frozen before execution)", [name]))
         if active_key is not None and not _is_reference(name, metrics):
             rate = sum(1 for r in records if r.get(active_key)) / len(records)
-            gate, source = activation_gate(name, metrics)
+            gate, source = activation_gate(name, protocol)
             if rate < gate:
                 findings.append(Finding("error", "CONSTRAINT_INACTIVE",
                                         f"{name}: `{active_key}` true on only {rate:.1%} of items, below the "
@@ -318,13 +336,15 @@ def _revision_findings(lines: list[str]) -> list[Finding]:
         match = re.match(r"REVISION (ERROR|WARN) ([A-Z_]+):? ?(.*)", line)
         if match:
             level, code, detail = match.groups()
-            cell = detail.split(":", 1)[0].strip() if code == "FROZEN_RESULT_CHANGED" else ""
+            cell = (detail.split(":", 1)[0].strip() if code in ("FROZEN_RESULT_CHANGED", "REUSED_EVIDENCE_CHANGED")
+                    else "")
             out.append(Finding(level.lower(), code, detail, [cell] if cell else []))
     return out
 
 
 # --------------------------------------------------------------------------- wiring
-def _read_design(plan) -> str:
+def _read_design(plan) -> tuple[str, Path | None]:
+    """(design text, its path); ("", None) when the plan names no readable design."""
     from openjiuwen.rsi.artifact_rsi.paper_opt.auto_research.common.workspace import project_root
 
     for raw in (plan.design_path,):
@@ -334,8 +354,8 @@ def _read_design(plan) -> str:
         if not path.is_absolute():
             path = Path(project_root()) / raw
         if path.is_file():
-            return path.read_text(encoding="utf-8", errors="replace")
-    return ""
+            return path.read_text(encoding="utf-8", errors="replace"), path.resolve()
+    return "", None
 
 
 def _results_dir(plan) -> Path:
@@ -344,28 +364,116 @@ def _results_dir(plan) -> Path:
     return Path(results_dir(plan.run_id))
 
 
+def code_fingerprint(code_dir: Path | None) -> str | None:
+    """Hash of the experiment code files (as the revision freeze hashes them); None without code."""
+    from jiuwenswarm.agents.harness.common.paper_pipeline.revision_state import code_hashes
+
+    files = code_hashes(code_dir)
+    return evidence.sha256_json(files)[:16] if files else None
+
+
+def frozen_item_sets(frozen_metrics: dict[str, dict[str, Any]]) -> dict[str, dict]:
+    """Per setting, the item set every frozen (pre-revision) cell of that setting was scored on — the
+    revision's pre-declared items when the design declares none. A setting whose frozen cells
+    disagree declares nothing.
+    """
+    by_setting: dict[str, list[tuple[str, list[str]]]] = {}
+    for name, metrics in sorted(frozen_metrics.items()):
+        ids, _ = rigor_stats.item_ids(rigor_stats.records_of(metrics))
+        by_setting.setdefault(evidence.setting_of(name), []).append((name, ids or []))
+    out = {}
+    for setting, cells in by_setting.items():
+        sets = {tuple(sorted(ids)) for _, ids in cells}
+        if len(sets) == 1 and cells[0][1]:
+            dataset = rigor_stats.parse_condition(cells[0][0], frozen_metrics[cells[0][0]]).dataset
+            entry, _ = experiment_protocol.item_set_entry(cells[0][1], dataset=dataset,
+                                                          source="revision frozen cells")
+            if entry is not None:
+                out[setting] = entry
+    return out
+
+
+def freeze_protocol(results: Path, *, design_text: str, plan_metrics: list[str], planned: list[str],
+                    frozen: set[str] | frozenset[str] = frozenset(), revision: int | None = None,
+                    design_path: Path | None = None, code_dir: Path | None = None,
+                    answering: dict[str, Any] | None = None,
+                    frozen_metrics: dict[str, dict[str, Any]] | None = None) -> dict:
+    """Host step *before* an execution: freeze what the execution will be held to."""
+    rule, policy, gates = evidence.resolve_options(results)
+    body = evidence.build_protocol(
+        declared=declared_metrics(design_text, plan_metrics), planned=planned, frozen=frozen,
+        design_text=design_text, revision=revision, missing_primary_rule=rule, delivery_policy=policy,
+        plan_metrics=plan_metrics, design_path=design_path, code_dir=code_dir, operator_gates=gates,
+        previous=evidence.load_protocol(results), retirements=evidence.load_retirements(results),
+        fallback_item_sets=frozen_item_sets(frozen_metrics or {}) if revision is not None else None,
+        answering=answering)
+    return evidence.save_protocol(results, body)
+
+
+def _protocol_findings(protocol: dict, comparisons: list[dict], statuses: dict[str, dict]) -> list[Finding]:
+    level = "error" if protocol.get("delivery_policy", "confirmatory") == "confirmatory" else "warn"
+    out = []
+    for entry in evidence.required_comparison_status(protocol, comparisons, statuses):
+        if entry["status"] == "verified":
+            continue
+        code = "PRIMARY_COMPARISON_FAILED" if entry["status"] == "failed" else "PRIMARY_COMPARISON_UNVERIFIED"
+        out.append(Finding(level, code, f"{entry['metric']}: {entry['a']} vs {entry['b']} — {entry['reason']}",
+                           [entry["a"], entry["b"]]))
+    return out
+
+
 def post_process(inputs, output, started_at: float, *, frozen: set[str] | frozenset[str] = frozenset(),
                  host_lines: list[str] | None = None, results: Path | None = None,
-                 design_text: str | None = None) -> str:
-    """Annotate ``output.result`` in place, write the audit/statistics files; returns the verdict."""
+                 design_text: str | None = None, protocol: dict | None = None, planned: list[str] | None = None,
+                 executed: list[str] | None = None, execution_id: str | None = None,
+                 revision: int | None = None, reused: dict[str, dict] | None = None,
+                 referenced_specs: dict[str, str] | None = None, design_path: Path | None = None) -> str:
+    """Annotate ``output.result`` in place, write the audit/statistics files and the evidence
+    manifest; returns the verdict. ``protocol``: frozen by ``run_audited`` before the execution;
+    a direct call freezes one now from the same inputs. ``frozen`` / ``reused``: cells referenced
+    (pre-revision frozen / ledger versions), not executed by this run.
+    """
     result = output.result
     plan = inputs.plan
     host_lines = list(host_lines or [])
-    completed = {v.name: v for v in result.variants if v.process_status == "completed" and v.metrics}
+    reused = dict(reused or {})
+    referenced = set(frozen) | set(reused)
     results = results or _results_dir(plan)
     results.mkdir(parents=True, exist_ok=True)
-    declared = declared_metrics(design_text if design_text is not None else _read_design(plan),
-                                list(plan.metrics or []))
+    planned = list(planned if planned is not None else [v.name for v in result.variants])
+    executed = list(executed if executed is not None else [n for n in planned if n not in referenced])
+    code_dir = getattr(getattr(inputs, "implementation", None), "workspace_dir", None)
+    if protocol is None:
+        if design_text is None:
+            design_text, design_path = _read_design(plan)
+        protocol = freeze_protocol(results, design_text=design_text, plan_metrics=list(plan.metrics or []),
+                                   planned=planned, frozen=frozen, revision=revision, design_path=design_path,
+                                   code_dir=Path(code_dir) if code_dir else None)
+    # calibration cells run before the gates are frozen and retired cells left the design: neither is evidence
+    outside = set(protocol.get("calibration_cells") or []) | {r["cell"] for r in protocol.get("retired") or []}
+    completed = {v.name: v for v in result.variants
+                 if v.process_status == "completed" and v.metrics and v.name not in outside}
+    planned = [n for n in planned if n not in outside]
+    executed = [n for n in executed if n not in outside]
+    declared = list(protocol.get("declared_metrics") or [])
+    execution_id = execution_id or evidence.new_execution_id()
     findings = _revision_findings(host_lines)
+    for name in executed:
+        if name not in completed and name in planned:
+            variant = next((v for v in result.variants if v.name == name), None)
+            status = getattr(variant, "process_status", "not returned") if variant is not None else "not returned"
+            findings.append(Finding("error", "CELL_FAILED", f"{name}: {status}, no metrics", [name]))
     stats = None
     if completed:
         metrics_paths = {name: results / f"{name}.metrics.json" for name in completed}
         payload = {name: v.metrics for name, v in completed.items()}
         findings += audit(payload, declared=declared, started_at=started_at, metrics_paths=metrics_paths,
-                          frozen=frozen)
+                          frozen=referenced, protocol=protocol)
         # Designs list a dozen "decision metrics"; intervals and paired tests go to the first two
         # (the primary metric and, by convention, its cost counterpart) so the handoff stays readable.
-        stats = rigor_stats.compute(payload, primary=declared[:2])
+        stats = rigor_stats.compute(payload, primary=declared[:2],
+                                    missing_rule=protocol.get("missing_primary_rule", "refuse"),
+                                    extra_pairs=[(r["a"], r["b"]) for r in protocol.get("review_comparisons") or []])
         rigor_stats.annotate(payload, stats)
         for finding in _stats_findings(stats):
             # only the primary metric's mapping blocks; a secondary (cost) metric's is a threat to note
@@ -374,7 +482,11 @@ def post_process(inputs, output, started_at: float, *, frozen: set[str] | frozen
             findings.append(finding)
         (results / "statistics.json").write_text(json.dumps(stats.to_dict(), indent=2), encoding="utf-8")
         (results / "statistics.md").write_text(rigor_stats.markdown(stats), encoding="utf-8")
-    code_dir = getattr(getattr(inputs, "implementation", None), "workspace_dir", None)
+    statuses = {n: {"status": "completed" if n in completed else ("failed" if n in executed else "not_run")}
+                for n in set(planned) | set(completed)}
+    for name, variant in completed.items():
+        statuses[name]["item_coverage"] = evidence.item_coverage(protocol, name, variant.metrics)
+    findings += _protocol_findings(protocol, stats.comparisons if stats else [], statuses)
     exceptions, problems = load_exceptions(Path(code_dir) if code_dir else None, results)
     findings += problems
     apply_exceptions(findings, exceptions)
@@ -385,13 +497,26 @@ def post_process(inputs, output, started_at: float, *, frozen: set[str] | frozen
     (results / "audit.json").write_text(json.dumps({
         "verdict": outcome,
         "blocking": blocking,
+        "protocol_id": protocol["protocol_id"],
+        "execution_id": execution_id,
         "execution_started_at": started_at,
         "audited_at": time.time(),
         "declared_metrics": declared,
         "frozen_cells": sorted(frozen),
+        "reused_cells": {n: e.get("version") for n, e in sorted(reused.items())},
         "findings": [asdict(f) for f in findings],
         "exceptions": exceptions,
     }, indent=2, ensure_ascii=False), encoding="utf-8")
+    manifest = evidence.record_execution(
+        results, protocol, execution_id=execution_id, started_at=started_at, revision=revision, planned=planned,
+        executed=executed, frozen=frozen, completed={n: v.metrics for n, v in completed.items()},
+        findings=[asdict(f) for f in findings], stats=stats, verdict=outcome, blocking=blocking, reused=reused,
+        referenced_specs=referenced_specs, code_sha256=code_fingerprint(Path(code_dir) if code_dir else None))
+    for hook in list(AFTER_RECORD_HOOKS):
+        try:
+            hook(results, manifest)
+        except Exception:  # noqa: BLE001, S110 - observers must not change the audit
+            pass
 
     lines = [line for line in host_lines if not re.match(r"REVISION (ERROR|WARN) ", line)]
     for f in findings:
@@ -400,6 +525,19 @@ def post_process(inputs, output, started_at: float, *, frozen: set[str] | frozen
     if outcome == "passed" and not any(f.level == "error" for f in findings):
         lines.append("AUDIT OK: declared metrics present, outputs differ across variants, artifacts fresh")
     lines.append(f"AUDIT VERDICT {outcome.upper()}" + (f" ({len(blocking)} blocking)" if blocking else ""))
+    for entry in manifest["required_comparisons"]:
+        tail = (f"outcome {entry.get('outcome')} (mean diff {entry.get('mean_diff')}, 95% CI {entry.get('ci95')})"
+                if entry["status"] == "verified" else entry.get("reason", ""))
+        lines.append(f"EVIDENCE primary comparison {entry['a']} vs {entry['b']}: {entry['status'].upper()} — {tail}")
+    for entry in manifest["review_comparisons"]:
+        tail = (f"outcome {entry.get('outcome')}" if entry["status"] == "verified" else entry.get("reason", ""))
+        lines.append(f"EVIDENCE review item {entry['item']} needs {entry['a']} vs {entry['b']}: "
+                     f"{entry['status'].upper()} — {tail}")
+    if outside:
+        lines.append(f"EVIDENCE not evidence (calibration / retired cells): {', '.join(sorted(outside))}")
+    lines.append(f"EVIDENCE protocol {protocol['protocol_id']} execution {execution_id} policy "
+                 f"{protocol.get('delivery_policy')}: primary hypothesis "
+                 + ("tested" if manifest["primary_hypothesis_verified"] else "NOT verified (no claim may rest on it)"))
     for p in stats.pairs if stats else []:
         verdict_text = "CI excludes 0" if (p.ci_low > 0 or p.ci_high < 0) else "CI includes 0"
         lines.append(f"STATS [{p.role}] {p.metric} {p.a}-{p.b}: {p.mean_diff:+.4f} [{p.ci_low:+.4f}, "
@@ -415,6 +553,56 @@ def post_process(inputs, output, started_at: float, *, frozen: set[str] | frozen
     return outcome
 
 
+def reaudit(results: Path, *, design_text: str, plan_metrics: list[str] | None = None,
+            code_dir: Path | None = None, design_path: Path | None = None, revision: Any = None,
+            run_dir: Path | None = None) -> str:
+    """Audit the results already on disk (no execution): for runs made before the evidence contract,
+    after an operator fix, or to re-establish the protocol after the design changed. Every completed
+    cell is referenced (not re-run), so freshness is not judged; its compatibility with the new
+    protocol is: a cell whose ledger version was recorded under another spec fails verification
+    (CELL_SPEC_CHANGED), one the ledger does not know is reported as unchecked (legacy).
+
+    ``revision`` (with ``run_dir``): the open ``RevisionState`` — its frozen cells stay the
+    pre-registered ones and the record belongs to it.
+    """
+    from types import SimpleNamespace
+
+    results = Path(results)
+    variants = []
+    for path in sorted(results.glob("*.metrics.json")):
+        try:
+            metrics = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(metrics, dict) and str(metrics.get("status", "")).lower() not in ("failed", "error",
+                                                                                         "harness_failed"):
+            variants.append(SimpleNamespace(name=path.name[: -len(".metrics.json")], metrics=metrics,
+                                            process_status="completed", exit_code=0))
+    names = [v.name for v in variants]
+    pre_registered, answering, index = set(names), None, None
+    if revision is not None:
+        from jiuwenswarm.agents.harness.common.paper_pipeline import revision_state
+
+        manifest = revision_state.load_manifest(revision.folder(Path(run_dir))) or {}
+        pre_registered = {c["name"] for c in manifest.get("cells", [])} & set(names)
+        answering, index = revision_state.answering_of(revision.settings), revision.index
+    specs = {}
+    for name in names:
+        if name in pre_registered and revision is not None:
+            specs[name] = evidence.SPEC_FROZEN
+        else:
+            specs[name] = evidence.ledger_spec_of(results, name, evidence.sha256_file(results / f"{name}.metrics.json"))
+    protocol = freeze_protocol(results, design_text=design_text, plan_metrics=list(plan_metrics or []), planned=names,
+                               frozen=pre_registered, revision=index, design_path=design_path, code_dir=code_dir,
+                               answering=answering,
+                               frozen_metrics={v.name: v.metrics for v in variants if v.name in pre_registered})
+    inputs = SimpleNamespace(plan=SimpleNamespace(metrics=list(plan_metrics or [])),
+                             implementation=SimpleNamespace(workspace_dir=str(code_dir) if code_dir else ""))
+    output = SimpleNamespace(result=SimpleNamespace(variants=variants, notes="", status="completed"))
+    return post_process(inputs, output, time.time(), frozen=set(names), results=results, protocol=protocol,
+                        planned=names, executed=[], revision=index, referenced_specs=specs)
+
+
 def write_unverified(inputs, exc: BaseException, results: Path | None = None) -> None:
     """The audit crashed: record ``unverified`` so nothing downstream reads it as a pass."""
     try:
@@ -424,26 +612,49 @@ def write_unverified(inputs, exc: BaseException, results: Path | None = None) ->
             "verdict": "unverified", "blocking": [f"AUDIT_CRASHED: {exc!r}"], "audited_at": time.time(),
             "findings": [asdict(Finding("error", "AUDIT_CRASHED", repr(exc)))],
         }, indent=2), encoding="utf-8")
+        evidence.record_unverified(results, repr(exc))
     except Exception:  # noqa: BLE001 - best effort; the note below still says unverified
         pass
 
 
 def run_audited(original, agent, inputs):
-    """The wrapped ``ExperimentExecutionAgent.run`` (module-level so it can be tested with fakes)."""
-    from jiuwenswarm.agents.harness.common.paper_pipeline.revision_state import active_guard
+    """The wrapped ``ExperimentExecutionAgent.run`` (module-level so it can be tested with fakes).
+
+    Order: freeze the protocol (before anything runs), then let the revision guard decide what to
+    execute and what to reference (frozen cells, reusable ledger versions), execute, audit.
+    """
+    from jiuwenswarm.agents.harness.common.paper_pipeline.revision_state import active_guard, answering_of
 
     started = time.time()
     guard = active_guard()
     plan = None
+    planned = [v.name for v in inputs.implementation.variants]
+    frozen = guard.frozen_names(planned) if guard is not None else set()
+    revision = guard.state.index if guard is not None else None
+    code_dir = getattr(inputs.implementation, "workspace_dir", None)
+    protocol, protocol_error = None, None
+    try:  # frozen before the execution runs: nothing the execution writes can lower the bar
+        design_text, design_path = _read_design(inputs.plan)
+        protocol = freeze_protocol(_results_dir(inputs.plan), design_text=design_text, design_path=design_path,
+                                   plan_metrics=list(getattr(inputs.plan, "metrics", None) or []),
+                                   planned=planned, frozen=frozen, revision=revision,
+                                   code_dir=Path(code_dir) if code_dir else None,
+                                   answering=answering_of(guard.state.settings) if guard is not None else None,
+                                   frozen_metrics=guard.frozen_metrics(frozen) if guard is not None else None)
+    except Exception as exc:  # noqa: BLE001 - recorded below as an unverified audit
+        protocol_error = exc
     if guard is not None:
-        inputs, plan = guard.filter_inputs(inputs)
+        inputs, plan = guard.filter_inputs(inputs, protocol)
     output = original(agent, inputs)
     host_lines: list[str] = []
     if guard is not None:
         host_lines = guard.merge(output, plan)
     try:
-        post_process(inputs, output, started, frozen=set(plan.reference) if plan else frozenset(),
-                     host_lines=host_lines)
+        if protocol_error is not None:
+            raise RuntimeError(f"protocol could not be frozen before execution: {protocol_error!r}")
+        post_process(inputs, output, started, frozen=set(plan.reference) if plan else set(), host_lines=host_lines,
+                     protocol=protocol, planned=planned, executed=list(plan.execute) if plan else planned,
+                     revision=revision, reused=dict(plan.attached_reuse) if plan else None)
     except Exception as exc:  # the audit must never break an otherwise good execution
         write_unverified(inputs, exc)
         extra = "\n".join(host_lines)

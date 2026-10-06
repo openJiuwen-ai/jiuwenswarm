@@ -60,7 +60,15 @@ METHOD = {
     "pairing": "within one condition (setting, model, dataset, recorded budget) over identical item-id sets; "
                "cross-condition pairs only when declared",
     "unanswered": "counted from answer fields; 'unknown' when the records carry none (never assumed 0)",
+    "primary_coverage": "the primary metric covers every item of each variant; a missing value is scored 0 only "
+                        "when the frozen protocol says so and the item is unanswered / an API failure / a parse "
+                        "failure, otherwise the comparison is unverified (never computed on the answered subset)",
 }
+# per-item reasons a primary value can be missing; only these may be scored by a protocol rule
+MISSING_REASONS = ("unanswered", "api_error", "parse_error")
+MISSING_RULES = ("refuse", "score_zero")
+_ERROR_KEYS = ("api_error", "error", "exception")
+_PARSE_KEYS = ("parse_error", "parse_failed")
 _NOT_METRICS = ("n_questions", "model_call_count", "revision", "budget_tokens", "design_revision",
                 "implementation_revision", "n_items_requested")
 
@@ -122,13 +130,22 @@ class ExperimentStats:
     # analysis that had to stop: unresolved conditions, an unmappable primary metric (stable prefixes)
     errors: list[str] = field(default_factory=list)
     conditions: dict[str, "Condition"] = field(default_factory=dict)
+    # every candidate comparison, computed or not: {metric, a, b, role, scope, status, reason, ...};
+    # status is "verified" (computed over the full declared item set) or "unverified" (with why)
+    comparisons: list[dict[str, Any]] = field(default_factory=list)
+    # variant -> metric -> {n_items, n_scored, scored_zero, missing: {reason: count}, complete}
+    coverage: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
+    missing_rule: str = "refuse"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "method": METHOD,
+            "missing_primary_rule": self.missing_rule,
             "families": dict(sorted(Counter(p.family for p in self.pairs).items())),
             "conditions": {n: c.to_dict() for n, c in self.conditions.items()},
             "variants": {v: [s.__dict__ for s in stats] for v, stats in self.metrics.items()},
+            "coverage": self.coverage,
+            "comparisons": self.comparisons,
             "pairs": [{**p.__dict__, "family": p.family, "verdict": p.verdict} for p in self.pairs],
             "unanswered": {k: ("unknown" if v is None else v) for k, v in self.unanswered.items()},
             "errors": self.errors,
@@ -239,6 +256,47 @@ def per_question_fields(records: list[dict[str, Any]]) -> dict[str, dict[str, fl
                 columns.setdefault(key, {})[rid] = value
     floor = 0.8 * len(records)
     return {k: v for k, v in columns.items() if len(v) >= floor}
+
+
+def missing_reason(record: dict[str, Any]) -> str:
+    """Why an item has no value for a metric: unanswered / api_error / parse_error / missing."""
+    status = str(record.get("status") or "").lower()
+    if any(str(record.get(k) or "").strip() for k in _PARSE_KEYS) or status in ("parse_error", "parse_failed"):
+        return "parse_error"
+    if any(str(record.get(k) or "").strip() for k in _ERROR_KEYS) or status in ("api_error", "error", "failed"):
+        return "api_error"
+    keys = [k for k in PREDICTION_KEYS if k in record]
+    if status in UNANSWERED_STATUSES or (keys and all(str(record.get(k) or "").strip() == "" for k in keys)):
+        return "unanswered"
+    return "missing"
+
+
+def complete_column(records: list[dict[str, Any]], col: str, rule: str = "refuse"
+                    ) -> tuple[dict[str, float], dict[str, Any]]:
+    """The metric column over *every* record, and its coverage.
+
+    A record without a value is scored 0 only under ``rule == "score_zero"`` and only when its
+    reason is one of ``MISSING_REASONS``; any other gap leaves the column incomplete (the caller
+    must then refuse to treat it as a full-sample analysis). No 80% floor: one missing item counts.
+    """
+    ids, _ = item_ids(records)
+    column: dict[str, float] = {}
+    missing: dict[str, int] = {}
+    scored_zero = 0
+    for index, record in enumerate(records):
+        rid = ids[index] if ids is not None else f"#{index}"
+        value = as_number(record.get(col))
+        if value is not None:
+            column[rid] = value
+            continue
+        reason = missing_reason(record)
+        missing[reason] = missing.get(reason, 0) + 1
+        if rule == "score_zero" and reason in MISSING_REASONS:
+            column[rid] = 0.0
+            scored_zero += 1
+    coverage = {"field": col, "n_items": len(records), "n_scored": len(column) - scored_zero,
+                "scored_zero": scored_zero, "missing": missing, "complete": len(column) == len(records)}
+    return column, coverage
 
 
 def _mean(values: list[float]) -> float:
@@ -449,14 +507,29 @@ def compute(
     anchor: str = "proposed",
     metric_fields: dict[str, str] | None = None,
     cross_pairs: Iterable[tuple[str, str]] = (),
+    complete: Iterable[str] | None = None,
+    missing_rule: str = "refuse",
+    extra_pairs: Iterable[tuple[str, str]] = (),
 ) -> ExperimentStats:
     """``variants``: variant name -> its metrics.json payload.
 
     ``metric_fields`` maps a top-level metric to its per-item field when the names differ;
     ``cross_pairs`` are comparisons across conditions (another model / dataset / setting) the
     design explicitly asks for — they are never generated automatically.
+
+    ``complete`` (default: the first of ``primary``) are metrics that must cover every item: a gap
+    is filled only by ``missing_rule`` (``refuse`` | ``score_zero``, from the frozen protocol), and
+    a still-incomplete column makes each of its comparisons ``unverified`` instead of shrinking the
+    sample to the scored items. Other metrics may be partial; their denominators are reported.
+
+    ``extra_pairs`` (e.g. the comparisons review items require) are added to the anchor candidates
+    and validated like them (same condition, same items).
     """
-    out = ExperimentStats()
+    if missing_rule not in MISSING_RULES:
+        raise ValueError(f"missing_rule {missing_rule!r} not in {MISSING_RULES}")
+    out = ExperimentStats(missing_rule=missing_rule)
+    wanted = list(dict.fromkeys(primary))
+    must_cover = set(wanted[:1] if complete is None else complete)
     records = {name: records_of(m) for name, m in variants.items()}
     columns = {name: per_question_fields(records[name]) for name in variants}
     unanswered = {name: unanswered_ids(records[name]) for name in variants}
@@ -466,6 +539,16 @@ def compute(
     for name, cond in out.conditions.items():
         if cond.problems:
             out.errors.append(f"CONDITION_UNRESOLVED {name}: {'; '.join(cond.problems)}")
+    for name, metrics in variants.items():  # full-coverage columns replace the 80%-floor ones
+        declared_fields = metric_fields if metric_fields is not None else metrics.get("metric_fields")
+        declared_fields = declared_fields if isinstance(declared_fields, dict) else {}
+        for metric in must_cover:
+            col = declared_fields.get(metric, metric)
+            if not records[name] or not any(col in r for r in records[name]):
+                continue
+            column, coverage = complete_column(records[name], col, missing_rule)
+            columns[name][col] = column
+            out.coverage.setdefault(name, {})[metric] = coverage
     matched: dict[str, dict[str, str]] = {}
     for name, metrics in variants.items():
         if not columns[name]:
@@ -480,22 +563,56 @@ def compute(
             low, high = bootstrap_ci(values)
             binary = all(v in (0.0, 1.0) for v in values)
             stats.append(MetricStats(metric, col, binary, len(values), _mean(values), low, high))
+            if metric not in must_cover:
+                out.coverage.setdefault(name, {})[metric] = {
+                    "field": col, "n_items": len(records[name]), "n_scored": len(values), "scored_zero": 0,
+                    "missing": {"not_recorded": len(records[name]) - len(values)} if len(values) < len(records[name])
+                    else {}, "complete": len(values) == len(records[name])}
         out.metrics[name] = stats
 
     # Paired tests only for the declared decision metrics; one that cannot be mapped in a variant
     # stops for that variant (an error), it is never replaced by another metric.
-    wanted = list(dict.fromkeys(primary))
     if not wanted:
         out.notes.append("no decision metric declared: intervals only, no paired tests")
     out.primary = wanted
-    candidates = [(a, b, False) for a, b in choose_pairs(sorted(matched), anchor, out.conditions)]
-    candidates += [(a, b, True) for a, b in cross_pairs if a in matched and b in matched]
+    candidates = [(a, b, False) for a, b in choose_pairs(sorted(variants), anchor, out.conditions)]
+    seen = {frozenset((a, b)) for a, b, _ in candidates}
+    for a, b in extra_pairs:
+        if a == b or not {a, b} <= variants.keys() or frozenset((a, b)) in seen:
+            continue
+        seen.add(frozenset((a, b)))
+        candidates.append((a, b, False))
+    candidates += [(a, b, True) for a, b in cross_pairs if a in variants and b in variants]
+
+    def record(metric: str, a: str, b: str, declared: bool, why: str, **extra: Any) -> None:
+        out.comparisons.append({
+            "metric": metric, "a": a, "b": b, "role": _role(variants, out.conditions, a, b, declared),
+            "scope": "declared_cross_condition" if declared else "within_condition",
+            "complete_coverage_required": metric in must_cover,
+            "status": "unverified" if why else "verified", "reason": why, **extra})
+
+    def gap(side: str, metric: str) -> str:
+        coverage = out.coverage.get(side, {}).get(metric)
+        if metric not in must_cover or not coverage or coverage["complete"]:
+            return ""
+        lacking = sum(coverage["missing"].values()) - coverage["scored_zero"]
+        return (f"{side}: {lacking} of {coverage['n_items']} items lack `{metric}` ({coverage['missing']}, "
+                f"rule {missing_rule})")
+
     for metric in wanted:
         unmapped = sorted(n for n in variants if n not in matched or metric not in matched[n])
         if unmapped:
             out.errors.append(f"PRIMARY_METRIC_UNMAPPED {metric}: no verified per-item field in {unmapped}")
         for a, b, declared in candidates:
+            gaps = [g for g in (gap(a, metric), gap(b, metric)) if g]
+            if gaps:  # the coverage gap is the cause, also when it made the mean unverifiable
+                why = "primary metric incomplete — " + "; ".join(gaps)
+                out.notes.append(f"{metric}: {a} vs {b} not compared: {why}")
+                record(metric, a, b, declared, why)
+                continue
             if a in unmapped or b in unmapped:
+                record(metric, a, b, declared, "metric has no verified per-item field in "
+                       + ", ".join(s for s in (a, b) if s in unmapped))
                 continue
             why = validate_pair(out.conditions[a], out.conditions[b], declared=declared)
             if not why:
@@ -509,11 +626,13 @@ def compute(
                 why = f"item sets differ ({len(only_a)} only in {a}, {len(only_b)} only in {b})"
             if why:
                 out.notes.append(f"{metric}: {a} vs {b} not compared: {why}")
+                record(metric, a, b, declared, why)
                 continue
             ca, cb = columns[a][matched[a][metric]], columns[b][matched[b][metric]]
             common = sorted(set(ca) & set(cb))
             if len(common) < 2:
                 out.notes.append(f"{metric}: {a} vs {b} share {len(common)} scored questions, not compared")
+                record(metric, a, b, declared, f"only {len(common)} items scored on both sides")
                 continue
             diffs = [ca[q] - cb[q] for q in common]
             low, high = bootstrap_ci(diffs)
@@ -526,15 +645,31 @@ def compute(
             ua, ub = unanswered.get(a) or set(), unanswered.get(b) or set()
             wins_u = sum(1 for q in common if ca[q] > cb[q] and q in ub)
             losses_u = sum(1 for q in common if ca[q] < cb[q] and q in ua)
-            out.pairs.append(PairStats(metric, a, b, len(common), _mean(diffs), low, high, p, test, wins, losses,
-                                       wins_u, losses_u,
-                                       scope="declared_cross_condition" if declared else "within_condition",
-                                       role=_role(variants, out.conditions, a, b, declared)))
+            pair = PairStats(metric, a, b, len(common), _mean(diffs), low, high, p, test, wins, losses,
+                             wins_u, losses_u, scope="declared_cross_condition" if declared else "within_condition",
+                             role=_role(variants, out.conditions, a, b, declared))
+            out.pairs.append(pair)
+            n_items = len(ids[a][0] or [])  # type: ignore[arg-type]
+            record(metric, a, b, declared, "", n_items=n_items, n_paired=len(common), _pair=pair)
     for family in {p.family for p in out.pairs}:
         group = [p for p in out.pairs if p.family == family]
         for pair, adjusted in zip(group, holm([p.p_value for p in group])):
             pair.p_holm = adjusted
+    for entry in out.comparisons:  # outcome after Holm, from the pair it summarises
+        pair = entry.pop("_pair", None)
+        if pair is not None:
+            entry.update(mean_diff=_r(pair.mean_diff), ci95=[_r(pair.ci_low), _r(pair.ci_high)],
+                         p=_r(pair.p_value), p_holm=_r(pair.p_holm), verdict=pair.verdict, outcome=outcome_of(pair))
     return out
+
+
+def outcome_of(pair: PairStats) -> str:
+    """What a verified comparison says about ``a`` vs ``b`` — a null or negative is still an outcome."""
+    if pair.ci_low > 0:
+        return "a_better"
+    if pair.ci_high < 0:
+        return "a_worse"
+    return "bounded_null" if pair.verdict.startswith("bounded") else "inconclusive"
 
 
 def _post_hoc(metrics: dict[str, Any]) -> bool:
@@ -570,6 +705,11 @@ def annotate(variants: dict[str, dict[str, Any]], stats: ExperimentStats) -> Non
                 added[name][f"{s.metric}_ci95_low"] = _r(s.ci_low)
                 added[name][f"{s.metric}_ci95_high"] = _r(s.ci_high)
                 added[name][f"{s.metric}_n"] = s.n
+                coverage = stats.coverage.get(name, {}).get(s.metric)
+                if coverage:
+                    added[name][f"{s.metric}_n_items"] = coverage["n_items"]
+                    if coverage["scored_zero"]:
+                        added[name][f"{s.metric}_scored_zero_by_protocol"] = coverage["scored_zero"]
     for p in stats.pairs:
         for owner, other, sign in ((p.a, p.b, 1.0), (p.b, p.a, -1.0)):
             low, high = (p.ci_low, p.ci_high) if sign > 0 else (-p.ci_high, -p.ci_low)
@@ -626,6 +766,20 @@ def markdown(stats: ExperimentStats) -> str:
         if cross:
             lines.append("Declared cross-condition comparisons (different model / dataset / setting): "
                          + ", ".join(f"{p.a} vs {p.b}" for p in cross) + ".")
+    unverified = [c for c in stats.comparisons if c["status"] != "verified"]
+    if unverified:
+        lines += ["", "Comparisons NOT verified (no claim may rest on them; missing evidence is not a null result):"]
+        lines += [f"- [{c['role']}] {c['metric']} {c['a']} vs {c['b']}: {c['reason']}" for c in unverified]
+    partial = []
+    for v, per in sorted(stats.coverage.items()):
+        partial += [(v, m, c) for m, c in per.items() if not c["complete"] or c["scored_zero"]]
+    if partial:
+        lines += ["", "Coverage (denominators; missing values by reason):"]
+        for v, m, c in partial:
+            zero = (f", {c['scored_zero']} scored 0 by the protocol rule ({stats.missing_rule})"
+                    if c["scored_zero"] else "")
+            missing = f", missing {c['missing']}" if c["missing"] else ""
+            lines.append(f"- `{v}` {m}: {c['n_scored']} scored of {c['n_items']} items{zero}{missing}")
     if stats.errors:
         lines += ["", "Analysis stopped (not substituted):"] + [f"- {e}" for e in stats.errors]
     if stats.notes:

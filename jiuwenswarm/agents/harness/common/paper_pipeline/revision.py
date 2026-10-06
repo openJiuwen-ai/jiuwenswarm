@@ -27,6 +27,7 @@ revision adds evidence, it does not restart the study.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -172,9 +173,15 @@ def build_brief(review: ReviewInput, *, max_new_cells: int, replication_model: s
                   "- The host will not accept DONE until a new execution and a new paper exist after this request."]
     lines += [f"- Reporting writes `{RESPONSE_FILE}` next to main.tex: one entry per review item id, "
               '`{"items": [{"id", "disposition", "evidence", "paper_location", "summary"}]}` with disposition '
-              f"one of {', '.join(DISPOSITIONS)}; `evidence` names the variants / statistics rows used "
-              "(required for new_experiment); `paper_location` is a \\label or a section title that exists in "
-              "the paper. The host checks it; unaddressed items keep the revision from being accepted."]
+              f"one of {', '.join(DISPOSITIONS)}; `evidence` names the variants or `a vs b` comparisons used "
+              "(every one must be a cell executed and verified in this revision). A new_experiment item counts "
+              "as resolved by evidence only if the design's experiment-protocol block bound it to "
+              "`review_comparisons` before execution and each of them verified (any outcome); "
+              "optional `conditions` ({model, dataset, budget, setting}) states what the reviewer asked for and "
+              "is checked against the recorded cells; `paper_location` is a \\label or the exact title of a "
+              "section / caption in the paper. The host checks it; unaddressed items keep the revision from "
+              "being accepted, and only new_experiment items backed by verified evidence count as resolved by "
+              "evidence (rewrites and limitations count as addressed)."]
     if replication_model:
         lines.append(f"- A second answering model is available to the experiment code as the environment "
                      f"variable REPLICATION_MODEL_NAME={replication_model} (same API_KEY / API_BASE). Use it "
@@ -202,7 +209,16 @@ You are revising a finished study, not designing a new one. Output an **updated*
   with a new dataset or model calibrates its own tiers (same quantile rule) from its own reference run;
 - states, for each new contrast, what result would support and what would refute the claim it tests,
   and that all new contrasts are post hoc;
-- stays within the new-variant limit of the revision request.
+- stays within the new-variant limit of the revision request;
+- updates the `experiment-protocol` block: `item_sets` for every new setting prefix (`{"same_as": ""}`
+  when it reuses the original items), and `review_comparisons` — for each review item id answered
+  by an experiment, the comparison(s) that answer it, e.g.
+  `{"item": "R-1a2b3c4d", "a": "proposed_T1", "b": "abl_rank_T1"}` (add `"conditions": {"model": ...}`
+  for a replication). Only these comparisons can mark the item resolved by evidence; a negative or
+  null result answers it as well as a positive one, a missing side does not;
+- never silently drops a variant this revision already ran: keep it, or list it under `retired` with
+  `reason`, `affected_comparisons` and `affected_claims`. A cell that already succeeded is reused by
+  the host, not re-run, as long as its condition and `cells` entry are unchanged.
 """
 
 REVISION_CODE = """
@@ -492,16 +508,96 @@ def _paper_text(paper_dir: Path) -> str:
     return "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in sorted(Path(paper_dir).rglob("*.tex")))
 
 
-def _has_metrics(results_dir: Path | None, variant: str) -> bool:
-    return results_dir is not None and (Path(results_dir) / f"{variant}.metrics.json").is_file()
+_HEADING = re.compile(r"\\(?:(?:sub)*section|paragraph)\*?\{|\\caption\{")
 
 
-def check_response(items: list[dict[str, str]], paper_dir: Path, results_dir: Path | None) -> dict[str, Any]:
-    """Check ``revision_response.json`` against the review items, the paper and the results.
+def _heading_titles(tex: str) -> set[str]:
+    """Titles of (sub)sections, paragraphs and captions; nested braces (``\\textbf{..}``) are kept."""
+    titles = set()
+    for match in _HEADING.finditer(tex):
+        depth, end = 1, match.end()
+        while end < len(tex) and depth:
+            depth += {"{": 1, "}": -1}.get(tex[end], 0)
+            end += 1
+        if not depth:
+            titles.add(" ".join(tex[match.end():end - 1].split()).lower())
+    return titles
 
-    An item is resolved only when it has a valid disposition, a paper location that exists, and —
-    for ``new_experiment`` — evidence naming variants that have a metrics file.
+
+def locate(location: str, tex: str) -> bool:
+    """A stable paper location: a ``\\label`` that exists, or the exact title of a (sub)section,
+    paragraph or caption. A phrase that merely occurs somewhere in the text does not count.
     """
+    location = location.strip()
+    if not location:
+        return False
+    label = location.removeprefix("\\label{").removesuffix("}") if location.startswith("\\label{") else location
+    if f"\\label{{{label}}}" in tex:
+        return True
+    return " ".join(location.split()).lower() in _heading_titles(tex)
+
+
+def _evidence_problem(ref: str, manifest: dict[str, Any] | None, attempted: set[str] | None,
+                      conditions: dict[str, Any], retired: set[str] = frozenset()) -> str:
+    """Why ``ref`` (a cell name, or a comparison ``a vs b``) is not verified evidence of this revision."""
+    from jiuwenswarm.agents.harness.common.paper_pipeline import evidence
+
+    if manifest is None:
+        return "no evidence manifest"
+    cells = manifest.get("cells") or {}
+    cited_retired = [n.strip() for n in ref.split(" vs ") if n.strip() in retired]
+    if cited_retired:
+        return f"{', '.join(cited_retired)} was retired from the design: not evidence"
+    if " vs " in ref:
+        a, b = (s.strip() for s in ref.split(" vs ", 1))
+        match = next((c for c in manifest.get("comparisons") or [] if {c["a"], c["b"]} == {a, b}), None)
+        if match is None:
+            return f"comparison {ref!r} is not in the evidence manifest"
+        if match["status"] != "verified":
+            return f"comparison {ref!r} is {match['status']}: {match.get('reason')}"
+        names = [a, b]
+    else:
+        names = [ref]
+    for name in names:
+        cell = cells.get(name)
+        if cell is None or cell.get("status") != "completed":
+            return f"{name}: no completed cell in the evidence manifest"
+        if cell.get("blocking"):
+            return f"{name}: blocked by {', '.join(cell['blocking'])}"
+        problem = evidence.hash_problem(cell)
+        if problem:
+            return f"{name}: {problem}"
+    if attempted is not None and not set(names) & attempted:
+        return (f"{ref!r} was not executed in this revision "
+                "(pre-existing evidence cannot answer a new-experiment request)")
+    for key, wanted in conditions.items():
+        for name in names:
+            have = cells[name].get(key) if key != "setting" else (name.split("__", 1)[0] if "__" in name else "")
+            if str(have) != str(wanted):
+                return f"{name}: {key} is {have!r}, the response claims {wanted!r}"
+    return ""
+
+
+def check_response(items: list[dict[str, str]], paper_dir: Path, results_dir: Path | None,
+                   revision: Any = None) -> dict[str, Any]:
+    """Check ``revision_response.json`` against the review items, the paper and the evidence.
+
+    Each item ends in one of three states:
+
+    * ``verified_resolved`` — ``new_experiment`` for which the frozen protocol requires comparisons
+      (``review_comparisons``, declared in the design before execution, so the host — not the
+      response — decides what evidence the item needs) and every one of them is verified over the
+      declared item set (any outcome: a negative or null result answers the item), with cells
+      executed in this revision, unchanged since their audit, matching the entry's optional
+      ``conditions`` (``model`` / ``dataset`` / ``budget`` / ``setting``); every evidence the entry
+      cites (cell names or ``a vs b``) must pass the same checks;
+    * ``addressed`` — a narrowed claim, rewrite or stated limitation at a location that exists: the
+      paper changed, which the host cannot verify further;
+    * unresolved — anything else (no entry, unknown disposition, location not found, evidence
+      missing / unverified / pre-existing).
+    """
+    from jiuwenswarm.agents.harness.common.paper_pipeline import evidence
+
     path = Path(paper_dir) / RESPONSE_FILE
     if not path.is_file():
         return {"file": str(path), "present": False, "resolved": [], "unresolved":
@@ -513,30 +609,50 @@ def check_response(items: list[dict[str, str]], paper_dir: Path, results_dir: Pa
         return {"file": str(path), "present": True, "resolved": [], "unresolved":
                 [{"id": i["id"], "text": i["text"], "why": f"unreadable ({exc})"} for i in items]}
     tex = _paper_text(paper_dir)
+    manifest = evidence.load_manifest(Path(results_dir)) if results_dir is not None else None
+    protocol = (evidence.load_protocol(Path(results_dir)) if results_dir is not None else None) or {}
+    retired = {r["cell"] for r in protocol.get("retired") or []}
+    attempted = None
+    if revision is not None:
+        attempted = set(getattr(revision, "executed_new_cells", [])) | set(getattr(revision, "cell_executions", {}))
     resolved, unresolved = [], []
     for item in items:
         entry = entries.get(item["id"])
-        why = ""
+        why, state = "", "addressed"
         if entry is None:
             why = "no entry"
         elif entry.get("disposition") not in DISPOSITIONS:
             why = f"disposition {entry.get('disposition')!r} not in {DISPOSITIONS}"
-        else:
-            location = str(entry.get("paper_location") or "").strip()
-            label = location.removeprefix("\\label{").rstrip("}")
-            if not location or (f"\\label{{{label}}}" not in tex and location not in tex):
-                why = f"paper_location {location!r} not found in the paper"
-            elif entry["disposition"] == "new_experiment":
-                evidence = [str(e) for e in entry.get("evidence") or []]
-                missing = [e for e in evidence if not _has_metrics(results_dir, e)]
-                if not evidence:
-                    why = "new_experiment without evidence"
-                elif len(missing) == len(evidence):
-                    why = f"evidence {missing} has no metrics file"
+        elif not locate(str(entry.get("paper_location") or ""), tex):
+            why = (f"paper_location {entry.get('paper_location')!r} is not a \\label or section/caption title "
+                   "in the paper")
+        elif entry["disposition"] == "new_experiment":
+            refs = [str(e) for e in entry.get("evidence") or []]
+            conditions = entry.get("conditions") if isinstance(entry.get("conditions"), dict) else {}
+            required = [r for r in (manifest or {}).get("review_comparisons") or [] if r.get("item") == item["id"]]
+            problems = []
+            if not required:
+                problems.append("the frozen protocol requires no comparison for this item: declare it under "
+                                "`review_comparisons` in the design's experiment-protocol block before execution")
+            for req in required:
+                if req["status"] != "verified":
+                    problems.append(f"required comparison {req['a']} vs {req['b']} is {req['status']}: "
+                                    f"{req.get('reason')}")
+                else:
+                    problems.append(_evidence_problem(f"{req['a']} vs {req['b']}", manifest, attempted, conditions,
+                                                      retired))
+            problems += [_evidence_problem(r, manifest, attempted, conditions, retired) for r in refs]
+            problems = [p for p in problems if p]
+            if problems:
+                why = "; ".join(problems[:3])
+            else:
+                state = "verified_resolved"
         record = {"id": item["id"], "text": item["text"], "disposition": (entry or {}).get("disposition")}
-        (unresolved if why else resolved).append({**record, **({"why": why} if why else {})})
+        (unresolved if why else resolved).append({**record, **({"why": why} if why else {"state": state})})
     extra = sorted(k for k in entries if k not in {i["id"] for i in items})
     return {"file": str(path), "present": True, "resolved": resolved, "unresolved": unresolved,
+            "counts": {"verified_resolved": sum(r["state"] == "verified_resolved" for r in resolved),
+                       "addressed": sum(r["state"] == "addressed" for r in resolved), "unresolved": len(unresolved)},
             "unknown_ids": extra}
 
 
@@ -578,7 +694,12 @@ def compare_reviews(before: dict, after: dict, *, items: list[dict[str, str]] | 
             if words and other and len(words & other) / len(words | other) >= 0.35:
                 still.append({"id": item["id"], "text": item["text"], "new_review": weakness})
                 break
+    comparable = old_mean is not None and new_mean is not None
     return {"prefer": "revised" if not reasons else "previous", "reasons": reasons,
+            # kept apart: a revision can be deliverable without being better, and vice versa
+            "deliverable": deliverable, "improved": (new_mean > old_mean) if comparable else None,
+            "decision_basis": ("no valid comparison: the previous paper is kept" if not comparable else
+                               "revised meets every check" if not reasons else "previous kept: " + reasons[0]),
             "overall_mean": {"previous": old_mean, "revised": new_mean}, "dimension_drops": drops,
             "still_raised": still, "unresolved": (response or {}).get("unresolved", [])}
 

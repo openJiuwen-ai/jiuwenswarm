@@ -12,9 +12,13 @@ a prompt being obeyed or on the process staying alive:
   sha256 of its metrics file, its per-item records file and its config, plus the experiment code's
   file hashes. These cells are *referenced*, never re-run.
 * ``ExecutionGuard`` — consulted by the execution wrapper (``execution_audit``): it strips frozen
-  cells from what the official engine executes, refuses new cells beyond the cap, re-attaches the
-  frozen cells' recorded metrics, re-verifies their hashes (a changed file stops their analysis),
-  and copies the new cells' metrics into the revision folder.
+  cells from what the official engine executes, references every new cell that already has a valid
+  evidence version under its current spec (``evidence.reusable_version``: succeeded earlier in this
+  run, hashes intact, condition and design entry unchanged) instead of re-running it, refuses new
+  cells beyond the cap and re-runs beyond ``max_cell_executions`` (both count only new executions,
+  so a cell at its limit with valid evidence is still referenced), skips retired cells, re-attaches
+  the frozen cells' recorded metrics, re-verifies their hashes (a changed file stops their
+  analysis), and copies the new cells' metrics into the revision folder.
 """
 
 from __future__ import annotations
@@ -32,9 +36,20 @@ from jiuwenswarm.agents.harness.common.paper_pipeline.runner import PaperRunErro
 REVISION_FILE = "revision.json"
 MANIFEST_FILE = "frozen_manifest.json"
 OPEN, ACCEPTED, NOT_ACCEPTED = "open", "accepted", "not_accepted"
+# The pipeline finished but acceptance failed: the revision stays active (guard, cap, frozen
+# cells, budgets) until it passes or the operator ends it (``rollback`` / ``abandon``).
+NEEDS_REPAIR, ROLLED_BACK, ABANDONED = "needs_repair", "rolled_back", "abandoned"
+# NOT_ACCEPTED was written automatically by older versions (it released the guard); it is read as
+# NEEDS_REPAIR unless the operator rolled the revision back.
+ACTIVE = (OPEN, NEEDS_REPAIR, NOT_ACCEPTED)
 # settings whose change mid-revision changes what the new cells measure
 ANSWERING_SETTINGS = ("experiment_model", "experiment_model_effective", "experiment_api_base", "replication_model")
+# spend / delivery controls: restored on resume when omitted, recorded when overridden
+BUDGET_SETTINGS = ("budget_soft", "budget_hard", "balance_floor", "balance_hard_floor")
+EVIDENCE_SETTINGS = ("delivery_policy", "missing_primary_rule", "tier_gates")
+_NOT_IDENTITY = ("experiment_env", *BUDGET_SETTINGS, *EVIDENCE_SETTINGS)
 _DERIVED = ("experiment_api_base", "experiment_model_effective", "config_sha256")
+DEFAULT_MAX_CELL_EXECUTIONS = 3
 _CODE_SUFFIXES = (".py", ".yaml", ".yml", ".json", ".toml", ".txt", ".cfg")
 _CODE_SKIP_DIRS = ("experiments", "results", "logs", "scratch", "__pycache__", ".git", "smoke")
 _FAILED_STATUSES = ("failed", "error", "harness_failed")
@@ -78,9 +93,21 @@ class RevisionState:
     mode: str = "experiments"  # or "writing_only": no new cell may run
     paper_snapshot: str | None = None  # the pre-revision paper, kept as a separate candidate
     review_items: list[dict[str, str]] = field(default_factory=list)  # [{"id", "text"}], stable ids
+    # executions per cell (a re-run is a new evidence version); separate from the new-cell cap
+    cell_executions: dict[str, int] = field(default_factory=dict)
+    max_cell_executions: int = DEFAULT_MAX_CELL_EXECUTIONS
+    status_history: list[dict[str, Any]] = field(default_factory=list)
 
     def folder(self, run_dir: Path) -> Path:
         return Path(run_dir) / "revisions" / f"revision_{self.index:02d}"
+
+    @property
+    def active(self) -> bool:
+        return self.status in ACTIVE and "rolled_back" not in self.acceptance
+
+    def set_status(self, status: str, reason: str) -> None:
+        self.status_history.append({"at": _now(), "from": self.status, "to": status, "reason": reason})
+        self.status = status
 
 
 def settings_of(opts) -> dict[str, Any]:
@@ -105,11 +132,12 @@ def settings_of(opts) -> dict[str, Any]:
         "experiment_model_effective": effective_model,
         "config_path": str(config_path) if config_path else None,
         "config_sha256": config_sha,
+        **{k: getattr(opts, k, None) for k in BUDGET_SETTINGS + EVIDENCE_SETTINGS},
     }
 
 
 def identity_of(settings: dict[str, Any]) -> str:
-    return sha256_json({k: v for k, v in settings.items() if k != "experiment_env"})[:16]
+    return sha256_json({k: v for k, v in settings.items() if k not in _NOT_IDENTITY})[:16]
 
 
 def save(state: RevisionState, run_dir: Path) -> Path:
@@ -136,7 +164,8 @@ def all_revisions(run_dir: Path) -> list[RevisionState]:
 
 
 def find_open(run_dir: Path) -> RevisionState | None:
-    opened = [s for s in all_revisions(run_dir) if s.status == OPEN]
+    """The active revision (open or needing repair); accepted / rolled back / abandoned ones are closed."""
+    opened = [s for s in all_revisions(run_dir) if s.active]
     if len(opened) > 1:
         raise RuntimeError(f"several open revisions under {run_dir}/revisions: {[s.index for s in opened]}")
     return opened[0] if opened else None
@@ -150,9 +179,23 @@ def next_index(run_dir: Path) -> int:
 def restore_settings(opts, state: RevisionState, run_dir: Path, *, allow_change: bool = False) -> list[dict]:
     """Fill unset options from the open revision; record (and for answering-model settings, gate)
     every explicit difference. Returns the overrides recorded by this call.
+
+    An omitted option (None) means "as persisted"; an explicit one that differs is an override and
+    is recorded. A revision persisted before budgets were recorded cannot tell "no budget" from
+    "budget lost": resuming it without an explicit budget is refused unless ``allow_change``.
     """
     current = settings_of(opts)
     changes: list[dict[str, Any]] = []
+    unrecorded = [k for k in BUDGET_SETTINGS + EVIDENCE_SETTINGS if k not in state.settings]
+    if (any(k in BUDGET_SETTINGS for k in unrecorded) and all(current.get(k) is None for k in BUDGET_SETTINGS)
+            and not allow_change):
+        raise PaperRunError(
+            f"revision {state.index:02d} was opened before budget limits were persisted, so the limits it ran "
+            "under are unknown. Resume with the limits stated explicitly (--budget / --budget-hard / "
+            "--balance-floor / --balance-hard-floor), or pass --allow-setting-change to continue without one."
+        )
+    for key in unrecorded:  # recorded from now on (None = explicitly none), so the next resume restores it
+        changes.append({"setting": key, "from": "unrecorded", "to": current.get(key)})
     for key, saved in state.settings.items():
         if key in _DERIVED:
             continue  # derived from the options; compared after restoring them
@@ -307,41 +350,127 @@ class ExecutionPlan:
     execute: list[str]
     reference: list[str]
     refused: list[str]
+    # cells refused because they already ran ``max_cell_executions`` times (a separate limit from the
+    # new-cell cap: the cap bounds how many cells the revision adds, this bounds re-runs of one cell)
+    rerun_refused: list[str] = field(default_factory=list)
+    # cells whose valid evidence version (same spec) is referenced instead of re-run: name -> ledger entry
+    reuse: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # cells that must be re-run because their spec changed (name -> why); old versions are kept
+    stale: dict[str, str] = field(default_factory=dict)
+    retired: list[str] = field(default_factory=list)  # retired in the protocol: not executed
+    attached_reuse: dict[str, dict[str, Any]] = field(default_factory=dict)  # reuse that ``merge`` attached
+
+
+def answering_of(settings: dict[str, Any]) -> dict[str, Any]:
+    """The settings that change what a new cell measures (part of every cell spec in a revision)."""
+    return {k: settings.get(k) for k in ANSWERING_SETTINGS if settings.get(k) is not None}
 
 
 class ExecutionGuard:
-    """Host enforcement of "reference frozen cells, execute only new ones, at most N new"."""
+    """Host enforcement of "reference frozen cells, reuse valid evidence, execute only what has none,
+    at most N new cells, each executed at most M times"."""
 
     def __init__(self, run_dir: Path, state: RevisionState, manifest: dict[str, Any]):
         self.run_dir = Path(run_dir)
         self.state = state
         self.manifest = manifest
         self.frozen = {c["name"]: c for c in manifest.get("cells", [])}
+        self.results_dir = Path(manifest.get("results_dir") or "")
 
-    def plan(self, names: list[str]) -> ExecutionPlan:
+    def frozen_names(self, names: list[str]) -> set[str]:
+        return {n for n in names if n in self.frozen}
+
+    def frozen_metrics(self, names) -> dict[str, dict[str, Any]]:
+        out = {}
+        for name in names:
+            try:
+                out[name] = json.loads(Path(self.frozen[name]["snapshot"]).read_text(encoding="utf-8"))
+            except (OSError, ValueError, KeyError):
+                continue
+        return out
+
+    def plan(self, names: list[str], protocol: dict[str, Any] | None = None) -> ExecutionPlan:
+        """``protocol``: the one frozen for this execution; with it, a non-frozen cell that has a valid
+        evidence version under its current spec is referenced (whatever its execution count), and the
+        caps apply only to cells that need a new execution.
+        """
+        from jiuwenswarm.agents.harness.common.paper_pipeline import evidence
+
         reference = [n for n in names if n in self.frozen]
         budget = set(self.state.executed_new_cells)
-        execute, refused = [], []
+        specs = (protocol or {}).get("cell_specs") or {}
+        retired = {r["cell"] for r in (protocol or {}).get("retired") or []}
+        out = ExecutionPlan([], reference, [])
         for name in names:
             if name in self.frozen:
                 continue
-            if self.state.mode != "writing_only" and (name in budget or len(budget) < self.state.max_new_cells):
-                budget.add(name)
-                execute.append(name)
+            if name in retired:
+                out.retired.append(name)
+                continue
+            if protocol is not None and self.results_dir.is_dir():
+                entry, note = evidence.reusable_version(self.results_dir, name, specs.get(name))
+                if entry is not None:
+                    out.reuse[name] = entry
+                    continue
+                if note:
+                    out.stale[name] = note
+            if self.state.mode == "writing_only" or (name not in budget and len(budget) >= self.state.max_new_cells):
+                out.refused.append(name)
+            elif self.state.cell_executions.get(name, 0) >= self.state.max_cell_executions:
+                out.rerun_refused.append(name)
             else:
-                refused.append(name)
-        return ExecutionPlan(execute, reference, refused)
+                budget.add(name)
+                out.execute.append(name)
+        return out
 
-    def filter_inputs(self, inputs):
+    def filter_inputs(self, inputs, protocol: dict[str, Any] | None = None):
         """``inputs`` with only the cells to execute; returns (inputs, plan)."""
         variants = list(inputs.implementation.variants)
-        plan = self.plan([v.name for v in variants])
+        plan = self.plan([v.name for v in variants], protocol)
         kept = [v for v in variants if v.name in plan.execute]
         implementation = _copy(inputs.implementation, variants=kept)
         return _copy(inputs, implementation=implementation), plan
 
+    def _attach_reuse(self, result, plan: ExecutionPlan, variant_cls) -> list[str]:
+        """Re-attach each reused version (hash re-checked) and put its file back in the results dir
+        if something replaced it there, so reporting reads the result the evidence describes."""
+        from jiuwenswarm.agents.harness.common.paper_pipeline import evidence
+
+        lines, attached = [], []
+        for name, entry in sorted(plan.reuse.items()):
+            copy = Path(entry["version_path"])
+            if not copy.is_file() or evidence.sha256_file(copy) != entry.get("metrics_sha256"):
+                lines.append(f"REVISION ERROR REUSED_EVIDENCE_CHANGED {name}: archived v{entry.get('version')} is "
+                             "missing or changed; not attached")
+                continue
+            target = self.results_dir / f"{name}.metrics.json"
+            if not target.is_file() or evidence.sha256_file(target) != entry["metrics_sha256"]:
+                shutil.copy2(copy, target)
+                lines.append(f"REVISION restored {target.name} from evidence version v{entry.get('version')}")
+            metrics = json.loads(copy.read_text(encoding="utf-8"))
+            result.variants.append(variant_cls(
+                name=name, metrics=metrics, exit_code=0, log_path=str(target), failure_kind="ok",
+                metrics_state="present", process_status="completed"))
+            plan.attached_reuse[name] = entry
+            attached.append(f"{name} (v{entry.get('version')})")
+        if attached:
+            lines.append(f"REVISION reused {len(attached)} verified evidence versions recorded in this run (same "
+                         f"cell spec; not re-run, no execution counted): {', '.join(attached)}")
+        from jiuwenswarm.agents.harness.common.paper_pipeline.execution_audit import code_fingerprint
+
+        code_dir = self.manifest.get("code_dir")
+        now = code_fingerprint(Path(code_dir)) if code_dir else None
+        drifted = [n for n, e in sorted(plan.attached_reuse.items())
+                   if now and e.get("code_sha256") and e["code_sha256"] != now]
+        if drifted:
+            lines.append(f"REVISION WARN REUSED_AFTER_CODE_CHANGE: the experiment code changed since "
+                         f"{', '.join(drifted)} ran; their design `cells` entries are unchanged, so they are reused "
+                         "— if the change affects them, bump `cells.<name>.implementation` in the experiment-protocol "
+                         "block to have them re-run")
+        return lines
+
     def merge(self, output, plan: ExecutionPlan) -> list[str]:
-        """Attach frozen cells, verify them, archive new metrics; returns host note lines."""
+        """Attach frozen cells and reused versions, verify them, archive new metrics; returns host note lines."""
         result = output.result
         problems = verify_manifest(self.manifest)
         changed = {p["cell"] for p in problems}
@@ -361,9 +490,20 @@ class ExecutionGuard:
         if attached:
             lines.append(f"REVISION referenced {len(attached)} frozen cells from the revision manifest (not re-run): "
                          + ", ".join(attached))
+        lines += self._attach_reuse(result, plan, variant_cls)
+        for name, why in sorted(plan.stale.items()):
+            if name in plan.execute:
+                lines.append(f"REVISION re-run required for {name}: {why}")
+        if plan.retired:
+            lines.append("REVISION retired cells (protocol retirement records) not executed: "
+                         f"{', '.join(plan.retired)}")
         if plan.refused:
             lines.append(f"REVISION ERROR CELL_CAP_REFUSED: the cap of {self.state.max_new_cells} new cells is "
                          f"reached; not executed: {', '.join(plan.refused)}")
+        if plan.rerun_refused:
+            lines.append(f"REVISION ERROR CELL_RERUN_LIMIT: already executed {self.state.max_cell_executions} times "
+                         f"in this revision and no valid evidence version matches the current spec; not executed "
+                         f"again: {', '.join(plan.rerun_refused)}")
         out_dir = self.state.folder(self.run_dir) / "results"
         out_dir.mkdir(parents=True, exist_ok=True)
         results_dir = Path(self.manifest.get("results_dir") or "")
@@ -377,13 +517,16 @@ class ExecutionGuard:
         if executed:
             lines.append(f"REVISION executed new cells: {', '.join(executed)}")
         elif not plan.execute:
-            lines.append("REVISION WARN NO_NEW_CELLS: every cell in the implementation is frozen; nothing new ran")
+            lines.append("REVISION WARN NO_NEW_CELLS: every cell in the implementation is frozen or reused; "
+                         "nothing new ran")
         changes = code_changes(self.manifest)
         if any(changes.values()):
             lines.append(f"REVISION WARN CODE_CHANGED_SINCE_FREEZE: {json.dumps(changes)[:400]} — frozen results "
                          "are referenced as recorded, not re-derived with the new code")
         self.state.executed_new_cells = sorted(set(self.state.executed_new_cells) | set(executed))
-        self.state.refused_cells = sorted(set(self.state.refused_cells) | set(plan.refused))
+        self.state.refused_cells = sorted(set(self.state.refused_cells) | set(plan.refused) | set(plan.rerun_refused))
+        for name in plan.execute:  # attempted executions count, whether or not they completed
+            self.state.cell_executions[name] = self.state.cell_executions.get(name, 0) + 1
         self.state.acceptance["last_integrity"] = {"at": _now(), "problems": problems}
         save(self.state, self.run_dir)
         return lines
@@ -424,32 +567,34 @@ def active_guard() -> ExecutionGuard | None:
 
 
 # --------------------------------------------------------------------------- evidence acceptance
-def evidence_status(run_dir: Path, state: RevisionState) -> tuple[bool, str]:
-    """Whether the revision's evidence is accepted: the latest execution's audit passed (after this
-    revision opened), at least one new cell ran, and every frozen result is unchanged.
+def evidence_check(run_dir: Path, state: RevisionState, design_text: str | None = None) -> dict[str, Any]:
+    """The revision's evidence, judged by ``evidence.verify`` (the same check the final acceptance
+    and ``PaperEvidenceRail`` use) plus the frozen-manifest integrity only a revision has.
     """
+    from jiuwenswarm.agents.harness.common.paper_pipeline import evidence
+
     folder = state.folder(run_dir)
     manifest = load_manifest(folder)
     if manifest is None:
-        return False, "no frozen manifest for this revision"
+        return evidence.finalize({"ok": False, "primary_hypothesis_verified": False, "limitations": [],
+                                 "verified_comparisons": [], "unverified_comparisons": [],
+                                 "blocking": [{"code": "NO_FROZEN_MANIFEST",
+                                               "detail": "no frozen manifest for this revision"}]})
+    result = evidence.verify(Path(manifest["results_dir"]), revision=state, design_text=design_text)
     problems = verify_manifest(manifest)
     if problems:
-        return False, "frozen results changed: " + "; ".join(f"{p['file']} ({p['reason']})" for p in problems[:3])
-    if state.mode == "writing_only":
-        return True, "writing-only revision: frozen results unchanged"
-    if not state.executed_new_cells:
-        return False, "no new cell has been executed in this revision"
-    audit_path = Path(manifest["results_dir"]) / "audit.json"
-    if not audit_path.is_file():
-        return False, "no audit.json for the latest execution"
-    try:
-        report = json.loads(audit_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        return False, f"audit.json unreadable ({exc}); evidence unverified"
-    opened = datetime.fromisoformat(state.created_at).timestamp()
-    if float(report.get("audited_at") or 0) < opened:
-        return False, "the latest audit predates this revision"
-    if report.get("verdict") != "passed":
-        blocking = report.get("blocking") or []
-        return False, f"audit verdict {report.get('verdict')}: " + " | ".join(map(str, blocking[:4]))[:600]
-    return True, "audit passed, frozen results unchanged"
+        result["blocking"].insert(0, {"code": "FROZEN_RESULT_CHANGED", "detail": "frozen results changed: " + "; ".join(
+            f"{p['file']} ({p['reason']})" for p in problems[:3])})
+    if state.mode != "writing_only" and not state.executed_new_cells:
+        result["blocking"].append({"code": "NO_NEW_CELL", "detail": "no new cell has been executed in this revision"})
+    return evidence.finalize(result)
+
+
+def evidence_status(run_dir: Path, state: RevisionState) -> tuple[bool, str]:
+    """(accepted, detail) for the revision gate; see ``evidence_check``."""
+    from jiuwenswarm.agents.harness.common.paper_pipeline import evidence
+
+    result = evidence_check(run_dir, state)
+    if result["ok"]:
+        return True, evidence.summary_line(result) + ", frozen results unchanged"
+    return False, evidence.summary_line(result)

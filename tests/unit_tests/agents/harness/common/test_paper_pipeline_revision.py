@@ -225,3 +225,14 @@ def test_cli_rejects_bad_module_model(monkeypatch):
 def test_unanswered_ids_none_without_answer_fields():
     assert rigor_stats.unanswered_ids([{"qid": "q1", "correct": 1}]) is None
     assert rigor_stats.unanswered_ids([{"qid": "q1", "status": "no_answer", "correct": 0}]) == {"q1"}
+
+
+def test_locate_matches_titles_with_nested_braces():
+    tex = ("\section{Analysis of \textbf{Model} Performance}\label{sec:a}\n"
+           "\subsection*{Plain}\n\caption{Accuracy on $\mathcal{D}$}\n")
+    assert revision.locate("Analysis of \textbf{Model} Performance", tex)
+    assert revision.locate("plain", tex)
+    assert revision.locate("Accuracy on $\mathcal{D}$", tex)
+    assert revision.locate("\label{sec:a}", tex)
+    assert not revision.locate("Analysis of \textbf", tex)
+    assert not revision.locate("Model", tex)

@@ -15,6 +15,9 @@ Running it end to end surfaced several defects; this package fixes them from the
 - ``revision``: ``jiuwenswarm-paper revise`` resumes a finished run for one review-driven revision
   cycle (single-change ablations, replication settings, rewrite), with a host gate that keeps the
   manager from finishing before a new execution and a new paper exist.
+- ``evidence``: the evidence contract — a protocol frozen by the host before execution, a hashed
+  evidence manifest per execution, and the one ``verify`` used by the audit, the revision gate,
+  ``acceptance.json`` and ``evidence_rail.PaperEvidenceRail`` (opt-in ``--evidence-rail``).
 
 Only ``openjiuwen`` and the standard library are imported here, so the package can be used
 without the full JiuwenSwarm service stack (``jiuwenswarm-paper`` CLI).

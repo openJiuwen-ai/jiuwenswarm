@@ -235,6 +235,27 @@ def _experiment_usage(results_dir: Path) -> dict:
     return out
 
 
+def _execution_history(results_dir: Path) -> dict:
+    """Executions per cell from the evidence history: runs, failed attempts (each may have cost
+    tokens that no metrics file records) and referenced (reused, not re-run) cells."""
+    from jiuwenswarm.agents.harness.common.paper_pipeline import evidence
+
+    folder = evidence.evidence_dir(results_dir)
+    out: dict = {"cells": {}, "failed_attempts": 0, "reruns": 0, "reused_cells": []}
+    for history in sorted(folder.glob("cells/*/history.jsonl")):
+        runs = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines() if line.strip()]
+        failed = sum(1 for r in runs if r.get("status") != "completed")
+        out["cells"][history.parent.name] = {"executions": len(runs), "failed": failed}
+        out["failed_attempts"] += failed
+        out["reruns"] += max(0, len(runs) - 1)
+    manifest = evidence.load_manifest(results_dir) or {}
+    cells = manifest.get("cells") or {}
+    out["reused_cells"] = sorted(n for n, c in cells.items() if c.get("role") in ("frozen", "reused"))
+    if out["failed_attempts"]:
+        out["note"] = "failed attempts consumed experiment calls whose usage is unknown (no metrics were written)"
+    return out
+
+
 def spend_report(run_dir: Path, *, balance_before: float | None = None, balance_after: float | None = None) -> dict:
     """Every model call of the run by source, each labelled by how well it is known.
 
@@ -261,7 +282,13 @@ def spend_report(run_dir: Path, *, balance_before: float | None = None, balance_
                             "note": "shared account: other tasks draw on it; not this task's exact cost"},
     }
     for results in sorted(run_dir.glob("experiments/*/results")):
-        report["experiments"]["results_dirs"][str(results)] = _experiment_usage(results)
+        usage = _experiment_usage(results)
+        usage["executions"] = _execution_history(results)
+        report["experiments"]["results_dirs"][str(results)] = usage
+    report["enforcement"] = (
+        "hard limits are checked before every manager round and before every experiment variant starts; "
+        "a variant already running is not interrupted, and experiment / review calls are not in the "
+        "pipeline ledger, so neither is a strict limit inside one long experiment")
     for panel in sorted(run_dir.rglob("review_panel.json")):
         try:
             report["review_panels"].append(_review_usage(panel))
@@ -272,7 +299,13 @@ def spend_report(run_dir: Path, *, balance_before: float | None = None, balance_
         "estimated_yuan": report["pipeline_ledger"]["estimated_yuan_unpriced_models"],
         "unknown": [f"{tokens['unknown_calls']} pipeline calls without usage",
                     "experiment calls: tokens recorded, price unknown",
+                    f"{sum(u['executions']['failed_attempts'] for u in report['experiments']['results_dirs'].values())}"
+                    " failed experiment attempts: usage unknown",
                     f"{sum(p.get('unknown_calls', 0) for p in report['review_panels'])} review calls without usage"],
+        "usage_quality": {"pipeline": "recorded per call (ledger)", "experiments": "recorded per item when the code "
+                          "writes token fields, else unknown", "reviews": "recorded per call when the API returns it"},
+        "price_quality": {"pipeline": "known for priced models, estimated for unpriced ones",
+                          "experiments": "unknown", "reviews": "unknown"},
     }
     (run_dir / "spend_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     return report

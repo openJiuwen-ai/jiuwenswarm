@@ -53,6 +53,22 @@ Reviewers reject papers whose experiment does not test the stated claim. Your de
 7. **Update mode.** When revising after a negative result, keep the same primary metric, item set and
    baselines so results stay comparable across revisions, and change one thing at a time. After two
    refuted/inconclusive revisions, recommend `stop` and let the paper report the negative result.
+8. **Machine-checkable protocol.** End the design with exactly one fenced block tagged
+   `experiment-protocol` holding a JSON object; the host freezes it before execution and checks the
+   evidence against it (rewording the prose later does not invalidate results; changing this block
+   does, for the cells it touches):
+   ```experiment-protocol
+   {"item_sets": {"": {"dataset": "<name + split>", "ids_file": "item_ids.json"}},
+    "tier_gates": {"t1": 0.5},
+    "calibration_cells": [],
+    "cells": {}}
+   ```
+   `item_sets`: per setting prefix (`""` = original; `"m2": {"same_as": ""}` for the same items), the
+   file in the experiment code directory listing every item id the run will score — every variant
+   must output a record for every listed id. `tier_gates`: the minimum share of items on which each
+   tier's constraint must be active, in [0, 1], fixed now (calibration runs named in
+   `calibration_cells` may precede it and are never evidence). `cells`: optional per-variant entries
+   (e.g. `{"implementation": "v2"}`); changing a variant's entry makes the host re-run it.
 """
 
 CODE_PROTOCOL = """
@@ -84,8 +100,12 @@ audits the run, so the records must be complete and honest:
   (`--tier`, `--budget`) silently never runs. Tier values fixed by a calibration step must be
   written to a file the full runs read, not recomputed per run.
 - The host audit fails a constrained variant whose per-item `constraint_active` is true on fewer
-  than 30% of items: calibrate tiers from the measured per-item uncompressed usage so that the
-  tightest tier binds on most items.
+  items than the gate frozen in the design's `experiment-protocol` block (30% if none): calibrate
+  tiers from the measured per-item uncompressed usage so that the tightest tier binds on most items.
+  A gate written into metrics.json is ignored; report only the actual per-item flags.
+- Write the sampled item ids, before any full run, to `item_ids.json` in the code directory (a JSON
+  list; the file the design's `item_sets` names). The host freezes it before execution: every
+  variant must output a record for every id in it, and a missing record is never scored.
 - Use temperature 0 for the answering model unless the design says otherwise.
 """
 

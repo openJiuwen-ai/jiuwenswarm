@@ -78,6 +78,50 @@ class PaperRunOptions:
     # resume of an open revision: allow an answering-model setting to differ from the persisted one
     allow_setting_change: bool = False
     writing_only: bool = False  # revise only: answer the review without new experiments
+    # evidence contract (None = as persisted / strict default): "confirmatory" needs every required
+    # primary comparison verified; "descriptive" delivers without it, as a stated limitation
+    delivery_policy: str | None = None
+    # a missing primary value: "refuse" (comparison unverified) or "score_zero" (unanswered / API /
+    # parse failures count as 0; anything else still refuses)
+    missing_primary_rule: str | None = None
+    # minimum constraint-activation rate per tier (e.g. {"t1": 0.5}), frozen into the protocol before
+    # execution; overrides the design's gates. None = as persisted / the design's / 30%
+    tier_gates: dict[str, float] | None = None
+    # PaperEvidenceRail on the manager / reporting agents (opt-in; needs the rigor protocol)
+    evidence_rail: bool = False
+
+
+# Options a plain ``resume`` restores from ``run_settings.json`` when they are omitted.
+RUN_SETTINGS = ("budget_soft", "budget_hard", "balance_floor", "balance_hard_floor", "experiment_env",
+                "experiment_model", "delivery_policy", "missing_primary_rule", "tier_gates", "evidence_rail")
+RUN_SETTINGS_FILE = "run_settings.json"
+
+
+def persist_run_settings(opts: PaperRunOptions, *, resume: bool) -> list[dict[str, Any]]:
+    """Restore omitted controls from ``run_settings.json`` on resume; record explicit ones.
+
+    An option left at None (``evidence_rail``: False) is "as before"; an explicit value that differs
+    from the persisted one is an override, recorded in the file's ``overrides``. Credentials are
+    never stored: the experiment env file is referenced by path.
+    """
+    path = Path(opts.run_dir) / RUN_SETTINGS_FILE
+    saved = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"settings": {}, "overrides": []}
+    events: list[dict[str, Any]] = []
+    for key in RUN_SETTINGS:
+        given = getattr(opts, key)
+        before = saved["settings"].get(key)
+        omitted = given is None or (key == "evidence_rail" and given is False)
+        if omitted:
+            if resume and before not in (None, False):
+                setattr(opts, key, before)
+                events.append({"setting": key, "restored": before})
+            continue
+        if before is not None and before != given:
+            events.append({"setting": key, "from": before, "to": given, "at": now_iso()})
+            saved["overrides"].append(events[-1])
+        saved["settings"][key] = given
+    path.write_text(json.dumps(saved, indent=2, ensure_ascii=False), encoding="utf-8")
+    return events
 
 
 def now_iso() -> str:
@@ -178,6 +222,8 @@ async def resume_run(opts: PaperRunOptions) -> None:
     else:
         revision = revision_state.find_open(run_dir)
         if revision is not None:
+            if revision.status != revision_state.OPEN and not followup:
+                followup = repair_followup(revision)
             activate_revision(run_dir, revision)
             log_event(run_dir, {"event": "patch", "revision_reactivated": revision.index,
                                 "start_round": revision.start_round, "max_new_cells": revision.max_new_cells,
@@ -229,6 +275,25 @@ async def resume_run(opts: PaperRunOptions) -> None:
         else:
             log_event(run_dir, {"event": "no_paper", "expected": str(tex)})
         await observer.finish_pending()
+
+
+def repair_followup(revision) -> str:
+    """Follow-up for resuming a revision whose acceptance failed: what is still missing."""
+    final = revision.acceptance.get("final") or {}
+    evidence = final.get("evidence") or {}
+    failed = [k for k, v in (final.get("checks") or {}).items() if not v]
+    lines = [f"Revision {revision.index:02d} finished but was NOT accepted "
+             f"(failed checks: {', '.join(failed) or 'unknown'}).",
+             "Repair it within the same revision limits (frozen cells, new-cell cap and budgets still apply):"]
+    lines += [f"- {task}" for task in evidence.get("pending_tasks") or []]
+    lines += [f"- {b.get('code')}: {b.get('detail')}" for b in (evidence.get("blocking") or [])[:6]]
+    unresolved = (final.get("revision") or {}).get("unresolved_items") or []
+    if unresolved:
+        lines.append(f"- review items not yet addressed in revision_response.json: {', '.join(unresolved)}")
+    if "paper_passed" in failed:
+        reasons = "; ".join((final.get("paper") or {}).get("reasons") or [])
+        lines.append(f"- the final PDF check failed: {reasons[:400]}")
+    return "\n".join(lines) + "\n"
 
 
 def activate_revision(run_dir: Path, revision) -> None:
@@ -370,47 +435,58 @@ def write_acceptance(run_dir: Path, results_dir: Path, *, pipeline_status: str |
                      revision=None) -> dict[str, Any]:
     """``<run_dir>/acceptance.json``: "the pipeline finished" and "the deliverable is accepted" kept apart.
 
-    Deliverable = pipeline complete + evidence audit passed (+ for a revision: evidence gate and
-    frozen-result integrity) + final PDF check passed. An open revision is closed here as
-    ``accepted`` or ``not_accepted`` once its manager run completes.
+    Deliverable = pipeline complete + evidence verified (``evidence.verify``: frozen protocol, every
+    required cell and primary comparison, result hashes re-checked now; for a revision also its own
+    executions and frozen-result integrity) + final PDF check passed. "Primary hypothesis tested"
+    is reported separately: under the ``descriptive`` policy a paper is deliverable without it.
+    A revision whose manager run completed becomes ``accepted``, or ``needs_repair`` — which keeps it
+    active (guard, cap, budgets) for the next resume until it passes or the operator ends it.
     """
-    from jiuwenswarm.agents.harness.common.paper_pipeline import revision_state
+    from jiuwenswarm.agents.harness.common.paper_pipeline import evidence, revision_state
 
-    audit_path = Path(results_dir) / "audit.json"
-    try:
-        audit = json.loads(audit_path.read_text(encoding="utf-8")) if audit_path.is_file() else {}
-    except (OSError, ValueError):
-        audit = {"verdict": "unverified", "blocking": ["audit.json unreadable"]}
-    evidence = {"verdict": audit.get("verdict", "unverified"), "blocking": audit.get("blocking", [])[:10]}
+    if revision is not None:
+        verified = revision_state.evidence_check(run_dir, revision)
+    else:
+        verified = evidence.verify(Path(results_dir))
+    kept = ("ok", "primary_hypothesis_verified", "policy", "protocol_id", "execution_id", "limitations",
+            "pending_tasks", "checked_at")
+    evidence_record = {k: verified.get(k) for k in kept}
+    evidence_record["blocking"] = verified["blocking"][:10]
     paper = ({"status": paper_check.status, "reasons": paper_check.reasons} if paper_check is not None
              else {"status": "failed", "reasons": ["no paper"]})
-    checks = {"pipeline_complete": pipeline_status == "complete", "evidence_passed": evidence["verdict"] == "passed",
+    checks = {"pipeline_complete": pipeline_status == "complete", "evidence_passed": bool(verified["ok"]),
               "paper_passed": paper["status"] == "passed"}
     record: dict[str, Any] = {"at": now_iso(), "pipeline_status": pipeline_status,
-                              "evidence": evidence, "paper": paper}
+                              "evidence": evidence_record, "paper": paper,
+                              "primary_hypothesis_verified": bool(verified.get("primary_hypothesis_verified"))}
     if revision is not None:
         from jiuwenswarm.agents.harness.common.paper_pipeline.revision import check_response
 
-        ok, detail = revision_state.evidence_status(run_dir, revision)
-        checks["revision_evidence_and_integrity"] = ok
         paper_dir = Path(results_dir).parent / "paper"
-        response = check_response(revision.review_items, paper_dir, Path(results_dir))
+        response = check_response(revision.review_items, paper_dir, Path(results_dir), revision=revision)
         if revision.review_items:
-            checks["review_items_resolved"] = not response["unresolved"]
+            checks["review_items_addressed"] = not response["unresolved"]
         (revision.folder(run_dir) / "response_check.json").write_text(
             json.dumps(response, indent=2, ensure_ascii=False), encoding="utf-8")
-        record["revision"] = {"index": revision.index, "mode": revision.mode, "evidence_detail": detail,
+        record["revision"] = {"index": revision.index, "mode": revision.mode,
+                              "evidence_detail": evidence.summary_line(verified),
                               "unresolved_items": [u["id"] for u in response["unresolved"]],
+                              "verified_resolved_items": [r["id"] for r in response["resolved"]
+                                                          if r.get("state") == "verified_resolved"],
                               # both papers stay available; `jiuwenswarm-paper rollback` restores the previous
                               "candidates": {"previous": revision.paper_snapshot, "revised": str(paper_dir)}}
     record["checks"] = checks
     record["deliverable"] = all(checks.values())
     (Path(run_dir) / "acceptance.json").write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
     if revision is not None and pipeline_status == "complete":
-        revision.status = revision_state.ACCEPTED if record["deliverable"] else revision_state.NOT_ACCEPTED
         revision.acceptance["final"] = record
+        if record["deliverable"]:
+            revision.set_status(revision_state.ACCEPTED, "acceptance passed")
+            revision_state.install_execution_guard(None)
+        else:  # stays active: the guard, cap and budgets keep applying on the next resume
+            failed = [k for k, v in checks.items() if not v]
+            revision.set_status(revision_state.NEEDS_REPAIR, f"acceptance failed: {failed}")
         revision_state.save(revision, run_dir)
-        revision_state.install_execution_guard(None)
     log_event(run_dir, {"event": "acceptance", "deliverable": record["deliverable"], "checks": checks,
                         "revision_status": revision.status if revision is not None else None})
     return record
@@ -434,8 +510,15 @@ async def run(opts: PaperRunOptions, *, resume: bool) -> None:
         overrides = revision_state.restore_settings(opts, open_revision_state, opts.run_dir,
                                                     allow_change=opts.allow_setting_change)
         log_event(opts.run_dir, {"event": "revision_restored", "revision": open_revision_state.index,
-                                 "identity": open_revision_state.identity,
+                                 "identity": open_revision_state.identity, "status": open_revision_state.status,
                                  "settings": open_revision_state.settings, "overrides": overrides})
+    restored = persist_run_settings(opts, resume=resume)
+    if restored:
+        log_event(opts.run_dir, {"event": "run_settings_restored", "changes": restored})
+    from jiuwenswarm.agents.harness.common.paper_pipeline import evidence
+
+    evidence.configure(missing_primary_rule=opts.missing_primary_rule, delivery_policy=opts.delivery_policy,
+                       tier_gates=opts.tier_gates)
     limit = install_code_agent_iteration_fix(opts.code_react_iterations)
     log_event(opts.run_dir, {"event": "patch", "code_react_iterations": limit})
     if opts.module_models:
@@ -470,6 +553,13 @@ async def run(opts: PaperRunOptions, *, resume: bool) -> None:
         from jiuwenswarm.agents.harness.common.paper_pipeline.research_protocol import install_research_protocol
 
         log_event(opts.run_dir, {"event": "patch", "rigor_protocol": install_research_protocol()})
+    if opts.evidence_rail:
+        if not opts.rigor:
+            raise PaperRunError("--evidence-rail needs the rigor protocol (it checks the audit's evidence)")
+        from jiuwenswarm.agents.harness.common.paper_pipeline.evidence_rail import install_paper_evidence_rail
+
+        # the rail looks the open revision up at each check: `revise` opens it only later
+        log_event(opts.run_dir, {"event": "patch", "paper_evidence_rail": install_paper_evidence_rail(opts.run_dir)})
     reader = None
     balance_before = None
     guard_spec = budget_limits(opts)

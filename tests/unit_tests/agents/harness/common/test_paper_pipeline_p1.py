@@ -197,8 +197,10 @@ def test_response_check_requires_disposition_location_and_evidence(tmp_path: Pat
         {"id": "R-unknown", "disposition": "rewritten", "paper_location": "Limitations"},
     ]}), encoding="utf-8")
     check = revision.check_response(items, paper, results)
-    assert [r["id"] for r in check["resolved"]] == [items[0]["id"], items[1]["id"]]
-    assert "no metrics file" in check["unresolved"][0]["why"] and check["unknown_ids"] == ["R-unknown"]
+    # a metrics file is not evidence: only the audited, hashed evidence manifest counts
+    assert [(r["id"], r["state"]) for r in check["resolved"]] == [(items[1]["id"], "addressed")]
+    assert all("no evidence manifest" in u["why"] for u in check["unresolved"])
+    assert check["unknown_ids"] == ["R-unknown"]
 
 
 def test_candidate_choice_is_not_by_mean_alone():
@@ -235,8 +237,10 @@ def test_writing_only_revision_runs_nothing_and_needs_only_a_report(tmp_path: Pa
     assert revision.writing_only_rows("reporting:7:1", (False, "changed"))[revision.REQ_REPORT][1] is None
     folder = state.folder(tmp_path)
     folder.mkdir(parents=True)
-    (folder / revision_state.MANIFEST_FILE).write_text(json.dumps({"cells": [], "results_dir": str(tmp_path)}))
-    assert revision_state.evidence_status(tmp_path, state)[0]
+    (folder / revision_state.MANIFEST_FILE).write_text(json.dumps({"cells": [], "results_dir": str(tmp_path / "results")}))
+    # nothing to run, but the existing evidence must still be verifiable (re-audit legacy runs first)
+    ok, detail = revision_state.evidence_status(tmp_path, state)
+    assert not ok and "NO_EVIDENCE_MANIFEST" in detail and "NO_NEW_CELL" not in detail
 
 
 def test_writing_only_gate_with_agent_core(monkeypatch):
@@ -270,7 +274,7 @@ def test_acceptance_needs_resolved_review_items(tmp_path: Path):
     (results / "audit.json").write_text(json.dumps({"verdict": "passed", "audited_at": time.time() + 5}))
     record = runner.write_acceptance(tmp_path, results, pipeline_status="complete",
                                      paper_check=FinalCheck("passed"), revision=state)
-    assert record["deliverable"] is False and record["checks"]["review_items_resolved"] is False
+    assert record["deliverable"] is False and record["checks"]["review_items_addressed"] is False
     assert record["revision"]["candidates"] == {"previous": "prev", "revised": str(paper)}
     assert (state.folder(tmp_path) / "response_check.json").is_file()
 
