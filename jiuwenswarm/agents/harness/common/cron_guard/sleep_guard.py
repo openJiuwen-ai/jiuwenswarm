@@ -140,8 +140,16 @@ def _split_segments(tokens: list[str]) -> list[list[str]]:
 
 
 def _extract_substitutions(text: str) -> list[str]:
-    """Pull inner scripts out of ``$( ... )`` and backtick constructs."""
+    """Pull inner scripts out of ``$( ... )`` and backtick constructs.
+
+    Each substitution is returned exactly once: the outer ``$(...)`` body is
+    extracted here and its nested parts are picked up when that body is
+    re-parsed; backticks inside a ``$(...)`` body are skipped for the same
+    reason (they are extracted from the inner text instead) — double-counting
+    a nested ``sleep`` would inflate the run's budget.
+    """
     inner: list[str] = []
+    substitution_spans: list[tuple[int, int]] = []
     idx = 0
     while True:
         start = text.find("$(", idx)
@@ -156,9 +164,14 @@ def _extract_substitutions(text: str) -> list[str]:
                 depth -= 1
             i += 1
         if depth == 0:
-            inner.append(text[start + 2 : i - 1])
-        idx = start + 2
+            inner.append(text[start + 2:i - 1])
+            substitution_spans.append((start, i))
+            idx = i  # continue after the close paren; nested $() come via recursion
+        else:
+            idx = start + 2  # unbalanced opener — skip past it
     for m in re.finditer(r"`([^`]*)`", text):
+        if any(a <= m.start() < b for a, b in substitution_spans):
+            continue
         if m.group(1).strip():
             inner.append(m.group(1))
     return inner
@@ -444,6 +457,7 @@ def guard_shell_command(command: str, background: bool = False, session_id: str 
     try:
         from .config import get_cron_guard_config
         from .identity import get_current_or_registered_run
+        from .ledger import sync_budget_to_ledger
 
         cfg = get_cron_guard_config()
         if not cfg.get("enabled"):
@@ -476,20 +490,24 @@ def guard_shell_command(command: str, background: bool = False, session_id: str 
         elif parsed.max_single_call_seconds > max_single:
             blocked_reason = f"单条 sleep 累计 {parsed.max_single_call_seconds:g}s 超过上限 {max_single:g}s"
         else:
-            # Counted against the run budget.
+            # Counted against the run budget (per sleep call, not per command:
+            # one command with two sleeps consumes two calls).
             counted_seconds = parsed.sleep_seconds
+            counted_calls = parsed.sleep_calls
             if parsed.unknown_duration and unknown_policy == "assume":
                 counted_seconds += float(sleep_cfg.get("unknown_assumed_seconds", 10))
-            ctx.budget.add_sleep(counted_seconds)
+            ctx.budget.add_sleep(counted_seconds, calls=counted_calls)
             if ctx.budget.sleep_calls > max_calls:
                 blocked_reason = f"本 run 的 sleep 调用次数 {ctx.budget.sleep_calls} 超过上限 {max_calls}"
             elif ctx.budget.sleep_seconds > max_total:
                 blocked_reason = (
                     f"本 run 的 sleep 累计 {ctx.budget.sleep_seconds:g}s 超过总预算 {max_total:g}s"
                 )
-            _ledger_sync(ctx)
+            sync_budget_to_ledger(ctx)
 
-        if background and blocked_reason is None and parsed.has_sleep:
+        # parsed.has_sleep is guaranteed here (early return above); a compliant
+        # sleep in a background job is still a polling escape hatch.
+        if background and blocked_reason is None:
             blocked_reason = "后台命令包含 sleep/轮询"
 
         if blocked_reason is None:
@@ -502,12 +520,3 @@ def guard_shell_command(command: str, background: bool = False, session_id: str 
     except Exception as exc:  # noqa: BLE001 — guard failure must never block the run
         logger.warning("[cron_guard] sleep guard internal error (fail-open): %s", exc)
         return None
-
-
-def _ledger_sync(ctx) -> None:
-    try:
-        from .ledger import get_run_ledger
-
-        get_run_ledger().update_budget(ctx.run_id, ctx.budget.snapshot())
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[cron_guard] ledger sync failed: %s", exc)

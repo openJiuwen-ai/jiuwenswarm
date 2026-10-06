@@ -93,9 +93,10 @@ class RunBudget:
             self.model_calls += 1
             return self.model_calls
 
-    def add_sleep(self, seconds: float) -> None:
+    def add_sleep(self, seconds: float, calls: int = 1) -> None:
+        """Account *calls* sleep invocations totalling *seconds*."""
         with self._lock:
-            self.sleep_calls += 1
+            self.sleep_calls += int(calls)
             self.sleep_seconds += max(0.0, float(seconds))
 
     def add_shell_seconds(self, seconds: float) -> None:
@@ -139,10 +140,6 @@ class CronRunContext:
     # Set by the L-WD soft timer; consumed by CronBudgetRail for soft finishing.
     soft_deadline_reached: bool = False
     force_finish_requested: bool = False
-
-    @property
-    def is_scheduled_run(self) -> bool:
-        return True
 
 
 #: ContextVar for the current cron run (asyncio task inheritance).
@@ -208,54 +205,19 @@ class RunRegistry:
             if not pids:
                 return True
             import signal
-            import subprocess
 
             try:
                 my_pgid = os.getpgid(0)
             except OSError:  # pragma: no cover
                 my_pgid = None
-            for pid in pids:
-                # Kill the child's process group only when it is NOT our own —
-                # killpg on a child that shares our pgid would terminate the
-                # whole AgentServer.  Children started with start_new_session
-                # (or via nohup/setsid) get the full group kill; otherwise we
-                # signal just the pid.
-                try:
-                    pgid = os.getpgid(pid)
-                except OSError:
-                    pgid = None
-                if pgid is not None and my_pgid is not None and pgid != my_pgid:
-                    try:
-                        os.killpg(pgid, signal.SIGTERM)
-                        continue
-                    except (ProcessLookupError, PermissionError, OSError):
-                        pass
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
+            _signal_wave(pids, signal.SIGTERM, my_pgid)
             deadline = time.monotonic() + max(0.0, kill_grace_seconds)
             while time.monotonic() < deadline:
                 if all(not _pid_alive(p) for p in pids):
                     return True
                 time.sleep(0.1)
-            for pid in pids:
-                if not _pid_alive(pid):
-                    continue
-                try:
-                    pgid = os.getpgid(pid)
-                except OSError:
-                    pgid = None
-                if pgid is not None and my_pgid is not None and pgid != my_pgid:
-                    try:
-                        os.killpg(pgid, signal.SIGKILL)
-                        continue
-                    except (ProcessLookupError, PermissionError, OSError):
-                        pass
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
+            survivors = {p for p in pids if _pid_alive(p)}
+            _signal_wave(survivors, signal.SIGKILL, my_pgid)
             return all(not _pid_alive(p) for p in pids)
         except Exception as exc:  # noqa: BLE001 — reap must never raise
             logger.warning("[cron_guard] reap(%s) failed: %s", run_id, exc)
@@ -266,10 +228,34 @@ class RunRegistry:
             return list(self._runs.keys())
 
 
+def _signal_wave(pids: set[int], sig: int, my_pgid: int | None) -> None:
+    """Deliver *sig* to every pid — process-group when it is not our own.
+
+    killpg on a child that shares our pgid would terminate the whole
+    AgentServer.  Children started with start_new_session (or via
+    nohup/setsid) get the full group kill; otherwise we signal just the pid.
+    """
+    for pid in pids:
+        try:
+            pgid = os.getpgid(pid)
+        except OSError:
+            pgid = None
+        if pgid is not None and my_pgid is not None and pgid != my_pgid:
+            try:
+                os.killpg(pgid, sig)
+                continue
+            except OSError:  # noqa: BLE001 — ESRCH/EPERM; fall through to the pid
+                pass
+        try:
+            os.kill(pid, sig)
+        except OSError:  # noqa: BLE001 — already gone (or not ours); never raise
+            pass
+
+
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
-    except (ProcessLookupError, OSError):
+    except OSError:  # ESRCH etc. — ProcessLookupError is an OSError subclass
         return False
     # os.kill(pid, 0) succeeds for zombies; treat reaped-but-unwaited children
     # as dead so the reaper does not spin on them.
@@ -338,7 +324,9 @@ def resolve_cron_run_context(
     try:
         max_iterations = int(max_iterations) if max_iterations is not None else None
     except (TypeError, ValueError):
-        max_iterations = int(DEFAULT_MAX_ITERATIONS_FALLBACK)
+        from .config import DEFAULTS
+
+        max_iterations = int(DEFAULTS["max_iterations"])
 
     from .config import clamp_deadlines
 
@@ -362,9 +350,6 @@ def resolve_cron_run_context(
     )
 
 
-DEFAULT_MAX_ITERATIONS_FALLBACK = 30
-
-
 def get_current_or_registered_run(session_id: str | None = None) -> Optional[CronRunContext]:
     """Consumer-side lookup: ContextVar first, registry-by-session fallback."""
     ctx = current_cron_run.get()
@@ -375,3 +360,18 @@ def get_current_or_registered_run(session_id: str | None = None) -> Optional[Cro
     except Exception as exc:  # noqa: BLE001 — lookup failure = not a cron run (fail-open for interactive)
         logger.warning("[cron_guard] registry lookup failed: %s", exc)
         return None
+
+
+def record_shell_wait(started_monotonic: float, session_id: str | None = None) -> None:
+    """Accumulate elapsed shell-tool wait into the active cron run budget (L3/L4).
+
+    Called by the shell tool wrappers after each tool call so the
+    ``wall_clock.tool_wait_budget_seconds`` limit works on real data.  No
+    active cron run → no-op.  Never raises (fail-open).
+    """
+    try:
+        ctx = get_current_or_registered_run(session_id)
+        if ctx is not None:
+            ctx.budget.add_shell_seconds(max(0.0, time.monotonic() - started_monotonic))
+    except Exception as exc:  # noqa: BLE001 — budget accounting must never break the tool
+        logger.debug("[cron_guard] shell wait accounting failed: %s", exc)

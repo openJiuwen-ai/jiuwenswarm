@@ -145,7 +145,7 @@ def restore_quarantined(sid: str, quarantine_prefix: str, db_path: Path | None =
                 return False
             conn.executemany(
                 "INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)",
-                [(k[len(quarantine_prefix) + 1 :], v) for k, v in rows],
+                [(k[len(quarantine_prefix) + 1:], v) for k, v in rows],
             )
             conn.commit()
             return True

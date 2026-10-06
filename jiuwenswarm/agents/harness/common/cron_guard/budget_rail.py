@@ -57,12 +57,9 @@ class CronBudgetRail(DeepAgentRail):
 
             budget = run.budget
             calls = budget.add_model_call()
-            try:
-                from .watchdog import _ledger_sync_safe
+            from .ledger import sync_budget_to_ledger
 
-                _ledger_sync_safe(run)
-            except Exception:  # noqa: BLE001
-                pass
+            sync_budget_to_ledger(run)
 
             max_iterations = run.max_iterations
             if max_iterations is not None and calls > int(max_iterations):
@@ -86,7 +83,8 @@ class CronBudgetRail(DeepAgentRail):
         except Exception as exc:  # noqa: BLE001 — rail failure must not break the agent loop
             logger.warning("[cron_guard] budget rail error (fail-open): %s", exc)
 
-    def _finish_or_raise(self, ctx: AgentCallbackContext, run: Any, reason: str) -> None:
+    @staticmethod
+    def _finish_or_raise(ctx: AgentCallbackContext, run: Any, reason: str) -> None:
         run.force_finish_requested = True
         logger.info(
             "[cron_guard] budget limit run_id=%s reason=%s — requesting force finish",
