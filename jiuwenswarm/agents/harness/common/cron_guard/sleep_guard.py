@@ -194,6 +194,90 @@ def _parse_sleep_args(args: list[str]) -> tuple[float | None, bool]:
     return total, False
 
 
+def _normalise_newlines(text: str) -> str:
+    """Rewrite command-separating newlines into ``;``.
+
+    shlex consumes ``\\n`` as whitespace, so ``echo done\\nsleep 120`` lexes
+    as a single ``echo`` command and the sleep hides in the argument list,
+    escaping interception entirely.  Newlines inside quotes (data), heredoc
+    bodies (data) and backslash continuations are left alone; the first
+    newline after a ``<<word`` operator closes the command line and opens
+    the heredoc body.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    quote: str | None = None
+    heredoc_term: str | None = None
+    pending_term: str | None = None
+    while i < n:
+        ch = text[i]
+        if heredoc_term is not None:
+            if ch != "\n":
+                out.append(ch)
+                i += 1
+                continue
+            out.append(ch)
+            i += 1
+            line_end = text.find("\n", i)
+            line = text[i:line_end if line_end != -1 else n]
+            if line.strip() == heredoc_term:
+                out.append(line)
+                heredoc_term = None
+                i += len(line)
+            continue
+        if quote is not None:
+            out.append(ch)
+            if quote == '"' and ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            if text[i + 1] == "\n":
+                out.append(" ")  # line continuation joins the two lines
+            else:
+                out.append(ch)
+                out.append(text[i + 1])
+            i += 2
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\n":
+            if pending_term is not None:
+                # Newline closing the heredoc's command line: the body starts
+                # here and must stay inert, so merge it into the host command's
+                # segment (a ``;`` would expose the body as a new command).
+                heredoc_term = pending_term
+                pending_term = None
+                out.append(" ")
+                i += 1
+                continue
+            out.append(";")
+            i += 1
+            continue
+        if ch == "<" and text[i:i + 2] == "<<":
+            j = i + 2
+            while j < n and text[j] not in " \t\n;|&<>()":
+                j += 1
+            raw = text[i:j]
+            out.append(raw)
+            term = raw.lstrip("<-").strip("'\"")
+            if term:
+                pending_term = term
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _tokenize(text: str) -> list[str]:
     lexer = _PunctLexer(text, posix=True, punctuation_chars="();|&<>")
     lexer.whitespace = " \t\n"
@@ -216,7 +300,7 @@ def _parse_script(
             result.details.append(f"nesting depth exceeded (>{max_depth}) with sleep markers")
         return
     try:
-        tokens = _tokenize(text)
+        tokens = _tokenize(_normalise_newlines(text))
     except ValueError:
         # Tokenizer failure: only meaningful as a hit when the raw text hints
         # at sleep; otherwise treat as inert (avoid false positives on exotic

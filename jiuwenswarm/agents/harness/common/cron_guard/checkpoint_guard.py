@@ -99,8 +99,8 @@ def quarantine_checkpoint(sid: str, db_path: Path | None = None) -> tuple[bool, 
                 "INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)",
                 [(f"{prefix}:{k}", v) for k, v in rows],
             )
-            conn.commit()
-            # Verify the copy before deleting anything.
+            # Verify the copy before committing or deleting anything — a
+            # rollback only discards work that was never committed.
             verify = conn.execute(
                 "SELECT COUNT(*) FROM kv_store WHERE key LIKE ?",
                 (f"{prefix}:%",),
@@ -108,6 +108,7 @@ def quarantine_checkpoint(sid: str, db_path: Path | None = None) -> tuple[bool, 
             if int(verify) < len(rows):
                 conn.rollback()
                 return False, None
+            conn.commit()
             conn.executemany(
                 "DELETE FROM kv_store WHERE key = ?",
                 [(k,) for k, _ in rows],
