@@ -11,7 +11,7 @@ import httpx
 
 from jiuwenswarm.common.duplex_choice import (
     DEFAULT_INTERRUPT_THRESHOLD, DEFAULT_TIMEOUT_SECONDS, choice_request,
-    classify_choice, credential, decision_from_body, endpoint_url, log_decision,
+    classify_choice, credential, endpoint_url,
 )
 from jiuwenswarm.common.duplex_router import (
     ROUTING_INSTRUCTIONS, ControlSnapshot, InboundMessage, state_for,
@@ -20,13 +20,6 @@ from jiuwenswarm.common.duplex_router import (
 DEFAULT_MODEL = "jev-1.13.0"
 DEFAULT_API_BASE = "https://api.typesafe.ai/v1"
 logger = logging.getLogger(__name__)
-
-
-def _decision(payload: Any, threshold: float) -> dict[str, str]:
-    """Compatibility entry point for direct typed-answer validation."""
-    decision = decision_from_body(payload, threshold, provider="Jev")
-    log_decision(payload, decision, threshold, provider="Jev", logger=logger)
-    return decision
 
 
 def _request(snapshot: ControlSnapshot, messages: tuple[InboundMessage, ...],

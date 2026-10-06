@@ -13,7 +13,7 @@ def configure_agent_teams_home() -> None:
 
     configure_openjiuwen_home(get_user_workspace_dir())
 
-    # Optional observation only; SDK delivery and ACK ownership remain intact.
+    # Optional input routing; SDK delivery and ACK ownership remain intact.
     from jiuwenswarm.agents.harness.team.duplex_shadow import install_shadow_observer
 
     install_shadow_observer()

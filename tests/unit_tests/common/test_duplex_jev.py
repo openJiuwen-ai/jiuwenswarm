@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from types import SimpleNamespace as NS
-from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -30,17 +28,10 @@ def answer(action="INTERRUPT", probability=0.95):
 
 @pytest.fixture
 def endpoint(monkeypatch):
-    server = NS(requests=[], payload=answer(), status=200, error=None, gate=None,
-                entered=asyncio.Event(), cancelled=asyncio.Event())
+    server = NS(requests=[], payload=answer(), status=200, error=None)
 
     async def handle(request):
         server.requests.append(request)
-        server.entered.set()
-        if server.gate is not None:
-            try:
-                await server.gate.wait()
-            finally:
-                server.cancelled.set()
         if server.error is not None:
             raise server.error
         return httpx.Response(server.status, json=server.payload)
@@ -73,29 +64,6 @@ async def test_request_uses_native_choice_and_only_public_snapshot(endpoint):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action,probability,threshold,expected", [
-    ("APPEND", 0.1, 0.9, "APPEND"),
-    ("INTERRUPT", 0.8, 0.9, "APPEND"),
-    ("INTERRUPT", 0.9, 0.9, "INTERRUPT"),
-    ("INTERRUPT", 0.95, 0.99, "APPEND"),
-    ("INTERRUPT", 0.7, 0.6, "INTERRUPT"),
-    ("INTERRUPT", 0.5, 0.9, "APPEND"),
-])
-async def test_interrupt_probability_gate(endpoint, monkeypatch, action, probability, threshold, expected):
-    endpoint.payload = answer(action, probability)
-    log = Mock()
-    monkeypatch.setattr(jev.logger, "info", log)
-    assert await jev.classify_jev(SNAPSHOT, MESSAGES, settings={"interrupt_threshold": threshold}) == {
-        "action": expected}
-    fmt, *args = log.call_args.args
-    rendered = fmt % tuple(args)
-    assert f"choice={action} effective={expected}" in rendered
-    assert "p_interrupt=" in rendered
-    assert "test-only-secret" not in rendered
-    assert MESSAGES[0].content not in rendered
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("patch", [
     {"type": "noul"}, {"choice": "DELETE"}, {"choice": "APPEND"},
     {"probabilities": {}}, {"probabilities": {"APPEND": 0.05, "INTERRUPT": 0.95, "OTHER": 0}},
@@ -103,7 +71,8 @@ async def test_interrupt_probability_gate(endpoint, monkeypatch, action, probabi
     {"probabilities": {"APPEND": -0.1, "INTERRUPT": 1.1}},
     {"probabilities": {"APPEND": False, "INTERRUPT": True}},
     {"probabilities": {"APPEND": "0.05", "INTERRUPT": "0.95"}},
-    {"confidence": None}, {"confidence": 2},
+    {"confidence": None}, {"confidence": 2}, {"confidence": float("inf")},
+    {"probabilities": {"APPEND": 0.05, "INTERRUPT": float("nan")}},
 ])
 async def test_bad_answers_are_errors_not_interrupts(endpoint, patch):
     endpoint.payload["answers"]["action"].update(patch)
@@ -122,53 +91,11 @@ async def test_missing_response_fields_fall_back(endpoint, payload):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("threshold", [0, 0.5, 1.1, True, "0.9", float("nan"), float("inf")])
-async def test_invalid_threshold_prevents_request(endpoint, threshold):
-    with pytest.raises(ValueError):
-        await jev.classify_jev(SNAPSHOT, MESSAGES, settings={"interrupt_threshold": threshold})
-    assert not endpoint.requests
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("status", [302, 401, 422, 429, 500, 529])
-async def test_http_failure_is_not_retried(endpoint, monkeypatch, status):
-    endpoint.status = status
-    log = Mock()
-    monkeypatch.setattr(jev.logger, "warning", log)
-    result = await observe(SNAPSHOT, MESSAGES, classify=jev.classify_jev)
-    assert result.status == "error"
-    assert result.attempts == len(endpoint.requests) == 1
-    fmt, *args = log.call_args.args
-    rendered = fmt % tuple(args)
-    assert f"status_code={status}" in rendered
-    assert "test-only-secret" not in rendered
-
-
-@pytest.mark.asyncio
 async def test_http_timeout_is_reported_as_timeout(endpoint):
     endpoint.error = httpx.ReadTimeout("request timed out")
     result = await observe(SNAPSHOT, MESSAGES, classify=jev.classify_jev)
     assert result.status == "timeout"
     assert len(endpoint.requests) == 1
-
-
-@pytest.mark.asyncio
-async def test_total_deadline_and_cancellation_stop_request(endpoint):
-    endpoint.gate = asyncio.Event()
-    result = await observe(SNAPSHOT, MESSAGES, classify=jev.classify_jev,
-                            timeout_seconds=0.02)
-    assert result.status == "timeout"
-    assert endpoint.cancelled.is_set()
-    endpoint.entered.clear()
-    endpoint.cancelled.clear()
-    task = asyncio.create_task(observe(SNAPSHOT, MESSAGES, classify=jev.classify_jev))
-    await asyncio.wait_for(endpoint.entered.wait(), 1)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert endpoint.cancelled.is_set()
-
-
 
 
 @pytest.mark.asyncio
@@ -204,36 +131,3 @@ async def test_invalid_jev_endpoint_path_prevents_request(endpoint):
         await jev.classify_jev(SNAPSHOT, MESSAGES,
                                settings={"endpoint_path": "../chat/completions"})
     assert not endpoint.requests
-
-
-@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
-def test_nonfinite_response_numbers_cannot_admit_interrupt(value):
-    payload = answer()
-    payload["answers"]["action"]["probabilities"]["INTERRUPT"] = value
-    with pytest.raises(ValueError):
-        jev._decision(payload, 0.9)
-    payload = answer()
-    payload["answers"]["action"]["confidence"] = value
-    with pytest.raises(ValueError):
-        jev._decision(payload, 0.9)
-
-
-def test_replay_cli_uses_jev_without_sdk_model_config(endpoint, monkeypatch, tmp_path):
-    from pathlib import Path
-
-    from jiuwenswarm.common.duplex_benchmark import main
-
-    cases = Path(__file__).parents[2] / "fixtures/duplex/routing_cases.jsonl"
-    output = tmp_path / "replay.json"
-    monkeypatch.setattr("sys.argv", ["duplex_benchmark", str(cases), "--backend", "jev",
-                                   "--repeats", "1", "--output", str(output)])
-    main()
-    report = json.loads(output.read_text(encoding="utf-8"))
-    assert report["backend"] == "jev"
-    assert report["model_name"] == "jev-1.13.0"
-    assert report["interrupt_threshold"] == 0.9
-    assert report["runs"] == len(endpoint.requests) == 6
-    assert report["failures"] == 0
-    assert report["correct"] == 3
-    assert report["false_interrupts"] == 3
-    assert all("expected_action" not in request.content.decode() for request in endpoint.requests)

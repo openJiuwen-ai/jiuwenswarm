@@ -13,7 +13,7 @@ from jiuwenswarm.common.duplex_router import env_secret
 @pytest.fixture
 def settings_file(tmp_path, monkeypatch):
     path = tmp_path / "config.yaml"
-    path.write_text("preferred_language: en\nother: keep\nduplex_router:\n  policy: model\n")
+    path.write_text("preferred_language: en\nother: keep\nduplex_router: {}\n")
     monkeypatch.setattr(config, "CONFIG_YAML_PATH", path)
     monkeypatch.setattr(handlers, "get_config_raw", lambda: yaml.safe_load(path.read_text()))
     monkeypatch.setattr(handlers, "get_config", lambda: yaml.safe_load(path.read_text()))
@@ -31,7 +31,6 @@ async def test_settings_round_trip_through_current_config_pipeline(settings_file
     result = handlers.apply_config_payload({"duplex_router_" + key: value for key, value in values.items()})
     raw = yaml.safe_load(settings_file.read_text())
     assert raw["other"] == "keep"
-    assert raw["duplex_router"]["policy"] == "model"
     assert raw["duplex_router"]["jev"]["interrupt_threshold"] == 0.95
     assert raw["duplex_router"]["timeout_seconds"] == 4
     assert len(result.yaml_updated) == len(values)
@@ -41,6 +40,9 @@ async def test_settings_round_trip_through_current_config_pipeline(settings_file
     for key, value in values.items():
         expected = "4.0" if key == "timeout_seconds" else value
         assert payload["duplex_router_" + key] == expected
+    assert payload["duplex_router_backends"]["jev"] == {
+        "api_base": values["api_base"], "interrupt_threshold": "0.95"}
+    assert payload["duplex_router_backends"]["mindshub"]["api_base"] == "https://api.mindshub.ai/v1"
 
 
 @pytest.mark.parametrize("field,value", [("mode", "shadow"), ("backend", "unknown"),

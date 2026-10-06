@@ -53,20 +53,13 @@ def snapshot_from_native(harness: Any) -> ControlSnapshot | None:
         plan = harness.load_state(harness._session).to_session_dict().get("task_plan") or {}
     current = next((task for task in plan.get("tasks", [])
                     if task.get("id") == plan.get("current_task_id")), {})
-    provider = getattr(harness, "_duplex_goal_provider", None)
-    query = provider() if provider else active.original_query
+    query = active.original_query
     if isinstance(query, list):
         query = "\n".join(str(item) for item in query)
     goal = str(plan.get("goal") or (query if isinstance(query, str) else ""))
     next_action = str(current.get("description") or current.get("content") or "")
-    action_provider = getattr(harness, "_duplex_action_provider", None)
-    if action_provider is not None:
-        actual_action = action_provider()
-        if isinstance(actual_action, str) and actual_action:
-            next_action = (next_action + "\nActual execution: " + actual_action[:2400]).strip()
     phase = str(getattr(active.iter_phase, "value", active.iter_phase))
-    last_provider = getattr(harness, "_duplex_last_action_provider", None)
-    last_action = str(last_provider() or "")[:2400] if last_provider is not None else ""
+    last_action = ""
     version = hashlib.sha256(json.dumps([
         id(active), id(checkpoint), phase, active.pause_requested, goal, next_action, last_action,
         getattr(getattr(harness, "_st", None), "seq_counter", 0),
@@ -89,9 +82,9 @@ async def classify_input(host, model_name, snapshot, messages):
         return await agent.run(prompt_for(snapshot, messages))
 
 
-def _decision_timeout(host, config, policy, backend, model_name):
+def _decision_timeout(host, config, backend, model_name):
     timeout = config.get("timeout_seconds")
-    if timeout is None and policy != "always_interrupt":
+    if timeout is None:
         if backend == "mindshub":
             from jiuwenswarm.common.duplex_mindshub import DEFAULT_TIMEOUT_SECONDS
 
@@ -109,13 +102,8 @@ def _decision_timeout(host, config, policy, backend, model_name):
     return float(timeout) if timeout is not None else None
 
 
-def _classifier(host, config, policy, backend, model_name, timeout):
+def _classifier(host, config, backend, model_name, timeout):
     async def classify(state, messages):
-        record_input = getattr(host, "record_duplex_input", None)
-        if record_input is not None:
-            record_input(state, messages)
-        if policy == "always_interrupt":
-            return {"action": "INTERRUPT"}
         if backend == "mindshub":
             from jiuwenswarm.common.duplex_mindshub import DEFAULT_MODEL, classify_mindshub
 
@@ -142,7 +130,7 @@ async def deliver_routed(host, content, *, use_steer, original, settings=None):
     from jiuwenswarm.common.config import get_config
     from .duplex_native import DuplexNativeHarness
 
-    config = settings if settings is not None else getattr(host, "duplex_settings", None)
+    config = settings
     if config is None:
         config = get_config().get("duplex_router", {}) or {}
     native = native_from_runtime(host.harness)
@@ -163,34 +151,29 @@ async def deliver_routed(host, content, *, use_steer, original, settings=None):
         return
 
     async def steer():
-        result = await original(host, str(content),
-                                use_steer=use_steer and config.get("policy") != "serial")
+        result = await original(host, str(content), use_steer=use_steer)
         native._duplex_received.add(message.message_id)
         return result
 
-    policy = config.get("policy", "model")
     snapshot = snapshot_from_native(native)
-    if not use_steer or policy in ("serial", "steer") or snapshot is None:
-        reason = "use_steer_false" if not use_steer else "policy_bypass" if policy in ("serial", "steer") else "no_snapshot"
-        logger.info("duplex route bypass backend=%s message_id=%s reason=%s policy=%s",
-                    backend, message.message_id, reason, policy)
+    if not use_steer or snapshot is None:
+        reason = "use_steer_false" if not use_steer else "no_snapshot"
+        logger.info("duplex route bypass backend=%s message_id=%s reason=%s",
+                    backend, message.message_id, reason)
         return await steer()
     model_name = str(config.get("model_name") or "")
     logger.info("duplex route start backend=%s message_id=%s round_id=%s checkpoint_id=%s phase=%s",
                 backend, message.message_id, snapshot.round_id, snapshot.checkpoint_id, snapshot.phase)
 
     try:
-        timeout = _decision_timeout(host, config, policy, backend, model_name)
-        classify = _classifier(host, config, policy, backend, model_name, timeout)
+        timeout = _decision_timeout(host, config, backend, model_name)
+        classify = _classifier(host, config, backend, model_name, timeout)
         observation = await observe(snapshot, (message,), classify=classify,
              timeout_seconds=timeout)
     except Exception as exc:
         logger.warning("duplex route fallback backend=%s message_id=%s reason=classification_exception "
                        "error_type=%s effective=APPEND", backend, message.message_id, type(exc).__name__)
         return await steer()
-    recorder = getattr(host, "record_duplex_observation", None)
-    if recorder is not None:
-        recorder(observation)
     logger.info("duplex route observation backend=%s message_id=%s status=%s proposed=%s latency_ms=%.1f attempts=%d",
                 backend, message.message_id, observation.status, observation.proposed_action,
                 observation.latency_ms, observation.attempts)

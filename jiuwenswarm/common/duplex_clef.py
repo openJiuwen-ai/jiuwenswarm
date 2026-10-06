@@ -13,7 +13,7 @@ import httpx
 
 from jiuwenswarm.common.duplex_choice import (
     DEFAULT_INTERRUPT_THRESHOLD, DEFAULT_TIMEOUT_SECONDS, choice_request,
-    classify_choice, credential, decision_from_body, endpoint_url, request_timeout,
+    classify_choice, credential, endpoint_url, request_timeout,
 )
 from jiuwenswarm.common.duplex_router import ControlSnapshot, InboundMessage, prompt_for
 
@@ -43,10 +43,6 @@ def _body(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("invalid Clef response")
     return payload
-
-
-def decision_from_clef(payload: Any, threshold: float) -> dict[str, str]:
-    return decision_from_body(_body(payload), threshold, provider="Clef")
 
 
 def clef_timeout(settings: Mapping[str, Any] | None) -> float:

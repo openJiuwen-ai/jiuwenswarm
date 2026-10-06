@@ -1501,6 +1501,12 @@ async def config_get_handler(
         defaults = {"jev": "https://api.typesafe.ai/v1", "mindshub": "https://api.mindshub.ai/v1",
                     "clef": "https://api.cloudflare.com/client/v4"}
         payload.update({
+            "duplex_router_backends": {
+                name: {"api_base": str((duplex.get(name) or {}).get("api_base", api_base)),
+                       **({"interrupt_threshold": str((duplex.get(name) or {}).get("interrupt_threshold", 0.9))}
+                          if name in {"jev", "clef"} else {})}
+                for name, api_base in defaults.items()
+            },
             "duplex_router_mode": str(duplex.get("mode", "off")),
             "duplex_router_backend": str(duplex.get("backend", "sdk")),
             "duplex_router_model_name": str(duplex.get("model_name", "")),

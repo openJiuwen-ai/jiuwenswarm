@@ -2785,15 +2785,10 @@ async def _process_team_message_stream(
                     query = turn.text if isinstance(turn.text, str) else query
                 followup_payload = _deliverable(turn, query)
                 await _begin_team_round()
-                logger.info("duplex user followup dispatch request_id=%s session_id=%s "
-                            "channel_id=%s path=team_manager.interact input_type=%s",
-                            rid, session_id, _resolve_channel_id(channel_id), type(followup_payload).__name__)
                 success, reason = await team_manager.interact(
                     session_id,
                     followup_payload,
                 )
-                logger.info("duplex user followup admitted request_id=%s session_id=%s accepted=%s",
-                            rid, session_id, success)
                 if not success:
                     logger.warning(
                         "[TeamHelpers] interact failed: channel_id=%s session_id=%s reason=%s query=%s",

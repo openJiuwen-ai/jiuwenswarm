@@ -26,7 +26,7 @@ async def classify_mindshub(
     settings: Mapping[str, Any] | None = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, str]:
-    """Return a strictly validated action; let observe() handle errors and staleness."""
+    """Return a strictly validated action; let observe() handle errors and timeouts."""
     settings = settings or {}
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("MindsHub timeout_seconds must be finite and positive")

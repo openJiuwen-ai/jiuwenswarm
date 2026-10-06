@@ -331,7 +331,11 @@
       "test": "测试"
     },
     "agent": {
-      "a2aDefaultsHint": "可选 SDK、Jev、MindsHub 或 Cloudflare Clef。外部接口使用下方 API Key。修改模式后需重启团队。",
+      "a2aClearTitle": "清除监工配置？",
+      "a2aClearConfirm": "关闭监工，清除当前监工的模型、自定义接口地址和共享 API Key。选择 Clef 时也会清除 Cloudflare 账号 ID。其他后端配置保持不变。",
+      "a2aDefaultsHint": "SDK 使用团队已有模型，地址和密钥在模型设置中管理。使用外部监工时，请在高级设置中选择后端。修改模式后需重启团队。",
+      "a2aNotConfigured": "未配置",
+      "a2aAdvanced": "高级设置",
       "a2aDuplexRouter": "A2A 双工监工",
       "skills": "技能",
       "webSearch": "网页搜索",

@@ -331,7 +331,11 @@
       "test": "Test"
     },
     "agent": {
-      "a2aDefaultsHint": "Choose SDK, Jev, MindsHub or Cloudflare Clef. External backends use the API key below. Restart the team after changing the mode.",
+      "a2aClearTitle": "Clear supervisor configuration?",
+      "a2aClearConfirm": "Disable supervision and clear the selected supervisor model, API URL override and shared API key. Cloudflare account ID is also cleared when Clef is selected. Other backend settings remain unchanged.",
+      "a2aDefaultsHint": "SDK uses a configured team model; its API URL and key are managed in model settings. For an external supervisor, choose a backend in Advanced settings. Restart the team after changing the mode.",
+      "a2aNotConfigured": "Not configured",
+      "a2aAdvanced": "Advanced settings",
       "a2aDuplexRouter": "A2A duplex supervisor",
       "skills": "Skills",
       "webSearch": "Web search",

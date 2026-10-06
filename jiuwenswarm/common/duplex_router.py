@@ -38,7 +38,6 @@ class Observation:
     round_id: str
     checkpoint_id: str
     proposed_action: str
-    effective_action: str
     status: str
     latency_ms: float
     attempts: int
@@ -109,7 +108,7 @@ async def observe(
         message_ids=tuple(m.message_id for m in messages),
         context_version=snapshot.context_version, round_id=snapshot.round_id,
         checkpoint_id=snapshot.checkpoint_id, proposed_action=action,
-        effective_action="UNCHANGED", status=status,
+        status=status,
         latency_ms=(time.monotonic() - started) * 1000, attempts=attempts,
     )
 

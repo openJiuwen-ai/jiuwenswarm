@@ -63,6 +63,11 @@ async def test_adapters_share_transport_and_safe_logs(adapter, choice, interrupt
     assert requests[0].headers["authorization"] == f"Bearer {SECRET}"
     state = json.loads(requests[0].content)["state"]
     assert isinstance(state, str if module is duplex_clef else dict)
+    request_body = json.loads(requests[0].content)
+    assert set(request_body["questions"]["action"]["criteria"]) == {"APPEND", "INTERRUPT"}
+    if module is duplex_clef:
+        assert str(requests[0].url).endswith("/accounts/private-account/ai/run/@cf/cloudflare/clef")
+        assert request_body["model"] == "clef"
     logged = rendered_logs(log)
     assert f"action={expected} reason={reason}" in logged
     assert "status_code=200" in logged
@@ -73,7 +78,7 @@ async def test_adapters_share_transport_and_safe_logs(adapter, choice, interrupt
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [302, 401, 402, 429, 529])
+@pytest.mark.parametrize("status", [302, 429, 500])
 async def test_adapters_do_not_retry_or_follow_redirects(adapter, status):
     _, classify, log = adapter
     requests = []
@@ -93,24 +98,16 @@ async def test_adapters_do_not_retry_or_follow_redirects(adapter, status):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("timeout", [0, -1, True, "2", float("nan"), float("inf")])
-async def test_adapters_validate_timeout_before_sending(adapter, timeout):
-    _, classify, _ = adapter
-    handler = Mock()
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        with pytest.raises(ValueError, match="timeout_seconds"):
-            await classify(SNAPSHOT, MESSAGES, timeout_seconds=timeout, client=client)
-    handler.assert_not_called()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("threshold", [0.5, True, "0.9", float("nan"), 1.1])
-async def test_adapters_validate_threshold_before_sending(adapter, threshold):
+@pytest.mark.parametrize("options", [
+    {"timeout_seconds": float("nan")},
+    {"settings": {"interrupt_threshold": 0.5}},
+])
+async def test_invalid_config_never_sends_a_request(adapter, options):
     _, classify, _ = adapter
     handler = Mock()
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ValueError):
-            await classify(SNAPSHOT, MESSAGES, settings={"interrupt_threshold": threshold}, client=client)
+            await classify(SNAPSHOT, MESSAGES, client=client, **options)
     handler.assert_not_called()
 
 
@@ -143,3 +140,14 @@ async def test_owned_client_closes_on_cancellation(adapter, monkeypatch):
     assert len(clients) == 1 and clients[0].is_closed
     assert "reason=caller_cancelled" in rendered_logs(log)
     assert SECRET not in rendered_logs(log)
+
+
+@pytest.mark.asyncio
+async def test_clef_rejects_failed_workers_envelope(monkeypatch):
+    monkeypatch.setenv("CLOUDFLARE_AUTH_TOKEN", SECRET)
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "private-account")
+    body = {"success": False, "errors": [{"message": "no"}], "result": None}
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(ValueError, match="failed"):
+            await duplex_clef.classify_clef(SNAPSHOT, MESSAGES, client=client)

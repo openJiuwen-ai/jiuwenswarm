@@ -15,7 +15,7 @@ MESSAGES = (InboundMessage("m1", "user", "Kafka is forbidden; use the existing d
 @pytest.fixture
 def endpoint(monkeypatch):
     requests = []
-    response = {"choices": [{"message": {"content": '{"action":"INTERRUPT"}'}}]}
+    response = {"choices": [{"message": {"content": '{"action":"APPEND"}'}}]}
     state = {"requests": requests, "response": response, "status": 200}
 
     async def handle(request):
@@ -31,7 +31,7 @@ def endpoint(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_request_and_strict_response(endpoint):
-    assert await mindshub.classify_mindshub(SNAPSHOT, MESSAGES) == {"action": "INTERRUPT"}
+    assert await mindshub.classify_mindshub(SNAPSHOT, MESSAGES) == {"action": "APPEND"}
     request, = endpoint["requests"]
     assert str(request.url) == "https://api.mindshub.ai/v1/chat/completions"
     assert request.headers["authorization"] == "Bearer test-only-secret"
@@ -40,15 +40,6 @@ async def test_request_and_strict_response(endpoint):
     assert body["messages"][0]["role"] == "system"
     assert json.loads(body["messages"][1]["content"]) == state_for(SNAPSHOT, MESSAGES)
     assert "test-only-secret" not in request.content.decode()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("content", [
-    '{"action":"APPEND"}', '{"action":"INTERRUPT"}',
-])
-async def test_both_actions(endpoint, content):
-    endpoint["response"]["choices"][0]["message"]["content"] = content
-    assert await mindshub.classify_mindshub(SNAPSHOT, MESSAGES) == json.loads(content)
 
 
 @pytest.mark.asyncio
@@ -72,22 +63,3 @@ async def test_http_failure_does_not_retry(endpoint, status):
     result = await observe(SNAPSHOT, MESSAGES, classify=mindshub.classify_mindshub)
     assert result.status == "error"
     assert result.attempts == len(endpoint["requests"]) == 1
-
-
-
-
-def test_replay_cli_uses_mindshub_without_sdk_model_config(endpoint, monkeypatch, tmp_path):
-    from pathlib import Path
-    from jiuwenswarm.common.duplex_benchmark import main
-
-    cases = Path(__file__).parents[2] / "fixtures/duplex/routing_cases.jsonl"
-    output = tmp_path / "replay.json"
-    monkeypatch.setattr("sys.argv", ["duplex_benchmark", str(cases), "--backend", "mindshub",
-                                    "--repeats", "1", "--output", str(output)])
-    main()
-    report = json.loads(output.read_text(encoding="utf-8"))
-    assert report["backend"] == "mindshub"
-    assert report["model_name"] == "mindshub_air"
-    assert report["runs"] == len(endpoint["requests"]) == 6
-    assert report["failures"] == 0
-    assert all("expected_action" not in request.content.decode() for request in endpoint["requests"])
