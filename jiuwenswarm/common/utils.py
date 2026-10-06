@@ -322,6 +322,18 @@ class _CompositeFilter(logging.Filter):
         return any(f.filter(record) for f in self.filters)
 
 
+class _DuplexLogFilter(logging.Filter):
+    """Collect supervisor diagnostics without unrelated user/tool payloads."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name.startswith(("jiuwenswarm.common.duplex_",
+                                   "jiuwenswarm.agents.harness.team.duplex_")):
+            return True
+        if record.name == "jiuwenswarm.server.runtime.agent_adapter.team_helpers":
+            return record.getMessage().startswith("duplex ")
+        return record.name == "jiuwenswarm" and record.getMessage().startswith("duplex logging ready ")
+
+
 def _load_logging_config_from_yaml() -> dict[str, Any]:
     """读取 ~/.jiuwenswarm/config/config.yaml 中的 logging 段（无则空）。"""
     try:
@@ -2850,6 +2862,7 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     - 其余 ``jiuwenswarm.*``（含 ``jiuwenswarm.app``、gateway、evolution、utils 等）→ gateway.log
 
     channel / agent_server（含 permissions）日志同时汇总写入 ``full.log``；
+    监工请求、决策、消息入口和打断执行日志另汇集到 ``duplex.log``，桌面/CMD 启动同样适用。
     gateway 日志**不写入** full.log（无论 gateway.log 是否独立目录）。输出目录：
     ``~/.jiuwenswarm/agent/.logs/``；gateway.log 默认同目录，可通过环境变量
     ``AGENTOS_GATEWAY_LOG_DIR`` 指定独立目录（如 Linux 部署的 ``/var/log/agentos``；
@@ -2927,6 +2940,10 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     _add_rotating("full.log", levels.full, _ExcludeComponentFilter("gateway"))
     json_formatter = JsonOnlyFormatter()
     _add_rotating("permissions.log", levels.agent_server, _ComponentNameFilter("permissions"), json_formatter)
+    _add_rotating("duplex.log", levels.agent_server, _DuplexLogFilter(), logging.Formatter(
+        "%(asctime)s.%(msecs)03d %(levelname)s pid=%(process)d %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
 
     stream_handler = logging.StreamHandler()
     stream_handler.setLevel(levels.console)
@@ -2937,6 +2954,7 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     # 源头脱敏：覆盖 jiuwenswarm 命名空间之外的第三方 logger（openjiuwen/openai/
     # httpx 等），在 LogRecord 创建时统一脱敏，保证任何来源的 api_key 都不明文落盘。
     install_source_record_masking()
+    root.info("duplex logging ready file=%s pid=%s", logs_root / "duplex.log", os.getpid())
     return root
 
 

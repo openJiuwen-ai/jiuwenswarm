@@ -1,9 +1,24 @@
 # Native A2A / U2A 输入路由；修改 mode 后重启团队。模型名来自当前团队模型池。
 duplex_router:
   mode: "off"  # off / active
+  backend: sdk  # sdk / jev / mindshub / clef
   policy: model  # model / always_interrupt / steer / serial
   model_name: ""
   timeout_seconds: 2.0
+  jev:
+    api_base: https://api.typesafe.ai/v1
+    endpoint_path: systemone
+    api_key_env: DUPLEX_ROUTER_API_KEY
+    interrupt_threshold: 0.9
+  mindshub:
+    api_base: https://api.mindshub.ai/v1
+    api_key_env: DUPLEX_ROUTER_API_KEY
+  clef:
+    model: clef
+    api_base: https://api.cloudflare.com/client/v4
+    account_id_env: CLOUDFLARE_ACCOUNT_ID
+    api_key_env: DUPLEX_ROUTER_API_KEY
+    interrupt_threshold: 0.9
 
 # 配置版本号：与程序版本（jiuwenswarm/common/_build_config.py 的 VERSION）同步。
 # 空串表示未迁移，首次启动迁移后由程序写回实际版本。

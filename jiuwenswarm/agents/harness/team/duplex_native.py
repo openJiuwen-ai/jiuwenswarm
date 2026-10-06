@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 
 from openjiuwen.agent_teams.harness.control import _CmdAbort, _CmdPause, _CmdResume, _CmdSend
 from openjiuwen.agent_teams.harness.native_harness import NativeHarness
 from openjiuwen.agent_teams.harness.state import HarnessState, InboxMessage
+
+logger = logging.getLogger(__name__)
 
 
 class DeliverySuperseded(RuntimeError):
@@ -42,6 +45,7 @@ class DuplexNativeHarness(NativeHarness):
 
     async def interrupt(self, content, *, version, message_id):
         self._require_alive()
+        logger.info("duplex interrupt queued message_id=%s snapshot_version=%s", message_id, version)
         ack = asyncio.get_running_loop().create_future()
         await self._control.put(_RouteInput(str(content), version, message_id, ack))
         return await ack
@@ -55,19 +59,23 @@ class DuplexNativeHarness(NativeHarness):
         await super()._dispatch(cmd)
 
     async def _route(self, cmd):
-        from .duplex_shadow import snapshot_from_native
-
         if cmd.ack.cancelled():
+            logger.info("duplex interrupt rejected message_id=%s reason=caller_cancelled", cmd.message_id)
             return
         if cmd.message_id in self._duplex_received:
+            logger.info("duplex interrupt rejected message_id=%s reason=duplicate", cmd.message_id)
             self._ack(cmd.ack, "DUPLICATE")
             return
-        current = snapshot_from_native(self)
-        if (self.state is not HarnessState.RUNNING or current is None
-                or current.context_version != cmd.version or self._duplex_pending is not None):
-            self._ack(cmd.ack, "STALE")
+        if (self.state is not HarnessState.RUNNING or self.active_round is None
+                or self._duplex_pending is not None):
+            logger.info("duplex interrupt rejected message_id=%s reason=inactive_or_pending state=%s "
+                        "requested_version=%s pending=%s", cmd.message_id,
+                        self.state, cmd.version,
+                        self._duplex_pending is not None)
+            self._ack(cmd.ack, "UNAVAILABLE")
             return
         self._duplex_pending = cmd
+        logger.info("duplex interrupt pause_requested message_id=%s", cmd.message_id)
         await super()._on_pause(_CmdPause(ack=asyncio.get_running_loop().create_future()))
         if self.state is HarnessState.PAUSED:
             await self._finish_transaction()
@@ -78,6 +86,7 @@ class DuplexNativeHarness(NativeHarness):
             return
         self._duplex_pending = None
         if cmd.ack.cancelled():
+            logger.info("duplex interrupt commit_skipped message_id=%s reason=caller_cancelled", cmd.message_id)
             return
         # The safe boundary preserves committed results, not authority to
         # execute an invalidated plan. Clear it BEFORE the continuation takes
@@ -85,6 +94,7 @@ class DuplexNativeHarness(NativeHarness):
         state = self.load_state(self._session)
         state.task_plan = None
         self.save_state(self._session, state)
+        logger.info("duplex interrupt safe_boundary message_id=%s plan_invalidated=true", cmd.message_id)
         replan = (
             "[Execution plan invalidated]\n"
             "Replan before taking further action. The previous execution plan "
@@ -105,6 +115,7 @@ class DuplexNativeHarness(NativeHarness):
             msg=InboxMessage(0, replan, True), ack=asyncio.get_running_loop().create_future()))
         self._duplex_received.add(cmd.message_id)
         self._ack(cmd.ack, "INTERRUPT")
+        logger.info("duplex interrupt committed message_id=%s action=INTERRUPT replan_input_sent=true", cmd.message_id)
 
     async def _on_round_done(self, cmd):
         active = self.active_round
@@ -128,6 +139,7 @@ class DuplexNativeHarness(NativeHarness):
     def _reject_transaction(self, reason):
         cmd, self._duplex_pending = self._duplex_pending, None
         if cmd is not None and not cmd.ack.done():
+            logger.info("duplex interrupt superseded message_id=%s reason=%s", cmd.message_id, reason)
             cmd.ack.set_exception(DeliverySuperseded(reason))
 
     async def _on_stop(self, cmd):

@@ -834,6 +834,17 @@ def update_browser_in_config(updates: dict[str, Any]) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_duplex_router_in_config(updates: dict[str, Any]) -> None:
+    """Update the native A2A/U2A duplex router section and write it back."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    section = data.get("duplex_router")
+    if not isinstance(section, dict):
+        section = {}
+        data["duplex_router"] = section
+    _merge_config_dict(section, updates)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_context_engine_enabled_in_config(value: bool) -> None:
     """更新 react.context_engine_config.enabled（上下文压缩开关）并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)

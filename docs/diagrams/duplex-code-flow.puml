@@ -90,26 +90,27 @@ else 当前任务运行中，执行一次快模型判断
     这四个字段会发给快模型，帮助它判断新消息是否推翻当前工作。
     例：目标“实现订单系统”，当前项“使用 Kafka”；新消息“禁止使用 Kafka” → 倾向 INTERRUPT。
 
-    context_version：本地比较标识，用于判断“等待快模型期间，慢 Agent 状态是否已变化”。
+    context_version：诊断标识；不再用于拒绝判断或阻止打断。
     它由执行轮次、安全点、阶段、任务信息、暂停状态和 SDK 已有发送序号 seq_counter 计算。
-    round_id / checkpoint_id：当前执行轮次 / 安全点编号，用于本地比较与记录。
+    round_id / checkpoint_id：当前执行轮次 / 安全点编号，用于诊断记录。
     这三个标识不发给快模型，也不要求快模型回传。
   end note
-  adapter -[#2563EB]> policy : <color:#2563EB>【新增】</color> 发起一次有超时限制的判断\nobserve(当前任务信息, 新消息, 判断函数, 重新读取状态的函数, 超时时间)
+  adapter -[#2563EB]> policy : <color:#2563EB>【新增】</color> 发起一次有超时限制的判断\nobserve(当前任务信息, 新消息, 判断函数, 超时时间)
   note over adapter, policy
     observe() 是普通 Python 函数，不是另一个 Agent。
-    它负责：等待一次判断 → 检查结果和当前状态 → 返回是否可用。
-    classify 是“怎样调用快模型”的函数；current_snapshot 是“重新读当前状态”的函数。
+    它负责：等待一次判断 → 检查结果格式 → 返回结果。
+    classify 按 backend 调用 SDK、Jev、MindsHub 或 Clef。
     timeout_seconds 是等待上限；超时或异常就交回原 steer。
   end note
   policy -[#2563EB]> fast : <color:#2563EB>【新增】</color> 调用传入的判断函数，把任务信息和新消息交给快模型\nclassify(snapshot, messages) → classify_input()
-  fast -[#2563EB]> fast : <color:#2563EB>【新增】</color> 准备独立的快模型调用对象\ncreate_tiny_agent(SYSTEM_PROMPT, default_schema=decision_schema(), max_iterations=1)
+  fast -[#2563EB]> fast : <color:#2563EB>【新增】</color> 按 backend 选择接口；SDK 分支准备调用对象\ncreate_tiny_agent(SYSTEM_PROMPT, default_schema=decision_schema(), max_iterations=1)
   note right of fast
     create_tiny_agent() 复用 SDK 的模型调用封装。
     SYSTEM_PROMPT：告诉快模型 APPEND / INTERRUPT 的判定规则。
     decision_schema()：规定回复只能有 action，值只能是这两个之一。
     max_iterations=1：限制这次判断的 Agent 执行轮数。
     这里只准备调用对象；下一步 agent.run() 才提交判断请求。
+    Jev / MindsHub / Clef 分支直接调用对应 HTTP 接口并统一结果。
   end note
   fast -[#2563EB]> fast : <color:#2563EB>【新增】</color> 拼好输入并提交判断请求\nagent.run(prompt_for(snapshot, messages))
   note right of fast
@@ -123,16 +124,16 @@ else 当前任务运行中，执行一次快模型判断
     未设置该字段或设置为 null 时，沿用该快模型的 SDK timeout。
   end note
   fast -[#2563EB]-> policy : <color:#2563EB>【新增】</color> 返回建议：增量注入 或 打断\n{action: APPEND / INTERRUPT}
-  policy -[#2563EB]> policy : <color:#2563EB>【新增】</color> 检查回复格式，再确认判断依据有没有过期\nvalidate_decision()；current_snapshot() 与请求前的信息比较
+  policy -[#2563EB]> policy : <color:#2563EB>【新增】</color> 检查统一后的回复格式\nvalidate_decision()；不比较状态哈希
   note over policy, native
-    为什么要再读一次？快模型判断期间，慢 Agent 仍在执行。
-    若慢 Agent 已换阶段、计划或执行轮次，刚才的 INTERRUPT 可能已不适用。
-    当前做法：信息有变化就标为 stale（过期），退回 steer，不再重判。
+    快模型判断期间，慢 Agent 仍在执行。
+    等待期间接纳新消息或状态变化，不会让判断自动失效。
+    执行端仍保留运行状态、生命周期与重复消息保护。
   end note
   policy -[#2563EB]-> adapter : <color:#2563EB>【新增】</color> 返回判断结果及是否可用，供入口选执行路径\nObservation(proposed_action, status, context_version, latency_ms, attempts=1)
   note over adapter, policy
-    proposed_action：快模型建议；status：ok / stale / error / timeout。
-    context_version：若要打断，交给执行端做最后一次状态检查。
+    proposed_action：快模型建议；status：ok / error / timeout。
+    context_version：传到执行端，仅用于诊断日志。
     latency_ms / attempts：耗时与尝试次数记录，不是额外执行步骤。
     只有判断有效且建议 INTERRUPT 才尝试打断；其余走原 steer。
   end note
@@ -142,7 +143,7 @@ else 当前任务运行中，执行一次快模型判断
   end note
 
   == B · 将判断结果作用到 A：补充或打断 ==
-  alt APPEND，或失败 / 超时 / 非法结果 / 判断已过期
+  alt APPEND，或失败 / 超时 / 非法结果
     adapter -[#2563EB]> native : <color:#2563EB>【新增】</color> 把新消息交给原增量注入入口\nsteer() 内调用 original TeamAgent.deliver_input()\n→ TeamHarness.send(immediate=True)\n→ NativeHarness.send()
     native -[#64748B]> native : <color:#64748B>【原有】</color> 原 _control 入 _CmdSend；原 _supervisor 取命令
     native -[#64748B]> native : <color:#64748B>【原有】</color> super()._dispatch(_CmdSend)
@@ -159,10 +160,10 @@ else 当前任务运行中，执行一次快模型判断
   else INTERRUPT
     adapter -[#2563EB]> native : <color:#2563EB>【新增】</color> 请求内部打断，并携带原消息和判断时的状态标识\ninterrupt(text, version, message_id)
     native -[#2563EB]> native : <color:#2563EB>【新增】</color> 让 SDK 原命令循环统一处理打断，避免在入口直接改执行状态\n_control 放入 _RouteInput → _supervisor → _dispatch → _route()
-    native -[#2563EB]> native : <color:#2563EB>【新增】</color> 再检查 RUNNING、当前版本、重复 ID\n以及是否已有待完成内部打断
-    alt 检查不通过：STALE
-      native -[#2563EB]-> adapter : <color:#2563EB>【新增】</color> "STALE"
-      adapter -[#2563EB]> native : <color:#2563EB>【新增】</color> 原 steer；不执行旧打断
+    native -[#2563EB]> native : <color:#2563EB>【新增】</color> 检查 RUNNING、活动轮次、重复 ID\n以及是否已有待完成内部打断
+    alt 运行状态不可用：UNAVAILABLE
+      native -[#2563EB]-> adapter : <color:#2563EB>【新增】</color> "UNAVAILABLE"
+      adapter -[#2563EB]> native : <color:#2563EB>【新增】</color> 原 steer；当前无法执行内部打断
       native -[#64748B]-> adapter : <color:#64748B>【原有】</color> 投递返回
     else 检查通过
       native -[#2563EB]> native : <color:#2563EB>【新增】</color> 记住待完成的内部打断，区分用户取消并在暂停后接续消息\n_duplex_pending = cmd

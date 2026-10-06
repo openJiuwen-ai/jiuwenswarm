@@ -83,6 +83,34 @@ def grade(task_id, answer):
             "task_spec": spec, "scope": "custom final-intent constraint checks, NOT official task success"}
 
 
+def _mean(values):
+    values = [value for value in values if value is not None]
+    return statistics.mean(values) if values else None
+
+def _median(values):
+    values = [value for value in values if value is not None]
+    return statistics.median(values) if values else None
+
+def decision_rows(records):
+    """One row per supervisor answer, timed from that call until the task finishes."""
+    run_start = next((row["elapsed_seconds"] for row in records if row["event"] == "run_start"), None)
+    run_end = next((row["elapsed_seconds"] for row in records if row["event"] == "run_end"), None)
+    span = None if run_start is None or run_end is None else run_end - run_start
+    rows = []
+    for row in records:
+        if row["event"] != "route_decision":
+            continue
+        decision_seconds = (row.get("latency_ms") or 0) / 1000
+        called_at = None if run_start is None else row["elapsed_seconds"] - run_start - decision_seconds
+        task_from_call = None if span is None or called_at is None else span - called_at
+        rows.append({"message_ids": row.get("message_ids"), "attempts": row.get("attempts"),
+                     "latency_ms": row.get("latency_ms"), "status": row.get("status"),
+                     "action": row.get("action"), "decision_seconds": decision_seconds,
+                     "called_at_seconds": called_at, "task_seconds_from_call": task_from_call,
+                     "stale": row.get("status") == "stale"})
+    return rows
+
+
 class RecordedUserPeer(UserInputPeer):
     async def deliver_input(self, content, *, use_steer=True):
         active = self.harness.active_round
@@ -191,7 +219,7 @@ async def one(models, case, policy, repeat, output):
     save(directory / "requests.json", requests)
     effective = [row for row in events.records if row["event"] == "delivery_effective"]
     model_ends = [row for row in events.records if row["event"] == "model_end"]
-    routes = [row for row in events.records if row["event"] == "route_decision"]
+    routes = decision_rows(events.records)
     for arrival in arrivals:
         candidates = [row for row in requests if row["started_seconds"] >= arrival["seconds"] and row["updates_in_prompt"][arrival["index"]]]
         arrival["adoption_seconds"] = min((row["started_seconds"] - arrival["seconds"] for row in candidates), default=None)
@@ -204,6 +232,10 @@ async def one(models, case, policy, repeat, output):
               "actual_interrupts": sum(row["action"] == "INTERRUPT" for row in effective),
               "idle_deliveries": sum(row["action"] == "IDLE_START" for row in effective),
               "slow_calls": len(model_ends), "cancelled_slow_calls": sum(row["status"] == "cancelled" for row in model_ends),
+              "decisions": len(routes),
+              "stale_decisions": sum(row["stale"] for row in routes),
+              "mean_decision_seconds": _mean(row["decision_seconds"] for row in routes),
+              "mean_task_seconds_from_call": _mean(row["task_seconds_from_call"] for row in routes),
               "fast_attempts": sum(row["attempts"] for row in routes), "routes": routes,
               "observed_slow_tokens": sum((row.get("usage") or {}).get("total_tokens", 0) or 0 for row in model_ends),
               "slow_calls_without_usage": sum(row.get("usage") is None for row in model_ends),
@@ -233,6 +265,11 @@ def report(output, rows):
             "cancelled_slow_calls": sum(row["cancelled_slow_calls"] for row in group),
             "slow_calls": sum(row["slow_calls"] for row in group),
             "fast_attempts": sum(row["fast_attempts"] for row in group),
+            "decisions": sum(row["decisions"] for row in group),
+            "stale_decisions": sum(row["stale_decisions"] for row in group),
+            "mean_decision_seconds": _mean(route["decision_seconds"] for row in group for route in row["routes"]),
+            "median_decision_seconds": _median(route["decision_seconds"] for row in group for route in row["routes"]),
+            "mean_task_seconds_from_call": _mean(route["task_seconds_from_call"] for row in group for route in row["routes"]),
             "route_actions": dict(collections.Counter(route["action"] for row in group for route in row["routes"])),
             "route_statuses": dict(collections.Counter(route["status"] for row in group for route in row["routes"]))}
     pairs = []

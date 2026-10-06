@@ -79,6 +79,18 @@
     "input": { "activePlaceholder": "也可以在当前会话中输入文字……", "inactivePlaceholder": "先开启 Full-duplex……", "send": "发送问题" }
   },
   "settingsPanel": {
+    "options": {
+      "duplexRouterSystemone": "systemone",
+      "duplexRouterDecisions": "decisions",
+      "duplexRouterModeOff": "关闭",
+      "duplexRouterModeActive": "启用主动监工",
+      "duplexRouterBackendSdk": "内置 SDK",
+      "duplexRouterBackendJev": "Jev",
+      "duplexRouterBackendMindshub": "MindsHub",
+      "duplexRouterBackendClef": "Cloudflare Clef",
+      "duplexRouterClef": "clef",
+      "duplexRouterClefFlash": "clef-flash"
+    },
     "title": "设置",
     "freeModels": {
       "title": "限时免费模型",
@@ -319,6 +331,8 @@
       "test": "测试"
     },
     "agent": {
+      "a2aDefaultsHint": "可选 SDK、Jev、MindsHub 或 Cloudflare Clef。外部接口使用下方 API Key。修改模式后需重启团队。",
+      "a2aDuplexRouter": "A2A 双工监工",
       "skills": "技能",
       "webSearch": "网页搜索",
       "mediaTools": "工具",
@@ -411,6 +425,54 @@
       "deleteConfirm": "删除后将清除已保存的全双工模型地址、模型和密钥。"
     },
     "fields": {
+      "duplex_router_mode": {
+        "title": "A2A 监工模式",
+        "description": "关闭监工，或让监工判断追加消息还是打断执行。"
+      },
+      "duplex_router_backend": {
+        "title": "监工后端",
+        "description": "选择 SDK、Jev、MindsHub 或 Cloudflare Clef。"
+      },
+      "duplex_router_model_name": {
+        "title": "监工模型名称",
+        "description": "SDK 团队模型名、Jev 或 MindsHub 模型标识。Clef 使用单独的模型选择项。",
+        "placeholder": "例如：jev-1.13.0"
+      },
+      "duplex_router_timeout_seconds": {
+        "title": "决策超时（秒）",
+        "description": "单次监工决策允许的最长等待时间。",
+        "placeholder": "例如：8"
+      },
+      "duplex_router_interrupt_threshold": {
+        "title": "打断阈值",
+        "description": "仅 Jev 和 Clef 使用。打断概率大于 0.5，且不超过 1。",
+        "placeholder": "例如：0.8"
+      },
+      "duplex_router_api_base": {
+        "title": "监工 API 地址",
+        "description": "当前外部后端的接口地址。先选择后端，再修改地址。",
+        "placeholder": "https://api.example.com/v1"
+      },
+      "duplex_router_endpoint_path": {
+        "title": "决策接口路径",
+        "description": "相对于 API 地址的决策接口路径。",
+        "placeholder": "例如：decisions"
+      },
+      "duplex_router_api_key": {
+        "title": "监工 API Key",
+        "description": "当前监工的 API Key 或 Cloudflare Token，沿用现有密钥存储方式。",
+        "placeholder": ""
+      },
+      "duplex_router_account_id": {
+        "title": "Cloudflare 账号 ID",
+        "description": "使用 Clef 时填写。",
+        "placeholder": ""
+      },
+      "duplex_router_model": {
+        "title": "Clef 模型",
+        "description": "仅用于 Cloudflare 后端。",
+        "placeholder": ""
+      },
       "preferred_language": {
         "title": "Language",
         "description": "设置应用程序界面的显示语言。"

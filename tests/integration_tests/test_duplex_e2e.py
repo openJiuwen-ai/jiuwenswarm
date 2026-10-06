@@ -41,6 +41,7 @@ from jiuwenswarm.agents.harness.team.duplex_native import DuplexNativeHarness, D
 class Endpoint:
     def __init__(self):
         self.calls = []
+        self.jev_calls = []
         self.fast_action = "INTERRUPT"
         self.fast_error = False
         self.fast_gate = asyncio.Event()
@@ -56,6 +57,15 @@ class Endpoint:
         self.final_content = "Finished using PostgreSQL."
         self.on_slow_request = None
         self.slow_responder = None
+
+    async def handle_jev(self, request):
+        self.jev_calls.append(await request.json())
+        self.fast_entered.set()
+        await self.fast_gate.wait()
+        return web.json_response({"answers": {"action": {
+            "type": "choice", "choice": self.fast_action, "confidence": 0.95,
+            "probabilities": {"INTERRUPT": 0.95, "APPEND": 0.05},
+        }}})
 
     async def handle(self, request):
         body = await request.json()
@@ -181,11 +191,15 @@ async def world(tmp_path, monkeypatch, request):
     endpoint = Endpoint()
     app = web.Application()
     app.router.add_post("/v1/chat/completions", endpoint.handle)
+    app.router.add_post("/v1/systemone", endpoint.handle_jev)
     server = web.AppRunner(app, shutdown_timeout=0.1)
     await server.setup()
     site = web.TCPSite(server, "127.0.0.1", 0)
     await site.start()
     port = site._server.sockets[0].getsockname()[1]
+    if settings["duplex_router"].get("backend") == "jev":
+        settings["duplex_router"]["jev"] = {"api_base": f"http://127.0.0.1:{port}/v1"}
+        monkeypatch.setenv("TYPESAFE_API_KEY", "local-jev-test")
     client = ModelClientConfig(client_provider="OpenAI", api_base=f"http://127.0.0.1:{port}/v1",
                               api_key="local-test", max_retries=0)
     fast = TeamModelConfig(model_client_config=client,
@@ -236,12 +250,12 @@ async def world(tmp_path, monkeypatch, request):
         endpoint.model_gate.set()
         endpoint.fast_gate.set()
         tool.gate.set()
-        await harness.stop()
+        await asyncio.wait_for(harness.dispose(), 10)
         await asyncio.wait_for(collector, 3)
         await db.close()
         reset_session_id(token)
-        await Runner.stop()
-        await server.cleanup()
+        await asyncio.wait_for(Runner.stop(), 10)
+        await asyncio.wait_for(server.cleanup(), 10)
 
 
 async def send_message(world, text="Customer forbids Kafka. Use PostgreSQL."):
@@ -574,7 +588,7 @@ async def test_explicit_cancel_supersedes_pending_interrupt_without_restart(worl
 
 
 @pytest.mark.asyncio
-async def test_stale_supervisor_command_cannot_interrupt_newer_context(world):
+async def test_older_supervisor_version_can_interrupt_and_keeps_newer_input(world):
     w = world
     await w.harness.send("Implement the order system.")
     await asyncio.wait_for(w.endpoint.model_entered.wait(), 6)
@@ -582,8 +596,11 @@ async def test_stale_supervisor_command_cannot_interrupt_newer_context(world):
     await w.harness.send("Also include migration steps.", immediate=True)
     result = await w.native.interrupt("old decision", version=old.context_version,
                                       message_id="old")
-    assert result == "STALE"
-    assert w.native.active_round.round_id == int(old.round_id)
+    assert result == "INTERRUPT"
+    await wait_until(lambda: w.harness.state is HarnessState.IDLE)
+    assert w.native._st.round_id_counter > int(old.round_id)
+    recovered = json.dumps([c for c in w.endpoint.calls if c["model"] == "slow"][-1]["messages"])
+    assert "Also include migration steps." in recovered
 
 
 @pytest.mark.asyncio
@@ -1225,3 +1242,42 @@ async def test_live_monitor_automatically_routes_real_artifact_correction(world,
         if not job.done():
             job.cancel()
         await asyncio.gather(job, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("world", [{"backend": "jev"}], indirect=True)
+@pytest.mark.parametrize("admit_new_input", [False, True])
+async def test_jev_hash_changes_only_when_executor_state_changes(world, admit_new_input):
+    """Real Jev HTTP transport must not mutate the Native execution version."""
+    w = world
+    w.endpoint.fast_gate.clear()
+    await w.harness.send("Implement the order event system with Kafka.")
+    await asyncio.wait_for(w.endpoint.model_entered.wait(), 6)
+    before = snapshot_from_native(w.native)
+    observations = []
+    w.host.record_duplex_observation = observations.append
+    mid = await send_message(w)
+    delivery = asyncio.create_task(poll_and_apply(w))
+    try:
+        await asyncio.wait_for(w.endpoint.fast_entered.wait(), 6)
+        assert snapshot_from_native(w.native) == before
+        if admit_new_input:
+            await w.harness.send("Also include migration steps.", immediate=True)
+            assert snapshot_from_native(w.native).context_version != before.context_version
+        w.endpoint.fast_gate.set()
+        await asyncio.wait_for(delivery, 6)
+        observed, = observations
+        assert observed.proposed_action == "INTERRUPT"
+        assert observed.status == "ok"
+        await wait_until(lambda: w.harness.state is HarnessState.IDLE)
+        assert w.tool.path.read_text() == "committed\n"
+        assert not await w.manager.get_messages(to_member_name="A2", unread_only=True)
+        if admit_new_input:
+            recovered = json.dumps([c for c in w.endpoint.calls if c["model"] == "slow"][-1]["messages"])
+            assert "Also include migration steps." in recovered
+        assert w.native._st.round_id_counter > int(before.round_id)
+        assert len(w.endpoint.jev_calls) == 1
+        assert mid in json.dumps(w.endpoint.jev_calls[0])
+    finally:
+        w.endpoint.fast_gate.set()
+        await asyncio.wait_for(delivery, 6)

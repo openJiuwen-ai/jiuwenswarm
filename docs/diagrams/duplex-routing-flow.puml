@@ -10,7 +10,7 @@ hide footbox
 title 双工流程：正常执行与新消息处理并行\n没有新消息时只走 A；新消息到达才触发 B
 actor "用户 / 其他 Agent" as sender
 participant "原 Jiuwen 入口" as inlet
-participant "快模型路由器" as router
+participant "监工路由器\nSDK / Jev / MindsHub / Clef" as router
 participant "原 SDK 执行器" as sdk
 participant "慢模型 / 工具" as slow
 note over sender, slow
@@ -32,8 +32,8 @@ opt 用户补充输入 / A2A 普通消息到达
 sender -> inlet : 新消息
 note over inlet, sdk : 以下展开可路由且有活动任务的情况；其余沿用原 SDK 投递
 inlet -> router : 消息原文 + 已有任务 / 计划
-note over router, slow : 快模型判断一次；A 的模型 / 工具继续运行
-alt APPEND，或判断失败 / 超时 / 过期
+note over router, slow : 快模型判断一次；A 的模型 / 工具继续运行；哈希变化不拒绝判断
+alt APPEND，或判断失败 / 超时 / 非法结果
   router -> sdk : 原 steer(新消息)
   sdk --> inlet : 投递成功
   inlet --> sender : 原接收确认 / A2A 已读
@@ -42,7 +42,7 @@ alt APPEND，或判断失败 / 超时 / 过期
     A 下一次原有模型调用前接纳新消息。
     这条消息不额外启动一轮模型调用。
   end note
-else INTERRUPT（应用前状态仍有效）
+else INTERRUPT（任务运行中且无待完成内部打断）
   router -> sdk : 内部暂停
   alt 模型生成中
     sdk -> slow : 取消当前生成

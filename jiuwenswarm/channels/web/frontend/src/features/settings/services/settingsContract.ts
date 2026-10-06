@@ -63,6 +63,16 @@ const yamlField = (
  * _CONFIG_YAML_KEYS and the Symphony-specific config specs.
  */
 export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
+  yamlField('duplex_router_mode', 'agent', 'text', 'duplex_router.mode'),
+  yamlField('duplex_router_backend', 'agent', 'text', 'duplex_router.backend'),
+  yamlField('duplex_router_model_name', 'agent', 'text', 'duplex_router.model_name'),
+  yamlField('duplex_router_timeout_seconds', 'agent', 'text', 'duplex_router.timeout_seconds'),
+  yamlField('duplex_router_interrupt_threshold', 'agent', 'text', 'duplex_router.<backend>.interrupt_threshold'),
+  yamlField('duplex_router_api_base', 'agent', 'text', 'duplex_router.<backend>.api_base'),
+  yamlField('duplex_router_endpoint_path', 'agent', 'text', 'duplex_router.jev.endpoint_path'),
+  yamlField('duplex_router_model', 'agent', 'text', 'duplex_router.clef.model'),
+  envField('duplex_router_account_id', 'agent', 'text', 'CLOUDFLARE_ACCOUNT_ID'),
+  envField('duplex_router_api_key', 'agent', 'text', 'DUPLEX_ROUTER_API_KEY'),
   envField('embed_api_base', 'models', 'text', 'EMBED_API_BASE'),
   envField('embed_api_key', 'models', 'text', 'EMBED_API_KEY'),
   envField('embed_model', 'models', 'text', 'EMBED_MODEL'),

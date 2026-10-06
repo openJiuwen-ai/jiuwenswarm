@@ -79,6 +79,18 @@
     "input": { "activePlaceholder": "You can also type in this session…", "inactivePlaceholder": "Start Full-duplex first…", "send": "Send question" }
   },
   "settingsPanel": {
+    "options": {
+      "duplexRouterSystemone": "systemone",
+      "duplexRouterDecisions": "decisions",
+      "duplexRouterModeOff": "Off",
+      "duplexRouterModeActive": "Active supervision",
+      "duplexRouterBackendSdk": "Built-in SDK",
+      "duplexRouterBackendJev": "Jev",
+      "duplexRouterBackendMindshub": "MindsHub",
+      "duplexRouterBackendClef": "Cloudflare Clef",
+      "duplexRouterClef": "clef",
+      "duplexRouterClefFlash": "clef-flash"
+    },
     "title": "Settings",
     "freeModels": {
       "title": "Limited-time free models",
@@ -319,6 +331,8 @@
       "test": "Test"
     },
     "agent": {
+      "a2aDefaultsHint": "Choose SDK, Jev, MindsHub or Cloudflare Clef. External backends use the API key below. Restart the team after changing the mode.",
+      "a2aDuplexRouter": "A2A duplex supervisor",
       "skills": "Skills",
       "webSearch": "Web search",
       "mediaTools": "Tools",
@@ -411,6 +425,54 @@
       "deleteConfirm": "This clears the saved full-duplex endpoint, model, and API key."
     },
     "fields": {
+      "duplex_router_mode": {
+        "title": "A2A supervision mode",
+        "description": "Disable supervision or let the supervisor choose APPEND or INTERRUPT."
+      },
+      "duplex_router_backend": {
+        "title": "Supervisor backend",
+        "description": "Choose SDK, Jev, MindsHub or Cloudflare Clef."
+      },
+      "duplex_router_model_name": {
+        "title": "Supervisor model name",
+        "description": "SDK team model name, Jev model ID, or MindsHub model ID. Clef uses the separate model selector.",
+        "placeholder": "e.g. jev-1.13.0"
+      },
+      "duplex_router_timeout_seconds": {
+        "title": "Decision timeout (seconds)",
+        "description": "Maximum time allowed for one supervision decision.",
+        "placeholder": "e.g. 8"
+      },
+      "duplex_router_interrupt_threshold": {
+        "title": "Interruption threshold",
+        "description": "Jev and Clef only. Probability greater than 0.5 and at most 1.",
+        "placeholder": "e.g. 0.8"
+      },
+      "duplex_router_api_base": {
+        "title": "Supervisor API URL",
+        "description": "Base URL for the selected external backend. Select the backend before editing.",
+        "placeholder": "https://api.example.com/v1"
+      },
+      "duplex_router_endpoint_path": {
+        "title": "Decision endpoint path",
+        "description": "Decision endpoint path relative to the API URL.",
+        "placeholder": "e.g. decisions"
+      },
+      "duplex_router_api_key": {
+        "title": "Supervisor API key",
+        "description": "API key or Cloudflare token for the selected supervisor. Stored like other API keys.",
+        "placeholder": ""
+      },
+      "duplex_router_account_id": {
+        "title": "Cloudflare account ID",
+        "description": "Required for Clef.",
+        "placeholder": ""
+      },
+      "duplex_router_model": {
+        "title": "Clef model",
+        "description": "Used only by the Cloudflare backend.",
+        "placeholder": ""
+      },
       "preferred_language": {
         "title": "Language",
         "description": "Set the display language for the application interface."
