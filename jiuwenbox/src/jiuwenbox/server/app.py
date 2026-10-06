@@ -230,14 +230,22 @@ def _chmod_uds_socket_if_any() -> None:
     背景: uvicorn 自己创建 UDS 时不暴露 ``--uds-mode`` flag, 落地权限完全由
     进程 umask 决定 (典型容器内 root umask=022 -> 0755), 这对宿主机非 root
     用户经常不够友好。launcher 会把 socket 路径写进 ``JIUWENBOX_UDS_PATH``;
-    本函数在 lifespan startup 阶段读一次 ``JIUWENBOX_UDS_MODE`` (默认 0666)
-    做一次同步 ``chmod``。socket 文件由 uvicorn 在监听阶段已经创建, 这里
-    无需 polling。任何失败仅 warn, 不阻塞服务起动。
+    本函数在 lifespan startup 阶段读一次 ``JIUWENBOX_UDS_MODE`` (默认 0600,
+    仅属主可读写) 做一次同步 ``chmod``。socket 文件由 uvicorn 在监听阶段
+    已经创建, 这里无需 polling。任何失败仅 warn, 不阻塞服务起动。
+
+    默认改为 0600 (此前是 0666, 任意本机用户都可读写): HTTP 侧的 Bearer
+    token 认证 (``JIUWENBOX_API_TOKEN``) 是另一个独立的环境变量, 不会因为
+    监听方式换成 UDS 就自动套用, 所以在没有同时显式配置 token 的部署里,
+    一个 0666 的 socket 就等价于"同机任意用户均可创建/删除沙箱并在其中执行
+    任意命令", 和 CVE 等级的未授权执行没有区别。真正需要多用户共享同一个
+    socket 的部署, 可显式设置 ``JIUWENBOX_UDS_MODE=0660`` (配合系统组权限)
+    或 ``0666``, 这是一个明确的、调用方自己承担后果的选择, 而不是默认行为。
     """
     uds_path = os.environ.get("JIUWENBOX_UDS_PATH")
     if not uds_path:
         return
-    mode_str = os.environ.get("JIUWENBOX_UDS_MODE", "0666")
+    mode_str = os.environ.get("JIUWENBOX_UDS_MODE", "0600")
     try:
         mode_value = int(mode_str, 8)
     except ValueError as exc:
