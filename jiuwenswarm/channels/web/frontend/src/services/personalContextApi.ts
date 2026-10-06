@@ -32,8 +32,16 @@ export type FetchRunState =
   | 'running'
   | 'stopping'
   | 'succeeded'
+  | 'partial_succeeded'
   | 'cancelled'
   | 'failed';
+
+export type FetchItemError = {
+  item_ref: string;
+  code: number;
+  message: string;
+  failed_at: string;
+};
 
 /** 单服务采集进度（后端 get_fetch_run_status / status.fetch_run_progress[id]）。 */
 export type FetchRunProgress = {
@@ -42,7 +50,15 @@ export type FetchRunProgress = {
   progress_percent: number;
   total_items: number;
   completed_items: number;
+  failed_items: number;
+  quarantined_items: number;
+  item_errors: FetchItemError[];
+  omitted_item_errors: number;
   last_error: string | null;
+  /** 本轮实际发布的 Context Markdown 节点（含目录说明）；旧历史缺字段表示未知。 */
+  created_node_count?: number;
+  updated_node_count?: number;
+  no_new_content?: boolean;
 };
 
 /** get_fetch_run_status 返回的单次运行记录；终端记录会保留 run_id 和起止时间。 */
@@ -83,15 +99,14 @@ export type PersonalContextStatus = {
 
 /**
  * 运行时停止超时不属于图谱发布失败；它应由采集任务页处理。
- * Core 目前会把 timeout 模板参数缺失渲染成 `<missing:timeout>`，所以这里只匹配稳定字段。
+ * 使用稳定状态码和操作名，后端消息可随缓存语言变化。
  */
 export function isFetchStopTimeoutError(
   error: PersonalContextStatus['last_error'] | undefined,
 ): boolean {
   return (
     error?.status === 'CONTEXT_PROACTIVE_RUNTIME_TIMEOUT' &&
-    error.operation === 'deactivate_runtime' &&
-    error.message.includes('PersonalContext stop timed out')
+    error.operation === 'deactivate_runtime'
   );
 }
 
@@ -105,6 +120,14 @@ export const FETCH_TASK_RUNNING_ERROR_CODE = 154001;
 /** 判断某个请求错误是否由「采集任务正在运行，配置修改被拒绝」触发。 */
 export function isFetchTaskRunningError(error: unknown): boolean {
   return String((error as { code?: unknown })?.code ?? '') === String(FETCH_TASK_RUNNING_ERROR_CODE);
+}
+
+/** 是否存在尚未停完的采集任务（采集进度里 running/stopping）。 */
+export function hasRunningFetchTask(status: PersonalContextStatus | null | undefined): boolean {
+  if (!status) return false;
+  return Object.values(status.fetch_run_progress ?? {}).some(
+    (item) => item.run_state === 'running' || item.run_state === 'stopping',
+  );
 }
 
 // ── runtime.get_config / patch / select_model 返回的 stored config ─────────
@@ -155,6 +178,8 @@ export type FetchServicePatch = Partial<
 
 export type PersonalContextConfig = {
   configured: boolean;
+  /** 总开关（独立持久化）：控制两个子开关联动，子开关切换不影响它。 */
+  master_enabled: boolean;
   collection_enabled: boolean;
   agent_use_enabled: boolean;
   strategy_profile: StrategyProfile;
@@ -171,9 +196,13 @@ export type AuthorizationState =
   | 'authorized'
   | 'authorization_failed';
 
+/** 飞书授权阶段：config_init=首次应用配置（第1步），device_authorization=登录授权（第2步）。 */
+export type FeishuAuthorizationStep = 'config_init' | 'device_authorization';
+
 export type AuthorizationResult = {
   provider: string;
   state: AuthorizationState;
+  authorization_step?: FeishuAuthorizationStep | null;
   verification_url: string | null;
   expires_at: string | null;
   error: string | null;
@@ -236,15 +265,14 @@ export type ContextSourceDetail = {
 
 // ── API 方法 ──────────────────────────────────────────────────────────────
 /**
- * 采集单次运行/停止 RPC 的客户端超时。
- * run_fetch 虽为立即返回 accepted，但受后端 _operation_lock 串行影响；stop_fetch_run 会
- * await 采集任务真正落停。两者都放宽到 60s，避免默认 15s 造成的"后端其实已受理，前端却误报请求超时"。
+ * 采集操作 RPC 的客户端超时。run_fetch 虽立即返回 accepted，但受后端 _operation_lock
+ * 串行影响，放宽到 60s；停止操作使用下面的 90s 预算。
  */
 const FETCH_OP_TIMEOUT_MS = 60_000;
 
 /**
  * 配置变更类 RPC 的客户端超时。create_service 受 _operation_lock 串行，且运行时会
- * 先 deactivate（上限 30s）再重建，可能与正在等待/执行的 stop 叠加，故放宽到 90s。
+ * 先 deactivate（上限 60s）再重建；停止请求同样使用 90s，留出传输和状态返回余量。
  */
 const FETCH_CONFIG_TIMEOUT_MS = 90_000;
 
@@ -260,8 +288,7 @@ export const pcApi = {
       'personal_context.runtime.start_collection',
       {},
       // start_collection 会加载 embedding / activate_runtime，且受 _operation_lock 串行，
-      // 可能慢于默认 15s；stop_collection 后端会 await 到 _STOP_TIMEOUT_SECONDS(30s) 才返回，
-      // 故起停都放宽到 60s，避免"后端其实已停完/起完，前端却先报请求超时"。
+      // 可能慢于默认 15s，因此启动请求放宽到 60s。
       { timeoutMs: FETCH_OP_TIMEOUT_MS },
     ),
 
@@ -269,7 +296,14 @@ export const pcApi = {
     webRequest<PersonalContextConfig>(
       'personal_context.runtime.stop_collection',
       {},
-      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+      { timeoutMs: FETCH_CONFIG_TIMEOUT_MS },
+    ),
+
+  setMasterEnabled: (enabled: boolean) =>
+    webRequest<PersonalContextConfig>(
+      'personal_context.runtime.set_master_enabled',
+      { enabled },
+      { timeoutMs: FETCH_CONFIG_TIMEOUT_MS },
     ),
 
   startAgentUse: () =>
@@ -348,8 +382,8 @@ export const pcApi = {
     webRequest<{ ok: true }>(
       'personal_context.fetch.stop_run',
       { service_id },
-      // stop_fetch_run 会 await 采集任务真正落停（asyncio.shield），耗时随采集进度不定，放宽超时。
-      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+      // 覆盖后端 60s 收尾预算及状态返回余量。
+      { timeoutMs: FETCH_CONFIG_TIMEOUT_MS },
     ),
 
   getRunStatus: () =>
@@ -368,12 +402,17 @@ export const pcApi = {
       { timeoutMs: FETCH_OP_TIMEOUT_MS },
     ),
 
-  authorizeProvider: (provider: string, credentials?: Record<string, string>) =>
+  authorizeProvider: (
+    provider: string,
+    credentials?: Record<string, string>,
+    reauthorize?: boolean,
+  ) =>
     webRequest<AuthorizationResult>(
       'personal_context.fetch.authorize_provider',
       {
         provider,
         ...(credentials ? { credentials } : {}),
+        ...(reauthorize ? { reauthorize: true } : {}),
       },
       { timeoutMs: FETCH_OP_TIMEOUT_MS },
     ),
@@ -569,12 +608,13 @@ export const FREQUENCY_SECONDS: Record<FrequencyUnit, number> = {
 };
 
 /**
- * 单次最大采集条数，对齐后端 config.py: max_items_per_run int|None，ge=1, le=10000。
- * None（前端留空）= 用各 provider 默认值；填值须在 [1,10000]。
+ * 单次最大采集条数，前端业务上限 [1,40]（后端 config.py 仍允许 le=10_000，
+ * 此处按产品要求在前端收窄，后端未同步修改）。
+ * None（前端留空）= 用各 provider 默认值；填值须在 [1,40]。
  * （后端不接受 0；前端以留空表达"不限/用默认"。）
  */
 export const MAX_ITEMS_MIN = 1;
-export const MAX_ITEMS_MAX = 10000;
+export const MAX_ITEMS_MAX = 40;
 
 /**
  * 采集频率上限（秒），对齐后端 PersonalContextFetchServiceConfig.interval_seconds 的 le=31_536_000（365 天）。
@@ -583,16 +623,13 @@ export const MAX_ITEMS_MAX = 10000;
 export const INTERVAL_MAX_SECONDS = 31_536_000;
 
 /**
- * service_id 前端预校验，对齐后端 _safe_segment（config.py: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$，禁 ./..）。
+ * service_id 前端仅做长度限制（≤500），格式校验由后端负责。
  * 返回 null 表示通过；否则返回错误信息。
  */
 export function validateServiceId(value: string): string | null {
   const text = value.trim();
   if (!text) return 'service_id is required';
-  if (text === '.' || text === '..') return 'service_id must not be . or ..';
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(text)) {
-    return 'service_id must start with a letter or digit and contain only letters, digits, . _ - (max 128 chars)';
-  }
+  if (text.length > 500) return 'service_id must be at most 500 characters';
   return null;
 }
 

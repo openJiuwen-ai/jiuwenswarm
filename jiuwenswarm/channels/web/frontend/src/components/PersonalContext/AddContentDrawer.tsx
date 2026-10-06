@@ -9,7 +9,7 @@
  * 后端 source 校验对齐 openjiuwen config.py:_normalize_service_source。
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, Loader2, X } from 'lucide-react';
 import { usePersonalContextStore } from '../../stores';
@@ -42,7 +42,10 @@ import {
   validateZhihuColumnUrl,
 } from '../../services/personalContextApi';
 import { requestSettingsModule } from '../../features/settings/settingsNavigation';
+import { selectProjectDirectory } from '../../features/workspace/projectDirectoryPicker';
+import { selectLocalFiles } from '../../features/workspace/localFilePicker';
 import { toast } from '../../components/ui/Toast/toastStore';
+import { parseEdgeBookmarkFolderPaths } from './edgeBookmarkFolders';
 import type { WebError } from '../../types/websocket';
 import localFilesIcon from '../../assets/settings/channels/local-files.svg';
 import edgeBookmarksIcon from '../../assets/settings/channels/edge-bookmarks.svg';
@@ -77,7 +80,7 @@ function freqFromSeconds(sec: number): { unit: 'hour' | 'day'; value: number } {
   if (sec % FREQUENCY_SECONDS.day === 0) {
     return { unit: 'day', value: Math.max(1, sec / FREQUENCY_SECONDS.day) };
   }
-  return { unit: 'hour', value: Math.max(1, Math.round(sec / FREQUENCY_SECONDS.hour)) };
+  return { unit: 'hour', value: sec / FREQUENCY_SECONDS.hour };
 }
 
 /** 给定频率单位下的数值上限，对齐后端 interval_seconds le=31_536_000（day=365 / hour=8760）。 */
@@ -132,15 +135,21 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
     return isProviderAuthorized(init) ? init : PROVIDER_ORDER.find((p) => isProviderAuthorized(p)) ?? 'local_files';
   });
   const [freqUnit, setFreqUnit] = useState<'hour' | 'day'>(() => freqFromSeconds(editService?.interval_seconds ?? 3 * FREQUENCY_SECONDS.day).unit);
-  const [freqValue, setFreqValue] = useState(() => freqFromSeconds(editService?.interval_seconds ?? 3 * FREQUENCY_SECONDS.day).value);
+  const [freqInput, setFreqInput] = useState(() => String(freqFromSeconds(editService?.interval_seconds ?? 3 * FREQUENCY_SECONDS.day).value));
+  const freqValue = Number(freqInput);
   const [timeRange, setTimeRange] = useState<'week' | 'month' | 'quarter' | 'custom'>(() => timeRangeFromConfig(editService?.time_range).timeRange);
   const [customStart, setCustomStart] = useState(() => timeRangeFromConfig(editService?.time_range).customStart);
   const [customEnd, setCustomEnd] = useState(() => timeRangeFromConfig(editService?.time_range).customEnd);
   // 默认 20 条；填值须 [1,10000]
-  const [maxItems, setMaxItems] = useState<number | null>(editService?.max_items_per_run ?? 20);
+  const [maxItemsInput, setMaxItemsInput] = useState(() => String(editService?.max_items_per_run ?? 20));
+  const [maxItemsBadInput, setMaxItemsBadInput] = useState(false);
+  const maxItems = maxItemsInput === '' ? null : Number(maxItemsInput);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [timeDropdownOpen, setTimeDropdownOpen] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const timeDropdownRef = useRef<HTMLDivElement | null>(null);
+  // 点击时间范围下拉外部任意处自动收起
+  useOutsideDismiss(timeDropdownRef, timeDropdownOpen, () => setTimeDropdownOpen(false));
 
   // 分支字段
   const [rootDir, setRootDir] = useState(() => (editService?.provider === 'local_files' ? String(editService.source.root_dir ?? '') : ''));
@@ -200,49 +209,61 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
     return false;
   }, [provider, feishuMode, feishuResources, feishuWikiSpaceId, rootDir, columnUrl, profileUrl, githubRepoUrl, githubResources, gitcodeRepoUrl, gitcodeResources]);
 
+  const nameErrorKey = isEdit
+    ? null
+    : !name.trim()
+      ? 'personalContext.addContent.nameRequired'
+      : validateServiceId(name) ? 'personalContext.addContent.nameFormatError' : null;
+  const frequencyErrorKey =
+    !Number.isFinite(freqValue) || !Number.isInteger(freqValue) || freqValue < 1 || freqValue > maxFreqValue(freqUnit)
+      ? 'personalContext.addContent.frequencyRangeError'
+      : null;
+  const maxItemsErrorKey =
+    maxItemsBadInput || (maxItems !== null && (
+      !Number.isFinite(maxItems) || !Number.isInteger(maxItems) || maxItems < MAX_ITEMS_MIN || maxItems > MAX_ITEMS_MAX
+    ))
+      ? 'personalContext.addContent.maxItemsRangeError'
+      : null;
+  const sourceErrorKey = branchValid ? null : {
+    local_files: 'personalContext.addContent.localFiles.rootDirRequired',
+    zhihu_reader: 'personalContext.addContent.zhihu.columnUrlHint',
+    toutiao_reader: 'personalContext.addContent.toutiao.profileUrlHint',
+    github: 'personalContext.addContent.github.sourceInvalid',
+    gitcode: 'personalContext.addContent.gitcode.sourceInvalid',
+    feishu: feishuMode === 'wiki_space'
+      ? 'personalContext.addContent.feishu.wikiSpaceIdRequired'
+      : 'personalContext.addContent.feishu.resourcesRequired',
+    browser_bookmarks: null,
+  }[provider];
+
   // 「添加」按钮被禁用时给出可见原因。顺序与 canSubmit 完全一致，返回 i18n key。
   // 没有它按钮只会静默置灰，用户无法判断是名称格式、来源地址还是未授权的问题。
   const submitBlockReasonKey = useMemo(() => {
     if (submitting) return null;
     if (!isConfigured) return 'personalContext.addContent.notConfigured';
-    if (!branchValid) {
-      if (provider === 'local_files') return 'personalContext.addContent.localFiles.rootDirHint';
-      if (provider === 'zhihu_reader') return 'personalContext.addContent.zhihu.columnUrlHint';
-      if (provider === 'toutiao_reader') return 'personalContext.addContent.toutiao.profileUrlHint';
-      if (provider === 'github') return 'personalContext.addContent.github.sourceInvalid';
-      if (provider === 'gitcode') return 'personalContext.addContent.gitcode.sourceInvalid';
-      if (provider === 'feishu') {
-        return feishuMode === 'wiki_space'
-          ? 'personalContext.addContent.feishu.wikiSpaceIdRequired'
-          : 'personalContext.addContent.feishu.resourcesRequired';
-      }
-      return null;
-    }
-    if (maxItems !== null && (maxItems < MAX_ITEMS_MIN || maxItems > MAX_ITEMS_MAX)) {
-      return 'personalContext.addContent.maxItemsRangeError';
-    }
+    if (nameErrorKey) return nameErrorKey;
+    if (sourceErrorKey) return sourceErrorKey;
+    if (frequencyErrorKey) return frequencyErrorKey;
+    if (maxItemsErrorKey) return maxItemsErrorKey;
     if (timeRange === 'custom' && (!customStart || !customEnd)) {
       return 'personalContext.addContent.dateRangeRequired';
     }
     if (isEdit) return null; // 编辑：名称/来源已锁定
-    if (!name.trim()) return 'personalContext.addContent.nameRequired';
     if (requiresAuth && !authorized) return 'personalContext.addContent.providerUnauthorized';
-    if (validateServiceId(name)) return 'personalContext.addContent.nameFormatError';
     return null;
   }, [
     isConfigured,
     submitting,
-    branchValid,
     isEdit,
-    name,
     requiresAuth,
     authorized,
-    provider,
-    feishuMode,
-    maxItems,
     timeRange,
     customStart,
     customEnd,
+    nameErrorKey,
+    sourceErrorKey,
+    frequencyErrorKey,
+    maxItemsErrorKey,
   ]);
 
   const canSubmit = useMemo(() => {
@@ -251,6 +272,10 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
 
   const handleSubmit = async () => {
     setError(null);
+    if (submitBlockReasonKey) {
+      setError(t(submitBlockReasonKey, { max: maxFreqValue(freqUnit) }));
+      return;
+    }
     if (!isConfigured) {
       setError(t('personalContext.addContent.notConfigured'));
       return;
@@ -296,7 +321,7 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
       const s: Record<string, unknown> = { include_subfolders: true, fetch_page_content: true };
       if (edgeProfile.trim()) s.profile = edgeProfile.trim();
       if (edgeBookmarksPath.trim()) s.bookmarks_path = edgeBookmarksPath.trim();
-      const folders = edgeFolderList.map((f) => f.trim()).filter(Boolean);
+      const folders = parseEdgeBookmarkFolderPaths(edgeFolderList);
       if (folders.length) s.bookmark_folder_paths = folders;
       source = s;
     } else if (provider === 'github') {
@@ -397,7 +422,7 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
       <aside
         className="pc-drawer"
         onClick={(e) => e.stopPropagation()}
-        data-testid="pc-add-content-drawer"
+        data-testid="personal-context-add-content-drawer"
       >
         <header className="pc-drawer__head">
           <h3 className="pc-drawer__title">{t(isEdit ? 'personalContext.addContent.editTitle' : 'personalContext.addContent.title')}</h3>
@@ -409,17 +434,22 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
         <div className="pc-drawer__body">
           {/* 采集内容名称 */}
           <div className="pc-drawer__field">
-            <label>{t('personalContext.addContent.nameLabel')}</label>
+            <label htmlFor="personal-context-content-name" data-testid="personal-context-content-name-label">{t('personalContext.addContent.nameLabel')}</label>
             {isEdit ? (
               <div className="pc-drawer__locked">{name}</div>
             ) : (
               <input
                 className="pc-drawer__input"
+                id="personal-context-content-name"
+                data-testid="personal-context-content-name"
+                aria-invalid={!!nameErrorKey}
+                aria-describedby={nameErrorKey ? 'personal-context-name-error' : undefined}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder={t('personalContext.addContent.namePlaceholder')}
               />
             )}
+            {nameErrorKey && <div id="personal-context-name-error" className="pc-drawer__field-error" data-testid="personal-context-name-error">{t(nameErrorKey)}</div>}
           </div>
 
           {/* 内容采集来源 */}
@@ -484,6 +514,7 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
 
           {/* provider 分支表单 */}
           <ProviderFields
+            sourceErrorKey={sourceErrorKey}
             provider={provider}
             rootDir={rootDir} setRootDir={setRootDir}
             columnUrl={columnUrl} setColumnUrl={setColumnUrl}
@@ -503,11 +534,13 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
             feishuCalendarOpen={feishuCalendarOpen} setFeishuCalendarOpen={setFeishuCalendarOpen}
             feishuDocIdList={feishuDocIdList} setFeishuDocIdList={setFeishuDocIdList}
           />
+          {sourceErrorKey && <div id="personal-context-source-error" className="pc-drawer__field-error" data-testid="personal-context-source-error">{t(sourceErrorKey)}</div>}
 
           {/* 高级配置 */}
           <button
             type="button"
             className={'pc-drawer__advanced-toggle' + (advancedOpen ? ' pc-drawer__advanced-toggle--open' : '')}
+            data-testid="personal-context-advanced-toggle"
             onClick={() => setAdvancedOpen(!advancedOpen)}
           >
             {t('personalContext.addContent.advancedConfig')}
@@ -518,7 +551,7 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
               {/* 采集时间 */}
               <div className="pc-drawer__field">
                 <label>{t('personalContext.addContent.timeRangeLabel')}</label>
-                <div className="pc-drawer__custom-select" >
+                <div className="pc-drawer__custom-select" ref={timeDropdownRef}>
                   <button
                     type="button"
                     className="pc-drawer__select-trigger"
@@ -555,38 +588,49 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
                   <button
                     type="button"
                     className="pc-drawer__calendar-trigger"
+                    data-testid="personal-context-date-range"
+                    aria-invalid={!customStart || !customEnd}
+                    aria-describedby={!customStart || !customEnd ? 'personal-context-date-range-error' : undefined}
                     onClick={() => setCalendarOpen(true)}
                   >
                     <span>{customStart && customEnd ? `${customStart} - ${customEnd}` : t('personalContext.addContent.dateRangePlaceholder')}</span>
                     <span className="pc-drawer__select-arrow">{'<'}</span>
                   </button>
                 )}
+                {timeRange === 'custom' && (!customStart || !customEnd) && <div id="personal-context-date-range-error" className="pc-drawer__field-error" data-testid="personal-context-date-range-error">{t('personalContext.addContent.dateRangeRequired')}</div>}
               </div>
 
               {/* 自动采集频率 */}
               <div className="pc-drawer__field">
-                <label>{t('personalContext.addContent.frequencyLabel')}</label>
+                <label htmlFor="personal-context-frequency" data-testid="personal-context-frequency-label">{t('personalContext.addContent.frequencyLabel')}</label>
                 <div className="pc-drawer__freq">
                   <div className="pc-drawer__spinner">
                     <button
                       type="button"
                       className="pc-drawer__spinner-btn"
-                      onClick={() => setFreqValue(Math.max(1, freqValue - 1))}
+                      data-testid="personal-context-frequency-decrease"
+                      onClick={() => setFreqInput(String(Math.max(1, freqValue - 1)))}
                     >
                       {'-'}
                     </button>
                     <input
                       type="number"
                       className="pc-drawer__spinner-input"
-                      value={freqValue}
+                      id="personal-context-frequency"
+                      data-testid="personal-context-frequency"
+                      value={freqInput}
+                      aria-invalid={!!frequencyErrorKey}
+                      aria-describedby={frequencyErrorKey ? 'personal-context-frequency-error' : undefined}
+                      step={1}
                       min={1}
                       max={maxFreqValue(freqUnit)}
-                      onChange={(e) => setFreqValue(clampFreq(Number(e.target.value) || 1, freqUnit))}
+                      onChange={(e) => setFreqInput(e.target.value)}
                     />
                     <button
                       type="button"
                       className="pc-drawer__spinner-btn"
-                      onClick={() => setFreqValue(clampFreq(freqValue + 1, freqUnit))}
+                      data-testid="personal-context-frequency-increase"
+                      onClick={() => setFreqInput(String(clampFreq(freqValue + 1, freqUnit)))}
                     >
                       {'+'}
                     </button>
@@ -594,67 +638,83 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
                   <button
                     type="button"
                     className={'pc-drawer__freq-pill' + (freqUnit === 'hour' ? ' pc-drawer__freq-pill--active' : '')}
-                    onClick={() => { setFreqUnit('hour'); setFreqValue(clampFreq(freqValue, 'hour')); }}
+                    data-testid="personal-context-frequency-hour"
+                    onClick={() => setFreqUnit('hour')}
                   >
                     {t('personalContext.addContent.unitHour')}
                   </button>
                   <button
                     type="button"
                     className={'pc-drawer__freq-pill' + (freqUnit === 'day' ? ' pc-drawer__freq-pill--active' : '')}
-                    onClick={() => { setFreqUnit('day'); setFreqValue(clampFreq(freqValue, 'day')); }}
+                    data-testid="personal-context-frequency-day"
+                    onClick={() => setFreqUnit('day')}
                   >
                     {t('personalContext.addContent.unitDay')}
                   </button>
                 </div>
+                {frequencyErrorKey && <div id="personal-context-frequency-error" className="pc-drawer__field-error" data-testid="personal-context-frequency-error">{t(frequencyErrorKey, { max: maxFreqValue(freqUnit) })}</div>}
               </div>
 
               {/* 单次最多采集条数 */}
               <div className="pc-drawer__field">
-                <label>{t('personalContext.addContent.maxItemsLabel')}</label>
+                <label htmlFor="personal-context-max-items" data-testid="personal-context-max-items-label">{t('personalContext.addContent.maxItemsLabel')}</label>
                 <div className="pc-drawer__spinner pc-drawer__spinner--narrow">
                   <button
                     type="button"
                     className="pc-drawer__spinner-btn"
-                    onClick={() => setMaxItems(Math.max(MAX_ITEMS_MIN, (maxItems ?? 20) - 1))}
+                    data-testid="personal-context-max-items-decrease"
+                    onClick={() => {
+                      setMaxItemsInput(String(Math.max(MAX_ITEMS_MIN, (maxItems ?? 20) - 1)));
+                      setMaxItemsBadInput(false);
+                    }}
                   >
                     {'-'}
                   </button>
                   <input
                     type="number"
                     className="pc-drawer__spinner-input"
-                    value={maxItems ?? ''}
+                    id="personal-context-max-items"
+                    data-testid="personal-context-max-items"
+                    value={maxItemsInput}
+                    aria-invalid={!!maxItemsErrorKey}
+                    aria-describedby={maxItemsErrorKey ? 'personal-context-max-items-error' : undefined}
+                    step={1}
                     min={MAX_ITEMS_MIN}
                     max={MAX_ITEMS_MAX}
                     placeholder="20"
                     onChange={(e) => {
-                      const raw = e.target.value;
-                      if (raw === '') { setMaxItems(null); return; }
-                      const v = Number(raw);
-                      setMaxItems(Number.isNaN(v) ? null : v);
+                      setMaxItemsInput(e.target.value);
+                      setMaxItemsBadInput(e.target.validity?.badInput ?? false);
                     }}
                   />
                   <button
                     type="button"
                     className="pc-drawer__spinner-btn"
-                    onClick={() => setMaxItems(Math.min(MAX_ITEMS_MAX, (maxItems ?? 20) + 1))}
+                    data-testid="personal-context-max-items-increase"
+                    onClick={() => {
+                      setMaxItemsInput(String(Math.min(MAX_ITEMS_MAX, (maxItems ?? 20) + 1)));
+                      setMaxItemsBadInput(false);
+                    }}
                   >
                     {'+'}
                   </button>
                 </div>
+                {maxItemsErrorKey && <div id="personal-context-max-items-error" className="pc-drawer__field-error" data-testid="personal-context-max-items-error">{t(maxItemsErrorKey)}</div>}
               </div>
               </div>
           )}
-          {error && <div className="pc-drawer__error" role="alert">{error}</div>}
+          {error && <div className="pc-drawer__error" data-testid="personal-context-content-error" role="alert">{error}</div>}
         </div>
 
         <footer className="pc-drawer__foot">
-          {submitBlockReasonKey && <div className="pc-drawer__foot-hint">{t(submitBlockReasonKey)}</div>}
+          {submitBlockReasonKey && <div className={`pc-drawer__foot-hint${submitBlockReasonKey !== 'personalContext.addContent.notConfigured' && submitBlockReasonKey !== 'personalContext.addContent.providerUnauthorized' ? ' pc-drawer__field-error' : ''}`} data-testid="personal-context-submit-hint">{t(submitBlockReasonKey, { max: maxFreqValue(freqUnit) })}</div>}
           <button type="button" className="pc-drawer__foot-btn pc-drawer__foot-btn--secondary" onClick={onClose} disabled={submitting}>
             {t('personalContext.services.cancel')}
           </button>
           <button
             type="button"
             className="pc-drawer__foot-btn pc-drawer__foot-btn--primary"
+            data-testid="personal-context-content-submit"
             onClick={handleSubmit}
             disabled={!canSubmit}
           >
@@ -684,6 +744,7 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
 
 interface ProviderFieldsProps {
   provider: FetchProvider;
+  sourceErrorKey: string | null;
   rootDir: string; setRootDir: (v: string) => void;
   columnUrl: string; setColumnUrl: (v: string) => void;
   profileUrl: string; setProfileUrl: (v: string) => void;
@@ -930,16 +991,43 @@ interface MultiSelectDropdownProps<T extends string> {
   labelKey: (opt: T) => string;
   onToggle: (opt: T) => void;
   placeholder: string;
+  invalid?: boolean;
 }
 
-function MultiSelectDropdown<T extends string>({ options, selected, labelKey, onToggle, placeholder }: MultiSelectDropdownProps<T>) {
+/** 下拉通用：open 时监听 document mousedown，点击容器外部任意处触发 onDismiss。 */
+function useOutsideDismiss(
+  containerRef: { current: HTMLElement | null },
+  open: boolean,
+  onDismiss: () => void,
+): void {
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        onDismissRef.current();
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [containerRef, open]);
+}
+
+function MultiSelectDropdown<T extends string>({ options, selected, labelKey, onToggle, placeholder, invalid }: MultiSelectDropdownProps<T>) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  // 点击多选下拉外部任意处自动收起（选项连续勾选时保持展开）
+  useOutsideDismiss(containerRef, open, () => setOpen(false));
   return (
-    <div className="pc-drawer__multi-select">
+    <div className="pc-drawer__multi-select" ref={containerRef}>
       <button
         type="button"
         className="pc-drawer__multi-select-trigger"
+        data-testid="personal-context-resource-select"
+        aria-invalid={invalid}
+        aria-describedby={invalid ? 'personal-context-source-error' : undefined}
         onClick={() => setOpen(!open)}
       >
         <span className="pc-drawer__multi-select-tags">
@@ -987,6 +1075,20 @@ function MultiSelectDropdown<T extends string>({ options, selected, labelKey, on
 
 function ProviderFields(props: ProviderFieldsProps) {
   const { t } = useTranslation();
+  /** 路径/文件选择器失败时给出反馈；取消选择保持静默。 */
+  const notifyPickerFailure = (result: {
+    ok: boolean;
+    reason?: 'unsupported' | 'cancelled' | 'failed';
+    message?: string;
+  }) => {
+    if (result.ok || result.reason === 'cancelled') return;
+    const content =
+      result.reason === 'unsupported'
+        ? t('chat.inputAttachment.filePickerUnsupported')
+        : result.message || t('chat.inputAttachment.filePickerFailed');
+    toast.open({ content, variant: 'error' });
+  };
+
   const { provider } = props;
 
   if (provider === 'feishu') {
@@ -1021,6 +1123,7 @@ function ProviderFields(props: ProviderFieldsProps) {
               <label>{t('personalContext.addContent.feishu.resourcesLabel')}</label>
               <MultiSelectDropdown
                 options={FEISHU_RESOURCES}
+                invalid={props.feishuResources.length === 0}
                 selected={props.feishuResources}
                 labelKey={(r) => FEISHU_RESOURCE_LABEL_KEYS[r]}
                 onToggle={toggleResource}
@@ -1061,6 +1164,9 @@ function ProviderFields(props: ProviderFieldsProps) {
               <input
                 className="pc-drawer__input"
                 value={props.feishuWikiSpaceId}
+                data-testid="personal-context-feishu-wiki-space"
+                aria-invalid={!!props.sourceErrorKey}
+                aria-describedby={props.sourceErrorKey ? 'personal-context-source-error' : undefined}
                 onChange={(e) => props.setFeishuWikiSpaceId(e.target.value)}
                 placeholder={t('personalContext.addContent.feishu.wikiSpaceIdPlaceholder')}
               />
@@ -1075,12 +1181,31 @@ function ProviderFields(props: ProviderFieldsProps) {
     return (
       <div className="pc-drawer__field">
         <label>{t('personalContext.addContent.localFiles.rootDirLabel')}</label>
-        <input
-          className="pc-drawer__input"
-          value={props.rootDir}
-          onChange={(e) => props.setRootDir(e.target.value)}
-          placeholder={t('personalContext.addContent.localFiles.rootDirPlaceholder')}
-        />
+        <div className="pc-drawer__path-input">
+          <input
+            className="pc-drawer__input"
+            value={props.rootDir}
+            data-testid="personal-context-local-root-directory"
+            aria-invalid={!!props.sourceErrorKey}
+            aria-describedby={props.sourceErrorKey ? 'personal-context-source-error' : undefined}
+            readOnly
+            placeholder={t('personalContext.addContent.localFiles.rootDirPlaceholder')}
+          />
+          <button
+            type="button"
+            className="pc-drawer__path-btn"
+            onClick={async () => {
+              const result = await selectProjectDirectory({ initialDir: props.rootDir || undefined });
+              if (result.ok && result.path) props.setRootDir(result.path);
+              else notifyPickerFailure(result);
+            }}
+            aria-label="browse"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+            </svg>
+          </button>
+        </div>
       </div>
     );
   }
@@ -1092,6 +1217,9 @@ function ProviderFields(props: ProviderFieldsProps) {
         <input
           className="pc-drawer__input"
           value={props.columnUrl}
+          data-testid="personal-context-zhihu-column-url"
+          aria-invalid={!!props.sourceErrorKey}
+          aria-describedby={props.sourceErrorKey ? 'personal-context-source-error' : undefined}
           onChange={(e) => props.setColumnUrl(e.target.value)}
           placeholder={t('personalContext.addContent.zhihu.columnUrlPlaceholder')}
         />
@@ -1106,6 +1234,9 @@ function ProviderFields(props: ProviderFieldsProps) {
         <input
           className="pc-drawer__input"
           value={props.profileUrl}
+          data-testid="personal-context-toutiao-profile-url"
+          aria-invalid={!!props.sourceErrorKey}
+          aria-describedby={props.sourceErrorKey ? 'personal-context-source-error' : undefined}
           onChange={(e) => props.setProfileUrl(e.target.value)}
           placeholder={t('personalContext.addContent.toutiao.profileUrlPlaceholder')}
         />
@@ -1118,23 +1249,60 @@ function ProviderFields(props: ProviderFieldsProps) {
       <div className="pc-drawer__fields-group">
         <div className="pc-drawer__field">
           <label>{t('personalContext.addContent.edge.profileLabel')}</label>
-          <select
-            className="pc-drawer__select"
-            value={props.edgeProfile}
-            onChange={(e) => props.setEdgeProfile(e.target.value)}
-          >
-            <option value="">{t('personalContext.addContent.edge.profilePlaceholder')}</option>
-            <option value="Default">{t('personalContext.addContent.edge.profileDefault')}</option>
-          </select>
+          <div className="pc-drawer__path-input">
+            <input
+              className="pc-drawer__input"
+              value={props.edgeProfile}
+              onChange={(e) => props.setEdgeProfile(e.target.value)}
+              placeholder={t('personalContext.addContent.edge.profilePlaceholder')}
+            />
+            <button
+              type="button"
+              className="pc-drawer__path-btn"
+              onClick={async () => {
+                const result = await selectProjectDirectory({});
+                if (result.ok && result.path) {
+                  const segments = result.path.replace(/\/+$/, '').split(/[\\/]/);
+                  const name = segments[segments.length - 1];
+                  if (name) props.setEdgeProfile(name);
+                } else {
+                  notifyPickerFailure(result);
+                }
+              }}
+              aria-label="browse"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+              </svg>
+            </button>
+          </div>
+          <div className="pc-drawer__field-hint">{t('personalContext.addContent.edge.profileHint')}</div>
         </div>
         <div className="pc-drawer__field">
           <label>{t('personalContext.addContent.edge.bookmarksPathLabel')}</label>
-          <input
-            className="pc-drawer__input"
-            value={props.edgeBookmarksPath}
-            onChange={(e) => props.setEdgeBookmarksPath(e.target.value)}
-            placeholder={t('personalContext.addContent.edge.bookmarksPathPlaceholder')}
-          />
+          <div className="pc-drawer__path-input">
+            <input
+              className="pc-drawer__input"
+              value={props.edgeBookmarksPath}
+              readOnly
+              placeholder={t('personalContext.addContent.edge.bookmarksPathPlaceholder')}
+            />
+            <button
+              type="button"
+              className="pc-drawer__path-btn"
+              onClick={async () => {
+                const result = await selectLocalFiles(false);
+                if (result.ok && result.files[0]?.path) props.setEdgeBookmarksPath(result.files[0].path);
+                else notifyPickerFailure(result);
+              }}
+              aria-label="browse"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.5 3H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7.5L15.5 3z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 3v5h5" />
+              </svg>
+            </button>
+          </div>
         </div>
         <div className="pc-drawer__field">
           <label>{t('personalContext.addContent.edge.foldersLabel')}</label>
@@ -1161,6 +1329,9 @@ function ProviderFields(props: ProviderFieldsProps) {
           <input
             className="pc-drawer__input"
             value={props.githubRepoUrl}
+            data-testid="personal-context-github-repository-url"
+            aria-invalid={'error' in parseGithubRepoUrl(props.githubRepoUrl)}
+            aria-describedby={'error' in parseGithubRepoUrl(props.githubRepoUrl) ? 'personal-context-source-error' : undefined}
             onChange={(e) => props.setGithubRepoUrl(e.target.value)}
             placeholder={t('personalContext.addContent.github.repoUrlPlaceholder')}
           />
@@ -1169,6 +1340,7 @@ function ProviderFields(props: ProviderFieldsProps) {
           <label>{t('personalContext.addContent.github.resourcesLabel')}</label>
           <MultiSelectDropdown
             options={GITHUB_RESOURCES}
+            invalid={props.githubResources.length === 0}
             selected={props.githubResources}
             labelKey={(r) => GITHUB_RESOURCE_LABEL_KEYS[r]}
             onToggle={toggleResource}
@@ -1192,6 +1364,9 @@ function ProviderFields(props: ProviderFieldsProps) {
           <input
             className="pc-drawer__input"
             value={props.gitcodeRepoUrl}
+            data-testid="personal-context-gitcode-repository-url"
+            aria-invalid={'error' in parseGitcodeRepoUrl(props.gitcodeRepoUrl)}
+            aria-describedby={'error' in parseGitcodeRepoUrl(props.gitcodeRepoUrl) ? 'personal-context-source-error' : undefined}
             onChange={(e) => props.setGitcodeRepoUrl(e.target.value)}
             placeholder={t('personalContext.addContent.gitcode.repoUrlPlaceholder')}
           />
@@ -1200,6 +1375,7 @@ function ProviderFields(props: ProviderFieldsProps) {
           <label>{t('personalContext.addContent.gitcode.resourcesLabel')}</label>
           <MultiSelectDropdown
             options={GITCODE_RESOURCES}
+            invalid={props.gitcodeResources.length === 0}
             selected={props.gitcodeResources}
             labelKey={(r) => GITCODE_RESOURCE_LABEL_KEYS[r]}
             onToggle={toggleResource}

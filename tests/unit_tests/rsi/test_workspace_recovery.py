@@ -26,12 +26,24 @@ class SnapshotAdapter:
 
     supports_resume = True
 
-    def __init__(self, *, status: str = "running", tree: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        status: str = "running",
+        tree: dict[str, Any] | None = None,
+        error_message: str | None = None,
+    ) -> None:
         self.status = status
         self.tree = tree
+        self.error_message = error_message
 
     def read_state(self, task_id: str) -> Any:
-        return SimpleNamespace(task_id=task_id, status=self.status)
+        return SimpleNamespace(
+            task_id=task_id,
+            status=self.status,
+            error_code="ENGINE_FAILED" if self.status == "failed" else None,
+            error_message=self.error_message,
+        )
 
     def get_tree(self, task_id: str) -> dict[str, Any] | None:
         del task_id
@@ -226,6 +238,28 @@ def test_running_task_uses_provider_terminal_status_during_recovery(tmp_path: Pa
     assert recovered.status == TaskStatus.COMPLETED.value
     assert recovered.status_history[-1]["cause"] == "provider_snapshot.completed"
     assert restarted.worker._queue.qsize() == 0  # noqa: SLF001 - recovery never starts engine work
+
+
+def test_running_task_preserves_provider_failure_reason_during_recovery(tmp_path: Path) -> None:
+    tasks_root = tmp_path / "tasks"
+    _, task_id = _create_task(tasks_root, TaskStatus.RUNNING)
+    restarted = build_rsi_service_context(
+        tasks_root,
+        adapters={
+            "HARNESS": SnapshotAdapter(
+                status="failed",
+                error_message="Harness 评测配置缺少 evaluator",
+            )
+        },
+    )
+
+    handlers = RsiAgentServerHandlers(restarted)
+    recovered = restarted.store.get(task_id)
+    assert recovered.status == TaskStatus.FAILED.value
+    assert recovered.status_history[-1]["cause"] == "Harness 评测配置缺少 evaluator"
+
+    detail = handlers.handle(FakeRequest(ReqMethod.RSI_TASK_GET, {"task_id": task_id}))
+    assert detail["payload"]["failure_reason"] == "Harness 评测配置缺少 evaluator"
 
 
 def test_queued_task_becomes_paused_once_without_being_requeued(tmp_path: Path) -> None:

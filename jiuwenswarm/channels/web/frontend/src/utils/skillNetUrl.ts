@@ -54,3 +54,74 @@ export function isClawHubOriginInstalled(
   }
   return false;
 }
+
+/** 广场 / 在线搜索条目：用 origin 反查本地技能名（SKILL.md name 可能 ≠ slug）。 */
+export type MarketplaceInstallRef = {
+  source?: string | null;
+  name: string;
+  identifier?: string | null;
+  asset_id?: string;
+  owner_handle?: string | null;
+};
+
+export type LocalSkillOriginRef = {
+  name: string;
+  origin?: string | null;
+};
+
+/**
+ * 解析广场技能对应的本地已安装技能名。
+ * ClawHub / TeamSkillsHub / SkillNet 优先按 origin 匹配；再回退到 name。
+ */
+export function resolveMarketplaceInstalledLocalName(
+  skill: MarketplaceInstallRef,
+  localSkills: readonly LocalSkillOriginRef[],
+  installedNames?: ReadonlySet<string>,
+): string | null {
+  const source = String(skill.source || "teamskillshub").trim().toLowerCase();
+  const identifier = String(skill.identifier || skill.asset_id || skill.name || "").trim();
+
+  if (source === "clawhub") {
+    const slug = identifier || skill.name;
+    const owner = String(skill.owner_handle || "").trim();
+    const slugCf = slug.toLowerCase();
+    for (const local of localSkills) {
+      const origin = local.origin?.trim();
+      if (!origin) continue;
+      const n = normalizeSkillNetUrl(origin);
+      if (!n.startsWith("clawhub:")) continue;
+      if (owner) {
+        if (n === normalizeSkillNetUrl(buildClawHubOrigin(slug, owner))) return local.name;
+        // 兼容旧版 clawhub:slug
+        if (n === normalizeSkillNetUrl(buildClawHubOrigin(slug))) return local.name;
+      } else if (n === normalizeSkillNetUrl(buildClawHubOrigin(slug))) {
+        return local.name;
+      } else if (n.endsWith(`/${slugCf}`)) {
+        return local.name;
+      }
+    }
+  } else if (source === "teamskillshub") {
+    const hubOrigin = normalizeSkillNetUrl(`teamskillshub:${identifier}`);
+    for (const local of localSkills) {
+      const origin = local.origin?.trim();
+      if (origin && normalizeSkillNetUrl(origin) === hubOrigin) return local.name;
+    }
+  } else if (source === "skillnet") {
+    const url = normalizeSkillNetUrl(identifier);
+    for (const local of localSkills) {
+      const origin = local.origin?.trim();
+      if (origin && normalizeSkillNetUrl(origin) === url) return local.name;
+    }
+  }
+
+  if (installedNames?.has(skill.name)) return skill.name;
+  return null;
+}
+
+export function isMarketplaceSkillInstalled(
+  skill: MarketplaceInstallRef,
+  localSkills: readonly LocalSkillOriginRef[],
+  installedNames?: ReadonlySet<string>,
+): boolean {
+  return resolveMarketplaceInstalledLocalName(skill, localSkills, installedNames) != null;
+}

@@ -15,7 +15,7 @@ equip handle compares ``(name, version)`` to decide reload; without a version
 change an in-place update of an installed expert would keep running the old
 package. If ``installed`` is false or the entry is missing, ``--bump`` only
 upserts marketplace metadata and leaves ``manifest.json`` version unchanged.
-create mode omits ``--bump`` and registers ``1.0.0`` as-is.
+create mode omits ``--bump`` and registers ``1.0.0`` as installed.
 
 Exit code: 0 success, 1 failure.
 """
@@ -129,7 +129,7 @@ def _entry_from_manifest(manifest: dict[str, Any], package_id: str) -> dict[str,
     return {
         "id": package_id,
         "source": "local",
-        "installed": False,
+        "installed": True,
     }
 
 
@@ -265,7 +265,7 @@ def main() -> int:
     )
     if entry.pop("_bump_skipped", False):
         write_stdout("  bump:        skipped (installed=false，version 未变更)\n")
-    write_stdout("\nNEXT:   在专家中心安装该专家（installed=true）后方可对话\n")
+    write_stdout("\nNEXT:   已登记为可使用；新开对话并装备该专家即可\n")
     return 0
 
 

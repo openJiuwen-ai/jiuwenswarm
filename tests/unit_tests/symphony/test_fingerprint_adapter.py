@@ -110,6 +110,44 @@ def test_swarm_settings_map_only_supported_core_controls(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fingerprint_adapter_removes_symphony_completion_token_override(
+    monkeypatch,
+):
+    model = _CapturingFingerprintModel(finish_reason="stop")
+    captured_configs = []
+    observed_responses = []
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.adapter.model_from_config",
+        lambda config: captured_configs.append(config) or model,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.adapter.model_response_observer_from_config",
+        lambda _config: (
+            lambda response, _stage, _operation: observed_responses.append(response)
+        ),
+    )
+    config = LLMConfig(
+        model="thinking-model",
+        model_config_obj={"max_tokens": 99, "extra_body": {"custom": True}},
+    )
+
+    adapter = FingerprintLLMAdapter(config)
+    response = await adapter.invoke([], max_tokens=2048, timeout=30)
+
+    assert captured_configs[0].model_config_obj == {
+        "max_tokens": 99,
+        "extra_body": {"custom": True},
+    }
+    assert model.calls == [{"timeout": 30}]
+    assert observed_responses == [response]
+    settings = fingerprint_settings_from_swarm(
+        symphony_config_from_dict({}),
+        config,
+    )
+    assert adapter.cache_signature == settings.configuration_signature
+
+
+@pytest.mark.asyncio
 async def test_swarm_graph_build_consumes_canonical_core_artifact(
     monkeypatch,
     tmp_path,
@@ -321,3 +359,16 @@ class _FingerprintAndGraphModel:
                 )
             )
         return SimpleNamespace(content=json.dumps({"matches": []}))
+
+
+class _CapturingFingerprintModel:
+    def __init__(self, *, finish_reason):
+        self.finish_reason = finish_reason
+        self.calls = []
+
+    async def invoke(self, _messages, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            content='{"outputs": [{"name": "result", "type": "string"}]}',
+            finish_reason=self.finish_reason,
+        )

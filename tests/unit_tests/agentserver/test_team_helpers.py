@@ -2692,12 +2692,19 @@ async def test_process_team_message_stream_rejects_agent_group_with_skills(
         )
     ]
 
-    assert len(chunks) == 2
+    assert len(chunks) == 3
     assert chunks[0].payload == {
         "event_type": "chat.error",
         "error": "skills cannot be selected when an agent_group_name is selected or bound",
     }
     assert chunks[0].is_complete is False
+    assert chunks[1].payload == {
+        "event_type": "chat.processing_status",
+        "session_id": "sess-group-skill-conflict",
+        "is_processing": False,
+        "is_complete": True,
+    }
+    assert chunks[1].is_complete is False
     assert chunks[-1].is_complete is True
     manager.get_swarm_enriched_team_spec.assert_not_awaited()
     manager.interact.assert_not_awaited()
@@ -2705,6 +2712,57 @@ async def test_process_team_message_stream_rejects_agent_group_with_skills(
     start_round.assert_not_awaited()
     persist_metadata.assert_not_called()
     persist_roots.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_stops_when_team_assembly_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _AgentGroupMissingError(ValueError):
+        code = "AGENT_GROUP_NOT_INSTALLED"
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        get_swarm_enriched_team_spec = AsyncMock(
+            side_effect=_AgentGroupMissingError(
+                "agent_group package not installed: deleted-group"
+            )
+        )
+
+    manager = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _channel_id: manager)
+
+    request = SimpleNamespace(
+        session_id="sess-deleted-group",
+        request_id="req-deleted-group",
+        channel_id="web",
+        metadata=None,
+        params={"mode": "team"},
+        user_id="owner",
+    )
+    chunks = [
+        chunk
+        async for chunk in team_helpers.process_team_message_stream(
+            request,
+            {"query": "continue"},
+            object(),
+        )
+    ]
+
+    assert [chunk.payload for chunk in chunks] == [
+        {
+            "event_type": "chat.error",
+            "error": "agent_group package not installed: deleted-group",
+            "code": "AGENT_GROUP_NOT_INSTALLED",
+        },
+        {
+            "event_type": "chat.processing_status",
+            "session_id": "sess-deleted-group",
+            "is_processing": False,
+            "is_complete": True,
+        },
+        None,
+    ]
+    assert [chunk.is_complete for chunk in chunks] == [False, False, True]
 
 
 @pytest.mark.anyio

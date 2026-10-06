@@ -49,6 +49,7 @@
   color: var(--color-text-primary);
   font-size: var(--font-size-sm);
   white-space: nowrap;
+  letter-spacing: 0;
 }
 
 .single-agent-tool-tab:hover,
@@ -238,7 +239,7 @@
   background: var(--color-surface-card);
 }
 
-.subagent-turn + .subagent-turn {
+.subagent-turn+.subagent-turn {
   margin-top: var(--subagent-turn-gap);
   border-top: 2px solid var(--color-border-default);
   padding-top: var(--subagent-turn-padding);
@@ -264,11 +265,11 @@
   line-height: 1.6;
 }
 
-.subagent-markdown > :first-child {
+.subagent-markdown> :first-child {
   margin-top: 0;
 }
 
-.subagent-markdown > :last-child {
+.subagent-markdown> :last-child {
   margin-bottom: 0;
 }
 

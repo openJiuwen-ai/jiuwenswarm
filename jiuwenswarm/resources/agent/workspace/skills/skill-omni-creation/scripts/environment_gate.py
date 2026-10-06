@@ -184,11 +184,23 @@ def _reexec_with_selected(selected: Path) -> None:
     caller = Path(sys.argv[0]).resolve()
     os.environ[_REEXEC_FLAG] = "1"
     _log(f"Re-executing with selected interpreter: {selected}")
+    argv = [str(selected), str(caller), *sys.argv[1:]]
     try:
+        if os.name == "nt":
+            # os.execv on Windows starts a new PID and exits this one at once,
+            # so a caller's timeout can only reach this dead wrapper while the
+            # real worker keeps running as an orphan. Run it in the foreground
+            # and forward its exit code; os._exit mirrors execv's no-unwind
+            # process hand-off (this is not a library error path), with the
+            # standard streams flushed first so buffered output survives.
+            worker_code = subprocess.call(argv)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(worker_code)  # pylint: disable=protected-access  # public API; underscore is historical
         # Replace this process outright rather than spawning a child and
         # exiting with its return code — avoids a lingering wrapper process
         # and keeps termination out of this non-entry-point function.
-        os.execv(str(selected), [str(selected), str(caller), *sys.argv[1:]])
+        os.execv(str(selected), argv)
     except OSError as exc:
         raise EnvironmentGateError(f"Could not start selected interpreter {selected}: {exc}") from exc
 

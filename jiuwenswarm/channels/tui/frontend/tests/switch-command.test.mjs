@@ -283,4 +283,44 @@ const MOCK_AGENTS = {
   assert.doesNotMatch(switchSrc, /["']codex["']/);
 }
 
+// 17. 选中带 cmd 的 agent：requestHandoff 收到原样 cmd，switchContent 仍为 agent_type
+{
+  const handoffCalls = [];
+  const { ctx } = makeMockContext({
+    request: async () => ({
+      agents: [
+        { agent_type: "agent-b", image_name: "image-b", cmd: "agent-b --runtime flag" },
+      ],
+      current_agent_type: "",
+    }),
+    askQuestions: async () => [{ selected_options: ["agent-b"] }],
+    checkHandoff: () => ({ ok: true }),
+    requestHandoff: async (target, switchContent, cmd) =>
+      handoffCalls.push({ target, switchContent, cmd }),
+    hasServerTask: () => false,
+  });
+  await listSub.action(ctx, "");
+  assert.equal(handoffCalls.length, 1);
+  assert.equal(handoffCalls[0].target, HANDOFF_TARGET_CC_TUI);
+  assert.equal(handoffCalls[0].switchContent, "switch agent-b");
+  assert.equal(handoffCalls[0].cmd, "agent-b --runtime flag");
+}
+
+// 18. 选中不带 cmd 的 agent：requestHandoff 的 cmd 为 undefined（行为同旧版）
+{
+  const handoffCalls = [];
+  const { ctx } = makeMockContext({
+    request: async () => MOCK_AGENTS,
+    askQuestions: async () => [{ selected_options: ["agent-b"] }],
+    checkHandoff: () => ({ ok: true }),
+    requestHandoff: async (target, switchContent, cmd) =>
+      handoffCalls.push({ target, switchContent, cmd }),
+    hasServerTask: () => false,
+  });
+  await listSub.action(ctx, "");
+  assert.equal(handoffCalls.length, 1);
+  assert.equal(handoffCalls[0].switchContent, "switch agent-b");
+  assert.equal(handoffCalls[0].cmd, undefined);
+}
+
 console.log("switch-command tests passed");

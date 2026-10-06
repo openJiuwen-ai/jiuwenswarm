@@ -131,10 +131,12 @@ class FileCronJobStore:
         timeout_seconds: int | None = None,
         project_id: str = "",
         model_name: str | None = None,
+        model_selection: dict[str, str] | None = None,
         mcp: list[str] | None = None,
         app_id: str = "",
         work_mode: str = DEFAULT_WEB_WORK_MODE,
         user_id: str = "",
+        credential_ref: str = "",
     ) -> CronJob:
         """Construct and validate a ``CronJob`` without persisting it.
 
@@ -158,10 +160,12 @@ class FileCronJobStore:
             timeout_seconds=timeout_seconds,
             project_id=project_id,
             model_name=model_name,
+            model_selection=model_selection,
             mcp=mcp,
             app_id=app_id,
             work_mode=work_mode,
             user_id=user_id,
+            credential_ref=credential_ref,
         )
 
     async def create_job(
@@ -182,10 +186,12 @@ class FileCronJobStore:
         timeout_seconds: int | None = None,
         project_id: str = "",
         model_name: str | None = None,
+        model_selection: dict[str, str] | None = None,
         mcp: list[str] | None = None,
         app_id: str = "",
         work_mode: str = DEFAULT_WEB_WORK_MODE,
         user_id: str = "",
+        credential_ref: str = "",
     ) -> CronJob:
         job = self.build_job(
             job_id=job_id,
@@ -203,10 +209,12 @@ class FileCronJobStore:
             timeout_seconds=timeout_seconds,
             project_id=project_id,
             model_name=model_name,
+            model_selection=model_selection,
             mcp=mcp,
             app_id=app_id,
             work_mode=work_mode,
             user_id=user_id,
+            credential_ref=credential_ref,
         )
         await self._upsert_job(job)
         return job
@@ -250,6 +258,18 @@ class FileCronJobStore:
             return deleted
 
         return await self._run_locked(_body)
+
+    async def disable_project_jobs(self, project_id: str) -> None:
+        def body():
+            data = self._read_json_unlocked()
+            changed = False
+            for job in data.get("jobs", []):
+                if job.get("project_id") == project_id and job.get("enabled", True):
+                    job["enabled"] = False
+                    changed = True
+            if changed:
+                self._write_json_unlocked(data)
+        await self._run_locked(body)
 
     async def _upsert_job(self, job: CronJob) -> None:
         def _body() -> None:

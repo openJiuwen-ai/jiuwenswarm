@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from jiuwenswarm.agents.harness.common.rsi.errors import failure_reason
+
 TASK_ID_PREFIX = "rsi-"
 
 
@@ -195,14 +197,30 @@ class RsiTask:
         if usage is not None:
             payload["usage"] = usage
         if self.status == TaskStatus.FAILED.value:
-            for item in reversed(self.status_history):
-                if item.get("to") != TaskStatus.FAILED.value:
-                    continue
-                reason = str(item.get("cause") or "").strip()
-                if reason:
-                    payload["failure_reason"] = reason
-                break
+            reason = self.failure_reason_text()
+            if reason:
+                payload["failure_reason"] = reason
         return payload
+
+    def failure_reason_text(self) -> str | None:
+        """Return the most actionable persisted reason for a failed task."""
+
+        if self.status != TaskStatus.FAILED.value:
+            return None
+        history_reason = ""
+        for item in reversed(self.status_history):
+            if item.get("to") != TaskStatus.FAILED.value:
+                continue
+            history_reason = str(item.get("cause") or "").strip()
+            break
+
+        results = (self.config or {}).get("results") or {}
+        result_reason = failure_reason(results)
+        if result_reason and (
+            not history_reason or _is_generic_failure_reason(history_reason)
+        ):
+            return result_reason
+        return history_reason or (result_reason or None)
 
     def to_taskview(self) -> "RsiTaskView":
         return RsiTaskView(
@@ -237,6 +255,16 @@ class RsiTaskView:
     # compatibility with older positional construction sites.
     optimization_instruction: str | None = None
     artifact_path: str | None = None
+
+
+def _is_generic_failure_reason(reason: str) -> bool:
+    normalized = reason.strip().lower()
+    return normalized in {
+        "provider.failed",
+        "provider_snapshot.failed",
+        "provider 输入校验失败",
+        "provider returned failure",
+    } or normalized.startswith("provider.failed") or normalized.startswith("provider_snapshot.failed")
 
 
 @dataclass(frozen=True, slots=True)

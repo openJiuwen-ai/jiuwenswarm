@@ -4,7 +4,9 @@ import { FileArchive, Info, Loader2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import UpFileIcon from '../../assets/upFile.svg?react';
 import {
+  DESKTOP_DIRECTORY_DROP_REJECTED_EVENT,
   DESKTOP_FILE_DRAG_EVENT,
+  DESKTOP_VIRTUAL_FILE_DROP_REJECTED_EVENT,
   registerDesktopLocalFilesConsumer,
   selectLocalFiles,
   type LocalFilePick,
@@ -135,6 +137,26 @@ export function DefinitionUploadDialog({
     return () => window.removeEventListener(DESKTOP_FILE_DRAG_EVENT, onFileDrag as EventListener);
   }, []);
 
+  useEffect(() => {
+    const rejectDirectory = () => {
+      setDragActive(false);
+      setFilePick(null);
+      setPickerError(t('agentManagement.form.uploadDirectoryUnsupported'));
+    };
+    window.addEventListener(DESKTOP_DIRECTORY_DROP_REJECTED_EVENT, rejectDirectory);
+    return () => window.removeEventListener(DESKTOP_DIRECTORY_DROP_REJECTED_EVENT, rejectDirectory);
+  }, [t]);
+
+  useEffect(() => {
+    const rejectVirtualFile = () => {
+      setDragActive(false);
+      setFilePick(null);
+      setPickerError(t('agentManagement.form.uploadVirtualFileUnsupported'));
+    };
+    window.addEventListener(DESKTOP_VIRTUAL_FILE_DROP_REJECTED_EVENT, rejectVirtualFile);
+    return () => window.removeEventListener(DESKTOP_VIRTUAL_FILE_DROP_REJECTED_EVENT, rejectVirtualFile);
+  }, [t]);
+
   useDialogFocusTrap({ dialogRef, onEscape: onCancel, escapeDisabled: submitting });
 
   const handleConfirm = async () => {
@@ -148,6 +170,11 @@ export function DefinitionUploadDialog({
   };
 
   const typeHint = kind === 'group' ? t('agentManagement.group.form.uploadHint') : t('agentManagement.form.uploadHint');
+  const uploadPlaceholder = t(
+    desktopReady
+      ? 'agentManagement.form.uploadPlaceholder'
+      : 'agentManagement.form.webUploadPlaceholder',
+  );
   return createPortal(
     <div
       className="agent-management-selection-overlay agent-group-upload-dialog-overlay"
@@ -218,7 +245,7 @@ export function DefinitionUploadDialog({
           data-testid="agent-group-upload-picker"
           role={filePick ? undefined : 'button'}
           tabIndex={filePick || submitting ? -1 : 0}
-          aria-label={filePick ? undefined : t('agentManagement.form.uploadPlaceholder')}
+          aria-label={filePick ? undefined : uploadPlaceholder}
           onKeyDown={(event) => {
             if ((event.key === 'Enter' || event.key === ' ') && !filePick && !submitting) {
               event.preventDefault();
@@ -273,13 +300,13 @@ export function DefinitionUploadDialog({
           ) : (
             <>
               <UpFileIcon aria-hidden="true" />
-              <span>{t('agentManagement.form.uploadPlaceholder')}</span>
+              <span>{uploadPlaceholder}</span>
             </>
           )}
         </div>
-        {error || pickerError ? (
+        {pickerError || error ? (
           <p className="agent-management-upload-dialog__error" role="alert">
-            {error || pickerError}
+            {pickerError || error}
           </p>
         ) : null}
         <footer>

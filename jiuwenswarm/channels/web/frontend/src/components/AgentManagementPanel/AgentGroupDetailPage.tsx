@@ -1,15 +1,24 @@
-import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AgentGroupDetail, DefinitionFileEntry, RequestStatus } from '../../features/agentManagement';
+import { openAssetPublish } from '../../features/assetPublishEvents';
+import { canShowAssetPublish } from '../../features/assetPublishState';
+import type {
+  AgentFileContent,
+  AgentGroupCatalogItem,
+  AgentGroupDetail,
+  DefinitionFileEntry,
+  RequestStatus,
+} from '../../features/agentManagement';
+import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
 import { DefinitionFilePreview } from './DefinitionFilePreview';
-import { getAvatarTone, GroupAvatar } from './GroupCard';
+import { GroupAvatar } from './GroupCard';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
-import { DetailPromptChip, DetailSection, EntityHeader, MarkdownPane, PageToolbar, Tabs } from '../ui';
+import { DetailPromptChip, DetailSection, EntityAvatar, EntityHeader, MarkdownPane, PageToolbar, Tabs } from '../ui';
 
 type AgentGroupDetailPageProps = {
   detail: AgentGroupDetail | null;
+  loadingSummary: AgentGroupCatalogItem | null;
   detailStatus: RequestStatus;
   detailError: string | null;
   detailTab: 'content' | 'files';
@@ -17,7 +26,7 @@ type AgentGroupDetailPageProps = {
   filesStatus: RequestStatus;
   filesError: string | null;
   selectedFilePath: string | null;
-  fileContent: { relativePath: string; content: string } | null;
+  fileContent: AgentFileContent | null;
   fileStatus: RequestStatus;
   fileError: string | null;
   actionError: string | null;
@@ -36,6 +45,7 @@ type AgentGroupDetailPageProps = {
 
 export function AgentGroupDetailPage({
   detail,
+  loadingSummary,
   detailStatus,
   detailError,
   detailTab,
@@ -60,15 +70,45 @@ export function AgentGroupDetailPage({
   onUninstall,
 }: AgentGroupDetailPageProps) {
   const { t } = useTranslation();
-  const [imageFailed, setImageFailed] = useState<Record<string, boolean>>({});
   if (detailStatus === 'loading')
     return (
-      <div className="agent-management-detail agent-management-detail--state" data-testid="agent-group-detail">
+      <div className="agent-management-detail agent-group-detail" data-testid="agent-group-detail" aria-busy="true">
         <button type="button" className="detail-back" data-testid="agent-group-detail-back" onClick={onBack}>
           <BackIcon aria-hidden="true" />
           {t('agentManagement.actions.back')}
         </button>
-        <p>{t('common.loading')}</p>
+        <div className="detail-body flex-1 min-h-0 overflow-y-auto">
+          {loadingSummary ? (
+            <>
+              <EntityHeader
+                testId="agent-management-detail-header"
+                avatar={<GroupAvatar item={loadingSummary} size="detail" />}
+                title={loadingSummary.displayName}
+                titleTestId="agent-management-detail-name"
+                tags={[
+                  ...(loadingSummary.category?.trim()
+                    ? [t(`agentManagement.categories.${loadingSummary.category}`, { defaultValue: loadingSummary.category })]
+                    : []),
+                  t('agentManagement.detail.sourcePrefix', {
+                    source: t(`agentManagement.source.${loadingSummary.source}`),
+                  }),
+                  ...(loadingSummary.installed ? [t('agentManagement.states.installed')] : []),
+                ]}
+              />
+              <DetailSection testId="agent-management-detail-ability" title={t('agentManagement.detail.ability')}>
+                <p>{loadingSummary.description || t('agentManagement.unknownDescription')}</p>
+              </DetailSection>
+            </>
+          ) : null}
+          <div
+            className="agent-management-detail--state"
+            data-testid="agent-group-detail-state"
+            data-variant="loading"
+            role="status"
+          >
+            <p>{t('common.loading')}</p>
+          </div>
+        </div>
       </div>
     );
   if (detailStatus === 'error' || !detail)
@@ -96,7 +136,8 @@ export function AgentGroupDetailPage({
 
   const canUse = detail.installed && detail.capabilities.canUse;
   const canDelete = detail.source === 'local' && !detail.installed;
-  const canPreviewFiles = detail.capabilities.canPreviewFiles && (detail.source === 'local' || detail.installed);
+  const canPreviewFiles =
+    detail.capabilities.canPreviewFiles && (detail.source === 'local' || detail.source === 'hub' || detail.installed);
   const category = detail.category?.trim() || '';
   const categoryLabel = category ? t(`agentManagement.categories.${category}`, { defaultValue: category }) : null;
   const detailTags = detail.tags;
@@ -107,6 +148,7 @@ export function AgentGroupDetailPage({
         {t('agentManagement.actions.back')}
       </button>
       <div className="detail-body flex-1 min-h-0 overflow-y-auto">
+        <PublicationDetailStatus kind="agent_group" localId={detail.id} />
         <EntityHeader
           testId="agent-management-detail-header"
           avatar={<GroupAvatar item={detail} size="detail" />}
@@ -121,6 +163,22 @@ export function AgentGroupDetailPage({
           ]}
           actions={
             <div className="agent-management-detail__actions">
+              {canShowAssetPublish(detail.installed, detail.capabilities.canPublish) ? (
+                <button
+                  type="button"
+                  className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text"
+                  data-testid="agent-management-agent-group-publish"
+                  onClick={() =>
+                    openAssetPublish({
+                      kind: 'agent_group',
+                      local_id: detail.id,
+                      avatar_url: detail.avatarUrl || undefined,
+                    })
+                  }
+                >
+                  {t('skills.actions.publish')}
+                </button>
+              ) : null}
               {detail.installed && detail.capabilities.canUninstall ? (
                 <button
                   type="button"
@@ -211,18 +269,8 @@ export function AgentGroupDetailPage({
                 key={member.id}
               >
                 <div className="agent-group-member-card__avatar-wrap">
-                  <span
-                    className={`agent-group-member-avatar agent-group-member-avatar--${getAvatarTone(member.displayName)}${imageFailed[member.id] ? ' is-fallback' : ''}`}
-                  >
-                    {member.avatarUrl && !imageFailed[member.id] ? (
-                      <img
-                        src={member.avatarUrl}
-                        alt=""
-                        onError={() => setImageFailed((current) => ({ ...current, [member.id]: true }))}
-                      />
-                    ) : (
-                      member.displayName.slice(0, 1).toUpperCase()
-                    )}
+                  <span className="agent-group-member-avatar" aria-hidden="true">
+                    <EntityAvatar name={member.displayName} iconUrl={member.avatarUrl || null} />
                   </span>
                 </div>
                 <div className="agent-group-member-card__identity">
@@ -290,7 +338,7 @@ export function AgentGroupDetailPage({
               ariaLabel={t('agentManagement.group.detail.tabsLabel')}
               wrapperTestId="agent-group-detail-tabs"
               itemTestId="agent-group-detail-tab"
-              className="text-base"
+              className="page-tabs"
               value={detailTab}
               onChange={onTabChange}
               items={[

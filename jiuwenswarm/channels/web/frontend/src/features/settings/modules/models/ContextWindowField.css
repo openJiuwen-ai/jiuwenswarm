@@ -1,0 +1,30 @@
+.settings-context-window-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-context-window-field > .ui-input-wrap {
+  flex: 1 1 180px;
+  min-width: 160px;
+}
+
+.settings-context-window-field__presets {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.settings-context-window-field__presets .ui-button {
+  min-width: 52px;
+  padding-right: 10px;
+  padding-left: 10px;
+}
+
+@media (max-width: 480px) {
+  .settings-context-window-field > .ui-input-wrap {
+    flex-basis: 100%;
+  }
+}

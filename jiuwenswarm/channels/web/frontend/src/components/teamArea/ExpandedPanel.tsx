@@ -7,6 +7,7 @@ import { ExpandedPanelTabs, useExpandedPanelTabs } from './ExpandedPanelTabs';
 export interface ExpandedPanelProps {
   activeTab: string;
   onTabChange: (tab: string) => void;
+  onTabClose?: (tab: string) => void;
   onCollapse: () => void;
   shouldFullscreen?: boolean;
   reviewPanel?: ReactNode;
@@ -14,15 +15,18 @@ export interface ExpandedPanelProps {
   onArtifactSelect?: (artifactId: string) => void;
   middleTab: { key: string; label: string; icon: ReactNode };
   showMiddleTab: boolean;
+  showBrowserTab?: boolean;
   resolveActiveTab: (activeTab: string, artifactsCount: number, reviewPanel?: ReactNode) => string;
   renderMiddleTabContent: () => ReactNode;
   renderPlanningContent: () => ReactNode;
+  renderBrowserContent?: () => ReactNode;
   testIdPrefix?: string;
 }
 
 export function ExpandedPanel({
   activeTab,
   onTabChange,
+  onTabClose,
   onCollapse,
   shouldFullscreen,
   reviewPanel,
@@ -30,14 +34,22 @@ export function ExpandedPanel({
   onArtifactSelect,
   middleTab,
   showMiddleTab,
+  showBrowserTab,
   resolveActiveTab,
   renderMiddleTabContent,
   renderPlanningContent,
+  renderBrowserContent,
   testIdPrefix = 'tool-panel',
 }: ExpandedPanelProps) {
   const tabPanelId = useId();
   const artifactsCount = useSessionArtifactsCount();
-  const { ref: fullscreenRef, isFullscreen, toggle: toggleFullscreen, enter: enterFullscreen, exit: exitFullscreen } = useFullscreenPanel<HTMLDivElement>();
+  const {
+    ref: fullscreenRef,
+    isFullscreen,
+    toggle: toggleFullscreen,
+    enter: enterFullscreen,
+    exit: exitFullscreen,
+  } = useFullscreenPanel<HTMLDivElement>();
 
   useEffect(() => {
     if (shouldFullscreen) {
@@ -57,14 +69,19 @@ export function ExpandedPanel({
 
   const resolvedTab = resolveActiveTab(activeTab, artifactsCount, reviewPanel);
 
-  const tabs = useExpandedPanelTabs({ middleTab, showMiddleTab, artifactsCount, reviewPanel });
+  const tabs = useExpandedPanelTabs({ middleTab, showMiddleTab, artifactsCount, reviewPanel, showBrowserTab });
 
   return (
-    <div ref={fullscreenRef} data-testid={`${testIdPrefix}-expanded-body`} className="flex h-full flex-col overflow-hidden bg-card">
+    <div
+      ref={fullscreenRef}
+      data-testid={`${testIdPrefix}-expanded-body`}
+      className="flex h-full flex-col overflow-hidden bg-card"
+    >
       <ExpandedPanelTabs
         tabs={tabs}
         activeTab={resolvedTab}
         onTabChange={onTabChange}
+        onTabClose={onTabClose}
         onCollapse={onCollapse}
         onToggleFullscreen={handleToggleFullscreen}
         isFullscreen={isFullscreen}
@@ -81,11 +98,20 @@ export function ExpandedPanel({
         {resolvedTab === middleTab.key ? (
           renderMiddleTabContent()
         ) : resolvedTab === 'artifacts' ? (
-          <ArtifactExpandedPanel selectedArtifactId={selectedArtifactId} onSelectArtifact={onArtifactSelect ?? (() => {})} />
+          <ArtifactExpandedPanel
+            selectedArtifactId={selectedArtifactId}
+            onSelectArtifact={onArtifactSelect ?? (() => {})}
+          />
         ) : resolvedTab === 'review' && reviewPanel ? (
-          <div data-testid={`${testIdPrefix}-review-pane`} data-variant="review" className="flex min-w-0 flex-1 overflow-hidden">
+          <div
+            data-testid={`${testIdPrefix}-review-pane`}
+            data-variant="review"
+            className="flex min-w-0 flex-1 overflow-hidden"
+          >
             {reviewPanel}
           </div>
+        ) : resolvedTab === 'browser' && renderBrowserContent ? (
+          renderBrowserContent()
         ) : (
           renderPlanningContent()
         )}

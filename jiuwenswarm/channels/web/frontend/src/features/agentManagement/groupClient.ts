@@ -1,4 +1,5 @@
 import { webRequest } from '../../services/webClient';
+import { withCatalogCache } from '../catalogCache';
 import { getAgentManagementLocale } from './locale';
 import {
   normalizeAgentGroupDetail,
@@ -51,15 +52,26 @@ export function createLiveAgentGroupManagementClient(): AgentGroupManagementClie
     async listGroups(options: AgentGroupListOptions = {}) {
       try {
         const filter = options.filter && options.filter !== 'all' ? { filter: options.filter } : {};
-        const payload = await webRequest<RawAgentGroupListPayload>('agent_groups.list', filter);
-        return (payload.agentGroups || []).map((item) => normalizeAgentGroupListItem(item, getAgentManagementLocale()));
+        const payload = await webRequest<RawAgentGroupListPayload>('agent_groups.list', {
+          ...filter,
+          ...(options.cache_mode ? { cache_mode: options.cache_mode } : {}),
+          ...(options.query ? { query: options.query } : {}),
+        });
+        return withCatalogCache(
+          (payload.agentGroups || []).map((item) => normalizeAgentGroupListItem(item, getAgentManagementLocale())),
+          payload.cache,
+        );
       } catch (error) {
         return rethrowGroupError(error);
       }
     },
     async getGroup(id) {
       try {
-        const payload = await webRequest<RawAgentGroupDetailPayload>('agent_groups.show', { id });
+        const payload = await webRequest<RawAgentGroupDetailPayload>(
+          'agent_groups.show',
+          { id },
+          { timeoutMs: 90_000 },
+        );
         if (!payload.group)
           throw new AgentManagementError('AgentGroup detail is empty', 'agent_group_detail_empty', false);
         return normalizeAgentGroupDetail(payload.group, getAgentManagementLocale());

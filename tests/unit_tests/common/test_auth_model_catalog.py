@@ -14,6 +14,8 @@ from jiuwenswarm.common.auth.model_catalog import (
 )
 from jiuwenswarm.common.auth.service import ModelAuthRequired
 
+_REAL_LOGIN_MODEL_SETTINGS = model_catalog.login_model_settings
+
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
@@ -22,6 +24,7 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(model_catalog, "_cache_path", lambda: auth_path / "model_catalog.json")
     monkeypatch.setattr(model_catalog, "_memo", None, raising=False)
     monkeypatch.setattr(model_catalog, "_last_discovery_failure_at", 0.0, raising=False)
+    monkeypatch.setattr(model_catalog, "login_model_settings", lambda config=None: {})
     monkeypatch.setattr(
         model_catalog,
         "get_auth_service",
@@ -176,6 +179,31 @@ def test_build_model_entry_shape():
     assert entry["is_default"] is not False
     assert entry["is_free"] is True
     assert entry["alias"] == "GLM-5"
+
+
+def test_user_context_window_is_merged_into_the_entry():
+    settings = _REAL_LOGIN_MODEL_SETTINGS(
+        {"models": {"login_model_settings": {"glm-5": {"context_window": "1M"}, "bad": {"context_window": 0}}}}
+    )
+    entry = build_model_entry(model_name="glm-5", api_base="https://a/v1", api_key="", settings=settings)
+    assert entry["model_config_obj"] == {"temperature": 0.95, "context_window": 1024 * 1024}
+    for name in ("bad", "other"):
+        entry = build_model_entry(model_name=name, api_base="https://a/v1", api_key="", settings=settings)
+        assert "context_window" not in entry["model_config_obj"]
+
+
+def test_saving_context_windows_only_touches_the_given_models(monkeypatch):
+    from jiuwenswarm.common import config as config_mod
+
+    data = {"models": {"defaults": [{"x": 1}], "login_model_settings": {"a": {"context_window": 1}, "b": {"context_window": 2}}}}
+    monkeypatch.setattr(config_mod, "update_config", lambda mutate: mutate(data))
+    config_mod.update_login_model_settings_in_config({"a": 131072, "c": 524288})
+    assert data["models"]["login_model_settings"] == {
+        "a": {"context_window": 131072}, "b": {"context_window": 2}, "c": {"context_window": 524288},
+    }
+    config_mod.update_login_model_settings_in_config({"a": None, "b": None, "c": None})
+    assert "login_model_settings" not in data["models"]
+    assert data["models"]["defaults"] == [{"x": 1}]
 
 
 def test_is_login_model():

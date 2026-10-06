@@ -9,7 +9,10 @@ from __future__ import annotations
 import pytest
 
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+from jiuwenswarm.gateway.routing.agent_client import (
+    DuplicateRequestIdError,
+    WebSocketAgentServerClient,
+)
 from jiuwenswarm.gateway.routing.agent_request_timeout import (
     AGENT_SERVER_TIMEOUT_CODE,
     AGENT_SERVER_TIMEOUT_ERROR,
@@ -17,6 +20,8 @@ from jiuwenswarm.gateway.routing.agent_request_timeout import (
 )
 from jiuwenswarm.gateway.routing.e2a_proxy import (
     SERVICE_UNAVAILABLE_CODE,
+    _new_fetch_request_id,
+    fetch_agent_unary,
     proxy_unary_request,
 )
 
@@ -115,37 +120,60 @@ async def test_proxy_agent_unavailable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_proxy_uses_adapter_fallback_only_for_local_websocket_client(monkeypatch) -> None:
-    """A local shared-directory AgentServer outage must preserve Web behavior."""
+async def test_proxy_does_not_substitute_front_control_methods(monkeypatch) -> None:
+    """session.list is Front Control; Gateway must not run a local adapter."""
     local_client = WebSocketAgentServerClient()  # server_ready defaults to False
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.get_all_sessions_metadata",
+        "jiuwenswarm.server.control.repositories.session_repository.get_all_sessions_metadata",
         lambda *, limit, offset: ([{"session_id": "legacy", "mode": "agent"}], 1),
     )
     channel = FakeChannel()
 
     await _invoke(channel, local_client)
 
-    assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"]["sessions"][0]["session_id"] == "legacy"
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == SERVICE_UNAVAILABLE_CODE
+    assert not local_client.server_ready
 
 
 @pytest.mark.asyncio
-async def test_proxy_offline_session_delete_uses_maintenance_runtime(monkeypatch) -> None:
-    """The shared-directory fallback enters Runtime without enabling KVC."""
-    from jiuwenswarm.runtime.session_delete import SessionDeleteResult
-
-    async def _delete_offline_session(**kwargs):
-        return SessionDeleteResult(
-            ok=True,
-            session_id=kwargs["session_id"],
-            deleted=True,
-        )
-
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.offline_session_cleanup.delete_offline_session",
-        _delete_offline_session,
+async def test_proxy_forwards_control_methods_after_failed_ack(monkeypatch) -> None:
+    """FAILED ack keeps transport up so Front control RPCs are not blocked."""
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack(
+        {
+            "type": "event",
+            "event": "connection.ack",
+            "payload": {"status": "failed", "readiness": "FAILED"},
+        }
     )
+    envelopes: list[object] = []
+
+    async def _send(envelope):
+        envelopes.append(envelope)
+        return type("Resp", (), {"ok": True, "payload": {"state": "FAILED"}})()
+
+    monkeypatch.setattr(client, "send_request", _send)
+    channel = FakeChannel()
+
+    await _invoke(
+        channel,
+        client,
+        req_method=ReqMethod.HEALTH_CHECK_GET_CONF,
+        params={},
+        label="health_check.get_conf",
+    )
+
+    assert client.server_ready is True
+    assert client.agent_ready is False
+    assert len(envelopes) == 1
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"]["state"] == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_proxy_offline_session_delete_is_unavailable() -> None:
+    """Gateway must not load Runtime adapters when AgentServer is unreachable."""
     local_client = WebSocketAgentServerClient()  # server_ready defaults to False
     channel = FakeChannel()
 
@@ -158,32 +186,20 @@ async def test_proxy_offline_session_delete_uses_maintenance_runtime(monkeypatch
     )
 
     response = channel.responses[-1]
-    assert response["ok"] is True
-    assert response["payload"] == {"session_id": "legacy"}
+    assert response["ok"] is False
+    assert response["code"] == SERVICE_UNAVAILABLE_CODE
 
 
 @pytest.mark.asyncio
-async def test_proxy_keeps_permissions_fallback_for_local_websocket_client(monkeypatch) -> None:
-    """Permissions kept their pre-refactor shared-directory availability path."""
+async def test_proxy_offline_permissions_is_unavailable() -> None:
+    """Permissions are execution-plane; offline Gateway does not substitute them."""
     local_client = WebSocketAgentServerClient()  # server_ready defaults to False
-    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_config_rpc
-
-    monkeypatch.setattr(
-        permissions_config_rpc,
-        "get_permissions_config_req_methods",
-        lambda: frozenset({ReqMethod.PERMISSIONS_TOOLS_GET}),
-    )
-    monkeypatch.setattr(
-        permissions_config_rpc,
-        "dispatch_permissions_config_request",
-        lambda request: type("Resp", (), {"ok": True, "payload": {"tools": []}})(),
-    )
     channel = FakeChannel()
 
     await _invoke(channel, local_client, req_method=ReqMethod.PERMISSIONS_TOOLS_GET)
 
-    assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"] == {"tools": []}
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == SERVICE_UNAVAILABLE_CODE
 
 
 @pytest.mark.asyncio
@@ -211,3 +227,67 @@ async def test_proxy_agent_error_response_passthrough() -> None:
     assert resp["error"] == "boom"
     assert resp["code"] == "SESSION_LIST_FAILED"
     assert resp["payload"] is None
+
+
+def test_new_fetch_request_id_is_unique_in_process() -> None:
+    """request_id 撞号会让客户端拒绝注册队列（请求根本发不出去），必须唯一。
+
+    历史上只用 ``time.time_ns()``：Windows 上墙钟只有 100ns 步进，密集调用
+    会重复；归档等长耗时 RPC 与 2s 生命周期轮询共用连接时表现为偶发失败。
+    """
+    generated = [_new_fetch_request_id() for _ in range(20000)]
+    assert len(set(generated)) == len(generated)
+    assert all(rid.startswith("fetch-") for rid in generated)
+
+
+class DuplicateRidAgentClient:
+    """前 ``fail_times`` 次 send_request 抛出 request_id 撞号错误。"""
+
+    def __init__(self, fail_times: int = 1) -> None:
+        self.server_ready = True
+        self.fail_times = fail_times
+        self.request_ids: list[str] = []
+
+    async def send_request(self, envelope, *, timeout=None):
+        self.request_ids.append(envelope.request_id)
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise DuplicateRequestIdError(envelope.request_id)
+        return type("Resp", (), {"ok": True, "payload": {"archived": 3}})()
+
+
+@pytest.mark.asyncio
+async def test_fetch_agent_unary_retries_with_new_request_id_on_duplicate() -> None:
+    agent = DuplicateRidAgentClient(fail_times=1)
+
+    ok, payload = await fetch_agent_unary(
+        agent_client=agent,
+        req_method=ReqMethod.PROJECT_SESSIONS_ARCHIVE,
+        params={"project_id": "p1"},
+        session_id=None,
+        user_id="u1",
+        channel_id="web",
+    )
+
+    assert ok is True
+    assert payload == {"archived": 3}
+    assert len(agent.request_ids) == 2
+    assert agent.request_ids[0] != agent.request_ids[1]
+
+
+@pytest.mark.asyncio
+async def test_fetch_agent_unary_gives_up_after_single_retry() -> None:
+    agent = DuplicateRidAgentClient(fail_times=5)
+
+    ok, payload = await fetch_agent_unary(
+        agent_client=agent,
+        req_method=ReqMethod.PROJECT_SESSIONS_ARCHIVE,
+        params={"project_id": "p1"},
+        session_id=None,
+        user_id="u1",
+        channel_id="web",
+    )
+
+    assert ok is False
+    assert payload["code"] == SERVICE_UNAVAILABLE_CODE
+    assert len(agent.request_ids) == 2

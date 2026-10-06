@@ -7,3 +7,5 @@ export * from './state';
 export * from './upload';
 export * from './viewModel';
 export * from './presentation';
+export * from './selection';
+export * from './pendingInstallQueue';

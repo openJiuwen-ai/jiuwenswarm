@@ -527,11 +527,8 @@ class TestPackageCatalogReqMethodRouting:
     async def test_agent_group_list_payload(self, monkeypatch) -> None:
         iface = _iface()
         expected = [{"name": "technical-proposal-review", "memberCount": 3}]
-        monkeypatch.setattr(
-            iface.package_manager,
-            "list_agent_groups",
-            lambda params: expected if params == {"filter": "builtin"} else [],
-        )
+        wrapper = AsyncMock(return_value=expected)
+        monkeypatch.setattr(iface.package_manager, "list_agent_groups_with_hub", wrapper)
 
         response = await iface.JiuWenSwarm._handle_package_catalog_request(
             None,
@@ -543,6 +540,7 @@ class TestPackageCatalogReqMethodRouting:
 
         assert response.ok is True
         assert response.payload == {"agentGroups": expected}
+        wrapper.assert_awaited_once_with({"filter": "builtin"})
 
     async def test_agent_group_show_payload(self, monkeypatch) -> None:
         iface = _iface()
@@ -654,15 +652,15 @@ class TestPackageCatalogReqMethodRouting:
     ) -> None:
         iface = _iface()
         if method == ReqMethod.AGENT_GROUPS_FILE_LIST:
+            wrapper = AsyncMock(return_value=[])
             monkeypatch.setattr(
-                iface.package_manager, function_name, lambda _name: []
+                iface.package_manager, "list_agent_group_files_with_hub", wrapper
             )
             params = {"id": "group-a"}
         elif method == ReqMethod.AGENT_GROUPS_FILE_READ:
+            wrapper = AsyncMock(return_value={"path": "README.md", "content": "# Group"})
             monkeypatch.setattr(
-                iface.package_manager,
-                function_name,
-                lambda _name, path: {"path": path, "content": "# Group"},
+                iface.package_manager, "read_agent_group_file_with_hub", wrapper
             )
             params = {"id": "group-a", "path": "README.md"}
         else:
@@ -676,6 +674,10 @@ class TestPackageCatalogReqMethodRouting:
         )
         assert response.ok is True
         assert response.payload == expected
+        if method == ReqMethod.AGENT_GROUPS_FILE_LIST:
+            wrapper.assert_awaited_once_with("group-a")
+        elif method == ReqMethod.AGENT_GROUPS_FILE_READ:
+            wrapper.assert_awaited_once_with("group-a", "README.md")
 
     async def test_agent_group_failures_expose_stable_codes(self, monkeypatch) -> None:
         iface = _iface()
@@ -709,11 +711,15 @@ class TestPackageCatalogReqMethodRouting:
     ) -> None:
         iface = _iface()
         calls: list[dict] = []
-        monkeypatch.setattr(
-            iface.package_manager,
-            function_name,
-            lambda params: calls.append(params),
-        )
+        if method == ReqMethod.AGENT_GROUPS_INSTALL:
+            wrapper = AsyncMock(side_effect=lambda params: calls.append(params))
+            monkeypatch.setattr(
+                iface.package_manager, "install_agent_group_with_hub", wrapper
+            )
+        else:
+            monkeypatch.setattr(
+                iface.package_manager, function_name, lambda params: calls.append(params)
+            )
         response = await iface.JiuWenSwarm._handle_package_catalog_request(
             None,
             _req({"id": "group-a"}, method=method),
@@ -721,6 +727,8 @@ class TestPackageCatalogReqMethodRouting:
         assert response.ok is True
         assert response.payload == {}
         assert calls == [{"id": "group-a"}]
+        if method == ReqMethod.AGENT_GROUPS_INSTALL:
+            wrapper.assert_awaited_once_with({"id": "group-a"})
 
     async def test_agent_template_update_payload(self, monkeypatch) -> None:
         """agent_templates.update falls through to update_agent_template(params)."""

@@ -284,7 +284,7 @@ class AuthSessionStore:
             updated_at=now,
         )
         with self._lock:
-            self._ensure_loaded()
+            self._ensure_loaded(force=True)
             # 同一账号重复登录：旧会话直接顶掉，避免残留多份凭据。
             old_id = self._by_user.get(session.user_id)
             if old_id:
@@ -301,7 +301,7 @@ class AuthSessionStore:
         with self._lock:
             # 版本栅栏：先同步磁盘。另一个进程可能已经登出了，内存里那份是陈的——
             # 不同步就会把已撤销的会话连同新凭据一起写回去（"注销后又复活"）。
-            self._ensure_loaded()
+            self._ensure_loaded(force=True)
             session = self._by_session.get(session_id)
             if session is None:
                 logger.info("[Auth] 会话已不存在，丢弃迟到的凭据更新 session=%s", mask(session_id))
@@ -315,14 +315,14 @@ class AuthSessionStore:
         with self._lock:
             # 先同步磁盘，理由同 update_credential：落盘写的是整份内存快照，内存是陈的
             # 就会把另一个进程刚写的东西（比如刚续好的凭据）盖回旧的。
-            self._ensure_loaded()
+            self._ensure_loaded(force=True)
             session = self._by_session.get(session_id)
             if session:
                 self._drop(session)
 
     def clear(self) -> None:
         with self._lock:
-            self._ensure_loaded()
+            self._ensure_loaded(force=True)
             self._by_session.clear()
             self._by_user.clear()
             self._flush()
@@ -340,12 +340,13 @@ class AuthSessionStore:
     def _session_file() -> Path:
         return auth_dir() / _SESSION_FILE_NAME
 
-    def _ensure_loaded(self) -> None:
+    def _ensure_loaded(self, *, force: bool = False) -> None:
         """从存档同步会话。
 
         jiuwenswarm 是**多进程**的：Gateway 负责登录并写存档，AgentServer 另一个
         进程要读到同一份登录态。所以这里不能只加载一次——按存档 mtime 判断，
-        文件变了就重新加载，否则登录前启动的进程永远看不到登录。
+        文件变了就重新加载，否则登录前启动的进程永远看不到登录。写操作前强制
+        读取一次，避免文件系统时间戳粒度不足时用旧快照覆盖其他进程的更新。
         """
         if not self._persist:
             self._loaded = True
@@ -358,8 +359,9 @@ class AuthSessionStore:
             mtime = path.stat().st_mtime_ns
         except OSError:
             mtime = None
-        if self._loaded and mtime is not None and mtime == self._loaded_mtime:
-            return
+        if not force and self._loaded:
+            if mtime is not None and mtime == self._loaded_mtime:
+                return
         self._loaded = True
         self._loaded_mtime = mtime
         self._by_session.clear()

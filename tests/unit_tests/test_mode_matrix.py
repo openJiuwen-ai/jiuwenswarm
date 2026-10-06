@@ -278,6 +278,11 @@ def test_new_canonical_ignores_supplemented_work_mode(mode, work_mode, expected)
         ("team.plan", ("team", "plan", "team.plan.normal")),
         ("team.plan.normal", ("team", "plan", "team.plan.normal")),
         ("team.plan.code", ("code", "team", "team.plan.code")),
+        # issue #4168: shorthand names resolve like their full names.
+        ("team.work", ("team", None, NEW_TEAM_WORK_NORMAL)),
+        ("team.normal", ("team", None, NEW_TEAM_WORK_NORMAL)),
+        ("agent.work", ("agent", None, NEW_AGENT_WORK_NORMAL)),
+        ("agent.code", ("code", "normal", NEW_AGENT_CODE_NORMAL)),
     ],
 )
 def test_legacy_modes_are_untouched_without_work_mode(raw_mode, expected):
@@ -377,9 +382,15 @@ def test_is_plan_mode(mode, expected):
         (NEW_TEAM_WORK_PLAN, True),
         (NEW_TEAM_CODE_NORMAL, True),
         (NEW_TEAM_CODE_PLAN, True),
+        # issue #4168: shorthand names must count as team modes.
+        ("team.work", True),
+        ("team.normal", True),
+        ("team.code", True),
         ("agent", False),
         ("agent.plan", False),
         ("code.plan", False),
+        ("agent.work", False),
+        ("agent.code", False),
     ],
 )
 def test_is_team_mode(mode, expected):
@@ -450,8 +461,29 @@ def test_deprecate_mode_hits_legacy_canonicals():
     assert deprecate_mode(Mode.AGENT_FAST) == NEW_AGENT_WORK_NORMAL
 
 
+def test_user_facing_two_segment_aliases_resolve_to_canonical():
+    """issue #4168: every shorthand name must resolve to its full canonical mode."""
+    assert deprecate_mode("team.work") == NEW_TEAM_WORK_NORMAL
+    assert deprecate_mode("team.normal") == NEW_TEAM_WORK_NORMAL
+    assert deprecate_mode("agent.work") == NEW_AGENT_WORK_NORMAL
+    assert deprecate_mode("agent.code") == NEW_AGENT_CODE_NORMAL
+    # team.code keeps its existing alias chain
+    assert deprecate_mode("team.code") == NEW_TEAM_CODE_NORMAL
+
+
 @pytest.mark.parametrize(
-    "mode", ["team", "team.plan", "team.plan.normal", "team.plan.code", "code.team"]
+    "mode",
+    [
+        "team",
+        "team.plan",
+        "team.plan.normal",
+        "team.plan.code",
+        "code.team",
+        # issue #4168: shorthand names (incl. team.code) are valid team inputs
+        "team.work",
+        "team.normal",
+        "team.code",
+    ],
 )
 def test_team_modes_are_team_params(mode):
     from jiuwenswarm.server.utils.utils import is_team_params

@@ -503,11 +503,11 @@ PERSONAL_CONTEXT_HOST_CALLS = [
 ]
 
 
-def test_agentserver_registers_exact_25_personal_context_methods() -> None:
+def test_agentserver_registers_exact_26_personal_context_methods() -> None:
     assert server_module._PERSONAL_CONTEXT_REQ_METHODS == {
         item for item in ReqMethod if item.value.startswith("personal_context.")
     }
-    assert len(server_module._PERSONAL_CONTEXT_REQ_METHODS) == 25
+    assert len(server_module._PERSONAL_CONTEXT_REQ_METHODS) == 26
 
 
 @pytest.mark.asyncio
@@ -1014,7 +1014,7 @@ async def test_core_error_is_returned_as_final_e2a_error(capture_wire: None) -> 
 
     assert ws.sent[0]["response_kind"] == "e2a.error"
     assert ws.sent[0]["body"]["details"] == {
-        "error": "safe PersonalContext error",
+        "error": "PersonalContext 操作失败，请重试；若仍失败，请查看服务日志。",
         "code": str(StatusCode.ERROR.code),
         "status": "ERROR",
     }
@@ -1049,3 +1049,40 @@ async def test_run_history_query_forwards_run_id(capture_wire):
     )
     assert host.calls == [("get_fetch_run_status", ("notes", "a" * 32))]
     assert ws.sent[0]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language,expected", [("zh", "参数"), ("en", "parameter")])
+async def test_request_validation_uses_cached_host_language(
+    capture_wire, language, expected
+):
+    _, host = _server()
+    host.error_language = language
+    ws = _FakeWebSocket()
+    await handle_personal_context_request(
+        host,
+        ws,
+        _request(
+            ReqMethod.PERSONAL_CONTEXT_RUNTIME_SET_MASTER_ENABLED, {"enabled": "false"}
+        ),
+        asyncio.Lock(),
+    )
+    assert expected in ws.sent[0]["body"]["details"]["error"]
+    assert ws.sent[0]["body"]["details"]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language,expected", [("zh", "重试"), ("en", "retry")])
+async def test_unknown_error_is_localized_and_hides_credentials(
+    capture_wire, language, expected
+):
+    _, host = _server()
+    host.error_language = language
+    host.failure = RuntimeError("api_key=secret-private-key")
+    ws = _FakeWebSocket()
+    await handle_personal_context_request(
+        host, ws, _request(ReqMethod.PERSONAL_CONTEXT_RUNTIME_STATUS), asyncio.Lock()
+    )
+    message = ws.sent[0]["body"]["details"]["error"]
+    assert expected in message
+    assert "secret-private-key" not in message

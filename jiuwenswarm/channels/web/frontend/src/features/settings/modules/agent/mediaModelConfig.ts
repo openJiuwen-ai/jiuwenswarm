@@ -1,11 +1,5 @@
 import type { ModelPlan, VendorPresetMap } from '../../../../types';
-import {
-  CONTEXT_WINDOW_1M_FIELD,
-  normalizeContextWindowTokens,
-  ONE_MILLION_CONTEXT_WINDOW_TOKENS,
-  parseContextWindowTokens,
-  resolveDraftContextWindowTokens,
-} from '../models/contextWindow';
+import { normalizeContextWindowTokens, resolveDraftContextWindowTokens } from '../models/contextWindow';
 import {
   CUSTOM_VENDOR_SELECTION,
   findVendorPreset,
@@ -32,7 +26,6 @@ export type MediaModelDraft = {
   vendor_key: string;
   plan: string;
   context_window_tokens: string;
-  [CONTEXT_WINDOW_1M_FIELD]: boolean;
 };
 
 function isModelPlan(value: string): value is ModelPlan {
@@ -75,8 +68,6 @@ export function createMediaModelDraft(
     vendor_key: vendorKey,
     plan,
     context_window_tokens: normalizedContextWindowTokens,
-    [CONTEXT_WINDOW_1M_FIELD]:
-      parseContextWindowTokens(normalizedContextWindowTokens) === ONE_MILLION_CONTEXT_WINDOW_TOKENS,
   };
 }
 
@@ -95,9 +86,7 @@ export function buildMediaModelConfigUpdates(
     [`${modality}_endpoint_profile`]: (preset ? (preset.endpoint_profile ?? '') : draft.endpoint_profile).trim(),
     [`${modality}_vendor_key`]: (preset?.vendor_key ?? '').trim(),
     [`${modality}_plan`]: (preset?.plan ?? '').trim(),
-    [mediaCapabilityContextWindowField(modality)]: String(
-      resolveDraftContextWindowTokens(draft.context_window_tokens, draft[CONTEXT_WINDOW_1M_FIELD]),
-    ),
+    [mediaCapabilityContextWindowField(modality)]: String(resolveDraftContextWindowTokens(draft.context_window_tokens)),
     ...(enableOnSave ? { [mediaCapabilityEnabledField(modality)]: 'true' } : {}),
   };
 }

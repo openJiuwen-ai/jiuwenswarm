@@ -395,6 +395,13 @@
   gap: 12px;
 }
 
+.pc-services__result,
+.pc-services__run-hint {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .pc-services__card-head {
   font-size: 16px;
   font-weight: 600;
@@ -516,11 +523,13 @@
 }
 
 .pc-services__status-text--stateCompleted { color: #5CB300; }
+.pc-services__status-text--statePartial { color: var(--color-feedback-warning); }
 .pc-services__status-text--stateStopped { color: #C2C2C2; }
 .pc-services__status-text--stateFailed { color: #F23030; }
 .pc-services__status-text--stateCollecting { color: #5CB300; }
 .pc-services__status-text--stateWaiting { color: #0BB8B2; }
 .pc-services__status-text--stateStopping { color: #808080; }
+.pc-services__status-text--stateCancelled { color: var(--color-text-secondary); }
 
 /* 卡片操作区 */
 .pc-services__card-actions {

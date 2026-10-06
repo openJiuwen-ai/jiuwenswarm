@@ -17,9 +17,11 @@ import pytest
 from jiuwenswarm.agents.harness.common.rsi import build_rsi_service_context
 from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiNotReady,
+    RsiScenarioNotSupported,
     RsiTaskNotFound,
     RsiTaskStateConflict,
 )
+from jiuwenswarm.agents.harness.common.rsi.events import EngineEvent
 from jiuwenswarm.agents.harness.common.rsi.models import TaskStatus
 from jiuwenswarm.server.rsi import RsiAgentServerHandlers
 
@@ -130,6 +132,168 @@ class TestWorkerRunLoop:
         runner.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await runner
+
+    async def test_terminate_cancels_harness_runner_and_continues_queue(self, ctx):
+        """Harness 取消必须停止内层执行，并在清理后继续消费队列。"""
+
+        class NonTerminatingAdapter:
+            supports_terminate = False
+
+            def __init__(self) -> None:
+                self.started: list[str] = []
+                self.activity: list[tuple[str, str]] = []
+                self.active: set[str] = set()
+                self.first_started = asyncio.Event()
+                self.first_cancelled = asyncio.Event()
+                self.first_cleaned = asyncio.Event()
+                self.second_completed = asyncio.Event()
+                self.first_task_id = ""
+                self.overlap_detected = False
+
+            def build_request(self, task_view, *, resume: bool = False):
+                del resume
+                return task_view
+
+            async def run(self, request, *, on_event=None):
+                del on_event
+                task_id = request.task_id
+                self.started.append(task_id)
+                self.activity.append(("started", task_id))
+                if self.active:
+                    self.overlap_detected = True
+                self.active.add(task_id)
+                try:
+                    if task_id == self.first_task_id:
+                        self.first_started.set()
+                        await asyncio.Event().wait()
+                    self.activity.append(("completed", task_id))
+                    return SimpleNamespace(status="completed")
+                except asyncio.CancelledError:
+                    self.activity.append(("cancelled", task_id))
+                    if task_id == self.first_task_id:
+                        self.first_cancelled.set()
+                    raise
+                finally:
+                    self.active.remove(task_id)
+                    self.activity.append(("cleaned", task_id))
+                    if task_id == self.first_task_id:
+                        self.first_cleaned.set()
+                    else:
+                        self.second_completed.set()
+
+        adapter = NonTerminatingAdapter()
+        ctx.register_adapters({"HARNESS": adapter})
+        first = _create(ctx, "harness-first")
+        second = _create(ctx, "harness-second")
+        adapter.first_task_id = first
+
+        ctx.worker.enqueue(first)
+        ctx.worker.enqueue(second)
+        await asyncio.wait_for(adapter.first_started.wait(), timeout=1)
+
+        assert ctx.worker.cancel(first, "terminate") == TaskStatus.TERMINATED.value
+        await asyncio.wait_for(adapter.first_cancelled.wait(), timeout=1)
+        await asyncio.wait_for(adapter.first_cleaned.wait(), timeout=1)
+        await asyncio.wait_for(adapter.second_completed.wait(), timeout=1)
+        await asyncio.wait_for(ctx.worker._queue.join(), timeout=1)  # noqa: SLF001
+
+        assert adapter.started == [first, second]
+        assert not adapter.overlap_detected
+        assert [kind for kind, task_id in adapter.activity if task_id == first] == [
+            "started",
+            "cancelled",
+            "cleaned",
+        ]
+        assert ctx.store.get(first).status == TaskStatus.TERMINATED.value
+        assert ctx.store.get(second).status == TaskStatus.COMPLETED.value
+        worker_loop = ctx.worker._run_task  # noqa: SLF001
+        assert worker_loop is not None
+        assert not worker_loop.done()
+        worker_loop.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker_loop
+
+    async def test_terminate_before_runner_registration_does_not_start_stale_run(
+        self, ctx, monkeypatch
+    ):
+        """竞态下的终止意图必须取消随后注册的 runner。"""
+
+        class NonTerminatingAdapter:
+            supports_terminate = False
+
+            def __init__(self) -> None:
+                self.run_calls: list[str] = []
+                self.second_started = asyncio.Event()
+                self.second_task_id = ""
+
+            def build_request(self, task_view, *, resume: bool = False):
+                del resume
+                return task_view
+
+            async def run(self, request, *, on_event=None):
+                del on_event
+                self.run_calls.append(request.task_id)
+                if request.task_id == self.second_task_id:
+                    self.second_started.set()
+                return SimpleNamespace(status="completed")
+
+        adapter = NonTerminatingAdapter()
+        ctx.register_adapters({"HARNESS": adapter})
+        first = _create(ctx, "race-first")
+        second = _create(ctx, "race-second")
+        adapter.second_task_id = second
+        supervisor_started = asyncio.Event()
+        release_supervisor = asyncio.Event()
+        original = ctx.worker._run_until_slot_free  # noqa: SLF001
+
+        async def delayed_supervisor(task_id, *, resume=False, generation):
+            supervisor_started.set()
+            await release_supervisor.wait()
+            return await original(task_id, resume=resume, generation=generation)
+
+        monkeypatch.setattr(ctx.worker, "_run_until_slot_free", delayed_supervisor)
+        ctx.worker.enqueue(first)
+        ctx.worker.enqueue(second)
+        await asyncio.wait_for(supervisor_started.wait(), timeout=1)
+
+        assert ctx.worker.cancel(first, "terminate") == TaskStatus.TERMINATED.value
+        release_supervisor.set()
+        await asyncio.wait_for(adapter.second_started.wait(), timeout=1)
+        await asyncio.wait_for(ctx.worker._queue.join(), timeout=1)  # noqa: SLF001
+
+        assert adapter.run_calls == [second]
+        assert ctx.store.get(first).status == TaskStatus.TERMINATED.value
+        assert ctx.store.get(second).status == TaskStatus.COMPLETED.value
+        worker_loop = ctx.worker._run_task  # noqa: SLF001
+        assert worker_loop is not None
+        assert not worker_loop.done()
+        worker_loop.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker_loop
+
+    async def test_stale_runner_cannot_apply_result_to_new_generation(self, ctx):
+        """旧 execution 的结果不能改写新 generation 的公开状态。"""
+
+        class ImmediateAdapter:
+            supports_terminate = False
+
+            def build_request(self, task_view, *, resume: bool = False):
+                del resume
+                return task_view
+
+            async def run(self, request, *, on_event=None):
+                del request, on_event
+                return SimpleNamespace(status="completed")
+
+        adapter = ImmediateAdapter()
+        ctx.register_adapters({"HARNESS": adapter})
+        task_id = _create(ctx, "stale-generation")
+        _mark_running(ctx, task_id)
+        ctx.worker._execution_generations[task_id] = 2  # noqa: SLF001
+
+        await ctx.worker._execute_task(task_id, generation=1)  # noqa: SLF001
+
+        assert ctx.store.get(task_id).status == TaskStatus.RUNNING.value
 
     async def test_persist_results_delegates_to_store_merge(self, ctx, monkeypatch):
         """F3：_persist_results 委托 store.merge_results（锁内读-改-写），不再直接写 task.json。"""
@@ -251,6 +415,98 @@ class TestWorkerRunLoop:
         with contextlib.suppress(asyncio.CancelledError):
             await runner
 
+    async def test_validation_failure_persists_provider_reason(self, ctx):
+        class InvalidAdapter:
+            def validate_input(self, *args, **kwargs):
+                del args, kwargs
+                return SimpleNamespace(
+                    valid=False,
+                    errors=[
+                        {
+                            "code": "ARTIFACT_NOT_FOUND",
+                            "message": "nothing at /tmp/deleted-program",
+                        }
+                    ],
+                )
+
+        ctx.register_adapters({"HARNESS": InvalidAdapter()})
+        task_id = _create(ctx, "deleted-input")
+        ctx.worker.enqueue(task_id)
+        await asyncio.wait_for(ctx.worker._queue.join(), timeout=1)  # noqa: SLF001
+
+        task = ctx.store.get(task_id)
+        assert task.status == TaskStatus.FAILED.value
+        assert task.status_history[-1]["cause"] == "nothing at /tmp/deleted-program"
+        runner = ctx.worker._run_task  # noqa: SLF001
+        assert runner is not None
+        runner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runner
+
+    async def test_provider_failure_result_persists_error_message(self, ctx):
+        class FailedAdapter:
+            def build_request(self, task_view, *, resume: bool = False):
+                del resume
+                return task_view
+
+            async def run(self, request, *, on_event=None):
+                del request, on_event
+                return SimpleNamespace(
+                    status="failed",
+                    error_code="ENGINE_FAILED",
+                    error_message="scorecard.json is invalid: missing script",
+                )
+
+        ctx.register_adapters({"HARNESS": FailedAdapter()})
+        task_id = _create(ctx, "provider-failure")
+        ctx.worker.enqueue(task_id)
+        await asyncio.wait_for(ctx.worker._queue.join(), timeout=1)  # noqa: SLF001
+
+        task = ctx.store.get(task_id)
+        assert task.status == TaskStatus.FAILED.value
+        assert task.status_history[-1]["cause"] == "scorecard.json is invalid: missing script"
+        runner = ctx.worker._run_task  # noqa: SLF001
+        assert runner is not None
+        runner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runner
+
+    async def test_provider_failure_uses_durable_snapshot_when_result_is_empty(self, ctx):
+        class SnapshotFailureAdapter:
+            def build_request(self, task_view, *, resume: bool = False):
+                del resume
+                return task_view
+
+            async def run(self, request, *, on_event=None):
+                del request, on_event
+                return SimpleNamespace(
+                    status="failed",
+                    error_code="PAPER_PIPELINE_FAILED",
+                    error_message=None,
+                )
+
+            def read_state(self, task_id: str):
+                del task_id
+                return SimpleNamespace(
+                    status="failed",
+                    error_code="PAPER_PIPELINE_FAILED",
+                    error_message="未生成可用的论文结果。",
+                )
+
+        ctx.register_adapters({"HARNESS": SnapshotFailureAdapter()})
+        task_id = _create(ctx, "paper-snapshot-failure")
+        ctx.worker.enqueue(task_id)
+        await asyncio.wait_for(ctx.worker._queue.join(), timeout=1)  # noqa: SLF001
+
+        task = ctx.store.get(task_id)
+        assert task.status == TaskStatus.FAILED.value
+        assert task.status_history[-1]["cause"] == "未生成可用的论文结果。"
+        runner = ctx.worker._run_task  # noqa: SLF001
+        assert runner is not None
+        runner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runner
+
 
 class TestProviderControl:
     async def test_pause_commits_state_after_provider_returns(self, ctx):
@@ -351,6 +607,30 @@ class TestProviderControl:
 
         assert ctx.store.get(task_id).status == TaskStatus.RUNNING.value
 
+    async def test_failed_provider_control_persists_error_message(self, ctx):
+        class FailedControlAdapter:
+            supports_pause = True
+
+            async def pause(self, task_id: str):
+                del task_id
+                return SimpleNamespace(
+                    status="FAILED",
+                    error_code="PAUSE_FAILED",
+                    error_message="provider could not checkpoint the current run",
+                )
+
+        adapter = FailedControlAdapter()
+        ctx.register_adapters({"HARNESS": adapter})
+        task_id = _create(ctx)
+        _mark_running(ctx, task_id)
+
+        assert ctx.worker.cancel(task_id, "pause") == TaskStatus.RUNNING.value
+        await ctx.worker._control_tasks[task_id]  # noqa: SLF001 - wait for control result
+
+        task = ctx.store.get(task_id)
+        assert task.status == TaskStatus.FAILED.value
+        assert task.status_history[-1]["cause"] == "provider could not checkpoint the current run"
+
     async def test_controls_are_serialized_instead_of_dropped(self, ctx):
         adapter = _ControlAdapter()
         ctx.register_adapters({"HARNESS": adapter})
@@ -438,6 +718,79 @@ class TestPushScheduling:
         assert len(sent) == 1
         assert sent[0]["payload"]["event_type"] == "rsi.training.progress"
         assert sent[0]["payload"]["task_id"] == "t"
+
+    async def test_progress_callback_waits_for_async_send(self, ctx):
+        """最终进度必须在事件消费完成前完成异步发送。"""
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def async_send(_msg):
+            started.set()
+            await release.wait()
+
+        RsiAgentServerHandlers(ctx, send_push=async_send, harness_refs_provider=lambda: None)
+        callback = ctx.worker._push_callbacks["rsi.training.progress"]  # noqa: SLF001
+        delivery = asyncio.create_task(
+            callback(
+                "rsi.training.progress",
+                "t",
+                {"iteration": 5, "total_iterations": 5},
+            )
+        )
+
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert not delivery.done()
+        release.set()
+        await delivery
+
+    async def test_completed_status_waits_for_final_progress_delivery(self, ctx):
+        """Provider 完成后，COMPLETED 必须晚于最终进度推送。"""
+        progress_started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def async_send(msg):
+            if msg["payload"]["event_type"] == "rsi.training.progress":
+                progress_started.set()
+                await release.wait()
+
+        RsiAgentServerHandlers(ctx, send_push=async_send, harness_refs_provider=lambda: None)
+
+        class Adapter:
+            def build_request(self, task_view, *, resume=False):
+                del resume
+                return task_view
+
+            async def run(self, request, *, on_event=None):
+                await on_event(
+                    EngineEvent(
+                        family="progress",
+                        kind="metric",
+                        task_id=request.task_id,
+                        payload={
+                            "iteration": 5,
+                            "total_iterations": 5,
+                            "score": None,
+                            "baseline": None,
+                        },
+                    )
+                )
+                return SimpleNamespace(status="completed")
+
+        ctx.register_adapters({"HARNESS": Adapter()})
+        task_id = _create(ctx, "final-progress-order")
+        ctx.worker.enqueue(task_id)
+
+        await asyncio.wait_for(progress_started.wait(), timeout=1)
+        assert ctx.store.get(task_id).status == TaskStatus.RUNNING.value
+        release.set()
+        await asyncio.wait_for(ctx.worker._queue.join(), timeout=1)  # noqa: SLF001
+        assert ctx.store.get(task_id).status == TaskStatus.COMPLETED.value
+
+        runner = ctx.worker._run_task  # noqa: SLF001
+        assert runner is not None
+        runner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runner
 
     def test_push_sync_send_unchanged(self, ctx):
         sent = []
@@ -570,3 +923,88 @@ class TestStatusCallback:
         t = _create(ctx)
         ctx.store.update_status(t, ["CREATED"], "QUEUED", cause="x")
         assert (t, "CREATED", "QUEUED") in seen
+
+
+class _PaperLikeAdapter:
+    """Paper 场景适配器：支持排队暂停，但不支持断点 resume（同 agent-core 桩实现）。"""
+
+    supports_pause = True
+    supports_resume = False
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def build_request(self, task_view, *, resume: bool = False):
+        del resume
+        return task_view
+
+    async def run(self, request, *, on_event=None):
+        del on_event
+        self.calls.append(f"run:{request.task_id}")
+        return SimpleNamespace(status="completed")
+
+    async def resume(self, request, *, on_event=None):
+        del on_event
+        self.calls.append(f"resume:{request.task_id}")
+        return SimpleNamespace(status="completed")
+
+
+class TestResumePauseSource:
+    async def test_queued_pause_resume_runs_fresh_without_provider_resume(self, ctx):
+        """排队中暂停 → 恢复执行走 run() 而非 Provider.resume()（paper 修复）。"""
+        adapter = _PaperLikeAdapter()
+        task_id = ctx.task_service.create({
+            "scenario": "ARTIFACT",
+            "artifact_type": "PAPER",
+            "name": "paper-queue-resume",
+            "model_refs": {"optimizer": "o"},
+            "optimization_instruction": "improve it",
+        })["task_id"]
+        ctx.register_adapters({"ARTIFACT:PAPER": adapter})
+
+        ctx.worker._ensure_runner = lambda: None  # noqa: SLF001 - 排队不自动执行
+        assert ctx.worker.enqueue(task_id) == TaskStatus.QUEUED.value
+        assert ctx.worker.cancel(task_id, "pause") == TaskStatus.PAUSED.value
+        assert ctx.worker.resume(task_id) == TaskStatus.QUEUED.value
+        assert task_id not in ctx.worker._resume_task_ids  # noqa: SLF001
+
+        runner = asyncio.create_task(ctx.worker._run_loop())
+        await asyncio.wait_for(ctx.worker._queue.join(), timeout=1)  # noqa: SLF001
+        runner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runner
+
+        assert adapter.calls == [f"run:{task_id}"]
+        assert ctx.store.get(task_id).status == TaskStatus.COMPLETED.value
+
+    async def test_real_pause_resume_rejected_without_provider_resume(self, ctx):
+        """运行中暂停且 Provider 不支持 resume → 明确报错而非静默回到 PAUSED。"""
+        adapter = _PaperLikeAdapter()
+        task_id = ctx.task_service.create({
+            "scenario": "ARTIFACT",
+            "artifact_type": "PAPER",
+            "name": "paper-real-pause",
+            "model_refs": {"optimizer": "o"},
+            "optimization_instruction": "improve it",
+        })["task_id"]
+        ctx.register_adapters({"ARTIFACT:PAPER": adapter})
+        ctx.store.update_status(task_id, ["CREATED"], "QUEUED", cause="test")
+        ctx.store.update_status(task_id, ["QUEUED"], "RUNNING", cause="test")
+        ctx.store.update_status(task_id, ["RUNNING"], "PAUSED", cause="provider.paused")
+
+        with pytest.raises(RsiScenarioNotSupported, match="不支持运行中暂停后的 resume"):
+            ctx.worker.resume(task_id)
+        assert ctx.store.get(task_id).status == TaskStatus.PAUSED.value
+        assert ctx.worker._queue.qsize() == 0  # noqa: SLF001 - 未入队
+
+    def test_queued_pause_resume_keeps_provider_resume_when_supported(self, ctx):
+        """排队暂停 + Provider 支持 resume（harness/program）→ 维持原 resume 路由。"""
+        adapter = _ControlAdapter()
+        ctx.register_adapters({"HARNESS": adapter})
+        task_id = _create(ctx)
+        ctx.worker._ensure_runner = lambda: None  # noqa: SLF001
+        assert ctx.worker.enqueue(task_id) == TaskStatus.QUEUED.value
+        assert ctx.worker.cancel(task_id, "pause") == TaskStatus.PAUSED.value
+        assert ctx.worker.resume(task_id) == TaskStatus.QUEUED.value
+        assert task_id in ctx.worker._resume_task_ids  # noqa: SLF001
+

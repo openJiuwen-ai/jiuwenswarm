@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 
 KIND_THIRD_PARTY = "三方"
 KIND_JIUWEN = "九问"
+# Registry rejects empty address; first POST uses this until placement PATCH.
+PENDING_INSTANCE_ADDRESS = "pending"
 _JIUWEN_FRAMEWORKS = frozenset({"jiuwenswarm", "jiuwen-report"})
 # Offline registry stub default list when no framework filter is given.
 _LOCAL_STUB_FRAMEWORKS = frozenset({BUILTIN_AGENT_TYPE})
@@ -38,7 +40,7 @@ class RegistryConfig:
     """Gateway → registry connection settings.
 
     ``endpoint`` empty → local stub (no HTTP). ``node`` is this machine's
-    nodeIP written into registered instances.
+    nodeIP for ``POST /api/nodes/{node}/heartbeat``, not instance placement.
     """
 
     endpoint: str = ""
@@ -541,20 +543,50 @@ class RegistryClient:
             if isinstance(item, dict)
         ]
 
-    async def unregister_instance(self, service_id: str) -> dict[str, Any]:
-        """``DELETE /api/instances/{service_id}`` (idempotent; missing is success)."""
+    async def unregister_instance(
+        self,
+        service_id: str,
+        *,
+        expected_instance_id: str = "",
+    ) -> dict[str, Any]:
+        """``DELETE /api/instances/{service_id}`` (idempotent; missing is success).
+
+        When *expected_instance_id* is set, pass ``?instance_id=`` so the
+        registry can CAS: ``DELETE WHERE service_id=? AND instance_id=?``.
+        The match is instance identity, not a local time window, so a
+        concurrent or sibling-worker upsert that retargets the row is kept.
+        A mismatch is ``409`` (or ``deleted=false``).
+        """
         sid = str(service_id or "").strip()
         if not sid:
             raise RegistryValidationError(
                 "service_id is required", status_code=400, payload=None
             )
+        expected = str(expected_instance_id or "").strip()
         if not self.enabled:
             return {"service_id": sid, "dataset": "default", "deleted": True}
+        params: dict[str, Any] | None = {"instance_id": expected} if expected else None
         try:
-            data = await self._request_json("DELETE", f"api/instances/{_encode(sid)}")
+            data = await self._request_json(
+                "DELETE",
+                f"api/instances/{_encode(sid)}",
+                params=params,
+            )
         except RegistryNotFoundError:
             return {"service_id": sid, "deleted": False}
-        return data if isinstance(data, dict) else {"service_id": sid, "deleted": True}
+        except RegistryConflictError:
+            return {
+                "service_id": sid,
+                "deleted": False,
+                "reason": "instance_id_mismatch",
+            }
+        if not isinstance(data, dict):
+            return {"service_id": sid, "deleted": True}
+        if expected and data.get("deleted") is False and data.get("reason"):
+            return data
+        if expected and data.get("deleted") is False:
+            return {**data, "reason": data.get("reason") or "instance_id_mismatch"}
+        return data
 
     # ── Compatibility helpers used by AgentOSRouterClient ─────────────────
 
@@ -667,10 +699,11 @@ class RegistryClient:
             or info.metadata.get("framework_version")
             or "default"
         ).strip()
+        # Placement node is YuanRong node_ip, patched after running. Do not
+        # stamp Gateway heartbeat IP (RegistryConfig.node) as the sandbox site.
         node = str(
             info.metadata.get("node")
             or sandbox_meta.get("node")
-            or self.node
             or ""
         ).strip()
         instance_id = str(
@@ -680,12 +713,12 @@ class RegistryClient:
             or ""
         ).strip()
         # Registry rejects empty address. Placement IP is patched after
-        # YuanRong get_agent_info; until then reuse instance_id.
+        # YuanRong get_agent_info; until then use a non-IP placeholder so
+        # address is not confused with instance_id.
         address = str(
             info.metadata.get("address")
             or sandbox_meta.get("address")
-            or instance_id
-            or ""
+            or PENDING_INSTANCE_ADDRESS
         ).strip()
         kind = str(info.metadata.get("kind") or resolve_instance_kind(framework)).strip()
 
@@ -746,7 +779,8 @@ class RegistryClient:
         if self.enabled:
             await self.unregister_instance(service_id)
 
-    def _instance_record_from_agent(self, info: AgentInfo) -> InstanceRecord:
+    @staticmethod
+    def _instance_record_from_agent(info: AgentInfo) -> InstanceRecord:
         user = str(info.user_id or "").strip()
         framework = str(info.agent_type or "").strip()
         sandbox_meta = info.metadata.get("sandbox")
@@ -758,7 +792,7 @@ class RegistryClient:
             framework=framework,
             framework_version=str(info.metadata.get("framework_version") or "default").strip(),
             node=str(
-                info.metadata.get("node") or sandbox_meta.get("node") or self.node or ""
+                info.metadata.get("node") or sandbox_meta.get("node") or ""
             ).strip(),
             address=str(
                 info.metadata.get("address") or sandbox_meta.get("address") or ""

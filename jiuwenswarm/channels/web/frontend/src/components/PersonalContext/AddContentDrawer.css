@@ -277,11 +277,26 @@
 }
 
 .pc-drawer__error {
-  background: rgba(220, 50, 50, 0.08);
-  color: #dc3232;
+  background: var(--color-feedback-danger-subtle);
+  color: var(--color-feedback-danger);
   border-radius: 6px;
   padding: 8px 12px;
   font-size: 12px;
+}
+
+.pc-drawer__field-error {
+  color: var(--color-feedback-danger);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.pc-drawer__foot-hint.pc-drawer__field-error {
+  color: var(--color-feedback-danger);
+}
+
+.pc-drawer__input[aria-invalid='true'],
+.pc-drawer__spinner-input[aria-invalid='true'] {
+  border-color: var(--color-border-danger);
 }
 
 
@@ -1117,4 +1132,31 @@
 
 .pc-cal__field-input:focus {
   border-color: #1476ff;
+}
+.pc-drawer__path-input {
+  position: relative;
+}
+.pc-drawer__path-input .pc-drawer__input {
+  padding-right: 36px;
+}
+.pc-drawer__path-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #999;
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+  transition: color 0.12s ease;
+}
+.pc-drawer__path-btn:hover {
+  color: #1476ff;
 }

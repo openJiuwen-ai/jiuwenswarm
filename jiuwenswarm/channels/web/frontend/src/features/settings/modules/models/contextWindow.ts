@@ -1,6 +1,6 @@
 export const DEFAULT_CONTEXT_WINDOW_TOKENS = 256 * 1024;
 export const ONE_MILLION_CONTEXT_WINDOW_TOKENS = 1024 * 1024;
-export const CONTEXT_WINDOW_1M_FIELD = 'context_window_1m_enabled';
+export const CONTEXT_WINDOW_PRESETS = ['128K', '256K', '512K', '1M'] as const;
 
 const MAX_CONTEXT_WINDOW_TOKENS = Number.MAX_SAFE_INTEGER;
 const CONTEXT_WINDOW_PATTERN = /^([0-9]+(?:\.[0-9]+)?)\s*(tokens?|k(?:i?b)?|m(?:i?b)?)?$/i;
@@ -59,8 +59,6 @@ export function normalizeContextWindowTokens(value: unknown): string {
     : formatContextWindowTokens(value);
 }
 
-export function resolveDraftContextWindowTokens(value: unknown, oneMillionEnabled: unknown): number {
-  return oneMillionEnabled
-    ? ONE_MILLION_CONTEXT_WINDOW_TOKENS
-    : (parseContextWindowTokens(value) ?? DEFAULT_CONTEXT_WINDOW_TOKENS);
+export function resolveDraftContextWindowTokens(value: unknown): number {
+  return parseContextWindowTokens(value) ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
 }

@@ -4,11 +4,11 @@ export interface ContextUsagePart {
   percentage_of_window: number | null;
 }
 
-/** Fields consumed from the context-usage.v1 post-call event. Ratios are not percentages. */
+/** Fields consumed from normal and manual context-usage.v1 events. Ratios are not percentages. */
 export interface ContextUsageSnapshot {
   event_type: 'context.usage';
   schema_version: 'context-usage.v1';
-  phase: 'post_call';
+  phase: 'post_call' | 'post_compact';
   request_id: string;
   product_session_id: string;
   /** Team streams identify the main conversation owner semantically with role="leader". */

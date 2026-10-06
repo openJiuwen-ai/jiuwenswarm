@@ -29,6 +29,67 @@ from tests.unit_tests.server.extensions.conftest import (
 _KINDS = (AGENT_TEMPLATES, PLUGIN_PACKAGES)
 
 
+def test_packaged_agent_group_resources_exclude_sample_group():
+    resources = catalog.get_equipment_resources_agent_groups_dir()
+
+    assert resources is None or not (resources / "sample-expert-group").exists()
+
+
+@pytest.mark.asyncio
+async def test_agent_group_catalog_queries_only_group_hub_type(monkeypatch):
+    from jiuwenswarm.server.runtime.marketplace.hub_asset_port import HubAssetSummary, HubSearchPage
+
+    monkeypatch.setattr(catalog, "list_agent_groups", lambda _params=None: [
+        {"id": "built-in-group", "source": "builtin", "installed": False}
+    ])
+    monkeypatch.setattr(catalog, "_hub_install_state_store", lambda _kind: type(
+        "Store", (), {"get_by_package_id": lambda _self, _id: None}
+    )())
+
+    class Port:
+        kinds = []
+
+        async def search_assets(self, request):
+            self.kinds.append(request.kind)
+            item = HubAssetSummary("agent_group", "group-id", "Hub Group", "desc", "1.0.0", "", (), "group-package")
+            return HubSearchPage((item,), 1, 1, 100)
+
+    port = Port()
+    cards = await catalog.list_agent_groups_with_hub({"filter": "builtin+hub"}, hub_port=port)
+    assert port.kinds == ["agent_group"]
+    assert {card["id"] for card in cards} == {"built-in-group", "group-id"}
+    assert next(card for card in cards if card["id"] == "group-id")["source"] == "hub"
+
+
+@pytest.mark.asyncio
+async def test_hub_agent_group_installs_and_uninstalls_by_asset_id(extension_workspace, tmp_path):
+    from jiuwenswarm.server.runtime.marketplace.hub_asset_port import HubAssetDetail, HubResolvedDownload
+
+    source = _seed_valid_agent_group(extension_workspace, "remote-group", under="local")
+    archive_source = tmp_path / "archive-source"
+    shutil.move(source, archive_source)
+
+    class Port:
+        async def query_asset(self, request):
+            return HubAssetDetail("agent_group", request.asset_id, "1.0.0", "Remote Group", "Group", "Group", "", (), "remote-group")
+
+        async def resolve_download(self, request):
+            return HubResolvedDownload("agent_group", request.asset_id, request.version, "https://example.test/group.zip", "a" * 64, "remote-group")
+
+    class Downloader:
+        async def download_and_extract(self, _artifact, destination):
+            shutil.copytree(archive_source, destination / "remote-group")
+
+    await catalog.install_agent_group_with_hub(
+        {"id": "group-asset-id"}, hub_port=Port(), downloader=Downloader()
+    )
+    detail = await catalog.show_agent_group_with_hub("group-asset-id")
+    assert detail["id"] == "group-asset-id" and detail["installed"]
+    assert detail["source"] == "hub"
+    catalog.uninstall_agent_group({"id": "group-asset-id"})
+    assert catalog._hub_install_state_store(AGENT_GROUPS).get("group-asset-id") is None
+
+
 def _seed_valid_agent_group(
     workspace: Path,
     package_id: str,
@@ -181,6 +242,35 @@ class TestPrepareWorkspaceAndMarketplace:
 
 
 class TestAgentGroupResolution:
+    def test_list_agent_groups_orders_latest_create_or_install_first(
+        self,
+        extension_workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _seed_valid_agent_group(extension_workspace, "older-group", under="local")
+        _seed_valid_agent_group(extension_workspace, "newer-group", under="local")
+        timestamps = iter((100, 200, 300))
+        monkeypatch.setattr(catalog.time, "time_ns", lambda: next(timestamps))
+
+        catalog.upsert_agent_group_marketplace_entry(
+            "older-group", installed=True, source="local"
+        )
+        catalog.upsert_agent_group_marketplace_entry(
+            "newer-group", installed=True, source="local"
+        )
+        assert [card["name"] for card in catalog.list_agent_groups()] == [
+            "newer-group",
+            "older-group",
+        ]
+
+        catalog.upsert_agent_group_marketplace_entry(
+            "older-group", installed=True, source="local"
+        )
+        assert [card["name"] for card in catalog.list_agent_groups()] == [
+            "older-group",
+            "newer-group",
+        ]
+
     def test_list_agent_groups_returns_only_loadable_selection_cards(
         self,
         extension_workspace: Path,
@@ -440,6 +530,7 @@ class TestAgentGroupLifecycle:
             "en": "交付评审专家团",
         }
         assert card["installed"] is False
+        assert card["capabilities"]["canPublish"] is False
         assert card["persona"] == "先独立分析，再由 Leader 汇总结论。"
         assert card["tags"] == [
             {
@@ -459,19 +550,73 @@ class TestAgentGroupLifecycle:
         assert card["capabilities"]["canUse"] is False
         assert str(home) not in json.dumps(card, ensure_ascii=False)
 
+        (package / "guide.pdf").write_bytes(b"%PDF-1.4")
+        (package / "sensitive.json").write_text(
+            json.dumps(
+                {
+                    "api_key": "sk-preview-secret-12345678",
+                    "nested": {"contact": "owner@example.com"},
+                    "safe": "visible",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (package / "notes.md").write_text(
+            "Authorization: Bearer preview-secret-token\n"
+            "-----BEGIN PRIVATE KEY-----\nprivate-material\n"
+            "-----END PRIVATE KEY-----\n",
+            encoding="utf-8",
+        )
         tree = catalog.list_agent_group_files("delivery-review-team")
         assert any(item["path"] == "README.md" for item in tree)
+        pdf = next(item for item in tree if item["path"] == "guide.pdf")
+        assert pdf["previewable"] is True
+        pdf_preview = catalog.read_agent_group_file(
+            "delivery-review-team", "guide.pdf"
+        )
+        assert pdf_preview["content"] is None
+        assert pdf_preview["download_url"].startswith("/file-api/download?")
+        agents = next(item for item in tree if item["path"] == "agents/")
+        leader = next(
+            item for item in agents["children"] if item["path"] == "agents/leader/"
+        )
+        manifest = next(
+            item
+            for item in leader["children"]
+            if item["path"] == "agents/leader/manifest.json"
+        )
+        assert manifest["previewable"] is True
+        assert catalog.read_agent_group_file(
+            "delivery-review-team", "agents/leader/manifest.json"
+        )["content"]
         content = catalog.read_agent_group_file(
             "delivery-review-team", "agents/leader/AGENT.md"
         )
         assert "专家团 Leader" in content["content"]
+        json_preview = json.loads(
+            catalog.read_agent_group_file(
+                "delivery-review-team", "sensitive.json"
+            )["content"]
+        )
+        assert json_preview == {
+            "api_key": "******",
+            "nested": {"contact": "******"},
+            "safe": "visible",
+        }
+        notes_preview = catalog.read_agent_group_file(
+            "delivery-review-team", "notes.md"
+        )["content"]
+        assert "preview-secret-token" not in notes_preview
+        assert "private-material" not in notes_preview
+        assert "******" in notes_preview
 
     def test_install_enables_runtime_and_uninstall_removes_local(
         self, extension_workspace: Path
     ) -> None:
         self._create_group()
-        with pytest.raises(ValueError, match="not installed"):
+        with pytest.raises(catalog.AgentGroupPackageError, match="not installed") as exc_info:
             catalog.resolve_agent_group_dir("delivery-review-team")
+        assert exc_info.value.code == "AGENT_GROUP_NOT_INSTALLED"
 
         catalog.install_agent_group({"id": "delivery-review-team"})
         resolved = catalog.resolve_agent_group_dir("delivery-review-team")
@@ -485,6 +630,7 @@ class TestAgentGroupLifecycle:
         assert catalog.is_agent_group_installed("delivery-review-team") is True
         card = catalog.show_agent_group("delivery-review-team")
         assert card is not None and card["capabilities"]["canUse"] is True
+        assert card["capabilities"]["canPublish"] is True
 
         catalog.uninstall_agent_group({"id": "delivery-review-team"})
         assert catalog.show_agent_group("delivery-review-team") is None
@@ -514,7 +660,34 @@ class TestAgentGroupLifecycle:
             / "broken-team"
         ).exists()
 
-    def test_import_valid_group_writes_local_uninstalled(
+    def test_create_rejects_duplicate_display_name(
+        self, extension_workspace: Path
+    ) -> None:
+        self._create_group()
+
+        with pytest.raises(catalog.AgentGroupPackageError) as exc_info:
+            catalog.create_agent_group(
+                {
+                    "id": "another-delivery-review-team",
+                    "name": "交付评审专家团",
+                    "description": "另一个专家团。",
+                    "persona": "独立分析后汇总结论。",
+                    "leaderId": "planning-expert",
+                    "memberIds": ["review-expert"],
+                    "skills": [],
+                }
+            )
+
+        assert exc_info.value.code == "AGENT_GROUP_DUPLICATE"
+        assert not (
+            extension_workspace.parent.parent
+            / ".agent_teams"
+            / AGENT_GROUPS
+            / "local"
+            / "another-delivery-review-team"
+        ).exists()
+
+    def test_import_valid_group_installs_local_group(
         self, extension_workspace: Path, tmp_path: Path
     ) -> None:
         source_workspace = tmp_path / "source-home" / "agent" / "workspace"
@@ -533,7 +706,87 @@ class TestAgentGroupLifecycle:
             / "imported-review"
         )
         assert imported.is_dir()
-        assert catalog.is_agent_group_installed("imported-review") is False
+        assert catalog.is_agent_group_installed("imported-review") is True
+        assert catalog.resolve_agent_group_dir("imported-review") == imported.resolve()
+
+    def test_import_rejects_duplicate_display_name(
+        self, extension_workspace: Path, tmp_path: Path
+    ) -> None:
+        existing = _seed_valid_agent_group(
+            extension_workspace,
+            "existing-review",
+            under="local",
+        )
+        existing_manifest = json.loads(
+            (existing / "manifest.json").read_text(encoding="utf-8")
+        )
+        existing_manifest["display_name"] = {
+            "zh": "交付评审专家团",
+            "en": "Delivery Review Team",
+        }
+        (existing / "manifest.json").write_text(
+            json.dumps(existing_manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        source_workspace = tmp_path / "source-home" / "agent" / "workspace"
+        source = _seed_valid_agent_group(
+            source_workspace,
+            "another-review",
+            under="local",
+        )
+        source_manifest = json.loads(
+            (source / "manifest.json").read_text(encoding="utf-8")
+        )
+        source_manifest["display_name"] = {
+            "zh": "交付评审专家团",
+            "en": "Another Review Team",
+        }
+        (source / "manifest.json").write_text(
+            json.dumps(source_manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(catalog.AgentGroupPackageError) as exc_info:
+            catalog.import_agent_group({"path": str(source)})
+
+        assert exc_info.value.code == "AGENT_GROUP_DUPLICATE"
+        assert "existing-review" in str(exc_info.value)
+        assert not (
+            extension_workspace.parent.parent
+            / ".agent_teams"
+            / AGENT_GROUPS
+            / "local"
+            / "another-review"
+        ).exists()
+
+    def test_import_rootless_hub_group_archive_writes_local_installed(
+        self, extension_workspace: Path, tmp_path: Path
+    ) -> None:
+        source_workspace = tmp_path / "source-home" / "agent" / "workspace"
+        source = _seed_valid_agent_group(
+            source_workspace,
+            "hub-review",
+            under="local",
+        )
+        archive = tmp_path / "hub-review.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            for path in source.rglob("*"):
+                if path.is_file():
+                    zf.write(path, path.relative_to(source))
+
+        result = catalog.import_agent_group({"path": str(archive)})
+
+        assert result == {"id": "hub-review"}
+        imported = (
+            extension_workspace.parent.parent
+            / ".agent_teams"
+            / AGENT_GROUPS
+            / "local"
+            / "hub-review"
+        )
+        assert imported.is_dir()
+        assert catalog.is_agent_group_installed("hub-review") is True
 
     def test_resource_group_install_and_uninstall_preserves_shelf_card(
         self,
@@ -1319,13 +1572,13 @@ class TestListShowAndFileRead:
         tree = catalog.list_agent_template_files("alpha")
         paths = {n["path"] for n in tree}
         assert "README.md" in paths
-        assert "model.json" not in paths
+        model = next(node for node in tree if node["path"] == "model.json")
+        assert model["previewable"] is True
         read = catalog.read_agent_template_file("alpha", "README.md")
         assert read["content"] == "body"
         with pytest.raises((ValueError, RuntimeError)):
             catalog.read_agent_template_file("alpha", "../secret.txt")
-        with pytest.raises((ValueError, RuntimeError)):
-            catalog.read_agent_template_file("alpha", "model.json")
+        assert catalog.read_agent_template_file("alpha", "model.json")["content"] == "{}"
 
 
 class TestUpdateAndDeleteAgentTemplate:

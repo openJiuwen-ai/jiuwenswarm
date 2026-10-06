@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import re
 import threading
 import time
@@ -171,8 +172,18 @@ _fetch_lock = threading.Lock()
 _cached: RemoteConfig | None = None
 _last_failure_at: float = 0.0
 _background_refreshing = False
-#: 拉失败后的冷却期，避免每个请求都去撞一次不通的接口。
+#: 第一次拉失败后的冷却期，避免每个请求都去撞一次不通的接口。
 _RETRY_AFTER_FAILURE_S = 30.0
+#: 连续失败时冷却期翻倍，封顶这么久。官网接口挂着时所有还没拉到配置的客户端都在重试，
+#: 固定 30 秒会把压力钉在"在线数 ÷ 30 秒"，恢复瞬间还会一起涌上来；封顶 10 分钟既把持续
+#: 故障的压力降一个量级，也保证恢复后最迟 10 分钟入口自己回来。
+_RETRY_BACKOFF_MAX_S = 600.0
+#: 冷却期上下浮动这么多，错开各客户端的重试时刻。
+_RETRY_JITTER = 0.2
+#: 这次失败要等多久才允许再试（含抖动）；0 = 没在冷却
+_retry_after_s: float = 0.0
+#: 下一次失败的冷却基准，成功后复位
+_retry_base_s: float = _RETRY_AFTER_FAILURE_S
 
 
 def get_config(allow_refresh: bool = True) -> RemoteConfig | None:
@@ -180,7 +191,8 @@ def get_config(allow_refresh: bool = True) -> RemoteConfig | None:
 
     **一个进程只拉一次**（启动时预热，见 :func:`warm_up_in_background`）：每个客户端都是一个
     进程，按 TTL 定期刷新会给官网压上"在线客户端数 ÷ 刷新周期"的常态 QPS。代价是改配置
-    （含活动下线）要客户端重启才生效。只有从来没拉到过才会重试，冷却 ``_RETRY_AFTER_FAILURE_S``。
+    （含活动下线）要客户端重启才生效。只有从来没拉到过才会重试，冷却从 ``_RETRY_AFTER_FAILURE_S``
+    起、连续失败翻倍（见 :func:`_record_failure`）。
 
     ``allow_refresh=False`` 给不能阻塞的调用方（Gateway 事件循环、逐请求的模型解析）：不在调用
     线程上发 HTTP，只在后台线程补拉。AgentServer 读配置的地方全是这类热路径。
@@ -205,7 +217,7 @@ def warm_up_in_background() -> None:
 
 def _snapshot() -> tuple[RemoteConfig | None, bool]:
     with _lock:
-        return _cached, time.time() - _last_failure_at < _RETRY_AFTER_FAILURE_S
+        return _cached, time.time() - _last_failure_at < _retry_after_s
 
 
 def _refresh_in_background() -> None:
@@ -238,8 +250,25 @@ def _fetch_once(url: str) -> RemoteConfig | None:
         return _fetch(url, cached)
 
 
+def _backoff(base: float) -> tuple[float, float]:
+    return base * random.uniform(1 - _RETRY_JITTER, 1 + _RETRY_JITTER), min(base * 2, _RETRY_BACKOFF_MAX_S)
+
+
+def _record_failure() -> None:
+    global _last_failure_at, _retry_after_s, _retry_base_s
+    _last_failure_at = time.time()
+    _retry_after_s, _retry_base_s = _backoff(_retry_base_s)
+
+
+def _reset_backoff() -> None:
+    global _last_failure_at, _retry_after_s, _retry_base_s
+    _last_failure_at = 0.0
+    _retry_after_s = 0.0
+    _retry_base_s = _RETRY_AFTER_FAILURE_S
+
+
 def _fetch(url: str, cached: RemoteConfig | None) -> RemoteConfig | None:
-    global _cached, _last_failure_at
+    global _cached
 
     try:
         response = requests_request("GET", url, headers={"Accept": "application/json"}, timeout=REQUEST_TIMEOUT_S)
@@ -248,7 +277,7 @@ def _fetch(url: str, cached: RemoteConfig | None) -> RemoteConfig | None:
         config = parse_config(response.json())
     except Exception as exc:  # noqa: BLE001 — 拿不到就用上一份，别让官网抖动把人踢下线
         with _lock:
-            _last_failure_at = time.time()
+            _record_failure()
         logger.warning(
             "[Auth] 配置接口不可用（%s）：%s",
             "继续用上一次的配置" if cached is not None else "登录功能暂不可用",
@@ -258,7 +287,7 @@ def _fetch(url: str, cached: RemoteConfig | None) -> RemoteConfig | None:
 
     with _lock:
         _cached = config
-        _last_failure_at = 0.0
+        _reset_backoff()
     logger.info(
         "[Auth] 已拉取远端配置 is_effective=%s gateway=%s 模型白名单=%s",
         config.is_effective,
@@ -269,8 +298,8 @@ def _fetch(url: str, cached: RemoteConfig | None) -> RemoteConfig | None:
 
 
 def set_config_for_test(config: RemoteConfig | None) -> None:
-    global _cached, _last_failure_at, _background_refreshing
+    global _cached, _background_refreshing
     with _lock:
         _cached = config
-        _last_failure_at = 0.0
+        _reset_backoff()
         _background_refreshing = False

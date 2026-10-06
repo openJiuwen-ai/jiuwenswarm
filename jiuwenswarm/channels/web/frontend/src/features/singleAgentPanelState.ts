@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
-export type SingleAgentToolTab = 'planning' | 'subagents' | 'artifacts' | 'review';
+export type SingleAgentToolTab = 'planning' | 'subagents' | 'artifacts' | 'review' | 'browser';
 
 export interface SingleAgentPanelState {
   expanded: boolean;
@@ -34,7 +34,7 @@ function normalizeState(value: unknown): SingleAgentPanelState {
   return {
     expanded: typeof raw.expanded === 'boolean' ? raw.expanded : false,
     activeTab:
-      activeTab === 'planning' || activeTab === 'subagents' || activeTab === 'artifacts' || activeTab === 'review' ? activeTab : DEFAULT_STATE.activeTab,
+      activeTab === 'planning' || activeTab === 'subagents' || activeTab === 'artifacts' || activeTab === 'review' || activeTab === 'browser' ? activeTab : DEFAULT_STATE.activeTab,
     ...(typeof raw.selectedArtifactId === 'string' && raw.selectedArtifactId.trim() ? { selectedArtifactId: raw.selectedArtifactId } : {}),
     ...(typeof raw.selectedSubagentId === 'string' && raw.selectedSubagentId.trim() ? { selectedSubagentId: raw.selectedSubagentId } : {}),
   };

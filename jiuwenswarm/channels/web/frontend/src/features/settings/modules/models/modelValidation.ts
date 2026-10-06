@@ -1,5 +1,5 @@
 import type { ModelEntry, VendorPresetMap } from '../../../../types';
-import { CONTEXT_WINDOW_1M_FIELD, parseContextWindowTokens } from './contextWindow';
+import { parseContextWindowTokens } from './contextWindow';
 import { CUSTOM_VENDOR_SELECTION, OPENAI_ACCOUNT_SELECTION, findVendorPreset, type ModelDraft } from './modelAdapters';
 import { isReasoningLevelSupported, resolveModelReasoning } from './modelReasoning';
 
@@ -19,7 +19,7 @@ export function validateModelDraft(
   const modelName = value.model_name.trim();
   const apiBase = value.api_base.trim();
   const apiKey = value.api_key.trim();
-  if (!value[CONTEXT_WINDOW_1M_FIELD] && parseContextWindowTokens(value.context_window_tokens) === null) {
+  if (parseContextWindowTokens(value.context_window_tokens) === null) {
     errors.context_window_tokens = t('settingsPanel.models.validation.contextWindowInvalid');
   }
   const account = value.vendor_selection === OPENAI_ACCOUNT_SELECTION;

@@ -31,6 +31,7 @@ def main() -> int:
         if not args.validate_only:
             result = import_agent_group({"path": str(package)})
             logger.info("REGISTERED: %s", result["id"])
+            logger.info("INSTALLED: %s", result["id"])
             destination = get_user_workspace_dir() / ".agent_teams" / "agent_groups" / "local" / result["id"]
             logger.info("PACKAGE: %s", destination)
         return 0

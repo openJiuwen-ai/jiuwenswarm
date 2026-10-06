@@ -203,15 +203,6 @@ class WebClient {
           this.updateState('closed');
           return;
         }
-        // 1008 Policy Violation: gateway 鉴权失败 (token 失效/缺失)。
-        // 重载页面, AppWithAuth 会探测 cookie 失效 -> 回到登录页。
-        if (closeEvent.code === 1008) {
-          this.updateState('closed');
-          if (typeof window !== 'undefined') {
-            window.location.reload();
-          }
-          return;
-        }
         this.scheduleReconnect();
       };
     });
@@ -327,7 +318,14 @@ class WebClient {
         messageType: 'req',
         data: message,
       });
-      this.ws?.send(JSON.stringify(message));
+      try {
+        options.onRequestId?.(id);
+        this.ws!.send(JSON.stringify(message));
+      } catch (error) {
+        window.clearTimeout(timeoutId);
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 
@@ -434,10 +432,12 @@ class WebClient {
       if (!eventName) {
         return null;
       }
+      const payload = this.normalizePayload(msg.payload);
       return {
         type: 'event',
-        event: eventName,
-        payload: this.normalizePayload(msg.payload),
+        // Older gateways wrap control ACKs in chat.final; an ACK must never close a turn.
+        event: eventName === 'chat.final' && payload.event_type === 'runtime.accepted' ? 'runtime.accepted' : eventName,
+        payload,
         seq: typeof msg.seq === 'number' ? msg.seq : undefined,
         stream_id: typeof msg.stream_id === 'string' ? msg.stream_id : undefined,
       };
@@ -448,10 +448,11 @@ class WebClient {
       if (!mappedEvent) {
         return null;
       }
+      const payload = this.normalizePayload(msg.payload);
       return {
         type: 'event',
-        event: mappedEvent,
-        payload: this.normalizePayload(msg.payload),
+        event: mappedEvent === 'chat.final' && payload.event_type === 'runtime.accepted' ? 'runtime.accepted' : mappedEvent,
+        payload,
       };
     }
 
@@ -514,7 +515,8 @@ class WebClient {
       typeof message.payload.error === 'string'
         ? message.payload.error
         : i18n.t('network.requestFailed');
-    pending.reject(this.createWebError(error, undefined, requestId, true));
+    const code = typeof message.payload.code === 'string' ? message.payload.code : undefined;
+    pending.reject(this.createWebError(error, code, requestId, true, message.payload));
   }
 
   private dispatchEvent(event: WsEvent): void {

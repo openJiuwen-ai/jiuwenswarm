@@ -4,7 +4,9 @@ import { useTranslation } from 'react-i18next';
 import { FileArchive, Info, Loader2, X } from 'lucide-react';
 import UpFileIcon from '../../assets/upFile.svg?react';
 import {
+  DESKTOP_DIRECTORY_DROP_REJECTED_EVENT,
   DESKTOP_FILE_DRAG_EVENT,
+  DESKTOP_VIRTUAL_FILE_DROP_REJECTED_EVENT,
   registerDesktopLocalFilesConsumer,
   selectLocalFiles,
   type LocalFilePick,
@@ -111,6 +113,26 @@ export function AgentUploadDialog({ error, onCancel, onConfirm }: AgentUploadDia
   }, []);
 
   useEffect(() => {
+    const rejectDirectory = () => {
+      setDragActive(false);
+      setFilePick(null);
+      setPickerError(t('agentManagement.form.uploadDirectoryUnsupported'));
+    };
+    window.addEventListener(DESKTOP_DIRECTORY_DROP_REJECTED_EVENT, rejectDirectory);
+    return () => window.removeEventListener(DESKTOP_DIRECTORY_DROP_REJECTED_EVENT, rejectDirectory);
+  }, [t]);
+
+  useEffect(() => {
+    const rejectVirtualFile = () => {
+      setDragActive(false);
+      setFilePick(null);
+      setPickerError(t('agentManagement.form.uploadVirtualFileUnsupported'));
+    };
+    window.addEventListener(DESKTOP_VIRTUAL_FILE_DROP_REJECTED_EVENT, rejectVirtualFile);
+    return () => window.removeEventListener(DESKTOP_VIRTUAL_FILE_DROP_REJECTED_EVENT, rejectVirtualFile);
+  }, [t]);
+
+  useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return undefined;
     const focusableSelector = 'button:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -156,6 +178,11 @@ export function AgentUploadDialog({ error, onCancel, onConfirm }: AgentUploadDia
         persona: 'agentManagement.states.uploadMissingPersona',
       })
     : pickerError;
+  const uploadPlaceholder = t(
+    desktopReady
+      ? 'agentManagement.form.uploadPlaceholder'
+      : 'agentManagement.form.webUploadPlaceholder',
+  );
 
   return createPortal(
     <div
@@ -192,7 +219,7 @@ export function AgentUploadDialog({ error, onCancel, onConfirm }: AgentUploadDia
           className={`agent-management-upload-picker${dragActive ? ' is-dragging' : ''}${pickerError ? ' has-error' : ''}`}
           role="button"
           tabIndex={filePick || submitting ? -1 : 0}
-          aria-label={t('agentManagement.form.uploadPlaceholder')}
+          aria-label={uploadPlaceholder}
           data-testid="agent-management-upload-dialog-picker"
           onKeyDown={event => {
             if ((event.key === 'Enter' || event.key === ' ') && !filePick && !submitting) {
@@ -246,7 +273,7 @@ export function AgentUploadDialog({ error, onCancel, onConfirm }: AgentUploadDia
           ) : (
             <>
               <UpFileIcon aria-hidden="true" />
-              <span>{t('agentManagement.form.uploadPlaceholder')}</span>
+              <span>{uploadPlaceholder}</span>
             </>
           )}
         </div>

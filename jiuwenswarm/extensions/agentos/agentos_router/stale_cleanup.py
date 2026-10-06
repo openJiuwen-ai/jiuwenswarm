@@ -7,7 +7,11 @@ from the registry and, asynchronously, deletes the YuanRong sandbox (by
 ``instance_id``) then unregisters the row.
 
 Live runtimes created after connect are skipped so a concurrent first request
-cannot have its new sandbox reaped by the startup pass.
+cannot have its new sandbox reaped by the startup pass. Local live snapshots
+are a same-process fast path only: a sibling worker's upsert is invisible to
+this ``AgentManager``, and an upsert can still land during the DELETE HTTP
+round-trip after the re-read. Unregister is therefore a registry CAS on the
+deleted ``instance_id``, not an unconditional ``service_id`` delete.
 """
 
 from __future__ import annotations
@@ -81,11 +85,12 @@ async def _cleanup_one(
     registry: RegistryClient,
     agent_manager: AgentManager,
 ) -> None:
-    live_sandboxes, live_service_ids = await _live_ids(agent_manager)
+    live_sandboxes = await _live_sandbox_ids(agent_manager)
     instance_id = str(record.instance_id or "").strip()
     service_id = str(record.service_id or "").strip()
 
     if instance_id and instance_id not in live_sandboxes:
+        sandbox_is_live = False
         try:
             await yuanrong.delete_sandbox(instance_id)
             log_agentos(
@@ -105,34 +110,120 @@ async def _cleanup_one(
                 service_id,
             )
     elif not instance_id:
+        sandbox_is_live = False
         logger.warning(
             "[AgentOS] sandbox.cleanup.skip_no_instance_id service_id=%s user=%s framework=%s",
             service_id,
             record.user,
             record.framework,
         )
+    else:
+        sandbox_is_live = True
 
-    if service_id and service_id not in live_service_ids:
-        try:
-            await registry.unregister_instance(service_id)
-        except RegistryNotFoundError:
-            pass
-        except Exception:  # noqa: BLE001 - best-effort per record
-            logger.exception(
-                "[AgentOS] sandbox.cleanup.unregister.fail service_id=%s",
-                service_id,
+    if not service_id:
+        return
+    # Same-process fast path: skip DELETE when this Gateway already has a
+    # live runtime for the service. Do not treat this as the correctness
+    # check — multi-worker upserts never appear here (RELPROC-004).
+    live_service_ids = await _refresh_live_service_ids(agent_manager)
+    if live_service_ids is not None:
+        if service_id in live_service_ids:
+            log_agentos(
+                logger,
+                logging.INFO,
+                "sandbox.cleanup.unregister.skip_live",
+                service_id=service_id,
+                user_id=record.user,
+                agent_type=record.framework,
+                sandbox_id=instance_id,
+                instance=instance_id,
             )
+            return
+    elif sandbox_is_live:
+        # Live sandbox is still in memory; do not wipe its registry row just
+        # because the follow-up service-id snapshot failed.
+        log_agentos(
+            logger,
+            logging.WARNING,
+            "sandbox.cleanup.unregister.skip_live_check_fail",
+            service_id=service_id,
+            user_id=record.user,
+            agent_type=record.framework,
+            sandbox_id=instance_id,
+            instance=instance_id,
+        )
+        return
+    else:
+        # Sandbox was treated as stale (deleted or missing id). Skipping
+        # unregister would leave a row pointing at a gone instance. Fall
+        # through to CAS unregister; a concurrent upsert of a new
+        # instance_id is rejected by the registry instead of wiping the row.
+        log_agentos(
+            logger,
+            logging.WARNING,
+            "sandbox.cleanup.unregister.live_check_fail",
+            service_id=service_id,
+            user_id=record.user,
+            agent_type=record.framework,
+            sandbox_id=instance_id,
+            instance=instance_id,
+        )
+
+    try:
+        # Identity CAS: delete only if the row still points at the instance
+        # this pass cleaned. Covers DELETE-round-trip and other workers.
+        result = await registry.unregister_instance(
+            service_id,
+            expected_instance_id=instance_id,
+        )
+    except RegistryNotFoundError:
+        return
+    except Exception:  # noqa: BLE001 - best-effort per record
+        logger.exception(
+            "[AgentOS] sandbox.cleanup.unregister.fail service_id=%s",
+            service_id,
+        )
+        return
+    if result.get("reason") == "instance_id_mismatch":
+        log_agentos(
+            logger,
+            logging.INFO,
+            "sandbox.cleanup.unregister.skip_cas",
+            service_id=service_id,
+            user_id=record.user,
+            agent_type=record.framework,
+            sandbox_id=instance_id,
+            instance=instance_id,
+        )
 
 
-async def _live_ids(agent_manager: AgentManager) -> tuple[set[str], set[str]]:
+async def _live_sandbox_ids(agent_manager: AgentManager) -> set[str]:
     sandboxes: set[str] = set()
-    service_ids: set[str] = set()
     for runtime in await agent_manager.list_all_agents():
         sandbox_id = str(runtime.info.sandbox_id or "").strip()
         if sandbox_id:
             sandboxes.add(sandbox_id)
+    return sandboxes
+
+
+async def _live_service_ids(agent_manager: AgentManager) -> set[str]:
+    service_ids: set[str] = set()
+    for runtime in await agent_manager.list_all_agents():
         user = str(runtime.info.user_id or "").strip()
         framework = str(runtime.info.agent_type or "").strip()
         if user and framework:
             service_ids.add(instance_service_id(user, framework))
-    return sandboxes, service_ids
+    return service_ids
+
+
+async def _refresh_live_service_ids(agent_manager: AgentManager) -> set[str] | None:
+    """Re-read live service ids after delete. None means both attempts failed."""
+    for attempt in (1, 2):
+        try:
+            return await _live_service_ids(agent_manager)
+        except Exception:  # noqa: BLE001 - caller chooses unregister fallback
+            logger.exception(
+                "[AgentOS] sandbox.cleanup.live_service_ids.fail attempt=%s",
+                attempt,
+            )
+    return None

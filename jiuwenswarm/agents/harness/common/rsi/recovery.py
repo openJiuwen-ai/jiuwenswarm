@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from jiuwenswarm.agents.harness.common.rsi.errors import failure_reason
 from jiuwenswarm.agents.harness.common.rsi.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -72,22 +73,33 @@ class RsiWorkspaceRecovery:
             return TaskStatus.PAUSED.value, "agentserver_restart.queue_lost"
 
         adapter = self.adapter_resolver(task.scenario, task.artifact_type)
-        provider_status = _read_provider_status(adapter, task.task_id)
+        provider_state = _read_provider_state(adapter, task.task_id)
+        provider_status = _provider_status(provider_state)
         terminal = _PROVIDER_TERMINAL_STATUS.get(provider_status)
         if terminal is not None:
+            if terminal == TaskStatus.FAILED.value:
+                reason = failure_reason(provider_state)
+                if reason:
+                    return terminal, reason
             return terminal, f"provider_snapshot.{terminal.lower()}"
         return TaskStatus.PAUSED.value, "agentserver_restart.execution_detached"
 
 
-def _read_provider_status(adapter: Any, task_id: str) -> str:
+def _read_provider_state(adapter: Any, task_id: str) -> Any:
     reader = getattr(adapter, "read_state", None) if adapter is not None else None
     if not callable(reader):
-        return ""
+        return None
     try:
         state = reader(task_id)
     except Exception as exc:  # noqa: BLE001 - provider recovery is best effort
         logger.warning("[RSI] provider state unavailable during recovery: task=%s error=%s", task_id, exc)
-        return ""
+        return None
+    if state is None:
+        return None
+    return state
+
+
+def _provider_status(state: Any) -> str:
     if state is None:
         return ""
     if isinstance(state, dict):
@@ -99,3 +111,9 @@ def _read_provider_status(adapter: Any, task_id: str) -> str:
     if error_code == "TASK_NOT_FOUND":
         return ""
     return str(status or "").strip().upper()
+
+
+def _read_provider_status(adapter: Any, task_id: str) -> str:
+    """Backward-compatible status-only helper for callers/tests."""
+
+    return _provider_status(_read_provider_state(adapter, task_id))

@@ -132,10 +132,11 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
 async def _serve_channel_websocket(channel: WebChannel, websocket: WebSocket) -> None:
     if await _reject_disallowed_origin(websocket):
         return
-    if await _reject_unauthorized_handshake(channel, websocket):
+    denied, authenticated_user_id = await _reject_unauthorized_handshake(channel, websocket)
+    if denied:
         return
 
-    adapter = StarletteWsAdapter(websocket)
+    adapter = StarletteWsAdapter(websocket, authenticated_user_id=authenticated_user_id)
     await adapter.accept()
     try:
         await channel.handle_connection(adapter, path=adapter.path)
@@ -191,21 +192,26 @@ def _websocket_handshake_path(websocket: WebSocket) -> str:
     return f"{path}?{query}" if query else path
 
 
-async def _reject_unauthorized_handshake(channel: WebChannel, websocket: WebSocket) -> bool:
-    """Return True when IAM rejected the Upgrade (HTTP 401, no WS)."""
+async def _reject_unauthorized_handshake(
+    channel: WebChannel, websocket: WebSocket
+) -> tuple[bool, str | None]:
+    """Reject unauthorized Upgrades and retain the authenticated user identity."""
     remote = ""
     client = getattr(websocket, "client", None)
     if client is not None:
         host = getattr(client, "host", "") or ""
         port = getattr(client, "port", "")
         remote = f"{host}:{port}" if host else ""
-    if not await channel.handshake_auth_denied(
+    result = await channel.authenticate_handshake(
         path=_websocket_handshake_path(websocket),
         headers=websocket.headers,
         remote=remote,
         channel="web",
-    ):
-        return False
+    )
+    if result is None:
+        return False, None
+    if bool(getattr(result, "success", True)):
+        return False, str(getattr(result, "user_id", "") or "").strip()
     logger.warning(
         "WebChannel 握手拒绝 path=%s reason=unauthorized",
         websocket.url.path,
@@ -213,7 +219,7 @@ async def _reject_unauthorized_handshake(channel: WebChannel, websocket: WebSock
     await websocket.send_denial_response(
         PlainTextResponse(_UNAUTHORIZED_BODY, status_code=401),
     )
-    return True
+    return True, None
 
 
 def mount_future_http_router(app: FastAPI, router: Any) -> None:

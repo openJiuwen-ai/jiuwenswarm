@@ -185,9 +185,13 @@ def test_agentserver_injects_runtime_manager_into_teammate_daemon() -> None:
     assert len(daemon_calls) == 1
     keywords = {keyword.arg: keyword.value for keyword in daemon_calls[0].keywords}
     manager = keywords.get("agent_manager")
-    assert isinstance(manager, ast.Call)
-    assert isinstance(manager.func, ast.Attribute)
-    assert manager.func.attr == "get_agent_manager"
+    call = manager.body if isinstance(manager, ast.IfExp) else manager
+    assert isinstance(call, ast.Call)
+    if isinstance(call.func, ast.Attribute):
+        assert call.func.attr == "get_agent_manager"
+        return
+    assert isinstance(call.func, ast.Name)
+    assert call.func.id == "get_agent_manager"
 
 
 def test_agentserver_session_lifecycle_uses_runtime_public_api() -> None:

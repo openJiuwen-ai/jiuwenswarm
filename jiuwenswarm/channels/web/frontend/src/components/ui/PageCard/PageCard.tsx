@@ -22,14 +22,12 @@ export interface PageCardProps {
   description?: string;
   onClick?: () => void;
   interactive?: boolean;
-  /** Selection state for interactive cards such as management pickers. */
   selected?: boolean;
-  /** Disabled state for interactive cards that remain visible but cannot be selected. */
   disabled?: boolean;
+  actionsHover?: boolean;
   ariaLabel?: string;
   className?: string;
   testId?: string;
-  /** Optional test hook for the clickable card header. */
   headerTestId?: string;
   variant?: string;
 }
@@ -46,6 +44,7 @@ export function PageCard({
   interactive = false,
   selected,
   disabled = false,
+  actionsHover = false,
   ariaLabel,
   className,
   testId,
@@ -88,7 +87,27 @@ export function PageCard({
         titleEnd={titleEnd}
         tags={hasLabel ? label : undefined}
         actions={
-          action ? (
+          actionsHover ? (
+            <div className="page-card-actions-hover">
+              {action ? (
+                <button
+                  type="button"
+                  className="page-card-action"
+                  disabled={action.disabled}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    action.onClick?.(e);
+                  }}
+                  data-tooltip={action.tooltip}
+                  {...(action.tooltip ? tooltipHandlers : {})}
+                >
+                  {action.icon}
+                </button>
+              ) : (
+                actionSlot
+              )}
+            </div>
+          ) : action ? (
             <button
               type="button"
               className="page-card-action"

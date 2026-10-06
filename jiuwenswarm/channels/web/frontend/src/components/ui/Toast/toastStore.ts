@@ -15,6 +15,8 @@ export interface ToastConfig {
   duration?: number;
   /** 视觉变体：success/warning/error 分别为绿色勾、琥珀色警告、红色描边 + 对应图标。 */
   variant?: ToastVariant;
+  /** 长文案场景按条加宽（如「请先手动停止」这类操作指引被单行省略截断时）；只影响该条 toast。 */
+  wide?: boolean;
   /** 自定义左侧图标；传入后覆盖 variant 默认图标。 */
   icon?: ReactNode;
   /** 关闭回调：toast 真正移除（退出动画播完）时只触发一次；自动消失、点关闭按钮或 toast.close(key) 均会触发。 */
@@ -27,6 +29,7 @@ export interface ToastRecord {
   actions: ToastAction[];
   durationMs: number;
   variant: ToastVariant;
+  wide?: boolean;
   icon?: ReactNode;
   /** 退出动画播放中：记录仍留在列表里渲染，但不响应交互；动画结束后才真正移除。 */
   closing: boolean;
@@ -106,6 +109,7 @@ export const toast = {
       actions: config.actions ?? [],
       durationMs: (config.duration ?? DEFAULT_DURATION_SECONDS) * 1000,
       variant: config.variant ?? 'default',
+      wide: config.wide,
       icon: config.icon,
       closing: false,
       onClose: config.onClose,

@@ -3,7 +3,7 @@
 """Unit tests for the replace_all merge helper preserving YAML env-var placeholders."""
 
 from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
-from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+from jiuwenswarm.common.config_panel.models_handlers import (
     _is_env_var_placeholder,
     _merge_models_for_replace_all,
     _reasoning_level_display,

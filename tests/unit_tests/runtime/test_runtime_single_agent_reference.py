@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -53,6 +54,24 @@ def _runtime():
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_sessions_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Keep resume validation away from the machine's real session store.
+
+    create_or_resume_session validates an explicit session_id against
+    persisted metadata under get_agent_sessions_dir(); without isolation a
+    real or suite-mate session named "session" on another channel makes the
+    channel-consistency check fail these tests.
+    """
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    monkeypatch.setattr(utils, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: tmp_path)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "work_mode"),
@@ -101,7 +120,13 @@ async def test_work_and_code_normal_stream_use_session_registry(
     )
 
     async def stream_started(request: AgentRequest, **_kwargs: Any):
-        yield request.request_id
+        yield RuntimeEvent(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            session_id=request.session_id,
+            payload={"event_type": "chat.final", "content": "done"},
+            is_complete=True,
+        )
 
     runtime._stream_started = stream_started  # type: ignore[method-assign]
     request = AgentRequest(
@@ -112,11 +137,17 @@ async def test_work_and_code_normal_stream_use_session_registry(
         params={"mode": mode, "work_mode": work_mode},
         is_stream=True,
     )
-    assert [item async for item in runtime.stream(request)] == [request.request_id]
+    events = [item async for item in runtime.stream(request)]
+    assert [item.request_id for item in events] == [request.request_id]
     snapshot = runtime._session_coordinator.snapshot_session(session_id)
     assert snapshot is not None
     assert snapshot.executions[-1].state is SessionExecutionState.SUCCEEDED
     assert snapshot.executions[-1].work_kind is SessionWorkKind.CHAT_STREAM
+    assert events[0].payload == {
+        "event_type": "chat.final",
+        "content": "done",
+        "execution_id": snapshot.executions[-1].execution_id,
+    }
     await runtime.close()
 
 

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronLeft, ChevronRight, TrendingUp, Newspaper, Briefcase } from 'lucide-react';
 import { webRequest, webClient } from '../../services/webClient';
+import { getArchiveErrorCode } from '../../features/workspace/archivedTaskClient';
 import { useCronStore } from '../../stores';
 import { projectRegistryClient } from '../../features/workspace/projectRegistryClient';
 import type { ProjectInfo } from '../../features/workspace/projectTypes';
@@ -443,7 +444,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   // 列宽调整状态：仅会话内有效，不持久化（刷新后恢复列配置默认值）
   const [colStates, setColStates] = useState<ColStates>(() => ({ ...DEFAULT_COL_STATE }));
   const [resizingColKey, setResizingColKey] = useState<ResizableColKey | null>(null);
-  const resizingCol = useRef<{ col: ResizableColKey; startX: number; startWidth: number } | null>(null);
+  const resizingCol = useRef<{ col: ResizableColKey; startX: number; startWidth: number; pendingWidth?: number } | null>(null);
   const tableRef = useRef<HTMLTableElement>(null);
 
   // Actions 列宽测量：fixed 布局下 auto 列会被平分剩余空间，需要量出按钮行实际内容宽度
@@ -477,14 +478,17 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
           ? colStates[col].width
           : (colDef.width ?? minWidth);
       const startWidth = Math.max(minWidth, rendered > 0 ? rendered : configured);
-      if (!(colStates[col].hasResized && colStates[col].width === startWidth)) {
-        setColStates((prev) => ({ ...prev, [col]: { width: startWidth, hasResized: true } }));
-      }
-      resizingCol.current = { col, startX: e.clientX, startWidth };
+      const alreadyCommitted = colStates[col].hasResized && colStates[col].width === startWidth;
+      resizingCol.current = { col, startX: e.clientX, startWidth, pendingWidth: alreadyCommitted ? undefined : startWidth };
       setResizingColKey(col);
 
       const onMove = (move: MouseEvent) => {
         if (!resizingCol.current) return;
+        if (resizingCol.current.pendingWidth != null) {
+          const pw = resizingCol.current.pendingWidth;
+          resizingCol.current.pendingWidth = undefined;
+          setColStates((prev) => ({ ...prev, [col]: { width: pw, hasResized: true } }));
+        }
         const delta = move.clientX - resizingCol.current.startX;
         const newW = Math.max(minWidth, resizingCol.current.startWidth + delta);
         setColStates((prev) => {
@@ -528,7 +532,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   // silent=true 用于轮询/可见性刷新等后台静默拉取：不切 loading 态、失败时不清空现有列表、
   // 不弹错误提示，避免偶发网络抖动打断用户正在看的内容（见 bug007/bug008/bug009 progress.md）
   const loadJobs = useCallback(
-    async (projectList: ProjectInfo[], options?: { silent?: boolean }) => {
+    async (projectListInput: ProjectInfo[] | Promise<ProjectInfo[]>, options?: { silent?: boolean }) => {
       const silent = options?.silent ?? false;
       if (!silent) {
         setLoading(true);
@@ -541,6 +545,9 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         // （见 bug007/bug008/bug009 progress.md：此前 isWebChannelJob 过滤把非 web 任务藏掉，
         // 导致飞书建的任务在 web 列表永不出现，轮询再勤也无济于事）
         const allJobs = payload.jobs || [];
+        // cron.job.list 请求本身不依赖项目列表（仅本地映射需要）：先发请求再等
+        // projects，挂载时才能与 project.list 真正并行；对传数组的调用方是 no-op
+        const projectList = await projectListInput;
         setJobs(allJobs.map((j) => cronJobToUI(j, projectList)));
       } catch (loadError) {
         if (silent) {
@@ -610,9 +617,11 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
 
   useEffect(() => {
     void (async () => {
-      const projectList = await loadProjects();
-      await loadJobs(projectList);
-      await loadChannels();
+      // 首开关键路径（issue #4885）：cron.job.list 请求不依赖 project.list 的
+      // 结果（只有 loadJobs 里的本地映射需要），两者并行把关键路径从两个串行
+      // 往返压到一个；channel.get 只影响推送下拉选项，一并并行
+      const projectsPromise = loadProjects();
+      await Promise.all([loadJobs(projectsPromise), loadChannels()]);
     })();
   }, [loadChannels, loadJobs, loadProjects]);
 
@@ -874,7 +883,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         useCronStore.getState().setLastRunSessionId(confirmState.job.id, result.session_id);
         onSelectSession(result.session_id);
       }
-      setSuccess(t('cron.success.runNow'));
+      setSuccess(t(isProactiveJob ? 'cron.success.proactiveRunNow' : 'cron.success.runNow'));
       // 刷新左侧栏该定时任务下展开的 session 列表（project.get_cron_sessions）
       const { id: cronId, projectId } = confirmState.job;
       if (cronId && projectId) {
@@ -898,7 +907,10 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       await loadJobs(projects);
       void reloadCronStore();
     } catch (deleteError) {
-      const message = deleteError instanceof Error ? deleteError.message : t('cron.errors.deleteFailed');
+      const code = getArchiveErrorCode(deleteError);
+      const message = code === 'SESSION_BUSY'
+        ? t('cron.errors.deleteSessionBusy')
+        : (deleteError instanceof Error ? deleteError.message : t('cron.errors.deleteFailed'));
       setError(message);
     } finally {
       setConfirmBusy(false);
@@ -1138,6 +1150,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
               )}
               <div ref={rowMenuJobId === job.id ? rowMenuRef : undefined}>
                 <button
+                  disabled={isProactive}
                   onClick={(e) => {
                     if (rowMenuJobId === job.id) {
                       closeRowMenu();
@@ -1149,11 +1162,13 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                     setRowMenuJobId(job.id);
                   }}
                   data-testid="cron-job-more-btn"
-                  className="flex items-center gap-0.5 text-sm text-cron-action-link hover:opacity-80"
+                  data-variant={isProactive ? 'disabled' : 'enabled'}
+                  className={`flex items-center gap-0.5 text-sm ${isProactive ? 'cursor-not-allowed text-text-muted/50' : 'text-cron-action-link hover:opacity-80'}`}
                 >
                   {t('cron.table.more')} <ChevronDown size={13} />
                 </button>
-                {rowMenuJobId === job.id &&
+                {!isProactive &&
+                  rowMenuJobId === job.id &&
                   rowMenuAnchor &&
                   createPortal(
                     <div

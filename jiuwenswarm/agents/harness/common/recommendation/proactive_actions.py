@@ -273,8 +273,8 @@ def _get_model(temperature: float = 0.0) -> Any:
 # prompt 模板拆到 proactive_prompts.py，便于独立维护话术。
 
 from jiuwenswarm.agents.harness.common.recommendation.proactive_prompts import (
-    UNIFIED_ANALYSIS_PROMPT,
-    DIRECTIVE_PROMPT,
+    directive_prompt,
+    unified_analysis_prompt,
 )
 
 
@@ -289,6 +289,7 @@ async def _analyze_and_decide(
     skills: list[dict[str, Any]],
     proactive_agent: Any,
     decision_rules_text: str = "（暂无）",
+    language: str = "zh",
 ) -> AnalysisResult:
     """Single call via the proactive agent: decide whether to recommend.
 
@@ -306,9 +307,13 @@ async def _analyze_and_decide(
     duplicate them in the LLM context.
 
     ``decision_rules_text`` is the decision-layer strategy gradients (target/relation),
-    injected into UNIFIED_ANALYSIS_PROMPT to influence type/target/reason selection.
+    injected into the analysis prompt to influence type/target/reason selection.
+
+    ``language``: preferred_language from config.yaml (read once per tick by the
+    engine and threaded through) — selects the ZH/EN prompt template so decision
+    copy language matches the system language setting.
     """
-    prompt = UNIFIED_ANALYSIS_PROMPT.format(
+    prompt = unified_analysis_prompt(language).format(
         conversation_summary=report_text,
         decision_rules_text=decision_rules_text,
     )
@@ -411,7 +416,7 @@ async def _trigger_main_agent(
     用于让调用方在"推荐确实送达"时再做计数/状态持久化，避免后台失败却已计数。
 
     ``request.style_rules_section`` is the style-layer strategy gradients (tone/structure),
-    injected into DIRECTIVE_PROMPT to influence message generation.
+    injected into the directive prompt to influence message generation.
 
     ``request.rec_id`` is the unique recommendation ID, passed to frontend for feedback.
 
@@ -420,7 +425,14 @@ async def _trigger_main_agent(
         or delivery failed.
     """
     decision = request.decision
-    query = DIRECTIVE_PROMPT.format(
+    from jiuwenswarm.common.config import get_config
+
+    # 指令语言跟随 config.yaml preferred_language——en 时模型收到的整条指令都是
+    # 英文，产出话术才是英文。此前指令硬编码中文，信封里 preferred_response_language=en
+    # 的元数据权重压不过整段中文指令，导致"agent 设为英文、推荐仍推中文"。
+    query = directive_prompt(
+        str(get_config().get("preferred_language") or "zh"),
+    ).format(
         rec_type=decision.type,
         target=decision.target,
         reason=decision.reason,

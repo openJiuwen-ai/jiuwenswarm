@@ -100,6 +100,11 @@ class _TestMessageHandler(MessageHandler):
         # legacy 别名经 canonicalize → DEPRECATION_MAP 两步映射
         ("team.plan", "team.work.plan"),   # team.plan → team.plan.normal → team.work.plan
         ("team.code", "team.code.normal"),  # team.code → code.team → team.code.normal
+        # issue #4168: shorthand names work for /mode too
+        ("team.work", "team.work.normal"),
+        ("team.normal", "team.work.normal"),
+        ("agent.work", "agent.work.normal"),
+        ("agent.code", "agent.code.normal"),
     ],
 )
 def test_mode_switch_uses_deprecation_map(input_mode: str, expected_state: str) -> None:
@@ -134,7 +139,7 @@ def test_valid_mode_inputs_covers_new_and_legacy() -> None:
     assert NEW_CANONICAL_MODES <= _VALID_MODE_INPUTS
     assert set(DEPRECATION_MAP.keys()) <= _VALID_MODE_INPUTS
     assert set(MODE_ALIASES.keys()) <= _VALID_MODE_INPUTS
-    # 额外 sanity：8 + 10 + 2 = 20（DEPRECATION_MAP 含裸 code），三集合互不相交
+    # 额外 sanity：8 + 10 + 6 = 24（DEPRECATION_MAP 含裸 code），三集合互不相交
     assert len(_VALID_MODE_INPUTS) == (
         len(NEW_CANONICAL_MODES)
         + len(DEPRECATION_MAP.keys())

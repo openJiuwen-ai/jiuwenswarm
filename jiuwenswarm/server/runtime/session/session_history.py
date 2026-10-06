@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from jiuwenswarm.common.mode_matrix import is_team_mode
+from jiuwenswarm.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
 
@@ -34,7 +35,6 @@ _JSONL_HISTORY_FILENAME = "history.jsonl"
 _LEGACY_HISTORY_ENV = "JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
 _PROBE_OK_TOKENS = {"HEALTH_CHECK_OK", "HEARTBEAT_OK"}
 SESSION_REQUEST_COMPLETED_EVENT = "chat.request_completed"
-_VALID_SESSION_ID = re.compile(r"^[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,78}[A-Za-z0-9_])?$")
 # Gateway may inline @path as <file-content>...</file-content> before chat.send.
 # History should keep the short @path form so jsonl rows stay one physical line
 # and refresh UI does not load megabytes of file body.
@@ -72,12 +72,6 @@ def collapse_file_content_blocks(content: str) -> str:
 
     collapsed = _FILE_CONTENT_BLOCK_RE.sub(_replacer, content)
     return re.sub(r"\n{3,}", "\n\n", collapsed).strip()
-
-
-def is_valid_session_id(session_id: str) -> bool:
-    """Return whether a session id is safe to use as one path component."""
-
-    return _VALID_SESSION_ID.fullmatch(session_id) is not None
 
 
 def subagent_history_dir_name(subagent_id: str) -> str:
@@ -166,6 +160,15 @@ def _has_persistable_assistant_payload(
         return True
     if et == "chat.subagent_activity" and isinstance(payload.get("subagent_activity"), dict):
         return True
+    # chat.ask_user_question 的载荷在 questions[] 数组里（无 content），
+    # 否则会被下面的「空 chat.* 壳」规则丢弃，导致问题澄清对话框刷新后无法恢复。
+    if et == "chat.ask_user_question":
+        questions = payload.get("questions")
+        return isinstance(questions, list) and bool(questions)
+    # chat.ask_user_answer 的载荷在 answers[] 数组里（无 content），同理需要放行。
+    if et == "chat.ask_user_answer":
+        answers = payload.get("answers")
+        return isinstance(answers, list) and bool(answers)
     # Empty chat.final / chat.* status shells and other blank assistants: skip.
     if et.startswith("chat.") or et in {"", "chat.final"}:
         return False
@@ -271,7 +274,7 @@ def resolve_session_dir(
     """安全解析 session 目录路径（防路径遍历）。
 
     采用严格白名单判据：session id 只能包含 ASCII 字母、数字、点、横线和下划线，
-    长度不超过 96；首尾允许下划线，以兼容 ``__cron__`` 等内部会话 ID，
+    长度不超过 80；首尾允许下划线，以兼容 ``__cron__`` 等内部会话 ID，
     但点和横线仍只允许出现在中间。不合法输入直接拒绝，根本不拼路径。
 
     再用 ``resolve()`` + ``relative_to`` 做纵深防御，兜底白名单逻辑被绕过的极端情况。

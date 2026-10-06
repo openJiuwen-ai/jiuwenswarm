@@ -8,6 +8,7 @@ import {
   getTextEditCapabilities,
   isChatComposerTarget,
   isEditableTarget,
+  insertPlainText,
   runTextEditAction,
 } from '../node_modules/.cache/text-edit-commands/utils/textEditCommands.js';
 
@@ -328,5 +329,76 @@ test('composer context-menu paste prefers native clipboard files over images', a
     assert.equal(filesEvent.trusted, true);
     assert.equal(filesEvent.files[0].filename, 'notes.txt');
     assert.equal(imagesEvent, null);
+  });
+});
+
+test('native paste is used without async clipboard reads and keeps the editor focused', async () => {
+  await withDom(async (window) => {
+    const editor = window.document.createElement('div');
+    editor.contentEditable = 'true';
+    editor.setAttribute('contenteditable', 'true');
+    editor.className = 'chat-input-editor';
+    window.document.body.append(editor);
+    let calls = 0;
+    window.pywebview = { api: {
+      paste_clipboard: async () => {
+        assert.equal(window.document.activeElement, editor);
+        calls++;
+      },
+      get_clipboard_files: () => { throw new Error('must use native paste'); },
+    } };
+    Object.defineProperty(window.navigator, 'clipboard', { value: {
+      read: () => { throw new Error('must not request clipboard permission'); },
+      readText: () => { throw new Error('must not request clipboard permission'); },
+    } });
+    await runTextEditAction(editor, 'paste');
+    assert.equal(calls, 1);
+  });
+});
+
+test('native paste failures propagate instead of silently reading or inserting text', async () => {
+  await withDom(async (window) => {
+    const input = window.document.createElement('input');
+    input.value = 'unchanged';
+    window.document.body.append(input);
+    window.pywebview = { api: { paste_clipboard: async () => { throw new Error('no focused view'); } } };
+    await assert.rejects(runTextEditAction(input, 'paste'), /no focused view/);
+    assert.equal(input.value, 'unchanged');
+  });
+});
+
+test('browser clipboard permission errors are not treated as an empty clipboard', async () => {
+  await withDom(async (window) => {
+    const input = window.document.createElement('input');
+    window.document.body.append(input);
+    Object.defineProperty(window.navigator, 'clipboard', { value: {
+      readText: async () => { throw new window.DOMException('denied', 'NotAllowedError'); },
+    } });
+    await assert.rejects(runTextEditAction(input, 'paste'), { name: 'NotAllowedError' });
+  });
+});
+
+test('plain text insertion escapes markup and keeps literal line breaks and spaces for serialization', async () => {
+  await withDom(async (window) => {
+    const editor = window.document.createElement('div');
+    editor.setAttribute('contenteditable', 'true');
+    window.document.body.append(editor);
+    const text = '<img src=x onerror=alert(1)> &amp; "quotes" \\n 😀\n\n  空格\tTab  \n最后一行\n';
+    let inserts = 0;
+    window.document.execCommand = (command, showUI, html) => {
+      assert.equal(command, 'insertHTML');
+      assert.equal(showUI, false);
+      const fragment = window.document.createElement('template');
+      fragment.innerHTML = html;
+      assert.equal(fragment.content.textContent, text);
+      assert.equal(fragment.content.querySelector('img'), null);
+      assert.equal(fragment.content.querySelector('span').style.whiteSpace, 'pre-wrap');
+      editor.append(fragment.content);
+      inserts++;
+      return true;
+    };
+    insertPlainText(editor, text);
+    assert.equal(editor.textContent, text);
+    assert.equal(inserts, 1);
   });
 });

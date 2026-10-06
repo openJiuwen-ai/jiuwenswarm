@@ -12,6 +12,7 @@ import os
 import shutil
 import sys
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -408,11 +409,26 @@ class RuntimePromptRail(DeepAgentRail):
         self.system_prompt_builder.remove_section("tui_current_project_policy")
         self.system_prompt_builder.remove_section("trusted_dirs_policy")
         if self._channel in ("tui", "web", "ws_client", "process_cli"):
+            installed_workspace_dir = Path(get_agent_workspace_dir())
+            user_workspace_dir = Path(get_user_workspace_dir())
             # This agent's own workspace. Team members each own one; without
             # it (single-agent runs) the process-wide agent workspace is the
             # same directory anyway.
-            agent_workspace_dir = self._existing_dir(self._workspace_dir) or str(get_agent_workspace_dir())
-            config_dir = str(get_user_workspace_dir() / "config")
+            agent_workspace_dir = self._existing_dir(self._workspace_dir) or str(
+                installed_workspace_dir
+            )
+            installed_skills_dir = installed_workspace_dir / "skills" / "{skill_name}"
+            installed_agent_templates_dir = (
+                installed_workspace_dir / "plugins" / "agent_templates" / "local"
+            )
+            installed_agent_groups_dir = (
+                user_workspace_dir / ".agent_teams" / "agent_groups" / "local"
+            )
+            installed_plugin_packages_dir = (
+                installed_workspace_dir / "plugins" / "plugin_packages" / "local"
+            )
+            installed_mcp_hub_dir = installed_workspace_dir / "mcp" / "mcp_hub"
+            config_dir = str(user_workspace_dir / "config")
             project_dir = self._existing_dir(self._project_dir)
             task_workspace_root = self._existing_dir(self._task_workspace_root)
             task_work_dir = self._existing_dir(self._task_work_dir)
@@ -566,12 +582,23 @@ class RuntimePromptRail(DeepAgentRail):
                     "- 用户已经提供明确路径时直接使用，不要重复询问。\n"
                     "- 只有任务确实需要操作某个项目、且现有上下文无法确定项目位置时，才询问项目路径。\n\n"
                     "## JiuwenSwarm 内部目录\n\n"
+                    "### 核心内部数据\n\n"
                     f"- 智能体内部数据目录：`{agent_workspace_dir}`\n"
                     f"- JiuwenSwarm 启动配置目录：`{config_dir}`\n"
-                    "- `IDENTITY.md`、`memory/`、`skills/`、`todo/` 和运行状态属于智能体内部数据。\n"
-                    f"- 技能执行产生的内部技能资产放在 `{agent_workspace_dir}/skills/{{skill_name}}/`。\n"
+                    "- `IDENTITY.md`、`memory/`、`todo/` 和运行状态属于智能体内部数据。\n\n"
+                    "### 已安装扩展资产\n\n"
+                    f"- 已安装的 Skill 根目录：`{installed_skills_dir}`\n"
+                    f"- 已安装的专家模板存放在：`{installed_agent_templates_dir}`\n"
+                    f"- 已安装的专家团存放在：`{installed_agent_groups_dir}`\n"
+                    f"- 已安装的插件包存放在：`{installed_plugin_packages_dir}`\n"
+                    f"- 已安装的 MCP 存放在：`{installed_mcp_hub_dir}`\n\n"
+                    "### 目录使用规则\n\n"
                     "- 不要把普通任务产物写入智能体内部目录或启动配置目录。\n"
-                    "- 用户任务中的 `config/`、`memory/`、`skills/`、`todo/` 或 `workspace/` 不自动映射到 JiuwenSwarm 内部目录。"
+                    "- 仅当用户明确要求创建、安装、更新或管理 JiuwenSwarm 内部资产时，才写入对应目录。\n"
+                    "- 修改或删除已有内部资产前，确认目标及操作范围，避免影响其他智能体或会话。\n"
+                    "- 用户任务中的 `config/`、`memory/`、`skills/`、`todo/`、`plugins/`、`mcp/` "
+                    "或 `workspace/` 不自动映射到 JiuwenSwarm 内部目录。\n"
+                    "- 目录中存在某项资产，不代表当前会话可以直接调用；实际可用性以当前技能、工具和 MCP 注册状态为准。"
                 )
             else:
                 directory_content += (
@@ -580,16 +607,30 @@ class RuntimePromptRail(DeepAgentRail):
                     "project and its location cannot be determined from the existing "
                     "context.\n\n"
                     "## JiuwenSwarm Internal Directories\n\n"
+                    "### Core Internal Data\n\n"
                     f"- Agent internal data directory: `{agent_workspace_dir}`\n"
                     f"- JiuwenSwarm startup configuration directory: `{config_dir}`\n"
-                    "- `IDENTITY.md`, `memory/`, `skills/`, `todo/`, and runtime state are Agent internal data.\n"
-                    f"- Internal skill assets produced by skill execution belong in "
-                    f"`{agent_workspace_dir}/skills/{{skill_name}}/`.\n"
+                    "- `IDENTITY.md`, `memory/`, `todo/`, and runtime state are Agent internal data.\n\n"
+                    "### Installed Extension Assets\n\n"
+                    f"- Installed Skill root: `{installed_skills_dir}`\n"
+                    f"- Installed Agent templates: `{installed_agent_templates_dir}`\n"
+                    f"- Installed Agent groups: `{installed_agent_groups_dir}`\n"
+                    f"- Installed plugin packages: `{installed_plugin_packages_dir}`\n"
+                    f"- Installed MCPs: `{installed_mcp_hub_dir}`\n\n"
+                    "### Directory Usage Rules\n\n"
                     "- Do not write ordinary task artifacts to the Agent internal data "
                     "directory or startup configuration directory.\n"
-                    "- `config/`, `memory/`, `skills/`, `todo/`, or `workspace/` in a "
+                    "- Write to these directories only when the user explicitly asks to "
+                    "create, install, update, or manage JiuwenSwarm internal assets.\n"
+                    "- Before modifying or deleting an existing internal asset, confirm the "
+                    "target and operation scope to avoid affecting other Agents or sessions.\n"
+                    "- `config/`, `memory/`, `skills/`, `todo/`, `plugins/`, `mcp/`, or "
+                    "`workspace/` in a "
                     "user task do not automatically refer to JiuwenSwarm internal "
-                    "directories."
+                    "directories.\n"
+                    "- An asset's presence in one of these directories does not make it "
+                    "directly callable in the current session; actual availability follows "
+                    "the current Skill, tool, and MCP registrations."
                 )
             self.system_prompt_builder.add_section(PromptSection(
                 name="directory_boundaries",

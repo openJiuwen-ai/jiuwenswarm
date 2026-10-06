@@ -7,12 +7,17 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import (
+    empty_task_file_query,  # noqa: F401 -- pytest fixture
+)
+
 from jiuwenswarm.extensions.video_duplex.backend import video_search
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("same_session,fail_first", [(True, False), (False, False), (True, True)])
-async def test_jobs_wait_for_execution_capacity(monkeypatch, same_session, fail_first):
+async def test_jobs_wait_for_execution_capacity(monkeypatch, same_session, fail_first, tmp_path):
     entered = [asyncio.Event(), asyncio.Event()]
     release = asyncio.Event()
 
@@ -28,26 +33,42 @@ async def test_jobs_wait_for_execution_capacity(monkeypatch, same_session, fail_
     monkeypatch.setattr(video_search, "execute_core_agent", execute)
     channel = SimpleNamespace(send_event=AsyncMock())
     manager = video_search.VideoSearchManager(
-        channel, None, log_event=lambda _: None, qwen_active=lambda: True,
-        max_concurrency=2 if same_session else 1, max_cached_jobs=1,
+        channel,
+        None,
+        log_event=lambda _: None,
+        qwen_active=lambda: True,
+        max_concurrency=2 if same_session else 1,
+        path=tmp_path / "tasks.sqlite",
+        authorize=lambda ws, scope: ("test", scope),
     )
-    first = manager.start(None, question="0", query="first", search_session_id="a")
+    first = await manager.start(
+        None, question="0", query="first", search_session_id="a", command_id="first"
+    )
     assert first["status"] == "queued"
     await asyncio.wait_for(entered[0].wait(), 2)
-    second = manager.start(None, question="1", query="second", search_session_id="a" if same_session else "b")
+    second = await manager.start(
+        None,
+        question="1",
+        query="second",
+        search_session_id="a" if same_session else "b",
+        command_id="second",
+    )
     try:
         await asyncio.sleep(0.05)
-        assert manager._jobs[first["id"]]["status"] == "running"
-        assert manager._jobs[second["id"]]["status"] == "queued"
+        assert manager.service.store.read(first["id"])["status"] == "running"
+        assert manager.service.store.read(second["id"])["status"] == "queued"
         assert not entered[1].is_set()
-        assert len(manager._jobs) == 2  # Active jobs survive cache pressure.
+        assert manager.service.store.read(first["id"])["id"] != second["id"]  # Both persist.
     finally:
         release.set()
-        await asyncio.wait_for(asyncio.gather(*list(manager._tasks)), 3)
-    assert manager._jobs[first["id"]]["status"] == ("failed" if fail_first else "completed")
-    assert manager._jobs[second["id"]]["status"] == "completed"
-    stages = [step["stage"] for step in manager._jobs[second["id"]]["progress_history"]]
-    assert stages == ["queued", "started", "completed"]
+        async with asyncio.timeout(3):
+            while manager.service.store.read(second["id"])["status"] not in {"completed", "failed"}:
+                await asyncio.sleep(0.01)
+    assert manager.service.store.read(first["id"])["status"] == ("failed" if fail_first else "completed")
+    assert manager.service.store.read(second["id"])["status"] == "completed"
+    stages = [step["stage"] for step in manager.service.store.read(second["id"])["progress"]]
+    assert stages == ["started"]
+    await manager.close()
 
 
 def test_plan_forwards_steps_instead_of_only_count():

@@ -13,10 +13,9 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 import jiuwenswarm.common.config as cfg_mod
 from jiuwenswarm.common import utils as common_utils
+from jiuwenswarm.server.runtime.mcp import registry as registry_mod
 from jiuwenswarm.server.runtime.mcp import state_store as ss
 
 
@@ -70,6 +69,22 @@ def test_state_disconnected_excluded(tmp_path: Path) -> None:
     assert names == {"baidu"}
 
 
+def test_stale_marketplace_record_excluded_from_servers(tmp_path: Path) -> None:
+    """A removed builtin's connected record must not be re-registered."""
+    _write_config_yaml(tmp_path, [])
+    _write_state_json(tmp_path, {
+        "harmonyos-mcp": {"transport": "stdio", "command": "npx",
+                          "args": ["-y", "harmonyos-mcp"], "state": "connected",
+                          "enabled": True, "server_id_scope": "mcp:harmonyos-mcp"},
+    })
+    with patch.object(cfg_mod, "CONFIG_YAML_PATH", tmp_path / "config.yaml"), \
+         patch.object(common_utils, "get_workspace_dir", return_value=tmp_path), \
+         patch.object(registry_mod, "get_workspace_dir", return_value=tmp_path), \
+         patch.object(ss, "get_workspace_dir", return_value=tmp_path):
+        servers = cfg_mod.get_mcp_servers()
+    assert servers == []
+
+
 def test_state_connecting_merged_like_connected(tmp_path: Path) -> None:
     """state==connecting is merged into get_mcp_servers (so apply_mcp_change /
     init can register the entry) — same as connected, NOT excluded like
@@ -78,7 +93,7 @@ def test_state_connecting_merged_like_connected(tmp_path: Path) -> None:
     _write_config_yaml(tmp_path, [])
     _write_state_json(tmp_path, {
         "baidu": {"transport": "sse", "state": "connected", "enabled": True},
-        "feishu": {"transport": "http", "state": "connecting", "enabled": True},
+        "connecting-mcp": {"transport": "http", "state": "connecting", "enabled": True},
         "github": {"transport": "http", "state": "registered", "enabled": True}
     })
     with patch.object(cfg_mod, "CONFIG_YAML_PATH", tmp_path / "config.yaml"), \
@@ -87,7 +102,7 @@ def test_state_connecting_merged_like_connected(tmp_path: Path) -> None:
         servers = cfg_mod.get_mcp_servers()
     names = {s["name"] for s in servers}
     # connected AND connecting merge; registered does NOT.
-    assert names == {"baidu", "feishu"}
+    assert names == {"baidu", "connecting-mcp"}
 
 
 def test_skill_only_connector_excluded_from_mcp_servers(tmp_path: Path) -> None:

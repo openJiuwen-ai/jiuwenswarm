@@ -189,3 +189,69 @@ async def test_conflicting_modes_do_not_kill_forward_loop(gateway):
     await handler.publish_user_messages(message("good", mode="steer"))
     await receive(handler, "good", event_type="runtime.accepted")
     assert [e.request_id for e in client.calls] == ["good"]
+
+
+_IM_CHANNELS = (
+    "feishu",
+    "wecom",
+    "dingtalk",
+    "slack",
+    "discord",
+    "telegram",
+    "wechat",
+    "whatsapp",
+    "xiaoyi",
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", _IM_CHANNELS)
+async def test_im_steer_reaches_the_running_session(gateway, channel):
+    handler, client = gateway
+    original = message("original", stream=True, channel=channel)
+    supplement = message("supplement", stream=True, channel=channel)
+    supplement.params.pop("input_mode", None)
+    supplement.metadata = dict(supplement.metadata)
+    supplement.metadata["runtime_mode"] = "steer"
+    handler.get_or_create_channel_state(original).session_id = original.session_id
+    handler.get_or_create_channel_state(supplement).session_id = supplement.session_id
+    await handler.publish_user_messages(original)
+    assert await asyncio.wait_for(client.started.get(), 5) == "original"
+    await handler.publish_user_messages(supplement)
+    assert await asyncio.wait_for(client.started.get(), 5) == "supplement"
+    ack = await receive(handler, "supplement", event_type="runtime.accepted")
+    delivered = client.calls[-1]
+    assert delivered.params["input_mode"] == "steer"
+    assert delivered.params["query"] == "supplement"
+    assert delivered.session_id == "sess-input-gateway"
+    assert ack.session_id == "sess-input-gateway"
+    assert not client.cancelled
+    assert handler._session_has_streams_blocking_processing_false("sess-input-gateway")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", _IM_CHANNELS)
+async def test_busy_im_chat_send_steers_without_cancelling(gateway, channel):
+    handler, client = gateway
+    original = message("original", stream=True, channel=channel)
+    follow = message("follow-up", stream=True, channel=channel)
+    handler.get_or_create_channel_state(original).session_id = original.session_id
+    handler.get_or_create_channel_state(follow).session_id = follow.session_id
+    await handler.publish_user_messages(original)
+    assert await asyncio.wait_for(client.started.get(), 5) == "original"
+    await handler.publish_user_messages(follow)
+    assert await asyncio.wait_for(client.started.get(), 5) == "follow-up"
+    await receive(handler, "follow-up", event_type="runtime.accepted")
+    delivered = client.calls[-1]
+    assert delivered.params["input_mode"] == "steer"
+    assert delivered.params["query"] == "follow-up"
+    assert not client.cancelled
+    assert handler._session_has_streams_blocking_processing_false("sess-input-gateway")
+
+
+@pytest.mark.asyncio
+async def test_idle_im_chat_send_stays_ordinary(gateway):
+    handler, client = gateway
+    await handler.publish_user_messages(message("only", channel="slack"))
+    assert await asyncio.wait_for(client.started.get(), 5) == "only"
+    assert client.calls[-1].params.get("input_mode") in (None, "")

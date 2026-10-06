@@ -26,6 +26,36 @@ test('setThinking does not notify subscribers when the value is unchanged', () =
   }
 });
 
+test('accepted supplemental input splits reasoning only when a later reasoning delta arrives', () => {
+  const sessionId = 'reasoning-supplement-boundary';
+  const store = useChatStore.getState();
+  store.ensureRuntime(sessionId);
+  store.setProcessing(sessionId, true);
+  store.setActiveExecutionId(sessionId, 'execution-A');
+  store.appendReasoning(sessionId, 'original reasoning', { atMs: 1_700_000_001_000 });
+  store.addToTaskQueue(sessionId, 'updated requirement');
+  const taskId = store.getRuntime(sessionId).taskQueue[0].id;
+  store.claimTaskInput(sessionId, taskId);
+  store.bindTaskInputRequest(sessionId, taskId, 'supplement-request');
+  store.settleTaskInput(sessionId, taskId, 'supplement-request', 'accepted');
+
+  let runtime = store.getRuntime(sessionId);
+  assert.equal(runtime.reasoningSegments.length, 1);
+  assert.equal(runtime.reasoningSegments[0].closed, false, 'acceptance alone must not close reasoning');
+  assert.equal(runtime.reasoningInputBoundaryPending, true);
+
+  store.appendReasoning(sessionId, 'revised reasoning', { atMs: 1_700_000_002_000 });
+  runtime = store.getRuntime(sessionId);
+  assert.equal(runtime.reasoningSegments.length, 2);
+  assert.equal(runtime.reasoningSegments[0].text, 'original reasoning');
+  assert.equal(runtime.reasoningSegments[0].closed, true);
+  assert.equal(runtime.reasoningSegments[1].text, 'revised reasoning');
+  assert.equal(runtime.reasoningSegments[1].closed, false);
+  assert.equal(runtime.reasoningInputBoundaryPending, false);
+
+  store.removeRuntime(sessionId);
+});
+
 test('collapsed Agent final keeps the selected Agent identity', () => {
   const sessionId = 'streaming-agent-identity';
   useChatStore.getState().ensureRuntime(sessionId);
@@ -58,6 +88,55 @@ test('collapsed Agent final keeps the selected Agent identity', () => {
   }
 });
 
+test('collapsed Agent final rebinds supplemental input to the replacement message id', () => {
+  const sessionId = 'streaming-supplement-final-rebind';
+  const store = useChatStore.getState();
+  store.ensureRuntime(sessionId);
+  store.addMessage(sessionId, {
+    id: 'user-original',
+    role: 'user',
+    content: 'write 500 words',
+    timestamp: '2026-09-20T14:00:00.000Z',
+  });
+  store.addMessage(sessionId, {
+    id: 'assistant-stream',
+    role: 'assistant',
+    content: 'partial answer',
+    timestamp: '2026-09-20T14:00:01.000Z',
+    isStreaming: true,
+  });
+  store.addMessage(sessionId, {
+    id: 'user-supplement',
+    role: 'user',
+    content: 'change to 200 words',
+    timestamp: '2026-09-20T14:00:02.000Z',
+    supplementalInput: {
+      executionId: 'execution-A',
+      streamMessageId: 'assistant-stream',
+      streamOffset: 8,
+    },
+  });
+
+  try {
+    store.collapseTurnFinal(sessionId, {
+      kind: 'agent',
+      content: 'complete answer',
+      finalId: 'assistant-final',
+      timestampIso: '2026-09-20T14:00:03.000Z',
+    });
+    const messages = store.getRuntime(sessionId).messages;
+    assert.equal(
+      messages.find((message) => message.id === 'user-supplement')
+        ?.supplementalInput?.streamMessageId,
+      'assistant-final',
+    );
+    assert.equal(messages.some((message) => message.id === 'assistant-stream'), false);
+    assert.equal(messages.some((message) => message.id === 'assistant-final'), true);
+  } finally {
+    store.removeRuntime(sessionId);
+  }
+});
+
 test('streaming reasoning keeps the selected Agent identity', () => {
   const sessionId = 'streaming-reasoning-identity';
   useChatStore.getState().ensureRuntime(sessionId);
@@ -86,6 +165,40 @@ test('restored reasoning keeps the persisted Agent identity', () => {
     }]);
     const segment = useChatStore.getState().getRuntime(sessionId)?.reasoningSegments.at(-1);
     assert.equal(segment?.agentTemplateName, 'expert-a');
+  } finally {
+    useChatStore.getState().removeRuntime(sessionId);
+  }
+});
+
+test('progressive history restore preserves existing reasoning segment ids', () => {
+  const sessionId = 'restored-reasoning-stable-id';
+  useChatStore.getState().ensureRuntime(sessionId);
+
+  try {
+    useChatStore.getState().restoreReasoningSegments(sessionId, [{
+      at: '2026-08-31T10:00:02.000Z',
+      text: 'visible reasoning',
+      historyBatchSeq: 1,
+    }]);
+    const visible = useChatStore.getState().getRuntime(sessionId)?.reasoningSegments[0];
+    assert.ok(visible?.id);
+
+    useChatStore.getState().restoreReasoningSegments(sessionId, [
+      {
+        at: '2026-08-31T10:00:01.000Z',
+        text: 'prefetched older reasoning',
+        historyBatchSeq: 2,
+      },
+      {
+        id: visible.id,
+        at: '2026-08-31T10:00:02.000Z',
+        text: visible.text,
+        historyBatchSeq: visible.historyBatchSeq,
+      },
+    ]);
+
+    const restored = useChatStore.getState().getRuntime(sessionId)?.reasoningSegments;
+    assert.equal(restored?.find((segment) => segment.text === visible.text)?.id, visible.id);
   } finally {
     useChatStore.getState().removeRuntime(sessionId);
   }

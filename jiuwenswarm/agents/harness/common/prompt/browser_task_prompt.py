@@ -12,6 +12,8 @@ _BROWSER_TASK_PROMPT = {
         "购物车操作、截图、检查页面显示内容、读取指定站点搜索结果时，立即调用同步 "
         "`task_tool`，将 `subagent_type` 设为 `\"browser_agent\"`，并在 "
         "`task_description` 中写明完整目标。不要使用 `subagent_spawn` 启动 browser_agent。\n"
+        "- 派发描述只保留原始目标和必要约束，不自行增加换向查询、传统组件、日期星期或独立交叉验证。"
+        "普通问答允许直接搜索 URL 并读取顶部 AI/知识/天气答案，注明来源；用户明确要求自然结果或进入详情时仍须执行。\n"
         "- Browser Agent 是同步的专用浏览器能力，不是可选的并行委派。即使用户没有明确说"
         "“子代理”，即使主流程必须等待浏览器结果，也应遵循本节规则；本节覆盖通用子代理"
         "规则中“未明确要求委派时不要调用”和“关键路径不要等待子代理”的限制。\n"
@@ -34,6 +36,9 @@ _BROWSER_TASK_PROMPT = {
         "site, immediately call the synchronous `task_tool`, set `subagent_type` to "
         '`"browser_agent"`, and put the complete objective in `task_description`. Do not use '
         "`subagent_spawn` for browser_agent.\n"
+        "- Delegate only the original goal and necessary constraints. Do not add reverse lookups, traditional "
+        "widgets, weekdays/dates, or independent cross-checks. Answer lookups may use direct search URLs and "
+        "top AI/knowledge/weather answers with attribution; preserve explicit natural-result/detail-visit requests.\n"
         "- Browser Agent is a synchronous browser capability, not optional parallel delegation. "
         "Apply this rule even when the user did not explicitly request a subagent and even when "
         "the main path must wait for the result. This section overrides generic subagent rules "

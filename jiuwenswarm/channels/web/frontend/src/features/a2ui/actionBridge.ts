@@ -128,6 +128,17 @@ export async function dispatchA2UIAction(
   if (!isA2UIFeatureEnabled()) {
     return;
   }
+
+  // Actions that are handled purely on the frontend (e.g. opening a Modal).
+  // These must NOT trigger a chat.send, otherwise the backend cancels the
+  // in-flight stream that is still rendering the A2UI surface.
+  const FRONTEND_ONLY_ACTIONS = new Set(['open_form', 'close_modal']);
+  const actionName = message.userAction?.name || '';
+  if (FRONTEND_ONLY_ACTIONS.has(actionName)) {
+    a2uiDebug('[A2UI] frontend-only action, skipping backend dispatch:', actionName);
+    return;
+  }
+
   if (!currentHandler) {
     a2uiWarn('[A2UI] action ignored because no chat sender is registered');
     return;

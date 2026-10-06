@@ -11,7 +11,7 @@ import type { WithSessionFn } from './useHubMarketplace';
 
 interface UseEvolutionParams {
   selectedSkill: SkillDetail | null;
-  detailTab: 'content' | 'files' | 'experience';
+  detailTab: 'content' | 'files' | 'experience' | 'members';
   withSession: WithSessionFn;
   fetchSkills: (refreshMarketplaces?: boolean) => Promise<void>;
 }

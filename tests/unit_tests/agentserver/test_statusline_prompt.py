@@ -138,7 +138,7 @@ class TestBuildUserPromptStatusline:
         )
         envelope = _extract_envelope(prompt)
         assert envelope["source"] == "tui"
-        assert envelope["timezone"] == "Asia/Shanghai"
+        assert envelope["timestamp"].endswith("(UTC+08:00, Asia/Shanghai)")
         assert envelope["type"] == "user input"
         assert envelope["trusted_dirs"] == json.dumps(["/home/user/project"])
 

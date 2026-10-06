@@ -19,6 +19,10 @@ _ENTRY_ARGV = tuple(sys.argv)
 # 在任何业务 import 之前，将 cwd 切换到用户数据目录 ~/.jiuwenswarm，
 # 让 openjiuwen 的相对日志路径落到 <data>/logs/，与项目其它运行时数据同根。
 if getattr(sys, "frozen", False):
+    # Skills may need to run bundled Python scripts on machines without an
+    # external Python installation.  The frozen executable already supports
+    # `jiuwenswarm.exe script.py ...` via the runpy branch below.
+    os.environ["JIUWENSWARM_EXECUTABLE"] = str(Path(sys.executable).resolve())
     _ORIGINAL_CWD = os.getcwd()
     _data_dir_env = os.environ.get("JIUWENSWARM_DATA_DIR")
     if _data_dir_env:
@@ -121,6 +125,7 @@ if getattr(sys, "frozen", False):
 
 _DESKTOP_RUN_AGENT = "--desktop-run-agent"
 _DESKTOP_RUN_GATEWAY = "--desktop-run-gateway"
+_DESKTOP_PREPARE_RUNTIME_WORKSPACE = "--desktop-prepare-runtime-workspace"
 _DESKTOP_INSTALL_EXTERNAL_CLI = "--desktop-install-external-cli"
 _DESKTOP_RESET_EXTERNAL_CLI_CONFIG = "--desktop-reset-external-cli-config"
 
@@ -152,6 +157,7 @@ _CHILD_FLAGS = {
     "--desktop-run-web",
     _DESKTOP_RUN_AGENT,
     _DESKTOP_RUN_GATEWAY,
+    _DESKTOP_PREPARE_RUNTIME_WORKSPACE,
     _DESKTOP_INSTALL_EXTERNAL_CLI,
     _DESKTOP_RESET_EXTERNAL_CLI_CONFIG,
     _DESKTOP_INSTALL_UPDATE,
@@ -574,6 +580,13 @@ def _dispatch() -> int | None:
     if len(sys.argv) >= 2 and sys.argv[1].lower() == "acp":
         from jiuwenswarm.channels.acp.app_acp import main as acp_main
         acp_main()
+        return None
+    if _pop_flag(_DESKTOP_PREPARE_RUNTIME_WORKSPACE):
+        # Electron 启动器（无 Python 宿主）用一次性进程完成工作区迁移/补齐，
+        # 之后 agent/gateway 通过 JIUWENSWARM_RUNTIME_WORKSPACE_READY=1 跳过。
+        from jiuwenswarm.common.utils import prepare_runtime_workspace
+
+        prepare_runtime_workspace(cleanup_stale_descs=False)
         return None
     if _pop_flag("--desktop-run-app"):
         from jiuwenswarm.app import main as app_main

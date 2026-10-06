@@ -308,6 +308,79 @@ def _skill(root, identity, metadata):
     return {"normalizations": changes, "dependencies": [], "wrapper": wrapper}
 
 
+def _agent_group(root: Path, identity: PublishIdentity, metadata: dict) -> dict:
+    """Validate and normalize an AgentGroup without changing its package kind."""
+    group = _json(root / "manifest.json")
+    if group.get("package_type") != "agent_group":
+        _fail(field="package_type", message="Package type does not match the publishing type")
+    _text(group.get("name"), "name")
+    agents = group.get("agents")
+    if not isinstance(agents, list) or not agents:
+        _fail(field="agents", message="Expert Team requires unique members and a leader")
+    if any(
+        not isinstance(name, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name)
+        for name in agents
+    ):
+        _fail(field="agents", message="Expert Team requires unique members and a leader")
+    if len(set(agents)) != len(agents) or "leader" not in agents:
+        _fail(field="agents", message="Expert Team requires unique members and a leader")
+    instruction = group.get("instruction", "")
+    if not isinstance(instruction, str):
+        _fail(field="instruction", message="Expert Team instruction must be text")
+    shared_skills = group.get("skills", [])
+    if not isinstance(shared_skills, list) or any(
+        not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name)
+        for name in shared_skills
+    ):
+        _fail(field="skills", message="Expert Team skills must be package identifiers")
+
+    member_manifests = {}
+    for agent_name in agents:
+        directory = _path(root, f"agents/{agent_name}", "agents", directory=True)
+        member = _json(_path(directory, "manifest.json", "agents.manifest"))
+        if member.get("package_type") != "agent_template":
+            _fail(field="package_type", message="Every Expert Team member must be an expert")
+        member_manifests[agent_name] = member
+
+    dependencies = []
+    for agent_name, member in member_manifests.items():
+        _expert(root / "agents" / agent_name, member, metadata, dependencies)
+    if shared_skills:
+        _capabilities(
+            root,
+            {"skills": [{"dir": f"skills/{name}"} for name in shared_skills]},
+            metadata,
+            dependencies,
+        )
+
+    description = (
+        metadata.get("description")
+        or group.get("description")
+        or member_manifests.get("leader", {}).get("description")
+    )
+    _text(description, "description")
+    changes = []
+    normalized = {
+        "name": identity.package_name,
+        "version": identity.version,
+        "description": description,
+        **{
+            key: metadata[key]
+            for key in ("display_name", "tags")
+            if key in metadata
+        },
+    }
+    for key, value in normalized.items():
+        if group.get(key) != value:
+            group[key] = value
+            changes.append("manifest." + key)
+    (root / "manifest.json").write_text(
+        json.dumps(group, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return {"normalizations": changes, "dependencies": dependencies, "wrapper": None}
+
+
 def normalize_and_validate(
     snapshot: Path, identity: PublishIdentity, metadata: dict[str, object]
 ) -> dict[str, object]:
@@ -326,6 +399,8 @@ def normalize_and_validate(
         _fail(field="package_name", message="Publish name must be a machine identifier")
     if identity.kind == "skill":
         return _skill(root, identity, metadata)
+    if identity.kind == "agent_group":
+        return _agent_group(root, identity, metadata)
     if len(list(root.rglob("manifest.json"))) != 1:
         _fail(
             "MULTIPLE_MANIFESTS",
