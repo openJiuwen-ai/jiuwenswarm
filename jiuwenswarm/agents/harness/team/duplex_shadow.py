@@ -7,6 +7,7 @@ Only this adapter knows its MessageHandler and NativeHarness accessors.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -82,6 +83,92 @@ async def classify_input(host, model_name, snapshot, messages):
         return await agent.run(prompt_for(snapshot, messages))
 
 
+def _duplex_context(host: Any, native: Any | None = None) -> tuple[str, str]:
+    """Resolve the Web push routing identifiers without exposing provider details."""
+    session_id = ""
+    for owner in (host, native, getattr(host, "harness", None)):
+        if owner is None:
+            continue
+        try:
+            value = getattr(owner, "session_id", None)
+            if callable(value):
+                value = value()
+            if value:
+                session_id = str(value).strip()
+                if session_id:
+                    break
+        except Exception:
+            continue
+    channel_id = ""
+    for owner in (host, native):
+        if owner is None:
+            continue
+        try:
+            value = getattr(owner, "channel_id", None)
+            if value:
+                channel_id = str(value).strip()
+                if channel_id:
+                    break
+        except Exception:
+            continue
+    return session_id, channel_id or "web"
+
+
+def _duplex_error_text(backend: str, phase: str, exc: BaseException | None = None,
+                       status: str | None = None) -> str:
+    backend_label = {"jev": "Jev", "mindshub": "Mindshub", "clef": "Cloudflare Clef",
+                     "sdk": "SDK"}.get(str(backend).lower(), str(backend or "未知"))
+    reason = status or type(exc).__name__ if exc is not None else status or "响应失败"
+    if phase == "config":
+        detail = "配置无效"
+    elif reason in {"timeout", "TimeoutError", "asyncio.TimeoutError"}:
+        detail = "请求超时"
+    elif reason in {"error", "ValueError", "JSONDecodeError"}:
+        detail = "连接或响应解析失败"
+    else:
+        detail = "调用失败"
+    return f"A2A 监工异常：{backend_label}{detail}，当前消息已按追加方式继续处理。"
+
+
+async def _emit_duplex_error(host: Any, native: Any | None, *, message_id: str,
+                             backend: str, phase: str, exc: BaseException | None = None,
+                             status: str | None = None) -> None:
+    """Make supervisor failures visible while keeping the worker's APPEND fallback."""
+    session_id, channel_id = _duplex_context(host, native)
+    if not session_id:
+        logger.warning("duplex error notice skipped: missing session_id message_id=%s phase=%s",
+                       message_id, phase)
+        return
+    try:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        request_id = f"duplex-error-{message_id}"
+        sent = await asyncio.wait_for(
+            AgentWebSocketServer.get_instance().send_push({
+                "request_id": request_id,
+                "channel_id": channel_id,
+                "session_id": session_id,
+                "payload": {
+                    "event_type": "chat.notice",
+                    "notice_type": "duplex_error",
+                    "source": "duplex_router",
+                    "backend": str(backend),
+                    "phase": phase,
+                    "content": _duplex_error_text(backend, phase, exc, status),
+                    "request_id": request_id,
+                    "session_id": session_id,
+                },
+                "is_complete": False,
+            }),
+            timeout=1.0,
+        )
+        logger.info("duplex error notice sent backend=%s phase=%s message_id=%s sent=%s",
+                    backend, phase, message_id, sent)
+    except Exception:
+        logger.warning("duplex error notice failed backend=%s phase=%s message_id=%s",
+                       backend, phase, message_id, exc_info=True)
+
+
 def _decision_timeout(host, config, backend, model_name):
     timeout = config.get("timeout_seconds")
     if timeout is None:
@@ -136,6 +223,12 @@ async def deliver_routed(host, content, *, use_steer, original, settings=None):
     native = native_from_runtime(host.harness)
     message = content.message
     backend = config.get("backend", "sdk")
+    configured_enabled = config.get("enabled")
+    if isinstance(configured_enabled, str):
+        configured_enabled = configured_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    if "enabled" in config and not bool(configured_enabled):
+        logger.info("duplex route bypass backend=%s message_id=%s reason=disabled", backend, message.message_id)
+        return await original(host, str(content), use_steer=use_steer)
     logger.info("duplex route entry backend=%s mode=%s recipient=%s message_id=%s sender=%s "
                 "use_steer=%s harness_type=%s",
                 backend, config.get("mode", "off"),
@@ -171,12 +264,17 @@ async def deliver_routed(host, content, *, use_steer, original, settings=None):
         observation = await observe(snapshot, (message,), classify=classify,
              timeout_seconds=timeout)
     except Exception as exc:
+        await _emit_duplex_error(host, native, message_id=message.message_id,
+                                 backend=str(backend), phase="route", exc=exc)
         logger.warning("duplex route fallback backend=%s message_id=%s reason=classification_exception "
                        "error_type=%s effective=APPEND", backend, message.message_id, type(exc).__name__)
         return await steer()
     logger.info("duplex route observation backend=%s message_id=%s status=%s proposed=%s latency_ms=%.1f attempts=%d",
                 backend, message.message_id, observation.status, observation.proposed_action,
                 observation.latency_ms, observation.attempts)
+    if observation.status in {"timeout", "error"}:
+        await _emit_duplex_error(host, native, message_id=message.message_id,
+                                 backend=str(backend), phase="route", status=observation.status)
     if observation.status != "ok" or observation.proposed_action == "APPEND":
         result = await steer()
         logger.info("duplex route effective backend=%s message_id=%s action=APPEND reason=%s",

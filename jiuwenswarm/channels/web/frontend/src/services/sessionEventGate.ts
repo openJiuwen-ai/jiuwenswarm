@@ -8,7 +8,7 @@ interface SuspendedSessionEvents {
   flushScheduled: boolean;
 }
 
-const IMMEDIATE_SESSION_EVENTS = new Set(['history.message', 'chat.error', 'security.alert']);
+const IMMEDIATE_SESSION_EVENTS = new Set(['history.message', 'chat.error', 'chat.notice', 'security.alert']);
 
 function normalizeSessionId(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;

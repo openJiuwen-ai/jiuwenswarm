@@ -344,6 +344,7 @@ CONFIG_KEYS = tuple(CONFIG_SET_ENV_MAP.keys())
 CONFIG_YAML_KEYS = frozenset({
     "duplex_router_model",
     "duplex_router_mode",
+    "duplex_router_enabled",
     "duplex_router_backend",
     "duplex_router_model_name",
     "duplex_router_timeout_seconds",
@@ -1140,6 +1141,8 @@ def _update_duplex_router_setting(param_key: str, value: Any, *, backend: str) -
     if field in allowed and raw not in allowed[field]:
         raise ConfigPanelBadRequest(f"invalid duplex router {field}")
     parsed: Any = raw
+    if field == "enabled":
+        parsed = parse_config_switch_bool(value)
     if field in {"timeout_seconds", "interrupt_threshold"}:
         try:
             parsed = float(raw)
@@ -1507,6 +1510,7 @@ async def config_get_handler(
                           if name in {"jev", "clef"} else {})}
                 for name, api_base in defaults.items()
             },
+            "duplex_router_enabled": "true" if duplex.get("enabled", duplex.get("mode", "off") != "off") else "false",
             "duplex_router_mode": str(duplex.get("mode", "off")),
             "duplex_router_backend": str(duplex.get("backend", "sdk")),
             "duplex_router_model_name": str(duplex.get("model_name", "")),

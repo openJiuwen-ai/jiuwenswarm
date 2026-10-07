@@ -63,6 +63,7 @@ const yamlField = (
  * _CONFIG_YAML_KEYS and the Symphony-specific config specs.
  */
 export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
+  yamlField('duplex_router_enabled', 'agent', 'boolean', 'duplex_router.enabled'),
   yamlField('duplex_router_mode', 'agent', 'text', 'duplex_router.mode'),
   yamlField('duplex_router_backend', 'agent', 'text', 'duplex_router.backend'),
   yamlField('duplex_router_model_name', 'agent', 'text', 'duplex_router.model_name'),

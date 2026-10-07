@@ -25,12 +25,13 @@ def settings_file(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_settings_round_trip_through_current_config_pipeline(settings_file):
-    values = {"mode": "active", "backend": "jev", "model_name": "jev-1.13.0",
+    values = {"enabled": "true", "mode": "active", "backend": "jev", "model_name": "jev-1.13.0",
               "timeout_seconds": "4", "interrupt_threshold": "0.95",
               "api_base": "https://api.typesafe.ai/v1", "endpoint_path": "decisions"}
     result = handlers.apply_config_payload({"duplex_router_" + key: value for key, value in values.items()})
     raw = yaml.safe_load(settings_file.read_text())
     assert raw["other"] == "keep"
+    assert raw["duplex_router"]["enabled"] is True
     assert raw["duplex_router"]["jev"]["interrupt_threshold"] == 0.95
     assert raw["duplex_router"]["timeout_seconds"] == 4
     assert len(result.yaml_updated) == len(values)
@@ -43,6 +44,13 @@ async def test_settings_round_trip_through_current_config_pipeline(settings_file
     assert payload["duplex_router_backends"]["jev"] == {
         "api_base": values["api_base"], "interrupt_threshold": "0.95"}
     assert payload["duplex_router_backends"]["mindshub"]["api_base"] == "https://api.mindshub.ai/v1"
+
+
+def test_supervisor_can_be_disabled_without_clearing_settings(settings_file):
+    handlers.apply_config_payload({"duplex_router_mode": "active", "duplex_router_enabled": "false"})
+    raw = yaml.safe_load(settings_file.read_text())["duplex_router"]
+    assert raw["enabled"] is False
+    assert raw["mode"] == "active"
 
 
 @pytest.mark.parametrize("field,value", [("mode", "shadow"), ("backend", "unknown"),

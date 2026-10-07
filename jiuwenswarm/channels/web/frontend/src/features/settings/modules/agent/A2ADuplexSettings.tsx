@@ -6,6 +6,7 @@ import { SettingRow, SettingsConfirmDialog } from '../../components';
 import type { SettingsCustomItemProps } from '../../registry/types';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { useSettingsSource } from '../../services/SettingsSourceProvider';
+import { parseConfigBoolean } from '../../services/settingsContract';
 
 const DEFAULT_BASES: Record<string, string> = {
   sdk: '',
@@ -36,6 +37,23 @@ export function A2ADuplexSettings({ disabled }: SettingsCustomItemProps) {
   const backend = value('backend') || 'sdk';
   const model = backend === 'clef' ? value('model') || 'clef' : value('model_name') || DEFAULT_MODELS[backend];
   const blocked = disabled || !isConnected || busy;
+  const enabled = source.values.duplex_router_enabled === undefined
+    ? value('mode') === 'active' : parseConfigBoolean(source.values.duplex_router_enabled);
+
+  const toggleEnabled = async (next: boolean) => {
+    setBusy(true);
+    setError('');
+    try {
+      await source.save({
+        duplex_router_enabled: next ? 'true' : 'false',
+        ...(next && value('mode') !== 'active' ? { duplex_router_mode: 'active' } : {}),
+      }, 'a2a-duplex-router-enabled');
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : t('settingsPanel.feedback.saveFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const openEditor = () => {
     setError('');
@@ -78,6 +96,7 @@ export function A2ADuplexSettings({ disabled }: SettingsCustomItemProps) {
     setError('');
     const updates: Record<string, string> = {
       duplex_router_mode: draft.mode,
+      duplex_router_enabled: draft.mode === 'active' ? 'true' : 'false',
       duplex_router_backend: draft.backend,
       duplex_router_timeout_seconds: draft.timeout_seconds,
       [draft.backend === 'clef' ? 'duplex_router_model' : 'duplex_router_model_name']: draft.model_name.trim(),
@@ -119,6 +138,7 @@ export function A2ADuplexSettings({ disabled }: SettingsCustomItemProps) {
     setError('');
     const updates: Record<string, string> = {
       duplex_router_mode: 'off',
+      duplex_router_enabled: 'false',
       duplex_router_model_name: '',
       duplex_router_api_key: '',
     };
@@ -193,13 +213,15 @@ export function A2ADuplexSettings({ disabled }: SettingsCustomItemProps) {
           <span data-testid="settings-a2a-status">
             {backend} ·{' '}
             {t(
-              value('mode') === 'active'
+              enabled && value('mode') === 'active'
                 ? 'settingsPanel.options.duplexRouterModeActive'
                 : 'settingsPanel.options.duplexRouterModeOff',
             )}
           </span>
         }
       >
+        <Switch checked={enabled} disabled={blocked} onChange={(next) => void toggleEnabled(next)}
+          aria-label={t('settingsPanel.agent.a2aDuplexRouter')} data-testid="settings-a2a-enabled-switch" />
         <Button variant="quiet" size="sm" disabled={blocked} onClick={openEditor} data-testid="settings-a2a-edit-btn">
           {t('common.modify')}
         </Button>

@@ -1,5 +1,6 @@
 # Native A2A / U2A 输入路由；修改 mode 后重启团队。模型名来自当前团队模型池。
 duplex_router:
+  enabled: false  # 是否启用监工；关闭后恢复 Jiuwen 原有 Agent 间交互
   mode: "off"  # off / active
   backend: sdk  # sdk / jev / mindshub / clef
   model_name: ""

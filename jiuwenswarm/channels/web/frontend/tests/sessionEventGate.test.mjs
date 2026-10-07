@@ -69,7 +69,7 @@ test('applies the persisted history snapshot before appending the live stream ta
   assert.deepEqual(transcript, ['persisted prefix', 'live tail']);
 });
 
-test('keeps history and error control events immediate while live events are suspended', () => {
+test('keeps history, notice, and error control events immediate while live events are suspended', () => {
   const received = [];
   const gate = createSessionEventGate(incoming => received.push(incoming.event));
   gate.suspend('session-a');
@@ -77,9 +77,10 @@ test('keeps history and error control events immediate while live events are sus
   gate.dispatch(event('chat.delta', 'session-a'));
   gate.dispatch(event('history.message', 'session-a'));
   gate.dispatch(event('chat.error', 'session-a'));
+  gate.dispatch(event('chat.notice', 'session-a'));
   gate.dispatch(event('security.alert', 'session-a'));
 
-  assert.deepEqual(received, ['history.message', 'chat.error', 'security.alert']);
+  assert.deepEqual(received, ['history.message', 'chat.error', 'chat.notice', 'security.alert']);
 });
 
 test('transfers queued events across overlapping history restore generations', async () => {
