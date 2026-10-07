@@ -9,7 +9,6 @@ from functools import lru_cache
 from pathlib import Path
 
 from jiuwenswarm.common.utils import get_user_workspace_dir
-from jiuwenswarm.common.work_mode import is_default_project_id
 
 # Local catalog package name; trajectories live under the data dir instead.
 _PACKAGE_DIRNAME = "designer_catalog_skills_reports_trajectory"
@@ -63,13 +62,13 @@ def design_trajectory_dir() -> Path:
     return get_user_workspace_dir() / ".trace" / "designer"
 
 
-def design_trajectory_key(project_id: str | None, graph_id: str) -> str:
+def design_trajectory_key(project_id: str) -> str:
     """File stem shared by every run of one design project.
 
     A design project owns exactly one graph, so the project id (visible in the
-    URL) identifies it. Graphs outside a real project fall back to the graph id.
+    URL) identifies the trajectory files for all agent actions in that project.
     """
-    raw = str(graph_id or "").strip() if is_default_project_id(project_id) else str(project_id).strip()
+    raw = str(project_id).strip()
     if _SAFE_TRAJECTORY_KEY.fullmatch(raw):
         return raw
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

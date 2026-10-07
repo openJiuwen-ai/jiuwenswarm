@@ -226,7 +226,7 @@ class TrajectoryRecorder:
         graph_id: str,
         run_id: str,
         *,
-        project_id: str = "",
+        project_id: str,
         key: str = "",
         otlp_path: Path | None = None,
         design_path: Path | None = None,
@@ -464,19 +464,19 @@ def begin_trajectory(
     graph_id: str,
     run_id: str,
     *,
-    project_id: str | None = None,
+    project_id: str,
     meta: dict[str, Any] | None = None,
     settings: TrajectoryStoreSettings | None = None,
 ) -> TrajectoryRecorder:
     resolved = settings or load_trajectory_store_settings()
     if not resolved.enabled:
-        return TrajectoryRecorder(graph_id, run_id, project_id=str(project_id or ""))
-    key = design_trajectory_key(project_id, graph_id)
+        return TrajectoryRecorder(graph_id, run_id, project_id=project_id)
+    key = design_trajectory_key(project_id)
     _prune_expired(design_trajectory_dir(), resolved.retention_days)
     rec = TrajectoryRecorder(
         graph_id,
         run_id,
-        project_id=str(project_id or ""),
+        project_id=project_id,
         key=key,
         otlp_path=design_otlp_trajectory_path(key),
         design_path=design_record_trajectory_path(key),

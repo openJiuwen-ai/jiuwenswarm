@@ -106,11 +106,10 @@ def test_second_run_appends_to_same_project_files(data_dir: Path) -> None:
     assert spans[0]["traceId"] != spans[1]["traceId"]
 
 
-def test_default_project_falls_back_to_graph_id() -> None:
-    assert paths.design_trajectory_key("proj_1", "graph-9") == "proj_1"
-    assert paths.design_trajectory_key("", "graph-9") == "graph-9"
-    assert paths.design_trajectory_key("default", "graph-9") == "graph-9"
-    unsafe = paths.design_trajectory_key("../escape", "graph-9")
+def test_trajectory_key_uses_project_id_only() -> None:
+    assert paths.design_trajectory_key("proj_1") == "proj_1"
+    assert paths.design_trajectory_key("default") == "default"
+    unsafe = paths.design_trajectory_key("../escape")
     assert "/" not in unsafe and len(unsafe) == 64
 
 

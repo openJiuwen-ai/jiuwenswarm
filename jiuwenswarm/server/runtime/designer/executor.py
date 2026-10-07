@@ -834,7 +834,12 @@ class GraphExecutor:
         from jiuwenswarm.server.runtime.designer.trajectory import begin_trajectory, end_trajectory
 
         run_id = run["run_id"]
-        begin_trajectory(graph["graph_id"], run_id, meta={"target_node_id": node_id})
+        begin_trajectory(
+            graph["graph_id"],
+            run_id,
+            project_id=graph["project_id"],
+            meta={"target_node_id": node_id},
+        )
         try:
             await self._await_pause(run_id)
             if self._is_cancelled(run_id):
@@ -874,8 +879,16 @@ class GraphExecutor:
         on_update: RunUpdateCallback | None,
     ) -> None:
         """Run only the scoped nodes, in order, with no Director phase or ratings."""
+        from jiuwenswarm.server.runtime.designer.trajectory import begin_trajectory, end_trajectory
+
         run_id = run["run_id"]
         scope = _scope_node_ids(run)
+        begin_trajectory(
+            graph["graph_id"],
+            run_id,
+            project_id=graph["project_id"],
+            meta={"scope_node_ids": list(scope)},
+        )
         try:
             for node_id in scope:
                 await self._await_pause(run_id)
@@ -917,6 +930,7 @@ class GraphExecutor:
             self._publish(run, on_update)
             self._store.save_run(run)
         finally:
+            end_trajectory(run_id)
             self._cleanup_run(run_id)
 
     async def _execute_agent_run(
@@ -1039,7 +1053,7 @@ class GraphExecutor:
         traj = begin_trajectory(
             graph_id,
             run_id,
-            project_id=str(graph.get("project_id") or ""),
+            project_id=graph["project_id"],
             meta={
                 "scenario": (graph.get("metadata") or {}).get("scenario"),
                 "optimize_for": optimize_for,
