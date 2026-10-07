@@ -1,0 +1,262 @@
+/**
+ * 保存会话可选团队列表和当前选择。
+ * 切换时获取 team.snapshot，并写入对应团队的会话投影；不覆盖主团队数据。
+ * 专家实时事件按 team_id 路由到独立命名空间，实验开关关闭时不启用专家视图。
+ */
+
+import { create } from 'zustand';
+import { webClient } from '../services/webClient';
+import { useChatStore } from './chatStore';
+
+export type RuntimeTeamState = 'running' | 'paused' | 'pending' | 'configured';
+
+export interface RuntimeTeamInfo {
+  team_id: string;
+  team_name: string;
+  display_name?: string | null;
+  agent_group_name?: string | null;
+  state: RuntimeTeamState | string;
+  leader_id?: string | null;
+  organization_id?: string | null;
+  is_leader?: boolean;
+  is_owner?: boolean;
+  capabilities?: string[];
+  source?: string;
+}
+
+interface TeamListResponse {
+  session_id: string;
+  teams: RuntimeTeamInfo[];
+  default_team_id?: string | null;
+}
+
+export interface TeamSnapshotMember {
+  member_id: string;
+  name?: string | null;
+  status?: string;
+  execution_status?: string | null;
+  mode?: string;
+  role?: string;
+  cli_agent?: string | null;
+}
+
+export interface TeamSnapshotTask {
+  task_id: string;
+  team_name?: string;
+  title?: string;
+  content?: string;
+  status?: string;
+  assignee?: string | null;
+  updated_at?: number | string | null;
+}
+
+export interface TeamSnapshotPayload {
+  members?: TeamSnapshotMember[];
+  tasks?: TeamSnapshotTask[];
+  team_id?: string | null;
+}
+
+/** 一个 session 的选择器运行态。 */
+interface TeamSelectorRuntime {
+  teams: RuntimeTeamInfo[];
+  /** 当前选中的 team_id；为空表示"跟随后端默认" */
+  selectedTeamId: string | null;
+  /** 后端给的默认选中项（通常是 running 的第一个） */
+  defaultTeamId: string | null;
+  loading: boolean;
+  /** 最近一次拉取失败的原因，供 UI 提示；成功时清空 */
+  error: string | null;
+  /** 是否已经完成过一次 team.list，用于区分"还没拉"和"确实没有 team" */
+  loaded: boolean;
+}
+
+function createEmptyRuntime(): TeamSelectorRuntime {
+  return {
+    teams: [],
+    selectedTeamId: null,
+    defaultTeamId: null,
+    loading: false,
+    error: null,
+    loaded: false,
+  };
+}
+
+/**
+ * 刷新 team 列表后要落到哪个 team 上。
+ *
+ * 用户的显式选择优先：只要那个 team 还在列表里就保留，否则退回后端给的默认项。
+ * 默认项同样必须在列表里——选中态指向一个列表里没有的 team_id 时，下拉的"当前值"
+ * 和"勾选行"都会悬空，看起来像选择丢了。都不可用时退回列表第一项。
+ */
+export function resolveSelectedTeamId(
+  previousSelectedTeamId: string | null | undefined,
+  teams: RuntimeTeamInfo[],
+  defaultTeamId: string | null | undefined,
+): string | null {
+  const listed = (teamId: string | null | undefined): string | null =>
+    teamId && teams.some((team) => team.team_id === teamId) ? teamId : null;
+  return listed(previousSelectedTeamId) ?? listed(defaultTeamId) ?? teams[0]?.team_id ?? null;
+}
+
+/**
+ * 这个 team 的成员事件是否该进当前视图。
+ *
+ * `team_id` 缺失（老后端 / 非 team 事件）时一律放行：宁可多收不可漏收；只有明确
+ * 知道当前选了谁、且事件确实属于别的 team 时才丢弃。
+ */
+export function isEventForSelectedTeam(
+  selectedTeamId: string | null | undefined,
+  eventTeamId: string | null | undefined,
+): boolean {
+  if (!eventTeamId || !selectedTeamId) return true;
+  return selectedTeamId === eventTeamId;
+}
+
+interface TeamSelectorState {
+  runtimes: Record<string, TeamSelectorRuntime>;
+
+  getRuntime: (sessionId: string | null | undefined) => TeamSelectorRuntime | undefined;
+  removeRuntime: (sessionId: string) => void;
+
+  fetchTeams: (sessionId: string) => Promise<RuntimeTeamInfo[]>;
+  selectTeam: (sessionId: string, teamId: string | null) => Promise<void>;
+  resetRuntime: (sessionId: string) => void;
+
+  /**
+   * 该 team_id 是否属于"当前选中"的视图。
+   *
+   * 事件过滤用：`team_id` 为空（老后端 / 兼容路径）时一律放行，宁可多收不可漏收；
+   * 只在明确知道当前选了谁、且事件确实属于别的 team 时才丢弃。
+   */
+  isEventForSelectedTeam: (
+    sessionId: string | null | undefined,
+    teamId: string | null | undefined,
+  ) => boolean;
+}
+
+export const useTeamSelectorStore = create<TeamSelectorState>((set, get) => ({
+  runtimes: {},
+
+  getRuntime: (sessionId) => {
+    if (!sessionId) return undefined;
+    return get().runtimes[sessionId];
+  },
+
+  removeRuntime: (sessionId) => {
+    set((state) => {
+      if (!(sessionId in state.runtimes)) return state;
+      const next = { ...state.runtimes };
+      delete next[sessionId];
+      return { runtimes: next };
+    });
+  },
+
+  resetRuntime: (sessionId) => {
+    set((state) => {
+      const existing = state.runtimes[sessionId];
+      if (!existing) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...existing, selectedTeamId: null, defaultTeamId: null },
+        },
+      };
+    });
+  },
+
+  fetchTeams: async (sessionId) => {
+    if (!sessionId) return [];
+    set((state) => ({
+      runtimes: {
+        ...state.runtimes,
+        [sessionId]: { ...(state.runtimes[sessionId] ?? createEmptyRuntime()), loading: true },
+      },
+    }));
+
+    try {
+      const response = await webClient.request<TeamListResponse>(
+        'team.list',
+        { session_id: sessionId },
+        { timeoutMs: 8000 }
+      );
+      const teams = Array.isArray(response?.teams) ? response.teams : [];
+      const defaultTeamId = response?.default_team_id ?? null;
+
+      set((state) => {
+        const previous = state.runtimes[sessionId] ?? createEmptyRuntime();
+        return {
+          runtimes: {
+            ...state.runtimes,
+            [sessionId]: {
+              teams,
+              defaultTeamId,
+              selectedTeamId: resolveSelectedTeamId(previous.selectedTeamId, teams, defaultTeamId),
+              loading: false,
+              error: null,
+              loaded: true,
+            },
+          },
+        };
+      });
+      return teams;
+    } catch (error) {
+      set((state) => ({
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...(state.runtimes[sessionId] ?? createEmptyRuntime()),
+            loading: false,
+            loaded: true,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        },
+      }));
+      return [];
+    }
+  },
+
+  selectTeam: async (sessionId, teamId) => {
+    if (!sessionId) return;
+    set((state) => ({
+      runtimes: {
+        ...state.runtimes,
+        [sessionId]: {
+          ...(state.runtimes[sessionId] ?? createEmptyRuntime()),
+          selectedTeamId: teamId,
+        },
+      },
+    }));
+
+    // Ensure the team conversation runtime exists before snapshot projection.
+    // Display/routing authority is selectedTeamId above (not chatStore).
+    if (teamId) {
+      useChatStore.getState().ensureTeamRuntime(sessionId, teamId);
+    }
+
+    if (!teamId) return;
+
+    try {
+      const {
+        applyTeamSnapshotToSession,
+      } = await import('./teamSliceApply');
+      // Team projections live under separate keys; never clear the owner.
+      const snapshot = await webClient.request<TeamSnapshotPayload>(
+        'team.snapshot',
+        { session_id: sessionId, team_name: teamId },
+        { timeoutMs: 8000 }
+      );
+      // A 的慢响应不能覆盖用户随后切换到的 B。
+      if (get().runtimes[sessionId]?.selectedTeamId !== teamId) return;
+      applyTeamSnapshotToSession(sessionId, teamId, snapshot);
+    } catch {
+      // 拉不到快照时保留当前 Team 的空投影；不恢复上一个 Team 的数据。
+    }
+  },
+
+  isEventForSelectedTeam: (sessionId, teamId) => {
+    if (!sessionId) return true;
+    return isEventForSelectedTeam(get().runtimes[sessionId]?.selectedTeamId, teamId);
+  },
+}));
+
+export { createEmptyRuntime as createEmptyTeamSelectorRuntime };

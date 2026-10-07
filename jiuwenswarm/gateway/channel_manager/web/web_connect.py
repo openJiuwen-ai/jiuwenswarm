@@ -804,12 +804,14 @@ class WebChannel(BaseWsChannel):
 
     @staticmethod
     def _should_preserve_full_payload(event_name: str) -> bool:
+        """Keep structured Organization milestones available to the Web client."""
         return (
             event_name in _WEB_FULL_PAYLOAD_EVENT_TYPES
             or event_name in {"chat.input_received", "chat.output_phase"}
             or event_name.startswith("team.")
             or event_name.startswith("harness.")
             or event_name.startswith("personal_context.context.")
+            or event_name.startswith("org.")
         )
 
     @staticmethod
@@ -872,6 +874,7 @@ class WebChannel(BaseWsChannel):
                 "request_id", "turn_request_id", "execution_id", "final_mode", "segment_id",
                 "output_phase_id", "output_suppressed", "output_order", "timestamp",
                 "message_origin", "session_message_id", "cross_session",
+                "team_name", "team_id",
                 # 主动推荐标记需透传到所有 chunk 事件（chat.delta/chat.reasoning/…），
                 # 否则前端无法按 source 短路：proactive 的 chat.reasoning 会被当作
                 # 用户轮思考流追加进 reasoningSegments，污染上一条消息的思考状态。

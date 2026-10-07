@@ -42,6 +42,41 @@ import {
 const TOOL_TIMEOUT_MS = 12_000_000;
 const EVOLUTION_STATUS_END_VISIBLE_MS = 3_000;
 
+/**
+ * 会话视图键。
+ *
+ * 一个 session 可以同时挂多个 team（后端 TeamRuntimePool 以 team_name 为键、按
+ * current_session_id 归属）。左栏对话要「切 team 就换一条思考过程」，那 messages /
+ * reasoningSegments / 流的中间态就不能只按 session 存一份——那样所有 team 的流会
+ * 汇进同一条对话，切换时看到的是同一段内容。
+ *
+ * 所以运行态按 conversationKey 存：`sessionId` 是这一轮的主视图（也是老数据的键，
+ * 不传 teamId 时行为与改造前完全一致），`sessionId::teamId` 是某个 team 自己的视图。
+ * 两边都是完整的 ChatRuntime，各自独立累积流、推理段和工具执行。
+ */
+const CONVERSATION_KEY_SEPARATOR = '::';
+
+export function conversationKey(sessionId: string, teamId?: string | null): string {
+  const team = typeof teamId === 'string' ? teamId.trim() : '';
+  if (!team) return sessionId;
+  return `${sessionId}${CONVERSATION_KEY_SEPARATOR}${team}`;
+}
+
+/** 从会话视图键拆回 (sessionId, teamId)；主视图的 teamId 为 null。 */
+export function parseConversationKey(key: string): { sessionId: string; teamId: string | null } {
+  const index = key.indexOf(CONVERSATION_KEY_SEPARATOR);
+  if (index < 0) return { sessionId: key, teamId: null };
+  return {
+    sessionId: key.slice(0, index),
+    teamId: key.slice(index + CONVERSATION_KEY_SEPARATOR.length) || null,
+  };
+}
+
+/** 会话视图键是否属于某个 session（含它名下的所有 team 视图）。 */
+export function isConversationKeyOfSession(key: string, sessionId: string): boolean {
+  return key === sessionId || key.startsWith(`${sessionId}${CONVERSATION_KEY_SEPARATOR}`);
+}
+
 let reasoningSegmentSeq = 0;
 
 function createReasoningSegmentId(): string {
@@ -272,6 +307,14 @@ interface ChatState {
   ensureRuntime: (sessionId: string) => ChatRuntime;
   getRuntime: (sessionId: string | null) => ChatRuntime | undefined;
   setActiveSessionId: (sessionId: string | null) => void;
+  /**
+   * 取某个 team 视图的运行态。teamId 为空时退回主视图，因此调用方不必先判空。
+   * 视图不存在时返回 undefined（不隐式创建，避免读操作产生副作用）。
+   * 当前选中 team 由 teamSelectorStore.selectedTeamId 决定，不在此 store 再存一份。
+   */
+  getTeamRuntime: (sessionId: string | null, teamId: string | null | undefined) => ChatRuntime | undefined;
+  /** 取得（必要时创建）某个 team 视图的运行态，供事件写入路径使用。 */
+  ensureTeamRuntime: (sessionId: string, teamId: string | null | undefined) => ChatRuntime;
   setGlobalTaskRunning: (running: boolean) => void;
   removeRuntime: (sessionId: string) => void;
 
@@ -409,6 +452,8 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
 
   getRuntime: (sessionId) => {
     if (!sessionId) return undefined;
+    // 只认主视图。未迁移的读点（会话列表、历史分页、导出等）拿到的仍是改造前那一份，
+    // 所以切 team 不会让它们读到别的视图。要看 team 视图的调用方走 getTeamRuntime。
     return get().runtimes[sessionId];
   },
 
@@ -418,6 +463,29 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       if (!runtime) return state;
       return { runtimes: { ...state.runtimes, [sessionId]: { ...runtime, outputPhaseId: phaseId } } };
     });
+  },
+  /**
+   * 某个 team 视图的运行态；teamId 为空时退回主视图。
+   *
+   * 这里**不**回退到主视图的另一层含义：team 视图尚未建立（还没收到这个 team 的
+   * 任何一帧）时返回 undefined，让调用方用 `?? []` 之类的默认值渲染空对话，而不是
+   * 把主视图的内容借过来——后者正是「切了 team 但看到同一段对话」的来源。
+   */
+  getTeamRuntime: (sessionId, teamId) => {
+    if (!sessionId) return undefined;
+    const key = conversationKey(sessionId, teamId);
+    return get().runtimes[key];
+  },
+
+  ensureTeamRuntime: (sessionId, teamId) => {
+    const key = conversationKey(sessionId, teamId);
+    const existing = get().runtimes[key];
+    if (existing) return existing;
+    const runtime = createEmptyRuntime();
+    set((state) => ({
+      runtimes: { ...state.runtimes, [key]: runtime },
+    }));
+    return runtime;
   },
 
   setActiveSessionId: (sessionId) => {
@@ -430,13 +498,17 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
 
   removeRuntime: (sessionId) => {
     set((state) => {
-      const runtime = state.runtimes[sessionId];
-      if (runtime) {
+      // 连同这个 session 名下所有 team 视图一起清掉，否则删会话后 team 视图会
+      // 留在 runtimes 里变成孤儿（键前缀匹配，主视图 key 恰好等于 sessionId）。
+      const next: Record<string, ChatRuntime> = {};
+      for (const [key, runtime] of Object.entries(state.runtimes)) {
+        if (!isConversationKeyOfSession(key, sessionId)) {
+          next[key] = runtime;
+          continue;
+        }
         if (runtime.evolutionStatusClearTimer) clearTimeout(runtime.evolutionStatusClearTimer);
         if (runtime.interruptResultClearTimer) clearTimeout(runtime.interruptResultClearTimer);
       }
-      const next = { ...state.runtimes };
-      delete next[sessionId];
       return {
         runtimes: next,
         activeSessionId: state.activeSessionId === sessionId ? null : state.activeSessionId,
@@ -476,6 +548,20 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
   },
 
   replaceHistoryMessages: (sessionId, messages) => {
+    if (!sessionId.includes(CONVERSATION_KEY_SEPARATOR)) {
+      const teams = new Map<string, Message[]>();
+      for (const message of messages) {
+        if (!message.teamId) continue;
+        const group = teams.get(message.teamId) ?? [];
+        group.push(message);
+        teams.set(message.teamId, group);
+      }
+      for (const [teamId, history] of teams) {
+        useChatStore.getState().ensureTeamRuntime(sessionId, teamId);
+        useChatStore.getState().replaceHistoryMessages(conversationKey(sessionId, teamId), history);
+      }
+      messages = messages.filter((message) => !message.teamId);
+    }
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
@@ -1624,6 +1710,20 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
   },
 
   prependMessages: (sessionId, olderFirst) => {
+    if (!sessionId.includes(CONVERSATION_KEY_SEPARATOR)) {
+      const teams = new Map<string, Message[]>();
+      for (const message of olderFirst) {
+        if (!message.teamId) continue;
+        const group = teams.get(message.teamId) ?? [];
+        group.push(message);
+        teams.set(message.teamId, group);
+      }
+      for (const [teamId, history] of teams) {
+        useChatStore.getState().ensureTeamRuntime(sessionId, teamId);
+        useChatStore.getState().prependMessages(conversationKey(sessionId, teamId), history);
+      }
+      olderFirst = olderFirst.filter((message) => !message.teamId);
+    }
     if (!olderFirst.length) return;
     set((state) => {
       const runtime = state.runtimes[sessionId];

@@ -993,6 +993,15 @@ def update_trajectory_ui_in_config(enabled: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_team_organization_ui_in_config(enabled: bool) -> None:
+    """Persist the experimental Organization UI switch without changing runtime capabilities."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "experimental" not in data or data["experimental"] is None:
+        data["experimental"] = {}
+    data["experimental"]["team_organization_ui_enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_task_full_duplex_in_config(enabled: bool) -> None:
     """Update the Task-chat Full-duplex entry switch in config.yaml."""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)

@@ -412,6 +412,10 @@ def get_panel() -> dict[str, Any]:
             payload["a2ui_enabled"] = "false"
         trajectory_cfg = raw.get("trajectory_ui") or {}
         payload["trajectory_ui_enabled"] = _bool_text(trajectory_cfg.get("enabled"), False)
+        experimental_cfg = raw.get("experimental") or {}
+        payload["team_organization_ui_enabled"] = _bool_text(
+            experimental_cfg.get("team_organization_ui_enabled"), False
+        )
         payload["swarmflow_enabled"] = _bool_text(
             _nested(raw, _SWARMFLOW_ENABLED_PATH, False)
         )
@@ -450,6 +454,7 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("memory_forbidden_description", "")
         payload.setdefault("a2ui_enabled", "false")
         payload.setdefault("trajectory_ui_enabled", "false")
+        payload.setdefault("team_organization_ui_enabled", "false")
         payload.setdefault("swarmflow_enabled", "false")
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")

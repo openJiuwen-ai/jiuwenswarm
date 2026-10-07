@@ -63,6 +63,11 @@ export const experimentalModule: SettingsModuleDefinition = {
       ],
     },
     {
+      id: 'team-organization',
+      titleKey: 'settingsPanel.experimental.teamOrganization',
+      items: [{ id: 'team-organization-ui-enabled', component: 'switch', key: 'team_organization_ui_enabled' }],
+    },
+    {
       id: 'proactive-recommendation',
       titleKey: 'settingsPanel.experimental.proactive',
       items: [
