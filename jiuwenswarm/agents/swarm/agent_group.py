@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
@@ -14,6 +15,34 @@ from openjiuwen.harness.schema.extension_spec import (
     PromptSectionSpec,
     SkillSpec,
 )
+
+
+@dataclass(frozen=True)
+class LoadedAgentGroupPackage:
+    """One validated AgentGroup load, reusable within a single call chain."""
+
+    package_dir: Path
+    manifest: dict[str, Any]
+    templates: dict[str, AgentTemplateSpec]
+
+    @property
+    def instruction(self) -> str:
+        value = self.manifest.get("instruction", "")
+        return value.strip() if isinstance(value, str) else ""
+
+    @property
+    def capabilities(self) -> tuple[str, ...]:
+        raw = self.manifest.get("capabilities", [])
+        if not isinstance(raw, list):
+            return ()
+        names: list[str] = []
+        seen: set[str] = set()
+        for item in raw:
+            name = str(item or "").strip()
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+        return tuple(names)
 
 
 def _read_mapping(path: Path, *, label: str) -> dict[str, Any]:
@@ -235,8 +264,8 @@ def _load_member_template(
     return template
 
 
-def load_agent_group_package(path: Path) -> dict[str, AgentTemplateSpec]:
-    """Load one validated AgentGroup into ordered per-member template specs."""
+def load_agent_group_package_bundle(path: Path) -> LoadedAgentGroupPackage:
+    """Load and validate one AgentGroup package once."""
     try:
         package_dir = Path(path).expanduser().resolve(strict=True)
     except OSError as exc:
@@ -296,7 +325,20 @@ def load_agent_group_package(path: Path) -> dict[str, AgentTemplateSpec]:
         templates[agent_name] = template.model_copy(
             update={"prompt_sections": prompt_sections, "skills": skills}
         )
-    return templates
+    return LoadedAgentGroupPackage(
+        package_dir=package_dir,
+        manifest=payload,
+        templates=templates,
+    )
 
 
-__all__ = ["load_agent_group_package"]
+def load_agent_group_package(path: Path) -> dict[str, AgentTemplateSpec]:
+    """Load one validated AgentGroup into ordered per-member template specs."""
+    return load_agent_group_package_bundle(path).templates
+
+
+__all__ = [
+    "LoadedAgentGroupPackage",
+    "load_agent_group_package",
+    "load_agent_group_package_bundle",
+]

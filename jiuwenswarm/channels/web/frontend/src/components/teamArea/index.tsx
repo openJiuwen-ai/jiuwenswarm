@@ -6,9 +6,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import { normalizeTaskStatus } from './shared';
 import { getTasksForCurrentProgress } from '../../features/teamTaskProgressBaseline';
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 
 export function useTaskPlanningMetrics() {
-  const activeSessionId = useChatStore(s => s.activeSessionId);
+  const activeSessionId = useOrganizationConversationKey(useChatStore(s => s.activeSessionId));
   const todos = useTodoStore(s => s.runtimes[activeSessionId ?? '']?.todos ?? []);
   const teamTaskEvents = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamTasks ?? []);

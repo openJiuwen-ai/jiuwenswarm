@@ -11,6 +11,7 @@ import WaitingStatusIcon from '../../assets/work-mode/status-waiting.svg?react';
 import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import { AgentAvatar } from '../AgentAvatar';
 import { useChatStore, useSessionStore } from '../../stores';
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import type { TeamLeaderIdentity } from '../../features/teamLeaderIdentity';
 import type { ReasoningSegment } from '../../stores/chatStore';
@@ -547,16 +548,17 @@ export function ChatTimelineList({
 }: ChatTimelineListProps) {
   const isTeamMode = mode === 'team';
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const conversationId = useOrganizationConversationKey(activeSessionId);
   const runtimeTeamLeaderIdentity = useSessionStore(
     (s) => s.runtimes[activeSessionId ?? '']?.teamLeaderIdentity ?? null,
   );
   const teamLeaderIdentity = teamLeaderIdentityOverride ?? runtimeTeamLeaderIdentity;
   const teamGroupIdentity = teamGroupIdentityOverride;
-  const storeIsProcessing = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isProcessing ?? false);
+  const storeIsProcessing = useChatStore((s) => s.runtimes[conversationId]?.isProcessing ?? false);
   const isLoadingHistory = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isLoadingHistory ?? false);
   const historyPagerMeta = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.historyPagerMeta ?? null);
   const storeReasoningSegments = useChatStore(
-    (s) => s.runtimes[s.activeSessionId ?? '']?.reasoningSegments ?? EMPTY_REASONING,
+    (s) => s.runtimes[conversationId]?.reasoningSegments ?? EMPTY_REASONING,
   );
   const isProcessing = staticTimeline ? false : storeIsProcessing;
   const allReasoningSegments = reasoningSegmentsProp ?? (staticTimeline ? EMPTY_REASONING : storeReasoningSegments);
@@ -932,8 +934,9 @@ export function MessageList({
   onForkFromMessage,
 }: MessageListProps) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const toolExecutions = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutions ?? new Map());
-  const toolExecutionOrder = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutionOrder ?? []);
+  const conversationId = useOrganizationConversationKey(activeSessionId);
+  const toolExecutions = useChatStore((s) => s.runtimes[conversationId]?.toolExecutions ?? new Map());
+  const toolExecutionOrder = useChatStore((s) => s.runtimes[conversationId]?.toolExecutionOrder ?? []);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const executions = useMemo(
     () => getExecutionList(toolExecutions, toolExecutionOrder),

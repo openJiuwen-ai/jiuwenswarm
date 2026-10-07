@@ -140,6 +140,8 @@ export interface Message {
   agentTemplateName?: string;
   proactiveRecId?: string;  // 推荐唯一ID，用于反馈关联
   proactiveTarget?: string;  // 推荐目标（skill名/待办/探索方向），点赞请求带回后端兜底
+  /** Team-attributed history is restored into this Team's conversation runtime. */
+  teamId?: string;
   /**
    * 这条用户消息是否曾经用于设置/修改持续目标（"设为目标"徽章）。发送那一刻本地回显消息
    * 直接置 true；历史消息刷新后重新加载时，优先读后端 history 字段

@@ -1,4 +1,6 @@
 import { ChevronRight } from 'lucide-react';
+import { conversationKey } from '../../stores/chatStore';
+import { selectedExpertTeamId } from '../../features/teamOrganization/conversation';
 import i18n from '../../i18n';
 import { ParsedTeamEvent, parseTeamEventMessage } from '../ChatPanel/teamEventUtils';
 import type { Message, TodoItem } from '../../types';
@@ -192,7 +194,8 @@ const resolveMemberIdentity = (member: TeamMember | string): { memberId: string;
 
 const getSessionTeamRoster = (): TeamMember[] => {
   const activeSessionId = useChatStore.getState().activeSessionId ?? '';
-  return useSessionStore.getState().runtimes[activeSessionId]?.teamMembers ?? [];
+  const key = conversationKey(activeSessionId, selectedExpertTeamId(activeSessionId));
+  return useSessionStore.getState().runtimes[key]?.teamMembers ?? [];
 };
 
 // 名册引用没变就复用上次的统计结果：本函数在成员列表里逐行调用，每次重扫是 O(N²)。

@@ -4,6 +4,7 @@
  * 工具面板，显示 Todo 列表和状态信息
  */
 
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -146,15 +147,16 @@ export function ToolPanel({
   const { t } = useTranslation();
   const isConnected = useSessionStore((state) => state.isConnected);
   const activeSessionId = useChatStore(s => s.activeSessionId);
+  const conversationId = useOrganizationConversationKey(activeSessionId);
   const mode = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const resolvedSessionId = sessionId ?? activeSessionId ?? '';
-  const teamMembers = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamMembers ?? []);
+  const teamMembers = useSessionStore(s => s.runtimes[conversationId]?.teamMembers ?? []);
   const teamConnectionPresentation = useSessionStore((s) =>
     s.runtimes[activeSessionId ?? '']?.mode === 'team'
-      ? (s.runtimes[activeSessionId ?? '']?.teamConnectionPresentation ?? null)
+      ? (s.runtimes[conversationId]?.teamConnectionPresentation ?? null)
       : null,
   );
-  const teamHistoryMessages = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamHistoryMessages ?? []);
+  const teamHistoryMessages = useSessionStore(s => s.runtimes[conversationId]?.teamHistoryMessages ?? []);
   const setTeamMembers = useSessionStore(s => s.setTeamMembers);
   const setTeamTaskEvents = useSessionStore(s => s.setTeamTaskEvents);
   const setTeamTasks = useSessionStore(s => s.setTeamTasks);
@@ -162,7 +164,7 @@ export function ToolPanel({
   const setTeamMemberExecutionEvents = useSessionStore(s => s.setTeamMemberExecutionEvents);
   const setTeamHistoryMessages = useSessionStore(s => s.setTeamHistoryMessages);
   const setTeamHumanShareCommands = useSessionStore(s => s.setTeamHumanShareCommands);
-  const isProcessing = useChatStore(s => s.runtimes[activeSessionId ?? '']?.isProcessing ?? false);
+  const isProcessing = useChatStore(s => s.runtimes[conversationId]?.isProcessing ?? false);
   const [planningExpanded, setPlanningExpanded] = useState(false);
   const [teamPlanningExpanded, setTeamPlanningExpanded] = useState(false);
   const [teamMembersExpanded, setTeamMembersExpanded] = useState(false);
@@ -233,7 +235,7 @@ export function ToolPanel({
       status: 'completed' as const,
     }));
   }, [messages, toolExecutions]);
-  const teamLeaderMemberIds = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamLeaderMemberIds ?? []);
+  const teamLeaderMemberIds = useSessionStore(s => s.runtimes[conversationId]?.teamLeaderMemberIds ?? []);
   const memberTasks = useMemo(
     () =>
       teamMembers

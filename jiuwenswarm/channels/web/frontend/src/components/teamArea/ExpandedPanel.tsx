@@ -3,6 +3,10 @@ import { useFullscreenPanel } from '../../hooks';
 import { useSessionArtifactsCount } from '../ArtifactsPanel';
 import { ArtifactExpandedPanel } from '../ArtifactsPanel';
 import { ExpandedPanelTabs, useExpandedPanelTabs } from './ExpandedPanelTabs';
+import { OrgInfoPanel } from './OrgInfoPanel';
+import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
+import { useSessionStore, useChatStore } from '../../stores';
+import { useTranslation } from 'react-i18next';
 
 export interface ExpandedPanelProps {
   activeTab: string;
@@ -41,6 +45,11 @@ export function ExpandedPanel({
   renderBrowserContent,
   testIdPrefix = 'tool-panel',
 }: ExpandedPanelProps) {
+  const { t } = useTranslation();
+  const organizationUiEnabled = useTeamOrganizationUiEnabled();
+  const activeSessionId = useChatStore((state) => state.activeSessionId);
+  const mode = useSessionStore((state) => state.runtimes[activeSessionId ?? '']?.mode);
+  const showOrganization = organizationUiEnabled && mode === 'team';
   const tabPanelId = useId();
   const artifactsCount = useSessionArtifactsCount();
   const {
@@ -67,9 +76,11 @@ export function ExpandedPanel({
     }
   }, [shouldFullscreen, onCollapse, toggleFullscreen]);
 
-  const resolvedTab = resolveActiveTab(activeTab, artifactsCount, reviewPanel);
+  const resolvedTab = activeTab === 'organization' && showOrganization ? 'organization' :
+    resolveActiveTab(activeTab === 'organization' ? 'planning' : activeTab, artifactsCount, reviewPanel);
 
   const tabs = useExpandedPanelTabs({ middleTab, showMiddleTab, artifactsCount, reviewPanel, showBrowserTab });
+  if (showOrganization) tabs.push({ key: 'organization', label: t('team.org.tab') });
 
   return (
     <div
@@ -95,7 +106,7 @@ export function ExpandedPanel({
         role="tabpanel"
         aria-labelledby={`${tabPanelId}-${resolvedTab}`}
       >
-        {resolvedTab === middleTab.key ? (
+        {resolvedTab === 'organization' && showOrganization ? <OrgInfoPanel /> : resolvedTab === middleTab.key ? (
           renderMiddleTabContent()
         ) : resolvedTab === 'artifacts' ? (
           <ArtifactExpandedPanel
