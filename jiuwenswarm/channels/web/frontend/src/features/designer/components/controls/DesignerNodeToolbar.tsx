@@ -95,13 +95,27 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
       ? ((config as { comfyui?: DesignerComfyuiConfig }).comfyui ?? null)
       : null;
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const promptFocusedRef = useRef(false);
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [expanded, setExpanded] = useState<ExpandedPanel>(null);
+  const storePrompt = media.generate?.prompt ?? '';
+  const [promptDraft, setPromptDraft] = useState(storePrompt);
 
   useEffect(() => {
     setExpanded(null);
+    promptFocusedRef.current = false;
   }, [nodeId]);
+
+  useEffect(() => {
+    if (expanded !== 'generate') {
+      promptFocusedRef.current = false;
+      return;
+    }
+    if (!promptFocusedRef.current) {
+      setPromptDraft(storePrompt);
+    }
+  }, [expanded, nodeId, storePrompt]);
 
   const materials = collectDesignerMaterials(domainGraph, run);
   const material =
@@ -239,12 +253,13 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
 
   return (
     <div
-      className="designer-node-toolbar"
+      className="designer-node-toolbar nodrag nopan nowheel"
       data-testid="designer-node-toolbar"
       data-node-type={nodeType}
       data-expanded={expanded ?? 'idle'}
       onClick={(event) => event.stopPropagation()}
       onMouseDown={(event) => event.stopPropagation()}
+      onWheel={(event) => event.stopPropagation()}
     >
       <div className="designer-node-toolbar__tabs" role="tablist" aria-label={t('designer.toolbar.modeLabel')}>
         <button
@@ -328,12 +343,27 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
                 })}
           </p>
           <textarea
-            className="designer-node-toolbar__prompt"
-            value={media.generate?.prompt ?? ''}
+            className="designer-node-toolbar__prompt nodrag nopan nowheel"
+            value={promptDraft}
             placeholder={t('designer.toolbar.promptPlaceholder')}
             rows={4}
             data-testid="designer-node-toolbar-prompt"
-            onChange={(event) => patchGenerate({ prompt: event.target.value })}
+            onFocus={() => {
+              promptFocusedRef.current = true;
+            }}
+            onBlur={() => {
+              promptFocusedRef.current = false;
+              const latestConfig =
+                useDesignerStore.getState().domainGraph?.nodes.find((node) => node.id === nodeId)
+                  ?.config ?? {};
+              setPromptDraft(readMediaConfig(latestConfig, nodeType).generate?.prompt ?? '');
+            }}
+            onChange={(event) => {
+              const value = event.target.value;
+              setPromptDraft(value);
+              patchGenerate({ prompt: value });
+            }}
+            onWheel={(event) => event.stopPropagation()}
           />
           {comfyui ? <DesignerComfyuiParamsForm nodeId={nodeId} comfyui={comfyui} /> : null}
           <button

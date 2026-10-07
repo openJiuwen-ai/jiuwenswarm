@@ -105,20 +105,29 @@ export function resolveMediaPromptForToolbar(
     raw.regenerate_packet && typeof raw.regenerate_packet === 'object'
       ? (raw.regenerate_packet as { prompt?: unknown })
       : undefined;
-  const packetPrompt =
-    typeof packet?.prompt === 'string' ? packet.prompt.trim() : '';
-  const lastWan =
-    typeof raw.last_wan_prompt === 'string' ? raw.last_wan_prompt.trim() : '';
+  const packetPrompt = typeof packet?.prompt === 'string' ? packet.prompt : '';
+  const lastWan = typeof raw.last_wan_prompt === 'string' ? raw.last_wan_prompt : '';
   const lastApproved =
-    typeof raw.last_approved_prompt === 'string'
-      ? raw.last_approved_prompt.trim()
-      : '';
+    typeof raw.last_approved_prompt === 'string' ? raw.last_approved_prompt : '';
   const gen =
     raw.generate && typeof raw.generate === 'object'
-      ? String((raw.generate as { prompt?: unknown }).prompt ?? '').trim()
+      ? String((raw.generate as { prompt?: unknown }).prompt ?? '')
       : '';
-  const rootPrompt = typeof raw.prompt === 'string' ? raw.prompt.trim() : '';
+  const rootPrompt = typeof raw.prompt === 'string' ? raw.prompt : '';
+  // While the user is editing, prefer generate.prompt so store round-trips and
+  // 4000-char packet seeds cannot rewrite the controlled textarea value mid-keystroke.
+  const origin =
+    raw.generate && typeof raw.generate === 'object'
+      ? (raw.generate as { prompt_origin?: unknown }).prompt_origin
+      : undefined;
+  if (origin === 'user' && gen.length > 0) {
+    return gen;
+  }
   // Final tool prompt first; fall back to scaffold generate.prompt for first run.
+  // Do not trim candidates: trimming trailing spaces jumps the textarea caret.
+  for (const candidate of [packetPrompt, lastWan, lastApproved, gen, rootPrompt]) {
+    if (candidate.trim().length > 0) return candidate;
+  }
   return packetPrompt || lastWan || lastApproved || gen || rootPrompt;
 }
 

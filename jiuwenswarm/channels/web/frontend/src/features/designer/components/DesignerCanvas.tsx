@@ -2,6 +2,7 @@ import {
   Background,
   Controls,
   MiniMap,
+  PanOnScrollMode,
   ReactFlow,
   ReactFlowProvider,
   addEdge as appendReactFlowEdge,
@@ -379,6 +380,10 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
         onDrop={onDrop}
         onPaneClick={closeDock}
         panOnDrag={handMode || canvasLocked ? true : [1]}
+        panOnScroll
+        panOnScrollMode={PanOnScrollMode.Free}
+        zoomOnScroll={false}
+        zoomActivationKeyCode={['Control', 'Meta']}
         selectionOnDrag={!handMode && !canvasLocked}
         nodesDraggable={!handMode && !canvasLocked}
         nodesConnectable={!handMode && !canvasLocked}
