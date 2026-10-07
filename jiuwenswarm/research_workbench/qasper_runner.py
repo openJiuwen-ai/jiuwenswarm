@@ -9,6 +9,7 @@ import socket
 from .execution import BudgetSettings, budget_view, cost_units, reserve, settle, units
 from .qasper_experiment import make_request, ParagraphRanker, parse_prediction, evaluate, sha, write
 from .qasper_selection import checked_request
+from .qasper_validation import data_split,check_order
 
 
 FILES=('pilot-requests.json','train/public-papers.json','train/public-questions.json','train/gold-references.json')
@@ -33,16 +34,20 @@ def read(path):return json.loads(Path(path).read_text(encoding='utf-8'))
 def digest(value):return sha(json.dumps(value,sort_keys=True,ensure_ascii=False).encode())
 def code_hashes(dense=False,memory=False):
     return {name:sha(Path(__file__).with_name(name).read_bytes()) for name in
-            ('qasper_runner.py','qasper_experiment.py','qasper_selection.py','retrieval_diagnostics.py','execution.py')+
+            ('qasper_runner.py','qasper_experiment.py','qasper_selection.py','retrieval_diagnostics.py','execution.py','qasper_validation.py','qasper_validation_cohorts.json')+
             (('qasper_dense.py','qasper_dense_bundle.py') if dense else ())+
             (('qasper_memory.py',) if memory else ())}
 
 
 def inputs(bundle):
     """Rebuild each prompt from public fields; never load answers into requests."""
+    split=data_split(bundle)
     if (Path(bundle)/'memory-mode.json').exists():
         from .qasper_memory import memory_inputs
-        return memory_inputs(bundle)
+        requests,papers=memory_inputs(bundle)
+        check_order(bundle,requests)
+        return requests,papers
+    if split=='dev':raise ValueError('Validation requires the frozen memory comparison')
     if (Path(bundle)/'dense-cache.json').exists():
         from .qasper_dense_bundle import validated_inputs
         return validated_inputs(bundle)
@@ -78,9 +83,10 @@ def inputs(bundle):
 
 
 def make_plan(bundle,cfg,batch_cny=.6):
-    cfg=BudgetSettings(**cfg).model_dump()
-    if not cfg['pricing_checked'] or cfg['max_output_tokens']!=512 or not 0<cfg['total_cny']<=15:
-        raise ValueError('Need checked pricing, 512 output limit and total <=15 CNY')
+    cfg=BudgetSettings(**cfg).model_dump();split=data_split(bundle)
+    ceiling=30 if split=='dev' else 15
+    if not cfg['pricing_checked'] or cfg['max_output_tokens']!=512 or not 0<cfg['total_cny']<=ceiling:
+        raise ValueError('Need checked pricing, 512 output limit and allowed total ceiling')
     if cfg['input_cny_per_million']<=0 or cfg['output_cny_per_million']<=0 or not 0<batch_cny<=2:
         raise ValueError('Invalid pricing/batch bound')
     requests,_=inputs(bundle)
@@ -93,19 +99,20 @@ def make_plan(bundle,cfg,batch_cny=.6):
             raise ValueError('Per-question task bound exceeded')
     dense=(Path(bundle)/'dense-cache.json').exists()
     memory=(Path(bundle)/'memory-mode.json').exists()
-    files=list(FILES)
+    files=[name.replace('train/',split+'/') for name in FILES]
+    if split=='dev':files+=['validation-batch.json']
     if dense:
         from .qasper_dense_bundle import cache_files
         files+=cache_files(bundle)
     if memory:files+=['memory-mode.json']
-    plan={'kind':'qasper_train_development','files':{name:sha((Path(bundle)/name).read_bytes()) for name in files},
+    plan={'kind':('qasper_dev_prospective_validation' if split=='dev' else 'qasper_train_development'),'files':{name:sha((Path(bundle)/name).read_bytes()) for name in files},
           'code':code_hashes(dense,memory),'model':cfg['model'],'input_cny_per_million':cfg['input_cny_per_million'],
           'output_cny_per_million':cfg['output_cny_per_million'],'total_cny':cfg['total_cny'],
           'max_input_upper':max(upper),'max_output_tokens':512,'parameters':PARAMS,
           'max_calls':len(requests),'reserve_upper_units':sum(holds),'batch_cap_units':units(batch_cny),
           'client_total_timeout_seconds':TOTAL_TIMEOUT_SECONDS,
           'automatic_retries':0,'order':'exact frozen pilot-requests order; see study protocol',
-          'note':'Development smoke test, no randomization/confirmatory inference; billed cost may differ from peak-rate estimate.'}
+          'note':('Frozen v137 dev-answer validation; prior offline dev use, not unseen test; no new approval implied.' if split=='dev' else 'Development smoke test, no randomization/confirmatory inference; billed cost may differ from peak-rate estimate.')}
     return plan|{'id':digest(plan)}
 
 
@@ -210,8 +217,8 @@ async def _run_batch(store,bundle,plan,key,*,transport=None):
 
 
 def score_batch(bundle,folder):
-    plan=read(Path(folder)/'plan.json');goldfile=Path(bundle)/'train/gold-references.json'
-    if sha(goldfile.read_bytes())!=plan['files']['train/gold-references.json']:raise ValueError('Gold changed')
+    plan=read(Path(folder)/'plan.json');split=data_split(bundle);goldname=split+'/gold-references.json';goldfile=Path(bundle)/goldname
+    if sha(goldfile.read_bytes())!=plan['files'][goldname]:raise ValueError('Gold changed')
     if any(sha((Path(bundle)/name).read_bytes())!=checksum for name,checksum in plan['files'].items()):
         raise ValueError('Scoring bundle changed')
     requests,papers=inputs(bundle);gold=read(goldfile);result=read(Path(folder)/'result.json')

@@ -5,6 +5,7 @@ import numpy as np
 from .qasper_dense import dense_rank,fuse_rankings
 from .qasper_experiment import ParagraphRanker,make_request,sha
 from .qasper_selection import checked_request
+from .qasper_validation import data_split
 
 METHODS=('bm25-check@8','bge-check@8','hybrid-check@8')
 MODEL_SHA='828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35'
@@ -22,18 +23,18 @@ def cache_files(bundle):
 
 def reconstructed(bundle):
     from .qasper_runner import short_answer_request
-    bundle=Path(bundle);cache=read(bundle/'dense-cache.json')
+    bundle=Path(bundle);split=data_split(bundle);cache=read(bundle/'dense-cache.json')
     if cache['model_sha256']!=MODEL_SHA or cache['tokenizer_sha256']!=TOKENIZER_SHA:
         raise ValueError('Wrong pinned model')
     for name in cache_files(bundle)[1:]:
         if sha((bundle/name).read_bytes())!=cache['files'][name]:raise ValueError('Embedding cache changed')
     for name in ('public-papers.json','public-questions.json'):
-        if sha((bundle/'train'/name).read_bytes())!=cache['inputs'][name]:raise ValueError('Public input changed')
-    papers=read(bundle/'train/public-papers.json');qs=read(bundle/'train/public-questions.json')
+        if sha((bundle/split/name).read_bytes())!=cache['inputs'][name]:raise ValueError('Public input changed')
+    papers=read(bundle/split/'public-papers.json');qs=read(bundle/split/'public-questions.json')
     if not 1<=len(qs)<=32 or len({q['question_id'] for q in qs})!=len(qs):raise ValueError('Invalid cohort')
     if {q['paper_id'] for q in qs}!=set(papers) or set(cache['papers'])!=set(papers):raise ValueError('Paper identity mismatch')
-    if any(set(q)!={'question_id','paper_id','question','split'} or q['split']!='train' for q in qs):
-        raise ValueError('Train public questions only')
+    if any(set(q)!={'question_id','paper_id','question','split'} or q['split']!=split for q in qs):
+        raise ValueError('Public questions must retain the allowed split')
     result={}
     for pid,paper in papers.items():
         info=cache['papers'][pid];sub=[q for q in qs if q['paper_id']==pid]
