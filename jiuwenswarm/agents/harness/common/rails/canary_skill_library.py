@@ -43,6 +43,7 @@ policy that wraps native evolution rails.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
@@ -211,22 +212,88 @@ def _default_skills_for_task(ctx: Any) -> list[str]:
     return []
 
 
+def _bounded_int(cfg: dict[str, Any], key: str, default: int) -> int:
+    """Parse a positive int; garbage or sub-minimum values fall back to default."""
+    try:
+        return max(1, int(cfg.get(key, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _unit_float(cfg: dict[str, Any], key: str, default: float) -> float:
+    """Parse a float clamped to [0, 1]; garbage falls back to default."""
+    try:
+        return min(1.0, max(0.0, float(cfg.get(key, default))))
+    except (TypeError, ValueError):
+        return default
+
+
 def get_canary_skill_config(config: dict[str, Any] | None) -> dict[str, Any]:
-    """Read ``react.evolution.canary``; default disabled."""
+    """Read ``react.evolution.canary``; default disabled.
+
+    Parsing is defensive and clamped, matching
+    ``get_execution_grounded_gate_config``: a malformed value degrades to
+    its default instead of aborting the whole evolution-rail build.
+    """
     raw = ((config or {}).get("react") or {}).get("evolution") or {}
     cfg = raw.get("canary") or {}
     return {
         "enabled": cfg.get("enabled") is True,
-        "core_strikes": int(cfg.get("core_strikes", 2)),
-        "promote_after": int(cfg.get("promote_after", 2)),
-        "attribution_floor": float(cfg.get("attribution_floor", 0.5)),
+        "core_strikes": _bounded_int(cfg, "core_strikes", 2),
+        "promote_after": _bounded_int(cfg, "promote_after", 2),
+        "attribution_floor": _unit_float(cfg, "attribution_floor", 0.5),
     }
 
 
+def _wrap_store_admission(rail: Any, library: CanaryLibrary) -> bool:
+    """Admit skills through the rail's ``EvolutionStore.write_skill_content``.
+
+    That store method is where every evolution write funnels (auto-approved,
+    user-approved and rebuild paths), so wrapping it covers admission for the
+    real ``SkillEvolutionRail`` assembly, which has no ``on_skill_written``.
+    Returns False when the rail exposes no wrappable store.
+    """
+    store = getattr(rail, "store", None) or getattr(rail, "evolution_store", None)
+    if store is None or getattr(store, "_canary_admission_wrapped", False):
+        return False
+    orig_write = getattr(store, "write_skill_content", None)
+    if not callable(orig_write):
+        return False
+
+    def _admitting_write(name: Any, content: Any, *args: Any, **kwargs: Any):
+        result = orig_write(name, content, *args, **kwargs)
+        if inspect.isawaitable(result):
+
+            async def _chained():
+                written = await result
+                library.admit(str(name))
+                logger.info("[canary] admit %s", name)
+                return written
+
+            return _chained()
+        library.admit(str(name))
+        logger.info("[canary] admit %s", name)
+        return result
+
+    # 动态挂接到非本类创建的 store 实例：用 setattr 显式表达动态绑定（G.CLS.11）。
+    setattr(store, "_canary_admission_wrapped", True)
+    store.write_skill_content = _admitting_write  # type: ignore[method-assign]
+    return True
+
+
 def attach_canary_library(rail: Any, library: CanaryLibrary) -> Any:
-    """Bind *library* onto a native evolution rail. Opt-in, in-place."""
+    """Bind *library* onto a native evolution rail. Opt-in, in-place.
+
+    Admission hooks, in priority order: the rail's ``EvolutionStore``
+    (production ``SkillEvolutionRail``; every write funnels through
+    ``write_skill_content``) and, for lightweight hosts/tests, a direct
+    ``on_skill_written`` callback. When neither exists the binding logs a
+    warning — the library then only ever holds skills admitted through
+    explicit ``admit`` calls.
+    """
     # 动态挂接到非本类创建的 rail 实例：用 setattr 显式表达动态绑定（G.CLS.11）。
     setattr(rail, "_canary_library", library)
+    admitted_via = _wrap_store_admission(rail, library)
     orig = getattr(rail, "on_skill_written", None)
     if callable(orig):
         def _wrapped(name, *args, **kwargs):
@@ -235,5 +302,12 @@ def attach_canary_library(rail: Any, library: CanaryLibrary) -> Any:
             logger.info("[canary] admit %s", name)
             return out
         rail.on_skill_written = _wrapped  # type: ignore[method-assign]
+        admitted_via = True
+    if not admitted_via:
+        logger.warning(
+            "[canary] no admission hook on rail (%s); canary is outcome-only "
+            "until an admit source is wired",
+            type(rail).__name__,
+        )
     logger.info("[canary] bound core_strikes=%s promote_after=%s", library.core_strikes, library.promote_after)
     return rail

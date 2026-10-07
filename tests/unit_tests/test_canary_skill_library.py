@@ -37,6 +37,72 @@ def test_enabled_true_only_on_explicit_true():
     assert get_canary_skill_config({"react": {"evolution": {"canary": {"enabled": "true"}}}})["enabled"] is False
 
 
+def test_config_garbage_degrades_to_defaults_instead_of_raising():
+    cfg = get_canary_skill_config({"react": {"evolution": {"canary": {
+        "enabled": True, "core_strikes": "abc", "promote_after": None,
+        "attribution_floor": "oops",
+    }}}})
+    assert cfg["core_strikes"] == 2
+    assert cfg["promote_after"] == 2
+    assert cfg["attribution_floor"] == 0.5
+
+
+def test_config_values_are_clamped():
+    cfg = get_canary_skill_config({"react": {"evolution": {"canary": {
+        "enabled": True, "core_strikes": 0, "promote_after": -3,
+        "attribution_floor": 1.5,
+    }}}})
+    assert cfg["core_strikes"] == 1
+    assert cfg["promote_after"] == 1
+    assert cfg["attribution_floor"] == 1.0
+
+
+def _store_rail():
+    """Stub matching the real SkillEvolutionRail surface: store, no on_skill_written."""
+
+    class _Store:
+        def __init__(self):
+            self.written = []
+
+        async def write_skill_content(self, name, content):
+            self.written.append(name)
+            return True
+
+    class _Rail:
+        def __init__(self):
+            self.store = _Store()
+
+    return _Rail()
+
+
+def test_store_write_path_admits_skills():
+    rail = _store_rail()
+    lib = CanaryLibrary()
+    attach_canary_library(rail, lib)
+    ok = asyncio.run(rail.store.write_skill_content("learned_t17", "# skill"))
+    assert ok is True
+    assert "learned_t17" in lib.entries
+    assert "learned_t17" in rail.store.written  # native write untouched
+
+
+def test_store_admission_wrap_is_idempotent():
+    rail = _store_rail()
+    lib = CanaryLibrary()
+    attach_canary_library(rail, lib)
+    attach_canary_library(rail, lib)  # second bind must not double-wrap
+    asyncio.run(rail.store.write_skill_content("learned_x", "# x"))
+    assert lib.entries["learned_x"].name == "learned_x"  # admitted exactly once
+
+
+def test_attach_without_any_hook_warns_but_stays_safe():
+    class _BareRail:
+        pass
+
+    lib = CanaryLibrary()
+    attach_canary_library(_BareRail(), lib)  # must not raise
+    assert lib.entries == {}
+
+
 def test_probation_evicted_on_first_attributed_failure():
     lib = CanaryLibrary()
     lib.admit("s1")
