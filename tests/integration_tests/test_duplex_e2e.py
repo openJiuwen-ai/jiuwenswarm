@@ -582,6 +582,49 @@ async def test_explicit_cancel_supersedes_pending_interrupt_without_restart(worl
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["load_state", "save_state", "restart"])
+async def test_tool_interrupt_failure_rejects_delivery_and_keeps_message_unread(world, monkeypatch, failure):
+    from openjiuwen.agent_teams.harness.native_harness import NativeHarness
+
+    w = world
+    w.tool.gate.clear()
+    w.endpoint.block_model = False
+    await w.harness.send("Implement the order system.")
+    await asyncio.wait_for(w.tool.entered.wait(), 6)
+    mid = await send_message(w)
+    drain = asyncio.create_task(poll_and_apply(w))
+    await wait_until(lambda: w.harness.state is HarnessState.PAUSING)
+
+    def fail_persistence(*args, **kwargs):
+        raise OSError("injected interrupt recovery failure")
+
+    async def fail_restart(*args, **kwargs):
+        raise OSError("injected interrupt recovery failure")
+
+    with monkeypatch.context() as patch:
+        if failure == "restart":
+            patch.setattr(NativeHarness, "_on_send", fail_restart)
+        else:
+            original = getattr(w.native, failure)
+
+            def persist(*args, **kwargs):
+                if w.native.state is HarnessState.PAUSED:
+                    return fail_persistence(*args, **kwargs)
+                return original(*args, **kwargs)
+
+            patch.setattr(w.native, failure, persist)
+        w.tool.gate.set()
+        with pytest.raises(OSError, match="injected interrupt recovery failure"):
+            await asyncio.wait_for(drain, 3)
+
+    assert w.native._duplex_pending is None
+    assert mid not in w.native._duplex_received
+    assert await w.manager.get_messages(to_member_name="A2", unread_only=True)
+    assert w.tool.path.read_text() == "committed\n"
+    assert w.native._st.round_id_counter == 1
+
+
+@pytest.mark.asyncio
 async def test_failed_db_ack_retry_does_not_reexecute_delivery(world, monkeypatch):
     w = world
     await w.harness.send("Implement the order system.")
