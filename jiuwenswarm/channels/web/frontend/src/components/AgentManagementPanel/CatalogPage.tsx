@@ -65,6 +65,7 @@ export function CatalogPage({
   const isMine = scope === 'mine';
   const [visibleCount, setVisibleCount] = useState(CATALOG_BATCH_SIZE);
   const contentScrollRef = useRef<HTMLDivElement | null>(null);
+  const catalogSentinelRef = useRef<HTMLDivElement | null>(null);
   const hasMore = visibleCount < items.length;
   const pageItems = items.slice(0, visibleCount);
   const isEmpty = status === 'success' && totalItems === 0;
@@ -80,19 +81,48 @@ export function CatalogPage({
     setVisibleCount((count) => (count < items.length ? Math.min(count + CATALOG_BATCH_SIZE, items.length) : count));
   }, [items.length]);
 
-  // 滚动触底：底部加载组件已可见，追加下一批（数据在内存中，追加为同步展示）。
-  // 时间戳节流：滚动事件高频触发，100ms 内只允许追加一次，避免一帧内连续追加多批。
+  // 时间戳节流：滚动/IntersectionObserver 高频触发，100ms 内只允许追加一次。
   const lastAppendAtRef = useRef(0);
-  const handleContentScroll = useCallback(() => {
+  const tryAppend = useCallback(() => {
     const now = performance.now();
     if (now - lastAppendAtRef.current < 100) return;
+    lastAppendAtRef.current = now;
+    appendNextBatch();
+  }, [appendNextBatch]);
+
+  // 滚动触底兜底（IntersectionObserver 为主路径）。
+  const handleContentScroll = useCallback(() => {
+    if (!hasMore) return;
+    const el = contentScrollRef.current;
+    if (!el) return;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - LOAD_MORE_THRESHOLD_PX) tryAppend();
+  }, [hasMore, tryAppend]);
+
+  // 哨兵进入视口即追加下一批；rootMargin 提前 LOAD_MORE_THRESHOLD_PX 触发。
+  // jsdom 等无布局环境没有 IntersectionObserver，跳过（由 onScroll + 兜底 effect 覆盖）。
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return;
+    const root = contentScrollRef.current;
+    const sentinel = catalogSentinelRef.current;
+    if (!root || !sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) tryAppend();
+      },
+      { root, rootMargin: `0px 0px ${LOAD_MORE_THRESHOLD_PX}px 0px` },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [tryAppend]);
+
+  // 兜底：首批没撑出滚动条时持续追加，直到出现滚动条或加载完，否则后续批次永远加载不出来。
+  // clientHeight === 0（无布局，如 jsdom）时跳过，避免误判一次性全量加载。
+  useEffect(() => {
     const el = contentScrollRef.current;
     if (!el || !hasMore) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - LOAD_MORE_THRESHOLD_PX) {
-      lastAppendAtRef.current = now;
-      appendNextBatch();
-    }
-  }, [appendNextBatch, hasMore]);
+    if (el.clientHeight === 0 || el.scrollHeight > el.clientHeight) return;
+    appendNextBatch();
+  }, [hasMore, appendNextBatch, visibleCount]);
 
   return (
     <>
@@ -213,6 +243,7 @@ export function CatalogPage({
             </div>
             {hasMore ? (
               <div
+                ref={catalogSentinelRef}
                 className="flex items-center justify-center gap-2 py-4"
                 role="status"
                 aria-label={t('agentManagement.loadMore')}

@@ -134,7 +134,7 @@ export function ExpandedPanelTabs({
               {tab.closable && onTabClose && (
                 <span
                   data-variant={tab.key}
-                  className="ml-1 -mr-0.5 inline-flex opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto"
+                  className="ml-1 -mr-0.5 inline-flex opacity-50 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
                   onClick={(event) => event.stopPropagation()}
                 >
                   <CloseButton

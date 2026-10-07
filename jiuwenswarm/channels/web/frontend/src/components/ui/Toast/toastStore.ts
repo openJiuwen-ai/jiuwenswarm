@@ -28,6 +28,9 @@ export interface ToastConfig {
   position?: ToastPosition;
   /** 自定义条目 data-testid（用于自动化测试定位）；默认 'ui-toast'。 */
   testId?: string;
+  /** 覆盖 toast 根的 data-variant（默认取内部数字 key）。
+   *  用于把"缓存提示 stale/error"这类业务态语义重新挂到根元素，便于自动化按状态收窄。 */
+  dataVariant?: string;
   /** 条目内联样式透传（如个别 toast 的定制 box-shadow，引用主题 token 而非硬编码色值）。 */
   style?: CSSProperties;
   /** 是否显示关闭按钮；默认 true。常驻型提示（如连接状态）传 false 隐藏关闭入口。 */
@@ -48,6 +51,8 @@ export interface ToastRecord {
   icon?: ReactNode;
   position: ToastPosition;
   testId?: string;
+  /** 业务态语义（如缓存提示的 stale/error）；缺省回退到内部数字 key。 */
+  dataVariant?: string;
   style?: CSSProperties;
   closable: boolean;
   /** 原地更新序号：每次 buildRecord 单调递增；ToastItem 依赖它复位自动消失计时器（对齐 antd update 语义）。 */
@@ -130,6 +135,7 @@ function buildRecord(config: ToastConfig, key: number): ToastRecord {
     icon: config.icon,
     position: config.position ?? 'center',
     testId: config.testId,
+    dataVariant: config.dataVariant,
     style: config.style,
     closable: config.closable ?? true,
     updatedAt: ++updateSeq,

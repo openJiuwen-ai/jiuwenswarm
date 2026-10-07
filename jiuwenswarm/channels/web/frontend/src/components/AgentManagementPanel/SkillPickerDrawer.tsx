@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import EntityAddIcon from '../../assets/agent-management/add.svg?react';
 import EntityRemoveIcon from '../../assets/agent-management/remove.svg?react';
@@ -53,13 +53,20 @@ export function SkillPickerDrawer({
   const [query, setQuery] = useState('');
   const [selectedIds, setSelectedIds] = useState<string[]>(initialSelectedIds);
 
-  const filteredSkills = sortInstalledFirst(
-    skills.filter((skill) => {
-      if (isTeamSkillOption(skill, sourceTab) || !isSkillVisibleInSourceTab(skill, sourceTab)) return false;
-      const q = query.trim().toLocaleLowerCase();
-      if (!q) return true;
-      return `${skill.id} ${skill.name} ${skill.description}`.toLocaleLowerCase().includes(q);
-    }),
+  // 与 ConnectorPickerDrawer 的 visibleItems 对齐：用 useMemo 稳定引用，
+  // 避免每次渲染都产生新数组导致 PickerListRegion 的 [items] effect 重置回首批
+  // （选中/取消会触发父组件重渲染，新引用会让列表从第 2 批跳回首屏 30 条）。
+  const filteredSkills = useMemo(
+    () =>
+      sortInstalledFirst(
+        skills.filter((skill) => {
+          if (isTeamSkillOption(skill, sourceTab) || !isSkillVisibleInSourceTab(skill, sourceTab)) return false;
+          const q = query.trim().toLocaleLowerCase();
+          if (!q) return true;
+          return `${skill.id} ${skill.name} ${skill.description}`.toLocaleLowerCase().includes(q);
+        }),
+      ),
+    [skills, sourceTab, query],
   );
 
   function toggle(id: string) {

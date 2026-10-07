@@ -45,6 +45,7 @@ export function PickerListRegion<T>({
   loadMoreLabel,
 }: PickerListRegionProps<T>) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
   const [visibleCount, setVisibleCount] = useState(pageSize);
   const hasMore = visibleCount < items.length;
 
@@ -52,18 +53,54 @@ export function PickerListRegion<T>({
     setVisibleCount(pageSize);
   }, [items, pageSize]);
 
-  // 时间戳节流：滚动事件高频触发，100ms 内只允许追加一次，避免一帧内连续追加多批。
+  const appendNextBatch = useCallback(() => {
+    setVisibleCount((count) => (count < items.length ? Math.min(count + pageSize, items.length) : count));
+  }, [items.length, pageSize]);
+
+  // 时间戳节流：滚动事件/IntersectionObserver 高频触发，100ms 内只允许追加一次，
+  // 避免一帧内连续追加多批；一次惯性滑动受限于实际渲染节奏，不会再"几百条"地连发。
   const lastAppendAtRef = useRef(0);
-  const handleScroll = useCallback(() => {
+  const tryAppend = useCallback(() => {
     const now = performance.now();
     if (now - lastAppendAtRef.current < 100) return;
+    lastAppendAtRef.current = now;
+    appendNextBatch();
+  }, [appendNextBatch]);
+
+  // 滚动触底兜底：IntersectionObserver 为主路径，这里覆盖快速滑动越过哨兵的情形。
+  const handleScroll = useCallback(() => {
+    if (!hasMore) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - LOAD_MORE_THRESHOLD_PX) tryAppend();
+  }, [hasMore, tryAppend]);
+
+  // 哨兵进入视口即追加下一批；rootMargin 提前 LOAD_MORE_THRESHOLD_PX 触发，体验更平滑。
+  // jsdom 等无布局环境没有 IntersectionObserver，跳过（由 onScroll + 兜底 effect 覆盖）。
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return;
+    const root = scrollRef.current;
+    const sentinel = sentinelRef.current;
+    if (!root || !sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) tryAppend();
+      },
+      { root, rootMargin: `0px 0px ${LOAD_MORE_THRESHOLD_PX}px 0px` },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [tryAppend]);
+
+  // 兜底：首批没撑出滚动条（clientHeight 可测且 scrollHeight <= clientHeight）时持续追加，
+  // 直到出现滚动条或加载完。否则哨兵恒在视口内但 IntersectionObserver 不会再回调（已处于相交态），
+  // 后续批次永远加载不出来。clientHeight === 0（无布局，如 jsdom）时跳过，避免误判一次性全量加载。
+  useEffect(() => {
     const el = scrollRef.current;
     if (!el || !hasMore) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - LOAD_MORE_THRESHOLD_PX) {
-      lastAppendAtRef.current = now;
-      setVisibleCount((count) => Math.min(count + pageSize, items.length));
-    }
-  }, [hasMore, pageSize, items.length]);
+    if (el.clientHeight === 0 || el.scrollHeight > el.clientHeight) return;
+    appendNextBatch();
+  }, [hasMore, appendNextBatch, visibleCount]);
 
   const visibleItems = items.slice(0, visibleCount);
   const isEmpty = status === 'success' && items.length === 0;
@@ -96,6 +133,7 @@ export function PickerListRegion<T>({
           </div>
           {hasMore ? (
             <div
+              ref={sentinelRef}
               className="flex items-center justify-center gap-2 py-4"
               role="status"
               aria-label={loadMoreLabel}

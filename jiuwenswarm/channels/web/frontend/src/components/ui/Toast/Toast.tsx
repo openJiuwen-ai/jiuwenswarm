@@ -13,7 +13,7 @@ const VARIANT_ICON: Partial<Record<ToastVariant, LucideIcon>> = {
 };
 
 function ToastItem({ record }: { record: ToastRecord }) {
-  const { key, content, actions, durationMs, variant, icon, wide, closing, testId, style, closable, updatedAt } = record;
+  const { key, content, actions, durationMs, variant, icon, wide, closing, testId, dataVariant, style, closable, updatedAt } = record;
   // 自动消失计时器依赖 updatedAt：同 id 原地更新时序号必然递增 → 计时器复位（对齐 antd update 语义）
   useEffect(() => {
     if (durationMs <= 0) return undefined;
@@ -28,7 +28,7 @@ function ToastItem({ record }: { record: ToastRecord }) {
       role="status"
       style={style}
       data-testid={testId ?? 'ui-toast'}
-      data-variant={key}
+      data-variant={dataVariant ?? key}
     >
       <div className="ui-toast__body">
         {icon ? (

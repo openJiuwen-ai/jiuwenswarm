@@ -63,6 +63,9 @@ export function CatalogCacheNotice({ cache }: { cache?: CatalogCacheMetadata }) 
       duration: 0,
       wide: true,
       testId: CACHE_NOTICE_TOAST_ID,
+      // 恢复迁移到 toast 前内联 div 上的 data-variant={kind} 语义（stale/error），
+      // 让外部自动化能按状态收窄该常驻提示；其它 toast 不传则仍取内部数字 key。
+      dataVariant: kind,
     });
   }, [kind, updatedAt, language]);
 
