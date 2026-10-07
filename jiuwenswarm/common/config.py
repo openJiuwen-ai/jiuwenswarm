@@ -465,10 +465,13 @@ def get_execution_grounded_gate_config(config: dict[str, Any] | None) -> dict[st
         except (TypeError, ValueError):
             return default
 
+    window = _int("window", 6)
     return {
         "enabled": raw.get("enabled") is True,
-        "window": _int("window", 6),
-        "min_samples": _int("min_samples", 3),
+        "window": window,
+        # min_samples beyond the window can never be reached: clamp instead of
+        # letting the gate suppress evolution forever.
+        "min_samples": min(_int("min_samples", 3), window),
     }
 
 

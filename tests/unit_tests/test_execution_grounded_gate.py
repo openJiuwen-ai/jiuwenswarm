@@ -77,6 +77,13 @@ def test_min_samples_must_be_positive():
         ExecutionGroundedGate(window=5, min_samples=0)
 
 
+def test_min_samples_above_window_is_rejected():
+    # _outcomes is a deque(maxlen=window): a larger min_samples can never be
+    # reached and would suppress evolution forever.
+    with pytest.raises(ValueError):
+        ExecutionGroundedGate(window=3, min_samples=6)
+
+
 def test_attach_wraps_allow_evolution_trigger():
     class _Rail:
         def _allow_evolution_trigger(self, trigger_point, ctx):

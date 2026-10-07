@@ -72,6 +72,10 @@ class ExecutionGroundedGate:
             # min_samples=0 would make recent_success_rate divide by an empty
             # window once outcomes exist; refuse it at construction time.
             raise ValueError("min_samples must be >= 1")
+        if min_samples > window:
+            # _outcomes never exceeds ``window`` entries, so a larger
+            # min_samples is unreachable and would suppress evolution forever.
+            raise ValueError("min_samples must be <= window")
         self.window = window
         self.min_samples = min_samples
         self._outcomes: Deque[_Outcome] = deque(maxlen=window)

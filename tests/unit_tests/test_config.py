@@ -1023,6 +1023,16 @@ class TestConfigFunctions:
         # unknown keys are ignored rather than propagated.
         assert cfg == {"enabled": True, "window": 5, "min_samples": 2}
 
+    def test_execution_grounded_gate_min_samples_clamped_to_window(self):
+        # min_samples beyond the window is unreachable (deque maxlen) and
+        # would suppress evolution forever; the config reader clamps it.
+        cfg = get_execution_grounded_gate_config({
+            "react": {"evolution": {"execution_gate": {
+                "enabled": True, "window": 3, "min_samples": 9,
+            }}}
+        })
+        assert cfg == {"enabled": True, "window": 3, "min_samples": 3}
+
     def test_execution_grounded_gate_ignores_top_level_evolution(self):
         cfg = get_execution_grounded_gate_config({
             "evolution": {"execution_gate": {"enabled": True}}
