@@ -76,8 +76,16 @@ def test_execution_gate_provider_disabled_is_inert():
 
 
 def test_canary_provider_path_admits_written_skills():
+    import asyncio
+
+    from jiuwenswarm.agents.harness.common.rails.canary_skill_library import (
+        CanarySkillRail,
+    )
+
     rail = _StubEvolutionRail()
-    evolution_rails._maybe_attach_canary(rail, _CANARY_ON)
+    extra = evolution_rails._maybe_attach_canary(rail, _CANARY_ON)
+    assert len(extra) == 1 and isinstance(extra[0], CanarySkillRail)
+    assert extra[0].library is rail._canary_library
     rail.on_skill_written("learned_t01")
     library = rail._canary_library
     assert "learned_t01" in library.entries
@@ -85,6 +93,16 @@ def test_canary_provider_path_admits_written_skills():
     # attributed failure strikes the admitted skill (core_strikes=1 -> evict)
     dec = library.record_task(["learned_t01"], passed=False, base_rate=0.9)
     assert dec.evicted == ["learned_t01"]
+    # full rail path: admission via the wrapped hook, eviction via the rail
+    rail.on_skill_written("learned_t02")
+    outcome = SimpleNamespace(
+        success=False,
+        inputs=SimpleNamespace(
+            task_id="task-1", canary_skills=["learned_t02"], canary_base_rate=0.9
+        ),
+    )
+    asyncio.run(extra[0].after_invoke(outcome))
+    assert "learned_t02" not in library.entries
 
 
 def test_canary_provider_disabled_is_inert():
