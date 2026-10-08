@@ -32,10 +32,12 @@ class DynamicMemoryGateway:
         evidence: EvidenceWriter,
         *,
         script: Path | None = None,
+        invoke_timeout: float = 600.0,
     ) -> None:
         self.root = root
         self.evidence = evidence
         self.script = script or VENDORED_SKILL / "scripts" / "dynamic_memory_cli.py"
+        self.invoke_timeout = invoke_timeout
         self._init_lock = asyncio.Lock()
         self._initialized = False
 
@@ -71,7 +73,26 @@ class DynamicMemoryGateway:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=self.invoke_timeout
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            elapsed_ms = (asyncio.get_running_loop().time() - started) * 1000
+            await self.evidence.append_audit(
+                "memory-cli-calls",
+                {
+                    "args": list(args),
+                    "returncode": None,
+                    "elapsed_ms": elapsed_ms,
+                    "result": {"error": "timeout", "timeout_s": self.invoke_timeout},
+                },
+            )
+            raise RuntimeError(
+                f"dynamic-memory-cli timed out after {self.invoke_timeout}s: {list(args)}"
+            ) from None
         elapsed_ms = (asyncio.get_running_loop().time() - started) * 1000
         text = stdout.decode("utf-8", errors="replace")
         error_text = stderr.decode("utf-8", errors="replace")

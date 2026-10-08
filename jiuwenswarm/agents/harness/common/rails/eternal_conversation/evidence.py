@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -13,6 +14,9 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 def utc_now() -> str:
@@ -290,8 +294,19 @@ class EvidenceWriter:
         search_path = self.root / "raw-history" / "search.jsonl"
         searchable: list[dict[str, Any]] = []
         if search_path.exists():
-            with search_path.open("r", encoding="utf-8") as handle:
-                searchable = [json.loads(line) for line in handle if line.strip()]
+            try:
+                with search_path.open("r", encoding="utf-8") as handle:
+                    searchable = [json.loads(line) for line in handle if line.strip()]
+            except json.JSONDecodeError:
+                # search.jsonl is a derived, fully rebuildable view of the
+                # authoritative Raw History; a partial/corrupt write must not
+                # disable the whole feature. Drop it and rebuild from scratch.
+                logger.warning(
+                    "corrupt search view at %s; rebuilding from Raw History",
+                    search_path,
+                )
+                search_path.unlink()
+                searchable = []
         if len(searchable) > len(events):
             raise RuntimeError("Raw History search view is ahead of canonical evidence")
         for index, row in enumerate(searchable):
