@@ -71,6 +71,15 @@ def parse_port(value: Any, default: int, field_name: str) -> int:
     return port
 
 
+def _direct_bind_host(role_cfg: dict[str, Any], role_host: str) -> str:
+    """Bind address for the direct socket: ``bind_host`` > the role's own ``host``.
+
+    ``host`` already defaults to loopback, so an unconfigured node never listens
+    on every interface; set ``bind_host: 0.0.0.0`` explicitly when that is intended.
+    """
+    return str(role_cfg.get("bind_host") or "").strip() or role_host
+
+
 def normalize_distributed_transport_fields(
     config_base: dict[str, Any],
     team_cfg: dict[str, Any],
@@ -114,7 +123,8 @@ def normalize_distributed_transport_fields(
         "team.transport.params.leader.sub_port",
     )
     if role == "leader":
-        local_direct_addr = f"tcp://0.0.0.0:{leader_direct_port}"
+        bind_host = _direct_bind_host(leader_cfg, leader_host)
+        local_direct_addr = f"tcp://{bind_host}:{leader_direct_port}"
         pubsub_bind = True
     else:
         leader_member_name = "team_leader"
@@ -129,7 +139,8 @@ def normalize_distributed_transport_fields(
             18600,
             "team.transport.params.teammate.direct_port",
         )
-        local_direct_addr = f"tcp://0.0.0.0:{teammate_direct_port}"
+        bind_host = _direct_bind_host(teammate_cfg, teammate_host)
+        local_direct_addr = f"tcp://{bind_host}:{teammate_direct_port}"
         known_peers = [
             {
                 "agent_id": leader_member_name,

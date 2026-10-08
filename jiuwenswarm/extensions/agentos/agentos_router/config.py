@@ -63,9 +63,11 @@ def agentos_router_selected(config: dict[str, Any]) -> bool:
 
 
 def load_ssh_channel_endpoint(config: dict[str, Any]) -> SshChannelEndpoint | None:
-    """Load northbound SSH listen ip/port from ``channels.ssh``.
+    """Load the northbound SSH endpoint reported to clients from ``channels.ssh``.
 
-    Returns ``None`` when the channel is disabled or listen address is incomplete.
+    ``advertise_host`` wins over ``listen_host`` so the channel can bind loopback
+    (or a wildcard) while still reporting a reachable address.
+    Returns ``None`` when the channel is disabled or the address is incomplete.
     """
     channels = config.get("channels") if isinstance(config, dict) else None
     if not isinstance(channels, dict):
@@ -75,7 +77,7 @@ def load_ssh_channel_endpoint(config: dict[str, Any]) -> SshChannelEndpoint | No
         return None
     if not bool(ssh.get("enabled", False)):
         return None
-    ip = str(ssh.get("listen_host") or "").strip()
+    ip = str(ssh.get("advertise_host") or ssh.get("listen_host") or "").strip()
     try:
         port = int(ssh.get("listen_port") or 0)
     except (TypeError, ValueError):

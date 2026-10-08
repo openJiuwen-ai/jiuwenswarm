@@ -74,16 +74,12 @@ def _is_strict_path_prefix(parent: str, child: str) -> bool:
     return child_norm.startswith(parent_norm + "/")
 
 
-def validate_sandbox_files_runtime(files: dict[str, Any] | None) -> None:
+def validate_sandbox_files_runtime(files: list[dict[str, Any]] | None) -> None:
     """Reject invalid ``sandbox.files`` shapes."""
-    if not isinstance(files, dict):
+    if files is None:
         return
-    for bucket in ("allow", "deny"):
-        entries = files.get(bucket)
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            _normalize_fs_entry(entry)
+    from jiuwenswarm.common.file_guard_config import sandbox_file_buckets
+    sandbox_file_buckets(files)
 
 
 def find_nested_files_conflict(
@@ -392,7 +388,7 @@ def build_yuanrong_sandbox_status_view() -> dict[str, Any]:
 
 
 def build_filesystem_policy(
-    files_runtime: dict[str, Any] | None,
+    files_runtime: list[dict[str, Any]] | None,
     *,
     project_dir: str | Path | None = None,
     is_code_agent: bool = False,
@@ -400,8 +396,14 @@ def build_filesystem_policy(
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """build jiuwenbox filesystem policy."""
     del is_code_agent  # retained for caller compatibility
-    files_runtime = files_runtime or {}
+    files_runtime = [] if files_runtime is None else files_runtime
     validate_sandbox_files_runtime(files_runtime)
+    from jiuwenswarm.common.file_guard_config import sandbox_file_buckets
+    files_runtime, blocked_paths = sandbox_file_buckets(files_runtime)
+    for entry in files_runtime.get("allow") or []:
+        conflict = find_nested_files_conflict(_sandbox_files_entry_path(entry), "allow", files_runtime)
+        if conflict:
+            raise ValueError(conflict)
     effective_startup_mode = (
         startup_mode if startup_mode is not None else get_sandbox_startup_mode()
     )
@@ -566,14 +568,19 @@ def build_filesystem_policy(
     if read_only_promote:
         fs_policy["read_only"] = read_only_promote
 
-    return {"filesystem_policy": fs_policy}, upload_list
+    policy = {"filesystem_policy": fs_policy}
+    if blocked_paths:
+        policy["windows"] = {"filesystem": {
+            "deny_read": blocked_paths, "deny_write": blocked_paths,
+        }}
+    return policy, upload_list
 
 
 def create_sandbox_sysop_card(
     sandbox_url: str,
     sandbox_type: str,
     *,
-    files_runtime: dict[str, Any] | None = None,
+    files_runtime: list[dict[str, Any]] | None = None,
     excluded_commands: list[str] | None = None,
     idle_ttl_seconds: int | None = None,
     idle_check_interval: int | None = None,
@@ -870,7 +877,7 @@ def list_auto_managed_sandbox_paths(
 
 
 def list_effective_sandbox_files(
-    files_runtime: dict[str, Any] | None,
+    files_runtime: list[dict[str, Any]] | None,
     *,
     project_dir: str | Path | None = None,
     is_code_agent: bool = False,
@@ -888,7 +895,7 @@ def list_effective_sandbox_files(
     by ``/sandbox status`` / ``/sandbox files list``.
 
     Args:
-        files_runtime: ``sandbox.files`` dict from ``get_sandbox_runtime()``.
+        files_runtime: ``sandbox.files`` list from ``get_sandbox_runtime()``.
         project_dir: explicit override for the rw bind-mount root. Callers
             should pass the trusted-directory project root cached on the
             adapter (i.e. ``trusted_dirs[0]``); ``None`` means "unknown",
@@ -907,7 +914,7 @@ def list_effective_sandbox_files(
     allow = list(auto["allow_write"])
     deny = list(auto["deny_write"])
 
-    files_runtime = files_runtime or {}
+    files_runtime = [] if files_runtime is None else files_runtime
     validate_sandbox_files_runtime(files_runtime)
 
     def _emit(bucket: list[dict[str, str]], entry: Any, *, access: str) -> None:
@@ -926,12 +933,17 @@ def list_effective_sandbox_files(
             },
         )
 
+    from jiuwenswarm.common.file_guard_config import sandbox_file_buckets
+    files_runtime, blocked_paths = sandbox_file_buckets(files_runtime)
     for entry in files_runtime.get("allow") or []:
         _emit(allow, entry, access="rw")
     for entry in files_runtime.get("deny") or []:
         _emit(deny, entry, access="ro")
 
-    return {"allow_write": allow, "deny_write": deny}
+    result = {"allow_write": allow, "deny_write": deny}
+    if blocked_paths:
+        result["deny_read"] = [{"path": path, "access": "none"} for path in blocked_paths]
+    return result
 
 
 def find_auto_managed_match(

@@ -1689,6 +1689,10 @@ class JiuWenSwarm:
         else:
             confirm_payload = {"approved": False, "auto_confirm": False, "feedback": f"未知选项: {value}"}
 
+        if (source == "permission_interrupt" and isinstance(answer, dict)
+                and ("authorization_mode" in answer or "authorization_scope" in answer)):
+            confirm_payload["authorization_mode"] = answer.get("authorization_mode", "allow")
+            confirm_payload["authorization_scope"] = answer.get("authorization_scope", "exact")
         interactive_input.update(request_id, confirm_payload)
         logger.info(
             "[JiuWenSwarm] PermissionRail InteractiveInput.update: request_id=%s payload=%s",

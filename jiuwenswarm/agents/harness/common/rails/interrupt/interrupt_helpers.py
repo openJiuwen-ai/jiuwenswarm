@@ -348,7 +348,7 @@ def build_permission_rail(
         tool_names, llm is not None, model_name,
     )
     try:
-        def _persist_allow_rule(permissions: dict[str, Any]) -> bool:
+        def _persist_allow_rule(permissions: dict[str, Any], *, approval_grant: dict | None = None) -> bool:
             """Persist merged scenario lists to config.yaml.
 
             openjiuwen PermissionInterruptRail calls this when user selects "always allow".
@@ -361,7 +361,7 @@ def build_permission_rail(
                     persist_merged_allow_rule_snapshot,
                 )
 
-                return persist_merged_allow_rule_snapshot(permissions)
+                return persist_merged_allow_rule_snapshot(permissions, approval_grant=approval_grant)
             except Exception as exc:
                 logger.warning("[InterruptHelpers] persist_allow_rule failed: %s", exc)
                 return False
@@ -428,6 +428,7 @@ def build_permission_rail(
                 },
                 "options": [
                     {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
+                    {"optionId": "allow-session", "name": "Allow in this session", "kind": "allow_always"},
                     {"optionId": "allow-always", "name": "Always allow", "kind": "allow_always"},
                     {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"},
                 ],
@@ -461,6 +462,8 @@ def build_permission_rail(
             if outcome_kind == "selected":
                 if option_id == "allow-once":
                     return PermissionConfirmResponse(approved=True, auto_confirm=False, feedback="")
+                if option_id == "allow-session":
+                    return PermissionConfirmResponse(approved=True, auto_confirm=True, persist_allow=False)
                 if option_id == "allow-always":
                     return PermissionConfirmResponse(approved=True, auto_confirm=True, feedback="")
                 return PermissionConfirmResponse(
@@ -997,6 +1000,7 @@ def _build_multi_questions(questions_data: list) -> list:
             "displayName",
             "skill_name",
             "skillName",
+            "authorization_scopes",
         ):
             if key in q and q[key] is not None:
                 question_payload[key] = q[key]
@@ -1183,6 +1187,7 @@ def extract_question_from_interaction(payload: Any) -> dict | None:
         "tool_name": tool_name,
         "tool_args": tool_args,
         "skill_name": skill_name,
+        "authorization_scopes": _extract_interrupt_metadata(value_obj).get("authorization_scopes", []),
         "options": _question_options_from_ui_options(value_obj, source, tool_name, message),
         "multi_select": False,
     }

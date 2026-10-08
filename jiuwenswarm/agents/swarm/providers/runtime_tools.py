@@ -213,6 +213,7 @@ def build_send_file_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> lis
             session_id=inp.session_id,
             channel_id=inp.channel_id,
             metadata=inp.request_metadata,
+            operation_provider=lambda: ctx.extras.get("sys_operation"),
         )
         tools = list(toolkit.get_tools())
         logger.info(

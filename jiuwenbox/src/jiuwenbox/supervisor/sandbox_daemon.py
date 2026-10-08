@@ -69,6 +69,8 @@ import json
 import logging
 import os
 import socket
+import select
+import signal
 import struct
 import subprocess
 import sys
@@ -208,6 +210,23 @@ class DaemonState:
             return True
 
 
+def _exec_disconnected(conn: socket.socket) -> bool:
+    try:
+        readable, _, _ = select.select([conn], [], [], 0)
+        return bool(readable) and conn.recv(1, socket.MSG_PEEK) == b""
+    except OSError:
+        return True
+
+
+def _kill_exec_group(proc: subprocess.Popen) -> None:
+    # Each foreground exec already starts a new session. Killing only its
+    # leader leaves ordinary children/grandchildren running with open pipes.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState) -> None:
     """Run a single user command and stream the result back to ``conn``."""
     try:
@@ -237,6 +256,8 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
             raise ValueError(f"invalid stdin_size {stdin_size}")
 
         stdin_bytes = _recv_exact(conn, stdin_size) if stdin_size else b""
+        if _exec_disconnected(conn):
+            return
 
         merged_env = dict(os.environ)
         # Children must not see the listener fd or the env var pointing at
@@ -276,21 +297,30 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
             )
             return
 
+        completed = False
         try:
-            stdout_bytes, stderr_bytes = proc.communicate(
-                input=stdin_bytes if stdin_size else None,
-                timeout=timeout,
-            )
+            deadline = time.monotonic() + timeout if timeout is not None else None
+            pending_input = stdin_bytes if stdin_size else None
+            while True:
+                if _exec_disconnected(conn):
+                    raise ConnectionAbortedError("exec request disconnected")
+                try:
+                    stdout_bytes, stderr_bytes = proc.communicate(
+                        input=pending_input, timeout=0.2,
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    pending_input = None  # communicate retains any unsent input
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise
+            completed = True
             response = _exec_response(
                 exit_code=proc.returncode if proc.returncode is not None else 0,
                 stdout=stdout_bytes.decode("utf-8", errors="replace"),
                 stderr=stderr_bytes.decode("utf-8", errors="replace"),
             )
         except subprocess.TimeoutExpired:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
+            _kill_exec_group(proc)
             try:
                 stdout_bytes, stderr_bytes = proc.communicate(timeout=5.0)
             except subprocess.TimeoutExpired:
@@ -307,6 +337,17 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
                 stderr=stderr_text,
                 error="timeout",
             )
+
+        finally:
+            # Normal exec completion preserves existing background-process
+            # behavior, including waiting for inherited output pipes to close.
+            # Only timeout, disconnect or failure terminates the exec group.
+            if not completed:
+                _kill_exec_group(proc)
+            proc.wait()
+            for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                if pipe is not None:
+                    pipe.close()
 
         _send_response(conn, response)
     except (ValueError, ConnectionError) as exc:

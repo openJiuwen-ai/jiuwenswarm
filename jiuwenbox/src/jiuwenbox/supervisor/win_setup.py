@@ -722,7 +722,7 @@ def _net_local_group_add_member_name(
 
     name_buf = ctypes.create_unicode_buffer(member_name)
     member = LocalGroupMembersInfo3()
-    member.lgrpi3_domainandname = name_buf
+    member.lgrpi3_domainandname = ctypes.cast(name_buf, wintypes.LPWSTR)
     return netapi32.NetLocalGroupAddMembers(
         None, group, const.LOCALGROUP_MEMBERS_INFO_3,
         ctypes.byref(member), 1,
@@ -765,7 +765,7 @@ def _add_user_to_group() -> None:
 
     grp_info = LocalGroupInfo0()
     grp_name_buf = ctypes.create_unicode_buffer(const.SANDBOX_USER_GROUP)
-    grp_info.lgrpi0_name = grp_name_buf
+    grp_info.lgrpi0_name = ctypes.cast(grp_name_buf, wintypes.LPWSTR)
     ret = netapi32.NetLocalGroupAdd(
         None, 0, ctypes.byref(grp_info), None,
     )

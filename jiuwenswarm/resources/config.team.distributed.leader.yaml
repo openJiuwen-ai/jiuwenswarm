@@ -681,7 +681,7 @@ team:
     type: pyzmq
     params:
       request_timeout: 20
-      direct_addr: tcp://0.0.0.0:28555
+      direct_addr: tcp://127.0.0.1:28555
       pubsub_publish_addr: tcp://127.0.0.1:28556
       pubsub_subscribe_addr: tcp://127.0.0.1:28557
       metadata:
@@ -781,7 +781,7 @@ modes:
         type: pyzmq
         params:
           request_timeout: 20
-          direct_addr: tcp://0.0.0.0:28555
+          direct_addr: tcp://127.0.0.1:28555
           pubsub_publish_addr: tcp://127.0.0.1:28556
           pubsub_subscribe_addr: tcp://127.0.0.1:28557
           metadata:

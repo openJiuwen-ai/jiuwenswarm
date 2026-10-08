@@ -238,6 +238,9 @@ class JiuwenBoxRunner:
         # 上次 spawn 的 policy 内容指纹 (sha256). 网络配置变更改写运行时副本 (path 不变内容变),
         # 须比指纹才检测到 → 触发 stop+spawn 重启 box-server 重建 EgressFilter.
         self._spawned_policy_fingerprint: Optional[str] = None
+        # Policy-only reloads omit extra_env. Keep bootstrap-injected runner
+        # Python/venv/skills paths across stop+spawn and failed-start retries.
+        self._startup_extra_env: dict[str, str] = {}
 
     @classmethod
     def instance(cls) -> "JiuwenBoxRunner":
@@ -363,6 +366,7 @@ class JiuwenBoxRunner:
                 避免全量 dict(os.environ) 把 agent-server 敏感凭据灌进子进程 +
                 避免 os.environ 全局污染). 仅 JIUWENBOX_* / PYTHONPATH 等白名单
                 键会从父进程继承, 其余敏感 env (token/API key/DB 口令) 不透传.
+                None 沿用上次 internal 启动参数; 显式 dict 整体替换, {} 清空。
 
         Returns:
             True 表示启动 / 已运行并通过健康检查; False 表示超时未就绪。
@@ -394,6 +398,9 @@ class JiuwenBoxRunner:
                     port,
                 )
                 return False
+
+            if extra_env is not None:
+                self._startup_extra_env = {str(k): str(v) for k, v in extra_env.items()}
 
             # internal 模式: agent-server 自管 jbx 生命周期. 上游保证 port 是 (a) 之前拉起的同 host:port 或 (b) 空闲端口.
             # 决策: 进程 alive 且 host/port/policy_path+内容指纹全匹配 → 复用; 指纹变 → 重 spawn; 否则停旧 spawn 新.
@@ -487,9 +494,8 @@ class JiuwenBoxRunner:
             for _k, _v in os.environ.items():
                 if _k.startswith("JIUWENBOX_") and _k not in env:
                     env[_k] = _v
-            # extra_env (调用方显式传入) 覆盖, 权限最高.
-            if extra_env:
-                env.update({str(k): str(v) for k, v in extra_env.items()})
+            # Retain explicit bootstrap overrides on policy-only reloads.
+            env.update(self._startup_extra_env)
             # 若 jiuwenbox 未安装到 site-packages, 尝试用仓库内源码目录注入 PYTHONPATH
             local_src = _resolve_jiuwenbox_src_dir()
             if local_src is not None and not getattr(sys, "frozen", False):

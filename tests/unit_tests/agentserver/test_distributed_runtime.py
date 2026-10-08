@@ -59,7 +59,7 @@ def test_normalize_distributed_transport_fields_does_not_mutate_input():
     assert "metadata" not in team_cfg["transport"]["params"]
 
     params = normalized["transport"]["params"]
-    assert params["direct_addr"] == "tcp://0.0.0.0:18555"
+    assert params["direct_addr"] == "tcp://127.0.0.1:18555"
     assert params["pubsub_publish_addr"] == "tcp://127.0.0.1:18556"
     assert params["metadata"]["pubsub_bind"] is True
     assert "enforce_static_spawn_names" not in params["metadata"]
@@ -88,6 +88,23 @@ def test_normalize_distributed_transport_fields_teammate_keeps_leader_peer():
     assert len(peers) == 1
     assert peers[0]["agent_id"] == "team_leader"
     assert peers[0]["addrs"] == ["tcp://10.0.0.1:18555"]
+    assert normalized["transport"]["params"]["direct_addr"] == "tcp://10.0.0.2:18600"
+
+
+def test_normalize_direct_addr_defaults_to_loopback_and_honors_bind_host():
+    config_base = {"team": {"runtime": {"mode": "distributed", "role": "leader"}}}
+    unconfigured = {"transport": {"type": "pyzmq", "params": {}}}
+    params = normalize_distributed_transport_fields(config_base, unconfigured)["transport"]["params"]
+    assert params["direct_addr"] == "tcp://127.0.0.1:18555"
+
+    explicit = {
+        "transport": {
+            "type": "pyzmq",
+            "params": {"leader": {"host": "10.0.0.1", "bind_host": "0.0.0.0"}},
+        }
+    }
+    params = normalize_distributed_transport_fields(config_base, explicit)["transport"]["params"]
+    assert params["direct_addr"] == "tcp://0.0.0.0:18555"
 
 
 def test_parse_port_uses_default_for_blank_string():
