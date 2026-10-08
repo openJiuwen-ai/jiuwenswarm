@@ -59,10 +59,13 @@ async def upload_local_file_public_url(
     *,
     need_preview: bool = False,
     expire_time: int = 259200,
+    file_content: bytes | None = None,
 ) -> str:
     """上传本地文件并通过 completeAndQuery 返回可公网访问的 URL.
 
     Args:
+        file_content: Optional bytes already read by an authorized filesystem
+            backend. When supplied (including empty bytes), never reopen file_path.
         need_preview: 为 True 时请求可预览 URL（对齐 openclaw
             ``uploadFileAndGetPreviewUrl`` 的 needPreview=true）。
         expire_time: 预览 URL 过期秒数；仅 need_preview=True 时写入请求体。
@@ -81,8 +84,9 @@ async def upload_local_file_public_url(
             timeout=httpx.Timeout(300.0, connect=10.0),
         )
     try:
-        with open(file_path, "rb") as f:
-            file_content = f.read()
+        if file_content is None:
+            with open(file_path, "rb") as f:
+                file_content = f.read()
         file_name = os.path.basename(file_path)
         file_size = len(file_content)
         file_sha256 = hashlib.sha256(file_content).hexdigest()

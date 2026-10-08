@@ -39,6 +39,20 @@ def extract_enabled_mcp_server_entries(config_base: dict[str, Any]) -> list[dict
     return result
 
 
+def mcp_endpoint_blocked_reason(url: str) -> str:
+    """Host exit (P3) check for a remote MCP endpoint; empty string means allowed."""
+    from openjiuwen.harness.security.outbound import OutboundBlockedError, check_mcp_server_url
+
+    try:
+        check_mcp_server_url(url)
+    except OutboundBlockedError as exc:
+        return str(exc)
+    except Exception as exc:
+        logger.warning("[mcp-config] endpoint check error for %s: %s", url, exc)
+        return f"outbound check error: {exc}"
+    return ""
+
+
 def build_mcp_server_config(
         entry: dict[str, Any],
         *,
@@ -88,6 +102,10 @@ def build_mcp_server_config(
     else:
         url = str(entry.get("url", "")).strip()
         if not url:
+            return None
+        blocked = mcp_endpoint_blocked_reason(url)
+        if blocked:
+            logger.warning("[mcp-config] skip server=%s: %s", name, blocked)
             return None
         payload["server_path"] = url
         params: dict[str, Any] = {}
@@ -292,6 +310,7 @@ __all__ = [
     "build_enabled_mcp_server_configs",
     "build_mcp_server_config",
     "extract_enabled_mcp_server_entries",
+    "mcp_endpoint_blocked_reason",
     "preflight_mcp_server_reachable",
     "filter_unreachable_mcp_servers",
 ]

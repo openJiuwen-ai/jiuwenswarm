@@ -10,10 +10,12 @@ from typing import Any
 
 from jiuwenswarm.common.utils import get_config_dir
 
+DEFAULT_LISTEN_HOST = "127.0.0.1"
+
 
 @dataclass
 class ProxyConfig:
-    listen_host: str = "0.0.0.0"
+    listen_host: str = DEFAULT_LISTEN_HOST
     listen_port: int = 2222
     host_key_path: str = ""
 
@@ -27,7 +29,7 @@ class ProxyConfig:
 def proxy_config_from_dict(raw: dict[str, Any]) -> ProxyConfig:
     """Build proxy runtime config from channels.ssh YAML block."""
     return ProxyConfig(
-        listen_host=str(raw.get("listen_host", "0.0.0.0")),
+        listen_host=str(raw.get("listen_host") or DEFAULT_LISTEN_HOST),
         listen_port=int(raw.get("listen_port", 2222)),
         host_key_path=str(raw.get("host_key_path") or ""),
     )

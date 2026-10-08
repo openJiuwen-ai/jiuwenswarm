@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import locale
@@ -17,7 +16,9 @@ import time
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
-from openjiuwen.core.foundation.tool import tool
+from openjiuwen.core.common.exception.codes import StatusCode
+from openjiuwen.core.foundation.tool import LocalFunction, tool
+from openjiuwen.core.sys_operation import SysOperation
 from openjiuwen.core.sys_operation.shell_process_registry import (
     consume_shell_session_cancelled,
     register_shell_process,
@@ -857,6 +858,22 @@ async def mcp_exec_command(
     max_output_chars: int = 0,
     background: bool = False,
 ) -> str:
+    return await _execute_command(
+        command, shell_type, timeout_seconds, workdir, max_output_chars, background,
+        operation=None,
+    )
+
+
+async def _execute_command(
+    command: str,
+    shell_type: str,
+    timeout_seconds: int = 300,
+    workdir: str = ".",
+    max_output_chars: int = 0,
+    background: bool = False,
+    *,
+    operation: SysOperation | None,
+) -> str:
     command = (command or "").strip()
     if not command:
         return "[ERROR]: command cannot be empty."
@@ -882,6 +899,9 @@ async def mcp_exec_command(
             },
             ensure_ascii=False,
         )
+
+    if operation is None:
+        return "[ERROR]: mcp_exec_command requires the agent's SysOperation binding; command was not executed."
 
     blocked_reason = _check_command_safety(command)
     if blocked_reason:
@@ -922,36 +942,31 @@ async def mcp_exec_command(
 
     if background:
         try:
-            pid, resolved_shell, err = await asyncio.to_thread(
-                _run_command_background,
-                command,
-                resolved_workdir,
-                normalized_shell_type,
+            result = await operation.shell().execute_cmd_background(
+                command, cwd=str(resolved_workdir), shell_type=normalized_shell_type,
             )
         except Exception as exc:
             return f"[ERROR]: command failed to start: {exc}"
-        if err:
-            return f"[ERROR]: background command failed: {err}"
+        if result.code != StatusCode.SUCCESS.code or result.data is None:
+            return f"[ERROR]: background command failed: {result.message}"
         payload = {
             "command": command,
             "cwd": str(resolved_workdir),
             "shell_type": normalized_shell_type,
-            "resolved_shell": resolved_shell,
+            "resolved_shell": normalized_shell_type,
             "background": True,
-            "pid": pid,
+            "pid": result.data.pid,
             "status": "started",
         }
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
     try:
-        result, resolved_shell = await asyncio.to_thread(
-            _run_command_sync,
-            command,
-            timeout_seconds,
-            resolved_workdir,
-            normalized_shell_type,
-            resolve_shell_session_id(),
+        result = await operation.shell().execute_cmd(
+            command, cwd=str(resolved_workdir), timeout=timeout_seconds,
+            shell_type=normalized_shell_type,
         )
+        if consume_shell_session_cancelled(resolve_shell_session_id() or ""):
+            raise CommandCancelled()
     except CommandCancelled:
         payload = {
             "command": command,
@@ -969,19 +984,46 @@ async def mcp_exec_command(
     except Exception as exc:
         return f"[ERROR]: command execution failed: {exc}"
 
+    if result.code != StatusCode.SUCCESS.code or result.data is None:
+        timeout_match = re.search(r"execution timeout after (\d+) seconds", result.message or "")
+        if timeout_match:
+            return f"[ERROR]: command timed out after {timeout_match.group(1)}s."
+        return f"[ERROR]: command execution failed: {result.message}"
     payload = {
         "command": command,
         "cwd": str(resolved_workdir),
         "shell_type": normalized_shell_type,
-        "resolved_shell": resolved_shell,
-        "exit_code": result.returncode,
-        "stdout": _clip_text(result.stdout or "", max_output_chars),
-        "stderr": _clip_text(result.stderr or "", max_output_chars),
+        "resolved_shell": normalized_shell_type,
+        "exit_code": result.data.exit_code,
+        "stdout": _clip_text(result.data.stdout or "", max_output_chars),
+        "stderr": _clip_text(result.data.stderr or "", max_output_chars),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 mcp_exec_command.card.input_params.get("properties", {}).pop("background", None)
+
+
+def create_command_tool(operation: SysOperation, *, agent_id: str) -> LocalFunction:
+    """Bind execution to this agent's operation; never share a mutable global binding."""
+    if not agent_id:
+        raise ValueError("agent_id is required for a bound command tool")
+
+    async def execute(
+        command: str,
+        shell_type: str,
+        timeout_seconds: int = 300,
+        workdir: str = ".",
+        max_output_chars: int = 0,
+        background: bool = False,
+    ) -> str:
+        return await _execute_command(
+            command, shell_type, timeout_seconds, workdir, max_output_chars, background,
+            operation=operation,
+        )
+
+    card = mcp_exec_command.card.model_copy(deep=True, update={"id": f"mcp_exec_command_{agent_id}"})
+    return LocalFunction(card, execute)
 
 
 def reset_tui_spawn_history() -> None:

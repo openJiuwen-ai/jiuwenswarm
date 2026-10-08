@@ -7,6 +7,7 @@ import io
 import json
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -27,6 +28,7 @@ class _DownloadHandlerStub:
         self.command = command
         self.headers = headers or {}
         self.wfile = io.BytesIO()
+        self.connection = Mock(spec=["settimeout"])
         self.status: int | None = None
         self.response_headers: dict[str, str] = {}
         self.headers_ended = False

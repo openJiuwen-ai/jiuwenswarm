@@ -291,6 +291,7 @@ class _DaemonExecCall:
     workdir: str | None
     stdin_bytes: bytes | None
     timeout: float | None
+    exec_socket: socket.socket | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2399,8 +2400,13 @@ class ProcessRuntime(RuntimeAdapter):
                 ),
             )
 
-        sock = self._connect_daemon_socket(call.socket_path)
+        sock = call.exec_socket
+        if sock is None:
+            sock = self._connect_daemon_socket(call.socket_path)
         try:
+            if call.exec_socket is not None:
+                sock.settimeout(DAEMON_CONNECT_TIMEOUT_SECONDS)
+                sock.connect(str(call.socket_path))
             # The daemon waits for the user command to finish before
             # responding, so the receive timeout has to outlive the request
             # timeout. When no exec timeout is configured, use a bounded
@@ -2410,10 +2416,8 @@ class ProcessRuntime(RuntimeAdapter):
             else:
                 sock.settimeout(DEFAULT_EXEC_IPC_READ_TIMEOUT_SECONDS)
             self._send_request_blob(sock, header_blob, call.stdin_bytes)
-            try:
-                sock.shutdown(socket.SHUT_WR)
-            except OSError:
-                pass
+            # stdin_size frames the body; EOF is reserved for cancellation.
+            # SHUT_WR here would look like a disconnect to the daemon.
             response = self._read_response_blob(sock)
         finally:
             try:
@@ -2541,6 +2545,7 @@ class ProcessRuntime(RuntimeAdapter):
             )
 
         loop = asyncio.get_running_loop()
+        exec_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             return await loop.run_in_executor(
                 None,
@@ -2552,8 +2557,15 @@ class ProcessRuntime(RuntimeAdapter):
                     workdir=request.workdir,
                     stdin_bytes=request.stdin_data,
                     timeout=request.timeout,
+                    exec_socket=exec_socket,
                 ),
             )
+        except asyncio.CancelledError:
+            try:
+                exec_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            raise
         except (ConnectionError, ValueError) as exc:
             # ``ValueError`` already covers ``json.JSONDecodeError`` (G.ERR.09).
             self._daemon_socket_ready[sandbox_id] = False
@@ -2611,6 +2623,8 @@ class ProcessRuntime(RuntimeAdapter):
                     stderr=f"daemon IPC transient failure: {exc}",
                 )
             raise
+        finally:
+            exec_socket.close()
 
     def _file_op_unavailable(self, sandbox_id: str) -> RuntimeFileOpResult:
         return RuntimeFileOpResult(
@@ -3026,6 +3040,11 @@ class ProcessRuntime(RuntimeAdapter):
         allow_write_paths = [_expand_ws(p) for p in (policy.windows.filesystem.allow_write or [])]
         deny_write_paths = [_expand_ws(p) for p in (policy.windows.filesystem.deny_write or [])]
         deny_read_paths = [_expand_ws(p) for p in (policy.windows.filesystem.deny_read or [])]
+        # config.yaml sandbox.files.deny becomes filesystem_policy.read_only.
+        # Preserve its existing deny-write semantics on Windows as on Linux.
+        for _ro in (policy.filesystem_policy.read_only or []):
+            if _ro and _ro not in deny_write_paths:
+                deny_write_paths.append(_ro)
         bundled_python = (os.environ.get("JIUWENBOX_BUNDLED_PYTHON") or "").strip()
         if bundled_python:
             allow_read_paths.append(bundled_python)
@@ -3048,6 +3067,8 @@ class ProcessRuntime(RuntimeAdapter):
             if _mode != "rw":
                 if _sp not in allow_read_paths:
                     allow_read_paths.append(_sp)
+                if _sp not in deny_write_paths:
+                    deny_write_paths.append(_sp)
                 continue
             if _sp not in allow_write_paths:
                 allow_write_paths.append(_sp)
@@ -3201,6 +3222,12 @@ class ProcessRuntime(RuntimeAdapter):
         # WinError 5 导致整段失败, 所有 skill 都拿不到写权限.
         _acl_write = [p for p in allow_write_paths if not _under_desktop(p)]
         _acl_read = [p for p in allow_read_paths if not _under_desktop(p)]
+        filesystem_policy = {
+            "allow_read": allow_read_paths,
+            "allow_write": allow_write_paths,
+            "deny_read": deny_read_paths,
+            "deny_write": deny_write_paths,
+        }
         acl_paths = win_acl.apply_sandbox_acl(
             workspace,
             _acl_write,
@@ -3212,11 +3239,12 @@ class ProcessRuntime(RuntimeAdapter):
         )
         if desktop_data_dir:
             try:
-                # 桌面 dataDir 整树可读可写, 不做 deny / 只读限制 (含 skills).
+                # 桌面补授权不得清掉当前 YAML deny (含 skills / logs).
                 _desktop_acl = win_acl.apply_desktop_data_rw(
                     desktop_data_dir,
                     sandbox_user_sid=sandbox_user_sid,
                     preserve_write_roots=allow_write_paths,
+                    filesystem_policy=filesystem_policy,
                 )
                 if _desktop_acl:
                     acl_paths = list(acl_paths or []) + _desktop_acl
@@ -3240,8 +3268,12 @@ class ProcessRuntime(RuntimeAdapter):
                     continue
                 _seen_traverse.add(_tk)
                 try:
-                    win_acl.grant_parent_traverse(_tp, sandbox_user_sid)
-                    win_acl.grant_parent_traverse(_tp, win_acl.get_synthetic_write_sid())
+                    win_acl.grant_parent_traverse(
+                        _tp, sandbox_user_sid, filesystem_policy=filesystem_policy,
+                    )
+                    win_acl.grant_parent_traverse(
+                        _tp, win_acl.get_synthetic_write_sid(), filesystem_policy=filesystem_policy,
+                    )
                 except Exception:  # noqa: BLE001
                     logger.warning(
                         "[SandboxWin] %s grant_parent_traverse 失败 path=%s",
@@ -3624,6 +3656,7 @@ class ProcessRuntime(RuntimeAdapter):
         want_body: bool,
         read_timeout: float | None = None,
         control_token: str | None = None,
+        exec_socket: socket.socket | None = None,
     ) -> "tuple[dict[str, Any] | None, bytes]":
         """同步执行一次 runner TCP roundtrip (在 executor 线程调用).
 
@@ -3637,9 +3670,9 @@ class ProcessRuntime(RuntimeAdapter):
         # P0-6: 注入鉴权 token 到 header payload (runner 首帧校验).
         if control_token:
             payload = {**payload, "token": control_token}
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(DAEMON_CONNECT_TIMEOUT_SECONDS)
+        sock = exec_socket if exec_socket is not None else socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
+            sock.settimeout(DAEMON_CONNECT_TIMEOUT_SECONDS)
             sock.connect(("127.0.0.1", control_port))
             # connect 用短超时 (2s 够 loopback), 但读响应须长超时: runner 起子命令 (bash/node) 可能跑几十秒,
             # 整个 roundtrip 用 2s 会导致 socket.timeout → 关连接 → runner 发响应抛异常退出 → 后续全 409.
@@ -3680,6 +3713,12 @@ class ProcessRuntime(RuntimeAdapter):
         无共享连接状态，runner 多 worker并行。
         """
         loop = asyncio.get_running_loop()
+        # exec 专用连接由协程持有; 取消时 shutdown 唤醒阻塞线程, runner 以 EOF
+        # 回收该次 Job. 文件接口仍沿用原有 roundtrip.
+        exec_socket = (
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            if request_type == REQUEST_TYPE_EXEC else None
+        )
         try:
             response, _ = await loop.run_in_executor(
                 None,
@@ -3688,14 +3727,25 @@ class ProcessRuntime(RuntimeAdapter):
                     request_type, payload, body_bytes, False,
                     read_timeout=read_timeout,
                     control_token=runner.get("control_token"),
+                    exec_socket=exec_socket,
                 ),
             )
             return response
+        except asyncio.CancelledError:
+            if exec_socket is not None:
+                try:
+                    exec_socket.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            raise
         except (OSError, ValueError) as exc:
             logger.warning(
                 "Windows runner IPC 失败 (sandbox=%s): %s", sandbox_id, exc,
             )
             return None
+        finally:
+            if exec_socket is not None:
+                exec_socket.close()
 
     async def _win_runner_roundtrip_with_body(
         self,

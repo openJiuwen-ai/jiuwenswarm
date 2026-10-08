@@ -139,6 +139,7 @@ export interface Question {
   header: string;
   options: QuestionOption[];
   multi_select?: boolean;
+  authorization_scopes?: { value: 'exact' | 'parent' | 'domain'; label: string }[];
 }
 
 /**
@@ -166,6 +167,8 @@ export interface UserAnswer {
   question?: string;
   selected_options: string[];
   custom_input?: string;
+  authorization_mode?: 'allow' | 'allow_with_scope';
+  authorization_scope?: 'exact' | 'parent' | 'domain';
 }
 
 /**

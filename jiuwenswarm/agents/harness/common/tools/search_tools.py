@@ -12,9 +12,9 @@ from html import unescape
 from typing import Any
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
-import requests
 import urllib3
 from openjiuwen.core.foundation.tool import tool
+from openjiuwen.harness.security.outbound import sync_client as outbound_http
 
 from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_verify
 
@@ -96,27 +96,15 @@ def _apply_free_search_proxy(url: str, kwargs: dict[str, Any]) -> bool:
     return True
 
 
-def _http_request(method: str, url: str, **kwargs) -> requests.Response:
-    """Try normal request first; retry without env proxies on ProxyError."""
+def _http_request(method: str, url: str, **kwargs) -> outbound_http.Response:
+    """Request through the host exit; no direct-connect retry on proxy errors."""
     kwargs.setdefault("verify", get_requests_verify())
-    method_up = method.upper()
-    explicit_proxy = _apply_free_search_proxy(url, kwargs)
+    _apply_free_search_proxy(url, kwargs)
     if "verify" not in kwargs:
         kwargs["verify"] = _free_search_ssl_verify()
         if kwargs["verify"] is False:
             _disable_insecure_request_warning()
-    try:
-        if method_up == "GET":
-            return requests.get(url, **kwargs)
-        if method_up == "POST":
-            return requests.post(url, **kwargs)
-        return requests.request(method_up, url, **kwargs)
-    except requests.exceptions.ProxyError:
-        if explicit_proxy:
-            raise
-        with requests.Session() as session:
-            session.trust_env = False
-            return session.request(method_up, url, **kwargs)
+    return outbound_http.request(method, url, **kwargs)
 
 
 def _strip_tags(value: str) -> str:

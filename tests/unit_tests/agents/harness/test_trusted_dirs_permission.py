@@ -314,7 +314,13 @@ def test_product_configs_disable_shell_guard_interception():
 
     for config_path in config_paths:
         data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert data["permissions"]["shell_guard"] == {
-            "unknown_structure": False,
-            "interpreter_sink": False,
+        shell_guard = data["permissions"]["shell_guard"]
+        assert shell_guard["unknown_structure"] is False
+        assert shell_guard["interpreter_sink"] is False
+        assert set(shell_guard) <= {
+            "unknown_structure",
+            "interpreter_sink",
+            "builtin_rules_enabled",
         }
+        if "builtin_rules_enabled" in shell_guard:
+            assert shell_guard["builtin_rules_enabled"] is True

@@ -686,7 +686,36 @@ def grant_aces(
     logger.debug("施加 %d 条 ACE: path=%s recursive=%s", len(new_aces), path, recursive)
 
 
-def grant_parent_traverse(path: str, sid: str | object) -> None:
+def _policy_deny_rights(path: Path, filesystem_policy: dict | None) -> int:
+    """YAML 前缀规则的拒绝权限位; 子路径显式 allow 保留, 同路径 deny 优先.
+
+    仅用于自动补授权, 不改变 apply_sandbox_acl 的原有施加方式.
+    allow_write 原本也授 Read, 因此在读轴上保留这一行为.
+    """
+    if not filesystem_policy:
+        return 0
+    key = os.path.normcase(str(path.resolve()))
+    denied = 0
+    for axis, mask in (("read", const.DENY_READ_RIGHTS), ("write", const.DENY_WRITE_RIGHTS)):
+        matches = []
+        allow_paths = list(filesystem_policy.get(f"allow_{axis}") or [])
+        if axis == "read":
+            allow_paths += list(filesystem_policy.get("allow_write") or [])
+        for is_deny, paths in (
+            (False, allow_paths), (True, filesystem_policy.get(f"deny_{axis}") or []),
+        ):
+            for raw in paths:
+                rule = os.path.normcase(str(_expand_fs_path(raw)))
+                if key == rule or key.startswith(rule.rstrip(os.sep) + os.sep):
+                    matches.append((len(rule), is_deny))
+        if matches and max(matches)[1]:
+            denied |= mask
+    return denied
+
+
+def grant_parent_traverse(
+    path: str, sid: str | object, *, filesystem_policy: dict | None = None,
+) -> None:
     """给 ``path`` 到用户目录的每一级父目录授非递归 traverse.
 
     必须用 SetFileSecurity (不向子对象传播). SetNamedSecurityInfo 即使
@@ -722,6 +751,17 @@ def grant_parent_traverse(path: str, sid: str | object) -> None:
         if key in seen:
             break
         seen.add(key)
+        # 已有 YAML ACL 负责这些路径, 不用通行补授权重建它们的 DACL;
+        # 否则会删掉 Deny, 或删掉 deny 目录下用户显式配置的 Allow 例外.
+        deny_only = {
+            name: (filesystem_policy or {}).get(name, [])
+            for name in ("deny_read", "deny_write")
+        }
+        if _policy_deny_rights(current, deny_only):
+            if current.parent == current or key in stop_keys:
+                break
+            current = current.parent
+            continue
         is_profile = key in stop_keys
         is_desktop = key in desktop_keys
         plan = _parent_traverse_plan(is_profile, is_desktop)
@@ -902,8 +942,10 @@ def apply_desktop_data_rw(
     root: str,
     sandbox_user_sid: str | None = None,
     preserve_write_roots: list[str] | None = None,
+    *,
+    filesystem_policy: dict | None = None,
 ) -> list[str]:
-    """给桌面 dataDir (claw-desktop) 整树可读可写, 不做 deny / 只读限制.
+    """给桌面 dataDir 补读写权限, 同时保留本次 YAML 的显式文件规则.
 
     授 Allow Write+Execute+Delete+Read. 含 agent workspace / skills 等
     allow_write 子树也会走访并改成 RW (不再跳过): 旧版曾对这些子树打只读
@@ -952,12 +994,18 @@ def apply_desktop_data_rw(
     def _is_heavy(name: str) -> bool:
         return name.lower() in _HEAVY_DIR_NAMES
 
-    def _acl_replace_our_allow(existing_dacl, inherit_flags: int):
-        """去掉本 SID 的旧 Allow/Deny (含上次只读或 logs Deny), 再写上读写 Allow."""
+    def _acl_replace_our_allow(existing_dacl, inherit_flags: int, path: Path):
+        """清理旧桌面授权, 按当前 YAML 保留拒绝权限位."""
+        denied = _policy_deny_rights(path, filesystem_policy)
         new_allow = [
-            (const.ACCESS_ALLOWED_ACE_TYPE, inherit_flags, int(rights), one)
+            (const.ACCESS_ALLOWED_ACE_TYPE, inherit_flags, int(rights) & ~denied, one)
             for one in sid_objs
         ]
+        if denied:
+            new_allow += [
+                (const.ACCESS_DENIED_ACE_TYPE, inherit_flags, denied, one)
+                for one in sid_objs
+            ]
         if existing_dacl is None:
             return _rebuild_acl_with_order(None, new_allow)
         kept: list[tuple[int, int, int, object]] = []
@@ -976,7 +1024,7 @@ def apply_desktop_data_rw(
             str(path), win32security.DACL_SECURITY_INFORMATION,
         )
         acl = _acl_replace_our_allow(
-            sd.GetSecurityDescriptorDacl(), const.RECURSIVE_ACE_FLAGS,
+            sd.GetSecurityDescriptorDacl(), const.RECURSIVE_ACE_FLAGS, path,
         )
         _write_file_dacl(str(path), acl, protect=True, sd=sd)
 
@@ -988,7 +1036,7 @@ def apply_desktop_data_rw(
             win32security.DACL_SECURITY_INFORMATION,
         )
         acl = _acl_replace_our_allow(
-            sd.GetSecurityDescriptorDacl(), const.RECURSIVE_ACE_FLAGS,
+            sd.GetSecurityDescriptorDacl(), const.RECURSIVE_ACE_FLAGS, path,
         )
         win32security.SetNamedSecurityInfo(
             str(path),
@@ -1000,6 +1048,12 @@ def apply_desktop_data_rw(
 
     def _subtree_dirty(path: Path) -> bool:
         """子树是否含日志/体量目录. 碰到第一个即返回, 不进入这些目录."""
+        key = os.path.normcase(str(path.resolve()))
+        for paths in (filesystem_policy or {}).values():
+            for raw in paths:
+                rule = os.path.normcase(str(_expand_fs_path(raw)))
+                if rule.startswith(key.rstrip(os.sep) + os.sep):
+                    return True  # 不跨越 YAML 边界做整树自动补授权
         try:
             for _dirpath, dirnames, _files in os.walk(path, topdown=True):
                 for d in dirnames:
@@ -1067,7 +1121,7 @@ def apply_desktop_data_rw(
                 seen.add(key)
                 try:
                     # preserve 根本身已有写 ACE; 中间目录同样授 RW.
-                    if key in preserve_exact:
+                    if key in preserve_exact and not filesystem_policy:
                         for one in sid_objs:
                             _set_ace_no_propagate(
                                 str(current), one,
@@ -1144,6 +1198,32 @@ def apply_desktop_data_rw(
                 _grant_here(target)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("desktop data RW grant 失败 path=%s: %s", target, exc)
+        # 只走访 YAML deny 涉及的桌面子树, 修复旧版本留下的显式 Allow /
+        # 受保护 DACL. 单纯在父目录加 Deny 无法覆盖它们. 不跟随 junction.
+        repaired: set[str] = set()
+        deny_paths = list((filesystem_policy or {}).get("deny_read") or [])
+        deny_paths += list((filesystem_policy or {}).get("deny_write") or [])
+        for raw in deny_paths:
+            denied_root = _expand_fs_path(raw)
+            if root_path.is_relative_to(denied_root):
+                denied_root = root_path
+            if not denied_root.is_relative_to(root_path):
+                continue
+            pending = [denied_root]
+            while pending:
+                target = pending.pop()
+                key = os.path.normcase(str(target))
+                if key in repaired or not target.exists():
+                    continue
+                repaired.add(key)
+                try:
+                    if target.lstat().st_file_attributes & 0x400:  # FILE_ATTRIBUTE_REPARSE_POINT
+                        continue
+                    _grant_here(target)
+                    if target.is_dir():
+                        pending.extend(target.iterdir())
+                except Exception as exc:  # noqa: BLE001 - 与已有 ACL 失败语义一致
+                    logger.warning("desktop YAML ACL 修复失败 path=%s: %s", target, exc)
     except Exception as exc:  # noqa: BLE001
         logger.warning("apply_desktop_data_rw 失败 root=%s: %s", root_path, exc)
         return applied

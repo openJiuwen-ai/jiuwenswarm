@@ -386,7 +386,14 @@ def _build_xiaoyi_phone_tools(ctx: SwarmBuildContext) -> list[Any]:
     )
     if not enabled:
         return []
-    return _mark_stateless(list(_XIAOYI_PHONE_TOOLS))
+    from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools.save_tools import bind_save_tool
+
+    return [
+        bind_save_tool(item, lambda: ctx.extras.get("sys_operation"))
+        if item.card.name in {"save_media_to_gallery", "save_file_to_file_manager"}
+        else _mark_stateless([item])[0]
+        for item in _XIAOYI_PHONE_TOOLS
+    ]
 
 
 def _build_symphony_tools(ctx: SwarmBuildContext) -> list[Any]:

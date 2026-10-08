@@ -54,7 +54,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 11px 16px 8px;
+  padding: 12px 16px 12px;
   cursor: pointer;
   outline: none;
 }
@@ -141,9 +141,20 @@
   background: rgba(var(--color-text-primary-rgb), 0.06);
 }
 
-/* 总是允许 / 会话内记住 / 授权单次 / 其它：主按钮（深色填充） */
+/* 持久授权使用次级按钮，保持原来的尺寸和排列。 */
 .auth-prompt__btn--allow-always,
-.auth-prompt__btn--session-allow,
+.auth-prompt__btn--session-allow {
+  background: var(--color-surface-card);
+  border-color: var(--color-border-default);
+  color: var(--color-text-primary);
+}
+
+.auth-prompt__btn--allow-always:hover:not(:disabled),
+.auth-prompt__btn--session-allow:hover:not(:disabled) {
+  background: var(--color-action-secondary);
+}
+
+/* 本次允许保留实心主按钮。 */
 .auth-prompt__btn--allow-once,
 .auth-prompt__btn--other {
   background: var(--color-text-strong);
@@ -151,11 +162,41 @@
   color: var(--color-surface-card);
 }
 
-.auth-prompt__btn--allow-always:hover:not(:disabled),
-.auth-prompt__btn--session-allow:hover:not(:disabled),
 .auth-prompt__btn--allow-once:hover:not(:disabled),
 .auth-prompt__btn--other:hover:not(:disabled) {
   opacity: 0.88;
+}
+
+.auth-prompt__scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.auth-prompt__scope-select {
+  min-width: 0;
+  max-width: 260px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.auth-prompt__scope-select:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.auth-prompt__btn:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
 }
 
 /* 正文：markdown 渲染（展开态用 Tailwind prose）；收起态只显示渲染后的首行 */
@@ -182,10 +223,24 @@
 }
 
 .auth-prompt__body--collapsed {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   overflow: hidden;
 }
 
+.auth-prompt__body--collapsed .auth-prompt__scope {
+  order: 1;
+  flex: 0 1 auto;
+  margin-left: auto;
+  min-width: 0;
+  max-width: 55%;
+  white-space: nowrap;
+}
+
 .auth-prompt__body--collapsed p {
+  flex: 1;
+  min-width: 0;
   margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;

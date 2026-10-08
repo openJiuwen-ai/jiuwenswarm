@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test:shell-rule-pattern": "tsc src/components/ConfigPanel/shellRulePattern.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/shell-rule-pattern --skipLibCheck --noEmitOnError && node --test tests/shellRulePattern.test.mjs",
     "predev": "cd ../../../.. && node ./jiuwenswarm/scripts/generate-agent-folders.js",
     "prebuild": "cd ../../../.. && node ./jiuwenswarm/scripts/generate-agent-folders.js",
     "dev": "vite",

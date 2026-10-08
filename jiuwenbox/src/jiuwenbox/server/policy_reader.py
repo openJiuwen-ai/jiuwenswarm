@@ -26,12 +26,12 @@ JIUWENBOX_POLICY_PATH_ENV = "JIUWENBOX_POLICY_PATH"
 
 
 def _resolve_tool_paths(policy: SecurityPolicy) -> SecurityPolicy:
-    """Windows 下自动检测 tool_paths 空字段, 用 sys.executable 反推.
+    """Windows 下自动检测 tool_paths 空字段, 优先使用实际 runner Python.
 
     基底 windows-policy.yaml 随 wheel 打包, tool_paths. 
     这里在 load_policy 内存合并后, 对空的 tool_paths
     字段做运行时检测填充: agent-server 进程用 OfficeAce 预制 python 跑 →
-    sys.executable 推出 tools 目录.
+    runner 未单独指定时, 从 sys.executable 推出 tools 目录.
 
     只填空字段: 基底/副本显式配的值不覆盖. 检测到的路径校验 os.path.isdir,
     无效则跳过该字段 (降级到留空, 由后续依赖系统 PATH 的逻辑兜底). 不落盘
@@ -48,11 +48,14 @@ def _resolve_tool_paths(policy: SecurityPolicy) -> SecurityPolicy:
         return policy
     filled: dict[str, str] = {}
 
-    # python_dir: sys.executable 所在目录
+    # 与 win_exec._build_runner_command 保持一致, 安装时授权实际执行的 Python.
     if not (tp.python_dir or "").strip():
         try:
-            py_dir = str(Path(sys.executable).parent.resolve())
-            if Path(py_dir, "python.exe").is_file():
+            runner_python = (os.environ.get("JIUWENBOX_RUNNER_PYTHON") or "").strip()
+            if not runner_python or not os.path.isfile(runner_python):
+                runner_python = sys.executable
+            py_dir = str(Path(runner_python).parent.resolve())
+            if Path(runner_python).is_file():
                 filled["python_dir"] = py_dir
         except OSError:
             pass
@@ -89,7 +92,7 @@ def _resolve_tool_paths(policy: SecurityPolicy) -> SecurityPolicy:
     new_fs = fs.model_copy(update={"tool_paths": new_tp})
     new_windows = policy.windows.model_copy(update={"filesystem": new_fs})
     logger.info(
-        "tool_paths 自动检测填充: %s (python_dir=via sys.executable, git_dir=via PATH)",
+        "tool_paths 自动检测填充: %s (python_dir=via runner Python or sys.executable, git_dir=via PATH)",
         ", ".join(f"{k}={v}" for k, v in filled.items()),
     )
     return policy.model_copy(update={"windows": new_windows})
