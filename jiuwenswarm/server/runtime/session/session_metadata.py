@@ -1388,6 +1388,12 @@ def save_session_equipment(
     }
     if get_session_equipment(session_id, cache_bust=True) == snapshot:
         return
+    # The first user record may still be queued. A synchronous equipment
+    # update from the older disk snapshot would erase its title and count.
+    if not flush_pending_writes():
+        raise RuntimeError("session metadata writes did not finish before equipment update")
+    if get_session_equipment(session_id, cache_bust=True) == snapshot:
+        return
     update_session_metadata(
         session_id=session_id,
         session_equipment=snapshot,

@@ -28,6 +28,11 @@ from jiuwenswarm.runtime.events import RuntimeEvent
 def _isolate_persistent_session_guard(monkeypatch):
     """Fake Runtime Sessions have no on-disk directory; guard has separate tests."""
 
+    async def no_session_writes() -> None:
+        pass
+
+    monkeypatch.setattr(machine, "_flush_session_writes", no_session_writes)
+
     class _Lease:
         def __init__(self, session_id):
             self.session_id = session_id
@@ -613,6 +618,20 @@ async def test_false_session_cleanup_is_a_successful_idempotent_noop() -> None:
     assert result.exit_code == 0
     assert result.error is None
     assert client.calls[-1] == "close"
+
+
+@pytest.mark.asyncio
+async def test_pending_session_write_failure_is_not_reported_as_success(monkeypatch) -> None:
+    async def fail_flush() -> None:
+        raise RuntimeError("session metadata was not persisted")
+
+    monkeypatch.setattr(machine, "_flush_session_writes", fail_flush)
+
+    result = await _run(FakeClient())
+
+    assert result.status == "failed"
+    assert result.error.code == "SHUTDOWN_FAILED"
+    assert result.error.details["cleanup_errors"] == ("session_writes",)
 
 
 @pytest.mark.asyncio
