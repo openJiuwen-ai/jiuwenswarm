@@ -50,12 +50,22 @@ async def _flush_session_writes() -> None:
     """Make one-shot history and metadata visible before the child exits."""
     from jiuwenswarm.server.runtime.session import session_history, session_metadata
 
-    for name, flush in (
+    queues = (
         ("history", session_history.flush_pending_writes),
         ("metadata", session_metadata.flush_pending_writes),
-    ):
-        if not await asyncio.to_thread(flush, SHUTDOWN_TIMEOUT_SECONDS - 0.5):
-            raise RuntimeError(f"{name} writes did not finish before shutdown")
+    )
+    # Both writers own independent queues. Wait for their barriers together so
+    # the outer cleanup_step timeout covers one 4.5-second window, not two.
+    results = await asyncio.gather(
+        *(
+            asyncio.to_thread(flush, SHUTDOWN_TIMEOUT_SECONDS - 0.5)
+            for _, flush in queues
+        ),
+        return_exceptions=True,
+    )
+    failed = [name for (name, _), result in zip(queues, results) if result is not True]
+    if failed:
+        raise RuntimeError(f"{', '.join(failed)} writes did not finish before shutdown")
 
 
 class MachineRunError(RuntimeError):
