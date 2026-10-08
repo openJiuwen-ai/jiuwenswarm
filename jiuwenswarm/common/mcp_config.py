@@ -240,10 +240,12 @@ async def preflight_mcp_server_reachable(
         pool=5.0,
     )
 
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-    }
+    headers = {"Accept": "text/event-stream"}
+    if transport != "sse":
+        headers.update({
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        })
     param_headers = params.get("headers") if isinstance(params, dict) else None
     if isinstance(param_headers, dict):
         headers.update({str(key): str(value) for key, value in param_headers.items()})
@@ -274,7 +276,19 @@ async def preflight_mcp_server_reachable(
 
     try:
         async with httpx.AsyncClient(timeout=http_timeout, follow_redirects=False) as client:
-            response = await client.post(url, headers=headers, params=query_params, json=body)
+            if transport == "sse":
+                # Legacy MCP SSE establishes the event stream with GET.  Only
+                # wait for response headers here; consuming the stream would
+                # block until the configured read timeout.
+                async with client.stream(
+                    "GET", url, headers=headers, params=query_params
+                ) as response:
+                    status_code = response.status_code
+            else:
+                response = await client.post(
+                    url, headers=headers, params=query_params, json=body
+                )
+                status_code = response.status_code
     except httpx.TimeoutException as exc:
         return False, f"http probe timed out after {read_timeout}s: {type(exc).__name__}"
     except (httpx.ConnectError, httpx.NetworkError, httpx.UnsupportedProtocol) as exc:
@@ -284,9 +298,9 @@ async def preflight_mcp_server_reachable(
     except Exception as exc:  # noqa: BLE001 - preflight must never break startup
         return False, f"probe failed: {type(exc).__name__}: {exc}"
 
-    if response.status_code >= 400:
-        return False, f"http {response.status_code} from server"
-    return True, f"ok (http {response.status_code})"
+    if status_code >= 400:
+        return False, f"http {status_code} from server"
+    return True, f"ok (http {status_code})"
 
 
 def is_asyncio_outer_cancellation() -> bool:
