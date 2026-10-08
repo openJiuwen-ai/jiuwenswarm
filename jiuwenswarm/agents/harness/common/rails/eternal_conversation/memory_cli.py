@@ -93,6 +93,14 @@ class DynamicMemoryGateway:
             raise RuntimeError(
                 f"dynamic-memory-cli timed out after {self.invoke_timeout}s: {list(args)}"
             ) from None
+        except asyncio.CancelledError:
+            # Session/loop teardown may cancel an in-flight invoke. Without
+            # this handler the child is abandoned still running and its
+            # transport detonates later as unraisable ResourceWarnings
+            # attributed to whichever test is running when GC fires.
+            process.kill()
+            await process.wait()
+            raise
         elapsed_ms = (asyncio.get_running_loop().time() - started) * 1000
         text = stdout.decode("utf-8", errors="replace")
         error_text = stderr.decode("utf-8", errors="replace")
