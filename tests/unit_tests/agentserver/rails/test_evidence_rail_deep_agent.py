@@ -305,3 +305,49 @@ async def test_real_loop_blocks_non_retryable_tool_failure(tmp_path: Path) -> No
     manifest = _manifest(root)
     assert manifest["status"] == "blocked"
     assert manifest["terminal_reason_code"] == "TOOL_PERMISSION_DENIED"
+
+
+async def test_real_loop_unsafe_id_factory_reports_receipt_reason(
+    tmp_path: Path,
+) -> None:
+    """The in-memory run record failed to build: the loop must not reach the model.
+
+    DeepAgent does not consume a force-finish requested from ``before_invoke``;
+    the inner loop's first ``before_model_call`` finds no run state and is the
+    hook whose result the framework actually returns.
+    """
+    root = tmp_path / "receipts"
+    client = _ScriptedClient([_answer("must never be produced")])
+    rail = EvidenceRail(
+        EvidenceRailConfig(artifact_root=str(root), evidence_items=[EVIDENCE]),
+        id_factory=lambda: "../escape",
+    )
+
+    result = await _run([rail], client)
+
+    assert client.index == 0
+    assert result["evidencerail"]["status"] == "blocked"
+    assert result["evidencerail"]["reason_code"] == "EVIDENCE_RECEIPT_FAILED"
+    assert not root.exists() or not any(root.rglob("*"))
+
+
+async def test_real_loop_manifest_save_oserror_reports_store_reason(
+    tmp_path: Path,
+) -> None:
+    """A genuine storage failure keeps the store reason code in the real loop."""
+    root = tmp_path / "receipts"
+    client = _ScriptedClient([_answer("must never be produced")])
+    rail = EvidenceRail(
+        EvidenceRailConfig(artifact_root=str(root), evidence_items=[EVIDENCE])
+    )
+
+    def _fail(manifest: Any) -> None:
+        del manifest
+        raise OSError("disk full")
+
+    rail.store.save_manifest = _fail  # type: ignore[method-assign]
+
+    result = await _run([rail], client)
+
+    assert client.index == 0
+    assert result["evidencerail"]["reason_code"] == "EVIDENCE_STORE_FAILED"

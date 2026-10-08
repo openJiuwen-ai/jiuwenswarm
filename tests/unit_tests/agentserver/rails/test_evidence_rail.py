@@ -369,7 +369,55 @@ async def test_store_failure_uses_force_finish_not_callback_exception(
     finish = ctx.consume_force_finish()
     assert finish is not None
     assert finish.result["evidencerail"]["reason_code"] == "EVIDENCE_STORE_FAILED"
+    assert finish.result["evidencerail"]["error_type"] == "OSError"
     assert "secret-should-not-be-returned" not in json.dumps(finish.result)
+
+
+@pytest.mark.asyncio
+async def test_unsafe_run_id_blocks_with_receipt_reason_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    """In-memory run construction failing is a receipt error, not a store error."""
+    root = tmp_path / "artifacts"
+    rail = EvidenceRail(
+        EvidenceRailConfig(artifact_root=str(root)),
+        clock=lambda: FIXED_NOW,
+        id_factory=lambda: "../escape",
+    )
+    ctx = AgentCallbackContext(
+        agent=SimpleNamespace(),
+        inputs=InvokeInputs(query="q"),
+        extra={},
+    )
+
+    await rail.before_invoke(ctx)
+
+    finish = ctx.consume_force_finish()
+    assert finish is not None
+    assert finish.result["evidencerail"]["reason_code"] == "EVIDENCE_RECEIPT_FAILED"
+    assert finish.result["evidencerail"]["error_type"] == "ValueError"
+    assert "safe path component" not in json.dumps(finish.result)
+    assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+
+
+@pytest.mark.asyncio
+async def test_undigestible_query_blocks_with_receipt_reason(tmp_path: Path) -> None:
+    """A query the canonicalizer cannot hash fails in memory, before any store call."""
+    rail = _rail(tmp_path, "bad-query")
+    ctx = AgentCallbackContext(
+        agent=SimpleNamespace(),
+        inputs=SimpleNamespace(query=_UndigestibleResult(), conversation_id=None),
+        extra={},
+    )
+
+    await rail.before_invoke(ctx)
+
+    finish = ctx.consume_force_finish()
+    assert finish is not None
+    assert finish.result["evidencerail"]["reason_code"] == "EVIDENCE_RECEIPT_FAILED"
+    assert finish.result["evidencerail"]["error_type"] == "TypeError"
+    assert "secret-should-not-be-returned" not in json.dumps(finish.result)
+    assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
 
 
 @pytest.mark.asyncio

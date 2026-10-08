@@ -256,7 +256,11 @@ class EvidenceRail(DeepAgentRail):
             ctx.extra[RUN_MANIFEST_KEY] = manifest
             self._remember(ctx, state)
         except _DATA_ERRORS as exc:
-            self._force_finish(ctx, REASON_STORAGE_FAILED, exc)
+            # Everything above is in-memory record construction (id, digest,
+            # manifest model, registry); nothing has been persisted yet, so
+            # this is a receipt failure, not a storage failure.  Persistence
+            # (``save_manifest``) is guarded separately below.
+            self._force_finish(ctx, REASON_RECEIPT_FAILED, exc)
             return
 
         try:
@@ -277,7 +281,9 @@ class EvidenceRail(DeepAgentRail):
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         state = self._state(ctx)
         if state is None:
-            self._force_finish(ctx, REASON_STORAGE_FAILED)
+            # Missing run state means the run record was never built (for
+            # example ``before_invoke`` failed); it is unrelated to storage.
+            self._force_finish(ctx, REASON_RECEIPT_FAILED)
             return
 
         try:
@@ -334,7 +340,9 @@ class EvidenceRail(DeepAgentRail):
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         state = self._state(ctx)
         if state is None:
-            self._force_finish(ctx, REASON_STORAGE_FAILED)
+            # Missing run state means the run record was never built (for
+            # example ``before_invoke`` failed); it is unrelated to storage.
+            self._force_finish(ctx, REASON_RECEIPT_FAILED)
             return
         try:
             receipt = ToolReceipt(
@@ -355,7 +363,9 @@ class EvidenceRail(DeepAgentRail):
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         state = self._state(ctx)
         if state is None:
-            self._force_finish(ctx, REASON_STORAGE_FAILED)
+            # Missing run state means the run record was never built (for
+            # example ``before_invoke`` failed); it is unrelated to storage.
+            self._force_finish(ctx, REASON_RECEIPT_FAILED)
             return
         if ctx.exception is not None:
             # The rail decorator fires AFTER_TOOL_CALL for the final attempt
@@ -383,7 +393,9 @@ class EvidenceRail(DeepAgentRail):
     async def on_tool_exception(self, ctx: AgentCallbackContext) -> None:
         state = self._state(ctx)
         if state is None:
-            self._force_finish(ctx, REASON_STORAGE_FAILED)
+            # Missing run state means the run record was never built (for
+            # example ``before_invoke`` failed); it is unrelated to storage.
+            self._force_finish(ctx, REASON_RECEIPT_FAILED)
             return
         exception = ctx.exception or RuntimeError("tool execution failed")
         reason_code = self._tool_reason(exception)
