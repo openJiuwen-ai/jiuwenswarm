@@ -175,6 +175,19 @@ _SKILL_TURBO_TOOL_ID_SUFFIX = "_skill_turbo"
 _RESUME_SIGNAL_CHUNK_TYPE = "__resume_signal__"
 
 
+def _is_foreign_stream_source(payload: Any) -> bool:
+    """True when the frame was mirrored from a nested stream (subagent / skill node).
+
+    The gateway fills a missing source with the ``"main"`` sentinel, so only a
+    non-empty, non-``main`` id marks a frame that must not touch parent-turn
+    bookkeeping.
+    """
+    if not isinstance(payload, dict):
+        return False
+    source_id = payload.get(STREAM_SOURCE_ID_FIELD)
+    return isinstance(source_id, str) and bool(source_id) and source_id != "main"
+
+
 def _propagate_stream_source_id(
     src_payload: Any, result: dict[str, Any] | None
 ) -> dict[str, Any] | None:
@@ -543,6 +556,7 @@ from jiuwenswarm.common.config import (
     _get_ttse_config,
     get_ttse_embedding_config,
     get_ttse_enabled,
+    is_subagent_mirror_child_stream_enabled,
     is_subagent_runtime_enabled,
     resolve_env_vars,
     resolve_string_or_list_config,
@@ -9365,7 +9379,9 @@ class JiuWenSwarmDeepAdapter:
                 install_subagent_control_compat_patch,
             )
 
-            install_subagent_control_compat_patch()
+            install_subagent_control_compat_patch(
+                mirror_child_stream=is_subagent_mirror_child_stream_enabled(config_base),
+            )
         except Exception as exc:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] subagent control compat skipped: %s",
@@ -19998,6 +20014,11 @@ class JiuWenSwarmDeepAdapter:
             nonlocal saw_approved_plan_exit_result, had_reasoning_output
             nonlocal visible_text_since_last_final, segment_streamed_text
             nonlocal has_streamed_content, had_visible_text_ever
+            # Frames mirrored from a child stream (subagent / skill node) must
+            # not reset the parent's streamed-content flags or stamp the
+            # parent's first-byte / first-answer marks.
+            if _is_foreign_stream_source(payload):
+                return payload
             event_type = payload.get("event_type")
             if event_type == "chat.reasoning":
                 had_reasoning_output = True
@@ -20582,7 +20603,11 @@ class JiuWenSwarmDeepAdapter:
                         getattr(chunk, "type", None) or type(chunk).__name__,
                     )
                 if _debug_logger is not None:
-                    _debug_logger.feed(chunk)
+                    # Chunks mirrored from a child stream are captured under
+                    # their own source; feeding them here would duplicate them
+                    # in the parent run's "main" section.
+                    if not _is_foreign_stream_source(getattr(chunk, "payload", None)):
+                        _debug_logger.feed(chunk)
                     # Surface run-level terminal failures (model/task_failed,
                     # error answer) on the /debug run-end status instead of a
                     # blanket "ok"; recoverable tool_result errors stay "ok".
@@ -21950,7 +21975,14 @@ class JiuWenSwarmDeepAdapter:
                     tool_info = (
                         payload.get("tool_call", payload) if isinstance(payload, dict) else payload
                     )
-                    return {"event_type": "chat.tool_call", "tool_call": tool_info}
+                    # 只透传 stream_source_id：tool 帧带 task_id 会让 RelayClaw
+                    # 按它开一个假的 taskRuns 段，且 reasoning 帧与 tool 帧被拆开。
+                    return _propagate_stream_source_id(
+                        {STREAM_SOURCE_ID_FIELD: payload.get(STREAM_SOURCE_ID_FIELD)}
+                        if isinstance(payload, dict)
+                        else {},
+                        {"event_type": "chat.tool_call", "tool_call": tool_info},
+                    )
 
                 if chunk_type == "tool_update":
                     if isinstance(payload, dict):
@@ -21962,10 +21994,12 @@ class JiuWenSwarmDeepAdapter:
                         )
                     else:
                         update_payload = {"content": str(payload)}
-                    return {
-                        "event_type": "chat.tool_update",
-                        **update_payload,
-                    }
+                    return _propagate_stream_source_id(
+                        {STREAM_SOURCE_ID_FIELD: payload.get(STREAM_SOURCE_ID_FIELD)}
+                        if isinstance(payload, dict)
+                        else {},
+                        {"event_type": "chat.tool_update", **update_payload},
+                    )
 
                 if chunk_type == "tool_result":
                     if isinstance(payload, dict):
@@ -21973,10 +22007,12 @@ class JiuWenSwarmDeepAdapter:
                         result_payload = build_tool_result_payload(result_info)
                     else:
                         result_payload = {"result": str(payload)}
-                    return {
-                        "event_type": "chat.tool_result",
-                        **result_payload,
-                    }
+                    return _propagate_stream_source_id(
+                        {STREAM_SOURCE_ID_FIELD: payload.get(STREAM_SOURCE_ID_FIELD)}
+                        if isinstance(payload, dict)
+                        else {},
+                        {"event_type": "chat.tool_result", **result_payload},
+                    )
 
                 if chunk_type == "error":
                     error_msg = (
