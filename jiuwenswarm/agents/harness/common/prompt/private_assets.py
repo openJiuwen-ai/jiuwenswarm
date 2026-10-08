@@ -46,7 +46,7 @@ def _payload() -> dict[str, Any] | None:
 
 
 def load_mode_sections(mode: str) -> tuple[PromptSection, ...] | None:
-    """Return private static sections for one mode, or ``None`` for OSS mode."""
+    """Return shared and mode-specific private sections, or ``None`` for OSS."""
     payload = _payload()
     if payload is None:
         return None
@@ -56,8 +56,13 @@ def load_mode_sections(mode: str) -> tuple[PromptSection, ...] | None:
     if not isinstance(raw_sections, list) or not raw_sections:
         raise PrivatePromptAssetsError(f"private prompt assets lack mode={mode!r}")
 
+    raw_shared_sections = payload.get("shared_sections", [])
+    if not isinstance(raw_shared_sections, list):
+        raise PrivatePromptAssetsError("private shared_sections must be a list")
+
     sections: list[PromptSection] = []
-    for raw in raw_sections:
+    names: set[str] = set()
+    for raw in [*raw_shared_sections, *raw_sections]:
         if not isinstance(raw, dict):
             raise PrivatePromptAssetsError(f"invalid private section for mode={mode!r}")
         name, priority, content = raw.get("id"), raw.get("priority"), raw.get("content")
@@ -65,6 +70,9 @@ def load_mode_sections(mode: str) -> tuple[PromptSection, ...] | None:
             raise PrivatePromptAssetsError(f"invalid private section fields for mode={mode!r}")
         if not all(isinstance(language, str) and isinstance(text, str) for language, text in content.items()):
             raise PrivatePromptAssetsError(f"invalid private section content for mode={mode!r}")
+        if name in names:
+            raise PrivatePromptAssetsError(f"duplicate private section {name!r} for mode={mode!r}")
+        names.add(name)
         sections.append(PromptSection(name=name, content=content, priority=priority))
     return tuple(sections)
 
