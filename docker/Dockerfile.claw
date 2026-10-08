@@ -1,8 +1,10 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-ARG AGENT_RUNTIME_REPOS
-ARG AGENT_RUNTIME_BRANCH
+ARG AGENT_RUNTIME_REPOS=https://gitcode.com/openJiuwen/agent-runtime.git
+ARG AGENT_RUNTIME_BRANCH=develop
+ARG AGENT_CORE_REPOS=https://gitcode.com/openJiuwen/agent-core.git
+ARG AGENT_CORE_BRANCH=develop
 ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
 
 # uid/gid 固定 1000：与部署侧 CLAW_USER/CLAW_GROUP/CLAW_FS_GROUP(=1000) 及
@@ -17,12 +19,18 @@ WORKDIR /app/jiuwenswarm
 COPY --chown=app:app . /app/jiuwenswarm/
 
 RUN sed -i '/openjiuwen_runtime_foundation/d' pyproject.toml
-# 回合中暂缓：packages/jiuwenclaw-ee 尚未合入 develop，目录就位后取消注释
-# RUN sed -i '/openjiuwen_runtime_management/d' packages/jiuwenclaw-ee/gateway/extensions/runtime_management_extension/pyproject.toml
 
-# 构建期使用 uv（运行时 ExtensionLoader 同样依赖）；要求构建机 docker >= 20.10.10
+# 删除主依赖中的 openjiuwen（仅首次出现，保留 harmony 组与 extras 引用），
+# 改由 AGENT_CORE_REPOS/AGENT_CORE_BRANCH 构建参数安装
+RUN sed -i '0,/"openjiuwen @ git+/{/"openjiuwen @ git+/d;}' pyproject.toml
+
+RUN if [ -f packages/jiuwenclaw-ee/gateway/extensions/runtime_management_extension/pyproject.toml ]; then \
+        sed -i '/openjiuwen_runtime_management/d' packages/jiuwenclaw-ee/gateway/extensions/runtime_management_extension/pyproject.toml; \
+    fi
+
 RUN uv pip install --system \
     -e . \
+    git+${AGENT_CORE_REPOS}@${AGENT_CORE_BRANCH} \
     git+${AGENT_RUNTIME_REPOS}@${AGENT_RUNTIME_BRANCH}#subdirectory=foundation \
     git+${AGENT_RUNTIME_REPOS}@${AGENT_RUNTIME_BRANCH}#subdirectory=management \
     "rich>=13.7.0" \
@@ -35,8 +43,9 @@ RUN mkdir -p /opt/tiktoken-cache \
     && chown -R app:app /opt/tiktoken-cache \
     && chmod -R u+rwX,go+rX /opt/tiktoken-cache
 
-# 回合中暂缓：jiuwenswarm/extensions/symphony 尚未合入 develop，extension.yaml 就位后取消注释
-# RUN yq -y -i '.dependencies = {}' jiuwenswarm/extensions/symphony/extension.yaml
+RUN if [ -f jiuwenswarm/extensions/symphony/extension.yaml ]; then \
+        yq -y -i '.dependencies = {}' jiuwenswarm/extensions/symphony/extension.yaml; \
+    fi
 
 USER app
 ENV PATH=$PATH:/home/app/.local/bin
