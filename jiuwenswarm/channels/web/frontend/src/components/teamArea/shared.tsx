@@ -356,7 +356,7 @@ export function StatusIcon({ status }: { status: TaskStatus }) {
 }
 
 export function Chevron({ expanded }: { expanded?: boolean }) {
-  return <ChevronRight size={16} className={` ${expanded ? 'rotate-90' : ''}`} />;
+  return <ChevronRight size={16} className={expanded ? 'rotate-90' : ''} />;
 }
 
 export function buildTaskMap(

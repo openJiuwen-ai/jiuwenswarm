@@ -711,7 +711,7 @@
       "skills": "技能",
       "files": "文件",
       "unassigned": "未分配",
-      "unassignedAvatar": "未分配 avatar",
+      "unassignedAvatar": "未分配头像",
       "views": {
         "list": "列表视图",
         "structure": "结构视图",

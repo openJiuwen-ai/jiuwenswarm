@@ -175,6 +175,10 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
     () => filterEnabledMySkills(computeMySkills(skills, installedSkillNames), installedSkillNames),
     [skills, installedSkillNames],
   );
+  // 选择抽屉的 items 需稳定引用：内联 map/filter 会让 PickerListRegion 在父组件每次渲染
+  // （如表单校验、submitError 变化）时把已触底加载的列表打回首屏。
+  const skillPickerItems = useMemo(() => toSkillPickerItems(myPickerSkills), [myPickerSkills]);
+  const mcpPickerItems = useMemo(() => myConnectors.map(toMcpPickerItem), [myConnectors]);
 
   async function handleSubmit() {
     const nextErrors: Record<RequiredFieldKey, boolean> = {
@@ -415,7 +419,7 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
           title={t('connectorMarket.create.pickSkillTitle')}
           testId="connector-market-picker"
           status={skillsLoading ? 'loading' : skillsError ? 'error' : 'success'}
-          items={toSkillPickerItems(myPickerSkills)}
+          items={skillPickerItems}
           getItemKey={(item) => item.id}
           initialSelectedIds={skillIds}
           onRetry={loadSkills}
@@ -432,7 +436,7 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
           title={t('connectorMarket.create.pickMcpTitle')}
           testId="connector-market-picker"
           status={connectorLoading ? 'loading' : connectorError ? 'error' : 'success'}
-          items={myConnectors.map(toMcpPickerItem)}
+          items={mcpPickerItems}
           getItemKey={(item) => item.id}
           initialSelectedIds={mcpIds}
           onRetry={() => loadConnectorList('local')}

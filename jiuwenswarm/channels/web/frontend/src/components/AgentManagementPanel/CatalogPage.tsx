@@ -32,6 +32,8 @@ type CatalogPageProps = {
   totalItems: number;
   query: string;
   category: string;
+  /** 安装态筛选（index.tsx 在进入 view model 前已按它过滤）；非 'all' 时空结果应显示"无匹配"而非"暂无专家" */
+  installation?: 'all' | 'installed' | 'uninstalled';
   status: RequestStatus;
   error: string | null;
   busyIds: ReadonlySet<string>;
@@ -50,6 +52,7 @@ export function CatalogPage({
   totalItems,
   query,
   category,
+  installation = 'all',
   status,
   error,
   busyIds,
@@ -69,7 +72,7 @@ export function CatalogPage({
   const hasMore = visibleCount < items.length;
   const pageItems = items.slice(0, visibleCount);
   const isEmpty = status === 'success' && totalItems === 0;
-  const hasQuery = query.trim().length > 0 || Boolean(category);
+  const hasQuery = query.trim().length > 0 || Boolean(category) || installation !== 'all';
 
   // 切换作用域/分类/搜索词/安装态筛选后回到首批（父组件按这些条件重建 items 数组，
   // 依赖 items 即可覆盖全部筛选路径），与 GroupCatalogPage 的重置行为一致

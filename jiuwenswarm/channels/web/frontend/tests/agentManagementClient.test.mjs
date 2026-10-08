@@ -155,11 +155,12 @@ test('skill and connector picker adapters retain marketplace/install state', asy
 
   const mcps = await client.listMcpOptions();
   assert.deepEqual(mcps.map((mcp) => mcp.id), ['market-connector', 'preset-connector', 'custom-connector']);
-  // installed 以"是否出现在 local 列表"为准：未连接预置不算已安装（否则抽屉两个 tab 内容雷同）
+  // installed 只表达安装态：预置包随应用分发，connectorApi 对非 hub 归一为 installed=true；
+  // 抽屉"我的/广场"tab 归属不依赖 installed，由 AgentEditor 的 isMine 用 connectionState 判断
   assert.equal(mcps[0].installed, true);
   assert.equal(mcps[0].hubAssetId, 'hub-connector-1');
   assert.equal(mcps[0].connectionState, 'connected');
-  assert.equal(mcps[1].installed, false);
+  assert.equal(mcps[1].installed, true);
   assert.equal(mcps[1].connectionState, 'disconnected');
   assert.equal(mcps[2].installed, true);
   assert.equal(mcps[2].connectionState, 'disconnected');

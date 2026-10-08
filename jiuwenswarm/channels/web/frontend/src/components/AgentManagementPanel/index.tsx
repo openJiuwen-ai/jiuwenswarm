@@ -614,9 +614,9 @@ export function AgentManagementPanel({
     void loadMcps();
   }, [loadMcps]);
 
-  // 鍒囨崲鍒颁笓瀹堕〉闈㈡椂鍒锋柊鐩綍锛堥潰鏉垮父椹绘寕杞姐€佸垏璧颁粎闅愯棌锛岃亰澶╅噷鏂板缓鐨勪笓瀹?
-  // 涓嶄細涓诲姩閫氱煡鍓嶇锛夛紝娌跨敤 SkillPanel 鐨勬縺娲昏浆鎹㈡娴嬶紱棣栨鎸傝浇涔熻蛋姝ゅ叆鍙ｏ紝
-  // 閬垮厤涓庢棫鐨?mount-only 璇锋眰閲嶅銆?
+  // 切换到专家页面时刷新目录（面板常驻挂载、切走仅隐藏，聊天里新建的专家
+  // 不会主动通知前端），沿用 SkillPanel 的激活转换检测；首次挂载也走此入口，
+  // 避免与旧的 mount-only 请求重复。
   useEffect(() => {
     const prevIsActive = panelPrevActiveRef.current;
     const isInitialMount = !panelMountedRef.current;
@@ -1489,6 +1489,7 @@ export function AgentManagementPanel({
               totalItems={isMine ? mineView.totalItems : catalogView.totalItems}
               query={isMine ? mineQuery : query}
               category={category}
+              installation={installationFilter}
               status={
                 !isMine && !state.catalogError && catalogAwaitingItems(catalogView.totalItems, catalogCacheOf(state.catalog))
                   ? 'loading'

@@ -110,16 +110,19 @@ export const toastStore = {
     scheduleRemoval(target);
   },
   closeAll(): void {
-    const targets = records.filter((record) => !record.closing);
+    // 常驻型提示（closable: false，如连接状态 toast）不受 closeAll 波及——其生命周期由挂载方
+    // （如 App 连接状态 effect）全权管理；业务方批量清场（如归档提示替换旧 toast）不应误杀系统
+    // 常驻条目，否则断连指示会消失到重连为止。显式 toast.close(key) 仍可关闭常驻条目。
+    const targets = records.filter((record) => !record.closing && record.closable);
     if (targets.length === 0) return;
-    records = records.map((record) => (record.closing ? record : { ...record, closing: true }));
+    records = records.map((record) => (record.closable && !record.closing ? { ...record, closing: true } : record));
     emit();
     targets.forEach(scheduleRemoval);
   },
 };
 
-/** 由 config 构造记录：open 与同 id 原地更新共用，保证两条路径的字段口径一致。 */
-/** 同 id 语义：原地更新复用 key 并递增 updatedAt（ToastItem 计时器随之复位，对齐 antd update）；
+/** 由 config 构造记录：open 与同 id 原地更新共用，保证两条路径的字段口径一致。
+ *  同 id 语义：原地更新复用 key 并递增 updatedAt（ToastItem 计时器随之复位，对齐 antd update）；
  *  closing 中的同 id 记录【不复活】——手动关闭后的下一次 open 视为全新条目（全新 key），
  *  避免用户刚关掉又被业务代码复活。StrictMode 下 unmount-close 再 re-open 会短暂出现一条退场 +
  *  一条新开（仅 dev，可接受），语义以此为准。 */

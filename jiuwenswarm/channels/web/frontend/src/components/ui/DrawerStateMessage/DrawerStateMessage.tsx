@@ -1,3 +1,5 @@
+import './DrawerStateMessage.css';
+
 export type DrawerStateVariant = 'loading' | 'error' | 'empty';
 
 export interface DrawerStateMessageProps {
@@ -24,7 +26,7 @@ export function DrawerStateMessage({
 }: DrawerStateMessageProps) {
   if (variant === 'error') {
     return (
-      <div className="agent-management-form-error" role="alert" data-testid={testId}>
+      <div className="ui-drawer-state-error" role="alert" data-testid={testId}>
         <span>{message}</span>
         {retryLabel ? (
           <button type="button" onClick={onRetry} data-testid={retryTestId}>

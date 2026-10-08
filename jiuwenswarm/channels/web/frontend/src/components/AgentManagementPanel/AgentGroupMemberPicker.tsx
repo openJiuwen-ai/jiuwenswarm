@@ -27,7 +27,6 @@ type AgentGroupMemberPickerProps = {
   onReloadAgents: () => void;
   onInstallAgent?: (id: string) => void | Promise<void>;
   installingAgentIds?: ReadonlySet<string>;
-  restoreFocusRef?: { current: HTMLElement | null };
 };
 
 export function AgentOptionAvatar({ agent }: { agent: AgentCatalogItem }) {
@@ -170,7 +169,7 @@ export function AgentGroupMemberPicker({
               : undefined;
           return (
             <PageCard
-              className={`${selected ? ' is-selected' : ''}${compatibilityLoading ? ' is-loading' : cardDisabled ? ' is-disabled' : ''}`}
+              className={`agent-management-selection-card${selected ? ' is-selected' : ''}${compatibilityLoading ? ' is-loading' : cardDisabled ? ' is-disabled' : ''}`}
               testId="agent-group-member-picker-item"
               variant={selectionId}
               interactive={installed && !compatibilityLoading}

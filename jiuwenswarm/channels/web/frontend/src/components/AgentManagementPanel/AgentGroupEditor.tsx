@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { ChevronDown, ChevronUp, Minus, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -66,8 +66,6 @@ export function AgentGroupEditor({
   const [teamConfigOpen, setTeamConfigOpen] = useState(true);
   const [skillsOpen, setSkillsOpen] = useState(true);
   const [promptsOpen, setPromptsOpen] = useState(true);
-  const leaderPickerTriggerRef = useRef<HTMLElement | null>(null);
-  const memberPickerTriggerRef = useRef<HTMLElement | null>(null);
   const promptKeySeedRef = useMemo(() => ({ current: 0 }), []);
   const promptKeysRef = useMemo(() => ({ current: [] as string[] }), []);
 
@@ -420,7 +418,6 @@ export function AgentGroupEditor({
           agentsError={agentsError}
           selectedLeaderId={draft.leaderId}
           selectedMemberIds={draft.memberIds}
-          restoreFocusRef={pickerMode === 'leader' ? leaderPickerTriggerRef : memberPickerTriggerRef}
           onInstallAgent={onInstallAgent}
           installingAgentIds={installingAgentIds}
           onReloadAgents={onReloadAgents}
@@ -438,7 +435,7 @@ export function AgentGroupEditor({
         <SkillPickerDrawer
           title={t('agentManagement.group.form.chooseSkills')}
           testId="agent-group-editor-skill-picker"
-          status={skillsStatus === 'loading' ? 'loading' : skillsStatus === 'error' ? 'error' : 'success'}
+          status={skillsStatus}
           skills={skillOptions}
           initialSelectedIds={draft.skillRefs}
           onClose={() => setSkillPickerOpen(false)}

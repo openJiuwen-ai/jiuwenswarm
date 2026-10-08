@@ -976,8 +976,8 @@
   height: 16px;
 }
 
-/* close.svg 资源自带硬编码灰色 fill（其他调用处依赖该颜色），此处覆盖为 currentColor，
-   保持 chip 删除图标跟随按钮主题色（--color-chat-accent / --color-action-primary）不变 */
+/* close.svg 已改为 fill="currentColor"（ConversationSidebar 处由调用方 text-text-meta 传灰），
+   此处显式声明 chip 删除图标跟随按钮主题色（--color-chat-accent / --color-action-primary）不变 */
 .chat-input-chip-inline__remove svg path {
   fill: currentColor;
 }

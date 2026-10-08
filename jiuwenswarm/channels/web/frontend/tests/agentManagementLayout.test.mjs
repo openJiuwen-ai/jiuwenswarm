@@ -284,7 +284,8 @@ for (const [source, installed, expected] of [
         onUninstall() {},
       }),
     );
-    const button = new JSDOM(markup).window.document.querySelector('.agent-management-detail-action--uninstall');
+    const actionTestId = installed ? 'agent-management-detail-uninstall-btn' : 'agent-management-detail-delete-btn';
+    const button = new JSDOM(markup).window.document.querySelector(`[data-testid="${actionTestId}"]`);
     assert.equal(button.textContent, expected === 'delete' ? '删除' : '卸载');
   });
 }
@@ -566,7 +567,13 @@ test('management pickers expose source tabs and preserve install/connect actions
   assert.match(agentEditorSource, /testId="agent-editor-mcp-picker"/);
   assert.match(agentEditorSource, /agent-editor-mcp-picker-connect/);
   assert.match(agentEditorSource, /<ConnectorPickerDrawer/);
-  assert.match(agentEditorSource, /filterItem=\{\(mcp, sourceTab\) =>/);
+  // filterItem/tabs 必须是稳定引用（useCallback/useMemo）：内联字面量会让 PickerListRegion
+  // 的 [items] 重置效应在父组件每次渲染时把触底加载的列表打回首屏
+  assert.match(agentEditorSource, /filterItem=\{filterMcpBySourceTab\}/);
+  assert.match(
+    agentEditorSource,
+    /const filterMcpBySourceTab = useCallback\(\(mcp: McpOption, sourceTab: 'market' \| 'installed'\)/,
+  );
   assert.match(agentEditorSource, /const sortedMcps = useMemo\(\(\) => sortMcpOptions\(mcpOptions\), \[mcpOptions\]\)/);
   assert.match(agentEditorSource, /const selectable = isMcpSelectable\(mcp\)/);
   assert.match(agentEditorSource, /interactive=\{selectable\}/);

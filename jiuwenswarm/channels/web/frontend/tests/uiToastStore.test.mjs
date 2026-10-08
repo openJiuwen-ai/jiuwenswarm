@@ -113,3 +113,24 @@ test('同 id 原地更新递增 updatedAt（ToastItem 依据它复位计时器�
   await waitForExit();
   assert.equal(toastStore.getSnapshot().length, 0);
 });
+
+test('closeAll 不波及 closable:false 的常驻条目；显式 close 仍可关闭', async () => {
+  const persistentKey = toast.open({ id: 'app-connection-toast-message', content: '连接已断开', duration: 0, closable: false });
+  const transientKey = toast.open({ content: '归档成功' });
+
+  toast.closeAll();
+
+  const afterCloseAll = toastStore.getSnapshot();
+  assert.equal(afterCloseAll.length, 2);
+  assert.equal(afterCloseAll.find((record) => record.key === persistentKey).closing, false, '常驻条目不应被 closeAll 关闭');
+  assert.equal(afterCloseAll.find((record) => record.key === transientKey).closing, true);
+
+  await waitForExit();
+  const afterExit = toastStore.getSnapshot();
+  assert.equal(afterExit.length, 1);
+  assert.equal(afterExit[0].key, persistentKey);
+
+  toast.close(persistentKey);
+  await waitForExit();
+  assert.equal(toastStore.getSnapshot().length, 0);
+});

@@ -92,6 +92,7 @@ export function MarketplacePage({
   const createMenuRef = useRef<HTMLDivElement>(null);
   useClickOutside(createMenuRef, () => setCreateMenuOpen(false));
   const scrollRef = useRef<HTMLDivElement>(null);
+  const marketSentinelRef = useRef<HTMLDivElement | null>(null);
   const [marketVisibleCount, setMarketVisibleCount] = useState(MARKET_BATCH_SIZE);
 
   const [tokenTarget, setTokenTarget] = useState<{
@@ -408,14 +409,55 @@ export function MarketplacePage({
   const visibleConnectors = filteredConnectors.slice(0, marketVisibleCount);
   const visiblePlugins = filteredPlugins.slice(0, marketVisibleCount);
 
-  // 滚动触底：底部加载组件已可见，追加下一批
+  const appendNextMarketBatch = useCallback(() => {
+    setMarketVisibleCount((count) => Math.min(count + MARKET_BATCH_SIZE, activeList.length));
+  }, [activeList.length]);
+
+  // 时间戳节流：滚动/IntersectionObserver 高频触发，100ms 内只允许追加一次
+  //（三层机制对齐 CatalogPage/GroupCatalogPage/PickerListRegion）。
+  const lastAppendAtRef = useRef(0);
+  const tryAppendMarketBatch = useCallback(() => {
+    const now = performance.now();
+    if (now - lastAppendAtRef.current < 100) return;
+    lastAppendAtRef.current = now;
+    appendNextMarketBatch();
+  }, [appendNextMarketBatch]);
+
+  // 第 2 层滚动触底兜底（IntersectionObserver 为主路径）：快速滑动越过哨兵时覆盖。
   const handleListScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el || !hasMoreMarketItems) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - LOAD_MORE_THRESHOLD_PX) {
-      setMarketVisibleCount((count) => Math.min(count + MARKET_BATCH_SIZE, activeList.length));
-    }
-  }, [activeList.length, hasMoreMarketItems]);
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - LOAD_MORE_THRESHOLD_PX) tryAppendMarketBatch();
+  }, [hasMoreMarketItems, tryAppendMarketBatch]);
+
+  // 第 1 层主路径：底部加载组件（哨兵）进入视口即追加下一批；rootMargin 提前
+  // LOAD_MORE_THRESHOLD_PX 触发。jsdom 等无布局环境没有 IntersectionObserver，
+  // 跳过（由 onScroll + 兜底 effect 覆盖）。hasMore 翻转时哨兵会卸载/重挂，
+  // 依赖带上它让 observer 重新挂到新节点。
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return;
+    const root = scrollRef.current;
+    const sentinel = marketSentinelRef.current;
+    if (!root || !sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) tryAppendMarketBatch();
+      },
+      { root, rootMargin: `0px 0px ${LOAD_MORE_THRESHOLD_PX}px 0px` },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMoreMarketItems, tryAppendMarketBatch]);
+
+  // 第 3 层兜底：首批没撑出滚动条（大屏/卡片较小）时 onScroll 永不触发、哨兵恒在
+  // 视口内但 IntersectionObserver 不会再回调（已处于相交态），这里持续追加直到
+  // 出现滚动条或加载完。clientHeight === 0（无布局，如 jsdom）时跳过，避免误判。
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !hasMoreMarketItems) return;
+    if (el.clientHeight === 0 || el.scrollHeight > el.clientHeight) return;
+    appendNextMarketBatch();
+  }, [hasMoreMarketItems, appendNextMarketBatch, marketVisibleCount]);
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="connector-market-marketplace">
@@ -559,9 +601,9 @@ export function MarketplacePage({
         </div>
       )}
 
-<CatalogCacheNotice cache={catalogCacheOf(topTab === 'my' ? (myKind === 'mcp' ? myConnectors : localPackages) : topTab === 'mcp' ? builtinConnectors : packages)} />
-<div ref={scrollRef} className="page-scroll min-h-0 flex-1 overflow-y-auto" onScroll={handleListScroll}>
-<div className="card-grid-auto" data-testid="connector-market-card-list">
+          <CatalogCacheNotice cache={catalogCacheOf(topTab === 'my' ? (myKind === 'mcp' ? myConnectors : localPackages) : topTab === 'mcp' ? builtinConnectors : packages)} />
+          <div ref={scrollRef} className="page-scroll min-h-0 flex-1 overflow-y-auto" onScroll={handleListScroll}>
+            <div className="card-grid-auto" data-testid="connector-market-card-list">
         {topTab === 'my'
           ? myKind === 'mcp'
             ? visibleConnectors.map((connector) => {
@@ -677,6 +719,7 @@ export function MarketplacePage({
         )}
         {hasMoreMarketItems ? (
           <div
+            ref={marketSentinelRef}
             className="flex items-center justify-center gap-2 py-4"
             role="status"
             aria-label={t('connectorMarket.loadMore')}

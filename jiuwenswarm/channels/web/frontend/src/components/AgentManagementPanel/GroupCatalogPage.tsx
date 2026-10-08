@@ -144,7 +144,19 @@ export function GroupCatalogPage({
         ref={contentScrollRef}
         onScroll={handleContentScroll}
       >
-        {status === 'loading' && items.length === 0 ? null : status === 'error' ? (
+        {status === 'loading' && items.length === 0 ? (
+          // 与专家目录（CatalogPage）同款首屏 loading：此前团队目录首屏是整块空白
+          <div
+            className="agent-management-state"
+            data-testid="agent-group-catalog-loading"
+            data-variant="loading"
+            role="status"
+          >
+            <LoadingSpinner size={20} />
+            <p>{t('common.loading')}</p>
+          </div>
+        ) : status === 'error' && items.length === 0 ? (
+          // 与 CatalogPage 对齐：刷新失败但仍有旧数据时保留列表，仅首屏无数据才整页错误态
           <div className="agent-management-state agent-management-state--error" role="alert">
             <p>{error || t('agentManagement.group.states.loadError')}</p>
             <button

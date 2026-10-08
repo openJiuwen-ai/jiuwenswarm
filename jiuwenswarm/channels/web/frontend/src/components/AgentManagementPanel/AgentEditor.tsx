@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronUp, Minus, Plus } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import EntityAddIcon from '../../assets/agent-management/add.svg?react';
 import EntityRemoveIcon from '../../assets/agent-management/remove.svg?react';
@@ -90,6 +90,26 @@ export function AgentEditor({
   const selectedSkills = skillOptions.filter((skill) => draft.skillRefs.includes(skill.id));
   const selectedMcps = mcpOptions.filter((mcp) => draft.mcpRefs.includes(mcp.id));
   const sortedMcps = useMemo(() => sortMcpOptions(mcpOptions), [mcpOptions]);
+  // MCP 选择抽屉的页签与过滤需保持稳定引用：ConnectorPickerDrawer 的 visibleItems useMemo
+  // 依赖 tabs/filterItem，内联字面量会让父组件每次渲染（如点安装/连接触发 busy 态）都生成
+  // 新数组，把 PickerListRegion 已触底加载的列表打回首屏。
+  const mcpPickerTabs = useMemo(
+    () => ({
+      ariaLabel: t('agentManagement.form.mcpSourceTabsLabel'),
+      items: [
+        { value: 'market' as const, label: t('agentManagement.form.mcpMarket') },
+        { value: 'installed' as const, label: t('agentManagement.form.myMcp') },
+      ],
+    }),
+    [t],
+  );
+  const filterMcpBySourceTab = useCallback((mcp: McpOption, sourceTab: 'market' | 'installed') => {
+    const isMarketplace = mcp.source === 'built_in' || mcp.source === 'hub';
+    // "我的" = 自定义 + 已连接的（预置/hub）；installed 只表达安装态（预置恒 true），
+    // 不能单独作为 tab 归属，否则未连接预置会同时出现在两个 tab。
+    const isMine = mcp.source === 'customize' || (mcp.installed === true && mcp.connectionState === 'connected');
+    return sourceTab === 'market' ? isMarketplace : isMine;
+  }, []);
 
   useEffect(() => {
     if (!personaEditing) return;
@@ -258,6 +278,8 @@ export function AgentEditor({
                         aria-label={t('agentManagement.form.personaPreview')}
                         onClick={() => setPersonaEditing(true)}
                         onKeyDown={(event) => {
+                          // 仅在预览自身聚焦时劫持 Enter/Space；markdown 内链接聚焦时按 Enter 应正常打开链接
+                          if (event.target !== event.currentTarget) return;
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault();
                             setPersonaEditing(true);
@@ -448,21 +470,8 @@ export function AgentEditor({
             setMcpDialogOpen(false);
           }}
           onRetry={onReloadMcps}
-          tabs={{
-            ariaLabel: t('agentManagement.form.mcpSourceTabsLabel'),
-            items: [
-              { value: 'market', label: t('agentManagement.form.mcpMarket') },
-              { value: 'installed', label: t('agentManagement.form.myMcp') },
-            ],
-          }}
-          filterItem={(mcp, sourceTab) => {
-            const isMarketplace = mcp.source === 'built_in' || mcp.source === 'hub';
-            // "我的" = 自定义 + 已连接的（预置/hub）；installed 只表达安装态（预置恒 true），
-            // 不能单独作为 tab 归属，否则未连接预置会同时出现在两个 tab。
-            const isMine =
-              mcp.source === 'customize' || (mcp.installed === true && mcp.connectionState === 'connected');
-            return sourceTab === 'market' ? isMarketplace : isMine;
-          }}
+          tabs={mcpPickerTabs}
+          filterItem={filterMcpBySourceTab}
           errorMessage={t('agentManagement.form.mcpError')}
           emptyMessage={t('agentManagement.form.mcpEmpty')}
           loadMoreLabel={t('agentManagement.loadMore')}
