@@ -20,6 +20,9 @@ from openjiuwen.harness.subagent_runtime.models import (  # type: ignore[import-
     SubagentStatus,
     SubagentStatusKind,
 )
+from openjiuwen.harness.subagent_runtime.status_events import (  # type: ignore[import-untyped]
+    is_turn_finished,
+)
 from openjiuwen.harness.tools.subagent import (
     _control_registry,  # type: ignore[import-untyped]
 )
@@ -170,6 +173,48 @@ class CompatibleSubagentControl(SubagentControl):
         raw = getattr(chunk, "payload", None)
         payload = dict(raw) if isinstance(raw, dict) else {"content": str(raw or "")}
         await self._write_mirrored_chunk(subagent_id, str(chunk_type), payload)
+
+    async def _release_mirror_tail(self, subagent_id: str) -> None:
+        """Send a short reasoning tail that no later chunk flushed.
+
+        Coalescing checks the 300ms gap only when the next chunk arrives.
+        A turn that stops on a short tail (timeout, cancel, error, or a
+        clean end with no trailing frame) would otherwise prepend that
+        text onto the same child's next turn.
+        """
+        if not self.mirror_child_stream or self._parent_session is None:
+            return
+        if subagent_id not in self._mirror_reasoning_text:
+            return
+        await self._flush_child_reasoning(subagent_id)
+
+    def _drop_mirror_state(self, subagent_id: str) -> None:
+        """Drop coalescing state for a child that has left memory."""
+        self._mirror_reasoning_text.pop(subagent_id, None)
+        self._mirror_reasoning_flushed_at.pop(subagent_id, None)
+        self._mirror_reasoning_frames.pop(subagent_id, None)
+
+    async def _handle_instance_status_changed(
+        self,
+        subagent_id: str,
+        status: SubagentStatus,
+    ) -> None:
+        if is_turn_finished(status):
+            await self._release_mirror_tail(subagent_id)
+        await super()._handle_instance_status_changed(subagent_id, status)
+
+    async def _evict_from_memory(
+        self,
+        subagent_id: str,
+        *,
+        reason: str,
+        persist: bool = True,
+    ) -> None:
+        await self._release_mirror_tail(subagent_id)
+        try:
+            await super()._evict_from_memory(subagent_id, reason=reason, persist=persist)
+        finally:
+            self._drop_mirror_state(subagent_id)
 
 
 def install_subagent_control_compat_patch(*, mirror_child_stream: bool = False) -> None:

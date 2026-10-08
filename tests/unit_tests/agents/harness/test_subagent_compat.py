@@ -209,3 +209,110 @@ async def test_reasoning_frame_cap_keeps_tool_frames() -> None:
     await control._on_child_chunk("sub-1", _Chunk("tool_call", {"tool_call": {"name": "bash"}}))
 
     assert [item[0] for item in session.written] == ["tool_call"]
+
+
+def _patch_parent_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep lifecycle hooks from touching a control built with ``object.__new__``."""
+
+    async def _status(_self: object, _subagent_id: str, _status: SubagentStatus) -> None:
+        """Parent bookkeeping is not under test."""
+
+    async def _evict(_self: object, _subagent_id: str, *, reason: str, persist: bool = True) -> None:
+        """Parent eviction is not under test."""
+        del reason, persist
+
+    monkeypatch.setattr(SubagentControl, "_handle_instance_status_changed", _status)
+    monkeypatch.setattr(SubagentControl, "_evict_from_memory", _evict)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        SubagentStatus.completed(),
+        SubagentStatus.interrupted(),
+        SubagentStatus.errored("boom"),
+    ],
+)
+async def test_turn_end_flushes_short_reasoning_without_leaking(
+    status: SubagentStatus,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A short tail must ship when the turn ends, and must not prefix the next turn."""
+    session = _ParentSession()
+    control = _mirror_control(session)
+    _patch_parent_lifecycle(monkeypatch)
+
+    await control._on_child_chunk("sub-1", _Chunk("llm_reasoning", {"content": "上一轮尾巴"}))
+    assert session.written == []
+
+    await control._handle_instance_status_changed("sub-1", status)
+
+    assert session.written == [("llm_reasoning", {"content": "上一轮尾巴", "stream_source_id": "sub-1"})]
+    assert "sub-1" not in control._mirror_reasoning_text  # pylint: disable=protected-access
+    assert control._mirror_reasoning_frames["sub-1"] == 1  # pylint: disable=protected-access
+
+    await control._on_child_chunk("sub-1", _Chunk("llm_reasoning", {"content": "新一轮"}))
+    await control._on_child_chunk("sub-1", _Chunk("tool_call", {"tool_call": {"name": "bash"}}))
+
+    reasoning = [item[1]["content"] for item in session.written if item[0] == "llm_reasoning"]
+    assert reasoning == ["上一轮尾巴", "新一轮"]
+
+
+@pytest.mark.asyncio
+async def test_running_status_keeps_short_reasoning_buffered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _ParentSession()
+    control = _mirror_control(session)
+    _patch_parent_lifecycle(monkeypatch)
+
+    await control._on_child_chunk("sub-1", _Chunk("llm_reasoning", {"content": "还在想"}))
+    await control._handle_instance_status_changed("sub-1", SubagentStatus.running())
+
+    assert session.written == []
+    assert control._mirror_reasoning_text["sub-1"] == "还在想"  # pylint: disable=protected-access
+
+
+@pytest.mark.asyncio
+async def test_evict_flushes_tail_and_drops_mirror_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """close/cancel both evict; the parent session must not keep that child's buffers."""
+    session = _ParentSession()
+    control = _mirror_control(session)
+    _patch_parent_lifecycle(monkeypatch)
+    control._mirror_reasoning_frames["sub-1"] = 3  # pylint: disable=protected-access
+
+    await control._on_child_chunk("sub-1", _Chunk("llm_reasoning", {"content": "关闭前"}))
+    await control._evict_from_memory("sub-1", reason="manual")
+
+    assert session.written == [("llm_reasoning", {"content": "关闭前", "stream_source_id": "sub-1"})]
+    assert "sub-1" not in control._mirror_reasoning_text  # pylint: disable=protected-access
+    assert "sub-1" not in control._mirror_reasoning_flushed_at  # pylint: disable=protected-access
+    assert "sub-1" not in control._mirror_reasoning_frames  # pylint: disable=protected-access
+
+
+@pytest.mark.asyncio
+async def test_evict_drops_mirror_state_when_parent_evict_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _ParentSession()
+    control = _mirror_control(session)
+
+    async def _boom(_self: object, _subagent_id: str, *, reason: str, persist: bool = True) -> None:
+        del reason, persist
+        raise RuntimeError("remove failed")
+
+    monkeypatch.setattr(SubagentControl, "_evict_from_memory", _boom)
+    control._mirror_reasoning_text["sub-1"] = "尾巴"  # pylint: disable=protected-access
+    control._mirror_reasoning_flushed_at["sub-1"] = 1.0  # pylint: disable=protected-access
+    control._mirror_reasoning_frames["sub-1"] = 2  # pylint: disable=protected-access
+
+    with pytest.raises(RuntimeError, match="remove failed"):
+        await control._evict_from_memory("sub-1", reason="manual")
+
+    assert session.written[0][1]["content"] == "尾巴"
+    assert "sub-1" not in control._mirror_reasoning_text  # pylint: disable=protected-access
+    assert "sub-1" not in control._mirror_reasoning_flushed_at  # pylint: disable=protected-access
+    assert "sub-1" not in control._mirror_reasoning_frames  # pylint: disable=protected-access
