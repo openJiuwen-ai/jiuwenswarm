@@ -12,6 +12,7 @@ import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus'
 import { DefinitionFilePreview } from './DefinitionFilePreview';
 import { GroupAvatar } from './GroupCard';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
+import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
 import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import { DetailPromptChip, DetailSection, EntityAvatar, EntityHeader, MarkdownPane, PageToolbar, Tabs } from '../ui';
 
@@ -159,11 +160,13 @@ export function AgentGroupDetailPage({
             ...(detail.installed ? [t('agentManagement.states.installed')] : []),
           ]}
           actions={
-            <div className="agent-management-detail__actions">
+            /* 收敛到共享类 .detail-actions/.detail-action（index.css，与 plugin/MCP/agent 模板
+               详情页同款）。原 .agent-management-detail__actions 一套私有类已删除。 */
+            <div className="detail-actions">
               {canShowAssetPublish(detail.installed, detail.capabilities.canPublish) ? (
                 <button
                   type="button"
-                  className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text"
+                  className="detail-action"
                   data-testid="agent-management-agent-group-publish"
                   onClick={() =>
                     openAssetPublish({
@@ -173,13 +176,14 @@ export function AgentGroupDetailPage({
                     })
                   }
                 >
+                  <PromptSendIcon aria-hidden="true" />
                   {t('skills.actions.publish')}
                 </button>
               ) : null}
               {detail.installed && detail.capabilities.canUninstall ? (
                 <button
                   type="button"
-                  className="agent-management-detail-action agent-management-detail-action--uninstall"
+                  className="detail-action"
                   data-testid="agent-group-detail-action"
                   data-variant="uninstall"
                   disabled={busy}
@@ -195,7 +199,7 @@ export function AgentGroupDetailPage({
               {detail.installed ? (
                 <button
                   type="button"
-                  className="agent-management-button agent-management-button--secondary agent-management-detail-action--use"
+                  className="detail-action detail-action--use"
                   data-testid="agent-group-detail-action"
                   data-variant="use"
                   disabled={!canUse || busy}
@@ -209,7 +213,7 @@ export function AgentGroupDetailPage({
                   {canDelete ? (
                     <button
                       type="button"
-                      className="agent-management-detail-action agent-management-detail-action--uninstall"
+                      className="detail-action"
                       data-testid="agent-group-detail-action"
                       data-variant="delete"
                       disabled={busy}
@@ -223,7 +227,7 @@ export function AgentGroupDetailPage({
                   {detail.capabilities.canInstall ? (
                     <button
                       type="button"
-                      className="agent-management-button agent-management-button--primary agent-management-detail-action--install"
+                      className="detail-action detail-action--install"
                       data-testid="agent-group-detail-action"
                       data-variant="install"
                       disabled={busy}

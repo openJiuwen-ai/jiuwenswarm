@@ -466,15 +466,13 @@
   font-size: 14px;
 }
 
-.agent-management-card__actions .agent-management-button--primary,
-.agent-management-detail-action--install {
+.agent-management-card__actions .agent-management-button--primary {
   border-color: var(--color-text-strong);
   background: var(--color-text-strong);
   color: var(--color-text-inverse);
 }
 
-.agent-management-card__actions .agent-management-button--primary:hover:not(:disabled),
-.agent-management-detail-action--install:hover:not(:disabled) {
+.agent-management-card__actions .agent-management-button--primary:hover:not(:disabled) {
   border-color: var(--color-text-primary);
   background: var(--color-text-primary);
 }
@@ -490,8 +488,7 @@
   background: var(--color-action-secondary);
 }
 
-.agent-management-card-action--use:disabled,
-.agent-management-detail-action--use:disabled {
+.agent-management-card-action--use:disabled {
   cursor: not-allowed;
   opacity: var(--opacity-agent-disabled);
 }
@@ -592,77 +589,10 @@
 
 /* 详情页能力 chip 已迁移到共享类 ui 层 index.css（.detail-chip-row / .detail-chip） */
 
-.agent-management-detail__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 0 0 auto;
-}
-
-/* 详情头部操作按钮统一 28px 高、药丸形（含带边框的连接/使用/安装按钮，对齐 use-btn） */
-.agent-management-detail__actions .agent-management-button {
-  min-height: 28px;
-  border-radius: var(--radius-full);
-}
-
-.agent-management-detail__actions .agent-management-button--secondary:hover:not(:disabled) {
-  border-color: var(--color-border-default);
-  background: var(--color-surface-card);
-}
-
-.agent-management-detail__actions .agent-management-button--primary:hover:not(:disabled) {
-  border-color: var(--color-action-primary);
-  background: var(--color-action-primary);
-}
-
-.agent-management-detail__actions .agent-management-detail-action--use:hover:not(:disabled) {
-  border-color: var(--color-button-border);
-  background: var(--color-surface-card);
-}
-
-.agent-management-detail__actions .agent-management-detail-action--uninstall:hover:not(:disabled),
-.agent-management-detail__actions .agent-management-detail-action--publish:hover:not(:disabled) {
-  background: transparent;
-}
-
-.agent-management-detail-action--install {
-  min-width: 56px;
-  min-height: 28px;
-  padding: 0 28px;
-  border-radius: var(--radius-full);
-}
-
-.agent-management-detail-action--use {
-  min-width: 56px;
-  min-height: 28px;
-  padding: 0 28px;
-  border-radius: var(--radius-full);
-}
-
-.agent-management-detail-action--uninstall,
-.agent-management-detail-action--publish {
-  display: inline-flex;
-  min-height: 28px;
-  align-items: center;
-  gap: 6px;
-  border: 0;
-  border-radius: var(--radius-full);
-  background: transparent;
-  color: var(--color-text-primary);
-  padding: 0 8px;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 20px;
-}
-
-.agent-management-detail-action--uninstall:hover:not(:disabled) {
-  background: var(--color-action-secondary);
-}
-
-.agent-management-detail-action--uninstall:disabled {
-  cursor: wait;
-  opacity: var(--opacity-agent-muted);
-}
+/* 详情头部操作区（.agent-management-detail__actions 及 .agent-management-detail-action--* 一套
+   私有类）已迁移到共享类 index.css 的 .detail-actions / .detail-action——发布/卸载/删除为文字
+   链接态，连接/使用为 .detail-action--use 药丸，安装为 .detail-action--install 实底药丸。
+   2026-10-08 与 plugin/MCP 详情页操作区收敛为同一套实现。 */
 
 .agent-management-inline-error {
   margin-top: 20px;
@@ -3027,7 +2957,6 @@
 .agent-group-member-card {
   display: flex;
   min-width: 174px;
-  height: 132px;
   flex-direction: column;
   align-items: center;
   justify-content: center;
@@ -3035,7 +2964,7 @@
   border: 1px solid var(--color-agent-group-member-card-border, #f0f0f0);
   border-radius: 8px;
   background: var(--color-agent-group-member-card-surface, #fafafa);
-  padding: 12px 16px;
+  padding: 16px;
   text-align: center;
   transition:
     border-color var(--duration-fast) var(--ease-out),
@@ -3150,10 +3079,4 @@
 /* Measure available space rather than the width of already-truncated tags. */
 .agent-management-catalog-card .page-card__tags {
   width: 100%;
-}
-
-.agent-management-detail-action--use {
-  border-color: var(--color-button-border);
-  background: var(--color-surface-card);
-  color: var(--color-text-primary);
 }
