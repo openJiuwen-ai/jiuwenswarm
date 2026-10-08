@@ -292,6 +292,69 @@ def test_runner_post_comments_defaults_to_dry_run() -> None:
     assert trace["gitcode_api"]["execute_used"] is False
 
 
+def test_runner_post_comments_skipped_duplicate_counts_as_posted() -> None:
+    from jiuwenavatar.server.runtime.review_trace.adapter import trajectory_to_review_trace
+
+    result = {
+        "findings": {
+            "must_fix": [
+                {"id": "MF-001", "location": "a.py:1", "position": 1},
+                {"id": "MF-002", "location": "a.py:2", "position": 2},
+            ],
+            "should_fix": [],
+            "nice_to_have": [],
+        }
+    }
+    trajectory = {
+        "messages": ["https://gitcode.com/a/b/pull/1"],
+        "steps": [
+            {
+                "kind": "tool",
+                "detail": {
+                    "tool_name": "bash",
+                    "call_args": {"command": "python code_review_runner.py collect --pr https://gitcode.com/a/b/pull/1"},
+                    "call_result": {"success": True},
+                },
+            },
+            {
+                "kind": "tool",
+                "detail": {
+                    "tool_name": "write_file",
+                    "call_args": {"file_path": "D:/result.json", "content": json.dumps(result)},
+                    "call_result": {"success": True},
+                },
+            },
+            {
+                "kind": "tool",
+                "detail": {
+                    "tool_name": "bash",
+                    "call_args": {"command": "python code_review_runner.py post-comments --number 1 --execute"},
+                    "call_result": {
+                        "success": True,
+                        "data": {
+                            "content": json.dumps(
+                                {
+                                    "ok": True,
+                                    "dry_run": False,
+                                    "results": [
+                                        {"id": "MF-001", "status": "posted"},
+                                        {"id": "MF-002", "status": "skipped_duplicate"},
+                                    ],
+                                }
+                            )
+                        },
+                    },
+                },
+            },
+        ],
+    }
+    trace = trajectory_to_review_trace(trajectory)
+    assert trace["runner_steps"]["post_comments"]["status"] == "execute_success"
+    # A fully deduplicated run still counts as commented evidence.
+    assert trace["findings"][0]["comment_posted"] is True
+    assert trace["findings"][1]["comment_posted"] is True
+
+
 def test_single_digit_finding_id_is_linked_to_direct_comment() -> None:
     from jiuwenavatar.server.runtime.review_trace.adapter import trajectory_to_review_trace
 

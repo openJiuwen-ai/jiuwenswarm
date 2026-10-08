@@ -25,6 +25,10 @@
 2. 用 `pr_creator.py --list --author <login> --target-project upstream --workspace <WS> --state open`。
 3. 对每个候选 PR 再核对 `user == login`，不匹配一律剔除。
 
+## 仓内检视标准
+
+每个 PR collect 之后、检视之前，读取 `context.json` 的 `project_context.repo_review_standards` 并对照执行（规则见 [workflow.md §仓内检视标准](workflow.md)）：清单非空必须逐个读取；被本 PR 修改的标准按 PR base（目标分支）版本读取，并在行评中提示维护者确认。
+
 ## 去重
 
 周期性检视“未检视过的 PR”时，远端评论是唯一事实来源。禁止用会话记忆判断是否已检视。
@@ -37,6 +41,8 @@
 - 存在本分身对应 GitCode 账号发出的行评/讨论区评论
 
 已检视则跳过并在最终摘要记录 PR 号和原因。只有 PR head 有新提交且任务明确要求复检，才重新检视。
+
+并发触发（push webhook 与 cron 撞车、PR 快速连续更新）时，最终以 `post-comments` 的逐条远端刷新 + 内容指纹去重为准，不会重复发布检视意见（规则见 [gitcode-comments.md §发布](gitcode-comments.md)）。
 
 ## 汇报格式
 

@@ -274,6 +274,269 @@ def test_extract_dev_reviewer_signatures():
     assert signatures == {"CR-001", "CR-ABC_02"}
 
 
+def test_extract_dev_reviewer_signatures_ignores_resolved():
+    runner = load_runner()
+
+    signatures = runner.extract_dev_reviewer_signatures(
+        [
+            {"body": "已提交\n<!-- dev-reviewer:CR-001 -->"},
+            {"body": "<!-- dev-reviewer:CR-GONE -->", "resolved": True},
+            {"body": "<!-- dev-reviewer:CR-ABC_02 -->"},
+        ]
+    )
+
+    assert signatures == {"CR-001", "CR-ABC_02"}
+
+
+def test_extract_dev_reviewer_fingerprints():
+    runner = load_runner()
+    body = "**[严重][Must Fix][Code]** 标题\n\n**问题：** 描述\n<!-- dev-reviewer:CR-001 -->"
+
+    fingerprints = runner.extract_dev_reviewer_fingerprints(
+        [
+            {"body": body, "path": "pkg/a.py"},
+            {"body": body.replace("CR-001", "CR-002"), "path": "pkg/a.py", "resolved": True},
+            {"body": "普通评论", "path": "pkg/a.py"},
+        ]
+    )
+
+    assert fingerprints == {runner.comment_fingerprint("pkg/a.py", body)}
+    # path participates in the fingerprint; a different file never collides
+    assert runner.comment_fingerprint("pkg/b.py", body) not in fingerprints
+
+
+def inline_finding(finding_id: str, line: int, issue: str = "bad") -> dict:
+    return {
+        "id": finding_id,
+        "dimension": "Code",
+        "location": f"pkg/a.py:{line}",
+        "issue": issue,
+        "risk": "may fail",
+        "recommendation": "fix it",
+    }
+
+
+def post_namespace(repo: Path, execute: bool) -> argparse.Namespace:
+    return namespace(
+        repo,
+        number=42,
+        config="gitcode-repo.json",
+        workspace="demo",
+        target_project="upstream",
+        gitcode_repo_root=str(RUNNER_PATH.parents[2] / "gitcode-repo"),
+        execute=execute,
+    )
+
+
+def make_fake_run(fetch_payloads):
+    """Fake ``runner.run``: dispatch pr_creator fetches vs pr_commenter posts.
+
+    Each fetch consumes one entry from ``fetch_payloads``: a list is a
+    successful comments payload, a string is stderr for a failed fetch.
+    Post calls always succeed. Every command is recorded in ``.calls``.
+    """
+    calls: list[list[str]] = []
+    fetches = iter(list(fetch_payloads))
+
+    def fake_run(cmd, cwd=None, timeout=0):
+        calls.append(list(cmd))
+        joined = " ".join(cmd)
+        if "pr_creator.py" in joined:
+            payload = next(fetches)
+            if isinstance(payload, str):
+                return 1, "", payload
+            return 0, json.dumps({"comments": payload}, ensure_ascii=False), ""
+        return 0, json.dumps([{"comment_id": 1234, "html_url": "http://pr/c/1234"}]), ""
+
+    fake_run.calls = calls
+    return fake_run
+
+
+def call_scripts(fake_run) -> list[str]:
+    return [
+        "pr_creator.py" if "pr_creator.py" in " ".join(cmd) else "pr_commenter.py"
+        for cmd in fake_run.calls
+    ]
+
+
+def test_post_comments_execute_skips_existing_signature(tmp_path: Path, capsys, monkeypatch):
+    runner = load_runner()
+    review = base_review(
+        {
+            "must_fix": [inline_finding("CR-001", 2)],
+            "should_fix": [],
+            "nice_to_have": [],
+        }
+    )
+    repo = make_review_workspace(tmp_path, review)
+    assert runner.command_render_comments(namespace(repo, dry_run=True)) == 0
+    capsys.readouterr()
+
+    fake_run = make_fake_run([[{"body": "已提交\n<!-- dev-reviewer:CR-001 -->"}]])
+    monkeypatch.setattr(runner, "run", fake_run)
+
+    code = runner.command_post_comments(post_namespace(repo, execute=True))
+    output = json.loads(capsys.readouterr().out)
+    manifest = json.loads(
+        (repo / "doc" / "demo" / "review" / "comments" / "manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert code == 0
+    assert output["results"][0]["status"] == "skipped_existing"
+    assert "pr_commenter.py" not in call_scripts(fake_run)
+    assert manifest["items"][0]["status"] == "skipped_existing"
+
+
+def test_post_comments_execute_skips_duplicate_fingerprint(tmp_path: Path, capsys, monkeypatch):
+    runner = load_runner()
+    review = base_review(
+        {
+            "must_fix": [inline_finding("CR-001", 2)],
+            "should_fix": [],
+            "nice_to_have": [],
+        }
+    )
+    repo = make_review_workspace(tmp_path, review)
+    assert runner.command_render_comments(namespace(repo, dry_run=True)) == 0
+    capsys.readouterr()
+    # Same rendered body as CR-001.md but posted by another run as CR-017.
+    body = (
+        (repo / "doc" / "demo" / "review" / "comments" / "CR-001.md")
+        .read_text(encoding="utf-8")
+        .replace("dev-reviewer:CR-001", "dev-reviewer:CR-017")
+    )
+
+    fake_run = make_fake_run([[{"body": body, "path": "pkg/a.py"}]])
+    monkeypatch.setattr(runner, "run", fake_run)
+
+    code = runner.command_post_comments(post_namespace(repo, execute=True))
+    output = json.loads(capsys.readouterr().out)
+    manifest = json.loads(
+        (repo / "doc" / "demo" / "review" / "comments" / "manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert code == 0
+    assert output["results"][0]["status"] == "skipped_duplicate"
+    assert "pr_commenter.py" not in call_scripts(fake_run)
+    assert manifest["items"][0]["status"] == "skipped_duplicate"
+
+
+def test_post_comments_execute_refreshes_before_each_post(tmp_path: Path, capsys, monkeypatch):
+    runner = load_runner()
+    review = base_review(
+        {
+            "must_fix": [
+                inline_finding("CR-001", 2, issue="bad one"),
+                inline_finding("CR-002", 3, issue="bad two"),
+            ],
+            "should_fix": [],
+            "nice_to_have": [],
+        }
+    )
+    repo = make_review_workspace(tmp_path, review)
+    assert runner.command_render_comments(namespace(repo, dry_run=True)) == 0
+    capsys.readouterr()
+    # Second refresh sees CR-002, as if a concurrent review run posted it.
+    fake_run = make_fake_run([[], [{"body": "<!-- dev-reviewer:CR-002 -->"}]])
+    monkeypatch.setattr(runner, "run", fake_run)
+
+    code = runner.command_post_comments(post_namespace(repo, execute=True))
+    output = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert [item["status"] for item in output["results"]] == ["posted", "skipped_existing"]
+    assert call_scripts(fake_run) == ["pr_creator.py", "pr_commenter.py", "pr_creator.py"]
+
+
+def test_post_comments_execute_ignores_resolved_comments(tmp_path: Path, capsys, monkeypatch):
+    runner = load_runner()
+    review = base_review(
+        {
+            "must_fix": [inline_finding("CR-001", 2)],
+            "should_fix": [],
+            "nice_to_have": [],
+        }
+    )
+    repo = make_review_workspace(tmp_path, review)
+    assert runner.command_render_comments(namespace(repo, dry_run=True)) == 0
+    capsys.readouterr()
+
+    fake_run = make_fake_run([[{"body": "<!-- dev-reviewer:CR-001 -->", "resolved": True}]])
+    monkeypatch.setattr(runner, "run", fake_run)
+
+    code = runner.command_post_comments(post_namespace(repo, execute=True))
+    output = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert output["results"][0]["status"] == "posted"
+    assert call_scripts(fake_run) == ["pr_creator.py", "pr_commenter.py"]
+
+
+def test_post_comments_fingerprint_includes_path(tmp_path: Path, capsys, monkeypatch):
+    runner = load_runner()
+    review = base_review(
+        {
+            "must_fix": [inline_finding("CR-001", 2)],
+            "should_fix": [],
+            "nice_to_have": [],
+        }
+    )
+    repo = make_review_workspace(tmp_path, review)
+    assert runner.command_render_comments(namespace(repo, dry_run=True)) == 0
+    capsys.readouterr()
+    body = (
+        (repo / "doc" / "demo" / "review" / "comments" / "CR-001.md")
+        .read_text(encoding="utf-8")
+        .replace("dev-reviewer:CR-001", "dev-reviewer:CR-017")
+    )
+
+    # Identical body but anchored to another file: not a duplicate.
+    fake_run = make_fake_run([[{"body": body, "path": "pkg/other.py"}]])
+    monkeypatch.setattr(runner, "run", fake_run)
+
+    code = runner.command_post_comments(post_namespace(repo, execute=True))
+    output = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert output["results"][0]["status"] == "posted"
+    assert call_scripts(fake_run) == ["pr_creator.py", "pr_commenter.py"]
+
+
+def test_post_comments_execute_stops_when_refresh_fails(tmp_path: Path, capsys, monkeypatch):
+    runner = load_runner()
+    review = base_review(
+        {
+            "must_fix": [
+                inline_finding("CR-001", 2, issue="bad one"),
+                inline_finding("CR-002", 3, issue="bad two"),
+            ],
+            "should_fix": [],
+            "nice_to_have": [],
+        }
+    )
+    repo = make_review_workspace(tmp_path, review)
+    assert runner.command_render_comments(namespace(repo, dry_run=True)) == 0
+    capsys.readouterr()
+
+    fake_run = make_fake_run([[], "boom"])
+    monkeypatch.setattr(runner, "run", fake_run)
+
+    code = runner.command_post_comments(post_namespace(repo, execute=True))
+    output = json.loads(capsys.readouterr().out)
+    manifest = json.loads(
+        (repo / "doc" / "demo" / "review" / "comments" / "manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert code == 1
+    assert output["ok"] is False
+    assert output["results"][0]["status"] == "posted"
+    assert output["results"][1]["status"] == "failed"
+    assert "failed to refresh existing comments: boom" in output["results"][1]["error"]
+    assert manifest["items"][0]["status"] == "posted"
+    assert manifest["items"][0]["comment_id"] == 1234
+    assert manifest["items"][1]["status"] == "failed"
+
+
 def test_config_hardening_security_item_is_schema_valid():
     validator = load_script("review_schema_validator", SCRIPTS_DIR / "review_schema_validator.py")
     review = {

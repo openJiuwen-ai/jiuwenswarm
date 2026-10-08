@@ -55,8 +55,10 @@ python scripts/code_review_runner.py post-comments --number <N> --execute --modu
 - inline finding 必须带 `--comment-file --path --position --need-to-resolve`。
 - `(architecture)` / `(documentation)` finding 可发讨论区，必须带 `--allow-review-discussion-comment`。
 - 每个 finding 单独文件、单独 API 调用；禁止把多条 findings 合并成一条评论。
-- 真实发布前读取远端评论签名，已存在同一 CR-id 时跳过。
-- 单条失败后停止继续发布，manifest 写入失败原因；重跑时跳过已发布项。
+- 真实发布时逐条先刷新远端评论状态（每次发布前重新拉取，防止两次检视并发触发导致重复发评）：同一 CR-id 已存在且未解决时跳过（`skipped_existing`）。
+- 内容指纹（路径 + 正文，忽略 CR-id 与行号）与既有未解决评论重复时跳过（`skipped_duplicate`），覆盖两次检视对同一问题编号漂移的场景。
+- 已解决（resolved）的旧评论不参与去重；复检再次发现同一问题时可重新发布，并配合 `--reopen` 闭环。
+- 单条失败或远端刷新失败后停止继续发布，manifest 写入失败原因；重跑时跳过已发布项。
 
 ## 复检闭环
 
