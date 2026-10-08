@@ -307,6 +307,9 @@ from jiuwenswarm.agents.harness.common.rails import (
     TaskExecutionRail,
     ContextOverflowRecoveryRail,
 )
+from jiuwenswarm.agents.harness.common.rails.eternal_conversation import (
+    EternalConversationRail,
+)
 from jiuwenswarm.agents.harness.common.rails.disabled_tools_rail import (
     DisabledToolsRail,
 )
@@ -2597,6 +2600,8 @@ class JiuWenSwarmDeepAdapter:
         self._context_assemble_rail: ContextAssembleRail | None = None
         self._context_assemble_mode: str | None = None
         self._context_processor_rail: ContextProcessorRail | None = None
+        self._eternal_conversation_rail: EternalConversationRail | None = None
+        self._eternal_conversation_enabled: bool = False
         self._runtime_prompt_rail: RuntimePromptRail | None = None
         self._response_prompt_rail: ResponsePromptRail | None = None
         self._prompt_attachment_loader: PromptAttachmentLoader | None = None
@@ -9746,6 +9751,27 @@ class JiuWenSwarmDeepAdapter:
             rail = None
         return rail
 
+    @staticmethod
+    def _build_eternal_conversation_rail() -> EternalConversationRail | None:
+        """Mount an inert Rail; a Session request flag activates it later."""
+        try:
+            rail = EternalConversationRail()
+            logger.info("[JiuWenSwarmDeepAdapter] EternalConversationRail created (disabled)")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] EternalConversationRail create failed: %s", exc)
+            return None
+
+    @staticmethod
+    def shutdown_context_session_memory(context_processor_rail: ContextProcessorRail) -> bool:
+        """Stop overlapping semantic session memory through a stable Adapter API."""
+        session_memory_manager = getattr(context_processor_rail, "_session_memory_mgr", None)
+        if session_memory_manager is None:
+            return False
+        session_memory_manager.shutdown()
+        setattr(context_processor_rail, "_session_memory_mgr", None)
+        return True
+
     def _build_skill_retrieval_prompt_rail(self) -> SkillRetrievalPromptRail | None:
         """Build lightweight agentic skill retrieval prompt guidance."""
         if not is_skill_retrieval_enabled():
@@ -10052,6 +10078,9 @@ class JiuWenSwarmDeepAdapter:
             _RailBuildInfo("_request_summary_rail", self._build_request_summary_rail),
             _RailBuildInfo("_model_routing_rail", self._build_model_routing, {"config": config_base}),
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
+            _RailBuildInfo(
+                "_eternal_conversation_rail", self._build_eternal_conversation_rail
+            ),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
             _RailBuildInfo(
                 "_multimodal_image_rail",
@@ -12759,6 +12788,8 @@ class JiuWenSwarmDeepAdapter:
         workspace: str | None = None
         project_dir: str | None = None
         supports_user_interaction: bool = True
+        eternal_conversation_enabled: bool = False
+        interaction_resume: bool = False
         interactive_ask: bool = False
         request_system_prompt: str | None = None
 
@@ -12786,6 +12817,27 @@ class JiuWenSwarmDeepAdapter:
         params = request.params if isinstance(getattr(request, "params", None), dict) else None
         metadata = request.metadata if isinstance(getattr(request, "metadata", None), dict) else None
         return extract_interactive_ask(params, metadata)
+
+    @staticmethod
+    def _resolve_eternal_conversation_enabled(params: Any) -> bool:
+        """Resolve the V1 frontend runtime flag; absent remains disabled."""
+        if not isinstance(params, dict):
+            return False
+        value = params.get("eternal_conversation_enabled", False)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().casefold() in {"1", "true", "yes", "on", "enabled"}
+        return bool(value)
+
+    @staticmethod
+    def _is_eternal_interaction_resume(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        return str(params.get("source") or "").strip() in {
+            "permission_interrupt",
+            "confirm_interrupt",
+        }
 
     async def configure_session_runtime(
         self,
@@ -12910,6 +12962,31 @@ class JiuWenSwarmDeepAdapter:
         circuit_breaker_rail = getattr(self, "_circuit_breaker_rail", None)
         if circuit_breaker_rail is not None:
             circuit_breaker_rail.set_language(resolved_language)
+
+        eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
+        if eternal_conversation_rail is not None:
+            self._eternal_conversation_enabled = runtime_config.eternal_conversation_enabled
+            eternal_conversation_rail.configure_runtime(
+                enabled=runtime_config.eternal_conversation_enabled,
+                session_id=runtime_config.session_id,
+                request_id=runtime_config.request_id,
+                mode=runtime_config.mode,
+                channel=resolved_channel,
+                project_dir=runtime_config.project_dir or self._project_dir,
+                model=getattr(self, "_active_request_model", None) or self._model,
+                interaction_resume=runtime_config.interaction_resume,
+            )
+            if (
+                self._eternal_conversation_enabled
+                and self._context_processor_rail is not None
+                and self.shutdown_context_session_memory(self._context_processor_rail)
+            ):
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] SessionMemoryManager disabled: "
+                    "eternal conversation owns semantic memory"
+                )
+        stage_timer.mark("eternal_conversation")
+
         if self._runtime_prompt_rail:
             self._runtime_prompt_rail.set_language(resolved_language)
             self._runtime_prompt_rail.set_channel(resolved_channel)
@@ -14683,6 +14760,14 @@ class JiuWenSwarmDeepAdapter:
 
     async def cleanup(self) -> None:
         """Release adapter-owned external runtime resources."""
+        eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
+        if eternal_conversation_rail is not None:
+            try:
+                await eternal_conversation_rail.close()
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] eternal conversation cleanup failed: %s", exc
+                )
         if not self._is_session_scoped_adapter:
             for adapter in list(self._session_adapters.values()):
                 try:
@@ -19042,6 +19127,10 @@ class JiuWenSwarmDeepAdapter:
                     supports_user_interaction=inputs.get(
                         "supports_user_interaction", True
                     ),
+                    eternal_conversation_enabled=self._resolve_eternal_conversation_enabled(
+                        request.params
+                    ),
+                    interaction_resume=self._is_eternal_interaction_resume(request.params),
                     interactive_ask=self._extract_request_interactive_ask(request),
                     request_system_prompt=self._extract_request_system_prompt(request),
                 )
@@ -19774,6 +19863,10 @@ class JiuWenSwarmDeepAdapter:
                         supports_user_interaction=inputs.get(
                             "supports_user_interaction", True
                         ),
+                        eternal_conversation_enabled=self._resolve_eternal_conversation_enabled(
+                            request.params
+                        ),
+                        interaction_resume=self._is_eternal_interaction_resume(request.params),
                         interactive_ask=self._extract_request_interactive_ask(request),
                         request_system_prompt=self._extract_request_system_prompt(request),
                     )
@@ -20141,6 +20234,10 @@ class JiuWenSwarmDeepAdapter:
                     supports_user_interaction=inputs.get(
                         "supports_user_interaction", True
                     ),
+                    eternal_conversation_enabled=self._resolve_eternal_conversation_enabled(
+                        request.params
+                    ),
+                    interaction_resume=self._is_eternal_interaction_resume(request.params),
                     interactive_ask=self._extract_request_interactive_ask(request),
                     request_system_prompt=self._extract_request_system_prompt(request),
                 )
@@ -22292,7 +22389,11 @@ class JiuWenSwarmDeepAdapter:
         )
         if get_memory_mode(config) == "local":
             # 引擎门禁：memory.engine 未放行内置时，等同于禁用
-            builtin_on = is_builtin_memory_allowed(config) and is_memory_enabled(mode, config)
+            builtin_on = (
+                not getattr(self, "_eternal_conversation_enabled", False)
+                and is_builtin_memory_allowed(config)
+                and is_memory_enabled(mode, config)
+            )
             if builtin_on:
                 # 开启记忆
                 new_embed_fp = self._embedding_config_fingerprint(config)
@@ -22367,7 +22468,9 @@ class JiuWenSwarmDeepAdapter:
         )
 
         config = get_config()
-        if is_external_memory_enabled(config):
+        if is_external_memory_enabled(config) and not getattr(
+            self, "_eternal_conversation_enabled", False
+        ):
             if self._external_memory_rail_registered:
                 return
             if self._external_memory_rail is None:
