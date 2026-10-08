@@ -1756,6 +1756,8 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
             video_tool_hint = (
                 "Follow the configured video backend's documented prompt length."
             )
+        from jiuwenswarm.server.runtime.designer.media_generation import video_tool_timeout_seconds
+
         tools.append(
             make_tool(
                 "call_video_model",
@@ -1790,7 +1792,7 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
                     "required": ["prompt"],
                 },
                 call_video_model,
-                properties={"resilience": {"timeout_s": 1500}},
+                properties={"resilience": {"timeout_s": video_tool_timeout_seconds()}},
             )
         )
     if "ffmpeg_compose" in wanted:
@@ -1818,6 +1820,48 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
             )
         )
     return tools
+
+
+def _json_object(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _is_agent_error(payload: dict[str, Any]) -> bool:
+    return str(payload.get("result_type") or "").strip().lower() == "error"
+
+
+def _agent_failure_message(result: Any) -> str | None:
+    """Failure text when a DeepAgent invoke ended as ``result_type=error``.
+
+    A task-loop timeout is a normal return value, not an exception. Its
+    ``output`` is the timeout sentence. Treating that sentence as creative
+    text makes the media fallback submit another video job.
+    """
+    payload: dict[str, Any] | None = None
+    if isinstance(result, dict):
+        if _is_agent_error(result):
+            payload = result
+        else:
+            nested = _json_object(result.get("output"))
+            if nested is not None and _is_agent_error(nested):
+                payload = nested
+    else:
+        nested = _json_object(result)
+        if nested is not None and _is_agent_error(nested):
+            payload = nested
+    if payload is None:
+        return None
+    message = str(payload.get("output") or payload.get("error") or "").strip()
+    return message or "node agent returned an error"
 
 
 class NodeAgentHost:
@@ -2028,6 +2072,10 @@ class NodeAgentHost:
                 or node.get("label")
                 or ctx.node_id
             )
+            from jiuwenswarm.server.runtime.designer.executor import (
+                _node_execute_timeout_sec,
+            )
+
             agent = create_deep_agent(
                 model=model,
                 card=AgentCard(name=card_name, id=key, description=card_name),
@@ -2038,6 +2086,9 @@ class NodeAgentHost:
                 enable_task_loop=True,
                 max_iterations=14,
                 add_general_purpose_agent=False,
+                # The framework default is 600s. That cancels an in-flight
+                # video call while the node budget is still open.
+                completion_timeout=float(_node_execute_timeout_sec(live)),
             )
             ensure = getattr(agent, "ensure_initialized", None)
             if callable(ensure):
@@ -2074,6 +2125,7 @@ class NodeAgentHost:
                 result = await result
             span_payload["output"] = result
         toolkit.raise_media_error()
+        failure = _agent_failure_message(result)
         if toolkit.completed is not None:
             completed = toolkit.completed
             # Guarantee required media family even when agent completed with text/PNG only.
@@ -2100,6 +2152,8 @@ class NodeAgentHost:
                         f"node {ctx.node_id} finished without required {required_family} media"
                     )
             return completed
+        if failure:
+            raise RuntimeError(failure)
         text = ""
         if isinstance(result, dict):
             text = str(result.get("output") or result.get("content") or "")

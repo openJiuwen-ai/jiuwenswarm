@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -343,7 +344,10 @@ class _DummySpawner:
         return {}
 
 
-def test_clip_video_tool_timeout_overrides_ability_manager_default() -> None:
+def test_clip_video_tool_timeout_overrides_ability_manager_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VIDEO_GEN_PROTOCOL", "minimax")
     from openjiuwen.core.single_agent.ability_manager import (
         AbilityManager,
         DEFAULT_TOOL_CALL_TIMEOUT,
@@ -374,6 +378,37 @@ def test_clip_video_tool_timeout_overrides_ability_manager_default() -> None:
     mgr.add_ability(video.card, video)
     registered = mgr._tools["call_video_model"]
     assert AbilityManager._resolve_call_timeout(registered) == 1500.0
+
+
+def test_vllm_omni_clip_waits_as_long_as_the_video_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openjiuwen.core.single_agent.ability_manager import AbilityManager
+
+    from jiuwenswarm.server.runtime.designer.executor import _node_execute_timeout_sec
+    from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
+    from jiuwenswarm.server.runtime.designer.node_agent import build_designer_tools
+
+    monkeypatch.setenv("VIDEO_GEN_PROTOCOL", "vllm-omni")
+    monkeypatch.setenv("VIDEO_GEN_API_BASE", "http://127.0.0.1:8091/v1")
+    node = {
+        "id": "n_clip_1",
+        "type": "video",
+        "config": {"pipeline": "clip", "tools": ["call_video_model"]},
+    }
+    compose = {
+        "id": "n_compose",
+        "type": "video",
+        "config": {"pipeline": "compose"},
+    }
+    ctx = NodeExecutionContext(
+        graph={"graph_id": "g1", "nodes": [node, compose], "edges": []},
+        run_id="r1",
+        node_id="n_clip_1",
+    )
+    tools = build_designer_tools(DesignerGraphToolkit(_DummySpawner(), ctx))
+    video = next(tool for tool in tools if tool.card.name == "call_video_model")
+    assert AbilityManager._resolve_call_timeout(video.card) == 7200.0
+    assert _node_execute_timeout_sec(node) == 7200.0
+    assert _node_execute_timeout_sec(compose) == 1800.0
 
 
 @pytest.mark.asyncio
@@ -507,3 +542,163 @@ async def test_call_image_model_attaches_scene_character_sheets(
     assert result.startswith("image_ready")
     assert seen["reference_images"] == [str(young.resolve()), str(partner.resolve())]
     assert seen["prompt"] == "compose dinner"
+
+
+def test_agent_failure_message_reads_task_loop_timeout() -> None:
+    from jiuwenswarm.server.runtime.designer.node_agent import _agent_failure_message
+
+    timeout = {
+        "output": "Task loop round timed out after 600 seconds.",
+        "result_type": "error",
+        "error": "completion_timeout",
+    }
+    assert _agent_failure_message(timeout) == timeout["output"]
+    assert _agent_failure_message({"output": json.dumps(timeout)}) == timeout["output"]
+    assert _agent_failure_message({"output": "红色陶瓷杯静置", "result_type": "answer"}) is None
+    assert _agent_failure_message("The scene is as in Image 1.") is None
+
+
+class _FakeNodeAgent:
+    def __init__(self, result: dict) -> None:
+        self.result = result
+        self.card = None
+
+    def ensure_initialized(self) -> None:
+        return None
+
+    async def invoke(self, _payload: dict, session: object = None) -> dict:
+        return self.result
+
+
+def _install_fake_deep_agent(monkeypatch: pytest.MonkeyPatch, result: dict) -> dict:
+    captured: dict = {}
+
+    def fake_create(model: object, **kwargs: object) -> _FakeNodeAgent:
+        captured["completion_timeout"] = kwargs.get("completion_timeout")
+        return _FakeNodeAgent(result)
+
+    monkeypatch.setattr("openjiuwen.harness.factory.create_deep_agent", fake_create)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_default_models",
+        lambda _config: [
+            {
+                "is_default": True,
+                "model_client_config": {
+                    "api_key": "test-key",
+                    "model_name": "test-model",
+                    "api_base": "http://127.0.0.1",
+                    "client_provider": "OpenAI",
+                },
+                "model_config_obj": {},
+            }
+        ],
+    )
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_task_loop_error_does_not_submit_another_video(
+    designer_store: DesignerGraphStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
+    from jiuwenswarm.server.runtime.designer.node_agent import NodeAgentHost
+
+    monkeypatch.setenv("VIDEO_GEN_PROTOCOL", "vllm-omni")
+    monkeypatch.setenv("VIDEO_GEN_API_BASE", "http://127.0.0.1:8091/v1")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.get_agent_workspace_dir",
+        lambda: tmp_path,
+    )
+    captured = _install_fake_deep_agent(
+        monkeypatch,
+        {
+            "output": "Task loop round timed out after 600 seconds.",
+            "result_type": "error",
+            "error": "completion_timeout",
+        },
+    )
+    calls: list[str] = []
+
+    async def fake_materialize(self, node):  # noqa: ANN001
+        calls.append(str(node.get("id") or ""))
+        raise AssertionError("error result must not materialize media")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.node_agent.DesignerGraphToolkit.materialize_media",
+        fake_materialize,
+    )
+    node = {
+        "id": "n_clip_1",
+        "type": "video",
+        "label": "clip",
+        "config": {"pipeline": "clip", "tools": ["call_model"]},
+    }
+    ctx = NodeExecutionContext(
+        graph={"graph_id": "g1", "nodes": [node], "edges": [], "metadata": {}},
+        run_id="r1",
+        node_id="n_clip_1",
+        run={"run_id": "r1", "node_states": {}},
+    )
+    with pytest.raises(RuntimeError, match="timed out after 600 seconds"):
+        await NodeAgentHost(_DummySpawner())._run_deep_agent(node, ctx, DesignerGraphToolkit(_DummySpawner(), ctx))
+    assert calls == []
+    assert captured["completion_timeout"] == 7200.0
+
+
+@pytest.mark.asyncio
+async def test_creative_text_still_materializes_one_video(
+    designer_store: DesignerGraphStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.designer.handlers.common import file_output_ref
+    from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
+    from jiuwenswarm.server.runtime.designer.node_agent import NodeAgentHost
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.get_agent_workspace_dir",
+        lambda: tmp_path,
+    )
+    _install_fake_deep_agent(
+        monkeypatch,
+        {"output": "The scene is as in Image 1. 红色陶瓷杯静置。", "result_type": "answer"},
+    )
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"v" * 600)
+    calls: list[str] = []
+
+    async def fake_materialize(self, node):  # noqa: ANN001
+        calls.append(str(node.get("id") or ""))
+        return NodeResult(
+            output_ref=file_output_ref(video, kind="video", mime_type="video/mp4"),
+            message="one video",
+        )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.node_agent.DesignerGraphToolkit.materialize_media",
+        fake_materialize,
+    )
+    node = {
+        "id": "n_clip_1",
+        "type": "video",
+        "label": "clip",
+        "config": {"pipeline": "clip", "tools": ["call_model"]},
+    }
+    ctx = NodeExecutionContext(
+        graph={"graph_id": "g1", "nodes": [node], "edges": [], "metadata": {}},
+        run_id="r1",
+        node_id="n_clip_1",
+        run={"run_id": "r1", "node_states": {}},
+    )
+    result = await NodeAgentHost(_DummySpawner())._run_deep_agent(
+        node, ctx, DesignerGraphToolkit(_DummySpawner(), ctx)
+    )
+    assert calls == ["n_clip_1"]
+    assert result.output_ref is not None
+    assert str(result.output_ref.get("uri") or "").endswith("clip.mp4")

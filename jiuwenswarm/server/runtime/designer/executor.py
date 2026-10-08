@@ -2854,7 +2854,11 @@ def _node_execute_timeout_sec(node: DesignerGraphNode) -> float:
     image/video backends). Default floor is 20 minutes for media nodes.
     """
     pipeline = node_pipeline(node)
-    if pipeline in {NODE_ROLE_CLIP, NODE_ROLE_COMPOSE}:
+    if pipeline == NODE_ROLE_CLIP:
+        from jiuwenswarm.server.runtime.designer.media_generation import video_tool_timeout_seconds
+
+        return max(1800.0, video_tool_timeout_seconds())
+    if pipeline == NODE_ROLE_COMPOSE:
         return 1800.0
     if pipeline in {NODE_ROLE_FRAME, "character", "character_design", "scene"}:
         return 1200.0

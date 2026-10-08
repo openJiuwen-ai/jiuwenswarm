@@ -40,6 +40,9 @@ _IMAGE_RATIOS = ("1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16", "21:9")
 _VIDEO_RATIOS = ("16:9", "21:9", "4:3", "1:1", "3:4", "9:16")
 _VIDEO_POLL_SECONDS = 15.0
 _VIDEO_TIMEOUT_SECONDS = 1800.0
+# The agent tool budget stays under the node cap so a cloud job can still be
+# cancelled with a little time left on the node.
+_VIDEO_TOOL_TIMEOUT_SECONDS = 1500.0
 # A 50-step MiniMax-H3 render on a self-deployed server can take far longer.
 _VLLM_OMNI_VIDEO_TIMEOUT_SECONDS = 7200.0
 _SAVED_TO = re.compile(r"^Saved to: (.+)$", re.MULTILINE)
@@ -76,6 +79,17 @@ def slot_settings(kind: Kind) -> SlotSettings:
 def configured_model(kind: Kind) -> str:
     """User-configured model only; never a fallback model id."""
     return slot_settings(kind).model
+
+
+def video_tool_timeout_seconds() -> float:
+    """How long one clip video call may run.
+
+    vLLM-Omni shares the long poll budget. Other backends keep the shorter
+    tool budget that sits inside the 1800s node cap.
+    """
+    if slot_settings("video").backend == gen_toolkits.VLLM_OMNI:
+        return _VLLM_OMNI_VIDEO_TIMEOUT_SECONDS
+    return _VIDEO_TOOL_TIMEOUT_SECONDS
 
 
 def generation_enabled(kind: Kind) -> bool:
