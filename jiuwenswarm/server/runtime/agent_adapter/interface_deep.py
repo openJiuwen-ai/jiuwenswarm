@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, 
 
 if TYPE_CHECKING:
     from openjiuwen.harness.schema.config import SubAgentConfig
+    from openjiuwen.harness.schema.interaction import InteractionOutputStream
     from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
 
 import yaml
@@ -1303,6 +1304,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         self._instance_overrides: dict[str, Any] = {}
         self._is_session_scoped_adapter: bool = False
         self._synced_history_tail_request_id: str | None = None
+        # 被用户停止（interrupt(cancel) 命中）且未获回复的轮数：这些轮次会在
+        # 会话历史留下悬空用户消息，下一次普通 chat.send 派发时消费计数并
+        # 注入 <system-reminder> 提示（_consume_stopped_rounds_reminder）。
+        self._stopped_unanswered_rounds: int = 0
         # Office (work) profile always uses English for system-prompt scaffolding
         # (identity / safety / skills / task_execution / runtime / env sections),
         # mirroring code mode. ``_runtime_language_override`` stays ``None`` in
@@ -8466,6 +8471,14 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 "[JiuWenSwarmDeepAdapter] interrupt(%s): interaction cancel failed",
                 intent,
             )
+        if cancelled and intent == "cancel":
+            # 被停止的轮次没有任何产出，会在会话历史里留下无回复的用户消息
+            # （悬空消息）；登记计数，下一次普通 chat.send 派发时消费并注入
+            # 提示（_consume_stopped_rounds_reminder），避免模型把已停止的
+            # 请求当作待处理任务回应。supplement 是换输入续跑，不算放弃。
+            self._stopped_unanswered_rounds = (
+                getattr(self, "_stopped_unanswered_rounds", 0) + 1
+            )
         # cancel 会放弃整个当前交互回合；supplement 仅在纯 ask_user 回合下做
         # 保守清理。两者都必须同时移除持久化 interrupt state 和上下文尾部
         # tool_call，否则下一条普通消息会被旧交互当作回答消费。
@@ -8520,6 +8533,103 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             ok=True,
             payload=payload,
             metadata=request.metadata,
+        )
+
+    async def _reclaim_output_stream_for_new_round(
+        self,
+        request: "AgentRequest",
+        session_id: str,
+        *,
+        timeout_seconds: float = 5.0,
+        poll_interval_seconds: float = 0.1,
+    ) -> Optional["InteractionOutputStream"]:
+        """普通对话取输出租约；被旧轮悬挂占用时重放 interrupt 收回。
+
+        ``attach_output`` 在租约被其他消费者持有时返回 None。网关的
+        cancel-then-start 顶替通常保证派发新消息前旧流已结束，但「取消早于
+        旧轮注册」的竞态（手机发送后立即终止，cancel 与消息在途中交错）会
+        让 fire-and-forget 中断扑空，旧轮带着租约跑到自然结束——期间同
+        session 的后续 chat.send 全部静默退化为只回 runtime.accepted
+        （前端「本轮无响应」）。这里重放一次 interrupt(cancel)（与网关中断
+        同一条清理路径：暂停 ACTIVE goal、cancel_round、清 pending
+        interrupt state），并在时限内轮询等待旧消费者释放租约。
+
+        Args:
+            request: 触发本次取回的 chat.send 请求，interrupt 复用其
+                session/request 标识做清理。
+            session_id: 会话 id。
+            timeout_seconds: 等待租约释放的总时限（秒）。
+            poll_interval_seconds: 租约轮询间隔（秒）。
+
+        Returns:
+            拿到租约时返回输出流；超时仍被占用返回 None，由调用方显式
+            报错收尾。
+
+        Raises:
+            RuntimeError: 交互已终止时由 ``attach_output`` 原样上抛。
+        """
+        stream = await self._instance.attach_output()
+        if stream is not None:
+            return stream
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] 新消息输出租约被旧消费者占用，"
+            "重放 interrupt 收回: session=%s request_id=%s",
+            session_id,
+            request.request_id,
+        )
+        await self._process_interaction_interrupt(request, "cancel", None)
+        started_at = time.monotonic()
+        deadline = started_at + timeout_seconds
+        while True:
+            stream = await self._instance.attach_output()
+            if stream is not None:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] 输出租约已收回: session=%s "
+                    "request_id=%s waited_ms=%.0f",
+                    session_id,
+                    request.request_id,
+                    (time.monotonic() - started_at) * 1000,
+                )
+                return stream
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] 输出租约收回超时: session=%s "
+                    "request_id=%s timeout_s=%.1f",
+                    session_id,
+                    request.request_id,
+                    timeout_seconds,
+                )
+                return None
+            await asyncio.sleep(poll_interval_seconds)
+
+    def _consume_stopped_rounds_reminder(self) -> str | None:
+        """消费「被用户停止且未回复」的轮次计数，生成一次性模型提示。
+
+        interrupt(cancel) 命中的轮次被中止时没有任何产出，会在会话历史里
+        留下一条无回复的用户消息（悬空消息）。下一条普通消息的模型会把这些
+        悬空消息当作待处理请求回应——实测：手机停止「生成图片」后发送
+        「你好」，模型回复的却是图片生成的引导话术。这里在普通 chat.send
+        派发时消费计数，返回一段 ``<system-reminder>``（模型系统提示中已
+        声明该标签承载系统信息），提醒模型这些请求已被用户放弃。
+
+        Returns:
+            存在被停止未回复轮次时返回提醒文本（计数已清零）；否则 None。
+        """
+        stopped = getattr(self, "_stopped_unanswered_rounds", 0)
+        if stopped <= 0:
+            return None
+        self._stopped_unanswered_rounds = 0
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] 注入被停止请求提示: session=%s "
+            "stopped_rounds=%d",
+            getattr(self, "_parent_session_id", None),
+            stopped,
+        )
+        return (
+            "<system-reminder>用户此前主动停止了 "
+            f"{stopped} 条未获得回复的请求（对应会话中未被应答的用户消息）。"
+            "这些请求已被用户放弃，请勿继续处理或主动回应它们；"
+            "只需处理最新一条用户消息。</system-reminder>"
         )
 
     def _cancel_scheduler_running_tasks(self) -> None:
@@ -10731,12 +10841,37 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 # 之前的 rewind 分支 Runner.run_agent_streaming(session=_runner_session)
                 # 会导致 stream 归属错位（core 写原始 session 的流，adapter 读
                 # _runner_session 的流），从而丢掉 output/notice chunk。
-                interaction_stream = await self._instance.attach_output()
+                # 输出租约被旧轮悬挂时（取消竞态漏网的场景），先重放
+                # interrupt 收回再走正常路径——不再静默只回
+                # runtime.accepted 把本轮吞掉。
+                interaction_stream = await self._reclaim_output_stream_for_new_round(
+                    request, session_id
+                )
                 if interaction_stream is None:
-                    async for chunk in _yield_runtime_accepted():
-                        yield chunk
+                    # 收回失败：显式报错收尾（计费按 FAILED）。旧实现只回
+                    # runtime.accepted 就返回，本轮零内容地「完成」，前端
+                    # 表现为「本轮无响应」。
+                    _billing_failed = True
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=cid,
+                        payload={
+                            "event_type": "chat.error",
+                            "error": "上一轮任务仍在处理且无法停止，请稍后重试",
+                            "code": "OUTPUT_LEASE_BUSY",
+                        },
+                        is_complete=True,
+                    )
                     interaction_stream_abort = False
                     return
+                # 悬空停止轮提示：只改本轮发往模型的 inputs（用户历史与计费
+                # 用的是门面层已落盘的原始 query）；放在租约收回之后，本轮
+                # 收回的悬挂旧轮同样计入。
+                stopped_reminder = self._consume_stopped_rounds_reminder()
+                if stopped_reminder is not None:
+                    inputs["query"] = (
+                        f"{inputs.get('query') or ''}\n\n{stopped_reminder}"
+                    )
                 server_logger.info(
                     "[AgentServer] message entering runner streaming: session_id=%s request_id=%s"
                     " channel_id=%s mode=%s prepare_ms=%.1f query=%s",
