@@ -217,57 +217,76 @@ def build_enabled_mcp_server_configs(
 
 
 async def preflight_mcp_server_reachable(
-    cfg: McpServerConfig, *, timeout: float = 3.0
+    cfg: McpServerConfig, *, timeout: float | None = None
 ) -> tuple[bool, str]:
-    """Cheap reachability probe for HTTP-based MCP servers.
-
-    Why this exists: when an HTTP MCP server is unreachable, openjiuwen still
-    enters the mcp ``streamablehttp_client`` async context (which spins up an
-    anyio task group with background request tasks) before failing on
-    ``session.initialize()``. Tearing that context back down leaks orphaned
-    background tasks and raises noisy ``aclose(): asynchronous generator is
-    already running`` / ``Attempted to exit cancel scope in a different task``
-    errors. Probing the host:port first lets us skip registration cleanly.
-
-    Returns ``(reachable, reason)``. Non-HTTP transports (stdio/playwright/…)
-    report reachable — they are spawned locally and have no cheap probe.
-    """
+    """Probe HTTP MCP reachability and authentication without entering its SDK task group."""
     transport = (getattr(cfg, "client_type", "") or "").strip().lower()
     if transport not in _HTTP_MCP_TRANSPORTS:
         return True, ""
 
+    import httpx
+
     url = (getattr(cfg, "server_path", "") or "").strip()
-    parsed = urlparse(url)
-    host = parsed.hostname
-    if not host:
-        return False, f"invalid url: {url!r}"
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not url:
+        return False, "invalid url: empty"
+
+    params = getattr(cfg, "params", None) or {}
+    configured_timeout = _positive_timeout_s(params.get("timeout_s"))
+    read_timeout = configured_timeout or _positive_timeout_s(timeout) or 10.0
+    http_timeout = httpx.Timeout(
+        connect=min(read_timeout, 5.0),
+        read=read_timeout,
+        write=5.0,
+        pool=5.0,
+    )
+
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    param_headers = params.get("headers") if isinstance(params, dict) else None
+    if isinstance(param_headers, dict):
+        headers.update({str(key): str(value) for key, value in param_headers.items()})
+    auth_headers = getattr(cfg, "auth_headers", None)
+    if isinstance(auth_headers, dict):
+        headers.update({str(key): str(value) for key, value in auth_headers.items()})
+    auth_query = getattr(cfg, "auth_query_params", None)
+    query_params = (
+        {str(key): str(value) for key, value in auth_query.items()}
+        if isinstance(auth_query, dict)
+        else None
+    )
 
     try:
-        _, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port), timeout=timeout
-        )
-    except asyncio.TimeoutError:
-        return False, f"tcp connect to {host}:{port} timed out after {timeout}s"
-    except Exception as exc:
-        # Connection refused / DNS failure / etc. — also defensive: the probe
-        # itself must never break startup with an unexpected exception type.
-        return (
-            False,
-            f"tcp connect to {host}:{port} failed: {type(exc).__name__}: {exc}",
-        )
+        from mcp.types import LATEST_PROTOCOL_VERSION
+    except ImportError:  # pragma: no cover - depends on the installed MCP SDK
+        LATEST_PROTOCOL_VERSION = "2025-06-18"
+    body = {
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "id": 0,
+        "params": {
+            "protocolVersion": LATEST_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "mcp", "version": "0.1.0"},
+        },
+    }
 
-    writer.close()
     try:
-        await writer.wait_closed()
-    except Exception as exc:
-        logger.debug(
-            "[mcp-preflight] reachability probe socket close failed for %s:%s: %r",
-            host,
-            port,
-            exc,
-        )
-    return True, ""
+        async with httpx.AsyncClient(timeout=http_timeout, follow_redirects=False) as client:
+            response = await client.post(url, headers=headers, params=query_params, json=body)
+    except httpx.TimeoutException as exc:
+        return False, f"http probe timed out after {read_timeout}s: {type(exc).__name__}"
+    except (httpx.ConnectError, httpx.NetworkError, httpx.UnsupportedProtocol) as exc:
+        return False, f"unreachable: {type(exc).__name__}: {exc}"
+    except httpx.InvalidURL as exc:
+        return False, f"invalid url: {exc}"
+    except Exception as exc:  # noqa: BLE001 - preflight must never break startup
+        return False, f"probe failed: {type(exc).__name__}: {exc}"
+
+    if response.status_code >= 400:
+        return False, f"http {response.status_code} from server"
+    return True, f"ok (http {response.status_code})"
 
 
 def is_asyncio_outer_cancellation() -> bool:
