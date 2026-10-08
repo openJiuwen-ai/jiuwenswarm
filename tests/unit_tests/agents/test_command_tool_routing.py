@@ -224,18 +224,18 @@ async def test_command_reuses_connector_host_routing(tmp_path, monkeypatch, conn
     provider._launcher_extra_params = Mock(return_value={})
     provider._get_sandbox_id = Mock(return_value="sandbox-a")
     client = Mock()
-    client.exec.return_value = {"stdout": "sandbox", "stderr": "", "exit_code": 0}
+    client.exec_async = AsyncMock(return_value={"stdout": "sandbox", "stderr": "", "exit_code": 0})
     provider._get_client = Mock(return_value=client)
     bound = commands.create_command_tool(SimpleNamespace(shell=lambda: provider), agent_id="agent-a")
     result = json.loads(await bound._func(command="echo test", shell_type="cmd"))
     if connector:
         assert result["stdout"] == "host"
         host.assert_called_once()
-        client.exec.assert_not_called()
+        client.exec_async.assert_not_called()
     else:
         assert result["stdout"] == "sandbox"
-        client.exec.assert_called_once()
-        assert client.exec.call_args.args[1] == ["cmd", "/d", "/s", "/c", "echo test"]
+        client.exec_async.assert_awaited_once()
+        assert client.exec_async.await_args.args[1] == ["cmd", "/d", "/s", "/c", "echo test"]
         host.assert_not_called()
 
 
