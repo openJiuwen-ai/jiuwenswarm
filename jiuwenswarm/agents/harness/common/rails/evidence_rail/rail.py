@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -57,21 +58,73 @@ _STORE_ERRORS: tuple[type[Exception], ...] = (OSError, *_DATA_ERRORS)
 
 
 class EvidenceRailConfig(BaseModel):
-    """Configuration for an opt-in EvidenceRail instance."""
+    """Configuration for an opt-in EvidenceRail instance.
+
+    Defaults are fail-closed.  Mounting the rail with no configuration blocks
+    every model call with ``EVIDENCE_MISSING`` because no verified evidence is
+    available; this is intended for evidence-bound agents, not a neutral
+    default.  Supply evidence in one of two ways:
+
+    * statically, through ``evidence_items`` (or the ``evidence_items`` param
+      of the ``swarm.evidence_rail`` RailSpec provider); or
+    * per invocation, by having a higher-priority rail write a list of
+      ``EvidenceItem`` (or plain dicts) to ``ctx.extra[EVIDENCE_ITEMS_KEY]`` in
+      ``before_invoke`` or ``before_model_call``.
+
+    Set ``require_verified_evidence=False`` to keep the receipts and the
+    context projection without blocking runs that have no verified evidence.
+
+    ``artifact_root`` is resolved when the rail is constructed.  Through the
+    RailSpec provider a relative path lands below the member workspace; when
+    the class is constructed directly a relative path resolves against the
+    process working directory, so pass an absolute path there.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    artifact_root: str = ".evidencerail"
-    evidence_items: list[EvidenceItem] = Field(default_factory=list)
-    require_verified_evidence: bool = True
-    max_context_items: int = Field(default=24, ge=1, le=256)
-    max_item_chars: int = Field(default=2000, ge=64, le=20_000)
-    max_recoveries: int = Field(default=1, ge=0, le=1)
+    artifact_root: str = Field(
+        default=".evidencerail",
+        description=(
+            "Receipt directory. Relative paths resolve against the process working "
+            "directory when constructed directly, or the member workspace through "
+            "the RailSpec provider."
+        ),
+    )
+    evidence_items: list[EvidenceItem] = Field(
+        default_factory=list,
+        description="Static evidence for every invocation; ctx.extra overrides it per call.",
+    )
+    require_verified_evidence: bool = Field(
+        default=True,
+        description="Block each model call with EVIDENCE_MISSING when no verified evidence exists.",
+    )
+    max_context_items: int = Field(
+        default=24,
+        ge=1,
+        le=256,
+        description="Maximum verified records projected into one model call.",
+    )
+    max_item_chars: int = Field(
+        default=2000,
+        ge=64,
+        le=20_000,
+        description="Per-record content truncation applied to the projection only.",
+    )
+    max_recoveries: int = Field(
+        default=1,
+        ge=0,
+        le=1,
+        description=(
+            "Bounded tool recovery per invocation: 0 disables retries, 1 allows one "
+            "retry of a retryable tool failure. Higher values are rejected on purpose."
+        ),
+    )
     retryable_reason_codes: set[str] = Field(
         default_factory=lambda: {
             REASON_TOOL_TIMEOUT,
             REASON_TOOL_EXECUTION_FAILED,
-        }
+        },
+        description="Tool reason codes eligible for the bounded retry.",
     )
 
 
@@ -129,9 +182,17 @@ def digest_value(value: Any) -> str:
 class EvidenceRail(DeepAgentRail):
     """Create replayable receipts and constrain model context to verified evidence.
 
-    The rail is deliberately opt-in.  Per-invocation state lives in ``ctx.extra``
-    instead of mutable instance fields. Tool arguments, results, user queries,
+    The rail is deliberately opt-in.  Tool arguments, results, user queries,
     and exception messages are persisted only as SHA-256 digests.
+
+    Per-invocation state is created in ``before_invoke`` and stored both in
+    ``ctx.extra`` and in an instance registry keyed by the agent session.  The
+    registry is required: a DeepAgent fires ``before_invoke`` / ``after_invoke``
+    on its own callback context, while model and tool hooks receive contexts
+    created by the inner ReAct loop whose ``extra`` dict does not contain the
+    outer entries.  The session object is the identity shared by all of them.
+    The entry is removed in ``after_invoke``; one rail instance therefore
+    supports one in-flight invocation per session.
 
     Failure handling follows the repository policy of catching specific
     exception types rather than ``Exception``: every guarded block names the
@@ -168,6 +229,8 @@ class EvidenceRail(DeepAgentRail):
         self._monotonic = monotonic
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
         self._prompt_builder = None
+        self._runs: dict[str, _RunState] = {}
+        self._runs_lock = threading.Lock()
 
     def init(self, agent: Any) -> None:
         self._prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -191,6 +254,7 @@ class EvidenceRail(DeepAgentRail):
             state = _RunState(manifest=manifest, evidence=[])
             ctx.extra[self._STATE_KEY] = state
             ctx.extra[RUN_MANIFEST_KEY] = manifest
+            self._remember(ctx, state)
         except _DATA_ERRORS as exc:
             self._force_finish(ctx, REASON_STORAGE_FAILED, exc)
             return
@@ -293,6 +357,11 @@ class EvidenceRail(DeepAgentRail):
         if state is None:
             self._force_finish(ctx, REASON_STORAGE_FAILED)
             return
+        if ctx.exception is not None:
+            # The rail decorator fires AFTER_TOOL_CALL for the final attempt
+            # even when it raised; ``on_tool_exception`` already closed that
+            # attempt's receipt, so recording a success here would be false.
+            return
         try:
             receipt = state.pending_tool or self._new_tool_receipt(ctx, state)
             receipt.status = "succeeded"
@@ -357,20 +426,30 @@ class EvidenceRail(DeepAgentRail):
         state = self._state(ctx)
         if state is None:
             return
-        if state.manifest.status == "running":
-            state.manifest.status = "failed" if ctx.exception else "completed"
-        state.manifest.ended_at = self._timestamp()
         try:
-            state.manifest.output_digest = digest_value(
-                getattr(ctx.inputs, "result", None)
-            )
-        except _DATA_ERRORS as exc:
-            self._force_finish(ctx, REASON_RECEIPT_FAILED, exc)
-            return
-        try:
-            self.store.save_manifest(state.manifest)
-        except _STORE_ERRORS as exc:
-            self._force_finish(ctx, REASON_STORAGE_FAILED, exc)
+            result = getattr(ctx.inputs, "result", None)
+            if state.manifest.status == "running":
+                blocked_by = self._blocked_reason(result)
+                if blocked_by is not None:
+                    # A force-finish that bypassed ``_block`` (for example a
+                    # store failure in ``before_invoke``) must not be recorded
+                    # as a completed run.
+                    state.manifest.status = "blocked"
+                    state.manifest.terminal_reason_code = blocked_by
+                else:
+                    state.manifest.status = "failed" if ctx.exception else "completed"
+            state.manifest.ended_at = self._timestamp()
+            try:
+                state.manifest.output_digest = digest_value(result)
+            except _DATA_ERRORS as exc:
+                self._force_finish(ctx, REASON_RECEIPT_FAILED, exc)
+                return
+            try:
+                self.store.save_manifest(state.manifest)
+            except _STORE_ERRORS as exc:
+                self._force_finish(ctx, REASON_STORAGE_FAILED, exc)
+        finally:
+            self._forget(ctx, state)
 
     def _resolve_evidence(
         self,
@@ -482,18 +561,73 @@ class EvidenceRail(DeepAgentRail):
         )
 
     @staticmethod
-    def _tool_reason(exception: Exception) -> str:
-        if isinstance(exception, TimeoutError):
-            return REASON_TOOL_TIMEOUT
-        if isinstance(exception, PermissionError):
-            return REASON_TOOL_PERMISSION_DENIED
-        if isinstance(exception, (TypeError, ValueError)):
-            return REASON_TOOL_INPUT_INVALID
+    def _tool_reason(exception: BaseException) -> str:
+        # The ability manager wraps a tool's exception in its own error type
+        # and keeps the original as ``__cause__``; classify along that chain.
+        current: BaseException | None = exception
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen and len(seen) < 8:
+            seen.add(id(current))
+            if isinstance(current, TimeoutError):
+                return REASON_TOOL_TIMEOUT
+            if isinstance(current, PermissionError):
+                return REASON_TOOL_PERMISSION_DENIED
+            if isinstance(current, (TypeError, ValueError)):
+                return REASON_TOOL_INPUT_INVALID
+            current = current.__cause__
         return REASON_TOOL_EXECUTION_FAILED
 
     def _state(self, ctx: AgentCallbackContext) -> _RunState | None:
         state = ctx.extra.get(self._STATE_KEY)
-        return state if isinstance(state, _RunState) else None
+        if isinstance(state, _RunState):
+            return state
+        key = self._run_key(ctx)
+        if key is None:
+            return None
+        with self._runs_lock:
+            state = self._runs.get(key)
+        if state is not None:
+            ctx.extra[self._STATE_KEY] = state
+        return state
+
+    def _remember(self, ctx: AgentCallbackContext, state: _RunState) -> None:
+        key = self._run_key(ctx)
+        if key is None:
+            return
+        with self._runs_lock:
+            self._runs[key] = state
+
+    def _forget(self, ctx: AgentCallbackContext, state: _RunState) -> None:
+        key = self._run_key(ctx)
+        if key is None:
+            return
+        with self._runs_lock:
+            if self._runs.get(key) is state:
+                del self._runs[key]
+
+    @staticmethod
+    def _run_key(ctx: AgentCallbackContext) -> str | None:
+        """Return the identity shared by the outer and inner callback contexts."""
+        session = getattr(ctx, "session", None)
+        if session is None:
+            return None
+        get_session_id = getattr(session, "get_session_id", None)
+        session_id = (
+            str(get_session_id() or "").strip() if callable(get_session_id) else ""
+        )
+        if session_id:
+            return f"session:{session_id}"
+        return f"session-object:{id(session)}"
+
+    @staticmethod
+    def _blocked_reason(result: Any) -> str | None:
+        if not isinstance(result, Mapping):
+            return None
+        marker = result.get("evidencerail")
+        if isinstance(marker, Mapping) and marker.get("status") == "blocked":
+            reason = marker.get("reason_code")
+            return str(reason) if reason else REASON_STORAGE_FAILED
+        return None
 
     def _timestamp(self) -> str:
         return self._clock().astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
