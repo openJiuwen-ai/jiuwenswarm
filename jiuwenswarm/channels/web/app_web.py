@@ -77,6 +77,8 @@ def _inject_user_web_runtime_config(
     web_transport: str = "websocket",
 ) -> str:
     """Inject runtime edition and login-auth flags into index.html."""
+    from jiuwenswarm.common.workspace.quota import is_workspace_quota_enabled
+
     edition = "enterprise" if is_enterprise() else "personal"
     return (
         document.replace("__JIUWENSWARM_EDITION_VALUE__", edition)
@@ -85,6 +87,10 @@ def _inject_user_web_runtime_config(
             "true" if login_auth_simulate else "false",
         )
         .replace("__JIUWEN_WEB_TRANSPORT_VALUE__", web_transport)
+        .replace(
+            "__WORKSPACE_QUOTA_ENABLED_VALUE__",
+            "true" if is_workspace_quota_enabled() else "false",
+        )
     )
 
 

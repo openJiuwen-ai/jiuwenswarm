@@ -72,6 +72,7 @@ export async function fetchWorkspaceUsage(): Promise<WorkspaceUsageData> {
     group_id: payload?.group_id,
     bot_id: payload?.bot_id,
     source_policy_id: payload?.source_policy_id,
+    unlimited: payload?.unlimited,
   };
 }
 

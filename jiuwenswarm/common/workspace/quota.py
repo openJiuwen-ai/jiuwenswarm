@@ -23,12 +23,24 @@ DEFAULT_FALLBACK_LIMIT_BYTES = 10 * 1024**4
 FALLBACK_POLICY_ID = "local_default"
 FALLBACK_LIMIT_ENV = "AGENT_WORKSPACE_QUOTA_DEFAULT_LIMIT_BYTES"
 USED_TTL_ENV = "AGENT_WORKSPACE_QUOTA_USED_TTL_SECONDS"
+FEATURE_ENABLED_ENV = "WORKSPACE_QUOTA_ENABLED"
 DEFAULT_USED_TTL_SECONDS = 5.0
 
 # 策略 ``limit_bytes == -1`` 表示无限制；``0`` 表示零配额（满额阻断）。
 UNLIMITED_LIMIT_BYTES = -1
 
 QuotaStatus = Literal["ok", "warn", "block"]
+
+
+def is_workspace_quota_enabled() -> bool:
+    """用户空间配额特性开关；默认关闭。
+
+    真值：``1/true/yes/on``；假值：``0/false/no/off/""``（未设置亦为假）。
+    与 Manager 共用 ``WORKSPACE_QUOTA_ENABLED``（企业部署由同一 .env 注入）。
+    """
+    from jiuwenswarm.common.config import coerce_config_bool
+
+    return coerce_config_bool(os.environ.get(FEATURE_ENABLED_ENV), False)
 
 
 @dataclass(frozen=True)
@@ -437,6 +449,8 @@ def check_workspace_write(
     used_bytes: int | None = None,
 ) -> QuotaGateDecision:
     """写盘前检查。拒绝时抛 ``WorkspaceQuotaExceeded``。"""
+    if not is_workspace_quota_enabled():
+        return QuotaGateDecision(allowed=True, status="ok", detail=None, snapshot=None)
     snap = resolve_effective_quota(
         user_id=user_id,
         group_id=group_id,
@@ -500,6 +514,7 @@ __all__ = [
     "DEFAULT_USED_TTL_SECONDS",
     "FALLBACK_LIMIT_ENV",
     "FALLBACK_POLICY_ID",
+    "FEATURE_ENABLED_ENV",
     "QuotaGateDecision",
     "QuotaSnapshot",
     "QuotaStatus",
@@ -517,6 +532,7 @@ __all__ = [
     "estimate_text_write_additional",
     "fallback_limit_bytes",
     "get_db_policy_cache",
+    "is_workspace_quota_enabled",
     "reset_quota_identity",
     "resolve_effective_quota",
     "set_db_policy_cache",
