@@ -30,7 +30,7 @@
 | Base | `gateway_config_host` | `http://{host}:19002/api/v1` |
 | 信封 | `{ code, message, data }` | `{ request_id, ok, data\|error, metadata }` |
 | 流式 | 无 SSE 会话流 | 流式仅 SSE |
-| 身份 | HTTP 层无 Web 租户头模型；依赖内网 / TLS（见 §18.7） | 企业推荐 `X-User-Id` / `X-Group-Id` / `X-Bot-Id` 等 |
+| 身份 | HTTP 层无 Web 租户头模型；依赖内网 / TLS（见 §19.7） | 企业推荐 `X-User-Id` / `X-Group-Id` / `X-Bot-Id` 等 |
 
 **交互原则**
 
@@ -1771,7 +1771,7 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 
 ## 15. 实例数据生命周期
 
-无独立业务表；`purge` 会清理本 Gateway 上已同步的模板 / 资源 / 应用配置等表（含 channel / cron / Manager 公钥等；不可逆）。
+无独立业务表；`purge` 会清理本 Gateway 上已同步的模板 / 资源 / 应用配置等表（含 channel / cron / Manager 公钥、`workspace_quota_policy` / `workspace_quota_usage` 等；不可逆）。
 
 ### 15.1 清理实例配置数据
 
@@ -1812,7 +1812,9 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
       "agent_template": 3,
       "instance_agent_resource": 3,
       "log_masking_rule": 1,
-      "logging_config": 1
+      "logging_config": 1,
+      "workspace_quota_policy": 2,
+      "workspace_quota_usage": 5
     }
   }
 }
@@ -1822,7 +1824,190 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 
 
 
-## 16. Manager 侧调用映射（速查）
+## 16. 工作区配额（`workspace_quota_*` / `workspace-quota`）
+
+> 契约对齐《用户空间与配额管理设计方案》§3.5.2 / §4.2.2。  
+> **调用方**：Manager `gateway_request`（管理面 Web / 用户面不直接调）。  
+> 策略权威在 Manager；Gateway 为集群内副本。用量接口只读本机 `workspace_quota_usage` 缓存，**不**访问 AgentServer。  
+> 用户面文件 / 用量见 [Gateway Web HTTP接口文档.md](./Gateway%20Web%20HTTP接口文档.md) §7。
+
+### 16.0 表结构
+
+#### 16.0.1 `workspace_quota_policy`
+
+本集群配额策略副本。**无** `cluster_id`（一套 Gateway 对应一个集群）。按 `policy_id` upsert。
+
+
+| 字段名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `id` | integer PK 自增 | 是 | 数据库主键 |
+| `policy_id` | string(64) UNIQUE | 是 | 对外稳定标识 |
+| `policy_name` | string(128) | 是 | 策略名称 |
+| `policy_desc` | string(512) | 否 | 策略描述 |
+| `match_expr` | json | 否 | 选路匹配；`[]` / 空为全匹配 |
+| `priority` | int | 是 | 越小越优先；启用行中非负 `priority` 唯一，审批 `-1` 可多条 |
+| `limit_bytes` | bigint | 是 | `>=0` 或 `-1`（无限制） |
+| `soft_percent` | int | 是 | 提醒阈值，缺省 80；须 `< hard_percent` |
+| `hard_percent` | int | 是 | 阻断阈值，缺省 100 |
+| `source` | string(32) | 是 | `manual` / `approval` |
+| `source_order_num` | string(64) | 否 | `source=approval` 时填审批单号 |
+| `enabled` | bool | 是 | `false` 不参与选路 |
+| `data` | json | 否 | 扩展 |
+| `created_at` / `updated_at` | datetime | 是 | — |
+| `created_by` / `updated_by` | string(64) | 否 | — |
+
+
+**接收端业务唯一（仅 `enabled=true`）：** 规范化 `match_expr` 至多一行；非负 `priority` 至多一行；全匹配至多一条。
+
+#### 16.0.2 `workspace_quota_usage`
+
+本集群用量缓存。由 Web 工作空间 list / usage / delete / 首次初始化等路径向 Agent 查询后写入；本 Config Receiver **只读**。
+
+
+| 字段名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `id` | integer PK 自增 | 是 | 数据库主键 |
+| `user_id` | string(64) | 是 | 用户 |
+| `group_id` | string(64) | 是 | 组织；无组织为空串 |
+| `bot_id` | string(64) | 是 | Bot |
+| `used_bytes` | bigint | 是 | 已用字节 |
+| `reported_at` | datetime | 是 | 最近一次从 Agent 取到用量的时间 |
+| `data` | json | 否 | 扩展 |
+| `created_at` / `updated_at` | datetime | 是 | — |
+| `created_by` / `updated_by` | string(64) | 否 | — |
+
+
+`UNIQUE(user_id, group_id, bot_id)`。响应里的 `limit_bytes` / `source_policy_id` / `status` **现算**，不写回本表。
+
+### 16.1 下发配额策略
+
+- **接口名称**：下发配额策略
+- **请求方法**：`PUT`
+- **请求路径**：`/api/v1/workspace-quota/policies`
+- **请求参数**（Body）：与 `workspace_quota_policy` 列一致（不含 `cluster_id`），按 `policy_id` upsert
+
+
+| 字段名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `policy_id` | string | 是 | 对外标识，最长 64 |
+| `policy_name` | string | 是 | 长度 1–128 |
+| `policy_desc` | string | 否 | 最长 512 |
+| `match_expr` | string \| string[] \| array | 否 | 默认 `[]` 全匹配 |
+| `priority` | int | 是 | 越小越优先 |
+| `limit_bytes` | int | 是 | `>= 0` 或 `-1` |
+| `soft_percent` | int | 否 | 默认 80；须 `< hard_percent` |
+| `hard_percent` | int | 否 | 默认 100 |
+| `source` | string | 否 | 默认 `manual`；仅 `manual` / `approval` |
+| `source_order_num` | string | 否 | 仅 `approval` 保留；`manual` 置空 |
+| `enabled` | bool | 是 | `false` 表示不参与选路 |
+
+
+- **返回参数**：`data` 为 `null`（或同步信封包装后的等价空结果）
+- **请求示例**：
+
+```json
+{
+  "policy_id": "qp_01",
+  "policy_name": "销售组个人额度",
+  "policy_desc": "销售组织下个人写作者的配额",
+  "match_expr": "user_id == 'u_123' and group_id == 'g_sales' and bot_id == 'bot_writer'",
+  "priority": 10,
+  "limit_bytes": 21474836480,
+  "soft_percent": 80,
+  "hard_percent": 100,
+  "source": "manual",
+  "source_order_num": null,
+  "enabled": true
+}
+```
+
+- **返回示例**：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": null
+}
+```
+
+停用策略：对本接口传入同一 `policy_id` 且 `enabled: false`（不要用删除接口表达停用）。
+
+### 16.2 删除配额策略
+
+- **接口名称**：删除配额策略
+- **请求方法**：`DELETE`
+- **请求路径**：`/api/v1/workspace-quota/policies/{policy_id}`
+- **请求参数**（Path）：
+
+
+| 字段名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `policy_id` | string | 是 | 要删除的策略 ID |
+
+
+按 `policy_id` 物理删除。目标行已不存在时仍返回成功，便于重试。Body 为 `{}`。
+
+- **返回参数**：`data` 为 `null`
+- **请求示例**：`DELETE /api/v1/workspace-quota/policies/qp_01`
+- **返回示例**：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": null
+}
+```
+
+### 16.3 查询本集群用量
+
+- **接口名称**：查询本集群用量
+- **请求方法**：`GET`
+- **请求路径**：`/api/v1/workspace-quota/usage`
+- **请求参数**（Query）：
+
+
+| 字段名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `user_id` | string | 否 | 精确过滤 |
+| `group_id` | string | 否 | 精确过滤；无组织行传空串；不传表示不过滤 |
+| `bot_id` | string | 否 | 精确过滤 |
+| `limit` | int | 否 | 默认 20，最大 100；按 `used_bytes` 降序 |
+
+
+条件只过滤已有缓存，不会因此去问 Agent。响应合成 `limit_bytes` / `source_policy_id` / `status`。
+
+- **返回参数**（`data.items[]`）：`user_id`、`group_id`、`bot_id`、`used_bytes`、`limit_bytes`、`source_policy_id`、`status`、`reported_at`（不含 `cluster_id`）
+- **请求示例**：`GET /api/v1/workspace-quota/usage?limit=20`
+- **返回示例**：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "items": [
+      {
+        "user_id": "u_123",
+        "group_id": "g_sales",
+        "bot_id": "bot_writer",
+        "used_bytes": 5368709120,
+        "limit_bytes": 21474836480,
+        "source_policy_id": "qp_01",
+        "status": "ok",
+        "reported_at": "2026-03-17T10:05:00Z"
+      }
+    ]
+  }
+}
+```
+
+---
+
+
+
+## 17. Manager 侧调用映射（速查）
 
 
 | Gateway 能力    | Manager 代码位置                                                                    |
@@ -1838,6 +2023,8 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 | Agent 资源业务    | `core/instance_resource/instance_agent_resource_service.py`                     |
 | 应用配置          | `core/application_config/*.py`                                                  |
 | 审计日志配置        | `core/application_config/audit_log_config.py` → `/api/v1/audit-log`             |
+| 工作区配额策略下发    | `core/quota/workspace_quota_policy.py` → `PUT/DELETE /api/v1/workspace-quota/policies` |
+| 工作区用量同步      | `core/quota/workspace_quota_usage.py` → `GET /api/v1/workspace-quota/usage`     |
 | 上线全量同步        | `core/instance/instance_data_lifecycle.py`                                      |
 | 删实例清理         | `purge_gateway_instance_data`                                                   |
 
@@ -1846,14 +2033,15 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 
 
 
-## 17. 源码索引
+## 18. 源码索引
 
 
 | 侧             | 路径                                                                                                                             |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | Gateway 路由    | `manager_config_receiver/http/app.py`                                                                                          |
 | 模板路由 / Schema | `routers/template_routers.py`、`schemas/template_schemas.py`                                                                    |
-| 表定义           | `jiuwenswarm/gateway/config/enterprise/tables/template_models.py`、`instance_resource_models.py`、`application_config_models.py` |
+| 配额路由 / Schema | `routers/quota_routers.py`、`schemas/quota_schemas.py`、`core/quota/*`                                                           |
+| 表定义           | `jiuwenswarm/gateway/config/enterprise/tables/template_models.py`、`instance_resource_models.py`、`application_config_models.py`、`quota_models.py` |
 | 应用配置路由        | `routers/application_config_routers.py`                                                                                        |
 | Agent 资源路由    | `routers/instance_resource_routers.py`                                                                                         |
 | 生命周期          | `routers/instance_routers.py`、`core/instance/instance_data_lifecycle.py`                                                       |
@@ -1866,14 +2054,14 @@ Gateway OpenAPI：`{gateway_config_host}/docs`。
 
 
 
-## 18. 与旧 Gateway 接口的差异
+## 19. 与旧 Gateway 接口的差异
 
 > 旧实现：`jiuwenswarm/.../packages/jiuwenclaw-ee/gateway/extensions/manager_ws_client`  
-> 新实现：`manager_config_receiver`（本文档 §1–§17 所描述的 HTTP Config Receiver）
+> 新实现：`manager_config_receiver`（本文档 §1–§18 所描述的 HTTP Config Receiver）
 
 旧链路是 **Gateway 作为 WebSocket 客户端连上 Manager**，由 Manager 下发 `config.push` 帧；新链路是 **Manager 作为 HTTP 客户端主动调用** Gateway 的 `gateway_config_host`。业务落库语义大体对齐，但传输、寻址、操作编码与能力边界均已切换。
 
-### 18.1 架构与连接模型
+### 19.1 架构与连接模型
 
 
 | 维度          | 旧（`manager_ws_client`）                                                   | 新（本文档 HTTP）                                               |
@@ -1889,7 +2077,7 @@ Gateway OpenAPI：`{gateway_config_host}/docs`。
 
 
 
-### 18.2 报文形态对比
+### 19.2 报文形态对比
 
 **旧：**`config.push` **帧（示意）**
 
@@ -1933,7 +2121,7 @@ Content-Type: application/json
 
 
 
-### 18.3 操作编码：`op` → HTTP 方法
+### 19.3 操作编码：`op` → HTTP 方法
 
 
 | 旧 `op`（payload 内）                    | 新 HTTP                            | 说明                                                                                                      |
@@ -1943,12 +2131,12 @@ Content-Type: application/json
 | `upsert`                             | `PUT /api/v1/...`                 | logging 等单文档配置                                                                                          |
 | `delete`                             | `DELETE /api/v1/...` 或 `.../{id}` | 无业务字段时 Body `{}`                                                                                        |
 | `sync`                               | **无对等单接口**                        | 旧版全量对账（upsert 全集 + 删差集）；新版由 Manager 上线引导时多次 REST 推送，或 `POST /api/v1/instance-data-lifecycle`（`purge`）清理 |
-| `activate` / `deactivate`（仅 channel） | **本 Receiver 未提供**                | 见 §18.5                                                                                                 |
+| `activate` / `deactivate`（仅 channel） | **本 Receiver 未提供**                | 见 §19.5                                                                                                 |
 
 
 
 
-### 18.4 能力映射速查
+### 19.4 能力映射速查
 
 
 | 旧 `config` key               | 旧入口                               | 新 HTTP 路径（本文档）                                                                 |
@@ -1966,11 +2154,12 @@ Content-Type: application/json
 | `instance_data_lifecycle`    | `apply_instance_data_lifecycle`   | `/api/v1/instance-data-lifecycle`                                              |
 | —                            | 无                                 | `/api/v1/agent-templates`（**新增**）                                              |
 | —                            | 无                                 | `/api/v1/instance-agent-resources`（**新增**）                                     |
+| —                            | 无                                 | `/api/v1/workspace-quota/policies`、`/api/v1/workspace-quota/usage`（**新增**，见 §16） |
 
 
 
 
-### 18.5 旧有、本文档未覆盖的能力
+### 19.5 旧有、本文档未覆盖的能力
 
 下列 key 仍存在于旧 `manager_ws_client` 路由中，**不在**本 Config Receiver HTTP 文档范围内（去向以当前产品设计为准：策略/映射可能仍在 Manager 侧编排，或改由 Runtime 通道下发）：
 
@@ -1991,7 +2180,7 @@ Content-Type: application/json
 
 
 
-### 18.6 数据模型与实例隔离
+### 19.6 数据模型与实例隔离
 
 
 | 维度                | 旧                                                              | 新                                                                                                                     |
@@ -2003,7 +2192,7 @@ Content-Type: application/json
 
 
 
-### 18.7 安全与副作用
+### 19.7 安全与副作用
 
 
 | 项           | 旧                                                         | 新                                                          |
@@ -2015,7 +2204,7 @@ Content-Type: application/json
 
 
 
-### 18.8 迁移时注意点
+### 19.8 迁移时注意点
 
 1. **不要把旧** `op` **JSON 原样 POST**：须改成对应 REST 方法与路径；模板 create 的 Body 是资源字段本身，不是 `{ "op":"create", "template":{...} }`。
 2. **无** `sync` **单接口**：上线全量对齐改为 Manager 按资源逐条（或批量多次）HTTP 推送；删实例仍用 lifecycle `purge`。

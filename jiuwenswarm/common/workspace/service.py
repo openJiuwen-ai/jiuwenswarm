@@ -8,7 +8,6 @@ import io
 import logging
 import mimetypes
 import os
-import shutil
 import subprocess
 import zipfile
 from dataclasses import dataclass
@@ -138,17 +137,53 @@ class WorkspaceService:
             return {"relative_path": relative_path, "ok": False, "error": "forbidden_zone"}
         if not is_deletable(rel):
             return {"relative_path": rel, "ok": False, "error": "forbidden_zone"}
-        target = self.resolve(rel)
-        if not target.exists():
-            return {"relative_path": rel, "ok": False, "error": "not_found"}
+
+        root = self.tenant_root.resolve()
+        lexical = root.joinpath(*rel.split("/"))
         try:
-            if target.is_dir():
-                self._assert_dir_delete_budget(target)
-                shutil.rmtree(target)
+            if os.path.commonpath([str(root), str(lexical.absolute())]) != str(root):
+                return {"relative_path": rel, "ok": False, "error": "bad_path"}
+        except ValueError:
+            return {"relative_path": rel, "ok": False, "error": "bad_path"}
+
+        try:
+            is_link = lexical.is_symlink()
+        except OSError as exc:
+            logger.warning("[workspace] delete lstat failed path=%s err=%s", rel, exc)
+            return {"relative_path": rel, "ok": False, "error": "io_error"}
+
+        # Broken symlinks: exists() is False but is_symlink() is True — still removable.
+        if not is_link and not lexical.exists():
+            return {"relative_path": rel, "ok": False, "error": "not_found"}
+
+        try:
+            if is_link:
+                # Only remove the link node. Never follow to delete the target
+                # (zone bypass / cross-tenant wipe via symlink).
+                lexical.unlink()
+                return {"relative_path": rel, "ok": True, "error": None}
+
+            # Real file/dir: resolve and re-check tenant + deletable zone on the
+            # final path (defense in depth against odd mount/junction cases).
+            resolved = lexical.resolve(strict=True)
+            try:
+                if os.path.commonpath([str(root), str(resolved)]) != str(root):
+                    return {"relative_path": rel, "ok": False, "error": "bad_path"}
+            except ValueError:
+                return {"relative_path": rel, "ok": False, "error": "bad_path"}
+            resolved_rel = resolved.relative_to(root).as_posix()
+            if not is_deletable(resolved_rel):
+                return {"relative_path": rel, "ok": False, "error": "forbidden_zone"}
+
+            if resolved.is_dir():
+                self._assert_dir_delete_budget(resolved)
+                self._rmtree_nofollow(resolved)
             else:
-                target.unlink()
+                resolved.unlink()
         except WorkspaceError as exc:
             return {"relative_path": rel, "ok": False, "error": exc.message}
+        except FileNotFoundError:
+            return {"relative_path": rel, "ok": False, "error": "not_found"}
         except OSError as exc:
             logger.warning("[workspace] delete failed path=%s err=%s", rel, exc)
             return {"relative_path": rel, "ok": False, "error": "io_error"}
@@ -158,13 +193,39 @@ class WorkspaceService:
         depth_cap = max(1, int(self.max_delete_depth))
         entry_cap = max(1, int(self.max_delete_entries))
         count = 0
-        for dirpath, dirnames, filenames in os.walk(root):
-            rel_depth = Path(dirpath).resolve().relative_to(root.resolve()).parts
+        # followlinks=False：预算统计不跟随符号链接，与删除实现一致。
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            dirnames[:] = [
+                name for name in dirnames if not (Path(dirpath) / name).is_symlink()
+            ]
+            try:
+                rel_depth = Path(dirpath).resolve().relative_to(root.resolve()).parts
+            except ValueError as exc:
+                raise WorkspaceError("FORBIDDEN", "path escapes tenant root") from exc
             if len(rel_depth) >= depth_cap:
                 raise WorkspaceError("BAD_REQUEST", "delete_too_deep")
             count += len(dirnames) + len(filenames)
             if count > entry_cap:
                 raise WorkspaceError("BAD_REQUEST", "delete_too_many")
+
+    @staticmethod
+    def _rmtree_nofollow(root: Path) -> None:
+        """Remove a directory tree without following file or directory symlinks."""
+        for dirpath, dirnames, filenames in os.walk(root, topdown=False, followlinks=False):
+            base = Path(dirpath)
+            for name in filenames:
+                path = base / name
+                path.unlink()
+            for name in dirnames:
+                path = base / name
+                if path.is_symlink():
+                    path.unlink()
+                else:
+                    path.rmdir()
+        if root.is_symlink():
+            root.unlink()
+        else:
+            root.rmdir()
 
     def preview_file(
         self,

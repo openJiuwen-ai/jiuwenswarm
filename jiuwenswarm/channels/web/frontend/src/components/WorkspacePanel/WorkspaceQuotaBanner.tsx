@@ -10,6 +10,7 @@ interface WorkspaceQuotaBannerProps {
   hidden?: boolean;
 }
 
+/** 仅在配额特性开启时由 ChatPanel 挂载；本组件不再读特性开关字段。 */
 export function WorkspaceQuotaBanner({ hidden }: WorkspaceQuotaBannerProps) {
   const { t } = useTranslation();
   const [usage, setUsage] = useState<WorkspaceUsageData | null>(null);
@@ -34,7 +35,13 @@ export function WorkspaceQuotaBanner({ hidden }: WorkspaceQuotaBannerProps) {
     };
   }, []);
 
-  if (hidden || !usage || usage.status === 'ok' || usage.unlimited || usage.limit_bytes === -1) {
+  if (
+    hidden ||
+    !usage ||
+    usage.status === 'ok' ||
+    usage.unlimited ||
+    usage.limit_bytes === -1
+  ) {
     return null;
   }
 
