@@ -16,7 +16,6 @@ from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
     AgentCreating,
     AgentManager,
     AgentRuntime,
-    is_openclaw_agent_type,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.config import (
     DEFAULT_AGENT_WORKSPACE_ROOT,
@@ -294,6 +293,7 @@ class FakeRegistryClient:
                     "access_mode": [
                         {"name": "tui", "port": "2222", "cmd": "opencode"},
                         {"name": "web", "port": "8080", "cmd": "serve"},
+                        {"name": "web_svc_port", "port": "19101"},
                     ],
                 },
             ),
@@ -1019,6 +1019,7 @@ async def test_agent_list_returns_registry_images_without_creating() -> None:
     assert "image_uri" not in response["payload"]["agents"][0]
     assert "metadata" not in response["payload"]["agents"][0]
     assert response["payload"]["agents"][0]["cmd"] == "opencode"
+    assert response["payload"]["agents"][0]["port"] == 19101
     assert await agent_manager.list_user_agents("u1") == []
 
 
@@ -3141,13 +3142,6 @@ async def test_register_agent_skips_when_runtime_already_cleaned() -> None:
         await client.shutdown()
 
 
-def test_is_openclaw_agent_type() -> None:
-    assert is_openclaw_agent_type("openclaw") is True
-    assert is_openclaw_agent_type("OpenClaw") is True
-    assert is_openclaw_agent_type("opencode") is False
-    assert is_openclaw_agent_type("") is False
-
-
 @pytest.mark.asyncio
 async def test_openclaw_create_does_not_default_web_port() -> None:
     yuanrong = FakeYuanRongClient()
@@ -3230,11 +3224,43 @@ async def test_resolve_web_endpoint_http_and_ws() -> None:
             "?instance=sbx-web&tenant_id=default&port=18789"
         )
         assert ws_url == (
-            "ws://yuanrong.test:8888/serverless/v1/ws"
+            "ws://yuanrong.test:8888/serverless/v1/http"
             "?instance=sbx-web&tenant_id=default&port=18789"
         )
+        assert "/serverless/v1/ws" not in ws_url
         stored = agent_manager._runtimes[key]
         assert stored.task_count == 0
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resolve_web_endpoint_unknown_protocol_and_wss_scheme() -> None:
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
+    key = AgentRuntime.build_key(
+        agent_manager.key_fields, user_id="u1", agent_type="openclaw"
+    )
+    agent_manager._runtimes[key] = AgentRuntime(
+        info=AgentInfo(
+            user_id="u1",
+            agent_type="openclaw",
+            status=AgentStatus.READY,
+            sandbox_id="sbx-web",
+            metadata={"web_port": 18789},
+        ),
+        key=key,
+    )
+    try:
+        assert await client.resolve_web_endpoint("u1", "openclaw", "tcp") is None
+        # https frontend → wss, still on the /serverless/v1/http tunnel path
+        yuanrong.frontend_endpoint = "https://yuanrong.test:8888"
+        wss_url = await client.resolve_web_endpoint("u1", "openclaw", "ws")
+        assert wss_url == (
+            "wss://yuanrong.test:8888/serverless/v1/http"
+            "?instance=sbx-web&tenant_id=default&port=18789"
+        )
     finally:
         await client.shutdown()
 
@@ -3398,3 +3424,150 @@ async def test_agentos_router_extension_delegates_web_endpoint() -> None:
     url = await ext.resolve_web_endpoint("u1", "openclaw", "http", acquire=True)
     assert url == "http://example/http"
     assert captured["args"] == ("u1", "openclaw", "http", True)
+
+
+class _GatedYuanRong(FakeYuanRongClient):
+    """Blocks ``wait_until_running`` until released; queues one token per entry."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.wait_entries: asyncio.Queue[str] = asyncio.Queue()
+        self._gate = asyncio.Event()
+
+    async def wait_until_running(self, instance_id: str, **_kwargs: Any) -> dict:
+        self.wait_entries.put_nowait(instance_id)
+        await self._gate.wait()
+        return {"instance_id": instance_id, "status": "running"}
+
+    def release(self) -> None:
+        self._gate.set()
+
+
+class _RegistryWithHttpWeb(FakeRegistryClient):
+    """Registry image carrying an HTTP ``web`` access_mode (port 18789)."""
+
+    async def get_image_info(self, image_name: str) -> ImageInfo:
+        info = await super().get_image_info(image_name)
+        info.metadata["access_mode"] = [
+            {"name": "web", "port": "18789", "protocol": "http", "cmd": "serve"},
+        ]
+        return info
+
+
+_WEB_HTTP_URL = (
+    "http://yuanrong.test:8888/serverless/v1/http"
+    "?instance=sbx-web&tenant_id=default&port=18789"
+)
+
+
+def _seed_ready_web_runtime(agent_manager: AgentManager) -> None:
+    """Pre-seed a READY runtime whose sandbox is not running yet (web_port set)."""
+    key = AgentRuntime.build_key(
+        agent_manager.key_fields, user_id="u1", agent_type="openclaw"
+    )
+    agent_manager._runtimes[key] = AgentRuntime(
+        info=AgentInfo(
+            user_id="u1",
+            agent_type="openclaw",
+            status=AgentStatus.READY,
+            sandbox_id="sbx-web",
+            metadata={"web_port": 18789},
+        ),
+        key=key,
+    )
+
+
+async def _drain_tasks(tasks: list[asyncio.Task]) -> None:
+    """Cancel any task still pending and await them, so none outlives the test."""
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_resolve_web_endpoint_concurrent_requests_share_readiness() -> None:
+    """All requests for one sandbox wait the same readiness, not just the creator."""
+    yuanrong = _GatedYuanRong()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
+    _seed_ready_web_runtime(agent_manager)
+    tasks: list[asyncio.Task] = []
+    try:
+        tasks.append(
+            asyncio.create_task(client.resolve_web_endpoint("u1", "openclaw", "http"))
+        )
+        tasks.append(
+            asyncio.create_task(client.resolve_web_endpoint("u1", "openclaw", "http"))
+        )
+        # Both requests must reach the readiness wait (one token each).
+        await asyncio.wait_for(yuanrong.wait_entries.get(), timeout=2)
+        await asyncio.wait_for(yuanrong.wait_entries.get(), timeout=2)
+        assert not tasks[0].done()
+        assert not tasks[1].done()
+
+        yuanrong.release()
+        assert await tasks[0] == _WEB_HTTP_URL
+        assert await tasks[1] == _WEB_HTTP_URL
+    finally:
+        yuanrong.release()
+        await _drain_tasks(tasks)
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resolve_web_endpoint_cancel_releases_activity_hold() -> None:
+    """Cancelling the readiness wait must release the acquired activity hold."""
+    yuanrong = _GatedYuanRong()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
+    _seed_ready_web_runtime(agent_manager)
+    tasks: list[asyncio.Task] = []
+    try:
+        task = asyncio.create_task(
+            client.resolve_web_endpoint("u1", "openclaw", "http", acquire=True)
+        )
+        tasks.append(task)
+        await asyncio.wait_for(yuanrong.wait_entries.get(), timeout=2)
+        assert not task.done()
+        runtime = await agent_manager.get_agent("u1", "openclaw")
+        assert runtime is not None and runtime.task_count == 1
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        runtime = await agent_manager.get_agent("u1", "openclaw")
+        assert runtime is not None and runtime.task_count == 0
+    finally:
+        yuanrong.release()
+        await _drain_tasks(tasks)
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resolve_web_endpoint_waits_for_running_after_create() -> None:
+    """Real create path: the resolving request only returns once the sandbox runs."""
+    yuanrong = _GatedYuanRong()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, _RegistryWithHttpWeb(), agent_manager)
+    tasks: list[asyncio.Task] = []
+    try:
+        task = asyncio.create_task(
+            client.resolve_web_endpoint("u1", "claude-code", "http")
+        )
+        tasks.append(task)
+        await asyncio.wait_for(yuanrong.wait_entries.get(), timeout=2)
+        assert yuanrong.create_calls == 1
+        assert not task.done()
+
+        yuanrong.release()
+        assert await task == (
+            "http://yuanrong.test:8888/serverless/v1/http"
+            "?instance=sbx-1&tenant_id=default&port=18789"
+        )
+    finally:
+        yuanrong.release()
+        await _drain_tasks(tasks)
+        await client.shutdown()

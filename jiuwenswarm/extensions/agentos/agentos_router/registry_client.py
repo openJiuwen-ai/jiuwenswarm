@@ -23,6 +23,10 @@ from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, ImageInfo
+from jiuwenswarm.extensions.agentos.registry_watcher.decode import (
+    parse_access_mode,
+    port_from_access_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -130,13 +134,6 @@ def _image_list_name(payload: dict[str, Any]) -> str:
     return str(payload.get("name") or payload.get("framework") or "").strip()
 
 
-def parse_access_mode(raw: Any) -> list[dict[str, Any]]:
-    """Normalize registry ``access_mode`` into a list of dict rows."""
-    if not isinstance(raw, list):
-        return []
-    return [dict(row) for row in raw if isinstance(row, dict)]
-
-
 def cmd_for_access_mode(access_mode: Any, name: str) -> str:
     """Return ``cmd`` for the ``access_mode`` row whose ``name`` matches *name*."""
     want = str(name or "").strip().lower()
@@ -151,33 +148,13 @@ def cmd_for_access_mode(access_mode: Any, name: str) -> str:
     return ""
 
 
-_HTTP_WEB_PROTOCOLS = frozenset({"", "http", "https"})
-
-
 def http_web_port_from_access_mode(access_mode: Any) -> int | None:
-    """Return the port from ``access_mode`` row ``name=web`` when it is HTTP.
+    """Southbound container web port: ``access_mode`` row ``name=web`` (HTTP).
 
-    A row counts as HTTP web when ``name`` is ``web`` (case-insensitive) and
-    ``protocol`` / ``type`` / ``scheme`` is empty, ``http``, or ``https``.
+    Shares the row parser with ``registry_watcher`` so the northbound
+    ``web_svc_port`` and this southbound ``web`` port cannot drift apart.
     """
-    rows = access_mode if isinstance(access_mode, list) else parse_access_mode(access_mode)
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        if str(row.get("name") or "").strip().lower() != "web":
-            continue
-        protocol = str(
-            row.get("protocol") or row.get("type") or row.get("scheme") or ""
-        ).strip().lower()
-        if protocol not in _HTTP_WEB_PROTOCOLS:
-            continue
-        try:
-            port = int(str(row.get("port") or "").strip())
-        except (TypeError, ValueError):
-            continue
-        if port > 0:
-            return port
-    return None
+    return port_from_access_mode(access_mode, "web")
 
 
 @dataclass(frozen=True)

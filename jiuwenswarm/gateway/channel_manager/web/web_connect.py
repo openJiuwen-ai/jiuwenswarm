@@ -41,6 +41,9 @@ from jiuwenswarm.common.ws_diagnostics import (
     describe_ws_peer,
     format_ws_diagnostics,
 )
+from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
+    new_web_proxy_client_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +211,7 @@ class WebChannel(BaseWsChannel):
         self.web_proxy_auth_enabled: bool = True
         self.web_proxy_config: Any = None
         self.web_port_manager: Any = None
+        self.web_registry_watcher: Any = None
         self.web_resolver: Any = None
         self.web_runtime_release: Any = None
         self.web_proxy_session: Any = None
@@ -715,7 +719,7 @@ class WebChannel(BaseWsChannel):
             session = self.web_proxy_session
             if session is not None and not session.closed:
                 return session
-            session = aiohttp.ClientSession()
+            session = new_web_proxy_client_session()
             self.web_proxy_session = session
             return session
 
@@ -733,7 +737,7 @@ class WebChannel(BaseWsChannel):
             session = self.web_proxy_http_session
             if session is not None and not session.closed:
                 return session
-            session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(force_close=True))
+            session = new_web_proxy_client_session(force_close=True)
             self.web_proxy_http_session = session
             return session
 
@@ -748,6 +752,13 @@ class WebChannel(BaseWsChannel):
             await asyncio.gather(*close_tasks, return_exceptions=True)
         self._clients_by_key.clear()
 
+        watcher = getattr(self, "web_registry_watcher", None)
+        if watcher is not None:
+            try:
+                await watcher.stop()
+            except Exception:  # noqa: BLE001
+                logger.debug("[WebChannel] registry watcher shutdown ignored", exc_info=True)
+            self.web_registry_watcher = None
         manager = getattr(self, "web_port_manager", None)
         if manager is not None:
             try:

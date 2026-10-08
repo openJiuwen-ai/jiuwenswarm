@@ -60,6 +60,9 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
     instance_service_id,
     parse_access_mode,
 )
+from jiuwenswarm.extensions.agentos.registry_watcher.decode import (
+    web_svc_port as _web_svc_port,
+)
 from jiuwenswarm.extensions.agentos.agentos_router.stale_cleanup import (
     cleanup_stale_sandboxes,
 )
@@ -642,6 +645,9 @@ class AgentOSRouterClient(AgentServerClient):
         self._ws_clients_lock = asyncio.Lock()
         # instance_id → 正在进行的 connect Future（合并并发首连，避免多路同时打 502）
         self._ws_connecting: dict[str, asyncio.Future[WebSocketAgentServerClient]] = {}
+        # sandbox_id 集合：已确认 web 南向 running。所有访问同一沙箱的请求
+        # 共享就绪结果，热了直接跳过（避免每请求一次 GET）；沙箱删除时移除。
+        self._web_ready_sandboxes: set[str] = set()
         self._ws_client_factory = ws_client_factory or WebSocketAgentServerClient
         self._push_handler: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._remote_resources: dict[str, int] = {}
@@ -1390,6 +1396,8 @@ class AgentOSRouterClient(AgentServerClient):
         runtime = await self._agent_manager.get_agent(
             uid, normalized, acquire=acquire
         )
+        # 仅当返回 endpoint 时，才把活动计数交给调用方；其余退出路径本次自行释放。
+        held = bool(acquire and runtime is not None and runtime.is_ready())
         if runtime is None or not runtime.is_ready():
             if self._uses_direct_yuanrong(normalized):
                 return None
@@ -1401,6 +1409,7 @@ class AgentOSRouterClient(AgentServerClient):
                     wait=False,
                     acquire=acquire,
                 )
+                held = bool(acquire)
             except (
                 ValueError,
                 AgentCreatingTimeout,
@@ -1412,16 +1421,48 @@ class AgentOSRouterClient(AgentServerClient):
             ):
                 return None
         if runtime is None or not runtime.is_ready():
+            await self._release_web_hold(runtime, held)
             return None
         sandbox_id = runtime.info.sandbox_id
         port = _web_port_from_runtime(runtime)
         if not sandbox_id or not port:
-            if acquire:
-                await self._agent_manager.release(runtime.key)
+            await self._release_web_hold(runtime, held)
             return None
-        if str(protocol or "").strip().lower() == "http":
+        # create 返回不代表端口就绪：按 sandbox_id 共享就绪结果，所有访问同一
+        # 沙箱的请求都等到 running；确认后记入缓存，后续请求直接跳过。
+        if (
+            not self._uses_direct_yuanrong(normalized)
+            and sandbox_id not in self._web_ready_sandboxes
+        ):
+            try:
+                await self._wait_yuanrong_running(
+                    sandbox_id,
+                    user_id=uid,
+                    session_id=str(runtime.info.metadata.get("session_id") or ""),
+                    agent_type=normalized,
+                )
+            except YuanrongAgentApiError as exc:
+                await self._cleanup_agent_on_instance_unavailable(runtime, exc=exc)
+                await self._release_web_hold(runtime, held)
+                return None
+            except BaseException:
+                await self._release_web_hold(runtime, held)
+                raise
+            self._web_ready_sandboxes.add(sandbox_id)
+        protocol_name = str(protocol or "").strip().lower()
+        if protocol_name == "http":
             return self._agent_http_url(sandbox_id, port)
-        return self._agent_ws_url(sandbox_id, port)
+        if protocol_name == "ws":
+            return self._agent_web_ws_url(sandbox_id, port)
+        await self._release_web_hold(runtime, held)
+        return None
+
+    async def _release_web_hold(
+        self, runtime: AgentRuntime | None, held: bool
+    ) -> None:
+        """Release this call's activity hold when no endpoint is handed to the caller."""
+        if held and runtime is not None:
+            await self._agent_manager.release(runtime.key)
 
     async def release_web_endpoint(self, user_id: str, agent_type: str) -> None:
         """Drop one web-proxy task hold taken by ``resolve_web_endpoint``."""
@@ -1472,6 +1513,21 @@ class AgentOSRouterClient(AgentServerClient):
             }
         )
         return f"{http_scheme}://{parsed.netloc}/serverless/v1/http?{query}"
+
+    def _agent_web_ws_url(self, instance_id: str, agent_port: int) -> str:
+        """Web-app WebSocket endpoint: the HTTP tunnel path with a ws scheme.
+
+        Reuses :meth:`_agent_http_url` so the browser's subpath (e.g.
+        ``/api/remote.mux``) survives ``_append_tail``. ``/serverless/v1/ws``
+        is the control channel and rejects such subpaths.
+        """
+        parsed = urllib.parse.urlsplit(
+            self._agent_http_url(instance_id, agent_port)
+        )
+        ws_scheme = "wss" if parsed.scheme == "https" else "ws"
+        return urllib.parse.urlunsplit(
+            (ws_scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment)
+        )
 
     async def _connect_ws_until_ready(
         self,
@@ -2057,6 +2113,8 @@ class AgentOSRouterClient(AgentServerClient):
                 {
                     "agent_type": agent_type,
                     "cmd": cmd_for_access_mode(meta.get("access_mode"), mode),
+                    # Gateway northbound port (registry access_mode web_svc_port).
+                    "port": _web_svc_port(meta),
                 }
             )
         current = (
@@ -2783,6 +2841,7 @@ class AgentOSRouterClient(AgentServerClient):
             resolved_key_values["session_id"] = agent_info.metadata.get(
                 "session_id"
             )
+        self._web_ready_sandboxes.discard(str(agent_info.sandbox_id or ""))
         await self._close_ws_client(agent_info.sandbox_id)
         if agent_info.sandbox_id:
             try:
@@ -3012,6 +3071,7 @@ class AgentOSRouterClient(AgentServerClient):
         best_effort: bool = False,
     ) -> None:
         """Delete YuanRong sandbox and unregister the registry instance."""
+        self._web_ready_sandboxes.discard(str(agent_info.sandbox_id or ""))
         await self._close_ws_client(agent_info.sandbox_id)
         if agent_info.sandbox_id:
             try:

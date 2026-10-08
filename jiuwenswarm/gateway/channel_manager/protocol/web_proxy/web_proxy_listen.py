@@ -10,7 +10,7 @@ import os
 import socket
 import time
 import urllib.parse
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
@@ -22,10 +22,8 @@ from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
     is_third_party_agent_type,
 )
 from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
-    DEFAULT_IDLE_TIMEOUT_SEC,
-    DEFAULT_PORT_BASE,
-    DEFAULT_PORT_SPAN,
     _HTTP_METHODS,
+    _TEST_NET_1,
     _WILDCARD_HOSTS,
     WebProxyChannelConfig,
     _append_tail,
@@ -37,10 +35,13 @@ from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect im
     _ensure_http_proxy_session,
     _ensure_proxy_session,
     _extract_web_proxy_token,
+    _filter_response_headers,
+    _final_response_headers,
     _forward_headers,
     _forward_ws_headers,
     _full_request_path,
     _location_without_token,
+    _merge_request_query,
     _query_access_token,
     _release_web_runtime,
     _retry_after_seconds,
@@ -52,9 +53,8 @@ from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect im
 
 logger = logging.getLogger(__name__)
 
-
-class PortPoolExhausted(RuntimeError):
-    """No free port left in ``[port_base, port_base + port_span)``."""
+# How often the background keeper retries ports that failed to bind.
+_BIND_RETRY_INTERVAL = 5.0
 
 
 @dataclass
@@ -64,29 +64,10 @@ class _PortBinding:
     server: Any
     task: asyncio.Task[None]
     sock: socket.socket
-    last_active: float = field(default_factory=time.monotonic)
-    inflight: int = 0
     closed: bool = False
 
     async def begin(self) -> bool:
-        if self.closed:
-            return False
-        self.inflight += 1
-        self.last_active = time.monotonic()
-        return True
-
-    def end(self) -> None:
-        if self.inflight > 0:
-            self.inflight -= 1
-        self.last_active = time.monotonic()
-
-
-def _positive_int(value: Any, default: int) -> int:
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return default
-    return number if number > 0 else default
+        return not self.closed
 
 
 def _proxy_config(channel: Any) -> WebProxyChannelConfig:
@@ -101,9 +82,14 @@ def _is_wildcard_host(host: str) -> bool:
 
 
 def _outbound_ip() -> str:
+    """Best-effort non-loopback IPv4 of the outbound interface.
+
+    A UDP ``connect`` only makes the kernel pick a route (no packet is sent);
+    ``getsockname()`` then yields the local address of that interface.
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        sock.connect(("192.0.2.1", 9))
+        sock.connect((_TEST_NET_1, 9))
         return str(sock.getsockname()[0] or "")
     except OSError:
         return ""
@@ -158,16 +144,23 @@ def _bind_listen_socket(host: str, port: int) -> socket.socket | None:
 
 
 class WebPortManager:
-    """``agent_type →`` one northbound listen port, shared by every user."""
+    """``agent_type →`` one northbound listen port, shared by every user.
+
+    Ports are decided *outside* the Gateway (the registry writes them to etcd);
+    :meth:`reconcile` makes the listeners match a desired ``{agent_type: port}``
+    map. A port change closes the old listener and binds the new one. There is
+    no idle reclamation: a listener stays until it leaves the desired map or the
+    manager is closed.
+    """
 
     def __init__(self, channel: Any, config: WebProxyChannelConfig | None = None) -> None:
         self._channel = channel
         self._config = config or _proxy_config(channel)
         self._bindings: dict[str, _PortBinding] = {}
-        self._reserved_ports: set[int] = set()
-        self._opening: dict[str, asyncio.Future[int]] = {}
+        self._desired: dict[str, int] = {}
+        self._failed: dict[str, int] = {}
         self._lock = asyncio.Lock()
-        self._reaper: asyncio.Task[None] | None = None
+        self._keeper: asyncio.Task[None] | None = None
         self._closed = False
 
     @property
@@ -181,87 +174,136 @@ class WebPortManager:
     def start(self) -> None:
         if self._closed:
             self._closed = False
-        if self._reaper is None or self._reaper.done():
-            self._reaper = asyncio.create_task(self._reap_loop(), name="web-proxy-port-reaper")
+        if self._keeper is None or self._keeper.done():
+            self._keeper = asyncio.create_task(
+                self._keeper_loop(), name="web-proxy-bind-keeper"
+            )
 
     def port_for(self, agent_type: str) -> int | None:
+        """The bound listen port for *agent_type*, or ``None`` if not bound."""
         binding = self._bindings.get(agent_type)
         if binding is None or binding.closed:
             return None
         return binding.port
 
-    async def ensure(self, agent_type: str) -> int:
-        """Return the listen port for *agent_type*, starting it on first use."""
-        self.start()
+    def desired_port(self, agent_type: str) -> int | None:
+        """The registered port for *agent_type*, whether or not it is bound yet."""
+        return self._desired.get(agent_type)
+
+    @property
+    def closed(self) -> bool:
+        """True once :meth:`close_all` has run; no listener will be bound."""
+        return self._closed
+
+    async def reconcile(self, desired: dict[str, int]) -> None:
+        """Make listeners match *desired* ``{agent_type: port}``.
+
+        Closes listeners that were removed or whose port changed, then binds the
+        missing/changed ones. Idempotent; safe to call on every registry change.
+        """
         async with self._lock:
-            if self._closed:
-                raise PortPoolExhausted("web proxy port manager is closed")
-            current = self._bindings.get(agent_type)
-            if current is not None and not current.closed:
-                current.last_active = time.monotonic()
-                return current.port
-            pending = self._opening.get(agent_type)
-            if pending is not None:
-                waiter = pending
-                owner = False
-                claimed: tuple[int, socket.socket, str] | None = None
-            else:
-                waiter = asyncio.get_running_loop().create_future()
-                self._opening[agent_type] = waiter
-                owner = True
-                try:
-                    claimed = self._claim_socket_locked()
-                except PortPoolExhausted as exc:
-                    self._opening.pop(agent_type, None)
-                    if not waiter.done():
-                        waiter.set_exception(exc)
-                        waiter.exception()
-                    raise
-        if not owner:
-            return await waiter
-        assert claimed is not None
-        port, sock, listen_host = claimed
-        try:
-            binding = await _start_listener(self._channel, agent_type, port, sock, listen_host)
-        except Exception as exc:
-            sock.close()
-            async with self._lock:
-                self._reserved_ports.discard(port)
-                self._opening.pop(agent_type, None)
-            if not waiter.done():
-                waiter.set_exception(exc)
-                waiter.exception()
-            raise
-        async with self._lock:
-            self._reserved_ports.discard(port)
-            self._opening.pop(agent_type, None)
-            if self._closed:
-                abandoned = True
-            else:
-                self._bindings[agent_type] = binding
-                abandoned = False
-        if abandoned:
-            if not waiter.done():
-                waiter.set_exception(PortPoolExhausted("web proxy port manager is closed"))
-                waiter.exception()
+            self._desired = {str(k): int(v) for k, v in desired.items()}
+            stale: list[_PortBinding] = []
+            for agent_type, binding in list(self._bindings.items()):
+                want = self._desired.get(agent_type)
+                if binding.closed or want is None or want != binding.port:
+                    binding.closed = True
+                    self._bindings.pop(agent_type, None)
+                    stale.append(binding)
+            to_bind = [
+                (agent_type, port)
+                for agent_type, port in self._desired.items()
+                if agent_type not in self._bindings
+            ]
+        for binding in stale:
             await _stop_binding(binding)
-            raise PortPoolExhausted("web proxy port manager is closed")
-        if not waiter.done():
-            waiter.set_result(port)
+            logger.info(
+                "[WebProxy] listener closed: agent=%s port=%s",
+                binding.agent_type,
+                binding.port,
+            )
+        for agent_type, port in to_bind:
+            await self._bind(agent_type, port)
+        logger.debug(
+            "[WebProxy] reconcile desired=%s bound=%s",
+            sorted(self._desired),
+            sorted(self._bindings),
+        )
+
+    async def _bind(self, agent_type: str, port: int) -> None:
+        """Bind *port* for *agent_type* unless it is taken or binding fails."""
+        async with self._lock:
+            if self._closed or agent_type in self._bindings:
+                return
+            if self._desired.get(agent_type) != port:
+                return
+            for other, binding in self._bindings.items():
+                if binding.port == port and other != agent_type:
+                    logger.error(
+                        "[WebProxy] port %s already used by agent=%s; skip agent=%s",
+                        port,
+                        other,
+                        agent_type,
+                    )
+                    return
+            listen_host = str(self._config.listen_host or "0.0.0.0").strip() or "0.0.0.0"
+            sock = _bind_listen_socket(listen_host, port)
+            if sock is None:
+                self._failed[agent_type] = port
+                logger.warning(
+                    "[WebProxy] bind failed: agent=%s %s:%s (will retry)",
+                    agent_type,
+                    listen_host,
+                    port,
+                )
+                return
+        try:
+            binding = await _start_listener(
+                self._channel, agent_type, port, sock, listen_host
+            )
+        except Exception:
+            sock.close()
+            self._failed[agent_type] = port
+            logger.exception(
+                "[WebProxy] listener start failed: agent=%s port=%s", agent_type, port
+            )
+            return
+        async with self._lock:
+            abandon = self._closed or self._desired.get(agent_type) != port
+            if not abandon:
+                self._bindings[agent_type] = binding
+                self._failed.pop(agent_type, None)
+        if abandon:
+            await _stop_binding(binding)
+            return
         logger.info("[WebProxy] listening: agent=%s %s:%s", agent_type, listen_host, port)
-        return port
+
+    async def _keeper_loop(self) -> None:
+        """Retry ports that failed to bind, until the manager is closed."""
+        while not self._closed:
+            try:
+                await asyncio.sleep(_BIND_RETRY_INTERVAL)
+                if self._closed:
+                    return
+                for agent_type, port in list(self._failed.items()):
+                    if self._desired.get(agent_type) == port:
+                        await self._bind(agent_type, port)
+            except Exception:
+                logger.exception("[WebProxy] bind keeper failed")
 
     async def close_all(self) -> None:
         async with self._lock:
             self._closed = True
+            self._desired = {}
+            self._failed = {}
             bindings = list(self._bindings.values())
             self._bindings.clear()
-            reaper = self._reaper
-            self._reaper = None
-        if reaper is not None:
-            reaper.cancel()
+            keeper = self._keeper
+            self._keeper = None
+        if keeper is not None:
+            keeper.cancel()
             try:
-                await reaper
+                await keeper
             except asyncio.CancelledError:
                 pass
         for binding in bindings:
@@ -271,61 +313,6 @@ class WebPortManager:
             if session is not None and not getattr(session, "closed", True):
                 await session.close()
                 setattr(self._channel, attr, None)
-
-    async def reap_idle(self, now: float | None = None) -> list[str]:
-        """Close listeners with no in-flight traffic past ``idle_timeout_sec``."""
-        moment = time.monotonic() if now is None else now
-        timeout = _positive_int(self._config.idle_timeout_sec, DEFAULT_IDLE_TIMEOUT_SEC)
-        stale: list[_PortBinding] = []
-        async with self._lock:
-            for agent_type, binding in list(self._bindings.items()):
-                if binding.closed or binding.inflight > 0:
-                    continue
-                if moment - binding.last_active < timeout:
-                    continue
-                binding.closed = True
-                self._bindings.pop(agent_type, None)
-                stale.append(binding)
-        stopped: list[str] = []
-        for binding in stale:
-            await _stop_binding(binding)
-            stopped.append(binding.agent_type)
-            logger.info(
-                "[WebProxy] idle listener closed: agent=%s port=%s",
-                binding.agent_type,
-                binding.port,
-            )
-        return stopped
-
-    async def _reap_loop(self) -> None:
-        while not self._closed:
-            try:
-                await asyncio.sleep(min(30.0, max(1.0, self._config.idle_timeout_sec / 4)))
-                if self._closed:
-                    return
-                await self.reap_idle()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("[WebProxy] port reaper failed")
-
-    def _claim_socket_locked(self) -> tuple[int, socket.socket, str]:
-        """Pick and bind the next free port. Caller holds ``self._lock``."""
-        base = _positive_int(self._config.port_base, DEFAULT_PORT_BASE)
-        span = _positive_int(self._config.port_span, DEFAULT_PORT_SPAN)
-        used = {item.port for item in self._bindings.values() if not item.closed}
-        used.update(self._reserved_ports)
-        listen_host = str(self._config.listen_host or "0.0.0.0").strip() or "0.0.0.0"
-        for offset in range(span):
-            port = base + offset
-            if port in used:
-                continue
-            sock = _bind_listen_socket(listen_host, port)
-            if sock is None:
-                continue
-            self._reserved_ports.add(port)
-            return port, sock, listen_host
-        raise PortPoolExhausted(f"no free web proxy port in [{base}, {base + span})")
 
 
 async def _start_listener(
@@ -347,9 +334,9 @@ async def _start_listener(
         timeout_graceful_shutdown=2,
     )
     server = uvicorn.Server(config)
-    # Skip Server.serve(): it installs SIGINT/SIGTERM handlers and would
-    # steal them from the Gateway's primary WebChannel server.
-    task = asyncio.create_task(server._serve(sockets=[sock]), name=f"web-proxy-{port}")
+    task = asyncio.create_task(
+        _serve_without_signals(server, sock), name=f"web-proxy-{port}"
+    )
     binding = _PortBinding(
         agent_type=agent_type,
         port=port,
@@ -370,6 +357,24 @@ async def _start_listener(
     raise RuntimeError(f"web proxy listener on :{port} did not start")
 
 
+async def _serve_without_signals(server: Any, sock: socket.socket) -> None:
+    """Same steps as ``uvicorn.Server._serve``, without capturing signals.
+
+    ``uvicorn.Server.serve`` wraps ``_serve`` in ``capture_signals``, which
+    installs SIGINT/SIGTERM handlers whenever the loop runs in the main thread
+    — the Gateway's primary WebChannel server owns those. Assembling the same
+    lifecycle from public methods keeps that ownership intact.
+    """
+    if not server.config.loaded:
+        server.config.load()
+    server.lifespan = server.config.lifespan_class(server.config)  # type: ignore[attr-defined]
+    await server.startup(sockets=[sock])
+    if not server.should_exit:
+        await server.main_loop()
+    if server.started:
+        await server.shutdown(sockets=[sock])
+
+
 async def _stop_binding(binding: _PortBinding) -> None:
     binding.closed = True
     server = binding.server
@@ -387,8 +392,6 @@ async def _stop_binding(binding: _PortBinding) -> None:
             await asyncio.wait_for(task, timeout=2)
         except (asyncio.TimeoutError, asyncio.CancelledError):
             task.cancel()
-    except asyncio.CancelledError:
-        raise
     except Exception:
         logger.debug("[WebProxy] listener stop ignored", exc_info=True)
 
@@ -425,21 +428,11 @@ def build_agent_port_app(channel: Any, agent_type: str) -> FastAPI:
 
 
 async def _activity_begin(app: FastAPI) -> bool:
+    """False once the listener is being torn down (the request then 404s)."""
     binding = getattr(app.state, "binding", None)
     if binding is None:
         return True
-    manager = getattr(app.state.channel, "web_port_manager", None)
-    lock = getattr(manager, "_lock", None)
-    if lock is None:
-        return await binding.begin()
-    async with lock:
-        return await binding.begin()
-
-
-def _activity_end(app: FastAPI) -> None:
-    binding = getattr(app.state, "binding", None)
-    if binding is not None:
-        binding.end()
+    return await binding.begin()
 
 
 async def _handle_http_proxy(app: FastAPI, request: Request, *, tail: str) -> Response:
@@ -451,27 +444,19 @@ async def _handle_http_proxy(app: FastAPI, request: Request, *, tail: str) -> Re
     if not await _activity_begin(app):
         return PlainTextResponse("not found", status_code=404)
 
-    defer_end = False
-    try:
-        prepared = await _prepare_http(channel, request, agent_type=agent_type, tail=tail)
-        if isinstance(prepared, Response):
-            return prepared
-        user_id, session_token, held_tail = prepared
-        response = await _proxy_http(
-            app,
-            channel,
-            request,
-            agent_type=agent_type,
-            user_id=user_id,
-            session_token=session_token,
-            tail=held_tail,
-        )
-        if isinstance(response, StreamingResponse):
-            defer_end = True
-        return response
-    finally:
-        if not defer_end:
-            _activity_end(app)
+    prepared = await _prepare_http(channel, request, agent_type=agent_type, tail=tail)
+    if isinstance(prepared, Response):
+        return prepared
+    user_id, session_token, held_tail = prepared
+    return await _proxy_http(
+        app,
+        channel,
+        request,
+        agent_type=agent_type,
+        user_id=user_id,
+        session_token=session_token,
+        tail=held_tail,
+    )
 
 
 async def _prepare_http(
@@ -511,6 +496,21 @@ async def _prepare_http(
     return user_id, session_token, tail
 
 
+def _request_has_body(request: Request) -> bool:
+    """True when the browser request carries a body to forward upstream."""
+    if "transfer-encoding" in request.headers:
+        return True
+    length = str(request.headers.get("content-length") or "").strip()
+    return length.isdigit() and int(length) > 0
+
+
+async def _iter_request_body(request: Request):
+    """Stream the request body upstream instead of buffering it whole."""
+    async for chunk in request.stream():
+        if chunk:
+            yield chunk
+
+
 async def _proxy_http(
     app: FastAPI,
     channel: Any,
@@ -542,7 +542,9 @@ async def _proxy_http(
         held = True
         session = await _ensure_http_proxy_session(channel)
         upstream_url = _append_tail(endpoint, tail)
-        body = await request.body()
+        upstream_url = _merge_request_query(
+            upstream_url, str(request.url.query or "")
+        )
         logger.info(
             "[WebProxy] HTTP proxy: agent=%s method=%s path=/%s",
             agent_type,
@@ -558,7 +560,11 @@ async def _proxy_http(
                     client_host=str(getattr(request.client, "host", "") or ""),
                     user_id=user_id,
                 ),
-                data=body if body else None,
+                data=(
+                    _iter_request_body(request)
+                    if _request_has_body(request)
+                    else None
+                ),
             )
             upstream_resp = await ctx.__aenter__()
         except aiohttp.ClientError as exc:
@@ -566,8 +572,19 @@ async def _proxy_http(
             logger.debug("[WebProxy] HTTP proxy error detail: %s", exc)
             return PlainTextResponse(f"upstream error: {exc}", status_code=502)
 
+        method = request.method.upper()
+        status = upstream_resp.status
         content_type = upstream_resp.headers.get("Content-Type", "")
-        if "text/event-stream" in content_type:
+        no_body = method == "HEAD" or status in (204, 304) or 100 <= status < 200
+
+        if not no_body and "text/event-stream" in content_type:
+            upstream_headers = [
+                (name, value)
+                for name, value in _filter_response_headers(upstream_resp.raw_headers)
+                if name != b"content-length"
+            ]
+            if not any(name == b"cache-control" for name, _ in upstream_headers):
+                upstream_headers.append((b"cache-control", b"no-cache"))
 
             async def _stream():
                 try:
@@ -576,32 +593,27 @@ async def _proxy_http(
                 finally:
                     await ctx.__aexit__(None, None, None)
                     await _release_web_runtime(channel, user_id, agent_type)
-                    _activity_end(app)
 
             defer_release = True
+            response = StreamingResponse(_stream(), status_code=status)
+            response.raw_headers = upstream_headers
             return _set_session_cookie(
-                StreamingResponse(
-                    _stream(),
-                    status_code=upstream_resp.status,
-                    media_type=content_type,
-                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-                ),
-                session_token,
-                user_id,
-                max_age=_cookie_max_age(channel),
+                response, session_token, user_id, max_age=_cookie_max_age(channel)
             )
 
         try:
-            resp_body = await upstream_resp.read()
-            media = upstream_resp.content_type
-            status = upstream_resp.status
+            resp_body = b"" if no_body else await upstream_resp.read()
+            upstream_headers = _filter_response_headers(upstream_resp.raw_headers)
         finally:
             await ctx.__aexit__(None, None, None)
+        response = Response(content=resp_body, status_code=status)
+        # Upstream business headers are passed through (Set-Cookie included);
+        # Content-Length is recomputed to match the bytes we actually send.
+        response.raw_headers = _final_response_headers(
+            upstream_headers, method=method, status=status, body=resp_body
+        )
         return _set_session_cookie(
-            Response(content=resp_body, status_code=status, media_type=media),
-            session_token,
-            user_id,
-            max_age=_cookie_max_age(channel),
+            response, session_token, user_id, max_age=_cookie_max_age(channel)
         )
     finally:
         if held and not defer_release:
@@ -618,10 +630,7 @@ async def _handle_ws_proxy(app: FastAPI, websocket: WebSocket, *, tail: str) -> 
     if not await _activity_begin(app):
         await websocket.close(code=1008, reason="not found")
         return
-    try:
-        await _proxy_ws(channel, websocket, agent_type=agent_type, tail=tail)
-    finally:
-        _activity_end(app)
+    await _proxy_ws(channel, websocket, agent_type=agent_type, tail=tail)
 
 
 async def _proxy_ws(
@@ -781,7 +790,13 @@ async def handle_3rdagent_web(
     *,
     user_id: str = "",
 ) -> None:
-    """Open (or reuse) the northbound port for ``params.agent_type``."""
+    """Report the northbound port for ``params.agent_type``.
+
+    The port is decided by the registry and applied by ``registry_watcher``;
+    this method never allocates or binds. It reads the live listener table and,
+    as a side effect, warms up the current user's sandbox (so the first browser
+    open is not a 503). The ``url`` is only returned once the sandbox resolves.
+    """
     body = params if isinstance(params, dict) else {}
     raw_type = str(body.get("agent_type") or "").strip()
     if not raw_type:
@@ -793,9 +808,7 @@ async def handle_3rdagent_web(
             code="BAD_REQUEST",
         )
         return
-    if not getattr(channel, "web_proxy_enabled", False) or not callable(
-        getattr(channel, "web_resolver", None)
-    ):
+    if not getattr(channel, "web_proxy_enabled", False):
         await channel.send_response(
             ws,
             req_id,
@@ -839,57 +852,77 @@ async def handle_3rdagent_web(
         )
         return
 
-    resolver = channel.web_resolver
+    manager = _manager_for(channel)
+    desired_port = manager.desired_port(agent_type)
+    if desired_port is None:
+        logger.debug("[WebProxy] no web endpoint registered for agent=%s", agent_type)
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=False,
+            error="agent has no http web endpoint",
+            code="NO_WEB_ENDPOINT",
+        )
+        return
+    bound_port = manager.port_for(agent_type)
+    if bound_port is None:
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=False,
+            error="agent web port is not listening yet",
+            code="PORT_NOT_LISTENING",
+            payload={"agent_type": agent_type, "port": desired_port},
+        )
+        return
+
+    resolver = getattr(channel, "web_resolver", None)
     held = False
     try:
-        try:
-            endpoint = await resolver(uid, agent_type, "http")
-        except Exception as exc:
-            seconds = _retry_after_seconds(exc)
-            if seconds is not None:
+        if callable(resolver):
+            try:
+                endpoint = await resolver(uid, agent_type, "http")
+            except Exception as exc:
+                seconds = _retry_after_seconds(exc)
+                if seconds is not None:
+                    await channel.send_response(
+                        ws,
+                        req_id,
+                        ok=False,
+                        error="agent sandbox is creating",
+                        code="AGENT_CREATING",
+                        payload={
+                            "agent_type": agent_type,
+                            "port": bound_port,
+                            "retry_after_sec": seconds,
+                        },
+                    )
+                    return
+                logger.exception(
+                    "[WebProxy] 3rdagent.web resolve failed: agent=%s", agent_type
+                )
                 await channel.send_response(
                     ws,
                     req_id,
                     ok=False,
-                    error="agent sandbox is creating",
-                    code="AGENT_CREATING",
-                    payload={"retry_after_sec": seconds},
+                    error="web endpoint resolve failed",
+                    code="NO_WEB_ENDPOINT",
                 )
                 return
-            logger.exception("[WebProxy] 3rdagent.web resolve failed: agent=%s", agent_type)
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="web endpoint resolve failed",
-                code="NO_WEB_ENDPOINT",
-            )
-            return
-        if not endpoint:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="agent has no http web endpoint",
-                code="NO_WEB_ENDPOINT",
-            )
-            return
-        held = True
-        manager = _manager_for(channel)
-        try:
-            port = await manager.ensure(agent_type)
-        except PortPoolExhausted:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="web proxy port pool is exhausted",
-                code="PORT_POOL_EXHAUSTED",
-            )
-            return
+            if not endpoint:
+                await channel.send_response(
+                    ws,
+                    req_id,
+                    ok=False,
+                    error="agent has no http web endpoint",
+                    code="NO_WEB_ENDPOINT",
+                )
+                return
+            held = True
+
         host = resolve_advertise_host(channel)
-        url = build_web_url(host=host, port=port, user_id=uid, token=token)
-        logger.info("[WebProxy] 3rdagent.web: agent=%s port=%s", agent_type, port)
+        url = build_web_url(host=host, port=bound_port, user_id=uid, token=token)
+        logger.info("[WebProxy] 3rdagent.web: agent=%s port=%s", agent_type, bound_port)
         await channel.send_response(
             ws,
             req_id,
@@ -897,7 +930,7 @@ async def handle_3rdagent_web(
             payload={
                 "agent_type": agent_type,
                 "host": host,
-                "port": port,
+                "port": bound_port,
                 "url": url,
             },
         )
@@ -908,7 +941,7 @@ async def handle_3rdagent_web(
 
 def _manager_for(channel: Any) -> WebPortManager:
     manager = getattr(channel, "web_port_manager", None)
-    if isinstance(manager, WebPortManager) and not manager._closed:
+    if isinstance(manager, WebPortManager) and not manager.closed:
         return manager
     created = WebPortManager(channel, _proxy_config(channel))
     channel.web_port_manager = created
