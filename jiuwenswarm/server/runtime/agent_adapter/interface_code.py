@@ -121,9 +121,7 @@ class CodingMemoryRail(_BaseCodingMemoryRail):
         self._recalled_content = None
         self._prefetch_task = None
 
-        is_read_only = getattr(self, "_read_only_tools", False) or self._is_read_only(
-            ctx.inputs
-        )
+        is_read_only = self._is_read_only(ctx.inputs)
         if not is_read_only and self._manager:
             query = self._extract_last_user_query(ctx)
             if query:
@@ -137,12 +135,6 @@ class CodingMemoryRail(_BaseCodingMemoryRail):
         except asyncio.CancelledError:
             cancelled = True
             raise
-        except Exception as exc:
-            logger.warning(
-                "[CodingMemoryRail] background initialization failed: %s",
-                exc,
-                exc_info=True,
-            )
         finally:
             if not cancelled and self._manager_init_task is asyncio.current_task():
                 self._manager_initialized = True
