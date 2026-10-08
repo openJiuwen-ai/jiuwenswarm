@@ -52,8 +52,12 @@ def format_todos_for_frontend(todos_data: list[Any]) -> list[dict[str, Any]]:
             active_form = getattr(item, "activeForm", None)
 
         status_value = getattr(status, "value", status)
-        status_key = str(status_value or "pending").lower()
-        if status in _CANCELLED_STATUSES or status_key in _CANCELLED_STATUSES:
+        status_key = (
+            status_value.lower()
+            if isinstance(status_value, str) and status_value
+            else "pending"
+        )
+        if status_key in _CANCELLED_STATUSES:
             continue
         if todo_id is None or todo_id == "":
             continue
@@ -62,7 +66,7 @@ def format_todos_for_frontend(todos_data: list[Any]) -> list[dict[str, Any]]:
             "id": str(todo_id),
             "content": content_text,
             "activeForm": active_form if isinstance(active_form, str) else content_text,
-            "status": _STATUS_TO_FRONTEND.get(status, _STATUS_TO_FRONTEND.get(status_key, "pending")),
+            "status": _STATUS_TO_FRONTEND.get(status_key, "pending"),
         })
     return formatted
 

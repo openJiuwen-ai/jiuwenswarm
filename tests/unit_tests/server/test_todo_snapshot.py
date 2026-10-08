@@ -21,6 +21,20 @@ def test_format_todos_keeps_completed_and_drops_cancelled():
     assert [item["id"] for item in format_todos_for_frontend(items)] == ["a", "b"]
 
 
+def test_format_todos_defaults_malformed_status_to_pending():
+    items = [
+        {"id": "dict", "content": "dict status", "status": {}},
+        {"id": "list", "content": "list status", "status": []},
+        {"id": "none", "content": "none status", "status": None},
+    ]
+
+    assert [item["status"] for item in format_todos_for_frontend(items)] == [
+        "pending",
+        "pending",
+        "pending",
+    ]
+
+
 def test_load_snapshot_accepts_json_and_rejects_unsafe_session(tmp_path, monkeypatch):
     root = tmp_path / "todo"
     snapshot = root / "web_session_1" / "todo.json"
