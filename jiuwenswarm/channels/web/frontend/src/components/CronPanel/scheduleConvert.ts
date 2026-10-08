@@ -1,4 +1,5 @@
 import type { CronSchedule } from '../../types/cron';
+import { isIntervalValueInRange } from './cronIntegerInput';
 import { normalizeWeekAlphas } from './cronWeekAlpha';
 
 // schedule ⇄ cron_expr（7段式：秒 分 时 日 月 周 年，croniter 语法）双向转换。
@@ -110,14 +111,13 @@ export function scheduleToCronExpr(schedule: CronSchedule): string {
       const days = schedule.weekdays && schedule.weekdays.length > 0
         ? Array.from(new Set(schedule.weekdays)).sort((a, b) => a - b).join(',')
         : '*';
-      // 显式判断而不是 `!schedule.everyMinutes`/`!schedule.everyHours`：0 和 undefined 在语义上
-      // 都是"无效间隔"，但用显式的 `< 1` 表达出来，不依赖假值隐式转换，逻辑更清楚，也方便以后
-      // 需要更精确的报错文案时复用同一个判断（见 2026-07-23 bugfix，bug002）。
+      // 范围与面板一致：分钟 1–1440、小时 1–24；超限不截断、不拼 cron，交给 UI 红框+禁止保存。
+      // （见 cronIntegerInput.ts；2026-07-23 bugfix bug002 起用显式范围判断。）
       if (schedule.intervalUnit === 'minutes') {
-        if (schedule.everyMinutes === undefined || schedule.everyMinutes < 1) return '';
+        if (!isIntervalValueInRange(schedule.everyMinutes, 'minutes')) return '';
         return `0 */${schedule.everyMinutes} * * * ${days} *`;
       }
-      if (schedule.everyHours === undefined || schedule.everyHours < 1) return '';
+      if (!isIntervalValueInRange(schedule.everyHours, 'hours')) return '';
       return `0 0 */${schedule.everyHours} * * ${days} *`;
     }
     case 'once': {

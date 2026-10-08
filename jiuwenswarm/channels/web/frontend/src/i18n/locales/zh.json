@@ -1662,7 +1662,8 @@
       "every": "每",
       "everyHoursPlaceholder": "小时数",
       "everyMinutesPlaceholder": "分钟数",
-      "integerOnlyHint": "间隔必须为大于等于 1 的整数",
+      "integerOnlyHint": "间隔须为 1–{{max}} 的整数",
+      "intervalRangeHint": "间隔须为 1–{{max}} 的整数",
       "hoursUnit": "小时",
       "minutesUnit": "分钟",
       "intervalUnit": {
@@ -1708,7 +1709,8 @@
       },
       "wakeOffset": "提前唤醒",
       "wakeOffsetUnit": "分钟",
-      "wakeOffsetHelp": "在计划推送时间前启动 Agent 准备结果；0 表示到点执行"
+      "wakeOffsetHelp": "在计划推送时间前启动 Agent 准备结果；0 表示到点执行",
+      "wakeOffsetRangeHint": "提前唤醒须为 0–{{max}} 的整数分钟"
     },
     "modelPicker": {
       "configured": "已配置",

@@ -5,7 +5,15 @@ import TimePicker from './TimePicker';
 import DatePicker from './DatePicker';
 import { validateCronExpr } from './cronExprValidation';
 import {
+  intervalMaxForUnit,
+  isIntervalValueInRange,
+  normalizeDigitsInput,
+  parseIntervalField,
+} from './cronIntegerInput';
+import {
+  isWakeOffsetMinutesValid,
   normalizeWakeOffsetMinutesInput,
+  WAKE_OFFSET_MAX_MINUTES,
   wakeOffsetMinutesToSeconds,
   wakeOffsetSecondsToMinutes,
 } from './cronWakeOffset';
@@ -19,6 +27,11 @@ interface ScheduleEditorProps {
   /** 提前唤醒秒数（后端 wake_offset_seconds）；UI 以分钟展示 */
   wakeOffsetSeconds?: number;
   onWakeOffsetSecondsChange?: (seconds: number) => void;
+  /**
+   * 提前唤醒分钟是否满足 0–WAKE_OFFSET_MAX_MINUTES。
+   * 超限时不截断、不回写秒数，由抽屉据此禁用保存。
+   */
+  onWakeOffsetValidChange?: (valid: boolean) => void;
   /** 仅锁定提前唤醒（proactive.tick 等不允许改 wake_offset） */
   wakeOffsetDisabled?: boolean;
 }
@@ -62,14 +75,6 @@ function intervalNumberTextOf(schedule: CronSchedule): string {
   return n !== undefined ? String(n) : '';
 }
 
-// 去掉纯数字字符串的前导零，只保留数值本身的字符串形式：""→""，"0"→"0"，"00"→"0"，
-// "01"→"1"，"010"→"10"。用 Number(...) 往返一次即可，不用手写正则去处理"全 0"这种边界
-// （见 2026-07-23 bugfix 追加需求，bug002：用户先敲 0 再敲其它数字时，输入框不应该停留在
-// "01"这种带前导零的形式上）。
-function normalizeIntegerDigits(digitsOnly: string): string {
-  return digitsOnly === '' ? '' : String(Number(digitsOnly));
-}
-
 function WeekdayPicker({ selected, onToggle }: { selected: number[]; onToggle: (day: number) => void }) {
   const { t } = useTranslation();
   return (
@@ -104,19 +109,24 @@ export default function ScheduleEditor({
   timezone,
   wakeOffsetSeconds = 0,
   onWakeOffsetSecondsChange,
+  onWakeOffsetValidChange,
   wakeOffsetDisabled = false,
 }: ScheduleEditorProps) {
   const { t } = useTranslation();
   const initialParsed = cronExprToSchedule(value);
   const initialSchedule = initialParsed ?? { kind: 'daily', time: '' };
   const [schedule, setSchedule] = useState<CronSchedule>(initialSchedule);
-  // 分钟输入单独用文本态，便于清空重输；能解析成非负整数才回写秒数
+  // 分钟输入单独用文本态，便于清空重输；合法时才回写秒数（超限不截断、不回写）
   const wakeMinutesFromProps = wakeOffsetSecondsToMinutes(wakeOffsetSeconds);
   const [wakeOffsetMinutesText, setWakeOffsetMinutesText] = useState(() => String(wakeMinutesFromProps));
   // 父表单换任务 / 外部改秒数时，把展示文本同步回来（本组件自身 onChange 写回的同值不会抖动）
   useEffect(() => {
     setWakeOffsetMinutesText(String(wakeMinutesFromProps));
   }, [wakeMinutesFromProps]);
+  // 打开抽屉 / 外部秒数变化时同步合法性（存量超限秒数也会标红）
+  useEffect(() => {
+    onWakeOffsetValidChange?.(isWakeOffsetMinutesValid(String(wakeMinutesFromProps)));
+  }, [wakeMinutesFromProps, onWakeOffsetValidChange]);
   // 默认 tab：能解析出结构化 schedule 就跟它走；解析不出来时，创建任务（value 为空）默认落在
   // "周期"而不是"Cron表达式"（更符合大多数人的心智，表达式 tab 留给"手写/编辑一条解析不了的旧
   // 表达式"这种进阶场景）；编辑一条解析不出来的已有表达式（value 非空但 parse 失败）则仍然落在
@@ -127,6 +137,15 @@ export default function ScheduleEditor({
   // "按间隔"数字输入框单独存一份文本状态，只做"显示"，输入时先过滤掉非数字字符（小时步长/分钟步长
   // 在 croniter 里都只支持整数，见 cronExprValidation.ts），能解析成数字才同步进 schedule。
   const [intervalNumberText, setIntervalNumberText] = useState(() => intervalNumberTextOf(initialSchedule));
+  // 超长非法间隔不能靠 String(everyHours) 回填（会丢原串），按单位记住输入文本以便切 tab 恢复
+  const savedIntervalTextRef = useRef<{ hours?: string; minutes?: string }>(
+    initialSchedule.kind === 'interval'
+      ? {
+          [initialSchedule.intervalUnit === 'minutes' ? 'minutes' : 'hours']:
+            intervalNumberTextOf(initialSchedule),
+        }
+      : {},
+  );
 
   // 切 tab 时的"上一次编辑内容"缓存：按 topMode 分桶各存一份 schedule。原实现切走一个 tab 时
   // 直接用 defaultForTopMode 把 value（唯一数据源）整个覆盖成空白默认值，原 tab 的数据没有任何
@@ -165,7 +184,10 @@ export default function ScheduleEditor({
       ? parsed
       : savedByModeRef.current[mode] ?? defaultForTopMode(mode);
     setTopMode(mode);
-    if (mode === 'interval') setIntervalNumberText(intervalNumberTextOf(next));
+    if (mode === 'interval' && next.kind === 'interval') {
+      const unit = next.intervalUnit === 'minutes' ? 'minutes' : 'hours';
+      setIntervalNumberText(savedIntervalTextRef.current[unit] ?? intervalNumberTextOf(next));
+    }
     updateSchedule(next, mode);
   }
 
@@ -173,11 +195,21 @@ export default function ScheduleEditor({
   function setIntervalUnit(unit: 'hours' | 'minutes') {
     if (schedule.kind !== 'interval' || (schedule.intervalUnit ?? 'hours') === unit) return;
     setIntervalNumberText('');
+    savedIntervalTextRef.current[unit] = '';
     updateSchedule(
       unit === 'minutes'
         ? { kind: 'interval', intervalUnit: 'minutes', everyMinutes: undefined, weekdays: schedule.weekdays }
         : { kind: 'interval', intervalUnit: 'hours', everyHours: undefined, weekdays: schedule.weekdays },
     );
+  }
+
+  function applyIntervalNumberText(raw: string) {
+    if (schedule.kind !== 'interval') return;
+    setIntervalNumberText(raw);
+    const unit = schedule.intervalUnit === 'minutes' ? 'minutes' : 'hours';
+    savedIntervalTextRef.current[unit] = raw;
+    const n = parseIntervalField(raw, unit);
+    updateSchedule(unit === 'minutes' ? { ...schedule, everyMinutes: n } : { ...schedule, everyHours: n });
   }
 
   function setPeriodKind(kind: Extract<CronScheduleKind, 'daily' | 'weekly' | 'monthly' | 'yearly'>) {
@@ -395,7 +427,9 @@ export default function ScheduleEditor({
               type="text"
               inputMode="numeric"
               value={intervalNumberText}
-              title={t('cron.schedule.integerOnlyHint') ?? undefined}
+              title={t('cron.schedule.intervalRangeHint', {
+                max: intervalMaxForUnit(schedule.intervalUnit === 'minutes' ? 'minutes' : 'hours'),
+              }) ?? undefined}
               onKeyDown={(e) => {
                 // 小时/分钟步长在 croniter 里都只支持正整数：在按键这一刻就挡掉非数字字符，
                 // 而不是等 onChange 里再"事后清洗"——之前的实现允许小数点先短暂插入、再被
@@ -411,33 +445,26 @@ export default function ScheduleEditor({
                 // 粘贴走的是单独的剪贴板事件，不经过 onKeyDown；同样只保留数字字符，
                 // 避免粘贴"0.1"这类字符串被 onChange 静默拼接成无关的整数（见上）。
                 e.preventDefault();
-                const digitsOnly = e.clipboardData.getData('text').replace(/\D/g, '');
-                if (!digitsOnly) return;
-                const pasted = normalizeIntegerDigits(digitsOnly);
-                setIntervalNumberText(pasted);
-                const isMinutes = schedule.intervalUnit === 'minutes';
-                const n = Number(pasted);
-                updateSchedule(isMinutes ? { ...schedule, everyMinutes: n } : { ...schedule, everyHours: n });
+                const pasted = normalizeDigitsInput(e.clipboardData.getData('text'));
+                if (!pasted) return;
+                applyIntervalNumberText(pasted);
               }}
               onChange={(e) => {
                 // onKeyDown/onPaste 已经在源头挡掉了非数字输入，这里的过滤是兜底
                 // （比如浏览器自动填充、IME 等不经过 onKeyDown 的输入路径）。
-                const digitsOnly = e.target.value.replace(/\D/g, '');
-                // 去掉前导零，只保留数值本身的字符串形式（"00"→"0"，"01"→"1"，"010"→"10"）：
-                // 用户先敲 "0" 再敲其它数字时（包括之前"敲 0 再敲被拦截的小数点再敲 1"这类路径），
-                // 框里不应该一直停留在"01"这种带前导零的形式（见 2026-07-23 bugfix 追加需求，bug002）。
-                const raw = normalizeIntegerDigits(digitsOnly);
-                setIntervalNumberText(raw);
-                const isMinutes = schedule.intervalUnit === 'minutes';
-                if (raw === '') {
-                  updateSchedule(isMinutes ? { ...schedule, everyMinutes: undefined } : { ...schedule, everyHours: undefined });
-                  return;
-                }
-                const n = Number(raw);
-                updateSchedule(isMinutes ? { ...schedule, everyMinutes: n } : { ...schedule, everyHours: n });
+                // 去前导零用字符串处理，禁止 Number→String，避免超长数字变成科学计数法。
+                applyIntervalNumberText(normalizeDigitsInput(e.target.value));
               }}
               placeholder={t(schedule.intervalUnit === 'minutes' ? 'cron.schedule.everyMinutesPlaceholder' : 'cron.schedule.everyHoursPlaceholder') ?? undefined}
-              className="w-16 shrink-0 rounded-md border border-border bg-card px-2 py-1.5 text-sm text-text outline-none focus:border-accent"
+              className={`w-20 shrink-0 rounded-md border bg-card px-2 py-1.5 text-sm text-text outline-none ${
+                (() => {
+                  const unit = schedule.intervalUnit === 'minutes' ? 'minutes' : 'hours';
+                  const n = unit === 'minutes' ? schedule.everyMinutes : schedule.everyHours;
+                  return !isIntervalValueInRange(n, unit)
+                    ? 'border-danger'
+                    : 'border-border focus:border-accent';
+                })()
+              }`}
             />
             <div className="inline-flex w-fit shrink-0 rounded-md bg-bg-muted p-0.5">
               {(['hours', 'minutes'] as const).map((unit) => {
@@ -458,13 +485,17 @@ export default function ScheduleEditor({
             </div>
             <WeekdayPicker selected={schedule.weekdays ?? []} onToggle={toggleWeekday} />
           </div>
-          {/* 间隔数字缺失或 < 1（含用户想输小数被约束成整数后落在 0 的情况）时，直接在输入框下面
-              给出常驻提示，不用等用户去悬停确定按钮才知道哪里有问题（见 2026-07-23 bugfix，bug002）。 */}
+          {/* 不满足唯一限制条件（1–max 整数）时红字展示该条件；空/过小/过大用同一条文案。 */}
           {(() => {
-            const n = schedule.intervalUnit === 'minutes' ? schedule.everyMinutes : schedule.everyHours;
-            return n === undefined || n < 1;
+            const unit = schedule.intervalUnit === 'minutes' ? 'minutes' : 'hours';
+            const n = unit === 'minutes' ? schedule.everyMinutes : schedule.everyHours;
+            return !isIntervalValueInRange(n, unit);
           })() && (
-            <p className="text-xs text-danger">{t('cron.schedule.integerOnlyHint')}</p>
+            <p className="text-xs text-danger">
+              {t('cron.schedule.intervalRangeHint', {
+                max: intervalMaxForUnit(schedule.intervalUnit === 'minutes' ? 'minutes' : 'hours'),
+              })}
+            </p>
           )}
         </div>
       )}
@@ -533,17 +564,35 @@ export default function ScheduleEditor({
               inputMode="numeric"
               value={wakeOffsetMinutesText}
               disabled={wakeOffsetDisabled}
-              title={wakeOffsetDisabled ? (t('cron.autoManagedToggleDisabled') ?? undefined) : undefined}
+              title={
+                wakeOffsetDisabled
+                  ? (t('cron.autoManagedToggleDisabled') ?? undefined)
+                  : (t('cron.schedule.wakeOffsetRangeHint', { max: WAKE_OFFSET_MAX_MINUTES }) ?? undefined)
+              }
               onChange={(e) => {
                 const normalized = normalizeWakeOffsetMinutesInput(e.target.value);
                 setWakeOffsetMinutesText(normalized);
-                onWakeOffsetSecondsChange(wakeOffsetMinutesToSeconds(normalized));
+                const valid = isWakeOffsetMinutesValid(normalized);
+                onWakeOffsetValidChange?.(valid);
+                // 合法才回写秒数；超限保留输入文本、不截断、不改父表单秒数，避免 useEffect 把框拉回
+                if (valid) {
+                  onWakeOffsetSecondsChange(wakeOffsetMinutesToSeconds(normalized));
+                }
               }}
               placeholder="0"
-              className="w-28 shrink-0 rounded-md border border-border bg-card px-3 py-1.5 text-sm text-text outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+              className={`w-28 shrink-0 rounded-md border bg-card px-3 py-1.5 text-sm text-text outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
+                isWakeOffsetMinutesValid(wakeOffsetMinutesText)
+                  ? 'border-border focus:border-accent'
+                  : 'border-danger'
+              }`}
             />
             <span className="shrink-0 text-sm text-text-muted">{t('cron.schedule.wakeOffsetUnit')}</span>
           </div>
+          {!isWakeOffsetMinutesValid(wakeOffsetMinutesText) && (
+            <p className="mt-1 text-xs text-danger">
+              {t('cron.schedule.wakeOffsetRangeHint', { max: WAKE_OFFSET_MAX_MINUTES })}
+            </p>
+          )}
         </div>
       )}
     </div>
