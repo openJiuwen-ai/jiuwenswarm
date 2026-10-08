@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { MessageSquare, Wrench } from 'lucide-react';
+import { ToolActionIcon } from '../ChatPanel/ToolActionIcon';
+import { getToolIconKey } from '../ChatPanel/toolCategory';
 import {
   Chevron,
   StatusIcon,
@@ -155,17 +156,23 @@ export function ProcessListCard({
 
 function ProcessIcon({ item }: { item: ProcessItem }) {
   if (item.type === 'message') {
+    // 协作消息统一用「发送消息」信封图标，与工具图标同源（testid 与执行项互斥归一，data-variant 区分）
     return (
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted">
-        <MessageSquare size={13} />
-      </span>
+      <ToolActionIcon
+        iconKey="sendMessage"
+        className="flex h-4 w-4 shrink-0 items-center justify-center text-muted"
+        testId="team-area-process-item-icon"
+      />
     );
   }
   if (item.type === 'execution') {
+    // 与 chat-panel 共用同一套设计稿图标；无对应动作 → 扳手兜底
     return (
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted">
-        <Wrench size={13} />
-      </span>
+      <ToolActionIcon
+        iconKey={getToolIconKey(item.execution?.tool_name ?? '')}
+        className="flex h-4 w-4 shrink-0 items-center justify-center text-muted"
+        testId="team-area-process-item-icon"
+      />
     );
   }
   return <StatusIcon status={item.status as TaskStatus} />;

@@ -13,12 +13,8 @@ import { AgentAvatar } from '../AgentAvatar';
 import { SkillTreePath } from './SkillTreePath';
 import { BeamSearchTree } from './BeamSearchTree';
 import { MarkdownRenderer } from '../MarkdownRenderer/MarkdownRenderer';
-import ToolFileIcon from '../../assets/work-mode/tool-file.svg?react';
-import ToolSearchIcon from '../../assets/work-mode/tool-search.svg?react';
-import ToolCodeIcon from '../../assets/work-mode/tool-code.svg?react';
-import ToolSystemIcon from '../../assets/work-mode/tool-system.svg?react';
-import ToolWrenchIcon from '../../assets/work-mode/tool-wrench.svg?react';
-import { classifyToolCall, describeToolCall, type ToolCategory } from './toolCategory';
+import { ToolActionIcon } from './ToolActionIcon';
+import { classifyToolCall, describeToolCall, getToolIconKey, type ToolCategory, type ToolIconKey } from './toolCategory';
 import {
   resolveTeamLeaderDisplayName,
   type TeamLeaderIdentity,
@@ -327,6 +323,7 @@ function isDisplayRunning(execution: ToolExecution): boolean {
 interface GroupHeaderLine {
   key: string;
   category: ToolCategory;
+  iconKey: ToolIconKey;
   text: string;
   goal?: string;
   running: boolean;
@@ -344,6 +341,7 @@ function buildGroupLines(
   const sessionCompletedLabel = t('chatUi.toolGroup.sessionCompleted');
   return executions.map((execution) => {
     const category = classifyToolCall(execution.toolCall.name);
+    const iconKey = getToolIconKey(execution.toolCall.name);
     const running = isDisplayRunning(execution);
     const failed = !running && isToolExecutionFailed(execution);
     const label = getExecutionLabel(execution, sessionCompletedLabel, t);
@@ -351,6 +349,7 @@ function buildGroupLines(
     return {
       key: execution.toolCallId,
       category,
+      iconKey,
       running,
       failed,
       executions: [execution],
@@ -364,22 +363,14 @@ function buildGroupLines(
   });
 }
 
-/** 五类任务各自的图标（file/search/code/system/other），均用 currentColor 跟随 .tool-tree__cat-icon 统一配色。 */
-function CategoryIcon({ category }: { category: ToolCategory }) {
-  const Icon =
-    category === 'file'
-      ? ToolFileIcon
-      : category === 'search'
-        ? ToolSearchIcon
-        : category === 'code'
-          ? ToolCodeIcon
-          : category === 'system'
-            ? ToolSystemIcon
-            : ToolWrenchIcon;
+/** 工具动作图标——委托给共享的 ToolActionIcon，className 与 data-testid 保持 chat-panel 约定。 */
+function CategoryIcon({ iconKey }: { iconKey: ToolIconKey }) {
   return (
-    <span className="tool-tree__cat-icon" aria-hidden="true" data-testid="chat-panel-tool-tree-cat-icon" data-variant={category}>
-      <Icon />
-    </span>
+    <ToolActionIcon
+      iconKey={iconKey}
+      className="tool-tree__cat-icon"
+      testId="chat-panel-tool-tree-cat-icon"
+    />
   );
 }
 
@@ -477,7 +468,7 @@ export function ToolGroupDisplay({
                   data-testid="chat-panel-tool-tree-header"
                 >
                   <span className="tool-tree__header-line" data-testid="chat-panel-tool-tree-header-line">
-                    <CategoryIcon category={line.category} />
+                    <CategoryIcon iconKey={line.iconKey} />
                     <span className="tool-tree__header-text">
                       <span
                         className={clsx(

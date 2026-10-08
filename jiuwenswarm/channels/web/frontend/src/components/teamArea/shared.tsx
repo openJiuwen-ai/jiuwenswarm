@@ -346,7 +346,8 @@ export function StatusIcon({ status }: { status: TaskStatus }) {
     return <LoadingSpinner />;
   }
   if (status === 'cancelled') {
-    return <CancelledIcon className="h-4 w-4 shrink-0 text-warn" />;
+    // 不传颜色，继承上下文文字色（设计稿 cancel_ignore 为中性色，不作状态着色）
+    return <CancelledIcon className="h-4 w-4 shrink-0" />;
   }
   if (status === 'error') {
     return <WarningCircleIcon className="h-4 w-4 shrink-0 text-danger" />;

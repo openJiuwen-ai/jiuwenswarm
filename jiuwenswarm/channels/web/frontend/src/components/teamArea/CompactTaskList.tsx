@@ -96,7 +96,7 @@ export function CompactTaskList({
             className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
             data-testid="team-area-task-planning-task-status-icon"
           >
-            <CancelledIcon className="h-4 w-4 shrink-0 text-warn" aria-hidden="true" />
+            <CancelledIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
           </span>
         ) : columnKey === 'waiting' ? (
           <span
