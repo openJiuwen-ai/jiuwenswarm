@@ -1057,6 +1057,7 @@ async def warmup_session_context(
         return False
 
     session = _resolve_live_agent_session(deep_agent, session_id)
+    temporary_session = session is None
     if session is None:
         # 正常调用点（start_interaction 之后）live session 必在；兜底临时 Session。
         try:
@@ -1078,6 +1079,16 @@ async def warmup_session_context(
     except Exception as exc:
         logger.warning("warmup_session_context: create_context failed for %s: %s", session_id, exc)
         return False
+    finally:
+        if temporary_session:
+            try:
+                await session.post_run()
+            except Exception as exc:
+                logger.warning(
+                    "warmup_session_context: post_run failed for %s: %s",
+                    session_id,
+                    exc,
+                )
 
     logger.info(
         "warmup_session_context: session=%s restored context from disk history with %d messages "

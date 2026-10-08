@@ -186,3 +186,72 @@ async def test_warmup_skips_oversized_partial_turn(monkeypatch):
 
     assert restored is False
     context_engine.create_context.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_warmup_closes_temporary_session_after_context_restore(monkeypatch):
+    from jiuwenswarm.agents.harness.common import session_ops_service
+
+    deep_agent, context_engine = _deep_agent_with_empty_context()
+    temporary_session = SimpleNamespace(pre_run=AsyncMock(), post_run=AsyncMock())
+    monkeypatch.setattr(session_ops_service, "history_exists", lambda _session_id: True)
+    monkeypatch.setattr(
+        session_ops_service,
+        "load_history_records",
+        lambda _session_id: [
+            {"role": "user", "request_id": "request-old", "content": "旧问题"},
+        ],
+    )
+    monkeypatch.setattr(
+        session_ops_service,
+        "_resolve_live_agent_session",
+        lambda _deep_agent, _session_id: None,
+    )
+    monkeypatch.setattr(
+        "openjiuwen.core.single_agent.create_agent_session",
+        lambda **_kwargs: temporary_session,
+    )
+
+    restored = await session_ops_service.warmup_session_context(
+        deep_agent=deep_agent,
+        session_id="session-1",
+    )
+
+    assert restored is True
+    temporary_session.pre_run.assert_awaited_once_with(inputs=None)
+    temporary_session.post_run.assert_awaited_once_with()
+    context_engine.create_context.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_warmup_closes_temporary_session_when_context_restore_fails(monkeypatch):
+    from jiuwenswarm.agents.harness.common import session_ops_service
+
+    deep_agent, context_engine = _deep_agent_with_empty_context()
+    context_engine.create_context.side_effect = RuntimeError("restore failed")
+    temporary_session = SimpleNamespace(pre_run=AsyncMock(), post_run=AsyncMock())
+    monkeypatch.setattr(session_ops_service, "history_exists", lambda _session_id: True)
+    monkeypatch.setattr(
+        session_ops_service,
+        "load_history_records",
+        lambda _session_id: [
+            {"role": "user", "request_id": "request-old", "content": "旧问题"},
+        ],
+    )
+    monkeypatch.setattr(
+        session_ops_service,
+        "_resolve_live_agent_session",
+        lambda _deep_agent, _session_id: None,
+    )
+    monkeypatch.setattr(
+        "openjiuwen.core.single_agent.create_agent_session",
+        lambda **_kwargs: temporary_session,
+    )
+
+    restored = await session_ops_service.warmup_session_context(
+        deep_agent=deep_agent,
+        session_id="session-1",
+    )
+
+    assert restored is False
+    temporary_session.post_run.assert_awaited_once_with()
