@@ -87,12 +87,16 @@ def main() -> int:
     setpath(data, "gateway.session_map_scope", "${GATEWAY_SESSION_MAP_SCOPE:-per_chat_bot}")
     setpath(data, "react.max_iterations", "${AGENT_SERVER_REACT_MAX_ITER:-100}")
     setpath(data, "react.evolution.enabled", False)
-    setpath(data, "sandbox.enabled", True)
-    setpath(data, "sandbox.startup_mode", "external")
-    setpath(data, "sandbox.idle_ttl_seconds", 600)
-    setpath(data, "sandbox.idle_check_interval", 180)
-    setpath(data, "sandbox.url", "${JIUWENBOX_URL:-http://127.0.0.1:8321}")
-    setpath(data, "sandbox.type", "jiuwenbox")
+    # 沙箱可插拔：由部署工具 JIUWENBOX_ENABLED 控制
+    # 关闭时整个 sandbox 域不写入，业务路由走 LOCAL 直跑
+    sandbox_enabled = os.getenv("JIUWENBOX_ENABLED", "true").strip().lower() == "true"
+    if sandbox_enabled:
+        setpath(data, "sandbox.enabled", True)
+        setpath(data, "sandbox.startup_mode", "external")
+        setpath(data, "sandbox.idle_ttl_seconds", 600)
+        setpath(data, "sandbox.idle_check_interval", 180)
+        setpath(data, "sandbox.url", "${JIUWENBOX_URL:-http://127.0.0.1:8321}")
+        setpath(data, "sandbox.type", "jiuwenbox")
     setpath(data, "channels.ssh.host_key_path", "${JIUWENSWARM_CONFIG_DIR:-}/ssh_host_key")
 
     inject_feishu_bots(data)
