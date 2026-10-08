@@ -530,6 +530,13 @@ function recordedFacts(
     ...(attributes.timePerOutputTokenMs === undefined
       ? {}
       : { timePerOutputTokenMs: attributes.timePerOutputTokenMs }),
+    ...(attributes.responseTimeToFirstByteMs === undefined
+      ? {}
+      : { timeToFirstByteMs: attributes.responseTimeToFirstByteMs }),
+    ...(attributes.responseTimeToFirstTokenMs === undefined
+      ? {}
+      : { timeToFirstTokenMs: attributes.responseTimeToFirstTokenMs }),
+    ...(attributes.requestRetryCount === undefined ? {} : { retryCount: attributes.requestRetryCount }),
     ...(attributes.promptTokenIds === undefined ? {} : { promptTokenIds: attributes.promptTokenIds }),
     ...(attributes.completionTokenIds === undefined
       ? {}
@@ -933,7 +940,15 @@ function assistantCell(span: ProjectedSpan): TrajectoryCell {
         : span.lifecycle === 'running' ? 'Waiting for model response…' : 'No output content')
   const usageValue = usage(span.attributes)
   const firstChunkSeconds = span.attributes.responseTimeToFirstChunkSeconds
+  const firstTokenMs = span.attributes.responseTimeToFirstTokenMs
+  const firstByteMs = span.attributes.responseTimeToFirstByteMs
   const start = startedAt(span)
+  // The first chunk may be pure framing (a role-only delta sent before prefill
+  // finishes), so the token-carrying measurement wins. Spans written before it
+  // existed, or by providers that only report the first chunk, fall back.
+  const firstTokenTime = firstTokenMs !== undefined
+    ? start + firstTokenMs
+    : firstChunkSeconds === undefined ? null : start + firstChunkSeconds * 1_000
   const error = statusError(span)
   return {
     ...spanCellBase(span, 'assistant'),
@@ -947,7 +962,9 @@ function assistantCell(span: ProjectedSpan): TrajectoryCell {
       timingRecorded: true,
       streaming: span.attributes.requestStream ?? null,
       stepStartTime: start,
-      firstTokenTime: firstChunkSeconds === undefined ? null : start + firstChunkSeconds * 1_000,
+      firstTokenTime,
+      firstByteTime: firstByteMs === undefined ? null : start + firstByteMs,
+      retryCount: span.attributes.requestRetryCount ?? null,
       completedTime: span.endTimeUnixNano === undefined
         ? null
         : Number(span.endTimeUnixNano / NANOSECONDS_PER_MILLISECOND),

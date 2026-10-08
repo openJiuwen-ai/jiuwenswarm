@@ -45,6 +45,9 @@ export interface TrajectoryRecordedFacts {
     finishReasons?: readonly string[]
     totalLatencyMs?: number
     timePerOutputTokenMs?: number
+    timeToFirstByteMs?: number
+    timeToFirstTokenMs?: number
+    retryCount?: number
     promptTokenIds?: unknown
     completionTokenIds?: unknown
     logprobs?: unknown

@@ -2445,6 +2445,59 @@ test('provisional inference projects running lifecycle without a fabricated end 
   assert.equal(request.completedAt, null);
 });
 
+function setDoubleAttribute(span, key, value) {
+  const current = span.attributes.find(attribute => attribute.key === key);
+  if (current === undefined) {
+    span.attributes.push({ key, value: { doubleValue: value } });
+    return;
+  }
+  current.value = { doubleValue: value };
+}
+
+function firstInferenceSpan(records) {
+  return spansOf(records).find(span => span.attributes.some(attribute => (
+    attribute.key === 'openjiuwen.trajectory.record.kind'
+      && attribute.value.stringValue === 'inference'
+  )));
+}
+
+test('assistant timing prefers time to first token over a framing-only first chunk', async () => {
+  const records = await fixtureRecords('standard-records.json');
+  const inferenceSpan = firstInferenceSpan(records);
+  assert.ok(inferenceSpan);
+  setDoubleAttribute(inferenceSpan, GEN_AI_ATTRIBUTES.GEN_AI_RESPONSE_TIME_TO_FIRST_CHUNK, 0.28);
+  setDoubleAttribute(inferenceSpan, 'openjiuwen.gen_ai.response.time_to_first_token_ms', 4000);
+  setDoubleAttribute(inferenceSpan, 'openjiuwen.gen_ai.response.time_to_first_byte_ms', 150);
+  setIntAttribute(inferenceSpan, 'openjiuwen.request.retry_count', 1);
+  const identity = `${inferenceSpan.traceId}:${inferenceSpan.spanId}`;
+
+  const assistant = cellsOf(projectOtelTrajectory(records))
+    .find(cell => cell.recordId === `${identity}:assistant`);
+
+  assert.ok(assistant);
+  const metrics = assistant.assistantMetrics;
+  assert.equal(metrics.firstTokenTime - metrics.stepStartTime, 4000);
+  assert.equal(metrics.firstByteTime - metrics.stepStartTime, 150);
+  assert.equal(metrics.retryCount, 1);
+});
+
+test('assistant timing falls back to the first chunk when time to first token is absent', async () => {
+  const records = await fixtureRecords('standard-records.json');
+  const inferenceSpan = firstInferenceSpan(records);
+  assert.ok(inferenceSpan);
+  setDoubleAttribute(inferenceSpan, GEN_AI_ATTRIBUTES.GEN_AI_RESPONSE_TIME_TO_FIRST_CHUNK, 0.5);
+  const identity = `${inferenceSpan.traceId}:${inferenceSpan.spanId}`;
+
+  const assistant = cellsOf(projectOtelTrajectory(records))
+    .find(cell => cell.recordId === `${identity}:assistant`);
+
+  assert.ok(assistant);
+  const metrics = assistant.assistantMetrics;
+  assert.equal(metrics.firstTokenTime - metrics.stepStartTime, 500);
+  assert.equal(metrics.firstByteTime, null);
+  assert.equal(metrics.retryCount, null);
+});
+
 test('every inference keeps an independent request identity inside a shared step', async () => {
   const records = await fixtureRecords('agent-loop-records.json');
   for (const record of records) {

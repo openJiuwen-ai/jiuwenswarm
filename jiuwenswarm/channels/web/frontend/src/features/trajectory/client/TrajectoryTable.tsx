@@ -325,6 +325,11 @@ function ttft(metrics: AssistantMetricDetail): string {
   return formatDurationMs(Math.max(0, metrics.firstTokenTime - metrics.stepStartTime))
 }
 
+function ttfb(metrics: AssistantMetricDetail): string | null {
+  if (metrics.firstByteTime == null || metrics.stepStartTime === null) return null
+  return formatDurationMs(Math.max(0, metrics.firstByteTime - metrics.stepStartTime))
+}
+
 function generationTime(metrics: AssistantMetricDetail): string {
   if (metrics.streaming === false) return 'Not separately recorded'
   if (!metrics.timingRecorded || metrics.firstTokenTime === null) return 'First token unavailable'
@@ -344,11 +349,14 @@ function throughput(metrics: AssistantMetricDetail): string {
 }
 
 function AssistantTimingPanel({ metrics }: { metrics: AssistantMetricDetail }) {
+  const firstByte = ttfb(metrics)
   return (
     <dl className={css.overview}>
       <div><dt>Started</dt><StartedAtValue timestamp={metrics.stepStartTime} /></div>
       <div><dt>Total duration</dt><dd>{totalTime(metrics)}</dd></div>
+      {firstByte === null ? null : <div><dt>TTFB</dt><dd>{firstByte}</dd></div>}
       <div><dt>TTFT</dt><dd>{ttft(metrics)}</dd></div>
+      {metrics.retryCount ? <div><dt>Retries</dt><dd>{metrics.retryCount}</dd></div> : null}
       <div><dt>Generation</dt><dd>{generationTime(metrics)}</dd></div>
       <div><dt>Throughput</dt><dd>{throughput(metrics)}</dd></div>
     </dl>

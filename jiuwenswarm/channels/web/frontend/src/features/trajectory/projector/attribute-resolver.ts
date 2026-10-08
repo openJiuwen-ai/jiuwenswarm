@@ -50,6 +50,12 @@ export interface NormalizedTrajectoryAttributes {
   responseId?: string
   responseFinishReasons?: readonly string[]
   responseTimeToFirstChunkSeconds?: number
+  /** Until the provider's response headers arrived, from the span start. */
+  responseTimeToFirstByteMs?: number
+  /** Until the first chunk carrying model output, from the span start. */
+  responseTimeToFirstTokenMs?: number
+  /** Transport retries the provider SDK made inside this request. */
+  requestRetryCount?: number
   usageInputTokens?: bigint
   usageOutputTokens?: bigint
   usageReasoningTokens?: bigint
@@ -582,6 +588,15 @@ function normalizeAttributeEntries(
     STANDARD_ATTRIBUTES.responseTimeToFirstChunk,
   ])
   assign(target, 'responseTimeToFirstChunkSeconds', firstChunk)
+  assign(target, 'responseTimeToFirstByteMs', resolveNonNegativeNumber(raw, [
+    OPENJIUWEN_ATTRIBUTES.timeToFirstByteMs,
+  ]))
+  assign(target, 'responseTimeToFirstTokenMs', resolveNonNegativeNumber(raw, [
+    OPENJIUWEN_ATTRIBUTES.timeToFirstTokenMs,
+  ]))
+  assign(target, 'requestRetryCount', resolveNonNegativeNumber(raw, [
+    OPENJIUWEN_ATTRIBUTES.requestRetryCount,
+  ]))
 
   // Token usage is read only in the standard shape, where every cache and
   // reasoning count is a breakdown of the input respectively output total.
