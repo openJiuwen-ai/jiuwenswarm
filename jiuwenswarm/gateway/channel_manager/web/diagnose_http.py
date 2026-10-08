@@ -44,7 +44,7 @@ from jiuwenswarm.observability.diagnosis.upload import (
     UploadValidationError,
     save_uploaded_logs,
 )
-from jiuwenswarm.server.runtime.session.session_history import is_valid_session_id
+from jiuwenswarm.common.utils import is_valid_session_id
 
 from .trajectory_http import _validate_http_origin
 
