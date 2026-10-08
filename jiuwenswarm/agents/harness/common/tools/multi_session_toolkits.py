@@ -103,7 +103,9 @@ class MultiSessionToolkit:
         )
         agent = ReActAgent(agent_card)
         agent.configure(self._sub_agent_config)
-        mcp_tools = get_mcp_tools()
+        operation_id = self._sub_agent_config.sys_operation_id
+        operation = Runner.resource_mgr.get_sys_operation(operation_id) if operation_id else None
+        mcp_tools = get_mcp_tools(sys_operation=operation, agent_id=agent_card.id)
         for mcp_tool in mcp_tools:
             Runner.resource_mgr.add_tool(mcp_tool)
             agent.ability_manager.add(mcp_tool.card)

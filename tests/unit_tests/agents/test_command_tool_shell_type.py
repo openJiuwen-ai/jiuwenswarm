@@ -9,7 +9,9 @@ import pytest
 from jiuwenswarm.agents.harness.common.prompt.shell_environment import (
     build_shell_environment_prompt,
 )
-from jiuwenswarm.agents.harness.common.tools.command_tools import mcp_exec_command
+from openjiuwen.core.sys_operation import OperationMode, SysOperation, SysOperationCard
+
+from jiuwenswarm.agents.harness.common.tools.command_tools import create_command_tool, mcp_exec_command
 from jiuwenswarm.agents.harness.code.rails.code_agent_mode_rail import _NON_GIT_WRITE_RE
 from jiuwenswarm.agents.harness.design.prompt.design_plan_prompts import DESIGN_PLAN_ALLOWED_TOOLS
 from jiuwenswarm.agents.harness.work.prompt.work_plan_prompts import WORK_PLAN_ALLOWED_TOOLS
@@ -41,7 +43,9 @@ async def test_mcp_rejects_auto_before_execution(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_mcp_accepts_explicit_shell_type() -> None:
-    result = await mcp_exec_command._func(
+    operation = SysOperation(SysOperationCard(id="command-shell-test", mode=OperationMode.LOCAL))
+    bound_tool = create_command_tool(operation, agent_id="command-shell-test")
+    result = await bound_tool._func(
         command="echo explicit-shell",
         shell_type="cmd",
         workdir=".",

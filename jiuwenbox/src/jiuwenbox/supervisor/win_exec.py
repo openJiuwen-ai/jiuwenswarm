@@ -908,10 +908,11 @@ def _create_process_as_user(  # pylint: disable=huawei-too-many-arguments
     stdin_fd: int,
     stdout_fd: int,
     workspace: str | None = None,
-) -> "tuple[int, int]":
-    """CreateProcessAsUserW 以受限 token 启动子命令.
+) -> "tuple[int, int, int]":
+    """CreateProcessAsUserW 以传入 token 挂起创建子命令.
 
-    Returns: (child_pid, child_process_handle).
+    Returns: (child_pid, child_process_handle, child_thread_handle).
+    调用方必须先加入 Job, 再恢复主线程并关闭线程句柄.
     """
     advapi32 = _get_advapi32()
     # P2-18: 用 subprocess.list2cmdline 正确转义命令行. 旧版 " ".join 只对含空格参数加外层双引号不转义内部 ",
@@ -1052,6 +1053,7 @@ def _create_process_as_user(  # pylint: disable=huawei-too-many-arguments
     # 否则 CreateProcessAsUserW 按 ANSI 解析 env block → WinError 87.
     creation_flags = (
         const.CREATE_NO_WINDOW
+        | const.CREATE_SUSPENDED
         | const.CREATE_NEW_PROCESS_GROUP
         | const.CREATE_UNICODE_ENVIRONMENT
     )
@@ -1092,7 +1094,7 @@ def _create_process_as_user(  # pylint: disable=huawei-too-many-arguments
             f"PATH_segs(8)={_path_segs}",
         )
         raise ctypes.WinError(ctypes.get_last_error())
-    return int(pi.dwProcessId), int(pi.hProcess)
+    return int(pi.dwProcessId), int(pi.hProcess), int(pi.hThread)
 
 
 def _read_control_token_from_stdin(fallback: str) -> str:
@@ -1665,6 +1667,31 @@ def _fallback_bash_to_native_shell(command: list) -> None:
                   f"bash unavailable, fallback to cmd /c: {script[:120]!r}")
 
 
+def _exec_peer_disconnected(stream) -> bool:
+    """exec 请求体已读完; 对端关闭专用连接表示该请求不再需要执行."""
+    import select
+    import socket
+
+    try:
+        readable, _, _ = select.select([stream], [], [], 0)
+        return bool(readable) and stream.recv(1, socket.MSG_PEEK) == b""
+    except OSError:
+        return True
+
+
+def _confirm_process_exit(kernel32, proc_handle) -> None:
+    """Confirm exit after Job closure, with one bounded termination retry."""
+    handle = wintypes.HANDLE(proc_handle)
+    result = kernel32.WaitForSingleObject(handle, 5000)
+    if result == 0x102:  # WAIT_TIMEOUT
+        _push_log("WARNING", "exec process still active after Job closure; retrying termination")
+        # A failed termination can race with exit; the subsequent wait decides.
+        kernel32.TerminateProcess(handle, 1)
+        result = kernel32.WaitForSingleObject(handle, 5000)
+    if result != 0:  # WAIT_OBJECT_0 is the only confirmed completion.
+        raise RuntimeError(f"cannot confirm exec process exit: wait_result={result:#x}")
+
+
 def _handle_exec_request(stream, header, restricted_token, workspace, stdin_bytes) -> None:
     """处理 exec 请求: 起 child 子命令, 回传 stdout/stderr/exit. stdin_bytes 透传给子进程."""
     command = header.get("command", [])
@@ -1707,23 +1734,24 @@ def _handle_exec_request(stream, header, restricted_token, workspace, stdin_byte
     # runner 持有的写端/读端关闭继承, 防 child 拿到.
     _clear_inherit(int(child_in_write.value))
     _clear_inherit(int(child_out_read.value))  # P2-29: 防 child 继承 stdout 读端
-    # review #3: 为本次 exec 创建专用 ephemeral Job (KILL_ON_JOB_CLOSE), child
-    # 起后立即 assign 进 Job, 超时/正常退出时 close_job 一次性杀整个进程树
-    # (含孙进程). 旧版只 TerminateProcess 杀 child, 孙进程继续占用端口/资源.
+    # 每次 exec 独立 Job. child 在加入前保持挂起, 不允许派生未归入 Job 的孙进程.
     from jiuwenbox.supervisor import win_job
     exec_job_handle = 0
+    proc_handle = 0
+    thread_handle = 0
+    stdin_thread = None
+    read_fd = None
     try:
+        if _exec_peer_disconnected(stream):
+            return
         exec_job_handle = win_job.create_exec_job()
-    except Exception as exc:  # noqa: BLE001 - Job 创建失败降级, 不阻断 exec
-        _push_log("WARNING", f"exec ephemeral Job 创建失败, 超时将只杀 child: {exc}")
-    try:
         workdir = header.get("workdir")
         env = header.get("env")
         # 用受限 token 起 child 会 0xC0000142 (desktop/全局对象机制硬限制, 非 ACL/env),
         # 故 exec 用 runner 自身未受限 primary token. 代价: 失去双重写检查, 写控制只剩 ACL.
         _self_token = _get_runner_primary_token()
         try:
-            pid, proc_handle = _create_process_as_user(
+            pid, proc_handle, thread_handle = _create_process_as_user(
                 _self_token, list(command), env, workdir,
                 stdin_fd=int(child_in_read.value),
                 stdout_fd=int(child_out_write.value),
@@ -1731,44 +1759,49 @@ def _handle_exec_request(stream, header, restricted_token, workspace, stdin_byte
             )
         finally:
             get_kernel32().CloseHandle(wintypes.HANDLE(_self_token))
-        # child 起后立即 assign 进 ephemeral Job (按 pid). 此后 child 起的孙进程
-        # 自动继承进 Job; 超时 close_job 一次性杀整树. assign 失败降级 (Job 创建
-        # 已成功但 assign 失败的概率极低, 失败则保留旧 TerminateProcess 兜底).
-        # 注: child 用 CreateProcessAsUserW 非 SUSPENDED 起的, assign 赶在 child
-        # spawn 第一跳孙进程前执行 (微秒级 vs child 加载+解析命令的毫秒级),
-        # race 窗口极小但非零 — 极端情况下 child 在 assign 前已 spawn 的孙进程
-        # 逃逸 Job (close_job 杀不到). 完全消除需改 CREATE_SUSPENDED+assign+resume,
-        # 改动 child 起动时序影响面大, 暂不取; 当前实现已实质性改善 (旧版完全不
-        # 杀孙进程).
-        if exec_job_handle:
-            try:
-                win_job.assign_process_by_pid(exec_job_handle, pid)
-            except Exception as exc:  # noqa: BLE001
-                _push_log("WARNING", f"exec child 加入 ephemeral Job 失败: {exc}")
+        win_job.assign_process(exec_job_handle, proc_handle)
+        if _exec_peer_disconnected(stream):
+            return
+        win_job.resume_process(thread_handle)
+        kernel32.CloseHandle(wintypes.HANDLE(thread_handle))
+        thread_handle = 0
         _push_log("INFO",
                    f"exec child 已启动: pid={pid} cmd={command[:3] if command else []!r} "
                    f"workdir={workdir} timeout_s={header.get('timeout')}")
         # runner 不再需要 child 端的写端/读端副本.
         kernel32.CloseHandle(child_in_read)
+        child_in_read.value = None
         kernel32.CloseHandle(child_out_write)
+        child_out_write.value = None
         # 透传 stdin (若有).
         if stdin_bytes:
             import msvcrt  # type: ignore[import-not-found]
             in_write_fd = msvcrt.open_osfhandle(
                 int(child_in_write.value), os.O_WRONLY | os.O_BINARY,
             )
-            with os.fdopen(in_write_fd, "wb") as in_wf:
-                in_wf.write(stdin_bytes)
-            # 写完关闭写端让 child 读到 EOF.
-            kernel32.CloseHandle(child_in_write)
+            child_in_write.value = None  # ownership transferred to fd
+
+            def _write_stdin() -> None:
+                # 子命令不读 stdin 时也必须能进入超时/取消循环. Job 关闭后
+                # pipe 读端消失, 阻塞的 write 会结束并释放 fd.
+                try:
+                    with os.fdopen(in_write_fd, "wb") as in_wf:
+                        in_wf.write(stdin_bytes)
+                except OSError:
+                    pass
+
+            stdin_thread = _threading.Thread(target=_write_stdin, name="stdin-write", daemon=True)
+            stdin_thread.start()
         else:
             kernel32.CloseHandle(child_in_write)
+            child_in_write.value = None
         # 后台 drain stdout pipe + 主线程 wait 进程 (并行, 防 pipe 写满死锁).
         # 旧版先 wait 再读, child 写满 64KB pipe 后阻塞在 write, runner 在 wait → 死锁.
         import msvcrt  # type: ignore[import-not-found]
         read_fd = msvcrt.open_osfhandle(
             int(child_out_read.value), os.O_RDONLY | os.O_BINARY,
         )
+        child_out_read.value = None  # ownership transferred to fd
         out_buf = bytearray()
         _drain_exc: list = []
 
@@ -1810,6 +1843,8 @@ def _handle_exec_request(stream, header, restricted_token, workspace, stdin_byte
             )
             if result == 0:  # wait_obj_0: child 已退出
                 break
+            if result != 0x102:  # WAIT_TIMEOUT
+                raise RuntimeError(f"exec process wait failed: wait_result={result:#x}")
             deadline_waited_ms += wait_timeout
             # 每 30s 打一次心跳, 记录 child 仍在跑.
             if deadline_waited_ms - _last_heartbeat_ms >= 30000:
@@ -1818,7 +1853,8 @@ def _handle_exec_request(stream, header, restricted_token, workspace, stdin_byte
                           f"exec child 等待中: pid={pid} waited={deadline_waited_ms}ms/"
                           f"{wait_budgets}ms stdout_buf={len(out_buf)}B "
                           f"cmd={command[:3] if command else []!r}")
-            if deadline_waited_ms >= wait_budgets:
+            disconnected = _exec_peer_disconnected(stream)
+            if disconnected or deadline_waited_ms >= wait_budgets:
                 # child 长时间不退出, 强杀整个进程树. review #3: 优先 close_job
                 # 触发 KILL_ON_JOB_CLOSE 杀 child + 所有孙进程 (旧版只 TerminateProcess
                 # 杀 child, 孙进程继续占用端口/资源). Job 失败兜底 TerminateProcess.
@@ -1833,9 +1869,13 @@ def _handle_exec_request(stream, header, restricted_token, workspace, stdin_byte
                     kernel32.TerminateProcess(wintypes.HANDLE(proc_handle), 1)
                 _child_killed = True
                 _push_log("WARNING",
-                          f"exec child 超时未退出 ({wait_budgets}ms) 强杀, "
+                          f"exec child {'请求已取消/断开' if disconnected else '超时'} 强杀, "
                           f"cmd={command[:3] if command else []!r}")
                 break
+        # 先回收孙进程, 再等 stdout EOF; 避免孙进程仍持有 pipe 写端.
+        win_job.close_job(exec_job_handle)
+        exec_job_handle = 0
+        _confirm_process_exit(kernel32, proc_handle)
         # 进程已退出 (正常或强杀). 等 drain 线程结束 (最多 5s, 防孙进程持写端不 EOF).
         _drain_thread.join(timeout=5.0)
         if _drain_thread.is_alive():
@@ -1853,21 +1893,16 @@ def _handle_exec_request(stream, header, restricted_token, workspace, stdin_byte
                 os.close(read_fd)
             except OSError:
                 pass
+        read_fd = None
         if _drain_exc:
             _push_log("WARNING", f"exec stdout drain 线程异常: {_drain_exc[0]}")
         exit_code = wintypes.DWORD()
-        kernel32.GetExitCodeProcess(
+        if not kernel32.GetExitCodeProcess(
             wintypes.HANDLE(proc_handle), ctypes.byref(exit_code),
-        )
+        ):
+            raise RuntimeError("GetExitCodeProcess failed after confirmed process exit")
         kernel32.CloseHandle(wintypes.HANDLE(proc_handle))
-        # review #3: child 已退出, 关闭 ephemeral Job 杀掉残留孙进程 (child 起的
-        # node server / playwright 进程等), 释放端口/资源, 防 EADDRINUSE + 句柄泄漏.
-        if exec_job_handle:
-            try:
-                win_job.close_job(exec_job_handle)
-            except Exception:  # noqa: BLE001
-                _push_log("DEBUG", "正常退出后 close_job 失败 (best-effort)", exc_info=True)
-            exec_job_handle = 0
+        proc_handle = 0
         ec = int(exit_code.value)
         out_text = _decode_child_output(out_buf)
         _push_log("INFO",
@@ -1915,19 +1950,33 @@ def _handle_exec_request(stream, header, restricted_token, workspace, stdin_byte
         except OSError:
             pass
         _push_log("ERROR", f"exec 处理异常: {exc}", exc=tb)
-        try:
-            kernel32.CloseHandle(child_out_write)
-            kernel32.CloseHandle(child_out_read)
-            kernel32.CloseHandle(child_in_write)
-        except Exception:  # noqa: BLE001 - 清理句柄兜底, 不抛
-            pass
-        # review #3: 异常时也关 ephemeral Job 杀残留孙进程 (best-effort).
+    finally:
+        # assign/resume 失败时 child 可能仍挂起且尚未入 Job, 必须单独终止.
+        if proc_handle:
+            kernel32.TerminateProcess(wintypes.HANDLE(proc_handle), 1)
+            try:
+                _confirm_process_exit(kernel32, proc_handle)
+            except Exception as cleanup_error:  # noqa: BLE001
+                _push_log("ERROR", f"exec process cleanup failed: {cleanup_error}")
+            kernel32.CloseHandle(wintypes.HANDLE(proc_handle))
+        if thread_handle:
+            kernel32.CloseHandle(wintypes.HANDLE(thread_handle))
+        if read_fd is not None:
+            try:
+                os.close(read_fd)
+            except OSError:
+                pass
         if exec_job_handle:
             try:
                 win_job.close_job(exec_job_handle)
             except Exception:  # noqa: BLE001
                 pass
             exec_job_handle = 0
+        for handle in (child_out_write, child_out_read, child_in_write, child_in_read):
+            if handle.value:
+                kernel32.CloseHandle(handle)
+        if stdin_thread is not None:
+            stdin_thread.join(timeout=5.0)
 
 
 def _handle_write_file_request(stream, header, stdin) -> None:

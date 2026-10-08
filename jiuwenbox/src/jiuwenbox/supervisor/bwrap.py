@@ -387,23 +387,20 @@ class BwrapConfig:
             # fail because bwrap may open sources after entering userns.
             # Keep synthetic binds whose source differs from the sandbox path,
             # such as the Landlock launcher mounted into /run.
-            ro_binds = [
-                (src, dst)
-                for src, dst in ro_binds
-                if not _same_path_bind_is_covered_by_root(src, dst)
-            ]
+            # RO children are restrictions, not redundant aliases of an RW root.
             rw_binds = [
                 (src, dst)
                 for src, dst in rw_binds
-                if not _same_path_bind_is_covered_by_root(src, dst)
+                if not _same_path_bind_is_covered_by_root(src, dst) or dst in self.remount_ro
             ]
         elif root_ro_binds:
-            # Read-only child binds are redundant under a read-only root; keep
-            # read-write children because they intentionally override root RO.
+            # Keep RO children below an RW override: otherwise that parent
+            # would expose their contents writable again.
             ro_binds = [
                 (src, dst)
                 for src, dst in ro_binds
                 if not _same_path_bind_is_covered_by_root(src, dst)
+                or any(dst.startswith(parent.rstrip("/") + "/") for _, parent in rw_binds)
             ]
 
         # A root bind must be applied before more specific mounts. Otherwise a
@@ -467,13 +464,13 @@ class BwrapConfig:
             else:
                 args.extend(["--tmpfs", path])
 
-        # read-only binds
-        for src, dst in ro_binds:
-            args.extend(["--ro-bind", src, dst])
-
-        # read-write binds
-        for src, dst in rw_binds:
-            args.extend(["--bind", src, dst])
+        # Mount parents before children, regardless of access mode. A later RW
+        # parent must not hide an earlier RO child. Stable order keeps the
+        # existing RW-wins behavior for duplicate destinations.
+        binds = [(src, dst, "--ro-bind") for src, dst in ro_binds]
+        binds += [(src, dst, "--bind") for src, dst in rw_binds]
+        for src, dst, flag in sorted(binds, key=lambda item: _path_depth(item[1])):
+            args.extend([flag, src, dst])
 
         for src, dst in self.device_binds:
             args.extend(["--dev-bind", src, dst])

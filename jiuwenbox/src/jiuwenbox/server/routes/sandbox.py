@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, File, Query, UploadFile
+from fastapi import APIRouter, File, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
@@ -104,9 +105,9 @@ async def restart_sandbox(sandbox_id: str):
 
 
 @router.post("/sandboxes/{sandbox_id}/exec", response_model=ExecResult)
-async def exec_in_sandbox(sandbox_id: str, request: ExecRequest):
+async def exec_in_sandbox(sandbox_id: str, request: ExecRequest, http_request: Request):
     stdin_data = request.stdin.encode() if request.stdin else None
-    return await _mgr().exec_in_sandbox(
+    execution = _mgr().exec_in_sandbox(
         sandbox_id=sandbox_id,
         request=SandboxExecRequest(
             command=list(request.command),
@@ -116,6 +117,21 @@ async def exec_in_sandbox(sandbox_id: str, request: ExecRequest):
             timeout=request.timeout_seconds,
         ),
     )
+    # HTTP 客户端取消不会自动取消 ASGI handler. 每个 exec 使用独立
+    # IPC 连接, 只取消当前执行即可通知 runner/daemon 回收当前命令.
+    task = asyncio.create_task(execution)
+    try:
+        while not task.done():
+            done, _ = await asyncio.wait({task}, timeout=0.2)
+            if done:
+                break
+            if await http_request.is_disconnected():
+                return Response(status_code=499)
+        return await task
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 class BackgroundJobListResponse(BaseModel):

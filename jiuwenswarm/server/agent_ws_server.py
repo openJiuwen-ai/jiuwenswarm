@@ -1457,6 +1457,31 @@ class AgentWebSocketServer:
                         "fall back to base policy: %s",
                         exc,
                     )
+            elif policy_path == resolve_sandbox_policy_path(default_sandbox_policy_file()):
+                # Linux: box-server 固定以打包 default-policy.yaml 为基底合并副本,
+                # 只有用的正是该基底时才换成副本, 否则自定义 policy_file 会被丢掉.
+                try:
+                    from jiuwenswarm.server.sandbox_policy_render import (
+                        ensure_linux_copy_exists,
+                    )
+                    runtime_policy = ensure_linux_copy_exists()
+                    if runtime_policy.is_file():
+                        policy_path = runtime_policy
+                        logger.info(
+                            "[AgentWebSocketServer][sandbox] using Linux runtime policy copy: %s",
+                            policy_path,
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[AgentWebSocketServer][sandbox] ensure Linux runtime copy failed, "
+                        "fall back to base policy: %s",
+                        exc,
+                    )
+
+            # config.yaml is the source; materialize synchronized domains before
+            # starting a service, including startup after an AgentServer restart.
+            from jiuwenswarm.common.net_guard_config import render_saved_sandbox_urls
+            render_saved_sandbox_urls(policy_path)
 
             host, preferred_port = self._parse_sandbox_host_port(url)
             port = self._allocate_internal_jiuwenbox_port(host, preferred_port)
@@ -5176,12 +5201,11 @@ class AgentWebSocketServer:
         # reload agent config so the PermissionInterruptRail picks up the
         # change immediately instead of waiting for the next tool call's
         # get_permissions_snapshot refresh.
-        read_only_methods = {
-            ReqMethod.PERMISSIONS_TOOLS_GET,
-            ReqMethod.PERMISSIONS_RULES_GET,
-            ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET,
-        }
-        if resp.ok and request.req_method not in read_only_methods:
+        from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
+            get_permissions_read_only_req_methods,
+        )
+
+        if resp.ok and request.req_method not in get_permissions_read_only_req_methods():
             # 后台异步重载: 不阻塞权限 RPC 回包(避免 reload 慢导致 AgentServer
             # request timed out)。reload_agents_config 内部有 _reload_lock 串行化
             # + fingerprint 去重,fire-and-forget 安全。
@@ -5200,10 +5224,96 @@ class AgentWebSocketServer:
         """处理 sandbox.* 配置 E2A 请求 (officeAce 经 WS 控制沙箱开关/启动方式/文件/网络)."""
         from jiuwenswarm.server.sandbox_config_rpc import dispatch_sandbox_config_request
 
-        resp = dispatch_sandbox_config_request(request)
+        if request.req_method == ReqMethod.SANDBOX_RESTART:
+            try:
+                payload = await self._restart_configured_sandboxes(request.params or {})
+                resp = AgentResponse(request_id=request.request_id, channel_id=request.channel_id,
+                                     ok=True, payload=payload, metadata=request.metadata)
+            except Exception as exc:
+                resp = AgentResponse(request_id=request.request_id, channel_id=request.channel_id,
+                                     ok=False, payload={"error": str(exc), "code": "SANDBOX_RESTART_FAILED"},
+                                     metadata=request.metadata)
+        else:
+            resp = dispatch_sandbox_config_request(request)
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
+
+    async def _restart_configured_sandboxes(self, params: dict) -> dict:
+        """Apply saved network policy and recreate sandboxes with saved file rules."""
+        if params:
+            raise ValueError("sandbox.restart accepts no parameters (scope: all active sandboxes)")
+        if get_sandbox_endpoint().get("type") != "jiuwenbox":
+            raise ValueError("sandbox.restart currently supports jiuwenbox only")
+        runtime = get_sandbox_runtime()
+        if not runtime.get("enabled"):
+            raise ValueError("sandbox is disabled")
+        from jiuwenswarm.server.sandbox_config_rpc import apply_sandbox_policy_for_restart
+
+        # Network egress is owned by the service. Wait for its saved policy before
+        # recreating instances; never acknowledge a queued background reload.
+        service_reloaded = await apply_sandbox_policy_for_restart(
+            getattr(self, "_bootstrap_internal_jiuwenbox", None),
+        )
+        adapters = []
+        launchers = set()
+        pending = []
+        for agents in list(self._agent_manager.agents.values()):
+            for agent in list(agents.values()):
+                pending.append(self._resolve_adapter(agent))
+        pending.reverse()
+        visited = set()
+        while pending:
+            adapter = pending.pop()
+            if adapter is None or id(adapter) in visited:
+                continue
+            visited.add(id(adapter))
+            # Root adapters dispatch execution to session-owned adapters, which
+            # hold the live SysOperation cards. Visit children before deduplication.
+            pending.extend(reversed(list(getattr(adapter, "_session_adapters", {}).values())))
+            if not hasattr(adapter, "apply_sandbox_runtime_patch"):
+                continue
+            # A port change can replace a registered sysop while older sessions
+            # still retain its previous card. Rebind before launcher deduplication.
+            refresh_binding = getattr(adapter, "refresh_sandbox_runtime_binding", None)
+            if refresh_binding is not None:
+                refresh_binding()
+            card = getattr(adapter, "_sys_operation_card", None)
+            gateway = getattr(card, "gateway_config", None)
+            launcher = getattr(gateway, "launcher_config", None)
+            if launcher is not None:
+                if id(launcher) in launchers:
+                    continue
+                launchers.add(id(launcher))
+            adapters.append(adapter)
+        restarted = 0
+        # Finish old Windows ACL cleanup for every scope before installing any
+        # replacement ACLs. Otherwise a later old instance can undo an earlier new one.
+        for adapter in adapters:
+            await adapter.apply_sandbox_runtime_patch(
+                runtime, files_changed=True, strict=True, prepare_only=True,
+            )
+        failures = []
+        for index, adapter in enumerate(adapters):
+            try:
+                if await adapter.apply_sandbox_runtime_patch(runtime, files_changed=True, strict=True):
+                    restarted += 1
+            except Exception as exc:
+                card = getattr(adapter, "_sys_operation_card", None)
+                identity = getattr(card, "id", None) or f"adapter[{index}]"
+                failures.append(f"{identity}: {exc}")
+        if failures:
+            raise RuntimeError(
+                f"Sandbox rebuild partially failed: restarted={restarted}, failed={len(failures)}; "
+                + "; ".join(failures)
+                + ". Retry sandbox.restart to apply the saved policy."
+            )
+        from jiuwenswarm.common.config import get_sandbox_startup_mode
+
+        return {"restarted": restarted, "scope": "all_active_sandboxes",
+                "status": "applied" if restarted or service_reloaded else "no_active_sandboxes",
+                **({"network_status": "externally_managed"}
+                   if get_sandbox_startup_mode() != "internal" else {})}
 
     async def _handle_history_get(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         params = request.params if isinstance(request.params, dict) else {}
@@ -6456,6 +6566,11 @@ class AgentWebSocketServer:
             url = server_payload.get("url", "")
             if not url:
                 return True, "skipped: no url"
+            from jiuwenswarm.common.mcp_config import mcp_endpoint_blocked_reason
+
+            blocked = mcp_endpoint_blocked_reason(str(url))
+            if blocked:
+                return False, f"{name} ({transport}) pre-check failed: {blocked}"
             payload["server_path"] = url
             params = {}
             if isinstance(server_payload.get("headers"), dict):
@@ -6514,6 +6629,12 @@ class AgentWebSocketServer:
             url = str(entry.get("url", "")).strip()
             if not url:
                 logger.warning("[command.mcp] _fetch skipped: no url for sse")
+                return []
+            from jiuwenswarm.common.mcp_config import mcp_endpoint_blocked_reason
+
+            blocked = mcp_endpoint_blocked_reason(url)
+            if blocked:
+                logger.warning("[command.mcp] _fetch skipped: %s", blocked)
                 return []
             payload["server_path"] = url
             params = {}
@@ -6963,6 +7084,8 @@ class AgentWebSocketServer:
             # 故意的, 让 ValueError 命中下方 ``except ValueError`` 分支转成
             # ``SANDBOX_BAD_REQUEST`` 回执, 跟其它入参校验失败的处理一致。
             _require_sandbox_supported()
+            if sub in {"files.allow", "files.deny", "files.remove"}:
+                raise ValueError("edit permissions.file_guard first, then call sandbox.files.sync and sandbox.restart")
             endpoint = get_sandbox_endpoint()
             sandbox_type = str(endpoint.get("type") or "").strip().lower()
             if sandbox_type == "yuanrong":
@@ -7007,7 +7130,7 @@ class AgentWebSocketServer:
                 elif sub == "files.remove":
                     payload = await self._handle_sandbox_files_remove(channel_id, params)
                 elif sub == "files.list":
-                    payload = {"files": dict(get_sandbox_runtime().get("files") or {})}
+                    payload = {"files": list(get_sandbox_runtime().get("files") or [])}
                 else:
                     raise ValueError(f"unknown sub: {sub!r}")
                 self._attach_effective_sandbox_files(payload, channel_id, params)
@@ -7524,18 +7647,18 @@ class AgentWebSocketServer:
                     payload["effective_files"] = cached
                     return
 
-            files_runtime: dict[str, Any] | None = None
+            files_runtime: list[dict[str, Any]] | None = None
             runtime = payload.get("runtime")
             if isinstance(runtime, dict):
                 rt_files = runtime.get("files")
-                if isinstance(rt_files, dict):
+                if isinstance(rt_files, list):
                     files_runtime = rt_files
             if files_runtime is None:
                 files_in_payload = payload.get("files")
-                if isinstance(files_in_payload, dict):
+                if isinstance(files_in_payload, list):
                     files_runtime = files_in_payload
             if files_runtime is None:
-                files_runtime = get_sandbox_runtime().get("files") or {}
+                files_runtime = get_sandbox_runtime().get("files") or []
             is_code_agent = self._resolve_active_is_code_agent(channel_id)
             payload["effective_files"] = list_effective_sandbox_files(
                 files_runtime,

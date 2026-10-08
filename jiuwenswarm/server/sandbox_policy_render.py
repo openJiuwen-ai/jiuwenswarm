@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Windows 沙箱运行时 policy 副本 (user_config) 读写.
+"""沙箱运行时 policy 副本 (user_config) 读写 (Windows + Linux network).
 
 officeAce 经 WS 接口 (sandbox.files.set / sandbox.network.set) 配置的文件白/黑名单、
 网络域名白/黑名单, 直接写进 workspace 下的稀疏副本 (只存用户可配字段, 不 dump 基底),
@@ -19,6 +19,11 @@ default) + **副本** (user_config) 合并 (``policy_engine.merge_policy``, list
         egress:
           allowed_domains: [<用户网络白名单>]   # merge 去重并集到基底 (pypi/npmmirror)
           blocked_domains: [<用户网络黑名单>]   # 黑名单优先
+
+Linux 副本 (``<config_dir>/default-policy.runtime.yaml``, 同样稀疏, 只存域名名单):
+    network:
+      egress: {allowed_domains, blocked_domains}
+Linux 无 disable_all; iptables 按 IP 过滤, 域名在下发时解析成 IP.
 
 拷贝只一次: 副本不存在时建稀疏空骨架; 已存在不重新建 (exe 重启不重拷).
 热更新: 基底随 wheel 升级新增字段 → box-server load_policy 重读基底 → 新字段生效
@@ -40,6 +45,7 @@ import hashlib
 import logging
 import os
 import re
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -285,10 +291,80 @@ def set_sandbox_files_config(allow: list[Any], deny: list[Any]) -> dict[str, Any
     return {"allow": allow_norm, "deny": deny_norm}
 
 
+# ----------------------------------------------------------------------------
+# Linux 运行时副本 (default-policy.runtime.yaml): 与 Windows 副本同机制, 稀疏,
+# 只存用户可配的 egress 域名名单, box-server PolicyReader.load_policy 合并基底
+# default-policy.yaml (list 去重并集).
+# ----------------------------------------------------------------------------
+
+_LINUX_RUNTIME_COPY_NAME = "default-policy.runtime.yaml"
+
+
+def _is_windows() -> bool:
+    return sys.platform == "win32"
+
+
+def _linux_runtime_copy_path() -> Path:
+    return _config_dir() / _LINUX_RUNTIME_COPY_NAME
+
+
+def _linux_empty_skeleton() -> dict[str, Any]:
+    return {"network": {"egress": {"allowed_domains": [], "blocked_domains": []}}}
+
+
+def ensure_linux_copy_exists() -> Path:
+    """Linux 副本不存在时建稀疏空骨架 (不 dump 基底). 返回副本路径."""
+    copy_p = _linux_runtime_copy_path()
+    copy_p.parent.mkdir(parents=True, exist_ok=True)
+    if not copy_p.is_file():
+        try:
+            copy_p.write_text(
+                yaml.safe_dump(_linux_empty_skeleton(), allow_unicode=True, sort_keys=False),
+                encoding="utf-8",
+            )
+            logger.info("已创建 Linux 运行时 policy 副本骨架: %s", copy_p)
+        except OSError as exc:
+            logger.warning("写 Linux 运行时 policy 副本 %s 失败: %s", copy_p, exc)
+    return copy_p
+
+
+def _load_linux_copy() -> dict[str, Any]:
+    with _copy_lock:
+        p = ensure_linux_copy_exists()
+        try:
+            data = yaml.safe_load(p.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            logger.warning("读 Linux 副本 %s 失败: %s", p, exc)
+            return copy.deepcopy(_linux_empty_skeleton())
+    if not isinstance(data, dict):
+        return copy.deepcopy(_linux_empty_skeleton())
+    egress = data.setdefault("network", {}).setdefault("egress", {})
+    egress.setdefault("allowed_domains", [])
+    egress.setdefault("blocked_domains", [])
+    return data
+
+
+def _save_linux_copy(data: dict[str, Any]) -> None:
+    p = _linux_runtime_copy_path()
+    with _copy_lock:
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        try:
+            tmp.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+            os.replace(tmp, p)
+        except OSError as exc:
+            logger.warning("写 Linux 副本 %s 失败: %s", p, exc)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def get_sandbox_network_config() -> dict[str, Any]:
-    """返回用户网络配置 (副本 windows.network)."""
-    data = _load_copy()
-    net = data.get("windows", {}).get("network", {})
+    """返回用户网络配置 (当前平台运行时副本的 network 段, 不含基底)."""
+    if _is_windows():
+        net = _load_copy().get("windows", {}).get("network", {})
+    else:
+        net = _load_linux_copy()["network"]
     eg = net.get("egress", {})
     return {
         "disable_all": bool(net.get("disable_all", False)),
@@ -304,24 +380,34 @@ def set_sandbox_network_config(
 ) -> dict[str, Any]:
     """整体替换用户网络配置.
 
-    disable_all → 副本 windows.network.disable_all (box-server 传给 EgressFilter 短路
-    拒绝所有出站; allow/blocked_domains 原样保留在副本, 不清空, 关掉即恢复).
+    disable_all → 副本 windows.network.disable_all (仅 Windows; box-server 传给
+    EgressFilter 短路拒绝所有出站; allow/blocked_domains 原样保留在副本, 不清空, 关掉即恢复).
     allow_domains → 副本 egress.allowed_domains (merge 去重并集到基底 pypi/npmmirror).
     deny_domains → 副本 egress.blocked_domains (黑名单优先).
+    Linux 副本写 network.egress.*; iptables 按 IP 过滤, 域名在下发时解析成 IP.
     """
     if not isinstance(disable_all, bool):
         raise ValueError("disable_all must be boolean")
     if not isinstance(allow_domains, list) or not isinstance(deny_domains, list):
         raise ValueError("allow_domains and deny_domains must be lists")
+    if disable_all and not _is_windows():
+        raise ValueError("disable_all is only supported on Windows sandbox")
     # P0-7: 域名校验 (格式 + 无端口/路径/控制字符), 非法条目 warning 跳过.
     allow_norm = _norm_domains(allow_domains)
     deny_norm = _norm_domains(deny_domains)
-    data = _load_copy()
-    net = data["windows"]["network"]
-    net["disable_all"] = disable_all
+    if _is_windows():
+        data = _load_copy()
+        net = data["windows"]["network"]
+        net["disable_all"] = disable_all
+    else:
+        data = _load_linux_copy()
+        net = data["network"]
     net["egress"]["allowed_domains"] = list(allow_norm)
     net["egress"]["blocked_domains"] = list(deny_norm)
-    _save_copy(data)
+    if _is_windows():
+        _save_copy(data)
+    else:
+        _save_linux_copy(data)
     return {
         "disable_all": disable_all,
         "allow_domains": allow_norm,
@@ -346,6 +432,7 @@ def fingerprint_runtime_policy() -> str | None:
 
 
 __all__ = [
+    "ensure_linux_copy_exists",
     "fingerprint_runtime_policy",
     "get_sandbox_files_config",
     "set_sandbox_files_config",

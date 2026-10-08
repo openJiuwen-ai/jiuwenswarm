@@ -6118,8 +6118,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         ac = _resolve(agent_client)
         if ac is None or not getattr(ac, "server_ready", False):
-            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import \
-                dispatch_permissions_config_request
+            if req_method.value.startswith("sandbox."):
+                await channel.send_response(
+                    ws, req_id, ok=False, error="AgentServer is not ready", code="AGENT_NOT_READY",
+                )
+                return
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
+                dispatch_permissions_config_request,
+                get_permissions_read_only_req_methods,
+            )
 
             resp = dispatch_permissions_config_request(synthetic)
             if not resp.ok:
@@ -6133,11 +6140,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 )
                 return
             out = resp.payload if isinstance(resp.payload, dict) else {}
-            should_schedule_reload = req_method not in (
-                ReqMethod.PERMISSIONS_TOOLS_GET,
-                ReqMethod.PERMISSIONS_RULES_GET,
-                ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET,
-            )
+            should_schedule_reload = req_method not in get_permissions_read_only_req_methods()
             if should_schedule_reload:
                 out = {
                     **out,
@@ -6182,6 +6185,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         channel.register_method(method_name, _handler)
 
+    _register_perm("permissions.file_guard.get", _PermReq.PERMISSIONS_FILE_GUARD_GET)
+    _register_perm("permissions.shell_guard.get", _PermReq.PERMISSIONS_SHELL_GUARD_GET)
+    _register_perm("permissions.shell_guard.update", _PermReq.PERMISSIONS_SHELL_GUARD_UPDATE)
+    _register_perm("permissions.file_guard.update", _PermReq.PERMISSIONS_FILE_GUARD_UPDATE)
+    _register_perm("sandbox.enabled.get", _PermReq.SANDBOX_ENABLED_GET)
+    _register_perm("sandbox.enabled.set", _PermReq.SANDBOX_ENABLED_SET)
+    _register_perm("sandbox.files.sync", _PermReq.SANDBOX_FILES_SYNC)
+    _register_perm("sandbox.network.sync", _PermReq.SANDBOX_NETWORK_SYNC)
+    _register_perm("sandbox.restart", _PermReq.SANDBOX_RESTART)
     _register_perm("permissions.tools.get", _PermReq.PERMISSIONS_TOOLS_GET)
     _register_perm("permissions.tools.set", _PermReq.PERMISSIONS_TOOLS_SET)
     _register_perm("permissions.tools.update", _PermReq.PERMISSIONS_TOOLS_UPDATE)
@@ -6192,6 +6204,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_perm("permissions.rules.delete", _PermReq.PERMISSIONS_RULES_DELETE)
     _register_perm("permissions.approval_overrides.get", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_GET)
     _register_perm("permissions.approval_overrides.delete", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_DELETE)
+    _register_perm("permissions.net_guard.get", _PermReq.PERMISSIONS_NET_GUARD_GET)
+    _register_perm("permissions.net_guard.set", _PermReq.PERMISSIONS_NET_GUARD_SET)
 
     async def _memory_forbidden_get(ws, req_id, params, session_id):
         try:

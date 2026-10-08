@@ -6,8 +6,9 @@ from __future__ import annotations
 import os
 
 from openjiuwen.core.foundation.tool import Tool
+from openjiuwen.core.sys_operation import SysOperation
 
-from jiuwenswarm.agents.harness.common.tools.command_tools import mcp_exec_command
+from jiuwenswarm.agents.harness.common.tools.command_tools import create_command_tool, mcp_exec_command
 from jiuwenswarm.agents.harness.common.tools.search_tools import mcp_free_search, mcp_paid_search
 from jiuwenswarm.agents.harness.common.tools.web_fetch_tools import mcp_fetch_webpage
 
@@ -36,14 +37,16 @@ def _is_free_search_enabled() -> bool:
     )
 
 
-def get_mcp_tools() -> list[Tool]:
+def get_mcp_tools(*, sys_operation: SysOperation | None = None, agent_id: str = "") -> list[Tool]:
     """Return all MCP toolkit tools for registration in Runner."""
     tools = []
     if _has_paid_search_api_key():
         tools.append(mcp_paid_search)
     if _is_free_search_enabled():
         tools.append(mcp_free_search)
-    tools.extend([mcp_fetch_webpage, mcp_exec_command])
+    tools.append(mcp_fetch_webpage)
+    if sys_operation is not None:
+        tools.append(create_command_tool(sys_operation, agent_id=agent_id))
     return tools
 
 

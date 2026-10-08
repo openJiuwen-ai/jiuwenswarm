@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import hashlib
 import json
 import os
@@ -21,6 +22,9 @@ import logging
 from typing import Any, List, Union
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
+from openjiuwen.harness.security.permission_engine.fileguard.outbound_paths import resolve_outbound_path
+
+from .outbound_file_access import OperationProvider, read_outbound_file, stage_outbound_file
 
 from jiuwenswarm.agents.harness.common.tools.turn_request_identity import (
     resolve_toolkit_delivery,
@@ -144,6 +148,7 @@ class SendFileToolkit:
         channel_id: str,
         *,
         metadata: dict[str, Any] | None = None,
+        operation_provider: OperationProvider | None = None,
     ) -> None:
         """Initialize SendFileToolkit.
 
@@ -153,6 +158,7 @@ class SendFileToolkit:
             channel_id: Channel identifier for message routing.
             metadata: 与 AgentRequest.metadata 一致（E2A channel_context 映射结果），用于 send_push。
         """
+        self._operation_provider = operation_provider
         self.request_id = request_id
         self.session_id = session_id
         self.channel_id = channel_id
@@ -242,15 +248,20 @@ class SendFileToolkit:
 
         valid_files = []
         missing_files = []
-        for fp in abs_file_path_list:
-            fp = str(fp).strip()
-            if not fp:
-                continue
-            if os.path.isfile(fp):
+        contents: dict[str, bytes] = {}
+        try:
+            operation = self._operation_provider() if self._operation_provider else None
+            for fp in abs_file_path_list:
+                fp = str(resolve_outbound_path(fp))
+                try:
+                    contents[fp] = await read_outbound_file(fp, operation)
+                except FileNotFoundError:
+                    missing_files.append(fp)
+                    logger.warning("[SendFileToolkit] 文件不存在: %s", fp)
+                    continue
                 valid_files.append(fp)
-            else:
-                missing_files.append(fp)
-                logger.warning("[SendFileToolkit] 文件不存在: %s", fp)
+        except Exception as exc:
+            return _tool_fail(f"Failed to send files: {exc}")
 
         if not valid_files:
             msg_parts = ["Failed to send files: none of the files exist"]
@@ -290,6 +301,13 @@ class SendFileToolkit:
         )
 
         try:
+            # Existing channels and download tokens use local paths. Snapshot only
+            # the bytes read through the owning backend; never re-read the source.
+            delivery_paths: dict[str, str] = {}
+            for file_path in valid_files:
+                delivery_paths[file_path] = await asyncio.to_thread(
+                    stage_outbound_file, file_path, contents[file_path], delivery.session_id,
+                )
             from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
             server = AgentWebSocketServer.get_instance()
@@ -303,10 +321,10 @@ class SendFileToolkit:
                 for file_path in valid_files:
                     base_name = os.path.basename(file_path)
                     download_info = build_file_download_info(
-                        file_path, base_name, delivery.session_id
+                        delivery_paths[file_path], base_name, delivery.session_id
                     )
                     files_payload.append({
-                        "path": file_path,
+                        "path": delivery_paths[file_path],
                         "name": base_name,
                         # 产物稳定标识：桌面端「对话卡片」与「右侧工作台产物」共用同一个键去重
                         "artifact_id": artifact_id_for_path(file_path),
@@ -322,7 +340,7 @@ class SendFileToolkit:
                 )
                 files_payload = [
                     {
-                        "path": file_path,
+                        "path": delivery_paths[file_path],
                         "name": os.path.basename(file_path),
                         "artifact_id": artifact_id_for_path(file_path),
                     }

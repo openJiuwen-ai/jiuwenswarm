@@ -32,7 +32,17 @@ PHONE_TASK_BIKE = "e2808a23-8b38-4379-9171-ed2189838829&4&31ac&0"
 
 
 @pytest.fixture(autouse=True)
-def _reset_identity_state():
+def _reset_identity_state(monkeypatch, tmp_path):
+    monkeypatch.setattr("jiuwenswarm.server.runtime.session.session_history.get_agent_sessions_dir",
+                        lambda: tmp_path / "sessions")
+    from openjiuwen.core.sys_operation import SysOperation, SysOperationCard, OperationMode
+
+    operation = SysOperation(SysOperationCard(id="test-identity-local", mode=OperationMode.LOCAL))
+    class LocalSendFileToolkit(sfu.SendFileToolkit):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, operation_provider=lambda: operation, **kwargs)
+
+    monkeypatch.setattr(sfu, "SendFileToolkit", LocalSendFileToolkit)
     sfu._SENT_FILE_PATHS_BY_SESSION.clear()
     yield
     sfu._SENT_FILE_PATHS_BY_SESSION.clear()

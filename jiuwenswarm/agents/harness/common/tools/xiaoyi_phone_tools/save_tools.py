@@ -10,12 +10,19 @@
 from __future__ import annotations
 
 import json
-import os
+from contextvars import ContextVar
 from typing import Any, Dict, Optional
 
 import aiohttp
 
-from openjiuwen.core.foundation.tool import tool
+from openjiuwen.core.foundation.tool import Tool, tool
+from openjiuwen.core.sys_operation import SysOperation
+from openjiuwen.harness.security.permission_engine.fileguard.outbound_paths import (
+    is_public_file_url,
+    resolve_outbound_path,
+)
+
+from ..outbound_file_access import OperationProvider, read_outbound_file
 
 from jiuwenswarm.common.utils import logger
 from .utils import (
@@ -26,15 +33,44 @@ from .utils import (
 from .file_upload_helpers import XiaoyiObsUploadConfig, upload_local_file_public_url
 
 
+_SAVE_OPERATION: ContextVar[SysOperation | None] = ContextVar("save_file_operation", default=None)
+
+
+class BoundSaveTool(Tool):
+    """Per-agent binding; the model cannot supply or replace the operation."""
+
+    def __init__(self, template: Tool, operation_provider: OperationProvider):
+        super().__init__(template.card.model_copy(deep=True))
+        self.card.stateless = False
+        self._template = template
+        self._operation_provider = operation_provider
+
+    async def invoke(self, inputs: Dict[str, Any], **kwargs):
+        token = _SAVE_OPERATION.set(self._operation_provider())
+        try:
+            return await self._template.invoke(inputs, **kwargs)
+        finally:
+            _SAVE_OPERATION.reset(token)
+
+    async def stream(self, inputs: Dict[str, Any], **kwargs):
+        yield await self.invoke(inputs, **kwargs)
+
+
+def bind_save_tool(template: Tool, operation_provider: OperationProvider) -> Tool:
+    return BoundSaveTool(template, operation_provider)
+
+
 async def _ensure_public_url(
     url: str,
     obs_cfg: XiaoyiObsUploadConfig,
     session: aiohttp.ClientSession,
 ) -> str:
     """如果 url 是本地路径，上传获取公网 URL；否则直接返回."""
-    if url.startswith("http://") or url.startswith("https://"):
+    if is_public_file_url(url):
         return url
-    public_url = await upload_local_file_public_url(session, obs_cfg, url)
+    source = str(resolve_outbound_path(url))
+    content = await read_outbound_file(source, _SAVE_OPERATION.get())
+    public_url = await upload_local_file_public_url(session, obs_cfg, source, file_content=content)
     if not public_url:
         raise RuntimeError("Local file upload failed; unable to obtain a public URL")
     return public_url

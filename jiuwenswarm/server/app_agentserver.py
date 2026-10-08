@@ -206,8 +206,13 @@ async def _run(host: str, port: int) -> None:
         configure_file_operation_history,
     )
 
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
+        publish_host_exit_policy_from_config,
+    )
+
     full_cfg = get_config()
     configure_file_operation_history(full_cfg)
+    publish_host_exit_policy_from_config(full_cfg)
     logger.info("[AgentServer] starting: ws://%s:%s", host, port)
 
     # ---------- 扩展系统初始化 ----------
