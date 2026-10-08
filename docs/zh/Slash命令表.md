@@ -711,7 +711,7 @@
 - **嵌套路径**：支持「父 allow + 子 deny」（例如 allow `/tmp`、deny `/tmp/secret`）；不支持「子 allow + 父 deny」（父 deny 会覆盖子 allow），服务端会拒绝此类配置。
 - **生效写入策略**：状态面板里的 `files.allow_write` / `files.deny_write` 是 auto-managed 与 user-configured 合并后的视图，每条路径显示 `(rw)` 或 `(ro)`。
 - **preserve_file_sharing_mode**：由 jiuwenswarm 配置决定，不通过 `/sandbox` 切换。仅支持 `mount`：intrinsic 文件与 `project_dir` 通过 bind mount 注入沙箱，`project_dir/config/config.yaml` 会显式加进 `deny_write`；yaml 里写入其它值会被服务端拒绝。
-- **excluded_commands**：按完整命令字符串匹配（不是只看 `argv[0]`），命中后该次调用穿透到本地，相当于把对应命令的副作用授权给本地环境。
+- **excluded_commands**：按 simple-command 叶子做 fnmatch（可匹配完整叶子文本或命令名）。全命中则整条本地；全未命中则整条沙箱；混合命中时由本地 bash 编排，远端段走 `jiuwenbox sandbox exec`（需宿主 CLI）。
 - **add / remove 的去重与冲突**：`exclude add` 在已存在同名 pattern 时报错；`exclude remove` 在不存在该 pattern 时报错。`files allow|deny` 在同一 bucket 已有同 path 时报错，在对侧 bucket（allow vs deny）已登记同 path 时也报错，需要先 `files remove` 再 add；`files remove` 在用户配置里找不到该 path 时报错。
 - **enable / disable**：会触发 agent 重建，响应里会列出 `rebuilt_modes`（典型 `agent.*` / `code.*`）和 jiuwenbox 端点。
 

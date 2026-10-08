@@ -597,7 +597,7 @@ Field reference:
 | `sandbox.policy_file` | filename or path | `code-agent-policy.yaml` | Bare filename → resolved relative to `jiuwenbox/configs/`; otherwise expanded (`~`, `$VAR`) and used verbatim. **Only honored under `startup_mode=internal`**; in `external` mode the policy is chosen by whoever started jiuwenbox-server (via `JIUWENBOX_DEFAULT_POLICY_PATH`). |
 | `sandbox.preserve_file_sharing_mode` | `mount` | `mount` | Intrinsic files (`AGENT.md` etc.) and `project_dir` are bind-mounted, with `project_dir/config/config.yaml` auto-added to `deny_write`. Writing any other value is rejected. |
 | `sandbox.enabled` | bool | `false` | When true, agent rebuilds route tools through the sandbox provider; toggled by `/sandbox enable`. |
-| `sandbox.excluded_commands` | list[str] | `[]` | Shell globs matched against the **full command string**; a match makes that single call run locally instead of in the sandbox. |
+| `sandbox.excluded_commands` | list[str] | `[]` | Shell globs matched per **simple-command leaf**. All matches → whole command on host; no matches → whole command in sandbox; mixed → local bash orchestrates control flow and wraps remote leaves with `jiuwenbox sandbox exec` (CLI required). Unsafe mixed forms run the whole original command in the sandbox. |
 | `sandbox.files.allow` / `sandbox.files.deny` | list | `[]` | User-configured write policy. The effective set shown by `/sandbox status` is `auto_managed ∪ user_configured`; see [the `/sandbox` command reference](../docs/en/SlashCommands.md). |
 
 ### Two typical deployment shapes
