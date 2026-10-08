@@ -35,7 +35,7 @@ jiuwenswarm\Scripts\activate
 source jiuwenswarm/bin/activate
 
 # 安装 JiuwenSwarm
-pip install jiuwenswarm
+pip install workswarm
 ```
 
 ## 启动服务

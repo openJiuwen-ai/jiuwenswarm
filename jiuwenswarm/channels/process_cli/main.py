@@ -7,19 +7,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import logging
 import os
 import re
 import signal
 import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, TextIO
 
 from jiuwenswarm.channels.process_cli.display_context import resolve_cli_work_mode
-
-
-logger = logging.getLogger(__name__)
+from jiuwenswarm.channels.process_cli.diagnostics import capture_diagnostics
 
 
 def _configure_forwarded_stdio(args: argparse.Namespace) -> None:
@@ -187,6 +184,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--show-tools", action="store_true", help="显示工具调用和结果。"
     )
     parser.add_argument(
+        "--debug", action="store_true", help="单次命令在终端显示详细诊断日志。"
+    )
+    parser.add_argument(
         "--_interactive-worker",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -245,43 +245,72 @@ def _activate_requested_cwd(
     args.cwd = str(target)
 
 
+def _report_machine_failure(
+    code: int, stderr: TextIO, log_path: Path | None
+) -> None:
+    if code == 0:
+        return
+    detail = f"；诊断日志：{log_path}" if log_path else ""
+    _write_stderr(
+        stderr,
+        f"jiuwenswarm-process: 请求失败（退出码 {code}）；"
+        f"详见标准输出的错误记录{detail}",
+    )
+
+
+def _write_stderr(stream: TextIO, message: str) -> None:
+    """Write a user-visible CLI message independently of diagnostic logging."""
+    stream.write(f"{message}\n")
+    stream.flush()
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     _configure_forwarded_stdio(args)
     if args.query_json is not None:
-        from jiuwenswarm.channels.process_cli.query_entry import execute_query_source
-
         standalone = sys.argv[1:] in (
             ["--query-json", args.query_json],
             [f"--query-json={args.query_json}"],
         )
-        sys.exit(
-            execute_query_source(args.query_json, conflicting_arguments=not standalone)
-        )
-    if args.run_jsonl:
-        from jiuwenswarm.channels.process_cli.machine_entry import execute_source
+        with capture_diagnostics(capture_stdout=False, debug=args.debug) as streams:
+            from jiuwenswarm.channels.process_cli.query_entry import (
+                execute_query_source,
+            )
 
-        sys.exit(
-            execute_source(
+            code = execute_query_source(
+                args.query_json, conflicting_arguments=not standalone
+            )
+            _report_machine_failure(code, streams.stderr, streams.log_path)
+        sys.exit(code)
+    if args.run_jsonl:
+        with capture_diagnostics(capture_stdout=False, debug=args.debug) as streams:
+            from jiuwenswarm.channels.process_cli.machine_entry import execute_source
+
+            code = execute_source(
                 "-",
                 json_lines=True,
                 conflicting_arguments=sys.argv[1:] != ["--run-jsonl"],
             )
-        )
+            _report_machine_failure(code, streams.stderr, streams.log_path)
+        sys.exit(code)
     if args.run_json is not None:
-        from jiuwenswarm.channels.process_cli.machine_entry import execute_source
-
         command_args = sys.argv[1:]
         standalone = command_args == ["--run-json", args.run_json]
         standalone = standalone or command_args == [f"--run-json={args.run_json}"]
         conflicting = not standalone
-        sys.exit(execute_source(args.run_json, conflicting_arguments=conflicting))
+        with capture_diagnostics(capture_stdout=False, debug=args.debug) as streams:
+            from jiuwenswarm.channels.process_cli.machine_entry import execute_source
+
+            code = execute_source(args.run_json, conflicting_arguments=conflicting)
+            _report_machine_failure(code, streams.stderr, streams.log_path)
+        sys.exit(code)
     args.work_mode = resolve_cli_work_mode(args.mode, args.work_mode)
     worker_interrupt = _WindowsWorkerInterruptController(
         enabled=bool(getattr(args, "_interactive_worker", False)),
     )
     worker_interrupt.install()
+    diagnostic_log_path: Path | None = None
     try:
         prompt_file = getattr(args, "_prompt_file", None)
         if prompt_file:
@@ -293,32 +322,35 @@ def main() -> None:
             parser.error("--timeout 必须大于零")
         if args.prompt is None and args.output != "human":
             parser.error("交互模式仅支持 --output human")
+        if args.prompt is None and args.debug:
+            parser.error("--debug 仅支持非交互式运行")
         if args.prompt is None:
             from jiuwenswarm.channels.process_cli.repl import run_repl
 
             code = asyncio.run(run_repl(args))
             sys.exit(code)
 
-        # Some existing Runtime dependencies still log to stdout.  Keep the
-        # CLI data stream clean by routing those diagnostics to stderr while
-        # the renderer retains the original stdout handle.
-        data_stdout = sys.stdout
-        diagnostic_stderr = sys.stderr
-        with contextlib.redirect_stdout(diagnostic_stderr):
-            from jiuwenswarm.channels.process_cli.app import run
+        # The REPL worker has a separate stderr pipe and receipt protocol.
+        # Standalone commands capture both Python and native diagnostics.
+        worker = bool(getattr(args, "_interactive_worker", False))
+        with capture_diagnostics(
+            capture_stdout=not worker,
+            debug=args.debug or worker,
+        ) as streams:
+            diagnostic_log_path = streams.log_path
+            with contextlib.redirect_stdout(sys.stderr):
+                from jiuwenswarm.channels.process_cli.app import run
 
-            async def run_command() -> int:
-                return await run(
-                    args,
-                    stdout=data_stdout,
-                    stderr=(
-                        data_stdout
-                        if getattr(args, "_interactive_worker", False)
-                        else diagnostic_stderr
-                    ),
-                )
+                async def run_command() -> int:
+                    return await run(
+                        args,
+                        stdout=streams.stdout,
+                        stderr=streams.stdout if worker else streams.stderr,
+                    )
 
-            code = asyncio.run(worker_interrupt.run(run_command))
+                code = asyncio.run(worker_interrupt.run(run_command))
+            if code != 0 and streams.log_path is not None:
+                _write_stderr(streams.stderr, f"诊断日志：{streams.log_path}")
     except KeyboardInterrupt:
         code = 130
     except asyncio.CancelledError:
@@ -326,7 +358,11 @@ def main() -> None:
             raise
         code = 130
     except Exception as exc:  # noqa: BLE001 - command-line boundary
-        logger.error("jiuwenswarm-process: 启动失败：%s", exc)
+        detail = f"；详细日志：{diagnostic_log_path}" if diagnostic_log_path else ""
+        _write_stderr(
+            sys.stderr,
+            f"jiuwenswarm-process: 启动失败（{type(exc).__name__}）{detail}",
+        )
         code = 1
     finally:
         worker_interrupt.restore()

@@ -1,7 +1,7 @@
 """session_metadata 模块单元测试"""
 from __future__ import annotations
 
-import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 import threading
 import time
@@ -1603,7 +1603,6 @@ class TestSyncChatRequestMetadata:
         from jiuwenswarm.server.runtime.session.session_metadata import (
             init_session_metadata,
             update_session_metadata,
-            get_session_metadata,
         )
 
         init_session_metadata(session_id="sess_1")
@@ -2365,6 +2364,51 @@ class TestSetSessionPinnedQueuedWriteRace:
         assert data["model"] == "old-queued-write"
         assert data["pinned"] is True
         assert data["pin_order"] == 1
+
+
+def test_equipment_write_preserves_queued_first_user_metadata(sessions_dir, monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_metadata as sm
+
+    sid = "s_pending_equipment"
+    sm.init_session_metadata(session_id=sid)
+    original_write = sm._write_metadata_sync
+    original_flush = sm.flush_pending_writes
+    user_write_started = threading.Event()
+    release_user_write = threading.Event()
+    flush_started = threading.Event()
+
+    def delayed_write(session_id, metadata, options=None):
+        if session_id == sid and metadata.get("title") == "first user turn":
+            user_write_started.set()
+            assert release_user_write.wait(5)
+        return original_write(session_id, metadata, options)
+
+    monkeypatch.setattr(sm, "_write_metadata_sync", delayed_write)
+
+    def traced_flush(*args, **kwargs):
+        flush_started.set()
+        return original_flush(*args, **kwargs)
+
+    monkeypatch.setattr(sm, "flush_pending_writes", traced_flush)
+    sm.update_session_metadata(
+        session_id=sid, user_content="first user turn", increment_message_count=True
+    )
+    assert user_write_started.wait(5)
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            saved = pool.submit(sm.save_session_equipment, sid, plugin_names=["example"])
+            assert flush_started.wait(5)
+            release_user_write.set()
+            saved.result(timeout=5)
+    finally:
+        release_user_write.set()
+
+    assert sm.flush_pending_writes()
+    metadata = _read_json(sessions_dir / sid / "metadata.json")
+    assert metadata["title"] == "first user turn"
+    assert metadata["message_count"] == 1
+    assert metadata["session_equipment"]["plugin_names"] == ["example"]
 
 
 # ===========================================================================

@@ -481,7 +481,9 @@ def test_final_result_is_written_after_asyncio_shutdown(
     assert decode_jsonl(output.getvalue())[-1].status == "completed"
 
 
-def test_python_native_and_child_diagnostics_do_not_pollute_jsonl() -> None:
+def test_python_native_and_child_diagnostics_do_not_pollute_jsonl(
+    tmp_path: Path,
+) -> None:
     result = subprocess.run(
         [sys.executable, "-c", _FAKE_MACHINE_MAIN, "--run-json", "-"],
         input=_document(),
@@ -489,7 +491,11 @@ def test_python_native_and_child_diagnostics_do_not_pollute_jsonl() -> None:
         text=True,
         encoding="utf-8",
         cwd=PROJECT_ROOT,
-        env=_environment(MACHINE_TEST_DIAGNOSTICS="1", MACHINE_TEST_EVENT="1"),
+        env=_environment(
+            MACHINE_TEST_DIAGNOSTICS="1",
+            MACHINE_TEST_EVENT="1",
+            JIUWENSWARM_DATA_DIR=str(tmp_path),
+        ),
         timeout=20,
         check=False,
     )
@@ -499,9 +505,39 @@ def test_python_native_and_child_diagnostics_do_not_pollute_jsonl() -> None:
     assert len(records) == 2
     assert records[0].event_type == "chat.delta"
     assert records[-1].status == "completed"
+    assert result.stderr == ""
+    logs = list((tmp_path / "agent" / "process_cli_logs").glob("*.log"))
+    assert len(logs) == 1
+    diagnostics = logs[0].read_text(encoding="utf-8")
     for marker in ("PYTHON_DIAGNOSTIC", "NATIVE_DIAGNOSTIC", "CHILD_DIAGNOSTIC"):
-        assert marker in result.stderr
+        assert marker in diagnostics
         assert marker not in result.stdout
+
+
+def test_log_directory_failure_keeps_machine_stdout_as_jsonl(tmp_path: Path) -> None:
+    log_directory = tmp_path / "agent" / "process_cli_logs"
+    log_directory.parent.mkdir()
+    log_directory.write_text("not a directory", encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-c", _FAKE_MACHINE_MAIN, "--run-json", "-"],
+        input=_document(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=PROJECT_ROOT,
+        env=_environment(
+            MACHINE_TEST_DIAGNOSTICS="1",
+            JIUWENSWARM_DATA_DIR=str(tmp_path),
+        ),
+        timeout=20,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert decode_jsonl(result.stdout)[-1].status == "completed"
+    assert result.stderr.count("jiuwenswarm-process: 无法写入诊断日志：") == 1
+    assert "PYTHON_DIAGNOSTIC" not in result.stdout
 
 
 @pytest.mark.parametrize("emit_event", ["0", "1"])

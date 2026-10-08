@@ -1188,8 +1188,10 @@ class AgentRuntime:
             )
         params = dict(request.params)
         params["mode"] = execution.mode.value
-        params["work_mode"] = "code"
-        if execution.definition.model:
+        params["work_mode"] = (
+            "code" if execution.mode.value.startswith("agent.code.") else "work"
+        )
+        if execution.definition.model and not params.get("model_name"):
             selected_model = self.resolve_model_capability(
                 execution.definition.model
             )

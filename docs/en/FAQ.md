@@ -35,10 +35,10 @@ Use a China mirror:
 
 ```bash
 # Tsinghua mirror (recommended)
-pip install jiuwenswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install workswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # Aliyun mirror
-pip install jiuwenswarm -i https://mirrors.aliyun.com/pypi/simple/
+pip install workswarm -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
 ### Q: How do I check the installed version?
@@ -50,13 +50,13 @@ jiuwenswarm --version
 Or:
 
 ```bash
-pip show jiuwenswarm
+pip show workswarm
 ```
 
 ### Q: How do I uninstall JiuwenSwarm?
 
 ```bash
-pip uninstall jiuwenswarm
+pip uninstall workswarm
 ```
 
 ---
@@ -123,16 +123,6 @@ jiuwenswarm-app
 
 Then access via `http://<server-ip>:<port>`.
 
-### Q: How to start TUI mode?
-
-TUI requires a separate installation. Open a new terminal after starting JiuwenSwarm:
-
-```bash
-pip install jiuwenswarm-tui
-jiuwenswarm-tui
-```
-
----
 
 ## Version Upgrades
 
@@ -141,7 +131,7 @@ jiuwenswarm-tui
 **Routine upgrade** (e.g. 0.2.0 → 0.2.1):
 
 ```bash
-pip install --upgrade jiuwenswarm
+pip install --upgrade workswarm
 ```
 
 **Major version upgrade** (crossing version 0.1.7):
@@ -157,7 +147,7 @@ pip install --upgrade jiuwenswarm
 2. Upgrade and reinitialize:
 
 ```bash
-pip install --upgrade jiuwenswarm
+pip install --upgrade workswarm
 jiuwenswarm-init
 ```
 

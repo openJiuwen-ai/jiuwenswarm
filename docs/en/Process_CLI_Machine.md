@@ -64,10 +64,35 @@ Optional `agent` uses the existing Agent definition contract, for example:
 
 Attach this object as the request's `agent` field. Omit `model` to use the
 configured selection. Definitions are validated and executed by Runtime, not
-loaded into a second Agent engine. Current Runtime rejects custom work-mode
-Agents and explicit tool allowlists; those errors are preserved, not silently
-downgraded. Available skills and model names still come from local Runtime
-configuration. The request is not a configuration-file override mechanism.
+loaded into a second Agent engine. Custom roots work in both code and work
+modes. `agent.tools` accepts `[*]` for the configured set or a nonempty list
+of exact tool names. Runtime filters model-facing tools and rejects calls to
+other tools, including tools registered after Agent startup. Available skills
+and model names still come from local Runtime configuration.
+
+The run document also accepts these per-invocation fields:
+
+```json
+{
+  "model": "configured-model-name",
+  "skills": ["review"],
+  "mcp": ["local-server"],
+  "permissions": {
+    "tools": {"read_file": "allow", "write_file": "ask", "run_shell": "deny"}
+  }
+}
+```
+
+`model` resolves against the Runtime catalog before Session execution and
+overrides `agent.model` for this run. `skills` and `mcp` use the same selected
+Skill and MCP inputs as `chat.send`; an explicit empty list requests no
+selection for that field on this turn. MCP references must be locally ready.
+`permissions.tools` accepts
+only `allow`, `ask`, and `deny` decisions. The policy is scoped to the run and
+does not write the global permission configuration. An installed deny remains
+deny; an `ask` uses the existing interaction callback in duplex mode and
+returns `INTERACTION_REQUIRED` in noninteractive mode.
+
 An inline definition must be sent again when resuming history in a later
 process. The Process CLI stores its fingerprint with the Session; a different
 definition or omission is rejected. Calls using the same Session are guarded
@@ -83,9 +108,23 @@ Session descriptor; supply it again when it differs from the project root.
 
 ## Output and lifecycle
 
+Normal one-shot CLI runs keep detailed Runtime and dependency diagnostics in a
+per-invocation file under
+`JIUWENSWARM_DATA_DIR/agent/process_cli_logs/` (or
+`~/.jiuwenswarm/agent/process_cli_logs/` by default). The terminal shows the
+answer and short progress for human output; failures also print a concise
+stderr summary and the diagnostic path. `--debug` shows detailed diagnostics
+in the terminal for a legacy prompt invocation. Machine entrypoints remain
+standalone: set `JIUWENSWARM_PROCESS_DEBUG=1` to inspect their diagnostics in
+stderr without mixing legacy flags into the JSON protocol. This setting does
+not change the stdout format. Piped runs also capture inherited native output.
+Windows terminals keep their console handles intact, so native code that writes
+directly to those handles can still appear in the terminal.
+
 Stdout contains only UTF-8 JSONL, with zero-based consecutive `sequence`, a
 stable external `request_id`, and the resolved `session_id`. Python/native
-dependency diagnostics and inherited tool stdout go to stderr. The adapter
+dependency diagnostics and inherited tool output go to the diagnostic file by
+default in piped runs, or to stderr when debugging is enabled. The adapter
 flushes each event immediately rather than retaining the event stream.
 
 Records are schema `0.1` `event` observations followed by exactly one terminal

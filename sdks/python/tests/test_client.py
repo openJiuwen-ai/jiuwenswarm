@@ -273,7 +273,7 @@ def test_no_runtime_dependency():
     source = str(FIXTURE.parents[1] / "python" / "src")
     script = (
         "import sys\n"
-        f"sys.path.append({source!r})\n"
+        f"sys.path.insert(0, {source!r})\n"
         "import jiuwenswarm_sdk\n"
         "from pathlib import Path\n"
         f"assert Path(jiuwenswarm_sdk.__file__).resolve().parent == Path({source!r}) / 'jiuwenswarm_sdk'\n"

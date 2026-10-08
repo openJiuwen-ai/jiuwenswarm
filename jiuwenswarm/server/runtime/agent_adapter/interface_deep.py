@@ -2031,6 +2031,7 @@ class JiuWenSwarmDeepAdapter:
         self._vision_tools: list[Any] = []
         self._audio_tools: list[Any] = []
         self._instance_overrides: dict[str, Any] = {}
+        self._session_instance_agent_definition: dict[str, Any] | None = None
         self._is_session_scoped_adapter: bool = False
         self._parent_session_id: str | None = None
         # Trajectory turn identity for this session. A turn spans every trace
@@ -2505,13 +2506,15 @@ class JiuWenSwarmDeepAdapter:
         adapter.set_permissions_changed_notifier(self._permissions_changed_notifier)
         return adapter
 
-    @staticmethod
-    def _session_instance_extra_create_kwargs() -> dict[str, Any]:
+    def _session_instance_extra_create_kwargs(self) -> dict[str, Any]:
         """Return subclass-specific arguments for deferred/session creation.
 
         Base implementation returns an empty dict; subclasses override to
         propagate instance-specific data.
         """
+        definition = getattr(self, "_session_instance_agent_definition", None)
+        if definition is not None:
+            return {"agent_definition": copy.deepcopy(definition)}
         return {}
 
     def mark_as_session_scoped(self, session_id: str) -> None:
@@ -10573,17 +10576,20 @@ class JiuWenSwarmDeepAdapter:
             return self._instance
 
     async def create_instance(
-        self, config: dict[str, Any] | None = None, *, mode: str = "agent", sub_mode: str = None
+        self, config: dict[str, Any] | None = None, *, mode: str = "agent", sub_mode: str = None,
+        agent_definition: dict[str, Any] | None = None,
     ) -> None:
         try:
-            await self._create_instance(config, mode=mode, sub_mode=sub_mode)
+            await self._create_instance(config, mode=mode, sub_mode=sub_mode,
+                                        agent_definition=agent_definition)
         except BaseException:
             if self._uses_smart_permission_lifecycle(self._config_base_cache or {}):
                 await self._isolate_permission_instance()
             raise
 
     async def _create_instance(
-        self, config: dict[str, Any] | None = None, *, mode: str = "agent", sub_mode: str = None
+        self, config: dict[str, Any] | None = None, *, mode: str = "agent", sub_mode: str = None,
+        agent_definition: dict[str, Any] | None = None,
     ) -> None:
         """初始化 DeepAgent 实例.
 
@@ -10598,6 +10604,9 @@ class JiuWenSwarmDeepAdapter:
         self._session_instance_config = dict(config or {}) if isinstance(config, dict) else None
         self._session_instance_mode = mode
         self._session_instance_sub_mode = sub_mode
+        self._session_instance_agent_definition = (
+            copy.deepcopy(agent_definition) if agent_definition is not None else None
+        )
         # Channel id drives the MCP load strategy (see _register_mcp_servers_
         # from_config / _sync_mcp_servers_for_runtime): the TUI channel loads
         # the global-default set (config.yaml ∪ state.json enabled) on init;
@@ -10629,6 +10638,11 @@ class JiuWenSwarmDeepAdapter:
         self._instance_overrides = dict(config or {}) if isinstance(config, dict) else {}
         load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
         config_base = get_config()
+        if self._instance_overrides.get("run_permissions_enabled"):
+            config_base = copy.deepcopy(config_base)
+            config_base["permissions"] = {
+                **(config_base.get("permissions") or {}), "enabled": True,
+            }
         self._config_base_cache = config_base.copy()
         if self._skill_retrieval_session_enabled is None:
             restored_profile = self._restored_skill_retrieval_profile
@@ -10643,6 +10657,8 @@ class JiuWenSwarmDeepAdapter:
         self._agent_name = self._instance_overrides.get(
             "agent_name", config.get("agent_name", "main_agent")
         )
+        if agent_definition is not None:
+            self._agent_name = agent_definition["name"]
         self._project_dir = self._instance_overrides.get(
             "project_dir", config.get("project_dir")
         )
@@ -10673,7 +10689,13 @@ class JiuWenSwarmDeepAdapter:
             self._freeze_skill_retrieval_context_window(config_base, model)
         if self._is_session_scoped_adapter:
             await self._try_init_a2x_client(config_base)
-        agent_card = AgentCard(name=self._agent_name, id=_AGENT_CARD_ID)
+        agent_card = (
+            AgentCard(
+                name=self._agent_name, id=_AGENT_CARD_ID,
+                description=agent_definition.get("description") or "",
+            ) if agent_definition is not None
+            else AgentCard(name=self._agent_name, id=_AGENT_CARD_ID)
+        )
 
         tool_cards = await self._get_tool_cards(self._tool_owner_id())
         self._tool_cards = tool_cards
@@ -10703,28 +10725,39 @@ class JiuWenSwarmDeepAdapter:
             root_path=self._workspace_dir or "./",
             language=resolved_language,
         )
-        configured_subagents = self._build_subagents_with_general_purpose(
-            model=model,
-            config=config,
-            config_base=config_base,
-            rails=rails_list,
-            tools=tool_cards if tool_cards else [],
-            workspace=workspace_obj,
-            sys_operation=sys_operation,
-            reload=False,
-            allow_general=(
-                sub_mode == "plan"
-                or (isinstance(mode, str) and mode.startswith("agent"))
-            ),
+        if agent_definition is not None and agent_definition.get("tools") != "*":
+            # Do not build delegates with a broader tool set than the root.
+            configured_subagents = []
+        else:
+            configured_subagents = self._build_subagents_with_general_purpose(
+                model=model,
+                config=config,
+                config_base=config_base,
+                rails=rails_list,
+                tools=tool_cards if tool_cards else [],
+                workspace=workspace_obj,
+                sys_operation=sys_operation,
+                reload=False,
+                allow_general=(
+                    sub_mode == "plan"
+                    or (isinstance(mode, str) and mode.startswith("agent"))
+                ),
+            )
+        system_prompt = build_agent_identity_prompt(
+            language=self._resolve_prompt_language(),
         )
+        if agent_definition is not None:
+            system_prompt = (
+                f"{system_prompt.rstrip()}\n\n# Agent Instructions\n"
+                f"{agent_definition['instructions'].strip()}"
+            )
         common_kwargs = dict(
             model=model,
             card=agent_card,
             tool_owner_id=self._tool_owner_id(),
-            system_prompt=build_agent_identity_prompt(
-                language=self._resolve_prompt_language(),
-            ),
+            system_prompt=system_prompt,
             tools=tool_cards if tool_cards else [],
+            skills=list(agent_definition.get("skills") or ()) if agent_definition else None,
             subagents=configured_subagents,
             rails=rails_list if rails_list else [],
             # Keep explicitly direct tools (including the enabled installed-Skill
@@ -10733,7 +10766,9 @@ class JiuWenSwarmDeepAdapter:
             enable_task_loop=self._resolve_enable_task_loop(config, config_base),
             enable_subagent_runtime=self._resolve_enable_subagent_runtime(config_base),
             add_general_purpose_agent=False,
-            max_iterations=parse_optional_int(config.get("max_iterations")),
+            max_iterations=(agent_definition.get("max_iterations") if agent_definition
+                            and agent_definition.get("max_iterations") is not None
+                            else parse_optional_int(config.get("max_iterations"))),
             workspace=workspace_obj,
             sys_operation=sys_operation,
             language=resolved_language,
@@ -10804,7 +10839,7 @@ class JiuWenSwarmDeepAdapter:
         # from chat.send's ``mcp`` field via reconcile_session_mcp (None and
         # [] both mean "no MCP this turn"). Skipping init keeps web's
         # default-False contract.
-        if getattr(self, "_channel_id", "") != "web":
+        if getattr(self, "_channel_id", "") not in {"web", "process_cli"}:
             await self._register_mcp_servers_from_config(config_base, tag=f"agent.{mode}")
         logger.info(
             "[JiuWenSwarmDeepAdapter] 初始化完成: agent_name=%s, mode=%s, sub_mode=%s", self._agent_name, mode, sub_mode
@@ -10822,6 +10857,9 @@ class JiuWenSwarmDeepAdapter:
         # Initialize the DeepAgent only after that point; its normal startup
         # path builds the initial BM25 snapshot after all pending rails.
         await self._instance.ensure_initialized()
+        if agent_definition is not None and agent_definition.get("tools") != "*":
+            from jiuwenswarm.runtime.tool_allowlist import install_tool_allowlist
+            install_tool_allowlist(self._instance.ability_manager, agent_definition["tools"])
         if self._enable_auto_permission:
             expected = PermissionRailGroup(
                 self._permission_rail, self._root_permission_queue_rail,
@@ -15176,6 +15214,23 @@ class JiuWenSwarmDeepAdapter:
     def _bind_permission_request_context(self, request: AgentRequest):
         """Bind Host request identity for streaming and non-streaming execution."""
         request_params = request.params if isinstance(request.params, dict) else {}
+        from jiuwenswarm.runtime.run_permissions import RUN_PERMISSIONS
+        run_permissions = (
+            request_params.get("run_permissions")
+            if request.channel_id == "process_cli" else None
+        )
+        tool_levels = run_permissions.get("tools", {}) if isinstance(run_permissions, dict) else None
+        if (tool_levels is not None and self._permission_rail is None
+                and self._is_session_scoped_adapter):
+            raise ValueError("run permissions require an enabled Runtime permission rail")
+        permission_rail = self._permission_rail
+        previous_rail_levels = (
+            getattr(permission_rail, "run_permission_levels", None)
+            if permission_rail is not None else None
+        )
+        if permission_rail is not None:
+            permission_rail.run_permission_levels = tool_levels
+        run_permissions_token = RUN_PERMISSIONS.set(tool_levels)
         runtime_mode = str(request_params.get("mode") or "agent").strip().lower()
         root_invocation_token = bind_root_permission_request(
             root_session_id=self._resolve_interrupt_session_id(request.session_id),
@@ -15202,6 +15257,9 @@ class JiuWenSwarmDeepAdapter:
         try:
             yield
         finally:
+            if permission_rail is not None:
+                permission_rail.run_permission_levels = previous_rail_levels
+            RUN_PERMISSIONS.reset(run_permissions_token)
             reset_root_permission_request(root_invocation_token)
             if command_token is not None:
                 reset_command_execution(command_token)

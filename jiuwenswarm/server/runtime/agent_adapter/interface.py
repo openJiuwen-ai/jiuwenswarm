@@ -1391,10 +1391,6 @@ class JiuWenSwarm:
         adapter = self._ensure_adapter(mode=mode)
         create_kwargs: dict[str, Any] = {"mode": mode, "sub_mode": sub_mode}
         if agent_definition is not None:
-            if mode != "code":
-                raise ValueError(
-                    "custom Agent definitions are supported only in code mode"
-                )
             create_kwargs["agent_definition"] = dict(agent_definition)
         await adapter.create_instance(config, **create_kwargs)
         self._runtime_agent_create_snapshot = runtime_agent_snapshot

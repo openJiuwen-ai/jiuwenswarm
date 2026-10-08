@@ -628,11 +628,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
         Starting from the configured product Spec preserves its permission,
         security, resilience, tool and extension rails. The declarative Agent
-        changes only identity, instructions and supported execution limits;
-        ``tools='*'`` retains the governed configured set.
+        changes identity, instructions and supported execution limits.
+        Explicit tool lists are enforced after all startup providers register.
         """
-        if definition.get("tools") != "*":
-            raise ValueError("custom Agent tools must use the configured set")
         name = str(definition.get("name") or "").strip()
         instructions = str(definition.get("instructions") or "")
         if not name or not instructions.strip():
@@ -657,6 +655,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             "system_prompt": system_prompt,
             "skills": list(definition.get("skills") or ()),
         }
+        if definition.get("tools") != "*":
+            # A delegated Agent could otherwise execute tools outside the
+            # root's explicit list through its own ability manager.
+            updates["subagents"] = []
         max_iterations = definition.get("max_iterations")
         if max_iterations is not None:
             updates["max_iterations"] = max_iterations
@@ -901,6 +903,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
         self._instance_overrides = dict(config or {}) if isinstance(config, dict) else {}
         config_base = get_config()
+        if self._instance_overrides.get("run_permissions_enabled"):
+            config_base = deepcopy(config_base)
+            config_base["permissions"] = {
+                **(config_base.get("permissions") or {}), "enabled": True,
+            }
         self._config_base_cache = config_base.copy()
         self._refresh_multimodal_configs(config_base)
         config = config_base.get('react', {}).copy()
@@ -1063,7 +1070,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # MCP load strategy by channel (see JiuWenSwarmDeepAdapter.create_instance):
         # TUI loads the global-default set (config.yaml ∪ state.json enabled) on init;
         # web loads nothing (session-level via chat.send's ``mcp`` field).
-        if getattr(self, "_channel_id", "") != "web":
+        if getattr(self, "_channel_id", "") not in {"web", "process_cli"}:
             await self._register_mcp_servers_from_config(config_base, tag="code")
         logger.info("[JiuwenSwarmCodeAdapter] 初始化完成: agent_name=%s", self._agent_name)
 
@@ -1071,6 +1078,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # create_instance 对齐，否则 code 模式新建实例时不携带已激活扩展。
         await self._load_active_packages()
         await self.load_user_rails()
+        if agent_definition is not None and agent_definition.get("tools") != "*":
+            from jiuwenswarm.runtime.tool_allowlist import install_tool_allowlist
+            install_tool_allowlist(self._instance.ability_manager, agent_definition["tools"])
 
     def _capture_code_spec_rail_attributes(
         self,

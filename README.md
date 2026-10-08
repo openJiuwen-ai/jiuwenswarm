@@ -28,7 +28,7 @@
     <img src="https://img.shields.io/badge/license-Apache--2.0-green.svg" alt="License" />
   </a>
   <a href="https://github.com/openJiuwen-ai/jiuwenswarm/releases">
-    <img src="https://img.shields.io/pypi/v/jiuwenswarm.svg" alt="Release" />
+    <img src="https://img.shields.io/pypi/v/workswarm.svg" alt="Release" />
   </a>
   <img src="https://img.shields.io/badge/python-%E2%89%A53.11-blue.svg" alt="Python Version" />
   <img src="https://img.shields.io/badge/os-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20HarmonyOS-lightgrey.svg" alt="OS Support" />
@@ -71,10 +71,10 @@ On Linux, install via [Command Line](#pip) or [from source](#from-source) below.
 
 ```bash
 # Install JiuwenSwarm
-pip install jiuwenswarm
+pip install workswarm
 
 # Use China mirror (recommended)
-pip install jiuwenswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install workswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # Initialize JiuwenSwarm (first-time setup)
 jiuwenswarm-init
@@ -84,19 +84,6 @@ jiuwenswarm-start
 ```
 
 After launching, visit http://localhost:5173 to open the frontend.
-
-To use TUI (terminal interface), open a new terminal after starting JiuwenSwarm:
-
-```bash
-# Install JiuwenSwarm-tui
-pip install jiuwenswarm-tui
-
-# Use China mirror (recommended)
-pip install jiuwenswarm-tui -i https://pypi.tuna.tsinghua.edu.cn/simple
-
-# Start JiuwenSwarm-tui
-jiuwenswarm-tui
-```
 
 ### From Source
 

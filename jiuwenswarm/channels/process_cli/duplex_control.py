@@ -160,6 +160,7 @@ class DuplexController:
             project_dir=str(params.get("project_dir") or ""),
             cwd=str(params.get("cwd") or ""),
             trusted_dirs=tuple(params.get("trusted_dirs") or ()),
+            run_permissions=params.get("run_permissions"),
         )
 
     def _add_stream(

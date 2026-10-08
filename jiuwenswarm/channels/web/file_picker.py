@@ -548,7 +548,11 @@ title = os.environ.get("JIUWEN_FILE_PICKER_TITLE") or "Select File"
 multiple = os.environ.get("JIUWEN_FILE_PICKER_MULTIPLE") == "1"
 patterns = os.environ.get("JIUWEN_FILE_PICKER_PATTERNS") or "*.*"
 filetypes = [("Allowed files", patterns)]
-root = tk.Tk()
+try:
+    root = tk.Tk()
+except Exception as exc:
+    sys.stderr.write(f"tkinter display unavailable: {exc}\n")
+    sys.exit(2)
 root.withdraw()
 try:
     try:

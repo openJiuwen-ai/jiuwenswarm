@@ -343,6 +343,10 @@ class OneShotRunInput:  # pylint: disable=too-many-instance-attributes
     session_id: str | None = None
     agent: AgentSpec | None = None
     mode: str | None = None
+    model: str | None = None
+    skills: tuple[str, ...] | None = None
+    mcp: tuple[str, ...] | None = None
+    permissions: JsonObject | None = None
     workspace: WorkspaceSpec | None = None
     timeout_seconds: float | None = None
 
@@ -369,6 +373,25 @@ class OneShotRunInput:  # pylint: disable=too-many-instance-attributes
         )
         if self.agent is not None and not isinstance(self.agent, AgentSpec):
             raise TypeError("agent must be an AgentSpec")
+        object.__setattr__(self, "model", _optional_text("model", self.model))
+        for name in ("skills", "mcp"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _string_tuple(name, value))
+        if self.permissions is not None:
+            policy = _strict_object(
+                "permissions", self.permissions, allowed=frozenset({"tools"})
+            )
+            tools = policy.get("tools", {})
+            if not isinstance(tools, Mapping):
+                raise TypeError("permissions.tools must be an object")
+            if any(not isinstance(name, str) or not name.strip() for name in tools):
+                raise ValueError("permissions.tools names must be nonempty strings")
+            if any(level not in ("allow", "ask", "deny") for level in tools.values()):
+                raise ValueError("permissions.tools levels must be allow, ask, or deny")
+            object.__setattr__(
+                self, "permissions", _freeze_object("permissions", {"tools": dict(tools)})
+            )
         if self.mode is not None:
             try:
                 mode = SingleAgentMode(self.mode).value
@@ -397,6 +420,10 @@ class OneShotRunInput:  # pylint: disable=too-many-instance-attributes
             "input": self.input,
             "agent": self.agent.to_dict() if self.agent is not None else None,
             "mode": self.mode,
+            "model": self.model,
+            "skills": list(self.skills) if self.skills is not None else None,
+            "mcp": list(self.mcp) if self.mcp is not None else None,
+            "permissions": _thaw_json(self.permissions) if self.permissions is not None else None,
             "workspace": (
                 self.workspace.to_dict() if self.workspace is not None else None
             ),
@@ -419,6 +446,10 @@ class OneShotRunInput:  # pylint: disable=too-many-instance-attributes
                     "input",
                     "agent",
                     "mode",
+                    "model",
+                    "skills",
+                    "mcp",
+                    "permissions",
                     "workspace",
                     "timeout_seconds",
                 }
@@ -435,6 +466,10 @@ class OneShotRunInput:  # pylint: disable=too-many-instance-attributes
             input=data["input"],
             agent=(AgentSpec.from_dict(raw_agent) if raw_agent is not None else None),
             mode=data.get("mode"),
+            model=data.get("model"),
+            skills=data.get("skills"),
+            mcp=data.get("mcp"),
+            permissions=data.get("permissions"),
             workspace=(
                 WorkspaceSpec.from_dict(data["workspace"])
                 if data.get("workspace") is not None
