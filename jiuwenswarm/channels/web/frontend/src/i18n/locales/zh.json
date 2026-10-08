@@ -3823,6 +3823,7 @@
       "runtimeMissing": "该连接器依赖的运行环境缺失，请先安装对应运行环境后再使用",
       "runtimeMissingNamed": "该连接器依赖 {{runtime}} 运行环境，请先安装 {{runtime}} 后再使用",
       "installNetwork": "依赖下载失败，请检查网络连接后重试",
+      "installScriptDep": "CLI 安装脚本需要 PowerShell 环境，请先启用或恢复 PowerShell 后重试",
       "cliIncomplete": "CLI 安装不完整或版本过低，请重新连接以重试",
       "cliIncompleteNamed": "CLI 安装不完整或版本过低，请手动执行以下命令安装或升级后重试：{{command}}"
     },
