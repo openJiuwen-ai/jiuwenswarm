@@ -6362,15 +6362,32 @@ class AgentWebSocketServer:
                     target_org_id,
                     error,
                 )
-            yield _chunk(
-                {
-                    "event_type": "chat.error",
-                    "error": error,
-                    "team_id": team_id,
-                    "team_name": team_id,
-                    "source": "org_expert_direct",
-                }
-            )
+            error_payload = {
+                "event_type": "chat.error",
+                "error": error,
+                "team_id": team_id,
+                "team_name": team_id,
+                "source": "org_expert_direct",
+            }
+            if not precheck_failed:
+                from jiuwenswarm.server.runtime.session.session_history import (
+                    append_history_record,
+                )
+
+                # The stream owns direct-turn errors; persist the same payload
+                # without also pushing a duplicate event through the launcher.
+                append_history_record(
+                    session_id=session_id,
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    role="assistant",
+                    event_type="chat.error",
+                    content=error,
+                    timestamp=time.time(),
+                    extra=error_payload,
+                    mode="team",
+                )
+            yield _chunk(error_payload)
         yield _chunk(
             {
                 "event_type": "chat.processing_status",
@@ -6847,7 +6864,7 @@ class AgentWebSocketServer:
                 "metadata": dict(organization.metadata or {}),
                 "unclaimed_task_policy": organization.unclaimed_task_policy.model_dump(),
             },
-            "tasks": [task.brief() | {"description": task.description[:280]} for task in tasks],
+            "tasks": [task.brief() | {"description": (task.description or "")[:280]} for task in tasks],
             "unclaimed_tasks": [task.brief() for task in unclaimed],
             "pending_reviews": pending_reviews,
             "stats": {

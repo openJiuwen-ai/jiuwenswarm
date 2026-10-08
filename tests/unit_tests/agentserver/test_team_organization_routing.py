@@ -4,6 +4,7 @@
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -126,3 +127,117 @@ async def test_team_list_defaults_to_owner_even_when_expert_is_running(monkeypat
     monkeypatch.setattr(agent_ws_server, "send_wire_payload", send)
     await server._handle_team_list(object(), request(), asyncio.Lock())
     assert sent[0].payload["default_team_id"] == "owner"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("description", [None, "", "short description", "x" * 400])
+async def test_org_snapshot_handles_empty_description(monkeypatch, description):
+    from openjiuwen.agent_teams.organization import pool
+
+    server = object.__new__(AgentWebSocketServer)
+    task = SimpleNamespace(
+        description=description,
+        unclaimed=None,
+        status="OPEN",
+        brief=lambda: {"task_id": "task"},
+    )
+    organization = SimpleNamespace(
+        organization_id="org",
+        display_name="Organization",
+        description="",
+        owner_team_id="owner",
+        owner_leader_id="leader",
+        leaders=[],
+        metadata={},
+        unclaimed_task_policy=SimpleNamespace(model_dump=lambda: {}),
+    )
+    manager = SimpleNamespace(
+        get_organization=AsyncMock(return_value=organization),
+        task_pool=SimpleNamespace(
+            list_tasks=AsyncMock(return_value=[task]),
+            list_pending_reviews=AsyncMock(return_value=[]),
+        ),
+    )
+    monkeypatch.setattr(pool, "get_process_org_manager", lambda **kwargs: manager)
+    snapshot = await server._build_org_snapshot(
+        session_id="session",
+        team_id="owner",
+        organization_id="org",
+        backend=SimpleNamespace(db=object()),
+    )
+    assert snapshot["tasks"] == [
+        {"task_id": "task", "description": (description or "")[:280]}
+    ]
+    assert snapshot["stats"]["total"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("succeeded", [False, True])
+async def test_direct_expert_failure_persists_error_once(monkeypatch, succeeded):
+    from jiuwenswarm.agents.harness.team.expert_org.launcher import (
+        JiuwenExpertTeamLauncher,
+    )
+    from jiuwenswarm.server.runtime.session import session_history
+
+    server = object.__new__(AgentWebSocketServer)
+    history = []
+    monkeypatch.setattr(
+        session_metadata, "get_session_metadata", lambda _: {"team_name": "owner"}
+    )
+    monkeypatch.setattr(
+        server, "_resolve_team_backend", lambda sid, team: backend("org")
+    )
+    monkeypatch.setattr(
+        session_history,
+        "append_history_record",
+        lambda **kwargs: history.append(kwargs),
+    )
+
+    async def run_turn(self, *args, **kwargs):
+        return succeeded
+
+    monkeypatch.setattr(JiuwenExpertTeamLauncher, "run_organization_turn", run_turn)
+    req = request()
+    req.params["content"] = "Explain your finding"
+    chunks = [chunk async for chunk in server._targeted_expert_response_stream(req)]
+    errors = [
+        chunk.payload for chunk in chunks if chunk.payload["event_type"] == "chat.error"
+    ]
+    if succeeded:
+        assert [record["role"] for record in history] == ["user"]
+        assert errors == []
+    else:
+        assert [record["role"] for record in history] == ["user", "assistant"]
+        error_record = history[1]
+        assert len(errors) == 1
+        assert error_record["event_type"] == "chat.error"
+        assert error_record["content"] == errors[0]["error"]
+        assert error_record["extra"] == errors[0]
+        assert error_record["extra"]["team_id"] == "expert"
+        assert error_record["request_id"] == req.request_id
+    assert chunks[-1].is_complete
+    assert chunks[-1].payload["success"] is succeeded
+
+
+@pytest.mark.asyncio
+async def test_denied_expert_request_does_not_write_history(monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_history
+
+    server = object.__new__(AgentWebSocketServer)
+    history = []
+    monkeypatch.setattr(
+        session_metadata, "get_session_metadata", lambda _: {"team_name": "owner"}
+    )
+    monkeypatch.setattr(
+        server, "_resolve_team_backend", lambda sid, team: backend(team)
+    )
+    monkeypatch.setattr(
+        session_history,
+        "append_history_record",
+        lambda **kwargs: history.append(kwargs),
+    )
+    chunks = [
+        chunk async for chunk in server._targeted_expert_response_stream(request())
+    ]
+    assert history == []
+    assert chunks[0].payload["event_type"] == "chat.error"
