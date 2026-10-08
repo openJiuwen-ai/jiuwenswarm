@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import logging
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -45,9 +46,22 @@ def check(path: Path) -> dict:
 
 
 def _write_result(result: dict) -> None:
-    """Emit one JSON protocol result, not a diagnostic log message."""
-    json.dump(result, sys.stdout, ensure_ascii=False)
-    sys.stdout.write("\n")
+    """Emit plain JSON via an isolated logging handler, without root changes."""
+    logger = logging.getLogger("runtime-config-check.result")
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    previous_level = logger.level
+    previous_propagate = logger.propagate
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger.addHandler(handler)
+    try:
+        logger.info("%s", json.dumps(result, ensure_ascii=False))
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+        logger.setLevel(previous_level)
+        logger.propagate = previous_propagate
 
 
 def main(argv=None) -> int:

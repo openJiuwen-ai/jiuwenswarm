@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -90,3 +91,20 @@ def test_cli_json_protocol_and_exit_status(tmp_path, helper, capsys, configured)
     assert captured.out.count("\n") == 1
     assert "secret-marker" not in captured.out
     assert captured.err == ""
+
+
+def test_json_logging_is_repeatable_and_preserves_logging_state(helper, capsys):
+    root = logging.getLogger()
+    logger = logging.getLogger("runtime-config-check.result")
+    root_state = (root.level, list(root.handlers))
+    logger_state = (logger.level, logger.propagate, list(logger.handlers))
+    helper._write_result({"valid": True, "errors": []})
+    helper._write_result({"valid": False, "errors": ["示例错误"]})
+    captured = capsys.readouterr()
+    assert [json.loads(line) for line in captured.out.splitlines()] == [
+        {"valid": True, "errors": []},
+        {"valid": False, "errors": ["示例错误"]},
+    ]
+    assert captured.err == ""
+    assert (root.level, list(root.handlers)) == root_state
+    assert (logger.level, logger.propagate, list(logger.handlers)) == logger_state
