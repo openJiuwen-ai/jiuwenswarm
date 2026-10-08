@@ -3138,6 +3138,10 @@ async def _run(
             web_channel.web_proxy_auth_enabled = True
             web_channel.web_resolver = None
             web_channel.web_runtime_release = None
+            previous_watcher = getattr(web_channel, "web_registry_watcher", None)
+            if previous_watcher is not None:
+                await previous_watcher.stop()
+                web_channel.web_registry_watcher = None
             previous_manager = getattr(web_channel, "web_port_manager", None)
             if previous_manager is not None:
                 await previous_manager.close_all()
@@ -3194,13 +3198,26 @@ async def _run(
                         manager = WebPortManager(web_channel, wp_config)
                         web_channel.web_port_manager = manager
                         manager.start()
+                        from jiuwenswarm.extensions.agentos.registry_watcher.service import (
+                            RegistryWatcherService,
+                        )
+                        from jiuwenswarm.gateway.cron.factory import (
+                            load_cron_store_settings,
+                        )
+
+                        endpoints = list(load_cron_store_settings(full_cfg).endpoints)
+                        watcher = RegistryWatcherService(
+                            etcd_endpoints=endpoints,
+                            on_desired=manager.reconcile,
+                        )
+                        web_channel.web_registry_watcher = watcher
+                        await watcher.start()
                         logger.info(
-                            "[App] 3rd-agent web proxy on ports [%s, %s) via 3rdagent.web "
-                            "(listen %s, auth=%s)",
-                            wp_config.port_base,
-                            wp_config.port_base + wp_config.port_span,
+                            "[App] 3rd-agent web proxy: listeners driven by registry_watcher "
+                            "(listen %s, auth=%s, etcd=%s)",
                             wp_config.listen_host,
                             "on" if wp_config.auth_enabled else "off",
+                            "on" if watcher.enabled else "off",
                         )
             else:
                 logger.info("[App] channels.web_proxy missing or invalid, web proxy disabled")

@@ -14,16 +14,16 @@ AgentOS Router 通过 YuanRong 创建和管理 3rd agent 容器。部分 agent�
 
 - 通用：任意 3rd agent，不限于 openclaw
 - 双协议：同时代理 HTTP 与 WebSocket（含 SSE）
-- SPA 兼容：相对路径、子资源、无尾斜杠 301
+- 端口由注册中心下发：每个 `agent_type` 一个北向端口，Gateway watch etcd 后监听
 - 通过注入的 `web_resolver` 查询上游 URL，网关层透明代理
 - 零侵入：不修改 agent 容器内服务
 
 ## 2. 整体架构
 
 ```
-浏览器  --HTTP/WS-->  WebChannel(:19000)
-                         |  /ws、/file-api 原样
-                         |  /<agent_type>/[<path>]?user_id=<uid>&access_token=<iam>  → Web 代理
+注册中心（校验端口后写 etcd）──► etcd ──watch──► Gateway（按 web_svc_port 监听北向端口）
+
+浏览器  --HTTP/WS-->  Gateway:<北向端口>（:19000 仍为控制面 /ws、/file-api）
                          |  web_resolver(user_id, agent_type, protocol)
                          v
                    YuanRong frontend :8888
@@ -37,24 +37,23 @@ AgentOS Router 通过 YuanRong 创建和管理 3rd agent 容器。部分 agent�
 入口 URL：
 
 ```
-http://<gateway>:19000/<agent_type>/?user_id=<uid>&access_token=<iam>
-ws://<gateway>:19000/<agent_type>/<path>?user_id=<uid>
+http://<advertise_host>:<北向端口>/?user_id=<uid>&access_token=<iam>
+ws://<advertise_host>:<北向端口>/<path>?user_id=<uid>
 ```
 
-首次由自有前端跳转打开。`auth_enabled` 时必须带 IAM token（`?access_token=` / `?token=` / `Authorization: Bearer` / `X-Token`）；成功后网关 `Set-Cookie: access_token`，OpenClaw 后续相对路径与 WebSocket 握手自动带 Cookie，不必再改 SPA。
+端口与 url 由 `:19000/ws` 的 `3rdagent.web` 返回，调用方打开该 url。`auth_enabled` 时必须带 IAM token（`?access_token=` / `?token=` / `Authorization: Bearer` / `X-Token`）；成功后网关 `Set-Cookie: access_token`，OpenClaw 后续相对路径与 WebSocket 握手自动带 Cookie，不必再改 SPA。
 
 ## 3. 核心组件
 
-### 3.1 Web 代理（挂在 WebChannel）
+### 3.1 Web 代理（每个 agent_type 一个北向端口）
 
 文件：`jiuwenswarm/gateway/channel_manager/protocol/web_proxy/web_proxy_connect.py`
 
-与 `/file-api` 一样挂在 WebChannel FastAPI（默认 `:19000`），不另开端口。
+每个 `agent_type` 一个北向端口（由注册中心经 etcd 下发），端口上跑一个只做反向代理的 ASGI 应用。
 
-- 路由 `/{agent_type}/{tail:path}` 与 `/{agent_type}` 注册在 `/ws`、`/file-api` 之后
-- 保留路径 `ws`、`file-api` 等不进入代理
-- `Upgrade: websocket` → WS 双向 pump，否则 HTTP 反向代理
-- `_append_tail()`：把剩余路径接到 `/serverless/v1/http`（或 `/ws`）后面，query 只保留 `instance` / `port` / `tenant_id`（不使用 `path=`）。南向与 YuanRong 验收格式一致：
+- 端口由 `registry_watcher` watch etcd 后经 `WebPortManager.reconcile` 建立/更新；bind 失败后台退避重试，注销或改端口才关监听（无空闲回收）
+- `Upgrade: websocket` → WS 双向 pump，否则 HTTP 反向代理；请求体端到端流式转发，上游 `Set-Cookie` 透传
+- `_append_tail()`：把浏览器路径接到 `/serverless/v1/http` 后面（HTTP 与 WS 同路径，WS 仅换 scheme）；`_merge_request_query()` 合并业务 query，保留 `instance` / `port` / `tenant_id`，屏蔽 `access_token` / `refresh_token` / `token` / `user_id` / `agent_type`。南向与 YuanRong 验收格式一致：
 
 ```
 https://<host_ip>:8888/serverless/v1/http/api/foo?instance=$ID&port=$P&tenant_id=default
@@ -69,6 +68,8 @@ TLS 终止在 frontend（不是 tunnel）：`https://` 进、frontend 解 TLS、
 
 `(user_id, agent_type, protocol) → upstream_url | None`
 
+`http` 与 `ws` 都走 `/serverless/v1/http`，`ws` 仅把 scheme 换成 `ws`（该入口承载 HTTP 升级）。
+
 端口解析顺序：runtime ``metadata.web_port`` → 镜像 ``access_mode`` 中 ``name=web`` 且协议为 HTTP 的 ``port``。没有可用端口则不代理。
 
 创建 3rd-agent 沙箱时不改 launch-spec 的 ``rootfs.ports``。若 ``access_mode`` 有 HTTP Web 行，只把该 ``port`` 写入 runtime ``metadata.web_port`` 供代理解析。无活跃 Runtime 时由首次 Web 访问触发 Sandbox 创建，不依赖 ``3rdagent.switch``。
@@ -78,8 +79,10 @@ TLS 终止在 frontend（不是 tunnel）：`https://` 进、frontend 解 TLS、
 ```yaml
 channels:
   web_proxy:
-    enabled: false          # 一体机模板默认 true；与 WebChannel 同端口
+    enabled: false          # 一体机模板默认 true；端口由注册中心经 etcd 下发
 ```
+
+端口来源：Gateway watch `{A2X_REGISTRY_ETCD_NAMESPACE:-a2x-registry}/images/`（无前导斜杠），取每条 `access_mode` 中 `name=web_svc_port` 的 `port`（默认段 `19101–19200`）。
 
 启用条件：`gateway.agent_client.type == agentos_router`，且 extension 提供 `resolve_web_endpoint`。
 
@@ -98,25 +101,24 @@ Token 来源（优先级）：
 2. Cookie `access_token`（首次跳转成功后下发，HttpOnly + SameSite=Lax + Path=/，Max-Age 900s，与 IAM access_token TTL 对齐）
 3. Referer 上的 `?access_token=` / `?token=`（Cookie 尚未落到的相对资源）
 
-首次 301（补尾斜杠）会从 Location 去掉 `access_token` / `token`，改由 Cookie 续程，避免地址栏长期暴露凭证。IAM 头与 Cookie **不会**转发进容器。
+首次 302（去 token）会从 Location 去掉 `access_token` / `token`，改由 Cookie 续程，避免地址栏长期暴露凭证。IAM 头与 Cookie **不会**转发进容器。
 
 前端跳转示例：
 
 ```
-http://<gateway>:19000/openclaw/?user_id=<uid>&access_token=<iam>
+http://<advertise_host>:<北向端口>/?user_id=<uid>&access_token=<iam>
 ```
 
 ## 5. 错误码
 
 | 状态码 | 场景 |
 | --- | --- |
-| 301 | 无 tail 的 HTTP 请求，重定向加 `/`（auth 开启时 Location 去掉 `access_token` / `token`） |
-| 400 | 缺少 `agent_type` 或 `user_id`（含子资源 Referer 兜底后仍缺） |
+| 400 | 缺少 `user_id` |
 | 401 | `auth_enabled` 且 token 缺失 / 无效 |
 | 403 | query `user_id` 与 token 身份不一致 |
-| 404 | resolver 返回 `None` |
-| 502 | 上游连接错误 / 空 upstream URL |
-| 503 | resolver 未配置 / channel 未完全启动 / Sandbox 创建中（含 `Retry-After`） |
+| 404 | resolver 返回 `None` / 监听已关闭 |
+| 502 | 上游连接错误 |
+| 503 | resolver 未配置 / Sandbox 创建中（含 `Retry-After`） |
 | 500 | 未处理异常 |
 
 WebSocket 鉴权失败关闭码 `1008`。
@@ -124,6 +126,6 @@ WebSocket 鉴权失败关闭码 `1008`。
 ## 6. 约束
 
 1. 前提：`gateway.agent_client.type` 必须为 `agentos_router`
-2. 无活跃 Runtime 时，首次访问 `GET :19000/<agent_type>/?user_id=<uid>` 触发 Sandbox 创建，不依赖 `3rdagent.switch`
+2. 无活跃 Runtime 时，首次访问 `GET <北向端口>/?user_id=<uid>` 触发 Sandbox 创建，不依赖 `3rdagent.switch`
 3. `auth_enabled` 时由自有前端在跳转 URL 上携带 IAM token；OpenClaw SPA 本身不感知 AgentOS 鉴权
 4. 依赖项目已有的 `aiohttp`
