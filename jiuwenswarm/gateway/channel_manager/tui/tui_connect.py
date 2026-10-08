@@ -532,6 +532,8 @@ _CLI_CONFIG_YAML_KEYS = frozenset(_CLI_CONFIG_YAML_SETTERS.keys())
 
 _PREFERRED_LANGUAGE_OPTIONS = ("zh", "en")
 
+_PERMISSIONS_MODE_OPTIONS = ("auto", "full_access", "strict")
+
 
 def _build_config_schema() -> list[dict]:
     """构建配置项 Schema，供前端渲染交互界面。与 config.yaml 结构对齐。"""
@@ -618,7 +620,7 @@ def _build_config_schema() -> list[dict]:
         {"key": "context_engine_enabled", "label": "上下文压缩", "group": "Features",
          "type": "toggle", "source": "yaml", "default": "false"},
         {"key": "permissions_mode", "label": "权限模式", "group": "Features",
-         "type": "select", "options": ["auto", "full_access", "strict"],
+         "type": "select", "options": list(_PERMISSIONS_MODE_OPTIONS),
          "source": "yaml", "default": "auto"},
         {"key": "permissions_enabled", "label": "权限管控(兼容)", "group": "Features",
          "type": "toggle", "source": "yaml", "default": "true"},
@@ -1009,8 +1011,23 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                         code="BAD_REQUEST",
                     )
                     return
+            elif param_key == "permissions_mode":
+                # 字符串参数不能布尔化：setter(False) 会被 normalize 成 auto，
+                # 用户选 strict/full_access 实际落盘 auto（静默降级）。
+                if raw_value not in _PERMISSIONS_MODE_OPTIONS:
+                    await channel.send_response(
+                        ws,
+                        req_id,
+                        ok=False,
+                        error=(
+                            f"permissions_mode must be one of "
+                            f"{list(_PERMISSIONS_MODE_OPTIONS)}"
+                        ),
+                        code="BAD_REQUEST",
+                    )
+                    return
             try:
-                if param_key == "preferred_language":
+                if param_key in ("preferred_language", "permissions_mode"):
                     setter(raw_value)
                 elif param_key.startswith("auto_harness_"):
                     # Auto-harness config items are strings, not toggles
