@@ -12,12 +12,25 @@ mirroring the existing fault-tolerance philosophy already in
 ``_apply_bind_root_entries``. These tests exercise the policy→config path
 (:meth:`BwrapConfig._apply_filesystem`) directly so they run on any host
 without a sandbox runtime.
+
+Edge cases covered beyond the basic "path absent" scenario:
+
+* **Broken symlink** — ``exists()`` follows links and returns ``False`` for a
+  dangling symlink; ``is_symlink()`` (lstat) distinguishes it from a truly
+  absent path so the warning message is more precise. Both are still skipped
+  because bwrap cannot resolve the source either way.
+* **Stat error (EACCES)** — ``Path.exists()`` only swallows a limited set of
+  errno values; ``EACCES`` propagates as ``OSError``. The guard catches it so
+  the tolerance check itself does not crash the sandbox startup.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
+
+import pytest
 
 from jiuwenbox.models.policy import BindMount, FilesystemPolicy
 from jiuwenbox.models.policy import _expand_path
@@ -113,4 +126,92 @@ def test_warning_emitted_at_warning_level(tmp_path, caplog):
     assert any(
         rec.levelno == logging.WARNING and rec.name == _LOGGER_NAME
         for rec in caplog.records
+    )
+
+
+# ---------------------------------------------------------------------------
+# Edge case: broken (dangling) symlink
+# ---------------------------------------------------------------------------
+
+
+def test_broken_symlink_host_path_is_skipped(tmp_path, caplog):
+    """A dangling symlink must be skipped — bwrap cannot resolve it either.
+
+    The warning message should say "broken symlink" (not "does not exist")
+    so operators can distinguish a misconfigured symlink from a genuinely
+    absent path. Symlink creation may be unavailable on some platforms
+    (Windows without Developer Mode / admin), so the test skips gracefully.
+    """
+    link = tmp_path / "dangling-link"
+    try:
+        link.symlink_to(tmp_path / "nonexistent-target")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported on this platform")
+
+    with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+        cfg = _apply(
+            [BindMount(host_path=str(link), sandbox_path="/lib64", mode="ro")]
+        )
+
+    assert cfg.ro_binds == []
+    assert cfg.rw_binds == []
+    assert any(
+        "broken symlink" in rec.message for rec in caplog.records
+    )
+
+
+def test_broken_symlink_does_not_mask_other_entries(tmp_path, caplog):
+    """A broken symlink in the list must not prevent present entries from binding."""
+    present = tmp_path / "bin"
+    present.mkdir()
+    link = tmp_path / "dangling"
+    try:
+        link.symlink_to(tmp_path / "no-such-target")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported on this platform")
+
+    with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+        cfg = _apply(
+            [
+                BindMount(host_path=str(present), sandbox_path="/bin", mode="ro"),
+                BindMount(host_path=str(link), sandbox_path="/lib64", mode="ro"),
+            ]
+        )
+
+    assert cfg.ro_binds == [(str(present), _expand_path("/bin"))]
+    assert cfg.rw_binds == []
+    assert any(
+        "broken symlink" in rec.message for rec in caplog.records
+    )
+
+
+# ---------------------------------------------------------------------------
+# Edge case: stat error (EACCES or other OSError)
+# ---------------------------------------------------------------------------
+
+
+def test_stat_error_does_not_crash(tmp_path, caplog, monkeypatch):
+    """If ``Path.exists()`` raises ``OSError`` (e.g. EACCES), the guard must
+    catch it and skip the entry — not let the exception propagate and crash
+    the sandbox startup the way it was supposed to prevent.
+    """
+    host = str(tmp_path / "restricted")
+    _original_exists = Path.exists
+
+    def _raise_on_target(self, *args, **kwargs):
+        if str(self) == host:
+            raise PermissionError(13, "Permission denied (simulated)")
+        return _original_exists(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", _raise_on_target)
+
+    with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+        cfg = _apply(
+            [BindMount(host_path=host, sandbox_path="/lib64", mode="ro")]
+        )
+
+    assert cfg.ro_binds == []
+    assert cfg.rw_binds == []
+    assert any(
+        "cannot stat" in rec.message for rec in caplog.records
     )
