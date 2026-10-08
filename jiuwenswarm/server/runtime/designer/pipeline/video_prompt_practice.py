@@ -1008,11 +1008,108 @@ def _story_leads_prompt(prompt: str, action: str) -> bool:
     return _covers_beat(text, beat)
 
 
+def _prompt_origin(cfg: dict[str, Any] | None) -> str:
+    cfg = cfg if isinstance(cfg, dict) else {}
+    generate = cfg.get("generate") if isinstance(cfg.get("generate"), dict) else {}
+    return str(generate.get("prompt_origin") or "").strip()
+
+
+def resolve_user_origin_prompt(cfg: dict[str, Any] | None, fallback: str = "") -> str:
+    """Resolve toolbar/user prompt authority for media calls.
+
+    Beat authority for user edits is the durable user surface — never the last
+    stamped API body (``last_wan_prompt`` / ``last_approved_prompt``). Prefer
+    ``user_edit_prompt`` and regenerate_packet (what the toolbar wrote) over
+    ``generate.prompt``, which is often a prior practice rewrite and would
+    silently drop Film-shot facts (e.g. \"blue car\").
+
+    A non-empty ``user_edit_prompt`` wins even if ``prompt_origin`` lagged behind
+    the toolbar write (image + video regenerate).
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    edit = str(cfg.get("user_edit_prompt") or "").strip()
+    if edit:
+        return edit
+    if _prompt_origin(cfg) != "user":
+        return ""
+    generate = cfg.get("generate") if isinstance(cfg.get("generate"), dict) else {}
+    packet = cfg.get("regenerate_packet") if isinstance(cfg.get("regenerate_packet"), dict) else {}
+    for candidate in (
+        packet.get("prompt"),
+        cfg.get("prompt"),
+        generate.get("prompt"),
+        fallback,
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def resolve_still_call_prompt(cfg: dict[str, Any] | None, fallback: str = "") -> str:
+    """Still/image call authority: durable user text, else the LLM-supplied prompt.
+
+    No hard-coded practice rewrite. Never prefer ``last_wan`` / ``last_approved``.
+    """
+    user = resolve_user_origin_prompt(cfg, "")
+    if user:
+        return user
+    return str(fallback or "").strip()
+
+
+_LOCK_BANNER_LINE = re.compile(
+    r"(?i)^\s*(?:style\s*lock|costume\s*lock|clothing\s*lock|wardrobe\s*lock|"
+    r"positioning\s*lock|scene\s*specs|forbid|forbidden|already-?done|on\s*screen)\b"
+)
+
+
+def narrative_seed_from_user_prompt(prompt: str) -> str:
+    """Positive story lines from a toolbar prompt; drop lock-essay / forbid noise."""
+    text = str(prompt or "").strip()
+    if not text:
+        return ""
+    # Keep enough Film-shot narrative for prop/color edits (e.g. blue car) to
+    # survive rewrite into Image-N practice form.
+    _SEED_CAP = 1200
+    if not _BAD_DIRECTIVE.search(text) and not _LOCK_BANNER_LINE.search(text):
+        return text[:_SEED_CAP]
+    chunks: list[str] = []
+    for part in re.split(r"(?<=[.!?])\s+|\n+", text):
+        line = part.strip().lstrip("-").strip()
+        if not line:
+            continue
+        if _BAD_DIRECTIVE.search(line) or _LOCK_BANNER_LINE.search(line):
+            continue
+        # Inline lock essays (same paragraph as Action:) — cut from the banner on.
+        cut = re.split(
+            r"(?i)\b(?:style\s*lock|costume\s*lock|clothing\s*lock|wardrobe\s*lock|"
+            r"positioning\s*lock|scene\s*specs|forbid|forbidden|already-?done|"
+            r"identity\s*sheets|strategy\s*=)\b",
+            line,
+            maxsplit=1,
+        )[0].strip(" ,;.—-")
+        if not cut or _BAD_DIRECTIVE.search(cut):
+            continue
+        chunks.append(cut.rstrip("."))
+    return ". ".join(chunks).strip()[:_SEED_CAP]
+
+
+def _compose_cfg_for_user_origin(cfg: dict[str, Any], *, camera: str) -> dict[str, Any]:
+    """Compose without re-seeding from stale storyboard beats/camera/cast_actions."""
+    out = dict(cfg)
+    out["shot_action"] = ""
+    out["character_action"] = ""
+    out["cast_actions"] = {}
+    out["camera"] = str(camera or "")
+    return out
+
+
 def prompt_respects_practice(
     prompt: str,
     *,
     cfg: dict[str, Any] | None,
     graph: dict[str, Any] | None = None,
+    honor_user_origin: bool = False,
 ) -> list[str]:
     """Reasons the video call should be rewritten. Empty means it can be sent."""
     cfg = cfg if isinstance(cfg, dict) else {}
@@ -1067,11 +1164,13 @@ def prompt_respects_practice(
     if str(cfg.get("previous_clip_wan_prompt") or cfg.get("previous_clip_action") or "").strip():
         if not re.search(r"(?i)\b(?:continue|continues|same setting|same placement|same room)\b", text):
             reasons.append("missing_prior_continue")
-    action = str(cfg.get("shot_action") or "").strip()
-    if action and not _covers_beat(text, action):
-        reasons.append("misses_storyboard_beat")
-    if action and not _story_leads_prompt(text, action):
-        reasons.append("story_buried_under_locks")
+    # Toolbar user edits are authoritative for beat fidelity; do not force stale shot_action.
+    if not honor_user_origin:
+        action = str(cfg.get("shot_action") or "").strip()
+        if action and not _covers_beat(text, action):
+            reasons.append("misses_storyboard_beat")
+        if action and not _story_leads_prompt(text, action):
+            reasons.append("story_buried_under_locks")
     # Film-lock content coverage (story prose, not LOCK banners).
     if _has_spoken_dialogue(cfg):
         lang = str(cfg.get("language_lock") or "").strip()
@@ -1147,6 +1246,10 @@ def director_prepare_video_prompt(
     """Keep a concise faithful story-form prompt; otherwise rewrite locks into narrative."""
     del shot_index
     cfg = cfg if isinstance(cfg, dict) else {}
+    user_text = resolve_user_origin_prompt(cfg, prompt)
+    honor_user = bool(user_text)
+    if honor_user:
+        prompt = user_text
     if str(cfg.get("reference_call_mode") or "").strip():
         from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
             compose_reference_clip_prompt,
@@ -1156,9 +1259,12 @@ def director_prepare_video_prompt(
         raw = str(prompt or "").strip()
         reasons = reference_prompt_issues(raw, cfg)
         if not reasons:
-            return raw[:2200], ["kept_reference_led_prompt"]
+            note = "kept_user_prompt" if honor_user else "kept_reference_led_prompt"
+            return raw[:2200], [note]
         return compose_reference_clip_prompt(cfg)[:2200], ["rewritten_reference_led", *reasons]
-    reasons = prompt_respects_practice(prompt, cfg=cfg, graph=graph)
+    reasons = prompt_respects_practice(
+        prompt, cfg=cfg, graph=graph, honor_user_origin=honor_user,
+    )
     try:
         from jiuwenswarm.server.runtime.designer.pipeline.clip_continuity_contract import (
             prompt_violates_continuity,
@@ -1183,24 +1289,41 @@ def director_prepare_video_prompt(
     ):
         reasons = [*reasons, "lock_banner_not_story"]
     if not reasons:
-        return raw[:2200], ["kept_agent_prompt"]
-    mined_action = (
-        action
-        or str(cfg.get("shot_action") or "")
-        or _pull_labeled(prompt, ("primary action", "character action", "storyboard shot", "storyboard beat", "action"))
-    )
-    move = _pull_labeled(prompt, ("camera move",))
-    angle = (
-        camera
-        or str(cfg.get("camera") or "")
-        or _pull_labeled(prompt, ("camera for shot", "camera"))
-    )
+        note = "kept_user_prompt" if honor_user else "kept_agent_prompt"
+        return raw[:2200], [note]
+    # User-origin rewrites seed action/camera from the user surface, not stale beats.
+    if honor_user:
+        mined_action = (
+            narrative_seed_from_user_prompt(action)
+            or narrative_seed_from_user_prompt(user_text)
+            or _pull_labeled(
+                user_text,
+                ("primary action", "character action", "storyboard shot", "storyboard beat", "action"),
+            )
+        )
+        move = _pull_labeled(user_text, ("camera move",))
+        angle = camera or _pull_labeled(user_text, ("camera for shot", "camera"))
+    else:
+        mined_action = (
+            action
+            or str(cfg.get("shot_action") or "")
+            or _pull_labeled(prompt, ("primary action", "character action", "storyboard shot", "storyboard beat", "action"))
+        )
+        move = _pull_labeled(prompt, ("camera move",))
+        angle = (
+            camera
+            or str(cfg.get("camera") or "")
+            or _pull_labeled(prompt, ("camera for shot", "camera"))
+        )
     if move and angle and move.casefold() not in angle.casefold():
         mined_camera = f"{move}, {angle}"
     else:
         mined_camera = move or angle
+    compose_cfg = (
+        _compose_cfg_for_user_origin(cfg, camera=mined_camera) if honor_user else cfg
+    )
     composed = compose_practice_prompt(
-        cfg=cfg,
+        cfg=compose_cfg,
         graph=graph,
         action=mined_action,
         camera=mined_camera,
@@ -1225,18 +1348,35 @@ def director_approve_video_prompt(
 
     Approves a leaf rewrite when it is narrative, faithful, and short. Otherwise edits
     via compose_practice_prompt into the story-form Image-N binding.
+
+    When generate.prompt_origin == user and a non-empty user prompt exists, that text
+    is authoritative for beat fidelity; storyboard shot_action/camera are not forced.
     """
     cfg = cfg if isinstance(cfg, dict) else {}
-    beat = (
-        action
-        or str(cfg.get("shot_action") or "")
-        or _pull_labeled(prompt, ("primary action", "character action", "storyboard shot", "storyboard beat", "action"))
-    )
-    cam = (
-        camera
-        or str(cfg.get("camera") or "")
-        or _pull_labeled(prompt, ("camera move", "camera for shot", "camera"))
-    )
+    user_text = resolve_user_origin_prompt(cfg, prompt)
+    honor_user = bool(user_text)
+    if honor_user:
+        prompt = user_text
+        beat = (
+            narrative_seed_from_user_prompt(action)
+            or narrative_seed_from_user_prompt(user_text)
+            or user_text
+        )
+        cam = (
+            camera
+            or _pull_labeled(user_text, ("camera move", "camera for shot", "camera"))
+        )
+    else:
+        beat = (
+            action
+            or str(cfg.get("shot_action") or "")
+            or _pull_labeled(prompt, ("primary action", "character action", "storyboard shot", "storyboard beat", "action"))
+        )
+        cam = (
+            camera
+            or str(cfg.get("camera") or "")
+            or _pull_labeled(prompt, ("camera move", "camera for shot", "camera"))
+        )
     approved, notes = director_prepare_video_prompt(
         prompt,
         cfg=cfg,
@@ -1248,7 +1388,8 @@ def director_approve_video_prompt(
         extra_image_labels=extra_image_labels,
     )
     reasons = list(notes)
-    if beat and not _covers_beat(approved, beat):
+    # Storyboard beat force-rewrite stays for non-user origins only.
+    if not honor_user and beat and not _covers_beat(approved, beat):
         approved = compose_practice_prompt(
             cfg=cfg,
             graph=graph,
@@ -1258,7 +1399,7 @@ def director_approve_video_prompt(
             extra_image_labels=extra_image_labels,
         )
         reasons = ["director_rewrote_for_storyboard", *reasons]
-    elif beat and not _story_leads_prompt(approved, beat):
+    elif not honor_user and beat and not _story_leads_prompt(approved, beat):
         approved = compose_practice_prompt(
             cfg=cfg,
             graph=graph,
@@ -1268,8 +1409,11 @@ def director_approve_video_prompt(
             extra_image_labels=extra_image_labels,
         )
         reasons = ["director_rewrote_story_first", *reasons]
-    elif "director_rewrote" not in notes and "kept_agent_prompt" in notes:
-        reasons = ["director_approved", *reasons]
+    elif "director_rewrote" not in notes and (
+        "kept_agent_prompt" in notes or "kept_user_prompt" in notes
+    ):
+        tag = "director_approved_user" if honor_user else "director_approved"
+        reasons = [tag, *reasons]
     else:
         reasons = ["director_checked", *reasons]
     return approved.strip()[:2200], reasons

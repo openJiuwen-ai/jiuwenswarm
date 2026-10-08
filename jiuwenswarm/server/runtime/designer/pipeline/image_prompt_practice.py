@@ -271,8 +271,24 @@ def ensure_still_tool_prompt(
     cfg: dict[str, Any] | None,
     graph: dict[str, Any] | None = None,
 ) -> tuple[str, list[str]]:
-    """Rewrite lock essays into positive still prompts before the image API."""
+    """Legacy helper: rewrite lock essays into positive still prompts.
+
+    Call paths (``call_image_model`` / handlers / director gate) no longer invoke
+    this — durable user text and the leaf LLM prompt are authority. Kept for
+    unit tests and optional offline cleanup.
+    """
     cfg = _cfg(cfg)
+    # Honor durable toolbar text if present (same authority as video).
+    try:
+        from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+            resolve_user_origin_prompt,
+        )
+
+        user = resolve_user_origin_prompt(cfg, "")
+        if user:
+            return user[:2200], ["still_user_authority"]
+    except Exception:  # noqa: BLE001
+        pass
     role_l = str(role or cfg.get("role") or "").lower()
     notes: list[str] = []
     text = str(prompt or "").strip()

@@ -33,6 +33,7 @@ from jiuwenswarm.server.runtime.designer.chat_shot_references import (
     node_prose_config,
     redirects_removed_continuity,
     referenced_shot_indices,
+    scrub_missing_shot_references,
 )
 from jiuwenswarm.server.runtime.designer.handlers.common import (
     file_output_ref,
@@ -412,6 +413,8 @@ def prepare_document_update(
                         raise DesignerGraphValidationError("Remove continuity claims about deleted shots instead of redirecting them to unrelated shots")
         shot_indices = {node_shot_index(node) for node in nodes.values() if node_pipeline(node) in {"frame", "clip"}}
         for key, doc in remaining.items():
+            # Deterministic scrub of prior-canvas / stale missing-shot prose before validate.
+            texts[key] = scrub_missing_shot_references(texts[key], shot_indices)
             invalid = referenced_shot_indices(texts[key]) - shot_indices
             if invalid:
                 raise DesignerGraphValidationError(f"Document {key} references missing shots: {sorted(invalid)}")

@@ -229,16 +229,10 @@ def _spatial_geography_lock_patch(graph: DesignerExecutionGraph) -> list[str]:
             cfg["master_scene_node_id"] = "n_scene"
             cfg.setdefault("scene_strategy", "edit_master_view")
             notes.append(f"{nid}: master_scene_node_id=n_scene")
-        if role in {"frame", "clip", "keyframe", "scene"}:
-            gen = dict(cfg.get("generate") or {}) if isinstance(cfg.get("generate"), dict) else {}
-            prompt = str(gen.get("prompt") or cfg.get("prompt") or "")
-            if lock_clause.strip() and "SPATIAL LOCK" not in prompt:
-                if gen.get("prompt") is not None or role in {"frame", "clip", "keyframe"}:
-                    gen["prompt"] = (prompt + lock_clause)[:1400]
-                    cfg["generate"] = gen
-                else:
-                    cfg["prompt"] = (prompt + lock_clause)[:1400]
-                notes.append(f"{nid}: spatial_lock stamped")
+        # Keep spatial_lock as structured cfg only. Do not append SPATIAL LOCK
+        # essays onto prompts (truncates mid-sentence and poisons the toolbar).
+        if role in {"frame", "clip", "keyframe", "scene"} and lock:
+            notes.append(f"{nid}: spatial_lock cfg only")
         node["config"] = cfg
     return notes
 
@@ -3055,23 +3049,24 @@ class Director:
                 style_l = meta_l.get("style_lock") if isinstance(meta_l.get("style_lock"), dict) else {}
             if style_l and not isinstance(cfg.get("style_lock"), dict):
                 cfg["style_lock"] = style_l
-            # Fidelity: rewrite lock essays into positive still prompts; soft-fill gaps.
+            # Still/image: user toolbar text wins; otherwise keep the LLM prompt.
+            # No hard-coded ensure_still rewrite — the leaf LLM authors the body.
             try:
-                from jiuwenswarm.server.runtime.designer.pipeline.image_prompt_practice import (
-                    ensure_still_tool_prompt,
+                from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+                    resolve_user_origin_prompt,
                 )
 
-                approved_still, still_notes = ensure_still_tool_prompt(
-                    prompt,
-                    role=role,
-                    cfg=cfg,
-                    graph=graph if isinstance(graph, dict) else {},
-                )
-                if approved_still != str(prompt or "").strip():
-                    prompt = approved_still
-                    notes.extend(still_notes or ["still_prompt_fidelity"])
+                user_still = resolve_user_origin_prompt(cfg, "")
+                if user_still and user_still != str(prompt or "").strip():
+                    prompt = user_still
+                    notes.append("still_user_authority")
                     changed = True
-                cfg["director_still_prompt_notes"] = still_notes
+                    cfg["director_still_prompt_notes"] = ["still_user_authority"]
+                else:
+                    cfg.setdefault(
+                        "director_still_prompt_notes",
+                        ["still_llm_authority"],
+                    )
                 cfg["director_still_prompt_approved"] = True
             except Exception:  # noqa: BLE001
                 pass

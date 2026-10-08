@@ -920,6 +920,17 @@ class DesignerGraphToolkit:
                 )
 
                 refs.extend(str(p) for p in node_ids_output_image_paths(self.ctx, nids))
+        # Toolbar user edits win over leaf narration before the still call.
+        try:
+            from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+                resolve_user_origin_prompt,
+            )
+
+            user_surface = resolve_user_origin_prompt(cfg, "")
+            if user_surface:
+                text = user_surface
+        except Exception:  # noqa: BLE001
+            pass
         if role in {
             "scene",
             "character",
@@ -1187,6 +1198,9 @@ class DesignerGraphToolkit:
         from jiuwenswarm.server.runtime.designer.pipeline.wan_call_locks import (
             apply_wan_call_locks,
         )
+        from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+            resolve_user_origin_prompt,
+        )
 
         meta = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
         # Clip calls are rewritten to the short image-binding form. Speech and
@@ -1195,6 +1209,10 @@ class DesignerGraphToolkit:
             apply_regenerate_packet,
         )
 
+        # Toolbar user edits win over leaf narration before the WAN gate.
+        user_surface = resolve_user_origin_prompt(cfg, "")
+        if user_surface:
+            text = user_surface
         text, ref_files = apply_regenerate_packet(
             cfg,
             graph,

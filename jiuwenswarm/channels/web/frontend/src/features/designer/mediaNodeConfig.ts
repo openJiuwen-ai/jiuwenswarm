@@ -96,11 +96,13 @@ function normalizeMaterials(raw: unknown): MediaMaterialSlot[] {
   return out;
 }
 
-/** Prefer the last tool-call prompt (what actually hit image/video APIs). */
+/** Prefer durable user edit, then packet, then last sent API body, then scaffold. */
 export function resolveMediaPromptForToolbar(
   config: Record<string, unknown> | undefined,
 ): string {
   const raw = (config ?? {}) as Record<string, unknown>;
+  const userEdit =
+    typeof raw.user_edit_prompt === 'string' ? raw.user_edit_prompt.trim() : '';
   const packet =
     raw.regenerate_packet && typeof raw.regenerate_packet === 'object'
       ? (raw.regenerate_packet as { prompt?: unknown })
@@ -113,13 +115,38 @@ export function resolveMediaPromptForToolbar(
     typeof raw.last_approved_prompt === 'string'
       ? raw.last_approved_prompt.trim()
       : '';
+  const looksLikeLockEssay = (text: string): boolean =>
+    /\bSPATIAL LOCK\b/i.test(text) ||
+    /\bSTYLE LOCK\b/i.test(text) ||
+    /\bSCENE SPECS\b/i.test(text) ||
+    /\bCLOTHING LOCK\b/i.test(text);
+  // Prefer last sent body over truncated engine lock essays in last_approved.
+  const approvedSafe =
+    lastApproved && !looksLikeLockEssay(lastApproved) ? lastApproved : '';
   const gen =
     raw.generate && typeof raw.generate === 'object'
       ? String((raw.generate as { prompt?: unknown }).prompt ?? '').trim()
       : '';
+  const genSafe = gen && !looksLikeLockEssay(gen) ? gen : '';
   const rootPrompt = typeof raw.prompt === 'string' ? raw.prompt.trim() : '';
-  // Final tool prompt first; fall back to scaffold generate.prompt for first run.
-  return packetPrompt || lastWan || lastApproved || gen || rootPrompt;
+  const rootSafe =
+    rootPrompt && !looksLikeLockEssay(rootPrompt) ? rootPrompt : '';
+  const directorTask =
+    typeof raw.director_task === 'string' ? raw.director_task.trim() : '';
+  // User toolbar intent first; last_wan is the sent API body (may differ in form).
+  // Skip hard-coded lock essays so Scene/Character toolbars show LLM/user text.
+  return (
+    userEdit ||
+    packetPrompt ||
+    lastWan ||
+    approvedSafe ||
+    genSafe ||
+    rootSafe ||
+    directorTask ||
+    lastApproved ||
+    gen ||
+    rootPrompt
+  );
 }
 
 export function readMediaConfig(
@@ -191,12 +218,12 @@ export function writeMediaGeneratePatch(
         : 'generate',
     generate,
   };
-  // Keep final-tool / regenerate seeds in sync so regenerate uses the edited text.
+  // Keep durable user intent + packet in sync so regenerate uses the edited text.
+  // last_wan / last_approved stay as last *sent* API bodies until the next run stamps them.
   if (typeof patch.prompt === 'string') {
     const text = patch.prompt;
     next.prompt = text;
-    next.last_approved_prompt = text.slice(0, 4000);
-    next.last_wan_prompt = text.slice(0, 4000);
+    next.user_edit_prompt = text.slice(0, 4000);
     const prevPacket =
       next.regenerate_packet && typeof next.regenerate_packet === 'object'
         ? { ...(next.regenerate_packet as Record<string, unknown>) }

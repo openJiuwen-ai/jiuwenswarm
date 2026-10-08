@@ -403,17 +403,26 @@ class CharacterDesignNodeHandler:
             prompt = still_task_prompt(cfg)
         else:
             roster = prompt_slot_roster(_references_for_paths(ctx.graph, user_images))
-            prompt = _character_prompt(f"{name}\n{source}", combined_cast=combined)
             try:
-                from jiuwenswarm.server.runtime.designer.pipeline.image_prompt_practice import (
-                    ensure_still_tool_prompt,
+                from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+                    resolve_user_origin_prompt,
                 )
 
-                prompt, _ = ensure_still_tool_prompt(
-                    prompt,
-                    role="character",
-                    cfg=cfg,
-                    graph=ctx.graph if isinstance(ctx.graph, dict) else {},
+                user_prompt = resolve_user_origin_prompt(cfg, "")
+            except Exception:  # noqa: BLE001
+                user_prompt = ""
+            if user_prompt:
+                prompt = user_prompt
+            else:
+                prompt = _character_prompt(f"{name}\n{source}", combined_cast=combined)
+            # No hard-coded ensure_still rewrite — user/LLM text is authority.
+            try:
+                from jiuwenswarm.server.runtime.designer.pipeline.wan_call_locks import (
+                    apply_keyframe_call_locks,
+                )
+
+                prompt = apply_keyframe_call_locks(
+                    prompt, cfg=cfg, graph=ctx.graph if isinstance(ctx.graph, dict) else {}
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -479,27 +488,31 @@ class SceneNodeHandler:
 
                 refs = [str(p) for p in node_ids_output_image_paths(ctx, char_nids)] + refs
         composed = bool(cfg.get("composed_scene", False)) and not derive
-        scene_prompt = _scene_prompt(source, derive_from_master=derive, composed=composed)
         try:
-            from jiuwenswarm.server.runtime.designer.pipeline.image_prompt_practice import (
-                ensure_still_tool_prompt,
+            from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+                resolve_user_origin_prompt,
             )
 
-            scene_prompt, _ = ensure_still_tool_prompt(
-                scene_prompt,
-                role="scene",
-                cfg=cfg,
-                graph=ctx.graph if isinstance(ctx.graph, dict) else {},
+            user_prompt = resolve_user_origin_prompt(cfg, "")
+        except Exception:  # noqa: BLE001
+            user_prompt = ""
+        if user_prompt:
+            scene_prompt = user_prompt
+        else:
+            scene_prompt = _scene_prompt(
+                source, derive_from_master=derive, composed=composed
+            )
+        # No hard-coded ensure_still rewrite — user/LLM text is authority.
+        try:
+            from jiuwenswarm.server.runtime.designer.pipeline.wan_call_locks import (
+                apply_keyframe_call_locks,
+            )
+
+            scene_prompt = apply_keyframe_call_locks(
+                scene_prompt, cfg=cfg, graph=ctx.graph
             )
         except Exception:  # noqa: BLE001
-            try:
-                from jiuwenswarm.server.runtime.designer.pipeline.wan_call_locks import (
-                    apply_keyframe_call_locks,
-                )
-
-                scene_prompt = apply_keyframe_call_locks(scene_prompt, cfg=cfg, graph=ctx.graph)
-            except Exception:  # noqa: BLE001
-                pass
+            pass
         roster = prompt_slot_roster(_references_for_paths(ctx.graph, refs))
         if roster:
             scene_prompt = (
@@ -650,18 +663,29 @@ class FrameNodeHandler:
             shot["comment"] = planned
         size = _resolve_image_size(cfg, ctx.graph if isinstance(ctx.graph, dict) else None)
         max_tries = max(2, int(cfg.get("max_image_calls") or 1))
-        frame_prompt = _shot_frame_prompt(
-            shot,
-            visual,
-            has_character=bool(all_chars),
-            has_scene=bool(all_scenes),
-            cast_names=cast_names,
-            character_ref_count=char_ref_count,
-            combined_cast_ref=combined_cast_ref,
-            keyframe_strategy=keyframe_strategy,
-            costume_lock=costume_lock,
-            staging_lock=staging_lock,
-        )
+        try:
+            from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+                resolve_user_origin_prompt,
+            )
+
+            user_frame = resolve_user_origin_prompt(cfg, "")
+        except Exception:  # noqa: BLE001
+            user_frame = ""
+        if user_frame:
+            frame_prompt = user_frame
+        else:
+            frame_prompt = _shot_frame_prompt(
+                shot,
+                visual,
+                has_character=bool(all_chars),
+                has_scene=bool(all_scenes),
+                cast_names=cast_names,
+                character_ref_count=char_ref_count,
+                combined_cast_ref=combined_cast_ref,
+                keyframe_strategy=keyframe_strategy,
+                costume_lock=costume_lock,
+                staging_lock=staging_lock,
+            )
         from jiuwenswarm.server.runtime.designer.pipeline.wan_call_locks import (
             apply_keyframe_call_locks,
         )

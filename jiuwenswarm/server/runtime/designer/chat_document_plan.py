@@ -22,7 +22,6 @@ from jiuwenswarm.common.schema.designer_graph import (
 from jiuwenswarm.server.runtime.designer.chat_document_sync import (
     ChatDocument,
     apply_text_replacements,
-    map_shot_references,
     timeline_seconds,
 )
 from jiuwenswarm.server.runtime.designer.chat_document_sections import (
@@ -32,6 +31,8 @@ from jiuwenswarm.server.runtime.designer.chat_document_sections import (
 )
 from jiuwenswarm.server.runtime.designer.chat_shot_references import (
     apply_node_reference_edits,
+    map_shot_references,
+    missing_shot_tombstones,
     node_reference_fields,
 )
 
@@ -262,6 +263,12 @@ def document_edit_context(
     }
     original_indices = {position["index"] for position in old_positions.values()}
     current_indices = {position["index"] for position in new_positions.values()}
+    # Prior canvas deletes leave prose refs whose indices are absent from both graphs.
+    # Tombstone those against the live candidate set so the editor can scrub them.
+    prose_corpus = "\n".join(doc.text for doc in documents.values())
+    reference_targets = missing_shot_tombstones(
+        prose_corpus, current_indices, reference_targets,
+    )
     fields = node_reference_fields(before, candidate, reference_targets)
     reviewed = {node["id"]: set() for node in before["nodes"] + candidate["nodes"]}
     for field in fields:
