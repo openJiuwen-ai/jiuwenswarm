@@ -214,6 +214,20 @@ class BwrapConfig:
         for spec in fs.bind_root_entries:
             BwrapConfig._apply_bind_root_entries(cfg, spec)
         for mount in fs.bind_mounts:
+            # 跨发行版布局差异容错：bind_mounts 是声明式列表（x86_64 布局有
+            # /lib64，Debian 系 arm64 只有 /lib -> usr/lib）。bwrap 对不存在的
+            # --ro-bind 源会直接失败（"Can't find source path ..."），单个缺失
+            # 条目就拖垮整个沙箱启动，这里降级为跳过 + warning。read_only 侧
+            # 无需同样处理：to_args 只对 created_paths 发 --remount-ro，未 bind
+            # 的路径天然被跳过。
+            if not Path(mount.host_path).exists():
+                logger.warning(
+                    "bind_mounts: host_path %r does not exist on this host; "
+                    "skipping bind (sandbox_path=%s)",
+                    mount.host_path,
+                    mount.sandbox_path,
+                )
+                continue
             if mount.mode == "ro":
                 cfg.ro_binds.append((mount.host_path, mount.sandbox_path))
             else:
