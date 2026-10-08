@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import sys
 import traceback
@@ -43,6 +44,18 @@ def _fileno(stream: TextIO) -> int | None:
         return None
 
 
+def _report_log_setup_failure(error: OSError, stream: TextIO) -> None:
+    """Keep the setup failure visible without relying on global log handlers."""
+    logger = logging.Logger(f"{__name__}.fallback", level=logging.ERROR)
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+    try:
+        logger.error("jiuwenswarm-process: 无法写入诊断日志：%s", error)
+    finally:
+        handler.close()
+
+
 @contextlib.contextmanager
 def capture_diagnostics(*, capture_stdout: bool, debug: bool) -> Iterator[VisibleStreams]:
     """Capture Python and inherited native diagnostics for one CLI invocation.
@@ -66,8 +79,7 @@ def capture_diagnostics(*, capture_stdout: bool, debug: bool) -> Iterator[Visibl
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.touch(mode=0o600, exist_ok=False)
     except OSError as error:
-        sys.stderr.write(f"jiuwenswarm-process: 无法写入诊断日志：{error}\n")
-        sys.stderr.flush()
+        _report_log_setup_failure(error, sys.stderr)
         yield VisibleStreams(sys.stdout, sys.stderr, None)
         return
 

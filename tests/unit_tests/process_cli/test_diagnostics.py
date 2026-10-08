@@ -101,3 +101,16 @@ def test_debug_shows_diagnostics_in_terminal(tmp_path: Path) -> None:
     assert "PYTHON_DIAGNOSTIC" in result.stderr
     assert "NATIVE_STDERR_DIAGNOSTIC" in result.stderr
     assert _logs(tmp_path) == []
+
+
+def test_log_directory_failure_reports_to_stderr(tmp_path: Path) -> None:
+    log_directory = tmp_path / "agent" / "process_cli_logs"
+    log_directory.parent.mkdir()
+    log_directory.write_text("not a directory", encoding="utf-8")
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 0
+    assert result.stderr.count("jiuwenswarm-process: 无法写入诊断日志：") == 1
+    assert "ANSWER" in result.stdout
+    assert log_directory.is_file()

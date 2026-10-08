@@ -514,6 +514,32 @@ def test_python_native_and_child_diagnostics_do_not_pollute_jsonl(
         assert marker not in result.stdout
 
 
+def test_log_directory_failure_keeps_machine_stdout_as_jsonl(tmp_path: Path) -> None:
+    log_directory = tmp_path / "agent" / "process_cli_logs"
+    log_directory.parent.mkdir()
+    log_directory.write_text("not a directory", encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-c", _FAKE_MACHINE_MAIN, "--run-json", "-"],
+        input=_document(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=PROJECT_ROOT,
+        env=_environment(
+            MACHINE_TEST_DIAGNOSTICS="1",
+            JIUWENSWARM_DATA_DIR=str(tmp_path),
+        ),
+        timeout=20,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert decode_jsonl(result.stdout)[-1].status == "completed"
+    assert result.stderr.count("jiuwenswarm-process: 无法写入诊断日志：") == 1
+    assert "PYTHON_DIAGNOSTIC" not in result.stdout
+
+
 @pytest.mark.parametrize("emit_event", ["0", "1"])
 def test_closed_output_pipe_exits_without_traceback(emit_event: str) -> None:
     with subprocess.Popen(
