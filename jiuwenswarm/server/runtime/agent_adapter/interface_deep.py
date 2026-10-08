@@ -9596,6 +9596,7 @@ class JiuWenSwarmDeepAdapter:
             allow_general=(
                 self._session_instance_sub_mode == "plan"
                 or self._session_instance_mode.startswith("agent")
+                or self._session_instance_mode in ("team", "team.plan", "code.team")
             ),
         )
         context_model_state = _ContextEngineModelState(
@@ -10714,7 +10715,7 @@ class JiuWenSwarmDeepAdapter:
             reload=False,
             allow_general=(
                 sub_mode == "plan"
-                or (isinstance(mode, str) and mode.startswith("agent"))
+                or (isinstance(mode, str) and (mode.startswith("agent") or mode in ("team", "team.plan", "code.team")))
             ),
         )
         common_kwargs = dict(
