@@ -15,7 +15,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmD
 @pytest.mark.parametrize("channel_id", ["web", "tui", "acp"])
 def test_resident_channel_ignores_run_permissions_field(channel_id: str) -> None:
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
-    rail = SimpleNamespace(_run_permission_levels={"existing": "ask"})
+    rail = SimpleNamespace(run_permission_levels={"existing": "ask"})
     adapter._permission_rail = rail
     adapter._is_session_scoped_adapter = False
     adapter._enable_auto_permission = False
@@ -30,16 +30,16 @@ def test_resident_channel_ignores_run_permissions_field(channel_id: str) -> None
 
     with adapter._bind_permission_request_context(request):
         assert RUN_PERMISSIONS.get() is None
-        assert rail._run_permission_levels is None
+        assert rail.run_permission_levels is None
         installed = {"tools": {"write_file": "allow"}}
         assert overlay_run_permissions(installed) is installed
-    assert rail._run_permission_levels == {"existing": "ask"}
+    assert rail.run_permission_levels == {"existing": "ask"}
     assert RUN_PERMISSIONS.get() is None
 
 
 def test_process_cli_binds_and_restores_run_permissions() -> None:
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
-    rail = SimpleNamespace(_run_permission_levels=None)
+    rail = SimpleNamespace(run_permission_levels=None)
     adapter._permission_rail = rail
     adapter._is_session_scoped_adapter = False
     adapter._enable_auto_permission = False
@@ -54,9 +54,9 @@ def test_process_cli_binds_and_restores_run_permissions() -> None:
 
     with adapter._bind_permission_request_context(request):
         assert RUN_PERMISSIONS.get() == {"write_file": "deny"}
-        assert rail._run_permission_levels == {"write_file": "deny"}
+        assert rail.run_permission_levels == {"write_file": "deny"}
         assert overlay_run_permissions({"tools": {"write_file": "allow"}})["tools"] == {
             "write_file": "deny"
         }
-    assert rail._run_permission_levels is None
+    assert rail.run_permission_levels is None
     assert RUN_PERMISSIONS.get() is None

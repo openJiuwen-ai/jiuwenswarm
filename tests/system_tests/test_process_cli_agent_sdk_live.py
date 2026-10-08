@@ -133,7 +133,7 @@ async def test_run_scoped_capabilities_and_custom_work_agent_live(tmp_path: Path
         shutil.copyfile(source / name, isolated_config / name)
 
     root = Path(__file__).resolve().parents[2]
-    sys.path.insert(0, str(root / "sdks" / "python" / "src"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sdks" / "python" / "src"))
     from jiuwenswarm_sdk import Client
 
     client = Client(
@@ -202,7 +202,7 @@ async def test_run_scoped_deny_keeps_file_absent_in_real_code_run(tmp_path: Path
     workspace.mkdir()
     target = workspace / "must_not_exist.txt"
     root = Path(__file__).resolve().parents[2]
-    sys.path.insert(0, str(root / "sdks" / "python" / "src"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sdks" / "python" / "src"))
     from jiuwenswarm_sdk import Client
 
     client = Client(

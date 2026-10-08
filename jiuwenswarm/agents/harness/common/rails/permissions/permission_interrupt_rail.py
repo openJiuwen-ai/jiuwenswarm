@@ -151,7 +151,7 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
             RUN_PERMISSIONS, overlay_run_permissions,
         )
 
-        levels = RUN_PERMISSIONS.get() or getattr(self, "_run_permission_levels", None)
+        levels = RUN_PERMISSIONS.get() or getattr(self, "run_permission_levels", None)
         run_token = RUN_PERMISSIONS.set(levels)
         normalized_name = self._normalize_tool_name(tool_call.name) if tool_call else ""
         level = levels.get(normalized_name) if levels else None

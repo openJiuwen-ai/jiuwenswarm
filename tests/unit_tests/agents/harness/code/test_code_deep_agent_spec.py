@@ -506,16 +506,18 @@ def test_runtime_agent_definition_overlays_complete_product_spec():
     assert effective.enable_tool_resilience_rail is True
 
 
-def test_runtime_agent_definition_rejects_unsupported_tool_override():
-    with pytest.raises(ValueError, match="configured set"):
-        interface_code.JiuwenSwarmCodeAdapter._apply_runtime_agent_definition(
-            DeepAgentSpec(system_prompt="product prompt"),
-            {
-                "name": "sdk_agent",
-                "instructions": "Follow the SDK task.",
-                "tools": ["shell"],
-            },
-        )
+def test_runtime_agent_definition_with_tool_list_disables_broader_subagents():
+    base = DeepAgentSpec(system_prompt="product prompt")
+    effective = interface_code.JiuwenSwarmCodeAdapter._apply_runtime_agent_definition(
+        base,
+        {
+            "name": "sdk_agent",
+            "instructions": "Follow the SDK task.",
+            "tools": ["shell"],
+        },
+    )
+    assert effective.subagents == []
+    assert effective.tools == base.tools
 
 
 def test_runtime_agent_definition_is_propagated_to_session_builds():

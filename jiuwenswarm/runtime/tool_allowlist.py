@@ -19,7 +19,7 @@ def install_tool_allowlist(manager: Any, tool_names: Iterable[str]) -> None:
     allowed = frozenset(tool_names)
     if not allowed or "*" in allowed:
         raise ValueError("an explicit tool allowlist must contain tool names")
-    if getattr(manager, "_jiuwenswarm_tool_allowlist", None) is not None:
+    if getattr(manager, "jiuwenswarm_tool_allowlist", None) is not None:
         raise ValueError("tool allowlist is already installed")
 
     original_list = manager.list
@@ -44,4 +44,4 @@ def install_tool_allowlist(manager: Any, tool_names: Iterable[str]) -> None:
     manager.list = limited_list
     manager.list_tool_info = limited_list_tool_info
     manager.execute = limited_execute
-    manager._jiuwenswarm_tool_allowlist = allowed
+    manager.jiuwenswarm_tool_allowlist = allowed

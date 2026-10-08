@@ -72,7 +72,7 @@ async def test_root_tool_allowlist_filters_discovery_and_blocks_execution() -> N
 @pytest.mark.asyncio
 async def test_permission_rail_rejects_run_deny_before_host_approval() -> None:
     rail = object.__new__(JiuwenSwarmPermissionInterruptRail)
-    rail._run_permission_levels = {"write_file": "deny"}
+    rail.run_permission_levels = {"write_file": "deny"}
     rail._normalize_tool_name = lambda name: name
     rail.reject = lambda *, tool_result: tool_result
 

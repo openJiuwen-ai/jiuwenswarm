@@ -2144,10 +2144,9 @@ class AgentManager:
             "mode": selected_mode,
             "project_dir": project_dir,
             "sub_mode": selected_sub_mode,
-            "run_permissions_enabled": (
-                channel_id == "process_cli" and isinstance(params.get("run_permissions"), dict)
-            ),
         }
+        if channel_id == "process_cli" and isinstance(params.get("run_permissions"), dict):
+            get_kwargs["run_permissions_enabled"] = True
         if agent_definition is not None:
             get_kwargs["agent_definition"] = agent_definition
             get_kwargs["agent_definition_fingerprint"] = (

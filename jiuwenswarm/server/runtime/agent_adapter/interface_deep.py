@@ -15225,11 +15225,11 @@ class JiuWenSwarmDeepAdapter:
             raise ValueError("run permissions require an enabled Runtime permission rail")
         permission_rail = self._permission_rail
         previous_rail_levels = (
-            getattr(permission_rail, "_run_permission_levels", None)
+            getattr(permission_rail, "run_permission_levels", None)
             if permission_rail is not None else None
         )
         if permission_rail is not None:
-            permission_rail._run_permission_levels = tool_levels
+            permission_rail.run_permission_levels = tool_levels
         run_permissions_token = RUN_PERMISSIONS.set(tool_levels)
         runtime_mode = str(request_params.get("mode") or "agent").strip().lower()
         root_invocation_token = bind_root_permission_request(
@@ -15258,7 +15258,7 @@ class JiuWenSwarmDeepAdapter:
             yield
         finally:
             if permission_rail is not None:
-                permission_rail._run_permission_levels = previous_rail_levels
+                permission_rail.run_permission_levels = previous_rail_levels
             RUN_PERMISSIONS.reset(run_permissions_token)
             reset_root_permission_request(root_invocation_token)
             if command_token is not None:
