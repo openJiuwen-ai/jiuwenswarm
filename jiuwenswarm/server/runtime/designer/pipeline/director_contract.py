@@ -840,7 +840,6 @@ async def enrich_analysis_with_llm(
         result = await call_model_tool(
             prompt=json.dumps(user_payload, ensure_ascii=False),
             system=system,
-            optimize_for="quality",
             max_tokens=16384,
         )
         text = model_text_or_raise(result)

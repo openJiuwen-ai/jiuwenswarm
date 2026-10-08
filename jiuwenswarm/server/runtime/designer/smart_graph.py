@@ -444,37 +444,17 @@ def _plan_cast_sheets(
     characters: list[dict[str, Any]],
     shots: list[dict[str, Any]],
     *,
-    prefer_combined: bool,
     prompt: str = "",
 ) -> tuple[list[dict[str, Any]], dict[str, list[str]], str]:
-    """Plan cast postcard nodes and per-shot node refs.
+    """Plan solo cast postcard nodes and per-shot node refs.
 
-    Identity rule: **always** one solo sheet per character (canonical look).
-    Optional combined sheets are compose aids only — keyframes/shots must
-    reference solo sheets via ``character_node_ids`` so wardrobe cannot drift
-    when a multi-person postcard is regenerated independently. Combined aids
-    are still wired into matching frame/shot edges by the graph builder.
+    Identity rule: one solo sheet per character (canonical look). Combined
+    multi-person sheets are not used — quality path always composes from solos.
     """
     id_to_char = {str(c.get("id")): c for c in characters if str(c.get("id") or "")}
-    groups: list[frozenset[str]] = []
-    seen_groups: set[frozenset[str]] = set()
-    for shot in shots:
-        cids = [
-            str(x)
-            for x in (shot.get("character_ids") or [])
-            if str(x) in id_to_char
-        ]
-        cids = list(dict.fromkeys(cids))
-        if len(cids) >= 2:
-            key = frozenset(cids)
-            if key not in seen_groups:
-                seen_groups.add(key)
-                groups.append(key)
-
     sheets: list[dict[str, Any]] = []
-    budget = max(_MAX_SPLIT_CHARS, len(characters) + len(groups))
+    budget = max(_MAX_SPLIT_CHARS, len(characters))
 
-    # 1) Canonical solo identity sheets — always.
     for ch in characters:
         cid = str(ch.get("id") or "")
         if not cid or cid not in id_to_char:
@@ -506,44 +486,6 @@ def _plan_cast_sheets(
             }
         )
 
-    # 2) Optional combined compose aids (not the identity source of truth).
-    use_combined = bool(prefer_combined and groups)
-    if use_combined:
-        for g in groups:
-            if len(sheets) >= budget:
-                break
-            members = [id_to_char[cid] for cid in sorted(g) if cid in id_to_char]
-            if not members:
-                continue
-            names = [str(m.get("name") or m.get("id")) for m in members]
-            from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
-                costume_lock_for_ids,
-                enrich_character_clothing,
-            )
-
-            for m in members:
-                enrich_character_clothing(m)
-            cast_costume = costume_lock_for_ids(
-                members, [str(m.get("id")) for m in members]
-            )
-            sheets.append(
-                {
-                    "character_ids": [str(m.get("id")) for m in members],
-                    "character_names": names,
-                    "combined_cast": True,
-                    "identity_source": False,
-                    "label": (" & ".join(names))[:48],
-                    "prompt_body": "; ".join(
-                        f"{m.get('name')}: {m.get('description')}" for m in members
-                    ),
-                    "costume_lock": cast_costume[:480]
-                    or "; ".join(
-                        f"{m.get('name')}: {str(m.get('costume_lock') or m.get('description') or '')[:100]}"
-                        for m in members
-                    )[:320],
-                }
-            )
-
     if not sheets and characters:
         ch = characters[0]
         name = _character_display_name(ch, prompt)
@@ -559,30 +501,21 @@ def _plan_cast_sheets(
             }
         )
 
-    # Assign node ids — solos first (n_character / n_character_i), combined as n_cast_*.
-    solo_count = sum(1 for s in sheets if not s["combined_cast"])
-    solo_i = 0
-    cast_i = 0
-    for sheet in sheets:
-        if sheet["combined_cast"]:
-            cast_i += 1
-            sheet["node_id"] = f"n_cast_{cast_i}"
+    solo_count = len(sheets)
+    for solo_i, sheet in enumerate(sheets, start=1):
+        if solo_count == 1:
+            sheet["node_id"] = "n_character"
         else:
-            solo_i += 1
-            if solo_count == 1:
-                sheet["node_id"] = "n_character"
-            else:
-                sheet["node_id"] = f"n_character_{solo_i}"
+            sheet["node_id"] = f"n_character_{solo_i}"
 
     solo_by_id: dict[str, str] = {}
     costume_by_id: dict[str, str] = {}
     for sheet in sheets:
         ids = [str(x) for x in sheet["character_ids"]]
-        if not sheet["combined_cast"] and len(ids) == 1:
+        if len(ids) == 1:
             solo_by_id[ids[0]] = str(sheet["node_id"])
             costume_by_id[ids[0]] = str(sheet.get("costume_lock") or "")
 
-    # Per-shot refs = solo sheets only (compose multi-char keyframes from individuals).
     shot_to_nodes: dict[str, list[str]] = {}
     for shot in shots:
         idx = str(int(shot.get("shot_index") or 0))
@@ -594,44 +527,13 @@ def _plan_cast_sheets(
         cids = list(dict.fromkeys(cids))
         nodes = [solo_by_id[cid] for cid in cids if cid in solo_by_id]
         if not nodes:
-            nodes = [str(s["node_id"]) for s in sheets if not s["combined_cast"]] or [
-                str(s["node_id"]) for s in sheets
-            ]
+            nodes = [str(s["node_id"]) for s in sheets]
         shot_to_nodes[idx] = list(dict.fromkeys(nodes))
 
-    if use_combined and solo_count:
-        layout = "solo_first_with_combined_aids"
-    elif solo_count <= 1:
-        layout = "single"
-    else:
-        layout = "solo_first"
-    # Stash costume map on first sheet metadata for graph builder (returned via sheets).
+    layout = "single" if solo_count <= 1 else "solo_first"
     for sheet in sheets:
         sheet["_costume_by_id"] = costume_by_id
     return sheets, shot_to_nodes, layout
-
-
-def _combined_aid_nodes_for_shot(
-    cast_sheets: list[dict[str, Any]],
-    focus_cids: list[str],
-) -> list[str]:
-    """Combined cast postcard ids that intersect this shot's character_ids.
-
-    Compose aids only — never identity sources. Caller must attach them to
-    ``frame_inputs`` / ``clip_inputs`` (and edges) but leave
-    ``identity_refs.character_node_ids`` as solos.
-    """
-    focus_set = {str(x) for x in focus_cids if str(x)}
-    if not focus_set:
-        return []
-    aids: list[str] = []
-    for sheet in cast_sheets:
-        if not sheet.get("combined_cast"):
-            continue
-        sheet_ids = {str(x) for x in (sheet.get("character_ids") or []) if str(x)}
-        if sheet_ids & focus_set:
-            aids.append(str(sheet["node_id"]))
-    return list(dict.fromkeys(aids))
 
 
 def ensure_combined_cast_reach_compose(graph: DesignerExecutionGraph) -> list[str]:
@@ -842,7 +744,6 @@ def build_smart_video_graph(
     prompt: str,
     analysis: dict[str, Any],
     title: str | None = None,
-    optimize_for: str = "quality",
 ) -> DesignerExecutionGraph:
     """Lean multi-shot video DAG: few image gens + brief/storyboard.
 
@@ -864,12 +765,10 @@ def build_smart_video_graph(
             prompt=prompt_text,
             analysis=analysis,
             title=title,
-            optimize_for=optimize_for,
         )
         graph = normalize_execution_graph(graph)
         prune_non_contributing_nodes(graph)
         return attach_skills_metadata(graph, prompt_text)
-    mode = "cost" if str(optimize_for).strip().lower() == "cost" else "quality"
     from jiuwenswarm.server.runtime.designer.audio_locks import ensure_audio_locks_on_analysis
 
     analysis = ensure_audio_locks_on_analysis(dict(analysis or {}), prompt_text)
@@ -989,13 +888,9 @@ def build_smart_video_graph(
     aspect["video_resolution"] = film_video_res
     analysis["aspect_lock"] = aspect
 
-    # Quality path: solo identity sheets only — keyframes compose multi-person.
-    prefer_combined = False
     cast_sheets, shot_cast_nodes, cast_layout = _plan_cast_sheets(
-        characters, shots, prefer_combined=prefer_combined, prompt=prompt_text
+        characters, shots, prompt=prompt_text
     )
-    # Drop any combined sheets that slipped through (no concatenation).
-    cast_sheets = [s for s in cast_sheets if not s.get("combined_cast")]
     film_duration = _duration_sec_for_graph(prompt_text, analysis, characters)
     try:
         from jiuwenswarm.server.runtime.designer.pipeline.production_bible import (
@@ -1020,7 +915,6 @@ def build_smart_video_graph(
                 "role": NODE_ROLE_BRIEF,
                 "prompt": prompt_text,
                 "tools": ["call_model", "write_artifact"],
-                "optimize_for": mode,
                 "agent_name": label_brief(story_name),
                 "kind": "agent",
                 "skill_id": "brief",
@@ -1045,7 +939,6 @@ def build_smart_video_graph(
         "prompt": prompt_text,
         "planned_shots": shots,
         "inputs": ["n_brief"],
-        "optimize_for": mode,
         "agent_name": label_storyboard(story_name),
         "kind": "agent",
         "skill_id": "storyboard",
@@ -1135,7 +1028,6 @@ def build_smart_video_graph(
                     "image_size": _IMAGE_SIZE,
                     "max_image_calls": 1,
                     "inputs": ["n_brief", "n_storyboard"],
-                    "optimize_for": mode,
                     "agent_name": agent,
                     "kind": "agent",
                     "skill_id": "character",
@@ -1374,7 +1266,6 @@ def build_smart_video_graph(
                     "image_size": _IMAGE_SIZE,
                     "max_image_calls": 1,
                     "inputs": scene_inputs,
-                    "optimize_for": mode,
                     "agent_name": scene_label,
                     "kind": "agent",
                     "skill_id": "scene",
@@ -1789,7 +1680,6 @@ def build_smart_video_graph(
             "generate": {"prompt": shot_prompt_body},
             "max_video_calls": 1,
             "inputs": clip_inputs,
-            "optimize_for": mode,
             "agent_name": clip_label,
             "kind": "agent",
             "skill_id": "clip",
@@ -1903,7 +1793,6 @@ def build_smart_video_graph(
             "config": {
                 "role": NODE_ROLE_COMPOSE,
                 "inputs": compose_inputs,
-                "optimize_for": mode,
                 "agent_name": label_compose(story_name),
                 "kind": "agent",
                 "skill_id": "compose",
@@ -1932,7 +1821,6 @@ def build_smart_video_graph(
         "metadata": {
             "bootstrap": "designer.graph.smart_video.quality.v5",
             "scenario": "video",
-            "optimize_for": mode,
             "skill_guided": True,
             "script_analysis": analysis,
             "audio_intent": audio,

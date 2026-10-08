@@ -50,9 +50,8 @@ def test_config_inputs_count_as_schedule_deps_even_without_edge():
             "b": {"status": NODE_STATUS_PENDING},
         }
     }
-    groups = {"a": frozenset({"a"}), "b": frozenset({"b"})}
-    assert _is_ready("a", run, preds, groups)
-    assert not _is_ready("b", run, preds, groups)
+    assert _is_ready("a", run, preds)
+    assert not _is_ready("b", run, preds)
 
 
 def test_cycle_breaks_by_shot_priority_so_dependent_waits():
@@ -78,9 +77,8 @@ def test_cycle_breaks_by_shot_priority_so_dependent_waits():
             "n_clip_2": {"status": NODE_STATUS_PENDING},
         }
     }
-    groups = {k: frozenset({k}) for k in ("n_clip_1", "n_clip_2")}
-    assert _is_ready("n_clip_1", run, dag, groups)
-    assert not _is_ready("n_clip_2", run, dag, groups)
+    assert _is_ready("n_clip_1", run, dag)
+    assert not _is_ready("n_clip_2", run, dag)
 
 
 def test_same_level_ready_set_never_starts_dependent_with_peer_pred():
@@ -149,14 +147,13 @@ def test_soft_clip_dep_unlocks_when_prior_prompt_artifact_ready():
     assert is_soft_artifact_dependency(graph, "n_clip_1", "n_clip_2")
     assert artifact_dependency_satisfied(graph, "n_clip_2", "n_clip_1")
     preds = execution_predecessors(graph)
-    groups = {k: frozenset({k}) for k in ("n_clip_1", "n_clip_2")}
     run = {
         "node_states": {
             "n_clip_1": {"status": NODE_STATUS_RUNNING},
             "n_clip_2": {"status": NODE_STATUS_PENDING},
         }
     }
-    assert _is_ready("n_clip_2", run, preds, groups, graph)
+    assert _is_ready("n_clip_2", run, preds, graph)
     selected = filter_ready_by_dependency_order(
         ["n_clip_2"],
         preds=preds,
@@ -183,20 +180,19 @@ def test_later_clip_waits_until_prior_wan_prompt_exists():
         [{"id": "e12", "source": "n_clip_1", "target": "n_clip_2", "kind": "data"}],
     )
     preds = execution_predecessors(graph)
-    groups = {k: frozenset({k}) for k in ("n_clip_1", "n_clip_2")}
     run = {
         "node_states": {
             "n_clip_1": {"status": "running"},
             "n_clip_2": {"status": NODE_STATUS_PENDING},
         }
     }
-    assert not _is_ready("n_clip_2", run, preds, groups, graph)
+    assert not _is_ready("n_clip_2", run, preds, graph)
 
     graph["nodes"][0]["config"]["handoff_artifact_ready"] = True
     graph["nodes"][0]["config"]["last_wan_prompt"] = (
         "Image 1 is Father.\nImage 2 is the dining room.\nFather sits down."
     )
-    assert _is_ready("n_clip_2", run, preds, groups, graph)
+    assert _is_ready("n_clip_2", run, preds, graph)
     selected = filter_ready_by_dependency_order(
         ["n_clip_1", "n_clip_2"],
         preds=preds,
@@ -220,7 +216,6 @@ def test_clip_starts_while_scene_is_still_running_once_plate_exists():
         [{"id": "e", "source": "n_scene", "target": "n_clip_1", "kind": "data"}],
     )
     preds = execution_predecessors(graph)
-    groups = {k: frozenset({k}) for k in ("n_scene", "n_clip_1")}
     run = {
         "node_states": {
             "n_scene": {
@@ -234,7 +229,7 @@ def test_clip_starts_while_scene_is_still_running_once_plate_exists():
             "n_clip_1": {"status": NODE_STATUS_PENDING},
         }
     }
-    assert _is_ready("n_clip_1", run, preds, groups, graph)
+    assert _is_ready("n_clip_1", run, preds, graph)
     selected = filter_ready_by_dependency_order(
         ["n_clip_1"],
         preds=preds,
@@ -258,7 +253,6 @@ def test_compose_stays_locked_while_a_clip_is_still_running():
         [{"id": "e", "source": "n_clip_1", "target": "n_compose", "kind": "data"}],
     )
     preds = execution_predecessors(graph)
-    groups = {k: frozenset({k}) for k in ("n_clip_1", "n_compose")}
     run = {
         "node_states": {
             "n_clip_1": {
@@ -272,7 +266,7 @@ def test_compose_stays_locked_while_a_clip_is_still_running():
             "n_compose": {"status": NODE_STATUS_PENDING},
         }
     }
-    assert not _is_ready("n_compose", run, preds, groups, graph)
+    assert not _is_ready("n_compose", run, preds, graph)
     selected = filter_ready_by_dependency_order(
         ["n_compose"],
         preds=preds,
@@ -327,7 +321,6 @@ def test_compose_waits_for_all_clips_not_soft_unlocked(tmp_path):
     assert not is_soft_artifact_dependency(graph, "n_clip_3", "n_compose")
 
     preds = execution_predecessors(graph)
-    groups = {k: frozenset({k}) for k in ("n_clip_1", "n_clip_2", "n_clip_3", "n_compose")}
     run = {
         "node_states": {
             "n_clip_1": {"status": NODE_STATUS_COMPLETED, "output_ref": _vid("c1.mp4")},
@@ -336,13 +329,13 @@ def test_compose_waits_for_all_clips_not_soft_unlocked(tmp_path):
             "n_compose": {"status": NODE_STATUS_PENDING},
         }
     }
-    assert not _is_ready("n_compose", run, preds, groups, graph)
+    assert not _is_ready("n_compose", run, preds, graph)
 
     run["node_states"]["n_clip_2"] = {
         "status": NODE_STATUS_COMPLETED,
         "output_ref": _vid("c2.mp4"),
     }
-    assert _is_ready("n_compose", run, preds, groups, graph)
+    assert _is_ready("n_compose", run, preds, graph)
 
 
 @pytest.mark.asyncio
@@ -467,7 +460,6 @@ def test_compose_also_waits_for_connected_audio_nodes(tmp_path):
     required = compose_required_predecessor_ids(graph)
     assert required == ["n_clip_1", "n_music", "n_speech"]
     preds = execution_predecessors(graph)
-    groups = {k: frozenset({k}) for k in required + ["n_compose"]}
     run = {
         "node_states": {
             "n_clip_1": {"status": NODE_STATUS_COMPLETED, "output_ref": clip_ref},
@@ -476,16 +468,16 @@ def test_compose_also_waits_for_connected_audio_nodes(tmp_path):
             "n_compose": {"status": NODE_STATUS_PENDING},
         }
     }
-    assert not _is_ready("n_compose", run, preds, groups, graph)
+    assert not _is_ready("n_compose", run, preds, graph)
     run["node_states"]["n_speech"] = {"status": NODE_STATUS_COMPLETED, "output_ref": speech_ref}
-    assert _is_ready("n_compose", run, preds, groups, graph)
+    assert _is_ready("n_compose", run, preds, graph)
 
     # COMPLETED without a real audio file must not unlock compose.
     run["node_states"]["n_speech"] = {
         "status": NODE_STATUS_COMPLETED,
         "output_ref": {"kind": "audio", "uri": (tmp_path / "missing.wav").as_uri()},
     }
-    assert not _is_ready("n_compose", run, preds, groups, graph)
+    assert not _is_ready("n_compose", run, preds, graph)
 
 
 def test_hard_keyframe_dep_still_blocks_until_complete():
@@ -504,11 +496,10 @@ def test_hard_keyframe_dep_still_blocks_until_complete():
         [{"id": "e", "source": "n_frame_1", "target": "n_clip_1", "kind": "data"}],
     )
     preds = execution_predecessors(graph)
-    groups = {k: frozenset({k}) for k in ("n_frame_1", "n_clip_1")}
     run = {
         "node_states": {
             "n_frame_1": {"status": NODE_STATUS_RUNNING},
             "n_clip_1": {"status": NODE_STATUS_PENDING},
         }
     }
-    assert not _is_ready("n_clip_1", run, preds, groups, graph)
+    assert not _is_ready("n_clip_1", run, preds, graph)

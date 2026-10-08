@@ -327,7 +327,6 @@ async def plan_document_edits(
         result = await call_model_tool(
             prompt=json.dumps(context, ensure_ascii=False),
             system=_DOCUMENT_SYSTEM,
-            optimize_for="quality",
             max_tokens=16384,
         )
         text = model_text_or_raise(result)

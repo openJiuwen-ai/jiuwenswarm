@@ -195,7 +195,6 @@ async def test_call_model_tool_does_not_retry_after_402() -> None:
         result = await model_tools.call_model_tool(
             prompt="hello",
             system="reply",
-            optimize_for="cost",
         )
         assert result["ok"] is False
         assert result["unavailable"] is True

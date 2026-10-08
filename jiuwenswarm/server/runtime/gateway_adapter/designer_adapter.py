@@ -25,7 +25,6 @@ from jiuwenswarm.common.schema.designer_graph import (
     CONFIG_DELEGATE_HANDLER,
     DesignerGraphValidationError,
     apply_graph_patch,
-    build_bootstrap_graph,
     node_pipeline,
     node_role,
     NODE_ROLE_COMPOSE,
@@ -400,7 +399,6 @@ async def _create_design_workspace_once(
             "prompt": prompt,
             "project_id": project_id,
             "work_mode": DESIGN_WORK_MODE,
-            "optimize_for": "quality",
             "session_id": session_id,
             **({"model_name": model_name} if model_name else {}),
             **(
@@ -871,8 +869,6 @@ def _bootstrap_graph(
         }
 
     title = params.get("title")
-    optimize_raw = str(params.get("optimize_for") or params.get("optimizeFor") or "quality")
-    optimize_for = "cost" if optimize_raw.strip().lower() == "cost" else "quality"
     from pathlib import Path as _Path
 
     from jiuwenswarm.server.runtime.designer.model_tools import (
@@ -924,13 +920,11 @@ def _bootstrap_graph(
                 prompt=prompt,
                 analysis=analysis,
                 title=str(title).strip() if isinstance(title, str) else None,
-                optimize_for=optimize_for,
             )
         )
     except DesignerLlmError as exc:
         return None, exc.user_message, exc.code
     meta = dict(graph.get("metadata") or {})
-    meta["optimize_for"] = optimize_for
     meta["scenario"] = "video"
     meta["script_analysis"] = analysis
     # Enter already authored Brief→Storyboard→Graph — skip Play redesign.
@@ -1402,11 +1396,6 @@ async def _bootstrap_graph_with_director_impl(
     from jiuwenswarm.server.runtime.designer.orchestration import Director
     from jiuwenswarm.server.runtime.designer.smart_graph import apply_runtime_delegate
 
-    optimize_for = str(
-        params.get("optimize_for")
-        or (graph.get("metadata") or {}).get("optimize_for")
-        or "quality"
-    )
     try:
         if callable(on_progress):
             on_progress("thinking", "Director · Authoring brief (LLM)")
@@ -1428,7 +1417,6 @@ async def _bootstrap_graph_with_director_impl(
             )
         await Director().design_execution_graph(
             graph,
-            optimize_for=optimize_for,
         )
         if callable(on_progress):
             on_progress("thinking", "Director · Validating / approving graph + locks")

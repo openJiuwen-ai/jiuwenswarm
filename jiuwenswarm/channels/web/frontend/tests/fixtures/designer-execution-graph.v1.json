@@ -118,9 +118,7 @@
       "target": "n_compose"
     }
   ],
-  "metadata": {
-    "bootstrap": "designer.graph.bootstrap.v1"
-  },
+  "metadata": {},
   "created_at": 1700000000000,
   "updated_at": 1700000000000
 }

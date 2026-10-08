@@ -852,13 +852,9 @@ class DesignerGraphToolkit:
 
         node = _node_from_ctx(self.ctx)
         cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
-        optimize = str(
-            (self.ctx.graph.get("metadata") or {}).get("optimize_for") or "quality"
-        )
         result = await call_model_tool(
             prompt=str(prompt or graph_prompt(self.ctx.graph, node) or "")[:6000],
             system=str(system or cfg.get("director_task") or "You are a Designer node agent.")[:4000],
-            optimize_for=optimize,
             max_tokens=16384,
         )
         return model_text_or_raise(result)

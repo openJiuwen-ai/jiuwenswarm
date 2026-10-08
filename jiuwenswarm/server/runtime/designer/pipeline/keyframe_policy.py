@@ -610,11 +610,6 @@ def _expand_blocking_to_visible(
     }
 
 
-def apply_ensemble_master_policy(analysis: dict[str, Any]) -> dict[str, Any]:
-    """Stamp Plan A setting-master strategies (delegates to compose-solos occupancy)."""
-    return apply_compose_solos_setting_policy(analysis)
-
-
 def _expand_blocking_to_ensemble(
     shot: dict[str, Any],
     by_id: dict[str, dict[str, Any]],
@@ -623,82 +618,3 @@ def _expand_blocking_to_ensemble(
     """Legacy helper — prefer visible-only blocking."""
     actions = _cast_actions_map(shot)
     _expand_blocking_to_visible(shot, by_id, ensemble, actions)
-
-
-def apply_master_still_policy(
-    analysis: dict[str, Any],
-    *,
-    prompt: str = "",
-    experiment_plan: str = "B",
-) -> dict[str, Any]:
-    """Stamp keyframe_policy + per-shot strategy hints onto analysis."""
-    out = analysis if isinstance(analysis, dict) else {}
-    out["keyframe_policy"] = "master_still"
-    out["experiment_plan"] = str(experiment_plan or "B").strip().upper() or "B"
-    shots = [s for s in (out.get("shots") or []) if isinstance(s, dict)]
-    for i, shot in enumerate(shots, start=1):
-        shot["shot_index"] = i
-        relation = str(shot.get("shot_relation") or "").strip().lower()
-        if i == 1:
-            shot["keyframe_strategy"] = "master_still"
-        elif relation in {"angle_variant", "continuation"}:
-            shot["keyframe_strategy"] = "edit_prior_keyframe"
-        else:
-            shot["keyframe_strategy"] = "edit_prior_keyframe"
-            shot["master_still_hard_cut"] = True
-    out["shots"] = shots
-    out["target_shot_count"] = len(shots)
-    out.setdefault(
-        "keyframe_policy_notes",
-        {
-            "version": "plan_b.v1",
-            "rule": (
-                "Solos = identity locks only. Shot-1 master still owns blocking. "
-                "Later shots edit prior keyframe for set continuity."
-            ),
-        },
-    )
-    _ = prompt
-    return out
-
-
-def resolve_keyframe_strategy(
-    *,
-    policy: str,
-    shot_index: int,
-    shot: dict[str, Any],
-    relation: str,
-    use_prior_edit_default: bool,
-) -> tuple[str, bool]:
-    """Return (strategy, use_prior_edit)."""
-    pol = str(policy or "").strip().lower()
-    explicit = str(shot.get("keyframe_strategy") or "").strip().lower()
-
-    if pol == "ensemble_master":
-        if explicit == "master_still" or shot.get("ensemble_master"):
-            return "master_still", False
-        if explicit == "edit_prior_keyframe" or shot.get("same_setting_prior_edit"):
-            return "edit_prior_keyframe", True
-        if shot_index <= 1:
-            return "master_still", False
-        return "edit_prior_keyframe", True
-
-    if pol in {"compose_solos_prior", "compose_solos"}:
-        # Always compose from solo sheets; scene consistency is prompt/bible lock.
-        if explicit == "master_still":
-            return "master_still", False
-        return "compose_from_solo_refs", False
-
-    if pol != "master_still":
-        strategy = (
-            "edit_prior_keyframe" if use_prior_edit_default else "compose_from_solo_refs"
-        )
-        return strategy, bool(use_prior_edit_default)
-
-    if shot_index <= 1:
-        return "master_still", False
-    if explicit in {"master_still", "edit_prior_keyframe", "compose_from_solo_refs"}:
-        return explicit, explicit == "edit_prior_keyframe"
-    if relation in {"angle_variant", "continuation"} or use_prior_edit_default:
-        return "edit_prior_keyframe", True
-    return "edit_prior_keyframe", True

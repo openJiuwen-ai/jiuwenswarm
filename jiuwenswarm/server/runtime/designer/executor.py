@@ -45,14 +45,12 @@ from jiuwenswarm.common.schema.designer_graph import (
     execution_predecessors,
     filter_ready_by_dependency_order,
     frame_node_id,
-    graph_uses_agent_scheduler,
     initial_node_states,
     is_comfyui_node,
     is_soft_artifact_dependency,
     new_run_id,
     node_pipeline,
     node_uses_agent_runtime,
-    sync_groups,
     utc_now_ms,
 )
 from jiuwenswarm.common.schema.message import EventType
@@ -327,13 +325,10 @@ class GraphExecutor:
         if source_run is None:
             raise ValueError("no previous run to rerun from")
         incoming = execution_predecessors(graph)
-        groups = sync_groups(graph)
         source_states = source_run.get("node_states") or {}
         for pred in incoming.get(node_id, []):
-            members = groups.get(pred, frozenset({pred}))
-            for member in members:
-                if (source_states.get(member) or {}).get("status") != NODE_STATUS_COMPLETED:
-                    raise ValueError(f"upstream not ready: {member}")
+            if (source_states.get(pred) or {}).get("status") != NODE_STATUS_COMPLETED:
+                raise ValueError(f"upstream not ready: {pred}")
         now = utc_now_ms()
         states = deepcopy(source_states)
         for node in graph.get("nodes", []):
@@ -689,8 +684,7 @@ class GraphExecutor:
 
         if is_compose_sink_node(target_node):
             preds = execution_predecessors(graph)
-            groups = sync_groups(graph)
-            if not _is_ready(target, run, preds, groups, graph):
+            if not _is_ready(target, run, preds, graph):
                 return (
                     f"compose blocked: waiting for all shots"
                     f"{' and audio nodes' if any(k.startswith('n_speech') or k.startswith('n_music') or 'speech' in k or 'music' in k for k in preds.get(target, [])) else ''}"
@@ -811,12 +805,8 @@ class GraphExecutor:
         if target_node_id is not None:
             await self._execute_node_run(graph, run, target_node_id, on_update=on_update)
             return
-        # Always use the continuous wave scheduler. The agent-spawn scheduler
-        # dropped ready nodes past the concurrency cap (spawn returned
-        # "too many concurrent" and was ignored), which left the run stalled
-        # with pending nodes — UI showed Continue. Leaf agents still run via
+        # Always use the continuous wave scheduler. Leaf agents still run via
         # config.delegate=agent inside _run_single_node.
-        _ = graph_uses_agent_scheduler  # retained import for callers/tests
         if _scope_node_ids(run):
             await self._execute_scoped_run(graph, run, on_update=on_update)
             return
@@ -840,7 +830,7 @@ class GraphExecutor:
             if self._is_cancelled(run_id):
                 return
             node = _node_by_id(graph, node_id)
-            if not _is_ready(node_id, run, execution_predecessors(graph), sync_groups(graph), graph):
+            if not _is_ready(node_id, run, execution_predecessors(graph), graph):
                 raise ValueError(f"node is not ready: {node_id}")
             run["current_node_ids"] = [node_id]
             self._publish(run, on_update)
@@ -919,79 +909,6 @@ class GraphExecutor:
         finally:
             self._cleanup_run(run_id)
 
-    async def _execute_agent_run(
-        self,
-        graph: DesignerExecutionGraph,
-        run: DesignerExecutionRun,
-        *,
-        on_update: RunUpdateCallback | None,
-    ) -> None:
-        """Run all ready waves to completion (same one-pass contract as wave executor)."""
-        run_id = run["run_id"]
-        try:
-            while True:
-                await self._await_pause(run_id)
-                if self._is_cancelled(run_id):
-                    return
-                run = self._require_run(run_id)
-                graph = self._require_graph(str(run.get("graph_id") or graph.get("graph_id") or ""))
-                incoming = execution_predecessors(graph)
-                groups = sync_groups(graph)
-                ready_ids = [
-                    node["id"]
-                    for node in graph.get("nodes") or []
-                    if _is_ready(node["id"], run, incoming, groups, graph)
-                ]
-                ready_ids = filter_ready_by_dependency_order(
-                    ready_ids,
-                    preds=incoming,
-                    in_flight=set(),
-                    graph=graph,
-                    run=run,
-                )
-                if not ready_ids:
-                    pending = any(
-                        (run.get("node_states") or {}).get(node["id"], {}).get("status")
-                        == NODE_STATUS_PENDING
-                        for node in graph.get("nodes") or []
-                    )
-                    run["status"] = RUN_STATUS_FAILED if pending else RUN_STATUS_COMPLETED
-                    run["current_node_ids"] = []
-                    run["updated_at"] = utc_now_ms()
-                    self._publish(run, on_update)
-                    self._store.save_run(run)
-                    return
-                run["current_node_ids"] = list(ready_ids)
-                run["updated_at"] = utc_now_ms()
-                self._publish(run, on_update)
-                self._store.save_run(run)
-                for node_id in ready_ids:
-                    await self.spawn_node_agent(run_id, node_id)
-                await self._wait_agent_workers(run_id)
-                if self._is_cancelled(run_id):
-                    return
-                run = self._require_run(run_id)
-                if NODE_STATUS_FAILED in {
-                    state.get("status") for state in graph_node_states(run).values()
-                }:
-                    run["status"] = RUN_STATUS_FAILED
-                    run["current_node_ids"] = []
-                    run["updated_at"] = utc_now_ms()
-                    self._publish(run, on_update)
-                    self._store.save_run(run)
-                    return
-        except asyncio.CancelledError:
-            run = self.cancel_run(run_id)
-            self._publish(run, on_update)
-            raise
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Designer agent run %s failed: %s", run_id, exc)
-            _stamp_run_failure(run, exc)
-            self._publish(run, on_update)
-            self._store.save_run(run)
-        finally:
-            self._cleanup_run(run_id)
-
     async def _execute_wave_run(
         self,
         graph: DesignerExecutionGraph,
@@ -1012,7 +929,6 @@ class GraphExecutor:
             get_trajectory,
         )
 
-        optimize_for = str((graph.get("metadata") or {}).get("optimize_for") or "quality")
         # One-pass: never consume prior ratings/feedback unless this is an explicit Run again.
         use_prior = bool(
             (graph.get("metadata") or {}).get("use_prior_feedback")
@@ -1042,7 +958,6 @@ class GraphExecutor:
             project_id=str(graph.get("project_id") or ""),
             meta={
                 "scenario": (graph.get("metadata") or {}).get("scenario"),
-                "optimize_for": optimize_for,
                 "skill_guided": bool((graph.get("metadata") or {}).get("skill_guided")),
                 "audio_intent": (graph.get("metadata") or {}).get("audio_intent"),
                 "use_prior_feedback": use_prior,
@@ -1183,7 +1098,6 @@ class GraphExecutor:
                 ):
                     graph_ack = await Director().design_execution_graph(
                         graph,
-                        optimize_for=optimize_for,
                     )
                     graph = self._store.save_graph(graph)
                     # Topology changed — resync run states and push canvas update now.
@@ -1230,7 +1144,7 @@ class GraphExecutor:
                     phase="orchestration",
                     role="director",
                     tool="llm",
-                    detail={"optimize_for": optimize_for, "has_prior_feedback": bool(prior)},
+                    detail={"has_prior_feedback": bool(prior)},
                 ):
                     director_skill = str(
                         (graph.get("metadata") or {}).get("director_skill_excerpt") or ""
@@ -1241,7 +1155,6 @@ class GraphExecutor:
                         graph["metadata"] = meta
                     plan = await Director().plan(
                         graph,
-                        optimize_for=optimize_for,
                         prior_feedback=prior,
                     )
                     traj.record(
@@ -1289,8 +1202,7 @@ class GraphExecutor:
                 not in _TERMINAL_NODE_STATUSES
             }
             incoming = execution_predecessors(graph)
-            groups = sync_groups(graph)
-            graph, remaining, incoming, groups = self._expand_shots_if_needed(
+            graph, remaining, incoming = self._expand_shots_if_needed(
                 graph, run, remaining, on_update=on_update
             )
             # Continuous scheduling: start each node as soon as graph deps are met
@@ -1436,7 +1348,7 @@ class GraphExecutor:
                     node_id
                     for node_id in list(remaining)
                     if node_id not in in_flight
-                    and _is_ready(node_id, run, incoming, groups, graph)
+                    and _is_ready(node_id, run, incoming, graph)
                 ]
                 newly_ready = filter_ready_by_dependency_order(
                     newly_ready,
@@ -1530,7 +1442,7 @@ class GraphExecutor:
                 run["current_node_ids"] = list(in_flight.keys())
                 await _maybe_review_storyboard()
                 _maybe_adjust_shots()
-                graph, remaining, incoming, groups = self._expand_shots_if_needed(
+                graph, remaining, incoming = self._expand_shots_if_needed(
                     graph, run, remaining, on_update=on_update
                 )
                 # Re-queue any newly expanded shot ids that are not in-flight.
@@ -1575,7 +1487,6 @@ class GraphExecutor:
                     graph,
                     agent_feedback=agent_feedback,
                     director_review={},
-                    optimize_for=optimize_for,
                     node_states=run.get("node_states"),
                 )
             with traj.span(
@@ -1590,7 +1501,6 @@ class GraphExecutor:
                     agent_feedback=agent_feedback,
                     director_plan=director_plan if isinstance(director_plan, dict) else {},
                     prior_feedback=None,
-                    optimize_for=optimize_for,
                     director_report=director_final,
                     node_states=run.get("node_states"),
                 )
@@ -1628,7 +1538,6 @@ class GraphExecutor:
                 director_plan=director_plan if isinstance(director_plan, dict) else {},
                 director_review=director_review,
                 director_final=director_final,
-                optimize_for=optimize_for,
             )
             traj.set_feedback(
                 {
@@ -1694,7 +1603,7 @@ class GraphExecutor:
             run = self._store.get_latest_run_for_graph(graph_id)
         if run is None:
             return graph
-        expanded, _, _, _ = self._expand_shots_if_needed(
+        expanded, _, _ = self._expand_shots_if_needed(
             graph, run, set(), on_update=None
         )
         return expanded
@@ -1710,11 +1619,10 @@ class GraphExecutor:
         DesignerExecutionGraph,
         set[str],
         dict[str, list[str]],
-        dict[str, frozenset[str]],
     ]:
         shot_rows = self._completed_storyboard_shots(graph, run)
         if shot_rows is None:
-            return graph, remaining, execution_predecessors(graph), sync_groups(graph)
+            return graph, remaining, execution_predecessors(graph)
         shot_count = max(1, len(shot_rows) or 1)
         from jiuwenswarm.server.runtime.designer.handlers.text_nodes import shot_generate_prompt
 
@@ -1726,7 +1634,7 @@ class GraphExecutor:
             for node in graph.get("nodes") or []
         )
         if not has_shot_pipeline:
-            return graph, remaining, execution_predecessors(graph), sync_groups(graph)
+            return graph, remaining, execution_predecessors(graph)
         # Flexible Director graphs: if storyboard shot count differs from frame
         # nodes, rebuild from analysis (do NOT use expand_shot_nodes — that dumps
         # all cast into every frame and breaks identity wiring).
@@ -1783,7 +1691,6 @@ class GraphExecutor:
                 prompt=str(graph.get("description") or ""),
                 analysis=analysis,
                 title=str(graph.get("title") or "") or None,
-                optimize_for=str(meta.get("optimize_for") or "quality"),
             )
             rebuilt["graph_id"] = graph.get("graph_id") or rebuilt.get("graph_id")
             rebuilt["project_id"] = graph.get("project_id") or rebuilt.get("project_id")
@@ -1816,17 +1723,17 @@ class GraphExecutor:
             callback = self._on_graph_updates.get(str(run.get("run_id") or ""))
             if callback is not None:
                 callback(deepcopy(saved))
-            return saved, remaining, execution_predecessors(saved), sync_groups(saved)
+            return saved, remaining, execution_predecessors(saved)
 
         if bool(meta.get("freeze_shot_topology")):
             synced = apply_shot_generate_prompts(graph, prompts)
             if synced is graph:
-                return graph, remaining, execution_predecessors(graph), sync_groups(graph)
+                return graph, remaining, execution_predecessors(graph)
             saved = self._store.save_graph(synced)
             callback = self._on_graph_updates.get(str(run.get("run_id") or ""))
             if callback is not None:
                 callback(deepcopy(saved))
-            return saved, remaining, execution_predecessors(saved), sync_groups(saved)
+            return saved, remaining, execution_predecessors(saved)
         current_shot_ids = {
             str(node.get("id") or "")
             for node in graph.get("nodes") or []
@@ -1855,12 +1762,12 @@ class GraphExecutor:
         if topology_matches and not bundled_frames:
             synced = apply_shot_generate_prompts(graph, prompts)
             if synced is graph:
-                return graph, remaining, execution_predecessors(graph), sync_groups(graph)
+                return graph, remaining, execution_predecessors(graph)
             saved = self._store.save_graph(synced)
             callback = self._on_graph_updates.get(str(run.get("run_id") or ""))
             if callback is not None:
                 callback(deepcopy(saved))
-            return saved, remaining, execution_predecessors(saved), sync_groups(saved)
+            return saved, remaining, execution_predecessors(saved)
 
         # Prefer Director-style rebuild over expand_shot_nodes (identity-safe).
         from jiuwenswarm.server.runtime.designer.smart_graph import (
@@ -1875,7 +1782,6 @@ class GraphExecutor:
             prompt=str(graph.get("description") or ""),
             analysis=analysis,
             title=str(graph.get("title") or "") or None,
-            optimize_for=str(meta.get("optimize_for") or "quality"),
         )
         rebuilt["graph_id"] = graph.get("graph_id") or rebuilt.get("graph_id")
         rebuilt["project_id"] = graph.get("project_id") or rebuilt.get("project_id")
@@ -1910,7 +1816,7 @@ class GraphExecutor:
         callback = self._on_graph_updates.get(str(run.get("run_id") or ""))
         if callback is not None:
             callback(deepcopy(saved))
-        return saved, remaining, execution_predecessors(saved), sync_groups(saved)
+        return saved, remaining, execution_predecessors(saved)
 
     def _handoff_scene_prompt_after_frame(
         self,
@@ -2110,7 +2016,7 @@ class GraphExecutor:
     ) -> None:
         node_id = node["id"]
         started_at = utc_now_ms()
-        blocked_by = list(sync_groups(graph).get(node_id, frozenset()) - {node_id})
+        blocked_by: list[str] = []
         lock = self._state_locks.setdefault(run["run_id"], asyncio.Lock())
         from jiuwenswarm.common.schema.designer_graph import (
             node_pipeline as _node_pipeline_fn,
@@ -2867,7 +2773,6 @@ def _is_ready(
     node_id: str,
     run: DesignerExecutionRun,
     incoming: dict[str, list[str]],
-    groups: dict[str, frozenset[str]],
     graph: DesignerExecutionGraph | None = None,
 ) -> bool:
     state = run.get("node_states", {}).get(node_id) or {}
@@ -2896,44 +2801,38 @@ def _is_ready(
     else:
         compose_wait = False
     for pred in preds:
-        group = groups.get(pred, frozenset({pred}))
-        for member in group:
-            # Sync groups often include this node (Align edges). Requiring it
-            # completed before it can start deadlocks storyboard forever.
-            if member == node_id:
-                continue
-            member_state = run.get("node_states", {}).get(member) or {}
-            member_status = member_state.get("status")
-            # Composer is the only hard barrier: every dependency must finish
-            # and hand over a real output before ffmpeg starts.
-            if compose_wait:
-                if member_status != NODE_STATUS_COMPLETED:
-                    return False
-                # Require a real on-disk shot/audio file — not just COMPLETED + URI.
-                try:
-                    from jiuwenswarm.server.runtime.designer.handlers.compose import (
-                        compose_predecessor_media_ready,
-                    )
+        pred_state = run.get("node_states", {}).get(pred) or {}
+        pred_status = pred_state.get("status")
+        # Composer is the only hard barrier: every dependency must finish
+        # and hand over a real output before ffmpeg starts.
+        if compose_wait:
+            if pred_status != NODE_STATUS_COMPLETED:
+                return False
+            # Require a real on-disk shot/audio file — not just COMPLETED + URI.
+            try:
+                from jiuwenswarm.server.runtime.designer.handlers.compose import (
+                    compose_predecessor_media_ready,
+                )
 
-                    if not compose_predecessor_media_ready(graph, run, member):
-                        return False
-                except Exception:  # noqa: BLE001
-                    ref = member_state.get("output_ref")
-                    if ref is None or not _usable_ref(ref) or _is_fallback_text_ref(ref):
-                        return False
+                if not compose_predecessor_media_ready(graph, run, pred):
+                    return False
+            except Exception:  # noqa: BLE001
+                ref = pred_state.get("output_ref")
+                if ref is None or not _usable_ref(ref) or _is_fallback_text_ref(ref):
+                    return False
+            continue
+        if pred_status == NODE_STATUS_COMPLETED:
+            continue
+        # Soft artifact deps (another shot's beat): unlock while that shot
+        # is still generating, once the storyboard shot is already known.
+        if graph is not None and is_soft_artifact_dependency(graph, pred, node_id):
+            if artifact_dependency_satisfied(graph, node_id, pred):
                 continue
-            if member_status == NODE_STATUS_COMPLETED:
-                continue
-            # Soft artifact deps (another shot's beat): unlock while that shot
-            # is still generating, once the storyboard shot is already known.
-            if graph is not None and is_soft_artifact_dependency(graph, member, node_id):
-                if artifact_dependency_satisfied(graph, node_id, member):
-                    continue
-                return False
-            # Hard inputs (character sheet, scene specs): proceed as soon
-            # as the file exists, even if that node is still finishing.
-            if member_status == NODE_STATUS_RUNNING and _published_media_output(member_state):
-                continue
-            if member_status != NODE_STATUS_COMPLETED:
-                return False
+            return False
+        # Hard inputs (character sheet, scene specs): proceed as soon
+        # as the file exists, even if that node is still finishing.
+        if pred_status == NODE_STATUS_RUNNING and _published_media_output(pred_state):
+            continue
+        if pred_status != NODE_STATUS_COMPLETED:
+            return False
     return True

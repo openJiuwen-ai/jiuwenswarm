@@ -112,7 +112,6 @@ async def _wait_run(
 async def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--timeout-sec", type=int, default=DEFAULT_TIMEOUT_SEC)
-    parser.add_argument("--optimize-for", default="quality", choices=("quality", "cost"))
     args = parser.parse_args()
 
     try:
@@ -226,7 +225,6 @@ async def main() -> int:
         prompt=PROMPT,
         analysis=analysis,
         title="Church Bible scene (pipeline test)",
-        optimize_for=args.optimize_for,
     )
     graph = apply_runtime_delegate(graph)
     graph = attach_skills_metadata(graph, PROMPT)

@@ -65,16 +65,8 @@ def main() -> None:
                         "default": "",
                         "description": "Settings model id chosen by supervisor",
                     },
-                    {
-                        "name": "optimize_for",
-                        "type": "enum",
-                        "default": "quality",
-                        "description": "cost|quality",
-                        "enum": ["cost", "quality"],
-                    },
                 ],
                 "model_hints": {
-                    "cost": ["settings-configured"],
                     "quality": ["settings-configured"],
                 },
                 "tags": ["video", "static-original", "agent"],

@@ -253,7 +253,6 @@ async def classify_reference_images(
             result = await call_model_tool(
                 prompt=body,
                 system=system,
-                optimize_for="quality",
                 max_tokens=1024,
                 images=images if with_images else None,
             )

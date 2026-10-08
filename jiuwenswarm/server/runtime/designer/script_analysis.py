@@ -1470,7 +1470,6 @@ async def analyze_creative_brief(
             result = await call_model_tool(
                 prompt=json.dumps(payload, ensure_ascii=False),
                 system=sys_msg,
-                optimize_for="quality",
                 max_tokens=32768,
                 images=list(reference_images or []) or None,
             )

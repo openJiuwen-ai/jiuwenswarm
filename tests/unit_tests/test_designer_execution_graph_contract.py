@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -23,7 +22,6 @@ from jiuwenswarm.common.schema.designer_graph import (
     ACTIVITY_KIND_STAGE,
     ROLE_DEFAULT_TEMPLATES,
     EDGE_KIND_DATA,
-    EDGE_KIND_SYNC,
     EDGE_KINDS,
     NODE_ROLE_BRIEF,
     NODE_ROLE_CHARACTER_DESIGN,
@@ -45,7 +43,6 @@ from jiuwenswarm.common.schema.designer_graph import (
     RUN_SCHEMA_VERSION,
     SCHEMA_VERSION,
     node_pipeline,
-    normalize_execution_graph,
     normalize_node,
 )
 
@@ -60,16 +57,6 @@ _TS = (
     / "features"
     / "designer"
     / "executionGraphTypes.ts"
-)
-_FIXTURE = (
-    _REPO_ROOT
-    / "jiuwenswarm"
-    / "channels"
-    / "web"
-    / "frontend"
-    / "tests"
-    / "fixtures"
-    / "designer-execution-graph.v1.json"
 )
 
 
@@ -117,7 +104,6 @@ def _extract_ts_const_array(path: Path, name: str) -> list[str]:
         (NODE_ROLE_VIDEO, "DESIGNER_NODE_ROLE_VIDEO"),
         (NODE_ROLE_AUDIO, "DESIGNER_NODE_ROLE_AUDIO"),
         (EDGE_KIND_DATA, "DESIGNER_EDGE_KIND_DATA"),
-        (EDGE_KIND_SYNC, "DESIGNER_EDGE_KIND_SYNC"),
         (CONFIG_DELEGATE_HANDLER, "DESIGNER_CONFIG_DELEGATE_HANDLER"),
         (CONFIG_DELEGATE_SUBAGENT, "DESIGNER_CONFIG_DELEGATE_SUBAGENT"),
         (CONFIG_DELEGATE_AGENT, "DESIGNER_CONFIG_DELEGATE_AGENT"),
@@ -151,24 +137,6 @@ def test_designer_role_default_templates_contract() -> None:
     for role, ref in ROLE_DEFAULT_TEMPLATES.items():
         assert ref in body
         assert role.replace("_", "").lower() in body.replace("_", "").lower() or ref in body
-
-
-def test_designer_fixture_normalizes() -> None:
-    payload = json.loads(_FIXTURE.read_text(encoding="utf-8"))
-    graph = normalize_execution_graph(payload)
-    assert graph["schema_version"] == SCHEMA_VERSION
-    assert any(node["id"] == "n_scene" for node in graph["nodes"])
-    assert any(edge["source"] == "n_frame_1" and edge["target"] == "n_clip_1" for edge in graph["edges"])
-    assert any(edge["source"] == "n_clip_1" and edge["target"] == "n_compose" for edge in graph["edges"])
-    assert any(edge["source"] == "n_brief" and edge["target"] == "n_scene" for edge in graph["edges"])
-    assert {node["type"] for node in graph["nodes"]} == {"text", "table", "image", "video"}
-    sync_edges = [edge for edge in graph["edges"] if edge.get("kind") == EDGE_KIND_SYNC]
-    assert len(sync_edges) == 2
-    sync_pairs = {frozenset((edge["source"], edge["target"])) for edge in sync_edges}
-    assert sync_pairs == {
-        frozenset({"n_character", "n_storyboard"}),
-        frozenset({"n_scene", "n_storyboard"}),
-    }
 
 
 def test_manual_modality_roles_normalize() -> None:

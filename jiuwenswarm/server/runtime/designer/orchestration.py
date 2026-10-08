@@ -796,12 +796,10 @@ def assign_audio_node_agents(graph: DesignerExecutionGraph) -> dict[str, Any]:
     return meta["director_audio_assignment"]
 
 
-def _pick_model(models: list[dict[str, Any]], *, optimize_for: str, prefer_image: bool = False) -> str:
+def _pick_model(models: list[dict[str, Any]], *, prefer_image: bool = False) -> str:
     if not models:
         return ""
     ordered = list(models)
-    if optimize_for == "cost":
-        ordered = list(reversed(ordered))
     if prefer_image:
         for m in ordered:
             name = f"{m.get('id') or ''} {m.get('model_name') or ''}".lower()
@@ -1162,9 +1160,7 @@ class Director:
     async def plan(
         self,
         graph: DesignerExecutionGraph,
-        *,
-        optimize_for: str,
-        prior_feedback: dict[str, Any] | None,
+        *, prior_feedback: dict[str, Any] | None,
     ) -> dict[str, Any]:
         from jiuwenswarm.server.runtime.designer.model_tools import (
             DesignerLlmError,
@@ -1191,20 +1187,17 @@ class Director:
             "Scene master plate must be authored first; later scene views must EDIT that plate. "
             "Coordinate node agents in a ComfyUI-like pipeline. "
             "Follow the scenario skill and audio policy. "
-            "For each node, choose optimize_for (cost|quality) and a preferred_model "
-            "from the configured Settings model list. "
+            "For each node, choose a preferred_model from the configured Settings model list. "
             "On rerun, incorporate prior feedback suggestions. "
             "Respond with JSON only: "
-            '{"optimize_for_global":"cost|quality",'
-            '"brief_notes":"...",'
+            '{"brief_notes":"...",'
             '"spatial_lock":{"setting":"...","landmarks":"...","light":"...","static_rule":"..."},'
-            '"node_directives":{"<node_id>":{"optimize_for":"...","preferred_model":"...","task":"..."}},'
+            '"node_directives":{"<node_id>":{"preferred_model":"...","task":"..."}},'
             '"notes":"..."}'
         )
         prompt = json.dumps(
             {
                 "user_prompt": graph.get("description"),
-                "optimize_for_default": optimize_for,
                 "available_models": model_ids,
                 "scenario_skill": str((graph.get("metadata") or {}).get("scenario_skill_excerpt") or "")[
                     :2500
@@ -1234,7 +1227,6 @@ class Director:
         result = await call_model_tool(
             prompt=prompt,
             system=system,
-            optimize_for=optimize_for,
             max_tokens=32768,
         )
         text = model_text_or_raise(result)
@@ -1253,26 +1245,18 @@ class Director:
             if not nid:
                 continue
             entry = directives.get(nid) if isinstance(directives.get(nid), dict) else {}
-            mode = str(entry.get("optimize_for") or parsed.get("optimize_for_global") or optimize_for)
-            mode = "cost" if mode == "cost" else "quality"
             preferred = str(entry.get("preferred_model") or "")
             if preferred and preferred not in model_ids and model_ids:
                 preferred = model_ids[0]
             elif not preferred and model_ids:
-                preferred = model_ids[0] if mode == "quality" else model_ids[-1]
+                preferred = model_ids[0]
             tools = _tools_for_node(node)
             directives[nid] = {
-                "optimize_for": mode,
                 "preferred_model": preferred,
                 "task": str(entry.get("task") or f"Execute node {node.get('label') or nid}"),
                 "tools": tools,
             }
         plan = {
-            "optimize_for_global": (
-                "cost"
-                if str(parsed.get("optimize_for_global") or optimize_for) == "cost"
-                else "quality"
-            ),
             "node_directives": directives,
             "notes": str(parsed.get("notes") or result.get("text") or "")[:2000],
             "brief_notes": str(parsed.get("brief_notes") or "")[:2000],
@@ -1285,7 +1269,6 @@ class Director:
             nid = str(node.get("id") or "")
             cfg = dict(node.get("config") or {})
             d = directives.get(nid) or {}
-            cfg["optimize_for"] = d.get("optimize_for", optimize_for)
             cfg["preferred_model"] = d.get("preferred_model", "")
             cfg["director_task"] = d.get("task", "")
             cfg["tools"] = d.get("tools") or _tools_for_node(node)
@@ -1380,7 +1363,6 @@ class Director:
                     ensure_ascii=False,
                 ),
                 system=system,
-                optimize_for="quality",
                 max_tokens=32768,
             )
             text = model_text_or_raise(result)
@@ -1554,7 +1536,6 @@ class Director:
                     ensure_ascii=False,
                 ),
                 system=system,
-                optimize_for="quality",
                 max_tokens=65536,
             )
             text = model_text_or_raise(result)
@@ -1791,10 +1772,7 @@ class Director:
 
     async def design_execution_graph(
         self,
-        graph: DesignerExecutionGraph,
-        *,
-        optimize_for: str = "quality",
-    ) -> dict[str, Any]:
+        graph: DesignerExecutionGraph) -> dict[str, Any]:
         """Director owns flexible multi-shot topology from Brief+Storyboard.
 
         Not a frozen single-keyframe template: LLM expands shots from the locked
@@ -1911,7 +1889,6 @@ class Director:
                     ensure_ascii=False,
                 ),
                 system=system,
-                optimize_for=optimize_for,
                 max_tokens=65536,
             )
             text = model_text_or_raise(result)
@@ -2075,7 +2052,6 @@ class Director:
             prompt=user_prompt,
             analysis=analysis,
             title=str(graph.get("title") or "") or None,
-            optimize_for=optimize_for,
         )
         rebuilt["graph_id"] = old_id or rebuilt.get("graph_id")
         rebuilt["project_id"] = project_id
@@ -3475,7 +3451,6 @@ class Director:
                     ensure_ascii=False,
                 ),
                 system=system,
-                optimize_for="quality",
                 max_tokens=32768,
             )
             text = model_text_or_raise(result)
@@ -3543,8 +3518,7 @@ class Director:
     async def review_storyboard_once(
         self,
         graph: DesignerExecutionGraph,
-        *,
-        node_states: dict[str, Any] | None,
+        *, node_states: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """After storyboard completes: fidelity + enhancement + consistency (one shot, no loop)."""
         meta = dict(graph.get("metadata") or {})
@@ -3632,7 +3606,6 @@ class Director:
                     ensure_ascii=False,
                 ),
                 system=system,
-                optimize_for="quality",
                 max_tokens=32768,
             )
             text = model_text_or_raise(result)
@@ -3878,7 +3851,6 @@ class Director:
             result = await call_model_tool(
                 prompt=prompt,
                 system=system,
-                optimize_for="quality",
                 max_tokens=32768,
             )
             text = model_text_or_raise(result)
@@ -4092,7 +4064,6 @@ class Director:
         agent_feedback: dict[str, dict[str, Any]],
         director_plan: dict[str, Any] | None,
         prior_feedback: dict[str, Any] | None,
-        optimize_for: str,
         director_report: dict[str, Any] | None = None,
         node_states: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -4130,7 +4101,6 @@ class Director:
         prompt = json.dumps(
             {
                 "user_prompt": graph.get("description"),
-                "optimize_for": optimize_for,
                 "director_plan": director_plan or {},
                 "director_report": director_report or {},
                 "agent_feedback": agent_feedback,
@@ -4143,7 +4113,6 @@ class Director:
         result = await call_model_tool(
             prompt=prompt,
             system=system,
-            optimize_for="quality",
             max_tokens=32768,
         )
         text = model_text_or_raise(result)
@@ -4217,7 +4186,6 @@ class Director:
                 result = await call_model_tool(
                     prompt=json.dumps({**base_payload, "rater_id": label}, ensure_ascii=False),
                     system=system,
-                    optimize_for="quality",
                     max_tokens=8192,
                 )
                 rtext = model_text_or_raise(result)
@@ -4329,7 +4297,6 @@ class Director:
         *,
         agent_feedback: dict[str, dict[str, Any]],
         director_review: dict[str, Any],
-        optimize_for: str,
         node_states: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         vision_notes: dict[str, str] = {}
@@ -4369,7 +4336,6 @@ class Director:
             {
                 "agent_feedback": agent_feedback,
                 "director_review": director_review,
-                "optimize_for": optimize_for,
                 "user_prompt": graph.get("description"),
                 "vision_notes": vision_notes,
                 "rating_modality": (graph.get("metadata") or {}).get("rating_modality"),
@@ -4379,7 +4345,6 @@ class Director:
         result = await call_model_tool(
             prompt=prompt,
             system=system,
-            optimize_for="quality",
             max_tokens=32768,
         )
         text = model_text_or_raise(result)
@@ -5080,13 +5045,11 @@ async def write_run_feedback(
     director_plan: dict[str, Any] | None,
     director_review: dict[str, Any],
     director_final: dict[str, Any],
-    optimize_for: str,
 ) -> str:
     """Persist the run report in the feedback store read by Run again."""
     graph_id = str(graph.get("graph_id") or "")
     payload = {
         "schema_version": "designer-feedback.v1",
-        "optimize_for": optimize_for,
         "agents": agent_feedback,
         "director_plan": director_plan or {},
         "director": {

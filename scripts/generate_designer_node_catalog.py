@@ -77,7 +77,6 @@ def build_catalog() -> dict:
                 outputs=[mod],
                 params=[
                     p("prompt", "string", "", "Primary instruction"),
-                    p("optimize_for", "enum", "quality", "cost|quality", enum=["cost", "quality"]),
                     p("language", "string", "en", "Output language"),
                 ],
                 models_cost=["deepseek-v4-flash"],
@@ -324,10 +323,9 @@ def build_catalog() -> dict:
         "schema_version": "designer-node-catalog.v1",
         "description": (
             "Catalog of agentic ComfyUI-style nodes for JiuwenSwarm Design. "
-            "Agents select nodes by scenario, wire outputs→inputs, and choose "
-            "cost vs quality model routes from model_hints."
+            "Agents select nodes by scenario and wire outputs→inputs "
+            "using model_hints."
         ),
-        "optimize_modes": ["cost", "quality"],
         "modalities": ["text", "table", "image", "video", "audio", "mesh"],
         "scenarios": scenarios,
         "node_count": len(nodes),
@@ -408,7 +406,6 @@ def _default_params_for(mod: str) -> list[dict]:
     base = [
         p("model", "string", "", "Selected model id for this node"),
         p("seed", "int", -1, "RNG seed (-1 = random)"),
-        p("optimize_for", "enum", "quality", "Inherited cost|quality", enum=["cost", "quality"]),
     ]
     if mod == "text":
         return base + [
@@ -478,7 +475,6 @@ def to_txt(catalog: dict) -> str:
         f"schema: {catalog['schema_version']}",
         f"nodes: {catalog['node_count']}",
         f"scenarios: {', '.join(catalog['scenarios'])}",
-        f"optimize_modes: {', '.join(catalog['optimize_modes'])}",
         "",
         "This catalog drives agentic ComfyUI-style graph composition.",
         "Agents pick a scenario template, expand nodes from user intent,",

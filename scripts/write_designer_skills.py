@@ -106,7 +106,7 @@ You are the only Designer overseer.
 
 ## Planning
 - Read scenario skill + prior feedback/trajectory.
-- For each node set optimize_for, preferred_model, and a concrete task.
+- For each node set preferred_model and a concrete task.
 - Enforce audio policy (silent / speech / music).
 - Prefer R2V shots (on-screen solos + scene specs).
 

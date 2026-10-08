@@ -11,10 +11,10 @@ from jiuwenswarm.common.schema.designer_graph import (
     NODE_ROLE_SCENE,
     NODE_TYPE_IMAGE,
     SCHEMA_VERSION,
-    build_bootstrap_graph,
     normalize_execution_graph,
     normalize_execution_run,
 )
+from tests.unit_tests.designer.graph_fixtures import make_pipeline_graph
 from jiuwenswarm.server.runtime.designer.a2a_collab import (
     DesignerA2ABus,
     align_specialists,
@@ -94,7 +94,7 @@ async def test_collaborate_ready_wave_runs_for_character_and_scene(
         "jiuwenswarm.server.runtime.designer.handlers.common.complete_designer_text",
         fake_text,
     )
-    graph = build_bootstrap_graph(project_id="proj_a2a01", prompt="火车站")
+    graph = make_pipeline_graph(project_id="proj_a2a01", prompt="火车站")
     if not any(node.get("id") == "n_scene" for node in graph["nodes"]):
         graph["nodes"].append(
             {

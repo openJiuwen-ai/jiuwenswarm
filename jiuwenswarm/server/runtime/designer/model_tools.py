@@ -331,19 +331,13 @@ def list_configured_models() -> list[dict[str, Any]]:
     return out
 
 
-def pick_model_for_optimize(optimize_for: str) -> dict[str, Any] | None:
+def pick_default_model() -> dict[str, Any] | None:
+    """Pick a chat model from Settings (prefer pro/reason when present)."""
     models = list_configured_models()
     if not models:
         return None
     defaults = [m for m in models if m.get("is_default")]
     pool = defaults or models
-    if optimize_for == "cost":
-        # Prefer flash / mini style names when present.
-        for m in pool:
-            nid = str(m.get("id") or "").lower()
-            if "flash" in nid or "mini" in nid or "fast" in nid:
-                return m
-        return pool[-1]
     for m in pool:
         nid = str(m.get("id") or "").lower()
         if "pro" in nid or "reason" in nid:
@@ -408,7 +402,6 @@ async def call_model_tool(
     *,
     prompt: str,
     system: str,
-    optimize_for: str,
     preferred_model: str | None = None,
     max_tokens: int = _DESIGNER_DEFAULT_MAX_TOKENS,
     images: list[str] | None = None,
@@ -444,7 +437,7 @@ async def call_model_tool(
                 chosen = m
                 break
     if chosen is None:
-        chosen = pick_model_for_optimize(optimize_for)
+        chosen = pick_default_model()
     if chosen is None:
         return {
             "ok": False,
@@ -568,7 +561,7 @@ async def call_model_tool(
                     pass
 
         first = await _once(
-            temperature=0.4 if optimize_for == "quality" else 0.7,
+            temperature=0.4,
             attempt=1,
         )
         if first.get("ok"):

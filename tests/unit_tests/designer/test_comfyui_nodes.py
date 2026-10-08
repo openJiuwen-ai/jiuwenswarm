@@ -10,8 +10,8 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.common.schema.designer_graph import build_bootstrap_graph
 from jiuwenswarm.server.runtime.designer.executor import GraphExecutor
+from tests.unit_tests.designer.graph_fixtures import make_pipeline_graph
 from jiuwenswarm.server.runtime.designer.graph_store import DesignerGraphStore
 from jiuwenswarm.server.runtime.designer.handlers import comfyui_nodes, resolve_handler_key
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
@@ -237,7 +237,7 @@ def designer_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DesignerG
 
 def _imported_graph(store: DesignerGraphStore, reference: Path | None) -> dict:
     """A Director-built graph plus an imported image-to-video ComfyUI pair."""
-    graph = build_bootstrap_graph(project_id="proj_comfy", prompt="a harbour film")
+    graph = make_pipeline_graph(project_id="proj_comfy", prompt="a harbour film")
     node = _video_node()
     graph["nodes"].extend([_upload_node("n_ref_image", "image", reference), node])
     graph["edges"].append(

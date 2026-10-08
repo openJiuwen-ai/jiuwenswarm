@@ -184,7 +184,6 @@ async def test_selected_model_context_reaches_designer_model_calls(monkeypatch):
         result = await model_tools.call_model_tool(
             prompt="prompt",
             system="system",
-            optimize_for="quality",
         )
 
     assert result["model"] == "selected-model"

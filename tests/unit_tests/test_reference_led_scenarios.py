@@ -144,7 +144,6 @@ def _graph(case: dict) -> dict:
         project_id=f"proj_{case['id']}",
         prompt=f"reference case {case['id']}",
         analysis=_analysis(case),
-        optimize_for="quality",
     )
 
 

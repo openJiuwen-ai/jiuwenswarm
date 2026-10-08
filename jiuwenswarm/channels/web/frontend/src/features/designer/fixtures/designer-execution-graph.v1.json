@@ -118,7 +118,6 @@
     }
   ],
   "metadata": {
-    "bootstrap": "designer.graph.bootstrap.v1",
     "scene_continuity_mode": "scene_card_plus_clip_shots"
   },
   "created_at": 1700000000000,

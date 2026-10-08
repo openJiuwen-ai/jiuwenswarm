@@ -1,28 +1,23 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Unit tests for Designer graph store and bootstrap schema."""
+"""Unit tests for Designer graph store, normalize, and executor."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.server.runtime.designer.handlers.common import graph_prompt
 from jiuwenswarm.common.schema.designer_graph import (
     CONFIG_DELEGATE_HANDLER,
-    EDGE_KIND_SYNC,
     NODE_ROLE_CHARACTER_DESIGN,
     NODE_ROLE_CLIP,
     NODE_ROLE_COMPOSE,
     NODE_ROLE_FRAME,
-    NODE_ROLE_SCENE,
     NODE_ROLE_STORYBOARD,
     NODE_TYPE_IMAGE,
-    NODE_TYPE_TABLE,
     NODE_TYPE_TEXT,
     NODE_TYPE_VIDEO,
     NODE_STATUS_COMPLETED,
@@ -30,16 +25,14 @@ from jiuwenswarm.common.schema.designer_graph import (
     RUN_STATUS_COMPLETED,
     RUN_STATUS_RUNNING,
     DesignerExecutionGraph,
-    DesignerGraphValidationError,
-    apply_graph_patch,
     apply_shot_generate_prompts,
-    build_bootstrap_graph,
     expand_clip_nodes_for_shots,
     preserve_expanded_shot_nodes,
     normalize_execution_graph,
-    normalize_node,
     node_pipeline,
+    repair_overlapping_pipeline_layout,
 )
+from tests.unit_tests.designer.graph_fixtures import make_pipeline_graph
 
 
 def _handler_graph(graph: DesignerExecutionGraph) -> DesignerExecutionGraph:
@@ -159,42 +152,8 @@ def designer_store(
     return DesignerGraphStore()
 
 
-def test_bootstrap_graph_uses_modality_node_types() -> None:
-    graph = build_bootstrap_graph(
-        project_id="proj_test01",
-        prompt="test prompt",
-        title="Test Video",
-    )
-    assert graph["schema_version"] == "designer-execution-graph.v1"
-    node_types = {node["type"] for node in graph["nodes"]}
-    assert node_types <= {NODE_TYPE_TEXT, NODE_TYPE_TABLE, NODE_TYPE_IMAGE, NODE_TYPE_VIDEO}
-    assert NODE_TYPE_TEXT in node_types
-    assert NODE_TYPE_IMAGE in node_types
-    roles = {node_pipeline(node) for node in graph["nodes"]}
-    assert {NODE_ROLE_CHARACTER_DESIGN, NODE_ROLE_STORYBOARD, NODE_ROLE_SCENE} <= roles
-    assert any(edge["source"] == "n_brief" and edge["target"] == "n_scene" for edge in graph["edges"])
-    sync_edges = [edge for edge in graph["edges"] if edge.get("kind") == EDGE_KIND_SYNC]
-    assert len(sync_edges) == 2
-    sync_pairs = {frozenset((edge["source"], edge["target"])) for edge in sync_edges}
-    assert sync_pairs == {
-        frozenset({"n_character", "n_storyboard"}),
-        frozenset({"n_scene", "n_storyboard"}),
-    }
-    assert not any(node_pipeline(node) == NODE_ROLE_FRAME for node in graph["nodes"])
-    assert any(edge["source"] == "n_storyboard" and edge["target"] == "n_clip_1" for edge in graph["edges"])
-    assert any(edge["source"] == "n_clip_1" and edge["target"] == "n_compose" for edge in graph["edges"])
-    clip = next(node for node in graph["nodes"] if node["id"] == "n_clip_1")
-    compose = next(node for node in graph["nodes"] if node["id"] == "n_compose")
-    assert node_pipeline(compose) == NODE_ROLE_COMPOSE
-    assert "n_clip_1" in ((compose.get("config") or {}).get("inputs") or [])
-    clip_layout = clip.get("layout") or {}
-    compose_layout = compose.get("layout") or {}
-    assert compose_layout["x"] >= clip_layout["x"] + clip_layout["width"]
-    _assert_nodes_do_not_overlap(graph["nodes"])
-
-
 def test_graph_store_roundtrip(designer_store: DesignerGraphStore) -> None:
-    graph = build_bootstrap_graph(project_id="proj_test01", prompt="roundtrip")
+    graph = make_pipeline_graph(project_id="proj_test01", prompt="roundtrip")
     saved = designer_store.save_graph(graph)
     loaded = designer_store.get_graph(saved["graph_id"])
     assert loaded is not None
@@ -202,26 +161,8 @@ def test_graph_store_roundtrip(designer_store: DesignerGraphStore) -> None:
     assert loaded["project_id"] == "proj_test01"
 
 
-def test_fixture_file_normalizes() -> None:
-    fixture = (
-        Path(__file__).resolve().parents[3]
-        / "jiuwenswarm"
-        / "channels"
-        / "web"
-        / "frontend"
-        / "tests"
-        / "fixtures"
-        / "designer-execution-graph.v1.json"
-    )
-    payload = json.loads(fixture.read_text(encoding="utf-8"))
-    graph = normalize_execution_graph(payload)
-    assert graph["title"] == "示例短视频"
-    assert any(edge["source"] == "n_frame_1" and edge["target"] == "n_clip_1" for edge in graph["edges"])
-    assert any(edge["source"] == "n_clip_1" and edge["target"] == "n_compose" for edge in graph["edges"])
-
-
 def test_expand_clip_nodes_for_shots_creates_one_clip_per_shot() -> None:
-    graph = build_bootstrap_graph(project_id="proj_expand01", prompt="three shots")
+    graph = make_pipeline_graph(project_id="proj_expand01", prompt="three shots")
     expanded = expand_clip_nodes_for_shots(graph, 3)
     clip_ids = [node["id"] for node in expanded["nodes"] if node_pipeline(node) == NODE_ROLE_CLIP]
     frame_ids = [node["id"] for node in expanded["nodes"] if node_pipeline(node) == NODE_ROLE_FRAME]
@@ -245,7 +186,7 @@ def test_expand_clip_nodes_for_shots_creates_one_clip_per_shot() -> None:
 
 def test_apply_shot_generate_prompts_fills_clips_and_keeps_user_edits() -> None:
     graph = expand_clip_nodes_for_shots(
-        build_bootstrap_graph(project_id="proj_prompt01", prompt="fill prompts"),
+        make_pipeline_graph(project_id="proj_prompt01", prompt="fill prompts"),
         2,
     )
     filled = apply_shot_generate_prompts(
@@ -272,7 +213,7 @@ def test_apply_shot_generate_prompts_fills_clips_and_keeps_user_edits() -> None:
 def test_preserve_node_output_refs_keeps_storyboard_uri() -> None:
     from jiuwenswarm.common.schema.designer_graph import preserve_node_output_refs
 
-    existing = build_bootstrap_graph(project_id="proj_keep_ref", prompt="keep ref")
+    existing = make_pipeline_graph(project_id="proj_keep_ref", prompt="keep ref")
     story = next(node for node in existing["nodes"] if node["id"] == "n_storyboard")
     story["output_ref"] = {
         "kind": "table",
@@ -280,7 +221,7 @@ def test_preserve_node_output_refs_keeps_storyboard_uri() -> None:
         "mime_type": "text/markdown",
         "label": "storyboard.md",
     }
-    incoming = build_bootstrap_graph(project_id="proj_keep_ref", prompt="keep ref")
+    incoming = make_pipeline_graph(project_id="proj_keep_ref", prompt="keep ref")
     incoming["graph_id"] = existing["graph_id"]
     merged = preserve_node_output_refs(incoming, existing)
     kept = next(node for node in merged["nodes"] if node["id"] == "n_storyboard")
@@ -288,7 +229,7 @@ def test_preserve_node_output_refs_keeps_storyboard_uri() -> None:
 
 
 def test_expand_preserves_existing_generate_prompt() -> None:
-    graph = build_bootstrap_graph(project_id="proj_keep_prompt", prompt="keep prompt")
+    graph = make_pipeline_graph(project_id="proj_keep_prompt", prompt="keep prompt")
     clip = next(node for node in graph["nodes"] if node["id"] == "n_clip_1")
     clip["config"]["generate"] = {
         "prompt": "用户改过的画面",
@@ -300,8 +241,8 @@ def test_expand_preserves_existing_generate_prompt() -> None:
     assert kept["config"]["generate"]["prompt_origin"] == "user"
 
 
-def test_normalize_repairs_overlapping_compose_and_column_layout() -> None:
-    graph = build_bootstrap_graph(project_id="proj_layout01", prompt="old overlap")
+def test_repair_overlapping_compose_and_column_layout() -> None:
+    graph = make_pipeline_graph(project_id="proj_layout01", prompt="old overlap")
     layouts = {
         "n_character": {"x": 380, "y": 40, "width": 280, "height": 160},
         "n_scene": {"x": 380, "y": 160, "width": 280, "height": 160},
@@ -313,7 +254,7 @@ def test_normalize_repairs_overlapping_compose_and_column_layout() -> None:
         layout = layouts.get(str(node.get("id") or ""))
         if layout:
             node["layout"] = dict(layout)
-    restored = normalize_execution_graph(graph)
+    restored = repair_overlapping_pipeline_layout(graph)
     compose = next(node for node in restored["nodes"] if node["id"] == "n_compose")
     clip = next(node for node in restored["nodes"] if node["id"] == "n_clip_1")
     clip_layout = clip.get("layout") or {}
@@ -323,9 +264,9 @@ def test_normalize_repairs_overlapping_compose_and_column_layout() -> None:
 
 
 def test_preserve_expanded_shot_nodes_rejects_stale_bootstrap_save() -> None:
-    graph = build_bootstrap_graph(project_id="proj_keep01", prompt="keep shots")
+    graph = make_pipeline_graph(project_id="proj_keep01", prompt="keep shots")
     expanded = expand_clip_nodes_for_shots(graph, 3)
-    stale = build_bootstrap_graph(project_id="proj_keep01", prompt="keep shots")
+    stale = make_pipeline_graph(project_id="proj_keep01", prompt="keep shots")
     stale["graph_id"] = expanded["graph_id"]
     kept = preserve_expanded_shot_nodes(stale, expanded)
     assert [node["id"] for node in kept["nodes"] if node_pipeline(node) == NODE_ROLE_CLIP] == [
@@ -338,11 +279,11 @@ def test_preserve_expanded_shot_nodes_rejects_stale_bootstrap_save() -> None:
 def test_graph_store_does_not_shrink_expanded_shot_nodes(designer_store: DesignerGraphStore) -> None:
     graph = designer_store.save_graph(
         expand_clip_nodes_for_shots(
-            build_bootstrap_graph(project_id="proj_keep02", prompt="keep shots"),
+            make_pipeline_graph(project_id="proj_keep02", prompt="keep shots"),
             3,
         )
     )
-    stale = build_bootstrap_graph(project_id="proj_keep02", prompt="keep shots")
+    stale = make_pipeline_graph(project_id="proj_keep02", prompt="keep shots")
     stale["graph_id"] = graph["graph_id"]
     saved = designer_store.save_graph(stale)
     assert [node["id"] for node in saved["nodes"] if node_pipeline(node) == NODE_ROLE_CLIP] == [
@@ -353,7 +294,7 @@ def test_graph_store_does_not_shrink_expanded_shot_nodes(designer_store: Designe
 
 
 def test_preserve_expanded_shot_nodes_keeps_user_deleted_extra_shots() -> None:
-    graph = build_bootstrap_graph(project_id="proj_del01", prompt="delete extra shots")
+    graph = make_pipeline_graph(project_id="proj_del01", prompt="delete extra shots")
     expanded = expand_clip_nodes_for_shots(graph, 4)
     drop = {"n_clip_4"}
     incoming = dict(expanded)
@@ -372,7 +313,7 @@ def test_preserve_expanded_shot_nodes_keeps_user_deleted_extra_shots() -> None:
 def test_graph_store_keeps_user_deleted_extra_shots(designer_store: DesignerGraphStore) -> None:
     graph = designer_store.save_graph(
         expand_clip_nodes_for_shots(
-            build_bootstrap_graph(project_id="proj_del02", prompt="delete extra shots"),
+            make_pipeline_graph(project_id="proj_del02", prompt="delete extra shots"),
             4,
         )
     )
@@ -391,7 +332,7 @@ def test_graph_store_keeps_user_deleted_extra_shots(designer_store: DesignerGrap
 
 
 def test_preserve_skips_graft_when_user_marks_topology_edit() -> None:
-    graph = build_bootstrap_graph(project_id="proj_del03", prompt="delete extra shots")
+    graph = make_pipeline_graph(project_id="proj_del03", prompt="delete extra shots")
     expanded = expand_clip_nodes_for_shots(graph, 4)
     drop = {"n_clip_4"}
     incoming = dict(expanded)
@@ -413,7 +354,7 @@ def test_expand_shots_keeps_director_topology_and_syncs_prompts(
     from jiuwenswarm.server.runtime.designer.executor import GraphExecutor
 
     graph = designer_store.save_graph(
-        _handler_graph(build_bootstrap_graph(project_id="proj_split01", prompt="two shots")),
+        _handler_graph(make_pipeline_graph(project_id="proj_split01", prompt="two shots")),
     )
     story = tmp_path / "two-shots.md"
     story.write_text(
@@ -439,7 +380,7 @@ def test_expand_shots_keeps_director_topology_and_syncs_prompts(
         },
     }
     designer_store.save_run(run)
-    expanded, remaining, _, _ = executor._expand_shots_if_needed(
+    expanded, remaining, _ = executor._expand_shots_if_needed(
         graph, run, {"n_clip_1", "n_compose"}, on_update=None
     )
     clip_ids = [node["id"] for node in expanded["nodes"] if node_pipeline(node) == NODE_ROLE_CLIP]
@@ -454,37 +395,15 @@ def test_expand_shots_keeps_director_topology_and_syncs_prompts(
     }
 
 
-def test_normalize_wires_existing_scene_on_old_bootstrap() -> None:
-    graph = build_bootstrap_graph(project_id="proj_old02", prompt="legacy-align")
-    if not any(node.get("id") == "n_scene" for node in graph["nodes"]):
-        graph["nodes"].append(
-            {
-                "id": "n_scene",
-                "type": NODE_TYPE_IMAGE,
-                "label": "Scene",
-                "config": {"role": NODE_ROLE_SCENE, "inputs": ["n_brief"]},
-                "layout": {"x": 400, "y": 240, "width": 280, "height": 160},
-            }
-        )
-    restored = normalize_execution_graph(graph)
-    assert any(
-        edge.get("source") == "n_scene"
-        and edge.get("target") == "n_storyboard"
-        and edge.get("kind") == EDGE_KIND_SYNC
-        for edge in restored["edges"]
-    )
-    assert any(edge.get("source") == "n_brief" and edge.get("target") == "n_scene" for edge in restored["edges"])
-
-
 def test_graph_store_list_by_project(designer_store: DesignerGraphStore) -> None:
     first = designer_store.save_graph(
-        build_bootstrap_graph(project_id="proj_list_a", prompt="first"),
+        make_pipeline_graph(project_id="proj_list_a", prompt="first"),
     )
     second = designer_store.save_graph(
-        build_bootstrap_graph(project_id="proj_list_a", prompt="second"),
+        make_pipeline_graph(project_id="proj_list_a", prompt="second"),
     )
     designer_store.save_graph(
-        build_bootstrap_graph(project_id="proj_list_b", prompt="other project"),
+        make_pipeline_graph(project_id="proj_list_b", prompt="other project"),
     )
     graphs = designer_store.list_graphs_for_project("proj_list_a")
     graph_ids = {graph["graph_id"] for graph in graphs}
@@ -499,7 +418,7 @@ async def test_mock_executor_completes_run(
     designer_store: DesignerGraphStore, stub_clip_video: None
 ) -> None:
     graph = designer_store.save_graph(
-        _handler_graph(build_bootstrap_graph(project_id="proj_exec01", prompt="execute me")),
+        _handler_graph(make_pipeline_graph(project_id="proj_exec01", prompt="execute me")),
     )
     executor = GraphExecutor(designer_store)
     run = executor.create_run(graph)
@@ -543,7 +462,7 @@ async def test_mock_executor_completes_run(
 
 def test_normalize_drops_legacy_keyframe_chain() -> None:
     graph = expand_clip_nodes_for_shots(
-        build_bootstrap_graph(project_id="proj_chain01", prompt="drop chain"),
+        make_pipeline_graph(project_id="proj_chain01", prompt="drop chain"),
         2,
     )
     for index in (1, 2):
@@ -597,7 +516,7 @@ async def test_running_status_is_saved_before_handler_returns(
 
     monkeypatch.setattr(BriefNodeHandler, "execute", paused)
     graph = designer_store.save_graph(
-        _handler_graph(build_bootstrap_graph(project_id="proj_run_persist", prompt="persist running")),
+        _handler_graph(make_pipeline_graph(project_id="proj_run_persist", prompt="persist running")),
     )
     executor = GraphExecutor(designer_store)
     run = executor.create_run(graph)
@@ -619,7 +538,7 @@ def test_create_rerun_parks_orphaned_running_and_marks_single_node(
     designer_store: DesignerGraphStore,
 ) -> None:
     graph = designer_store.save_graph(
-        _handler_graph(build_bootstrap_graph(project_id="proj_park_running", prompt="park")),
+        _handler_graph(make_pipeline_graph(project_id="proj_park_running", prompt="park")),
     )
     executor = GraphExecutor(designer_store)
     source = executor.create_run(graph)
@@ -644,7 +563,7 @@ def test_park_running_nodes_leaves_failed_and_completed(
     designer_store: DesignerGraphStore,
 ) -> None:
     graph = designer_store.save_graph(
-        _handler_graph(build_bootstrap_graph(project_id="proj_park_wave", prompt="park wave")),
+        _handler_graph(make_pipeline_graph(project_id="proj_park_wave", prompt="park wave")),
     )
     executor = GraphExecutor(designer_store)
     run = executor.create_run(graph)
@@ -662,7 +581,7 @@ async def test_rerun_single_node_keeps_upstream_outputs(
     designer_store: DesignerGraphStore, stub_clip_video: None
 ) -> None:
     graph = designer_store.save_graph(
-        _handler_graph(build_bootstrap_graph(project_id="proj_rerun01", prompt="rerun clip")),
+        _handler_graph(make_pipeline_graph(project_id="proj_rerun01", prompt="rerun clip")),
     )
     executor = GraphExecutor(designer_store)
     first = executor.create_run(graph)
@@ -718,7 +637,7 @@ async def test_continue_after_failure_retries_failed_node(
         lambda **_: None,
     )
     graph = designer_store.save_graph(
-        _handler_graph(build_bootstrap_graph(project_id="proj_continue_failed", prompt="continue")),
+        _handler_graph(make_pipeline_graph(project_id="proj_continue_failed", prompt="continue")),
     )
     executor = GraphExecutor(designer_store)
     scheduled: dict[str, dict] = {}
@@ -754,7 +673,7 @@ async def test_rerun_compose_replaces_film_in_place(
     designer_store: DesignerGraphStore, stub_clip_video: None
 ) -> None:
     graph = designer_store.save_graph(
-        _handler_graph(build_bootstrap_graph(project_id="proj_compose_rerun", prompt="rerun film")),
+        _handler_graph(make_pipeline_graph(project_id="proj_compose_rerun", prompt="rerun film")),
     )
     executor = GraphExecutor(designer_store)
     first = executor.create_run(graph)
@@ -788,7 +707,7 @@ async def test_rerun_promotes_generated_image_over_fallback_notes(
     designer_store: DesignerGraphStore, stub_clip_video: None, tmp_path: Path
 ) -> None:
     graph = designer_store.save_graph(
-        _handler_graph(build_bootstrap_graph(project_id="proj_notes01", prompt="promote png")),
+        _handler_graph(make_pipeline_graph(project_id="proj_notes01", prompt="promote png")),
     )
     executor = GraphExecutor(designer_store)
     first = executor.create_run(graph)
@@ -889,10 +808,10 @@ def test_start_run_rejects_run_from_another_graph(
     from jiuwenswarm.server.runtime.gateway_adapter import designer_adapter as adapter
 
     first = designer_store.save_graph(
-        _handler_graph(build_bootstrap_graph(project_id="proj_iso_a", prompt="scheme a")),
+        _handler_graph(make_pipeline_graph(project_id="proj_iso_a", prompt="scheme a")),
     )
     second = designer_store.save_graph(
-        _handler_graph(build_bootstrap_graph(project_id="proj_iso_b", prompt="scheme b")),
+        _handler_graph(make_pipeline_graph(project_id="proj_iso_b", prompt="scheme b")),
     )
     executor = GraphExecutor(designer_store)
     run = executor.create_run(first)
@@ -913,7 +832,7 @@ def test_list_graphs_includes_video_summary(
 
     monkeypatch.setattr(adapter, "_store", designer_store)
     graph = designer_store.save_graph(
-        build_bootstrap_graph(project_id="proj_sum01", prompt="clip ready"),
+        make_pipeline_graph(project_id="proj_sum01", prompt="clip ready"),
     )
     designer_store.save_run(
         {
@@ -954,7 +873,7 @@ def test_list_graphs_omits_graph_bodies(
 
     monkeypatch.setattr(adapter, "_store", designer_store)
     graph = designer_store.save_graph(
-        build_bootstrap_graph(project_id="proj_slim01", prompt="slim listing"),
+        make_pipeline_graph(project_id="proj_slim01", prompt="slim listing"),
     )
 
     payload, error, code = adapter._list_graphs({})
@@ -977,7 +896,7 @@ def test_get_graph_hydrates_node_outputs_from_latest_run(
     monkeypatch.setattr(adapter, "_store", designer_store)
     monkeypatch.setattr(adapter._executor, "_store", designer_store)
     graph = designer_store.save_graph(
-        build_bootstrap_graph(project_id="proj_hydrate01", prompt="train arrives"),
+        make_pipeline_graph(project_id="proj_hydrate01", prompt="train arrives"),
     )
     brief_uri = (tmp_path / "brief.md").resolve().as_uri()
     designer_store.save_run(
@@ -1037,7 +956,7 @@ async def test_sync_peers_start_together_and_block_downstream(
     monkeypatch.setitem(NODE_HANDLERS, NODE_ROLE_CLIP, TimedHandler(NODE_ROLE_CLIP))
 
     graph = designer_store.save_graph(
-        _handler_graph(build_bootstrap_graph(project_id="proj_sync01", prompt="align peers")),
+        _handler_graph(make_pipeline_graph(project_id="proj_sync01", prompt="align peers")),
     )
     execu = GraphExecutor(designer_store)
     run = execu.create_run(graph)
@@ -1052,176 +971,6 @@ async def test_sync_peers_start_together_and_block_downstream(
 
 
 @pytest.mark.asyncio
-async def test_sync_barrier_blocks_even_without_second_data_edge(
-    designer_store: DesignerGraphStore,
-    monkeypatch: pytest.MonkeyPatch,
-    stub_clip_video: None,
-) -> None:
-    from jiuwenswarm.common.schema.designer_graph import (
-        EDGE_KIND_DATA,
-        EDGE_KIND_SYNC,
-        NODE_ROLE_SCENE,
-        NODE_TYPE_IMAGE,
-        NODE_TYPE_TEXT,
-        SCHEMA_VERSION,
-        normalize_execution_graph,
-    )
-    from jiuwenswarm.server.runtime.designer import executor as executor_mod
-
-    monkeypatch.setattr(executor_mod, "_MOCK_NODE_DELAY_SECONDS", 0)
-    graph = designer_store.save_graph(
-        _handler_graph(
-        normalize_execution_graph(
-            {
-                "schema_version": SCHEMA_VERSION,
-                "graph_id": "graph_barrier01",
-                "project_id": "proj_barrier01",
-                "title": "barrier",
-                "source": "manual",
-                "nodes": [
-                    {"id": "a", "type": NODE_TYPE_TEXT, "label": "A", "config": {"role": "brief"}},
-                    {
-                        "id": "b",
-                        "type": NODE_TYPE_IMAGE,
-                        "label": "B",
-                        "config": {"role": NODE_ROLE_CHARACTER_DESIGN},
-                    },
-                    {
-                        "id": "s",
-                        "type": NODE_TYPE_IMAGE,
-                        "label": "S",
-                        "config": {"role": NODE_ROLE_SCENE},
-                    },
-                    {
-                        "id": "c",
-                        "type": NODE_TYPE_TABLE,
-                        "label": "C",
-                        "config": {"role": NODE_ROLE_STORYBOARD},
-                    },
-                    {"id": "d", "type": NODE_TYPE_IMAGE, "label": "D", "config": {"role": "frame"}},
-                ],
-                "edges": [
-                    {"id": "e1", "source": "a", "target": "b", "kind": EDGE_KIND_DATA},
-                    {"id": "e2", "source": "a", "target": "c", "kind": EDGE_KIND_DATA},
-                    {"id": "e5", "source": "a", "target": "s", "kind": EDGE_KIND_DATA},
-                    {"id": "e3", "source": "b", "target": "c", "kind": EDGE_KIND_SYNC},
-                    {"id": "e4", "source": "b", "target": "d", "kind": EDGE_KIND_DATA},
-                    {"id": "e6", "source": "s", "target": "d", "kind": EDGE_KIND_DATA},
-                ],
-            }
-        )
-        )
-    )
-    execu = GraphExecutor(designer_store)
-    run = execu.create_run(graph)
-    await execu.start_run(run["run_id"])
-    worker = execu._tasks.get(run["run_id"])
-    if worker is not None:
-        await worker
-    finished = designer_store.get_run(run["run_id"])
-    assert finished is not None
-    assert finished["status"] == RUN_STATUS_COMPLETED
-    assert (finished["node_states"]["c"].get("completed_at") or 0) <= (
-        finished["node_states"]["d"].get("started_at") or 0
-    )
-
-
-def test_normalize_node_rejects_unknown_role() -> None:
-    with pytest.raises(DesignerGraphValidationError, match="unsupported node role"):
-        normalize_node(
-            {
-                "id": "n_x",
-                "type": NODE_TYPE_TEXT,
-                "label": "x",
-                "config": {"role": "not_a_role"},
-            }
-        )
-
-
-def test_normalize_node_accepts_typed_config() -> None:
-    node = normalize_node(
-        {
-            "id": "n_brief",
-            "type": NODE_TYPE_TEXT,
-            "label": "brief",
-            "config": {
-                "role": "brief",
-                "prompt": "晨间",
-                "inputs": ["n_src"],
-                "delegate": "handler",
-                "generate": {"prompt": "站台", "aspect_ratio": "16:9"},
-                "interaction_mode": "generate",
-            },
-        }
-    )
-    assert node["config"]["role"] == "text"
-    assert node["config"]["pipeline"] == "brief"
-    assert node["config"]["prompt"] == "晨间"
-    assert node["config"]["inputs"] == ["n_src"]
-    assert node["config"]["delegate"] == "handler"
-    assert node["config"]["generate"]["prompt"] == "站台"
-    assert node["config"]["interaction_mode"] == "generate"
-
-
-def test_graph_prompt_reads_generate_prompt() -> None:
-    node = normalize_node(
-        {
-            "id": "n_scene",
-            "type": NODE_TYPE_IMAGE,
-            "label": "场景",
-            "config": {
-                "role": "scene",
-                "generate": {"prompt": "火车站晨间"},
-            },
-        }
-    )
-    graph = {
-        "schema_version": "designer-execution-graph.v1",
-        "graph_id": "g1",
-        "project_id": "p1",
-        "title": "标题",
-        "nodes": [node],
-        "edges": [],
-    }
-    assert graph_prompt(graph, node) == "火车站晨间"
-
-
-def test_apply_graph_patch_upserts_and_removes() -> None:
-    graph = build_bootstrap_graph(project_id="proj_patch01", prompt="patch me")
-    patched = apply_graph_patch(
-        graph,
-        {
-            "title": "改过的标题",
-            "upsert_nodes": [
-                {
-                    "id": "n_extra",
-                    "type": NODE_TYPE_TEXT,
-                    "label": "备注",
-                    "config": {"role": "brief", "prompt": "extra"},
-                }
-            ],
-            "upsert_edges": [
-                {
-                    "id": "e_brief_extra",
-                    "source": "n_brief",
-                    "target": "n_extra",
-                    "kind": "data",
-                }
-            ],
-        },
-    )
-    assert patched["title"] == "改过的标题"
-    assert any(node["id"] == "n_extra" for node in patched["nodes"])
-    assert any(edge["id"] == "e_brief_extra" for edge in patched["edges"])
-    removed = apply_graph_patch(
-        patched,
-        {"remove_node_ids": ["n_extra"], "remove_edge_ids": ["e_brief_extra"]},
-    )
-    assert all(node["id"] != "n_extra" for node in removed["nodes"])
-    assert all(edge["id"] != "e_brief_extra" for edge in removed["edges"])
-
-
-@pytest.mark.asyncio
 async def test_executor_on_update_includes_node_id(
     designer_store: DesignerGraphStore, stub_clip_video: None
 ) -> None:
@@ -1231,7 +980,7 @@ async def test_executor_on_update_includes_node_id(
         events.append(node_id)
 
     graph = designer_store.save_graph(
-        _handler_graph(build_bootstrap_graph(project_id="proj_evt01", prompt="events")),
+        _handler_graph(make_pipeline_graph(project_id="proj_evt01", prompt="events")),
     )
     executor = GraphExecutor(designer_store)
     run = executor.create_run(graph)

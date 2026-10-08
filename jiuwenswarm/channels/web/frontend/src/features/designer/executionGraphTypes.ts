@@ -217,9 +217,8 @@ export type DesignerNodeConfig =
     };
 
 export const DESIGNER_EDGE_KIND_DATA = 'data' as const;
-export const DESIGNER_EDGE_KIND_SYNC = 'sync' as const;
 
-export const DESIGNER_EDGE_KINDS = [DESIGNER_EDGE_KIND_DATA, DESIGNER_EDGE_KIND_SYNC] as const;
+export const DESIGNER_EDGE_KINDS = [DESIGNER_EDGE_KIND_DATA] as const;
 
 export type DesignerEdgeKind = (typeof DESIGNER_EDGE_KINDS)[number];
 

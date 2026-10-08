@@ -47,8 +47,7 @@ def _bed_duration_sec(cfg: dict) -> float:
         film = 0.0
     if film > 0:
         return max(4.0, min(90.0, film))
-    mode = str(cfg.get("optimize_for") or "quality").lower()
-    return 6.0 if mode == "cost" else 18.0
+    return 18.0
 
 
 def _synthesize_bed(dest: Path, *, duration: float, kind: str) -> bool:

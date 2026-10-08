@@ -277,9 +277,8 @@ ROLE_DEFAULT_TEMPLATES: dict[str, str] = {
 # ── Edge kinds ────────────────────────────────────────────────────────────────
 
 EDGE_KIND_DATA = "data"
-EDGE_KIND_SYNC = "sync"
 
-EDGE_KINDS: frozenset[str] = frozenset({EDGE_KIND_DATA, EDGE_KIND_SYNC})
+EDGE_KINDS: frozenset[str] = frozenset({EDGE_KIND_DATA})
 
 # ── Graph sources ─────────────────────────────────────────────────────────────
 
@@ -647,7 +646,8 @@ def normalize_node(raw: Any) -> DesignerGraphNode:
     return node
 
 
-def normalize_edge(raw: Any) -> DesignerGraphEdge:
+def normalize_edge(raw: Any) -> DesignerGraphEdge | None:
+    """Normalize a data edge. Legacy ``sync`` edges are dropped (return None)."""
     if not isinstance(raw, dict):
         raise DesignerGraphValidationError("edge must be an object")
     edge_id = _require_str(raw.get("id"), "edge.id")
@@ -657,13 +657,16 @@ def normalize_edge(raw: Any) -> DesignerGraphEdge:
     kind = EDGE_KIND_DATA
     if isinstance(kind_raw, str) and kind_raw.strip():
         kind = kind_raw.strip()
+    # Sync barriers are no longer created or honored — drop on load.
+    if kind == "sync":
+        return None
     if kind not in EDGE_KINDS:
         raise DesignerGraphValidationError(f"unsupported edge kind: {kind!r}")
     edge: DesignerGraphEdge = {
         "id": edge_id,
         "source": source,
         "target": target,
-        "kind": kind,
+        "kind": EDGE_KIND_DATA,
     }
     label = raw.get("label")
     if isinstance(label, str) and label.strip():
@@ -697,7 +700,7 @@ def normalize_execution_graph(raw: Any) -> DesignerExecutionGraph:
     if not isinstance(raw_edges, list):
         raise DesignerGraphValidationError("edges must be an array")
     nodes = [normalize_node(item) for item in raw_nodes]
-    edges = [normalize_edge(item) for item in raw_edges]
+    edges = [edge for item in raw_edges if (edge := normalize_edge(item)) is not None]
     node_ids = {node["id"] for node in nodes}
     if len(node_ids) != len(nodes):
         raise DesignerGraphValidationError("node ids must be unique")
@@ -725,154 +728,7 @@ def normalize_execution_graph(raw: Any) -> DesignerExecutionGraph:
         "created_at": int(created_at) if isinstance(created_at, int) else now,
         "updated_at": int(updated_at) if isinstance(updated_at, int) else now,
     }
-    return stamp_concat_video_nodes(
-        drop_keyframe_to_keyframe_deps(ensure_bootstrap_pipeline(graph))
-    )
-
-
-def _append_unique_edge(
-    edges: list[DesignerGraphEdge],
-    *,
-    edge_id: str,
-    source: str,
-    target: str,
-    kind: str = EDGE_KIND_DATA,
-    label: str | None = None,
-) -> None:
-    if any(edge.get("source") == source and edge.get("target") == target for edge in edges):
-        return
-    edge: DesignerGraphEdge = {"id": edge_id, "source": source, "target": target, "kind": kind}
-    if label:
-        edge["label"] = label
-    edges.append(edge)
-
-
-def _append_node_input(graph: DesignerExecutionGraph, node_id: str, input_id: str) -> None:
-    for node in graph.get("nodes") or []:
-        if node.get("id") != node_id:
-            continue
-        config = node.setdefault("config", {})
-        if not isinstance(config, dict):
-            return
-        inputs = [str(item) for item in (config.get("inputs") or [])]
-        if input_id not in inputs:
-            inputs.append(input_id)
-            config["inputs"] = inputs
-        return
-
-
-def ensure_bootstrap_pipeline(graph: DesignerExecutionGraph) -> DesignerExecutionGraph:
-    """Keep old bootstrap graphs on the current clip / scene / keyframe pipeline."""
-    metadata = graph.get("metadata") or {}
-    if metadata.get("bootstrap") != "designer.graph.bootstrap.v1":
-        return graph
-    node_ids = {node["id"] for node in graph.get("nodes") or []}
-    edges = graph.setdefault("edges", [])
-    has_frame = "n_frame" in node_ids or any(
-        str(item).startswith("n_frame_") for item in node_ids
-    )
-    if "n_brief" in node_ids and has_frame and "n_scene" not in node_ids:
-        graph.setdefault("nodes", []).append(
-            {
-                "id": "n_scene",
-                "type": NODE_TYPE_IMAGE,
-                "label": "Image",
-                "config": {
-                    "role": NODE_TYPE_IMAGE,
-                    "pipeline": PIPELINE_SCENE,
-                    "inputs": ["n_brief"],
-                },
-                "layout": {"x": 400, "y": 240, "width": 280, "height": 160},
-            }
-        )
-        node_ids.add("n_scene")
-    frame_ids = [
-        str(node.get("id") or "")
-        for node in graph.get("nodes") or []
-        if node_pipeline(node) == PIPELINE_FRAME
-        or str(node.get("id") or "") == "n_frame"
-        or str(node.get("id") or "").startswith("n_frame_")
-    ]
-    frame_ids = [item for item in frame_ids if item]
-    if "n_scene" in node_ids:
-        _append_unique_edge(edges, edge_id="e_brief_scene", source="n_brief", target="n_scene")
-        for frame_id in frame_ids:
-            _append_unique_edge(
-                edges,
-                edge_id=f"e_scene_{frame_id}",
-                source="n_scene",
-                target=frame_id,
-            )
-            _append_node_input(graph, frame_id, "n_scene")
-    if "n_scene" in node_ids and "n_storyboard" in node_ids:
-        _append_unique_edge(
-            edges,
-            edge_id="e_scene_storyboard",
-            source="n_scene",
-            target="n_storyboard",
-            kind=EDGE_KIND_SYNC,
-            label="Align",
-        )
-    if frame_ids:
-        clip_nodes = [
-            node
-            for node in graph.get("nodes") or []
-            if node_pipeline(node) == PIPELINE_CLIP
-            or str(node.get("id") or "") == "n_clip"
-            or str(node.get("id") or "").startswith("n_clip_")
-        ]
-        if not clip_nodes and "n_clip" in node_ids:
-            clip_nodes = [{"id": "n_clip"}]
-        frame_by_shot = {node_shot_index(node): str(node.get("id") or "") for node in graph.get("nodes") or [] if str(node.get("id") or "") in frame_ids}
-        for clip in clip_nodes:
-            clip_id = str(clip.get("id") or "")
-            if not clip_id:
-                continue
-            frame_id = frame_by_shot.get(node_shot_index(clip)) or frame_ids[0]
-            _append_unique_edge(
-                edges,
-                edge_id=f"e_{frame_id}_{clip_id}",
-                source=frame_id,
-                target=clip_id,
-            )
-            _append_node_input(graph, clip_id, frame_id)
-            if "n_scene" in node_ids:
-                _append_unique_edge(
-                    edges,
-                    edge_id=f"e_scene_{clip_id}",
-                    source="n_scene",
-                    target=clip_id,
-                )
-                _append_node_input(graph, clip_id, "n_scene")
-        clip_ids = [str(node.get("id") or "") for node in clip_nodes if node.get("id")]
-        if clip_ids and "n_compose" not in node_ids:
-            graph.setdefault("nodes", []).append(
-                {
-                    "id": "n_compose",
-                    "type": NODE_TYPE_VIDEO,
-                    "label": "Video",
-                    "config": {
-                        "role": NODE_TYPE_VIDEO,
-                        "pipeline": PIPELINE_COMPOSE,
-                        "inputs": list(clip_ids),
-                    },
-                    "layout": compose_layout_right_of_clips(
-                        [node.get("layout") for node in clip_nodes]
-                    ),
-                }
-            )
-            node_ids.add("n_compose")
-        if "n_compose" in {node["id"] for node in graph.get("nodes") or []}:
-            for clip_id in clip_ids:
-                _append_unique_edge(
-                    edges,
-                    edge_id=f"e_{clip_id}_compose",
-                    source=clip_id,
-                    target="n_compose",
-                )
-                _append_node_input(graph, "n_compose", clip_id)
-    drop_keyframe_to_keyframe_deps(graph)
-    return repair_overlapping_pipeline_layout(graph)
+    return stamp_concat_video_nodes(drop_keyframe_to_keyframe_deps(graph))
 
 
 COMPOSE_NODE_ID = "n_compose"
@@ -1502,13 +1358,6 @@ def expand_clip_nodes_for_shots(
     return expand_shot_nodes(graph, shot_count)
 
 
-def ensure_bootstrap_clip_waits_for_frame(
-    graph: DesignerExecutionGraph,
-) -> DesignerExecutionGraph:
-    """Backward-compatible alias used by older tests."""
-    return ensure_bootstrap_pipeline(graph)
-
-
 def is_leader_node_id(node_id: Any) -> bool:
     return str(node_id or "").strip() == LEADER_NODE_ID
 
@@ -1881,13 +1730,6 @@ def is_comfyui_node(node: Any) -> bool:
     return isinstance(node, dict) and bool(node_config(node).get(CONFIG_KEY_IS_COMFYUI))
 
 
-def graph_uses_agent_scheduler(graph: DesignerExecutionGraph) -> bool:
-    nodes = graph.get("nodes") or []
-    if not nodes:
-        return False
-    return any(node_uses_agent_runtime(node) for node in nodes)
-
-
 def apply_graph_patch(graph: DesignerExecutionGraph, patch: Any) -> DesignerExecutionGraph:
     """Merge upserts/removals into a domain graph, then re-normalize."""
     if patch is None:
@@ -1924,6 +1766,8 @@ def apply_graph_patch(graph: DesignerExecutionGraph, patch: Any) -> DesignerExec
         raise DesignerGraphValidationError("patch.upsert_edges must be an array")
     for item in upsert_edges:
         edge = normalize_edge(item)
+        if edge is None:
+            continue
         edges_by_id[edge["id"]] = edge
     remove_edge_ids = patch.get("remove_edge_ids") or []
     if not isinstance(remove_edge_ids, list) or not all(
@@ -2560,148 +2404,3 @@ def filter_ready_by_dependency_order(
         selected_set.add(nid)
     return selected
 
-
-def sync_groups(graph: DesignerExecutionGraph) -> dict[str, frozenset[str]]:
-    """Union-find over undirected ``sync`` edges."""
-    parent: dict[str, str] = {node["id"]: node["id"] for node in graph.get("nodes", [])}
-
-    def find(node_id: str) -> str:
-        while parent[node_id] != node_id:
-            parent[node_id] = parent[parent[node_id]]
-            node_id = parent[node_id]
-        return node_id
-
-    def union(left: str, right: str) -> None:
-        root_left, root_right = find(left), find(right)
-        if root_left != root_right:
-            parent[root_right] = root_left
-
-    for edge in graph.get("edges", []):
-        if edge_kind(edge) != EDGE_KIND_SYNC:
-            continue
-        source = edge.get("source")
-        target = edge.get("target")
-        if isinstance(source, str) and isinstance(target, str) and source in parent and target in parent:
-            union(source, target)
-
-    groups: dict[str, set[str]] = {}
-    for node_id in parent:
-        root = find(node_id)
-        groups.setdefault(root, set()).add(node_id)
-    return {node_id: frozenset(groups[find(node_id)]) for node_id in parent}
-
-
-def build_bootstrap_graph(
-    *,
-    project_id: str,
-    prompt: str,
-    title: str | None = None,
-) -> DesignerExecutionGraph:
-    """Create the default video-creation pipeline graph from an initial prompt."""
-    graph_id = new_graph_id()
-    now = utc_now_ms()
-    prompt_text = prompt.strip()
-    graph_title = title.strip() if isinstance(title, str) and title.strip() else prompt_text[:80]
-    nodes: list[DesignerGraphNode] = [
-        {
-            "id": "n_brief",
-            "type": NODE_TYPE_TEXT,
-            "label": "Text 1",
-            "config": {
-                "role": NODE_TYPE_TEXT,
-                "pipeline": PIPELINE_BRIEF,
-                "prompt": prompt_text,
-            },
-            "layout": {"x": 40, "y": 240, "width": 280, "height": 160},
-        },
-        {
-            "id": "n_character",
-            "type": NODE_TYPE_IMAGE,
-            "label": "Image 1",
-            "config": {
-                "role": NODE_TYPE_IMAGE,
-                "pipeline": PIPELINE_CHARACTER_DESIGN,
-                "inputs": ["n_brief"],
-            },
-            "layout": {"x": 400, "y": 40, "width": 280, "height": 160},
-        },
-        {
-            "id": "n_scene",
-            "type": NODE_TYPE_IMAGE,
-            "label": "Scene 1: Place",
-            "config": {
-                "role": NODE_TYPE_IMAGE,
-                "pipeline": PIPELINE_SCENE,
-                "inputs": ["n_brief", "n_storyboard"],
-            },
-            "layout": {"x": 760, "y": 240, "width": 280, "height": 160},
-        },
-        {
-            "id": "n_storyboard",
-            "type": NODE_TYPE_TABLE,
-            "label": "Table 1",
-            "config": {
-                "role": NODE_TYPE_TABLE,
-                "pipeline": PIPELINE_STORYBOARD,
-                "inputs": ["n_brief"],
-            },
-            "layout": {"x": 400, "y": 440, "width": 280, "height": 160},
-        },
-        {
-            "id": "n_clip_1",
-            "type": NODE_TYPE_VIDEO,
-            "label": "Video 1",
-            "config": {
-                "role": NODE_TYPE_VIDEO,
-                "pipeline": PIPELINE_CLIP,
-                "shot_index": 1,
-                "inputs": ["n_character", "n_scene", "n_storyboard"],
-            },
-            "layout": {"x": 1120, "y": 240, "width": 280, "height": 160},
-        },
-        {
-            "id": "n_compose",
-            "type": NODE_TYPE_VIDEO,
-            "label": "Video 2",
-            "config": {
-                "role": NODE_TYPE_VIDEO,
-                "pipeline": PIPELINE_COMPOSE,
-                "inputs": ["n_clip_1"],
-            },
-            "layout": {"x": 1480, "y": 240, "width": 280, "height": 160},
-        },
-    ]
-    edges: list[DesignerGraphEdge] = [
-        {"id": "e_brief_character", "source": "n_brief", "target": "n_character", "kind": EDGE_KIND_DATA},
-        {"id": "e_brief_storyboard", "source": "n_brief", "target": "n_storyboard", "kind": EDGE_KIND_DATA},
-        {"id": "e_brief_scene", "source": "n_brief", "target": "n_scene", "kind": EDGE_KIND_DATA},
-        {"id": "e_storyboard_scene", "source": "n_storyboard", "target": "n_scene", "kind": EDGE_KIND_DATA},
-        {
-            "id": "e_character_storyboard",
-            "source": "n_character",
-            "target": "n_storyboard",
-            "kind": EDGE_KIND_SYNC,
-            "label": "Align",
-        },
-        {"id": "e_character_n_clip_1", "source": "n_character", "target": "n_clip_1", "kind": EDGE_KIND_DATA},
-        {"id": "e_scene_n_clip_1", "source": "n_scene", "target": "n_clip_1", "kind": EDGE_KIND_DATA},
-        {"id": "e_storyboard_n_clip_1", "source": "n_storyboard", "target": "n_clip_1", "kind": EDGE_KIND_DATA},
-        {"id": "e_n_clip_1_compose", "source": "n_clip_1", "target": "n_compose", "kind": EDGE_KIND_DATA},
-    ]
-    graph: DesignerExecutionGraph = {
-        "schema_version": SCHEMA_VERSION,
-        "graph_id": graph_id,
-        "project_id": project_id,
-        "title": graph_title,
-        "description": prompt_text,
-        "source": GRAPH_SOURCE_PROMPT,
-        "nodes": nodes,
-        "edges": edges,
-        "metadata": {
-            "bootstrap": "designer.graph.bootstrap.v1",
-            "scene_continuity_mode": "scene_card_plus_clip_shots",
-        },
-        "created_at": now,
-        "updated_at": now,
-    }
-    return normalize_execution_graph(graph)

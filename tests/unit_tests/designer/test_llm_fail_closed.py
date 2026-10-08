@@ -83,7 +83,7 @@ async def test_call_model_tool_no_credentials_is_error(
             }
         ],
     )
-    monkeypatch.setattr(model_tools, "pick_model_for_optimize", lambda _opt: {
+    monkeypatch.setattr(model_tools, "pick_default_model", lambda: {
         "id": "demo",
         "model_name": "demo",
         "api_base": "https://example.com/v1",
@@ -98,7 +98,6 @@ async def test_call_model_tool_no_credentials_is_error(
     result = await model_tools.call_model_tool(
         prompt="hello",
         system="reply",
-        optimize_for="cost",
     )
     assert result["ok"] is False
     assert result.get("fallback") is False
