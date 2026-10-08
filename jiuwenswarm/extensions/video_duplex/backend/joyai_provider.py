@@ -22,9 +22,8 @@ from .tasks.prompts import JOYAI_TASK_INSTRUCTIONS
 MAX_FRAME_CHARS = 4_000_000
 MAX_INSTRUCTION_CHARS = 16_000
 MAX_TOOL_CONTEXT_CHARS = 4_000
-_TTS_VOICE = "vivian"
 _TTS_INSTRUCTIONS = (
-    "Always use the same Vivian voice. Read all Chinese text in Standard Mandarin "
+    "Use the configured voice. Read all Chinese text in Standard Mandarin "
     "(Mainland China Putonghua, zh-CN), never Cantonese or another Chinese dialect. "
     "If the input contains Traditional Chinese characters or Hong Kong wording, "
     "interpret it as Simplified Chinese Mandarin before speaking. Speak at a slightly "
@@ -65,17 +64,9 @@ def model_config() -> tuple[str, str, str]:
 def voice_config() -> tuple[str, str, str]:
     """Return the native JoyAI channel ASR/TTS WebSocket settings."""
     return (
-        (
-            os.environ.get("VOICE_ASR_ENDPOINT")
-            or os.environ.get("JOYAI_ASR_WS_URL")
-            or "ws://127.0.0.1:8994/ws/asr"
-        ).strip(),
-        (
-            os.environ.get("VOICE_TTS_ENDPOINT")
-            or os.environ.get("JOYAI_TTS_WS_URL")
-            or "ws://127.0.0.1:8992/ws/tts"
-        ).strip(),
-        _TTS_VOICE,
+        (os.environ.get("VOICE_ASR_ENDPOINT") or os.environ.get("JOYAI_ASR_WS_URL") or "").strip(),
+        (os.environ.get("VOICE_TTS_ENDPOINT") or os.environ.get("JOYAI_TTS_WS_URL") or "").strip(),
+        os.environ.get("VOICE_TTS_VOICE", "").strip(),
     )
 
 
@@ -85,7 +76,7 @@ def uses_native_voice_channel(video_live_mode: str) -> bool:
     protocol = os.environ.get("VOICE_PROTOCOL", "").strip().casefold()
     if protocol:
         return protocol == "native_ws"
-    provider = os.environ.get("JOYAI_VOICE_PROVIDER", "native").strip().casefold()
+    provider = os.environ.get("JOYAI_VOICE_PROVIDER", "openai").strip().casefold()
     return provider not in {"openai", "openai_compatible", "siliconflow"}
 
 
@@ -400,6 +391,8 @@ async def stream_channel_pcm(
     _, tts_url, voice = voice_config()
     if not tts_url:
         raise RuntimeError("请配置 VOICE_TTS_ENDPOINT")
+    if not voice:
+        raise RuntimeError("请配置 VOICE_TTS_VOICE")
     request_id = uuid.uuid4().hex
     messages = (
         {
