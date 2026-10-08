@@ -2512,8 +2512,9 @@ class JiuWenSwarmDeepAdapter:
         Base implementation returns an empty dict; subclasses override to
         propagate instance-specific data.
         """
-        if self._session_instance_agent_definition is not None:
-            return {"agent_definition": copy.deepcopy(self._session_instance_agent_definition)}
+        definition = getattr(self, "_session_instance_agent_definition", None)
+        if definition is not None:
+            return {"agent_definition": copy.deepcopy(definition)}
         return {}
 
     def mark_as_session_scoped(self, session_id: str) -> None:
@@ -15214,7 +15215,10 @@ class JiuWenSwarmDeepAdapter:
         """Bind Host request identity for streaming and non-streaming execution."""
         request_params = request.params if isinstance(request.params, dict) else {}
         from jiuwenswarm.runtime.run_permissions import RUN_PERMISSIONS
-        run_permissions = request_params.get("run_permissions")
+        run_permissions = (
+            request_params.get("run_permissions")
+            if request.channel_id == "process_cli" else None
+        )
         tool_levels = run_permissions.get("tools", {}) if isinstance(run_permissions, dict) else None
         if (tool_levels is not None and self._permission_rail is None
                 and self._is_session_scoped_adapter):
