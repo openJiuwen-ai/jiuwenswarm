@@ -1178,6 +1178,21 @@ def sync_session_request_metadata(
     metadata = _read_metadata(session_id, cache_bust=True)
     effective_project_dir: str | None = None
 
+    from jiuwenswarm.common.agentos_runtime import is_agentos_workspace_fallback
+
+    workspace_fallback = is_agentos_workspace_fallback(
+        channel_id=channel_id,
+        project_dir=project_dir,
+        project_id=project_id,
+    )
+    stored_project_id = str((metadata or {}).get("project_id") or "").strip()
+    stored_project_dir = str((metadata or {}).get("project_dir") or "").strip().rstrip("/")
+    if stored_project_id not in {"", "default", "default_code"} or stored_project_dir not in {
+        "", "/home/agentos/workspace",
+    }:
+        workspace_fallback = False
+    binding_project_dir = None if workspace_fallback else project_dir
+
     if not metadata:
         # 会话元数据不存在：兜底新建（外部渠道隐式创建 session 的场景）
         now = _current_timestamp()
@@ -1199,7 +1214,7 @@ def sync_session_request_metadata(
             "team_name": "",
             "team_template_id": "",
             "round_id": 0,
-            "project_dir": project_dir or "",
+            "project_dir": binding_project_dir or "",
             "project_id": project_id or "",
             "persist_session": persist_session if isinstance(persist_session, bool) else False,
             "model": model if (model is not None and explicit_model_provided) else "",
@@ -1246,7 +1261,11 @@ def sync_session_request_metadata(
 
         # 校验 project_dir：首次锁定 / 不一致告警不覆盖
         locked_project = metadata.get("project_dir")
-        if isinstance(locked_project, str) and locked_project.strip():
+        if workspace_fallback:
+            # Execution cwd only: do not persist a project association or treat
+            # an old fallback directory as a newly requested binding.
+            effective_project_dir = project_dir
+        elif isinstance(locked_project, str) and locked_project.strip():
             # 已锁定：以磁盘值为准
             effective_project_dir = locked_project.strip()
             # 请求带了不同值 → 告警（会话被换项目目录，有问题），但不覆盖

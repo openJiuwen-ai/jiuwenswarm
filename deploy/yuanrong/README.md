@@ -1,5 +1,8 @@
 # JiuwenSwarm 分布式一键部署方案
 
+AgentOS 多用户使用 develop 的运行标识、数据面热同步、Conch 与 Code Graph 配置见
+[AgentOS 适配说明](AGENTOS_ADAPTATION.md)。
+
 ## 简介
 
 openYuanrong 是一个 Serverless 分布式计算引擎，旨在为分布式应用提供高性能运行和集群资源的高效利用。基于此引擎，我们打造了 JiuwenSwarm 分布式一键部署方案。

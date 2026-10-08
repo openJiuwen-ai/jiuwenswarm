@@ -401,7 +401,10 @@ async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
     # 沙箱本地非 loopback IP(ISOLATED 模式 bind veth 地址, 见
     # app_agentserver._resolve_bind_host); 单机版默认仍 127.0.0.1。
     assert "AGENT_SERVER_HOST" not in env
-    assert env == {USER_DIRECTORY_ENV_KEY: yuanrong.create_payloads[0]["workspace"]}
+    assert env == {
+        USER_DIRECTORY_ENV_KEY: yuanrong.create_payloads[0]["workspace"],
+        "JIUWENSWARM_RUNTIME_PROFILE": "agentos",
+    }
     # create 后通过 frontend WS 代理直连 instance（不走 invoke 链路）。
     assert yuanrong.ws_connect_uris == [
         "ws://yuanrong.test:8888/serverless/v1/ws"

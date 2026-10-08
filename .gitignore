@@ -1,3 +1,6 @@
+# ZCode 工作区
+.zcode/
+
 # Python
 __pycache__/
 *.py[cod]

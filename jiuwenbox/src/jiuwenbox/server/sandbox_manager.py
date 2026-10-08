@@ -57,7 +57,7 @@ def _is_daemon_ipc_file_op_failure(result: RuntimeFileOpResult) -> bool:
 
 from jiuwenbox.logging_config import configure_logging
 from jiuwenbox.models.common import AuditEventType
-from jiuwenbox.models.policy import NetworkMode, NetworkRulePolicy, SecurityPolicy, TimeoutPolicy
+from jiuwenbox.models.policy import ConchDirectionPolicy, ConchNetworkPolicy, NetworkMode, NetworkRulePolicy, SecurityPolicy, TimeoutPolicy
 from jiuwenbox.models.sandbox import (
     BackgroundExecResult,
     BackgroundJobStatus,
@@ -84,6 +84,26 @@ from jiuwenbox.server.runtime.base import (
 )
 from jiuwenbox.server.runtime.process import BackgroundJobNotFoundError, ProcessRuntime
 from jiuwenbox.server.workspace import JIUWENBOX_HOME
+from jiuwenbox.server.policy_update_store import PolicyUpdateStore
+from jiuwenbox.server.runtime.errors import SandboxNotFoundError, SandboxConflictError, SandboxStateError
+
+RUNTIME_PROCESS = "process"
+RUNTIME_CONCH = "conch"
+
+def normalize_sandbox_runtime(sandbox_runtime: str | None) -> str:
+    """Map API ``sandbox_runtime`` create values to stored SandboxRef values."""
+    if sandbox_runtime is None:
+        return RUNTIME_PROCESS
+    value = sandbox_runtime.strip().lower()
+    if value == "" or value == "bwrap":
+        return RUNTIME_PROCESS
+    if value == "conch":
+        return RUNTIME_CONCH
+    raise PolicyValidationError(
+        f"Unsupported sandbox_runtime {sandbox_runtime!r}; "
+        "expected 'bwrap' or 'conch'"
+    )
+
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -116,22 +136,6 @@ class SandboxListRequest:
     include_dirs: bool = True
 
 
-class SandboxNotFoundError(Exception):
-    def __init__(self, *args: object) -> None:
-        super().__init__(*args)
-        logger.error("%s: %s", self.__class__.__name__, str(self))
-
-
-class SandboxStateError(Exception):
-    def __init__(self, *args: object) -> None:
-        super().__init__(*args)
-        logger.error("%s: %s", self.__class__.__name__, str(self))
-
-
-class SandboxConflictError(Exception):
-    """Raised for expected request conflicts such as duplicate sandbox IDs."""
-
-
 class SandboxManager:
     """Manages sandbox lifecycle and state."""
 
@@ -143,8 +147,12 @@ class SandboxManager:
         state_dir: Path | None = None,
         policy_reader: PolicyReader | None = None,
         policy_path: Path | None = None,
+        update_policy_path: Path | None = None,
     ) -> None:
         self.runtime = runtime or ProcessRuntime()
+        self._conch_runtime = None
+        self._policy_updates_enabled = os.getenv("JIUWENBOX_RUNTIME_PROFILE", "").lower() == "agentos" or update_policy_path is not None
+        self.update_store = PolicyUpdateStore(path=update_policy_path)
         self.policy_engine = policy_engine or PolicyEngine()
         self.audit = audit_logger or AuditLogger()
         self.state_dir = state_dir or JIUWENBOX_HOME / "sandboxes"
@@ -153,7 +161,8 @@ class SandboxManager:
             policy_engine=self.policy_engine,
             policy_path=policy_path,
         )
-        self.policy = self.policy_reader.load_policy()
+        base_policy = self.policy_reader.load_policy()
+        self.policy = self.update_store.resolve(base_policy) if self._policy_updates_enabled else base_policy
 
         self._lock = asyncio.Lock()
         self._sandboxes: dict[str, SandboxRef] = {}
@@ -487,10 +496,20 @@ class SandboxManager:
             return
         unregister(loop)
 
-    async def _resolve_sandbox_ip_address(self, sandbox_id: str) -> str | None:
+    async def _resolve_sandbox_ip_address(
+        self,
+        sandbox_id: str,
+        runtime: RuntimeAdapter | None = None,
+    ) -> str | None:
         """Best-effort IPv4 snapshot after create/start. Failures yield None."""
+        adapter = runtime
+        if adapter is None:
+            ref = self._sandboxes.get(sandbox_id)
+            if ref is None:
+                return None
+            adapter = self._runtime_for(ref)
         try:
-            return await self.runtime.get_sandbox_ip_address(sandbox_id)
+            return await adapter.get_sandbox_ip_address(sandbox_id)
         except Exception:
             logger.debug(
                 "Failed to resolve IP address for sandbox %s",
@@ -544,13 +563,17 @@ class SandboxManager:
                         f"Sandbox '{spec.sandbox_id}' already exists"
                     )
                 sandbox_id = spec.sandbox_id
+            runtime_name = normalize_sandbox_runtime(spec.sandbox_runtime)
             policy = self._resolve_effective_policy(policy_data, policy_mode)
             logger.debug("Creating sandbox %s with policy %s", sandbox_id, str(policy))
             self.policy_engine.validate_policy(policy)
+            if runtime_name == RUNTIME_CONCH:
+                self.policy_engine.validate_conch_policy(policy)
             # Create sandbox ref
             ref = SandboxRef(
                 id=sandbox_id,
                 phase=SandboxPhase.PROVISIONING,
+                runtime=runtime_name,
                 env=dict(spec.env),
             )
             self._sandboxes[sandbox_id] = ref
@@ -562,16 +585,19 @@ class SandboxManager:
             # Write resolved policy
             policy_path = self.policy_engine.write_sandbox_policy(sandbox_id, policy)
             self.audit.log(AuditEventType.POLICY_APPLIED, sandbox_id, policy_name=policy.name)
+            runtime = self._runtime_for(ref)
 
         # Runtime startup can be expensive. Do it outside the manager-wide lock
         # so independent sandboxes can start in parallel.
         try:
-            pid = await self.runtime.create(
+            pid = await runtime.create(
                 sandbox_id=sandbox_id,
                 policy_path=policy_path,
                 env=ref.env,
             )
-            ip_address = await self._resolve_sandbox_ip_address(sandbox_id)
+            ip_address = await self._resolve_sandbox_ip_address(
+                sandbox_id, runtime=runtime,
+            )
             cleanup_after_create = False
             async with self._lock:
                 current_ref = self._sandboxes.get(sandbox_id)
@@ -588,7 +614,7 @@ class SandboxManager:
                     ref.last_active_at = now
                     self._save_state(ref)
             if cleanup_after_create:
-                await self.runtime.cleanup(sandbox_id)
+                await runtime.cleanup(sandbox_id)
         except Exception as e:
             async with self._lock:
                 current_ref = self._sandboxes.get(sandbox_id)
@@ -605,11 +631,12 @@ class SandboxManager:
     async def get_sandbox(self, sandbox_id: str) -> SandboxRef:
         async with self._lock:
             ref = self._get_sandbox(sandbox_id)
+            runtime = self._runtime_for(ref)
             # Refresh running status
             if ref.phase == SandboxPhase.READY:
-                if not await self.runtime.is_running(sandbox_id):
+                if not await runtime.is_running(sandbox_id):
                     ref.phase = SandboxPhase.STOPPED
-                    diagnostics = getattr(self.runtime, "get_exit_diagnostics", None)
+                    diagnostics = getattr(runtime, "get_exit_diagnostics", None)
                     if diagnostics is not None:
                         ref.error_message = diagnostics(sandbox_id)
                     self._save_state(ref)
@@ -625,8 +652,9 @@ class SandboxManager:
 
     async def _start_sandbox_unlocked(self, sandbox_id: str) -> SandboxRef:
         ref = self._get_sandbox(sandbox_id)
+        runtime = self._runtime_for(ref)
         if ref.phase == SandboxPhase.READY:
-            if await self.runtime.is_running(sandbox_id):
+            if await runtime.is_running(sandbox_id):
                 return ref
 
         policy = self._policies.get(sandbox_id)
@@ -642,12 +670,14 @@ class SandboxManager:
             policy_path = self.policy_engine.write_sandbox_policy(sandbox_id, policy)
 
         try:
-            pid = await self.runtime.create(
+            pid = await runtime.create(
                 sandbox_id=sandbox_id,
                 policy_path=policy_path,
                 env=ref.env,
             )
-            ip_address = await self._resolve_sandbox_ip_address(sandbox_id)
+            ip_address = await self._resolve_sandbox_ip_address(
+                sandbox_id, runtime=runtime,
+            )
             ref.phase = SandboxPhase.READY
             ref.pid = pid
             ref.ip_address = ip_address
@@ -671,7 +701,13 @@ class SandboxManager:
 
     async def _stop_sandbox_unlocked(self, sandbox_id: str) -> SandboxRef:
         ref = self._get_sandbox(sandbox_id)
-        await self.runtime.stop(sandbox_id)
+        if ref.runtime == RUNTIME_CONCH:
+            raise SandboxStateError(
+                f"Cannot stop sandbox '{sandbox_id}': Conch runtime does not "
+                "support stop; use DELETE to destroy the sandbox or "
+                "POST .../restart for cold recreate"
+            )
+        await self._runtime_for(ref).stop(sandbox_id)
         ref.phase = SandboxPhase.STOPPED
         ref.pid = None
         self._save_state(ref)
@@ -680,19 +716,82 @@ class SandboxManager:
 
     async def restart_sandbox(self, sandbox_id: str) -> SandboxRef:
         async with self._lock:
-            await self._stop_sandbox_unlocked(sandbox_id)
-            return await self._start_sandbox_unlocked(sandbox_id)
+            ref = self._get_sandbox(sandbox_id)
+            if ref.runtime != RUNTIME_CONCH:
+                await self._stop_sandbox_unlocked(sandbox_id)
+                return await self._start_sandbox_unlocked(sandbox_id)
+            runtime = self._runtime_for(ref)
+            policy = self._policies.get(sandbox_id)
+            if policy is None:
+                policy_path = self.policy_engine.get_sandbox_policy_path(sandbox_id)
+                if policy_path:
+                    policy = self.policy_engine.load_policy_from_file(policy_path)
+                    self._policies[sandbox_id] = policy
+                else:
+                    raise SandboxStateError(f"No policy found for sandbox {sandbox_id}")
+            policy_path = self.policy_engine.get_sandbox_policy_path(sandbox_id)
+            if policy_path is None:
+                policy_path = self.policy_engine.write_sandbox_policy(sandbox_id, policy)
+            env = dict(ref.env)
+
+        # Conch has no stop: cold recreate via delete + create with retries.
+        recreate = getattr(runtime, "recreate", None)
+        try:
+            if recreate is not None:
+                pid = await recreate(
+                    sandbox_id=sandbox_id,
+                    policy_path=policy_path,
+                    env=env,
+                )
+            else:
+                await runtime.cleanup(sandbox_id)
+                pid = await runtime.create(
+                    sandbox_id=sandbox_id,
+                    policy_path=policy_path,
+                    env=env,
+                )
+            ip_address = await self._resolve_sandbox_ip_address(
+                sandbox_id, runtime=runtime,
+            )
+            async with self._lock:
+                current = self._get_sandbox(sandbox_id)
+                current.phase = SandboxPhase.READY
+                current.pid = pid
+                current.ip_address = ip_address
+                now = datetime.now(timezone.utc)
+                current.started_at = now
+                current.last_active_at = now
+                current.error_message = None
+                self._save_state(current)
+                self.audit.log(AuditEventType.SANDBOX_STARTED, sandbox_id)
+                return current
+        except Exception as e:
+            logger.error(
+                "Failed to restart Conch sandbox %s: %s",
+                sandbox_id,
+                e,
+                exc_info=True,
+            )
+            async with self._lock:
+                current = self._get_sandbox(sandbox_id)
+                current.phase = SandboxPhase.ERROR
+                current.error_message = str(e)
+                current.pid = None
+                current.ip_address = None
+                self._save_state(current)
+                return current
 
     async def delete_sandbox(self, sandbox_id: str) -> None:
         async with self._lock:
             ref = self._get_sandbox(sandbox_id)
+            runtime = self._runtime_for(ref)
             ref.phase = SandboxPhase.DELETING
             self._save_state(ref)
 
         # Cleanup can wait on processes and namespace teardown. Keep it outside
         # the global state lock so deleting one sandbox does not block unrelated
         # sandbox operations.
-        await self.runtime.cleanup(sandbox_id)
+        await runtime.cleanup(sandbox_id)
         self.policy_engine.delete_sandbox_policy(sandbox_id)
         self.audit.log(AuditEventType.SANDBOX_DELETED, sandbox_id)
 
@@ -713,6 +812,8 @@ class SandboxManager:
                     f"Cannot exec in sandbox '{sandbox_id}': state is {ref.phase.value}"
                 )
             self._mark_active(ref)
+            runtime = self._runtime_for(ref)
+            runtime_name = ref.runtime
 
         # One audit row per exec, emitted **after** the runtime returns so
         # the payload covers both intent (command/workdir) and outcome
@@ -728,8 +829,8 @@ class SandboxManager:
             timeout=request.timeout,
         )
         try:
-            result = await self.runtime.exec(sandbox_id, runtime_request)
-            if _is_daemon_ipc_exec_failure(result):
+            result = await runtime.exec(sandbox_id, runtime_request)
+            if runtime_name == RUNTIME_PROCESS and _is_daemon_ipc_exec_failure(result):
                 logger.warning(
                     "Daemon IPC exec failed for sandbox %s (exit=%s), "
                     "restarting sandbox once",
@@ -737,7 +838,7 @@ class SandboxManager:
                     result.exit_code,
                 )
                 await self.restart_sandbox(sandbox_id)
-                result = await self.runtime.exec(sandbox_id, runtime_request)
+                result = await runtime.exec(sandbox_id, runtime_request)
         except Exception as exc:
             self.audit.log(
                 AuditEventType.EXEC_COMMAND,
@@ -774,13 +875,14 @@ class SandboxManager:
                     f"Cannot exec in sandbox '{sandbox_id}': state is {ref.phase.value}"
                 )
             self._mark_active(ref)
+            runtime = self._runtime_for(ref)
 
         job_id = (
             generate_job_id()
             if request.job_id is None or request.job_id.strip() == ""
             else validate_custom_job_id(request.job_id.strip())
         )
-        existing = await self.runtime.list_background_jobs(sandbox_id)
+        existing = await runtime.list_background_jobs(sandbox_id)
         if any(item.job_id == job_id for item in existing):
             raise SandboxConflictError(
                 f"Background job '{job_id}' already exists in sandbox '{sandbox_id}'",
@@ -788,7 +890,7 @@ class SandboxManager:
 
         start = time.monotonic()
         try:
-            result = await self.runtime.exec_background(
+            result = await runtime.exec_background(
                 sandbox_id,
                 RuntimeBackgroundExecRequest(
                     command=request.command,
@@ -833,8 +935,8 @@ class SandboxManager:
         job_id: str,
     ) -> BackgroundJobStatus:
         async with self._lock:
-            self._get_sandbox(sandbox_id)
-        return await self.runtime.get_background_job(sandbox_id, job_id)
+            runtime = self._runtime_for(self._get_sandbox(sandbox_id))
+        return await runtime.get_background_job(sandbox_id, job_id)
 
     async def list_background_jobs_in_sandbox(
         self,
@@ -843,8 +945,8 @@ class SandboxManager:
         running_only: bool = False,
     ) -> list[BackgroundJobSummary]:
         async with self._lock:
-            self._get_sandbox(sandbox_id)
-        return await self.runtime.list_background_jobs(
+            runtime = self._runtime_for(self._get_sandbox(sandbox_id))
+        return await runtime.list_background_jobs(
             sandbox_id,
             running_only=running_only,
         )
@@ -863,10 +965,11 @@ class SandboxManager:
                     f"state is {ref.phase.value}"
                 )
             self._mark_active(ref)
+            runtime = self._runtime_for(ref)
 
         start = time.monotonic()
         try:
-            result = await self.runtime.kill_background_job(
+            result = await runtime.kill_background_job(
                 sandbox_id,
                 job_id,
                 signum=signal,
@@ -909,6 +1012,7 @@ class SandboxManager:
                     f"Cannot upload to sandbox '{sandbox_id}': state is {ref.phase.value}"
                 )
             self._mark_active(ref)
+            runtime = self._runtime_for(ref)
 
         # One audit row per upload, emitted after the call returns so the
         # payload covers both intent (path/size) and outcome (ok, error,
@@ -935,7 +1039,7 @@ class SandboxManager:
         # spawning ``bash -c 'cat > "$target"'`` but skips the bash
         # cold-start and an extra fork/exec roundtrip per upload.
         try:
-            result = await self.runtime.write_file(
+            result = await runtime.write_file(
                 sandbox_id,
                 sandbox_path,
                 content,
@@ -1038,6 +1142,8 @@ class SandboxManager:
                     f"Cannot download from sandbox '{sandbox_id}': state is {ref.phase.value}"
                 )
             self._mark_active(ref)
+            runtime = self._runtime_for(ref)
+            runtime_name = ref.runtime
 
         # Mirror of ``upload_file_to_sandbox``: a single post-result row
         # carrying intent + outcome. ``size`` is filled in on success
@@ -1061,18 +1167,22 @@ class SandboxManager:
         # any path that user code couldn't read. Binary content survives
         # the IPC unchanged - no base64 round-trip.
         try:
-            result = await self.runtime.read_file(sandbox_id, sandbox_path)
+            result = await runtime.read_file(sandbox_id, sandbox_path)
         except Exception as exc:
             _emit_result(False, error=repr(exc), path="ipc")
             raise
-        if not result.ok and _is_daemon_ipc_file_op_failure(result):
+        if (
+            runtime_name == RUNTIME_PROCESS
+            and not result.ok
+            and _is_daemon_ipc_file_op_failure(result)
+        ):
             logger.warning(
                 "Daemon IPC read failed for sandbox %s (%s), restarting sandbox once",
                 sandbox_id,
                 result.error,
             )
             await self.restart_sandbox(sandbox_id)
-            result = await self.runtime.read_file(sandbox_id, sandbox_path)
+            result = await runtime.read_file(sandbox_id, sandbox_path)
         if result.ok:
             content = result.content or b""
             _emit_result(True, size=len(content), path="ipc")
@@ -1161,11 +1271,12 @@ class SandboxManager:
                     f"Cannot list files in sandbox '{sandbox_id}': state is {ref.phase.value}"
                 )
             self._mark_active(ref)
+            runtime = self._runtime_for(ref)
 
         # Fast path: ask the daemon to walk the directory in-process.
         # Saves the python3 cold start and the fork+exec that the legacy
         # helper paid on every call.
-        result = await self.runtime.list_dir(
+        result = await runtime.list_dir(
             sandbox_id,
             request.sandbox_path,
             recursive=request.recursive,
@@ -1287,6 +1398,31 @@ class SandboxManager:
         pattern: str,
         exclude_patterns: list[str] | None = None,
     ) -> list[dict[str, object]]:
+        async with self._lock:
+            ref = self._get_sandbox(sandbox_id)
+            if ref.phase != SandboxPhase.READY:
+                raise SandboxStateError(
+                    f"Cannot search files in sandbox '{sandbox_id}': state is {ref.phase.value}"
+                )
+            self._mark_active(ref)
+            runtime = self._runtime_for(ref)
+
+        result = await runtime.search_files(
+            sandbox_id,
+            sandbox_path,
+            [pattern],
+            exclude_patterns=exclude_patterns,
+        )
+        if result.ok:
+            return list(result.items or [])
+        if result.error != "unsupported":
+            if result.error == "not_found":
+                raise FileNotFoundError(sandbox_path)
+            raise SandboxStateError(
+                f"Failed to search files in '{sandbox_path}': "
+                f"{result.detail or result.error}"
+            )
+
         script = textwrap.dedent(
             """
             import datetime
@@ -1382,6 +1518,8 @@ class SandboxManager:
             self._policies[sandbox_id] = policy
             return policy
 
+    _POLICY_UPDATE_TOP_KEYS = frozenset({"network", "conch"})
+    _CONCH_UPDATE_KEYS = frozenset({"network"})
     _NETWORK_UPDATE_KEYS = frozenset({"egress", "ingress"})
 
     @classmethod
@@ -1389,72 +1527,17 @@ class SandboxManager:
         cls,
         policy_data: Mapping[str, object] | None,
     ) -> tuple[dict[str, object] | None, dict[str, object] | None]:
-        """Validate a partial policy update payload for network rules.
+        """Validate a process-runtime network update payload.
 
-        Returns ``(egress, ingress)`` dict fragments (either may be ``None``
-        when that direction was omitted). Raises
-        :class:`PolicyValidationError` when the payload is out of scope for
-        the current dynamic-update API.
+        Kept for compatibility with callers that only touch ``policy.network``.
         """
-        if policy_data is None:
-            raise PolicyValidationError("'policy' is required")
-        if not isinstance(policy_data, Mapping):
-            raise PolicyValidationError("'policy' must be an object")
-
-        unexpected = sorted(set(policy_data.keys()) - {"network"})
-        if unexpected:
-            raise PolicyValidationError(
-                "Only 'policy.network' updates are supported in this API; "
-                f"unsupported fields: {unexpected}"
-            )
-        if "network" not in policy_data:
-            raise PolicyValidationError("'policy.network' is required")
-
-        network = policy_data["network"]
-        if not isinstance(network, Mapping):
-            raise PolicyValidationError("'policy.network' must be an object")
-
-        unexpected_net = sorted(set(network.keys()) - cls._NETWORK_UPDATE_KEYS)
-        if unexpected_net:
-            raise PolicyValidationError(
-                "Only network.egress/ingress can be updated dynamically; "
-                f"unsupported fields: {unexpected_net}"
-            )
-        if "egress" not in network and "ingress" not in network:
-            raise PolicyValidationError(
-                "At least one of network.egress or network.ingress is required"
-            )
-
-        egress_raw = network.get("egress")
-        ingress_raw = network.get("ingress")
-        egress: dict[str, object] | None = None
-        ingress: dict[str, object] | None = None
-        rule_fields = set(NetworkRulePolicy.model_fields)
-
-        if egress_raw is not None:
-            if not isinstance(egress_raw, Mapping):
-                raise PolicyValidationError("'network.egress' must be an object")
-            try:
-                NetworkRulePolicy.model_validate(egress_raw)
-            except Exception as exc:
-                raise PolicyValidationError(f"Invalid network.egress: {exc}") from exc
-            # Keep only caller-provided keys so append does not invent defaults
-            # (e.g. flipping ``default`` to deny when the client only appended
-            # an allowed_domains entry). Override still model_validates later
-            # and fills omitted fields for a full directional replace.
-            egress = {key: egress_raw[key] for key in egress_raw if key in rule_fields}
-        if ingress_raw is not None:
-            if not isinstance(ingress_raw, Mapping):
-                raise PolicyValidationError("'network.ingress' must be an object")
-            try:
-                NetworkRulePolicy.model_validate(ingress_raw)
-            except Exception as exc:
-                raise PolicyValidationError(f"Invalid network.ingress: {exc}") from exc
-            ingress = {
-                key: ingress_raw[key] for key in ingress_raw if key in rule_fields
-            }
-
-        return egress, ingress
+        process = cls.validate_policy_update_payload(
+            policy_data,
+            allow_network=True,
+            allow_conch=False,
+            require_any=True,
+        )
+        return process["network"]
 
     def _merge_network_rules_update(
         self,
@@ -1464,21 +1547,24 @@ class SandboxManager:
         policy_mode: PolicyMode,
     ) -> SecurityPolicy:
         """Apply egress/ingress update onto a sandbox's current effective policy."""
-        if policy_mode == PolicyMode.APPEND:
-            network_fragment: dict[str, object] = {}
+        if not self._policy_updates_enabled and policy_mode == PolicyMode.OVERRIDE:
+            # Personal ProcessRuntime retains develop's full directional
+            # replacement. AgentOS updates instead preserve absent leaves.
+            network = current.network.model_copy(deep=True)
             if egress is not None:
-                network_fragment["egress"] = egress
+                network.egress = NetworkRulePolicy.model_validate(egress)
             if ingress is not None:
-                network_fragment["ingress"] = ingress
-            fragment: dict[str, object] = {"network": network_fragment}
-            return self.policy_engine.merge_policy(current, fragment)
-
-        new_network = current.network.model_copy(deep=True)
+                network.ingress = NetworkRulePolicy.model_validate(ingress)
+            return current.model_copy(deep=True, update={"network": network})
+        network_fragment: dict[str, object] = {}
         if egress is not None:
-            new_network.egress = NetworkRulePolicy.model_validate(egress)
+            network_fragment["egress"] = egress
         if ingress is not None:
-            new_network.ingress = NetworkRulePolicy.model_validate(ingress)
-        return current.model_copy(deep=True, update={"network": new_network})
+            network_fragment["ingress"] = ingress
+        fragment: dict[str, object] = {"network": network_fragment}
+        return self.policy_engine.merge_policy(
+            current, fragment, mode=policy_mode.value,
+        )
 
     async def _load_sandbox_policy_unlocked(self, sandbox_id: str) -> SecurityPolicy:
         policy = self._policies.get(sandbox_id)
@@ -1500,15 +1586,17 @@ class SandboxManager:
         *,
         reject_host: bool,
     ) -> SecurityPolicy | None:
-        """Merge, persist, and optionally hot-apply network rules for one sandbox.
-
-        Returns the updated policy, or ``None`` when ``reject_host`` is False
-        and the sandbox is in host networking mode (caller should treat as
-        skipped).
-        """
+        """Merge, persist, and optionally hot-apply process network rules."""
         ref = self._get_sandbox(sandbox_id)
-        current = await self._load_sandbox_policy_unlocked(sandbox_id)
+        if ref.runtime != RUNTIME_PROCESS:
+            if reject_host:
+                raise PolicyValidationError(
+                    f"Sandbox '{sandbox_id}' uses runtime '{ref.runtime}'; "
+                    "update policy.conch.network instead of policy.network"
+                )
+            return None
 
+        current = await self._load_sandbox_policy_unlocked(sandbox_id)
         if current.network.mode != NetworkMode.ISOLATED:
             if reject_host:
                 raise PolicyValidationError(
@@ -1522,20 +1610,15 @@ class SandboxManager:
             current, egress, ingress, policy_mode,
         )
         self.policy_engine.validate_policy(updated)
-        self.policy_engine.write_sandbox_policy(sandbox_id, updated)
-        self._policies[sandbox_id] = updated
-        self.audit.log(
-            AuditEventType.POLICY_APPLIED,
-            sandbox_id,
-            policy_name=updated.name,
-        )
+        self._persist_updated_policy(sandbox_id, updated)
 
+        runtime = self._runtime_for(ref)
         hot_apply = (
             ref.phase == SandboxPhase.READY
-            and await self.runtime.is_running(sandbox_id)
+            and await runtime.is_running(sandbox_id)
         )
         if hot_apply:
-            update_fn = getattr(self.runtime, "update_network_policy", None)
+            update_fn = getattr(runtime, "update_network_policy", None)
             if update_fn is None:
                 raise SandboxStateError(
                     f"Runtime cannot hot-update network policy for sandbox '{sandbox_id}'"
@@ -1551,15 +1634,50 @@ class SandboxManager:
         policy_mode: PolicyMode = PolicyMode.OVERRIDE,
     ) -> SecurityPolicy:
         """Update network ingress/egress for a single sandbox."""
-        egress, ingress = self.validate_network_policy_update(policy_data)
+        if self._get_sandbox(sandbox_id).runtime != RUNTIME_CONCH:
+            return await self._update_process_policy(sandbox_id, policy_data=policy_data, policy_mode=policy_mode)
         async with self._lock:
-            updated = await self._apply_network_policy_update_unlocked(
-                sandbox_id,
-                egress,
-                ingress,
-                policy_mode,
-                reject_host=True,
-            )
+            ref = self._get_sandbox(sandbox_id)
+            if ref.runtime == RUNTIME_CONCH:
+                fragments = self.validate_policy_update_payload(
+                    policy_data,
+                    allow_network=False,
+                    allow_conch=True,
+                    require_any=True,
+                )
+                conch = fragments["conch"]
+                if conch is None:
+                    raise PolicyValidationError(
+                        "policy.conch.network is required for Conch network update"
+                    )
+                egress, ingress = conch
+                updated = await self._apply_conch_network_policy_update_unlocked(
+                    sandbox_id,
+                    egress,
+                    ingress,
+                    policy_mode,
+                    reject_mismatch=True,
+                )
+            else:
+                fragments = self.validate_policy_update_payload(
+                    policy_data,
+                    allow_network=True,
+                    allow_conch=False,
+                    require_any=True,
+                )
+                network = fragments["network"]
+                if network is None:
+                    raise PolicyValidationError(
+                        "policy.network is required for process network update"
+                    )
+                egress, ingress = network
+                updated = await self._apply_network_policy_update_unlocked(
+                    sandbox_id,
+                    egress,
+                    ingress,
+                    policy_mode,
+                    reject_host=True,
+                )
             if updated is None:
                 raise SandboxStateError(
                     f"Failed to update network policy for sandbox '{sandbox_id}'"
@@ -1567,6 +1685,420 @@ class SandboxManager:
             return updated
 
     async def update_all_policies(
+        self,
+        policy_data: Mapping[str, object] | None,
+        policy_mode: PolicyMode = PolicyMode.OVERRIDE,
+        update_default_policy: bool = False,
+        update_existing_sandboxes: bool = True,
+    ) -> dict[str, object]:
+        """Apply a policy fragment to the default template and/or live sandboxes.
+
+        When ``update_default_policy`` is true the (full sandbox) fragment is
+        deep-merged into ``self.policy`` and the result is written to
+        ``update_policy.yaml`` (single merged document, overwritten each time).
+        On restart that file becomes the default policy when present.
+        ``timeout`` changes also restart the idle reaper.
+        ``inference_privacy_proxies`` is ignored.
+
+        When ``update_existing_sandboxes`` is true only ``network`` /
+        ``conch.network`` egress/ingress are hot-applied to registered sandboxes.
+        """
+        if not self._policy_updates_enabled and not update_default_policy and update_existing_sandboxes and all(
+            ref.runtime != RUNTIME_CONCH for ref in self._sandboxes.values()
+        ):
+            result = await self._update_all_network_policies(policy_data=policy_data, policy_mode=policy_mode)
+            return {**result, "default_updated": False, "default_policy": None}
+        if update_default_policy and not self._policy_updates_enabled:
+            raise PolicyValidationError("default policy persistence requires AgentOS profile")
+        fragment = self._strip_batch_policy_fragment(policy_data)
+        process_fragment = None
+        conch_fragment = None
+        if update_existing_sandboxes:
+            hot_fragments = self._extract_hot_update_network_fragments(fragment)
+            process_fragment = hot_fragments["network"]
+            conch_fragment = hot_fragments["conch"]
+
+        default_policy: dict[str, object] | None = None
+        sandbox_ids: list[str] = []
+        async with self._lock:
+            if update_default_policy:
+                # Merge against the latest committed default under the lock;
+                # concurrent API and watch updates must not lose each other.
+                candidate = self.policy_engine.merge_policy(
+                    self.policy, fragment, mode=policy_mode.value,
+                )
+                self.policy_engine.validate_policy(candidate)
+                self.policy_engine.validate_conch_policy(candidate)
+                previous_timeout = self.policy.timeout
+                self.update_store.save(candidate)
+                self.policy = candidate
+                default_policy = self.policy.model_dump(mode="json")
+                logger.info(
+                    "default sandbox policy updated (mode=%s); "
+                    "persisted to %s",
+                    policy_mode.value,
+                    self.update_store.path,
+                )
+                if self.policy.timeout != previous_timeout:
+                    # update_timeout_policy grabs no outer lock itself; we already
+                    # hold ``self._lock``. Re-apply timeout via stop/start reaper
+                    # without re-entering the lock-dependent paths that mutate
+                    # ``self.policy`` twice: set timeout is already on self.policy.
+                    await self.stop_idle_reaper()
+                    self.start_idle_reaper()
+            if update_existing_sandboxes:
+                sandbox_ids = list(self._sandboxes.keys())
+
+        updated_ids: list[str] = []
+        skipped: list[dict[str, str]] = []
+        failed: list[dict[str, str]] = []
+
+        if not update_existing_sandboxes:
+            return {
+                "updated": updated_ids,
+                "skipped": skipped,
+                "failed": failed,
+                "default_updated": update_default_policy,
+                "default_policy": default_policy,
+            }
+
+        for sandbox_id in sandbox_ids:
+            try:
+                async with self._lock:
+                    ref = self._get_sandbox(sandbox_id)
+                    if ref.runtime == RUNTIME_CONCH:
+                        if conch_fragment is None:
+                            skipped.append({
+                                "sandbox_id": sandbox_id,
+                                "reason": "no conch.network fragment in request",
+                            })
+                            continue
+                        egress, ingress = conch_fragment
+                        result = await self._apply_conch_network_policy_update_unlocked(
+                            sandbox_id,
+                            egress,
+                            ingress,
+                            policy_mode,
+                            reject_mismatch=False,
+                        )
+                        skip_reason = "runtime mismatch"
+                    else:
+                        if process_fragment is None:
+                            skipped.append({
+                                "sandbox_id": sandbox_id,
+                                "reason": "no network fragment in request",
+                            })
+                            continue
+                        egress, ingress = process_fragment
+                        result = await self._apply_network_policy_update_unlocked(
+                            sandbox_id,
+                            egress,
+                            ingress,
+                            policy_mode,
+                            reject_host=False,
+                        )
+                        skip_reason = "network.mode is host"
+                if result is None:
+                    skipped.append({
+                        "sandbox_id": sandbox_id,
+                        "reason": skip_reason,
+                    })
+                else:
+                    updated_ids.append(sandbox_id)
+            except SandboxNotFoundError:
+                skipped.append({
+                    "sandbox_id": sandbox_id,
+                    "reason": "sandbox no longer exists",
+                })
+            except Exception as exc:
+                logger.exception(
+                    "Failed to update network policy for sandbox %s",
+                    sandbox_id,
+                )
+                failed.append({
+                    "sandbox_id": sandbox_id,
+                    "error": str(exc) or exc.__class__.__name__,
+                })
+
+        return {
+            "updated": updated_ids,
+            "skipped": skipped,
+            "failed": failed,
+            "default_updated": update_default_policy,
+            "default_policy": default_policy,
+        }
+
+    @staticmethod
+    def _strip_batch_policy_fragment(
+        policy_data: Mapping[str, object] | None,
+    ) -> dict[str, object]:
+        if policy_data is None:
+            raise PolicyValidationError("'policy' is required")
+        if not isinstance(policy_data, Mapping):
+            raise PolicyValidationError("'policy' must be an object")
+        fragment = dict(policy_data)
+        fragment.pop("inference_privacy_proxies", None)
+        return fragment
+
+
+    def _extract_hot_update_network_fragments(
+        self,
+        policy_data: Mapping[str, object],
+    ) -> dict[str, tuple[dict[str, object] | None, dict[str, object] | None] | None]:
+        """Pull egress/ingress for live sandboxes; ignore other policy fields."""
+        result: dict[
+            str, tuple[dict[str, object] | None, dict[str, object] | None] | None
+        ] = {"network": None, "conch": None}
+
+        network = policy_data.get("network")
+        if isinstance(network, Mapping) and (
+            "egress" in network or "ingress" in network
+        ):
+            result["network"] = self._parse_network_directions(
+                {
+                    key: network[key]
+                    for key in ("egress", "ingress")
+                    if key in network
+                },
+                label="network",
+                model_cls=NetworkRulePolicy,
+            )
+
+        conch = policy_data.get("conch")
+        if isinstance(conch, Mapping) and "network" in conch:
+            conch_network = conch["network"]
+            if not isinstance(conch_network, Mapping):
+                raise PolicyValidationError("'policy.conch.network' must be an object")
+            if "egress" in conch_network or "ingress" in conch_network:
+                result["conch"] = self._parse_network_directions(
+                    {
+                        key: conch_network[key]
+                        for key in ("egress", "ingress")
+                        if key in conch_network
+                    },
+                    label="conch.network",
+                    model_cls=ConchDirectionPolicy,
+                )
+        return result
+
+
+    def _runtime_for(self, ref: SandboxRef) -> RuntimeAdapter:
+        if ref.runtime == RUNTIME_CONCH:
+            if self._conch_runtime is None:
+                from jiuwenbox.server.runtime.conch import ConchRuntime
+                self._conch_runtime = ConchRuntime()
+            return self._conch_runtime
+        return self.runtime
+
+
+    @classmethod
+    def _parse_direction_fragment(
+        cls,
+        raw: object,
+        *,
+        label: str,
+        model_cls: type,
+    ) -> dict[str, object] | None:
+        if raw is None:
+            return None
+        if not isinstance(raw, Mapping):
+            raise PolicyValidationError(f"'{label}' must be an object")
+        try:
+            model_cls.model_validate(raw)
+        except Exception as exc:
+            raise PolicyValidationError(f"Invalid {label}: {exc}") from exc
+        fields = set(model_cls.model_fields)
+        return {key: raw[key] for key in raw if key in fields}
+
+
+    @classmethod
+    def _parse_network_directions(
+        cls,
+        network: object,
+        *,
+        label: str,
+        model_cls: type,
+    ) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+        if not isinstance(network, Mapping):
+            raise PolicyValidationError(f"'{label}' must be an object")
+        unexpected_net = sorted(set(network.keys()) - cls._NETWORK_UPDATE_KEYS)
+        if unexpected_net:
+            raise PolicyValidationError(
+                f"Only {label}.egress/ingress can be updated dynamically; "
+                f"unsupported fields: {unexpected_net}"
+            )
+        if "egress" not in network and "ingress" not in network:
+            raise PolicyValidationError(
+                f"At least one of {label}.egress or {label}.ingress is required"
+            )
+        egress = cls._parse_direction_fragment(
+            network.get("egress"), label=f"{label}.egress", model_cls=model_cls,
+        )
+        ingress = cls._parse_direction_fragment(
+            network.get("ingress"), label=f"{label}.ingress", model_cls=model_cls,
+        )
+        return egress, ingress
+
+
+    @classmethod
+    def validate_policy_update_payload(
+        cls,
+        policy_data: Mapping[str, object] | None,
+        *,
+        allow_network: bool,
+        allow_conch: bool,
+        require_any: bool,
+    ) -> dict[str, tuple[dict[str, object] | None, dict[str, object] | None] | None]:
+        """Validate dynamic network update payload for process and/or Conch."""
+        if policy_data is None:
+            raise PolicyValidationError("'policy' is required")
+        if not isinstance(policy_data, Mapping):
+            raise PolicyValidationError("'policy' must be an object")
+
+        allowed: set[str] = set()
+        if allow_network:
+            allowed.add("network")
+        if allow_conch:
+            allowed.add("conch")
+        unexpected = sorted(set(policy_data.keys()) - allowed)
+        if unexpected:
+            supported = " / ".join(f"'policy.{key}'" for key in sorted(allowed)) or "none"
+            raise PolicyValidationError(
+                f"Only {supported} updates are supported in this API; "
+                f"unsupported fields: {unexpected}"
+            )
+
+        result: dict[
+            str, tuple[dict[str, object] | None, dict[str, object] | None] | None
+        ] = {"network": None, "conch": None}
+
+        if allow_network and "network" in policy_data:
+            result["network"] = cls._parse_network_directions(
+                policy_data["network"],
+                label="network",
+                model_cls=NetworkRulePolicy,
+            )
+
+        if allow_conch and "conch" in policy_data:
+            conch = policy_data["conch"]
+            if not isinstance(conch, Mapping):
+                raise PolicyValidationError("'policy.conch' must be an object")
+            unexpected_conch = sorted(set(conch.keys()) - cls._CONCH_UPDATE_KEYS)
+            if unexpected_conch:
+                raise PolicyValidationError(
+                    "Only 'policy.conch.network' can be updated dynamically; "
+                    f"unsupported fields: {unexpected_conch}"
+                )
+            if "network" not in conch:
+                raise PolicyValidationError("'policy.conch.network' is required")
+            result["conch"] = cls._parse_network_directions(
+                conch["network"],
+                label="conch.network",
+                model_cls=ConchDirectionPolicy,
+            )
+
+        if require_any and result["network"] is None and result["conch"] is None:
+            raise PolicyValidationError(
+                "At least one of policy.network or policy.conch.network is required"
+            )
+        return result
+
+
+    def _merge_conch_network_rules_update(
+        self,
+        current: SecurityPolicy,
+        egress: dict[str, object] | None,
+        ingress: dict[str, object] | None,
+        policy_mode: PolicyMode,
+    ) -> SecurityPolicy:
+        """Apply Conch egress/ingress update onto current effective policy."""
+        network_fragment: dict[str, object] = {}
+        if egress is not None:
+            network_fragment["egress"] = egress
+        if ingress is not None:
+            network_fragment["ingress"] = ingress
+        fragment: dict[str, object] = {
+            "conch": {"network": network_fragment},
+        }
+        return self.policy_engine.merge_policy(
+            current, fragment, mode=policy_mode.value,
+        )
+
+
+    def _persist_updated_policy(
+        self,
+        sandbox_id: str,
+        updated: SecurityPolicy,
+    ) -> None:
+        self.policy_engine.write_sandbox_policy(sandbox_id, updated)
+        self._policies[sandbox_id] = updated
+        self.audit.log(
+            AuditEventType.POLICY_APPLIED,
+            sandbox_id,
+            policy_name=updated.name,
+        )
+
+
+    async def _apply_conch_network_policy_update_unlocked(
+        self,
+        sandbox_id: str,
+        egress: dict[str, object] | None,
+        ingress: dict[str, object] | None,
+        policy_mode: PolicyMode,
+        *,
+        reject_mismatch: bool,
+    ) -> SecurityPolicy | None:
+        """Merge and optionally hot-apply Conch network rules for one sandbox."""
+        ref = self._get_sandbox(sandbox_id)
+        if ref.runtime != RUNTIME_CONCH:
+            if reject_mismatch:
+                raise PolicyValidationError(
+                    f"Sandbox '{sandbox_id}' uses runtime '{ref.runtime}'; "
+                    "update policy.network instead of policy.conch.network"
+                )
+            return None
+
+        current = await self._load_sandbox_policy_unlocked(sandbox_id)
+        updated = self._merge_conch_network_rules_update(
+            current, egress, ingress, policy_mode,
+        )
+        # Re-validate Conch network constraints (destination limits, IPv4).
+        ConchNetworkPolicy.model_validate(updated.conch.network.model_dump())
+        self.policy_engine.validate_policy(updated)
+
+        runtime = self._runtime_for(ref)
+        hot_apply = (
+            ref.phase == SandboxPhase.READY
+            and await runtime.is_running(sandbox_id)
+        )
+        if hot_apply:
+            update_fn = getattr(runtime, "update_network_policy", None)
+            if update_fn is None:
+                raise SandboxStateError(
+                    f"Runtime cannot hot-update Conch network policy for "
+                    f"sandbox '{sandbox_id}'"
+                )
+            await update_fn(sandbox_id, updated.conch.network)
+            try:
+                self._persist_updated_policy(sandbox_id, updated)
+            except Exception:
+                try:
+                    await update_fn(sandbox_id, current.conch.network)
+                except Exception:
+                    logger.exception(
+                        "Failed to rollback Conch network policy for sandbox %s "
+                        "after persist failure",
+                        sandbox_id,
+                    )
+                raise
+            return updated
+
+        # STOPPED/ERROR (or not running): persist only; next start applies rules.
+        self._persist_updated_policy(sandbox_id, updated)
+        return updated
+
+
+    async def _update_all_network_policies(
         self,
         policy_data: Mapping[str, object] | None,
         policy_mode: PolicyMode = PolicyMode.OVERRIDE,
@@ -1624,3 +2156,25 @@ class SandboxManager:
             "skipped": skipped,
             "failed": failed,
         }
+
+    async def _update_process_policy(
+        self,
+        sandbox_id: str,
+        policy_data: Mapping[str, object] | None,
+        policy_mode: PolicyMode = PolicyMode.OVERRIDE,
+    ) -> SecurityPolicy:
+        """Update network ingress/egress for a single sandbox."""
+        egress, ingress = self.validate_network_policy_update(policy_data)
+        async with self._lock:
+            updated = await self._apply_network_policy_update_unlocked(
+                sandbox_id,
+                egress,
+                ingress,
+                policy_mode,
+                reject_host=True,
+            )
+            if updated is None:
+                raise SandboxStateError(
+                    f"Failed to update network policy for sandbox '{sandbox_id}'"
+                )
+            return updated
