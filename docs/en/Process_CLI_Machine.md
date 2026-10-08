@@ -90,8 +90,22 @@ selection for that field on this turn. MCP references must be locally ready.
 `permissions.tools` accepts
 only `allow`, `ask`, and `deny` decisions. The policy is scoped to the run and
 does not write the global permission configuration. An installed deny remains
-deny; an `ask` uses the existing interaction callback in duplex mode and
-returns `INTERACTION_REQUIRED` in noninteractive mode.
+deny. Without a callback, permission cards with an explicit `reject` option
+are rejected and execution resumes; other interactions need a host answer.
+
+Optional `output_schema` is an object-root JSON Schema. The final answer must
+be exactly one matching JSON object; success includes parsed `output_json`.
+Invalid output fails with `OUTPUT_SCHEMA_MISMATCH`. `max_turns` (1 to 1000)
+caps the Agent model loop and reports `usage.model_calls`. `max_budget_usd`
+stops after reported model cost exceeds the bound. Costs are checked after
+each call, so one call can cross the limit. A model without usable cost data
+fails a budgeted run with `BUDGET_METER_UNAVAILABLE`.
+
+`host_tools` declares SDK-hosted tools for `--run-jsonl` only. Each has a
+unique `name`, `description`, and object-root JSON Schema `input_schema`.
+Custom `agent.tools` must list these names (or use `["*"]`). Runtime registers
+them for this run and validates their arguments. The host responds to each
+`host_tool.requested` event with a matching `tool_result` control frame.
 
 An inline definition must be sent again when resuming history in a later
 process. The Process CLI stores its fingerprint with the Session; a different
@@ -175,10 +189,11 @@ stream is not retried, since a JSONL record may already be partially delivered.
 
 ## Noninteractive interaction boundary
 
-`--run-json FILE|-` remains noninteractive. Asking questions, plan approval and
-harness activation observations produce `INTERACTION_REQUIRED`, followed by
-cancellation and cleanup. Its stdin input still requires EOF. No answer is
-inferred, auto-approved or supplied by reading the terminal.
+`--run-json FILE|-` remains noninteractive. Permission questions with an
+explicit `reject` option are rejected through the typed Runtime API and the
+Agent can continue. Other questions, plan approvals and harness activation
+still fail with `INTERACTION_REQUIRED` or `INTERACTION_UNSUPPORTED`. Its stdin
+input still requires EOF. No answer is read from the terminal.
 
 ## Duplex interaction within one command
 
@@ -200,6 +215,18 @@ unrelated Session command or configuration override is not accepted.
 4. Keep stdin open if answers or cancellation may be needed. Wait for the single terminal
    `result` and process exit. Neither another command nor closing stdin is
    required for a normally completed command to exit.
+
+For a declared host tool, `host_tool.requested` carries a unique `call_id`,
+tool `name`, and validated `arguments`. The SDK callback returns one JSON value
+through the same child process:
+
+```json
+{"schema_version":"0.1","type":"tool_result","request_id":"sdk-run-001","session_id":"<session_id from output>","call_id":"<call_id>","result":{"value":"example"}}
+```
+
+Send `error` instead of `result` to fail that tool call. Exactly one is
+required; unknown, duplicate, or foreign call IDs are rejected. The shipped
+SDKs require a callback whenever `host_tools` is declared.
 
 For a question with the option `ALPHA`, an answer line is:
 

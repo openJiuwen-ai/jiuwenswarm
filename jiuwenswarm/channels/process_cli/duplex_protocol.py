@@ -25,6 +25,7 @@ from jiuwenswarm.channels.process_cli.protocol.version import (
 
 _CANCEL_FIELDS = frozenset({"schema_version", "type", "request_id", "session_id"})
 _ANSWER_FIELDS = _CANCEL_FIELDS | frozenset({"interaction_id", "answers"})
+_TOOL_RESULT_FIELDS = _CANCEL_FIELDS | frozenset({"call_id", "result", "error"})
 _COMMON_REQUIRED = frozenset({"schema_version", "type", "request_id"})
 
 
@@ -90,15 +91,18 @@ class DuplexControl:
     a previously decoded record through its source or serialized output.
     """
 
-    kind: Literal["answer", "cancel"]
+    kind: Literal["answer", "cancel", "tool_result"]
     request_id: str
     session_id: str | None = None
     interaction_id: str | None = None
     answers: tuple[dict[str, Any], ...] = ()
+    call_id: str | None = None
+    result: Any = None
+    error: str | None = None
 
     def __post_init__(self) -> None:
-        if self.kind not in ("answer", "cancel"):
-            raise DuplexProtocolError("control type must be answer or cancel")
+        if self.kind not in ("answer", "cancel", "tool_result"):
+            raise DuplexProtocolError("control type must be answer, tool_result or cancel")
         object.__setattr__(
             self, "request_id", _required_text("request_id", self.request_id)
         )
@@ -112,13 +116,22 @@ class DuplexControl:
                 _required_text("interaction_id", self.interaction_id),
             )
             object.__setattr__(self, "answers", _copy_answers(self.answers))
+        elif self.kind == "tool_result":
+            object.__setattr__(self, "session_id", _required_text("session_id", self.session_id))
+            object.__setattr__(self, "call_id", _required_text("call_id", self.call_id))
+            if self.interaction_id is not None or self.answers != ():
+                raise DuplexProtocolError("tool_result must not contain answer fields")
+            if self.error is not None:
+                object.__setattr__(self, "error", _required_text("error", self.error))
+            else:
+                object.__setattr__(self, "result", _copy_json(self.result))
         else:
             if self.session_id is not None:
                 object.__setattr__(
                     self, "session_id", _required_text("session_id", self.session_id)
                 )
-            if self.interaction_id is not None or self.answers != ():
-                raise DuplexProtocolError("cancel must not contain answer fields")
+            if self.interaction_id is not None or self.answers != () or self.call_id is not None or self.error is not None:
+                raise DuplexProtocolError("cancel must not contain answer fields or tool fields")
 
     def to_dict(self) -> dict[str, Any]:
         """Return this versioned control as fresh, JSON-compatible data."""
@@ -132,6 +145,12 @@ class DuplexControl:
         if self.kind == "answer":
             record["interaction_id"] = self.interaction_id
             record["answers"] = list(_copy_answers(self.answers))
+        elif self.kind == "tool_result":
+            record["call_id"] = self.call_id
+            if self.error is None:
+                record["result"] = _copy_json(self.result)
+            else:
+                record["error"] = self.error
         return record
 
 
@@ -143,8 +162,13 @@ def _validate_fields(record: dict[str, Any]) -> None:
     elif kind == "cancel":
         allowed = _CANCEL_FIELDS
         required = _COMMON_REQUIRED
+    elif kind == "tool_result":
+        allowed = _TOOL_RESULT_FIELDS
+        required = _CANCEL_FIELDS | frozenset({"call_id"})
+        if ("result" in record) == ("error" in record):
+            raise DuplexProtocolError("tool_result requires exactly one result or error")
     else:
-        raise DuplexProtocolError("control type must be answer or cancel")
+        raise DuplexProtocolError("control type must be answer, tool_result or cancel")
     fields = set(record)
     if fields - allowed:
         raise DuplexProtocolError("control contains unknown fields")
@@ -182,6 +206,9 @@ def decode_control(line: bytes) -> DuplexControl:
             session_id=record.get("session_id"),
             interaction_id=record.get("interaction_id"),
             answers=record.get("answers", ()),
+            call_id=record.get("call_id"),
+            result=record.get("result"),
+            error=record.get("error"),
         )
     except DuplexProtocolError as error:
         raise DuplexProtocolError(str(error), request_id=correlation) from None

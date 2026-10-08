@@ -18,6 +18,24 @@ export * from "./protocol.js";
 
 export class TransportError extends Error {}
 export class InteractionRequired extends Error {}
+
+function rejectUnattendedPermission(record: Event): JsonObject[] {
+  const payload = record.payload;
+  const interaction = payload && !Array.isArray(payload) && typeof payload === "object"
+    ? payload.interaction : null;
+  if (!interaction || Array.isArray(interaction) || typeof interaction !== "object" ||
+      interaction.source !== "permission_interrupt" || !Array.isArray(interaction.questions) ||
+      !interaction.questions.length)
+    throw new InteractionRequired("host interaction handler required; no approval granted");
+  for (const question of interaction.questions) {
+    if (!question || Array.isArray(question) || typeof question !== "object" ||
+        !Array.isArray(question.options) ||
+        !question.options.some((option) => option && !Array.isArray(option) &&
+          typeof option === "object" && option.value === "reject"))
+      throw new InteractionRequired("permission card has no safe rejection option");
+  }
+  return interaction.questions.map(() => ({ selected_options: ["reject"] }));
+}
 export interface ClientOptions {
   command?: readonly string[];
   cwd?: string;
@@ -28,6 +46,7 @@ export interface ClientOptions {
 export interface RunOptions {
   onEvent?: (event: Event) => void | Promise<void>;
   onInteraction?: (event: Event) => JsonObject[] | Promise<JsonObject[]>;
+  onToolCall?: (event: Event) => unknown | Promise<unknown>;
   signal?: AbortSignal;
   deadlineMs?: number;
 }
@@ -60,6 +79,8 @@ export class Client {
   }
 
   async run(request: RunInput, options: RunOptions = {}): Promise<RunResult> {
+    if (request.host_tools?.length && !options.onToolCall)
+      throw new TypeError("host_tools require an onToolCall callback");
     return (await this.execute(
       { ...request },
       undefined,
@@ -258,20 +279,42 @@ class Invocation {
       Promise.resolve().then(() => options.onEvent?.(record)),
       this.cancelled,
     ]);
+    if (record.event_type === "host_tool.requested" && !this.cancelSent && !this.stopped) {
+      const payload = record.payload;
+      if (!payload || Array.isArray(payload) || typeof payload !== "object" ||
+          typeof payload.call_id !== "string")
+        throw new ProtocolError("host tool request has no correlation identity");
+      if (!options.onToolCall) throw new ProtocolError("host tool callback is missing");
+      let response: JsonObject;
+      try {
+        const result = await Promise.race([
+          Promise.resolve().then(() => options.onToolCall!(record)),
+          this.cancelled,
+        ]);
+        response = { result: (result === undefined ? null : result) as JsonObject };
+      } catch {
+        response = { error: "Host tool callback failed." };
+      }
+      if (!this.cancelSent && !this.stopped)
+        await this.write(encode({
+          schema_version: "0.1", type: "tool_result",
+          request_id: this.records.requestId,
+          session_id: record.session_id, call_id: payload.call_id,
+          ...response,
+        }));
+    }
     if (
       record.event_type !== "interaction.requested" ||
       this.cancelSent ||
       this.stopped
     )
       return;
-    if (!options.onInteraction)
-      throw new InteractionRequired(
-        "host interaction handler required; no approval granted",
-      );
-    const answers = await Promise.race([
-      Promise.resolve().then(() => options.onInteraction!(record)),
-      this.cancelled,
-    ]);
+    const answers = options.onInteraction
+      ? await Promise.race([
+          Promise.resolve().then(() => options.onInteraction!(record)),
+          this.cancelled,
+        ])
+      : rejectUnattendedPermission(record);
     if (this.cancelSent || this.stopped) return;
     const payload = record.payload;
     if (

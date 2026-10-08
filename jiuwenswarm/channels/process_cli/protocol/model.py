@@ -3,8 +3,7 @@
 """Value contracts for one Process CLI command and one Runtime lifecycle.
 
 These types describe a future machine-facing adapter. They deliberately do not
-implement a resident server, JSON-RPC methods, Session control plane, or host
-callbacks. The Process CLI remains the transport owner and converts the shared
+implement a resident server, JSON-RPC methods, or Session control plane. The Process CLI remains the transport owner and converts the shared
 Runtime event stream into these records.
 """
 
@@ -32,6 +31,7 @@ JsonValue: TypeAlias = JsonScalar | tuple["JsonValue", ...] | Mapping[str, "Json
 JsonObject: TypeAlias = Mapping[str, JsonValue]
 
 _AGENT_NAME = re.compile(r"[A-Za-z0-9_-]{3,50}\Z")
+_TOOL_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}\Z")
 
 
 class SingleAgentMode(str, Enum):
@@ -277,6 +277,44 @@ class AgentSpec:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class HostToolSpec:
+    """One process-local tool whose implementation lives in the SDK host."""
+
+    name: str
+    description: str
+    input_schema: JsonObject
+
+    def __post_init__(self) -> None:
+        name = _required_text("host_tools.name", self.name)
+        if _TOOL_NAME.fullmatch(name) is None:
+            raise ValueError("host_tools.name must be an ASCII tool identifier")
+        object.__setattr__(self, "name", name)
+        object.__setattr__(
+            self, "description", _required_text("host_tools.description", self.description)
+        )
+        schema = _freeze_object("host_tools.input_schema", self.input_schema)
+        if schema.get("type") != "object":
+            raise ValueError("host_tools.input_schema must describe an object")
+        object.__setattr__(self, "input_schema", schema)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "input_schema": _thaw_json(self.input_schema),
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> HostToolSpec:
+        data = _strict_object(
+            "host_tool", value,
+            allowed=frozenset({"name", "description", "input_schema"}),
+            required=frozenset({"name", "description", "input_schema"}),
+        )
+        return cls(**data)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class WorkspaceSpec:
     """Filesystem context passed to the existing Runtime security boundary."""
 
@@ -347,6 +385,10 @@ class OneShotRunInput:  # pylint: disable=too-many-instance-attributes
     skills: tuple[str, ...] | None = None
     mcp: tuple[str, ...] | None = None
     permissions: JsonObject | None = None
+    output_schema: JsonObject | None = None
+    max_turns: int | None = None
+    max_budget_usd: float | None = None
+    host_tools: tuple[HostToolSpec, ...] = ()
     workspace: WorkspaceSpec | None = None
     timeout_seconds: float | None = None
 
@@ -392,6 +434,29 @@ class OneShotRunInput:  # pylint: disable=too-many-instance-attributes
             object.__setattr__(
                 self, "permissions", _freeze_object("permissions", {"tools": dict(tools)})
             )
+        if self.output_schema is not None:
+            schema = _freeze_object("output_schema", self.output_schema)
+            if schema.get("type") != "object":
+                raise ValueError("output_schema must describe an object")
+            object.__setattr__(self, "output_schema", schema)
+        if self.max_turns is not None:
+            turns = _non_negative_integer("max_turns", self.max_turns)
+            if not 1 <= turns <= 1000:
+                raise ValueError("max_turns must be between 1 and 1000")
+        if self.max_budget_usd is not None:
+            object.__setattr__(
+                self, "max_budget_usd",
+                _positive_number("max_budget_usd", self.max_budget_usd),
+            )
+        if isinstance(self.host_tools, (str, bytes)) or not isinstance(
+            self.host_tools, Sequence
+        ):
+            raise TypeError("host_tools must be a sequence")
+        if any(not isinstance(tool, HostToolSpec) for tool in self.host_tools):
+            raise TypeError("host_tools entries must be HostToolSpec")
+        if len({tool.name for tool in self.host_tools}) != len(self.host_tools):
+            raise ValueError("host_tools names must be unique")
+        object.__setattr__(self, "host_tools", tuple(self.host_tools))
         if self.mode is not None:
             try:
                 mode = SingleAgentMode(self.mode).value
@@ -424,6 +489,10 @@ class OneShotRunInput:  # pylint: disable=too-many-instance-attributes
             "skills": list(self.skills) if self.skills is not None else None,
             "mcp": list(self.mcp) if self.mcp is not None else None,
             "permissions": _thaw_json(self.permissions) if self.permissions is not None else None,
+            "output_schema": _thaw_json(self.output_schema) if self.output_schema is not None else None,
+            "max_turns": self.max_turns,
+            "max_budget_usd": self.max_budget_usd,
+            "host_tools": [tool.to_dict() for tool in self.host_tools],
             "workspace": (
                 self.workspace.to_dict() if self.workspace is not None else None
             ),
@@ -450,6 +519,10 @@ class OneShotRunInput:  # pylint: disable=too-many-instance-attributes
                     "skills",
                     "mcp",
                     "permissions",
+                    "output_schema",
+                    "max_turns",
+                    "max_budget_usd",
+                    "host_tools",
                     "workspace",
                     "timeout_seconds",
                 }
@@ -470,6 +543,12 @@ class OneShotRunInput:  # pylint: disable=too-many-instance-attributes
             skills=data.get("skills"),
             mcp=data.get("mcp"),
             permissions=data.get("permissions"),
+            output_schema=data.get("output_schema"),
+            max_turns=data.get("max_turns"),
+            max_budget_usd=data.get("max_budget_usd"),
+            host_tools=tuple(
+                HostToolSpec.from_dict(tool) for tool in data.get("host_tools", ())
+            ),
             workspace=(
                 WorkspaceSpec.from_dict(data["workspace"])
                 if data.get("workspace") is not None
@@ -666,6 +745,7 @@ class OneShotRunResult:  # pylint: disable=too-many-instance-attributes
     schema_version: str = CURRENT_SCHEMA_VERSION
     session_id: str | None = None
     output: str | None = None
+    output_json: JsonObject | None = None
     error: RuntimeErrorInfo | None = None
     usage: JsonObject = field(default_factory=lambda: MappingProxyType({}))
 
@@ -701,6 +781,10 @@ class OneShotRunResult:  # pylint: disable=too-many-instance-attributes
             "output",
             _optional_raw_text("output", self.output),
         )
+        if self.output_json is not None:
+            object.__setattr__(
+                self, "output_json", _freeze_object("output_json", self.output_json)
+            )
         if self.error is not None and not isinstance(self.error, RuntimeErrorInfo):
             raise TypeError("error must be RuntimeErrorInfo")
         if status == RunStatus.COMPLETED.value:
@@ -729,6 +813,7 @@ class OneShotRunResult:  # pylint: disable=too-many-instance-attributes
             "status": self.status,
             "exit_code": self.exit_code,
             "output": self.output,
+            "output_json": _thaw_json(self.output_json) if self.output_json is not None else None,
             "error": self.error.to_dict() if self.error is not None else None,
             "usage": _thaw_json(self.usage),
         }
@@ -750,6 +835,7 @@ class OneShotRunResult:  # pylint: disable=too-many-instance-attributes
                     "status",
                     "exit_code",
                     "output",
+                    "output_json",
                     "error",
                     "usage",
                 }
@@ -776,6 +862,7 @@ class OneShotRunResult:  # pylint: disable=too-many-instance-attributes
             status=data["status"],
             exit_code=data["exit_code"],
             output=data.get("output"),
+            output_json=data.get("output_json"),
             error=(
                 RuntimeErrorInfo.from_dict(raw_error) if raw_error is not None else None
             ),

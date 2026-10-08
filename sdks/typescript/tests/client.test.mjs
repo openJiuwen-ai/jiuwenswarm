@@ -89,6 +89,19 @@ test("no automatic approval", async () => {
     InteractionRequired,
   );
 });
+test("permission is rejected and child continues without handler", async () => {
+  const result = await client("permission_without_handler").run({ input: "test" });
+  assert.equal(result.status, "completed");
+});
+test("host tool callback returns to same child", async () => {
+  const seen = [];
+  const result = await client("host_tool").run(
+    { input: "test", host_tools: [{ name: "lookup" }] },
+    { onToolCall(event) { seen.push(event.payload); return { value: "world" }; } },
+  );
+  assert.equal(result.status, "completed");
+  assert.deepEqual(seen[0].arguments, { key: "hello" });
+});
 test("cancel stops actual child before returning", async () => {
   const directory = await mkdtemp(join(tmpdir(), "jiuwen-sdk-test-"));
   const marker = join(directory, "closed");

@@ -15,6 +15,12 @@ from typing import TYPE_CHECKING, Any
 
 from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
 from jiuwenswarm.channels.process_cli.machine_io import OneShotWriter
+from jiuwenswarm.channels.process_cli.machine_policy import (
+    RunLimits,
+    parse_structured_output,
+    structured_prompt,
+    validate_output_schema,
+)
 from jiuwenswarm.channels.process_cli.machine_result import RunSummary
 from jiuwenswarm.channels.process_cli.machine_signals import (
     command_signals,
@@ -157,6 +163,11 @@ class _MachineRun:
         self.request: AgentRequest | None = None
         self.stream: AsyncIterator[RuntimeEvent] | None = None
         self.summary = RunSummary()
+        self.limits = RunLimits(
+            max_turns=run_input.max_turns,
+            max_budget_usd=run_input.max_budget_usd,
+        )
+        self.output_json: dict[str, Any] | None = None
         self.error: RuntimeErrorInfo | None = None
         self.status = RunStatus.COMPLETED
         self.exit_code = 0
@@ -180,6 +191,34 @@ class _MachineRun:
     async def execute(
         self, client_factory: Callable[[], InProcessRuntimeClient]
     ) -> None:
+        if self.run_input.output_schema is not None:
+            try:
+                validate_output_schema(self.run_input.output_schema)
+            except ValueError as error:
+                raise MachineRunError(str(error), code="INVALID_OUTPUT_SCHEMA") from error
+        if self.run_input.host_tools:
+            from jiuwenswarm.channels.process_cli.host_tools import validate_host_tool_schemas
+
+            try:
+                validate_host_tool_schemas(self.run_input.host_tools)
+            except ValueError as error:
+                raise MachineRunError(str(error), code="INVALID_HOST_TOOL") from error
+            if self.control is None or self.control.reader is None:
+                raise MachineRunError(
+                    "Host tools require --run-jsonl and a live SDK callback.",
+                    code="HOST_TOOLS_REQUIRE_DUPLEX",
+                )
+            if (
+                self.run_input.agent is not None
+                and self.run_input.agent.tools != ("*",)
+                and not {tool.name for tool in self.run_input.host_tools}.issubset(
+                    self.run_input.agent.tools
+                )
+            ):
+                raise MachineRunError(
+                    "Every host tool must appear in the Agent tool allowlist.",
+                    code="HOST_TOOL_NOT_ALLOWED",
+                )
         if self.run_input.session_id is not None:
             self.session_lease = SessionLease(self.run_input.session_id)
             self.session_lease.acquire()
@@ -229,10 +268,15 @@ class _MachineRun:
             resumed=descriptor is not None,
         )
         params = _workspace_params(self.run_input, resumed=descriptor is not None)
+        query = (
+            structured_prompt(self.run_input.input, self.run_input.output_schema)
+            if self.run_input.output_schema is not None
+            else self.run_input.input
+        )
         params.update(
             {
-                "query": self.run_input.input,
-                "content": self.run_input.input,
+                "query": query,
+                "content": query,
                 "mode": mode.mode,
                 "work_mode": mode.work_mode,
                 "supports_user_interaction": self.control is not None,
@@ -269,11 +313,33 @@ class _MachineRun:
             timestamp=time.time(),
             params=params,
         )
+        ready = None
+        if self.run_input.max_turns is not None or self.run_input.host_tools:
+            def configure(agent: Any) -> None:
+                from jiuwenswarm.channels.process_cli.host_tools import HostCallbackTool
+
+                tools = tuple(
+                    HostCallbackTool(spec, self.control.call_host_tool)
+                    for spec in self.run_input.host_tools
+                ) if self.control is not None else ()
+                agent.configure_process_cli_run(
+                    max_turns=self.run_input.max_turns,
+                    host_tools=tools,
+                )
+
+            ready = configure
         if self.run_input.agent is None:
-            self.stream = self.client.stream(self.request)
+            self.stream = (
+                self.client.stream(self.request, on_agent_ready=ready)
+                if ready is not None else self.client.stream(self.request)
+            )
         else:
-            self.stream = self.client.stream_agent(
-                self.request, self.run_input.agent.to_dict()
+            self.stream = (
+                self.client.stream_agent(
+                    self.request, self.run_input.agent.to_dict(), on_agent_ready=ready
+                ) if ready is not None else self.client.stream_agent(
+                    self.request, self.run_input.agent.to_dict()
+                )
             )
         if self.control is not None:
             completed = await self.control.consume(
@@ -291,12 +357,29 @@ class _MachineRun:
                 "Runtime stream ended without a completion event.",
                 code="INCOMPLETE_RUN",
             )
+        if self.run_input.output_schema is not None:
+            try:
+                self.output_json = parse_structured_output(
+                    self.summary.output, self.run_input.output_schema
+                )
+            except ValueError as error:
+                raise MachineRunError(
+                    str(error), code="OUTPUT_SCHEMA_MISMATCH"
+                ) from error
 
     def observe(self, event: RuntimeEvent) -> None:
         self.writer.write_event(event)
         self.summary.observe(event)
         if self.summary.error is not None:
             self.fail(self.summary.error)
+        limit_error = self.limits.observe(event)
+        if limit_error is not None:
+            messages = {
+                "BUDGET_METER_UNAVAILABLE": "Model did not report a usable cost for the requested budget.",
+                "BUDGET_EXCEEDED": "Run exceeded max_budget_usd.",
+                "TURN_LIMIT_EXCEEDED": "Run exceeded max_turns.",
+            }
+            raise MachineRunError(messages[limit_error], code=limit_error)
 
     async def consume_noninteractive(self) -> bool:
         completed = False
@@ -391,7 +474,8 @@ class _MachineRun:
             status=self.status,
             exit_code=self.exit_code,
             output=self.summary.output,
-            usage=self.summary.usage,
+            output_json=self.output_json,
+            usage=self.limits.add_usage(self.summary.usage),
             error=self.error,
         )
 

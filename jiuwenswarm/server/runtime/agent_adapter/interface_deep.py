@@ -10156,6 +10156,40 @@ class JiuWenSwarmDeepAdapter:
             return f"{_AGENT_CARD_ID}_s_{self._session_adapter_key(self._parent_session_id)}"
         return f"{_AGENT_CARD_ID}_root"
 
+    def configure_process_cli_run(
+        self, *, max_turns: int | None, host_tools: tuple[Any, ...]
+    ) -> None:
+        """Apply ephemeral Process CLI limits and host tools to this Agent only.
+
+        Runtime calls this after startup rails and the Agent allowlist are in
+        place, but before the first model invocation. No persistent Agent
+        definition or other channel configuration is changed.
+        """
+        if self._channel_id != "process_cli":
+            raise ValueError("process CLI run options require a Process CLI Agent")
+        if not self._is_session_scoped_adapter:
+            # The root is a router; the DeepAgent is created on first stream
+            # in a session child. Apply there after selection, before model I/O.
+            self._process_cli_run_options = (max_turns, host_tools)
+            return
+        if self._instance is None:
+            raise ValueError("process CLI session Agent is not ready")
+        if max_turns is not None:
+            react = self._instance.react_agent
+            if react is None:
+                raise RuntimeError("Agent model loop is unavailable")
+            config = react.config.model_copy()
+            existing = config.max_iterations
+            config.max_iterations = min(existing, max_turns) if existing else max_turns
+            react.configure(config)
+        manager = self._instance.ability_manager
+        existing_names = {card.name for card in manager.list()}
+        for tool in host_tools:
+            if tool.card.name in existing_names:
+                raise ValueError("host tool name conflicts with a Runtime tool")
+            manager.add_ability(tool.card, tool)
+            existing_names.add(tool.card.name)
+
     @staticmethod
     def _register_shared_tool(tool: Any) -> None:
         """Declare a tool instance shared across adapters, then register it.
@@ -15960,6 +15994,11 @@ class JiuWenSwarmDeepAdapter:
                 reserve_activity=True,
             )
             try:
+                process_options = getattr(self, "_process_cli_run_options", None)
+                if process_options is not None:
+                    session_adapter.configure_process_cli_run(
+                        max_turns=process_options[0], host_tools=process_options[1]
+                    )
                 child_stream = session_adapter.process_message_stream_impl(request, inputs)
                 async with aclosing(child_stream):
                     async for chunk in child_stream:

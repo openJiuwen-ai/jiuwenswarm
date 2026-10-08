@@ -114,6 +114,30 @@ async def test_no_automatic_approval():
 
 
 @pytest.mark.asyncio
+async def test_permission_is_rejected_and_child_continues_without_handler():
+    result = await client("permission_without_handler").run(
+        {"input": "test"}, deadline_seconds=10
+    )
+    assert result["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_host_tool_callback_returns_to_same_child():
+    seen = []
+
+    async def tool(event):
+        seen.append(event["payload"])
+        return {"value": "world"}
+
+    result = await client("host_tool").run(
+        {"input": "test", "host_tools": [{"name": "lookup"}]},
+        on_tool_call=tool, deadline_seconds=10,
+    )
+    assert result["status"] == "completed"
+    assert seen[0]["arguments"] == {"key": "hello"}
+
+
+@pytest.mark.asyncio
 async def test_cancel_before_answer_collects_real_child(tmp_path):
     cancel = asyncio.Event()
 

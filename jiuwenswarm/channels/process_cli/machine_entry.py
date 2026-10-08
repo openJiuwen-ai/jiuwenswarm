@@ -163,9 +163,12 @@ async def _execute_document(source: str, writer: OneShotWriter) -> OneShotRunRes
     run_input = prepare_workspace(run_input)
     await asyncio.sleep(0)
     from jiuwenswarm.channels.process_cli.machine import run_with_signals
+    from jiuwenswarm.channels.process_cli.duplex_control import DuplexController
 
     await asyncio.sleep(0)
-    return await run_with_signals(run_input, writer)
+    return await run_with_signals(
+        run_input, writer, control=DuplexController(None, writer, unattended=True)
+    )
 
 
 def _run_async(

@@ -44,6 +44,10 @@ class RunInput(TypedDict):
     skills: NotRequired[list[str]]
     mcp: NotRequired[list[str]]
     permissions: NotRequired["RunPermissions"]
+    output_schema: NotRequired[dict[str, object]]
+    max_turns: NotRequired[int]
+    max_budget_usd: NotRequired[float]
+    host_tools: NotRequired[list["HostTool"]]
     agent: NotRequired[AgentDefinition]
     workspace: NotRequired[Workspace]
     timeout_seconds: NotRequired[float]
@@ -51,3 +55,9 @@ class RunInput(TypedDict):
 
 class RunPermissions(TypedDict, total=False):
     tools: dict[str, Literal["allow", "ask", "deny"]]
+
+
+class HostTool(TypedDict):
+    name: str
+    description: str
+    input_schema: dict[str, object]

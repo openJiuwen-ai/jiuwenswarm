@@ -138,6 +138,10 @@ class Records:
                 raise ProtocolError("successful query requires data and operation")
         elif self.session_id is None:
             raise ProtocolError("successful run requires Session identity")
+        if not self.query and record.get("output_json") is not None and not isinstance(
+            record["output_json"], dict
+        ):
+            raise ProtocolError("output_json must be an object or null")
 
     def finish(self, exit_code: int) -> dict[str, Any]:
         if self.result is None:

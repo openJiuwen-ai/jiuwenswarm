@@ -53,9 +53,12 @@ class DuplexController:
     one owns subsequent output. Their EOFs/acks are not separate command results.
     """
 
-    def __init__(self, reader: DuplexLineReader, writer: OneShotWriter) -> None:
+    def __init__(
+        self, reader: DuplexLineReader | None, writer: OneShotWriter, *, unattended: bool = False
+    ) -> None:
         self.reader = reader
         self.writer = writer
+        self.unattended = unattended
         self.failure: RuntimeErrorInfo | None = None
         self.failure_status = RunStatus.FAILED
         self.failure_exit_code = 2
@@ -64,6 +67,7 @@ class DuplexController:
         self._client: InProcessRuntimeClient | None = None
         self._request: AgentRequest | None = None
         self._pending: dict[str, dict[str, Any]] = {}
+        self._pending_tools: dict[str, asyncio.Future[tuple[Any, str | None]]] = {}
         self._queue: asyncio.Queue[_StreamItem] = asyncio.Queue(maxsize=32)
         self._streams: dict[str, asyncio.Task[None]] = {}
         self._stopping_input = False
@@ -72,9 +76,10 @@ class DuplexController:
 
     def start(self) -> None:
         self._owner = asyncio.current_task()
-        self._input_task = asyncio.create_task(
-            self._read_controls(), name="one-shot-controls"
-        )
+        if self.reader is not None:
+            self._input_task = asyncio.create_task(
+                self._read_controls(), name="one-shot-controls"
+            )
 
     def _terminate(self, *, code: str, message: str, cancelled: bool = False) -> None:
         if self._stopping_input or self.failure is not None:
@@ -87,6 +92,7 @@ class DuplexController:
             self._owner.cancel()
 
     async def _read_controls(self) -> None:
+        assert self.reader is not None
         try:
             while not self._stopping_input:
                 line = await self.reader.read_line()
@@ -111,6 +117,14 @@ class DuplexController:
                         cancelled=True,
                     )
                     return
+                if control.kind == "tool_result":
+                    pending_tool = self._pending_tools.pop(control.call_id or "", None)
+                    if pending_tool is None:
+                        raise DuplexControlError(
+                            "Host tool call is not pending.", code="HOST_TOOL_NOT_PENDING"
+                        )
+                    pending_tool.set_result((control.result, control.error))
+                    continue
                 payload = self._pending.pop(control.interaction_id or "", None)
                 if payload is None:
                     raise DuplexControlError(
@@ -130,7 +144,7 @@ class DuplexController:
             )
 
     def _check_answer_available(self) -> None:
-        if self._input_closed and self._pending:
+        if self._input_closed and (self._pending or self._pending_tools):
             self._terminate(
                 code="INPUT_CLOSED",
                 message="Control input closed while an interaction requires an answer.",
@@ -228,6 +242,54 @@ class DuplexController:
             )
         )
 
+    async def call_host_tool(
+        self, name: str, arguments: dict[str, Any]
+    ) -> tuple[Any, str | None]:
+        """Suspend one tool until the same child receives its correlated result."""
+        if self.reader is None or self._input_closed or self._stopping_input:
+            return None, "Host tool callback is unavailable."
+        if len(self._pending_tools) >= _MAX_PENDING:
+            return None, "Too many pending host tool calls."
+        call_id = uuid.uuid4().hex
+        future: asyncio.Future[tuple[Any, str | None]] = asyncio.get_running_loop().create_future()
+        self._pending_tools[call_id] = future
+        try:
+            self._notice(
+                "host_tool.requested", call_id=call_id, name=name,
+                arguments=deepcopy(arguments),
+            )
+            return await future
+        finally:
+            self._pending_tools.pop(call_id, None)
+
+    @staticmethod
+    def _permission_rejection(payload: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+        """Use only explicit rejection options from a Runtime permission card."""
+        if payload.get("source") != "permission_interrupt":
+            raise DuplexControlError(
+                "A non-permission interaction needs a host answer.",
+                code="INTERACTION_REQUIRED",
+            )
+        questions = payload.get("questions")
+        if not isinstance(questions, list) or not questions:
+            raise DuplexControlError(
+                "Permission card cannot be safely rejected.",
+                code="INTERACTION_UNSUPPORTED",
+            )
+        answers = []
+        for question in questions:
+            options = question.get("options") if isinstance(question, dict) else None
+            if not isinstance(options, list) or not any(
+                isinstance(option, dict) and option.get("value") == "reject"
+                for option in options
+            ):
+                raise DuplexControlError(
+                    "Permission card has no explicit reject option.",
+                    code="INTERACTION_UNSUPPORTED",
+                )
+            answers.append({"selected_options": ["reject"]})
+        return tuple(answers)
+
     async def consume(
         self,
         stream: AsyncIterator[RuntimeEvent],
@@ -261,10 +323,19 @@ class DuplexController:
                 had_interaction = True
                 token, payload = self._register_interaction(event)
                 observe(event)
-                self._notice(
-                    "interaction.requested", interaction_id=token, interaction=payload
-                )
-                self._check_answer_available()
+                if self.unattended:
+                    answers = self._permission_rejection(payload)
+                    self._pending.pop(token)
+                    answer = self._answer_input(payload, answers)
+                    self._add_stream(
+                        answer.request_id, client.stream_interaction_answer(answer)
+                    )
+                    self._notice("interaction.auto_denied", interaction_id=token)
+                else:
+                    self._notice(
+                        "interaction.requested", interaction_id=token, interaction=payload
+                    )
+                    self._check_answer_available()
             else:
                 observe(event)
                 if event.event_type not in _ACK_EVENTS and event.ok:
@@ -296,7 +367,11 @@ class DuplexController:
         # but no longer enqueue observations for the stopped command consumer.
         while not self._queue.empty():
             self._queue.get_nowait()
-        await self.reader.close()
+        if self.reader is not None:
+            await self.reader.close()
+        for pending_tool in self._pending_tools.values():
+            pending_tool.cancel()
+        self._pending_tools.clear()
         if self._input_task is not None:
             self._input_task.cancel()
             await asyncio.gather(self._input_task, return_exceptions=True)
@@ -306,6 +381,7 @@ class DuplexController:
         tasks = list(self._streams.values())
         self._streams.clear()
         self._pending.clear()
+        self._pending_tools.clear()
         for task in tasks:
             task.cancel()
         results = await asyncio.gather(*tasks, return_exceptions=True)

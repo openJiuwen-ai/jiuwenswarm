@@ -36,9 +36,18 @@ export interface RunInput {
   skills?: string[];
   mcp?: string[];
   permissions?: { tools?: { [tool: string]: "allow" | "ask" | "deny" } };
+  output_schema?: JsonObject;
+  max_turns?: number;
+  max_budget_usd?: number;
+  host_tools?: HostTool[];
   agent?: AgentDefinition;
   workspace?: Workspace;
   timeout_seconds?: number;
+}
+export interface HostTool {
+  name: string;
+  description: string;
+  input_schema: JsonObject;
 }
 export type QueryOperation =
   | "session.get"
@@ -74,6 +83,7 @@ export interface Terminal extends Envelope {
 export interface RunResult extends Terminal {
   type: "result";
   output: string | null;
+  output_json: JsonObject | null;
   usage: JsonObject;
 }
 export interface QueryResult extends Terminal {
@@ -209,6 +219,13 @@ export class Records {
         throw new ProtocolError("successful query requires data and operation");
     } else if (this.sessionId === null)
       throw new ProtocolError("successful run requires Session identity");
+    if (
+      this.operation === undefined &&
+      value.output_json !== null &&
+      value.output_json !== undefined &&
+      !object(value.output_json)
+    )
+      throw new ProtocolError("output_json must be an object or null");
   }
 
   finish(code: number | null): RunResult | QueryResult {
