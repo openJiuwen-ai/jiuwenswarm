@@ -748,6 +748,7 @@ async def run(
         stderr=stderr,
         show_reasoning=args.show_reasoning,
         show_tools=args.show_tools,
+        concise_errors=not bool(getattr(args, "_interactive_worker", False)),
     )
     renderer.start()
 
