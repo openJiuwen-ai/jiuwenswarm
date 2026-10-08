@@ -1,0 +1,38 @@
+{
+  "schema_version": "designer-skills-index.v1",
+  "scenarios": [
+    "3d",
+    "image",
+    "multimodal",
+    "music",
+    "speech",
+    "video"
+  ],
+  "agents": [
+    "audio_bed",
+    "brief",
+    "character",
+    "clip",
+    "compose",
+    "frame",
+    "mesh",
+    "music",
+    "scene",
+    "speech_tts",
+    "storyboard"
+  ],
+  "subjects": [
+    "animal",
+    "architecture",
+    "human",
+    "nature",
+    "product",
+    "vehicle"
+  ],
+  "orchestration": [
+    "director"
+  ],
+  "styles": [
+    "final_frame_reverse"
+  ]
+}

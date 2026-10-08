@@ -13,6 +13,7 @@ from jiuwenswarm.common.work_mode import (
     DEFAULT_PROJECT_ID_WORK,
     DEFAULT_TUI_WORK_MODE,
     DEFAULT_WEB_WORK_MODE,
+    SUPPORTED_WORK_MODES,
     is_default_project_id,
 )
 from jiuwenswarm.server.runtime.session import project_store
@@ -359,8 +360,8 @@ def load_project_list(
     work_mode: str | None = None
     if isinstance(raw_work_mode, str) and raw_work_mode.strip():
         candidate = raw_work_mode.strip().lower()
-        if candidate not in {DEFAULT_WEB_WORK_MODE, DEFAULT_TUI_WORK_MODE}:
-            return None, f"invalid work_mode: {candidate!r}, must be 'code' or 'work'", "BAD_REQUEST"
+        if candidate not in SUPPORTED_WORK_MODES:
+            return None, f"invalid work_mode: {candidate!r}", "BAD_REQUEST"
         work_mode = candidate
 
     all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)

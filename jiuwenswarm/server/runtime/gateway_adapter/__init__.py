@@ -33,6 +33,7 @@ __all__ = [
     "WorkspaceFileAdapter",
     "HarmonyOSAdapter",
     "ConfigAdapter",
+    "DesignerAdapter",
 ]
 
 _EXPORTS = {
@@ -44,6 +45,7 @@ _EXPORTS = {
     "WorkspaceFileAdapter": "jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter",
     "HarmonyOSAdapter": "jiuwenswarm.server.runtime.gateway_adapter.harmonyos_adapter",
     "ConfigAdapter": "jiuwenswarm.server.runtime.gateway_adapter.config_adapter",
+    "DesignerAdapter": "jiuwenswarm.server.runtime.gateway_adapter.designer_adapter",
 }
 
 

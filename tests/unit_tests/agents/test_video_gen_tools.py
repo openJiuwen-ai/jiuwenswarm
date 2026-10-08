@@ -26,7 +26,9 @@ _TEST_MODEL = "example/video-gen-model"
 
 
 def _clear_video_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("VIDEO_GEN_API_KEY", "VIDEO_GEN_API_BASE", "VIDEO_GEN_MODEL_NAME", "VIDEO_GEN_ENABLED"):
+    for name in (
+        "VIDEO_GEN_API_KEY", "VIDEO_GEN_API_BASE", "VIDEO_GEN_MODEL_NAME", "VIDEO_GEN_ENABLED", "VIDEO_GEN_PROTOCOL",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -415,3 +417,65 @@ async def test_generate_video_returns_error_when_submit_response_invalid_json(
     result = await generate_video(prompt="a cat")
 
     assert result.startswith("[ERROR]: video generation submit returned invalid JSON:")
+
+
+# ---------------------------------------------------------------------------
+# Reference-to-video and self-deployed (vLLM-Omni) backends
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generate_video_references_on_openrouter_point_to_supported_providers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _set_video_model_config(monkeypatch)
+    ref = tmp_path / "hero.png"
+    ref.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"no request expected: {request.url}")
+
+    _patch_async_client(monkeypatch, handler)
+    result = await generate_video(prompt="hero walks", reference_image_paths=[str(ref)])
+    assert result.startswith("[ERROR]: the configured video model")
+    assert "first_frame_path" in result and "wan3.0-video" in result and "vLLM-Omni" in result
+
+    result = await generate_video(prompt="hero walks", first_frame_path=str(ref), reference_mode=True)
+    assert result.startswith("[ERROR]: the configured video model")
+
+
+@pytest.mark.asyncio
+async def test_generate_video_reference_argument_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    _set_video_model_config(monkeypatch)
+    missing = await generate_video(prompt="p", reference_image_paths=[str(tmp_path / "nope.png")])
+    assert missing.startswith("[ERROR]: reference_image_paths") and "no such file" in missing
+    empty = await generate_video(prompt="p", reference_mode=True)
+    assert empty == "[ERROR]: reference_mode needs reference_image_paths or first_frame_path."
+
+
+@pytest.mark.asyncio
+async def test_generate_video_forwards_references_to_native_backend(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    _set_video_model_config(monkeypatch)
+    monkeypatch.setenv("VIDEO_GEN_PROTOCOL", "dashscope")
+    ref = tmp_path / "hero.png"
+    ref.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    captured: dict[str, Any] = {}
+
+    async def fake_submit(target: Any, request: Any, save_dir: str | None) -> str:
+        captured.update(target=target, request=request)
+        return "Video generated successfully!\nSaved to: /tmp/v.mp4"
+
+    monkeypatch.setattr(vg.gen_toolkits, "submit_video", fake_submit)
+    result = await generate_video(prompt="hero walks", reference_image_paths=[str(ref)], reference_mode=True)
+    assert result.startswith("Video generated successfully!")
+    assert captured["target"].backend == "dashscope"
+    request = captured["request"]
+    assert request.reference_mode is True
+    assert len(request.reference_image_uris) == 1 and request.reference_image_uris[0].startswith("data:image/png")
+
+
+def test_vllm_omni_is_configured_without_key_or_model(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VIDEO_GEN_API_BASE", "http://127.0.0.1:8091/v1")
+    assert vg.video_gen_configured() is False
+    monkeypatch.setenv("VIDEO_GEN_PROTOCOL", "vllm-omni")
+    assert vg.video_gen_configured() is True

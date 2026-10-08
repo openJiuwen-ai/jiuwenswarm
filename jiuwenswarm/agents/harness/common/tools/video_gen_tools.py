@@ -18,7 +18,8 @@ capabilities can point at independent models (e.g. a chat-completions-style
 video-analysis model for understanding, and OpenRouter's
 bytedance/seedance-2.0-fast for generation) without one breaking the other.
 There is no built-in default endpoint/model: whatever's configured there is
-what these tools use, and api_key/api_base/model must all be set.
+what these tools use, and api_key/api_base/model must all be set (a
+self-deployed vLLM-Omni endpoint needs only the API URL).
 """
 from __future__ import annotations
 
@@ -75,11 +76,16 @@ def video_gen_configured() -> bool:
     swarm/providers/tools.py) that only need a yes/no gate and shouldn't
     depend on _get_video_gen_api_credentials' private tuple shape.
     """
-    api_key, api_base, model = _get_video_gen_api_credentials()
+    return _credentials_complete(*_get_video_gen_api_credentials())
+
+
+def _credentials_complete(api_key: str, api_base: str, model: str) -> bool:
+    if gen_toolkits.detect_backend("VIDEO_GEN_PROTOCOL", api_base) in gen_toolkits.KEYLESS_BACKENDS:
+        return bool(api_base)
     return bool(api_key and api_base and model)
 
 
-def _resolve_frame_reference(path_or_url: str) -> tuple[str | None, str | None]:
+def _resolve_frame_reference(path_or_url: str, arg_name: str = "first_frame_path") -> tuple[str | None, str | None]:
     """first_frame_path may be a real http(s) URL, an already-complete data:
     URI, or a local file path - resolved to a data: URI here (server-side)
     rather than asked of the calling agent, since a large base64 blob is not
@@ -93,7 +99,7 @@ def _resolve_frame_reference(path_or_url: str) -> tuple[str | None, str | None]:
         return value, None
     path = Path(value).expanduser()
     if not path.is_file():
-        return None, f"[ERROR]: first_frame_path {value!r} is not a URL/data URI and no such file exists."
+        return None, f"[ERROR]: {arg_name} {value!r} is not a URL/data URI and no such file exists."
     mime, _ = mimetypes.guess_type(str(path))
     if not mime or not mime.startswith("image/"):
         mime = "image/png"
@@ -189,9 +195,10 @@ async def _poll_job(
 @tool(
     name="generate_video",
     description=(
-        "Generate a video clip from a text prompt (and optionally a first-frame image) "
-        "using AI video generation models. Use this tool when the user wants to create "
-        "or generate a video based on a text description. Video generation can take "
+        "Generate a video clip from a text prompt (and optionally a first-frame image, or "
+        "reference images the clip must stay consistent with) using AI video generation "
+        "models. Use this tool when the user wants to create or generate a video based on "
+        "a text description. Video generation can take "
         "several minutes; if this tool returns a job_id instead of a finished video, call "
         "check_video_status with that job_id to keep waiting for it instead of resubmitting."
     ),
@@ -204,6 +211,8 @@ async def generate_video(  # pylint: disable=huawei-too-many-arguments
     first_frame_path: str | None = None,
     generate_audio: bool = False,
     save_dir: str | None = None,
+    reference_image_paths: list[str] | None = None,
+    reference_mode: bool = False,
 ) -> str:
     """
     Generate a video from a text prompt.
@@ -232,13 +241,18 @@ async def generate_video(  # pylint: disable=huawei-too-many-arguments
             by the model.
         save_dir: Optional directory to save the video (defaults to the agent
             workspace's generated_videos/ folder).
+        reference_image_paths: Optional local file paths, http(s) URLs or data:
+            URIs of images (characters, props, scenes) the clip must stay
+            consistent with (reference-to-video).
+        reference_mode: Treat first_frame_path as one more reference image
+            instead of the literal opening frame.
 
     Returns:
         Path to the generated video file, or a job_id + status message if the
         job is still running after the bounded poll window.
     """
     api_key, api_base, model = _get_video_gen_api_credentials()
-    if not (api_key and api_base and model):
+    if not _credentials_complete(api_key, api_base, model):
         return (
             "[ERROR]: video generation is not configured - set the Video processing "
             "API key, API URL, and model name in configuration settings."
@@ -252,16 +266,33 @@ async def generate_video(  # pylint: disable=huawei-too-many-arguments
         frame_data_uri, err = _resolve_frame_reference(first_frame_path)
         if err:
             return err
+    reference_uris: list[str] = []
+    for path in reference_image_paths or []:
+        uri, err = _resolve_frame_reference(path, "reference_image_paths")
+        if err:
+            return err
+        reference_uris.append(uri)
+    if reference_mode and not (reference_uris or frame_data_uri):
+        return "[ERROR]: reference_mode needs reference_image_paths or first_frame_path."
 
-    # MiniMax (v2 task API) and BytePlus ModelArk (Seedance, contents/generations/tasks)
-    # are not OpenRouter's /videos API, so they have their own backends.
+    # MiniMax (v2 task API), BytePlus ModelArk (Seedance), DashScope (Wan) and
+    # vLLM-Omni are not OpenRouter's /videos API, so they have their own backends.
     backend = gen_toolkits.detect_backend("VIDEO_GEN_PROTOCOL", api_base)
     if backend:
         target = gen_toolkits.GenerationTarget(backend, api_key, api_base, model)
         request = gen_toolkits.VideoRequest(
-            prompt, aspect_ratio, resolution, duration_seconds, generate_audio, frame_data_uri
+            prompt, aspect_ratio, resolution, duration_seconds, generate_audio, frame_data_uri,
+            reference_image_uris=tuple(reference_uris), reference_mode=reference_mode,
         )
         return await gen_toolkits.submit_video(target, request, save_dir)
+    if reference_uris or reference_mode:
+        return (
+            f"[ERROR]: the configured video model {model!r} ({api_base}) only supports text-to-video and "
+            "first-frame image-to-video, not reference images. Retry with first_frame_path only, or ask the "
+            "user to switch Settings > Agent (Video generation) to a provider that supports reference-to-video: "
+            "MiniMax (MiniMax-H3), BytePlus ModelArk / Volcengine (Seedance 2.x), Alibaba DashScope "
+            "(wan3.0-video / wan3.0-video-prime) or a self-deployed vLLM-Omni server."
+        )
 
     body: dict[str, Any] = {
         "model": model,
@@ -339,7 +370,8 @@ async def check_video_status(job_id: str, save_dir: str | None = None) -> str:
         Path to the generated video file, or a status message if still running.
     """
     api_key, api_base, model = _get_video_gen_api_credentials()
-    if not (api_key and api_base):
+    backend = gen_toolkits.detect_backend("VIDEO_GEN_PROTOCOL", api_base)
+    if not (api_base and (api_key or backend in gen_toolkits.KEYLESS_BACKENDS)):
         return (
             "[ERROR]: video generation is not configured - set the Video processing "
             "API key, API URL, and model name in configuration settings."
@@ -348,7 +380,6 @@ async def check_video_status(job_id: str, save_dir: str | None = None) -> str:
     if not job_id:
         return "[ERROR]: job_id is required."
 
-    backend = gen_toolkits.detect_backend("VIDEO_GEN_PROTOCOL", api_base)
     if backend:
         target = gen_toolkits.GenerationTarget(backend, api_key, api_base, model)
         return await gen_toolkits.check_video(target, job_id, save_dir)

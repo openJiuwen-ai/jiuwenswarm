@@ -23,7 +23,7 @@ VISUAL_GEN_PROVIDER/VISUAL_GEN_PROTOCOL) - independent of both:
 
 There is no built-in default endpoint/model: whatever's configured in the
 dedicated slot above is what this tool uses, and api_key/api_base/model
-must all be set.
+must all be set (a self-deployed vLLM-Omni endpoint needs only the API URL).
 """
 from __future__ import annotations
 
@@ -74,7 +74,12 @@ def visual_gen_configured() -> bool:
     swarm/providers/tools.py) that only need a yes/no gate and shouldn't
     depend on _get_visual_gen_api_credentials' private tuple shape.
     """
-    api_key, api_base, model = _get_visual_gen_api_credentials()
+    return _credentials_complete(*_get_visual_gen_api_credentials())
+
+
+def _credentials_complete(api_key: str, api_base: str, model: str) -> bool:
+    if gen_toolkits.detect_backend("VISUAL_GEN_PROTOCOL", api_base) in gen_toolkits.KEYLESS_BACKENDS:
+        return bool(api_base)
     return bool(api_key and api_base and model)
 
 
@@ -122,7 +127,7 @@ async def generate_visual(
         Path to the generated image file, or an error message.
     """
     api_key, api_base, model = _get_visual_gen_api_credentials()
-    if not (api_key and api_base and model):
+    if not _credentials_complete(api_key, api_base, model):
         return (
             "[ERROR]: image generation is not configured - set the Visual processing "
             "API key, API URL, and model name in configuration settings."
@@ -131,8 +136,8 @@ async def generate_visual(
     if not prompt:
         return "[ERROR]: prompt is required."
 
-    # MiniMax (own /v1/image_generation) and BytePlus ModelArk (Seedream, own
-    # /images/generations) are not OpenAI-compatible, so they have their own backends.
+    # MiniMax (own /v1/image_generation), BytePlus ModelArk (Seedream), DashScope
+    # (Qwen-Image) and vLLM-Omni are not OpenAI-compatible, so they have their own backends.
     backend = gen_toolkits.detect_backend("VISUAL_GEN_PROTOCOL", api_base)
     if backend:
         target = gen_toolkits.GenerationTarget(backend, api_key, api_base, model)

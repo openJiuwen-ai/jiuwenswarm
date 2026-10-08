@@ -15,6 +15,7 @@
 - [Auto Harness Feature Overview](AutoHarness.md)
 - [User guide](../README_EN.md)
   - [Conversation](Conversation.md)
+  - [Design](Design.md)
   - [Channels](Channels.md)
     - [International Channels](InternationalChannels.md)
   - [Modes](Modes.md)

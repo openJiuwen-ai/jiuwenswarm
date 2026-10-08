@@ -1,4 +1,4 @@
-﻿import {
+import {
   useState,
   useRef,
   useCallback,
@@ -20,7 +20,7 @@
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { AtSign, ChevronRight, CircleX, Loader2, Lock, Mic, Plus, Settings, Square, Workflow, X } from 'lucide-react';
+import { AtSign, ChevronRight, CircleX, LayoutTemplate, Loader2, Lock, Mic, Plus, Settings, Square, Workflow, X } from 'lucide-react';
 
 // import { stopAllTts } from '../../utils';
 import {
@@ -109,6 +109,7 @@ import PlanIcon from '../../assets/agent-management/planned-events.svg?react';
 import SkillIcon from '../../assets/agent-management/agent-skill.svg?react';
 import closeSvg from '../../assets/work-mode/close.svg?raw';
 import { insertPlainText } from '../../utils/textEditCommands';
+import { useDesignArmedStore } from '../../features/designer/designArmedStore';
 
 // 个人上下文图标——文档/知识库隐喻，与 SessionSidebar 的 personalContextNavIcon 同源内联 SVG。
 function PersonalContextIcon(props: SVGProps<SVGSVGElement>) {
@@ -148,6 +149,8 @@ const GROUP_PICKER_ROW_HEIGHT = 40;
 function isSameAgentOption(item: AgentCatalogItem, selectedId: string | null): boolean {
   return selectedId !== null && (item.id === selectedId || item.runtimePackageName === selectedId);
 }
+/** 「+」菜单含文件/技能/计划/目标/设计。欢迎页若按 200px 判断向下展开，底部「设计」会被视口裁掉。 */
+const ATTACH_MENU_ESTIMATED_HEIGHT = 360;
 
 function resolveMenuDirection(anchorBottom: number, menuHeight: number) {
   const spaceBelow = window.innerHeight - anchorBottom - MENU_GAP;
@@ -169,6 +172,7 @@ import {
   type AgentGroupCatalogItem,
   type AgentGroupIdentity,
 } from '../../features/agentManagement';
+import { DESIGNER_REF_MAX_INLINE_BYTES } from '../../features/designer/designerReferences';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { isImeCompositionKey } from './imeComposition';
 import { useTaskAsr } from '../../features/taskAsr/useTaskAsr';
@@ -339,6 +343,8 @@ interface InputAreaProps {
    * 真的空闲，空闲才会真正发送，不会重复触发。
    */
   onDrainTaskQueueIfIdle?: (sessionId: string) => void;
+  /** 任务页选「设计」后发送：跳转设计栏并 bootstrap，不走主 agent */
+  onLaunchDesign?: (prompt: string, mediaItems?: MediaItem[]) => void;
 }
 
 export type InputAreaHandle = {
@@ -454,12 +460,14 @@ const ATTACHMENT_ACCEPT = [
   .filter((item) => !FORBIDDEN_DOCUMENT_EXTENSIONS.has(item.toLowerCase()))
   .join(',');
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v']);
+const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.aac', '.flac', '.ogg', '.m4a']);
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_ATTACHMENT_COUNT = 20;
 const ATTACHMENT_ALERT_DURATION_MS = 3000;
 
-type AttachmentKind = 'image' | 'document';
+type AttachmentKind = 'image' | 'video' | 'audio' | 'document';
 type AttachmentStatus = 'uploading' | 'ready' | 'error';
 
 interface AttachmentDraft {
@@ -595,17 +603,26 @@ function getLocalFilePath(file: File | undefined, explicitPath?: string): string
   return undefined;
 }
 
+function isVideoFile(file: File): boolean {
+  if (file.type.startsWith('video/')) return true;
+  return VIDEO_EXTENSIONS.has(getFileExtension(file.name || ''));
+}
+
+function isAudioFile(file: File): boolean {
+  if (file.type.startsWith('audio/')) return true;
+  return AUDIO_EXTENSIONS.has(getFileExtension(file.name || ''));
+}
+
 /** Classify a picked file for routing to media.persist vs document.persist. */
 function resolveAttachmentKind(file: File): AttachmentKind | null {
   if (isImageFile(file)) return 'image';
+  if (isVideoFile(file)) return 'video';
+  if (isAudioFile(file)) return 'audio';
   if (isForbiddenDocumentFile(file)) return null;
   return 'document';
 }
 
-function getImageValidationError(file: File, t: TFunction): string | null {
-  if (!isImageFile(file)) {
-    return t('chat.inputAttachment.unsupportedFileType', { name: file.name || t('chat.inputAttachment.unnamedFile') });
-  }
+function getMediaValidationError(file: File, t: TFunction): string | null {
   if (file.size > MAX_FILE_BYTES) {
     return t('chat.inputAttachment.fileSizeExceeded', {
       name: file.name || t('chat.inputAttachment.unnamedFile'),
@@ -613,6 +630,20 @@ function getImageValidationError(file: File, t: TFunction): string | null {
     });
   }
   return null;
+}
+
+function getImageValidationError(file: File, t: TFunction): string | null {
+  if (!isImageFile(file)) {
+    return t('chat.inputAttachment.unsupportedFileType', { name: file.name || t('chat.inputAttachment.unnamedFile') });
+  }
+  return getMediaValidationError(file, t);
+}
+
+function getAvValidationError(file: File, t: TFunction): string | null {
+  if (!isVideoFile(file) && !isAudioFile(file)) {
+    return t('chat.inputAttachment.unsupportedFileType', { name: file.name || t('chat.inputAttachment.unnamedFile') });
+  }
+  return getMediaValidationError(file, t);
 }
 
 function clearAttachmentAlertTimers(timers: Map<string, number>): void {
@@ -713,6 +744,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     onRefreshGoal,
     onClearGoal,
     onDrainTaskQueueIfIdle,
+    onLaunchDesign,
   },
   ref,
 ) {
@@ -978,6 +1010,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const hasHistory = (currentSession?.message_count ?? 0) > 0 || loadedMsgLen > 0;
   const goalArmed = useGoalStore((s) => s.runtimes[activeSessionId ?? '']?.armed ?? false);
   const currentGoal = useGoalStore((s) => s.runtimes[activeSessionId ?? '']?.goal ?? null);
+  const designSessionId = activeSessionId ?? NEW_CONVERSATION_ID;
+  const designArmed = useDesignArmedStore((s) => s.runtimes[designSessionId]?.armed ?? false);
   // 目标 active 时普通发送改走排队，而不是文档 §5.1 原定的 input_mode:'steer' 实时插话——
   // 用户明确要求改成这个语义（steer 目前收不到任何反馈，体验上等同于消息发出去石沉大海，
   // 见 backend-requests.md #1）。走排队后消息复用现有的通用队列机制，行为和普通排队一致。
@@ -1016,6 +1050,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // 会在下面按 evaluateGoalArm 的"关闭方向"结果做忙态保护，不会出现"tag 一直在、点了却把执行
   // 中的目标误关掉"的问题。
   const goalTagVisible = canUseGoalMenu && (goalArmed || hasUnfinishedGoal);
+  const canUseDesignMenu = Boolean(onLaunchDesign);
+  const designTagVisible = canUseDesignMenu && designArmed;
   // Plan 是持续开关（不是 Goal 那种"下一条消息生效"的过渡态）：打开后一直用
   // agent.plan 发送，直到用户点叉或后端推 plan.mode_exited。
   // 和 Goal 一样只对单 agent 开放，集群模式不提供 Plan 入口。
@@ -1430,6 +1466,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               filename: attachment.filename,
               localPath: attachment.localPath,
             })
+          : attachment.kind === 'video' || attachment.kind === 'audio'
+            ? (attachment.file ? getAvValidationError(attachment.file, t) : null)
           : attachment.file
             ? getImageValidationError(attachment.file, t)
             : attachment.base64Data
@@ -1507,6 +1545,51 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             });
           }
         })();
+        return;
+      }
+
+      if (attachment.kind === 'video' || attachment.kind === 'audio') {
+        const localPath = getLocalFilePath(attachment.file, attachment.localPath);
+        if (localPath) {
+          updateAttachment(attachment.id, {
+            persistedMediaItem: {
+              type: attachment.kind,
+              filename: attachment.filename,
+              mime_type: attachment.mimeType,
+              path: localPath,
+              size_bytes: attachment.size,
+            },
+            status: 'ready',
+            error: undefined,
+          });
+          return;
+        }
+        if (!attachment.file) {
+          const error = t('chat.inputAttachment.uploadFailed');
+          pushAttachmentAlert(error);
+          updateAttachment(attachment.id, { status: 'error', error });
+          return;
+        }
+        if (attachment.file.size > DESIGNER_REF_MAX_INLINE_BYTES) {
+          const error = t('designer.chat.tooLarge');
+          pushAttachmentAlert(error);
+          updateAttachment(attachment.id, { status: 'error', error });
+          return;
+        }
+        void readBinaryFileAsBase64(attachment.file).then((payload) => {
+          if (!payload?.base64Data) {
+            updateAttachment(attachment.id, {
+              status: 'error',
+              error: t('chat.inputAttachment.uploadFailed'),
+            });
+            return;
+          }
+          updateAttachment(attachment.id, {
+            base64Data: payload.base64Data,
+            status: 'ready',
+            error: undefined,
+          });
+        });
         return;
       }
 
@@ -1658,7 +1741,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         const validationError =
           kind === 'document'
             ? getDocumentValidationError(file, t, { filename: base.filename, localPath })
-            : getImageValidationError(file, t);
+            : kind === 'video' || kind === 'audio'
+              ? getAvValidationError(file, t)
+              : getImageValidationError(file, t);
         if (validationError) {
           pushAttachmentAlert(validationError);
           items.push({
@@ -1886,7 +1971,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       if (!attachMenuRef.current) return;
       const rect = attachMenuRef.current.getBoundingClientRect();
       setAttachMenuAnchor(rect);
-      setAttachMenuDirection(window.innerHeight - rect.bottom >= 200 ? 'down' : 'up');
+      setAttachMenuDirection(resolveMenuDirection(rect.bottom, ATTACH_MENU_ESTIMATED_HEIGHT));
     }
     window.addEventListener('resize', updateAttachMenuPosition);
     window.addEventListener('scroll', updateAttachMenuPosition, true);
@@ -2191,6 +2276,19 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (isInterruptible && !isTeamMode && !isAgentMode && hasReadyMedia) return;
 
     const sid = useChatStore.getState().activeSessionId;
+    const launchDesignSid = sid ?? NEW_CONVERSATION_ID;
+    if ((trimmedBase || hasReadyMedia) && onLaunchDesign && useDesignArmedStore.getState().isArmed(launchDesignSid)) {
+      useDesignArmedStore.getState().consumeArmed(launchDesignSid);
+      useChatStore.getState().setInputValue(launchDesignSid, '');
+      setAttachments([]);
+      setAttachmentAlerts([]);
+      if (inputRef.current) {
+        inputRef.current.innerHTML = '';
+      }
+      setComposerSuggestion(null);
+      onLaunchDesign(trimmedBase, readyMediaItems);
+      return;
+    }
     if (goalArmed && trimmedBase && sid && onSetGoal && sid !== NEW_CONVERSATION_ID) {
       // command.goal carries a text objective only; silently dropping attachments
       // would make users believe they were sent, so block explicitly with an alert.
@@ -2263,7 +2361,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     isTeamMode,
     queuePaused,
     goalArmed,
+    designArmed,
     onSetGoal,
+    onLaunchDesign,
     onDrainTaskQueueIfIdle,
     pushAttachmentAlert,
     releaseUnsentUploads,
@@ -3505,7 +3605,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       if (!attachMenuOpen && attachMenuRef.current) {
                         const rect = attachMenuRef.current.getBoundingClientRect();
                         setAttachMenuAnchor(rect);
-                        setAttachMenuDirection(window.innerHeight - rect.bottom >= 200 ? 'down' : 'up');
+                        setAttachMenuDirection(resolveMenuDirection(rect.bottom, ATTACH_MENU_ESTIMATED_HEIGHT));
                       }
                       setAttachMenuOpen((open) => !open);
                       setExtensionPanelOpen(false);
@@ -3909,6 +4009,37 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           </div>
                         )}
                         <div className="chat-mode-select__divider" role="separator" />
+                        {canUseDesignMenu &&
+                          (() => {
+                            const toggleDesign = (next: boolean) => {
+                              const sid = activeSessionId ?? NEW_CONVERSATION_ID;
+                              if (next) {
+                                useGoalStore.getState().setArmed(sid, false);
+                                if (planActive) {
+                                  usePlanStore.getState().setActive(sid, false);
+                                }
+                                useDesignArmedStore.getState().setArmed(sid, true);
+                              } else {
+                                useDesignArmedStore.getState().setArmed(sid, false);
+                              }
+                            };
+                            return (
+                              <div
+                                className="chat-mode-select__option"
+                                role="menuitem"
+                                data-testid="chat-panel-input-attach-menu-design"
+                                onClick={() => toggleDesign(!designArmed)}
+                              >
+                                <span className="chat-mode-select__option-main">
+                                  <span className="chat-mode-select__icon" aria-hidden="true">
+                                    <LayoutTemplate size={16} />
+                                  </span>
+                                  <span className="chat-mode-select__label">{t('designer.toggleLabel')}</span>
+                                </span>
+                                <Switch checked={designArmed} onChange={toggleDesign} />
+                              </div>
+                            );
+                          })()}
                         {canUsePlanMenu &&
                           (() => {
                             // 能否切换计划模式由 planModeGate 统一判断，与 `/plan` 命令、
@@ -3933,6 +4064,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                 // goalArmed 为 true 时只可能是"刚选了目标、还没发消息"的
                                 // 未提交态，顶掉换成 Plan。
                                 useGoalStore.getState().setArmed(activeSessionId, false);
+                                useDesignArmedStore.getState().setArmed(activeSessionId ?? NEW_CONVERSATION_ID, false);
                               }
                               applyPlanToggle(activeSessionId, next, { entrySource: 'plan_toggle' });
                               // 不关闭菜单：用户拨动开关后保持菜单打开，便于看到开关状态变化并继续操作。
@@ -4050,6 +4182,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             const toggleGoal = (next: boolean) => {
                               if (!activeSessionId) return;
                               if (next) {
+                                useDesignArmedStore.getState().setArmed(activeSessionId ?? NEW_CONVERSATION_ID, false);
                                 applyGoalArm(activeSessionId, true);
                                 return;
                               }
@@ -4420,7 +4553,29 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     </button>
                   </div>
                 )}
-
+                {designTagVisible && (
+                  <div className="chat-goal-tag" data-testid="chat-panel-design-tag">
+                    <button type="button" className="chat-mode-select__trigger" data-testid="chat-panel-design-tag-label">
+                      <span className="chat-mode-select__value">
+                        <span className="chat-mode-select__icon" aria-hidden="true">
+                          <LayoutTemplate size={14} />
+                        </span>
+                        <span className="chat-mode-select__label">{t('designer.toolbarTag')}</span>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="chat-goal-tag__close"
+                      data-testid="chat-panel-design-tag-close"
+                      title={t('designer.closeTag')}
+                      onClick={() => {
+                        useDesignArmedStore.getState().setArmed(activeSessionId ?? NEW_CONVERSATION_ID, false);
+                      }}
+                    >
+                      <X size={11} strokeWidth={2.5} />
+                    </button>
+                  </div>
+                )}
                 {evolutionLabel && (
                   <div
                     className="chat-input-evolution-pill"

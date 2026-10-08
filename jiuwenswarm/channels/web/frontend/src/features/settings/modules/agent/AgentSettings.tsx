@@ -24,6 +24,7 @@ import {
   type MediaCapabilityModality,
 } from './mediaCapabilities';
 import { GenerationModelConfigDialog } from './GenerationModelConfigDialog';
+import { isGenerationSlotConfigured } from './generationModels';
 import { MediaModelConfigDialog } from './MediaModelConfigDialog';
 import './AgentSettings.css';
 
@@ -387,7 +388,7 @@ export function VideoGenSettings({ disabled }: SettingsCustomItemProps) {
   const [deleteError, setDeleteError] = useState('');
   const saveConfig: SaveConfig = (updates, operation) => save(updates, operation);
 
-  const configured = videoGenFields.every((name) => String(values[name] ?? '').trim());
+  const configured = isGenerationSlotConfigured(values, 'video_gen');
   const enabled = configured && parseConfigBoolean(values.video_gen_enabled);
   const busy = [...videoGenFields, videoGenContextWindowField, 'video_gen_enabled'].some((field) => savingKeys.has(field));
   const name = t('settingsPanel.fields.video_gen_enabled.title');
@@ -433,7 +434,9 @@ export function VideoGenSettings({ disabled }: SettingsCustomItemProps) {
         subSettings={
           configured ? (
             <div className="settings-agent-media__model-card">
-              <strong className="settings-agent-media__model-name">{String(values.video_gen_model)}</strong>
+              <strong className="settings-agent-media__model-name">
+                {String(values.video_gen_model ?? '').trim() || t('settingsPanel.agent.servedModel')}
+              </strong>
               <div className="settings-agent-media__actions">
                 <Button
                   variant="quiet"
@@ -507,7 +510,7 @@ export function VisualGenSettings({ disabled }: SettingsCustomItemProps) {
   const [deleteError, setDeleteError] = useState('');
   const saveConfig: SaveConfig = (updates, operation) => save(updates, operation);
 
-  const configured = visualGenFields.every((name) => String(values[name] ?? '').trim());
+  const configured = isGenerationSlotConfigured(values, 'visual_gen');
   const enabled = configured && parseConfigBoolean(values.visual_gen_enabled);
   const busy = [...visualGenFields, visualGenContextWindowField, 'visual_gen_enabled'].some((field) => savingKeys.has(field));
   const name = t('settingsPanel.fields.visual_gen_enabled.title');
@@ -553,7 +556,9 @@ export function VisualGenSettings({ disabled }: SettingsCustomItemProps) {
         subSettings={
           configured ? (
             <div className="settings-agent-media__model-card">
-              <strong className="settings-agent-media__model-name">{String(values.visual_gen_model)}</strong>
+              <strong className="settings-agent-media__model-name">
+                {String(values.visual_gen_model ?? '').trim() || t('settingsPanel.agent.servedModel')}
+              </strong>
               <div className="settings-agent-media__actions">
                 <Button
                   variant="quiet"

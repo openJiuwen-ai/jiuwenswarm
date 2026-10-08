@@ -38,6 +38,8 @@ import {
 } from './features/settings/settingsNavigation';
 import { ConnectorMarketPanel } from './components/ConnectorMarket';
 import { LoginDialog } from './components/LoginDialog';
+import { DesignerPage } from './features/designer/components/DesignerPage';
+import { DesignerLanding } from './features/designer/components/DesignerLanding';
 import type { CodeReviewTarget } from './features/code-mode/types';
 
 import { FEATURE_APP_UPDATER_UI, FEATURE_PERSONAL_CONTEXT_UI } from './featureFlags';
@@ -75,6 +77,7 @@ import { useBrowserAgentActivity } from './features/browserAgentActivity';
 import {
   AgentMode,
   MediaItem,
+  type ProjectInfo,
   type ChatSendOptions,
   UserAnswer,
   ModelEntry,
@@ -539,6 +542,7 @@ function AppContent({
   /** 为 true 表示刚从「会话列表」恢复；history 为空时在 useEffect 的 onEmpty 中提示一次 */
   const historyRestoreFromPanelHintRef = useRef(false);
   const { loadProjects, setSelectedProject } = useWorkspaceStore();
+  const workspaceWorkMode = useWorkspaceStore((state) => state.workMode);
 
   const setHistoryRetryAvailable = useCallback((sid: string, available: boolean) => {
     setHistoryRetrySessions((current) => {
@@ -619,6 +623,19 @@ function AppContent({
       sessionIdRef.current = route.sessionId;
       setSessionId(route.sessionId);
       setActiveNav('chat');
+    } else if (route.kind === 'design-project') {
+      sessionIdRef.current = NEW_CONVERSATION_ID;
+      setSessionId(NEW_CONVERSATION_ID);
+      setActiveNav('chat');
+      void useWorkspaceStore.getState().setWorkMode('design').then(() => {
+        const project = useWorkspaceStore.getState().projects.find(
+          (item) => item.project_id === route.projectId,
+        );
+        useWorkspaceStore.getState().setSelectedProject(project ?? null);
+      });
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
+      setToolPanelHidden(true);
     } else if (route.kind === 'chat-new') {
       if (window.location.pathname !== '/chat/new') {
         navigate({ kind: 'chat-new' }, { replace: true });
@@ -635,7 +652,7 @@ function AppContent({
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
     }
-  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
+  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded, setToolPanelHidden]);
 
   useEffect(() => {
     ensureSessionRuntimes(sessionId);
@@ -3413,6 +3430,29 @@ function AppContent({
     void handleRestoreSession(target.session_id, target.mode, target);
   }, [enterNewConversation, handleRestoreSession, isToolPanelAutoHideViewport, mode, setSingleAgentPanelExpanded, setTeamAreaExpanded, setToolPanelHidden]);
 
+  const handleSelectDesignProject = useCallback((project: ProjectInfo) => {
+    setSelectedProject(project);
+    navigate({ kind: 'design-project', projectId: project.project_id });
+  }, [navigate, setSelectedProject]);
+
+  const handleProjectRemoved = useCallback((projectId: string, removedWorkMode: WorkMode) => {
+    // 目前Design功能页是唯一需要处理项目软删除的场景
+    // 打开项目的URL是 `/design/<id>`，但是回到上层是`/chat/new`
+    if (
+      removedWorkMode === 'design'
+      && route.kind === 'design-project'
+      && route.projectId === projectId
+    ) {
+      navigate({ kind: 'chat-new' });
+    }
+  }, [navigate, route]);
+
+  const handleDesignWorkspaceCreated = useCallback((projectId: string, createdSessionId: string) => {
+    sessionIdRef.current = createdSessionId;
+    setSessionId(createdSessionId);
+    navigate({ kind: 'design-project', projectId });
+  }, [navigate]);
+
   const handleNavigate = useCallback(
     (nav: MainNavKey) => {
       if (
@@ -3440,6 +3480,10 @@ function AppContent({
       if (nav === 'agents') setHasVisitedAgents(true);
       if (nav === 'skills') setHasVisitedSkills(true);
       if (nav === 'personalContext') setHasVisitedPersonalContext(true);
+      if (nav === 'design') {
+        setTeamAreaExpanded(false);
+        setToolPanelHidden(true);
+      }
     },
     [activeNav, isMobile, modelSetupGuideStep, setSingleAgentPanelExpanded, setHasVisitedPersonalContext, setRequestedSettingsModuleId, setTeamAreaExpanded, setToolPanelHidden, t],
   );
@@ -3659,12 +3703,21 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 activeSessionId={sessionId === NEW_CONVERSATION_ID ? null : sessionId}
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
+                onSelectDesignProject={handleSelectDesignProject}
+                onProjectRemoved={handleProjectRemoved}
                 onOpenCron={() => handleNavigate('cron')}
                 isCronActive={false}
                 collapsed={conversationSidebarCollapsed}
                 floating={conversationSidebarFloating}
                 onToggleCollapse={() => setConversationSidebarCollapsed((v) => !v)}
               />
+              {workspaceWorkMode === 'design' ? (
+                route.kind === 'design-project' ? (
+                  <DesignerPage projectId={route.projectId} />
+                ) : (
+                  <DesignerLanding onCreated={handleDesignWorkspaceCreated} />
+                )
+              ) : (
               <div
                 className={`chat-workspace flex-1 flex min-h-0 overflow-hidden ${insetTrajectoryFloatingTasks ? 'chat-workspace--trajectory-floating-tools' : ''}`}
               >
@@ -3691,7 +3744,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                   } as CSSProperties}
                   data-testid="app-chat-surface"
                 >
-<SingleAgentSurface
+                  <SingleAgentSurface
                     activeView={chatSurfaceView}
                     chat={(
                       <ChatPanel
@@ -3826,6 +3879,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                   <HeartbeatPanel sessionId={sessionId} onClose={() => setHeartbeatPanelOpen(false)} />
                 )}
               </div>
+              )}
             </div>
           </>
         )}

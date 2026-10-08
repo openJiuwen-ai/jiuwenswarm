@@ -23,7 +23,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
-from jiuwenswarm.common.work_mode import SUPPORTED_WORK_MODES
+from jiuwenswarm.common.work_mode import EXECUTION_WORK_MODES
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +234,7 @@ def normalize_work_mode(raw: Any) -> str | None:
     if not isinstance(raw, str):
         return None
     value = raw.strip().lower()
-    return value if value in SUPPORTED_WORK_MODES else None
+    return value if value in EXECUTION_WORK_MODES else None
 
 
 def read_request_work_mode(params: Mapping[str, Any] | None) -> str | None:

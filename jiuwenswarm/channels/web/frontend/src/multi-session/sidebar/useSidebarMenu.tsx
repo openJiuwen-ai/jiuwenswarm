@@ -48,6 +48,8 @@ export type SidebarMenuOptions =
       type: 'project';
       project: ProjectInfo;
       archiveSessionsDisabled?: boolean;
+      /** 项目移除成功后回调（如 Design 页需要离开已移除项目的路由） */
+      onRemoved?: (projectId: string) => void;
     };
 
 type RenameTarget =
@@ -408,6 +410,7 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
       if (projectAction === 'delete') {
         const removed = await removeProject(projectId);
         await loadCronJobs();
+        if (options.type === 'project') options.onRemoved?.(projectId);
         // 项目下没有定时任务时只提示“项目已移除”；字段缺失（旧网关）沿用原文案。
         toast.open({
           content: removed.stopped_cron_jobs === 0

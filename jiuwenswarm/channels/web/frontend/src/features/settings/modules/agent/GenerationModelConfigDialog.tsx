@@ -23,13 +23,16 @@ import {
 } from '../models/modelAdapters';
 import {
   catalogProtocols,
+  credentialsOptional,
   defaultGeneration,
+  generationApiBase,
   generationModelOptions,
   generationProviderName,
   generationVendor,
-  isRegionalVendor,
+  isEditableBaseVendor,
   modelProtocol,
   regionalHintKey,
+  VLLM_OMNI_PROTOCOL,
   withCurrentOption,
   type GenerationSlot,
 } from './generationModels';
@@ -62,14 +65,25 @@ function trimSlash(value: string): string {
   return value.trim().replace(/\/+$/, '').toLowerCase();
 }
 
-/** 之前保存下来的配置只有 provider 名称和 api_base（没有厂商 key），按 api_base
- *  优先、其次按名称找回对应的厂商预设，这样编辑已有配置时下拉能回显成对应厂商。 */
-function findStoredPreset(catalog: VendorPresetMap, provider: string, apiBase: string): VendorPreset | undefined {
+/** 之前保存下来的配置只有 provider 名称、协议和 api_base（没有厂商 key）。vLLM-Omni 的地址
+ *  由用户填写，按协议找回；其余按 api_base 优先、其次按名称找回对应的厂商预设，这样编辑
+ *  已有配置时下拉能回显成对应厂商。 */
+function findStoredPreset(
+  catalog: VendorPresetMap,
+  provider: string,
+  protocol: string,
+  apiBase: string,
+): VendorPreset | undefined {
   const presets = flattenVendorCatalog(catalog);
+  if (protocol.trim() === VLLM_OMNI_PROTOCOL) {
+    return presets.find((preset) => preset.vendor_key === VLLM_OMNI_PROTOCOL);
+  }
   const base = trimSlash(apiBase);
   const name = provider.trim().toLowerCase();
   return (
-    (base ? presets.find((preset) => trimSlash(preset.api_base) === base) : undefined) ??
+    (base
+      ? presets.find((preset) => trimSlash(generationApiBase(preset.vendor_key, preset.api_base)) === base)
+      : undefined) ??
     (name
       ? presets.find((preset) => preset.display_name.toLowerCase() === name || preset.vendor_key.toLowerCase() === name)
       : undefined)
@@ -95,7 +109,7 @@ function createDraft(config: Readonly<Record<string, unknown>>, slot: Generation
 
 function buildUpdates(slot: GenerationSlot, draft: GenerationDraft, catalog: VendorPresetMap): Record<string, string> {
   const preset = findVendorPreset(catalog, draft.vendor_selection);
-  const editableBase = !preset || isRegionalVendor(preset.vendor_key);
+  const editableBase = !preset || isEditableBaseVendor(preset.vendor_key);
   return {
     [`${slot}_provider`]: generationProviderName(preset?.vendor_key, preset?.client_provider),
     [`${slot}_protocol`]: draft.protocol.trim(),
@@ -143,8 +157,9 @@ export function GenerationModelConfigDialog({
 
   const preset = findVendorPreset(catalog, values.vendor_selection);
   const custom = values.vendor_selection === CUSTOM_VENDOR_SELECTION;
-  // API 地址：自定义、以及密钥分区域的厂商（MiniMax）让用户填/改；其余厂商用预设地址，不展示。
-  const showApiBase = custom || isRegionalVendor(preset?.vendor_key);
+  // API 地址：自定义、密钥分区域的厂商（MiniMax / 火山引擎 / 百炼）和自部署厂商（vLLM-Omni）让用户填/改；
+  // 其余厂商用预设地址，不展示。
+  const showApiBase = custom || isEditableBaseVendor(preset?.vendor_key);
   const apiBase = (showApiBase ? values.api_base : (preset?.api_base ?? values.api_base)).trim();
   // 用哪份模型目录：OpenRouter / MiniMax 有各自的目录；自定义地址给出全部作为候选
   // （可能是兼容它们的代理），仍允许手输别的 ID；其他厂商没有已知的生成模型，只能手输。
@@ -190,7 +205,7 @@ export function GenerationModelConfigDialog({
   useEffect(() => {
     const current = form.getValues();
     if (current.vendor_selection !== CUSTOM_VENDOR_SELECTION) return;
-    const match = findStoredPreset(catalog, readConfig(config, slot, 'provider'), current.api_base);
+    const match = findStoredPreset(catalog, readConfig(config, slot, 'provider'), current.protocol, current.api_base);
     if (!match) return;
     const next = { ...current, vendor_selection: vendorSelectionKey(match.plan, match.vendor_key) };
     // 没有专属目录的厂商只支持 OpenAI 协议，旧配置里残留的其他协议值一并纠正。
@@ -220,7 +235,7 @@ export function GenerationModelConfigDialog({
     const defaults = defaultGeneration(slot, nextVendor);
     form.setValues({
       vendor_selection: selection,
-      api_base: nextPreset.api_base,
+      api_base: generationApiBase(nextPreset.vendor_key, nextPreset.api_base),
       api_key: '',
       protocol: nextVendor ? defaults.protocol : OPENAI_PROTOCOL,
       model_name: defaults.model,
@@ -240,6 +255,8 @@ export function GenerationModelConfigDialog({
     ? generationModelOptions(slot, vendor, catalogAll, values.protocol, values.model_name)
     : [];
 
+  const optionalCredentials = credentialsOptional(values.protocol);
+
   const errors = useMemo(() => {
     const next: Partial<Record<keyof GenerationDraft, string>> = {};
     const baseValue = values.api_base.trim();
@@ -255,16 +272,16 @@ export function GenerationModelConfigDialog({
       else if (!/^https?:\/\//i.test(baseValue)) next.api_base = t('config.modelList.apiBaseUrlInvalid');
     }
     const apiKey = values.api_key.trim();
-    if (!apiKey) next.api_key = t('config.modelList.apiKeyRequired');
+    if (!apiKey && !optionalCredentials) next.api_key = t('config.modelList.apiKeyRequired');
     else if (apiKey.length > 2048) next.api_key = t('settingsPanel.models.apiKeyTooLong');
     const modelName = values.model_name.trim();
-    if (!modelName) next.model_name = t('config.modelList.modelNameRequired');
+    if (!modelName && !optionalCredentials) next.model_name = t('config.modelList.modelNameRequired');
     else if (modelName.length > 100) next.model_name = t('config.modelList.modelNameTooLong');
     if (parseContextWindowTokens(values.context_window_tokens) === null) {
       next.context_window_tokens = t('settingsPanel.models.validation.contextWindowInvalid');
     }
     return next;
-  }, [custom, preset, showApiBase, t, values]);
+  }, [custom, optionalCredentials, preset, showApiBase, t, values]);
 
   const formItems: FormItem<GenerationDraft>[] = [
     {
@@ -309,7 +326,7 @@ export function GenerationModelConfigDialog({
       component: 'input',
       required: true,
       placeholder: t('settingsPanel.fields.api_base.placeholder'),
-      helpTips: isRegionalVendor(preset?.vendor_key) ? t(regionalHintKey(preset?.vendor_key)) : undefined,
+      helpTips: isEditableBaseVendor(preset?.vendor_key) ? t(regionalHintKey(preset?.vendor_key)) : undefined,
     });
   }
 
@@ -319,7 +336,7 @@ export function GenerationModelConfigDialog({
       label: t('settingsPanel.models.apiKeyLabel'),
       component: 'input',
       type: 'password',
-      required: true,
+      required: !optionalCredentials,
       passwordVisibilityLabels: {
         show: t('settingsPanel.common.showValue'),
         hide: t('settingsPanel.common.hideValue'),
@@ -330,7 +347,7 @@ export function GenerationModelConfigDialog({
       name: 'model_name',
       label: t('settingsPanel.models.model'),
       component: 'custom',
-      required: true,
+      required: !optionalCredentials,
       render: ({ id, value, error, disabled: fieldDisabled, onChange, onBlur }) => (
         <ModelNameField
           id={id}

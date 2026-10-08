@@ -193,6 +193,7 @@ from jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter import Voi
 from jiuwenswarm.server.runtime.gateway_adapter import (
     AdapterRegistry,
     ConfigAdapter,
+    DesignerAdapter,
     HarmonyOSAdapter,
     MemoryAdapter,
     ProjectAdapter,
@@ -1136,6 +1137,7 @@ class AgentWebSocketServer:
             WorkspaceFileAdapter(),
             MemoryAdapter(),
             ProjectAdapter(runtime_probe=self._execution_runtime),
+            DesignerAdapter(),
             HarmonyOSAdapter(),
             ConfigAdapter(),
         ):
@@ -2007,6 +2009,7 @@ class AgentWebSocketServer:
                     WorkspaceFileAdapter(),
                     MemoryAdapter(),
                     ProjectAdapter(runtime_probe=self._execution_runtime),
+                    DesignerAdapter(),
                     HarmonyOSAdapter(),
                     ConfigAdapter(),
                 ):

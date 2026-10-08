@@ -1,0 +1,124 @@
+{
+  "schema_version": "designer-execution-graph.v1",
+  "graph_id": "graph_fixture001",
+  "project_id": "proj_fixture01",
+  "title": "示例短视频",
+  "description": "From the initial prompt, generate Brief, then Character, Storyboard, and later frames/clips.",
+  "source": "prompt",
+  "nodes": [
+    {
+      "id": "n_brief",
+      "type": "text",
+      "label": "Brief",
+      "config": {
+        "role": "brief",
+        "prompt": "根据用户描述生成一段 5 秒短视频。"
+      },
+      "layout": { "x": 40, "y": 240, "width": 280, "height": 160 }
+    },
+    {
+      "id": "n_character",
+      "type": "image",
+      "label": "Character",
+      "config": {
+        "role": "character_design",
+        "inputs": ["n_brief"]
+      },
+      "layout": { "x": 400, "y": 140, "width": 280, "height": 160 }
+    },
+    {
+      "id": "n_storyboard",
+      "type": "table",
+      "label": "Storyboard",
+      "config": {
+        "role": "storyboard",
+        "inputs": ["n_brief"]
+      },
+      "layout": { "x": 400, "y": 340, "width": 280, "height": 160 }
+    },
+    {
+      "id": "n_frame_1",
+      "type": "image",
+      "label": "Keyframe 1",
+      "config": {
+        "role": "frame",
+        "shot_index": 1,
+        "inputs": ["n_character", "n_storyboard"]
+      },
+      "layout": { "x": 760, "y": 240, "width": 280, "height": 160 }
+    },
+    {
+      "id": "n_clip_1",
+      "type": "video",
+      "label": "Clip 1",
+      "config": {
+        "role": "clip",
+        "shot_index": 1,
+        "inputs": ["n_character", "n_storyboard", "n_frame_1"]
+      },
+      "layout": { "x": 1120, "y": 240, "width": 280, "height": 160 }
+    },
+    {
+      "id": "n_compose",
+      "type": "video",
+      "label": "Film",
+      "config": {
+        "role": "compose",
+        "inputs": ["n_clip_1"]
+      },
+      "layout": { "x": 1480, "y": 240, "width": 280, "height": 160 }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_brief_character",
+      "source": "n_brief",
+      "target": "n_character"
+    },
+    {
+      "id": "e_brief_storyboard",
+      "source": "n_brief",
+      "target": "n_storyboard"
+    },
+    {
+      "id": "e_character_storyboard",
+      "source": "n_character",
+      "target": "n_storyboard",
+      "kind": "sync",
+      "label": "Align"
+    },
+    {
+      "id": "e_character_frame",
+      "source": "n_character",
+      "target": "n_frame_1"
+    },
+    {
+      "id": "e_storyboard_frame",
+      "source": "n_storyboard",
+      "target": "n_frame_1"
+    },
+    {
+      "id": "e_character_n_clip_1",
+      "source": "n_character",
+      "target": "n_clip_1"
+    },
+    {
+      "id": "e_storyboard_n_clip_1",
+      "source": "n_storyboard",
+      "target": "n_clip_1"
+    },
+    {
+      "id": "e_frame_n_clip_1",
+      "source": "n_frame_1",
+      "target": "n_clip_1"
+    },
+    {
+      "id": "e_n_clip_1_compose",
+      "source": "n_clip_1",
+      "target": "n_compose"
+    }
+  ],
+  "metadata": {},
+  "created_at": 1700000000000,
+  "updated_at": 1700000000000
+}

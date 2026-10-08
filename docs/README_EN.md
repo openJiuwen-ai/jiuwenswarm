@@ -15,7 +15,7 @@
 This page collects common JiuwenSwarm usage instructions, feature documentation, and development practices. The content is organized into five sections: **Installation**, **Basic Usage**, **Advanced Operations**, **Appendix**, and **Development Practices**.
 
 * **Installation**: For first-time JiuwenSwarm users, covering basic installation, environment preparation, TUI mode installation, and quick start guidance.
-* **Basic Usage**: Introduces common daily-use entry points, including page overview, conversation, agents, sessions, scheduled tasks, skills, channels, configuration, browser service, logs, and MCP service settings.
+* **Basic Usage**: Introduces common daily-use entry points, including page overview, conversation, design, agents, sessions, scheduled tasks, skills, channels, configuration, browser service, logs, and MCP service settings.
 * **Advanced Operations**: Covers advanced capabilities and extension mechanisms, including context compression, Skill self-evolution, tool permissions and security, E2A / A2A protocols, multi-agent collaboration, memory systems, and TUI mode.
 * **Appendix**: Provides supplementary materials for project usage and maintenance, including EXE packaging, Windows auto-update design, and developer documentation.
 * **Development Practices**: Collects real Agent application cases built with JiuwenSwarm, helping developers reference existing practices for secondary development and capability extension.
@@ -64,6 +64,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="22%"><strong>Conversation</strong></td>
       <td width="28%"><a href="en/Conversation.md">Conversation</a></td>
       <td width="50%">Web conversation entry point, supporting message sending, new sessions, and planning / performance / cluster mode switching.</td>
+    </tr>
+    <tr>
+      <td width="22%"><strong>Design</strong></td>
+      <td width="28%"><a href="en/Design.md">Design</a></td>
+      <td width="50%">Workflow canvas for video and image creation: turn one sentence into a brief, storyboard, keyframes, and video clips, with per-node editing and re-runs.</td>
     </tr>
     <tr>
       <td width="22%"><strong>Agent</strong></td>

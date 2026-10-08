@@ -1,3 +1,77 @@
+.conversation-sidebar__design-project-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+}
+
+.conversation-sidebar__design-project-row:hover,
+.conversation-sidebar__design-project-row.is-active,
+.conversation-sidebar__design-project-row.is-menu-open {
+  z-index: 10;
+  background: var(--color-bg-hover);
+}
+
+.conversation-sidebar__design-project {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 34px 9px 10px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conversation-sidebar__design-project > svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+.conversation-sidebar__design-project-row.is-active .conversation-sidebar__design-project,
+.conversation-sidebar__design-project-row:hover .conversation-sidebar__design-project,
+.conversation-sidebar__design-project-row.is-menu-open .conversation-sidebar__design-project {
+  color: var(--color-text-primary);
+}
+
+.conversation-sidebar__design-project-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-sidebar__design-project-pin {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  color: var(--color-text-primary);
+}
+
+.conversation-sidebar__design-project-row .conversation-list-item__actions {
+  top: 6px;
+  right: 6px;
+}
+
+.conversation-sidebar__design-project-row:hover .conversation-list-item__actions,
+.conversation-sidebar__design-project-row.is-menu-open .conversation-list-item__actions,
+.conversation-sidebar__design-project-row:focus-within .conversation-list-item__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.conversation-sidebar__design-project-row > .conversation-list-item__actions:hover,
+.conversation-sidebar__design-project-row > .conversation-list-item__actions:focus-visible {
+  background: var(--color-icon-btn-hover-surface);
+  color: var(--color-text-primary);
+}
+
 .conversation-sidebar {
   --conversation-sidebar-width: 240px;
 

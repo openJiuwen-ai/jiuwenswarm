@@ -26,6 +26,7 @@ from jiuwenswarm.server.runtime.session.work_mode import (
 class TestPureHelpers:
     @pytest.mark.parametrize("fn, arg, expected", [
         (normalize_work_mode, "WORK", "work"),
+        (normalize_work_mode, "DESIGN", "design"),
         (normalize_work_mode, "cod", DEFAULT_WEB_WORK_MODE),
         (is_default_project_id, "default", True),
         (is_default_project_id, "proj_abc", False),
@@ -40,6 +41,7 @@ class TestRequestResolution:
     @pytest.mark.parametrize("params, channel, expected_value, expected_error", [
         ({}, "web", "work", None),
         ({"work_mode": "code"}, "web", "code", None),
+        ({"work_mode": "design"}, "web", "design", None),
         ({"work_mode": "cod"}, "web", None, "BAD_REQUEST"),
     ])
     def test_resolve_request_work_mode(self, params, channel, expected_value, expected_error):
@@ -70,6 +72,22 @@ class TestRequestResolution:
         assert result.project_id == ""
         assert result.work_mode == ""
 
+    def test_projectless_design_session_is_rejected(self):
+        result = resolve_session_work_mode_params({"work_mode": "design"}, channel_id="web")
+        assert result.code == "BAD_REQUEST"
+        assert result.error == "design sessions require a real Design project"
+        assert result.project_id == ""
+        assert result.work_mode == ""
+
+    def test_design_session_with_real_project_is_preserved_for_binding(self):
+        result = resolve_session_work_mode_params(
+            {"work_mode": "design", "project_id": "proj_design"},
+            channel_id="web",
+        )
+        assert result.error is None
+        assert result.project_id == "proj_design"
+        assert result.work_mode == "design"
+
     @pytest.mark.parametrize("project_id, expected_pid, expected_mode", [
         (None, "default", "work"),
         ("default", "default", "work"),
@@ -91,6 +109,7 @@ class TestModelRoundtrip:
     @pytest.mark.parametrize("raw, expected_work_mode, expected_git", [
         ({"project_id": "proj_1", "name": "demo", "project_dir": "/tmp/demo"}, "work", {}),
         ({"project_id": "proj_2", "name": "c", "project_dir": "/tmp/c", "work_mode": "code"}, "code", {}),
+        ({"project_id": "proj_d", "name": "d", "project_dir": "/tmp/d", "work_mode": "design"}, "design", {}),
         ({"project_id": "proj_3", "name": "c", "project_dir": "/tmp/c", "git": {"enabled": True, "branch": "main"}},
          "work", {"enabled": True, "branch": "main"}),
     ])
@@ -144,6 +163,7 @@ class TestSessionMetadataWorkMode:
 
     @pytest.mark.parametrize("channel_id, work_mode, expected", [
         ("web", "code", "code"),
+        ("web", "design", "design"),
         ("web", None, "work"),
     ])
     def test_init_work_mode(self, sessions_dir, channel_id, work_mode, expected):

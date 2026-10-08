@@ -2854,6 +2854,215 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="session.pin",
         )
 
+    async def _designer_graph_list(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.DESIGNER_GRAPH_LIST,
+            label="designer.graph.list",
+        )
+
+    async def _designer_workspace_create(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.DESIGNER_WORKSPACE_CREATE,
+            label="designer.workspace.create",
+        )
+
+    async def _designer_workspace_get(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.DESIGNER_WORKSPACE_GET,
+            label="designer.workspace.get",
+        )
+
+    async def _designer_graph_get(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.DESIGNER_GRAPH_GET,
+            label="designer.graph.get",
+        )
+
+    async def _designer_graph_save(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.DESIGNER_GRAPH_SAVE,
+            label="designer.graph.save",
+        )
+
+    async def _designer_graph_bootstrap(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.DESIGNER_GRAPH_BOOTSTRAP,
+            label="designer.graph.bootstrap",
+        )
+
+    async def _designer_graph_patch(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.DESIGNER_GRAPH_PATCH,
+            label="designer.graph.patch",
+        )
+
+    async def _designer_graph_chat(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.DESIGNER_GRAPH_CHAT,
+            label="designer.graph.chat",
+            timeout_seconds=300,
+        )
+
+    async def _designer_run_start(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.DESIGNER_RUN_START,
+            label="designer.run.start",
+        )
+
+    async def _designer_run_get(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.DESIGNER_RUN_GET,
+            label="designer.run.get",
+        )
+
+    async def _designer_run_pause(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.DESIGNER_RUN_PAUSE,
+            label="designer.run.pause",
+        )
+
+    async def _designer_run_cancel(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.DESIGNER_RUN_CANCEL,
+            label="designer.run.cancel",
+        )
+
+    async def _designer_run_choose_output(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.DESIGNER_RUN_CHOOSE_OUTPUT,
+            label="designer.run.choose_output",
+        )
+
     async def _project_list(ws, req_id, params, session_id, user_id=None):
         channel.ensure_lifecycle_watch(user_id)
         """获取项目列表(含统计),已排序,包含默认项目。
@@ -5047,6 +5256,20 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("session.plan_status", _session_plan_status)
     channel.register_method("session.rename", _session_rename)
     channel.register_method("session.pin", _session_pin)
+
+    channel.register_method("designer.workspace.create", _designer_workspace_create)
+    channel.register_method("designer.workspace.get", _designer_workspace_get)
+    channel.register_method("designer.graph.get", _designer_graph_get)
+    channel.register_method("designer.graph.list", _designer_graph_list)
+    channel.register_method("designer.graph.save", _designer_graph_save)
+    channel.register_method("designer.graph.bootstrap", _designer_graph_bootstrap)
+    channel.register_method("designer.graph.patch", _designer_graph_patch)
+    channel.register_method("designer.graph.chat", _designer_graph_chat)
+    channel.register_method("designer.run.start", _designer_run_start)
+    channel.register_method("designer.run.get", _designer_run_get)
+    channel.register_method("designer.run.pause", _designer_run_pause)
+    channel.register_method("designer.run.cancel", _designer_run_cancel)
+    channel.register_method("designer.run.choose_output", _designer_run_choose_output)
 
     channel.register_method("project.list", _project_list)
     channel.register_method("project.info", _project_info)

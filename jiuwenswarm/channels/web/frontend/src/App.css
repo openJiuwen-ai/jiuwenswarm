@@ -219,6 +219,13 @@
   transform: none;
   display: flex;
   justify-content: center;
+  pointer-events: none;
+}
+
+.app-toast-wrapper--top-center > * {
+  pointer-events: auto;
+  min-width: 0;
+  max-width: min(88vw, 32rem);
 }
 
 .app-connection-toast {
@@ -227,6 +234,9 @@
   padding: 0.5rem 1rem;
   color: var(--color-text-inverse);
   box-shadow: var(--effect-shadow-lg);
+  max-height: 6.5rem;
+  overflow: auto;
+  overflow-wrap: anywhere;
 }
 
 .app-session-toast {

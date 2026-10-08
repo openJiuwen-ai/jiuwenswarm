@@ -6,6 +6,7 @@
 work_mode 与 Agent 执行模式（``mode`` 字段）正交：
 - ``code``：代码工程，绑定项目目录，展示 Git 状态/分支/diff。
 - ``work``：普通办公协作，不默认暴露 Git 能力。
+- ``design``：一项目、一会话、一画布的设计工作区，不参与 Agent 执行模式组合。
 """
 from __future__ import annotations
 
@@ -14,8 +15,12 @@ from typing import Any
 DEFAULT_WEB_WORK_MODE: str = "work"
 # 同时作为"code 模式字面量"语义,resolve_default_project_id 据此判定 code 模式
 DEFAULT_TUI_WORK_MODE: str = "code"
+DESIGN_WORK_MODE: str = "design"
 
-SUPPORTED_WORK_MODES: frozenset[str] = frozenset({"code", "work"})
+SUPPORTED_WORK_MODES: frozenset[str] = frozenset({"code", "design", "work"})
+# Only these modes select an Agent execution profile. Design has its own
+# Designer RPC surface and must never be folded into work/code execution.
+EXECUTION_WORK_MODES: frozenset[str] = frozenset({"code", "work"})
 
 DEFAULT_PROJECT_ID_WORK: str = "default"
 DEFAULT_PROJECT_ID_CODE: str = "default_code"

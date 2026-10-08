@@ -154,6 +154,8 @@ export interface VendorPreset {
   icon_key: string;
   models_endpoint: string | null;
   models_needs_key: boolean;
+  /** 仅用于图片/视频生成的厂商（如自部署 vLLM-Omni），不出现在对话 / 理解类模型选择中。 */
+  generation_only?: boolean;
   supports_anthropic: boolean;
   anthropic_base: string | null;
   anthropic_client_provider: string | null;

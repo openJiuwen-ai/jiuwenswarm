@@ -26,7 +26,10 @@ _TEST_MODEL = "example/visual-gen-model"
 
 
 def _clear_visual_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("VISUAL_GEN_API_KEY", "VISUAL_GEN_API_BASE", "VISUAL_GEN_MODEL_NAME", "VISUAL_GEN_ENABLED"):
+    for name in (
+        "VISUAL_GEN_API_KEY", "VISUAL_GEN_API_BASE", "VISUAL_GEN_MODEL_NAME", "VISUAL_GEN_ENABLED",
+        "VISUAL_GEN_PROTOCOL",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -394,3 +397,10 @@ def test_resolve_save_path_honors_custom_save_dir(tmp_path: Path):
 )
 def test_extension_for_mime(mime: str, expected: str):
     assert vg._extension_for_mime(mime) == expected
+
+
+def test_vllm_omni_is_configured_without_key_or_model(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VISUAL_GEN_API_BASE", "http://127.0.0.1:8091/v1")
+    assert vg.visual_gen_configured() is False
+    monkeypatch.setenv("VISUAL_GEN_PROTOCOL", "vllm-omni")
+    assert vg.visual_gen_configured() is True
