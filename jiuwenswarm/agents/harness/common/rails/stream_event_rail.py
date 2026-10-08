@@ -31,7 +31,6 @@ from openjiuwen.core.single_agent.rail.base import (
 )
 from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.rails.skills.skill_use_rail import get_current_skill_name
-from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.tools import TodoListTool
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
 
@@ -63,6 +62,7 @@ from jiuwenswarm.common.tool_display import (
     extract_call_goal,
     inject_call_goal_schema,
 )
+from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
 from jiuwenswarm.common.utils import fix_json_arguments, logger
 
 # "todo"：flash 统一工具（单卡 action 分发，覆盖同一组引擎操作）
@@ -1631,34 +1631,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
     def _format_todos_for_frontend(
         todos_data: List[Any],
     ) -> List[dict[str, Any]]:
-        """Format todo items for frontend compatibility.
-
-        Maps internal TodoStatus values to frontend-compatible status strings.
-        Cancelled items are omitted because the frontend todo panel tracks
-        actionable or completed tasks only.
-
-        Args:
-            todos_data: List of TodoItem objects from TodoListTool.
-
-        Returns:
-            List of formatted todo dictionaries.
-        """
-        status_mapping = {
-            TodoStatus.PENDING: "pending",
-            TodoStatus.IN_PROGRESS: "in_progress",
-            TodoStatus.COMPLETED: "completed",
-        }
-
-        return [
-            {
-                "id": item.id,
-                "content": item.content,
-                "activeForm": item.activeForm,
-                "status": status_mapping.get(item.status, item.status.value),
-            }
-            for item in todos_data
-            if item.status != TodoStatus.CANCELLED
-        ]
+        """Use the same mapping for live events and history restoration."""
+        return format_todos_for_frontend(todos_data)
 
     @staticmethod
     async def _emit_context_usage(
