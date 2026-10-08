@@ -4840,6 +4840,7 @@ class JiuWenSwarmDeepAdapter:
             self._active_office_claw_mcp = registration
             set_agent_office_claw_tool_ids(self._instance, ())
             self._sync_office_claw_allowlist_to_progressive_rail(None)
+        logger.info("[latency] stage=2 name=mcp request_id=%s", registration.request_id)
         return registration
 
     async def _register_mcp_from_registry(
@@ -4904,6 +4905,7 @@ class JiuWenSwarmDeepAdapter:
                 )
 
             if not replace_request_scoped_mcp_registration(generation, generation):
+                logger.info("[latency] stage=2 name=mcp request_id=%s", request.request_id)
                 return generation
             # There must be no await from this guard through publication: a slow
             # old discovery must never overwrite a newer request's tool bindings.
