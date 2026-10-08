@@ -107,6 +107,7 @@ class InteractionAnswerInput:
     project_dir: str = ""
     cwd: str = ""
     trusted_dirs: tuple[str, ...] = ()
+    run_permissions: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -147,6 +148,9 @@ class InteractionAnswerInput:
         )
         object.__setattr__(self, "cwd", _optional_text("cwd", self.cwd))
         object.__setattr__(self, "trusted_dirs", _trusted_dirs(self.trusted_dirs))
+        object.__setattr__(
+            self, "run_permissions", _optional_mapping("run_permissions", self.run_permissions)
+        )
 
     @property
     def resumes_interrupted_turn(self) -> bool:
@@ -187,6 +191,8 @@ class InteractionAnswerInput:
             params["evolution_meta"] = deepcopy(dict(self.evolution_meta))
         if self.trusted_dirs:
             params["trusted_dirs"] = list(self.trusted_dirs)
+        if self.run_permissions is not None:
+            params["run_permissions"] = deepcopy(dict(self.run_permissions))
         return AgentRequest(
             request_id=self.request_id,
             channel_id=self.channel_id,

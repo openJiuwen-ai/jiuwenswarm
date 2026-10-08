@@ -64,10 +64,35 @@ Optional `agent` uses the existing Agent definition contract, for example:
 
 Attach this object as the request's `agent` field. Omit `model` to use the
 configured selection. Definitions are validated and executed by Runtime, not
-loaded into a second Agent engine. Current Runtime rejects custom work-mode
-Agents and explicit tool allowlists; those errors are preserved, not silently
-downgraded. Available skills and model names still come from local Runtime
-configuration. The request is not a configuration-file override mechanism.
+loaded into a second Agent engine. Custom roots work in both code and work
+modes. `agent.tools` accepts `[*]` for the configured set or a nonempty list
+of exact tool names. Runtime filters model-facing tools and rejects calls to
+other tools, including tools registered after Agent startup. Available skills
+and model names still come from local Runtime configuration.
+
+The run document also accepts these per-invocation fields:
+
+```json
+{
+  "model": "configured-model-name",
+  "skills": ["review"],
+  "mcp": ["local-server"],
+  "permissions": {
+    "tools": {"read_file": "allow", "write_file": "ask", "run_shell": "deny"}
+  }
+}
+```
+
+`model` resolves against the Runtime catalog before Session execution and
+overrides `agent.model` for this run. `skills` and `mcp` use the same selected
+Skill and MCP inputs as `chat.send`; an explicit empty list requests no
+selection for that field on this turn. MCP references must be locally ready.
+`permissions.tools` accepts
+only `allow`, `ask`, and `deny` decisions. The policy is scoped to the run and
+does not write the global permission configuration. An installed deny remains
+deny; an `ask` uses the existing interaction callback in duplex mode and
+returns `INTERACTION_REQUIRED` in noninteractive mode.
+
 An inline definition must be sent again when resuming history in a later
 process. The Process CLI stores its fingerprint with the Session; a different
 definition or omission is rejected. Calls using the same Session are guarded

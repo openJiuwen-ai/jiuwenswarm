@@ -207,9 +207,10 @@ class OpenJiuwenPolicyEvaluator:
         return None
 
     def _effective_permission_config(self) -> dict[str, Any] | None:
+        from jiuwenswarm.runtime.run_permissions import overlay_run_permissions
         runtime_config = self._runtime_permission_config()
         if runtime_config is not None:
-            return runtime_config
+            return overlay_run_permissions(runtime_config)
 
         host = getattr(self._base_rail, "_host", None)
         snapshot_getter = getattr(host, "get_permissions_snapshot", None)
@@ -219,11 +220,11 @@ class OpenJiuwenPolicyEvaluator:
             logger.exception("[PolicyEval] permission snapshot refresh failed")
             snapshot = None
         if isinstance(snapshot, Mapping):
-            return dict(snapshot)
+            return overlay_run_permissions(dict(snapshot))
 
         static_config = getattr(self._base_rail, "_static_config", None)
         if isinstance(static_config, Mapping):
-            return dict(static_config)
+            return overlay_run_permissions(dict(static_config))
         return None
 
     def _runtime_permission_config(self) -> dict[str, Any] | None:

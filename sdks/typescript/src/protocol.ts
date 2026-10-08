@@ -32,6 +32,10 @@ export interface RunInput {
   request_id?: string;
   session_id?: string;
   mode?: Mode;
+  model?: string;
+  skills?: string[];
+  mcp?: string[];
+  permissions?: { tools?: { [tool: string]: "allow" | "ask" | "deny" } };
   agent?: AgentDefinition;
   workspace?: Workspace;
   timeout_seconds?: number;

@@ -135,6 +135,14 @@ class FakeClient:
         self.raise_at("validate_agent")
         self.validated_definition = (definition, mode)
 
+    def resolve_model_capability(self, requested):
+        self.calls.append(f"model:{requested}")
+        return SimpleNamespace(selection_key=f"{requested}#0")
+
+    def validate_mcp_references(self, references):
+        self.calls.append(f"mcp:{','.join(references)}")
+        return SimpleNamespace(valid="missing" not in references)
+
     async def create_or_resume_session(self, *, channel_id, session_id):
         self.calls.append(f"session:{channel_id}:{session_id or ''}")
         await self.checkpoint("session")
@@ -256,6 +264,32 @@ async def test_one_command_owns_one_runtime_and_returns_result_after_close() -> 
     assert {record["request_id"] for record in records} == {"external-run"}
     assert writer.final_written is False
     assert client.agent_definition is None
+
+
+@pytest.mark.asyncio
+async def test_run_capabilities_reach_runtime_without_persisting_configuration() -> None:
+    client = FakeClient()
+    run = OneShotRunInput(
+        input="hello", model="example", skills=("review",), mcp=("local",),
+        permissions={"tools": {"write_file": "deny", "exec_command": "ask"}},
+    )
+    result = await _run(client, run)
+    assert result.status == "completed"
+    assert client.request.params["model_name"] == "example#0"
+    assert client.request.params["skills"] == ["review"]
+    assert client.request.params["mcp"] == ["local"]
+    assert client.request.params["run_permissions"] == {
+        "tools": {"write_file": "deny", "mcp_exec_command": "ask"}
+    }
+    assert client.calls.index("mcp:local") < client.calls.index("session:process_cli:")
+
+
+@pytest.mark.asyncio
+async def test_unready_mcp_fails_before_session_creation() -> None:
+    client = FakeClient()
+    result = await _run(client, OneShotRunInput(input="hello", mcp=("missing",)))
+    assert result.error.code == "MCP_NOT_READY"
+    assert not any(call.startswith("session:") for call in client.calls)
 
 
 @pytest.mark.asyncio

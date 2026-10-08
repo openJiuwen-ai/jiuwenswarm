@@ -170,17 +170,19 @@ def test_optional_fields_and_skills_are_strict(field: str, value: object) -> Non
     assert caught.value.field is not None
 
 
-@pytest.mark.parametrize(
-    "tools",
-    ["read_file", ("read_file",), ["read_file", "write_file"], ["*", "read_file"]],
-)
-def test_explicit_tool_allowlist_has_stable_unsupported_error(tools: object) -> None:
+@pytest.mark.parametrize("tools", [("read_file",), ["read_file", "write_file"]])
+def test_explicit_tool_allowlist_is_canonical(tools: object) -> None:
+    definition = _definition(tools=tools)
+    assert definition.tools == tuple(tools)
+    assert definition.to_dict()["tools"] == list(tools)
+
+
+@pytest.mark.parametrize("tools", ["read_file", ["*", "read_file"]])
+def test_invalid_tool_allowlist_is_rejected(tools: object) -> None:
     with pytest.raises(RuntimeAgentDefinitionError) as caught:
         _definition(tools=tools)
-
-    assert caught.value.code == "AGENT_DEFINITION_TOOL_ALLOWLIST_UNSUPPORTED"
+    assert caught.value.code == "AGENT_DEFINITION_INVALID"
     assert caught.value.field == "tools"
-    assert caught.value.retryable is False
 
 
 @pytest.mark.parametrize("tools", [None, 7, (), [], [""], [1]])
@@ -244,13 +246,10 @@ def test_code_modes_prepare_a_transport_neutral_execution(
 @pytest.mark.parametrize(
     "mode", [RuntimeAgentMode.WORK_NORMAL, RuntimeAgentMode.WORK_PLAN]
 )
-def test_work_modes_return_stable_unsupported_error(mode: RuntimeAgentMode) -> None:
-    with pytest.raises(RuntimeAgentDefinitionError) as caught:
-        prepare_agent_execution(_definition(), mode=mode)
-
-    assert caught.value.code == "AGENT_DEFINITION_MODE_UNSUPPORTED"
-    assert caught.value.field == "mode"
-    assert caught.value.retryable is False
+def test_work_modes_prepare_custom_root_agent(mode: RuntimeAgentMode) -> None:
+    execution = prepare_agent_execution(_definition(), mode=mode)
+    assert execution.mode is mode
+    assert execution.to_dict()["agent_fingerprint"] == execution.definition.fingerprint
 
 
 @pytest.mark.parametrize(

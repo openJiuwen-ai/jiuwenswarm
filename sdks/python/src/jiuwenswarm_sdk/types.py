@@ -40,6 +40,14 @@ class RunInput(TypedDict):
     request_id: NotRequired[str]
     session_id: NotRequired[str]
     mode: NotRequired[Mode]
+    model: NotRequired[str]
+    skills: NotRequired[list[str]]
+    mcp: NotRequired[list[str]]
+    permissions: NotRequired["RunPermissions"]
     agent: NotRequired[AgentDefinition]
     workspace: NotRequired[Workspace]
     timeout_seconds: NotRequired[float]
+
+
+class RunPermissions(TypedDict, total=False):
+    tools: dict[str, Literal["allow", "ask", "deny"]]

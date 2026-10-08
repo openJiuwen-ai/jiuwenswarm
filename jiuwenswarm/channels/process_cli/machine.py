@@ -181,6 +181,17 @@ class _MachineRun:
             self.client.validate_agent_definition(
                 self.run_input.agent.to_dict(), mode=mode.mode
             )
+        selected_model = (
+            self.client.resolve_model_capability(self.run_input.model)
+            if self.run_input.model is not None else None
+        )
+        if self.run_input.mcp:
+            mcp_status = self.client.validate_mcp_references(self.run_input.mcp)
+            if not mcp_status.valid:
+                raise MachineRunError(
+                    "Selected MCP references are unavailable.",
+                    code="MCP_NOT_READY",
+                )
         session_id = await self.client.create_or_resume_session(
             channel_id=CHANNEL_ID,
             session_id=self.run_input.session_id,
@@ -206,6 +217,28 @@ class _MachineRun:
                 "supports_user_interaction": self.control is not None,
             }
         )
+        if selected_model is not None:
+            params["model_name"] = selected_model.selection_key
+        if self.run_input.skills is not None:
+            params["skills"] = list(self.run_input.skills)
+        if self.run_input.mcp is not None:
+            params["mcp"] = list(self.run_input.mcp)
+        if self.run_input.permissions is not None:
+            from jiuwenswarm.common.permission_tools import (
+                normalize_permission_tool_name,
+            )
+            tool_levels: dict[str, str] = {}
+            for name, level in self.run_input.permissions["tools"].items():
+                canonical = normalize_permission_tool_name(name)
+                if not canonical or canonical in tool_levels:
+                    raise MachineRunError(
+                        "Run permission tool names are ambiguous.",
+                        code="INVALID_RUN_PERMISSIONS",
+                    )
+                tool_levels[canonical] = level
+            params["run_permissions"] = {
+                "tools": tool_levels
+            }
         self.request = AgentRequest(
             request_id=self.writer.request_id,
             channel_id=CHANNEL_ID,

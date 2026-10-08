@@ -172,6 +172,22 @@ def test_agent_capabilities_match_existing_definition_semantics() -> None:
         )
 
 
+def test_run_scoped_capabilities_round_trip_and_validate() -> None:
+    run = OneShotRunInput.from_dict({
+        "schema_version": "0.1",
+        "type": "run",
+        "input": "hello",
+        "model": "model:example",
+        "skills": ["review"],
+        "mcp": [],
+        "permissions": {"tools": {"read_file": "allow", "write_file": "ask", "run_shell": "deny"}},
+    })
+    assert run.to_dict()["permissions"]["tools"]["write_file"] == "ask"
+    assert OneShotRunInput.from_dict(run.to_dict()) == run
+    with pytest.raises(ValueError, match="levels must be"):
+        OneShotRunInput(input="hello", permissions={"tools": {"read_file": "always"}})
+
+
 def test_resume_identity_is_runtime_owned_and_agent_declaration_is_optional() -> None:
     run = OneShotRunInput(
         input="continue",
