@@ -214,6 +214,12 @@ class BwrapConfig:
         for spec in fs.bind_root_entries:
             BwrapConfig._apply_bind_root_entries(cfg, spec)
         for mount in fs.bind_mounts:
+            if not Path(mount.host_path).exists():
+                logger.warning(
+                    "bind_mounts: host_path %r does not exist; skipping",
+                    mount.host_path,
+                )
+                continue
             if mount.mode == "ro":
                 cfg.ro_binds.append((mount.host_path, mount.sandbox_path))
             else:
