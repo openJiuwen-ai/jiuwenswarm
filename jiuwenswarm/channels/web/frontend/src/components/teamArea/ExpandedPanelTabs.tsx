@@ -1,7 +1,7 @@
 import { useId, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Minimize2 } from 'lucide-react';
-import MaximizeIcon from '../../assets/maximize.svg?react';
+import CollapseAllIcon from '../../assets/collapse-all.svg?react';
+import ExpandAllIcon from '../../assets/expand-all.svg?react';
 import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
 import RecentTasksIcon from '../../assets/work-mode/recent-tasks.svg?react';
 import WebsiteBuildIcon from '../../assets/work-mode/website-build.svg?react';
@@ -161,9 +161,9 @@ export function ExpandedPanelTabs({
             title={isFullscreen ? t('team.restore') : t('team.maximize')}
           >
             {isFullscreen ? (
-              <Minimize2 className="h-[21.33px] w-[21.33px]" />
+              <CollapseAllIcon className="h-[21.33px] w-[21.33px]" aria-hidden="true" />
             ) : (
-              <MaximizeIcon className="h-[21.33px] w-[21.33px]" aria-hidden="true" />
+              <ExpandAllIcon className="h-[21.33px] w-[21.33px]" aria-hidden="true" />
             )}
           </button>
         )}
