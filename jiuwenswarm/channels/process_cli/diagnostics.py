@@ -11,7 +11,7 @@ import traceback
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TextIO
 
@@ -30,7 +30,7 @@ def _diagnostic_path() -> Path:
     else:
         home = Path(os.getenv("JIUWENSWARM_HOME") or Path.home()).expanduser()
         root = home / ".jiuwenswarm"
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     name = f"{stamp}-{os.getpid()}-{uuid.uuid4().hex[:8]}.log"
     # Do not create agent/.logs before common.utils migrates a legacy .logs.
     return root.resolve() / "agent" / "process_cli_logs" / name
@@ -64,13 +64,14 @@ def capture_diagnostics(*, capture_stdout: bool, debug: bool) -> Iterator[Visibl
     log_path = _diagnostic_path()
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        log_path.touch(mode=0o600, exist_ok=False)
     except OSError as error:
-        print(f"jiuwenswarm-process: 无法写入诊断日志：{error}", file=sys.stderr)
+        sys.stderr.write(f"jiuwenswarm-process: 无法写入诊断日志：{error}\n")
+        sys.stderr.flush()
         yield VisibleStreams(sys.stdout, sys.stderr, None)
         return
 
-    with os.fdopen(log_fd, "w", encoding="utf-8", errors="replace") as log_file:
+    with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
         visible_stdout = sys.stdout
         visible_stderr = sys.stderr
         # Windows console streams use Win32 handles beyond the CRT file

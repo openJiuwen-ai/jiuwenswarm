@@ -251,12 +251,17 @@ def _report_machine_failure(
     if code == 0:
         return
     detail = f"；诊断日志：{log_path}" if log_path else ""
-    print(
+    _write_stderr(
+        stderr,
         f"jiuwenswarm-process: 请求失败（退出码 {code}）；"
         f"详见标准输出的错误记录{detail}",
-        file=stderr,
-        flush=True,
     )
+
+
+def _write_stderr(stream: TextIO, message: str) -> None:
+    """Write a user-visible CLI message independently of diagnostic logging."""
+    stream.write(f"{message}\n")
+    stream.flush()
 
 
 def main() -> None:
@@ -345,7 +350,7 @@ def main() -> None:
 
                 code = asyncio.run(worker_interrupt.run(run_command))
             if code != 0 and streams.log_path is not None:
-                print(f"诊断日志：{streams.log_path}", file=streams.stderr, flush=True)
+                _write_stderr(streams.stderr, f"诊断日志：{streams.log_path}")
     except KeyboardInterrupt:
         code = 130
     except asyncio.CancelledError:
@@ -354,9 +359,9 @@ def main() -> None:
         code = 130
     except Exception as exc:  # noqa: BLE001 - command-line boundary
         detail = f"；详细日志：{diagnostic_log_path}" if diagnostic_log_path else ""
-        print(
+        _write_stderr(
+            sys.stderr,
             f"jiuwenswarm-process: 启动失败（{type(exc).__name__}）{detail}",
-            file=sys.stderr,
         )
         code = 1
     finally:
