@@ -55,12 +55,11 @@ async def _flush_session_writes() -> None:
         ("metadata", session_metadata.flush_pending_writes),
     )
     # Both writers own independent queues. Wait for their barriers together so
-    # the outer cleanup_step timeout covers one 4.5-second window, not two.
+    # the outer cleanup_step timeout covers one window, not two. Keep a margin
+    # even when a caller uses a shorter shutdown deadline.
+    flush_timeout = SHUTDOWN_TIMEOUT_SECONDS - min(0.5, SHUTDOWN_TIMEOUT_SECONDS / 10)
     results = await asyncio.gather(
-        *(
-            asyncio.to_thread(flush, SHUTDOWN_TIMEOUT_SECONDS - 0.5)
-            for _, flush in queues
-        ),
+        *(asyncio.to_thread(flush, flush_timeout) for _, flush in queues),
         return_exceptions=True,
     )
     failed = [name for (name, _), result in zip(queues, results) if result is not True]

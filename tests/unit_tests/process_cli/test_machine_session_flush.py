@@ -32,6 +32,25 @@ async def test_history_and_metadata_flush_start_within_one_cleanup_window(
 
 
 @pytest.mark.asyncio
+async def test_short_cleanup_deadline_gives_writers_positive_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeouts: list[float] = []
+
+    def flush(timeout: float) -> bool:
+        timeouts.append(timeout)
+        return timeout > 0
+
+    monkeypatch.setattr(machine, "SHUTDOWN_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(session_history, "flush_pending_writes", flush)
+    monkeypatch.setattr(session_metadata, "flush_pending_writes", flush)
+
+    await machine._flush_session_writes()
+
+    assert timeouts == pytest.approx([0.045, 0.045])
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failed_queue", ["history", "metadata"])
 async def test_unfinished_queue_fails_the_session_write_step(
     monkeypatch: pytest.MonkeyPatch, failed_queue: str

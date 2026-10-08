@@ -941,6 +941,11 @@ async def test_full_output_queue_does_not_block_runtime_cancel_draining_producer
 
     monkeypatch.setattr(asyncio, "Queue", ObservedQueue)
     monkeypatch.setattr(machine, "SHUTDOWN_TIMEOUT_SECONDS", 0.05)
+
+    async def flush_session_writes() -> None:
+        pass
+
+    monkeypatch.setattr(machine, "_flush_session_writes", flush_session_writes)
     client = DrainingCancelClient()
     run = run_factory(client=client)
     client.original.emit(

@@ -125,7 +125,7 @@ original_write_result = OneShotWriter.write_result
 def checked_write_result(self, result):
     assert lifecycle == [
         'start', 'session', 'stream', 'stream-closed', 'session-cleaned',
-        'runtime-closed', 'asyncio-shutdown',
+        'runtime-closed', 'session-writes', 'asyncio-shutdown',
     ], lifecycle
     assert threading.enumerate() == [threading.main_thread()]
     lifecycle.append('result-written')
@@ -142,6 +142,9 @@ class FakeSessionLease:
         pass
 machine.SessionLease = FakeSessionLease
 machine.bind_agent = lambda *_args, **_kwargs: None
+async def fake_flush_session_writes():
+    note('session-writes')
+machine._flush_session_writes = fake_flush_session_writes
 from jiuwenswarm.channels.process_cli.main import main
 main()
 """
