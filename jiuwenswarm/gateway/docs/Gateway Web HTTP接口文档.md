@@ -699,6 +699,8 @@ X-Bot-Id: b1
 
 JSON 路径若收到 `chat.error` 且文案含本地历史缺失，remote 模式可能回退 PG 合成同形 `data`；回退失败则 **404** `NOT_FOUND`。
 
+历史分页保留已持久化的 `chat.error`，Web 恢复时显示为系统错误消息；remote 数据库回退也保留该事件类型，避免刷新后把失败提示丢弃或显示成普通助手回复。
+
 **SSE 示例：**
 
 ```http

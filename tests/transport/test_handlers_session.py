@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext
-from jiuwenswarm.server.handlers.session import _coerce_int, handle_session_list
+from jiuwenswarm.server.handlers.session import (
+    _coerce_int,
+    get_conversation_history,
+    handle_session_list,
+)
 from jiuwenswarm.server.transports.sink import UnaryHTTPSink
 
 
@@ -25,6 +30,46 @@ def _ctx(params: dict | None = None) -> tuple[RequestContext, UnaryHTTPSink]:
 
 def _run(ctx: RequestContext) -> None:
     asyncio.run(handle_session_list(ctx))
+
+
+@pytest.mark.parametrize(
+    "error_fields",
+    [
+        {"content": "cron failed"},
+        {"content": "", "error": "route failed"},
+        {"content": "", "event_payload": {"error": "agent failed"}},
+    ],
+)
+def test_history_page_keeps_persisted_error(tmp_path, error_fields) -> None:
+    session_id = "failed-conversation"
+    directory = tmp_path / session_id
+    directory.mkdir()
+    error_record = {
+        "role": "assistant",
+        "event_type": "chat.error",
+        "timestamp": 2,
+        **error_fields,
+    }
+    records = [
+        {"role": "user", "content": "create a task", "timestamp": 1},
+        error_record,
+        {"role": "assistant", "event_type": "chat.processing_status", "content": "working", "timestamp": 3},
+        {"role": "assistant", "event_type": "chat.final", "content": "retry succeeded", "timestamp": 4},
+    ]
+    (directory / "history.json").write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+
+    page = get_conversation_history(session_id, 1, str(tmp_path))
+
+    assert page is not None
+    messages = page["messages"]
+    assert [message.get("event_type") for message in messages] == ["chat.final", "chat.error", None]
+    assert messages[1]["timestamp"] == 2
+    for key, value in error_fields.items():
+        assert messages[1][key] == value
+    assert all(message["session_id"] == session_id for message in messages)
 
 
 @pytest.mark.parametrize(
