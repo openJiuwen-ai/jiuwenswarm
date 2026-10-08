@@ -241,6 +241,20 @@ def get_config():
     config_base = resolve_env_vars(config_base)
     _normalize_config(config_base)
 
+    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+    if is_agentos_runtime():
+        for section, env_key in (
+            ("code_graph", "JIUWENSWARM_AGENTOS_CODE_GRAPH_CONFIG"),
+            ("sandbox", "JIUWENSWARM_AGENTOS_SANDBOX_CONFIG"),
+        ):
+            try:
+                defaults = json.loads(os.getenv(env_key, "{}"))
+                if isinstance(defaults, dict) and defaults:
+                    local = config_base.get(section)
+                    config_base[section] = {**defaults, **local} if isinstance(local, dict) else defaults
+            except (ValueError, TypeError):
+                logger.warning("Ignoring malformed AgentOS %s deployment config", section)
+
     return config_base
 
 
@@ -3333,7 +3347,7 @@ def resolve_sandbox_enabled(sandbox: Any) -> bool:
     if "enabled" in sandbox:
         return bool(sandbox["enabled"])
     return (
-        str(sandbox.get("type") or "").strip().lower() == "jiuwenbox"
+        str(sandbox.get("type") or "").strip().lower() in {"jiuwenbox", "jiuwenbox-conch"}
         and bool(str(sandbox.get("url") or "").strip())
         and bool(str(sandbox.get("control_token_path") or "").strip())
     )
@@ -3398,6 +3412,8 @@ _YUANRONG_ENDPOINT_OPTIONAL_KEYS: tuple[str, ...] = (
     "memory",
     "mem_limit",
     "rootfs",
+    "user",
+    "group",
 )
 
 # Public re-exports for callers that need to fall back to / advertise defaults
@@ -3659,7 +3675,8 @@ def get_sandbox_endpoint() -> dict[str, Any]:
     当 ``type=yuanrong`` 时额外返回:
     - ``executor`` (缺省 ``docker``)
     - 若 yaml 中存在: ``image`` / ``workdir`` / ``mounts`` / ``cpu`` /
-      ``cpu_limit`` / ``memory`` / ``mem_limit`` / ``rootfs``
+      ``cpu_limit`` / ``memory`` / ``mem_limit`` / ``rootfs`` /
+      ``user`` / ``group``
     - ``url`` 为空时回落占位 ``http://yuanrong.local`` (仅作 cache key)
 
     Raises:
@@ -3683,6 +3700,10 @@ def get_sandbox_endpoint() -> dict[str, Any]:
         result["url"] = url or _DEFAULT_YUANRONG_URL
         result["executor"] = _normalize_yuanrong_executor(sandbox.get("executor"))
         for key in _YUANRONG_ENDPOINT_OPTIONAL_KEYS:
+            if key in sandbox:
+                result[key] = sandbox[key]
+    if sandbox_type == "jiuwenbox-conch":
+        for key in ("template_name", "user", "group", "conch"):
             if key in sandbox:
                 result[key] = sandbox[key]
     return result

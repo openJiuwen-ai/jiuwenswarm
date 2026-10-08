@@ -234,6 +234,11 @@ def _first_nonempty(*values: Any) -> str:
     return ""
 
 
+def _pick_keys(source: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    """Copy only the ``keys`` that exist in ``source``."""
+    return {key: source[key] for key in keys if key in source}
+
+
 def _extract_placement_ips(instance_info: Mapping[str, Any] | None) -> tuple[str, str]:
     """Read node / sandbox IP from YuanRong GET, including jiuwenbox aliases.
 
@@ -538,7 +543,7 @@ class AgentOSRouterClient(AgentServerClient):
         self._ws_connecting: dict[str, asyncio.Future[WebSocketAgentServerClient]] = {}
         self._ws_client_factory = ws_client_factory or WebSocketAgentServerClient
         self._push_handler: Callable[[dict[str, Any]], Awaitable[None]] | None = None
-
+        self._server_config: dict[str, Any] = {}
 
     def set_channel_manager(self, channel_manager: ChannelManager) -> None:
         """Attach handshake IAM for Web/TUI and subscribe channel disconnect events."""
@@ -1211,6 +1216,9 @@ class AgentOSRouterClient(AgentServerClient):
         config: dict[str, Any],
         env: dict[str, str] | None = None,
     ) -> None:
+        if config:
+            import copy
+            self._server_config = copy.deepcopy(config)
         self._yuanrong.set_or_update_server_config(config=config, env=env)
 
     def set_server_push_handler(
@@ -2439,14 +2447,41 @@ class AgentOSRouterClient(AgentServerClient):
                 "cmds": [["sh", "-c", f"exec jiuwenswarm-agentserver --port {port}"]],
                 "probes": self._probe_settings.tcp_probes(port, with_liveness=True),
                 "cpu": int(os.environ.get("AGENTOS_BUILTIN_AGENT_CPU", "2000")),
-                "memory": int(os.environ.get("AGENTOS_BUILTIN_AGENT_MEMORY", "4096"))
+                "memory": int(os.environ.get("AGENTOS_BUILTIN_AGENT_MEMORY", "4096")),
             }
             # 不注入 AGENT_SERVER_HOST: 留空让沙箱内 agentserver 自行检测沙箱本地
             # 非 loopback IP(ISOLATED 模式 bind veth 地址,外部可达;见
             # app_agentserver._resolve_bind_host)。单机版默认仍 127.0.0.1。
             env_vars = {
                 USER_DIRECTORY_ENV_KEY: workspace,
+                "JIUWENSWARM_RUNTIME_PROFILE": "agentos",
             }
+            from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
+            import json
+
+            endpoints = load_cron_store_settings(self._server_config).endpoints
+            if endpoints:
+                env_vars["JIUWENBOX_ETCD_ENDPOINTS"] = ",".join(endpoints)
+            graph_config = self._server_config.get("code_graph")
+            if isinstance(graph_config, dict):
+                env_vars["JIUWENSWARM_AGENTOS_CODE_GRAPH_CONFIG"] = json.dumps(graph_config)
+            sandbox_config = self._server_config.get("sandbox")
+            if isinstance(sandbox_config, dict):
+                # Deployment defaults only: do not broadcast local host paths,
+                # file lists, credentials or YuanRong resource knobs to users.
+                deployment = _pick_keys(sandbox_config, (
+                    "type", "enabled", "startup_mode", "url", "template_name",
+                    "user", "group",
+                ))
+                conch = sandbox_config.get("conch")
+                if isinstance(conch, dict):
+                    deployment["conch"] = _pick_keys(conch, (
+                        "vcpu_num", "vcpu_max", "ram_mb", "network",
+                    ))
+                env_vars["JIUWENSWARM_AGENTOS_SANDBOX_CONFIG"] = json.dumps(deployment)
+                sdk_config = str(sandbox_config.get("conch_sdk_config") or "").strip()
+                if sdk_config:
+                    env_vars["CONCH_SDK_CONFIG"] = sdk_config
             # create 后 Gateway 通过 frontend WS 代理直连该端口（不走 invoke）。
             extra_metadata: dict[str, Any] = {"agent_port": port}
         else:

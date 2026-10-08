@@ -347,6 +347,19 @@ class WebChannel(BaseWsChannel):
 
         self._on_message_cb = wrapped
 
+    def _enqueue_send(self, ws: Any, data: Any) -> None:
+        # All unary, streamed and pushed frames converge here, after internal
+        # callbacks and busy-state tracking have consumed the canonical values.
+        from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
+
+        if is_agentos_routing_client(self.agent_client):
+            from jiuwenswarm.gateway.channel_manager.web.agentos_compat import (
+                project_agentos_web_frame,
+            )
+
+            data = project_agentos_web_frame(data)
+        super()._enqueue_send(ws, data)
+
     # ── 帧发送 API（公开给处理器使用）─────────────────────
 
     async def send_response(
@@ -434,11 +447,11 @@ class WebChannel(BaseWsChannel):
 
     @classmethod
     def _resolve_connection_user_id(cls, flat_query: dict[str, str], ws: Any) -> str | None:
-        authenticated_user_id = getattr(ws, "authenticated_user_id", None)
-        if authenticated_user_id is not None:
-            connection_user_id = str(authenticated_user_id).strip() or None
-        else:
-            connection_user_id = cls._extract_query_user_id(flat_query) or cls._extract_ws_header_user_id(ws)
+        # 会话身份以客户端声明为准（query user_id / X-User-Id 头，值为 username），
+        # 与 agent_os 稳定版一致。authenticated_user_id（IAM UUID）只作认证门禁，
+        # 不参与工作区/沙箱身份推导：现有部署的用户目录按 username 布局
+        # （/home/agentos/users/<username>），用 UUID 会导致建沙箱时目录校验失败。
+        connection_user_id = cls._extract_query_user_id(flat_query) or cls._extract_ws_header_user_id(ws)
         setattr(ws, _WEB_CONNECTION_USER_ID_ATTR, connection_user_id)
         return connection_user_id
 

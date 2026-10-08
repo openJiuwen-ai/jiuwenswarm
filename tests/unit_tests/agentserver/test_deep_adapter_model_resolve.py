@@ -63,3 +63,20 @@ def test_resolve_model_total_miss_falls_back_with_warning(monkeypatch):
     assert warning_msgs, "total miss must log a warning instead of silent fallback"
     assert "no-such-model" in warning_msgs[0]
     assert "my-default-model" in warning_msgs[0]
+
+
+def test_agentos_resolve_global_index_over_per_name_collision(monkeypatch):
+    """The compatibility alias must use develop's global map, not name#counter."""
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
+    adapter = _make_adapter()
+    default, backup, collision = object(), object(), object()
+    adapter._model_cache = {"shared#0": default, "shared#1": backup, "shared#2": collision,
+                            "backup-alias": backup}
+    adapter._global_index_to_cache_key = {1: "shared#0", 2: "shared#1", 3: "shared#2"}
+    assert adapter._resolve_model_by_name("shared#2") is backup
+    assert adapter._resolve_model_by_name("backup-alias") is backup
+    assert adapter._resolve_model_by_name("other#2") is adapter._model
+    assert adapter._resolve_model_by_name("shared#99") is adapter._model
+    monkeypatch.delenv("JIUWENSWARM_RUNTIME_PROFILE")
+    # Personal edition retains develop's existing indexed selection semantics.
+    assert adapter._resolve_model_by_name("other#2") is backup

@@ -493,7 +493,7 @@ _CODE_SECTION_GENERATORS = [
 # ─── Entry Point ──────────────────────────────────
 
 
-def build_code_system_prompt() -> str:
+def build_code_system_prompt(*, code_graph_profile: str = "off") -> str:
     """Build the complete code mode system prompt (English-only).
 
     Called once at agent creation time. Dynamic content (time, runtime state,
@@ -504,4 +504,11 @@ def build_code_system_prompt() -> str:
     for generator in _CODE_SECTION_GENERATORS:
         builder.add_section(generator())
 
-    return builder.build()
+    prompt = builder.build()
+    if code_graph_profile == "graph":
+        prompt += (
+            "\n\nCode Graph retrieval is enabled. Use the available graph tools to resolve "
+            "symbols and inspect focused source context before editing. If indexing is "
+            "unavailable or over its resource limits, use the available text search tools."
+        )
+    return prompt

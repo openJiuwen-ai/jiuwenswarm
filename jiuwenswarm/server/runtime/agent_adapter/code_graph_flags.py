@@ -1,0 +1,446 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+"""Code Graph configuration for the Code adapter.
+
+``code_graph.profile`` turns graph tools on: ``off`` is the original agent;
+``graph`` hangs focused retrieval tools (``focus_code``). ``code_graph.agent``
+selects who owns them: ``root`` or ``code_agent``. Plan and Explore never get
+graph tools. Retrieval interface is not a yaml knob.
+
+Product yaml writes ``agent: root``. An omitted or unknown ``agent`` key still
+resolves to ``code_agent`` so previous ContextBench runs stay comparable.
+Unknown ``profile`` spellings are ``off``.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+PROFILE_OFF = "off"
+PROFILE_GRAPH = "graph"
+VALID_PROFILES = (PROFILE_OFF, PROFILE_GRAPH)
+
+AGENT_ROOT = "root"
+AGENT_CODE = "code_agent"
+VALID_AGENTS = (AGENT_ROOT, AGENT_CODE)
+
+INTERFACE_CLASSIC = "classic"
+INTERFACE_FOCUSED = "focused"
+VALID_INTERFACES = (INTERFACE_CLASSIC, INTERFACE_FOCUSED)
+
+
+@dataclass(frozen=True)
+class CodeGraphFlags:
+    """Resolved Code Graph settings for one run."""
+
+    profile: str = PROFILE_OFF
+    agent: str = AGENT_CODE
+    retrieval_interface: str = INTERFACE_CLASSIC
+
+    @property
+    def enabled(self) -> bool:
+        return self.profile != PROFILE_OFF
+
+    @property
+    def on_root(self) -> bool:
+        return self.enabled and self.agent == AGENT_ROOT
+
+    @property
+    def on_code_agent(self) -> bool:
+        return self.enabled and self.agent == AGENT_CODE
+
+    @property
+    def uses_focused(self) -> bool:
+        """ACI observation. Ignored when the profile is off."""
+        return self.enabled and self.retrieval_interface == INTERFACE_FOCUSED
+
+    @property
+    def root_prompt_profile(self) -> str:
+        """Profile for the Root system prompt.
+
+        Teach find_* only when Root owns the graph. ``agent: code_agent``
+        leaves grep on Root; that prompt must stay off-style.
+        """
+        return self.profile if self.on_root else PROFILE_OFF
+
+
+def resolve_profile(value: Any, *, default: str = PROFILE_OFF) -> str:
+    """Accept ``off`` / ``graph`` only. Anything else falls back to ``default``."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return default
+    text = str(value).strip().lower()
+    if text in VALID_PROFILES:
+        return text
+    return default
+
+
+def resolve_agent(value: Any, *, default: str = AGENT_CODE) -> str:
+    """Accept ``root`` / ``code_agent``. Missing or unknown values use ``default``."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return default
+    text = str(value).strip().lower()
+    if text in VALID_AGENTS:
+        return text
+    return default
+
+
+def resolve_retrieval_interface(value: Any, *, default: str = INTERFACE_FOCUSED) -> str:
+    """Accept ``classic`` / ``focused``. Missing or unknown values use ``focused``."""
+    if value is None or isinstance(value, bool):
+        return default
+    text = str(value).strip().lower()
+    if text in VALID_INTERFACES:
+        return text
+    return default
+
+
+def effective_retrieval_interface(
+    *,
+    profile: str,
+    prompt_mode: str | None = None,
+    explicit: str | None = None,
+) -> str:
+    """In-memory interface for one run. Not a product yaml key.
+
+    ``off`` is classic. Locate exam defaults to classic so later A/B can
+    still pass ``classic`` or ``focused``. Every other graph run is focused.
+    """
+    if resolve_profile(profile) == PROFILE_OFF:
+        return INTERFACE_CLASSIC
+    if explicit is not None and str(explicit).strip() != "":
+        return resolve_retrieval_interface(explicit)
+    mode = (prompt_mode or "").strip().lower()
+    if mode == "locate":
+        return INTERFACE_CLASSIC
+    return INTERFACE_FOCUSED
+
+
+_MIB = 1024 * 1024
+_GIB = 1024 ** 3
+DEFAULT_MAX_SOURCE_BYTES = 40 * _MIB
+_SOURCE_VOLUME_UNITS = {
+    "b": 1,
+    "byte": 1,
+    "bytes": 1,
+    "k": 1024,
+    "kb": 1024,
+    "kib": 1024,
+    "m": _MIB,
+    "mb": _MIB,
+    "mib": _MIB,
+    "g": _GIB,
+    "gb": _GIB,
+    "gib": _GIB,
+}
+
+
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _cache_size_mb(value: Any, default: int | None) -> int | None:
+    """Keep ``0`` as a real cap. ``None`` falls back to ``default`` or 2048."""
+    fallback = 2048 if default is None else default
+    if value is None or value == "":
+        return fallback
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def parse_source_volume_to_bytes(value: Any, default: int = DEFAULT_MAX_SOURCE_BYTES) -> int:
+    """Panel ``40`` / yaml ``40MB`` / legacy ``41943040`` → engine bytes.
+
+    Bare integers below 1 MiB are megabytes (panel unit). Integers at or
+    above 1 MiB stay bytes so old yaml still works.
+    """
+    if isinstance(value, bool) or value is None:
+        return default
+    if isinstance(value, int):
+        if value >= _MIB:
+            return value
+        return max(1, value * _MIB)
+    if isinstance(value, float):
+        if value != value or value in {float("inf"), float("-inf")}:
+            return default
+        if value >= _MIB:
+            return max(1, int(value))
+        return max(1, int(value * _MIB))
+    text = str(value).strip().replace(",", "").replace(" ", "")
+    if not text:
+        return default
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([a-zA-Z]+)?", text)
+    if not match:
+        return default
+    amount = float(match.group(1))
+    if amount != amount or amount in {float("inf"), float("-inf")}:
+        return default
+    unit = (match.group(2) or "").lower()
+    if unit:
+        factor = _SOURCE_VOLUME_UNITS.get(unit)
+        if factor is None:
+            return default
+        return max(1, int(amount * factor))
+    if "." not in match.group(1) and amount >= _MIB:
+        return max(1, int(amount))
+    return max(1, int(amount * _MIB))
+
+
+def format_source_volume_for_panel(n_bytes: int) -> str:
+    """Show yaml bytes as MB. ``41943040`` / ``40MB`` → ``40``."""
+    if n_bytes <= 0:
+        return "0"
+    mb = n_bytes / _MIB
+    rounded = round(mb)
+    if abs(mb - rounded) < 1e-9:
+        return str(int(rounded))
+    text = f"{mb:.4f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def format_source_volume_for_yaml(n_bytes: int) -> str:
+    """Write the same unit the panel uses. ``41943040`` → ``40MB``."""
+    if n_bytes <= 0:
+        return "0MB"
+    if n_bytes % _GIB == 0:
+        return f"{n_bytes // _GIB}GB"
+    mb = n_bytes / _MIB
+    if abs(mb - round(mb)) < 1e-9:
+        return f"{int(round(mb))}MB"
+    text = f"{mb:.4f}".rstrip("0").rstrip(".")
+    return f"{text}MB"
+
+
+def product_code_graph_config(config_base: dict[str, Any] | None) -> Any:
+    """Live yaml caps for ``/status`` and manager lookups. Cache path is not needed."""
+    from openjiuwen.core.retrieval.code_graph.models import CodeGraphConfig
+
+    raw = (config_base or {}).get("code_graph") if isinstance(config_base, dict) else None
+    if not isinstance(raw, dict):
+        raw = {}
+    defaults = CodeGraphConfig()
+    return CodeGraphConfig(
+        cache_dir=None,
+        max_files=_as_int(raw.get("max_files"), defaults.max_files),
+        max_source_bytes=parse_source_volume_to_bytes(
+            raw.get("max_source_bytes"), defaults.max_source_bytes
+        ),
+        max_build_rss_mb=_as_int(raw.get("max_build_rss_mb"), defaults.max_build_rss_mb),
+        max_cache_size_mb=_cache_size_mb(raw.get("max_cache_size_mb"), defaults.max_cache_size_mb),
+    )
+
+
+def resolve_code_graph_flags(config_base: dict[str, Any] | None) -> CodeGraphFlags:
+    raw = (config_base or {}).get("code_graph") if isinstance(config_base, dict) else None
+    if not isinstance(raw, dict):
+        return CodeGraphFlags()
+    profile = resolve_profile(raw.get("profile"))
+    return CodeGraphFlags(
+        profile=profile,
+        agent=resolve_agent(raw.get("agent")),
+        retrieval_interface=(
+            INTERFACE_CLASSIC if profile == PROFILE_OFF else INTERFACE_FOCUSED
+        ),
+    )
+
+
+_MB_LIMIT_MESSAGE = re.compile(
+    r"(max_(?:build_rss|cache_size)_mb) is (\d+), cap is (\d+)",
+    re.IGNORECASE,
+)
+
+
+def _bytes_as_mb_label(value: int) -> str:
+    megabytes = value / _MIB
+    if abs(megabytes - round(megabytes)) < 1e-6:
+        return str(int(round(megabytes)))
+    return f"{megabytes:.1f}"
+
+
+def rewrite_code_graph_limit_message(message: object) -> str:
+    """Show RSS/disk caps in MB. The engine fills ``*_mb`` fields with bytes."""
+    text = str(message or "")
+
+    def _replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        observed = int(match.group(2))
+        cap = int(match.group(3))
+        if observed < _MIB and cap < _MIB:
+            return match.group(0)
+        return f"{name} is {_bytes_as_mb_label(observed)}, cap is {_bytes_as_mb_label(cap)}"
+
+    return _MB_LIMIT_MESSAGE.sub(_replace, text)
+
+
+def admit_code_graph_workspace(workspace: str, config: Any) -> Any | None:
+    """Return the engine limit error if the live tree is already over cap.
+
+    Used by ``/status`` so adding files past ``max_files`` / ``max_source_bytes``
+    reports ``unavailable`` without waiting for a ``find_*`` call. ``None``
+    means under cap or the walk failed; callers keep the manager's state.
+    """
+    root = str(workspace or "").strip()
+    if not root or config is None:
+        return None
+    try:
+        from openjiuwen.core.retrieval.code_graph.errors import CodeGraphLimitExceeded
+        from openjiuwen.core.retrieval.code_graph.indexing import builder as graph_builder
+    except Exception:  # noqa: BLE001 — status / session create must still return
+        return None
+    # Same walk ``build_index`` uses. Prefer a public name if the engine adds one.
+    admit = getattr(graph_builder, "admit_source_files", None) or getattr(
+        graph_builder, "_admit_source_files", None
+    )
+    iterate = getattr(graph_builder, "iter_source_files", None) or getattr(
+        graph_builder, "_iter_source_files", None
+    )
+    if not callable(admit) or not callable(iterate):
+        return None
+    try:
+        admit(list(iterate(Path(root), config)), config)
+    except CodeGraphLimitExceeded as exc:
+        return exc
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def enable_code_agent_subagent(config: dict[str, Any]) -> None:
+    """Turn on ``react.subagents.code_agent`` in place.
+
+    Graph hang on ``code_agent`` needs that sub-agent present. Product yaml
+    leaves it ``enabled: false`` so Root hang does not also open it.
+    """
+    react = config.get("react")
+    if not isinstance(react, dict):
+        react = {}
+        config["react"] = react
+    subagents = react.get("subagents")
+    if not isinstance(subagents, dict):
+        subagents = {}
+        react["subagents"] = subagents
+    code_agent_cfg = subagents.get("code_agent")
+    if not isinstance(code_agent_cfg, dict):
+        code_agent_cfg = {}
+        subagents["code_agent"] = code_agent_cfg
+    code_agent_cfg["enabled"] = True
+
+
+def apply_code_graph_profile(
+    config_base: dict[str, Any],
+    profile: str,
+    retrieval_interface: str | None = None,
+) -> dict[str, Any]:
+    """Eval overlay: set ``code_graph.profile`` and keep ``code_agent`` on.
+
+    Does not rewrite ``code_graph.agent``. Eval hang is ``--graph-agent``.
+    Extra keys in a live config stay in yaml; flags only read ``profile`` and
+    ``agent``. ``retrieval_interface`` is not written: it is not a product
+    switch. Eval resolves it in memory.
+    """
+    from copy import deepcopy
+
+    del retrieval_interface
+    cfg = deepcopy(config_base)
+    graph = dict(cfg.get("code_graph") or {})
+    graph["profile"] = resolve_profile(profile)
+    graph.pop("retrieval_interface", None)
+    cfg["code_graph"] = graph
+    react = dict(cfg.get("react") or {})
+    subagents = dict(react.get("subagents") or {})
+    code_agent_cfg = dict(subagents.get("code_agent") or {})
+    code_agent_cfg["enabled"] = True
+    subagents["code_agent"] = code_agent_cfg
+    react["subagents"] = subagents
+    cfg["react"] = react
+    return cfg
+
+
+# TUI and Web config panels share these yaml keys. Keep the mapping here so
+# the two channels do not import each other.
+CODE_GRAPH_PANEL_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
+    "code_graph_profile": (("profile",), "code_graph_profile", PROFILE_OFF),
+    "code_graph_agent": (("agent",), "code_graph_agent", AGENT_ROOT),
+    "code_graph_max_files": (("max_files",), "int", 5000),
+    "code_graph_max_source_bytes": (
+        ("max_source_bytes",),
+        "code_graph_source_volume",
+        DEFAULT_MAX_SOURCE_BYTES,
+    ),
+    "code_graph_max_build_rss_mb": (("max_build_rss_mb",), "int", 4096),
+    "code_graph_max_cache_size_mb": (("max_cache_size_mb",), "int", 2048),
+}
+CODE_GRAPH_PANEL_KEYS = tuple(CODE_GRAPH_PANEL_SPECS.keys())
+
+
+def _panel_section_value(section: dict[str, Any], path: tuple[str, ...], default: Any) -> Any:
+    current: Any = section
+    for key in path:
+        if not isinstance(current, dict):
+            return default
+        current = current.get(key, default)
+    return current
+
+
+def _panel_set_value(target: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
+    current = target
+    for key in path[:-1]:
+        nxt = current.get(key)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            current[key] = nxt
+        current = nxt
+    current[path[-1]] = value
+
+
+def _coerce_code_graph_panel_value(value: Any, value_type: str, default: Any) -> Any:
+    if value_type == "int":
+        try:
+            return max(1, int(value))
+        except (TypeError, ValueError):
+            return default
+    if value_type == "code_graph_profile":
+        text = str(value if value is not None else default).strip().lower()
+        return text if text in VALID_PROFILES else default
+    if value_type == "code_graph_agent":
+        text = str(value if value is not None else default).strip().lower()
+        return text if text in VALID_AGENTS else default
+    if value_type == "code_graph_source_volume":
+        return parse_source_volume_to_bytes(value, default)
+    return str(value if value is not None else default)
+
+
+def flatten_code_graph_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
+    section = raw.get("code_graph") if isinstance(raw.get("code_graph"), dict) else {}
+    flat: dict[str, str] = {}
+    for key, (path, value_type, default) in CODE_GRAPH_PANEL_SPECS.items():
+        value = _panel_section_value(section, path, default)
+        if value_type == "code_graph_source_volume":
+            flat[key] = format_source_volume_for_panel(
+                parse_source_volume_to_bytes(value, default)
+            )
+            continue
+        flat[key] = str(_coerce_code_graph_panel_value(value, value_type, default))
+    return flat
+
+
+def build_code_graph_config_update(params: dict[str, Any]) -> dict[str, Any]:
+    updates: dict[str, Any] = {}
+    for key, (path, value_type, default) in CODE_GRAPH_PANEL_SPECS.items():
+        if key not in params:
+            continue
+        value = _coerce_code_graph_panel_value(params[key], value_type, default)
+        if value_type == "code_graph_source_volume":
+            value = format_source_volume_for_yaml(value)
+        _panel_set_value(updates, path, value)
+    return updates

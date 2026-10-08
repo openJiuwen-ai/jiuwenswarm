@@ -13,6 +13,7 @@ from typing import Any
 
 from openjiuwen.agent_teams.paths import get_agent_teams_home
 
+from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.auth.login_credentials import bare_model_name
 from jiuwenswarm.common.config import get_config, get_default_models
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
@@ -226,13 +227,25 @@ def _select_default_model_config(
     login_model_entry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     requested = (requested_model_name or "").strip()
+    agentos = is_agentos_runtime()
     if requested:
+        # Port agent_os b8273f093's selector over develop's normalized entries.
+        # Keep their positions: models.list and the single-agent cache use the
+        # same defaults+agentos global origin_index, including placeholders.
+        if agentos and "#" in requested:
+            bare_name, _, index_part = requested.rpartition("#")
+            if bare_name and index_part.isdigit():
+                origin_index = int(index_part)
+                if 0 <= origin_index < len(configured_entries):
+                    entry = configured_entries[origin_index]
+                    if _entry_model_name(entry) == bare_name:
+                        return entry
         # When the caller (chat page) provides a requested model name, prefer
         # the entry whose ``model_client_config.model_name`` matches it so
         # team members without an explicit ``modes.team.agents.*.model`` fall
         # back to the page-selected model instead of the first list item.
         for item in configured_entries:
-            if _entry_model_name(item) == requested:
+            if _entry_model_name(item) == requested or (agentos and item.get("alias") == requested):
                 return item
 
         # Login-granted models are request-scoped and never written into
@@ -251,6 +264,13 @@ def _select_default_model_config(
             if _entry_model_name(item) == requested:
                 return item
 
+        if agentos:
+            logger.warning("[TeamConfigLoader] requested model %r not found; using configured fallback", requested)
+
+    if agentos:
+        # agent_os 5cc86e59b: an unresolved placeholder must not shadow a usable
+        # backup. Skip it only for fallback, without shifting origin_index.
+        return next((entry for entry in configured_entries if _entry_model_name(entry)), {})
     if configured_entries:
         return configured_entries[0]
 
