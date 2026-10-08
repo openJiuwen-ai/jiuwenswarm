@@ -1,6 +1,7 @@
 """Offline configuration diagnostics must never disclose secret values."""
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -56,3 +57,36 @@ def test_missing_placeholder_and_interpolation_are_reported(tmp_path, helper):
     result = helper.check(path)
     assert not result["valid"]
     assert len(result["errors"]) == 3
+
+
+@pytest.mark.parametrize("error", [
+    OSError("secret-marker"),
+    ValueError("secret-marker"),
+    UnicodeDecodeError("utf-8", b"\xff", 0, 1, "secret-marker"),
+])
+def test_read_errors_emit_one_redacted_json_result(helper, monkeypatch, capsys, error):
+    def fail(path):
+        raise error
+
+    monkeypatch.setattr(helper, "check", fail)
+    assert helper.main(["--dotenv", "unused.env"]) == 2
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "valid": False, "errors": ["file cannot be read as UTF-8 dotenv"]
+    }
+    assert captured.out.count("\n") == 1
+    assert "secret-marker" not in captured.out
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("configured", [True, False])
+def test_cli_json_protocol_and_exit_status(tmp_path, helper, capsys, configured):
+    path = tmp_path / ".env"
+    content = "API_BASE=https://example.com/v1\nAPI_KEY=secret-marker\nMODEL_NAME=test\n" if configured else ""
+    path.write_text(content, encoding="utf-8")
+    assert helper.main(["--dotenv", str(path)]) == (0 if configured else 1)
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["valid"] is configured
+    assert captured.out.count("\n") == 1
+    assert "secret-marker" not in captured.out
+    assert captured.err == ""

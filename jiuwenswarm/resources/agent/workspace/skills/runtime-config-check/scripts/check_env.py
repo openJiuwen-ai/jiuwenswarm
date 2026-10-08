@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -43,17 +44,23 @@ def check(path: Path) -> dict:
     return {"valid": not errors, "utf8_bom": raw.startswith(b"\xef\xbb\xbf"), "errors": errors}
 
 
+def _write_result(result: dict) -> None:
+    """Emit one JSON protocol result, not a diagnostic log message."""
+    json.dump(result, sys.stdout, ensure_ascii=False)
+    sys.stdout.write("\n")
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dotenv", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
         result = check(args.dotenv)
-    except (OSError, UnicodeError, ValueError):
+    except (OSError, ValueError):
         # Exception text may contain the path or file contents. Do not echo it.
-        print(json.dumps({"valid": False, "errors": ["file cannot be read as UTF-8 dotenv"]}))
+        _write_result({"valid": False, "errors": ["file cannot be read as UTF-8 dotenv"]})
         return 2
-    print(json.dumps(result, ensure_ascii=False))
+    _write_result(result)
     return 0 if result["valid"] else 1
 
 
