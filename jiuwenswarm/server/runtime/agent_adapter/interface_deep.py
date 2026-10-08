@@ -12937,6 +12937,7 @@ class JiuWenSwarmDeepAdapter:
             self._runtime_prompt_rail.set_runtime_paths(
                 cwd=task_cwd,
                 project_dir=runtime_config.project_dir or self._project_dir,
+                workspace_dir=self._workspace_dir,
             )
             self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
             self._runtime_prompt_rail.set_mode(runtime_config.mode)
