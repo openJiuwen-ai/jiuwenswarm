@@ -397,6 +397,60 @@ def test_switch_branch_allows_untracked_files_when_clean_is_required(monkeypatch
     assert ["checkout", "feature"] in calls
 
 
+def test_switch_branch_reports_untracked_checkout_collision(monkeypatch, tmp_path):
+    """目标分支会覆盖未跟踪文件时，应给出可执行的处理提示。"""
+    from jiuwenswarm.server.runtime.session import project_git
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = Project(
+        project_id="proj_test",
+        name="test",
+        project_dir=str(project_dir),
+        work_mode="code",
+    )
+
+    def fake_run_git(args, *, cwd, timeout=project_git.GIT_COMMAND_TIMEOUT_SEC):
+        if args == ["check-ref-format", "--branch", "feature"]:
+            return _cp(["git", *args], 0, stdout="feature\n")
+        if args == ["show-ref", "--verify", "refs/heads/feature"]:
+            return _cp(["git", *args], 0)
+        if args == ["checkout", "feature"]:
+            return _cp(
+                ["git", *args],
+                1,
+                stderr=(
+                    "error: The following untracked working tree files would be "
+                    "overwritten by checkout:\n    conflict.txt\n"
+                ),
+            )
+        return _cp(["git", *args], 0)
+
+    pre_status = project_git.GitRepoStatus(
+        is_git=True,
+        repo_root=str(project_dir),
+        branch="main",
+        is_dirty=True,
+        untracked=1,
+        local_branches=["feature", "main"],
+    )
+    monkeypatch.setattr(project_git, "_run_git", fake_run_git)
+    monkeypatch.setattr(
+        project_git,
+        "_git_to_repo_status",
+        lambda project, *, persist=False: pre_status,
+    )
+
+    result = project_git.ProjectGitService.switch_branch(
+        project, "feature", require_clean=True,
+    )
+
+    assert result.success is False
+    assert result.error is not None
+    assert "未跟踪文件" in result.error.message
+    assert "git stash -u" in result.error.hint
+
+
 @pytest.mark.parametrize("tracked_state", ["staged", "unstaged", "conflicted"])
 def test_switch_branch_still_rejects_tracked_changes_when_clean_is_required(
     monkeypatch,

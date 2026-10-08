@@ -1285,6 +1285,9 @@ class ProjectGitService:
             elif held:
                 msg = "分支被其他 worktree 占用"
                 hint = "请先解散占用该分支的团队,或手动处理对应 worktree 后重试"
+            elif "untracked working tree files would be overwritten" in cp_co.stderr:
+                msg = "切换分支失败:未跟踪文件会被目标分支覆盖"
+                hint = "请移走冲突的未跟踪文件,或执行 git stash -u 后重试"
             elif "would be overwritten" in cp_co.stderr:
                 msg = "切换分支失败:本地改动阻止切换"
                 hint = "请先提交或 stash 改动后重试"

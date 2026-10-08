@@ -5379,7 +5379,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _project_git_switch_branch(ws, req_id, params, session_id):
         """切换 Git 分支(设计文档 §4.1.14)。
 
-        ``require_clean=true`` 时工作区不干净返回 ``WORKTREE_DIRTY``。成功后
+        ``require_clean=true`` 时已跟踪文件存在未提交修改返回
+        ``WORKTREE_DIRTY``；未跟踪文件不阻止切换。成功后
         调 ``mark_dirty`` 触发 /ws/git 立即重算。中间状态返回
         ``GIT_TRANSIENT_STATE``。
         """

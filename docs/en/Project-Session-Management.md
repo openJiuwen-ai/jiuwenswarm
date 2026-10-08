@@ -400,7 +400,7 @@ Runs `git init`, refreshes the project snapshot, and wakes Diff watchers.
 
 ### project.git.switch_branch - Switch branch
 
-Switches to an existing local branch. `require_clean=true` rejects dirty worktrees.
+Switches to an existing local branch. `require_clean=true` rejects worktrees with uncommitted changes to tracked files; untracked files do not block the switch.
 
 **Request params:** `project_id`, `branch`, optional `require_clean`.
 
