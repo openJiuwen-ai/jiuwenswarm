@@ -1581,7 +1581,8 @@
       "every": "Every",
       "everyHoursPlaceholder": "Hours",
       "everyMinutesPlaceholder": "Minutes",
-      "integerOnlyHint": "Interval must be an integer of at least 1",
+      "integerOnlyHint": "Interval must be an integer from 1 to {{max}}",
+      "intervalRangeHint": "Interval must be an integer from 1 to {{max}}",
       "hoursUnit": "hours",
       "minutesUnit": "minutes",
       "intervalUnit": {
@@ -1627,7 +1628,8 @@
       },
       "wakeOffset": "Wake early",
       "wakeOffsetUnit": "minutes",
-      "wakeOffsetHelp": "Start the agent this many minutes before the scheduled push time; 0 means run at the scheduled time"
+      "wakeOffsetHelp": "Start the agent this many minutes before the scheduled push time; 0 means run at the scheduled time",
+      "wakeOffsetRangeHint": "Wake early must be an integer from 0 to {{max}} minutes"
     },
     "modelPicker": {
       "configured": "Configured",
