@@ -37,7 +37,7 @@ where = ["src"]
 include = ["jiuwenbox*"]
 
 [tool.setuptools.package-data]
-jiuwenbox = ["configs/*.yaml"]
+jiuwenbox = ["configs/*.yaml", "native/*.dll"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -3325,18 +3325,31 @@ class ProcessRuntime(RuntimeAdapter):
         # CloseHandle 写端 → resume thread 全流程, 返回 (pid, process_handle).
         import secrets as _secrets
         control_token = _secrets.token_urlsafe(32)
-        _t_spawn0 = time.perf_counter()
-        runner_pid, proc_handle = win_exec.two_hop_spawn_and_authorize(
-            sandbox_id,
-            sandbox_user=user,
-            sandbox_password=password,
-            workspace=workspace,
-            proxy_port_start=proxy_start,
-            proxy_port_end=proxy_end,
-            control_port=control_port,
-            env=env,
-            control_token=control_token,
+        # 沙箱删除交给本进程 (登录用户) 回收. 回收失败时 DLL 拒绝删除, 不在
+        # jbx-sandbox 里调用回收站, 也不把用户令牌交给沙箱.
+        from jiuwenbox.supervisor.win_recycle_broker import (
+            detach_runner_recycle,
+            prepare_runner_recycle,
         )
+        recycle_token = prepare_runner_recycle(
+            env, [workspace, *(allow_write_paths or [])],
+        )
+        _t_spawn0 = time.perf_counter()
+        try:
+            runner_pid, proc_handle = win_exec.two_hop_spawn_and_authorize(
+                sandbox_id,
+                sandbox_user=user,
+                sandbox_password=password,
+                workspace=workspace,
+                proxy_port_start=proxy_start,
+                proxy_port_end=proxy_end,
+                control_port=control_port,
+                env=env,
+                control_token=control_token,
+            )
+        except Exception:  # noqa: BLE001
+            detach_runner_recycle(recycle_token)
+            raise
         logger.info(
             "[SandboxWin] %s runner spawned (two-hop): pid=%s, workspace=%s, "
             "proxy_port=%s-%s, control_port=%s, token_via=pipe, state=RUNNING, "
@@ -3350,6 +3363,7 @@ class ProcessRuntime(RuntimeAdapter):
             "control_token": control_token,  # P0-6 鉴权 token
             "process_handle": proc_handle,
             "workspace": workspace,
+            "recycle_token": recycle_token,
         }
 
         # 3. Job Object 资源限制 (memory/cpu/进程数) 当前禁用: 跨用户 OpenProcess 拿不到
@@ -3444,6 +3458,8 @@ class ProcessRuntime(RuntimeAdapter):
 
         runner = self._win_runners.pop(sandbox_id, None)
         if runner is not None:
+            from jiuwenbox.supervisor.win_recycle_broker import detach_runner_recycle
+            detach_runner_recycle(runner.get("recycle_token"))
             # 1. 发 shutdown 让 runner 优雅退出 (它内部会停掉所有受限 token child).
             await self._send_runner_shutdown(sandbox_id, runner)
             # 1.5 join 日志读取线程: runner 收 shutdown 退出前会 push 最后一帧
