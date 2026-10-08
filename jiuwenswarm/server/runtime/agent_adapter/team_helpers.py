@@ -686,6 +686,10 @@ async def _prepare_first_team_request(
             error_chunks=error_chunks,
         )
 
+    if isinstance(query, dict) and query.get("type") == "group_chat":
+        return _FirstTeamRequestPreparation(
+            recovered_runtime=False, query=query, hide_dm=False, debug=False, error_chunks=None,
+        )
     query, hide_dm, debug = _extract_query_directives(str(query or ""))
     if hide_dm or debug:
         logger.info(
@@ -1156,6 +1160,43 @@ def _is_member_addressed(text: str) -> bool:
     return bool(payloads) and any(not isinstance(p, GodViewMessage) for p in payloads)
 
 
+def _group_chat_input(request: Any, text: Any) -> dict | None:
+    """Convert explicit public input; mention objects carry their core member identity."""
+    params = getattr(request, "params", None) or {}
+    raw = params.get("query")
+    if not isinstance(raw, dict) or raw.get("type") != "group_chat":
+        if params.get("type") != "group_chat":
+            return None
+        raw = params
+    mentions = raw.get("mentions", [])
+    if not isinstance(mentions, list):
+        raise ValueError("Group mentions must be an array")
+    targets = []
+    for mention in mentions:
+        if isinstance(mention, dict):
+            # An expert team is represented by its leader in the outer team.
+            mention = mention.get("leader_member_name") or mention.get("member_name")
+        if not isinstance(mention, str) or not mention.strip():
+            raise ValueError("Each group mention requires a core member name")
+        targets.append(mention)
+    payload = {
+        "type": "group_chat", "body": raw.get("body", text),
+        "client_message_id": raw.get("client_message_id") or request.request_id,
+        "mentions": list(dict.fromkeys(targets)), "attachments": raw.get("attachments", []),
+    }
+    if not isinstance(payload["body"], str):
+        raise ValueError("Group body must be a string")
+    identity = payload["client_message_id"]
+    if not isinstance(identity, str) or not identity.strip():
+        raise ValueError("Group chat requires client_message_id")
+    attachments = payload["attachments"]
+    if not isinstance(attachments, list):
+        raise ValueError("Group attachments must be an array")
+    if any(not isinstance(item, dict) for item in attachments):
+        raise ValueError("Group attachments must contain JSON objects")
+    return payload
+
+
 def _deliverable(turn: UserTurn, text: Any) -> Any:
     """Render ``text`` into the payload delivered to the team runtime.
 
@@ -1178,6 +1219,8 @@ def _deliverable(turn: UserTurn, text: Any) -> Any:
         The rendered envelope for team-wide input, or ``text`` unchanged when
         the team message system owns delivery.
     """
+    if isinstance(text, dict) and text.get("type") == "group_chat":
+        return text
     if not isinstance(text, str):
         return turn.with_text(text).render()
     if _is_member_addressed(text):
@@ -2324,6 +2367,16 @@ async def _process_team_message_stream(
     # the leader receives exactly the envelope a single agent would.
     turn = _resolve_user_turn(inputs, channel_id=channel_id, language=language)
     query = turn.text
+    try:
+        group_input = _group_chat_input(request, query)
+    except ValueError as exc:
+        yield AgentResponseChunk(
+            request_id=rid, channel_id=channel_id,
+            payload={"event_type": "chat.error", "error": str(exc)}, is_complete=True,
+        )
+        return
+    if group_input is not None:
+        query = group_input
     query_text = query if isinstance(query, str) else ""
     try:
         from jiuwenswarm.agents.harness.team.remote_member_bootstrap import (
@@ -2388,6 +2441,8 @@ async def _process_team_message_stream(
 
     async def _begin_team_round() -> None:
         nonlocal cron_user_admitted, user_admitted
+        if group_input is not None and not group_input["mentions"]:
+            return
         if not is_bounded_round:
             if admission is not None:
                 begin_team_user = getattr(
@@ -2899,6 +2954,20 @@ async def _process_team_message_stream(
 
             if not is_first_request:
                 await startup.aclose()
+                if group_input is not None and success:
+                    yield AgentResponseChunk(
+                        request_id=rid, channel_id=channel_id,
+                        payload={"event_type": "team.group_message.accepted",
+                                 "client_message_id": group_input["client_message_id"]},
+                        is_complete=False,
+                    )
+                    if not group_input["mentions"]:
+                        await team_manager.release_round(session_id, rid)
+                        yield _team_processing_done_chunk(rid, channel_id, session_id)
+                        yield AgentResponseChunk(
+                            request_id=rid, channel_id=channel_id, payload=None, is_complete=True,
+                        )
+                        return
                 if is_bounded_round and request_queue is not None:
                     logger.info(
                         "[TeamHelpers] automated follow-up team request waits for round: "
@@ -3055,6 +3124,17 @@ async def _process_team_message_stream(
                             metadata=_metadata,
                             is_complete=False,
                         )
+                        if group_input is not None and not group_input["mentions"]:
+                            if isinstance(event, dict) and event.get("event_type") == "team.group_message.accepted":
+                                identity = event.get("client_message_id") or event.get("message", {}).get(
+                                    "client_message_id",
+                                )
+                                if identity == group_input["client_message_id"]:
+                                    yield _team_processing_done_chunk(rid, channel_id, session_id)
+                                    yield AgentResponseChunk(
+                                        request_id=rid, channel_id=channel_id, payload=None, is_complete=True,
+                                    )
+                                    return
                         if isinstance(event, dict) and event.get("event_type") == "team.error":
                             break
                     except asyncio.TimeoutError:

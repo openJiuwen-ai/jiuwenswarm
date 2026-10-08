@@ -44,6 +44,93 @@ def test_team_event_queue_is_bounded() -> None:
     assert queue.maxsize > 0
 
 
+def test_group_input_maps_expert_team_to_outer_leader_and_preserves_identity():
+    request = SimpleNamespace(request_id="req-1", params={
+        "type": "group_chat", "client_message_id": "stable-1", "body": "请分析",
+        "mentions": ["alice", {"member_name": "bob"},
+                     {"leader_member_name": "research_proxy"}, "alice"],
+        "attachments": [{"path": "/workspace/report.txt"}],
+    })
+    payload = team_helpers._group_chat_input(request, "other")
+    assert payload == {
+        "type": "group_chat", "client_message_id": "stable-1", "body": "请分析",
+        "mentions": ["alice", "bob", "research_proxy"],
+        "attachments": [{"path": "/workspace/report.txt"}],
+    }
+    from jiuwenswarm.server.runtime.agent_adapter.user_turn import UserTurn
+
+    turn = UserTurn(text="other", channel="web", language="zh", files={})
+    assert team_helpers._deliverable(turn, payload) is payload
+    request.params = {"query": {"type": "group_chat", "body": "public"}}
+    assert team_helpers._group_chat_input(request, "other")["client_message_id"] == "req-1"
+    request.params = {"query": "normal", "mentions": ["alice"]}
+    assert team_helpers._group_chat_input(request, "normal") is None
+    request.params = {"type": "group_chat", "mentions": [{"display_name": "专家"}]}
+    with pytest.raises(ValueError, match="core member name"):
+        team_helpers._group_chat_input(request, "text")
+
+
+@pytest.mark.parametrize("fields,error", [
+    ({"body": 123}, "body must be a string"),
+    ({"client_message_id": " "}, "requires client_message_id"),
+    ({"attachments": {}}, "attachments must be an array"),
+    ({"attachments": ["file.txt"]}, "attachments must contain JSON objects"),
+])
+def test_group_input_validates_without_core_payload_type(fields, error):
+    request = SimpleNamespace(request_id="req-1", params={"type": "group_chat", **fields})
+    with pytest.raises(ValueError, match=error):
+        team_helpers._group_chat_input(request, "text")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("active,mentions", [(False, []), (True, []), (True, ["alice"])])
+async def test_group_request_routes_without_prompt_and_finishes_public_ack(monkeypatch, active, mentions):
+    started = active
+    class Manager(_InactiveTeamRuntimeManagerMixin):
+        def has_stream_task(self, session_id):
+            return started
+
+        def is_runtime_active(self, session_id):
+            return active
+
+    manager = Manager()
+    manager.get_swarm_enriched_team_spec = AsyncMock(
+        return_value=SimpleNamespace(team_name="unit-team", enable_swarmflow=False),
+    )
+    manager.interact = AsyncMock(return_value=(True, None))
+    queue = asyncio.Queue()
+    queue.put_nowait({"event_type": "team.group_message.accepted", "client_message_id": "req-group"})
+    async def start_stream(**kwargs):
+        nonlocal started
+        started = True
+        return queue
+    start = AsyncMock(side_effect=start_stream)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _: manager)
+    monkeypatch.setattr(team_helpers, "_start_team_stream_round", start)
+    monkeypatch.setattr(team_helpers, "get_session_metadata", lambda *args, **kwargs: {})
+    monkeypatch.setattr(team_helpers, "update_session_metadata", Mock())
+    monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", Mock())
+    monkeypatch.setattr(team_helpers, "_handle_team_slash_command", AsyncMock(return_value=None))
+    request = SimpleNamespace(
+        session_id="session-group", request_id="req-group", channel_id="web", metadata=None,
+        params={"mode": "team", "type": "group_chat", "mentions": mentions},
+    )
+    chunks = [chunk async for chunk in team_helpers.process_team_message_stream(
+        request, {"query": "讨论"}, object(),
+    )]
+    payload = (manager.interact.await_args.args[1] if active else start.await_args.kwargs["query"])
+    assert payload == {
+        "type": "group_chat", "body": "讨论", "client_message_id": "req-group",
+        "mentions": mentions, "attachments": [],
+    }
+    assert chunks[-1].is_complete
+    assert any(chunk.payload and chunk.payload.get("event_type") == "team.group_message.accepted"
+               for chunk in chunks)
+    if not mentions:
+        assert any(chunk.payload and chunk.payload.get("event_type") == "chat.processing_status"
+                   and chunk.payload["is_complete"] for chunk in chunks)
+
+
 def test_agent_group_selection_inherits_session_binding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
