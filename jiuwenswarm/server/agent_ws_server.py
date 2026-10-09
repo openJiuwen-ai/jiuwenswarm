@@ -14,12 +14,14 @@ import shutil
 import sys
 from contextlib import aclosing
 from pathlib import Path
-from typing import Any, ClassVar, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 from weakref import WeakValueDictionary
 
 from openjiuwen.core.common.logging import server_logger
 
-from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService, reset_harness_packages_state
+if TYPE_CHECKING:
+    from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService
+
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools.device_command_manager import (
     get_device_command_manager,
 )
@@ -1260,6 +1262,12 @@ def _inject_plan_mode_activation_reminder(request: AgentRequest) -> None:
         )
 
 
+def _new_auto_harness_service(*args: Any, **kwargs: Any) -> AutoHarnessService:
+    """第一次用到 AutoHarness 时再导入（openjiuwen.rsi 不挡 ready）。"""
+    from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService as Service
+    return Service(*args, **kwargs)
+
+
 class AgentWebSocketServer:
     """Gateway 与 AgentServer 之间的 WebSocket 服务端（单例）.
 
@@ -1421,7 +1429,9 @@ class AgentWebSocketServer:
             logger.warning("[AgentWebSocketServer] 服务端已在运行")
             return
 
-        # Reset harness package state to native on service startup
+        # Reset harness package state to native on service startup.
+        # 延后到这里再导入，避免加载本模块时拉起 auto_harness。
+        from jiuwenswarm.agents.harness.common.auto_harness import reset_harness_packages_state
         reset_harness_packages_state()
 
         if listen_tcp:
@@ -9845,7 +9855,7 @@ class AgentWebSocketServer:
     ) -> None:
         """Handle harness.packages.get request - retrieve packages info."""
         try:
-            service = AutoHarnessService(rail=None, agent=None)
+            service = _new_auto_harness_service(rail=None, agent=None)
             payload = await asyncio.to_thread(service.get_packages_info)
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -9871,7 +9881,7 @@ class AgentWebSocketServer:
     ) -> None:
         """Handle harness.packages.scan request - scan runtime extensions."""
         try:
-            service = AutoHarnessService(rail=None, agent=None)
+            service = _new_auto_harness_service(rail=None, agent=None)
             payload = await asyncio.to_thread(service.scan_runtime_extensions)
             await asyncio.to_thread(service.save_packages, payload)
             resp = AgentResponse(
@@ -9932,7 +9942,7 @@ class AgentWebSocketServer:
                     hasattr(agent_instance, "load_harness_config") if agent_instance else False,
                 )
 
-            service = AutoHarnessService(
+            service = _new_auto_harness_service(
                 rail=None,
                 agent=agent_instance,
                 agent_manager=self._agent_manager,
@@ -9999,7 +10009,7 @@ class AgentWebSocketServer:
             if agent is not None:
                 agent_instance = await agent.ensure_instance()
 
-            service = AutoHarnessService(
+            service = _new_auto_harness_service(
                 rail=None,
                 agent=agent_instance,
                 agent_manager=self._agent_manager,
@@ -10076,7 +10086,7 @@ class AgentWebSocketServer:
             if agent is not None:
                 agent_instance = await agent.ensure_instance()
 
-            service = AutoHarnessService(
+            service = _new_auto_harness_service(
                 rail=None,
                 agent=agent_instance,
                 agent_manager=self._agent_manager,
@@ -10189,7 +10199,7 @@ class AgentWebSocketServer:
             # Lazy initialization: create scheduler service on first request
             if self._scheduler_service is None:
                 logger.info("[AgentServer] Initializing scheduler service on first request")
-                self._scheduler_service = AutoHarnessService(None, agent=None)
+                self._scheduler_service = _new_auto_harness_service(None, agent=None)
                 # Start the scheduler loop
                 await self._scheduler_service.start_scheduler()
 

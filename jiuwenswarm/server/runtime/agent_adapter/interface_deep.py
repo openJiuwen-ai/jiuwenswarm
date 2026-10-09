@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, 
 if TYPE_CHECKING:
     from openjiuwen.harness.schema.config import SubAgentConfig
     from openjiuwen.harness.schema.interaction import InteractionOutputStream
+    from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService
     from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
 
 import yaml
@@ -133,7 +134,6 @@ from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import CronRuntimeBridge
-from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     SKILL_EVOLUTION_APPROVAL_SCHEMA,
     apply_permission_trusted_dirs,
@@ -261,7 +261,6 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     complete_multimodal_model_configured,
 )
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
-from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
 
 from jiuwenswarm.agents.harness.common.tools import (
     SendFileToolkit,
@@ -389,6 +388,12 @@ _CRON_TOOL_BOUND: ContextVar[bool] = ContextVar(
 
 
 _HIDDEN_RUNTIME_TOOLS = frozenset({"video_understanding", "acp_chat"})
+
+
+def _load_generate_image():
+    """生图依赖（fastmcp、google.genai）留到真正注册工具时再导入。"""
+    from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
+    return generate_image
 
 
 def _runtime_tool_is_disabled(tool_name: str) -> bool:
@@ -3344,11 +3349,22 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             warn_label="video tool",
         )
 
+        if self._image_gen_model_config or self._image_gen_tool_registered:
+            image_tool = _load_generate_image()
+            image_tools = mark_stateless([image_tool])
+
+            def image_create_fn(tool: Any = image_tool) -> list[Any]:
+                return mark_stateless([tool])
+        else:
+            image_tools = []
+
+            def image_create_fn() -> list[Any]:
+                return []
         _, self._image_gen_tool_registered = self._sync_tool_group(
-            current_tools=mark_stateless([generate_image]),
+            current_tools=image_tools,
             registered=self._image_gen_tool_registered,
             enabled=bool(self._image_gen_model_config),
-            create_fn=lambda: mark_stateless([generate_image]),
+            create_fn=image_create_fn,
             warn_label="generate_image tool",
         )
 
@@ -5912,6 +5928,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         self._image_gen_tool_registered = False
         if self._image_gen_model_config:
             try:
+                generate_image = _load_generate_image()
                 self._register_shared_tool(generate_image)
                 tool_cards.append(generate_image.card)
                 self._image_gen_tool_registered = True
@@ -10515,6 +10532,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         # Auto-Harness 模式处理
         if mode == "auto_harness":
             if self._auto_harness_service is None:
+                from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService
                 self._auto_harness_service = AutoHarnessService(
                     self._stream_event_rail,
                     agent=self._instance,
