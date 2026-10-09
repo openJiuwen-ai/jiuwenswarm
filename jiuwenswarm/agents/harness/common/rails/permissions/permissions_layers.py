@@ -23,6 +23,15 @@ logger = logging.getLogger(__name__)
 _VALID_MODES = frozenset({"full_access", "auto", "strict"})
 
 # 与 agent-core MODE_PRESETS 对齐的最小子集，供 CI / 旧 openjiuwen 回退合成。
+# 敏感路径底线：模板 file_guard.paths 的最后防线。openjiuwen 无
+# compose_effective_permissions 时走 _compose_effective_local 回退，
+# 模板 paths 清空会导致全新安装丢掉 ~/.ssh/.env 审批（CR-2），
+# 故注入 preset，与旧模板规则保持一致。
+_SENSITIVE_PATH_FLOOR: list[dict[str, Any]] = [
+    {"path": "**/.ssh/**", "match": "glob", "read": "ask", "write": "ask", "exec": "ask"},
+    {"path": "**/.env*", "match": "glob", "read": "ask", "write": "ask", "exec": "ask"},
+]
+
 _FALLBACK_MODE_PRESETS: dict[str, dict[str, Any]] = {
     "full_access": {
         "sandbox_intent": "optional",
@@ -36,6 +45,7 @@ _FALLBACK_MODE_PRESETS: dict[str, dict[str, Any]] = {
             "enabled": True,
             "defaults": {"read": "allow", "write": "ask", "exec": "ask"},
             "workspace": {"read": "allow", "write": "allow", "exec": "allow"},
+            "paths": deepcopy(_SENSITIVE_PATH_FLOOR),
         },
     },
     "strict": {
@@ -45,6 +55,7 @@ _FALLBACK_MODE_PRESETS: dict[str, dict[str, Any]] = {
             "enabled": True,
             "defaults": {"read": "ask", "write": "ask", "exec": "ask"},
             "workspace": {"read": "allow", "write": "ask", "exec": "ask"},
+            "paths": deepcopy(_SENSITIVE_PATH_FLOOR),
         },
     },
 }
@@ -283,14 +294,32 @@ def get_session_permissions_path(session_id: str) -> Path:
     return get_agent_sessions_dir() / sid / "session_permissions.yaml"
 
 
+# overlay 读取缓存：PermissionInterruptRail 每次工具调用都会经
+# compose_host_effective_permissions 读 user/session YAML，ruamel
+# round-trip 解析毫秒级，长任务累积可观（CR-8）。以 (mtime_ns, size)
+# 失效，命中时返回 deepcopy 防调用方改写共享缓存。
+_YAML_LOAD_CACHE: dict[Path, tuple[tuple[int, int], dict[str, Any]]] = {}
+_YAML_LOAD_CACHE_MAX = 128
+
+
 def _load_yaml(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     try:
+        stat = path.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        cached = _YAML_LOAD_CACHE.get(path)
+        if cached is not None and cached[0] == stamp:
+            return deepcopy(cached[1])
         from jiuwenswarm.common.config import _load_yaml_round_trip
 
         data = _load_yaml_round_trip(path)
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            data = {}
+        if len(_YAML_LOAD_CACHE) >= _YAML_LOAD_CACHE_MAX:
+            _YAML_LOAD_CACHE.pop(next(iter(_YAML_LOAD_CACHE)))
+        _YAML_LOAD_CACHE[path] = (stamp, deepcopy(data))
+        return data
     except Exception:
         logger.warning("[PermissionsLayers] load_yaml_failed path=%s", path, exc_info=True)
         return {}
@@ -484,24 +513,25 @@ def migrate_and_write_global_permissions() -> dict[str, Any]:
 
 
 def update_permissions_mode(mode: str) -> str:
-    """写入 Global ``permissions.mode``，并保证 ``enabled: true``。"""
-    from jiuwenswarm.common.config import _dump_yaml_round_trip, _load_yaml_round_trip
-    from jiuwenswarm.common.utils import get_config_file
+    """写入 Global ``permissions.mode``，并保证 ``enabled: true``。
+
+    经 ``persist_permissions_mutate`` 持久化：标准版写 config.yaml；
+    企业版只更新进程内存 base，不直写 yaml——直写会绕过企业版内存
+    注入，UI 显示已切换而 rail 实际权限不变（CR-4）。
+    """
+    from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+        persist_permissions_mutate,
+    )
 
     normalized = normalize_permission_mode(mode)
-    yaml_path = get_config_file()
-    data = _load_yaml_round_trip(yaml_path)
-    if not isinstance(data, dict):
-        data = {}
-    perms = data.get("permissions")
-    if not isinstance(perms, dict):
-        perms = {}
-        data["permissions"] = perms
-    perms["enabled"] = True
-    perms["mode"] = normalized
-    # 旧字段不再作为产品源
-    perms.pop("permission_mode", None)
-    _dump_yaml_round_trip(yaml_path, data)
+
+    def mutate(perms: dict[str, Any]) -> None:
+        perms["enabled"] = True
+        perms["mode"] = normalized
+        # 旧字段不再作为产品源
+        perms.pop("permission_mode", None)
+
+    persist_permissions_mutate(mutate, persist_scope="base")
     return normalized
 
 
