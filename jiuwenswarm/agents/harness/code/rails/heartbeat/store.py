@@ -26,12 +26,12 @@ from zoneinfo import ZoneInfo
 
 import portalocker
 
+from jiuwenswarm.common.timezone import get_default_timezone
 from jiuwenswarm.common.utils import get_heartbeat_jobs_path
 from jiuwenswarm.agents.harness.code.rails.heartbeat.models import (
     DEFAULT_CONCURRENCY_POLICY,
     DEFAULT_MAX_RUNS,
     DEFAULT_SESSION_DELETED_POLICY,
-    DEFAULT_TIMEZONE,
     HEARTBEAT_JOBS_VERSION,
     HEARTBEAT_TERMINAL_STATUSES,
     HeartbeatJob,
@@ -804,7 +804,7 @@ class HeartbeatJobStore:
         session_id: str,
         prompt: str,
         schedule: HeartbeatSchedule,
-        timezone: str = DEFAULT_TIMEZONE,
+        timezone: str | None = None,
         enabled: bool = True,
         concurrency_policy: str = DEFAULT_CONCURRENCY_POLICY,
         session_deleted_policy: str = DEFAULT_SESSION_DELETED_POLICY,
@@ -842,7 +842,7 @@ class HeartbeatJobStore:
 
                 from .cron_schedule import next_cron_datetime
 
-                tz = ZoneInfo(schedule.timezone or timezone or DEFAULT_TIMEZONE)
+                tz = ZoneInfo(schedule.timezone or timezone or get_default_timezone().key)
                 resolved_next_run_at = next_cron_datetime(
                     schedule.cron_expr or "", datetime.fromtimestamp(ts, tz=tz)
                 ).timestamp()
@@ -870,7 +870,7 @@ class HeartbeatJobStore:
             session_id=str(session_id or "").strip(),
             prompt=str(prompt or "").strip(),
             schedule=schedule,
-            timezone=str(timezone or DEFAULT_TIMEZONE).strip() or DEFAULT_TIMEZONE,
+            timezone=str(timezone or get_default_timezone().key).strip() or get_default_timezone().key,
             status=status,
             concurrency_policy=str(concurrency_policy or DEFAULT_CONCURRENCY_POLICY),
             session_deleted_policy=str(
@@ -1047,7 +1047,7 @@ class HeartbeatJobStore:
                             tz = ZoneInfo(
                                 updated.schedule.timezone
                                 or updated.timezone
-                                or DEFAULT_TIMEZONE
+                                or get_default_timezone().key
                             )
                             next_at = next_cron_datetime(
                                 updated.schedule.cron_expr or "",
