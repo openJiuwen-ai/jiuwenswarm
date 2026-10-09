@@ -1861,7 +1861,7 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 
 #### 16.0.2 `workspace_quota_usage`
 
-本集群用量缓存。由 Web 工作空间 list / usage / delete / 首次初始化等路径向 Agent 查询后写入；本 Config Receiver **只读**。
+本集群用量缓存。由 Web 工作空间 **usage** / **delete**、首次初始化补查，以及 AgentServer 后台校准回写等路径向 Agent 取数后写入；**列目录 `tree` 不再单独触发全量 `du` / 写本表**。本 Config Receiver **只读**。Agent 侧多数请求读进程内缓存，`force_refresh` / 近限门禁 / 后台校准才同步 `du`（见设计方案 §2.4、Web HTTP 文档 §7.2）。
 
 
 | 字段名 | 类型 | 必填 | 说明 |

@@ -4,13 +4,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from dataclasses import dataclass
 from typing import Any
 
 from jiuwenswarm.common.utils import get_multi_tenant_user_workspace_dir
-from jiuwenswarm.common.workspace.quota import snapshot_to_dict
+from jiuwenswarm.common.workspace.quota import (
+    get_cached_used,
+    mark_usage_active,
+    measure_and_cache,
+    snapshot_to_dict,
+)
 from jiuwenswarm.common.workspace.service import WorkspaceError, WorkspaceService
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.gateway.workspace.quota import resolve_quota_snapshot, upsert_usage_cache
@@ -158,10 +164,42 @@ def register_workspace_web_methods(channel: Any, *, agent_client: Any) -> None:
     """Register workspace.* WebChannel methods (HTTP mapped routes + WS)."""
     from jiuwenswarm.common.schema.message import ReqMethod
 
+    try:
+        from jiuwenswarm.server.runtime.workspace.usage_reconciler import (
+            start_usage_reconciler,
+        )
+
+        start_usage_reconciler()
+    except Exception:  # noqa: BLE001
+        logger.debug("[workspace] usage reconciler start skipped", exc_info=True)
+
     def _resolve_ac() -> Any:
         if callable(agent_client):
             return agent_client()
         return agent_client
+
+    def _force_refresh(params: dict[str, Any]) -> bool:
+        for key in ("force_refresh", "forceRefresh", "refresh"):
+            raw = params.get(key)
+            if raw is True:
+                return True
+            if isinstance(raw, str) and raw.strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
+                return True
+        return False
+
+    def _local_used(svc: WorkspaceService, params: dict[str, Any]) -> int:
+        uid, gid, bid = _identity_from_params(params)
+        if _force_refresh(params):
+            return measure_and_cache(
+                svc.tenant_root, user_id=uid, group_id=gid, bot_id=bid
+            )
+        mark_usage_active(svc.tenant_root, user_id=uid, group_id=gid, bot_id=bid)
+        return get_cached_used(svc.tenant_root)
 
     async def _tree(ws, req_id, params, session_id):
         p = dict(params) if isinstance(params, dict) else {}
@@ -198,13 +236,6 @@ def register_workspace_web_methods(channel: Any, *, agent_client: Any) -> None:
 
             svc = _local_service(p)
             data = svc.list_tree(relative_path)
-            used = svc.measure_used_bytes()
-            await upsert_usage_cache(
-                user_id=str(p.get("user_id") or ""),
-                group_id=str(p.get("group_id") or ""),
-                bot_id=str(p.get("bot_id") or ""),
-                used_bytes=used,
-            )
             await channel.send_response(ws, req_id, ok=True, payload=data)
         except WorkspaceError as exc:
             await channel.send_response(
@@ -238,7 +269,7 @@ def register_workspace_web_methods(channel: Any, *, agent_client: Any) -> None:
                     return
                 used = int(payload.get("used_bytes") or 0)
             else:
-                used = _local_service(p).measure_used_bytes()
+                used = await asyncio.to_thread(_local_used, _local_service(p), p)
             out = await _usage_payload_from_used(used, p)
             await channel.send_response(ws, req_id, ok=True, payload=out)
         except Exception as exc:  # noqa: BLE001
@@ -291,11 +322,12 @@ def register_workspace_web_methods(channel: Any, *, agent_client: Any) -> None:
 
             svc = _local_service(p)
             data = svc.delete_entries([str(x) for x in paths])
-            used = svc.measure_used_bytes()
+            uid, gid, bid = _identity_from_params(p)
+            used = await asyncio.to_thread(_local_used, svc, p)
             await upsert_usage_cache(
-                user_id=str(p.get("user_id") or ""),
-                group_id=str(p.get("group_id") or ""),
-                bot_id=str(p.get("bot_id") or ""),
+                user_id=uid,
+                group_id=gid,
+                bot_id=bid,
                 used_bytes=used,
             )
             await channel.send_response(ws, req_id, ok=True, payload=data)
