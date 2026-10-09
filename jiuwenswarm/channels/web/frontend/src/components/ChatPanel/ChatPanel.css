@@ -1116,6 +1116,13 @@
   height: 26px;
 }
 
+.chat-composer-suggestion__asset-thumb {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
 .chat-composer-suggestion__text {
   display: flex;
   min-width: 0;
@@ -3491,6 +3498,22 @@
       rgba(var(--color-action-primary-rgb), 0.04));
 }
 
+/* @ 引用的素材预览卡：由输入框里的 @名称 驱动，不由上传产生。
+   用虚线和主色底把“引用”跟“真附件”区分开，也不做 hover 抬升。 */
+.chat-input-attachment-card--reference {
+  border-style: dashed;
+  border-color: rgba(var(--color-action-primary-rgb), 0.55);
+  background-color: var(--color-surface-card);
+  background-image: linear-gradient(rgba(var(--color-action-primary-rgb), 0.05),
+      rgba(var(--color-action-primary-rgb), 0.05));
+  cursor: default;
+}
+
+.chat-input-attachment-card--reference:hover {
+  transform: none;
+  box-shadow: var(--effect-chat-toolbar-shadow);
+}
+
 .chat-input-attachment-card--error {
   border-color: var(--color-chat-attachment-error-border);
   background-color: var(--color-surface-card);
@@ -3530,13 +3553,21 @@
 }
 
 .chat-input-attachment-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  min-width: 0;
   color: var(--color-text-primary);
   font-size: 12px;
   font-weight: 500;
   line-height: 17px;
+}
+
+.chat-input-attachment-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .chat-input-attachment-meta {
@@ -4856,4 +4887,33 @@
 .chat-panel-file-download-item--expired:hover {
   border-color: var(--color-border-default);
   box-shadow: none;
+}
+
+.chat-input-attachment-name-input {
+  width: 100%;
+  min-width: 0;
+  padding: 0 4px;
+  border: 1px solid var(--color-border, #d0d5dd);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.chat-input-attachment-rename {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  margin-left: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted, #667085);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.chat-input-attachment-card:hover .chat-input-attachment-rename,
+.chat-input-attachment-rename:focus-visible {
+  opacity: 1;
 }

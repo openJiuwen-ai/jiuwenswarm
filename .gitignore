@@ -106,3 +106,7 @@ report/index.html
 /sub_agents/
 /context/
 /.plans/
+short-video-production-swarm.zip
+director-edit-assistant.zip
+designer_catalog_skills_reports_trajectory/runs/*
+tests/ui_e2e/artifacts/suite/*

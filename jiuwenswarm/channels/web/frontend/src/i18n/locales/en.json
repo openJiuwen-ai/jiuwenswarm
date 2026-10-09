@@ -744,6 +744,17 @@
       }
     }
   },
+  "sessionAssets": {
+    "title": "Assets",
+    "empty": "Uploaded and generated files appear here. Rename them and reference them in the chat box with @name.",
+    "rename": "Rename",
+    "save": "Save",
+    "cancel": "Cancel",
+    "invalidName": "The name must not be empty, at most 60 characters, and cannot contain @ or line breaks",
+    "pickTitle": "Choose an asset",
+    "referHint": "Type @ in the chat box to reference",
+    "reference": "Referenced"
+  },
   "artifacts": {
     "title": "Artifacts",
     "tab": "Artifacts",

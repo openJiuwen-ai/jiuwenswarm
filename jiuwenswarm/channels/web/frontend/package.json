@@ -11,6 +11,7 @@
     "prebuild": "cd ../../../.. && node ./jiuwenswarm/scripts/generate-agent-folders.js",
     "dev": "vite",
     "build": "tsc && vite build",
+    "test:session-assets": "esbuild src/features/sessionAssets/assetReferences.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/session-assets/assetReferences.mjs && node --test tests/sessionAssetReferences.test.mjs",
     "test:task-asr": "node --test tests/taskAsr.test.mjs",
     "test:joyai-workflow": "esbuild ../../../extensions/video_duplex/frontend/VideoLivePanel/joyaiVoice.ts src/utils/speechDetection/speechGate.ts --bundle --platform=node --format=esm --entry-names=[name] --outdir=node_modules/.cache/joyai-voice && node --test ../../../extensions/video_duplex/tests/frontend/joyaiVoice.test.mjs ../../../extensions/video_duplex/tests/frontend/joyaiProvider.test.mjs",
     "test:task-full-duplex": "node --test tests/taskFullDuplex.test.mjs tests/taskDuplexLifecycle.test.mjs tests/applicationTaskControls.test.mjs tests/voiceTaskPanel.test.mjs",

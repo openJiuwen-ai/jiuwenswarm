@@ -283,6 +283,11 @@ class ReqMethod(Enum):
     SKILLS_EXPERIENCE_LIST = "skills.experience.list"
     SKILLS_EXPERIENCE_REQUEST = "skills.experience.request"
 
+    # Task (session) assets: named files referenceable with @name in the chat box.
+    SESSION_ASSETS_LIST = "session.assets.list"
+    SESSION_ASSETS_REGISTER = "session.assets.register"
+    SESSION_ASSETS_RENAME = "session.assets.rename"
+
     PERSONAL_CONTEXT_RUNTIME_STATUS = "personal_context.runtime.status"
     PERSONAL_CONTEXT_RUNTIME_START_COLLECTION = (
         "personal_context.runtime.start_collection"

@@ -735,6 +735,17 @@
       }
     }
   },
+  "sessionAssets": {
+    "title": "素材",
+    "empty": "上传文件或生成内容后，会出现在这里；可以重命名，并在输入框里用 @名称 引用。",
+    "rename": "重命名",
+    "save": "保存",
+    "cancel": "取消",
+    "invalidName": "名称不能为空，最多 60 个字符，不能包含 @ 或换行",
+    "pickTitle": "选择素材",
+    "referHint": "输入框里输入 @ 引用",
+    "reference": "已引用"
+  },
   "artifacts": {
     "title": "所有产物",
     "tab": "产物",

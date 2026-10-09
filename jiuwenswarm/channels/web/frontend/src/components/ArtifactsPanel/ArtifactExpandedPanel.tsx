@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useSessionArtifacts } from '.';
 import { ArtifactList } from '.';
 import { FilePreview } from './FilePreview';
+import { resolvePreviewableArtifact } from './artifactPreviewRegistry';
 import BackIcon from '../../assets/work-mode/back.svg?react';
 import ArrowLeftIcon from '../../assets/work-mode/arrow-left.svg?react';
 import ArrowRightIcon from '../../assets/work-mode/arrow-right.svg?react';
@@ -16,10 +17,14 @@ export function ArtifactExpandedPanel({
 }) {
   const { t } = useTranslation();
   const artifacts = useSessionArtifacts();
-  const selectedArtifact = artifacts.find(a => a.id === selectedArtifactId) ?? null;
-  const selectedIndex = selectedArtifact ? artifacts.findIndex(a => a.id === selectedArtifact.id) : -1;
+  // 素材（session assets）不一定在消息产物里：只有走过 send_file_to_user 的才会进
+  // buildArtifacts。点素材时先把它登记进 registry，这里查不到列表就回退查 registry，
+  // 素材于是也能像产物一样打开预览。prev/next 只在命中列表时可用，避免跳到不相关的产物。
+  const listedArtifact = artifacts.find(a => a.id === selectedArtifactId) ?? null;
+  const selectedArtifact = listedArtifact ?? resolvePreviewableArtifact(selectedArtifactId);
+  const selectedIndex = listedArtifact ? artifacts.findIndex(a => a.id === listedArtifact.id) : -1;
   const hasPrev = selectedIndex > 0;
-  const hasNext = selectedArtifact && selectedIndex < artifacts.length - 1;
+  const hasNext = Boolean(listedArtifact) && selectedIndex < artifacts.length - 1;
   const [, setInvalidPresentationIds] = useState<Set<string>>(() => new Set());
   const handlePresentationStructureInvalidChange = useCallback((artifactId: string, invalid: boolean) => {
     setInvalidPresentationIds(current => {

@@ -54,6 +54,14 @@ import { FileIcon } from '../FileIcon';
 import skillPackageIcon from '../../assets/skill.svg';
 import { webRequest } from '../../services/webClient';
 import { useChatStore } from '../../stores/chatStore';
+import {
+  findReferencedAssets,
+  normalizePath,
+  resolveAssetDisplayNames,
+  selectSessionAssets,
+  useSessionAssetsStore,
+} from '../../features/sessionAssets/sessionAssets';
+import type { MediaItem } from '../../types/message';
 import { useSessionStore } from '../../stores/sessionStore';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { extractTokenFromDownloadUrl } from '../../utils/fileDownloadDedup';
@@ -398,6 +406,9 @@ export const MessageItem = memo(function MessageItem({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
   const activeSessionId = useChatStore((state) => state.activeSessionId);
+  // 任务素材（@名称 引用）：素材存在后端，历史消息里只有 @名称 文本。
+  // 渲染用户气泡时按名称解析成缩略图，这样刷新/重进会话依然能看到素材。
+  const sessionAssets = useSessionAssetsStore(selectSessionAssets(activeSessionId));
   const sessionTeamLeaderIdentity = useSessionStore(
     (state) => state.runtimes[activeSessionId ?? '']?.teamLeaderIdentity ?? null
   );
@@ -756,7 +767,37 @@ export const MessageItem = memo(function MessageItem({
   );
   const showCopy = Boolean(isUser ? displayContent : content) && !isStreaming;
   const isPlaying = audioBase64 ? isAudioPlaying : isSpeaking;
-  const visibleMediaItems = mediaItems?.length ? mediaItems : null;
+  const rawMediaItems = mediaItems?.length ? mediaItems : null;
+  // 上传时改过名的文件，历史消息里只存了原始 filename（displayName 不落盘），刷新页面后会
+  // 退化成 EMXN1y8qOw....webp。按路径从会话素材表把用户起的名字补回来。
+  const baseMediaItems = rawMediaItems
+    ? resolveAssetDisplayNames(rawMediaItems, sessionAssets)
+    : null;
+  // 用户气泡里用 @名称 引用的素材，按当前会话素材表解析成可渲染的缩略图。
+  // 只在用户消息上做；素材表为空时不产生任何额外渲染。
+  let referencedMediaItems: MediaItem[] | null = null;
+  if (isUser && displayContent && sessionAssets.length > 0) {
+    const refs = findReferencedAssets(displayContent, sessionAssets);
+    if (refs.length > 0) {
+      const shown = new Set((baseMediaItems ?? []).map((item) => normalizePath(item.path ?? '')));
+      const extra: MediaItem[] = [];
+      for (const ref of refs) {
+        if (shown.has(normalizePath(ref.path))) continue;
+        shown.add(normalizePath(ref.path));
+        extra.push({
+          type: ref.kind === 'image' || ref.kind === 'video' || ref.kind === 'audio' ? ref.kind : 'document',
+          mimeType: '',
+          filename: ref.path.split(/[\\/]/).pop() || ref.name,
+          displayName: ref.name,
+          path: ref.path,
+        });
+      }
+      referencedMediaItems = extra.length > 0 ? extra : null;
+    }
+  }
+  const visibleMediaItems = referencedMediaItems
+    ? [...(baseMediaItems ?? []), ...referencedMediaItems]
+    : baseMediaItems;
   const visibleFileItems = fileItems?.length ? fileItems : null;
   const hasDisplayText = Boolean(displayContent);
   const hasBubbleContent = isUser

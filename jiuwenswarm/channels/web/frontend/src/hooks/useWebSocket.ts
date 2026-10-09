@@ -6,6 +6,14 @@
 
 import { readOutputOrder } from '../features/sessionOutput';
 import { handleTaskInputReceipt, sendQueuedTaskInput, handleSessionOutputBoundary, shouldIgnoreSessionOutput } from '../features/sessionInput';
+import {
+  assetKindFromMime,
+  findReferencedAssets,
+  normalizePath,
+  stemFilename,
+  useSessionAssetsStore,
+  type NamedAsset,
+} from '../features/sessionAssets/sessionAssets';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -1945,10 +1953,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       // pruneEnabledExtensions）兜底重新核对一遍"我的插件/我的MCP里已连接的"，避免把早就失效的
       // 名字发给后端；被摘掉的项同步从 sessionStore 里移除，让"+"扩展面板的开关同步变回关闭。
       const extensionPayload = buildExtensionSendPayload(sessionId);
+      const userMessageId = prefixedMessageId('user-');
+      const displayedContent =
+        stripUploadDocumentBlocks(content) || content.replace(/\n*【上传文档[\s\S]*$/, '').trim() || content;
       useChatStore.getState().addMessage(sessionId, {
-        id: prefixedMessageId('user-'),
+        id: userMessageId,
         role: 'user',
-        content: stripUploadDocumentBlocks(content) || content.replace(/\n*【上传文档[\s\S]*$/, '').trim() || content,
+        content: displayedContent,
         mediaItems,
         timestamp: new Date().toISOString(),
         ...(selectedSkillsForRequest.length > 0 ? { skills: selectedSkillsForRequest } : {}),
@@ -2022,6 +2033,64 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             outgoingMediaItems = mergedItems.length ? slimPersistedMediaRecords(mergedItems) : undefined;
             outgoingFiles = Object.keys(mergedFiles).length ? mergedFiles : undefined;
           }
+        }
+        // @名称 -> 文件路径的引用笔记在这里统一加（不在 InputArea 提交时加）：候选既包括这个
+        // 会话之前已经登记过的素材，也包括这条消息里刚落盘、还没跑完注册往返的文件——用
+        // pendingNames 里用户自己起的名字，没改过就用文件名去掉扩展名（和后端默认命名规则一致）。
+        // 这样欢迎页发的第一条消息（这时候 session 刚建，素材注册还没来得及跑）也能正确 @ 到
+        // 这条消息自己带的附件。
+        {
+          const pendingNames = useSessionAssetsStore.getState().pendingNames;
+          const freshAssets: NamedAsset[] = (outgoingMediaItems ?? []).flatMap((item) => {
+            const path = typeof item.path === 'string' ? item.path.trim() : '';
+            const filename = typeof item.filename === 'string' ? item.filename : '';
+            if (!path) return [];
+            const mimeType = typeof item.mime_type === 'string' ? item.mime_type : '';
+            return [{ name: pendingNames[filename] || stemFilename(filename) || filename, path, kind: assetKindFromMime(mimeType) }];
+          });
+          const knownAssets = useSessionAssetsStore.getState().bySession[sessionId] ?? [];
+          const byName = new Map<string, NamedAsset>();
+          for (const asset of knownAssets) byName.set(asset.name.toLowerCase(), asset);
+          for (const asset of freshAssets) byName.set(asset.name.toLowerCase(), asset); // 本次上传的名字优先
+          const referenced = findReferencedAssets(outgoingContent, [...byName.values()]);
+          if (referenced.length) {
+            // 笔记只加进发给 agent 的文本（outgoingContent），不进气泡——用户不需要读一段带绝对
+            // 路径的文本，引用的是什么样子应该直接看图，不是看路径字符串。
+            const lines = referenced.map((asset) => `@${asset.name} = ${asset.path} (${asset.kind})`);
+            outgoingContent = `${outgoingContent}\n\n[引用素材]\n${lines.join('\n')}`;
+            // 引用的文件如果这条消息本来就带了（最常见：刚上传、随手就 @ 了自己），气泡上已经有
+            // 一张卡片在显示它，不用再摆一张重复的；只给"引用的是之前已经存在、这条消息没有重新
+            // 上传"的素材补一张缩略图卡片，让引用在气泡上是看得见的图，不是纯文本。
+            const shownPaths = new Set(
+              [...mediaItems.map((item) => item.path), ...(outgoingMediaItems ?? []).map((item) => item.path)]
+                .filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+                .map(normalizePath),
+            );
+            const extraMediaItems: MediaItem[] = referenced
+              .filter((asset) => !shownPaths.has(normalizePath(asset.path)))
+              .map((asset) => ({
+                type: (['image', 'video', 'audio', 'document'] as const).includes(asset.kind as never)
+                  ? (asset.kind as MediaItem['type'])
+                  : 'document',
+                filename: asset.path.split(/[\\/]/).pop() || asset.name,
+                displayName: asset.name,
+                mimeType: '',
+                path: asset.path,
+              }));
+            if (extraMediaItems.length) {
+              const current = useChatStore.getState().runtimes[sessionId]?.messages.find((m) => m.id === userMessageId);
+              useChatStore.getState().updateMessage(sessionId, userMessageId, {
+                mediaItems: [...(current?.mediaItems ?? mediaItems), ...extraMediaItems],
+              });
+            }
+          }
+        }
+        // 上传的文件落盘后登记为任务素材（欢迎页发出的第一条消息也走这里；后端按路径去重）。
+        if (outgoingMediaItems?.length) {
+          void useSessionAssetsStore
+            .getState()
+            .registerUploads(sessionId, outgoingMediaItems)
+            .catch((error) => console.error('Failed to register session assets:', error));
         }
         // Goal 处于 active 时，普通输入按文档 §5.1 作为补充约束插入当前 Goal，而不是覆盖它
         const activeGoal = useGoalStore.getState().getRuntime(sessionId)?.goal;

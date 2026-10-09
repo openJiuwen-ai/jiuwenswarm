@@ -42,6 +42,8 @@ import { useSubagentStore, selectSubagents } from '../../stores/subagentStore';
 import { useMinWidth } from '../../hooks/useResponsive';
 import { DesktopBrowserPane } from '../DesktopBrowserPane';
 import './ToolPanel.css';
+import { SessionAssetList } from '../../features/sessionAssets/SessionAssetList';
+import { selectSessionAssets, useSessionAssetsStore } from '../../features/sessionAssets/sessionAssets';
 import { applicationTasksToTeamTasks, EMPTY_APPLICATION_TASKS, useApplicationTaskStore } from '../../applicationPlugins/taskProgressStore';
 
 /** 规划/性能模式下把 TodoItem 降级映射为 TeamTask，复用 TaskPlanningPanel 紧凑态样式 */
@@ -169,6 +171,7 @@ export function ToolPanel({
   const [artifactsExpanded, setArtifactsExpanded] = useState(false);
   const { completedTasks: teamCompletedTasks, progressTasks, teamTasks, totalTasks: teamTotalTasks, now } = useTaskPlanningMetrics();
   const artifactsCount = useSessionArtifactsCount();
+  const sessionAssetCount = useSessionAssetsStore(selectSessionAssets(activeSessionId)).length;
   const subagentCount = useSubagentStore(state => Object.keys(state.runtimes[resolvedSessionId]?.subagentsById ?? {}).length);
   const subagentRuntime = useSubagentStore(state => state.runtimes[resolvedSessionId]);
   const subagentList = selectSubagents(subagentRuntime);
@@ -699,6 +702,23 @@ export function ToolPanel({
           </CollapsibleSection>
         ),
       },
+    {
+      key: 'assets',
+      testId: 'tool-panel-assets-pane',
+      render: () => (
+        <CollapsibleSection
+          title={t('sessionAssets.title')}
+          icon={<img src={artifactsIcon} width={16} height={16} aria-hidden="true" />}
+          childCount={sessionAssetCount}
+          dataTestId="tool-panel-assets"
+          defaultCollapsed
+          autoExpandOnContent
+          showExpandButton={false}
+        >
+          <SessionAssetList hideTitle />
+        </CollapsibleSection>
+      ),
+    },
     {
       key: 'artifacts',
       testId: 'tool-panel-artifacts-pane',

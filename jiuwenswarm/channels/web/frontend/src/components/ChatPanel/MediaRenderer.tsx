@@ -42,6 +42,9 @@ function mediaSrc(item: MediaItem): string | undefined {
 
 function FileCard({ item }: { item: MediaItem }) {
   const filename = item.filename || 'file';
+  // 素材改过名的话（比如上传后在卡片上重命名过），这里显示新名字；扩展名标签、图标类型、
+  // 下载文件名仍然按真实文件名走，重命名只影响这一处展示文字。
+  const displayLabel = item.displayName || filename;
   const extLabel = getFileExtensionLabel(filename);
   const src = mediaSrc(item);
   const showThumb = isImageItem(item) && Boolean(src);
@@ -56,8 +59,8 @@ function FileCard({ item }: { item: MediaItem }) {
         )}
       </span>
       <span className="chat-msg-file-card__meta">
-        <span className="chat-msg-file-card__name" title={filename}>
-          {filename}
+        <span className="chat-msg-file-card__name" title={displayLabel}>
+          {displayLabel}
         </span>
         {extLabel ? <span className="chat-msg-file-card__ext">{extLabel}</span> : null}
       </span>
@@ -72,7 +75,7 @@ function FileCard({ item }: { item: MediaItem }) {
         data-variant={filename}
         href={src}
         download={filename}
-        title={filename}
+        title={displayLabel}
       >
         {body}
       </a>
@@ -80,7 +83,7 @@ function FileCard({ item }: { item: MediaItem }) {
   }
 
   return (
-    <div className="chat-msg-file-card" data-testid="chat-panel-msg-file-card" data-variant={filename} title={filename}>
+    <div className="chat-msg-file-card" data-testid="chat-panel-msg-file-card" data-variant={filename} title={displayLabel}>
       {body}
     </div>
   );
@@ -124,6 +127,7 @@ function OverflowMenu({ items }: { items: MediaItem[] }) {
         <div className="chat-msg-file-more__menu" data-testid="chat-panel-msg-file-more-menu" role="menu">
           {items.map((item, index) => {
             const filename = item.filename || 'file';
+            const displayLabel = item.displayName || filename;
             const src = mediaSrc(item);
             const showThumb = isImageItem(item) && Boolean(src);
             const content = (
@@ -133,8 +137,8 @@ function OverflowMenu({ items }: { items: MediaItem[] }) {
                 ) : (
                   <FileIcon fileName={filename} size={14} />
                 )}
-                <span className="chat-msg-file-more__name" title={filename}>
-                  {filename}
+                <span className="chat-msg-file-more__name" title={displayLabel}>
+                  {displayLabel}
                 </span>
               </>
             );

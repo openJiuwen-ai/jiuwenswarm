@@ -51,6 +51,7 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
 )
 from jiuwenswarm.server.runtime.session.session_manager import SessionManager
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager, SkillRpcError
+from jiuwenswarm.server.runtime.session_assets import get_session_asset_manager
 from jiuwenswarm.server.runtime.skill.archive_store import ARCHIVE_DIRNAME
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.common.config import get_config
@@ -993,6 +994,12 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_VISIBILITY_UPDATE: "handle_skills_visibility_update",
 }
 
+_SESSION_ASSET_ROUTES: dict[ReqMethod, str] = {
+    ReqMethod.SESSION_ASSETS_LIST: "handle_session_assets_list",
+    ReqMethod.SESSION_ASSETS_REGISTER: "handle_session_assets_register",
+    ReqMethod.SESSION_ASSETS_RENAME: "handle_session_assets_rename",
+}
+
 # Handlers that persist a Skill visibility document; every one of them must
 # trigger a rail refresh so a grant or a revocation takes effect on the next
 # turn. The read-only ``get`` deliberately stays out.
@@ -1184,6 +1191,7 @@ class JiuWenSwarm:
         self._personal_context_runtime_enabled: bool = False
         self._sdk_name: str | None = None
         self._skill_manager = SkillManager(workspace_dir=str(get_agent_workspace_dir()))
+        self._session_asset_manager = get_session_asset_manager()
         self._session_manager = SessionManager()
         self._heartbeat_service: Any | None = None
         self._permissions_changed_notifier: Callable[[], None] | None = None
@@ -2192,6 +2200,37 @@ class JiuWenSwarm:
             metadata=request.metadata,
         )
 
+    async def _handle_session_asset_request(self, request: AgentRequest) -> AgentResponse | None:
+        """Handle task-asset requests (session.assets.*); None means not one of them."""
+        if request.req_method not in _SESSION_ASSET_ROUTES:
+            return None
+        handler = getattr(self._session_asset_manager, _SESSION_ASSET_ROUTES[request.req_method])
+        params = dict(request.params) if isinstance(request.params, dict) else {}
+        params.setdefault("session_id", request.session_id or "")
+        try:
+            payload = await handler(params)
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if not isinstance(code, str):
+                logger.error("[JiuWenSwarm] session.assets request failed: method=%s error=%s", request.req_method, exc)
+            err_payload: dict = {"error": str(exc), "message": str(exc)}
+            if isinstance(code, str) and code.strip():
+                err_payload["code"] = code.strip()
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload=err_payload,
+                metadata=request.metadata,
+            )
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload=payload,
+            metadata=request.metadata,
+        )
+
     @staticmethod
     def _is_skills_rebuild_followup(payload: Any) -> bool:
         """判断 skills.rebuild 响应是否需要静默 follow-up."""
@@ -2977,6 +3016,10 @@ class JiuWenSwarm:
         skills_response = await self._handle_skills_request(request)
         if skills_response is not None:
             return skills_response
+
+        session_asset_response = await self._handle_session_asset_request(request)
+        if session_asset_response is not None:
+            return session_asset_response
 
         plugins_response = await self._handle_plugins_request(request)
         if plugins_response is not None:
