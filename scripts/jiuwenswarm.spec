@@ -194,6 +194,7 @@ hiddenimports = webview_hiddenimports + [
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
+    "xiaoyi_prompt_assets",
 ] + openjiuwen_submodules + symphony_submodules + dispatch_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
