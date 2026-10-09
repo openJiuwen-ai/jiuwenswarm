@@ -3430,8 +3430,9 @@ class JiuWenSwarm:
             return
 
         # Team 模式：把整个 turn 交给 team_helpers。它先用 turn.text（用户原
-        # 文）解析 /debug、$member 与 slash，再用同一个 render() 投递，因此
-        # leader 收到的信封与单 agent 逐字段一致。
+        # 文）解析 /debug、$member 与 slash，再用同一个 render() 投递，信封
+        # 结构与单 agent 一致；字段有差异（缺 supplementary_info/企业态
+        # file_handling_hint，system 集合不含 diagnosis），统一留后续任务。
         team_query_is_interactive_input = False
         if is_team_mode:
             from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
