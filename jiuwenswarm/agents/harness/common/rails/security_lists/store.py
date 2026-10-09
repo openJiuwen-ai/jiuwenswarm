@@ -166,7 +166,7 @@ def get_security_lists() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _ensure_section(data: dict[str, Any], *, bootstrap_legacy: bool = True) -> dict[str, Any]:
+def _ensure_section(data: dict[str, Any]) -> dict[str, Any]:
     """在待写数据上取/建 security_lists 段（mutator 内调用）。
 
     段已存在但结构畸形 → :class:`SecurityListsCorruptedError`（与读路径一致，
@@ -176,9 +176,6 @@ def _ensure_section(data: dict[str, Any], *, bootstrap_legacy: bool = True) -> d
     if section is None:
         section = _empty_section()
         data[_SECTION] = section
-        if bootstrap_legacy:
-            from .legacy_compat import bootstrap
-            bootstrap(data, section)
         return section
     if not isinstance(section, dict):
         raise SecurityListsCorruptedError(f"security_lists 段须为映射: {type(section).__name__}")
@@ -203,9 +200,6 @@ def _ensure_section(data: dict[str, Any], *, bootstrap_legacy: bool = True) -> d
     section.setdefault("defaults", {})
     # 写入即盖章当前结构版本（v2 → v3 迁移闸门；defaults 缺失＝保持现状）
     section["version"] = SECURITY_LISTS_VERSION
-    if bootstrap_legacy:
-        from .legacy_compat import bootstrap
-        bootstrap(data, section)
     return section
 
 
@@ -422,7 +416,7 @@ def delete_record(record_id: str) -> bool:
         kept = [r for r in user_raw if not (isinstance(r, dict) and r.get("id") == record_id)]
         found = len(kept) != len(user_raw)
         section["user"] = kept
-        return data if found else None
+        return data
 
     update_config(_mutate)
     if found:
@@ -779,7 +773,7 @@ def migrate_legacy_once(
 
     def _mutate(data: dict[str, Any]) -> dict[str, Any] | None:
         nonlocal created, skipped
-        section = _ensure_section(data, bootstrap_legacy=False)
+        section = _ensure_section(data)
         migrations = section.setdefault("migrations", {})
         existing = _parse_existing_user(section)
         user_raw = section["user"]

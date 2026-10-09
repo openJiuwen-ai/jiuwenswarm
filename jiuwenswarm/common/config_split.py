@@ -55,8 +55,6 @@ _SCALAR_PATHS: tuple[tuple[str, ...], ...] = (
     # 手改 config.yaml 都可能设它，模板缺失 → 不登记会被模板重同步整键抹掉。
     ("sandbox", "fallback_policy"),
     ("sandbox", "urls_revision"),
-    ("sandbox", "urls_from_security_lists"),
-    ("sandbox", "files_from_security_lists"),
     ("permissions", "soft_delete", "enabled"),
 )
 

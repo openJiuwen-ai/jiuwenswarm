@@ -45,11 +45,8 @@ def sync_net_guard_to_sandbox():
     skipped = []
 
     def mutate(data):
-        from jiuwenswarm.agents.harness.common.rails.security_lists import store
-        store._ensure_section(data)
         permissions = data.get("permissions") or {}
-        from jiuwenswarm.agents.harness.common.rails.security_lists.legacy_compat import guard_view
-        guard = guard_view("net_guard", data=data, owned_only=True)
+        guard = permissions.get("net_guard") or {}
         if (data.get("sandbox") or {}).get("type", "jiuwenbox") != "jiuwenbox":
             raise ValueError("sandbox.network.sync currently supports jiuwenbox only")
         if not permissions.get("enabled") or not guard.get("enabled"):
@@ -61,8 +58,6 @@ def sync_net_guard_to_sandbox():
         urls.update({domain: "deny" for domain in network["deny_domains"]})
         data.setdefault("sandbox", {})["urls"] = urls
         data["sandbox"]["urls_revision"] = uuid.uuid4().hex
-        # A compatibility sync saves a derived snapshot, not a second rule owner.
-        data["sandbox"]["urls_from_security_lists"] = True
         return data
 
     data = update_config(mutate)
@@ -114,7 +109,7 @@ def render_saved_sandbox_urls(policy_path):
     expected = _runtime_copy_path() if _is_windows() else _linux_runtime_copy_path()
     if policy_path is None or Path(policy_path).resolve() != expected.resolve():
         raise ValueError("sandbox.urls requires the platform runtime policy copy")
-    if "urls" in sandbox and not sandbox.get("urls_from_security_lists"):
+    if "urls" in sandbox:
         urls = validate_sandbox_urls(sandbox["urls"])
         stamp = hashlib.sha256(json.dumps(
             [urls, sandbox.get("urls_revision")], sort_keys=True,

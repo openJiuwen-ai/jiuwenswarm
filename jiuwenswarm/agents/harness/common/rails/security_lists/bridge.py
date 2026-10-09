@@ -161,12 +161,7 @@ def permissions_for_enforcement(config: Mapping[str, Any] | None) -> dict[str, A
     ``config`` 缺省/非映射 → 空 dict（**不回读全局 config**，保持与调用点原语义一致）。
     """
     perms = config.get("permissions") if isinstance(config, Mapping) else None
-    merged = merge_domain_rules_into_net_guard(perms)
-    if isinstance(merged.get("file_guard"), Mapping):
-        from jiuwenswarm.common.permission_profile import current_permission_profile
-        from .legacy_compat import file_rules_for_enforcement
-        merged = file_rules_for_enforcement(merged, mode=current_permission_profile(merged))
-    return merged
+    return merge_domain_rules_into_net_guard(perms)
 
 
 __all__ = [

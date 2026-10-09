@@ -17,8 +17,6 @@ def config_file(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_YAML_PATH", path)
     monkeypatch.setattr(config, "_CONFIG_YAML_PATH", path)
     monkeypatch.setattr(config, "get_config_file", lambda: path)
-    from jiuwenswarm.server import sandbox_policy_render
-    monkeypatch.setattr(sandbox_policy_render, "_config_dir", lambda: tmp_path)
     monkeypatch.setattr(builder, "_resolve_workspace_dir", lambda: None)
     monkeypatch.setattr(builder, "_resolve_project_dir", lambda _: None)
     monkeypatch.setattr(builder, "_resolve_config_ro_path", lambda: None)
@@ -27,20 +25,6 @@ def config_file(tmp_path, monkeypatch):
 
 def rule(path, write="deny"):
     return {"path": str(path), "read": "allow", "write": write}
-
-
-def test_derived_file_snapshot_reflects_canonical_update_and_delete(config_file, tmp_path):
-    from jiuwenswarm.agents.harness.common.rails.security_lists import store
-    folder = tmp_path / "data"
-    folder.mkdir()
-    service.update_file_guard_config({"paths": [rule(folder)]})
-    service.sync_file_guard_to_sandbox()
-    rec = store.get_security_lists()["user"][0]
-    rec.cells["*"]["write"] = "allow"
-    store.upsert_record(rec)
-    assert config.get_sandbox_runtime()["files"] == [rule(folder, write="allow")]
-    store.delete_record(rec.id)
-    assert config.get_sandbox_runtime()["files"] == []
 
 
 @pytest.mark.parametrize("enabled", [True, False])

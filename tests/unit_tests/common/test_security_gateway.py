@@ -8,14 +8,6 @@ import re
 from pathlib import Path
 
 import pytest
-
-
-@pytest.fixture(autouse=True)
-def isolated_runtime_policy(tmp_path, monkeypatch):
-    # Bind the store's config reader before individual tests replace get_config.
-    from jiuwenswarm.agents.harness.common.rails.security_lists import store  # noqa: F401
-    from jiuwenswarm.server import sandbox_policy_render
-    monkeypatch.setattr(sandbox_policy_render, "_config_dir", lambda: tmp_path)
 import yaml
 
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import (

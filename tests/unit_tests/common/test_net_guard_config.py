@@ -63,16 +63,17 @@ def test_sync_roundtrip_and_removal(config_file, monkeypatch, windows):
     assert config.get_sandbox_runtime()["urls"] == result["urls"]
     assert render.get_sandbox_network_config() == previous
     assert [s["pattern"] for s in result["skipped"]] == ["ask.example.com"]
-    # Derived compatibility snapshots cannot re-import a deleted canonical rule.
+    # Applying consumes the saved sandbox snapshot, not later Guard edits.
+    stored = config.load_yaml_round_trip(config_file)
+    stored["permissions"]["net_guard"]["urls"] = {}
+    config.dump_yaml_round_trip(config_file, stored)
     render_saved_sandbox_urls(policy_path)
     applied = render.get_sandbox_network_config()
     assert applied == {
         "disable_all": windows,
         "allow_domains": ["allow.example.com", "*.allow.example.com"],
-        "deny_domains": ["deny.example.com", "*.deny.example.com", "old.example.com", "*.old.example.com"],
+        "deny_domains": ["old.example.com", "*.old.example.com", "deny.example.com", "*.deny.example.com"],
     }
-    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import persist_net_guard_section
-    persist_net_guard_section({"urls": {"old.example.com": "deny"}})
     assert sync_net_guard_to_sandbox()["urls"] == {}
     assert render.get_sandbox_network_config() == applied
     render_saved_sandbox_urls(policy_path)
@@ -114,17 +115,6 @@ def test_failed_runtime_write_does_not_report_success(config_file, monkeypatch):
         render_saved_sandbox_urls(render._runtime_copy_path())
 
 
-def test_derived_snapshot_cannot_restore_canonical_delete(config_file, monkeypatch):
-    from jiuwenswarm.agents.harness.common.rails.security_lists import store
-    monkeypatch.setattr(render, "_is_windows", lambda: True)
-    sync_net_guard_to_sandbox()
-    record = next(r for r in store.get_security_lists()["user"] if r.pattern == "deny.example.com")
-    store.delete_record(record.id)
-    render_saved_sandbox_urls(render._runtime_copy_path())
-    assert render.get_sandbox_network_config()["deny_domains"] == []
-    assert all(r.id != record.id for r in store.get_security_lists()["user"])
-
-
 @pytest.mark.parametrize("explicit_empty", [False, True])
 def test_empty_or_missing_urls_preserves_independent_panel_rules(config_file, monkeypatch, explicit_empty):
     monkeypatch.setattr(render, "_is_windows", lambda: True)
@@ -135,9 +125,8 @@ def test_empty_or_missing_urls_preserves_independent_panel_rules(config_file, mo
         config.dump_yaml_round_trip(config_file, data)
     render_saved_sandbox_urls(render._runtime_copy_path())
     assert render.get_sandbox_network_config() == {
-        "disable_all": False,
-        "allow_domains": ["allow.example.com", "*.allow.example.com", "allowed.example.com", "*.allowed.example.com"],
-        "deny_domains": ["deny.example.com", "*.deny.example.com", "blocked.example.com", "*.blocked.example.com"],
+        "disable_all": False, "allow_domains": ["allowed.example.com", "*.allowed.example.com"],
+        "deny_domains": ["blocked.example.com", "*.blocked.example.com"],
     }
 
 
@@ -145,8 +134,9 @@ def test_explicit_empty_sync_preserves_rules_owned_by_panel(config_file, monkeyp
     monkeypatch.setattr(render, "_is_windows", lambda: True)
     render.set_sandbox_network_config(False, [], ["old.example.com"])
     previous = render.get_sandbox_network_config()
-    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import persist_net_guard_section
-    persist_net_guard_section({"urls": {"old.example.com": "deny"}})
+    data = config.load_yaml_round_trip(config_file)
+    data["permissions"]["net_guard"]["urls"] = {}
+    config.dump_yaml_round_trip(config_file, data)
     assert sync_net_guard_to_sandbox()["urls"] == {}
     assert config.load_yaml_round_trip(config_file)["sandbox"]["urls"] == {}
     assert render.get_sandbox_network_config() == previous
