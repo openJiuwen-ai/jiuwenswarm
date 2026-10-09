@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Version pins and semantic names accepted by the observability profile. */
 
 import { GEN_AI_ATTRIBUTES } from './gen-ai-semconv.generated.ts'
@@ -116,6 +114,9 @@ export const OPENJIUWEN_ATTRIBUTES = {
   totalCost: OPENJIUWEN_SEMCONV.OJ_GEN_AI_USAGE_TOTAL_COST,
   totalLatencyMs: OPENJIUWEN_SEMCONV.OJ_GEN_AI_RESPONSE_TOTAL_LATENCY_MS,
   timePerOutputTokenMs: OPENJIUWEN_SEMCONV.OJ_GEN_AI_RESPONSE_TPOT_MS,
+  timeToFirstByteMs: OPENJIUWEN_SEMCONV.OJ_GEN_AI_RESPONSE_TIME_TO_FIRST_BYTE_MS,
+  timeToFirstTokenMs: OPENJIUWEN_SEMCONV.OJ_GEN_AI_RESPONSE_TIME_TO_FIRST_TOKEN_MS,
+  requestRetryCount: OPENJIUWEN_SEMCONV.OJ_REQUEST_RETRY_COUNT,
   promptTokenIds: OPENJIUWEN_SEMCONV.OJ_GEN_AI_RESPONSE_PROMPT_TOKEN_IDS,
   completionTokenIds: OPENJIUWEN_SEMCONV.OJ_GEN_AI_RESPONSE_COMPLETION_TOKEN_IDS,
   logprobs: OPENJIUWEN_SEMCONV.OJ_GEN_AI_RESPONSE_LOGPROBS,

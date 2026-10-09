@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * Markdown-to-plain-text projection for compact summaries and labels.
  * Parsing shares the renderer's streaming GFM grammar ({@link parseGfm}), so

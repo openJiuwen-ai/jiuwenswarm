@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * Chrome-Network-style overview timeline for focusing the trajectory ledger.
  * Adapted mechanically from `packages/client/ui-trajectory/src/client/TrajectoryTimeline.tsx`

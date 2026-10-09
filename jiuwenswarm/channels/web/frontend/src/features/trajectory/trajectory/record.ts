@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * Standalone trajectory record model and formatters.
  *
@@ -26,6 +24,10 @@ export interface AssistantMetricDetail {
   streaming?: boolean | null
   stepStartTime: number | null
   firstTokenTime: number | null
+  /** When the provider's response headers arrived; null when not reported. */
+  firstByteTime?: number | null
+  /** Transport retries the provider SDK made before the streamed response. */
+  retryCount?: number | null
   completedTime: number | null
   usageProvided: boolean
   outputTokens: number | null

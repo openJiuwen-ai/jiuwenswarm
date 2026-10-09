@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Reusable trajectory UI and OTLP projection surface. */
 
 import './client/theme.css'

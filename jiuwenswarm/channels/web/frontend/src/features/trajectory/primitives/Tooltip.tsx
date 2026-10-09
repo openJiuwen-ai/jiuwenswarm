@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 // Hover/focus label bubble (figma tooltip pill: dark plate, white text).
 // TODO: interaction is a placeholder (horizontal overflow clamps and a
 // vertical collision flips the bubble to the other side, but there is no

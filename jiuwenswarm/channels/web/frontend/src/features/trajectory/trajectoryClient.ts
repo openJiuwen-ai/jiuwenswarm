@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Same-origin HTTP client for the JiuwenSwarm trajectory read API. */
 
 import { getApiBase } from '../../utils/env';

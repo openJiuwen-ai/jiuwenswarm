@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Standalone trajectory toolbar dictionary. */
 
 export type TrajectoryKey =
