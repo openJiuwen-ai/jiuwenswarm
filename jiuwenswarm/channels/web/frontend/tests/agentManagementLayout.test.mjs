@@ -72,6 +72,10 @@ const connectorPickerDrawerSource = readFileSync(
   new URL('../src/components/ConnectorMarket/ConnectorPickerDrawer.tsx', import.meta.url),
   'utf8',
 );
+const mcpPickerDrawerSource = readFileSync(
+  new URL('../src/components/ConnectorMarket/McpPickerDrawer.tsx', import.meta.url),
+  'utf8',
+);
 const groupUploadSource = readFileSync(
   new URL('../src/components/AgentManagementPanel/AgentGroupUploadDialog.tsx', import.meta.url),
   'utf8',
@@ -565,27 +569,36 @@ test('management pickers expose source tabs and preserve install/connect actions
   assert.match(agentEditorSource, /testId="agent-editor-skill-picker"/);
   assert.match(pickerListRegionSource, /data-testid=\{testId \? `\$\{testId\}-load-more` : undefined\}/);
   assert.match(agentEditorSource, /testId="agent-editor-mcp-picker"/);
-  assert.match(agentEditorSource, /agent-editor-mcp-picker-connect/);
-  assert.match(agentEditorSource, /<ConnectorPickerDrawer/);
+  assert.match(mcpPickerDrawerSource, /testId: `\$\{testId\}-connect`/);
+  assert.match(agentEditorSource, /<McpPickerDrawer/);
   // filterItem/tabs 必须是稳定引用（useCallback/useMemo）：内联字面量会让 PickerListRegion
-  // 的 [items] 重置效应在父组件每次渲染时把触底加载的列表打回首屏
-  assert.match(agentEditorSource, /filterItem=\{filterMcpBySourceTab\}/);
+  // 的 [items] 重置效应在父组件每次渲染时把触底加载的列表打回首屏。
+  // 页签/过滤/排序/安装连接卡片已内聚在 McpPickerDrawer，专家编辑器与
+  // 手动创建插件页（connector-market-mcp-picker）共用同一组件。
+  assert.match(mcpPickerDrawerSource, /filterItem=\{filterMcpBySourceTab\}/);
   assert.match(
-    agentEditorSource,
-    /const filterMcpBySourceTab = useCallback\(\(mcp: McpOption, sourceTab: 'market' \| 'installed'\)/,
+    mcpPickerDrawerSource,
+    /const filterMcpBySourceTab = useCallback\(\(mcp: McpOption, tab: McpSourceTab\)/,
   );
-  assert.match(agentEditorSource, /const sortedMcps = useMemo\(\(\) => sortMcpOptions\(mcpOptions\), \[mcpOptions\]\)/);
-  assert.match(agentEditorSource, /const selectable = isMcpSelectable\(mcp\)/);
-  assert.match(agentEditorSource, /interactive=\{selectable\}/);
+  assert.match(mcpPickerDrawerSource, /const sortedMcps = useMemo\(\(\) => sortMcpOptions\(items\), \[items\]\)/);
+  assert.match(mcpPickerDrawerSource, /const selectable = isMcpSelectable\(mcp\)/);
+  assert.match(mcpPickerDrawerSource, /interactive=\{selectable\}/);
   assert.match(connectorPickerDrawerSource, /selected: selectedIds\.includes\(getItemKey\(item\)\)/);
-  assert.match(agentEditorSource, /value: 'installed'/);
+  assert.match(mcpPickerDrawerSource, /value: 'installed'/);
   assert.doesNotMatch(agentEditorSource, /MCP_TYPE_OPTIONS|mcpTypeFilter|mcpTypeAll/);
+  assert.doesNotMatch(mcpPickerDrawerSource, /MCP_TYPE_OPTIONS|mcpTypeFilter|mcpTypeAll/);
   assert.match(panelSource, /const \[busySkillId, setBusySkillId\] = useState<string \| null>\(null\)/);
-  assert.match(panelSource, /const \[busyMcpId, setBusyMcpId\] = useState<string \| null>\(null\)/);
+  assert.match(mcpPickerDrawerSource, /const \[installingId, setInstallingId\] = useState<string \| null>\(null\)/);
   assert.match(panelSource, /setBusySkillId\(skill\.id\)/);
-  assert.match(panelSource, /setBusyMcpId\(mcp\.id\)/);
+  assert.match(mcpPickerDrawerSource, /setInstallingId\(mcp\.id\)/);
   assert.match(panelSource, /installingSkillId=\{busySkillId\}/);
-  assert.match(panelSource, /installingMcpId=\{busyMcpId\}/);
+  assert.match(mcpPickerDrawerSource, /disabled: installing,/);
+  assert.match(mcpPickerDrawerSource, /busy: installing,/);
+  // 挂载首跑静默清掉残留的 connectorStore.error（陈旧报错不误弹），只 toast 挂载后新发生的错误。
+  assert.match(mcpPickerDrawerSource, /const staleErrorRef = useRef\(true\)/);
+  assert.match(mcpPickerDrawerSource, /if \(staleErrorRef\.current\) \{\s*staleErrorRef\.current = false;\s*if \(connectorError\) clearConnectorError\(\);/);
+  // 安装请求落定（response 有值）即刷新列表，需凭据分支取消授权弹窗后卡片能看到已安装态。
+  assert.match(mcpPickerDrawerSource, /if \(response\) onRetry\(\);/);
   assert.match(agentManagementCss, /agent-management-selection-card\.page-card\.is-disabled[\s\S]*opacity: 1;/);
   assert.match(
     agentManagementCss,
@@ -600,9 +613,18 @@ test('management pickers expose source tabs and preserve install/connect actions
     agentManagementCss,
     /agent-management-selection-card__install[\s\S]*color: var\(--color-action-primary\);/,
   );
+  // 2026-10-09 收敛：成员/队长选择卡片的 hover 走 PageCard 默认效果（浮起阴影），选中态
+  // 与 connector-market-skill-picker / agent-group-editor-skill-picker 滚动区卡片一致
+  // （accent 底色描边）；selection-card 不再有 info 蓝底/inset 描边/install 描边类覆盖。
+  // is-disabled（未安装灰底）与 is-loading（兼容性查询骨架）仍保留专属样式。
+  assert.match(memberPickerSource, /selected=\{selected\}/);
+  assert.doesNotMatch(agentManagementCss, /\.agent-management-selection-card\.is-selected/);
+  assert.doesNotMatch(agentManagementCss, /\.agent-management-selection-card:hover/);
+  // 选中态需在 page-card 作用域按 PageCard 原值 re-assert：基础块与 .page-card--selected
+  // 同特异性且本文件打包序更晚，tie 会把选中底色/描边盖回默认（见 agentManagement.css 注释）。
   assert.match(
     agentManagementCss,
-    /\.agent-management-selection-card\.page-card\.is-selected\s*\{[\s\S]*box-shadow: inset/,
+    /\.agent-management-selection-card\.page-card\.page-card--selected\s*\{[^}]*background: var\(--color-chat-accent-subtle\);[^}]*border-color: var\(--color-chat-accent\);/,
   );
   assert.doesNotMatch(
     agentManagementCss,

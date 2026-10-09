@@ -2,8 +2,16 @@ import { scheduleCatalogRefresh, catalogScope } from '../features/catalogCache';
 import { create } from 'zustand';
 import i18n from '../i18n';
 import { connectorApi } from '../services/connectorApi';
-import type { ConnectorConnectResponse, ConnectorDetail, ConnectorInstallResponse, ConnectorSummary, McpBusyKind } from '../types/connector';
+import type {
+  ConnectorConnectResponse,
+  ConnectorDetail,
+  ConnectorInstallResponse,
+  ConnectorSummary,
+  McpBusyKind,
+} from '../types/connector';
 import type { WebError } from '../types/websocket';
+
+export const CONNECTOR_ERROR_TOAST_ID = 'connector-market-action-error';
 
 // 命名/组织风格照抄 cronStore.ts：inline action、无独立 actions 对象。
 // connect/disconnect/registerCustom 悲观更新——这几个是重操作，且有 busyMap/
@@ -242,7 +250,14 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
     try {
       const response = await connectorApi.list(filter);
       if (requestScope !== catalogScope()) return;
-      scheduleCatalogRefresh('connectorStore.ts:' + filter, response.cache, () => { void get().loadList(filter, { silent: true }); }, () => listRequestSeq[filter] === mySeq);
+      scheduleCatalogRefresh(
+        'connectorStore.ts:' + filter,
+        response.cache,
+        () => {
+          void get().loadList(filter, { silent: true });
+        },
+        () => listRequestSeq[filter] === mySeq,
+      );
       if (listRequestSeq[filter] !== mySeq) return; // 已有更新的同 filter 调用发起过，这次结果作废
       const fresh = response;
       set((state) => ({

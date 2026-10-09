@@ -132,6 +132,9 @@ export type SkillOption = {
   description: string;
   source?: string;
   installed?: boolean;
+  /** skills.list 原样透传的启用态：false = 用户已停用。手动创建插件页的技能弹窗据此
+      只列已启用技能（同 SkillPanel"我的技能"默认口径，见 utils/mySkills.ts）。 */
+  enabled?: boolean;
   /** Raw SKILL.md frontmatter kind, including swarm-skill/team-skill. */
   kind?: string;
   skillType?: string;

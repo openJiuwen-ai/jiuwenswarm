@@ -241,6 +241,7 @@ export function normalizeSkillOption(raw: RawSkillOption): SkillOption {
     description: raw.description || '',
     source,
     installed,
+    ...(typeof raw.enabled === 'boolean' ? { enabled: raw.enabled } : {}),
     ...(raw.kind?.trim() ? { kind: raw.kind.trim() } : {}),
     ...(raw.skill_type?.trim() ? { skillType: raw.skill_type.trim() } : {}),
     ...(marketplace ? { marketplace } : {}),

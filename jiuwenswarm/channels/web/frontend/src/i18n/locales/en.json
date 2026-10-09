@@ -3773,6 +3773,15 @@
       "fieldRequired": "This field is required",
       "withSkillNotWired": "This entry point isn't wired to the chat panel yet"
     },
+    "picker": {
+      "searchPlaceholder": "Search by keyword",
+      "actionError": "The action could not be completed. Try again in a moment.",
+      "mcpSourceTabsLabel": "Connector sources",
+      "mcpMarketTab": "Connector market",
+      "mcpMineTab": "My connectors",
+      "mcpError": "Unable to load the connector list. Try again.",
+      "mcpEmpty": "No connectors available"
+    },
     "chatPrompts": {
       "createPlugin": "Help me create a xxx plugin that's great at xxx"
     },
