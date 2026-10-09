@@ -158,7 +158,7 @@ def test_resolve_rewind_agent_finds_session_owner_across_cached_roots(server_cls
     }
     server = SimpleNamespace(
         _agent_manager=manager,
-        _resolve_adapter=server_cls._resolve_adapter,
+        _resolve_adapter=AgentWebSocketServer._resolve_adapter,
     )
     ctx = SimpleNamespace(services=_services(server))
 
