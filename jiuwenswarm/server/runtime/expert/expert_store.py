@@ -101,7 +101,7 @@ async def resolve_expert_package_dir(expert_id: str) -> Path:
     if os.environ.get(LOCAL_DIRS_ENV, "1") == "1":
         # 本地源启用（默认）：LocalDir 源不落缓存，miss 回退 fetch 是常态
         logger.info(
-            "expert package cache miss, fallback to source fetch "
+            "[ExpertStore] expert package cache miss, fallback to source fetch "
             "(local dirs enabled): %s",
             expert_id,
         )
@@ -109,8 +109,8 @@ async def resolve_expert_package_dir(expert_id: str) -> Path:
         # 生产链路：缓存应已由 expert.load 落盘，miss 属异常态（缓存被清/损坏），
         # 自动回退仓库下载可自愈，但必须留 warning 让异常可被发现
         logger.warning(
-            "expert package cache unexpectedly missing, fallback to repo fetch: "
-            "%s（缓存本应已由 expert.load 落盘，请关注缓存目录健康）",
+            "[ExpertStore] expert package cache unexpectedly missing, fallback "
+            "to repo fetch: %s（缓存本应已由 expert.load 落盘，请关注缓存目录健康）",
             expert_id,
         )
     return await get_expert_source().fetch(expert_id)
@@ -177,7 +177,7 @@ def validate_expert_package(package_dir: Path) -> list[str]:
         # 装载侧 _build_skill_specs 同规放宽；非空残缺（目录不存在/缺 SKILL.md）
         # 与非 dict 非法条目仍报错
         if not skill_entry or (
-            isinstance(skill_entry, dict) and not skill_entry.get("dir")
+                isinstance(skill_entry, dict) and not skill_entry.get("dir")
         ):
             skipped_empty_skills += 1
             continue
@@ -292,8 +292,12 @@ class HttpRepoExpertPackageSource:
         target_dir = get_expert_cache_dir() / expert_id
         try:
             _extract_zip(resp.content, target_dir)
-        except (zipfile.BadZipFile, ValueError, OSError) as exc:
-            raise ExpertRepoUnavailable(f"专家包下载内容异常: {exc}") from exc
+        except (zipfile.BadZipFile, ValueError) as exc:
+            # 包内容损坏/非法，且不降级缓存——损坏的包不应静默回退旧版本（fail-loud）
+            raise InvalidExpertPackage(f"专家包内容损坏或非法: {exc}") from exc
+        except OSError as exc:
+            # 磁盘/权限等本地环境故障：可重试语义，但缓存目录写不进去与仓库无关
+            raise ExpertRepoUnavailable(f"专家包写入本地缓存失败: {exc}") from exc
         return target_dir
 
 
@@ -342,7 +346,13 @@ _LONG_PATH_GUARD = 32700
 
 
 def _extract_zip(content: bytes, target_dir: Path) -> None:
-    """解压到 target_dir（先清空旧目录），拒绝路径逃逸的条目。
+    """解压到 target_dir，拒绝路径逃逸的条目。
+
+    原子化：先解压到同级暂存目录（``.<name>.staging-<pid>``），全部成功后才与
+    target_dir 交换——损坏的 zip / 解压中断不再摧毁原有可用缓存。交换采用
+    rename 两步（target → ``.<name>.old-<pid>`` → staging 顶上），崩溃窗口内
+    至多残留 ``.old-*`` 目录，旧缓存不丢；``.`` 前缀使暂存/备份目录不进
+    LocalDir.list（其跳过点开头的目录）。
 
     容错：条目全部位于同一个一级目录前缀下时自动剥掉该层，让
     ``manifest.json`` 落到包根目录，与平铺打包形态等价。
@@ -351,6 +361,21 @@ def _extract_zip(content: bytes, target_dir: Path) -> None:
     导致的 WinError 3 假「路径不存在」。
     """
     target_str = _to_long_path(target_dir)
+    staging_str = _to_long_path(
+        target_dir.parent / f".{target_dir.name}.staging-{os.getpid()}"
+    )
+    backup_str = _to_long_path(
+        target_dir.parent / f".{target_dir.name}.old-{os.getpid()}"
+    )
+
+    def _rmtree_quiet(path_str: str) -> None:
+        if os.path.exists(path_str):
+            shutil.rmtree(path_str, ignore_errors=True)
+
+    # 清掉上次崩溃残留的同名暂存/备份目录
+    _rmtree_quiet(staging_str)
+    _rmtree_quiet(backup_str)
+
     with zipfile.ZipFile(io.BytesIO(content)) as zf:
         names = zf.namelist()
         for name in names:
@@ -358,23 +383,37 @@ def _extract_zip(content: bytes, target_dir: Path) -> None:
             if normalized.is_absolute() or ".." in normalized.parts:
                 raise ValueError(f"zip 条目路径非法: {name}")
         prefix = _single_top_level_prefix(names)
-        if os.path.exists(target_str):
-            shutil.rmtree(target_str)
-        os.makedirs(target_str, exist_ok=True)
-        for name in names:
-            rel = name[len(prefix):] if prefix else name
-            if not rel or rel.endswith("/"):
-                continue
-            # 逐段拼接而非 rel 整体 join：前缀模式下 Windows 不做分隔符/`.` 规范化
-            parts = [p for p in rel.split("/") if p not in ("", ".")]
-            if not parts:
-                continue
-            dest = os.path.join(target_str, *parts)
-            if len(dest) > _LONG_PATH_GUARD:
-                raise ValueError(f"zip 条目路径过长: {name[:80]}")
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            with zf.open(name) as src, open(dest, "wb") as dst:
-                shutil.copyfileobj(src, dst)
+        os.makedirs(staging_str, exist_ok=True)
+        try:
+            for name in names:
+                rel = name[len(prefix):] if prefix else name
+                if not rel or rel.endswith("/"):
+                    continue
+                # 逐段拼接而非 rel 整体 join：前缀模式下 Windows 不做分隔符/`.` 规范化
+                parts = [p for p in rel.split("/") if p not in ("", ".")]
+                if not parts:
+                    continue
+                dest = os.path.join(staging_str, *parts)
+                if len(dest) > _LONG_PATH_GUARD:
+                    raise ValueError(f"zip 条目路径过长: {name[:80]}")
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with zf.open(name) as src, open(dest, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+        except BaseException:
+            # 解压失败：清暂存，原缓存原样保留
+            _rmtree_quiet(staging_str)
+            raise
+
+    # 全部解压成功，交换落位（rename 两步，失败回滚）
+    if os.path.exists(target_str):
+        os.rename(target_str, backup_str)
+    try:
+        os.rename(staging_str, target_str)
+    except BaseException:
+        if os.path.exists(backup_str) and not os.path.exists(target_str):
+            os.rename(backup_str, target_str)
+        raise
+    _rmtree_quiet(backup_str)
 
 
 class LocalDirExpertPackageSource:
@@ -448,12 +487,19 @@ class CachedExpertPackageSource(LocalDirExpertPackageSource):
     挂链尾（仓库之后）：
     - list：同名条目以仓库元数据为准（版本更新/下架信息新鲜），缓存只补充仓库没有的；
     - fetch：先走仓库（下载产物本来就落 experts_cache，版本更新语义不变），
-      仓库 404（下架）时回退缓存目录——已下载专家仍可装载/重装；
+      仓库 404（下架）或不可达时回退缓存目录——已下载专家仍可装载/重装；
     - 列表只收校验通过的包：下载中断的残留目录（available=False）不进列表。
 
     缓存目录按用户动态解析（``get_expert_cache_dir()`` = 工作区下 experts_cache），
     不写死任何 uid 路径。
     """
+
+    # 链式 fetch 兜底命中本源时的告警文案（ChainExpertPackageSource.fetch 读取）：
+    # 走到这里意味着仓库说「没有此包」（可能已下架——原因或为安全回收）
+    fallback_notice = (
+        "本地源与仓库均无此包（可能已下架），由缓存兜底装载；"
+        "下架原因可能是安全回收，请关注"
+    )
 
     def __init__(self) -> None:
         super().__init__(experts_dir=get_expert_cache_dir())
@@ -468,7 +514,16 @@ class CachedExpertPackageSource(LocalDirExpertPackageSource):
 
 
 class ChainExpertPackageSource:
-    """多来源链：靠前来源优先（list 同名覆盖、fetch 先尝试），ExpertNotFound 落到下一源。"""
+    """多来源链：靠前来源优先（list 同名覆盖、fetch 先尝试）。
+
+    fetch 降级语义：
+    - ``ExpertNotFound``（权威否定：该源确定无此包）→ 落到下一源；
+    - ``ExpertRepoUnavailable``（模糊故障：源答不了）→ 同样落到下一源，但兜底
+      命中时记 warning（可能非最新版本）；所有源都失败时优先抛它而非
+      ExpertNotFound——「仓库不可达」比「不存在」更可行动；
+    - 其余异常（如 ``InvalidExpertPackage`` 包损坏）不降级，直接上抛——
+      损坏的包不应静默回退旧版本。
+    """
 
     def __init__(self, sources: list[ExpertPackageSource]) -> None:
         self._sources = sources
@@ -488,12 +543,31 @@ class ChainExpertPackageSource:
         return sorted(merged.values(), key=lambda s: s.id)
 
     async def fetch(self, expert_id: str) -> Path:
-        # local 优先
+        # local 优先；降级规则见类 docstring
+        repo_error: ExpertRepoUnavailable | None = None
+        saw_miss = False
         for source in self._sources:
             try:
-                return await source.fetch(expert_id)
+                package_dir = await source.fetch(expert_id)
             except ExpertNotFound:
+                saw_miss = True
                 continue
+            except ExpertRepoUnavailable as exc:
+                repo_error = repo_error or exc
+                continue
+            if repo_error is not None:
+                logger.warning(
+                    "[ExpertStore] expert %s: 上游源不可达（%s），由 %s 兜底"
+                    "——可能不是最新版本",
+                    expert_id, repo_error, type(source).__name__,
+                )
+            elif saw_miss:
+                notice = getattr(source, "fallback_notice", None)
+                if notice:
+                    logger.warning("[ExpertStore] expert %s: %s", expert_id, notice)
+            return package_dir
+        if repo_error is not None:
+            raise repo_error
         raise ExpertNotFound(f"专家包不存在: {expert_id}")
 
 
@@ -511,7 +585,10 @@ def get_expert_source() -> ExpertPackageSource:
         sources: list[ExpertPackageSource] = []
         if os.environ.get(LOCAL_DIRS_ENV, "1") == "1":
             sources.append(LocalDirExpertPackageSource())
-            logger.info("expert local dir source enabled (%s)", get_agent_experts_dir())
+            logger.info(
+                "[ExpertStore] expert local dir source enabled (%s)",
+                get_agent_experts_dir(),
+            )
         sources.append(HttpRepoExpertPackageSource())
         sources.append(CachedExpertPackageSource())
         _default_source = ChainExpertPackageSource(sources)

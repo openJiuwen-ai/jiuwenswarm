@@ -242,9 +242,26 @@ async def test_fetch_rejects_zip_slip(cache_dir: Path) -> None:
     source = es.HttpRepoExpertPackageSource(
         client=_mock_client(lambda request: httpx.Response(200, content=payload))
     )
-    with pytest.raises(es.ExpertRepoUnavailable):
+    # 包内容非法 ≠ 仓库不可达：InvalidExpertPackage（→ INVALID_PACKAGE）
+    with pytest.raises(es.InvalidExpertPackage):
         await source.fetch("security-reviewer")
     assert not (cache_dir.parent / "evil.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_fetch_corrupt_zip_preserves_old_cache(cache_dir: Path) -> None:
+    """坏下载不毁旧缓存：原子化解压，旧版本原地保留。"""
+    stale = _make_package(cache_dir, "security-reviewer")
+    payload = b"not-a-zip-at-all"
+    source = es.HttpRepoExpertPackageSource(
+        client=_mock_client(lambda request: httpx.Response(200, content=payload))
+    )
+    with pytest.raises(es.InvalidExpertPackage):
+        await source.fetch("security-reviewer")
+    assert (stale / "manifest.json").is_file(), "坏下载不得摧毁原有可用缓存"
+    # 暂存/备份目录不外漏（.staging-* / .old-* 应已清理或根本未落位）
+    leftovers = [p.name for p in cache_dir.iterdir() if p.name.startswith(".")]
+    assert not leftovers, f"残留的暂存/备份目录: {leftovers}"
 
 
 @pytest.mark.asyncio
@@ -372,6 +389,37 @@ async def test_chain_fetch_falls_back_to_cache_on_repo_404(cache_dir: Path) -> N
     )
     chain = es.ChainExpertPackageSource([repo, cache])
     assert await chain.fetch("delisted") == cache_dir / "delisted"
+
+
+@pytest.mark.asyncio
+async def test_chain_fetch_falls_back_to_cache_on_repo_down(cache_dir: Path) -> None:
+    """仓库不可达（模糊故障）时 fetch 同样回退缓存目录——修复前仅 404 降级，
+    仓库挂掉时已下载包装不上（desktop 主进程不在 = np 管道不可达的日常场景）。"""
+    _make_package(cache_dir, "cached-expert")
+    cache = es.CachedExpertPackageSource()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    repo = es.HttpRepoExpertPackageSource(client=_mock_client(handler))
+    chain = es.ChainExpertPackageSource([repo, cache])
+    assert await chain.fetch("cached-expert") == cache_dir / "cached-expert"
+
+
+@pytest.mark.asyncio
+async def test_chain_fetch_prefers_repo_unavailable_over_not_found(
+        cache_dir: Path) -> None:
+    """所有源都失败且含仓库不可达时，抛 ExpertRepoUnavailable 而非
+    ExpertNotFound——「仓库挂了」比「不存在」更可行动。"""
+    cache = es.CachedExpertPackageSource()  # 空缓存 → ExpertNotFound
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    repo = es.HttpRepoExpertPackageSource(client=_mock_client(handler))
+    chain = es.ChainExpertPackageSource([repo, cache])
+    with pytest.raises(es.ExpertRepoUnavailable):
+        await chain.fetch("nobody")
 
 
 @pytest.mark.asyncio

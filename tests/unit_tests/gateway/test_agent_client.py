@@ -212,6 +212,110 @@ async def test_send_request_stream_absorbs_duplicate_complete_frames(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_send_request_stream_grace_survives_idle_timeout(monkeypatch):
+    """宿主挂起恢复竞态：空闲超时后先进宽限探活，补到帧就继续收流。
+
+    背景（2026-09-27 现场）：睡眠/休眠恢复瞬间，网关的空闲超时比 AgentServer
+    醒来后第一条 keepalive 早 61ms 触发；旧实现立刻 raise，该轮之后 500 帧
+    被判"无目标队列"丢弃，用户侧显示"已完成"而 agent 其实还在跑。
+    """
+    client = AgentClientHarness()
+    client.set_ws_for_test(FakeWebSocket())
+
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.routing.agent_client._STREAM_IDLE_TIMEOUT_SECONDS", 0.05
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.routing.agent_client._STREAM_IDLE_GRACE_PROBES", 5
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.routing.agent_client._STREAM_IDLE_GRACE_PROBE_SECONDS", 0.2
+    )
+
+    env = e2a_from_agent_fields(
+        request_id="rid-grace",
+        channel_id="xiaoyi",
+        session_id="sess-grace",
+        params={"content": "hello"},
+        is_stream=True,
+    )
+
+    async def inject_frames():
+        while not client.has_message_queue_for_test("rid-grace"):
+            await asyncio.sleep(0.001)
+        queue = client.get_message_queue_for_test("rid-grace")
+        # 先静默超过空闲上限（等价于宿主冻结），再补发 keepalive + 终帧
+        await asyncio.sleep(0.08)
+        await queue.put(
+            encode_agent_chunk_for_wire(
+                AgentResponseChunk(
+                    request_id="rid-grace",
+                    channel_id="xiaoyi",
+                    payload={"event_type": "keepalive"},
+                    is_complete=False,
+                ),
+                response_id="rid-grace",
+                sequence=-1,
+            )
+        )
+        await queue.put(
+            encode_agent_chunk_for_wire(
+                AgentResponseChunk(
+                    request_id="rid-grace",
+                    channel_id="xiaoyi",
+                    payload={"is_complete": True},
+                    is_complete=True,
+                ),
+                response_id="rid-grace",
+                sequence=0,
+            )
+        )
+
+    injector = asyncio.create_task(inject_frames())
+    chunks = []
+    async for chunk in client.send_request_stream(env):
+        chunks.append(chunk)
+    await injector
+
+    assert [chunk.payload for chunk in chunks] == [
+        {"event_type": "keepalive"},
+        {"is_complete": True},
+    ]
+    assert client.has_message_queue_for_test("rid-grace") is False
+
+
+@pytest.mark.asyncio
+async def test_send_request_stream_grace_exhausted_still_raises(monkeypatch):
+    """宽限探活耗尽后仍按原语义收口，避免真挂死的流永久占住转发循环。"""
+    client = AgentClientHarness()
+    client.set_ws_for_test(FakeWebSocket())
+
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.routing.agent_client._STREAM_IDLE_TIMEOUT_SECONDS", 0.02
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.routing.agent_client._STREAM_IDLE_GRACE_PROBES", 2
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.routing.agent_client._STREAM_IDLE_GRACE_PROBE_SECONDS", 0.02
+    )
+
+    env = e2a_from_agent_fields(
+        request_id="rid-stall",
+        channel_id="xiaoyi",
+        session_id="sess-stall",
+        params={"content": "hello"},
+        is_stream=True,
+    )
+
+    with pytest.raises(RuntimeError, match="空闲超时"):
+        async for _ in client.send_request_stream(env):
+            pass
+
+    assert client.has_message_queue_for_test("rid-stall") is False
+
+
+@pytest.mark.asyncio
 async def test_message_receiver_loop_stops_on_closed_websocket():
     client = AgentClientHarness()
     ws = ClosingRecvWebSocket()

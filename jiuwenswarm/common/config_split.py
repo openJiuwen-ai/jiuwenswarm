@@ -51,6 +51,7 @@ _EXTRACT_LOCK = threading.Lock()
 _SCALAR_PATHS: tuple[tuple[str, ...], ...] = (
     ("sandbox", "enabled"),
     ("permissions", "shell_guard", "builtin_rules_enabled"),
+    ("permissions", "soft_delete", "enabled"),
 )
 
 # 小艺 PC/手机 HITL「永久记住」。按 id（路径条目按 path）upsert 回新模板 list。

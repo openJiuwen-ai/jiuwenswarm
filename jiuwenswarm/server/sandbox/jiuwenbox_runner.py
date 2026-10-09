@@ -69,6 +69,38 @@ def _win_hidden_kwargs() -> dict:
     }
 
 
+def _apply_soft_delete_env(env: dict[str, str]) -> None:
+    """开关打开时把软删除 DLL 路径和归档目录写进 box-server 环境.
+
+    box-server 不继承父进程的全部环境, 只复制白名单和 ``JIUWENBOX_*``.
+    这里显式写入, 后面的 runner 才能在挂起时装上 DLL.
+    开关打开但 DLL 不存在时直接失败, 不能无保护地启动沙箱.
+    """
+    from jiuwenbox.supervisor.win_softdelete import (
+        ENV_ARCHIVE,
+        ENV_DLL,
+        ENV_ENABLED,
+        dll_path,
+    )
+    from jiuwenswarm.common.config import get_config, get_file_soft_delete_settings
+
+    existing_dll = (env.get(ENV_DLL) or "").strip()
+    if env.get(ENV_ENABLED) == "1" and existing_dll:
+        if not os.path.isfile(existing_dll):
+            raise RuntimeError(f"soft-delete enabled but DLL is missing: {existing_dll}")
+        return
+    enabled, archive = get_file_soft_delete_settings(get_config())
+    if not enabled:
+        return
+    dll = dll_path()
+    if not dll.is_file():
+        raise RuntimeError(f"soft-delete enabled but DLL is missing: {dll}")
+    env[ENV_ENABLED] = "1"
+    env[ENV_DLL] = str(dll)
+    if archive:
+        env[ENV_ARCHIVE] = archive
+
+
 def _cleanup_stale_win_proxy_ports(
     port_start: int = _WIN_PROXY_DEFAULT_PORT_START,
     port_end: int = _WIN_PROXY_DEFAULT_PORT_END,
@@ -496,6 +528,8 @@ class JiuwenBoxRunner:
                     env[_k] = _v
             # Retain explicit bootstrap overrides on policy-only reloads.
             env.update(self._startup_extra_env)
+            if sys.platform == "win32":
+                _apply_soft_delete_env(env)
             # 若 jiuwenbox 未安装到 site-packages, 尝试用仓库内源码目录注入 PYTHONPATH
             local_src = _resolve_jiuwenbox_src_dir()
             if local_src is not None and not getattr(sys, "frozen", False):
