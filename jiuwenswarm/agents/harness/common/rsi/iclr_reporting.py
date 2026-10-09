@@ -116,8 +116,15 @@ class IclrReportingAgent(ReportingAgent):
         visible = ReportingAgent._build_evidence_blocks(
             inputs.model_copy(update={"result": result}), design_context, background, bib, figure_path,
         )
-        marker = "\n\nHost-rendered results table — include exactly as given, do not redraw it:\n\n"
-        evidence["results"] = evidence["results"].split(marker, 1)[0] + marker + visible["results"].split(marker, 1)[1]
+        # SDK display headings vary; replace only the table and retain the full evidence.
+        prefix, start, tail = evidence["results"].partition(r"\begin{tabular}")
+        _, visible_start, visible_tail = visible["results"].partition(r"\begin{tabular}")
+        _, end, suffix = tail.partition(r"\end{tabular}")
+        display, visible_end, _ = visible_tail.partition(r"\end{tabular}")
+        if start and visible_start and end and visible_end:
+            evidence["results"] = prefix + start + display + end + suffix
+        else:
+            evidence["results"] += "\n\n" + visible["results"]
         return evidence
 
     def _build_paper_agent(self, *, run_id: str):

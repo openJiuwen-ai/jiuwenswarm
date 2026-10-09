@@ -462,12 +462,11 @@ def test_paired_study_display_table_keeps_full_result_context_and_other_evidence
     bib = Bibliography("", {"Verified source": "verified"}, {"verified"}, ["Retained evidence"])
     context = {"objective": "Retained objective", "hypothesis": "Retained hypothesis"}
     baseline = ReportingAgent._build_evidence_blocks(inputs, context, "Retained background", bib, None)
-    marker = "\n\nHost-rendered results table — include exactly as given, do not redraw it:\n\n"
     assert "\\begin{tabular}{l" + "r" * 19 + "}" in baseline["results"]
     evidence = _agent_type()._build_evidence_blocks(inputs, context, "Retained background", bib, None)
     assert "\\begin{tabular}{lrrr}" in evidence["results"]
     assert r"paired\_study & 0.375 & 0.4583 & 0.5 \\" in evidence["results"]
-    assert evidence["results"].split(marker, 1)[0] == baseline["results"].split(marker, 1)[0]
+    assert evidence["results"].split(r"\begin{tabular}", 1)[0] == baseline["results"].split(r"\begin{tabular}", 1)[0]
     assert "input\\_tokens=9881" in evidence["results"]
     assert "model\\_call\\_count=54" in evidence["results"]
     for block in ("background", "method", "discussion"):
@@ -613,3 +612,37 @@ def test_sdk_manifest_bibliography_recovers_keys_offline_and_rejects_unknown(tmp
     assert "Verified local source" in bib.bib_text
     assert lint.check_citations(r"\cite{" + key + "}", bib.known_keys) == []
     assert lint.check_citations(r"\cite{unknown}", bib.known_keys)
+
+
+def test_paired_study_table_preserves_sdk_evidence_without_display_heading(monkeypatch):
+    inputs = _display_reporting_input()
+    inputs.result.variants[0].metrics["lengthmatched_accuracy"] = 0.412345
+    original = inputs.model_dump_json()
+    known = lint.known_numbers(inputs.result)
+    bib = Bibliography("", {"Verified source": "verified"}, {"verified"}, ["Retained evidence"])
+    context = {"objective": "Retained objective", "hypothesis": "Retained hypothesis"}
+    real_build = ReportingAgent._build_evidence_blocks
+    marker = "\n\nHost-rendered results table — include exactly as given, do not redraw it:\n\n"
+
+    def changed_sdk(*args):
+        evidence = real_build(*args)
+        evidence["results"] = evidence["results"].replace(marker, "\n\nSDK results display:\n\n")
+        evidence["results"] += "\nRetained SDK numeric caveat: 0.1379."
+        return evidence
+
+    monkeypatch.setattr(ReportingAgent, "_build_evidence_blocks", staticmethod(changed_sdk))
+    baseline = changed_sdk(inputs, context, "Retained background", bib, None)
+    assert marker not in baseline["results"]
+    evidence = _agent_type()._build_evidence_blocks(inputs, context, "Retained background", bib, None)
+    assert evidence["results"].split(r"\begin{tabular}", 1)[0] == baseline["results"].split(r"\begin{tabular}", 1)[0]
+    assert evidence["results"].split(r"\end{tabular}", 1)[1] == baseline["results"].split(r"\end{tabular}", 1)[1]
+    assert r"\begin{tabular}{lrrrr}" in evidence["results"]
+    assert r"lengthmatched\_accuracy" in evidence["results"]
+    assert "0.4123" in evidence["results"]
+    assert r"input\_tokens=9881" in evidence["results"]
+    assert r"model\_call\_count=54" in evidence["results"]
+    for block in ("background", "method", "discussion"):
+        assert evidence[block] == baseline[block]
+    assert json.loads(evidence["verified_facts"].split("\n", 1)[1])["lengthmatched_accuracy"] == 0.412345
+    assert inputs.model_dump_json() == original
+    assert lint.known_numbers(inputs.result) == known
