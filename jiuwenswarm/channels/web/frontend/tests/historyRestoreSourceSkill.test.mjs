@@ -3,6 +3,26 @@ import test from 'node:test';
 
 import { parseHistoryJsonFileToTimelinePreview } from '../node_modules/.cache/history-restore/historyRestore.mjs';
 
+test('history replay restores failed turns as system error messages', () => {
+  const { messages } = parseHistoryJsonFileToTimelinePreview([
+    { role: 'user', content: 'create a task', timestamp: 1757800000 },
+    { role: 'assistant', event_type: 'chat.error', content: 'cron failed', timestamp: 1757800001 },
+    { role: 'assistant', event_type: 'chat.error', content: '', error: 'route failed', timestamp: 1757800002 },
+    { role: 'assistant', event_type: 'chat.error', event_payload: { error: 'agent failed' }, timestamp: 1757800003 },
+    { role: 'assistant', event_type: 'chat.error', content: '  ', timestamp: 1757800004 },
+    { role: 'assistant', event_type: 'chat.final', content: 'retry succeeded', timestamp: 1757800005 },
+  ], 'error-session');
+  assert.equal(messages.length, 5);
+  assert.equal(messages[1].role, 'system');
+  assert.match(messages[1].content, /cron failed/);
+  assert.equal(messages[2].role, 'system');
+  assert.match(messages[2].content, /route failed/);
+  assert.equal(messages[3].role, 'system');
+  assert.match(messages[3].content, /agent failed/);
+  assert.equal(messages[4].role, 'assistant');
+  assert.equal(messages[4].content, 'retry succeeded');
+});
+
 // 历史记录字段对齐 pod 本地 history.json 的落盘结构：chat.tool_call 事件把
 // tool_call（含 source_skill）展平在 extra 里（interface.py _append_history_record）。
 const TOOL_CALL_WITH_SOURCE_SKILL = {
