@@ -4,22 +4,22 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
 
+from gateway_protocol.sdk.crypto_utility import CryptoUtility
+from gateway_protocol.types import ExtensionConfig
 from jiuwenswarm.common.security import base_crypto
 from jiuwenswarm.common.security.base_crypto import CryptoProvider
 from jiuwenswarm.extensions.callback_compat import unregister_callback_sync
-from jiuwenswarm.extensions.sdk.crypto_utility import CryptoUtility
-from jiuwenswarm.extensions.types import ExtensionConfig
 
 if TYPE_CHECKING:
-    from jiuwenswarm.extensions.sdk.agent_server_client import (
+    from gateway_protocol.sdk.agent_server_client import (
         AgentServerClientExtension,
     )
-    from jiuwenswarm.extensions.sdk.application_plugin import (
+    from gateway_protocol.sdk.application_plugin import (
         ApplicationPluginExtension,
     )
-    from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
-    from jiuwenswarm.common.client.agent_client import AgentServerClient
-    from jiuwenswarm.common.client.third_agent import ThirdAgent
+    from gateway_protocol.sdk.third_agent import ThirdAgentExtension
+    from gateway_protocol.agent_client import AgentServerClient
+    from gateway_protocol.third_agent import ThirdAgent
 else:
     # Keep runtime type-hint introspection valid without importing Gateway and
     # transport adapters into a Runtime-direct process.
@@ -167,7 +167,7 @@ class ExtensionRegistry:
         media_attachment_normalizer: Callable[[dict[str, Any], str | None], None]
         | None = None,
     ) -> None:
-        from jiuwenswarm.extensions.sdk.application_plugin import (
+        from gateway_protocol.sdk.application_plugin import (
             ApplicationPluginServices,
         )
 

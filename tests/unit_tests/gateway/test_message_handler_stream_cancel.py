@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy.exc import TimeoutError as DatabaseTimeoutError
 
+from gateway_protocol.e2a.agent_models import AgentResponseChunk
+from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema import Message
-from jiuwenswarm.common.schema.agent import AgentResponseChunk
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.gateway.message_handler.message_handler import ChannelMode, MessageHandler
 from jiuwenswarm.gateway.routing.session_sharing import SubRole

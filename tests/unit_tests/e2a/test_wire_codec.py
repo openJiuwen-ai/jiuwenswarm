@@ -10,20 +10,20 @@ from dataclasses import asdict
 import pytest
 from openjiuwen.core.session.stream import OutputSchema
 
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_LEGACY_AGENT_RESPONSE_KEY
-from jiuwenswarm.common.e2a.gateway_normalize import (
+from gateway_protocol.e2a.constants import E2A_WIRE_LEGACY_AGENT_RESPONSE_KEY
+from gateway_protocol.e2a.gateway_normalize import (
     e2a_response_from_agent_chunk,
     e2a_response_from_agent_response,
     e2a_response_to_agent_chunk,
     e2a_response_to_agent_response,
 )
-from jiuwenswarm.common.e2a.wire_codec import (
+from gateway_protocol.e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
     parse_agent_server_wire_chunk,
     parse_agent_server_wire_unary,
 )
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from gateway_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
 
 
 def test_roundtrip_unary_ok() -> None:

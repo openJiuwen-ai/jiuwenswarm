@@ -19,13 +19,13 @@ from openjiuwen.harness.prompts import SystemPromptBuilder
 from openjiuwen.harness.prompts.prompt_attachment_manager import PromptAttachmentManager
 from openjiuwen.harness.tools import BashTool
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import (
     RuntimePromptRail,
 )
 from jiuwenswarm.common import projectless_workspace
 from jiuwenswarm.common.projectless_workspace import get_projectless_task_workspace
 from jiuwenswarm.common.runtime_workspace import resolve_runtime_workspace_paths
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.agent_ws_server import (
     _uses_projectless_task_workspace,
     resolve_request_project_dir,

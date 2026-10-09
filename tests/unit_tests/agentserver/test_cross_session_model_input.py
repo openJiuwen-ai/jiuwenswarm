@@ -170,7 +170,7 @@ async def test_idle_sdk_query_uses_host_provenance_not_text_to_select_role(host_
 @pytest.mark.parametrize("mode", ["agent.work.normal", "agent.code.normal"])
 async def test_host_provenance_survives_request_builder_and_sdk_normalization(monkeypatch, host_marker, mode):
     from openjiuwen.harness.deep_agent import DeepAgent
-    from jiuwenswarm.common.schema.agent import AgentRequest
+    from gateway_protocol.e2a.agent_models import AgentRequest
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
     cross_session = {"message_id": "sm-host", "source_session_id": "source"}

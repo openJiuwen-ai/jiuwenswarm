@@ -5,10 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.common.auth import login_credentials, passthrough
 from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user
 from jiuwenswarm.common.auth.model_catalog import LoginModel
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 
 
 def _remote(monkeypatch, *, effective=True, apig_base="https://apig.example.com",

@@ -14,6 +14,7 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent
 from openjiuwen.harness import DeepAgent, DeepAgentConfig
 from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import build_permission_rail
 from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers
@@ -24,7 +25,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_ra
     JiuwenSwarmPermissionInterruptRail,
 )
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 

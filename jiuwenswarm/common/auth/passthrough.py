@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+from gateway_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 
 logger = logging.getLogger(__name__)
 

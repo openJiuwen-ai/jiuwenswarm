@@ -28,7 +28,7 @@ def _require_process_cli_channel(channel_id: object) -> None:
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Mapping
 
-    from jiuwenswarm.common.schema.agent import AgentRequest
+    from gateway_protocol.e2a.agent_models import AgentRequest
     from jiuwenswarm.runtime.agent_definition import (
         RuntimeAgentDefinition,
         RuntimeAgentExecution,

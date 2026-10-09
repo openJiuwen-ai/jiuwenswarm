@@ -13,7 +13,7 @@ from openjiuwen.core.single_agent.rail.base import AgentRail
 from openjiuwen.harness.schema.config import SubAgentConfig
 from openjiuwen.harness.tools.subagent._control_registry import get_subagent_control
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from tests.unit_tests.agentserver.permissions.test_permission_cold_build import cold

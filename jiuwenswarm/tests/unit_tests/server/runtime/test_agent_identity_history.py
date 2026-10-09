@@ -1,14 +1,14 @@
 from types import SimpleNamespace
 
+from gateway_protocol.e2a.gateway_normalize import (
+    e2a_response_from_agent_chunk,
+    e2a_response_to_agent_chunk,
+)
+from gateway_protocol.e2a.agent_models import AgentResponseChunk
 from jiuwenswarm.server.runtime.agent_adapter.interface import (
     _with_web_agent_template_metadata,
     _with_web_agent_template_payload,
 )
-from jiuwenswarm.common.e2a.gateway_normalize import (
-    e2a_response_from_agent_chunk,
-    e2a_response_to_agent_chunk,
-)
-from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
 
 

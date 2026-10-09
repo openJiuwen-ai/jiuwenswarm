@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
 from jiuwenswarm.channels.process_cli.display_context import resolve_cli_work_mode
 from jiuwenswarm.channels.process_cli.live_input import (
@@ -25,7 +26,6 @@ from jiuwenswarm.channels.process_cli.live_input import (
 )
 from jiuwenswarm.channels.process_cli.render import EventRenderer
 from jiuwenswarm.common.mode_matrix import is_team_mode
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session_provisioner import (
     SessionCreateInput,

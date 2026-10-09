@@ -9,7 +9,7 @@ from datetime import datetime
 
 from gateway_protocol.e2a.gateway_normalize import E2A_INTERNAL_CONTEXT_KEY
 from gateway_protocol.e2a.models import E2AEnvelope
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 
 logger = logging.getLogger(__name__)

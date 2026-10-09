@@ -11,11 +11,6 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-# --- Early --dotenv parsing (before jiuwenswarm imports) ---
-from jiuwenswarm.dotenv_early import parse_dotenv_early
-parse_dotenv_early("jiuwenswarm-acp-channel")
-
-# --- Now safe to import jiuwenswarm modules ---
 from gateway_protocol.e2a.acp.protocol import (
     build_acp_initialize_result,
     build_acp_prompt_result,
@@ -39,6 +34,11 @@ from gateway_protocol.e2a.constants import (
     E2A_SOURCE_PROTOCOL_E2A,
 )
 from gateway_protocol.e2a.models import E2AEnvelope, E2AProvenance, E2AResponse, utc_now_iso
+# --- Early --dotenv parsing (before jiuwenswarm imports) ---
+from jiuwenswarm.dotenv_early import parse_dotenv_early
+parse_dotenv_early("jiuwenswarm-acp-channel")
+
+# --- Now safe to import jiuwenswarm modules ---
 from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
 from jiuwenswarm.common.version import __version__
 from jiuwenswarm.gateway.channel_manager.base import BaseChannel, RobotMessageRouter

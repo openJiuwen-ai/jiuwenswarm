@@ -77,7 +77,7 @@ class _FakeSessionCreateAgentClient:
             "project.remove",
             "project.restore",
         }:
-            from jiuwenswarm.common.schema.agent import AgentRequest
+            from gateway_protocol.e2a.agent_models import AgentRequest
             from jiuwenswarm.common.schema.message import ReqMethod
             from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
                 ProjectAdapter,
@@ -1436,7 +1436,7 @@ class TestProjectRemoveRestore:
     @pytest.mark.asyncio
     async def test_remove_busy_scan_exemptions(registered_channel, tmp_path, monkeypatch):
         """扫描豁免:parked Team 常驻流、cron 执行会话、其他项目的会话不阻塞。"""
-        from jiuwenswarm.common.schema.agent import AgentRequest
+        from gateway_protocol.e2a.agent_models import AgentRequest
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
             ProjectAdapter,
@@ -1487,7 +1487,7 @@ class TestProjectRemoveRestore:
         sessions_dir, project_store_dir, tmp_path,
     ):
         """后台心跳不阻塞移除:移除停掉心跳,再读到已落定的会话。"""
-        from jiuwenswarm.common.schema.agent import AgentRequest
+        from gateway_protocol.e2a.agent_models import AgentRequest
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
             ProjectAdapter,
@@ -1520,7 +1520,7 @@ class TestProjectRemoveRestore:
         sessions_dir, project_store_dir, tmp_path,
     ):
         """真实工作仍在跑时移除照旧被挡,且不为注定被拒的移除取消心跳。"""
-        from jiuwenswarm.common.schema.agent import AgentRequest
+        from gateway_protocol.e2a.agent_models import AgentRequest
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
             ProjectAdapter,
@@ -1554,7 +1554,7 @@ class TestProjectRemoveRestore:
         sessions_dir, project_store_dir, tmp_path,
     ):
         """心跳停不掉时移除仍报 SESSION_BUSY,不隐藏还在跑的工作。"""
-        from jiuwenswarm.common.schema.agent import AgentRequest
+        from gateway_protocol.e2a.agent_models import AgentRequest
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
             ProjectAdapter,

@@ -25,7 +25,7 @@ from openjiuwen.core.session import InteractiveInput
 from openjiuwen.harness import create_deep_agent
 from openjiuwen.harness.schema.interaction import InputDispatchMode, SendInputRequest
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
@@ -341,9 +341,9 @@ async def test_gateway_websocket_runtime_harness_sdk(tmp_path, monkeypatch, orig
     agent; it does not start the desktop application or external IM services.
     """
     from websockets.legacy.server import serve
-    from jiuwenswarm.common.e2a.models import E2AEnvelope
+    from gateway_protocol.e2a.models import E2AEnvelope
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-    from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+    from gateway_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
     from jiuwenswarm.common.schema.message import Message
     from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
@@ -720,7 +720,7 @@ async def test_mailbox_steer_reaches_running_runtime_sdk_with_agent_provenance(t
         with_session_messaging_route, current_session_messaging_route,
     )
     from jiuwenswarm.agents.harness.common.rails.permissions.root_context import extract_permission_user_content
-    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+    from gateway_protocol.e2a.agent_models import AgentResponseChunk
     from jiuwenswarm.runtime.service import AgentRuntime
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.runtime.session.session_message_service import SessionMessageService, SessionMessageSource

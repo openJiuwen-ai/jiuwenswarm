@@ -322,7 +322,7 @@ class Scheduler:
             )
 
             # Build request for execution
-            from jiuwenswarm.common.schema.agent import AgentRequest
+            from gateway_protocol.e2a.agent_models import AgentRequest
 
             # Resolve pipeline preference (use task's pipeline or default to META_EVOLVE_PIPELINE)
             pipeline_preference = pipeline if pipeline else META_EVOLVE_PIPELINE

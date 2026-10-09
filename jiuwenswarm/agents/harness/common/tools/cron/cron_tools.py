@@ -301,7 +301,7 @@ class CronTools:
         return bool(getattr(self._gateway_push, "supports_cron_command_ack", False))
 
     async def _send_split(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
-        from jiuwenswarm.common.e2a.constants import E2A_RESPONSE_KIND_CRON
+        from gateway_protocol.e2a.constants import E2A_RESPONSE_KIND_CRON
 
         r = self._route()
         # ``send_push`` is delivered on a side channel.  The originating chat

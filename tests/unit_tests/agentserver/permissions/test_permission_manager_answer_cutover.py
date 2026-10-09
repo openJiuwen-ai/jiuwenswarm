@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from openjiuwen.core.foundation.llm import AssistantMessage
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_permission_rail import AutoPermissionInterruptRail
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import RootPermissionQueueError
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime import agent_manager as manager_module
 from jiuwenswarm.server.runtime.agent_manager import AgentManager, _make_agent_cache_key

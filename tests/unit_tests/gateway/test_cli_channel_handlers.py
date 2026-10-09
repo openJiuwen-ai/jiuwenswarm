@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentResponse
+from gateway_protocol.e2a.agent_models import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.config_panel import tui_models_handlers
 from jiuwenswarm.gateway.channel_manager.tui import tui_connect as tui_connect_module

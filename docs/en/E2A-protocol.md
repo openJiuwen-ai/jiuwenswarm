@@ -127,7 +127,7 @@ Hand-built defaults use `source_protocol` = `e2a`. Legacy `binding` migrates to 
 
 ## 6. ACP strings in `constants.py` (bridge reference)
 
-For ACP bridging and doc cross-check only; **at runtime** use tuples in `jiuwenswarm.common.e2a.constants`:
+For ACP bridging and doc cross-check only; **at runtime** use tuples in `gateway_protocol.e2a.constants`:
 
 - **`ACP_CLIENT_TO_AGENT_METHODS`**: client → Agent JSON-RPC method names
 - **`ACP_AGENT_TO_CLIENT_METHODS`**, **`ACP_NOTIFICATION_NAMES`**: downstream / notifications

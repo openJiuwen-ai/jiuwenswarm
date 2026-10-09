@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from gateway_protocol.e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.agentos.agentos_router.logutil import format_agentos, log_agentos
 from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
 

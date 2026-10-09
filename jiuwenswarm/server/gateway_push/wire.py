@@ -6,14 +6,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from jiuwenswarm.common.e2a.constants import (
+from gateway_protocol.e2a.constants import (
     E2A_RESPONSE_STATUS_SUCCEEDED,
     E2A_WIRE_INTERNAL_METADATA_KEYS,
     E2A_WIRE_SERVER_PUSH_KEY,
 )
-from jiuwenswarm.common.e2a.models import E2AProvenance, E2AResponse, IdentityOrigin, utc_now_iso
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
-from jiuwenswarm.common.schema.agent import AgentResponseChunk
+from gateway_protocol.e2a.models import E2AProvenance, E2AResponse, IdentityOrigin, utc_now_iso
+from gateway_protocol.e2a.wire_codec import encode_agent_chunk_for_wire
+from gateway_protocol.e2a.agent_models import AgentResponseChunk
 
 _CONVERTER = "jiuwenswarm.server.gateway_push.wire:build_server_push_wire"
 

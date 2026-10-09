@@ -34,13 +34,13 @@ from openjiuwen.harness.security.core import PermissionEngine
 from openjiuwen.harness.security.host import ToolPermissionHost
 from openjiuwen.harness.security.models import PermissionLevel
 
-from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
-    build_permission_rail,
-)
-from jiuwenswarm.common.schema.agent import (
+from gateway_protocol.e2a.agent_models import (
     AgentRequest,
     AgentResponse,
     AgentResponseChunk,
+)
+from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    build_permission_rail,
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,

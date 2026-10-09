@@ -11,7 +11,6 @@ from zoneinfo import ZoneInfo
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
-from jiuwenswarm.gateway.cron.cron_expr import normalize_cron_expr
 from gateway_protocol.cron_models import (
     CRON_JOB_DESCRIPTION_MAX_LENGTH,
     CRON_JOB_NAME_MAX_LENGTH,
@@ -19,6 +18,7 @@ from gateway_protocol.cron_models import (
     is_valid_target_channel_id,
     normalize_target_channel_id,
 )
+from jiuwenswarm.gateway.cron.cron_expr import normalize_cron_expr
 from jiuwenswarm.gateway.cron.models import (
     CRON_MODEL_SOURCE_LOGIN,
     cron_job_metadata,

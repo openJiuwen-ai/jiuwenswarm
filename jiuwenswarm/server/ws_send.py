@@ -8,12 +8,12 @@ import json
 import logging
 from typing import Any
 
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
-from jiuwenswarm.common.e2a.wire_codec import (
+from gateway_protocol.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from gateway_protocol.e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
 )
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from gateway_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.ws_limits import AGENT_WS_SEND_BUDGET_BYTES
 
 logger = logging.getLogger(__name__)

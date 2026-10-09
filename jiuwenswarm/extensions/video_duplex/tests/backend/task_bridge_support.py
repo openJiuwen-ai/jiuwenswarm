@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway_protocol.e2a.wire_codec import parse_agent_server_wire_chunk
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
 from jiuwenswarm.extensions.video_duplex.backend.tasks import bridge
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 

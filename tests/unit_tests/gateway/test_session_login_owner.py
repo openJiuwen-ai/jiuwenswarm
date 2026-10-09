@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway_protocol.e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY, E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.common.auth import session_owners
-from jiuwenswarm.common.e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY, E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.gateway.message_handler.message_handler import (
     _LOGIN_HINT_NO_OWNER,
     _LOGIN_HINT_OWNER_LOGGED_OUT,

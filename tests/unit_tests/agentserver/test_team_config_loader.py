@@ -241,7 +241,7 @@ _CONFIGURED_ENTRY = {
 def _login_model_entry():
     from jiuwenswarm.common.auth import login_credentials
     from jiuwenswarm.common.auth.login_credentials import build_login_model_entry
-    from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+    from gateway_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 
     login_credentials.reset_for_test()
     params = {

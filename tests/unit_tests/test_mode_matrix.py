@@ -2,7 +2,7 @@
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.common.schema.message import Mode
 from jiuwenswarm.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,

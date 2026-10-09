@@ -8,11 +8,11 @@ approval in channels without TUI interrupt support.
 
 # pylint: disable=protected-access
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     classify_plan_user_intent,
     is_direct_plan_implement_request,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 

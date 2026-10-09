@@ -151,7 +151,7 @@ async def trigger_main_agent(
     rec_id = request.rec_id
 
     try:
-        from jiuwenswarm.common.schema.agent import AgentRequest
+        from gateway_protocol.e2a.agent_models import AgentRequest
     except ImportError as exc:
         logger.warning("[AgentServer] trigger_main_agent import failed: %s", exc)
         return False

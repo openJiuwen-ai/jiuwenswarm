@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from gateway_protocol.e2a.models import E2AEnvelope
 from jiuwenswarm.extensions import yuanrong_frontend_client as yuanrong_mod
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
     DEFAULT_RUNTIME_PROBE_SETTINGS,

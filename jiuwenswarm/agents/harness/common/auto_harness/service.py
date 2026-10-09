@@ -56,8 +56,8 @@ from openjiuwen.rsi.harness_rsi.auto_harness.stages.activate import ExtendActiva
 from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
 from openjiuwen.core.session.stream.base import OutputSchema
 
+from gateway_protocol.e2a.agent_models import AgentResponseChunk
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
-from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
 from .capabilities import AutoHarnessCapabilityRegistry, create_default_capability_registry

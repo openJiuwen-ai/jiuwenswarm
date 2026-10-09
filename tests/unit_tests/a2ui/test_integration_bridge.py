@@ -334,7 +334,7 @@ def test_team_a2ui_partial_tag_false_alarm_is_released_locally():
 @pytest.mark.asyncio
 async def test_team_a2ui_repair_does_not_block_other_member(monkeypatch):
     """A slow local repair must not delay an unrelated teammate event."""
-    from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
+    from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponseChunk
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
     from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 
@@ -523,7 +523,7 @@ def test_a2ui_processing_false_waits_for_repaired_final():
 
 def test_nested_stream_completion_waits_for_facade_post_processing():
     """The adapter terminal must not close the wire before A2UI finalization."""
-    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+    from gateway_protocol.e2a.agent_models import AgentResponseChunk
     from jiuwenswarm.server.runtime.agent_adapter.interface import (
         _normalize_nested_stream_chunk,
     )
@@ -540,7 +540,7 @@ def test_nested_stream_completion_waits_for_facade_post_processing():
 
 def test_nested_terminal_event_remains_visible_without_closing_stream():
     """A meaningful terminal event is retained while the facade owns completion."""
-    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+    from gateway_protocol.e2a.agent_models import AgentResponseChunk
     from jiuwenswarm.server.runtime.agent_adapter.interface import (
         _normalize_nested_stream_chunk,
     )

@@ -12,13 +12,13 @@ import pytest
 from openjiuwen.core.single_agent.rail.base import ModelCallInputs
 from openjiuwen.harness.deep_agent import DeepAgent
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import LocalSectionName
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
 from jiuwenswarm.common.context_keys import (
     JIUWENSWARM_CHANNEL_CONTEXT_KEY,
     JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime.a2ui.config import A2UIConfig
 from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 

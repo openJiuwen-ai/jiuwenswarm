@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.skill.archive_store import ARCHIVE_DIRNAME
 from jiuwenswarm.server.runtime.skill.skill_manager import (
@@ -494,7 +494,7 @@ async def test_skill_rpc_client_skips_ack_and_decoy_frames(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """最小 WS 客户端须先消费 connection.ack，并按 request_id 丢弃无关帧。"""
-    from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+    from gateway_protocol.e2a.wire_codec import encode_agent_response_for_wire
     from jiuwenswarm.server.runtime.skill import skills_multipart_http as mod
 
     seen: list[dict[str, Any]] = []

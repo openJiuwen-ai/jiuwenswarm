@@ -11,10 +11,10 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.runtime.mcp import state_store as state_store_mod
 from jiuwenswarm.server.runtime.mcp import registry as registry_mod
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 
 

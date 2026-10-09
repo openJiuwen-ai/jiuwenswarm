@@ -12,13 +12,13 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponseChunk
 from jiuwenswarm.agents.harness.code.rails.heartbeat import runtime as heartbeat_module
 from jiuwenswarm.agents.harness.code.rails.heartbeat.models import HeartbeatSchedule
 from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
 from jiuwenswarm.agents.harness.code.rails.heartbeat.session_resolver import (
     SessionSummary,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.runtime.plan import PlanStateResult

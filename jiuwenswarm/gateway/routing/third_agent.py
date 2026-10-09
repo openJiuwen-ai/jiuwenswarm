@@ -2,7 +2,7 @@
 
 """ThirdAgent - 第三方 Agent list/switch 能力接口.
 
-实现已下沉 ``jiuwenswarm.common.client.third_agent``（保留侧与 Gateway 仓共用契约）；
+实现已下沉 ``gateway_protocol.third_agent``（保留侧与 Gateway 仓共用契约）；
 此处 re-export 保持既有 import 路径兼容。
 """
 

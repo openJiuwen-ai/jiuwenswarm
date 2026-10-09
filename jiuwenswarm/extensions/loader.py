@@ -5,11 +5,11 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.extensions.registry import ExtensionRegistry
-from jiuwenswarm.extensions.sdk.application_plugin import (
+from gateway_protocol.sdk.application_plugin import (
     ApplicationPluginExtension,
     ManifestApplicationPlugin,
 )
+from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.utils import logger
 
 MANIFEST_FILENAME = "extension.yaml"

@@ -66,7 +66,7 @@ GET /api/application-plugins/{plugin_id}/assets/{asset_path}
 需要 RPC、WebSocket 或 Core Agent 时增加 `extension.py`：
 
 ```python
-from jiuwenswarm.extensions.sdk import (
+from gateway_protocol.sdk import (
     ApplicationPluginExtension,
     FrontendContribution,
 )

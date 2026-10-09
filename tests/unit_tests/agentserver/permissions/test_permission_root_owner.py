@@ -10,13 +10,13 @@ import pytest
 from openjiuwen.core.foundation.llm import AssistantMessage, Model
 from openjiuwen.harness import DeepAgent
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_permission_rail import AutoPermissionInterruptRail
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context_rail import RootContextRail
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
     RootPermissionCompletionRail,
     RootPermissionQueueRail,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from tests.unit_tests.agentserver.permissions.test_permission_admission_edges import built_edges  # noqa: F401

@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.channels.process_cli import app
 from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.request import resolve_request_runtime_mode

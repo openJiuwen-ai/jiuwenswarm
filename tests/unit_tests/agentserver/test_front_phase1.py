@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.admission import ExecutionAdmission
 from jiuwenswarm.server.front.router import CONTROL_METHODS, MethodRouter, is_control_method

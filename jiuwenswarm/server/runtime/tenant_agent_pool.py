@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any, ClassVar
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
 logger = logging.getLogger(__name__)

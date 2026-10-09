@@ -71,7 +71,7 @@ class _ProjectAdapterAgentClient:
     server_ready = True
 
     async def send_request(self, request):
-        from jiuwenswarm.common.schema.agent import AgentRequest
+        from gateway_protocol.e2a.agent_models import AgentRequest
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import ProjectAdapter
 

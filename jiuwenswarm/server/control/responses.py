@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse
 
 
 def parse_int_param(

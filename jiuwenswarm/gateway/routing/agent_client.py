@@ -21,6 +21,7 @@ from gateway_protocol.e2a.wire_codec import (
     parse_agent_server_wire_unary,
 )
 from gateway_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
+from gateway_protocol.agent_client import AgentServerClient  # noqa: F401
 from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.common.ws_diagnostics import (
     describe_ws_exception,
@@ -102,9 +103,8 @@ def _build_ws_origin(uri: str) -> str | None:
     return f"{scheme}://{parsed.netloc}"
 
 
-# AgentServerClient 抽象契约已下沉 ``jiuwenswarm.common.client.agent_client``
+# AgentServerClient 抽象契约已下沉 ``gateway_protocol.agent_client``
 # （保留侧与 Gateway 仓共用契约）。此处 re-export 保持既有 import 路径兼容。
-from gateway_protocol.agent_client import AgentServerClient  # noqa: F401
 
 
 def _e2a_to_wire(envelope: E2AEnvelope) -> dict[str, Any]:

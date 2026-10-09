@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.server.runtime.gateway_adapter import (

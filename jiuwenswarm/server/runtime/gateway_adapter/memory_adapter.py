@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse
 from jiuwenswarm.agents.harness.common.memory_rpc import (
     handle_memory_edit,
     handle_memory_list,
@@ -18,7 +19,6 @@ from jiuwenswarm.agents.harness.common.memory_rpc import (
     handle_memory_status,
     handle_memory_toggle,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.server.runtime.gateway_adapter.base import (

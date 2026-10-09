@@ -143,7 +143,7 @@ async def test_connector_connect_handler_does_not_load_into_agent() -> None:
     NOT reload_agents_config. State flips to connected; the agent sees the
     MCP's tools only when a chat turn selects it."""
     import asyncio, json
-    from jiuwenswarm.common.schema.agent import AgentRequest
+    from gateway_protocol.e2a.agent_models import AgentRequest
     from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 

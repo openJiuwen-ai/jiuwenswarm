@@ -9,7 +9,7 @@ from openjiuwen.core.session.stream import OutputSchema
 from openjiuwen.harness.goal.schema import GoalOperationError, GoalRecord, GoalStatus
 from openjiuwen.harness.schema.interaction import InteractionEventType
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter.interface import (
     JiuWenSwarm,

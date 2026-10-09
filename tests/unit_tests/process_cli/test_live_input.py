@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.channels.process_cli import app
 from jiuwenswarm.channels.process_cli.live_input import (
     LIVE_INPUT_PROMPT,
@@ -23,7 +24,6 @@ from jiuwenswarm.channels.process_cli.live_input import (
 )
 from jiuwenswarm.channels.process_cli.live_layout import LiveTurnLayout
 from jiuwenswarm.channels.process_cli.render import EventRenderer
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
 

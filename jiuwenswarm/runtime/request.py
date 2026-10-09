@@ -9,6 +9,7 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse
 from jiuwenswarm.common.mode_matrix import (
     ResolvedMode,
     TEAM_PLAN_CODE_MODE,
@@ -18,7 +19,6 @@ from jiuwenswarm.common.mode_matrix import (
     resolve_new_canonical_mode,
     resolve_request_mode,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 

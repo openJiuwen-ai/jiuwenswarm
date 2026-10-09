@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import ClassVar
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse
 from jiuwenswarm.server.control.responses import (  # noqa: F401
     build_error_response,
     parse_int_param,

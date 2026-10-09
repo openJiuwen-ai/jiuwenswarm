@@ -11,11 +11,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 from openjiuwen.core.common.exception.errors import BaseError
 
-from jiuwenswarm.common.e2a.wire_codec import (
+from gateway_protocol.e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
 )
-from jiuwenswarm.common.schema.agent import (
+from gateway_protocol.e2a.agent_models import (
     AgentRequest,
     AgentResponse,
     AgentResponseChunk,

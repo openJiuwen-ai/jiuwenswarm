@@ -2306,7 +2306,7 @@ async def test_gateway_agent_list_uses_local_handler_default_unsupported(
 async def test_gateway_agent_switch_local_handler_updates_connection(
     _third_agent_registry,
 ):
-    from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
+    from gateway_protocol.sdk.third_agent import ThirdAgentExtension
     from jiuwenswarm.gateway.routing.third_agent import ThirdAgent
 
     class _FakeThirdAgent(ThirdAgent):
@@ -2428,7 +2428,7 @@ async def test_gateway_agent_switch_local_handler_updates_connection(
 
 @pytest.mark.asyncio
 async def test_gateway_agent_switch_rejects_unsupported_type(_third_agent_registry):
-    from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
+    from gateway_protocol.sdk.third_agent import ThirdAgentExtension
     from jiuwenswarm.gateway.routing.third_agent import ThirdAgent
 
     class _FakeThirdAgent(ThirdAgent):

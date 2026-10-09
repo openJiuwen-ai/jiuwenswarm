@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import (
+from gateway_protocol.e2a.agent_models import (
     AgentRequest,
     AgentResponse,
     AgentResponseChunk,

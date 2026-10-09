@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.common.schema.chat_send import (
     PLAN_ENTRY_SOURCES,
     PLAN_ENTRY_SOURCE_PLAN_TOGGLE,
