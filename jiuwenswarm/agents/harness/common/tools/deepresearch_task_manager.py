@@ -11,6 +11,10 @@ import re
 from collections.abc import Mapping
 from typing import Any, Dict
 
+from jiuwenswarm.agents.harness.common.model_gears import (
+    is_model_gear,
+    resolve_model_gear,
+)
 from jiuwenswarm.common.local_env_config import (
     get_local_config,
     read_default_headers_raw,
@@ -279,6 +283,19 @@ class DeepResearchTaskManager:
             return DeepResearchTaskManager._read_config_value(name, default, env)
 
         llm_model_name = read("LLM_MODEL_NAME").strip() or read("MODEL_NAME").strip()
+        # 档位关键字（fast/balanced/extreme/auto）只对**单 agent 主链路**成立：那里
+        # ModelRoutingRail 会读 request param 把它翻成具体模型。DeepResearch 子进程
+        # 走的是 env 通道（relay OFFICE_CLAW_EFFECTIVE_MODEL → MODEL_NAME），**没有
+        # rail 也没有 request params**，裸档位关键字会被当真实模型名直送 MaaS →
+        # ModelArts.81009 Invalid model。故在把配置交给隔离子进程前先翻成具体模型 id。
+        if is_model_gear(llm_model_name):
+            resolved_gear_model = resolve_model_gear(llm_model_name)
+            logger.info(
+                "[DeepResearch] model gear %r resolved to %r for child config",
+                llm_model_name,
+                resolved_gear_model,
+            )
+            llm_model_name = resolved_gear_model
         llm_model_type = (
             read("LLM_MODEL_TYPE").strip().lower()
             or read("MODEL_PROVIDER").strip().lower()

@@ -8,6 +8,11 @@ from openjiuwen.core.context_engine import TiktokenCounter
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.common.utils import logger
+from jiuwenswarm.agents.harness.common.model_gears import (
+    MODE_MODEL_MAP,
+    MODE_PREFERRED_PROVIDER,
+    MODE_THINKING_MAP,
+)
 from .capability import ModelCapability
 from .types import (
     PriorModelCall, TaskAnalysis, RoutingDecision,
@@ -23,24 +28,16 @@ from .types import (
 #   auto      → deepseek-v4.1-flash 中等思考
 # 具体模型名不在此表内（走 skip 分支，保留 adapter 已应用的具体/默认模型）。
 # 与 relay 前端 GEAR_MODEL_MAP 对齐市场 id。
-_MODE_MODEL_MAP: dict[str, str] = {
-    "fast": "deepseek-v4.1-flash",
-    "balanced": "deepseek-v4.1-flash",
-    "extreme": "glm-5.2",
-    "auto": "deepseek-v4.1-flash",
-}
+# 表本体在 jiuwenswarm.agents.harness.common.model_gears（deepresearch 隔离子进程
+# 也要用同一张表把档位翻成具体模型），此处只做别名，避免两处各写一份漂移。
+_MODE_MODEL_MAP: dict[str, str] = MODE_MODEL_MAP
 
-_MODE_THINKING_MAP: dict[str, str] = {
-    "fast": "off",      # 关闭思考
-    "balanced": "medium",  # 中等思考
-    "extreme": "deep",  # 深度思考
-    "auto": "medium",   # 中等思考
-}
+_MODE_THINKING_MAP: dict[str, str] = MODE_THINKING_MAP
 
 # 四档写死映射里的「官方模型」标记：relay 写 models.json 时给 maas binding 打
 # model_provider='huawei_maas'（config.yaml 手工配时也可在条目顶层写同名字段）。
 # 四档查找优先命中此标，避免撞到用户自定义的同名模型；无标则退回第一个同名。
-_MODE_PREFERRED_PROVIDER = "huawei_maas"
+_MODE_PREFERRED_PROVIDER = MODE_PREFERRED_PROVIDER
 
 # 思考深度 → 直接注入的 llm_call_kwargs（不经 vendor 白名单 / 语义适配层，短路）。
 #   off    → extra_body.thinking.type=disabled（DeepSeek/GLM 通用“关闭思考”）

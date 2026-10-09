@@ -6148,7 +6148,13 @@ class JiuWenSwarmDeepAdapter:
     @staticmethod
     def _build_model_from_entry(mcc: dict, mco: dict) -> Model:
         """根据单个模型条目的 model_client_config / model_config_obj 构建 Model 实例。"""
-        name = mcc.get("model_name", "")
+        # 档位关键字（fast/balanced/extreme/auto）是 relay 前端的选择器，不是模型 id。
+        # 无 rail 的消费方（子代理继承 _deep_config.model、code 模式、DeepResearch 子进程）
+        # 会把它直送 MaaS → ModelArts.81009。在构建 Model 的唯一入口翻成具体模型；只改
+        # Model 的请求模型名，不动 mcc（cache key / identity 仍按档位登记）。
+        from jiuwenswarm.agents.harness.common.model_gears import resolve_model_gear
+
+        name = resolve_model_gear(mcc.get("model_name", ""))
         # models.json 在 relay spawn 前落盘；未登录时 maas 条目 api_base/api_key 为空，
         # Model 构建会失败（整批跳过，四档路由只能 keep current）。登录后 invoke 同步
         # 把 maas 凭证 env（API_BASE/API_KEY/default_headers）注入 tip，这里在 api_base
