@@ -59,6 +59,7 @@ export function MemberListItem({
         <div className="flex items-center gap-2">
           <span
             className={`${compact ? 'text-xs' : 'text-sm'} truncate font-semibold text-text`}
+            title={displayName}
             data-testid="team-area-member-item-name"
           >
             {displayName}
