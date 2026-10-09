@@ -440,6 +440,11 @@ def migrate_and_write_global_permissions() -> dict[str, Any]:
     if not isinstance(data, dict):
         data = {}
     raw = data.get("permissions") if isinstance(data.get("permissions"), dict) else {}
+    if not raw:
+        # 无块且无遗留字段：运行时默认即 enabled+auto，物化写回只会向
+        # 用户 config.yaml 注入默认块（update_config 每次保存都会触发，
+        # 未配置即默认的文件语义随之破坏）。
+        return {}
     migrated = migrate_legacy_permissions(deepcopy(raw), is_overlay=False)
 
     # 将 allow_tools / ask_tools / deny_tools 从 Global 迁到 User（设计：仅 User 写整工具名单）
