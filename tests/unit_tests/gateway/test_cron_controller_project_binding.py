@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwenswarm.gateway.cron.controller import CronController
-from jiuwenswarm.server.runtime.session.project_store import CronProjectBinding
+from jiuwenswarm.gateway.embedded.runtime.session.project_store import CronProjectBinding
 
 
 @pytest.mark.asyncio
@@ -183,7 +183,7 @@ def _make_controller():
 async def test_create_job_tolerates_user_side_project_id(monkeypatch) -> None:
     """显式真实 project_id 不在 Gateway 本地项目表时，信任调用方 work_mode。"""
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.project_store.resolve_cron_project_binding",
+        "jiuwenswarm.gateway.embedded.runtime.session.project_store.resolve_cron_project_binding",
         lambda project_id, project_dir, work_mode: CronProjectBinding(
             project_id="",
             work_mode="work",
@@ -218,7 +218,7 @@ async def test_create_job_tolerates_user_side_project_id(monkeypatch) -> None:
 async def test_create_job_rejects_missing_project(monkeypatch) -> None:
     """不存在的项目仍拒绝新增 cron 绑定。"""
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.project_store.resolve_cron_project_binding",
+        "jiuwenswarm.gateway.embedded.runtime.session.project_store.resolve_cron_project_binding",
         lambda project_id, project_dir, work_mode: CronProjectBinding(
             project_id="",
             work_mode="work",
@@ -244,7 +244,7 @@ async def test_create_job_rejects_missing_project(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_create_job_rejects_unresolved_project_in_single_user(monkeypatch) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.project_store.resolve_cron_project_binding",
+        "jiuwenswarm.gateway.embedded.runtime.session.project_store.resolve_cron_project_binding",
         lambda project_id, project_dir, work_mode: CronProjectBinding(
             project_id="",
             work_mode="work",
@@ -267,7 +267,7 @@ async def test_create_job_rejects_unresolved_project_in_single_user(monkeypatch)
 async def test_update_job_tolerates_user_side_project_id(monkeypatch) -> None:
     """patch 含显式真实 project_id 且不在本地项目表时，跳过本地反查。"""
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.project_store.get_project_by_id",
+        "jiuwenswarm.gateway.embedded.runtime.session.project_store.get_project_by_id",
         lambda project_id, cache_bust=True: None,
     )
     cc = _make_controller()
@@ -295,7 +295,7 @@ async def test_update_job_tolerates_user_side_project_id(monkeypatch) -> None:
 async def test_create_job_normalizes_and_passes_mcp_to_store(monkeypatch) -> None:
     """create 时 mcp 做 strip/去空/去重后透传 store；不校验存在性。"""
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.project_store.resolve_cron_project_binding",
+        "jiuwenswarm.gateway.embedded.runtime.session.project_store.resolve_cron_project_binding",
         lambda project_id, project_dir, work_mode: CronProjectBinding(
             project_id="",
             work_mode="work",
@@ -323,7 +323,7 @@ async def test_create_job_normalizes_and_passes_mcp_to_store(monkeypatch) -> Non
 async def test_create_job_without_mcp_passes_none(monkeypatch) -> None:
     """未传 mcp → store 收到 None（保持既有行为，旧 job 兜底一致）。"""
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.project_store.resolve_cron_project_binding",
+        "jiuwenswarm.gateway.embedded.runtime.session.project_store.resolve_cron_project_binding",
         lambda project_id, project_dir, work_mode: CronProjectBinding(
             project_id="",
             work_mode="work",
@@ -350,7 +350,7 @@ async def test_create_job_without_mcp_passes_none(monkeypatch) -> None:
 async def test_update_job_normalizes_mcp_patch(monkeypatch) -> None:
     """patch mcp：非空列表规范化；空列表/null 归 None（清除选择）。"""
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.project_store.get_project_by_id",
+        "jiuwenswarm.gateway.embedded.runtime.session.project_store.get_project_by_id",
         lambda project_id, cache_bust=True: None,
     )
     cc = _make_controller()

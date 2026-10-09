@@ -35,7 +35,7 @@ from jiuwenswarm.observability.config import (
     load_trajectory_store_settings,
 )
 from jiuwenswarm.observability.store import AsyncTrajectoryReader
-from jiuwenswarm.server.runtime.session.session_history import is_valid_session_id
+from jiuwenswarm.common.protocol_ids import is_valid_session_id
 
 if TYPE_CHECKING:
     from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
@@ -784,7 +784,7 @@ def attach_trajectory_routes(
 
 
 def _load_session_metadata(session_id: str) -> Mapping[str, Any]:
-    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+    from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
 
     return get_session_metadata(
         session_id,
