@@ -2,14 +2,9 @@
 
 """Tests for cron job model validation, incl. free-model fallbacks.
 
-The frontend appends free models (in-memory only, never written to config.yaml)
-to ``models.list`` and lets the user pick one for a cron job.
-``validate_cron_model`` must resolve such an id/alias so job creation does not
-fail with ``Unknown model``, while still rejecting genuinely unknown models.
-
-免费模型有两个来源：Opencode Zen 缓存（已停用）和华为账号登录送的模型
-（``common/auth/model_catalog``，Zen 停用后的唯一来源）。两者都要命中即放行，
-来源为空时仍拒绝。
+The frontend lets the user pick a login free model for a cron job.
+``validate_cron_model`` resolves configured models and login-catalog models.
+Zen free models are resolved only by AgentServer ``resolve_agent_cron_model``.
 """
 
 from __future__ import annotations
@@ -171,9 +166,10 @@ def test_validate_cron_model_rejects_whitespace_only_model_name(
         validate_cron_model("默认模型")
 
 
-def test_validate_cron_model_accepts_zen_free_model_id(
+def test_validate_cron_model_leaves_zen_names_to_agentserver(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Gateway 校验不读 AgentServer 的 Zen 缓存，未知 id 仍拒绝。"""
     monkeypatch.setattr(
         "jiuwenswarm.common.config.get_model_config",
         lambda name, index=None: None,
@@ -183,22 +179,10 @@ def test_validate_cron_model_accepts_zen_free_model_id(
         "jiuwenswarm.server.runtime.opencode_zen.get_zen_free_model_entries",
         lambda: [_zen_free_entry()],
     )
-    assert validate_cron_model("deepseek-v4-flash-free") == "deepseek-v4-flash-free"
-
-
-def test_validate_cron_model_accepts_zen_free_model_alias(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_config",
-        lambda name, index=None: None,
-    )
-    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.opencode_zen.get_zen_free_model_entries",
-        lambda: [_zen_free_entry()],
-    )
-    assert validate_cron_model("DeepSeek V4 Flash") == "deepseek-v4-flash-free"
+    with pytest.raises(ValueError, match="Unknown model"):
+        validate_cron_model("deepseek-v4-flash-free")
+    with pytest.raises(ValueError, match="Unknown model"):
+        validate_cron_model("DeepSeek V4 Flash")
 
 
 def test_validate_cron_model_unknown_model_still_rejected(
@@ -331,19 +315,13 @@ def test_resolve_cron_model_reports_source(monkeypatch: pytest.MonkeyPatch) -> N
         lambda name, index=None: _user_model_entry(),
     )
     assert resolve_cron_model("my-model") == ("my-model", "config")
-    # Zen 免费模型
     monkeypatch.setattr(
         "jiuwenswarm.common.config.get_model_config",
         lambda name, index=None: None,
     )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.opencode_zen.get_zen_free_model_entries",
-        lambda: [_zen_free_entry()],
-    )
-    assert resolve_cron_model("deepseek-v4-flash-free") == (
-        "deepseek-v4-flash-free",
-        "zen",
-    )
+    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+    with pytest.raises(ValueError, match="Unknown model"):
+        resolve_cron_model("deepseek-v4-flash-free")
 
 
 # ---------------------------------------------------------------------------

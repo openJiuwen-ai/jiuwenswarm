@@ -116,7 +116,7 @@ class GitDiffWebSocketHandler:
 
         委托给共享 helper ``project_git.send_git_error_response``。
         """
-        from jiuwenswarm.server.runtime.session.project_git import send_git_error_response
+        from jiuwenswarm.gateway.embedded.runtime.session.project_git import send_git_error_response
         await send_git_error_response(self._channel, ws, req_id, exc)
 
     @staticmethod
@@ -128,7 +128,7 @@ class GitDiffWebSocketHandler:
         ``send_git_error_response`` 会走非 GitError 兜底分支,code 丢失并
         退化为 ``INTERNAL_ERROR``,破坏前端按 code 分支的行为。
         """
-        from jiuwenswarm.server.runtime.session.project_git import (
+        from jiuwenswarm.gateway.embedded.runtime.session.project_git import (
             GitError,
             GitOperationError,
         )
@@ -291,7 +291,7 @@ class GitDiffWebSocketHandler:
 
         ``include_last_turn=False`` 时 ``last_turn`` 固定为 ``None``。
         """
-        from jiuwenswarm.server.runtime.session.git_diff_status import (
+        from jiuwenswarm.gateway.embedded.runtime.session.git_diff_status import (
             build_summary_entry,
             build_turn_summary_entry,
         )
@@ -577,7 +577,7 @@ class GitDiffWebSocketHandler:
         委托给 ``git_diff_status.extract_files_from_status`` 统一实现,
         与 watcher 共用同一 schema 访问逻辑。
         """
-        from jiuwenswarm.server.runtime.session.git_diff_status import (
+        from jiuwenswarm.gateway.embedded.runtime.session.git_diff_status import (
             extract_files_from_status,
         )
         return extract_files_from_status(status_dict, source)
@@ -590,7 +590,7 @@ class GitDiffWebSocketHandler:
         确保与 watcher 推送事件及 ``DiffFileEntry.to_dict(include_hunks=False)``
         输出一致(设计文档 §3.6)。
         """
-        from jiuwenswarm.server.runtime.session.git_diff_status import (
+        from jiuwenswarm.gateway.embedded.runtime.session.git_diff_status import (
             file_map_to_dict_no_hunks,
         )
         return file_map_to_dict_no_hunks(files_dict)

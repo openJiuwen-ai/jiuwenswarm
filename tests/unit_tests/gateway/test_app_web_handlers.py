@@ -585,7 +585,7 @@ async def test_session_list_keeps_single_user_shared_directory_fallback(monkeypa
         WebHandlersBindParams(channel=channel, agent_client=WebSocketAgentServerClient())
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.session_metadata.get_all_sessions_metadata",
+        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_all_sessions_metadata",
         lambda *, limit, offset: ([{"session_id": "legacy", "mode": "agent"}], 1),
     )
 
@@ -603,7 +603,7 @@ async def test_session_list_does_not_fallback_for_offline_remote_client(monkeypa
         WebHandlersBindParams(channel=channel, agent_client=_OfflineRemoteAgentClient())
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.session_metadata.get_all_sessions_metadata",
+        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_all_sessions_metadata",
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not read Gateway state")),
     )
 
@@ -688,7 +688,7 @@ async def test_agentos_cron_create_does_not_read_gateway_session_metadata(monkey
         lambda _client: True,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not read Gateway metadata")),
     )
 
@@ -902,8 +902,6 @@ class FakeOpenAIAccountModelCatalog:
 
 @pytest.mark.asyncio
 async def test_models_list_returns_exact_vendor_identity(monkeypatch) -> None:
-    from jiuwenswarm.server.runtime import opencode_zen
-
     monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(
         models_handlers,
@@ -922,7 +920,6 @@ async def test_models_list_returns_exact_vendor_identity(monkeypatch) -> None:
             "is_default": True,
         }],
     )
-    monkeypatch.setattr(opencode_zen, "get_zen_free_model_entries", lambda: [])
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel))
 
@@ -937,8 +934,6 @@ async def test_models_list_returns_exact_vendor_identity(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_models_list_omits_context_for_empty_template_model(monkeypatch) -> None:
-    from jiuwenswarm.server.runtime import opencode_zen
-
     monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(
         models_handlers,
@@ -954,7 +949,6 @@ async def test_models_list_omits_context_for_empty_template_model(monkeypatch) -
             "is_default": True,
         }],
     )
-    monkeypatch.setattr(opencode_zen, "get_zen_free_model_entries", lambda: [])
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel))
 
@@ -992,47 +986,17 @@ async def test_models_list_builds_the_list_off_the_event_loop(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_models_list_includes_cached_zen_free_models(monkeypatch) -> None:
-    """Free models are in-memory entries but must remain selectable in new sessions."""
-    from jiuwenswarm.server.runtime import opencode_zen
-
+async def test_models_list_keeps_zen_models_on_agentserver(monkeypatch) -> None:
+    """Gateway 本地 models.list 不合并 Zen 缓存，那一步在 AgentServer。"""
     monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(models_handlers, "get_default_models", lambda _config: [])
-    monkeypatch.setattr(
-        opencode_zen,
-        "get_zen_free_model_entries",
-        lambda: [{
-            "model_client_config": {
-                "model_name": "deepseek-v4-flash-free",
-                "api_base": "https://opencode.ai/zen/v1",
-                "api_key": "public",
-                "client_provider": "OpenAI",
-            },
-            "model_config_obj": {"temperature": 0.95},
-            "alias": "DeepSeek V4 Flash",
-            "context_window_tokens": 200000,
-            "is_free": True,
-        }],
-    )
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel))
 
     await channel.methods["models.list"](object(), "req-models", {}, "session-1")
 
     assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"]["models"] == [{
-        "model_name": "deepseek-v4-flash-free",
-        "api_base": "https://opencode.ai/zen/v1",
-        "api_key": "public",
-        "model_provider": "OpenAI",
-        "temperature": 0.95,
-        "reasoning_level": "",
-        "is_default": None,
-        "is_agentos": False,
-        "is_free": True,
-        "alias": "DeepSeek V4 Flash",
-        "context_window_tokens": 200000,
-    }]
+    assert channel.responses[-1]["payload"]["models"] == []
 
 
 @pytest.mark.asyncio

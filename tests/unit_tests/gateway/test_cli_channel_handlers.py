@@ -454,7 +454,7 @@ async def test_harmonyos_dev_init_legacy_client_falls_back_to_local(monkeypatch)
         return {"ok": True, "source": "local-fallback"}
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
+        "jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
         fake_local_init,
     )
 
@@ -504,7 +504,7 @@ async def test_harmonyos_dev_init_remote_client_error_without_fallback(monkeypat
         return {"ok": True}
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
+        "jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
         fake_local_init,
     )
 
@@ -564,7 +564,7 @@ async def test_harmonyos_dev_init_business_failure_does_not_rerun_locally(monkey
         return {"ok": True}
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
+        "jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
         fake_local_init,
     )
 
@@ -1549,15 +1549,15 @@ async def test_session_rebind_project_falls_back_to_shared_dir_when_agent_offlin
         },
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
         lambda *args, **kwargs: {"session_id": "sess-1"},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.project_store.find_or_create_code_project_for_tui_params",
+        "jiuwenswarm.gateway.embedded.runtime.session.project_store.find_or_create_code_project_for_tui_params",
         lambda *args, **kwargs: project,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.session_metadata.rebind_session_project",
+        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.rebind_session_project",
         lambda *args, **kwargs: True,
     )
 
@@ -1586,7 +1586,7 @@ async def test_session_rebind_project_does_not_read_gateway_state_for_remote_cli
         CliHandlersBindParams(channel=server, agent_client=RemoteAgentClient(), path="/tui")
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
         lambda *args, **kwargs: pytest.fail("remote fallback must not read Gateway session state"),
     )
 

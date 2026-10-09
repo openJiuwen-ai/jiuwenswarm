@@ -90,7 +90,7 @@ from jiuwenswarm.common.utils import (
 )
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod, Message, Mode
-from jiuwenswarm.server.runtime.attachments.media_attachments import (
+from jiuwenswarm.gateway.embedded.runtime.attachments.media_attachments import (
     normalize_chat_media_attachments,
 )
 _mark_startup_import_phase("gateway_core_imports_loaded")
@@ -125,7 +125,7 @@ def _agent_prewarm_enabled() -> bool:
     Prewarming is opt-in via JIUWENSWARM_AGENT_PREWARM; when off the Gateway
     must not emit agent.prewarm.sync requests or related log noise.
     """
-    from jiuwenswarm.server.runtime.agent_warm_pool import prewarm_enabled_by_env
+    from jiuwenswarm.gateway.embedded.runtime.agent_prewarm import prewarm_enabled_by_env
 
     return prewarm_enabled_by_env()
 
@@ -367,7 +367,7 @@ def _inject_session_work_mode(msg: Message) -> None:
         return
     channel_id = getattr(msg, "channel_id", None)
     try:
-        from jiuwenswarm.server.runtime.session.work_mode import resolve_session_work_mode_params
+        from jiuwenswarm.gateway.embedded.runtime.session.work_mode import resolve_session_work_mode_params
         binding = resolve_session_work_mode_params(params, channel_id=channel_id)
     except Exception:  # noqa: BLE001
         # 归一化异常时不写回,保留原始 params 由后续处理
@@ -2172,7 +2172,7 @@ async def _run(
     # 注入 Git diff 监控注册表(设计文档阶段10):
     # 1. 让 ``_mark_git_watcher_dirty`` 能通过 ``channel.git_watcher_registry`` 唤醒轮询
     # 2. 通过 ``set_channel`` 让 registry 拿到 send_event 的发送句柄
-    from jiuwenswarm.server.runtime.session.git_diff_watcher import (
+    from jiuwenswarm.gateway.embedded.runtime.session.git_diff_watcher import (
         get_git_diff_watcher_registry,
     )
     _git_watcher_registry = get_git_diff_watcher_registry()
@@ -3120,44 +3120,6 @@ async def _run(
         else None
     )
 
-    # ---------- Opencode Zen 免费模型预热 ----------
-    # Gateway 进程独立拉取 Zen 免费模型到内存缓存（_models_list 在此进程处理，
-    # 与 AgentServer 内存不共享，故各自预热）。失败留空，不阻断启动。
-    # fire-and-forget：不再同步 await（拉取上限 15s，原直接推迟 19001/19000
-    # 端口开放，Desktop 只等 19000 且 45s 超时）。失败由 opencode_zen 自带
-    # 后台重试自动恢复；models.list 在完成前返回已有配置模型，不影响主链路。
-    # shutdown 时 cancel（见本函数 finally）。
-    zen_free_models_task: asyncio.Task | None = None
-    try:
-        from jiuwenswarm.server.runtime.opencode_zen import (
-            warm_zen_free_models,
-            set_main_event_loop,
-            register_models_ready_callback,
-        )
-        # 注册 event loop，供后台重试线程通过 call_soon_threadsafe 调度回调
-        set_main_event_loop(asyncio.get_running_loop())
-
-        # 注册回调：后台重试成功后广播 models.updated 事件，前端自动刷新模型列表
-        async def _on_zen_models_ready():
-            try:
-                web_channel = channel_manager.get_channel("web")
-                if web_channel:
-                    await web_channel.broadcast_event("models.updated", {})
-                    logger.info("[App] broadcasted models.updated: zen free models ready")
-            except Exception as e:  # noqa: BLE001
-                logger.debug("[App] broadcast models.updated failed: %s", e)
-
-        def _models_ready_cb():
-            asyncio.create_task(_on_zen_models_ready())
-
-        register_models_ready_callback(_models_ready_cb)
-        zen_free_models_task = asyncio.create_task(
-            warm_zen_free_models(reason="gateway-startup"),
-            name="zen-free-models-warmup",
-        )
-    except Exception as e:  # noqa: BLE001 - 兜底
-        logger.warning("[App] zen free models warm failed (non-fatal): %s", e)
-
     # 主动推荐：按 config 自动注册/删除 proactive.tick 定时 job
     try:
         from jiuwenswarm.gateway.cron.proactive_cron_sync import sync_proactive_tick_job
@@ -3361,14 +3323,6 @@ async def _run(
                 await prewarm_sync_task
             except asyncio.CancelledError:
                 pass
-        if zen_free_models_task is not None:
-            zen_free_models_task.cancel()
-            try:
-                await zen_free_models_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:
-                logger.warning("[App] zen free models warmup stop failed: %s", exc)
         if a2a_task is not None:
             a2a_task.cancel()
             try:

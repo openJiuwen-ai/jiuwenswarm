@@ -700,7 +700,7 @@ async def models_list_handler(
                 # 并让 agentos 进 ModelSelector 下拉（is_default!==false || is_agentos）
                 "is_agentos": bool(mco.get("_source") == "agentos"),
                 # 免费模型标记：前端据此归进「免费模型」分组、并从设置页的模型配置里滤掉。
-                # 下面追加 Zen 模型那段设的是同一个字段，**两处必须一致**。
+                # AgentServer ``append_zen_free_models`` 追加的 Zen 条目使用同一个字段。
                 "is_free": bool(entry.get("is_free")),
                 "alias": entry.get("alias", ""),
                 "origin_index": idx,
@@ -720,44 +720,8 @@ async def models_list_handler(
                 # 登录送的模型：前端据此置灰编辑
                 result_entry.update(source=entry.get("source"), read_only=True)
             result.append(result_entry)
-        # Zen 免费模型仅存在于进程内缓存，不能写回 models.defaults；但需要
-        # 与普通模型一同出现在会话选择器中。is_default 保持 None（而不是
-        # False），使前端把它视为可选模型，同时不会改变首个配置模型作为
-        # active_model 的既有语义。
-        try:
-            from jiuwenswarm.server.runtime.opencode_zen import (
-                get_zen_free_model_entries,
-            )
-
-            existing_names = {str(item.get("model_name") or "") for item in result}
-            for entry in get_zen_free_model_entries():
-                mcc = entry.get("model_client_config") or {}
-                mco = entry.get("model_config_obj") or {}
-                model_name = str(mcc.get("model_name") or "").strip()
-                if not model_name or model_name in existing_names:
-                    continue
-                result.append({
-                    "model_name": model_name,
-                    "api_base": mcc.get("api_base", ""),
-                    "api_key": mcc.get("api_key", ""),
-                    "model_provider": mcc.get("client_provider", ""),
-                    "temperature": mco.get("temperature"),
-                    "reasoning_level": reasoning_level_display(mco.get("reasoning_level")),
-                    "is_default": entry.get("is_default"),
-                    "is_agentos": False,
-                    "is_free": True,
-                    "alias": entry.get("alias", ""),
-                    # Preserve an explicit context-window value supplied by
-                    # the runtime cache; otherwise use the shared default.
-                    "context_window_tokens": (
-                        parse_positive_int(entry.get("context_window_tokens"))
-                        or parse_positive_int(mco.get("context_window"))
-                        or DEFAULT_CONTEXT_WINDOW_TOKENS
-                    ),
-                })
-                existing_names.add(model_name)
-        except Exception:
-            logger.warning("[models.list] append Zen free models failed", exc_info=True)
+        # Zen 免费模型由 AgentServer 的 ConfigAdapter 在本响应返回后追加。
+        # Gateway 本地 models.list 不读那份进程内缓存。
 
         # active_model 为列表首位的模型（主对话默认）
         active_model = result[0]["model_name"] if result else ""

@@ -1575,13 +1575,6 @@ async def config_set_handler(
         logger.warning("[config.set] on_config_saved failed: %s", exc)
         applied_without_restart = False
 
-    if "enable_free_models" in apply_result.yaml_updated:
-        try:
-            from jiuwenswarm.server.runtime.opencode_zen import warm_zen_free_models
-            await warm_zen_free_models(reason="config-toggle")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[config.set] warm_zen_free_models failed: %s", exc)
-
     updated_param_keys = [k for k, e in CONFIG_SET_ENV_MAP.items() if e in env_updates] + yaml_updated
     payload = {"updated": updated_param_keys, "applied_without_restart": applied_without_restart}
     if apply_result.codex_dependency_install is not None:
@@ -1723,13 +1716,6 @@ async def config_save_all_handler(
             on_config_saved=on_config_saved,
             agent_client=agent_client,
         )
-
-        if "enable_free_models" in yaml_updated:
-            try:
-                from jiuwenswarm.server.runtime.opencode_zen import warm_zen_free_models
-                await warm_zen_free_models(reason="config-toggle")
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[config.save_all] warm_zen_free_models failed: %s", exc)
 
         payload = {
             "updated": [k for k, e in CONFIG_SET_ENV_MAP.items() if e in env_updates] + yaml_updated,

@@ -9,6 +9,7 @@ its response into an E2A response.
 
 from __future__ import annotations
 
+import logging
 import sys
 from typing import Any
 
@@ -16,6 +17,33 @@ from jiuwenswarm.common.config import resolve_env_vars
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
+
+logger = logging.getLogger(__name__)
+
+
+def _append_zen_free_models(payload: dict[str, Any]) -> None:
+    """Add AgentServer's Zen cache to a models.list payload."""
+    models = payload.get("models")
+    if not isinstance(models, list):
+        return
+    try:
+        from jiuwenswarm.server.runtime.opencode_zen import append_zen_free_models
+
+        append_zen_free_models(models)
+    except Exception:
+        logger.warning("[ConfigAdapter] append Zen free models failed", exc_info=True)
+
+
+async def _warm_zen_after_free_model_toggle(payload: dict[str, Any]) -> None:
+    updated = payload.get("updated")
+    if not isinstance(updated, list) or "enable_free_models" not in updated:
+        return
+    try:
+        from jiuwenswarm.server.runtime.opencode_zen import warm_zen_free_models
+
+        await warm_zen_free_models(reason="config-toggle")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[ConfigAdapter] warm_zen_free_models failed: %s", exc)
 
 
 def _resolve_browser_path(browser: dict[str, Any]) -> str:
@@ -187,6 +215,13 @@ class ConfigAdapter(GatewayAdapter):
         }:
             metadata["config_changed"] = True
         payload = dict(response["payload"])
+        if response["ok"] and request.req_method == ReqMethod.MODELS_LIST:
+            _append_zen_free_models(payload)
+        if response["ok"] and request.req_method in {
+            ReqMethod.CONFIG_SET,
+            ReqMethod.CONFIG_SAVE_ALL,
+        }:
+            await _warm_zen_after_free_model_toggle(payload)
         if not response["ok"]:
             payload.setdefault("error", response["error"] or "config request failed")
             payload.setdefault("code", response["code"] or "INTERNAL_ERROR")

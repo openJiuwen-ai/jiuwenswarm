@@ -19,7 +19,11 @@ from jiuwenswarm.runtime.cron.models import (
     is_valid_target_channel_id,
     normalize_target_channel_id,
 )
-from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
+from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import (
+    CronToolRoute,
+    CronTools,
+    resolve_agent_cron_model,
+)
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.runtime.host_services import send_runtime_wake
@@ -145,9 +149,7 @@ class _CronToolsCronBackend(CronToolBackend):
             inherited = str(meta.get("model") or "").strip()
             if not inherited:
                 return payload
-            from jiuwenswarm.runtime.cron.models import validate_cron_model
-
-            canonical = validate_cron_model(inherited)
+            canonical = resolve_agent_cron_model(inherited)
             if canonical:
                 out = dict(payload)
                 out["model_name"] = canonical
