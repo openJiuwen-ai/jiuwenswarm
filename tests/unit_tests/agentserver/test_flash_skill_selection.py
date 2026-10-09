@@ -873,12 +873,90 @@ def test_flash_reload_keeps_optional_rail_and_uses_new_snapshot(monkeypatch):
     adapter = object.__new__(interface_flash.JiuwenSwarmFlashAdapter)
     adapter._config_base_cache = {"flash": {"skill_selection": {"enabled": True}}}
     adapter._skill_rail = None
-    rail = adapter._build_flash_skill_selection_rail(adapter._config_base_cache)
+    monkeypatch.setattr(interface_deep.JiuWenSwarmDeepAdapter, "_instantiate_rails", lambda *args: [])
+    initial = adapter._instantiate_rails([], adapter._config_base_cache)
+    rail = adapter._flash_skill_selection_rail
+    assert initial == [rail.load_rail, rail]
     monkeypatch.setattr(interface_deep.JiuWenSwarmDeepAdapter, "_get_current_agent_rails", lambda *args: ([], []))
-    adapter._config_base_cache = {"flash": {"skill_selection": {"enabled": False}}}
-    rails, _ = adapter._get_current_agent_rails({}, adapter._config_base_cache)
+    for enabled in (True, False, True):
+        adapter._config_base_cache = {"flash": {"skill_selection": {"enabled": enabled}}}
+        rails, removed = adapter._get_current_agent_rails({}, adapter._config_base_cache)
+        assert rails == [] and removed == []
+        assert adapter._flash_skill_selection_rail is rail
+        assert SelectionSettings.from_config(rail._config_provider()).enabled is enabled
+
+
+def test_flash_reload_registers_new_optional_rail_once(monkeypatch):
+    adapter = object.__new__(interface_flash.JiuwenSwarmFlashAdapter)
+    monkeypatch.setattr(interface_deep.JiuWenSwarmDeepAdapter, "_get_current_agent_rails", lambda *args: ([], []))
+    rails, removed = adapter._get_current_agent_rails({}, {})
+    rail = adapter._flash_skill_selection_rail
     assert rails == [rail.load_rail, rail]
-    assert not SelectionSettings.from_config(rail._config_provider()).enabled
+    assert removed == []
+    assert adapter._get_current_agent_rails({}, {}) == ([], [])
+
+
+async def test_flash_reload_does_not_duplicate_sdk_selection_callbacks(harness, monkeypatch):
+    """Exercise real SDK configure/registration without calling an LLM or server."""
+    from uuid import uuid4
+    from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+    from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent
+    from openjiuwen.harness.deep_agent import DeepAgent
+    from openjiuwen.harness.schema.config import DeepAgentConfig
+
+    h = harness
+    adapter = object.__new__(interface_flash.JiuwenSwarmFlashAdapter)
+    adapter._config_base_cache = h.config
+    adapter._skill_rail = h.native
+    monkeypatch.setattr(interface_deep.JiuWenSwarmDeepAdapter, "_instantiate_rails", lambda *args: [])
+    monkeypatch.setattr(interface_deep.JiuWenSwarmDeepAdapter, "_get_current_agent_rails", lambda *args: ([], []))
+    rails = adapter._instantiate_rails([], h.config)
+    rail = adapter._flash_skill_selection_rail
+    model_calls, load_calls = [], []
+    model_hook, load_hook = rail.before_model_call, rail.load_rail.before_tool_call
+
+    async def before_model(ctx):
+        model_calls.append(ctx)
+        await model_hook(ctx)
+
+    async def before_load(ctx):
+        load_calls.append(ctx)
+        await load_hook(ctx)
+
+    monkeypatch.setattr(rail, "before_model_call", before_model)
+    monkeypatch.setattr(rail.load_rail, "before_tool_call", before_load)
+    agent = DeepAgent(AgentCard(id="flash-reload-" + uuid4().hex, name="flash-reload"))
+    agent.configure(DeepAgentConfig(rails=rails, enable_read_image_multimodal=False))
+    try:
+        await agent.ensure_initialized()
+        callbacks = agent._react_agent.agent_callback_manager
+        for enabled in (True, True, False, True):
+            adapter._config_base_cache = {"flash": {"skill_selection": {"enabled": enabled}}}
+            rails, removed = adapter._get_current_agent_rails({}, adapter._config_base_cache)
+            assert removed == []
+            agent.configure(DeepAgentConfig(rails=rails, enable_read_image_multimodal=False))
+            await agent.ensure_initialized()
+            agent.system_prompt_builder.add_section(
+                build_skills_section(skill_lines="0. slides: presentation slides"))
+            ctx = context()
+            model_calls.clear()
+            await callbacks.execute(AgentCallbackEvent.BEFORE_MODEL_CALL, ctx)
+            assert model_calls == [ctx]
+            assert not ctx.extra.get(rail.FALLBACK)
+            assert (SkillSearchTool.TOOL_NAME in {tool.name for tool in ctx.inputs.tools}) is enabled
+            catalog = agent.system_prompt_builder.get_section("skills").render()
+            assert ("0. slides: presentation slides" in catalog) is not enabled
+            await callbacks.execute(AgentCallbackEvent.AFTER_MODEL_CALL, ctx)
+            tool_ctx = SimpleNamespace(inputs=SimpleNamespace(tool_name="bash"), extra={}, session=ctx.session)
+            load_calls.clear()
+            await callbacks.execute(AgentCallbackEvent.BEFORE_TOOL_CALL, tool_ctx)
+            assert load_calls == [tool_ctx]
+            await rail.after_invoke(ctx)
+    finally:
+        for registered in list(agent._registered_rails):
+            await agent.unregister_rail(registered)
+        await agent.agent_callback_manager.clear()
+        await agent._react_agent.agent_callback_manager.clear()
 
 
 def test_other_adapters_have_no_retrieval_extension_hook():
