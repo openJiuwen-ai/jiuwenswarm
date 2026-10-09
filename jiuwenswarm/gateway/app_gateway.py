@@ -1906,7 +1906,7 @@ async def _run(
     # 本期有意复用 gateway.cron.etcd_endpoints 连接同一 etcd 集群；
     # gateway.cron.store_backend 只控制 Cron 存储后端，不控制 ConfigUpdater。
     # 后续若两者需要连接不同集群，再新增独立的 config_updater endpoint。
-    # 无 etcd 端点则不启动。生效链路：内存合并 → Gateway 本地刷新（不 reload AgentServer）。
+    # 无 etcd 端点则不启动。生效链路：内存合并 → Gateway 本地刷新。
     # refresh_handler 在此注入，使 config_updater 无需反向 import 本模块。
     config_updater_service: ConfigUpdaterService | None = None
     try:
@@ -1918,16 +1918,14 @@ async def _run(
 
         apply_local = build_refresh_handler(client)
 
-        async def _on_remote_config_applied(merged: dict[str, Any]) -> None:
-            # 管理面(etcd)下发只做 Gateway 本地应用，不再 reload AgentServer：
-            # reload 失败会被升级成 Gateway 自重启（工作区/沙箱等环境问题尤其
-            # 容易触发，进而反复重启）。托管字段在 Gateway 侧消费即可。
-            apply_local(merged)
+        async def _on_remote_config_applied(overrides: dict[str, Any]) -> None:
+            # Management-plane overrides handled by this service belong to the
+            # Gateway Router. Existing Web/TUI config saves keep using
+            # ``_on_config_saved`` and their AgentServer reload path.
+            apply_local(overrides)
 
         config_updater_service = ConfigUpdaterService(
             etcd_endpoints=list(load_cron_store_settings(full_cfg).endpoints),
-            config=full_cfg,
-            config_provider=get_config,
             refresh_handler=_on_remote_config_applied,
         )
     except Exception as exc:  # noqa: BLE001 - must not block startup

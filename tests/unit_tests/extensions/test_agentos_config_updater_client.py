@@ -104,13 +104,16 @@ async def test_fetch_once_decodes_section_and_metadata():
     fake = FakeEtcd()
     fake.set(
         KEY,
-        "gateway:\n  sandbox:\n    cpu: 2000\n_version: 1\n_revision: 3\n",
+        "gateway:\n  agent_sandbox:\n    idle_timeout: 120\n    cpu: 2000\n    memory: 4096\n  tool_sandbox:\n    idle_timeout: 300\n    cpu: 1000\n    memory: 2048\n_version: 1\n_revision: 3\n",
         7,
     )
     fetched = await _client(fake).fetch_once()
 
     assert fetched is not None
-    assert fetched.section == {"sandbox": {"cpu": 2000}}
+    assert fetched.section == {
+        "agent_sandbox": {"idle_timeout": 120, "cpu": 2000, "memory": 4096},
+        "tool_sandbox": {"idle_timeout": 300, "cpu": 1000, "memory": 2048},
+    }
     assert fetched.metadata == {"_version": 1, "_revision": 3}
     assert fetched.mod_revision == 7
 
@@ -118,7 +121,7 @@ async def test_fetch_once_decodes_section_and_metadata():
 async def test_fetch_once_ignores_neighbouring_prefix_key():
     # A prefix-range read would also match this; the exact-key filter must not.
     fake = FakeEtcd()
-    fake.set(KEY + "-backup", "gateway:\n  sandbox:\n    cpu: 1\n", 9)
+    fake.set(KEY + "-backup", "gateway:\n  agent_sandbox:\n    cpu: 1\n", 9)
     assert await _client(fake).fetch_once() is None
 
 
@@ -145,7 +148,7 @@ async def test_fetch_once_parse_error_yields_empty_section():
 
 async def test_watch_loop_pulls_once_before_watching():
     fake = FakeEtcd()
-    fake.set(KEY, "gateway:\n  sandbox:\n    cpu: 2000\n", 5)
+    fake.set(KEY, "gateway:\n  agent_sandbox:\n    cpu: 2000\n", 5)
     seen: list[int] = []
 
     async def on_event(fetched):
@@ -158,7 +161,7 @@ async def test_watch_loop_pulls_once_before_watching():
     assert seen == [5]  # initial full pull
     assert fake.watch_start_revisions == [fake.revision + 1]
 
-    fake.set(KEY, "gateway:\n  sandbox:\n    cpu: 4000\n", 6)
+    fake.set(KEY, "gateway:\n  agent_sandbox:\n    cpu: 4000\n", 6)
     await fake.watch_queue.put(
         [EtcdKv(key=KEY.encode(), value=fake.kvs[KEY.encode()][0], mod_revision=6)]
     )
@@ -186,7 +189,7 @@ async def test_watch_loop_filters_neighbour_key_events():
         [
             EtcdKv(
                 key=(KEY + "-backup").encode(),
-                value=b"gateway:\n  sandbox:\n    cpu: 1\n",
+                value=b"gateway:\n  agent_sandbox:\n    cpu: 1\n",
                 mod_revision=9,
             )
         ]
@@ -209,7 +212,7 @@ async def test_watch_loop_repulls_after_stream_ends(monkeypatch):
         0.02,
     )
     fake = FakeEtcd()
-    fake.set(KEY, "gateway:\n  sandbox:\n    cpu: 2000\n", 5)
+    fake.set(KEY, "gateway:\n  agent_sandbox:\n    cpu: 2000\n", 5)
     seen: list[int] = []
 
     async def on_event(fetched):
@@ -222,7 +225,7 @@ async def test_watch_loop_repulls_after_stream_ends(monkeypatch):
 
     # A change made while the stream is down is also picked up by the fresh
     # full pull performed before the replacement watch is established.
-    fake.set(KEY, "gateway:\n  sandbox:\n    cpu: 8000\n", 8)
+    fake.set(KEY, "gateway:\n  agent_sandbox:\n    cpu: 8000\n", 8)
     await fake.watch_queue.put(None)  # end the stream -> loop reconnects
 
     await asyncio.sleep(0.1)
@@ -236,14 +239,14 @@ async def test_watch_loop_repulls_after_stream_ends(monkeypatch):
 async def test_watch_loop_catches_change_between_range_and_watch():
     fake = FakeEtcd()
     fake.revision = 5
-    fake.set(KEY, "gateway:\n  sandbox:\n    cpu: 2000\n", 5)
+    fake.set(KEY, "gateway:\n  agent_sandbox:\n    cpu: 2000\n", 5)
     seen: list[int] = []
 
     async def on_event(fetched):
         seen.append(fetched.mod_revision)
         if fetched.mod_revision == 5:
             fake.revision = 6
-            fake.set(KEY, "gateway:\n  sandbox:\n    cpu: 4000\n", 6)
+            fake.set(KEY, "gateway:\n  agent_sandbox:\n    cpu: 4000\n", 6)
             await fake.watch_queue.put(
                 [EtcdKv(key=KEY.encode(), value=fake.kvs[KEY.encode()][0], mod_revision=6)]
             )
