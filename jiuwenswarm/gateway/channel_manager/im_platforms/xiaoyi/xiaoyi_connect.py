@@ -208,6 +208,23 @@ class XiaoyiChannelConfig:
     session_cleanup_timeout_ms: int = 3600000
 
 
+def _a2a_transport_kind(ws: Any) -> str:
+    """中转连接形态标签（命名管道 / WebSocket），用于 A2A 调试落盘上下文。"""
+    if ws is None:
+        return ""
+    return "pipe" if isinstance(ws, PipeStream) else "ws"
+
+
+def _a2a_channel_label(channel: Any) -> str:
+    """渠道名（XiaoyiChannel.name = "xiaoyi"；配置里 channel_id 兜底）。"""
+    name = getattr(channel, "name", None)
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    config = getattr(channel, "config", None)
+    channel_id = getattr(config, "channel_id", None)
+    return channel_id.strip() if isinstance(channel_id, str) else ""
+
+
 def _generate_signature(sk: str, timestamp: str) -> str:
     """生成 HMAC-SHA256 签名（Base64 编码）."""
     h = hmac.new(
@@ -531,6 +548,8 @@ class XiaoyiChannel(BaseChannel):
         # clientVariables 审批桥接：待答复审批（logical_session → 审批上下文）
         self._pending_approvals: dict[str, dict[str, Any]] = {}
         self._reload_permissions_cb: Callable[[], Any] | None = None
+        # 流式审计（诊断取证）：task_key → 本轮"正文/思考"帧计数（见 _note_stream_audit）
+        self._stream_audit: dict[str, dict[str, Any]] = {}
 
     @property
     def channel_id(self) -> str:
@@ -735,6 +754,103 @@ class XiaoyiChannel(BaseChannel):
         except asyncio.CancelledError:
             pass
 
+    # ------------------------------------------------------------ 流式审计（诊断取证）
+
+    def _stream_audit_item(
+        self, key: str, session_id: str, task_id: str
+    ) -> dict[str, Any]:
+        """取（或新建）本轮审计计数器；条数封顶，避免异常流量下无界增长。"""
+        item = self._stream_audit.get(key)
+        if item is None:
+            if len(self._stream_audit) >= 64:
+                self._stream_audit.pop(next(iter(self._stream_audit)), None)
+            item = {
+                "session_id": session_id,
+                "task_id": task_id,
+                "text": 0,
+                "reasoning": 0,
+                "switches": 0,
+                "last_kind": "",
+                "text_chars": 0,
+                "first_switch_seq": -1,
+                "samples": [],
+            }
+            self._stream_audit[key] = item
+        return item
+
+    @staticmethod
+    def _stream_audit_touch(item: dict[str, Any], kind: str) -> None:
+        """记录一次类型（R=思考 / T=正文），并统计类型切换次数。"""
+        last = str(item.get("last_kind") or "")
+        frames = int(item.get("text") or 0) + int(item.get("reasoning") or 0)
+        if last and last != kind:
+            item["switches"] = int(item.get("switches") or 0) + 1
+            if int(item.get("first_switch_seq") or -1) < 0:
+                item["first_switch_seq"] = frames
+        item["last_kind"] = kind
+
+    def _note_stream_audit(
+        self, msg: Message, event_name: str, session_id: str, task_id: str
+    ) -> None:
+        """统计本轮出站帧里正文/思考的条数与交替次数，轮末输出一行汇总。
+
+        背景：手机控制 PC 时正文常被切成大量碎片（每片之间夹一行「深度思考」），
+        需要有证据说明"交替/碎片"来自模型增量块序列，而非端侧渲染或某一次渲染 bug。
+        逐帧日志会被日志轮转冲掉，这里只保留**轮级汇总（一行）**，且不新增日志文件
+        （沿用现有 logger，落到既有 gateway 日志）。只统计、不改帧。
+        """
+        payload = msg.payload if isinstance(msg.payload, dict) else {}
+        key = f"{session_id}|{task_id}"
+
+        if event_name in {"chat.reasoning", "chat.delta"}:
+            item = self._stream_audit_item(key, session_id, task_id)
+            if event_name == "chat.reasoning":
+                item["reasoning"] = int(item["reasoning"]) + 1
+                self._stream_audit_touch(item, "R")
+                return
+            text = str(payload.get("content", "") or "")
+            item["text"] = int(item["text"]) + 1
+            item["text_chars"] = int(item["text_chars"]) + len(text.strip())
+            samples = item.get("samples")
+            if isinstance(samples, list) and len(samples) < 3:
+                samples.append(text.strip().replace("\n", " ")[:24])
+            self._stream_audit_touch(item, "T")
+            return
+
+        # 轮次终态：处理结束状态 / 出错 / 取消回执
+        terminal = (
+            event_name in {"chat.error", "chat.interrupt_result"}
+            or (
+                event_name == "chat.processing_status"
+                and payload.get("is_processing") is False
+            )
+        )
+        if not terminal:
+            return
+        item = self._stream_audit.pop(key, None)
+        if not item:
+            return
+        text_frames = int(item.get("text") or 0)
+        reasoning_frames = int(item.get("reasoning") or 0)
+        frames = text_frames + reasoning_frames
+        if not frames:
+            return
+        samples = item.get("samples")
+        logger.info(
+            "[GUI_AGENT_DIAG] phase=XIAOYI_STREAM_AUDIT session_id=%s task_id=%s "
+            "frames=%d text=%d reasoning=%d switches=%d avg_text_chars=%.1f "
+            "first_switch_seq=%d samples=%s",
+            session_id,
+            task_id,
+            frames,
+            text_frames,
+            reasoning_frames,
+            int(item.get("switches") or 0),
+            (float(item.get("text_chars") or 0) / text_frames) if text_frames else 0.0,
+            int(item.get("first_switch_seq") or -1),
+            " | ".join(samples) if isinstance(samples, list) else "",
+        )
+
     def _extract_platform_receive_info(self, msg: Message) -> tuple[str, str]:
         """
         从消息中提取小艺平台会话 ID 与任务 ID。
@@ -787,6 +903,23 @@ class XiaoyiChannel(BaseChannel):
         - routing_target 非空（team 模式）→ 双通道投递：
           活跃会话走 ws 流式，非活跃走 push webhook 全文 final
         """
+        # 流式审计（诊断取证）：本轮出站帧的正文/思考计数与交替次数（team 与非 team
+        # 路径统一在此统计），轮末打一行汇总。只统计、不改帧、不新增日志文件；
+        # 统计异常绝不影响投递。
+        try:
+            _audit_payload = msg.payload if isinstance(msg.payload, dict) else {}
+            _audit_event = str(
+                getattr(msg.event_type, "value", None)
+                or _audit_payload.get("event_type")
+                or ""
+            ).strip()
+            _audit_session_id, _audit_task_id = self._extract_platform_receive_info(msg)
+            self._note_stream_audit(
+                msg, _audit_event, _audit_session_id, _audit_task_id
+            )
+        except Exception as exc:  # noqa: BLE001 - 诊断统计不得影响消息投递
+            logger.debug("XiaoyiChannel 流式审计统计失败: %s", exc)
+
         # ── team 模式：双通道投递 ──
         if routing_target is not None:
             await self._send_team(msg, routing_target)
@@ -2104,6 +2237,24 @@ class XiaoyiChannel(BaseChannel):
         try:
             if isinstance(raw, bytes):
                 raw = raw.decode("utf-8")
+            # A2A 全量入站落盘（开关：<数据目录>/trace.json → a2a）：
+            # 只落原始报文，缺省关闭，异常不影响业务。
+            try:
+                from jiuwenswarm.common.e2a.wire_trace import trace_a2a_inbound
+
+                _conn = None
+                if url_key:
+                    _conns = getattr(self, "_ws_connections", None)
+                    _conn = _conns.get(url_key) if isinstance(_conns, dict) else None
+                trace_a2a_inbound(
+                    raw,
+                    channel=_a2a_channel_label(self),
+                    transport=_a2a_transport_kind(_conn),
+                    url_key=url_key,
+                    agent_id=str(getattr(getattr(self, "config", None), "agent_id", "") or ""),
+                )
+            except Exception:  # noqa: BLE001
+                pass
             is_gui_response_frame = "InvokeJarvisGUIAgentResponse" in raw
             message = json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
@@ -4119,6 +4270,20 @@ class XiaoyiChannel(BaseChannel):
             lock = asyncio.Lock()
             self._send_locks[url_key] = lock
         async with lock:
+            # A2A 全量出站落盘（开关：<数据目录>/trace.json → a2a）：
+            # 只落实际发出的原始报文，缺省关闭，异常不影响业务。
+            try:
+                from jiuwenswarm.common.e2a.wire_trace import trace_a2a_outbound
+
+                trace_a2a_outbound(
+                    payload,
+                    channel=_a2a_channel_label(self),
+                    transport=_a2a_transport_kind(ws),
+                    url_key=url_key,
+                    agent_id=str(getattr(getattr(self, "config", None), "agent_id", "") or ""),
+                )
+            except Exception:  # noqa: BLE001
+                pass
             if isinstance(ws, PipeStream):
                 # 命名管道形态：帧负载即 JSON 对象（桌面侧按帧 JSON.parse 后透传）
                 await ws.send_frame(payload)

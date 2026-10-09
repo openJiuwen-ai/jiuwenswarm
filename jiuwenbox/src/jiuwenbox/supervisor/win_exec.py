@@ -694,6 +694,25 @@ def two_hop_spawn_and_authorize(
             raise RuntimeError(
                 f"control_token 写入 pipe 失败, runner 未启动 (sandbox_id={sandbox_id})"
             )
+        from jiuwenbox.supervisor import win_softdelete
+        if win_softdelete.enabled_from_environ():
+            try:
+                win_softdelete.prepare_dll_for_sandbox_user()
+                win_softdelete.inject_suspended(int(proc_handle))
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "软删除 DLL 注入失败, 终止 runner spawn (sandbox=%s): %s",
+                    sandbox_id, exc,
+                )
+                kernel32.TerminateProcess(wintypes.HANDLE(proc_handle), 1)
+                kernel32.CloseHandle(wintypes.HANDLE(proc_handle))
+                try:
+                    kernel32.CloseHandle(wintypes.HANDLE(thread_handle))
+                except Exception:  # noqa: BLE001
+                    pass
+                raise RuntimeError(
+                    f"软删除 DLL 注入失败, runner 未启动 (sandbox_id={sandbox_id})"
+                ) from exc
         # 2. resume runner 主线程 (CREATE_SUSPENDED 必须被唤醒).
         try:
             win_job.resume_process(thread_handle)
@@ -937,6 +956,10 @@ def _create_process_as_user(  # pylint: disable=huawei-too-many-arguments
         _val = os.environ.get(_var)
         if _val:
             env.setdefault(_var, _val)
+    # 子进程环境块是现拼的, 不会带上 runner 里的软删除变量.
+    # DLL 靠这三个变量知道归档目录; 缺了就会把文件挪到错误的位置或拒绝删除.
+    from jiuwenbox.supervisor.win_softdelete import merge_soft_delete_env
+    merge_soft_delete_env(env)
     # 沙箱可写临时区 + profile 变量补全: child env 来自 header 不带 profile 变量,
     # 用 runner token 拿 jbx-sandbox profile 目录, TEMP 指向每沙箱隔离子目录
     # (<profile>\AppData\Local\Temp\jiuwenbox\<sandbox_id>\). ms-playwright 安装目录跨沙箱共用不重下.

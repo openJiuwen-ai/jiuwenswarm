@@ -1140,6 +1140,14 @@ permissions:
   owner_scopes: {}
   deny_guidance_message: ""
 
+  # Windows 软删除。和 file_guard 的 allow/ask/deny 无关。
+  # enabled 只接受真正的布尔 true。
+  # 打开后，本机和 jiuwenbox 里的删除改为回收站；放不进去则挪到同卷 archive_dir。
+  # archive_dir 为空时使用 <workspace>/.trash。Windows 默认开启软删除。
+  soft_delete:
+    enabled: true
+    archive_dir: ""
+
   # Native 路径层（agent-core FileGuard）：defaults + workspace 绑定运行时 workspace_root
   # trusted_dirs（TUI 项目 cwd / /add-dir）由引擎运行时编译，不必写进 YAML。
   file_guard:

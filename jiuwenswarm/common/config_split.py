@@ -55,6 +55,7 @@ _SCALAR_PATHS: tuple[tuple[str, ...], ...] = (
     # 手改 config.yaml 都可能设它，模板缺失 → 不登记会被模板重同步整键抹掉。
     ("sandbox", "fallback_policy"),
     ("sandbox", "urls_revision"),
+    ("permissions", "soft_delete", "enabled"),
 )
 
 # 小艺 PC/手机 HITL「永久记住」。按 id（路径条目按 path）upsert 回新模板 list。
