@@ -208,6 +208,7 @@ def uninstall_mcp_skills(name: str) -> dict[str, Any]:
                     removed.append(child.name)
                     try:
                         mgr.remove_skill_config(child.name)
+                        mgr.remove_skill_hash(child.name)
                     except Exception:  # noqa: BLE001
                         pass
             shutil.rmtree(skills_dir)
