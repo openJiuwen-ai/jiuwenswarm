@@ -297,7 +297,12 @@ def dispatch_permissions_config_request(
 
     try:
         if m == ReqMethod.PERMISSIONS_ENABLED_GET:
-            enabled = bool(_permissions_body(request).get("enabled", True))
+            # 按 mode 派生，与 web/TUI 载荷对齐（CR-3）：update_permissions_mode
+            # 恒写 enabled: true，读原始键在 full_access 下返回 true，令
+            # OfficeAce relay 的 enabled 自愈机制对 full_access 失明。
+            from jiuwenswarm.common.config import get_permissions_mode_from_config
+
+            enabled = get_permissions_mode_from_config() != "full_access"
             return _ok(request, {"enabled": enabled})
 
         if m == ReqMethod.PERMISSIONS_ENABLED_SET:
@@ -571,6 +576,7 @@ def dispatch_permissions_config_request(
         if m == ReqMethod.PERMISSIONS_MODE_SET:
             from jiuwenswarm.common.config import update_permissions_mode_in_config
             from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                _VALID_MODES,
                 get_sandbox_intent,
                 normalize_permission_mode,
             )
@@ -580,6 +586,14 @@ def dispatch_permissions_config_request(
             raw_mode = params.get("mode") or params.get("value")
             if not isinstance(raw_mode, str) or not raw_mode.strip():
                 return _err(request, "mode is required")
+            # 非法值拒绝而不是静默归一为 auto：与 TUI 严格校验一致，
+            # 避免 "Full Access" 等错值被降级成中等放行（CR-7）。
+            if normalize_permission_mode(raw_mode) != raw_mode.strip().lower():
+                return _err(
+                    request,
+                    f"mode must be one of {sorted(_VALID_MODES)}",
+                    code="BAD_REQUEST",
+                )
             mode = update_permissions_mode_in_config(normalize_permission_mode(raw_mode))
             return _ok(
                 request,
