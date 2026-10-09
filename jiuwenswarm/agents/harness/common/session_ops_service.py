@@ -1056,7 +1056,7 @@ async def warmup_session_context(
         )
         return False
 
-    session = _resolve_live_agent_session(deep_agent, session_id)
+    session = resolve_live_agent_session(deep_agent, session_id)
     temporary_session = session is None
     if session is None:
         # 正常调用点（start_interaction 之后）live session 必在；兜底临时 Session。
