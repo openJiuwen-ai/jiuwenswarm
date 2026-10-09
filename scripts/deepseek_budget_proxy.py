@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import socket
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -17,7 +18,7 @@ from typing import Any, Mapping
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 _MICRO_CNY_PER_CNY = Decimal("1000000")
 
@@ -28,6 +29,10 @@ class BudgetExceeded(RuntimeError):
 
 class LedgerLocked(RuntimeError):
     """Raised when another proxy process already owns the budget ledger."""
+
+
+class LedgerPersistenceError(RuntimeError):
+    """Local storage cannot safely commit a budget transition."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +107,7 @@ class BudgetLedger:
         self._lock = asyncio.Lock()
         self._settled = asyncio.Condition(self._lock)
         self._owned_reservations: set[str] = set()
+        self._persistence_failed = False
         self._process_lock = _ProcessFileLock(self.path.with_suffix(f"{self.path.suffix}.lock"))
         try:
             self._state = self._load()
@@ -119,6 +125,8 @@ class BudgetLedger:
 
     async def reserve(self) -> Reservation:
         async with self._settled:
+            if self._persistence_failed:
+                raise LedgerPersistenceError("budget settlement requires local recovery")
             worst = self.policy.worst_call_micro_cny
             charged = int(self._state["charged_micro_cny"])
             while charged + worst > self.policy.budget_micro_cny:
@@ -126,12 +134,20 @@ class BudgetLedger:
                 if charged - in_flight + worst > self.policy.budget_micro_cny:
                     raise BudgetExceeded("RSI model budget cannot cover another worst-case call")
                 await self._settled.wait()
+                if self._persistence_failed:
+                    raise LedgerPersistenceError("budget settlement requires local recovery")
                 charged = int(self._state["charged_micro_cny"])
+            before = self.snapshot()
             reservation = Reservation(uuid.uuid4().hex, worst)
             self._state["charged_micro_cny"] = charged + worst
             self._state["reserved_calls"] = int(self._state["reserved_calls"]) + 1
             self._state["active_reservations"][reservation.reservation_id] = worst
-            self._persist()
+            try:
+                self._persist()
+            except LedgerPersistenceError:
+                self._state = before
+                self._settled.notify_all()
+                raise
             self._owned_reservations.add(reservation.reservation_id)
             return reservation
 
@@ -146,6 +162,8 @@ class BudgetLedger:
             actual = None if usage is None else self.policy.cost_micro_cny(usage)
             if actual is not None and actual > reservation.worst_micro_cny:
                 raise ValueError("reported usage exceeds the reserved model contract")
+            before = self.snapshot()
+            owned = reservation.reservation_id in self._owned_reservations
             active.pop(reservation.reservation_id)
             self._owned_reservations.discard(reservation.reservation_id)
             if usage is None:
@@ -155,7 +173,39 @@ class BudgetLedger:
                 refund = reservation.worst_micro_cny - actual
                 self._state["charged_micro_cny"] = int(self._state["charged_micro_cny"]) - refund
             self._state["settled_calls"] = int(self._state["settled_calls"]) + 1
-            self._persist()
+            try:
+                self._persist()
+            except LedgerPersistenceError:
+                self._state = before
+                if owned:
+                    self._owned_reservations.add(reservation.reservation_id)
+                self._persistence_failed = True
+                self._settled.notify_all()
+                raise
+            self._settled.notify_all()
+
+    async def cancel_unforwarded(self, reservation: Reservation) -> None:
+        """Undo a local reservation that was rejected before upstream admission."""
+        async with self._settled:
+            active = self._state["active_reservations"]
+            if (
+                reservation.reservation_id not in self._owned_reservations
+                or active.get(reservation.reservation_id) != reservation.worst_micro_cny
+            ):
+                raise ValueError("reservation is not owned by this process or is not active")
+            before = self.snapshot()
+            active.pop(reservation.reservation_id)
+            self._owned_reservations.remove(reservation.reservation_id)
+            self._state["charged_micro_cny"] -= reservation.worst_micro_cny
+            self._state["reserved_calls"] -= 1
+            try:
+                self._persist()
+            except LedgerPersistenceError:
+                self._state = before
+                self._owned_reservations.add(reservation.reservation_id)
+                self._persistence_failed = True
+                self._settled.notify_all()
+                raise
             self._settled.notify_all()
 
     def snapshot(self) -> dict[str, Any]:
@@ -222,14 +272,24 @@ class BudgetLedger:
         return state
 
     def _persist(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._state["updated_at"] = datetime.now(UTC).isoformat()
-        temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        temporary.write_text(
-            json.dumps(self._state, ensure_ascii=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, self.path)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._state["updated_at"] = datetime.now(UTC).isoformat()
+            temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
+            temporary.write_text(
+                json.dumps(self._state, ensure_ascii=True, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            for attempt in range(5):
+                try:
+                    os.replace(temporary, self.path)
+                    return
+                except PermissionError as exc:
+                    if getattr(exc, "winerror", None) not in {5, 32} or attempt == 4:
+                        raise
+                    time.sleep(0.02)
+        except OSError as exc:
+            raise LedgerPersistenceError("budget ledger could not be committed") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,16 +384,24 @@ def create_app(
     settings: ProxySettings,
     ledger: BudgetLedger,
     *,
+    request_policy: str | Path | None = None,
     upstream_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
+    @app.exception_handler(LedgerPersistenceError)
+    async def persistence_failure(request: Request, exc: LedgerPersistenceError) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": {"code": "RSI_LEDGER_PERSIST_FAILED", "message": "local budget storage requires recovery"}},
+        )
+
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        return {"status": "ok", **ledger.public_snapshot()}
+        return {"status": "degraded" if ledger._persistence_failed else "ok", **ledger.public_snapshot()}
 
     async def forward_models() -> Response:
-        return await _forward_unmetered(settings, "/models", upstream_transport)
+        return await _forward_unmetered(settings, "/models", upstream_transport, request_policy)
 
     app.add_api_route("/models", forward_models, methods=["GET"])
     app.add_api_route("/v1/models", forward_models, methods=["GET"])
@@ -346,6 +414,7 @@ def create_app(
             body = bounded_chat_body(raw_body, ledger.policy)
         except (json.JSONDecodeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _check_request_policy(request_policy)
         try:
             reservation = await ledger.reserve()
         except BudgetExceeded as exc:
@@ -365,6 +434,16 @@ def create_app(
                 headers=_upstream_headers(settings.api_key),
                 json=body,
             )
+            # Admission is this synchronous check immediately before entering send;
+            # requests admitted earlier may finish and settle during a pause.
+            try:
+                _check_request_policy(request_policy)
+            except HTTPException:
+                try:
+                    await asyncio.shield(ledger.cancel_unforwarded(reservation))
+                finally:
+                    await client.aclose()
+                raise
             response = await client.send(upstream_request, stream=True)
         except httpx.HTTPError as exc:
             await client.aclose()
@@ -423,12 +502,14 @@ async def _forward_unmetered(
     settings: ProxySettings,
     path: str,
     upstream_transport: httpx.AsyncBaseTransport | None = None,
+    request_policy: str | Path | None = None,
 ) -> Response:
     try:
         async with httpx.AsyncClient(
             timeout=settings.timeout_seconds,
             transport=upstream_transport,
         ) as client:
+            _check_request_policy(request_policy)
             response = await client.get(
                 f"{settings.upstream_base_url.rstrip('/')}{path}",
                 headers=_upstream_headers(settings.api_key),
@@ -440,6 +521,33 @@ async def _forward_unmetered(
         status_code=response.status_code,
         headers=_response_headers(response),
     )
+
+
+def _check_request_policy(path: str | Path | None) -> None:
+    if path is None:
+        return
+    try:
+        policy = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(policy, dict) or set(policy) != {"paused", "stop_at_utc"}:
+            raise ValueError("request policy fields are invalid")
+        if not isinstance(policy["paused"], bool):
+            raise ValueError("paused must be a boolean")
+        deadline = None
+        if policy["stop_at_utc"] is not None:
+            if not isinstance(policy["stop_at_utc"], str):
+                raise ValueError("stop_at_utc must be null or a UTC timestamp")
+            deadline = datetime.fromisoformat(policy["stop_at_utc"])
+            if deadline.tzinfo is None or deadline.utcoffset() != UTC.utcoffset(deadline):
+                raise ValueError("stop_at_utc must have a UTC timezone")
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "RSI_REQUEST_POLICY_INVALID", "message": "local request policy is invalid or unreadable"},
+        ) from exc
+    if policy["paused"]:
+        raise HTTPException(status_code=423, detail={"code": "RSI_REQUEST_PAUSED"})
+    if deadline is not None and datetime.now(UTC) >= deadline:
+        raise HTTPException(status_code=423, detail={"code": "RSI_REQUEST_DEADLINE"})
 
 
 def _usage_from_mapping(value: Any) -> Usage | None:
@@ -535,6 +643,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", type=Path, required=True)
     parser.add_argument("--ledger", type=Path, required=True)
+    parser.add_argument("--request-policy", type=Path)
     parser.add_argument("--budget-cny", default="19.90")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=19080)
@@ -558,7 +667,12 @@ def main() -> None:
     )
     ledger = BudgetLedger(args.ledger, policy)
     host = validate_loopback_host(args.host)
-    uvicorn.run(create_app(settings, ledger), host=host, port=args.port, log_level="warning")
+    uvicorn.run(
+        create_app(settings, ledger, request_policy=args.request_policy),
+        host=host,
+        port=args.port,
+        log_level="warning",
+    )
 
 
 if __name__ == "__main__":

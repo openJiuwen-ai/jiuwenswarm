@@ -548,13 +548,19 @@ class RsiWorker:
                 cause=cause,
             )
         except Exception:  # noqa: BLE001 - a terminal evidence failure must converge
+            if self.store.get(task_id).status != TaskStatus.RUNNING.value:
+                logger.exception("[RSI] 任务状态已改变，保留当前状态 task=%s", task_id)
+                return
             logger.exception("[RSI] 终态证据持久化失败 task=%s", task_id)
-            self.store.update_status(
-                task_id,
-                [TaskStatus.RUNNING.value],
-                TaskStatus.FAILED.value,
-                cause="worker.terminal_evidence_persist_failed",
-            )
+            try:
+                self.store.update_status(
+                    task_id,
+                    [TaskStatus.RUNNING.value],
+                    TaskStatus.FAILED.value,
+                    cause="worker.terminal_evidence_persist_failed",
+                )
+            except RsiTaskStateConflict:
+                logger.info("[RSI] 状态提交冲突，保留当前状态 task=%s", task_id)
 
     async def _wait_for_provider_terminal(
         self,
