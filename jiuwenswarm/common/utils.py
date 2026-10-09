@@ -1438,6 +1438,18 @@ def update_config() -> None:
         )
 
     config_yaml_dest = workspace_dir / "config" / "config.yaml"
+    # 权限段 legacy 迁移必须先于模板合并与键清理执行：get_config() 的
+    # 模板合并会注入新模板 permissions.mode，cleanup 会删 override 的
+    # permission_mode/defaults/tools，两者都会令 enabled:false→full_access、
+    # permission_mode:strict 等 legacy 语义不可达，静默改变用户权限（CR-1）。
+    try:
+        from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+            migrate_and_write_global_permissions,
+        )
+
+        migrate_and_write_global_permissions()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[update_config] permissions legacy migrate failed: %s", e)
     # 稀疏 override 模式：清理 override 中模板已删除的废弃字段
     from jiuwenswarm.common.config import cleanup_override_against_template
 
