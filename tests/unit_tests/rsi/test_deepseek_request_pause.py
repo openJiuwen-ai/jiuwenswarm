@@ -1,11 +1,9 @@
 """Request admission must stop locally without consuming model budget."""
 
 import asyncio
-import importlib.util
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
 import sys
 
 import httpx
@@ -280,18 +278,14 @@ async def test_cancel_unforwarded_cannot_refund_an_old_process_reservation(tmp_p
         ledger.close()
 
 
-def test_full_context_launcher_policy_flag_reaches_request_admission(tmp_path, monkeypatch):
-    launcher_path = Path(__file__).resolve().parents[4] / "research_project/start_full_context_budget_proxy.py"
-    spec = importlib.util.spec_from_file_location("_test_full_context_launcher", launcher_path)
-    launcher = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(launcher)
-    policy = launcher.proxy.BudgetPolicy(
+def test_proxy_cli_policy_flag_reaches_request_admission(tmp_path, monkeypatch):
+    policy = proxy.BudgetPolicy(
         model="deepseek-flash", budget_cny=Decimal("2.40"),
         input_cny_per_million=Decimal("2"), output_cny_per_million=Decimal("8"),
-        max_input_tokens=1_048_576, max_output_tokens=32_768,
+        max_input_tokens=1_000_000, max_output_tokens=32_768,
     )
     ledger_path = tmp_path / "budget.json"
-    initial = launcher.proxy.BudgetLedger(ledger_path, policy)
+    initial = proxy.BudgetLedger(ledger_path, policy)
 
     async def seed():
         reservation = await initial.reserve()
@@ -303,9 +297,9 @@ def test_full_context_launcher_policy_flag_reaches_request_admission(tmp_path, m
     _write_policy(path, paused=True)
     env_file = tmp_path / "test.env"
     env_file.write_text("DEEPSEEK_API_BASE=https://api.test.invalid\nDEEPSEEK_API_KEY=unused-local-test\n", encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", [str(launcher_path), "--env-file", str(env_file), "--ledger", str(ledger_path), "--request-policy", str(path)])
+    monkeypatch.setattr(sys, "argv", ["deepseek_budget_proxy", "--env-file", str(env_file), "--ledger", str(ledger_path), "--request-policy", str(path), "--budget-cny", "2.40"])
     observed = []
-    real_create_app = launcher.proxy.create_app
+    real_create_app = proxy.create_app
 
     def local_app(*args, **kwargs):
         def upstream(request):
@@ -320,8 +314,8 @@ def test_full_context_launcher_policy_flag_reaches_request_admission(tmp_path, m
         response = asyncio.run(post())
         observed.append(response.status_code)
 
-    monkeypatch.setattr(launcher.proxy, "create_app", local_app)
-    monkeypatch.setattr(launcher.proxy.uvicorn, "run", run)
-    launcher.main()
+    monkeypatch.setattr(proxy, "create_app", local_app)
+    monkeypatch.setattr(proxy.uvicorn, "run", run)
+    proxy.main()
     assert observed == [423]
     assert json.loads(ledger_path.read_text(encoding="utf-8"))["charged_micro_cny"] == 0
