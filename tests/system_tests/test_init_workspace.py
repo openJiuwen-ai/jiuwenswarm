@@ -37,14 +37,29 @@ def interactive_mode(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def clean_environment(temp_home: Path, monkeypatch: pytest.MonkeyPatch, interactive_mode: None) -> None:
-    """Set up a clean environment for testing initialization."""
+    """Point every workspace path at a temporary home, for the duration of one test.
+
+    Setting ``HOME`` is not enough on its own. ``utils`` caches the resolved home and
+    the workspace root in module globals, both filled on the first path lookup -- which
+    happens at import time, from the real home, by way of ``setup_logger()``. Both
+    getters return the cached value *before* they consult the environment, so a test
+    that only moved ``HOME`` still resolved to the developer's own ``~/.jiuwenswarm``.
+
+    That gap was not theoretical: ``test_main_force_init`` calls ``run_init(force=True)``,
+    which deletes the entire workspace it resolves. It deleted the real one -- config
+    directory, stored cloud-document credentials and all -- and still reported a pass,
+    because nothing it asserts on looks at where the work landed.
+    """
     # Override HOME to use temporary directory
     monkeypatch.setenv("HOME", str(temp_home))
     # Clear any cached configuration
     monkeypatch.delenv("JIUWENSWARM_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("JIUWENSWARM_DATA_DIR", raising=False)
 
     # Reset module-level caches in utils.py
     import jiuwenswarm.common.utils as utils_module
+    monkeypatch.setattr(utils_module, "_user_home", temp_home)
+    monkeypatch.setattr(utils_module, "_workspace_base_dir", None)
     monkeypatch.setattr(utils_module, "_initialized", False)
     monkeypatch.setattr(utils_module, "_config_dir", None)
     monkeypatch.setattr(utils_module, "_workspace_dir", None)
@@ -250,8 +265,23 @@ class TestInitWorkspaceMain:
         assert exit_code == 1
 
     @staticmethod
-    def test_main_force_init(clean_environment: None, monkeypatch: pytest.MonkeyPatch):
-        """Test main function with -f flag for force initialization."""
+    def test_main_force_init(
+        temp_home: Path, clean_environment: None, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Test main function with -f flag for force initialization.
+
+        Force init deletes the whole workspace before rebuilding it, so where it aims
+        is as much part of the contract as the exit code. The assertion below is the
+        guard: this test once resolved to the real ``~/.jiuwenswarm`` and wiped it while
+        still passing, because an exit code of 0 says nothing about which directory the
+        run destroyed.
+        """
+        from jiuwenswarm.common.utils import get_user_home
+
+        assert get_user_home() == temp_home, (
+            "工作区路径没有被重定向到临时目录，force init 会删除真实的 ~/.jiuwenswarm"
+        )
+
         from jiuwenswarm.init_workspace import run_init
 
         # Simulate user confirming force init and selecting Chinese
@@ -266,6 +296,9 @@ class TestInitWorkspaceMain:
         if exit_code == 1:
             pytest.skip("Init was cancelled - may occur in some test environments")
         assert exit_code == 0
+        assert (temp_home / ".jiuwenswarm" / "config" / "config.yaml").is_file(), (
+            "工作区没有建在临时目录下"
+        )
 
 
 class TestInitCLI:

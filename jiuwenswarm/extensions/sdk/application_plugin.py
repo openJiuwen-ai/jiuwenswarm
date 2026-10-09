@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable
 
 from jiuwenswarm.extensions.sdk.base import BaseExtension
 
 
 WebSocketEndpoint = Callable[[Any], Awaitable[None]]
+
+# Raster and vector types a browser renders from a data URI without help.
+ICON_MIME_TYPES = {
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
 
 
 @dataclass(frozen=True)
@@ -54,6 +64,26 @@ class FrontendContribution:
 
     ``bundled`` entries are compiled with Jiuwen and resolved by ``component``.
     ``iframe`` entries are prebuilt assets shipped by an installable plugin.
+
+    Two marks, because they do different jobs. ``icon`` is the navigation mark:
+    monochrome, painted by the rail as a mask so it takes the theme's colour the
+    way every built-in entry does, which a bitmap cannot. ``logo`` is the
+    plugin's identity as it appears on its card, where full-colour artwork is
+    right. A plugin may supply either, both, or neither; the card falls back to
+    ``icon`` and then to a generic glyph.
+
+    Both are paths relative to the plugin's own directory. The host inlines them
+    as data URIs on the manifest, so a plugin carries its identity wherever its
+    directory lives -- inside the package, or in a user's
+    ``application_plugins`` folder that no static route serves.
+    ``description_i18n_key`` localizes the card's description the same way
+    ``title_i18n_key`` localizes its name; the untranslated fallback stays the
+    plugin's ``extension.yaml`` description.
+
+    ``name_i18n_key`` is the plugin's own product name, which is not the same
+    fact as ``title``: the rail's label says what the page is ("Cloud Docs"),
+    the name says which plugin provides it ("Co-scribe for Cloud Docs"). A
+    plugin that supplies none falls back to its id on the card.
     """
 
     id: str
@@ -64,6 +94,10 @@ class FrontendContribution:
     component: str = ""
     entrypoint: str = ""
     position: int = 100
+    icon: str = ""
+    logo: str = ""
+    description_i18n_key: str = ""
+    name_i18n_key: str = ""
 
 
 class ApplicationPluginExtension(BaseExtension):
@@ -102,6 +136,40 @@ class ApplicationPluginExtension(BaseExtension):
             return None
         candidate = root / "frontend" / "dist"
         return candidate if candidate.is_dir() else None
+
+    def resolve_icon(self, icon: str) -> str:
+        """Inline a contribution icon as a data URI, or "" when unusable.
+
+        The path is read relative to the plugin's own directory and must stay
+        inside it. Anything unreadable, outside, or of an unsupported type
+        answers "" so the card falls back to its generic glyph rather than
+        rendering a broken image.
+        """
+
+        if not isinstance(icon, str) or not icon.strip():
+            return ""
+        relative = icon.strip().replace("\\", "/")
+        if relative.startswith("/") or ".." in PurePosixPath(relative).parts:
+            return ""
+        mime = ICON_MIME_TYPES.get(PurePosixPath(relative).suffix.lower())
+        if mime is None:
+            return ""
+        root_dir = self._get_extension_dir()
+        if root_dir is None:
+            return ""
+        root = root_dir.resolve()
+        target = (root / relative).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            return ""
+        if not target.is_file():
+            return ""
+        try:
+            payload = target.read_bytes()
+        except OSError:
+            return ""
+        return f"data:{mime};base64,{base64.b64encode(payload).decode('ascii')}"
 
 
 class ManifestApplicationPlugin(ApplicationPluginExtension):
@@ -148,6 +216,10 @@ class ManifestApplicationPlugin(ApplicationPluginExtension):
                     render_mode=render_mode,
                     entrypoint=entrypoint,
                     position=position,
+                    icon=str(raw.get("icon", "")).strip(),
+                    description_i18n_key=str(
+                        raw.get("description_i18n_key", "")
+                    ).strip(),
                 )
             )
         return tuple(contributions)

@@ -106,6 +106,11 @@
       <td width="50%">JiuwenSwarm 的多渠道接入与交互。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>云文档协同</strong></td>
+      <td width="28%"><a href="zh/云文档协同.md">云文档协同</a></td>
+      <td width="50%">介绍 Co-scribe 云文档协同编辑：连接与纳管、对话修改、评论触发与提议批准流程。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>配置信息</strong></td>
       <td width="28%"><a href="zh/配置信息.md">配置信息</a></td>
       <td width="50%">系统参数、大模型 API、运行环境相关配置。</td>

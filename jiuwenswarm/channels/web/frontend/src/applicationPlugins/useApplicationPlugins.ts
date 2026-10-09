@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import { fetchApplicationPlugins } from './manifest';
+import { APPLICATION_PLUGINS_CHANGED_EVENT, fetchApplicationPlugins } from './manifest';
 import type { ApplicationPluginContribution } from './types';
 
 export interface ApplicationPluginsState {
@@ -28,6 +28,12 @@ export function useApplicationPlugins(isGatewayConnected: boolean): ApplicationP
       setLoading(false);
     }
   }, [isGatewayConnected]);
+
+  useEffect(() => {
+    const onChanged = () => void refresh();
+    window.addEventListener(APPLICATION_PLUGINS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(APPLICATION_PLUGINS_CHANGED_EVENT, onChanged);
+  }, [refresh]);
 
   useEffect(() => {
     if (!isGatewayConnected) {

@@ -1,0 +1,11 @@
+id: co-scribe
+name: Co-scribe
+version: 1.0.0
+description: "Co-edit cloud files on Google and Feishu: documents, sheets and slides. Each document's watch is turned on and off by its owner; while it is on, a collaborator who @-mentions the agent in a comment gets a bounded edit inside the passage they marked, and every write leaves a receipt the owner can audit."
+author: JiuwenSwarm
+min_jiuwenswarm_version: "0.2.5"
+package_type: application
+dependencies: {}
+permissions:
+  - outbound_network
+  - agent_tools

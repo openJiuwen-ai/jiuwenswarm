@@ -90,6 +90,7 @@ function fromRawSummary(raw: RawPluginPackageSummary): PluginPackageSummary {
 interface RawPluginPackageDetail extends RawPluginPackageSummary {
   version?: string;
   details?: string;
+  details_en?: string;
   tags: LocalizedText[];
   skills: PluginCapabilityRef[];
   tools: PluginCapabilityRef[];
@@ -108,6 +109,7 @@ function fromRawDetail(raw: RawPluginPackageDetail): PluginPackageDetail {
     ...fromRawSummary(raw),
     version: raw.version,
     details: raw.details,
+    detailsEn: raw.details_en,
     tags: raw.tags ?? [],
     skills: raw.skills ?? [],
     tools: raw.tools ?? [],
