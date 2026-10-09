@@ -29,6 +29,7 @@ import { webClient, webRequest } from '../../../../channels/web/frontend/src/ser
 import { createRealtimeDuplexSession, RealtimeDuplexSession } from './qwenOmniSession';
 import { isVideoSourceReady, RealtimeVideoFrameScheduler, waitForFirstVideoFrame } from './videoSource';
 import { JoyAIProvider, normalizeJoyAIResponseLanguage } from './joyaiProvider';
+import { describeDuplexError } from '../duplexErrorMessage';
 import {
   mergeSearchProgressJob,
   searchAwareToolStatus,
@@ -375,7 +376,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     const callId = payload.tool_call_id?.trim() || existing?.toolCallId;
     const turnId = payload.turn_id?.trim() || existing?.turnId;
     const error = payload.error?.trim() || 'Jiuwen Core Agent failed';
-    const failureText = `Jiuwen Core Agent 未能完成任务：${error}`;
+    const failureText = describeDuplexError(error, 'task');
     if (!headless) appendChat('assistant', failureText, 'tool_result');
     if (callId) {
       duplexRef.current?.enqueueToolResult({
@@ -948,7 +949,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                     return;
                   }
                   if (mediaGeneration !== mediaGenerationRef.current) return;
-                  appendChat('assistant', t('videoLive.coreAgent.startFailed', { message }), 'tool_result');
+                  appendChat('assistant', describeDuplexError(message, 'task'), 'tool_result');
                   const queued = session.enqueueToolResult({
                     jobId: `qwen-tool-error-${call.callId}`,
                     question: originalInstruction,
@@ -1030,7 +1031,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   }, [isRealtimeStarting, isRecording, onRuntimeState]);
 
   useEffect(() => {
-    if (error) onError?.(error);
+    if (error) onError?.(describeDuplexError(error));
   }, [error, onError]);
 
   useImperativeHandle(ref, () => ({
@@ -1293,7 +1294,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             )}
           </div>
 
-          {error && <div className="video-live__error">{error}</div>}
+          {error && <div className="video-live__error" data-testid="video-live-error-message" role="alert">{describeDuplexError(error)}</div>}
           {realtimeStatus && <div className="video-live__realtime-status">{realtimeStatus}</div>}
           {visibleSearchProgress && (
             <div className={`video-live__search-progress is-${visibleSearchProgress.status}`}>
