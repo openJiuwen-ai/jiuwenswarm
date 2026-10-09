@@ -5172,7 +5172,14 @@ function ComposerSuggestionMenu({
                       <span className="chat-composer-suggestion__text">
                         <span className="chat-composer-suggestion__label">{item.label}</span>
                         {item.description ? (
-                          <span className="chat-composer-suggestion__meta">{item.description}</span>
+                          <span
+                            className="chat-composer-suggestion__meta"
+                            title={item.description}
+                            data-testid="chat-panel-composer-suggestion-description"
+                            data-variant={item.id}
+                          >
+                            {item.description}
+                          </span>
                         ) : null}
                       </span>
                     </>
