@@ -4124,7 +4124,31 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         if sys_operation is not None:
             self._retain_sys_operation(str(sys_operation.id))
         self._release_sys_operations(previously_retained)
+        if sys_operation is not None:
+            self._install_file_soft_delete()
         return sys_operation
+
+    def _install_file_soft_delete(self) -> None:
+        """Load the Windows soft-delete DLL once when the switch is on.
+
+        Failure raises. The agent must not keep running with physical deletes
+        after the operator turned the feature on.
+        """
+        import sys
+
+        if sys.platform != "win32":
+            return
+        from jiuwenswarm.common.config import get_config, get_file_soft_delete_settings
+
+        enabled, archive = get_file_soft_delete_settings(
+            get_config(),
+            workspace_dir=getattr(self, "_workspace_dir", None),
+        )
+        if not enabled:
+            return
+        from openjiuwen.core.sys_operation.local.win_softdelete import install_win_soft_delete
+
+        install_win_soft_delete(archive)
 
     def _retain_sys_operation(self, sys_operation_id: str) -> None:
         """Record one adapter-held reference on a registered sys operation.

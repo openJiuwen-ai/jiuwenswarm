@@ -353,6 +353,29 @@ async def lifespan(_application: FastAPI):
                 logger.exception(
                     "Windows 出站代理启动失败; 沙箱网络隔离将不可用",
                 )
+            try:
+                from jiuwenbox.supervisor.win_recycle_broker import (
+                    permitted_loopback_ports,
+                    start_broker,
+                )
+                from jiuwenbox.supervisor.win_softdelete import enabled_from_environ
+                if enabled_from_environ():
+                    _permit_start = (
+                        _proxy_start
+                        if _proxy_start is not None
+                        else _wconst.DEFAULT_PROXY_PORT_RANGE_START
+                    )
+                    _permit_end = (
+                        _proxy_end
+                        if _proxy_end is not None
+                        else _wconst.DEFAULT_PROXY_PORT_RANGE_END
+                    )
+                    # 代理占起始端口. 沙箱只能连这个范围内的回环, 转发必须绑在其中.
+                    start_broker(permitted_loopback_ports(_permit_start, _permit_end))
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "回收站转发启动失败; 软删除已开启时沙箱创建会被拒绝",
+                )
         # Become the subreaper for our descendant tree *before* any sandbox
         # spawns bwrap. PR_SET_CHILD_SUBREAPER only affects *future*
         # children, so doing it here (after the loop is up but before
@@ -418,6 +441,13 @@ async def lifespan(_application: FastAPI):
             finally:
                 _win_proxy_task = None
                 _win_proxy_stop = None
+
+        if sys.platform == "win32":
+            try:
+                from jiuwenbox.supervisor.win_recycle_broker import stop_broker
+                stop_broker()
+            except Exception:  # noqa: BLE001
+                logger.debug("recycle broker shutdown", exc_info=True)
 
         # Stop proxies first so any in-flight clients are torn down before we
         # wipe sandbox descriptors. All steps below are best-effort: a failure

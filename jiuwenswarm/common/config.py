@@ -301,6 +301,71 @@ def is_file_operation_history_enabled(config: dict[str, Any] | None) -> bool:
     return enabled
 
 
+def get_file_soft_delete_settings(
+    config: dict[str, Any] | None,
+    workspace_dir: str | None = None,
+) -> tuple[bool, str]:
+    """Return whether Windows soft-delete is on, and the archive directory.
+
+    Only a real boolean ``True`` enables the feature. Missing keys and
+    non-boolean values stay off, so the string ``"true"`` cannot turn it on.
+    An empty ``archive_dir`` resolves to ``<workspace>/.trash``. The archive
+    path is empty when the feature is off.
+
+    Args:
+        config: Parsed user config. ``permissions.soft_delete`` holds
+            ``enabled`` and ``archive_dir``. It is not part of ``file_guard``.
+        workspace_dir: Workspace used when ``archive_dir`` is empty. Falls
+            back to ``react.workspace_dir``, then the default agent workspace.
+    """
+    if not isinstance(config, dict):
+        return False, ""
+    permissions = config.get("permissions")
+    if not isinstance(permissions, dict):
+        return False, ""
+    section = permissions.get("soft_delete")
+    if section is None:
+        return False, ""
+    if not isinstance(section, dict):
+        logger.warning("Invalid permissions.soft_delete=%r; leaving soft-delete off", section)
+        return False, ""
+    enabled = section.get("enabled", False)
+    if not isinstance(enabled, bool):
+        logger.warning(
+            "Invalid permissions.soft_delete.enabled=%r; leaving soft-delete off",
+            enabled,
+        )
+        return False, ""
+    if not enabled:
+        return False, ""
+
+    archive = section.get("archive_dir", "")
+    if archive is None:
+        archive = ""
+    if not isinstance(archive, str):
+        logger.warning(
+            "Invalid permissions.soft_delete.archive_dir=%r; leaving soft-delete off",
+            archive,
+        )
+        return False, ""
+    archive = archive.strip()
+    if archive:
+        return True, os.path.abspath(os.path.expandvars(os.path.expanduser(archive)))
+
+    workspace = (workspace_dir or "").strip()
+    if not workspace:
+        react = config.get("react")
+        if isinstance(react, dict):
+            raw_workspace = react.get("workspace_dir")
+            if isinstance(raw_workspace, str):
+                workspace = raw_workspace.strip()
+    if not workspace:
+        from jiuwenswarm.common.utils import get_agent_workspace_dir
+
+        workspace = str(get_agent_workspace_dir())
+    return True, os.path.abspath(os.path.join(workspace, ".trash"))
+
+
 def get_config_raw():
     """未解析环境变量的配置视图。只读 ``CONFIG_YAML_PATH``。"""
     user_file = Path(CONFIG_YAML_PATH)
