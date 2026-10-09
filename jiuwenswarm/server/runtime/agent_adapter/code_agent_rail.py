@@ -190,7 +190,10 @@ class AgentTool(Tool):
         from openjiuwen.harness.factory import create_deep_agent
         from openjiuwen.harness.schema.config import SubAgentConfig
         from openjiuwen.core.single_agent import AgentCard as OJAgentCard
-        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import _agent_def_to_subagent_config
+        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+            _agent_def_to_subagent_config,
+            _jws_sync_subagent_sandbox,
+        )
 
         parent_config = getattr(self._parent_agent, "deep_config", None)
 
@@ -255,6 +258,7 @@ class AgentTool(Tool):
         factory_kwargs = dict(spec.factory_kwargs or {})
 
         sub_agent = create_deep_agent(**create_kwargs, **factory_kwargs)
+        _jws_sync_subagent_sandbox(sub_agent, agent_def.name, parent_workspace_root)
         logger.info("[AgentTool] Created sub-agent for '%s' via create_deep_agent()", agent_def.name)
         return sub_agent
 

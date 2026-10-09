@@ -5793,7 +5793,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             )
             self._register_agent_owned_tool(tool_instance, agent_id)
             tool_cards.append(tool_instance.card)
-
+        
         self._vision_tools = []
         self._vision_tools_registered = False
         if self._vision_model_config is not None:
@@ -13315,19 +13315,54 @@ def _load_custom_subagents(
     return result
 
 
-# === [JiuWenSwarm patch] widen general-purpose subagent sandbox =============
-# core 的 DeepAgent.create_subagent 会给 general-purpose 子 agent 生成窄目录
-# sub_agents/<id> 作为 CWD，并把 sandbox 边界(回退到 [workspace, project_root]) 也
-# 锁成该窄目录；叠加从父继承的 restrict_to_work_dir(openJiuwen #987) 后，子 agent
-# 读不到共享 skills/、也无法落盘到主工作区。
-#
-# 这里在不改 core 源码的前提下，运行时包一层 create_subagent：保留窄目录当 CWD(每次
-# 调用独立工位)，仅把该子 agent 的 sandbox_root 显式放宽到主 agent 的共享 workspace 根，
-# 并保持 restrict_to_sandbox=True —— 于是 skills/ 可读、工作区可落盘，而 /tmp 及外部路径
-# 仍被沙箱拒绝(#987 的隔离不变)。
-#
-# 影响面：仅当 subagent_type == "general-purpose" 时才改写 sandbox_root；其它子 agent
-# (research/browser/code 以及 team 成员各自派生的子 agent) 原样返回，不受影响。
+# === [JiuWenSwarm patch] subagent sandbox follows config.yaml ===============
+# 子代理创建后按 config.yaml 的 sandbox.enabled 设置本地路径检查。
+# 调用方：create_subagent 补丁，以及自定义 Agent 的 create_deep_agent。
+# - false：restrict_to_sandbox=False，不拦截工作区外路径。
+# - true：restrict_to_sandbox=True。
+#   general-purpose 另把 sandbox_root 设为主 workspace，才能读共享 skills/。
+#   若不放宽，它的回退目录是 sub_agents/<id>。
+#   其它类型只打开检查，不改 sandbox_root。
+def _jws_sync_subagent_sandbox(sub, subagent_type: str, shared_root: str | None = None) -> None:
+    """Align a sub-agent's local path check with ``sandbox.enabled``."""
+    # pylint: disable=protected-access
+    try:
+        sysop = getattr(getattr(sub, "_deep_config", None), "sys_operation", None)
+        wc = getattr(sysop, "_run_config", None)
+        if wc is None or not hasattr(wc, "restrict_to_sandbox"):
+            return
+        enabled = bool(get_sandbox_runtime().get("enabled"))
+        wc.restrict_to_sandbox = enabled
+        if not enabled:
+            logger.info(
+                "[JiuWenSwarm] sandbox disabled, subagent %s path check off",
+                subagent_type,
+            )
+            return
+        if (
+            subagent_type == "general-purpose"
+            and shared_root
+            and hasattr(wc, "sandbox_root")
+        ):
+            wc.sandbox_root = [str(shared_root)]
+            sub_ws = getattr(getattr(sub, "_deep_config", None), "workspace", None)
+            cwd_root = getattr(sub_ws, "root_path", None) if sub_ws else None
+            logger.info(
+                "[JiuWenSwarm] sandbox enabled, widened general-purpose "
+                "subagent sandbox to %s (cwd stays %s)",
+                shared_root,
+                cwd_root,
+            )
+            return
+        logger.info(
+            "[JiuWenSwarm] sandbox enabled, subagent %s path check on",
+            subagent_type,
+        )
+    except Exception:
+        logger.warning("[JiuWenSwarm] sync subagent sandbox failed", exc_info=True)
+    # pylint: enable=protected-access
+
+
 def _jws_install_subagent_sandbox_widen_patch() -> None:
     # DeepAgent 已在模块级导入(顶部 `from openjiuwen.harness import DeepAgent`),
     # 此处直接复用,避免函数内重复 import 造成同名遮蔽(huawei-redefined-outer-name)。
@@ -13335,37 +13370,18 @@ def _jws_install_subagent_sandbox_widen_patch() -> None:
         return
     _orig_create_subagent = DeepAgent.create_subagent
 
-    # pylint: disable=protected-access
-    # 此处为运行时 monkey-patch:必须在 DeepAgent 类外访问其受保护成员
-    # (_deep_config / _run_config) 才能改写子 agent 沙箱边界,G.CLS.11 在此不适用。
     def _create_subagent_widen_sandbox(self, subagent_type, subsession_id, *args, **kwargs):
         sub = _orig_create_subagent(self, subagent_type, subsession_id, *args, **kwargs)
-        try:
-            if subagent_type == "general-purpose":
-                parent_ws = getattr(self._deep_config, "workspace", None)
-                shared_root = getattr(parent_ws, "root_path", None) if parent_ws else None
-                if shared_root:
-                    shared_root = str(shared_root)
-                    sysop = getattr(getattr(sub, "_deep_config", None), "sys_operation", None)
-                    wc = getattr(sysop, "_run_config", None)
-                    if wc is not None and hasattr(wc, "sandbox_root"):
-                        wc.sandbox_root = [shared_root]
-                        wc.restrict_to_sandbox = True
-                        sub_ws = getattr(sub._deep_config, "workspace", None)
-                        cwd_root = getattr(sub_ws, "root_path", None) if sub_ws else None
-                        logger.info(
-                            "[JiuWenSwarm] widened general-purpose subagent sandbox to "
-                            "%s (cwd stays %s)",
-                            shared_root,
-                            cwd_root,
-                        )
-        except Exception:
-            logger.warning(
-                "[JiuWenSwarm] widen subagent sandbox failed", exc_info=True
-            )
+        # pylint: disable=protected-access
+        parent_ws = getattr(self._deep_config, "workspace", None)
+        # pylint: enable=protected-access
+        shared_root = getattr(parent_ws, "root_path", None) if parent_ws else None
+        _jws_sync_subagent_sandbox(
+            sub,
+            subagent_type,
+            str(shared_root) if shared_root else None,
+        )
         return sub
-
-    # pylint: enable=protected-access
     DeepAgent.create_subagent = _create_subagent_widen_sandbox
     DeepAgent._jws_subagent_sandbox_widen = True  # pylint: disable=protected-access
     logger.info(
