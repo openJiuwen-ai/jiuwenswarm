@@ -609,6 +609,7 @@ async def test_runtime_env_section_includes_message_rules_subsections():
     assert "### Artifact and Deliverable Rules" in prompt
     assert "### Output Language" in prompt
     assert "### Model Name Answers" in prompt
+    assert "### Time-Related Answers" in prompt
     assert "## Subagent Usage Rules" in prompt
     assert builder.has_section("env")
     assert not builder.has_section("input")

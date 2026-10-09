@@ -249,6 +249,11 @@ _RUNTIME_ENV_MESSAGE_RULES_TEXT = """## Output Rules
 - When asked for the current model name, use the current model value in `runtime.setting` and state only the model name.
 - When asked which models are supported or configured, use the available model list in `runtime.setting`.
 
+### Time-Related Answers
+
+- When the conversation involves time, prefer the time explicitly specified by the user.
+- If the user has not specified a time and the answer depends on the current time (e.g., "today", "now"), execute the `date` command to check the latest time before answering.
+
 """
 
 _SUBAGENT_USAGE_RULES_TEXT = """## Subagent Usage Rules
