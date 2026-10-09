@@ -17,6 +17,7 @@ import clsx from 'clsx';
 import { Users } from 'lucide-react';
 import { useTeamSelectorStore, type RuntimeTeamInfo } from '../../stores';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
+import { webClient } from '../../services/webClient';
 
 const MENU_GAP = 10;
 const MENU_MAX_HEIGHT = 260;
@@ -67,7 +68,6 @@ export function TeamSelector({ sessionId, isProcessing = false }: TeamSelectorPr
   const teamCount = runtime?.teams.length ?? 0;
   const fetchTeams = useTeamSelectorStore((s) => s.fetchTeams);
   const selectTeam = useTeamSelectorStore((s) => s.selectTeam);
-  const removeRuntime = useTeamSelectorStore((s) => s.removeRuntime);
 
   // 只有真正的会话才去问后端；新会话（NEW_CONVERSATION_ID）与空态直接跳过。
   const isRealSession = Boolean(sessionId && sessionId !== 'new' && sessionId !== NEW_CONVERSATION_ID);
@@ -92,21 +92,53 @@ export function TeamSelector({ sessionId, isProcessing = false }: TeamSelectorPr
     void fetchTeams(sessionId);
   }, [isRealSession, sessionId, fetchTeams]);
 
+  useEffect(() => {
+    if (!isRealSession || !sessionId) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsubs = ['team.member', 'team.task', 'chat.tool_result', 'chat.final'].map((event) =>
+      webClient.on(event, ({ payload }) => {
+        if (String(payload.session_id ?? payload.product_session_id ?? '') !== sessionId) return;
+        if (timer !== undefined) clearTimeout(timer);
+        timer = setTimeout(() => {
+          if (!useTeamSelectorStore.getState().runtimes[sessionId]?.loading) void fetchTeams(sessionId);
+        }, 200);
+      }),
+    );
+    return () => {
+      if (timer !== undefined) clearTimeout(timer);
+      unsubs.forEach((unsubscribe) => unsubscribe());
+    };
+  }, [isRealSession, sessionId, fetchTeams]);
+
   /**
    * 运行期轮询。
    *
    * team 不是会话一开始就存在的：集群模式下 agent 会在这一轮里陆续调
    * org_create_and_invite_expert_team 现建多个 team。owner 先入 pool 时列表已非空，
    * 若此时停轮询，后面的 expert team 要等本轮结束才出现在下拉里。
-   * 因此整个 isProcessing 期间都按 POLL_MS 重拉；结束后再收一次尾。
+   * 因此运行时每 2 秒刷新，Owner 暂停后仍在可见页面每 10 秒刷新。
    */
   useEffect(() => {
     if (!isRealSession || !sessionId) return;
-    if (!isProcessing) return;
-    const timer = window.setInterval(() => {
-      void fetchTeams(sessionId);
-    }, TEAM_POLL_MS);
-    return () => window.clearInterval(timer);
+    const timer = window.setInterval(
+      () => {
+        // Organization Teams continue in the background after the Owner turn ends.
+        if (document.visibilityState === 'hidden') return;
+        if (useTeamSelectorStore.getState().runtimes[sessionId]?.loading) return;
+        void fetchTeams(sessionId);
+      },
+      isProcessing ? TEAM_POLL_MS : 10000,
+    );
+    const onVisible = () => {
+      if (document.visibilityState !== 'hidden' && !useTeamSelectorStore.getState().runtimes[sessionId]?.loading) {
+        void fetchTeams(sessionId);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [isRealSession, sessionId, isProcessing, fetchTeams]);
 
   // 一轮结束时再收一次尾：建 team 的工具可能刚好在 isProcessing 翻 false 的同一拍完成，
@@ -119,13 +151,7 @@ export function TeamSelector({ sessionId, isProcessing = false }: TeamSelectorPr
     if (wasProcessing && !isProcessing) void fetchTeams(sessionId);
   }, [isRealSession, sessionId, isProcessing, fetchTeams]);
 
-  // 会话被真正清掉时顺手回收运行态，避免 runtimes 表无限增长。
-  useEffect(() => {
-    if (!sessionId) return;
-    return () => {
-      removeRuntime(sessionId);
-    };
-  }, [sessionId, removeRuntime]);
+  // Component unmount is not session deletion: preserve the selected Team and its cache.
 
   const selected = useMemo(() => {
     const teams = runtime?.teams ?? [];

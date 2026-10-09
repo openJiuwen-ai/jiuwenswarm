@@ -755,6 +755,8 @@
       "loading": "Loading…",
       "empty": "This Team is not bound to an organization",
       "noOrganization": "No organization bound",
+      "noTeam": "No Team is available in this session",
+      "loadFailed": "Failed to load organization information",
       "organizationId": "Organization ID",
       "displayName": "Name",
       "description": "Description",

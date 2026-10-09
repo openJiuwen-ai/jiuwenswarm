@@ -746,6 +746,8 @@
       "loading": "加载中…",
       "empty": "当前 Team 未绑定 organization",
       "noOrganization": "未绑定组织",
+      "noTeam": "当前会话暂无可查询的 Team",
+      "loadFailed": "组织信息加载失败",
       "organizationId": "Organization ID",
       "displayName": "名称",
       "description": "描述",

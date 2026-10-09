@@ -18,7 +18,9 @@ export function expertTeamId(payload: Record<string, unknown>, sessionId: string
   const teamId = String(payload.team_id || payload.team_name || '').trim();
   if (!teamId || teamId === ownerTeamId(sessionId)) return null;
   const source = String(payload.source ?? '');
-  if (source.startsWith('org_root_')) return null;
+  // Root follow-up events can originate from any Team. Preserve legacy
+  // routing when disabled; when enabled, Team identity determines the owner.
+  if (source.startsWith('org_root_') && !isTeamOrganizationUiEnabled()) return null;
   const teams = useTeamSelectorStore.getState().runtimes[sessionId]?.teams ?? [];
   if (teams.find((team) => team.team_id === teamId)?.is_owner) return null;
   return source.startsWith('org_') || teams.some((team) => team.team_id === teamId) ? teamId : null;
