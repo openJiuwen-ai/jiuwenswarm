@@ -15997,6 +15997,8 @@ class JiuWenSwarmDeepAdapter:
             try:
                 process_options = getattr(self, "_process_cli_run_options", None)
                 if process_options is not None:
+                    # Consume before applying so failed runs cannot leak callbacks.
+                    self._process_cli_run_options = None
                     session_adapter.configure_process_cli_run(
                         max_turns=process_options[0], host_tools=process_options[1]
                     )
