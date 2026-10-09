@@ -3761,6 +3761,15 @@
       "fieldRequired": "该项为必填项，请填写",
       "withSkillNotWired": "该入口尚未接入聊天面板，需先在聊天输入框完成对接"
     },
+    "picker": {
+      "searchPlaceholder": "请输入关键字搜索",
+      "actionError": "操作未完成，请稍后重试。",
+      "mcpSourceTabsLabel": "连接器来源",
+      "mcpMarketTab": "连接器广场",
+      "mcpMineTab": "我的连接器",
+      "mcpError": "连接器列表加载失败，请重试。",
+      "mcpEmpty": "暂无可用连接器"
+    },
     "chatPrompts": {
       "createPlugin": "帮我创建一个xxx插件，擅长xxx"
     },

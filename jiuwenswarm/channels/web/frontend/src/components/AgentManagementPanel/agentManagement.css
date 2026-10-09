@@ -1993,22 +1993,10 @@
   height: 16px;
 }
 
-.agent-management-selection-card:hover,
-.agent-management-selection-card:focus-visible,
-.agent-management-selection-card.is-selected {
-  border-color: var(--color-action-primary);
-  outline: 0;
-}
-
-.agent-management-selection-card.is-selected {
-  background: var(--color-feedback-info-subtle);
-}
-
-.agent-management-selection-card.is-selected .agent-management-selection-card__action {
-  border-color: var(--color-action-primary);
-  background: var(--color-action-primary);
-}
-
+/* 2026-10-09 收敛：成员/队长选择卡片的 hover 与选中态不再有 selection-card 专属覆盖，
+   直接走 PageCard 默认效果（hover 浮起阴影、选中 accent 底色描边），与
+   connector-market-skill-picker / agent-group-editor-skill-picker 滚动区卡片一致。
+   is-disabled（未安装灰底）与 is-loading（兼容性查询骨架）仍保留专属样式。 */
 .agent-management-selection-card:disabled,
 .agent-management-selection-card.is-disabled {
   border-color: var(--color-border-default);
@@ -2025,14 +2013,6 @@
   color: var(--color-text-tertiary);
 }
 
-.agent-management-selection-card:disabled:hover,
-.agent-management-selection-card:disabled:focus-visible,
-.agent-management-selection-card.is-disabled:hover,
-.agent-management-selection-card.is-disabled:focus-visible {
-  border-color: var(--color-border-default);
-  outline: 0;
-}
-
 /* Leader/member pickers use the same PageCard → EntityHeader → body structure
    as the Expert cards in My Experts. Only the picker card's dimensions and
    selection affordance differ for the dialog grid. */
@@ -2044,8 +2024,14 @@
   padding: 24px;
 }
 
-.agent-management-selection-card.page-card.is-selected {
-  box-shadow: inset 0 0 0 1px var(--color-action-primary);
+/* 选中态需在此按 PageCard 的值 re-assert：上方基础块（.agent-management-selection-card）
+   的 background/border 与 PageCard.css 的 .page-card--selected 同特异性（0,1,0），而本文件
+   在打包序里晚于 PageCard.css，tie 由后者输——选中底色/描边会被基础块盖回默认卡片样式。
+   re-assert 与 .page-card--selected 同值，保证选中效果与 connector-market-skill-picker /
+   agent-group-editor-skill-picker 的滚动区卡片一致（2026-10-09 收敛）。 */
+.agent-management-selection-card.page-card.page-card--selected {
+  background: var(--color-chat-accent-subtle);
+  border-color: var(--color-chat-accent);
 }
 
 .agent-management-selection-card.page-card.page-card--disabled,

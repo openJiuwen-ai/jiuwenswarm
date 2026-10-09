@@ -108,6 +108,7 @@ import AttachmentIcon from '../../assets/agent-management/attachment.svg?react';
 import GoalIcon from '../../assets/agent-management/goal.svg?react';
 import PlanIcon from '../../assets/agent-management/planned-events.svg?react';
 import SkillIcon from '../../assets/agent-management/agent-skill.svg?react';
+import CommandIcon from '../../assets/chat/command.svg?react';
 import closeSvg from '../../assets/work-mode/close.svg?raw';
 import { insertPlainText } from '../../utils/textEditCommands';
 
@@ -5180,7 +5181,7 @@ function ComposerSuggestionMenu({
                         )}
                         aria-hidden="true"
                       >
-                        {item.itemKind === 'command' ? '/' : null}
+                        {item.itemKind === 'command' ? <CommandIcon /> : null}
                       </span>
                       <span className="chat-composer-suggestion__text">
                         <span className="chat-composer-suggestion__label">{item.label}</span>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useConnectorStore } from '../../stores/connectorStore';
+import { useConnectorStore, CONNECTOR_ERROR_TOAST_ID } from '../../stores/connectorStore';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
 import { MarketplacePage, type TopTab, type MarketKind } from './MarketplacePage';
 import { PluginDetailPage } from './PluginDetailPage';
@@ -118,14 +118,17 @@ export function ConnectorMarketPanel({
 
   useEffect(() => {
     if (connectorError) {
-      toast.open({ id: 'connector-market-action-error', content: connectorError, variant: 'error', duration: 5 });
+      // 与 McpPickerDrawer 抽屉内的 error effect 共用 CONNECTOR_ERROR_TOAST_ID：抽屉挂载时
+      // 两处 effect 会对同一次失败各跑一遍，同 id 才会被 toast.open 原地合并成一条。
+      toast.open({ id: CONNECTOR_ERROR_TOAST_ID, content: connectorError, variant: 'error', duration: 5 });
       clearConnectorError();
     }
   }, [connectorError, clearConnectorError]);
 
   useEffect(() => {
     if (pluginError) {
-      toast.open({ id: 'connector-market-action-error', content: pluginError, variant: 'error', duration: 5 });
+      // 插件错误与连接器错误共用同一 id：页内任意操作失败都替换上一条，不叠两条。
+      toast.open({ id: CONNECTOR_ERROR_TOAST_ID, content: pluginError, variant: 'error', duration: 5 });
       clearPluginError();
     }
   }, [pluginError, clearPluginError]);

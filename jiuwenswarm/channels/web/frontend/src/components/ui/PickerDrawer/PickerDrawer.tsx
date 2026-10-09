@@ -1,6 +1,7 @@
 import { type ReactNode } from 'react';
 import { Search } from 'lucide-react';
 import { FormDrawer } from '../FormDrawer/FormDrawer';
+import { Input } from '../Input/Input';
 import { Tabs } from '../Tabs/Tabs';
 
 export interface PickerDrawerTab {
@@ -56,17 +57,12 @@ export function PickerDrawer<T extends string = string>({
       bodyClassName="form-drawer__body--flush"
       footerLeading={footerLeading}
     >
-      <div className="relative mx-6 mb-4 shrink-0">
-        <Search
-          size={14}
-          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--color-text-placeholder)]"
-          aria-hidden="true"
-        />
-        <input
+      <div className="mx-6 mb-4 shrink-0">
+        <Input
           value={search}
-          onChange={(event) => onSearchChange(event.target.value)}
+          onChange={onSearchChange}
           placeholder={searchPlaceholder}
-          className="h-8 w-full rounded-lg border border-border bg-bg pl-8 pr-3 text-[12px] leading-[18px] text-text outline-none focus:border-border-hover"
+          prefix={<Search size={14} aria-hidden="true" />}
           data-testid={`${testId}-search`}
         />
       </div>

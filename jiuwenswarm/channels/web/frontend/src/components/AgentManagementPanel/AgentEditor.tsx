@@ -1,25 +1,15 @@
 import { ChevronDown, ChevronUp, Minus, Plus } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import EntityAddIcon from '../../assets/agent-management/add.svg?react';
-import EntityRemoveIcon from '../../assets/agent-management/remove.svg?react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import {
-  isMcpSelectable,
-  sortMcpOptions,
-  type AgentDraft,
-  type McpOption,
-  type RequestStatus,
-  type SkillOption,
-} from '../../features/agentManagement';
+import { type AgentDraft, type McpOption, type RequestStatus, type SkillOption } from '../../features/agentManagement';
 import { AGENT_DESCRIPTION_MAX_LENGTH, AGENT_NAME_MAX_LENGTH } from '../../features/agentManagement/limits';
 import { AgentTagPicker } from './AgentTagPicker';
 import { DeleteCardIcon } from './cardActions';
 import { SkillPickerDrawer } from './SkillPickerDrawer';
+import { McpPickerDrawer } from '../ConnectorMarket/McpPickerDrawer';
 import { PageCard, Tabs, Input, Textarea, FieldError } from '../ui';
-import type { PageCardDefaultButton } from '../ui';
-import { ConnectorPickerDrawer } from '../ConnectorMarket/ConnectorPickerDrawer';
 import { FormPageLayout } from '../ConnectorMarket/FormPageLayout';
 
 type AgentEditorProps = {
@@ -36,10 +26,6 @@ type AgentEditorProps = {
   onReloadMcps: () => void;
   onInstallSkill?: (skill: SkillOption) => void | Promise<void>;
   installingSkillId?: string | null;
-  onConnectMcp?: (mcp: McpOption) => void;
-  connectingMcpId?: string | null;
-  onInstallMcp?: (mcp: McpOption) => void | Promise<void>;
-  installingMcpId?: string | null;
   onCreateGroup?: () => void;
   onCancel: () => void;
   onSave: () => void;
@@ -59,10 +45,6 @@ export function AgentEditor({
   onReloadMcps,
   onInstallSkill,
   installingSkillId,
-  onConnectMcp,
-  connectingMcpId,
-  onInstallMcp,
-  installingMcpId,
   onCreateGroup,
   onCancel,
   onSave,
@@ -89,27 +71,6 @@ export function AgentEditor({
   const hasErrors = Object.values(errors).some(Boolean);
   const selectedSkills = skillOptions.filter((skill) => draft.skillRefs.includes(skill.id));
   const selectedMcps = mcpOptions.filter((mcp) => draft.mcpRefs.includes(mcp.id));
-  const sortedMcps = useMemo(() => sortMcpOptions(mcpOptions), [mcpOptions]);
-  // MCP 选择抽屉的页签与过滤需保持稳定引用：ConnectorPickerDrawer 的 visibleItems useMemo
-  // 依赖 tabs/filterItem，内联字面量会让父组件每次渲染（如点安装/连接触发 busy 态）都生成
-  // 新数组，把 PickerListRegion 已触底加载的列表打回首屏。
-  const mcpPickerTabs = useMemo(
-    () => ({
-      ariaLabel: t('agentManagement.form.mcpSourceTabsLabel'),
-      items: [
-        { value: 'market' as const, label: t('agentManagement.form.mcpMarket') },
-        { value: 'installed' as const, label: t('agentManagement.form.myMcp') },
-      ],
-    }),
-    [t],
-  );
-  const filterMcpBySourceTab = useCallback((mcp: McpOption, sourceTab: 'market' | 'installed') => {
-    const isMarketplace = mcp.source === 'built_in' || mcp.source === 'hub';
-    // "我的" = 自定义 + 已连接的（预置/hub）；installed 只表达安装态（预置恒 true），
-    // 不能单独作为 tab 归属，否则未连接预置会同时出现在两个 tab。
-    const isMine = mcp.source === 'customize' || (mcp.installed === true && mcp.connectionState === 'connected');
-    return sourceTab === 'market' ? isMarketplace : isMine;
-  }, []);
 
   useEffect(() => {
     if (!personaEditing) return;
@@ -457,12 +418,11 @@ export function AgentEditor({
       )}
 
       {mcpDialogOpen && (
-        <ConnectorPickerDrawer
+        <McpPickerDrawer
           title={t('agentManagement.form.selectMcp')}
           testId="agent-editor-mcp-picker"
           status={mcpStatus}
-          items={sortedMcps}
-          getItemKey={(mcp) => mcp.id}
+          items={mcpOptions}
           initialSelectedIds={draft.mcpRefs}
           onClose={() => setMcpDialogOpen(false)}
           onConfirm={(ids) => {
@@ -470,70 +430,6 @@ export function AgentEditor({
             setMcpDialogOpen(false);
           }}
           onRetry={onReloadMcps}
-          tabs={mcpPickerTabs}
-          filterItem={filterMcpBySourceTab}
-          errorMessage={t('agentManagement.form.mcpError')}
-          emptyMessage={t('agentManagement.form.mcpEmpty')}
-          loadMoreLabel={t('agentManagement.loadMore')}
-          searchPlaceholder={t('agentManagement.form.selectionSearchPlaceholder')}
-          fallbackDescription={t('agentManagement.unknownDescription')}
-          renderItem={(mcp, { selected, toggle }) => {
-            const installed = mcp.installed === true;
-            const preset = mcp.source === 'built_in';
-            const selectable = isMcpSelectable(mcp);
-            const connectable = (installed || preset) && !selectable;
-            const connecting = connectingMcpId === mcp.id || mcp.connectionState === 'connecting';
-            const installing = installingMcpId === mcp.id;
-            const defaultButton: PageCardDefaultButton | undefined =
-              !installed && !preset && onInstallMcp
-                ? {
-                    text: installing
-                      ? t('agentManagement.form.installingConnector')
-                      : t('agentManagement.form.installConnector'),
-                    testId: 'agent-editor-mcp-picker-install',
-                    variant: mcp.id,
-                    disabled: installing,
-                    busy: installing,
-                    onClick: () => void onInstallMcp(mcp),
-                  }
-                : connectable && onConnectMcp
-                  ? {
-                      text: connecting
-                        ? t('agentManagement.form.connectingConnector')
-                        : t('agentManagement.form.connectConnector'),
-                      testId: 'agent-editor-mcp-picker-connect',
-                      variant: mcp.id,
-                      disabled: connecting,
-                      busy: connecting,
-                      onClick: () => onConnectMcp(mcp),
-                    }
-                  : undefined;
-            return (
-              <PageCard
-                testId="agent-editor-mcp-picker-item"
-                variant={mcp.id}
-                interactive={selectable}
-                selected={selected}
-                disabled={!selectable && !onInstallMcp && !onConnectMcp}
-                onClick={selectable ? () => toggle(mcp.id) : undefined}
-                avatar={{ name: mcp.name, iconUrl: mcp.icon || undefined }}
-                title={mcp.name}
-                description={mcp.description || t('agentManagement.unknownDescription')}
-                defaultButton={defaultButton}
-                actionSlot={
-                  defaultButton ? null : (
-                    <span className="shrink-0" aria-hidden="true">
-                      {selected ? (
-                        <EntityRemoveIcon className="text-[color:var(--color-chat-accent)]" />
-                      ) : (
-                        <EntityAddIcon className="text-text-muted" />
-                      )}
-                    </span>
-                  )
-                }
-              />
-            );
-          }}
         />
       )}
     </>
