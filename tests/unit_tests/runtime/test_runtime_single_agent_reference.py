@@ -19,6 +19,12 @@ from jiuwenswarm.runtime.session.model import SessionExecutionState
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def isolated_session_storage(monkeypatch, tmp_path):
+    """Keep reused session IDs independent of persisted sessions from other tests."""
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: tmp_path)
+
+
 class _Manager:
     def __init__(self) -> None:
         self.cleanup_sessions: list[tuple[str, str]] = []

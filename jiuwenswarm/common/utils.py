@@ -1691,6 +1691,21 @@ def _resolve_paths() -> None:
 
     workspace_dir = get_user_workspace_dir()
 
+    # JIUWENSWARM_CONFIG_DIR overrides where config.yaml is read from. The docs
+    # present it as the way to isolate configuration between instances on one
+    # machine, and the diagnostics endpoint reports it as an active settings
+    # source -- but nothing here consulted it, so an operator following those
+    # docs silently got the default config while being told otherwise.
+    env_config_dir = os.getenv("JIUWENSWARM_CONFIG_DIR", "").strip()
+    if env_config_dir:
+        override = Path(env_config_dir).expanduser()
+        _root_dir = override.parent
+        _config_dir = override
+        _workspace_dir = workspace_dir / "agent" / "workspace"
+        _workspace_dir.mkdir(parents=True, exist_ok=True)
+        _initialized = True
+        return
+
     # 优先使用已初始化的用户工作区 (~/.jiuwenswarm)，
     # 保证源码运行与安装包运行后的读写路径完全一致。
     user_config_dir = workspace_dir / "config"

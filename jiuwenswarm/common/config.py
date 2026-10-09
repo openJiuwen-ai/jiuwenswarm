@@ -444,6 +444,21 @@ def get_evolution_review_feedback_min_confidence(config: dict[str, Any] | None) 
         return 0.7
 
 
+def get_rigor_audit_enabled(config: dict[str, Any] | None) -> bool:
+    """Whether RigorAuditRail is mounted on team members.
+
+    Defaults to True: the rail costs zero model calls, so the usual reason to
+    gate a capability off -- budget -- does not apply. Set ``rigor_audit.enabled:
+    false`` to opt out.
+    """
+    if not isinstance(config, dict):
+        return True
+    section = config.get("rigor_audit")
+    if not isinstance(section, dict):
+        return True
+    return section.get("enabled", True) is not False
+
+
 def get_evolution_auto_save_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return canonical ``react.evolution.auto_save`` without disk/env reads."""
     return _get_evolution_config(config).get("auto_save") is True
