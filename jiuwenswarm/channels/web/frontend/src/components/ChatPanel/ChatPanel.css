@@ -1250,15 +1250,7 @@
   width: 16px;
   height: 16px;
   flex: 0 0 auto;
-  border: 1.5px solid currentColor;
-  border-radius: 4px;
   color: var(--color-text-primary);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.chat-composer-suggestion__slash-icon--skill {
-  border: 0;
 }
 
 .chat-composer-suggestion__slash-icon--skill::before {
