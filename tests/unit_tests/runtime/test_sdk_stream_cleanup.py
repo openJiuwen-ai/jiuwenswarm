@@ -20,6 +20,21 @@ from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.service import AgentRuntime
 
 
+@pytest.fixture(autouse=True)
+def isolated_agent_dirs(tmp_path, monkeypatch):
+    """会话/lifecycle 持久状态落在 tmp，而不是真实用户主目录。
+
+    claim_runtime 按 get_agent_sessions_dir 的父目录写 runtime owner 文件；
+    不隔离时并行 worker 会通过共享文件争抢同名会话，真实主目录的历史
+    状态也会泄漏进测试。
+    """
+    sessions = tmp_path / "agent" / "sessions"
+    sessions.mkdir(parents=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions
+    )
+
+
 class _WaitingAgent:
     def __init__(self) -> None:
         self.closed = False
@@ -165,7 +180,10 @@ async def test_sdk_stream_aclose_drains_real_runtime_wrapper_and_context(
         assert agent.enter_runtime is runtime
         assert get_current_runtime() is None
         if close_in_other_task:
-            await asyncio.wait_for(stream.aclose(), timeout=1.0)
+            # Python 3.12 起 asyncio.wait_for 不再为裸协程隐式创建任务；
+            # 显式建任务以保持“在另一个任务中关闭”的语义。
+            closer = asyncio.create_task(stream.aclose())
+            await asyncio.wait_for(closer, timeout=1.0)
         else:
             async with asyncio.timeout(1.0):
                 await stream.aclose()
