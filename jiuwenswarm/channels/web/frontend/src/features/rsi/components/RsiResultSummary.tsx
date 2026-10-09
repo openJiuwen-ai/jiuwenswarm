@@ -1,7 +1,7 @@
 /**
  * RSI 优化结果摘要条（rsi-stage 上半区）。
  * 数据源对齐接口契约：
- *   - score / baseline：P2 推送 liveProgress → task.progress → report.best_score/baseline（§3.3/§8.1）
+ *   - score / baseline：运行中优先推送；结束后优先最终报告（§3.3/§8.1）
  *   - usage.tokens：rsi.usage.get → task.usage（§3.4/§8.2）
  *   - metrics.iterations / eval_passed / eval_total / pruned_count：rsi.report.get（§8.1）
  *   - pruned_count 仅 harness 优化有值；产物优化为 null（§14），不渲染剪枝列
@@ -10,7 +10,7 @@
 import { useTranslation } from 'react-i18next';
 import optimizeImage from '../../../assets/rsi/rsi-optimize.svg';
 import type { RsiTaskGetResult, RsiReportGetResult, RsiUsageGetResult } from '../types';
-import { formatArtifactScore, formatGain, formatTokensK, presentRsiNode, typeDisplayLabel } from '../rsiPresentation';
+import { formatArtifactScore, formatGain, formatTokensK, presentRsiNode, resolveRsiSummaryMetrics, typeDisplayLabel } from '../rsiPresentation';
 import { resolveRsiArtifactSource } from '../rsiArtifactFiles';
 import { useRsiStore } from '../rsiStore';
 
@@ -23,12 +23,10 @@ interface RsiResultSummaryProps {
 
 export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiResultSummaryProps) {
   const { t } = useTranslation();
-  const liveProgress = useRsiStore((s) => (s.selectedTaskId ? s.detail[s.selectedTaskId]?.liveProgress : null));
+  const liveProgress = useRsiStore((s) => s.detail[task.task_id]?.liveProgress ?? null);
   const tree = useRsiStore((s) => s.detail[task.task_id]?.tree ?? null);
 
-  // 分数优先取运行时推送，回退 task.progress/report
-  const score = liveProgress?.score ?? task.progress?.score ?? report?.best_score ?? null;
-  const baseline = liveProgress?.baseline ?? task.progress?.baseline ?? report?.baseline ?? null;
+  const { score, baseline, iteration: iterations } = resolveRsiSummaryMetrics(task, report, liveProgress);
   const gain = score != null && baseline != null ? score - baseline : null;
   const gainFmt = formatGain(gain);
   const bestArtifactId = task.best_artifact?.artifact_id ?? report?.best_artifact?.artifact_id ?? null;
@@ -59,9 +57,6 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
   const evalPassed = queued ? null : (report?.metrics.eval_passed ?? null);
   const evalTotal = queued ? null : (report?.metrics.eval_total ?? null);
   const prunedCount = queued ? null : (report?.metrics.pruned_count ?? null);
-  const iterations = queued
-    ? null
-    : (liveProgress?.iteration ?? report?.metrics.iterations ?? task.progress?.iteration ?? null);
   const tokenUsage = task.status === 'RUNNING'
     ? liveProgress?.usage ?? usage?.usage ?? task.usage ?? null
     : usage?.usage ?? task.usage ?? liveProgress?.usage ?? null;

@@ -12,7 +12,55 @@ import {
   progressPercent,
   scoreScale,
   actionsForStatus,
+  resolveRsiSummaryMetrics,
 } from '../node_modules/.cache/rsi-presentation/rsiPresentation.mjs';
+
+test('completed summary uses final report despite stale zero progress', () => {
+  const task = { status: 'COMPLETED', progress: { iteration: 0, score: 0, baseline: 0 } };
+  const report = { best_score: 2 / 3, baseline: 0, metrics: { iterations: 2 } };
+  const live = { iteration: 0, score: 0, baseline: 0 };
+  const result = resolveRsiSummaryMetrics(task, report, live);
+  assert.deepEqual(result, { score: 2 / 3, baseline: 0, iteration: 2 });
+  assert.equal(formatArtifactScore(result.score, null), '0.7');
+});
+
+test('running summary retains live progress while reports lag', () => {
+  const task = { status: 'RUNNING', progress: { iteration: 0, score: 0, baseline: 0 } };
+  const report = { best_score: 0, baseline: 0, metrics: { iterations: 0 } };
+  assert.deepEqual(
+    resolveRsiSummaryMetrics(task, report, { iteration: 1, score: 0.5, baseline: 0 }),
+    { score: 0.5, baseline: 0, iteration: 1 },
+  );
+});
+
+test('terminal summaries preserve final zero scores over higher transient scores', () => {
+  for (const status of ['COMPLETED', 'FAILED', 'TERMINATED']) {
+    const task = { status, progress: { iteration: 1, score: 0.5, baseline: 0.2 } };
+    const report = { best_score: 0, baseline: 0, metrics: { iterations: 2 } };
+    assert.deepEqual(
+      resolveRsiSummaryMetrics(task, report, { iteration: 1, score: 1, baseline: 0.2 }),
+      { score: 0, baseline: 0, iteration: 2 },
+    );
+  }
+});
+
+test('completed summary falls back to task snapshot if report is unavailable', () => {
+  const task = { status: 'COMPLETED', progress: { iteration: 2, score: 2 / 3, baseline: 0 } };
+  assert.deepEqual(
+    resolveRsiSummaryMetrics(task, null, { iteration: 0, score: 0, baseline: 0 }),
+    { score: 2 / 3, baseline: 0, iteration: 2 },
+  );
+  assert.deepEqual(
+    resolveRsiSummaryMetrics({ status: 'COMPLETED', progress: null }, null, null),
+    { score: null, baseline: null, iteration: null },
+  );
+});
+
+test('queued summaries do not display an iteration count', () => {
+  for (const status of ['CREATED', 'QUEUED']) {
+    assert.equal(resolveRsiSummaryMetrics({ status, progress: null }, null, null).iteration, null);
+  }
+});
 
 test('completed tasks show full progress even when they finish before the iteration limit', () => {
   assert.equal(progressPercent('COMPLETED', 1, 5), 100);
