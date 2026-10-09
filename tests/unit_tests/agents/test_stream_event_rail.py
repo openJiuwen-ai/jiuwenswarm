@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
-"""stream_event_rail 工具结果错误判读测试（此前零直接测试）。
+"""stream_event_rail 的 ``ok`` 失败约定判读测试。
 
 修复 #5019：``{"ok": False, "error": ...}`` 是仓库通用失败约定（sdd_advance
 的 stage 拒绝、CLI JSON 输出、随包 skill 脚本、skill_manager 均使用），但
 ``_infer_tool_result_error`` 不读 ``ok`` 键——被拒绝的工具调用在事件流里
 显示为成功（web 时间线 / TUI / 调试 trace 全部误报）。
+
+该模块在 ``tests/unit_tests/agentserver/test_stream_event_rail_*.py`` 已有针对
+``success`` / ``is_error`` / 退出码 / 暂停闩锁等既有约定的直接测试；本文件不
+重复其覆盖面，只新增 ``ok`` 判读及其优先级锁：
 
 - ``ok`` 组：修复前红，修复后绿；
 - 既有约定组（success / is_error / status / 退出码 / 嵌套 / 字符串）作回归锁；
@@ -148,10 +152,14 @@ def test_object_success_attribute() -> None:
 
 
 @pytest.mark.asyncio
-async def test_after_tool_call_emits_failure_verdict_for_sdd_advance_refusal() -> None:
+async def test_after_tool_call_emits_failure_verdict_for_sdd_advance_refusal(
+    tmp_path: Path,
+) -> None:
     """被 sdd_advance 拒绝的调用，事件必须携带 success/status/is_error 失败判读。"""
+    # 裸 RailStateMachineBase 的 stages 为空（类属性默认 {}），任意 stage 都会被
+    # 拒绝；传入 tmp_path 以确保用例不依赖运行目录的内容。
     refusal = RailStateMachineBase(
-        rail_pkg_dir=Path("."), project_dir=Path(".")
+        rail_pkg_dir=tmp_path, project_dir=tmp_path
     )._handle_advance({"stage": "design"})
     assert refusal["ok"] is False  # 前置：确为失败结果
 
