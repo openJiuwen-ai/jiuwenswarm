@@ -1300,21 +1300,23 @@ class MessageHandler(FileTransferMixin, ABC):
 
     async def cancel_agent_sessions_on_disconnect(
         self,
-        session_keys: list[tuple[str, str]],
+        session_keys: list[tuple],
         *,
-        stale_request_keys: list[tuple[str, str]] | None = None,
+        stale_request_keys: list[tuple] | None = None,
         user_id: str | None = None,
     ) -> bool:
         """取消仍绑定在断开连接上的会话（与显式 chat.interrupt 对齐）。
 
         Args:
-            session_keys: ``(channel_id, session_id)`` 元组，来自 GatewayServer
-                ``_session_to_client`` 中 ``client is ws`` 的反查。当用户在同一
-                ``session_id`` 上重连导致旧 WS 在该映射中被覆盖时，这里可能为空。
-            stale_request_keys: ``(channel_id, request_id)`` 元组，来自 GatewayServer
-                ``_request_to_client`` 中 ``client is ws`` 的反查。即使
-                ``session_keys`` 为空，这里仍能让我们通过 ``_stream_sessions``
-                找出该 WS 上 in-flight stream 对应的 session_id，避免漏取消。
+            session_keys: ``(channel_id, session_id[, agent_ref])`` 元组，来自
+                GatewayServer ``_session_to_client`` 中 ``client is ws`` 的反查。
+                V2 键带 agent_ref 时为三元组。当用户在同一 ``session_id`` 上
+                重连导致旧 WS 在该映射中被覆盖时，这里可能为空。
+            stale_request_keys: ``(channel_id, request_id[, agent_ref])`` 元组，
+                来自 GatewayServer ``_request_to_client`` 中 ``client is ws``
+                的反查，V2 同样可能为三元组。即使 ``session_keys`` 为空，
+                这里仍能让我们通过 ``_stream_sessions`` 找出该 WS 上
+                in-flight stream 对应的 session_id，避免漏取消。
 
         Returns:
             ``True`` 表示所有会话的 AgentServer 中断均成功（或无可取消的会话）；
@@ -1348,13 +1350,18 @@ class MessageHandler(FileTransferMixin, ABC):
 
     async def schedule_cancel_agent_sessions_on_disconnect(
         self,
-        session_keys: list[tuple[str, str]],
+        session_keys: list[tuple],
         *,
-        stale_request_keys: list[tuple[str, str]] | None = None,
+        stale_request_keys: list[tuple] | None = None,
         delay_seconds: float = _TUI_DISCONNECT_CANCEL_GRACE_SECONDS,
         user_id: str | None = None,
     ) -> None:
-        """Schedule a disconnect cancel unless the same session reconnects first."""
+        """Schedule a disconnect cancel unless the same session reconnects first.
+
+        键形状与 :meth:`cancel_agent_sessions_on_disconnect` 相同：V2 反查键
+        可能为三元组（带 agent_ref），由 ``_merge_disconnect_session_keys``
+        兼容处理。
+        """
         merged, recovered_via_requests = self._merge_disconnect_session_keys(
             session_keys,
             stale_request_keys=stale_request_keys,
@@ -1404,10 +1411,20 @@ class MessageHandler(FileTransferMixin, ABC):
 
     def _merge_disconnect_session_keys(
         self,
-        session_keys: list[tuple[str, str]],
+        session_keys: list[tuple],
         *,
-        stale_request_keys: list[tuple[str, str]] | None = None,
+        stale_request_keys: list[tuple] | None = None,
     ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+        """合并断连反查键为待取消的 ``(channel_id, session_id)`` 列表。
+
+        键形状兼容：入参列表来自 GatewayServer 对 ``_session_to_client`` /
+        ``_request_to_client`` 的 ``client is ws`` 反查，而这两个映射的键由
+        ``_client_route_key`` 生成——V2 带 ``agent_ref`` 时为三元组
+        ``(channel_id, scoped_id, agent_ref_str)``，不带时为二元组。合并只消费
+        前两元，第三元（agent_ref）不参与，按位置取 ``key[0] / key[1]``
+        兼容两种形状；按二元组解包会在 agent_ref 路由场景抛
+        ``ValueError: too many values to unpack`` 导致断连取消 100% 失效。
+        """
         merged: list[tuple[str, str]] = []
         seen: set[tuple[str, str]] = set()
 
@@ -1422,11 +1439,13 @@ class MessageHandler(FileTransferMixin, ABC):
             merged.append(entry)
             return True
 
-        for channel_id, session_id in session_keys or []:
+        for session_key in session_keys or []:
+            channel_id, session_id = session_key[0], session_key[1]
             add(channel_id, session_id)
 
         recovered_via_requests: list[tuple[str, str]] = []
-        for channel_id, request_id in stale_request_keys or []:
+        for stale_key in stale_request_keys or []:
+            channel_id, request_id = stale_key[0], stale_key[1]
             task_session = (self._stream_sessions.get(request_id) or "").strip()
             if add(channel_id, task_session):
                 recovered_via_requests.append((channel_id, task_session))

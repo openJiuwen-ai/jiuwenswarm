@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
@@ -17,7 +17,7 @@ class CompatibleTodoModifyTool(_OpenJiuWenTodoModifyTool):
 
     Some clients send task deletion as an update payload with
     ``{"status": "deleted"}`` rather than the canonical
-    ``{"action": "delete", "ids": [...]}``. The upstream tool rejects that
+    ``{"action": "delete", "ids": [...]}`. The upstream tool rejects that
     status, leaving the task pending. This shim preserves the canonical behavior
     while treating those update statuses as delete/cancel operations.
     """
@@ -27,6 +27,8 @@ class CompatibleTodoModifyTool(_OpenJiuWenTodoModifyTool):
         session_id: str,
         todos_data: list[dict[str, Any]],
         current_todos: list[TodoItem],
+        *,
+        generation_token: Optional[str] = None,
     ) -> str:
         if not isinstance(todos_data, list):
             raise build_error(
@@ -69,10 +71,14 @@ class CompatibleTodoModifyTool(_OpenJiuWenTodoModifyTool):
                 current_todo.status = TodoStatus(status_value)
             if "selected_model_id" in todo_data:
                 current_todo.selected_model_id = todo_data["selected_model_id"]
+            # 本轮触碰即归本轮：与 agent-core TodoModifyTool._update_todos 对齐，
+            # update 重打 generation_token（token 为空时保留原标记）。
+            if generation_token:
+                current_todo.generation_token = generation_token
             updated_count += 1
 
         updated_todos = [todo for todo in current_todos if todo.id not in deleted_ids]
-        self._validate_single_in_progress(updated_todos)
+        self._validate_single_in_progress(updated_todos, generation_token)
         await self.save_todos(session_id, updated_todos)
 
         parts: list[str] = []
