@@ -2694,6 +2694,17 @@ class MessageHandler(ABC):
         """
         self._channel_manager = channel_manager
 
+    async def _broadcast_models_updated(self) -> None:
+        """把 AgentServer 的 models.updated 推送给所有 Web 连接。"""
+        web_channel = self._resolve_web_channel()
+        if web_channel is None:
+            return
+        try:
+            await web_channel.broadcast_event("models.updated", {})
+            logger.info("[MessageHandler] broadcasted models.updated")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[MessageHandler] broadcast models.updated failed: %s", exc)
+
     def _resolve_web_channel(self) -> Any:
         """从 ChannelManager 取 web channel 实例（广播用）；取不到返回 None。"""
         cm = getattr(self, "_channel_manager", None)
@@ -3251,6 +3262,9 @@ class MessageHandler(ABC):
 
         from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import EVENT, handle_checkpoint_push
 
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "models.updated":
+            await self._broadcast_models_updated()
+            return
         if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == EVENT:
             await handle_checkpoint_push(self.agent_client, chunk, session_id)
             return

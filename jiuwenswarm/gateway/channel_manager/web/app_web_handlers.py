@@ -2083,6 +2083,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
+    async def _request_zen_warmup() -> None:
+        from jiuwenswarm.gateway.zen_query import request_zen_warmup
+
+        await request_zen_warmup(_resolve(agent_client))
+
     async def _config_set(ws, req_id, params, session_id):
         """config.set 实现已下沉 ``common.config_panel.config_set_handlers``。"""
         await config_set_handlers.config_set_handler(
@@ -2091,6 +2096,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             agent_client=_resolve(agent_client),
             ensure_codex_dependency=_ensure_codex_dependency_available_or_start_install,
             ensure_claude_dependency=_ensure_claude_dependency_available_or_start_install,
+            on_free_models_toggled=_request_zen_warmup,
         )
 
     async def _config_validate_model(ws, req_id, params, session_id, max_tokens_bounds=None):
@@ -2102,7 +2108,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     # ── models.* handlers ────────────────────────────────────────
 
     async def _models_list(ws, req_id, params, session_id):
-        await models_handlers.models_list_handler(channel, ws, req_id, params, session_id)
+        from jiuwenswarm.gateway.zen_query import fetch_zen_free_model_rows
+
+        zen_rows = await fetch_zen_free_model_rows(_resolve(agent_client))
+        await models_handlers.models_list_handler(
+            channel, ws, req_id, params, session_id, zen_rows=zen_rows,
+        )
 
     async def _models_replace_all(ws, req_id, params, session_id):
         """原子地用提交的列表整体替换 models.defaults（实现见下沉模块）。"""
@@ -2121,6 +2132,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             agent_client=_resolve(agent_client),
             ensure_codex_dependency=_ensure_codex_dependency_available_or_start_install,
             ensure_claude_dependency=_ensure_claude_dependency_available_or_start_install,
+            on_free_models_toggled=_request_zen_warmup,
         )
 
     async def _models_validate(ws, req_id, params, session_id):

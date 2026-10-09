@@ -9,12 +9,15 @@ the live model catalog from Zen, keep the free ones (model id ending in
 ``-free``, plus the always-free ``big-pickle``), and hold them in a process-wide
 in-memory cache. Nothing is written to ``config.yaml``.
 
-Consumers read the cache through :func:`get_zen_free_model_entries`:
+Consumers read the cache through :func:`get_zen_free_model_entries`. They all
+run in the AgentServer process:
 
-- ``models.list`` (Gateway web) appends them after the user's own models so
-  they show up in the frontend dropdown.
+- ``ConfigAdapter`` appends them to ``models.list`` and answers
+  ``models.zen_entries`` so Gateway can merge the same rows into a local list.
 - ``AgentWebSocketServer._build_model_cache`` builds a :class:`Model` per entry
   so a Zen free model is resolvable when a chat selects it.
+- Cron tools accept a Zen free model id or alias. Gateway asks this process
+  for the same rows before it stores a Web or TUI job.
 
 If the catalog cannot be reached, the cache stays empty and no free models are
 offered — per the requirement that free models are only available when Zen is.
@@ -118,8 +121,8 @@ _background_retry_started: bool = False
 _last_fetch_error: str = ""
 
 # ---------- 免费模型就绪回调 ----------
-# 后台重试/惰性重试成功后通知 Gateway 广播 models.updated 事件，
-# 让前端自动刷新模型列表，无需用户手动刷新。
+# 后台重试/惰性重试成功后通知 AgentServer：重建模型缓存，并向 Gateway
+# 推送 models.updated，由 Gateway 广播给页面。
 _main_event_loop: asyncio.AbstractEventLoop | None = None
 _models_ready_callbacks: list = []
 
@@ -522,6 +525,67 @@ def get_zen_default_free_model_entry() -> dict[str, Any] | None:
         if (entry.get("model_client_config") or {}).get("model_name") == DEFAULT_FREE_MODEL_ID:
             return entry
     return entries[0] if entries else None
+
+
+def match_zen_free_model_name(raw: Any) -> str | None:
+    """Return the canonical Zen model id when ``raw`` is that id or its alias."""
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    for entry in get_zen_free_model_entries():
+        model_config = entry.get("model_client_config") or {}
+        model_name = str(model_config.get("model_name") or "").strip()
+        alias = str(entry.get("alias") or "").strip()
+        if model_name and value in {model_name, alias}:
+            return model_name
+    return None
+
+
+def append_zen_free_models(models: list[dict[str, Any]]) -> None:
+    """Append cached Zen free models to a ``models.list`` payload.
+
+    Called from AgentServer. Entries already present by ``model_name`` are
+    left unchanged. The appended rows are the public shape Gateway also
+    merges onto a locally built list.
+    """
+    from jiuwenswarm.common.config_panel.models_handlers import reasoning_level_display
+    from jiuwenswarm.common.context_window import (
+        DEFAULT_CONTEXT_WINDOW_TOKENS,
+        parse_positive_int,
+    )
+
+    existing_names = {str(item.get("model_name") or "") for item in models}
+    for entry in get_zen_free_model_entries():
+        model_config = entry.get("model_client_config") or {}
+        model_config_obj = entry.get("model_config_obj") or {}
+        model_name = str(model_config.get("model_name") or "").strip()
+        if not model_name or model_name in existing_names:
+            continue
+        models.append({
+            "model_name": model_name,
+            "api_base": model_config.get("api_base", ""),
+            "api_key": model_config.get("api_key", ""),
+            "model_provider": model_config.get("client_provider", ""),
+            "temperature": model_config_obj.get("temperature"),
+            "reasoning_level": reasoning_level_display(model_config_obj.get("reasoning_level")),
+            "is_default": entry.get("is_default"),
+            "is_agentos": False,
+            "is_free": True,
+            "alias": entry.get("alias", ""),
+            "context_window_tokens": (
+                parse_positive_int(entry.get("context_window_tokens"))
+                or parse_positive_int(model_config_obj.get("context_window"))
+                or DEFAULT_CONTEXT_WINDOW_TOKENS
+            ),
+        })
+        existing_names.add(model_name)
+
+
+def public_zen_free_model_rows() -> list[dict[str, Any]]:
+    """Return the public Zen rows Gateway can merge without reading this cache."""
+    rows: list[dict[str, Any]] = []
+    append_zen_free_models(rows)
+    return rows
 
 
 def set_main_event_loop(loop: asyncio.AbstractEventLoop | None) -> None:

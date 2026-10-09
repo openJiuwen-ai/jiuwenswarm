@@ -312,6 +312,17 @@ async def _start_runtime_backend(front: object, host: str, port: int) -> object:
         if callable(reset_cache):
             reset_cache()
         logger.info("[AgentServer] zen free models ready: model cache reset for rebuild")
+        push = getattr(front, "send_push", None) or getattr(server, "send_push", None)
+        if not callable(push):
+            return
+        try:
+            asyncio.create_task(push({
+                "request_id": "zen-models-ready",
+                "channel_id": "web",
+                "payload": {"event_type": "models.updated"},
+            }))
+        except Exception:  # noqa: BLE001
+            logger.debug("[AgentServer] models.updated push failed", exc_info=True)
 
     register_models_ready_callback(_on_zen_models_ready)
     zen_free_models_task = asyncio.create_task(
