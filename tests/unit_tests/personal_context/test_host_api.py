@@ -209,6 +209,14 @@ class FakeCore:
         self.authorization_status_error: BaseException | None = None
         self.authorization_status_started: asyncio.Event | None = None
         self.authorization_status_release: asyncio.Event | None = None
+        self._distill_corpus: object | None = None
+        self._distill_runner: object | None = None
+
+    def set_distill_corpus(self, corpus: object | None) -> None:
+        self._distill_corpus = corpus
+
+    def set_distill_runner(self, runner: object | None) -> None:
+        self._distill_runner = runner
 
     def _set_embedding_configuration(
         self,

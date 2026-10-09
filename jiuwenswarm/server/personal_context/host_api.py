@@ -10,21 +10,46 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from copy import deepcopy
+import json
 import os
 from pathlib import Path
 import stat
 import tempfile
+import time
 from collections.abc import Awaitable, Callable
 from typing import NoReturn, cast
 
 import httpx
 import yaml
 
+from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
 from openjiuwen.harness.personal_context import PersonalContext
+from openjiuwen.harness.personal_context.distill import (
+    DistillRunResult,
+    OpenJiuwenLlm,
+    complete_distill_lease,
+    get_last_attempt_at_ms,
+    try_claim_distill_lease,
+)
+from openjiuwen.harness.personal_context.distill.store import (
+    get_cursor_ms,
+    get_distill_lease,
+    get_job,
+)
 
 from jiuwenswarm.common.config import get_config, get_default_models
 from jiuwenswarm.server.im.im_connector.learning_source import as_im_learning_source
 from jiuwenswarm.server.im.im_hosting.connectors import LazySharedRegistryView
+from jiuwenswarm.server.personal_context.distill_ports import (
+    build_distill_corpus,
+    build_distill_runner,
+)
+from jiuwenswarm.server.personal_context.profiles_ops import (
+    activate_profile,
+    get_current_profile,
+    get_profile_version,
+    list_profile_versions,
+)
 
 
 _CONFIG_FILENAME = "personal_context.yaml"
@@ -207,6 +232,31 @@ def _im_learning_defaults() -> dict[str, object]:
     if default_factory is None:
         raise RuntimeError("PersonalContext im_learning defaults are invalid")
     return default_factory().model_dump(mode="json", by_alias=True)
+
+
+def _distill_defaults() -> dict[str, object]:
+    """Distill 配置默认形态（跟随 Core DistillScheduleSettings）。"""
+
+    default_factory = PersonalContext.Config.model_fields["distill"].default_factory
+    if default_factory is None:
+        raise RuntimeError("PersonalContext distill defaults are invalid")
+    return default_factory().model_dump(mode="json", by_alias=True)
+
+
+_DISTILL_PATCH_KEYS = frozenset(
+    {"enabled", "interval_seconds", "message_threshold"}
+)
+
+
+def _read_distill_cursor_payload(home: Path) -> dict[str, object]:
+    path = home / "im" / "distill" / "cursor.json"
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 def _unconfigured_projection() -> dict[str, object]:
@@ -676,6 +726,293 @@ class PersonalContextHostAPI:
         self._stored_config: dict[str, object] | None = None
         self._operation_lock = asyncio.Lock()
         self._fetch_run_stop_lock = asyncio.Lock()
+        self._distill_last_error: str | None = None
+        self._distill_manual_task: asyncio.Task[None] | None = None
+        self._ensure_distill_ports()
+
+    def _resolve_distill_llm(self) -> OpenJiuwenLlm:
+        """Build an OpenJiuwenLlm from the Host's current model_index selection."""
+
+        stored = self._stored_config
+        if stored is None:
+            _raise_host_error("distill model unavailable: PersonalContext is not configured")
+        model_index = stored.get("model_index")
+        if model_index is None:
+            _raise_host_error("distill model unavailable: no model selected")
+        client, request = _resolve_model_reference(model_index)
+        model = Model(
+            model_client_config=ModelClientConfig.model_validate(client),
+            model_config=ModelRequestConfig.model_validate(request),
+        )
+        return OpenJiuwenLlm(model, max_tokens=16384)
+
+    def _ensure_distill_ports(self) -> None:
+        """Inject SqliteImCorpus and DistillRunnerPort while Core is stopped."""
+
+        corpus = build_distill_corpus(self._home)
+        runner = build_distill_runner(
+            home=self._home,
+            corpus=corpus,
+            resolve_llm=self._resolve_distill_llm,
+        )
+        self._personal_context.set_distill_corpus(corpus)
+        self._personal_context.set_distill_runner(runner)
+
+    def distill_ports_wired(self) -> bool:
+        """Return whether corpus and runner are injected (process-local probe)."""
+
+        core = self._personal_context
+        return (
+            getattr(core, "_distill_corpus", None) is not None
+            and getattr(core, "_distill_runner", None) is not None
+        )
+
+    async def run_distill_now(self) -> dict[str, object]:
+        """Start one manual distill job in the background and return at once.
+
+        The job holds the Core Distill lease so the scheduler tick skips with
+        ``lease_held`` while it runs, and a second manual request is rejected
+        with ``distill_busy``. Progress and outcome surface via
+        ``get_distill_status`` (``lease`` / ``last_success_job_id`` /
+        ``last_error``); the Host lock is never held across the LLM calls.
+        """
+
+        async with self._operation_lock:
+            core = self._personal_context
+            runner = getattr(core, "_distill_runner", None)
+            if getattr(core, "_distill_corpus", None) is None or runner is None:
+                self._distill_last_error = "distill_not_wired"
+                _raise_host_error(
+                    "distill_not_wired",
+                    status_name="CONTEXT_PROACTIVE_STATE_INVALID",
+                )
+            config = self._config
+            if config is None or not config.distill.enabled:
+                self._distill_last_error = "distill_disabled"
+                _raise_host_error(
+                    "distill_disabled",
+                    status_name="CONTEXT_PROACTIVE_STATE_INVALID",
+                )
+            # Fail fast when model cannot be resolved (same path as runner).
+            self._resolve_distill_llm()
+            task = self._distill_manual_task
+            if task is not None and not task.done():
+                _raise_host_error(
+                    "distill_busy",
+                    status_name="CONTEXT_PROACTIVE_STATE_INVALID",
+                )
+            settings = config.distill
+            now_ms = int(time.time() * 1000)
+            token = try_claim_distill_lease(
+                str(self._home),
+                now_ms=now_ms,
+                lease_ms=int(settings.lease_seconds * 1000),
+            )
+            if token is None:
+                _raise_host_error(
+                    "distill_busy",
+                    status_name="CONTEXT_PROACTIVE_STATE_INVALID",
+                )
+            try:
+                self._distill_manual_task = asyncio.create_task(
+                    self._run_manual_distill(
+                        runner,
+                        token,
+                        window_end_ms=now_ms,
+                        learning_since_ms=settings.learning_since_ms,
+                        max_messages=settings.max_messages,
+                    ),
+                    name="personal-context-distill-manual",
+                )
+            except BaseException:
+                complete_distill_lease(str(self._home), token)
+                raise
+            return {"accepted": True}
+
+    async def _run_manual_distill(
+        self,
+        runner: Callable[..., Awaitable[DistillRunResult]],
+        lease_token: str,
+        *,
+        window_end_ms: int,
+        learning_since_ms: int | None,
+        max_messages: int,
+    ) -> None:
+        """Background body of ``run_distill_now``; releases the lease on any exit."""
+
+        home = str(self._home)
+        try:
+            result = await runner(
+                home,
+                window_end_ms=window_end_ms,
+                learning_since_ms=learning_since_ms,
+                max_messages=max_messages,
+            )
+        except asyncio.CancelledError:
+            self._distill_last_error = "distill_cancelled"
+            raise
+        except Exception as exc:
+            self._distill_last_error = str(exc) or type(exc).__name__
+        else:
+            if result.status == "failed":
+                self._distill_last_error = result.error or "distill_failed"
+            else:
+                self._distill_last_error = None
+        finally:
+            complete_distill_lease(home, lease_token)
+
+    async def _cancel_manual_distill(self) -> None:
+        """Cancel and await the in-flight manual distill job, if any."""
+
+        task = self._distill_manual_task
+        self._distill_manual_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            # Lease release inside the task is best-effort; only propagate our
+            # own cancellation, never the task's.
+            with contextlib.suppress(Exception):
+                await task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+
+    async def get_distill_config(self) -> dict[str, object]:
+        """Return the distill schedule settings projection."""
+
+        async with self._operation_lock:
+            if self._stored_config is None:
+                return _distill_defaults()
+            distill = self._stored_config.get("distill")
+            if isinstance(distill, dict):
+                return deepcopy(distill)
+            return _distill_defaults()
+
+    async def patch_distill_config(
+        self,
+        patch: dict[str, object],
+    ) -> dict[str, object]:
+        """Patch distill settings via dedicated API (D7 keeps runtime.patch free of distill)."""
+
+        if not isinstance(patch, dict):
+            _raise_host_error("patch must be an object")
+        unknown = set(patch) - _DISTILL_PATCH_KEYS
+        if unknown:
+            _raise_host_error("distill patch contains unsupported fields")
+        async with self._operation_lock:
+            if self._stored_config is None:
+                _raise_host_error("PersonalContext is not configured")
+            stored = deepcopy(self._stored_config)
+            current = stored.get("distill")
+            if not isinstance(current, dict):
+                current = _distill_defaults()
+            else:
+                current = deepcopy(current)
+            current.update(deepcopy(patch))
+            stored["distill"] = current
+            stored, candidate = _prepare_stored_config(stored)
+            await self._apply_configuration_locked(
+                candidate,
+                stored,
+                _serialize_config(stored),
+            )
+            distill = stored.get("distill")
+            return deepcopy(distill) if isinstance(distill, dict) else _distill_defaults()
+
+    async def get_distill_status(self) -> dict[str, object]:
+        """Return honest distill wiring / schedule status for UI polling."""
+
+        async with self._operation_lock:
+            wired = self.distill_ports_wired()
+            if self._stored_config is None or self._config is None:
+                return {
+                    "wired": wired,
+                    "enabled": False,
+                    "scheduler_active": False,
+                    "collection_enabled": False,
+                    "last_attempt_at_ms": 0,
+                    "cursor_ms": 0,
+                    "last_success_job_id": None,
+                    "lease": None,
+                    "last_job": None,
+                    "last_error": self._distill_last_error,
+                }
+            enabled = bool(self._config.distill.enabled)
+            collection_enabled = bool(self._config.collection_enabled)
+            home_str = str(self._home)
+            task = getattr(self._personal_context, "_distill_task", None)
+            if task is not None:
+                scheduler_active = not task.done()
+            else:
+                scheduler_active = wired and enabled and collection_enabled
+            cursor_payload = _read_distill_cursor_payload(self._home)
+            last_success_job_id = cursor_payload.get("last_success_job_id")
+            last_job = None
+            if isinstance(last_success_job_id, str) and last_success_job_id.strip():
+                last_job = get_job(home_str, last_success_job_id.strip())
+            return {
+                "wired": wired,
+                "enabled": enabled,
+                "scheduler_active": bool(scheduler_active),
+                "collection_enabled": collection_enabled,
+                "last_attempt_at_ms": get_last_attempt_at_ms(home_str),
+                "cursor_ms": get_cursor_ms(home_str),
+                "last_success_job_id": last_success_job_id,
+                "lease": get_distill_lease(home_str),
+                "last_job": last_job,
+                "last_error": self._distill_last_error,
+            }
+
+    async def list_profiles(self) -> dict[str, object]:
+        """List distilled profile versions (Host disk scan)."""
+
+        async with self._operation_lock:
+            return {"versions": list_profile_versions(str(self._home))}
+
+    async def get_current_profile_payload(self) -> dict[str, object]:
+        """Return the active profile or an explicit empty payload."""
+
+        async with self._operation_lock:
+            current = get_current_profile(str(self._home))
+            return {"current": current}
+
+    async def get_profile_version_payload(
+        self,
+        job_id: str,
+    ) -> dict[str, object]:
+        """Return one profile version for UI preview."""
+
+        async with self._operation_lock:
+            try:
+                return get_profile_version(str(self._home), job_id)
+            except ValueError as exc:
+                _raise_host_error(str(exc))
+            except FileNotFoundError as exc:
+                _raise_host_error(
+                    str(exc),
+                    status_name="CONTEXT_PROACTIVE_FILE_EXECUTION_ERROR",
+                )
+
+    async def activate_profile_version_payload(
+        self,
+        job_id: str,
+    ) -> dict[str, object]:
+        """Switch current.json to the given version (manual_switch)."""
+
+        async with self._operation_lock:
+            try:
+                pointer = activate_profile(str(self._home), job_id)
+            except ValueError as exc:
+                _raise_host_error(str(exc))
+            except Exception as exc:
+                _raise_host_error(
+                    f"activate profile failed: {exc}",
+                    status_name="CONTEXT_PROACTIVE_FILE_EXECUTION_ERROR",
+                    cause=exc,
+                )
+            return {"current": pointer, "versions": list_profile_versions(str(self._home))}
 
     def _refresh_embedding_configuration(self) -> None:
         model_name, base_url, api_key = _global_embedding_values()
@@ -736,6 +1073,9 @@ class PersonalContextHostAPI:
             self._stored_config = deepcopy(stored)
             return
 
+        # The runtime restarts below; a manual distill job holding the old
+        # runner must not keep publishing after the configuration changes.
+        await self._cancel_manual_distill()
         temporary: Path | None = _stage_yaml(self._config_path, payload)
         disabling = (
             previous is not None
@@ -763,10 +1103,14 @@ class PersonalContextHostAPI:
 
             phase = "set"
             rollback_runtime = True
+            self._ensure_distill_ports()
             await self._personal_context.set_configuration(candidate)
 
             if candidate.collection_enabled:
                 phase = "activate"
+                # Distill runner resolves model_index from Host stored config.
+                self._config = candidate
+                self._stored_config = deepcopy(stored)
                 self._refresh_embedding_configuration()
                 await self._personal_context.activate_runtime()
 
@@ -1617,6 +1961,7 @@ class PersonalContextHostAPI:
                     return
                 stored, config = _prepare_stored_config(raw)
                 try:
+                    self._ensure_distill_ports()
                     await self._personal_context.set_configuration(config)
                 except BaseException as exc:
                     if isinstance(exc, asyncio.CancelledError):
@@ -1662,6 +2007,7 @@ class PersonalContextHostAPI:
                 status_name="CONTEXT_PROACTIVE_RUNTIME_TIMEOUT",
             )
         async with self._operation_lock:
+            await self._cancel_manual_distill()
             try:
                 await self._personal_context.deactivate_runtime(
                     timeout_seconds=timeout_seconds
@@ -1681,17 +2027,22 @@ class PersonalContextHostAPI:
     ) -> None:
         """Restore after a failed candidate configuration operation."""
 
+        # Candidate may already sit in Host memory before activate (distill LLM
+        # resolution). Restore memory first so a later stop failure cannot leave
+        # the Host half-configured while Core is still active.
+        self._config = previous
+        self._stored_config = (
+            deepcopy(previous_stored) if previous_stored is not None else None
+        )
         await self._personal_context.deactivate_runtime(
             timeout_seconds=_STOP_TIMEOUT_SECONDS
         )
         if previous is None:
             self._personal_context = _new_personal_context(self._home)
-            self._config = None
-            self._stored_config = None
+            self._ensure_distill_ports()
             return
+        self._ensure_distill_ports()
         await self._personal_context.set_configuration(previous)
         if was_active and previous.collection_enabled:
             self._refresh_embedding_configuration()
             await self._personal_context.activate_runtime()
-        self._config = previous
-        self._stored_config = deepcopy(previous_stored)
