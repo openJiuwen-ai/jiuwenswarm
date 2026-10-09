@@ -62,8 +62,16 @@ class TestReqMethod:
             "personal_context.context.get_source",
             "personal_context.im_learning.get_status",
             "personal_context.im_learning.run_now",
+            "personal_context.distill.get_config",
+            "personal_context.distill.get_status",
+            "personal_context.distill.patch_config",
+            "personal_context.distill.run_now",
+            "personal_context.profiles.list",
+            "personal_context.profiles.get_current",
+            "personal_context.profiles.get_version",
+            "personal_context.profiles.activate",
         }
-        assert len(methods) == 27
+        assert len(methods) == 35
 
     @staticmethod
     def test_session_methods():
