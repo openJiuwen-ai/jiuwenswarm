@@ -238,6 +238,15 @@ def _is_outer_react_tool_result(payload: Any) -> bool:
     return True
 
 
+def _team_turn_text(inputs: dict) -> str:
+    """Team 模式的用户原文：信封化后 ``inputs["query"]`` 是渲染信封，
+    以原文开头的判定（如 ``/evolve_rebuild`` 前缀）必须读 turn.text（CR-5）。"""
+    turn = inputs.get(TEAM_USER_TURN_KEY)
+    if isinstance(turn, UserTurn) and isinstance(turn.text, str):
+        return turn.text
+    return str(inputs.get("query") or "")
+
+
 def _ask_user_questions_key(payload: dict) -> str:
     """ask_user 卡片的 questions 规范化键，用于判定同一中断的重复通道。"""
     try:
@@ -19816,7 +19825,7 @@ class JiuWenSwarmDeepAdapter:
                     ),
                 }
                 if (
-                    evolution_slash_command_name(str(inputs.get("query") or ""))
+                    evolution_slash_command_name(_team_turn_text(inputs))
                     == "evolve_rebuild"
                 ):
                     team_stream_kwargs["rebuild_skill"] = (
