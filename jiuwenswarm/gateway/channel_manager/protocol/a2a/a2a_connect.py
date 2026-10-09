@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from jiuwenswarm.gateway.channel_manager.base import BaseChannel
-from jiuwenswarm.common.e2a.acp.acp_tool_updates import is_reasoning_event
+from gateway_protocol.e2a.acp.acp_tool_updates import is_reasoning_event
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from jiuwenswarm.gateway.routing.keys import DeliveryTarget
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget

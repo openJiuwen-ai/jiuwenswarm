@@ -8,7 +8,7 @@ import secrets
 import time
 from typing import Any
 
-from jiuwenswarm.common.e2a.gateway_normalize import message_to_e2a_or_fallback
+from gateway_protocol.e2a.gateway_normalize import message_to_e2a_or_fallback
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 
 

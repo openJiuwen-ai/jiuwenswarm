@@ -176,7 +176,7 @@ class GatewayHealthCheckService(IHealthCheck):
 
     async def _tick(self) -> None:
         """执行一次探活:构造 E2A 发往 AgentServer,不向 Channel 下发。"""
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 
         if not self._is_active_now():
             logger.debug(

@@ -27,7 +27,7 @@ from jiuwenswarm.gateway.im_pipeline.im_session_input import (
     prepare_im_session_input,
     steer_busy_im_chat,
 )
-from jiuwenswarm.common.e2a.constants import (
+from gateway_protocol.e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
     E2A_WIRE_INTERNAL_METADATA_KEYS,
@@ -54,8 +54,7 @@ from jiuwenswarm.gateway.message_handler.prompts.security_review_prompt import (
     GitPreExecError,
     build_security_review_prompt,
 )
-from jiuwenswarm.extensions.hook_event import GatewayHookEvents
-from jiuwenswarm.extensions.hooks_context import GatewayChatHookContext
+from gateway_protocol.hooks import GatewayChatHookContext, GatewayHookEvents
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.mode_matrix import (
     DEPRECATION_MAP,
@@ -289,9 +288,9 @@ class ModeChangeCancelParams:
 
 
 if TYPE_CHECKING:
-    from jiuwenswarm.common.e2a.models import E2AEnvelope
+    from gateway_protocol.e2a.models import E2AEnvelope
     from jiuwenswarm.gateway.routing.agent_client import AgentServerClient
-    from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+    from gateway_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
     from jiuwenswarm.common.schema.message import Message
 
 
@@ -927,7 +926,7 @@ class MessageHandler(ABC):
         persist_session: bool = False,
     ) -> str:
         """Allocate and persist a real AgentServer-owned session for a channel."""
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
 
         channel_type = self._resolve_control_channel_type(msg)
@@ -2312,7 +2311,7 @@ class MessageHandler(ABC):
         metadata) and in-memory context copy (DeepAgent checkpointer + context
         engine) are performed atomically.
         """
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
 
         state = self.get_or_create_channel_state(msg)
@@ -2420,7 +2419,7 @@ class MessageHandler(ABC):
         E2A 不可达时仅对单用户共享目录 client 回退到本地截断 history.json，
         远程/AgentOS client 返回可重试错误（方案 §8：禁止用部署侧目录代替用户目录）。
         """
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client
 
@@ -2760,7 +2759,7 @@ class MessageHandler(ABC):
         return cls._is_session_map_style_session_id(sid)
 
     async def _ensure_acp_agent_session(self) -> str:
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
 
         env = e2a_from_agent_fields(
@@ -3051,7 +3050,7 @@ class MessageHandler(ABC):
 
     @staticmethod
     def message_to_e2a(msg: "Message") -> "E2AEnvelope":
-        from jiuwenswarm.common.e2a.gateway_normalize import message_to_e2a_or_fallback
+        from gateway_protocol.e2a.gateway_normalize import message_to_e2a_or_fallback
 
         return message_to_e2a_or_fallback(msg)
 
@@ -3226,7 +3225,7 @@ class MessageHandler(ABC):
 
     async def push_login_credential_update(self, params: dict[str, Any]) -> bool:
         """把登录凭据的新 token（或撤销）推给 AgentServer。返回是否被接受。"""
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
 
         env = e2a_from_agent_fields(
@@ -3244,7 +3243,7 @@ class MessageHandler(ABC):
 
     async def _handle_agent_server_push(self, wire: dict[str, Any]) -> None:
         """AgentServer ``send_push`` 下行：与 RPC 共用连接但不得占用 unary/stream 等待队列。"""
-        from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+        from gateway_protocol.e2a.wire_codec import parse_agent_server_wire_chunk
 
         try:
             chunk = parse_agent_server_wire_chunk(wire)
@@ -3594,7 +3593,7 @@ class MessageHandler(ABC):
     ) -> None:
         """Return a Gateway cron command result to the waiting Agent tool."""
         try:
-            from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+            from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
             from jiuwenswarm.common.schema.message import ReqMethod
 
             env = e2a_from_agent_fields(
@@ -3620,7 +3619,7 @@ class MessageHandler(ABC):
         if not request_id:
             return
         try:
-            from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+            from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
             from jiuwenswarm.common.schema.message import ReqMethod
 
             env = e2a_from_agent_fields(
@@ -4194,7 +4193,7 @@ class MessageHandler(ABC):
         return stored.strip() if isinstance(stored, str) else ""
 
     async def _apply_session_login_owner(self, env: "E2AEnvelope") -> None:
-        from jiuwenswarm.common.e2a.constants import (
+        from gateway_protocol.e2a.constants import (
             E2A_LOGIN_REQUIRED_HINT_PARAM_KEY,
             E2A_MODEL_AUTH_PARAM_KEY,
         )
@@ -4560,7 +4559,7 @@ class MessageHandler(ABC):
 
                         # 3. 发送 supplement intent 到 AgentServer（取消任务但保留 todo）
                         #    用 await 确保 agent 侧先完成取消再启动新任务
-                        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+                        from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 
                         agent_msg = await self._prepare_agent_dispatch_message(msg)
                         source_params = msg.params if isinstance(msg.params, dict) else {}
@@ -5137,7 +5136,7 @@ class MessageHandler(ABC):
                 for job in jobs
                 if str(job.get("user_id") or "").strip() == user_id
             ]
-            from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+            from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
             from jiuwenswarm.common.schema.message import ReqMethod
 
             snapshot_env = e2a_from_agent_fields(

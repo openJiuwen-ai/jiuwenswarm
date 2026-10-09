@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.common.client.third_agent import (
+from gateway_protocol.third_agent import (
     ThirdAgent,
     UnsupportedThirdAgent,
     get_unsupported_third_agent,
