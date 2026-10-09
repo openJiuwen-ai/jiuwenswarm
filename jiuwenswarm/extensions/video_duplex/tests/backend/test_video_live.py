@@ -1210,6 +1210,8 @@ def test_registers_only_realtime_support_methods() -> None:
 
     assert set(channel.handlers) == {
         "video.realtime.config",
+        "video.realtime.session",
+        "video.realtime.tool",
         "video.joyai.frame",
         "video.realtime.telemetry",
         "video.conversation.append",

@@ -27,7 +27,8 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { webClient, webRequest } from '../../../../channels/web/frontend/src/services/webClient';
-import { createRealtimeDuplexSession, RealtimeDuplexSession } from './qwenOmniSession';
+import type { PlaybackUpdate } from '../realtime/session';
+import { createRealtimeDuplexSession, RealtimeDuplexSession } from '../realtime/index';
 import { isVideoSourceReady, RealtimeVideoFrameScheduler, waitForFirstVideoFrame } from './videoSource';
 import { JoyAIProvider } from './joyaiProvider';
 import {
@@ -86,6 +87,7 @@ export interface VideoLivePanelHandle {
 interface VideoLivePanelProps {
   headless?: boolean;
   onConversationItem?: (role: 'user' | 'assistant', text: string, presentation?: 'tool_result') => void;
+  onPlayback?: (update: PlaybackUpdate) => void;
   onAssistantStream?: (update: { streamId: string; content: string; final: boolean }) => void;
   onRuntimeState?: (state: 'idle' | 'starting' | 'active') => void;
   onError?: (message: string) => void;
@@ -93,7 +95,7 @@ interface VideoLivePanelProps {
 }
 
 export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelProps>(function VideoLivePanel(
-  { headless = false, onConversationItem, onAssistantStream, onRuntimeState, onError, onCoreAgentProgress },
+  { headless = false, onConversationItem, onAssistantStream, onPlayback, onRuntimeState, onError, onCoreAgentProgress },
   ref,
 ) {
   const { t } = useTranslation();
@@ -193,7 +195,12 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     const normalized = text.trim();
     if (!normalized) return;
     if (!headless) {
-      const item = { id: ++chatSequenceRef.current, role, text: normalized, presentation };
+      const item = {
+        id: ++chatSequenceRef.current,
+        role,
+        text: normalized,
+        presentation,
+      };
       setChatHistory((current) => [...current, item]);
     }
     if (role === 'user' || role === 'assistant') onConversationItem?.(role, normalized, presentation);
@@ -329,7 +336,10 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     const callId = payload.tool_call_id?.trim() || existing?.toolCallId;
     const turnId = payload.turn_id?.trim() || existing?.turnId;
     const realtimeBrief: RealtimeBrief = payload.realtime_brief?.summary?.trim()
-      ? { ...payload.realtime_brief, summary: payload.realtime_brief.summary.trim() }
+      ? {
+          ...payload.realtime_brief,
+          summary: payload.realtime_brief.summary.trim(),
+        }
       : {
           status: 'completed',
           result_kind: 'generic',
@@ -813,7 +823,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       reportRealtimeEvent('realtime_config_requested');
       try {
         searchSessionRef.current = conversationSearchSessionRef.current || crypto.randomUUID();
-        const config = await webRequest<VideoSessionConfig>('video.realtime.config', {});
+        const config = await webRequest<VideoSessionConfig>('video.realtime.session', {
+          search_session_id: searchSessionRef.current,
+        });
         if (mediaGeneration !== mediaGenerationRef.current) return;
         if (config.provider === 'qwen_omni') {
           reportRealtimeEvent('qwen_local_asr_disabled', {
@@ -833,14 +845,19 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         const session = createRealtimeDuplexSession(
           {
             url: config.url || '',
+            provider: config.provider,
             voice: config.voice,
             tools: config.tools,
             replyLanguage: config.reply_language,
           },
           {
             getVideoFrame: () => {
+              if (!framesRef.current.length) return '';
               const frame = videoFrames.take(framesRef.current);
               return frame?.data_url.split(',', 2)[1] || null;
+            },
+            onPlayback: (update) => {
+              if (mediaGeneration === mediaGenerationRef.current) onPlayback?.(update);
             },
             onAssistantText: (text, final, toolJobId, responseId) => {
               const visibleText = text.trim();
@@ -863,7 +880,15 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   const existing = current.find((item) => item.responseId === responseId);
                   return existing
                     ? current.map((item) => (item === existing ? { ...item, text: visibleText } : item))
-                    : [...current, { id, role: 'assistant', text: visibleText, responseId }];
+                    : [
+                        ...current,
+                        {
+                          id,
+                          role: 'assistant',
+                          text: visibleText,
+                          responseId,
+                        },
+                      ];
                 });
                 return;
               }
@@ -916,7 +941,10 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               if (mediaGeneration !== mediaGenerationRef.current) return;
               mediaToolCallIdsRef.current.add(call.callId);
               const searchSessionId = searchSessionRef.current;
-              const latestInstruction = {text: call.originalInstruction || call.task, turnId: call.inputId || ''};
+              const latestInstruction = {
+                text: call.originalInstruction || call.task,
+                turnId: call.inputId || '',
+              };
               const originalInstruction = latestInstruction.text.trim();
               reportRealtimeEvent('qwen_tool_call_forwarding', {
                 name: call.name,
@@ -926,8 +954,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 turn_id: latestInstruction.turnId,
               });
               void webRequest<AgentAction & { call_id?: string; tool_result?: unknown }>(
-                'video.qwen.tool',
+                'video.realtime.tool',
                 {
+                  media_session_id: config.media_session_id,
                   name: call.name,
                   call_id: call.callId,
                   arguments: call.arguments,
@@ -940,13 +969,16 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               )
                 .then((action) => {
                   reportRealtimeEvent('qwen_tool_call_receipt', {
-                    name: call.name, call_id: call.callId,
+                    name: call.name,
+                    call_id: call.callId,
                     job_id: action.search_job?.id || '',
-                    decision: (action.tool_result as {state?: string})?.state === 'rejected' ? 'rejected' : 'accepted',
+                    decision:
+                      (action.tool_result as { state?: string })?.state === 'rejected' ? 'rejected' : 'accepted',
                   });
                   if (action.tool_result !== undefined) {
-                    const successor = (action.tool_result as {successor_id?: string}).successor_id;
-                    if (successor && mediaGeneration === mediaGenerationRef.current) mediaTaskIdsRef.current.add(successor);
+                    const successor = (action.tool_result as { successor_id?: string }).successor_id;
+                    if (successor && mediaGeneration === mediaGenerationRef.current)
+                      mediaTaskIdsRef.current.add(successor);
                     if (mediaGeneration === mediaGenerationRef.current)
                       session.enqueueOperationResult(call.callId, action.tool_result);
                     return;
@@ -956,7 +988,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   if (mediaGeneration === mediaGenerationRef.current) mediaTaskIdsRef.current.add(jobId);
                   if (mediaGeneration === mediaGenerationRef.current) {
                     session.enqueueOperationResult(call.callId, {
-                      state: 'accepted', job_id: jobId, status: action.search_job?.status,
+                      state: 'accepted',
+                      job_id: jobId,
+                      status: action.search_job?.status,
                       accepted_instruction: action.search_job?.question || originalInstruction,
                       message: TASK_ACCEPTED_INSTRUCTIONS,
                     });
@@ -971,10 +1005,16 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   const message = toolError instanceof Error ? toolError.message : 'Jiuwen Core Agent request failed';
                   if (mediaGeneration !== mediaGenerationRef.current) return;
                   reportRealtimeEvent('qwen_tool_call_receipt', {
-                    name: call.name, call_id: call.callId, decision: 'rejected', message,
+                    name: call.name,
+                    call_id: call.callId,
+                    decision: 'rejected',
+                    message,
                   });
                   setError(message);
-                  session.enqueueOperationResult(call.callId, { state: 'rejected', error: message });
+                  session.enqueueOperationResult(call.callId, {
+                    state: 'rejected',
+                    error: message,
+                  });
                 });
             },
             onDiagnostic: (event) => {
@@ -1032,7 +1072,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     if (!isRecording && !isRealtimeStarting) return;
     return webClient.onStateChange((state) => {
       if (state !== 'closed' && state !== 'reconnecting') return;
-      setError((previous) => previous || 'Jiuwen 服务连接已断开，未提供具体原因。请检查网络或本地服务后重新启动全双工。');
+      setError(
+        (previous) => previous || 'Jiuwen 服务连接已断开，未提供具体原因。请检查网络或本地服务后重新启动全双工。',
+      );
       stopRealtime();
     });
   }, [isRecording, isRealtimeStarting]);
@@ -1061,7 +1103,11 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       // A function_call_output is valid only on the Qwen connection that created its call ID.
       // JoyAI jobs likewise need to belong to this media run; old results stay visible without replay.
       if (duplexRef.current) {
-        if (!mediaTaskIdsRef.current.has(payload.job_id || '') && (!payload.tool_call_id || !mediaToolCallIdsRef.current.has(payload.tool_call_id))) return;
+        if (
+          !mediaTaskIdsRef.current.has(payload.job_id || '') &&
+          (!payload.tool_call_id || !mediaToolCallIdsRef.current.has(payload.tool_call_id))
+        )
+          return;
       } else if (!joyaiProviderRef.current?.active || !searchJobsRef.current.has(payload.job_id || '')) {
         return;
       }
@@ -1216,7 +1262,12 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               </div>
             )}
             {source && source !== 'screen' && (
-              <button className="video-live__close" type="button" onClick={closeSource} aria-label={t('videoLive.actions.closeVideo')}>
+              <button
+                className="video-live__close"
+                type="button"
+                onClick={closeSource}
+                aria-label={t('videoLive.actions.closeVideo')}
+              >
                 <X aria-hidden />
               </button>
             )}
@@ -1248,11 +1299,20 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 onClick={closeSource}
               >
                 <X aria-hidden />
-                {source === 'camera' ? t('videoLive.sources.stopCamera') : source === 'screen' ? t('videoLive.sources.stopScreens') : t('videoLive.actions.closeVideo')}
+                {source === 'camera'
+                  ? t('videoLive.sources.stopCamera')
+                  : source === 'screen'
+                    ? t('videoLive.sources.stopScreens')
+                    : t('videoLive.actions.closeVideo')}
               </button>
             )}
             <span className="video-live__frame-count">
-              {source ? t('videoLive.frameWindow', { count: frameCount, max: MAX_FRAMES }) : t('videoLive.audioOnly')}
+              {source
+                ? t('videoLive.frameWindow', {
+                    count: frameCount,
+                    max: MAX_FRAMES,
+                  })
+                : t('videoLive.audioOnly')}
               {source === 'screen' ? ` · ${screens.length}/${MAX_SCREENS} 屏` : ''}
             </span>
           </div>
@@ -1405,7 +1465,11 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                     : t('videoLive.actions.startSession')
               }
               title={
-                isRealtimeStarting ? realtimeStatus : isRecording ? t('videoLive.actions.stopSession') : t('videoLive.actions.startSession')
+                isRealtimeStarting
+                  ? realtimeStatus
+                  : isRecording
+                    ? t('videoLive.actions.stopSession')
+                    : t('videoLive.actions.startSession')
               }
             >
               {isRealtimeStarting && !isRecording ? (
@@ -1419,9 +1483,16 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             <input
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
-              placeholder={isRecording ? t('videoLive.input.activePlaceholder') : t('videoLive.input.inactivePlaceholder')}
+              placeholder={
+                isRecording ? t('videoLive.input.activePlaceholder') : t('videoLive.input.inactivePlaceholder')
+              }
             />
-            <button type="submit" disabled={!question.trim()} aria-label={t('videoLive.input.send')} title={t('videoLive.input.send')}>
+            <button
+              type="submit"
+              disabled={!question.trim()}
+              aria-label={t('videoLive.input.send')}
+              title={t('videoLive.input.send')}
+            >
               <Send aria-hidden />
             </button>
           </form>

@@ -8,14 +8,8 @@ export interface ChatContextItem {
   responseId?: string;
 }
 
-export interface RealtimeBrief {
-  status: 'completed' | 'failed';
-  result_kind: 'code' | 'research' | 'calculation' | 'action' | 'file' | 'generic';
-  summary: string;
-  displayed_in_ui: boolean;
-  response_mode: 'brief' | 'acknowledge';
-  source: 'core_agent' | 'derived' | 'fallback';
-}
+import type { RealtimeBrief } from '../realtime/taskTypes';
+export type { RealtimeBrief } from '../realtime/taskTypes';
 
 export interface SearchJobPayload {
   sequence?: number;
@@ -99,7 +93,9 @@ export interface AgentAction {
 }
 
 export interface VideoSessionConfig {
-  provider?: 'joyai' | 'qwen_omni';
+  provider?: 'joyai' | 'qwen_omni' | 'openai';
+  media_session_id?: string;
+  config_version?: string;
   url?: string;
   model: string;
   voice?: string;

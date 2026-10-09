@@ -376,6 +376,13 @@
       "notConfigured": "尚未配置语音转写模型"
     },
     "videoDuplex": {
+      "openaiProvider": "OpenAI Realtime",
+      "openaiUrl": "OpenAI 实时连接地址",
+      "openaiKey": "OpenAI API 密钥",
+      "openaiModel": "OpenAI 实时语音模型",
+      "openaiVoice": "OpenAI 音色",
+      "nextSession": "保存后对下一次语音连接生效。当前连接及后台任务继续运行。",
+
       "loading": "正在读取全双工模型配置…",
       "description": "配置视觉模型以及配套的语音识别与语音合成通道。",
       "enabled": "全双工已启用",

@@ -17,6 +17,9 @@ from jiuwenswarm.extensions.video_duplex.backend.video_live import (
     video_duplex_enabled,
 )
 from jiuwenswarm.extensions.video_duplex.backend import settings
+from jiuwenswarm.extensions.video_duplex.backend.realtime.sessions import (
+    REALTIME_PROXY_PATH, serve_bound_realtime_websocket,
+)
 
 
 class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
@@ -127,6 +130,11 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
 
     def websocket_routes(self) -> tuple[WebSocketRouteContribution, ...]:
         return (
+            WebSocketRouteContribution(
+                path=REALTIME_PROXY_PATH,
+                endpoint=serve_bound_realtime_websocket,
+                available_when_disabled=True,
+            ),
             WebSocketRouteContribution(
                 path=QWEN_OMNI_PROXY_PATH,
                 endpoint=serve_qwen_omni_websocket,

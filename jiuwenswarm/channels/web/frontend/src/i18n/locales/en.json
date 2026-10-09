@@ -376,6 +376,13 @@
       "notConfigured": "Speech transcription model is not configured."
     },
     "videoDuplex": {
+      "openaiProvider": "OpenAI Realtime",
+      "openaiUrl": "OpenAI Realtime WebSocket URL",
+      "openaiKey": "OpenAI API key",
+      "openaiModel": "OpenAI realtime model",
+      "openaiVoice": "OpenAI voice",
+      "nextSession": "Changes apply to the next voice connection. The current connection and background tasks continue.",
+
       "loading": "Loading full-duplex model settings…",
       "description": "Configure the vision model and its speech recognition and synthesis channels.",
       "enabled": "Full duplex enabled",

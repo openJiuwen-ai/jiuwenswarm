@@ -271,7 +271,7 @@ function createSession(videoFrame = null, callbackOverrides = {}) {
 
 test('playback waits for the target 400ms startup buffer and drains short tails', () => {
   const workletSource = readFileSync(
-    new URL('../../frontend/VideoLivePanel/duplex-playback.js', import.meta.url),
+    new URL('../../frontend/realtime/audio/duplex-playback.js', import.meta.url),
     'utf8',
   );
   const workletEvents = [];
@@ -382,7 +382,7 @@ test('user speech cancels an active response and preserves completed text', () =
   assert.equal(session.interruptQwenResponse('voice-1', 260, 900, 350), false);
 
   assert.deepEqual(sent, [{ type: 'response.cancel' }]);
-  assert.deepEqual(posted, [{ type: 'clear', cancelResponse: false }]);
+  assert.deepEqual(posted, [{ type: 'clear', clearId: 1, cancelResponse: false }]);
   assert.equal(assistantTexts.at(-1).text, '这是一段被用户打断的回答');
   assert.equal(assistantTexts.at(-1).final, true);
   assert.equal(states.at(-1), 'listening');

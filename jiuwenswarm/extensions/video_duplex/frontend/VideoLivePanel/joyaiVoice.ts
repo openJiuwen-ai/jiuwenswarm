@@ -162,7 +162,7 @@ export class JoyAIVoiceSession {
     }
     this.captureContext = new AudioContext({ sampleRate: TARGET_RATE });
     await this.captureContext.audioWorklet.addModule(
-      new URL('./duplex-capture.js', import.meta.url),
+      new URL('../realtime/audio/duplex-capture.js', import.meta.url),
     );
     if (this.stopped) return;
     const source = this.captureContext.createMediaStreamSource(this.microphone);
