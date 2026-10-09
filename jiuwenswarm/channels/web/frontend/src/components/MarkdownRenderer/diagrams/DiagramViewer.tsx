@@ -108,6 +108,7 @@ function DiagramMoreMenu({ title, items }: DiagramMoreMenuProps): JSX.Element {
               type="button"
               className="diagram-menu__item"
               role="menuitem"
+              data-variant={item.id}
               disabled={item.disabled}
               onClick={() => {
                 setOpen(false);

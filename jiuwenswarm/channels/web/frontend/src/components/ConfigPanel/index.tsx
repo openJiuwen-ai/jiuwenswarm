@@ -1126,6 +1126,8 @@ const MODEL_PROVIDER_OPTIONS = [
   "DeepSeek",
 ] as const;
 
+const REASONING_LEVEL_OPTIONS = ["off", "low", "medium", "high"] as const;
+
 function isOpenAIAccountProvider(provider?: string): boolean {
   return (provider || "").trim().toLowerCase() === OPENAI_ACCOUNT_PROVIDER.toLowerCase();
 }
