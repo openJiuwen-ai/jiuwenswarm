@@ -90,7 +90,7 @@ from jiuwenswarm.common.utils import (
 )
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod, Message, Mode
-from jiuwenswarm.server.runtime.attachments.media_attachments import (
+from jiuwenswarm.gateway.embedded.runtime.attachments.media_attachments import (
     normalize_chat_media_attachments,
 )
 _mark_startup_import_phase("gateway_core_imports_loaded")
@@ -125,7 +125,7 @@ def _agent_prewarm_enabled() -> bool:
     Prewarming is opt-in via JIUWENSWARM_AGENT_PREWARM; when off the Gateway
     must not emit agent.prewarm.sync requests or related log noise.
     """
-    from jiuwenswarm.server.runtime.agent_warm_pool import prewarm_enabled_by_env
+    from jiuwenswarm.gateway.embedded.runtime.agent_prewarm import prewarm_enabled_by_env
 
     return prewarm_enabled_by_env()
 

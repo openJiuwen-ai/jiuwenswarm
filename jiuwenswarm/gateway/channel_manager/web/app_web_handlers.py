@@ -1631,7 +1631,7 @@ def _persist_media_locally(
     AgentServer-side ``_persisted`` passthrough recognizes the file.
     """
     from jiuwenswarm.common.utils import get_agent_sessions_dir
-    from jiuwenswarm.server.runtime.attachments.upload_storage import atomic_write_unique
+    from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import atomic_write_unique
 
     try:
         upload_dir = get_agent_sessions_dir() / safe_session_id / "uploads"
@@ -1659,10 +1659,10 @@ async def _upload_document_item_via_http(
     """
     from jiuwenswarm.gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
     from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-    from jiuwenswarm.server.runtime.attachments.document_attachments import (
+    from jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments import (
         is_forbidden_document,
     )
-    from jiuwenswarm.server.runtime.attachments.upload_storage import (
+    from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import (
         safe_session_dirname,
         safe_upload_filename,
     )
@@ -1722,7 +1722,7 @@ async def _pre_persist_large_documents(
     可能超内部 WS 帧限制。
     """
     from jiuwenswarm.gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
-    from jiuwenswarm.server.runtime.attachments.document_attachments import (
+    from jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments import (
         _strip_data_uri_prefix,
     )
 
@@ -1800,8 +1800,8 @@ async def _upload_media_item_via_http(
     """
     from jiuwenswarm.gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
     from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-    from jiuwenswarm.server.runtime.attachments import media_attachments as _ma
-    from jiuwenswarm.server.runtime.attachments.upload_storage import (
+    from jiuwenswarm.gateway.embedded.runtime.attachments import media_attachments as _ma
+    from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import (
         safe_session_dirname,
         safe_upload_filename,
     )
@@ -1864,7 +1864,7 @@ async def _pre_persist_large_media(
     import json as _json
 
     from jiuwenswarm.gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
-    from jiuwenswarm.server.runtime.attachments.document_attachments import (
+    from jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments import (
         _strip_data_uri_prefix,
     )
 
@@ -1947,7 +1947,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     def _schedule_agent_prewarm_sync(name: str) -> None:
         """Reconcile project-derived warm keys without delaying the Web RPC."""
-        from jiuwenswarm.server.runtime.agent_warm_pool import prewarm_enabled_by_env
+        from jiuwenswarm.gateway.embedded.runtime.agent_prewarm import prewarm_enabled_by_env
 
         if not prewarm_enabled_by_env():
             return
@@ -2619,7 +2619,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             is_legacy_shared_directory_client(real_client)
             and not getattr(real_client, "server_ready", True)
         ):
-            from jiuwenswarm.server.runtime.gateway_adapter.base import parse_int_param
+            from jiuwenswarm.gateway.embedded.runtime.parse_int import parse_int_param
             from jiuwenswarm.server.runtime.session.session_info import to_session_info
             from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata
 
