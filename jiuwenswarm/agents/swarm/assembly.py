@@ -454,7 +454,7 @@ async def preflight_team_mcps(spec: Any) -> list[str]:
             name = str(getattr(cfg, "server_name", "") or "").strip()
             sid = str(getattr(cfg, "server_id", "") or "").strip()
             key = sid or name
-            if key in verdict:
+            if key and key in verdict:
                 # Already probed (shared config across roles) — reuse verdict.
                 if verdict[key]:
                     kept.append(cfg)
@@ -481,6 +481,21 @@ async def preflight_team_mcps(spec: Any) -> list[str]:
                         name, degr_exc,
                     )
         spec.agents[role] = member.model_copy(update={"mcps": kept})
+
+    # AgentGroup 展开出来的其他成员同样带着团队 MCP；只裁剪 leader/teammate
+    # 两个键会漏掉它们，坏 MCP 仍可能让整个团队启动失败。
+    for member_name, member in list(spec.agents.items()):
+        if member_name in _MEMBER_ROLES or not getattr(member, "mcps", None):
+            continue
+        kept_other = []
+        for cfg in member.mcps:
+            sid = str(getattr(cfg, "server_id", "") or "").strip()
+            nm = str(getattr(cfg, "server_name", "") or "").strip()
+            if verdict.get(sid or nm, True):
+                kept_other.append(cfg)
+        spec.agents[member_name] = member.model_copy(
+            update={"mcps": kept_other}
+        )
     return dropped
 
 
