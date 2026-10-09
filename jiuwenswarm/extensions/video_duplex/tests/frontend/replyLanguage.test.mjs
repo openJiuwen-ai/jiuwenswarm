@@ -10,6 +10,7 @@ for (const [language, spoken, announced] of [
 ]) {
   test(`Qwen ${language ?? 'default'} reply language applies to session and task receipt`, () => {
     const session = createQwenOmniSessionUpdate({ inputRate: 16000, outputRate: 24000, replyLanguage: language });
+    assert.equal(session.session.voice, 'Tina');
     assert.match(session.session.instructions, spoken);
     const events = createQwenOmniToolResultEvents(
       'call', { status: 'completed', summary: 'done' },
