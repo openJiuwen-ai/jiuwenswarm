@@ -2617,7 +2617,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 elif param_key == "permissions_enabled":
                     update_permissions_enabled_in_config(parsed)
                 elif param_key == "permissions_mode":
-                    update_permissions_mode_in_config(str(val or "").strip())
+                    mode_value = str(val or "").strip()
+                    # 非法值拒绝而非静默归一 auto，与 TUI/RPC 校验一致（CR-7）
+                    if mode_value.lower() not in ("auto", "full_access", "strict"):
+                        raise _ConfigBadRequest(
+                            f"permissions_mode 必须是 auto/full_access/strict，收到 {mode_value!r}"
+                        )
+                    update_permissions_mode_in_config(mode_value)
                 elif param_key == "setup_guide_enabled":
                     update_setup_guide_enabled_in_config(parsed)
                 elif param_key == "trajectory_ui_enabled":
