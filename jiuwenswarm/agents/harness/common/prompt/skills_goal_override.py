@@ -39,7 +39,10 @@ from openjiuwen.harness.prompts.builder import PromptSection
 from openjiuwen.harness.prompts.sections import SectionName
 
 from jiuwenswarm.common.utils import logger
-from jiuwenswarm.agents.harness.common.prompt.private_assets import load_shared_text
+from jiuwenswarm.agents.harness.common.prompt.private_assets import (
+    PrivatePromptAssetsError,
+    load_shared_text,
+)
 
 # ---------------------------------------------------------------------------
 # Skills preamble and dynamic catalogue
@@ -99,12 +102,20 @@ _TOOL_USAGE_RULES = {
 def _private_language_map(name: str, fallback: Dict[str, str]) -> Dict[str, str]:
     """Use Xiaoyi's private policy text when available, else the OSS fallback."""
     value = load_shared_text(name)
-    if isinstance(value, dict) and all(
+    if value is None:
+        return fallback
+    if not (
+        isinstance(value, dict)
+        and {"cn", "en"}.issubset(value)
+        and all(
         isinstance(language, str) and isinstance(text, str)
         for language, text in value.items()
+        )
     ):
-        return value
-    return fallback
+        raise PrivatePromptAssetsError(
+            f"private shared asset {name!r} must map both 'cn' and 'en' to text"
+        )
+    return value
 
 
 def _skills_preamble() -> Dict[str, str]:

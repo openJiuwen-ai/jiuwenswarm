@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.agents.harness.common.prompt import private_assets
+from jiuwenswarm.agents.harness.common.prompt import private_assets, skills_goal_override
 
 
 def test_oss_build_uses_no_private_sections(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -52,3 +52,18 @@ def test_required_release_fails_closed_when_assets_are_missing(
 
     with pytest.raises(private_assets.PrivatePromptAssetsError, match="required"):
         private_assets.load_mode_sections("office")
+
+
+def test_private_shared_skill_assets_require_both_languages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        skills_goal_override,
+        "load_shared_text",
+        lambda _name: {"cn": "\u6280\u80fd\u89c4\u5219"},
+    )
+
+    with pytest.raises(private_assets.PrivatePromptAssetsError, match="both 'cn' and 'en'"):
+        skills_goal_override._private_language_map(
+            "skills_preamble", {"cn": "fallback", "en": "fallback"}
+        )

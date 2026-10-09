@@ -28,7 +28,7 @@ class PromptPriority(IntEnum):
     SAFETY = 13
     TASK_EXECUTION = 31
     SKILLS = 40
-    MEMORY = 55
+    MEMORY = 57  # After the runtime Skills section (56), before Input (60).
     INPUT = 60
     A2UI = 61
     OUTPUT = 65
@@ -135,7 +135,8 @@ def _read_file(file_path: str) -> Optional[str]:
     if not file_path:
         return None
     try:
-        content = open(file_path, encoding="utf-8").read().strip()
+        with open(file_path, encoding="utf-8") as file:
+            content = file.read().strip()
         return content or None
     except FileNotFoundError:
         logger.debug("File not found: %s", file_path)
