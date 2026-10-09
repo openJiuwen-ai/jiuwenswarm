@@ -104,6 +104,14 @@ def _valid_counter(value: object) -> bool:
     return value >= 0
 
 
+def _assemble_answer(deltas: str, final: str) -> str | None:
+    if final and final.startswith(deltas):
+        return final
+    if final and final not in deltas:
+        return deltas + final
+    return deltas or final or None
+
+
 class RunSummary:
     """Keep only assistant text, a usage snapshot and the first run failure.
 
@@ -113,11 +121,21 @@ class RunSummary:
     retained here.
     """
 
-    __slots__ = ("_deltas", "_final", "_usage", "_has_usage_summary", "_error")
+    __slots__ = (
+        "_deltas",
+        "_final",
+        "_answer_deltas",
+        "_answer_final",
+        "_usage",
+        "_has_usage_summary",
+        "_error",
+    )
 
     def __init__(self) -> None:
         self._deltas = StringIO()
         self._final = ""
+        self._answer_deltas = StringIO()
+        self._answer_final = ""
         self._usage: dict[str, Any] = {}
         self._has_usage_summary = False
         self._error: RuntimeErrorInfo | None = None
@@ -130,12 +148,17 @@ class RunSummary:
         flush only a final tail. Containment matches its run-answer assembly;
         the prefix case also handles a full final after partially sent deltas.
         """
-        joined = self._deltas.getvalue()
-        if self._final and self._final.startswith(joined):
-            return self._final
-        if self._final and self._final not in joined:
-            return joined + self._final
-        return joined or self._final or None
+        return _assemble_answer(self._deltas.getvalue(), self._final)
+
+    @property
+    def final_answer(self) -> str | None:
+        """Return the answer after the last tool call, excluding tool preambles.
+
+        Structured output validates this assistant segment as a whole. It must
+        not extract a JSON substring from prose or discard an unflushed tail.
+        The complete textual output and observable events remain available.
+        """
+        return _assemble_answer(self._answer_deltas.getvalue(), self._answer_final)
 
     @property
     def usage(self) -> dict[str, Any]:
@@ -152,11 +175,18 @@ class RunSummary:
         payload = event.payload if isinstance(event.payload, Mapping) else {}
         event_type = event.event_type
         if event_type == "chat.delta":
-            self._deltas.write(_text(payload))
+            text = _text(payload)
+            self._deltas.write(text)
+            self._answer_deltas.write(text)
+        elif event_type == "chat.tool_call":
+            self._answer_deltas.seek(0)
+            self._answer_deltas.truncate()
+            self._answer_final = ""
         elif event_type == "chat.final":
             final = _text(payload)
             if final:
                 self._final = final
+                self._answer_final = final
 
         if event_type == "chat.usage_summary":
             usage = payload.get("usage")

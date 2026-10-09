@@ -2,7 +2,7 @@
 
 """Value contracts for one Process CLI command and one Runtime lifecycle.
 
-These types describe a future machine-facing adapter. They deliberately do not
+These types describe the machine-facing adapter. They deliberately do not
 implement a resident server, JSON-RPC methods, or Session control plane.
 The Process CLI remains the transport owner and converts the shared
 Runtime event stream into these records.
@@ -115,6 +115,7 @@ def _strict_object(
     *,
     allowed: frozenset[str],
     required: frozenset[str] = frozenset(),
+    allow_unknown: bool = False,
 ) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise TypeError(f"{name} must be an object")
@@ -122,7 +123,7 @@ def _strict_object(
     if any(not isinstance(key, str) for key in keys):
         raise TypeError(f"{name} keys must be strings")
     unknown = sorted(keys - allowed)
-    if unknown:
+    if unknown and not allow_unknown:
         raise ValueError(f"{name} contains unknown fields: {', '.join(unknown)}")
     missing = sorted(required - keys)
     if missing:
@@ -191,8 +192,8 @@ class AgentSpec:
     """Declarative references for one root Agent in the shared Runtime.
 
     ``tools`` follows the existing Agent definition semantics: ``("*",)``
-    requests the configured tool set, while an explicit non-empty tuple is an
-    allowlist. Runtime policy remains authoritative and may further restrict
+    requests the configured tool set, while an explicit tuple is an allowlist
+    (an empty tuple disables all tools). Runtime policy may further restrict
     it. This contract excludes Team/Workflow entry modes; the selected Agent
     may still use Runtime-managed internal capabilities.
     """
@@ -222,8 +223,6 @@ class AgentSpec:
         )
         object.__setattr__(self, "model", _optional_text("model", self.model))
         tools = _string_tuple("tools", self.tools)
-        if not tools:
-            raise ValueError("tools must not be empty; use '*' for configured tools")
         if "*" in tools and tools != ("*",):
             raise ValueError("'*' must be the only tools entry when used")
         object.__setattr__(self, "tools", tools)
@@ -291,7 +290,9 @@ class HostToolSpec:
             raise ValueError("host_tools.name must be an ASCII tool identifier")
         object.__setattr__(self, "name", name)
         object.__setattr__(
-            self, "description", _required_text("host_tools.description", self.description)
+            self,
+            "description",
+            _required_text("host_tools.description", self.description),
         )
         schema = _freeze_object("host_tools.input_schema", self.input_schema)
         if schema.get("type") != "object":
@@ -308,7 +309,8 @@ class HostToolSpec:
     @classmethod
     def from_dict(cls, value: object) -> HostToolSpec:
         data = _strict_object(
-            "host_tool", value,
+            "host_tool",
+            value,
             allowed=frozenset({"name", "description", "input_schema"}),
             required=frozenset({"name", "description", "input_schema"}),
         )
@@ -433,7 +435,9 @@ class OneShotRunInput:  # pylint: disable=too-many-instance-attributes
             if any(level not in ("allow", "ask", "deny") for level in tools.values()):
                 raise ValueError("permissions.tools levels must be allow, ask, or deny")
             object.__setattr__(
-                self, "permissions", _freeze_object("permissions", {"tools": dict(tools)})
+                self,
+                "permissions",
+                _freeze_object("permissions", {"tools": dict(tools)}),
             )
         if self.output_schema is not None:
             schema = _freeze_object("output_schema", self.output_schema)
@@ -446,7 +450,8 @@ class OneShotRunInput:  # pylint: disable=too-many-instance-attributes
                 raise ValueError("max_turns must be between 1 and 1000")
         if self.max_budget_usd is not None:
             object.__setattr__(
-                self, "max_budget_usd",
+                self,
+                "max_budget_usd",
                 _positive_number("max_budget_usd", self.max_budget_usd),
             )
         if isinstance(self.host_tools, (str, bytes)) or not isinstance(
@@ -489,8 +494,12 @@ class OneShotRunInput:  # pylint: disable=too-many-instance-attributes
             "model": self.model,
             "skills": list(self.skills) if self.skills is not None else None,
             "mcp": list(self.mcp) if self.mcp is not None else None,
-            "permissions": _thaw_json(self.permissions) if self.permissions is not None else None,
-            "output_schema": _thaw_json(self.output_schema) if self.output_schema is not None else None,
+            "permissions": _thaw_json(self.permissions)
+            if self.permissions is not None
+            else None,
+            "output_schema": _thaw_json(self.output_schema)
+            if self.output_schema is not None
+            else None,
             "max_turns": self.max_turns,
             "max_budget_usd": self.max_budget_usd,
             "host_tools": [tool.to_dict() for tool in self.host_tools],
@@ -595,6 +604,7 @@ class RuntimeErrorInfo:
         data = _strict_object(
             "error",
             value,
+            allow_unknown=True,
             allowed=frozenset({"code", "message", "retryable", "details"}),
             required=frozenset({"code", "message"}),
         )
@@ -611,8 +621,8 @@ class OneShotEvent:  # pylint: disable=too-many-instance-attributes
     """Read-only JSONL observation of one shared Runtime event.
 
     ``event_type`` remains open so a compatible SDK can ignore new observation
-    events. ``payload`` is opaque JSON owned by that event type; schema ``0.1``
-    stabilizes the envelope rather than every event payload. Transport and
+    events. Protocol revision 1 defines public fields for critical event types;
+    other payload fields remain Runtime-owned observations. Transport and
     internal Runtime metadata are intentionally omitted. Only
     :class:`OneShotRunResult` represents the outcome of the command process.
     """
@@ -703,6 +713,7 @@ class OneShotEvent:  # pylint: disable=too-many-instance-attributes
         data = _strict_object(
             "event",
             value,
+            allow_unknown=True,
             allowed=frozenset(
                 {
                     "schema_version",
@@ -814,7 +825,9 @@ class OneShotRunResult:  # pylint: disable=too-many-instance-attributes
             "status": self.status,
             "exit_code": self.exit_code,
             "output": self.output,
-            "output_json": _thaw_json(self.output_json) if self.output_json is not None else None,
+            "output_json": _thaw_json(self.output_json)
+            if self.output_json is not None
+            else None,
             "error": self.error.to_dict() if self.error is not None else None,
             "usage": _thaw_json(self.usage),
         }
@@ -826,6 +839,7 @@ class OneShotRunResult:  # pylint: disable=too-many-instance-attributes
         data = _strict_object(
             "result",
             value,
+            allow_unknown=True,
             allowed=frozenset(
                 {
                     "schema_version",

@@ -1,5 +1,12 @@
 # One-shot Process SDKs (schema 0.1)
 
+Protocol revision 1 adds stable public event fields, configuration-independent
+`protocol.capabilities` / `protocol.schema` queries, empty tool allowlists and
+field diagnostics. See [the full protocol contract](PROTOCOL.md) and
+[the published JSON Schema](../jiuwenswarm/channels/process_cli/protocol/schema.json).
+Check advertised features before using an optional input field; compatible
+extensions retain schema 0.1 and breaking changes require a new schema version.
+
 These are thin **local child-process clients**, not another Agent engine or an
 app-server. Install JiuwenSwarm and configure its model first. Each SDK call
 creates one `jiuwenswarm-process`, talks over its pipes, waits for Runtime cleanup
@@ -51,8 +58,9 @@ is argv, not a shell string; arguments with spaces need no manual quoting.
 
 `on_event` is an async callback receiving versioned event records. An optional
 async `on_interaction` receives only `interaction.requested` and returns the
-existing `answers` array. Render `event["payload"]["interaction"]` questions and
-options to the actual host/user. The SDK copies the opaque `interaction_id`,
+existing `answers` array. Render revision 1 `event["payload"]["questions"]`
+and their options to the actual host/user (legacy hosts can still read
+`payload.interaction`). The SDK copies the opaque `interaction_id`,
 command identity and Session identity to the answer envelope automatically.
 Do not also answer the raw Runtime interaction event. Without a callback,
 permission cards offering `reject` are rejected automatically and the Agent

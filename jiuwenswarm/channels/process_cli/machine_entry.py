@@ -233,6 +233,14 @@ def execute_source(
         except MachineInputError as error:
             writer.request_id = error.request_id or writer.request_id
             result = _failure(writer, code=error.code, message=str(error), exit_code=2)
+            result = replace(
+                result,
+                error=RuntimeErrorInfo(
+                    code=error.code,
+                    message=str(error),
+                    details=error.details,
+                ),
+            )
         except (KeyboardInterrupt, asyncio.CancelledError):
             result = _failure(
                 writer, code="CANCELLED", message="Command interrupted.", exit_code=130

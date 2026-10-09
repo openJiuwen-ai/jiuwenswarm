@@ -33,13 +33,18 @@ def test_mode_catalog_is_single_agent_only_and_stably_ordered() -> None:
     assert [item.is_plan for item in catalog.modes] == [False, True, False, True]
 
 
-def test_custom_agent_definitions_are_available_only_in_code_modes() -> None:
+def test_custom_agent_capabilities_match_runtime_execution_modes() -> None:
+    from jiuwenswarm.runtime.agent_definition import prepare_agent_execution
+
     catalog = list_mode_capabilities()
 
-    assert all(
-        item.supports_custom_agent_definitions == (item.work_mode == "code")
-        for item in catalog.modes
-    )
+    for item in catalog.modes:
+        assert item.supports_custom_agent_definitions
+        execution = prepare_agent_execution(
+            {"name": "catalog_agent", "instructions": "Answer the user."},
+            mode=item.mode,
+        )
+        assert execution.mode.value == item.mode
 
 
 def test_mode_resolution_accepts_legacy_single_agent_values_only() -> None:

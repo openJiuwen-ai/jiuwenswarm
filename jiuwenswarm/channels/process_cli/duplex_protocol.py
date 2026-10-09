@@ -34,9 +34,16 @@ class DuplexProtocolError(ValueError):
 
     code = "INVALID_CONTROL"
 
-    def __init__(self, message: str, *, request_id: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.request_id = request_id
+        self.details = details or {}
 
 
 def _required_text(name: str, value: object) -> str:
@@ -66,6 +73,23 @@ def _copy_json(value: object) -> Any:
     raise DuplexProtocolError("answers must contain only JSON values")
 
 
+def _validate_answer_fields(answer: dict[str, Any]) -> None:
+    """Check public answer fields while retaining existing JSON extensions."""
+    for name in ("question", "custom_input"):
+        if name in answer and not isinstance(answer[name], str):
+            raise DuplexProtocolError(f"answers.{name} must be a string")
+    if "card_id" in answer:
+        _required_text("answers.card_id", answer["card_id"])
+    if "selected_options" in answer:
+        options = answer["selected_options"]
+        if not isinstance(options, (list, tuple)) or any(
+            not isinstance(option, str) for option in options
+        ):
+            raise DuplexProtocolError(
+                "answers.selected_options must be an array of strings"
+            )
+
+
 def _copy_answers(value: object) -> tuple[dict[str, Any], ...]:
     if not isinstance(value, (list, tuple)):
         raise DuplexProtocolError("answers must be a non-empty array of objects")
@@ -76,6 +100,7 @@ def _copy_answers(value: object) -> tuple[dict[str, Any], ...]:
         for answer in value:
             if not isinstance(answer, dict):
                 raise DuplexProtocolError("answers entries must be objects")
+            _validate_answer_fields(answer)
             copied.append(_copy_json(answer))
     except RecursionError:
         raise DuplexProtocolError("answers nesting is invalid") from None
@@ -102,7 +127,9 @@ class DuplexControl:
 
     def __post_init__(self) -> None:
         if self.kind not in ("answer", "cancel", "tool_result"):
-            raise DuplexProtocolError("control type must be answer, tool_result or cancel")
+            raise DuplexProtocolError(
+                "control type must be answer, tool_result or cancel"
+            )
         object.__setattr__(
             self, "request_id", _required_text("request_id", self.request_id)
         )
@@ -117,7 +144,9 @@ class DuplexControl:
             )
             object.__setattr__(self, "answers", _copy_answers(self.answers))
         elif self.kind == "tool_result":
-            object.__setattr__(self, "session_id", _required_text("session_id", self.session_id))
+            object.__setattr__(
+                self, "session_id", _required_text("session_id", self.session_id)
+            )
             object.__setattr__(self, "call_id", _required_text("call_id", self.call_id))
             if self.interaction_id is not None or self.answers != ():
                 raise DuplexProtocolError("tool_result must not contain answer fields")
@@ -133,7 +162,9 @@ class DuplexControl:
             has_answer_fields = self.interaction_id is not None or self.answers != ()
             has_tool_fields = self.call_id is not None or self.error is not None
             if has_answer_fields or has_tool_fields:
-                raise DuplexProtocolError("cancel must not contain answer fields or tool fields")
+                raise DuplexProtocolError(
+                    "cancel must not contain answer fields or tool fields"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         """Return this versioned control as fresh, JSON-compatible data."""
@@ -168,7 +199,9 @@ def _validate_fields(record: dict[str, Any]) -> None:
         allowed = _TOOL_RESULT_FIELDS
         required = _CANCEL_FIELDS | frozenset({"call_id"})
         if ("result" in record) == ("error" in record):
-            raise DuplexProtocolError("tool_result requires exactly one result or error")
+            raise DuplexProtocolError(
+                "tool_result requires exactly one result or error"
+            )
     else:
         raise DuplexProtocolError("control type must be answer, tool_result or cancel")
     fields = set(record)
@@ -213,7 +246,15 @@ def decode_control(line: bytes) -> DuplexControl:
             error=record.get("error"),
         )
     except DuplexProtocolError as error:
-        raise DuplexProtocolError(str(error), request_id=correlation) from None
+        from jiuwenswarm.channels.process_cli.protocol.schema import input_error_details
+
+        kind = record.get("type")
+        definition = kind if kind in ("answer", "cancel", "tool_result") else "control"
+        raise DuplexProtocolError(
+            str(error),
+            request_id=correlation,
+            details=input_error_details(record, definition),
+        ) from None
 
 
 __all__ = ["DuplexControl", "DuplexProtocolError", "decode_control"]

@@ -10786,6 +10786,9 @@ class JiuWenSwarmDeepAdapter:
                 f"{system_prompt.rstrip()}\n\n# Agent Instructions\n"
                 f"{agent_definition['instructions'].strip()}"
             )
+            from jiuwenswarm.runtime.tool_allowlist import apply_tool_policy_prompt
+
+            system_prompt = apply_tool_policy_prompt(system_prompt, agent_definition.get("tools", "*"))
         common_kwargs = dict(
             model=model,
             card=agent_card,
@@ -10891,10 +10894,12 @@ class JiuWenSwarmDeepAdapter:
         # All host-level startup providers have now registered their tools.
         # Initialize the DeepAgent only after that point; its normal startup
         # path builds the initial BM25 snapshot after all pending rails.
-        await self._instance.ensure_initialized()
         if agent_definition is not None and agent_definition.get("tools") != "*":
             from jiuwenswarm.runtime.tool_allowlist import install_tool_allowlist
             install_tool_allowlist(self._instance.ability_manager, agent_definition["tools"])
+        # Startup rails build discovery indexes and prompts from the ability
+        # manager. Apply the boundary first, including to tools added by rails.
+        await self._instance.ensure_initialized()
         if self._enable_auto_permission:
             expected = PermissionRailGroup(
                 self._permission_rail, self._root_permission_queue_rail,
@@ -12504,7 +12509,18 @@ class JiuWenSwarmDeepAdapter:
         """Stop this adapter's DeepAgent interaction loop if it was started."""
         if self._instance is None:
             return
+        session = (
+            self._instance.loop_session
+            if self._channel_id == "process_cli"
+            and getattr(self._instance, "interaction_started", False) is True
+            else None
+        )
         await self._instance.stop()
+        if session is not None:
+            # The product owns this Session's lifecycle. Persist cleared HITL
+            # state after the loop stops, before this one-shot process exits.
+            # Otherwise the next process can replay an already approved tool.
+            await session.post_run()
 
     async def cleanup(self) -> None:
         """Release adapter-owned external runtime resources."""

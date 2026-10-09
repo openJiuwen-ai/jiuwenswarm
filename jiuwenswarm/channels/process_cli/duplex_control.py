@@ -54,7 +54,11 @@ class DuplexController:
     """
 
     def __init__(
-        self, reader: DuplexLineReader | None, writer: OneShotWriter, *, unattended: bool = False
+        self,
+        reader: DuplexLineReader | None,
+        writer: OneShotWriter,
+        *,
+        unattended: bool = False,
     ) -> None:
         self.reader = reader
         self.writer = writer
@@ -81,10 +85,19 @@ class DuplexController:
                 self._read_controls(), name="one-shot-controls"
             )
 
-    def _terminate(self, *, code: str, message: str, cancelled: bool = False) -> None:
+    def _terminate(
+        self,
+        *,
+        code: str,
+        message: str,
+        cancelled: bool = False,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         if self._stopping_input or self.failure is not None:
             return
-        self.failure = RuntimeErrorInfo(code=code, message=message)
+        self.failure = RuntimeErrorInfo(
+            code=code, message=message, details=details or {}
+        )
         if cancelled:
             self.failure_status = RunStatus.CANCELLED
             self.failure_exit_code = 130
@@ -123,7 +136,8 @@ class DuplexController:
                     pending_tool = self._pending_tools.pop(control.call_id or "", None)
                     if pending_tool is None:
                         raise DuplexControlError(
-                            "Host tool call is not pending.", code="HOST_TOOL_NOT_PENDING"
+                            "Host tool call is not pending.",
+                            code="HOST_TOOL_NOT_PENDING",
                         )
                     pending_tool.set_result((control.result, control.error))
                     continue
@@ -143,6 +157,7 @@ class DuplexController:
             self._terminate(
                 code=code,
                 message="Control input was rejected; no answer was delivered.",
+                details=getattr(error, "details", {}),
             )
 
     def _check_answer_available(self) -> None:
@@ -253,11 +268,15 @@ class DuplexController:
         if len(self._pending_tools) >= _MAX_PENDING:
             return None, "Too many pending host tool calls."
         call_id = uuid.uuid4().hex
-        future: asyncio.Future[tuple[Any, str | None]] = asyncio.get_running_loop().create_future()
+        future: asyncio.Future[tuple[Any, str | None]] = (
+            asyncio.get_running_loop().create_future()
+        )
         self._pending_tools[call_id] = future
         try:
             self._notice(
-                "host_tool.requested", call_id=call_id, name=name,
+                "host_tool.requested",
+                call_id=call_id,
+                name=name,
                 arguments=deepcopy(arguments),
             )
             return await future
@@ -335,7 +354,9 @@ class DuplexController:
                     self._notice("interaction.auto_denied", interaction_id=token)
                 else:
                     self._notice(
-                        "interaction.requested", interaction_id=token, interaction=payload
+                        "interaction.requested",
+                        interaction_id=token,
+                        interaction=payload,
                     )
                     self._check_answer_available()
             else:

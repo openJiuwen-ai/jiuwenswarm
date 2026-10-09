@@ -76,9 +76,16 @@ async def _flush_session_writes() -> None:
 class MachineRunError(RuntimeError):
     """A stable failure of this noninteractive execution boundary."""
 
-    def __init__(self, message: str, *, code: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.details = details or {}
 
 
 def _exception_info(error: Exception) -> RuntimeErrorInfo:
@@ -96,6 +103,7 @@ def _exception_info(error: Exception) -> RuntimeErrorInfo:
         code=code,
         message=message,
         retryable=getattr(error, "retryable", False) is True,
+        details=error.details if isinstance(error, MachineRunError) else {},
     )
 
 
@@ -195,14 +203,24 @@ class _MachineRun:
             try:
                 validate_output_schema(self.run_input.output_schema)
             except ValueError as error:
-                raise MachineRunError(str(error), code="INVALID_OUTPUT_SCHEMA") from error
+                raise MachineRunError(
+                    str(error),
+                    code="INVALID_OUTPUT_SCHEMA",
+                    details={"field": "/output_schema", "reason": "invalid_schema"},
+                ) from error
         if self.run_input.host_tools:
-            from jiuwenswarm.channels.process_cli.host_tools import validate_host_tool_schemas
+            from jiuwenswarm.channels.process_cli.host_tools import (
+                validate_host_tool_schemas,
+            )
 
             try:
                 validate_host_tool_schemas(self.run_input.host_tools)
             except ValueError as error:
-                raise MachineRunError(str(error), code="INVALID_HOST_TOOL") from error
+                raise MachineRunError(
+                    str(error),
+                    code="INVALID_HOST_TOOL",
+                    details={"field": "/host_tools", "reason": "invalid_schema"},
+                ) from error
             if self.control is None or self.control.reader is None:
                 raise MachineRunError(
                     "Host tools require --run-jsonl and a live SDK callback.",
@@ -243,7 +261,8 @@ class _MachineRun:
             )
         selected_model = (
             self.client.resolve_model_capability(self.run_input.model)
-            if self.run_input.model is not None else None
+            if self.run_input.model is not None
+            else None
         )
         if self.run_input.mcp:
             mcp_status = self.client.validate_mcp_references(self.run_input.mcp)
@@ -292,6 +311,7 @@ class _MachineRun:
             from jiuwenswarm.common.permission_tools import (
                 normalize_permission_tool_name,
             )
+
             tool_levels: dict[str, str] = {}
             for name, level in self.run_input.permissions["tools"].items():
                 canonical = normalize_permission_tool_name(name)
@@ -301,9 +321,7 @@ class _MachineRun:
                         code="INVALID_RUN_PERMISSIONS",
                     )
                 tool_levels[canonical] = level
-            params["run_permissions"] = {
-                "tools": tool_levels
-            }
+            params["run_permissions"] = {"tools": tool_levels}
         self.request = AgentRequest(
             request_id=self.writer.request_id,
             channel_id=CHANNEL_ID,
@@ -315,13 +333,18 @@ class _MachineRun:
         )
         ready = None
         if self.run_input.max_turns is not None or self.run_input.host_tools:
+
             def configure(agent: Any) -> None:
                 from jiuwenswarm.channels.process_cli.host_tools import HostCallbackTool
 
-                tools = tuple(
-                    HostCallbackTool(spec, self.control.call_host_tool)
-                    for spec in self.run_input.host_tools
-                ) if self.control is not None else ()
+                tools = (
+                    tuple(
+                        HostCallbackTool(spec, self.control.call_host_tool)
+                        for spec in self.run_input.host_tools
+                    )
+                    if self.control is not None
+                    else ()
+                )
                 agent.configure_process_cli_run(
                     max_turns=self.run_input.max_turns,
                     host_tools=tools,
@@ -331,13 +354,16 @@ class _MachineRun:
         if self.run_input.agent is None:
             self.stream = (
                 self.client.stream(self.request, on_agent_ready=ready)
-                if ready is not None else self.client.stream(self.request)
+                if ready is not None
+                else self.client.stream(self.request)
             )
         else:
             self.stream = (
                 self.client.stream_agent(
                     self.request, self.run_input.agent.to_dict(), on_agent_ready=ready
-                ) if ready is not None else self.client.stream_agent(
+                )
+                if ready is not None
+                else self.client.stream_agent(
                     self.request, self.run_input.agent.to_dict()
                 )
             )
@@ -360,7 +386,7 @@ class _MachineRun:
         if self.run_input.output_schema is not None:
             try:
                 self.output_json = parse_structured_output(
-                    self.summary.output, self.run_input.output_schema
+                    self.summary.final_answer, self.run_input.output_schema
                 )
             except ValueError as error:
                 raise MachineRunError(

@@ -25,8 +25,13 @@ def _reject_unattended_permission(record: dict[str, Any]) -> list[dict[str, Any]
     """Only an explicit reject option may be selected without a host handler."""
     payload = record.get("payload")
     interaction = payload.get("interaction") if isinstance(payload, dict) else None
-    if not isinstance(interaction, dict) or interaction.get("source") != "permission_interrupt":
-        raise InteractionRequired("host interaction handler required; no approval granted")
+    if (
+        not isinstance(interaction, dict)
+        or interaction.get("source") != "permission_interrupt"
+    ):
+        raise InteractionRequired(
+            "host interaction handler required; no approval granted"
+        )
     questions = interaction.get("questions")
     if not isinstance(questions, list) or not questions:
         raise InteractionRequired("permission card has no safe rejection option")
@@ -138,7 +143,8 @@ class Client:
             raise ValueError("host_tools require an on_tool_call callback")
         request.setdefault("schema_version", SCHEMA_VERSION)
         request.setdefault("type", "query" if query else "run")
-        request.setdefault("request_id", str(uuid.uuid4()))
+        if request.get("request_id") is None:
+            request["request_id"] = str(uuid.uuid4())
         request_id = request["request_id"]
         if not isinstance(request_id, str) or not request_id.strip():
             raise ValueError("request_id must be a nonempty string")
@@ -180,7 +186,9 @@ class Client:
                 await invocation.write(payload)
                 if query:
                     invocation.stdin.close()
-                result = await invocation.consume(on_event, on_interaction, on_tool_call)
+                result = await invocation.consume(
+                    on_event, on_interaction, on_tool_call
+                )
                 exit_code = await process.wait()
                 await stderr_task
                 invocation.records.finish(exit_code)
@@ -281,7 +289,9 @@ class _Invocation:
                 await self.callback(on_event(record))
             if record["event_type"] == "host_tool.requested" and not self.cancel_sent:
                 payload = record.get("payload")
-                if not isinstance(payload, dict) or not isinstance(payload.get("call_id"), str):
+                if not isinstance(payload, dict) or not isinstance(
+                    payload.get("call_id"), str
+                ):
                     raise ProtocolError("host tool request has no correlation identity")
                 if on_tool_call is None:
                     raise ProtocolError("host tool callback is missing")
@@ -291,14 +301,18 @@ class _Invocation:
                 except Exception:  # noqa: BLE001 - tool failure is returned to the Agent
                     control = {"error": "Host tool callback failed."}
                 if not self.cancel_sent:
-                    await self.write(encode({
-                        "schema_version": SCHEMA_VERSION,
-                        "type": "tool_result",
-                        "request_id": self.records.request_id,
-                        "session_id": record["session_id"],
-                        "call_id": payload["call_id"],
-                        **control,
-                    }))
+                    await self.write(
+                        encode(
+                            {
+                                "schema_version": SCHEMA_VERSION,
+                                "type": "tool_result",
+                                "request_id": self.records.request_id,
+                                "session_id": record["session_id"],
+                                "call_id": payload["call_id"],
+                                **control,
+                            }
+                        )
+                    )
             if record["event_type"] == "interaction.requested" and not self.cancel_sent:
                 answers = (
                     _reject_unattended_permission(record)

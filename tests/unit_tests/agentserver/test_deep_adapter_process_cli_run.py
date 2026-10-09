@@ -88,3 +88,36 @@ async def test_run_options_are_not_reused_by_later_sessions(
     for child, session_id in zip(children, ("first", "second", "third"), strict=True):
         child._unregister_session_agent_task.assert_called_once_with(session_id)
     assert evict.await_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["process_cli", "web", "tui"])
+async def test_only_process_cli_flushes_stopped_owned_interaction_session(channel):
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._channel_id = channel
+    session = SimpleNamespace(post_run=AsyncMock())
+    instance = SimpleNamespace(interaction_started=True, loop_session=session)
+
+    async def stop():
+        instance.interaction_started = False
+
+    instance.stop = AsyncMock(side_effect=stop)
+    adapter._instance = instance
+    await adapter.stop_interaction()
+    await adapter.stop_interaction()
+    assert session.post_run.await_count == (1 if channel == "process_cli" else 0)
+
+
+@pytest.mark.asyncio
+async def test_process_cli_checkpoint_failure_propagates_from_stop():
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._channel_id = "process_cli"
+    adapter._instance = SimpleNamespace(
+        interaction_started=True,
+        stop=AsyncMock(),
+        loop_session=SimpleNamespace(
+            post_run=AsyncMock(side_effect=OSError("checkpoint unavailable"))
+        ),
+    )
+    with pytest.raises(OSError, match="checkpoint unavailable"):
+        await adapter.stop_interaction()
