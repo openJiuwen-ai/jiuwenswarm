@@ -22,7 +22,7 @@ import yaml
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file
-from jiuwenswarm.common.version import __version__
+from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
 from jiuwenswarm.server.control.responses import build_error_response
 from jiuwenswarm.symphony.config import (
@@ -377,7 +377,7 @@ def get_panel() -> dict[str, Any]:
         param_key: (os.getenv(env_key) or "")
         for param_key, env_key in _CONFIG_SET_ENV_MAP.items()
     }
-    payload["app_version"] = __version__
+    payload["app_version"] = get_runtime_version()
     runtime_platform = (
         (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
     )

@@ -74,6 +74,14 @@ def test_pip_mode_uses_canonical_package_identity(monkeypatch):
     )
 
 
+def test_updater_status_reports_installed_build_version(monkeypatch):
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: "0.2.5.beta1.dev20261009")
+
+    status = updater.UpdaterService().get_status()
+
+    assert status["current_version"] == "0.2.5.beta1.dev20261009"
+
+
 def test_pip_executor_installs_canonical_package_name(monkeypatch):
     checked_packages = []
     statuses = []
