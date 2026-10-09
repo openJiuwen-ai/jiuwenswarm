@@ -1019,6 +1019,11 @@ def _is_permission_interrupt_message(message: str, tool_name: str) -> bool:
         return True
     if normalized.startswith("**工具 `") or normalized.startswith("**Tool `"):
         return True
+    # Confirm 白名单必须先于 ask_prefixes：ASK 文案前缀是宽松的通用词
+    # （write/read/edit/list），confirm rail 文案一旦踩中即被误判为
+    # permission_interrupt，下游 OfficeAce relay 会据此自动放行（CR-6）。
+    if tool_name in _CONFIRM_INTERRUPT_TOOLS:
+        return False
     # New ASK copy: summary lines like ``write C:\...`` or ``powershell: ...``
     ask_prefixes = (f"{tool_name}:", "write ", "read ", "edit ", "list ")
     if tool_name and any(normalized.startswith(prefix) for prefix in ask_prefixes):
