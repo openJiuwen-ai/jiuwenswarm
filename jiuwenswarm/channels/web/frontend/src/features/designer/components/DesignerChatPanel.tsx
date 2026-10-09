@@ -1,7 +1,9 @@
 import { Loader2, Paperclip, SendHorizontal, X } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ComponentPropsWithoutRef, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { chatDesignerGraph } from '../designerEntry';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { chatDesignerGraph, collectReferencedMedia } from '../designerEntry';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
 import { useDesignerStore } from '../designerStore';
 import { designerActivityText } from '../designerActivity';
@@ -16,8 +18,58 @@ import {
   type DesignerStoredReference,
 } from '../designerReferences';
 import { DesignerAssetsPanel } from './DesignerAssetsPanel';
+import { designerAssetPreviewUrl, isPreviewableMediaKind } from '../designerAssetUrl';
+
+/** Finds the "@token" (if any) the cursor is currently inside, so the
+ * composer can show a node-label autocomplete menu. Mirrors Director mode's
+ * ComposerCard @-detection (duplicated rather than shared — different
+ * feature, different mention target: node labels, not named assets). */
+function detectAtToken(value: string, cursor: number): { start: number; query: string } | null {
+  const upto = value.slice(0, cursor);
+  const at = upto.lastIndexOf('@');
+  if (at === -1) return null;
+  const before = upto[at - 1];
+  if (before !== undefined && !/\s/.test(before)) return null;
+  const token = upto.slice(at + 1);
+  if (/\s/.test(token)) return null;
+  return { start: at, query: token };
+}
+
+/** Assistant replies (storyboards, shot lists, stage plans) can run long;
+ * collapse them past this many characters and offer an expand/collapse
+ * toggle, mirroring the Edit assistant's long-message handling. Only
+ * assistant messages collapse — the user's own prompt always stays visible. */
+const MESSAGE_EXPAND_THRESHOLD = 260;
+
+/** Content to render for a message: truncated with an ellipsis while
+ * collapsed, otherwise unchanged. Cuts on the last line boundary so a collapsed
+ * markdown table keeps whole rows — slicing mid-row would render a broken
+ * one-row table. */
+function collapsibleContent(content: string, expanded: boolean): string {
+  const text = String(content ?? '');
+  if (expanded || text.length <= MESSAGE_EXPAND_THRESHOLD) return text;
+  const sliced = text.slice(0, MESSAGE_EXPAND_THRESHOLD);
+  const lastBreak = sliced.lastIndexOf('\n');
+  // Only prefer the line boundary when it still keeps most of the preview.
+  const preview = lastBreak > MESSAGE_EXPAND_THRESHOLD * 0.6 ? sliced.slice(0, lastBreak) : sliced;
+  return `${preview}…`;
+}
 
 type SidebarTab = 'assistant' | 'assets';
+
+/** Storyboards arrive as markdown tables, which are wider than this narrow
+ * panel. Wrap them in a scroll container so columns keep their natural width
+ * and the user scrolls sideways instead of the browser breaking words
+ * mid-token. Mirrors the Edit assistant's MarkdownTable. */
+function MarkdownTable({ children }: ComponentPropsWithoutRef<'table'>) {
+  return (
+    <div className="designer-chat-panel__table-wrap" data-testid="designer-chat-panel-table-wrap">
+      <table>{children}</table>
+    </div>
+  );
+}
+
+const markdownComponents = { table: MarkdownTable };
 
 type ComposerDraft = {
   id: string;
@@ -99,6 +151,64 @@ export function DesignerChatPanel() {
   const [attachments, setAttachments] = useState<ComposerDraft[]>([]);
   const [attachError, setAttachError] = useState('');
   const [sending, setSending] = useState(false);
+  const [atMenu, setAtMenu] = useState<{ start: number; query: string; index: number } | null>(null);
+  const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // @-mention candidates: every node's own label, newest-first (most likely
+  // to be what the user just made and wants to refer back to).
+  const nodeLabels = useMemo(() => {
+    const labels: string[] = [];
+    const seen = new Set<string>();
+    for (const node of [...(domainGraph?.nodes ?? [])].reverse()) {
+      const label = (node.label || '').trim();
+      if (label && !seen.has(label)) {
+        seen.add(label);
+        labels.push(label);
+      }
+    }
+    return labels;
+  }, [domainGraph]);
+  const atCandidates = useMemo(() => {
+    if (!atMenu) return [];
+    const query = atMenu.query.toLowerCase();
+    return nodeLabels.filter((label) => label.toLowerCase().includes(query)).slice(0, 8);
+  }, [atMenu, nodeLabels]);
+
+  const insertAtLabel = useCallback(
+    (label: string) => {
+      if (!atMenu) return;
+      const before = draft.slice(0, atMenu.start);
+      const after = draft.slice(atMenu.start + 1 + atMenu.query.length);
+      const next = `${before}@${label} ${after}`;
+      setDraft(next);
+      setAtMenu(null);
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        const caret = before.length + label.length + 2;
+        el.focus();
+        el.setSelectionRange(caret, caret);
+      });
+    },
+    [atMenu, draft],
+  );
+
+  const toggleMessageExpanded = useCallback((messageId: string) => {
+    setExpandedMessages((prev) => {
+      const next = new Set(prev);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      return next;
+    });
+  }, []);
+
+  /** Nodes the current draft points at with "@Label" — shown above the input as
+   * image + name chips, the way the Edit assistant previews its references. */
+  const draftReferences = useMemo(
+    () => collectReferencedMedia(domainGraph, draft),
+    [domainGraph, draft],
+  );
 
   const chatBusy = bootstrapPhase === 'thinking' || bootstrapPhase === 'bootstrapping' || sending;
   const canSend = Boolean(draft.trim() || attachments.length > 0);
@@ -205,6 +315,7 @@ export function DesignerChatPanel() {
             graphId: existingGraph.graph_id,
             prompt: content,
             selectedNodeId: selectedNodeId || undefined,
+            references: converted.refs as unknown as Array<Record<string, unknown>>,
             thinkingText: t('designer.chat.updating'),
             errorText: t('designer.chat.updateError'),
           });
@@ -217,14 +328,45 @@ export function DesignerChatPanel() {
       });
   }, [attachments, chatBusy, domainGraph, draft, selectedNodeId, t]);
 
+  const onDraftChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
+    const value = event.target.value;
+    setDraft(value);
+    const token = detectAtToken(value, event.target.selectionStart ?? value.length);
+    setAtMenu(token ? { ...token, index: 0 } : null);
+  }, []);
+
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (atMenu && atCandidates.length > 0) {
+        if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          setAtMenu((cur) => (cur ? { ...cur, index: (cur.index + 1) % atCandidates.length } : cur));
+          return;
+        }
+        if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          setAtMenu((cur) =>
+            cur ? { ...cur, index: (cur.index - 1 + atCandidates.length) % atCandidates.length } : cur,
+          );
+          return;
+        }
+        if (event.key === 'Enter' || event.key === 'Tab') {
+          event.preventDefault();
+          insertAtLabel(atCandidates[atMenu.index]);
+          return;
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setAtMenu(null);
+          return;
+        }
+      }
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         handleSend();
       }
     },
-    [handleSend],
+    [atCandidates, atMenu, handleSend, insertAtLabel],
   );
 
   return (
@@ -279,7 +421,55 @@ export function DesignerChatPanel() {
                       </span>
                     ) : (
                       <>
-                        {message.content}
+                        {message.media && message.media.length > 0 ? (
+                          <div className="designer-chat-panel__media" data-testid="designer-chat-panel-media">
+                            {message.media.map((item) => {
+                              // A reference with no image of its own (a text or
+                              // table output such as the storyboard) has nothing
+                              // to preview — it must not get an <img>, which only
+                              // ever rendered as a broken image.
+                              if (!isPreviewableMediaKind(item.kind)) return null;
+                              const src = designerAssetPreviewUrl(item.uri);
+                              if (!src) return null;
+                              return (
+                                <figure key={item.nodeId} className="designer-chat-panel__media-item">
+                                  {item.kind === 'video' ? (
+                                    <video src={src} controls playsInline preload="metadata" />
+                                  ) : (
+                                    <img src={src} alt={item.label || ''} />
+                                  )}
+                                  {item.label ? (
+                                    <figcaption
+                                      className="designer-chat-panel__media-name"
+                                      data-testid="designer-chat-panel-media-name"
+                                      title={item.label}
+                                    >
+                                      {item.label}
+                                    </figcaption>
+                                  ) : null}
+                                </figure>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                        <div className="designer-chat-panel__markdown">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                            {collapsibleContent(message.content, expandedMessages.has(message.id))}
+                          </ReactMarkdown>
+                        </div>
+                        {message.role !== 'user' && message.content.length > MESSAGE_EXPAND_THRESHOLD ? (
+                          <button
+                            type="button"
+                            className="designer-chat-panel__expand"
+                            data-testid="designer-chat-panel-expand"
+                            aria-expanded={expandedMessages.has(message.id)}
+                            onClick={() => toggleMessageExpanded(message.id)}
+                          >
+                            {expandedMessages.has(message.id)
+                              ? t('designer.chat.collapseMessage')
+                              : t('designer.chat.expandMessage')}
+                          </button>
+                        ) : null}
                         {message.references ? <ReferenceChips items={message.references} /> : null}
                       </>
                     )}
@@ -299,6 +489,20 @@ export function DesignerChatPanel() {
                 }))}
                 onRemove={removeAttachment}
                 removeLabel={t('designer.chat.removeAttachment')}
+              />
+            ) : null}
+            {draftReferences.length > 0 ? (
+              <ReferenceChips
+                items={draftReferences
+                  // Only references that have an image/video of their own get a
+                  // thumbnail chip; "@Story Board" and friends resolve to text.
+                  .filter((item) => isPreviewableMediaKind(item.kind))
+                  .map((item) => ({
+                    id: item.nodeId,
+                    kind: (item.kind === 'video' ? 'video' : 'image') as DesignerReferenceKind,
+                    filename: item.label || item.nodeId,
+                    previewUrl: designerAssetPreviewUrl(item.uri),
+                  }))}
               />
             ) : null}
             {attachError ? (
@@ -330,15 +534,37 @@ export function DesignerChatPanel() {
               >
                 <Paperclip size={16} aria-hidden />
               </button>
-              <textarea
-                className="designer-chat-panel__input"
-                placeholder={t('designer.chat.inputPlaceholder')}
-                value={draft}
-                disabled={chatBusy}
-                data-testid="designer-chat-panel-input"
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={onKeyDown}
-              />
+              <div className="designer-chat-panel__input-wrap">
+                {atMenu && atCandidates.length > 0 ? (
+                  <ul className="designer-chat-panel__at-menu" data-testid="designer-chat-panel-at-menu">
+                    {atCandidates.map((label, index) => (
+                      <li key={label}>
+                        <button
+                          type="button"
+                          className={index === atMenu.index ? 'is-active' : ''}
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            insertAtLabel(label);
+                          }}
+                          data-testid="designer-chat-panel-at-option"
+                        >
+                          {label}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                <textarea
+                  ref={textareaRef}
+                  className="designer-chat-panel__input"
+                  placeholder={t('designer.chat.inputPlaceholder')}
+                  value={draft}
+                  disabled={chatBusy}
+                  data-testid="designer-chat-panel-input"
+                  onChange={onDraftChange}
+                  onKeyDown={onKeyDown}
+                />
+              </div>
               <button
                 type="button"
                 className="designer-chat-panel__send"

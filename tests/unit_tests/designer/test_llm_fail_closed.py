@@ -326,7 +326,7 @@ def test_require_media_models_blocks_incomplete_video_only(
     assert "Image generation" not in message
 
 
-def test_require_media_models_blocks_openrouter_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_require_media_models_allows_openrouter_slot(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_slot(
         monkeypatch,
         "VIDEO_GEN",
@@ -336,9 +336,9 @@ def test_require_media_models_blocks_openrouter_slot(monkeypatch: pytest.MonkeyP
         model_name="google/veo-3",
         protocol="openrouter",
     )
-    with pytest.raises(DesignerLlmError) as excinfo:
-        _require_media_models(video=True)
-    assert "vLLM-Omni" in str(excinfo.value)
+    # OpenRouter-style endpoints are a supported Design backend, so this must
+    # not raise the way the native-only gate used to.
+    _require_media_models(video=True)
 
 
 def test_require_media_models_allows_vllm_omni_without_key_and_model(

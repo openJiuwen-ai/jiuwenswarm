@@ -528,6 +528,45 @@ def _storyboard_alignment_context(ctx: NodeExecutionContext) -> str:
     return "\n\n".join(parts)
 
 
+def _storyboard_rerun_requested(ctx: NodeExecutionContext, node: DesignerGraphNode) -> bool:
+    """True when this run exists because the user asked to redo THIS node.
+
+    The storyboard node normally replays ``metadata.approved_storyboard`` verbatim,
+    so an approved film cannot drift. That is right for ordinary pipeline
+    execution, but it made an explicit "重新生成分镜脚本" a silent no-op: a run was
+    created, the node reported completed, and the file was rewritten
+    byte-identical with the new requirement dropped. A single-node rerun scoped to
+    this node is the user deliberately overriding the approved text, so author it
+    again instead of replaying.
+    """
+    run = ctx.run if isinstance(ctx.run, dict) else {}
+    run_meta = run.get("metadata") if isinstance(run.get("metadata"), dict) else {}
+    if not run_meta.get("single_node_rerun"):
+        return False
+    scope = [str(item) for item in (run_meta.get("scope_node_ids") or []) if str(item)]
+    return str(node.get("id") or "") in scope if scope else True
+
+
+def _storyboard_source(ctx: NodeExecutionContext, node: DesignerGraphNode) -> str:
+    """Brief text plus the node's own current requirement.
+
+    The node's prompt used to be only a fallback *behind* the brief, so a
+    requirement the user added through chat ("每个分镜至少 4 秒") never reached the
+    model while a brief output existed — the storyboard came back unchanged.
+    """
+    brief = role_output_text(ctx, NODE_ROLE_BRIEF)
+    instruction = graph_prompt(ctx.graph, node)
+    if not brief:
+        return instruction
+    if instruction and instruction not in brief:
+        return (
+            f"{brief}\n\nCURRENT USER REQUIREMENT for this storyboard (authoritative — where it "
+            "conflicts with the Brief above, including per-shot durations, follow this and not the "
+            f"Brief):\n{instruction}"
+        )
+    return brief
+
+
 class StoryboardNodeHandler:
     async def execute(self, node: DesignerGraphNode, ctx: NodeExecutionContext) -> NodeResult:
         import asyncio
@@ -536,7 +575,7 @@ class StoryboardNodeHandler:
         planned = cfg.get("planned_shots")
         meta = ctx.graph.get("metadata") if isinstance(ctx.graph.get("metadata"), dict) else {}
         approved = str(meta.get("approved_storyboard") or "").strip()
-        if approved:
+        if approved and not _storyboard_rerun_requested(ctx, node):
             _sync_style_authority(approved, ctx)
             sync_shot_nodes_from_storyboard_markdown(ctx.graph, approved)
             text = _stamp_bible_on_text(approved, ctx)
@@ -545,7 +584,7 @@ class StoryboardNodeHandler:
                 output_ref=file_output_ref(path, kind=NODE_TYPE_TABLE, mime_type="text/markdown"),
                 message="storyboard written (director)",
             )
-        source = role_output_text(ctx, NODE_ROLE_BRIEF) or graph_prompt(ctx.graph, node)
+        source = _storyboard_source(ctx, node)
         alignment = _storyboard_alignment_context(ctx)
         planned_block = ""
         if isinstance(planned, list) and planned:

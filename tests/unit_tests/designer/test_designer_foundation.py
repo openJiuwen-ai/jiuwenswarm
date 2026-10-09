@@ -615,6 +615,37 @@ async def test_running_status_is_saved_before_handler_returns(
             await task
 
 
+def test_create_scoped_run_for_node_covers_every_named_node(
+    designer_store: DesignerGraphStore,
+) -> None:
+    """A plan naming several nodes must get all their chains, not just the first.
+
+    Regression: a confirmation turn that asked for the character sheet AND the
+    scene set built only the first id's ancestor chain, while the reply announced
+    both stages — the scene stayed ungenerated until the user asked again.
+    """
+    graph = designer_store.save_graph(
+        _handler_graph(build_bootstrap_graph(project_id="proj_scoped_multi", prompt="multi")),
+    )
+    executor = GraphExecutor(designer_store)
+    ids = [str(node.get("id") or "") for node in graph["nodes"]]
+    character = next(item for item in ids if "character" in item)
+    scene = next(item for item in ids if "scene" in item)
+
+    single = executor.create_scoped_run_for_node(graph, node_id=character)
+    single_scope = list(single["metadata"]["scope_node_ids"])
+    assert scene not in single_scope, single_scope
+
+    multi = executor.create_scoped_run_for_node(
+        graph, node_id=character, node_ids=[character, scene]
+    )
+    multi_scope = list(multi["metadata"]["scope_node_ids"])
+    assert character in multi_scope
+    assert scene in multi_scope, multi_scope
+    # The run only carries the nodes it will actually build.
+    assert set(multi["node_states"]) == set(multi_scope)
+
+
 def test_create_rerun_parks_orphaned_running_and_marks_single_node(
     designer_store: DesignerGraphStore,
 ) -> None:
@@ -703,6 +734,179 @@ async def test_rerun_single_node_keeps_upstream_outputs(
             },
         }
         executor.create_rerun(graph, source_run=unfinished, node_id="n_clip_1")
+
+
+def _chained_clip_graph(designer_store: DesignerGraphStore, project_id: str):
+    """Bootstrap graph plus a second clip that continues the first.
+
+    Mirrors what the leader wires for chained shots: clip 2 takes clip 1's tail
+    frame, so clip 1 is clip 2's upstream.
+    """
+    base = build_bootstrap_graph(project_id=project_id, prompt="chain")
+    clip_1 = next(node for node in base["nodes"] if node["id"] == "n_clip_1")
+    clip_2 = {
+        **clip_1,
+        "id": "n_clip_2",
+        "label": "Clip 2",
+        "config": dict(clip_1.get("config") or {}),
+    }
+    return designer_store.save_graph(
+        _handler_graph(
+            {
+                **base,
+                "nodes": [*base["nodes"], clip_2],
+                "edges": [
+                    *base["edges"],
+                    {"id": "e_clip_1_clip_2", "source": "n_clip_1", "target": "n_clip_2"},
+                ],
+            }
+        )
+    )
+
+
+def test_rerun_allows_targets_that_depend_on_each_other(
+    designer_store: DesignerGraphStore,
+) -> None:
+    """Asking for chained clips together must not be refused.
+
+    ``create_rerun`` required every predecessor to be completed already,
+    including predecessors that are themselves targets of the same rerun — so
+    "生成镜头视频" on clips chained first-frame-to-first-frame raised
+    "upstream not ready: n_clip_1", the very node the run would have rebuilt.
+    Nothing ran, and the reply still said generation had started.
+    """
+    graph = _chained_clip_graph(designer_store, "proj_chain")
+    executor = GraphExecutor(designer_store)
+    source = executor.create_run(graph)
+    for state in source["node_states"].values():
+        state["status"] = NODE_STATUS_COMPLETED
+    # The earlier clip failed earlier in the session; this rerun rebuilds it.
+    source["node_states"]["n_clip_1"] = {"status": "failed", "error": "[ERROR]: boom"}
+    designer_store.save_run(source)
+
+    rerun = executor.create_rerun(
+        graph, source_run=source, node_id="n_clip_1", node_ids=["n_clip_1", "n_clip_2"]
+    )
+
+    assert rerun["node_states"]["n_clip_1"]["status"] == "pending"
+    assert rerun["node_states"]["n_clip_2"]["status"] == "pending"
+
+
+def test_rerun_still_refuses_an_unfinished_upstream_it_will_not_build(
+    designer_store: DesignerGraphStore,
+) -> None:
+    """Widening must not drop the check for a predecessor outside the target set."""
+    graph = _chained_clip_graph(designer_store, "proj_chain_guard")
+    executor = GraphExecutor(designer_store)
+    source = executor.create_run(graph)
+    for state in source["node_states"].values():
+        state["status"] = NODE_STATUS_COMPLETED
+    source["node_states"]["n_clip_1"] = {"status": "failed", "error": "boom"}
+    designer_store.save_run(source)
+
+    # Only clip 2 is rebuilt here, so its failed upstream really is not ready.
+    with pytest.raises(ValueError, match="upstream not ready: n_clip_1"):
+        executor.create_rerun(graph, source_run=source, node_id="n_clip_2", node_ids=["n_clip_2"])
+
+
+async def _drain_run(executor: GraphExecutor, run_id: str) -> None:
+    """Let the run's task finish; its own outcome is not what these tests assert."""
+    task = executor._tasks.get(run_id)
+    if task is None:
+        return
+    try:
+        await task
+    except Exception:  # noqa: BLE001 - cleanup runs in the task's finally either way
+        pass
+
+
+@pytest.mark.asyncio
+async def test_cleanup_run_drops_the_handoff_wake_event(
+    designer_store: DesignerGraphStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One asyncio.Event per run must not outlive the run.
+
+    ``_cleanup_run`` dropped every other per-run dict but this one.
+    ``_get_handoff_wake`` creates the entry on demand — the wave scheduler calls
+    it for each run — so a long-lived AgentServer kept one Event alive per run it
+    had ever executed.
+    """
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.model_tools.require_llm", lambda: None
+    )
+    graph = designer_store.save_graph(
+        _handler_graph(build_bootstrap_graph(project_id="proj_wake", prompt="wake")),
+    )
+    executor = GraphExecutor(designer_store)
+    run_id = executor.create_run(graph)["run_id"]
+    baseline = len(executor._handoff_wake)
+
+    executor._get_handoff_wake(run_id)
+    assert run_id in executor._handoff_wake
+
+    await executor.start_run(run_id)
+    await _drain_run(executor, run_id)
+
+    assert run_id not in executor._handoff_wake
+    assert len(executor._handoff_wake) == baseline
+
+
+@pytest.mark.asyncio
+async def test_repeated_runs_leave_no_handoff_wake_entries(
+    designer_store: DesignerGraphStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Creating and cleaning up several runs returns the map to its start size."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.model_tools.require_llm", lambda: None
+    )
+    graph = designer_store.save_graph(
+        _handler_graph(build_bootstrap_graph(project_id="proj_wake_many", prompt="wake many")),
+    )
+    executor = GraphExecutor(designer_store)
+    baseline = len(executor._handoff_wake)
+
+    for _ in range(3):
+        run_id = executor.create_run(graph)["run_id"]
+        executor._get_handoff_wake(run_id)
+        await executor.start_run(run_id)
+        await _drain_run(executor, run_id)
+
+    assert executor._handoff_wake == {}
+    assert len(executor._handoff_wake) == baseline
+
+
+@pytest.mark.asyncio
+async def test_has_active_tasks_tracks_live_runs_of_one_graph(
+    designer_store: DesignerGraphStore,
+) -> None:
+    """The chat guard needs per-graph liveness, and cleanup must clear it.
+
+    Two overlapping runs on one graph would share the graph and its node_states,
+    so the chat path refuses a second turn while one is still generating.
+    """
+    graph = designer_store.save_graph(
+        _handler_graph(build_bootstrap_graph(project_id="proj_active", prompt="active")),
+    )
+    executor = GraphExecutor(designer_store)
+    run_id = executor.create_run(graph)["run_id"]
+
+    assert executor.has_active_tasks(graph["graph_id"]) is False
+
+    pending: asyncio.Future = asyncio.get_running_loop().create_future()
+    executor._tasks[run_id] = pending
+    executor._live_runs[run_id] = {"run_id": run_id, "graph_id": graph["graph_id"]}
+
+    assert executor.has_active_tasks(graph["graph_id"]) is True
+    assert executor.has_active_tasks("graph_somewhere_else") is False
+
+    # A finished run is not an active one, even before its cleanup runs.
+    pending.set_result(None)
+    assert executor.has_active_tasks(graph["graph_id"]) is False
+
+    executor._cleanup_run(run_id)
+    assert executor.has_active_tasks(graph["graph_id"]) is False
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 import { DESIGNER_PREVIEW_GRAPH_ID } from './designerBootstrapGraph';
 import { DESIGNER_NODE_ROLE_BRIEF, type DesignerExecutionGraph } from './executionGraphTypes';
+import type { DesignerChatMedia } from './designerChatStore';
 import {
   extractDesignerGraphReferences,
   type DesignerStoredReference,
@@ -14,6 +15,9 @@ export type DesignerStoredChatMessage = {
   kind: 'user' | 'thinking' | 'bootstrap_done' | 'bootstrap_error' | 'chat_ack' | 'chat_error' | 'not_implemented';
   createdAt: number;
   references?: DesignerStoredReference[];
+  /** Generated outputs shown inline; stored as node id + uri (never blobs) so
+   * the capped localStorage transcript stays small. */
+  media?: DesignerChatMedia[];
 };
 
 export const DESIGNER_CHAT_STORAGE_KEY = 'jiuwenswarm_designer_chat_by_graph';
@@ -92,7 +96,8 @@ export function sanitizeDesignerChatMessages(
     if (!MESSAGE_KINDS.has(kind) || !MESSAGE_ROLES.has(role)) continue;
     if (!keepThinking && kind === 'thinking') continue;
     const references = sanitizeStoredReferences(raw.references);
-    if (!content.trim() && references.length === 0) continue;
+    const media = sanitizeStoredMedia(raw.media);
+    if (!content.trim() && references.length === 0 && media.length === 0) continue;
     out.push({
       id: String(raw.id || '').trim() || `seed-${out.length}`,
       role: role as DesignerStoredChatMessage['role'],
@@ -100,6 +105,7 @@ export function sanitizeDesignerChatMessages(
       kind: kind as DesignerStoredChatMessage['kind'],
       createdAt: Number.isFinite(Number(raw.createdAt)) ? Number(raw.createdAt) : 0,
       ...(references.length > 0 ? { references } : {}),
+      ...(media.length > 0 ? { media } : {}),
     });
     if (out.length >= DESIGNER_CHAT_MAX_MESSAGES) break;
   }
@@ -198,4 +204,25 @@ export function persistDesignerChat(
 function sanitizeStoredReferences(raw: DesignerStoredReference[] | unknown): DesignerStoredReference[] {
   if (!Array.isArray(raw)) return [];
   return extractDesignerGraphReferences({ metadata: { user_references: raw } });
+}
+
+const MAX_STORED_MEDIA = 8;
+
+/** Rebuild a message's inline media from persisted JSON, dropping anything
+ * malformed. Only ids + URIs are kept, never image data. */
+function sanitizeStoredMedia(raw: unknown): DesignerChatMedia[] {
+  if (!Array.isArray(raw)) return [];
+  const out: DesignerChatMedia[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const nodeId = String(record.nodeId ?? '').trim();
+    const uri = String(record.uri ?? '').trim();
+    if (!nodeId || !uri) continue;
+    const kind = String(record.kind ?? 'image').trim() || 'image';
+    const label = String(record.label ?? '').trim();
+    out.push({ nodeId, uri, kind, ...(label ? { label } : {}) });
+    if (out.length >= MAX_STORED_MEDIA) break;
+  }
+  return out;
 }

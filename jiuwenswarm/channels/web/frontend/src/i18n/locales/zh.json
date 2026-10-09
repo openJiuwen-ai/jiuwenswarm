@@ -98,6 +98,8 @@
       "updateError": "改图失败，请稍后重试。",
       "bootstrapDone": "已为你搭建初始设计工作流。",
       "bootstrapError": "搭建工作流失败，请稍后重试。",
+      "expandMessage": "展开",
+      "collapseMessage": "收起",
       "notImplemented": "未实现",
       "send": "发送",
       "attach": "添加参考素材",
@@ -117,7 +119,8 @@
       "running": "执行中…",
       "moreActions": "更多执行动作",
       "restart": "重跑工作流",
-      "cancel": "取消"
+      "cancel": "取消",
+      "allDone": "所有节点均已有产出，如需从头重来请使用「重跑工作流」"
     },
     "subtitle": "创作执行图画布",
     "toolbar": {

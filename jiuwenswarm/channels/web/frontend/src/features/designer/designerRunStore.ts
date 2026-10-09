@@ -201,11 +201,19 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
   advance: async (graph) => {
     const state = get();
     if (state.isRunning || graph.nodes.length === 0) return;
-    await persistBeforeRun();
     const run = state.run?.graph_id === graph.graph_id ? state.run : null;
     const nodeStates = run ? state.nodeStates : {};
     const currentLayerNodeIds = run ? state.currentLayerNodeIds : [];
     const primary = primaryFrom(graph, nodeStates, currentLayerNodeIds, false);
+    if (primary === 'done') {
+      // Every node already carries an output, so there is nothing left to build.
+      // Execute means "build what is still missing", so it stays idle here
+      // instead of rebuilding the whole film from scratch — a deliberate full
+      // rebuild is the 重跑工作流 menu action. The chat asking "shall I continue?"
+      // therefore never turns Execute into a full regeneration.
+      return;
+    }
+    await persistBeforeRun();
     set({ runError: null, runWarning: null });
     try {
       let result;
@@ -223,7 +231,10 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
             })
           : await designerGraphClient.startRun({ graphId: graph.graph_id });
       } else if (run?.run_id && primary === 'continue') {
-        result = await designerGraphClient.startRun({ runId: run.run_id });
+        // The run may be one the chat scoped to a single node (e.g. "change the
+        // character image"). Execute covers the whole canvas, so opt that scope
+        // back out — otherwise the chat's one-node scope would narrow this run.
+        result = await designerGraphClient.startRun({ runId: run.run_id, clearScope: true });
       } else {
         result = await designerGraphClient.startRun({ graphId: graph.graph_id });
       }

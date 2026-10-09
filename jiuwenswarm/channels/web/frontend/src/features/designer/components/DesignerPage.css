@@ -769,6 +769,131 @@
   border: 1px solid var(--color-border-default);
 }
 
+.designer-chat-panel__markdown {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.designer-chat-panel__markdown p {
+  margin: 0;
+}
+
+.designer-chat-panel__markdown ul,
+.designer-chat-panel__markdown ol {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.designer-chat-panel__table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.designer-chat-panel__markdown table {
+  border-collapse: collapse;
+  font-size: 12px;
+  width: max-content;
+  min-width: 100%;
+}
+
+.designer-chat-panel__markdown th,
+.designer-chat-panel__markdown td {
+  border: 1px solid var(--color-border-default);
+  padding: 4px 6px;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+
+.designer-chat-panel__markdown th {
+  white-space: nowrap;
+}
+
+/* Bound the two long columns so the storyboard table stays a reasonable width
+   instead of stretching with every extra word of description. */
+.designer-chat-panel__markdown td:nth-child(4) {
+  max-width: 180px;
+}
+
+.designer-chat-panel__markdown td:nth-child(5) {
+  max-width: 120px;
+}
+
+/* Pin the shot number: the panel is narrower than the table, so this keeps the
+   row identity visible while the rest scrolls sideways. */
+.designer-chat-panel__markdown th:first-child,
+.designer-chat-panel__markdown td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--color-surface-shell);
+}
+
+.designer-chat-panel__markdown code {
+  background: var(--color-surface-sunken, rgba(0, 0, 0, 0.06));
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
+
+.designer-chat-panel__expand {
+  display: block;
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-action-primary, #1677ff);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.designer-chat-panel__expand:hover {
+  text-decoration: underline;
+}
+
+.designer-chat-panel__media {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.designer-chat-panel__media-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 96px;
+  margin: 0;
+}
+
+.designer-chat-panel__media-item img,
+.designer-chat-panel__media-item video {
+  display: block;
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-default);
+  background: var(--color-surface-sunken, rgba(0, 0, 0, 0.06));
+}
+
+/* The name of the node/output the image came from, shown with the thumbnail. */
+.designer-chat-panel__media-name {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+
 .designer-chat-panel__thinking {
   display: inline-flex;
   align-items: center;
@@ -803,6 +928,47 @@
   display: flex;
   align-items: flex-end;
   gap: 8px;
+}
+
+.designer-chat-panel__input-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.designer-chat-panel__at-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--color-surface-elevated, #fff);
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  z-index: 20;
+}
+
+.designer-chat-panel__at-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border: none;
+  background: none;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.designer-chat-panel__at-menu button:hover,
+.designer-chat-panel__at-menu button.is-active {
+  background: var(--color-action-secondary);
 }
 
 .designer-chat-panel__refs {

@@ -19,6 +19,13 @@ export type DesignerChatMessageKind =
   | 'chat_error'
   | 'not_implemented';
 
+export type DesignerChatMedia = {
+  nodeId: string;
+  uri: string;
+  kind: string;
+  label?: string;
+};
+
 export type DesignerChatMessage = {
   id: string;
   role: DesignerChatRole;
@@ -26,6 +33,8 @@ export type DesignerChatMessage = {
   kind: DesignerChatMessageKind;
   createdAt: number;
   references?: DesignerStoredReference[];
+  /** Outputs this turn generated, shown inline in the reply. */
+  media?: DesignerChatMedia[];
 };
 
 export type DesignerBootstrapPhase = 'idle' | 'thinking' | 'bootstrapping' | 'done' | 'error';
@@ -122,6 +131,7 @@ export const useDesignerChatStore = create<DesignerChatStore>((set, get) => ({
           ...(message.references && message.references.length > 0
             ? { references: message.references }
             : {}),
+          ...(message.media && message.media.length > 0 ? { media: message.media } : {}),
         },
       ];
       const messagesByGraphId = state.activeGraphId

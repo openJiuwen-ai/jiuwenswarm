@@ -192,6 +192,54 @@ async def _poll_job(
     return status, job, elapsed, None
 
 
+def _openrouter_video_body(
+    *,
+    model: str,
+    prompt: str,
+    aspect_ratio: str,
+    resolution: str,
+    duration_seconds: int,
+    generate_audio: bool,
+    first_frame: str | None,
+    reference_uris: list[str],
+    reference_mode: bool,
+) -> dict[str, Any]:
+    """The ``POST {api_base}/videos`` body for an OpenRouter-style endpoint.
+
+    Reference stills ride ``input_references`` as objects, not bare URL strings -
+    the same contract ``video_tools._openrouter_submit_video`` already uses for
+    this endpoint. ``reference_mode`` folds the first frame in as one more
+    reference instead of using it as the literal opening frame, matching every
+    native backend in :mod:`gen_toolkits`.
+    """
+    if reference_mode and first_frame:
+        if first_frame not in reference_uris:
+            reference_uris.insert(0, first_frame)
+        first_frame = None
+    if first_frame and first_frame in reference_uris:
+        first_frame = None
+
+    body: dict[str, Any] = {
+        "model": model,
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+        "duration": duration_seconds,
+        "generate_audio": bool(generate_audio),
+    }
+    if first_frame:
+        body["frame_images"] = [
+            {"type": "image_url", "image_url": {"url": first_frame}, "frame_type": "first_frame"}
+        ]
+    if reference_uris:
+        # ``input_references`` carries no frame_type; ``frame_images`` is the one
+        # that needs it.
+        body["input_references"] = [
+            {"type": "image_url", "image_url": {"url": uri}} for uri in reference_uris
+        ]
+    return body
+
+
 @tool(
     name="generate_video",
     description=(
@@ -285,27 +333,20 @@ async def generate_video(  # pylint: disable=huawei-too-many-arguments
             reference_image_uris=tuple(reference_uris), reference_mode=reference_mode,
         )
         return await gen_toolkits.submit_video(target, request, save_dir)
-    if reference_uris or reference_mode:
-        return (
-            f"[ERROR]: the configured video model {model!r} ({api_base}) only supports text-to-video and "
-            "first-frame image-to-video, not reference images. Retry with first_frame_path only, or ask the "
-            "user to switch Settings > Agent (Video generation) to a provider that supports reference-to-video: "
-            "MiniMax (MiniMax-H3), BytePlus ModelArk / Volcengine (Seedance 2.x), Alibaba DashScope "
-            "(wan3.0-video / wan3.0-video-prime) or a self-deployed vLLM-Omni server."
-        )
-
-    body: dict[str, Any] = {
-        "model": model,
-        "prompt": prompt,
-        "aspect_ratio": aspect_ratio,
-        "resolution": resolution,
-        "duration": duration_seconds,
-        "generate_audio": bool(generate_audio),
-    }
-    if frame_data_uri:
-        body["frame_images"] = [
-            {"type": "image_url", "image_url": {"url": frame_data_uri}, "frame_type": "first_frame"}
-        ]
+    # Reference stills used to be refused here, which blocked reference-to-video
+    # on a model that supports it (seedance-2.0-fast) and told the user to switch
+    # providers for nothing.
+    body = _openrouter_video_body(
+        model=model,
+        prompt=prompt,
+        aspect_ratio=aspect_ratio,
+        resolution=resolution,
+        duration_seconds=duration_seconds,
+        generate_audio=generate_audio,
+        first_frame=frame_data_uri,
+        reference_uris=reference_uris,
+        reference_mode=reference_mode,
+    )
 
     headers = {"Authorization": f"Bearer {api_key}"}
     logger.info(
@@ -317,7 +358,22 @@ async def generate_video(  # pylint: disable=huawei-too-many-arguments
         async with httpx.AsyncClient(timeout=60, verify=get_requests_verify()) as client:
             submit = await client.post(f"{api_base}/videos", headers=headers, json=body)
             if submit.status_code not in (200, 201, 202):
-                return f"[ERROR]: video generation submit failed: {submit.status_code} {submit.text}"
+                detail = f"[ERROR]: video generation submit failed: {submit.status_code} {submit.text}"
+                if reference_uris:
+                    # Not every video model accepts input_references, and the
+                    # provider's own wording rarely says which inputs it refused.
+                    # Say what was sent and what to do instead, without refusing
+                    # the call up front: a blanket block here used to reject
+                    # reference-to-video on models that do support it.
+                    detail += (
+                        f" {len(reference_uris)} reference image(s) were sent as input_references, which a "
+                        "text-to-video / first-frame-only model rejects. Retry with first_frame_path only, or "
+                        "switch Settings > Agent (Video generation) to a model that supports "
+                        "reference-to-video: OpenRouter (bytedance/seedance-2.x), MiniMax (MiniMax-H3), "
+                        "BytePlus ModelArk / Volcengine (Seedance 2.x), Alibaba DashScope "
+                        "(wan3.0-video / wan3.0-video-prime) or a self-deployed vLLM-Omni server."
+                    )
+                return detail
             try:
                 job = submit.json()
             except ValueError as exc:

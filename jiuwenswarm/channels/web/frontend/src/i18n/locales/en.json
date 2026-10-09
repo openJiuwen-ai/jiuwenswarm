@@ -98,6 +98,8 @@
       "updateError": "Could not update the workflow. Please try again later.",
       "bootstrapDone": "Your initial design workflow is ready.",
       "bootstrapError": "Failed to build the workflow. Please try again later.",
+      "expandMessage": "Expand",
+      "collapseMessage": "Collapse",
       "notImplemented": "Not implemented",
       "send": "Send",
       "attach": "Add reference media",
@@ -117,7 +119,8 @@
       "running": "Running…",
       "moreActions": "More run actions",
       "restart": "Rerun workflow",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "allDone": "Every node already has an output — use “Rerun workflow” to rebuild from scratch"
     },
     "subtitle": "Creation execution canvas",
     "toolbar": {

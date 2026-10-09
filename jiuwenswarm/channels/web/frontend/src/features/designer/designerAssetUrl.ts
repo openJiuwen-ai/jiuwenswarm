@@ -35,6 +35,17 @@ export function isPlaceholderAsset(uri: string | null | undefined): boolean {
   return Boolean(uri?.startsWith('designer://'));
 }
 
+/**
+ * Kinds the chat can actually render inline. Text and table outputs (e.g. the
+ * storyboard) are legitimate "@" references but have no thumbnail of their own —
+ * giving them an <img> only ever produced a broken image, so they are shown by
+ * name alone.
+ */
+export function isPreviewableMediaKind(kind: string | null | undefined): boolean {
+  const value = (kind || '').trim().toLowerCase();
+  return value === 'image' || value === 'video';
+}
+
 export function designerAssetPreviewUrl(uri: string | null | undefined): string | null {
   const value = (uri || '').trim();
   if (!value) return null;

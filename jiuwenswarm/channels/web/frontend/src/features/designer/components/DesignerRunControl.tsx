@@ -39,13 +39,17 @@ export function DesignerRunControl({ graph, disabled = false }: DesignerRunContr
 
   const controlDisabled = disabled || !graph || graph.nodes.length === 0;
   const busy = isRunning;
+  // Nothing is missing, so "build what is still missing" has no work: stay idle
+  // rather than silently rebuilding the whole film. The 重跑工作流 menu item is
+  // the explicit way to rebuild.
+  const nothingToBuild = primaryAction === 'done';
   const canCancel =
     !controlDisabled && (busy || runStatus === 'running' || runStatus === 'paused' || currentLayerNodeIds.length > 0);
 
   const onPrimary = useCallback(() => {
-    if (!graph || controlDisabled || busy) return;
+    if (!graph || controlDisabled || busy || nothingToBuild) return;
     void advance(graph);
-  }, [advance, busy, controlDisabled, graph]);
+  }, [advance, busy, controlDisabled, graph, nothingToBuild]);
 
   const onRestart = useCallback(() => {
     if (!graph || controlDisabled || busy) return;
@@ -80,7 +84,9 @@ export function DesignerRunControl({ graph, disabled = false }: DesignerRunContr
           <button
             type="button"
             className="designer-run-control__primary"
-            disabled={controlDisabled || busy}
+            disabled={controlDisabled || busy || nothingToBuild}
+            title={nothingToBuild ? t('designer.run.allDone') : undefined}
+            aria-disabled={nothingToBuild || undefined}
             onClick={onPrimary}
             data-testid="designer-run-control-primary"
           >

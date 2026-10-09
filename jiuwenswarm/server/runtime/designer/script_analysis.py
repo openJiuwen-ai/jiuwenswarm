@@ -16,6 +16,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _MAX_CHARS = 12
+_MAX_SHOTS = 16
 _MAX_SCENES = 8
 # Keep under typical UI bootstrap budgets while still allowing a real LLM call.
 _DEFAULT_LLM_TIMEOUT_SEC = 90.0
@@ -479,7 +480,7 @@ def _split_prompt_beats(prompt: str) -> list[str]:
         if out and key in re.sub(r"\s+", " ", out[-1].lower()):
             continue
         out.append(p)
-    return out
+    return _clamp_list(out, _MAX_SHOTS)
 
 
 def _heuristic_shots(prompt: str, characters: list[dict[str, str]]) -> list[dict[str, Any]]:
@@ -517,9 +518,9 @@ def _heuristic_shots(prompt: str, characters: list[dict[str, str]]) -> list[dict
             _explicit_shot_count_from_prompt,
         )
 
-        shot_ceiling = _explicit_shot_count_from_prompt(prompt)
+        shot_ceiling = _explicit_shot_count_from_prompt(prompt) or _MAX_SHOTS
     except Exception:  # noqa: BLE001
-        shot_ceiling = 0
+        shot_ceiling = _MAX_SHOTS
     covered = {cid for s in shots for cid in s.get("character_ids") or []}
     for ch in characters:
         cid = str(ch.get("id") or "")
@@ -539,7 +540,7 @@ def _heuristic_shots(prompt: str, characters: list[dict[str, str]]) -> list[dict
             )
             covered.add(cid)
             continue
-        if shot_ceiling < 1 or len(shots) < shot_ceiling:
+        if len(shots) < min(_MAX_SHOTS, shot_ceiling):
             shots.append(
                 {
                     "shot_index": len(shots) + 1,
@@ -576,9 +577,7 @@ def _heuristic_shots(prompt: str, characters: list[dict[str, str]]) -> list[dict
             if ranked and ranked[0][0] > 0:
                 shot["character_ids"] = [ranked[0][1]]
             # else leave empty — fail closed; Director must fill on_screen
-    if shot_ceiling >= 1:
-        return _clamp_list(shots, shot_ceiling)
-    return shots
+    return _clamp_list(shots, min(_MAX_SHOTS, shot_ceiling))
 
 
 def _heuristic_scenes(prompt: str) -> list[dict[str, str]]:
@@ -708,7 +707,7 @@ def _director_pipeline_decisions(
             budget = explicit
     except Exception:  # noqa: BLE001
         pass
-    budget = max(1, budget)
+    budget = max(1, min(_MAX_SHOTS, budget))
 
     multi = any(len(s.get("character_ids") or []) >= 2 for s in shots if isinstance(s, dict))
     solo = any(len(s.get("character_ids") or []) == 1 for s in shots if isinstance(s, dict))
@@ -853,14 +852,14 @@ def heuristic_analysis(prompt: str) -> dict[str, Any]:
     if explicit >= 2:
         shots = _heuristic_shots(prompt, characters)
         decisions = _director_pipeline_decisions(prompt, characters, shots)
-        decisions["target_shot_count"] = max(1, explicit)
+        decisions["target_shot_count"] = max(1, min(_MAX_SHOTS, explicit))
         shots = _select_shots_for_budget(
             shots, int(decisions["target_shot_count"]), characters
         )
         for i, shot in enumerate(shots, start=1):
             shot["shot_index"] = i
         decisions = _director_pipeline_decisions(prompt, characters, shots)
-        decisions["target_shot_count"] = max(1, explicit)
+        decisions["target_shot_count"] = max(1, min(_MAX_SHOTS, explicit))
         if len(shots) > explicit:
             shots = shots[:explicit]
         _assign_heuristic_setting_ids(shots, scenes)
@@ -1030,35 +1029,34 @@ def _reference_reads(parsed: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         subject = _reference_subject(item.get("subject") or item.get("kind") or item.get("type"))
-        from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
-            absorb_reference_read,
-        )
-
-        read = absorb_reference_read(item, index, subject)
-        if read is None:
+        if not subject:
             continue
-        reads.append(read)
+        try:
+            slot = int(item.get("slot") or index)
+        except (TypeError, ValueError):
+            slot = index
+        if slot < 1:
+            slot = index
+        reads.append(
+            {
+                "slot": slot,
+                "subject": subject,
+                "character_id": str(item.get("character_id") or "").strip(),
+                "setting_id": str(item.get("setting_id") or "").strip(),
+            }
+        )
     return reads
 
 
-def _normalize_llm_analysis(
-    parsed: dict[str, Any],
-    base: dict[str, Any],
-    *,
-    allow_empty_cast: bool = False,
-) -> dict[str, Any] | None:
+def _normalize_llm_analysis(parsed: dict[str, Any], base: dict[str, Any]) -> dict[str, Any] | None:
     characters = parsed.get("characters") if isinstance(parsed.get("characters"), list) else []
     scenes = parsed.get("scenes") if isinstance(parsed.get("scenes"), list) else []
     shots = parsed.get("shots") if isinstance(parsed.get("shots"), list) else []
-    if allow_empty_cast and len(shots) < 1:
-        shots = [
-            {
-                "shot_index": 1,
-                "action": str(base.get("user_prompt") or "")[:500],
-                "setting_id": "set_1",
-            }
-        ]
-    if (not allow_empty_cast and len(characters) < 1) or len(shots) < 1:
+    # Shots are what a film cannot do without. A cast is optional: a car, a
+    # landscape or an abstract product spot has no humans, and the analysis
+    # prompt asks only for named humans, so the model correctly returns an empty
+    # characters[]. Requiring one here rejected every such brief.
+    if len(shots) < 1:
         return None
     norm_chars: list[dict[str, Any]] = []
     for i, ch in enumerate(characters[:_MAX_CHARS], start=1):
@@ -1073,7 +1071,8 @@ def _normalize_llm_analysis(
             "match_terms": _match_terms_for_character(name, desc),
         }
         norm_chars.append(entry)
-    if not norm_chars and not allow_empty_cast:
+    if characters and not norm_chars:
+        # A declared cast that produced no usable entry is a malformed reply.
         return None
     valid_ids, by_name = _cast_id_maps(norm_chars)
     norm_scenes: list[dict[str, str]] = []
@@ -1091,7 +1090,7 @@ def _normalize_llm_analysis(
         # Derive placeholder scenes from shot setting_ids after the shot loop if needed.
         norm_scenes = []
     norm_shots: list[dict[str, Any]] = []
-    for i, sh in enumerate(shots, start=1):
+    for i, sh in enumerate(shots[:_MAX_SHOTS], start=1):
         if not isinstance(sh, dict):
             continue
         cids = resolve_cast_token_list(
@@ -1169,18 +1168,6 @@ def _normalize_llm_analysis(
         }
         if cast_actions:
             entry["cast_actions"] = cast_actions
-        from jiuwenswarm.server.runtime.designer.pipeline.storyboard_shot_state import (
-            emotion_label,
-        )
-
-        labeled = emotion_label(sh.get("emotion") or sh.get("beat"))
-        if labeled:
-            entry["emotion"] = labeled
-        irreversible = str(sh.get("irreversible") or "").strip()
-        if irreversible:
-            entry["irreversible"] = irreversible[:160]
-        if isinstance(sh.get("cast_states"), dict) and sh.get("cast_states"):
-            entry["cast_states"] = sh["cast_states"]
         if strategy in {"compose_from_solo_refs", "edit_prior_keyframe"}:
             entry["keyframe_strategy"] = strategy
         from jiuwenswarm.server.runtime.designer.node_labels import derive_shot_name
@@ -1255,14 +1242,14 @@ def _normalize_llm_analysis(
         explicit = int(_explicit_shot_count_from_prompt(user_prompt) or 0)
     except Exception:  # noqa: BLE001
         explicit = 0
-    # The user's explicit N-shot is the only ceiling. Otherwise keep every shot.
-    # Heuristic budget is only a fallback when the model returned no shots.
+    # LLM owns N via shots[] / target_shot_count. Explicit user N-shot is a hard ceiling.
+    # Soft safety only: never exceed _MAX_SHOTS. Heuristic budget is fallback when LLM omits N.
     if explicit >= 1:
-        decisions["target_shot_count"] = max(1, explicit)
-    elif norm_shots:
-        decisions["target_shot_count"] = max(1, len(norm_shots))
-    elif tsc >= 1:
+        decisions["target_shot_count"] = max(1, min(_MAX_SHOTS, explicit))
+    elif 1 <= tsc <= _MAX_SHOTS:
         decisions["target_shot_count"] = tsc
+    elif norm_shots:
+        decisions["target_shot_count"] = max(1, min(_MAX_SHOTS, len(norm_shots)))
     else:
         decisions["target_shot_count"] = heuristic_budget
     # Honor explicit LLM layout only when it matches co-appearance reality.
@@ -1286,9 +1273,10 @@ def _normalize_llm_analysis(
             decisions["prefer_combined_cast"] = False
             decisions["prefer_split_cast"] = False
     # Prefer coverage-preserving selection over naive first-N truncate.
-    ceiling = max(1, int(decisions["target_shot_count"]))
-    if explicit < 1 and len(norm_shots) > ceiling:
-        ceiling = len(norm_shots)
+    ceiling = max(1, min(int(decisions["target_shot_count"]), _MAX_SHOTS))
+    if explicit < 1 and len(norm_shots) > ceiling and 1 <= tsc <= _MAX_SHOTS:
+        # shots[] longer than declared target_shot_count → trust the longer list (soft max).
+        ceiling = max(1, min(len(norm_shots), _MAX_SHOTS))
     decisions["target_shot_count"] = ceiling
     norm_shots = _select_shots_for_budget(norm_shots, ceiling, norm_chars)
     layout_decisions = _director_pipeline_decisions(user_prompt, norm_chars, norm_shots)
@@ -1297,16 +1285,11 @@ def _normalize_llm_analysis(
             decisions[key] = layout_decisions[key]
     # Keep LLM-owned N after layout refresh (do not re-clamp to heuristic 2–4).
     if explicit >= 1:
-        decisions["target_shot_count"] = max(1, explicit)
+        decisions["target_shot_count"] = max(1, min(explicit, _MAX_SHOTS))
     else:
-        decisions["target_shot_count"] = max(1, len(norm_shots) or ceiling)
+        decisions["target_shot_count"] = max(1, min(len(norm_shots) or ceiling, _MAX_SHOTS))
     if len(norm_shots) > int(decisions["target_shot_count"]):
         norm_shots = norm_shots[: int(decisions["target_shot_count"])]
-    from jiuwenswarm.server.runtime.designer.pipeline.storyboard_shot_state import (
-        ensure_shot_start_end_states,
-    )
-
-    norm_shots = ensure_shot_start_end_states(norm_shots)
     out: dict[str, Any] = {
         "schema_version": "designer-script-analysis.v1",
         "source": "llm",
@@ -1369,10 +1352,6 @@ async def analyze_creative_brief(
             "Create enough distinct visual shots to earn the requested runtime; every shot must "
             "advance the idea, reveal new information, or change the emotional state. No filler, "
             "duplicate actions, or same-moment camera coverage presented as new content. "
-            "Use one emotion curve and exactly one climax. Each shot needs emotion "
-            "(setup, rise, climax, or release) and irreversible (what is newly true at the end). "
-            "The next shot starts from the previous end. cast_states may change wardrobe or "
-            "emotion for that shot; face identity stays the character description. "
         )
         shot_count_rule = (
             "Shots are consecutive TIME windows that concatenate to the film. "
@@ -1383,8 +1362,7 @@ async def analyze_creative_brief(
             "Qwen KF: lock identity+wardrobe; first setting KF = compose_from_solo_refs, "
             "later same setting = edit_prior_keyframe; prefer ≤2–3 people with refs. "
             "Clip prompt = this shot's motion and camera only. "
-            "Explicit user N-shot / N分镜 is the only shot ceiling. "
-            "Do not drop shots to fit a fixed count. "
+            "Explicit user N-shot / N分镜 is a HARD ceiling (hard max 16). "
         )
         if target_duration_sec:
             duration_rule = (
@@ -1398,11 +1376,7 @@ async def analyze_creative_brief(
             "You are the Designer Director. Domain-agnostic. "
             + story_enrichment_rule
             + "Do not alter explicit people, places, brand facts, claims, or requested events. "
-            "Extract every on-screen human into characters[], including unnamed people and groups. "
-            "A group that shares one look (villagers, soldiers, children, elders) is one character "
-            "with a locked face, age, hair, and costume. Put that id in on_screen on every shot "
-            "where they are visible so later shots keep the same people. Do not leave them only "
-            "in the action prose. "
+            "Extract EVERY named human into characters[]. Anonymous crowd is not a character. "
             "Each character description MUST lock wardrobe garments: shirt/top style+color, "
             "trousers/skirt/bottom style+color, footwear, outerwear/accessories if any "
             "(example: 'light blue short-sleeve shirt; dark charcoal trousers; black sneakers'). "
@@ -1432,9 +1406,7 @@ async def analyze_creative_brief(
             '"shots":[{"shot_index":1,"title":"2-4 word beat name NEVER Shot N",'
             '"action":"...","camera":"...","on_screen":["char_1"],'
             '"offscreen":[],"cast_actions":{"char_1":"..."},"featured_cast_ids":["char_1"],'
-            '"ensemble_cast_ids":["char_1"],"setting_id":"set_1","keyframe_prompt":"...","timeline":"0-5s",'
-            '"emotion":"setup","irreversible":"what is newly true at the end",'
-            '"cast_states":{"char_1":{"wardrobe":"","emotion":"","presence":"on_screen"}}}],'
+            '"ensemble_cast_ids":["char_1"],"setting_id":"set_1","keyframe_prompt":"...","timeline":"0-5s"}],'
             '"target_shot_count":N'
             + (f',"target_duration_sec":{duration_sec}' if target_duration_sec else "")
             + (
@@ -1451,7 +1423,7 @@ async def analyze_creative_brief(
             sys_msg = system
             payload: dict[str, Any] = {
                 "user_prompt": prompt[:3000] if not reinforce_json else prompt[:2000],
-                "instructions": "JSON only. Every on-screen person and recurring group is a character.",
+                "instructions": "JSON only. Every named human in characters[].",
             }
             if reinforce_json:
                 sys_msg = (
@@ -1485,33 +1457,35 @@ async def analyze_creative_brief(
                 )
                 return None
             chars = parsed.get("characters") if isinstance(parsed.get("characters"), list) else []
+            shots = parsed.get("shots") if isinstance(parsed.get("shots"), list) else []
+            placeholder_values = {"", "...", "…", "string", "name"}
             placeholder = False
             for ch in chars:
                 if not isinstance(ch, dict):
                     continue
-                name = str(ch.get("name") or "").strip()
-                if name in {"", "...", "…", "string", "name"}:
+                if str(ch.get("name") or "").strip() in placeholder_values:
                     placeholder = True
                     break
-            allow_empty_cast = bool(reference_images)
-            if allow_empty_cast and (
-                not isinstance(parsed.get("shots"), list) or not parsed.get("shots")
-            ):
-                parsed["shots"] = [
-                    {
-                        "shot_index": 1,
-                        "action": (prompt or "")[:500],
-                        "setting_id": "set_1",
-                    }
-                ]
-            if placeholder or (not chars and not allow_empty_cast):
+            if not placeholder:
+                for shot in shots:
+                    if not isinstance(shot, dict):
+                        continue
+                    if str(shot.get("action") or "").strip() in placeholder_values:
+                        placeholder = True
+                        break
+            # An empty characters[] is legitimate. A car, a landscape or a product
+            # spot has no cast at all, and the system prompt's "extract EVERY named
+            # human" correctly yields none — so requiring a non-empty cast rejected
+            # every such brief and surfaced "Chat model did not return a usable
+            # cast/shot analysis." Only a reply with nothing usable (neither cast
+            # nor shots), or one echoing the schema's placeholder text, is a real
+            # schema echo.
+            if placeholder or not (chars or shots):
                 logger.info("LLM script analysis looked like schema echo; soft-fail")
                 return None
             if short_clip:
                 parsed.setdefault("target_duration_sec", duration_sec)
-            normalized = _normalize_llm_analysis(
-                parsed, base, allow_empty_cast=allow_empty_cast
-            )
+            normalized = _normalize_llm_analysis(parsed, base)
             if not normalized:
                 return None
             if short_clip and normalized.get("shots"):

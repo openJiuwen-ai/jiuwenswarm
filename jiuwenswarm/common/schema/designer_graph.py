@@ -875,6 +875,7 @@ def ensure_bootstrap_pipeline(graph: DesignerExecutionGraph) -> DesignerExecutio
     return repair_overlapping_pipeline_layout(graph)
 
 
+MAX_SHOT_CLIP_NODES = 16
 COMPOSE_NODE_ID = "n_compose"
 DEFAULT_NODE_WIDTH = 280.0
 DEFAULT_NODE_HEIGHT = 160.0
@@ -1304,7 +1305,7 @@ def expand_shot_nodes(
     shot_count: int,
 ) -> DesignerExecutionGraph:
     """One clip node per storyboard shot (scene-card R2V), plus compose."""
-    count = max(1, int(shot_count or 1))
+    count = max(1, min(int(shot_count or 1), MAX_SHOT_CLIP_NODES))
     raw = dict(graph)
     existing_by_id = {
         str(node.get("id") or ""): dict(node)
@@ -1886,6 +1887,71 @@ def graph_uses_agent_scheduler(graph: DesignerExecutionGraph) -> bool:
     if not nodes:
         return False
     return any(node_uses_agent_runtime(node) for node in nodes)
+
+
+def is_shot_topology_node_id(node_id: str) -> bool:
+    nid = str(node_id or "").strip()
+    return nid.startswith("n_frame_") or nid.startswith("n_clip_") or nid in {"n_frame", "n_clip"}
+
+
+def is_shot_topology_node(node: Any) -> bool:
+    if isinstance(node, dict):
+        nid = str(node.get("id") or "").strip()
+        if is_shot_topology_node_id(nid):
+            return True
+        return node_pipeline(node) in {PIPELINE_FRAME, PIPELINE_CLIP}
+    return is_shot_topology_node_id(str(node or ""))
+
+
+def shot_topology_ids_added_by_patch(graph: DesignerExecutionGraph, patch: Any) -> list[str]:
+    """New keyframe/clip ids a leaf agent would insert — retry must not expand topology."""
+    if not isinstance(patch, dict):
+        return []
+    existing = {
+        str(node.get("id") or "").strip()
+        for node in graph.get("nodes") or []
+        if str(node.get("id") or "").strip()
+    }
+    added: list[str] = []
+    for item in patch.get("upsert_nodes") or []:
+        if not isinstance(item, dict):
+            continue
+        nid = str(item.get("id") or "").strip()
+        if not nid or nid in existing:
+            continue
+        if is_shot_topology_node(item):
+            added.append(nid)
+    return added
+
+
+def extra_media_ids_added_by_patch(graph: DesignerExecutionGraph, patch: Any) -> list[str]:
+    """New image/video canvas nodes a leaf agent must not insert."""
+    if not isinstance(patch, dict):
+        return []
+    existing = {
+        str(node.get("id") or "").strip()
+        for node in graph.get("nodes") or []
+        if str(node.get("id") or "").strip()
+    }
+    added: list[str] = []
+    for item in patch.get("upsert_nodes") or []:
+        if not isinstance(item, dict):
+            continue
+        nid = str(item.get("id") or "").strip()
+        if not nid or nid in existing:
+            continue
+        ntype = str(item.get("type") or "").strip().lower()
+        cfg = item.get("config") if isinstance(item.get("config"), dict) else {}
+        pipeline = str(cfg.get("pipeline") or "").strip().lower()
+        if (
+            ntype in {NODE_TYPE_IMAGE, NODE_TYPE_VIDEO}
+            or pipeline in {PIPELINE_FRAME, PIPELINE_CLIP, PIPELINE_COMPOSE, PIPELINE_SCENE}
+            or nid.startswith("n_image_")
+            or nid.startswith("n_video_")
+            or is_shot_topology_node(item)
+        ):
+            added.append(nid)
+    return added
 
 
 def apply_graph_patch(graph: DesignerExecutionGraph, patch: Any) -> DesignerExecutionGraph:

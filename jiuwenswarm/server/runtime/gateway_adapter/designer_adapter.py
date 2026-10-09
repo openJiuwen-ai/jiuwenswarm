@@ -191,6 +191,28 @@ def hydrate_graph_node_outputs(
     return {**graph, "nodes": nodes}
 
 
+def _chat_concurrency_conflict(graph_id: str, baseline_graph: dict[str, Any] | None) -> str:
+    """Why this chat turn must not write, or "" when it is safe to.
+
+    A turn plans against the graph it read, then saves a graph derived from that
+    snapshot. Without this a writer that lands meanwhile — another chat turn, or
+    the canvas autosaving a user edit — is silently overwritten: the leader's
+    plan comes from the older snapshot, so saving it reverts whatever else
+    changed, and the user sees an edit disappear with no error.
+
+    The design branch carried this guard until e29021fac ("add asset into chat
+    box") dropped it along with the chat-document conflict machinery. Only the
+    graph half is restored here: comparing the run too would refuse turns that
+    lose nothing (a background run updating its own node_states mid-turn is
+    normal), while a genuinely overlapping run is already caught above.
+    """
+    if _executor.has_active_tasks(graph_id):
+        return "工作流任务尚未结束；运行中请先停止，任务正在停止时请稍后重试。"
+    if _store.get_graph(graph_id) != baseline_graph:
+        return "工作流已在此期间发生变化，请重新提交。"
+    return ""
+
+
 def _get_graph(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, str | None]:
     graph_id = str(params.get("graph_id") or "").strip()
     if not graph_id:
@@ -249,6 +271,85 @@ def _design_title(prompt: str) -> str:
     return sanitize_project_dir_name(prompt, max_len=80)
 
 
+_BOOTSTRAP_STORYBOARD_MAX_CHARS = 3600
+
+_STORYBOARD_TABLE_HEADER = (
+    "| 镜头 | 时间 | 场景 | 画面与动作 | 运镜 |",
+    "| --- | --- | --- | --- | --- |",
+)
+
+
+def _md_cell(value: Any) -> str:
+    """One GFM table cell: escape pipes and flatten newlines so a value can
+    never break out of its column or row."""
+    text = str(value if value is not None else "").replace("|", "\\|")
+    return " ".join(text.split())
+
+
+def _storyboard_table_markdown(shots: list[Any]) -> str:
+    """Render the sync'd shots as a chat-friendly GFM table.
+
+    ``approved_storyboard`` is a director-style markdown doc (a heading plus
+    bullets per shot) which reads as a wall of text in the narrow assistant
+    panel; the same information already exists structured in
+    ``script_analysis.shots``, so render that as a table instead. Returns an
+    empty string when there is no usable shot, so the caller can fall back to
+    the raw storyboard markdown.
+    """
+    rows: list[str] = []
+    for index, shot in enumerate(shots, start=1):
+        if not isinstance(shot, dict):
+            continue
+        shot_no = _md_cell(shot.get("shot_index") or index) or str(index)
+        rows.append(
+            "| {no} | {timeline} | {setting} | {action} | {camera} |".format(
+                no=shot_no,
+                timeline=_md_cell(shot.get("timeline")),
+                setting=_md_cell(shot.get("setting_id")),
+                action=_md_cell(shot.get("action") or shot.get("character_action")),
+                camera=_md_cell(shot.get("camera")),
+            )
+        )
+    if not rows:
+        return ""
+    return "\n".join([*_STORYBOARD_TABLE_HEADER, *rows])
+
+
+def _bootstrap_summary_message(graph: dict[str, Any]) -> str:
+    """Director's brief/storyboard LLM calls already ran inside bootstrap (see
+    _bootstrap_graph_with_director_impl) — surface that result in chat instead of a
+    placeholder, and ask the user to confirm or move on, the way a human director would."""
+    metadata = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
+    script_analysis = metadata.get("script_analysis") if isinstance(metadata.get("script_analysis"), dict) else {}
+    characters = [c for c in (script_analysis.get("characters") or []) if isinstance(c, dict)]
+    cast_names = [str(c.get("name") or c.get("id") or "").strip() for c in characters]
+    cast_names = [name for name in cast_names if name]
+    shots = [s for s in (script_analysis.get("shots") or []) if isinstance(s, dict)]
+    shot_count = len(shots)
+    storyboard_table = _storyboard_table_markdown(shots)
+    storyboard_md = str(metadata.get("approved_storyboard") or "").strip()
+    if len(storyboard_md) > _BOOTSTRAP_STORYBOARD_MAX_CHARS:
+        storyboard_md = storyboard_md[:_BOOTSTRAP_STORYBOARD_MAX_CHARS].rstrip() + "\n\n…（画布上可查看完整分镜）"
+
+    lines = ["✅ 分镜脚本已完成。"]
+    header_bits = []
+    if cast_names:
+        header_bits.append("角色：" + "、".join(cast_names))
+    if shot_count:
+        header_bits.append(f"共 {shot_count} 个镜头")
+    if header_bits:
+        lines.append("，".join(header_bits))
+    if storyboard_table:
+        lines.append("")
+        lines.append(storyboard_table)
+    elif storyboard_md:
+        lines.append("")
+        lines.append(storyboard_md)
+    lines.append("")
+    lines.append("分镜没问题的话回复「确认」或「生成角色」即可开始角色设定图；想调整分镜就直接告诉我要改哪里。")
+    return "\n".join(lines)
+
+
 def _design_workspace_messages(session_id: str) -> list[dict[str, Any]]:
     from jiuwenswarm.server.runtime.session.session_history import load_history_records
 
@@ -263,6 +364,7 @@ def _design_workspace_messages(session_id: str) -> list[dict[str, Any]]:
         content = str(record.get("content") or "")
         if not content and event_type != "design.graph_updated":
             continue
+        media = _chat_media_from_record(record.get("media"))
         messages.append(
             {
                 "id": str(record.get("id") or uuid.uuid4()),
@@ -277,9 +379,157 @@ def _design_workspace_messages(session_id: str) -> list[dict[str, Any]]:
                     if isinstance(record.get("references"), list)
                     else {}
                 ),
+                **({"media": media} if media else {}),
             }
         )
     return messages
+
+
+def _chat_media_from_record(raw: Any) -> list[dict[str, str]]:
+    """Rebuild a message's inline media from what was persisted with the history
+    record (snake_case on disk, camelCase on the wire)."""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        node_id = str(item.get("node_id") or "").strip()
+        uri = str(item.get("uri") or "").strip()
+        if not node_id or not uri:
+            continue
+        label = str(item.get("label") or "").strip()
+        out.append(
+            {
+                "nodeId": node_id,
+                "uri": uri,
+                "kind": str(item.get("kind") or "image"),
+                **({"label": label} if label else {}),
+            }
+        )
+        if len(out) >= _CHAT_MEDIA_MAX_ITEMS:
+            break
+    return out
+
+
+def _scope_chat_run_to_nodes(run_id: str, node_ids: list[str]) -> None:
+    """Restrict a chat-triggered rerun to the nodes the plan actually named.
+
+    The generic rerun path deliberately leaves every node the source run did not
+    cover at ``pending`` (``states.setdefault(..., pending)``) and its run
+    metadata carries no ``scope_node_ids``, so it goes through the *wave*
+    scheduler. On a partially generated graph that means a "modify the character
+    image" request sweeps in the whole downstream pipeline — scene, every clip,
+    compose. Stamping the scope keeps the turn to the named nodes, and the
+    frontend already refuses to auto-continue a scoped run, so the user decides
+    whether to move on.
+    """
+    ids = [str(item).strip() for item in node_ids if str(item).strip()]
+    if not ids:
+        return
+    run = _store.get_run(run_id)
+    if run is None:
+        return
+    meta = dict(run.get("metadata") or {})
+    if meta.get("scope_node_ids"):
+        return
+    meta["scope_node_ids"] = ids
+    run["metadata"] = meta
+    _store.save_run(run)
+
+
+# Gateway -> AgentServer unary requests are cut at
+# agent_client.AGENT_REQUEST_TIMEOUT_SECONDS (600s), so waiting longer does not
+# extend the reply — it destroys it: the caller sees "AgentServer request timed
+# out" and the finished media never reaches the conversation. Stay inside that
+# ceiling with room for the reply to travel; three clips regenerating
+# concurrently take roughly five minutes in practice. Anything slower falls back
+# to the "still generating" note below rather than being cut off.
+_CHAT_RUN_WAIT_SECONDS = 8 * 60
+
+
+async def _await_run_completion(run_id: str) -> bool:
+    """Wait for a chat-started run to stop. False if it is still going.
+
+    ``start_run`` only schedules execution (``asyncio.create_task``) and returns
+    immediately with status "running", so the node has not finished generating at
+    that point. A compose of several clips easily outlives a short fixed cap, and
+    when that fired the chat replied with the "starting…" text and no media while
+    the run kept going unnoticed in the background — no progress shown, and no
+    reply carrying the finished clip.
+    """
+    task = None
+    try:
+        task = _executor._tasks.get(run_id)
+    except Exception:  # noqa: BLE001
+        task = None
+    if task is not None and not task.done():
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task), timeout=_CHAT_RUN_WAIT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            return False
+        except Exception:  # noqa: BLE001
+            pass
+    # The task handle can be gone (a different code path scheduled the run), so
+    # confirm against the stored run before calling it finished.
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        run = _store.get_run(run_id)
+        if run is None or str(run.get("status") or "") != "running":
+            return True
+        await asyncio.sleep(0.5)
+    return False
+
+
+def _clear_run_scope(run_id: str) -> None:
+    """Drop a single-node chat scope so a canvas-driven run covers the canvas.
+
+    The chat stamps ``scope_node_ids`` so one changed asset is regenerated on its
+    own (see :func:`_scope_chat_run_to_nodes`). Execute on the canvas means "build
+    whatever is still missing", so when the frontend asks for an unscoped start
+    on that same run the scope has to go before the executor reads it —
+    otherwise the run stays pinned to the chat's node and Execute would rebuild
+    or skip the wrong things.
+    """
+    run = _store.get_run(run_id)
+    if run is None:
+        return
+    meta = dict(run.get("metadata") or {})
+    if not meta.get("scope_node_ids"):
+        return
+    meta.pop("scope_node_ids", None)
+    run["metadata"] = meta
+    _store.save_run(run)
+
+
+def _chat_media_from_params(raw: Any) -> list[dict[str, str]]:
+    """Inline media the client sent for this turn (camelCase on the wire),
+    normalised to the snake_case shape stored in the history record — so a
+    message that refers to a generated image shows it again after a reload."""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        node_id = str(item.get("nodeId") or item.get("node_id") or "").strip()
+        uri = str(item.get("uri") or "").strip()
+        if not node_id or not uri:
+            continue
+        label = str(item.get("label") or "").strip()
+        out.append(
+            {
+                "node_id": node_id,
+                "uri": uri,
+                "kind": str(item.get("kind") or "image"),
+                **({"label": label} if label else {}),
+            }
+        )
+        if len(out) >= _CHAT_MEDIA_MAX_ITEMS:
+            break
+    return out
 
 
 def _get_design_workspace(
@@ -462,7 +712,7 @@ async def _create_design_workspace_once(
                 "request_id": request.request_id,
                 "channel_id": request.channel_id or "web",
                 "timestamp": now + 0.001,
-                "content": "Director composed the workflow.",
+                "content": _bootstrap_summary_message(graph),
                 "event_type": "design.bootstrap_completed",
                 "design_kind": "bootstrap_done",
                 "graph_id": graph_id,
@@ -1030,6 +1280,18 @@ def _start_run(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | Non
     graph_id = str(params.get("graph_id") or "").strip()
     run_id = str(params.get("run_id") or "").strip()
     node_id = str(params.get("node_id") or "").strip()
+    # A plan can name several nodes (e.g. all three clips). node_ids carries the
+    # whole list so the rerun and its scope cover every one of them.
+    node_ids = [
+        str(item).strip() for item in (params.get("node_ids") or []) if str(item).strip()
+    ]
+    if not node_ids and node_id:
+        node_ids = [node_id]
+    if not node_id and node_ids:
+        node_id = node_ids[0]
+    # Canvas "Execute" opts out of any single-node scope the chat pinned on the
+    # run it is continuing (see _clear_run_scope).
+    clear_scope = params.get("clear_scope") in (True, 1, "1", "true", "True")
     graph = _store.get_graph(graph_id) if graph_id else None
     contribution_warning = ""
     if graph is not None and not (node_id and _is_comfyui_target(graph, node_id)):
@@ -1053,30 +1315,52 @@ def _start_run(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | Non
             if graph is None:
                 return None, "graph not found", "NOT_FOUND"
             try:
-                run = _executor.create_rerun(graph, source_run=existing, node_id=node_id)
+                run = _executor.create_rerun(
+                    graph, source_run=existing, node_id=node_id, node_ids=node_ids
+                )
             except ValueError as exc:
                 return None, _rerun_error_message(graph, node_id, exc), "BAD_REQUEST"
             except KeyError:
                 return None, "node not found", "NOT_FOUND"
             run_id = run["run_id"]
-        elif (existing.get("metadata") or {}).get("target_node_id"):
-            # The workflow Continue action explicitly leaves single-node scope.
-            if _executor.has_active_tasks(existing["graph_id"]):
-                return None, "任务正在运行或停止，请稍后继续工作流", "BAD_REQUEST"
-            existing["metadata"].pop("target_node_id")
-            _store.save_run(existing)
     elif graph is not None and node_id:
         source = _store.get_latest_run_for_graph(graph["graph_id"])
         # A ComfyUI node runs on its own, so it needs no earlier Play.
         if source is None and not _is_comfyui_target(graph, node_id):
-            return None, "no previous run to rerun from", "BAD_REQUEST"
-        try:
-            run = _executor.create_rerun(graph, source_run=source, node_id=node_id)
-        except ValueError as exc:
-            return None, _rerun_error_message(graph, node_id, exc), "BAD_REQUEST"
-        except KeyError:
-            return None, "node not found", "NOT_FOUND"
-        run_id = run["run_id"]
+            # Bootstrap (and chat refine) write straight to each node's own
+            # output_ref, bypassing the run system entirely — a graph fresh
+            # off bootstrap has real upstream content but no run record
+            # marking it "completed" yet. Treat the graph's own current
+            # output as that baseline rather than failing outright; only
+            # fall back to the hard error if even that has nothing usable
+            # upstream (e.g. a genuinely still-pending predecessor).
+            try:
+                run = _executor.create_run_from_graph_output(graph, node_id=node_id)
+            except ValueError:
+                # Nothing on this graph carries an output_ref yet (bootstrap
+                # writes the brief/storyboard text to graph metadata), so no
+                # upstream looks "completed" and the single-node baseline above
+                # cannot be built. Drive the node's ancestor chain instead of
+                # refusing: the requested node then really generates.
+                try:
+                    run = _executor.create_scoped_run_for_node(
+                        graph, node_id=node_id, node_ids=node_ids
+                    )
+                except (ValueError, KeyError):
+                    return None, "no previous run to rerun from", "BAD_REQUEST"
+            except KeyError:
+                return None, "node not found", "NOT_FOUND"
+            run_id = run["run_id"]
+        else:
+            try:
+                run = _executor.create_rerun(
+                    graph, source_run=source, node_id=node_id, node_ids=node_ids
+                )
+            except ValueError as exc:
+                return None, _rerun_error_message(graph, node_id, exc), "BAD_REQUEST"
+            except KeyError:
+                return None, "node not found", "NOT_FOUND"
+            run_id = run["run_id"]
     elif graph is not None:
         run = _executor.create_run(graph)
         run_id = run["run_id"]
@@ -1084,6 +1368,14 @@ def _start_run(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | Non
         return None, "graph_id or run_id is required", "BAD_REQUEST"
     if graph is None:
         return None, "graph not found", "NOT_FOUND"
+    # A run the chat scoped to one node must not narrow a canvas-driven start.
+    # Only applies when the caller reuses that run without naming a node — a
+    # node-specific start builds its own fresh, legitimately scoped record.
+    if clear_scope and run_id and not node_id:
+        try:
+            _clear_run_scope(run_id)
+        except Exception:
+            logger.debug("Failed to clear run scope", exc_info=True)
     # Stamp warning onto the run record so the UI can show it without blocking.
     if contribution_warning:
         try:
@@ -1145,13 +1437,98 @@ def _choose_output(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str |
     return {"run": dict(run)}, None, None
 
 
+_CHAT_HISTORY_MAX_TURNS = 8
+_CHAT_ATTACHMENT_MAX_IMAGES = 3
+
+
+def _chat_history_from_params(params: dict[str, Any]) -> list[dict[str, str]]:
+    """Recent prior turns the frontend already holds (its own chat store is the
+    source of truth — no server-side chat history store exists for Designer
+    chat), so a short follow-up like "make it brighter" has context.
+    """
+    raw = params.get("history")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in raw[-_CHAT_HISTORY_MAX_TURNS:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip()
+        content = str(item.get("content") or "").strip()
+        if role not in ("user", "assistant") or not content:
+            continue
+        out.append({"role": role, "content": content})
+    return out
+
+
+def _chat_attachment_images(raw_references: Any) -> list[str]:
+    """A freshly-uploaded file attached to this turn (distinct from "@Label",
+    which points at an *existing* node's output) — resolved straight to an
+    image source ``call_model_tool`` can embed, no on-disk materialization
+    needed since this is a one-off vision reference, not a persisted asset.
+    """
+    if not isinstance(raw_references, list) or not raw_references:
+        return []
+    sources: list[str] = []
+    for item in raw_references:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "").strip().lower()
+        if kind and kind != "image":
+            continue
+        path = str(item.get("path") or "").strip()
+        uri = str(item.get("uri") or "").strip()
+        base64_data = str(item.get("base64_data") or "").strip()
+        if path:
+            sources.append(path)
+        elif uri:
+            sources.append(uri)
+        elif base64_data:
+            mime = str(item.get("mime_type") or "image/png").strip() or "image/png"
+            sources.append(f"data:{mime};base64,{base64_data}")
+        if len(sources) >= _CHAT_ATTACHMENT_MAX_IMAGES:
+            break
+    return sources
+
+
+_CHAT_MEDIA_MAX_ITEMS = 8
+
+
+def _chat_media_refs(graph: dict[str, Any], node_ids: list[str]) -> list[dict[str, str]]:
+    """Outputs this chat turn generated, so the reply can show the image/video
+    inline and a reload can rebuild it from the persisted history record.
+
+    Reads each node's ``output_ref`` (the run merges completed states back onto
+    the graph before this is called) and skips placeholders, which are not real
+    files.
+    """
+    by_id = {str(node.get("id") or ""): node for node in (graph.get("nodes") or []) if isinstance(node, dict)}
+    refs: list[dict[str, str]] = []
+    for node_id in node_ids:
+        node = by_id.get(str(node_id))
+        if node is None:
+            continue
+        ref = node.get("output_ref")
+        if not isinstance(ref, dict):
+            continue
+        uri = str(ref.get("uri") or "").strip()
+        if not uri or uri.startswith("designer://"):
+            continue
+        refs.append(
+            {
+                "node_id": str(node_id),
+                "uri": uri,
+                "kind": str(ref.get("kind") or node.get("type") or "image"),
+                "label": str(node.get("label") or ""),
+            }
+        )
+        if len(refs) >= _CHAT_MEDIA_MAX_ITEMS:
+            break
+    return refs
+
+
 async def _chat_graph(request: AgentRequest, params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, str | None]:
     from jiuwenswarm.server.runtime.designer.leader_chat import run_leader_chat
-    from jiuwenswarm.server.runtime.designer.chat_document_sync import (
-        ChatDocumentConflict,
-        read_chat_documents,
-        save_document_update,
-    )
     from jiuwenswarm.server.runtime.designer.model_tools import (
         DesignerLlmError,
         require_llm,
@@ -1167,109 +1544,212 @@ async def _chat_graph(request: AgentRequest, params: dict[str, Any]) -> tuple[di
     graph = _store.get_graph(graph_id)
     if graph is None:
         return None, "graph not found", "NOT_FOUND"
+    graph = _executor.reconcile_loaded_graph(graph)
+    # Optimistic-concurrency baseline: what the store holds now, captured before
+    # hydration overlays the run's outputs. This turn plans against it and saves
+    # a graph derived from it, so the guard below compares like-for-like against
+    # a fresh read and refuses when another writer got there first.
+    baseline_graph = _store.get_graph(graph_id)
+    baseline_run = _store.get_latest_run_for_graph(graph_id)
+    # The run record is the source of truth for what a node already produced. A
+    # long render can finish after the chat's wait window, so a node can be
+    # completed in the run while the persisted graph still shows no output —
+    # planning from that stale view treats finished work as a leftover and
+    # queues a second, unasked-for version of it.
+    graph = hydrate_graph_node_outputs(graph, baseline_run)
     selected_node_id = str(params.get("selected_node_id") or params.get("node_id") or "").strip()
     run_new_nodes = bool(params.get("run_new_nodes") or params.get("runNewNodes"))
     progress = _leader_progress_callback(request)
+    history = _chat_history_from_params(params)
+    attached_images = _chat_attachment_images(params.get("references"))
+    # Outputs this turn's "@Label" mentions point at (resolved client-side from
+    # the canvas), persisted so the user's bubble shows them again after a
+    # reload — the server resolves the same labels for the model's vision.
+    user_media = _chat_media_from_params(params.get("media"))
     try:
         require_llm()
-        run = _store.get_latest_run_for_graph(graph_id)
-        documents = read_chat_documents(graph, run)
-        pending_documents = any(
-            state.get("candidate_output_ref") or state.get("candidate_output_refs")
-            for node_id, state in ((run or {}).get("node_states") or {}).items() if node_id in documents
-        )
-        was_active = _executor.has_active_tasks(graph_id)
         preferred_model = str((graph.get("metadata") or {}).get("model_name") or "")
         with use_preferred_designer_model(preferred_model):
             result = await run_leader_chat(
                 graph,
                 message,
-                documents=documents,
-                pending_documents=pending_documents,
                 selected_node_id=selected_node_id,
                 run_new_nodes=run_new_nodes,
                 progress=progress,
+                history=history,
+                attached_images=attached_images,
             )
-        updated_text_uris = []
-        saved = graph
-        if result.get("changed") or result.get("run_node_ids"):
-            if was_active or _executor.has_active_tasks(graph_id):
-                return None, "工作流任务尚未结束；运行中请先停止，任务正在停止时请稍后重试。", "CONFLICT"
-            current_graph = _store.get_graph(graph_id)
-            current_run = _store.get_latest_run_for_graph(graph_id)
-            if (current_graph != graph or current_run != run
-                    or read_chat_documents(current_graph, current_run) != documents):
-                return None, "工作流或文本已在本次请求期间发生变化，请重新提交。", "CONFLICT"
-        if result.get("changed"):
-            saved, run, updated_text_uris = save_document_update(
-                _store, result["graph"], run, documents, result["texts"]
-            )
-        progress("stage", str(result.get("summary") or "done"))
     except DesignerLlmError as exc:
         return None, exc.user_message, exc.code
-    except ChatDocumentConflict as exc:
-        return None, str(exc), "CONFLICT"
     except DesignerGraphValidationError as exc:
         return None, str(exc), "BAD_REQUEST"
     except Exception as exc:  # noqa: BLE001
         logger.warning("[DesignerAdapter] graph chat failed: %s", exc)
         return None, str(exc), "INTERNAL_ERROR"
 
+    next_graph = result.get("graph") or graph
+    if result.get("changed") or result.get("run_node_ids"):
+        conflict = _chat_concurrency_conflict(graph_id, baseline_graph)
+        if conflict:
+            logger.info("[DesignerAdapter] refusing chat turn on %s: %s", graph_id, conflict)
+            return None, conflict, "CONFLICT"
+    saved = _store.save_graph(next_graph) if result.get("changed") else graph
     summary = str(result.get("summary") or "")
     session_id = str((saved.get("metadata") or {}).get("session_id") or "").strip()
+    history_request_id = request.request_id or str(uuid.uuid4())
+    history_now = time.time()
     if session_id:
         from jiuwenswarm.server.runtime.session.session_history import append_history_record
 
-        now = time.time()
-        history_request_id = request.request_id or str(uuid.uuid4())
         append_history_record(
             session_id=session_id,
             request_id=history_request_id,
             channel_id=request.channel_id or "web",
             role="user",
             content=message,
-            timestamp=now,
+            timestamp=history_now,
             event_type="design.user",
-            extra={"design_kind": "user", "graph_id": graph_id},
+            extra={"design_kind": "user", "graph_id": graph_id, "media": user_media},
             mode="designer",
         )
-        append_history_record(
-            session_id=session_id,
-            request_id=history_request_id,
-            channel_id=request.channel_id or "web",
-            role="assistant",
-            content=summary or "Updated the workflow.",
-            timestamp=now + 0.001,
-            event_type="design.graph_updated",
-            extra={"design_kind": "chat_ack", "graph_id": graph_id},
-            mode="designer",
-        )
-    run_payload = dict(run) if run is not None and result.get("changed") else None
+    run_payload = None
+    run_error = ""
     run_ids = list(result.get("run_node_ids") or [])
     if run_ids:
-        start_params: dict[str, Any] = {"graph_id": saved["graph_id"], "node_id": run_ids[0]}
+        start_params: dict[str, Any] = {
+            "graph_id": saved["graph_id"],
+            "node_id": run_ids[0],
+            "node_ids": list(run_ids),
+        }
         latest = _store.get_latest_run_for_graph(saved["graph_id"])
         if latest is not None:
             start_params["run_id"] = str(latest.get("run_id") or "")
         payload, error, code = _start_run(start_params)
         if error is None and payload is not None:
+            run_id = str(payload["run_id"])
+            # A chat refine regenerates only the nodes it names; without this the
+            # unscoped rerun would also build every not-yet-generated downstream
+            # scene/clip/compose node.
+            _scope_chat_run_to_nodes(run_id, [str(item) for item in run_ids])
             run = await _executor.start_run(
-                str(payload["run_id"]),
+                run_id,
                 on_update=_run_update_callback(request),
                 on_graph_update=_graph_update_callback(request),
             )
+            # start_run only schedules execution (asyncio.create_task) and
+            # returns immediately with status "running" -- the node hasn't
+            # actually finished generating yet at this point. Follow the run
+            # instead of guessing a cap, so the merge below and the chat reply
+            # carry the real, finished output.
+            finished = await _await_run_completion(run_id)
+            run = _store.get_run(run_id) or run
             run_payload = dict(run)
             await _push_designer_event(
                 request=request,
                 event_type=EventType.DESIGNER_RUN_UPDATED.value,
                 payload={"run": run_payload},
             )
+            # A "single_node_rerun" (the only kind a chat refine ever starts)
+            # skips the Director orchestration phases entirely, and those are
+            # the only places the executor syncs a completed node's fresh
+            # output_ref from the run's own node_states back onto the
+            # persisted graph (_publish_graph, called only from inside that
+            # skipped branch). So a chat-triggered regeneration completes
+            # correctly in the run record, but the graph itself — what the
+            # canvas and every other graph read renders from — never learns
+            # about it unless we copy it over here ourselves.
+            node_states = run.get("node_states") or {}
+            merged_nodes = []
+            graph_changed = False
+            for node in saved.get("nodes") or []:
+                node_id = str(node.get("id") or "")
+                state = node_states.get(node_id) or {}
+                ref = state.get("output_ref")
+                if state.get("status") == "completed" and isinstance(ref, dict) and ref.get("uri"):
+                    if node.get("output_ref") != ref:
+                        node = {**node, "output_ref": ref}
+                        graph_changed = True
+                merged_nodes.append(node)
+            if graph_changed:
+                saved = _store.save_graph({**saved, "nodes": merged_nodes})
+            # The leader writes its summary before the run executes, so it can
+            # announce a node the run never produced — the user was told a
+            # character sheet had been generated while its node was still
+            # pending, and went looking for an asset that did not exist. With
+            # both the run's node_states and the merged graph in hand, replace
+            # any such claim with what actually happened, rather than appending
+            # a "still generating" note to a sentence that already claimed
+            # success.
+            from jiuwenswarm.server.runtime.designer.leader_chat import (
+                looks_chinese,
+                report_unbuilt_nodes,
+            )
+
+            summary = report_unbuilt_nodes(
+                summary,
+                saved,
+                [str(item) for item in run_ids],
+                node_states=(run or {}).get("node_states"),
+                run_finished=finished,
+                chinese=looks_chinese(str(message)),
+            )
+            result["summary"] = summary
         elif error:
-            result["summary"] = f"{result.get('summary') or ''} ({error})".strip()
-            summary = str(result["summary"])
+            # Keep the reason out of the summary here: replace_next_step below
+            # truncates everything from the "下一步" marker, which is exactly
+            # where a suffix would land, so the cause was silently dropped and
+            # the reply still read as though generation had begun.
+            run_error = str(error)
+    if run_error:
+        from jiuwenswarm.server.runtime.designer.leader_chat import (
+            looks_chinese,
+            report_unbuilt_nodes,
+        )
+
+        summary = report_unbuilt_nodes(
+            summary,
+            saved,
+            [str(item) for item in run_ids],
+            run_finished=True,
+            chinese=looks_chinese(str(message)),
+            reason=run_error,
+        )
+        result["summary"] = summary
+    # The leader writes its summary before the run executes, so a turn that built
+    # the last shots still closed with "下一步是镜头视频" — true when it was written,
+    # wrong by the time the user read it. Re-resolve the closing line from the
+    # graph that now carries the finished outputs, so the next step is the compose
+    # once every shot exists.
+    from jiuwenswarm.server.runtime.designer.leader_chat import (
+        looks_chinese,
+        replace_next_step,
+    )
+
+    summary = replace_next_step(summary, saved, chinese=looks_chinese(str(message)))
+    result["summary"] = summary
+    if session_id:
+        from jiuwenswarm.server.runtime.session.session_history import append_history_record
+
+        # Appended after the run so the persisted reply carries the finished
+        # outputs — the chat shows the generated image inline, and a reload
+        # (which rebuilds messages from history) can render it again.
+        append_history_record(
+            session_id=session_id,
+            request_id=history_request_id,
+            channel_id=request.channel_id or "web",
+            role="assistant",
+            content=summary or "Updated the workflow.",
+            timestamp=history_now + 0.001,
+            event_type="design.graph_updated",
+            extra={
+                "design_kind": "chat_ack",
+                "graph_id": graph_id,
+                "media": _chat_media_refs(saved, run_ids),
+            },
+            mode="designer",
+        )
     return {
         "graph": dict(saved),
-        "updated_text_uris": updated_text_uris,
         "summary": summary,
         "intent": result.get("intent") or "answer",
         "run_node_ids": run_ids,
@@ -1370,21 +1850,9 @@ async def _bootstrap_graph_with_director_impl(
         if callable(on_progress):
             on_progress("thinking", "Supervisor · Reading reference images")
         reads = await classify_reference_images(prompt, image_refs)
-        if not reads:
-            return (
-                None,
-                "Attached stills could not be assigned a reference role.",
-                "LLM_API_ERROR",
-            )
-        from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
-            ReferenceIntentError,
-            stamp_creative_intent,
-        )
-
-        try:
-            analysis = stamp_creative_intent(analysis, reads, image_refs)
-        except ReferenceIntentError as exc:
-            return None, str(exc), "LLM_API_ERROR"
+        if reads:
+            analysis = dict(analysis)
+            analysis["reference_reads"] = reads
 
     payload, error, code = await asyncio.to_thread(
         _bootstrap_graph,

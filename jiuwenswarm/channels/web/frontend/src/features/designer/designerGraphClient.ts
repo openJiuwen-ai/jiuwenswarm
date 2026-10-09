@@ -6,7 +6,7 @@ import type {
   DesignerGraphPatch,
   DesignerGraphSummary,
 } from './executionGraphTypes';
-import type { DesignerChatMessage } from './designerChatStore';
+import type { DesignerChatMessage, DesignerChatMedia } from './designerChatStore';
 
 export type DesignerWorkspace = {
   project: {
@@ -64,7 +64,17 @@ export const designerGraphClient = {
       patch,
     }),
 
-  chat: (params: { graphId: string; message: string; selectedNodeId?: string; runNewNodes?: boolean }) =>
+  chat: (params: {
+    graphId: string;
+    message: string;
+    selectedNodeId?: string;
+    runNewNodes?: boolean;
+    references?: Array<Record<string, unknown>>;
+    history?: Array<{ role: 'user' | 'assistant'; content: string }>;
+    /** Outputs the message refers to with "@Label"; persisted with the turn so
+     * the bubble can show them again after a reload. */
+    media?: DesignerChatMedia[];
+  }) =>
     webRequest<{
       graph: DesignerExecutionGraph;
       summary?: string;
@@ -79,6 +89,9 @@ export const designerGraphClient = {
         message: params.message,
         ...(params.selectedNodeId ? { selected_node_id: params.selectedNodeId } : {}),
         ...(params.runNewNodes ? { run_new_nodes: true } : {}),
+        ...(params.references?.length ? { references: params.references } : {}),
+        ...(params.history?.length ? { history: params.history } : {}),
+        ...(params.media?.length ? { media: params.media } : {}),
       },
       { timeoutMs: 20 * 60 * 1000 },
     ),
@@ -108,7 +121,7 @@ export const designerGraphClient = {
       { timeoutMs: 20 * 60 * 1000 },
     ),
 
-  startRun: (params: { graphId?: string; runId?: string; nodeId?: string }) =>
+  startRun: (params: { graphId?: string; runId?: string; nodeId?: string; clearScope?: boolean }) =>
     webRequest<{
       run: DesignerExecutionRun;
       warning?: string | null;
@@ -117,6 +130,9 @@ export const designerGraphClient = {
       ...(params.graphId ? { graph_id: params.graphId } : {}),
       ...(params.runId ? { run_id: params.runId } : {}),
       ...(params.nodeId ? { node_id: params.nodeId } : {}),
+      // The canvas drives the whole remaining pipeline; a run the chat scoped to
+      // a single node must not narrow what Execute builds.
+      ...(params.clearScope ? { clear_scope: true } : {}),
     }),
 
   getRun: (params: { runId?: string; graphId?: string }) =>

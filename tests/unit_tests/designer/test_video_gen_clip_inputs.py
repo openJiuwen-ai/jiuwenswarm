@@ -132,9 +132,11 @@ def dashscope_video_slot(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_generation_problem_explains_each_gap(monkeypatch: pytest.MonkeyPatch, dashscope_video_slot: None) -> None:
     assert mg.generation_problem("video") is None
-    monkeypatch.setenv("VIDEO_GEN_PROTOCOL", "bytedance")
+    # An OpenRouter-style endpoint is a supported Design backend now, so the
+    # only remaining gaps are configuration ones.
+    monkeypatch.setenv("VIDEO_GEN_PROTOCOL", "openrouter")
     monkeypatch.setenv("VIDEO_GEN_API_BASE", "https://openrouter.ai/api/v1")
-    assert "not one of them" in (mg.generation_problem("video") or "")
+    assert mg.generation_problem("video") is None
     monkeypatch.setenv("VIDEO_GEN_API_KEY", "")
     assert "not configured" in (mg.generation_problem("video") or "")
     monkeypatch.setenv("VIDEO_GEN_ENABLED", "false")

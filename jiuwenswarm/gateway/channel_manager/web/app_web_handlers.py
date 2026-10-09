@@ -5094,7 +5094,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.DESIGNER_GRAPH_CHAT,
             label="designer.graph.chat",
-            timeout_seconds=300,
+            # A chat turn can drive a multi-clip regeneration, which is minutes of
+            # video generation. The old 300s cap cut those turns mid-run: the
+            # caller saw "AgentServer request timed out" and the finished media
+            # never reached the conversation. Stay just under AgentClient's own
+            # 600s unary ceiling, which is the real floor here.
+            timeout_seconds=570,
         )
 
     async def _designer_run_start(ws, req_id, params, session_id, user_id=None):
