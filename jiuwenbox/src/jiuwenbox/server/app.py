@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from jiuwenbox.logging_config import configure_logging
+from jiuwenbox.logging_config import configure_logging, make_stream_logging_nonblocking
 from jiuwenbox import __version__
 from jiuwenbox.server.auth import BearerTokenAuthMiddleware, get_configured_token
 from jiuwenbox.server.audit_logger import AuditLogger
@@ -250,6 +250,8 @@ def _chmod_uds_socket_if_any() -> None:
 async def lifespan(_application: FastAPI):
     global _sandbox_manager, _proxy_manager, _proxy_only_mode
     global _win_proxy_task, _win_proxy_stop
+    # After uvicorn installed its handlers: stdout/stderr are pipes to the parent.
+    make_stream_logging_nonblocking()
     # Both of these have to run after uvicorn has spun up its event loop -
     # ``set_default_executor`` requires a running loop, and raising NOFILE is
     # only effective within the live process. They are also independent of

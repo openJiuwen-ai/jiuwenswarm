@@ -510,7 +510,10 @@ def _rebuild_acl_with_order(
     return acl
 
 
-def purge_sid_aces(path: str, sid_objs: "list[object]") -> int:
+def purge_sid_aces(
+    path: str, sid_objs: "list[object]", *, propagate: bool = True, allow_only: bool = False,
+    check_forbidden: bool = True,
+) -> int:
     """清除 ``path`` 上属于 ``sid_objs`` 任一 SID 的所有 ACE (不管 Allow/Deny).
         配置切换 (路径从 deny_read 移到 allow_read) 时, apply 前先清掉旧 ACE,
         避免同 SID 上 Deny+Allow 共存导致 Deny 压过 Allow (NTFS 显式 Deny 优先).
@@ -518,14 +521,15 @@ def purge_sid_aces(path: str, sid_objs: "list[object]") -> int:
     win32security, _, _ = _ensure_pywin32()
     if not sid_objs:
         return 0
-    if _is_acl_forbidden_path(path):
+    if check_forbidden and _is_acl_forbidden_path(path):
         logger.warning("拒绝改盘符根/Users 的 DACL (purge): %s", path)
         return 0
-    sd = win32security.GetNamedSecurityInfo(
-        path,
-        win32security.SE_FILE_OBJECT,
-        win32security.DACL_SECURITY_INFORMATION,
-    )
+    if propagate:
+        sd = win32security.GetNamedSecurityInfo(
+            path, win32security.SE_FILE_OBJECT, win32security.DACL_SECURITY_INFORMATION,
+        )
+    else:
+        sd = win32security.GetFileSecurity(path, win32security.DACL_SECURITY_INFORMATION)
     existing_dacl = sd.GetSecurityDescriptorDacl()
     if existing_dacl is None:
         return 0
@@ -538,7 +542,9 @@ def purge_sid_aces(path: str, sid_objs: "list[object]") -> int:
         ace_type, ace_flags, ace_mask, ace_sid = _parse_getace_tuple(
             existing_dacl.GetAce(i),
         )
-        if _sid_dedup_key(ace_sid) in purge_keys:
+        if _sid_dedup_key(ace_sid) in purge_keys and not (
+            allow_only and ace_type == const.ACCESS_DENIED_ACE_TYPE
+        ):
             removed += 1
             continue
         if ace_type == const.ACCESS_DENIED_ACE_TYPE:
@@ -553,12 +559,14 @@ def purge_sid_aces(path: str, sid_objs: "list[object]") -> int:
     for flags, mask, sid in allow_aces:
         acl.AddAccessAllowedAceEx(2, flags, mask, sid)
     _t0 = time.perf_counter()
-    win32security.SetNamedSecurityInfo(
-        path,
-        win32security.SE_FILE_OBJECT,
-        win32security.DACL_SECURITY_INFORMATION,
-        None, None, acl, None,
-    )
+    logger.debug("[ACL] purge start path=%s propagate=%s", path, propagate)
+    if propagate:
+        win32security.SetNamedSecurityInfo(
+            path, win32security.SE_FILE_OBJECT, win32security.DACL_SECURITY_INFORMATION,
+            None, None, acl, None,
+        )
+    else:
+        _write_file_dacl(path, acl, sd=sd)
     _t1 = time.perf_counter()
     logger.debug(
         "purge ACE: path=%s removed=%d remaining=%d t_set=%.3fs",
@@ -623,6 +631,7 @@ def grant_ace(
 
     flags = win32security.DACL_SECURITY_INFORMATION
 
+    logger.debug("[ACL] grant start path=%s mode=%s recursive=%s", path, mode, recursive)
     win32security.SetNamedSecurityInfo(
         path,
         win32security.SE_FILE_OBJECT,
@@ -1235,6 +1244,131 @@ def apply_desktop_data_rw(
     return applied
 
 
+_ACL_PROGRESS_EVERY = 2000
+_ACL_SLOW_OBJECT_SECONDS = 1.0
+_ACL_MAX_FAILURE_LOGS = 20
+
+
+def _walk_acl_objects(root: str):
+    """Visit existing objects once, without following Windows reparse points."""
+    pending = [root]
+    while pending:
+        path = pending.pop()
+        try:
+            stat = os.stat(path, follow_symlinks=False)
+            if os.path.islink(path) or getattr(stat, "st_file_attributes", 0) & 0x400:
+                continue
+            yield path
+            if os.path.isdir(path):
+                with os.scandir(path) as entries:
+                    pending.extend(entry.path for entry in entries)
+        except FileNotFoundError:
+            # node_modules / caches may delete entries while we walk them.
+            continue
+
+
+def _compile_acl_rules(paths: list[str] | None) -> list[str]:
+    rules: list[str] = []
+    for raw in paths or []:
+        try:
+            rules.append(os.path.normcase(str(_expand_fs_path(raw))).rstrip(os.sep))
+        except OSError:
+            continue
+    return rules
+
+
+def _acl_rule_covers(rule: str, key: str) -> bool:
+    return key == rule or key.startswith(rule + os.sep)
+
+
+def _acl_entries(acl) -> "list[tuple[int, int, int, str]] | None":
+    if acl is None:
+        return None
+    entries = []
+    for index in range(acl.GetAceCount()):
+        ace_type, ace_flags, mask, sid = _parse_getace_tuple(acl.GetAce(index))
+        entries.append((int(ace_type), int(ace_flags), int(mask), _sid_dedup_key(sid)))
+    return entries
+
+
+def _apply_bounded_acl(root: str, sid_objs: list, policy: dict) -> list[str]:
+    """Apply final policy per object; never ask Windows to propagate a whole tree.
+
+    Objects that need a Deny ACE fail closed; Allow-only objects degrade with a
+    warning, matching the non-bounded segments.
+    """
+    win32security, _, _ = _ensure_pywin32()
+    sid_keys = {_sid_dedup_key(sid) for sid in sid_objs}
+    allow = {axis: _compile_acl_rules(policy[f"allow_{axis}"]) for axis in ("read", "write")}
+    deny = {axis: _compile_acl_rules(policy[f"deny_{axis}"]) for axis in ("read", "write")}
+    visited = written = failed = 0
+    t0 = time.perf_counter()
+    if os.path.islink(root) or getattr(os.stat(root, follow_symlinks=False), "st_file_attributes", 0) & 0x400:
+        raise ValueError(f"Refusing recursive sandbox ACL on reparse point: {root}")
+    walk_root = str(_expand_fs_path(root))
+    # The walk never follows reparse points, so descendants of a permitted
+    # root cannot be a volume root or X:\Users; resolving each one is costly.
+    if _is_acl_forbidden_path(walk_root):
+        raise ValueError(f"Refusing sandbox ACL on protected path: {walk_root}")
+    logger.info("[ACL] tree start path=%s", walk_root)
+    for path in _walk_acl_objects(walk_root):
+        visited += 1
+        if visited % _ACL_PROGRESS_EVERY == 0:
+            logger.info(
+                "[ACL] tree progress path=%s objects=%d written=%d failed=%d elapsed=%.2fs current=%s",
+                walk_root, visited, written, failed, time.perf_counter() - t0, path,
+            )
+        key = os.path.normcase(path)
+        rights = 0
+        if any(_acl_rule_covers(rule, key) for rule in allow["read"]):
+            rights |= const.FILE_GENERIC_READ
+        if any(_acl_rule_covers(rule, key) for rule in allow["write"]):
+            rights |= const.ALLOW_WRITE_RIGHTS | const.FILE_GENERIC_READ
+        denied = 0
+        for axis, mask in (("read", const.DENY_READ_RIGHTS), ("write", const.DENY_WRITE_RIGHTS)):
+            allow_rules = allow[axis] + (allow["write"] if axis == "read" else [])
+            matches = [(len(rule), False) for rule in allow_rules if _acl_rule_covers(rule, key)]
+            matches += [(len(rule), True) for rule in deny[axis] if _acl_rule_covers(rule, key)]
+            if matches and max(matches)[1]:
+                denied |= mask
+        try:
+            flags = const.RECURSIVE_ACE_FLAGS if os.path.isdir(path) else 0
+            aces = []
+            for sid in sid_objs:
+                if denied:
+                    aces.append((const.ACCESS_DENIED_ACE_TYPE, flags, denied, sid))
+                if rights & ~denied:
+                    aces.append((const.ACCESS_ALLOWED_ACE_TYPE, flags, rights & ~denied, sid))
+            t_obj = time.perf_counter()
+            sd = win32security.GetFileSecurity(path, win32security.DACL_SECURITY_INFORMATION)
+            existing = sd.GetSecurityDescriptorDacl()
+            acl = _rebuild_acl_with_order(existing, aces, drop_sid_keys=sid_keys)
+            if _acl_entries(existing) != _acl_entries(acl):
+                _write_file_dacl(path, acl, sd=sd)
+                written += 1
+            elapsed = time.perf_counter() - t_obj
+            if elapsed >= _ACL_SLOW_OBJECT_SECONDS:
+                logger.warning("[ACL] slow object path=%s elapsed=%.2fs", path, elapsed)
+        except FileNotFoundError:
+            continue
+        except Exception as exc:  # noqa: BLE001 - Deny objects re-raise below
+            if denied:
+                raise
+            failed += 1
+            if failed <= _ACL_MAX_FAILURE_LOGS:
+                logger.warning(
+                    "[ACL] allow grant failed, skip object (isolation degraded): path=%s reason=%s",
+                    path, exc,
+                )
+    logger.info(
+        "[ACL] tree done path=%s objects=%d written=%d failed=%d elapsed=%.2fs",
+        walk_root, visited, written, failed, time.perf_counter() - t0,
+    )
+    # Revoke walks this root explicitly too. Keep persistence in its existing
+    # root-based format rather than adding every child to registry history.
+    return [root] if visited else []
+
+
 def apply_sandbox_acl(
     workspace: str,
     allow_write: list[str],
@@ -1245,6 +1379,7 @@ def apply_sandbox_acl(
     recursive: bool = True,
     sandbox_user_sid: str | None = None,
     preinstalled_read_paths: "set[str] | None" = None,
+    bounded_roots: list[str] | None = None,
 ) -> list[str]:
     """对沙箱工作区施加文件 ACL (写控制 allow-only + 读控制 deny-then-allow).
 
@@ -1264,11 +1399,46 @@ def apply_sandbox_acl(
     if sandbox_user_sid:
         purge_sids.append(_resolve_sid(sandbox_user_sid))
 
+    # Automatically mounted workspaces/projects can contain node_modules and
+    # protected DACLs. Apply their final rules explicitly, including old files.
+    roots = [os.path.abspath(os.path.expandvars(p)) for p in bounded_roots or [] if os.path.isdir(p)]
+    roots = list({os.path.normcase(p): p for p in roots}.values())
+    roots = [p for p in roots if not any(
+        p != other and os.path.normcase(p).startswith(os.path.normcase(other).rstrip(os.sep) + os.sep)
+        for other in roots
+    )]
+
+    def _bounded(path: str) -> bool:
+        key = os.path.normcase(os.path.abspath(os.path.expandvars(path)))
+        return any(key == os.path.normcase(root) or key.startswith(os.path.normcase(root) + os.sep) for root in roots)
+
+    write_targets = list(allow_write) or [workspace]
+    read_targets = allow_read or [workspace]
+    bounded_policy = {
+        "allow_write": write_targets, "allow_read": read_targets,
+        "deny_write": deny_write, "deny_read": deny_read,
+    }
+    for paths in bounded_policy.values():
+        for raw in paths:
+            expanded = os.path.expandvars(raw)
+            if _bounded(expanded) and not os.path.exists(expanded):
+                os.makedirs(expanded, exist_ok=True)
+    for root in roots:
+        try:
+            applied.extend(_apply_bounded_acl(root, purge_sids, bounded_policy))
+        except Exception:
+            revoke_sandbox_acl(roots, sandbox_user_sid=sandbox_user_sid)
+            raise
+    write_targets = [p for p in write_targets if not _bounded(p)]
+    read_targets = [p for p in read_targets if not _bounded(p)]
+    deny_write = [p for p in deny_write if not _bounded(p)]
+    deny_read = [p for p in deny_read if not _bounded(p)]
+
     # 段级耗时埋点: 记录每个 ACL 段 (allow_write / deny_write / deny_read /
     # allow_read / traverse) 的总耗时与命中路径数
     seg_stats: dict[str, list[float]] = {}  # 每段 [耗时, 命中数], 由 _seg_end 填
 
-    def _purge_before_grant(path: str) -> None:
+    def _purge_before_grant(path: str, *, propagate: bool = True) -> None:
         """先清该路径上合成+真实 SID 的所有旧 ACE (best-effort).
 
         仅在本次 apply_sandbox_acl 调用中首次遇到该路径时执行,
@@ -1279,7 +1449,7 @@ def apply_sandbox_acl(
             return
         _purged.add(path)
         try:
-            purge_sid_aces(path, purge_sids)
+            purge_sid_aces(path, purge_sids, propagate=propagate)
         except Exception as exc:  # noqa: BLE001
             logger.debug("purge 旧 ACE 失败 path=%s: %s", path, exc)
 
@@ -1290,7 +1460,6 @@ def apply_sandbox_acl(
         seg_stats[seg] = [time.perf_counter() - t0, n]
 
     # --- 写控制 ---
-    write_targets = list(allow_write) or [workspace]
     _t_seg = _seg_begin()
     _n_seg = 0
     for path in write_targets:
@@ -1423,10 +1592,6 @@ def apply_sandbox_acl(
     def _is_preinstalled(p: str) -> bool:
         return p.rstrip("\\/").lower() in _preinstalled
 
-    read_targets = allow_read
-    if not read_targets:
-        # workspace 默认: 独立用户沙箱至少能读自己工作区.
-        read_targets = [workspace]
     _t_seg = _seg_begin()
     _n_seg = 0
     for path in read_targets:
@@ -1490,8 +1655,10 @@ def apply_sandbox_acl(
     try:
         _office = str(OFFICE_CLAW_DATA_ROOT) if OFFICE_CLAW_DATA_ROOT else ""
         if _office and os.path.isdir(_office):
-            _purge_before_grant(_office)
-            logger.info("已去掉 ~/.office-claw 特殊 ACL: %s", _office)
+            # 只清旧版 Allow; Deny 由 _harden_profile_children 每次补上, 清掉会
+            # 触发对整棵 ~/.office-claw 的传播 (数万文件, 每次建沙箱 ~10s).
+            if purge_sid_aces(_office, purge_sids, allow_only=True):
+                logger.info("已去掉 ~/.office-claw 特殊 ACL: %s", _office)
     except Exception as exc:  # noqa: BLE001
         logger.warning("去掉 ~/.office-claw 特殊 ACL 失败 (非致命): %s", exc)
 
@@ -1506,19 +1673,19 @@ def apply_sandbox_acl(
     _n_seg = 0
     for _root in _traverse_roots:
         try:
-            _purge_before_grant(str(_root))
-            grant_ace(
+            _purge_before_grant(str(_root), propagate=False)
+            _set_ace_no_propagate(
                 str(_root), sid,
                 rights=const.FILE_GENERIC_READ,
                 mode="ALLOW",
-                recursive=False,
+                inheritable=False,
             )
             if sandbox_user_sid:
-                grant_ace(
+                _set_ace_no_propagate(
                     str(_root), sandbox_user_sid,
                     rights=const.FILE_GENERIC_READ,
                     mode="ALLOW",
-                    recursive=False,
+                    inheritable=False,
                 )
             _n_seg += 1
         except Exception as exc:  # noqa: BLE001
@@ -1579,19 +1746,33 @@ def revoke_sandbox_acl(
     else:
         root_list = list(paths)
 
-    # 只对根路径本身 purge. 不再 rglob 展开。
-    # - 子对象上的继承 ACE 是只读快照, 单独 purge 删不掉 (Windows 立即从父重继承);
-    # - 只要删掉根的显式源头 ACE, 子的继承 ACE 自动消失.
+    # Bounded grants are explicit on existing objects. Remove parent sources
+    # first, then descendants, without triggering implicit kernel propagation.
     cleaned = 0
+    seen: set[str] = set()
     for root_path in root_list:
         p = os.path.expandvars(root_path)
-        if not os.path.exists(p):
+        if not os.path.exists(p) or os.path.normcase(os.path.abspath(p)) in seen:
+            continue
+        if _is_acl_forbidden_path(p):
+            logger.warning("拒绝改盘符根/Users 的 DACL (revoke): %s", p)
             continue
         try:
-            removed = purge_sid_aces(p, target_sids)
-            if removed > 0:
-                cleaned += 1
-                logger.debug("revoke: 清理 %s 上 %d 个 ACE", p, removed)
+            for target in _walk_acl_objects(p):
+                key = os.path.normcase(os.path.abspath(target))
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    removed = purge_sid_aces(
+                        target, target_sids, propagate=False, check_forbidden=False,
+                    )
+                except Exception:  # noqa: BLE001 - 单对象失败不放弃整棵树
+                    logger.debug("revoke 单个对象失败: %s", target, exc_info=True)
+                    continue
+                if removed > 0:
+                    cleaned += 1
+                    logger.debug("revoke: 清理 %s 上 %d 个 ACE", target, removed)
         except Exception:  # noqa: BLE001 - ACL 清理是 best-effort
             logger.debug("revoke 单个路径失败: %s", p, exc_info=True)
     logger.info("撤销沙箱 ACL 完成: 清理根路径数=%d", cleaned)
