@@ -41,6 +41,12 @@ const EMPTY_VENDOR_CATALOG: VendorPresetMap = {
   custom_api: [],
 };
 
+/** 视频/图像生成配置弹窗里"API"分组只保留这几家——其余厂商没有可用的视频/图像
+ *  生成模型，放出来只会诱导用户选到一个填不出正确模型名的死路。已保存的旧配置
+ *  仍然用完整的 catalog（见下方 preset/findStoredPreset）正常回显，这里只是收窄
+ *  下拉本身能新选到的选项。 */
+const ALLOWED_API_VENDORS = new Set(['openrouter', 'volcengine', 'minimax']);
+
 const OPENAI_PROTOCOL = 'openai';
 
 type SaveConfig = (updates: Record<string, string>, operation: string) => Promise<unknown>;
@@ -133,6 +139,13 @@ export function GenerationModelConfigDialog({
   const [submitting, setSubmitting] = useState(false);
   const [saveError, setSaveError] = useState('');
   const catalogRequestId = useRef(0);
+  // 只给下拉本身用的收窄版 catalog——preset/findStoredPreset 等逻辑仍然用上面
+  // 完整的 catalog，不然已保存的旧配置（provider 是被收窄掉的厂商）编辑时会
+  // 回显失败。
+  const pickerCatalog = useMemo<VendorPresetMap>(
+    () => ({ ...catalog, custom_api: catalog.custom_api.filter((preset) => ALLOWED_API_VENDORS.has(preset.vendor_key)) }),
+    [catalog],
+  );
   const closeBlocked = submitting;
   const { discardConfirmationOpen, requestClose, cancelDiscard, confirmDiscard } = useSettingsFormDialogClose({
     id: `agent-${slot}-model-dialog`,
@@ -277,8 +290,9 @@ export function GenerationModelConfigDialog({
           id={id}
           value={String(value ?? '')}
           protocol="openai"
-          catalog={catalog}
+          catalog={pickerCatalog}
           includeOpenAIAccount={false}
+          groups={['custom_api', 'other']}
           disabled={fieldDisabled}
           invalid={Boolean(error)}
           onChange={updateVendor}
