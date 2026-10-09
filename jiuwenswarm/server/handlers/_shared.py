@@ -250,13 +250,20 @@ def resolve_agent_request_mode(
 
 
 def _request_allows_plan_entry(request: AgentRequest, params: dict) -> bool:
-    """plan 类 mode token 是否允许原样生效：plan 能力渠道，或带显式进入标记。"""
+    """plan 类 mode token 是否允许原样生效。
+
+    三类放行：plan 能力渠道；本会话已处于 plan 中（非能力渠道显式进入后的
+    后续消息不带 ``plan_entry_source``，视同 plan 延续，与 Web/TUI 渠道白名单
+    语义对齐，评审 CR-8）；或带显式进入标记。
+    """
     channel = str(request.channel_id or "").strip().lower()
     if not channel:
         # 无通道信息的内部 / 历史请求保持原行为；归一只针对已知的宿主渠道，
         # 避免误伤 channel_id 缺省的 RPC 路径。
         return True
     if channel in PLAN_CAPABLE_CHANNELS:
+        return True
+    if request.session_id and request.session_id in _plan_active_sessions:
         return True
     source = str(params.get("plan_entry_source") or "").strip().lower()
     return source in EXPLICIT_PLAN_ENTRY_SOURCES

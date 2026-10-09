@@ -546,3 +546,24 @@ def test_plan_capable_channels_keep_plan_token(channel):
     request = _request({"mode": "agent.plan", "work_mode": "work"}, channel_id=channel)
 
     assert resolve_request_runtime_mode(request).is_plan is True
+
+
+def test_plan_active_session_continues_on_non_capable_channel():
+    """非能力渠道显式进入 plan 后，后续无 source 的消息视同 plan 延续（评审 CR-8）；
+    退出 plan（内存标记已清）后恢复归一，stale token 仍被拦。"""
+    from jiuwenswarm.server.handlers._shared import (
+        _plan_active_sessions,
+        resolve_request_runtime_mode,
+    )
+
+    request = _request(
+        {"mode": "agent.plan", "work_mode": "work"}, channel_id="officeclaw"
+    )
+
+    _plan_active_sessions.add("s1")
+    try:
+        assert resolve_request_runtime_mode(request).is_plan is True
+    finally:
+        _plan_active_sessions.discard("s1")
+
+    assert resolve_request_runtime_mode(request).is_plan is False
