@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Pure OTLP/GenAI to standalone trajectory read-model projection. */
 
 import {

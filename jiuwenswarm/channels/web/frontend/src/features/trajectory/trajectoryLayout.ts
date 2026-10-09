@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Deterministic sizing rules for the raw OTel inspector. */
 
 export const RAW_INSPECTOR_DEFAULT_HEIGHT = 220;

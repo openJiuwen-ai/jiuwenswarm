@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Version pins and semantic names accepted by the observability profile. */
 
 import { GEN_AI_ATTRIBUTES } from './gen-ai-semconv.generated.ts'

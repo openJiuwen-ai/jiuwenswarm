@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * Bounded Markdown-to-text projection shared by trajectory consumers.
  * Adapted mechanically from `packages/client/ui-trajectory/src/client/trajectory-preview.ts`

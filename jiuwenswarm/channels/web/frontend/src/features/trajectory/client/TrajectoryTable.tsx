@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * Turn-aware trajectory event ledger with a local record inspector.
  * Adapted mechanically from `packages/client/ui-trajectory/src/client/TrajectoryTable.tsx`

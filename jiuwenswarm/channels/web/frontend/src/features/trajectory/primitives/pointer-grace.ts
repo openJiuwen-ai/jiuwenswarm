@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 // Shared close timing for pointer-dismissed popups (HoverCard, hover-closing
 // Menu). Both float free of their anchor, so the pointer has to cross ground
 // that belongs to neither on its way in; closing on the first pointerleave

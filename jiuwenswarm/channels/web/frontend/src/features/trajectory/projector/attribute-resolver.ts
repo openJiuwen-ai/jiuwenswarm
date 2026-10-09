@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Per-field semantic normalization for standard and OpenJiuwen spans. */
 
 import {

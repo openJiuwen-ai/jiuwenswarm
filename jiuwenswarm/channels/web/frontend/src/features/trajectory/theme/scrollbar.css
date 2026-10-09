@@ -1,5 +1,3 @@
-/* Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. */
-
 /* Scrollbar skin: the sole consumer of the four --dsw-alias-scrollbar-*
  * tokens. Without it every scrolling region renders the UA scrollbar, which
  * ignores the theme — a light native bar over the dark palette.
