@@ -2889,7 +2889,9 @@ class JiuWenSwarm:
             ):
                 try:
                     hook_adapter = await adapter._get_or_create_session_adapter(  # pylint: disable=protected-access
-                        session_id, request=request
+                        session_id,
+                        request=request,
+                        history_before_request_id=request.request_id,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -3309,7 +3311,9 @@ class JiuWenSwarm:
             ):
                 try:
                     hook_adapter = await adapter._get_or_create_session_adapter(  # pylint: disable=protected-access
-                        session_id, request=request
+                        session_id,
+                        request=request,
+                        history_before_request_id=request.request_id,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -3457,7 +3461,9 @@ class JiuWenSwarm:
             ):
                 try:
                     _guard_adapter = await _guard_adapter._get_or_create_session_adapter(  # pylint: disable=protected-access
-                        session_id, request=request
+                        session_id,
+                        request=request,
+                        history_before_request_id=request.request_id,
                     )
                 except Exception:
                     _guard_adapter = adapter
