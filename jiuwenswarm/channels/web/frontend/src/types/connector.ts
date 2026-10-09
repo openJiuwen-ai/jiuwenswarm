@@ -121,6 +121,8 @@ export interface ConnectorConnectResponse {
   installedSkills?: string[];
   serverIdScope?: string;
   // credentials_required 分支专属字段
+  oauthAvailable?: boolean;
+  oauthSession?: string;
   credentialsRequired?: boolean;
   requiredTokens?: string[];
   credentialKind?: 'token';
