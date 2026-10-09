@@ -531,6 +531,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # second time (or resolve to agent-core's deprecated RunKind rail).
         "HeartbeatRail",
         "SessionMessagingRouteRail",
+        "GovernanceReviewRail", "RigorAuditRail",
     })
 
     def __init__(self) -> None:
@@ -1549,6 +1550,14 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 {"tool_names": ["switch_mode"]},
             ),
             _RailBuildInfo("_context_processor_rail", self._build_context_processor_rail),
+            # Research governance: same builders as agent mode, so a code-mode
+            # session writing a paper gets the same process and rigor checks.
+            _RailBuildInfo("_governance_review_rail", self._build_governance_review_rail),
+            _RailBuildInfo(
+                "_rigor_audit_rail",
+                self._build_rigor_audit_rail,
+                {"config_base": config_base},
+            ),
             _RailBuildInfo(
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
             ),

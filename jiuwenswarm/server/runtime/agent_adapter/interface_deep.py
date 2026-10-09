@@ -8791,6 +8791,50 @@ class JiuWenSwarmDeepAdapter:
             security_prompt_rail = None
         return security_prompt_rail
 
+    @staticmethod
+    def _build_governance_review_rail() -> Any | None:
+        """Build GovernanceReviewRail for single-agent modes.
+
+        Team members get it from build_member_rails(). Agent mode assembles its
+        rails in this adapter and code mode in JiuwenSwarmCodeAdapter, which
+        reuses this builder; without it the process gate exists only on the
+        team path.
+        """
+        try:
+            from jiuwenswarm.agents.harness.team.rails.governance_review_rail import (
+                GovernanceReviewRail,
+            )
+
+            rail = GovernanceReviewRail()
+            logger.info("[JiuWenSwarmDeepAdapter] GovernanceReviewRail create success")
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] GovernanceReviewRail create failed: %s", exc)
+            rail = None
+        return rail
+
+    @staticmethod
+    def _build_rigor_audit_rail(config_base: dict[str, Any] | None = None) -> Any | None:
+        """Build RigorAuditRail for single-agent modes.
+
+        The rail was originally wired only into build_member_rails(), which
+        assembles rails for *team members*. Agent and code modes come through
+        here instead, so a rail mounted there alone never loads for the single
+        agent -- and the failure is silent, because a rail that never runs and a
+        rail that found nothing log the same thing.
+        """
+        try:
+            from jiuwenswarm.agents.harness.team.rails.rigor_audit_rail import RigorAuditRail
+            from jiuwenswarm.common.config import get_rigor_audit_enabled
+
+            if not get_rigor_audit_enabled(config_base):
+                return None
+            rail = RigorAuditRail()
+            logger.info("[JiuWenSwarmDeepAdapter] RigorAuditRail create success")
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] RigorAuditRail create failed: %s", exc)
+            rail = None
+        return rail
+
     # 重索引延时（秒）：embedding 配置变更后，延后这段时间再跑一次全量重索引。
     # 配合 _schedule_memory_reindex 的 debounce，连续改多次只在最后一次后跑一次。
     _MEMORY_REINDEX_DELAY_SECONDS: float = 5.0
@@ -9447,6 +9491,12 @@ class JiuWenSwarmDeepAdapter:
                 {"config_base": config_base},
             ),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
+            _RailBuildInfo("_governance_review_rail", self._build_governance_review_rail),
+            _RailBuildInfo(
+                "_rigor_audit_rail",
+                self._build_rigor_audit_rail,
+                {"config_base": config_base},
+            ),
             _RailBuildInfo(
                 "_session_messaging_route_rail",
                 self._build_session_messaging_route_rail,

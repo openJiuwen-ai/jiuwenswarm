@@ -803,13 +803,20 @@ class TestAdditionalHardcodedPaths:
 
         import jiuwenswarm.common.config as config_module
 
-        with patch.dict(os.environ, {"JIUWENSWARM_CONFIG_DIR": str(config_dir)}):
-            config_module = importlib.reload(config_module)
-            module_config_dir = config_module.__dict__["_CONFIG_MODULE_DIR"]
-            assert str(module_config_dir.resolve()) == str(config_dir.resolve()), \
-                f"Expected: {config_dir.resolve()}, Got: {module_config_dir.resolve()}"
-
-        importlib.reload(config_module)
+        # The reload resolves (and caches) paths while the override is set, so
+        # restore the path cache before reloading back to the default config.
+        cache_names = ("_initialized", "_config_dir", "_workspace_dir", "_root_dir")
+        saved = {name: getattr(utils, name) for name in cache_names}
+        try:
+            with patch.dict(os.environ, {"JIUWENSWARM_CONFIG_DIR": str(config_dir)}):
+                config_module = importlib.reload(config_module)
+                module_config_dir = config_module.__dict__["_CONFIG_MODULE_DIR"]
+                assert str(module_config_dir.resolve()) == str(config_dir.resolve()), \
+                    f"Expected: {config_dir.resolve()}, Got: {module_config_dir.resolve()}"
+        finally:
+            for name, value in saved.items():
+                setattr(utils, name, value)
+            importlib.reload(config_module)
 
     @staticmethod
     def test_interactions_dir_structure():

@@ -5772,6 +5772,9 @@ harmony = [
     { name = "uvicorn", extra = ["standard"] },
     { name = "wecom-aibot-sdk" },
 ]
+research = [
+    { name = "matplotlib" },
+]
 ssh = [
     { name = "asyncssh" },
 ]
@@ -5869,6 +5872,7 @@ requires-dist = [
     { name = "loguru", marker = "extra == 'harmony'", specifier = ">=0.7.3" },
     { name = "lxml", specifier = ">=6.1.0,<7" },
     { name = "lxml", marker = "extra == 'harmony'", specifier = ">=6.1.0" },
+    { name = "matplotlib", marker = "extra == 'research'", specifier = ">=3.8" },
     { name = "mcp", specifier = ">=1.28.1,<2" },
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
@@ -5933,7 +5937,7 @@ requires-dist = [
     { name = "wecom-aibot-sdk", marker = "extra == 'harmony'", specifier = ">=1.0.5" },
     { name = "workswarm-tui", marker = "extra == 'tui'", directory = "packages/jiuwenswarm-tui" },
 ]
-provides-extras = ["harmony", "a2a", "ssh", "desktop", "dev", "tui", "distribute", "claude", "codex", "shell-ast", "test"]
+provides-extras = ["harmony", "a2a", "ssh", "desktop", "dev", "tui", "distribute", "claude", "codex", "shell-ast", "research", "test"]
 
 [package.metadata.requires-dev]
 dev = [

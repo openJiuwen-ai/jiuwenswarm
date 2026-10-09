@@ -134,6 +134,7 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
     registry.XIAOYI_PHONE,
     registry.CRON_TOOLS,
     registry.SEND_FILE,
+    registry.PAPER_SEARCH,
 )
 
 # Parameterless code-profile rails (the code variant of the common rails plus

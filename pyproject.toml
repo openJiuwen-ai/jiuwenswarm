@@ -118,6 +118,8 @@ distribute = ["openjiuwen[postgres,zmq]"]
 claude = ["openjiuwen[claude]"]
 codex = ["openjiuwen[codex]"]
 shell-ast = []
+# Drawing for the research pipeline (scripts/run_research_*.py); a replay needs none of it.
+research = ["matplotlib>=3.8"]
 # Same packages as [dependency-groups] test (pip install -e ".[test]")
 test = [
     "a2a-sdk[http-server]==1.0.0",

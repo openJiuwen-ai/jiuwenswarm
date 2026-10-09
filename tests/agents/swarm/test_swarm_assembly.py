@@ -257,6 +257,7 @@ _COMMON_TOOL_NAMES: frozenset[str] = frozenset(
         registry.XIAOYI_PHONE,
         registry.CRON_TOOLS,
         registry.SEND_FILE,
+        registry.PAPER_SEARCH,
     }
 )
 

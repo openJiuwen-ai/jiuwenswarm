@@ -1491,6 +1491,16 @@ hooks:
   #         command: "echo 'agent stopping'"
 
 
+# RigorAuditRail：科研产出的严谨性地板，挂在每个 team 成员的 after_model_call 上。
+# 八项算术可裁决的检查（GRIM 均值可行性、p 值印成恰好为零、百分比超 100、方差坍缩、
+# 置信区间颠倒/零宽、占位符残留、数值全落在取整网格上），findings
+# 经 PromptSection（priority 44）回注，生成 agent 下一轮即可看见自己上一轮的算术错误。
+#
+# 默认开启：该 rail 不发起任何模型调用（测试以源码断言锁死），所以通常要关一个能力的
+# 理由——预算——在这里不成立。设为 false 即关闭。
+rigor_audit:
+  enabled: true
+
 mcp:
   servers: []
   # 示例：
