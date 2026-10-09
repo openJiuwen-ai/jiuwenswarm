@@ -31,6 +31,7 @@ class MockToolInputs:
 class MockCallbackContext:
     inputs: MockToolInputs = field(default_factory=MockToolInputs)
     extra: dict = field(default_factory=dict)
+    session: Any = None
 
 
 def _rail_with_mocked_executor(config, results):
@@ -67,6 +68,26 @@ class TestBeforeToolCall:
         await rail.before_tool_call(ctx)
         # ctx 不应被修改
         assert "_skip_tool" not in ctx.extra
+
+    @pytest.mark.asyncio
+    async def test_passes_session_id_from_context_session(self):
+        config = self._make_config(
+            PreToolUse=[("*", [{"command": "echo ok", "timeout": 5}])]
+        )
+        rail = _rail_with_mocked_executor(config, [])
+        ctx = MockCallbackContext(
+            inputs=MockToolInputs(tool_name="Bash"),
+            session=type(
+                "Session",
+                (),
+                {"get_session_id": lambda self: "session-5081"},
+            )(),
+        )
+
+        await rail.before_tool_call(ctx)
+
+        hook_input = rail._executor.run_all.await_args.kwargs["hook_input"]
+        assert hook_input["session_id"] == "session-5081"
 
     @pytest.mark.asyncio
     async def test_blocking_hook_sets_skip_tool(self):
