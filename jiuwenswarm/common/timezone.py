@@ -39,9 +39,8 @@ def get_default_timezone() -> ZoneInfo:
         return ZoneInfo(name)
     except ZoneInfoNotFoundError:
         logger.warning(
-            "Invalid timezone %r in %s; falling back to %s",
+            "Invalid timezone %r; falling back to %s",
             name,
-            ENV_TIMEZONE,
             FALLBACK_TIMEZONE,
         )
         return ZoneInfo(FALLBACK_TIMEZONE)
