@@ -60,7 +60,7 @@ from jiuwenswarm.common.e2a.wire_codec import (
 )
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.version import __version__
+from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
@@ -10169,7 +10169,7 @@ class AgentWebSocketServer:
                     channel_id=request.channel_id,
                     ok=True,
                     payload={
-                        "version": __version__,
+                        "version": get_runtime_version(),
                         "session_id": session_id,
                         "cwd": str(params.get("cwd", "") or os.getcwd()),
                         "model": model_name,

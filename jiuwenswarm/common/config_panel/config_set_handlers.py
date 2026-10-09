@@ -85,7 +85,7 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
     set_default_model_provider_in_entries,
 )
 from jiuwenswarm.common.utils import get_env_file
-from jiuwenswarm.common.version import __version__
+from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.server.runtime.a2ui.integration import (
     get_a2ui_config_payload,
     get_default_a2ui_config_payload,
@@ -1433,7 +1433,7 @@ async def config_get_handler(
         param_key: (os.getenv(env_key) or "")
         for param_key, env_key in CONFIG_SET_ENV_MAP.items()
     }
-    payload["app_version"] = __version__
+    payload["app_version"] = get_runtime_version()
     runtime_platform = (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
     payload["runtime_platform"] = runtime_platform
     payload["external_cli_agents_supported"] = "false" if runtime_platform == "harmony" else "true"
