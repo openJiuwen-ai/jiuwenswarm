@@ -26,6 +26,17 @@ from jiuwenswarm.common.e2a.wire_codec import (
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 
 
+@pytest.mark.parametrize("source", [None, "team_background", "user"])
+def test_regular_team_delta_keeps_existing_identity_contract(source: str | None) -> None:
+    payload = {"event_type": "chat.delta", "content": "text", "request_id": "business", "rid": "round"}
+    if source is not None:
+        payload["source"] = source
+    chunk = AgentResponseChunk(request_id="frame", channel_id="web", payload=payload, is_complete=False)
+    restored = parse_agent_server_wire_chunk(encode_agent_chunk_for_wire(chunk, response_id="frame", sequence=1))
+    assert restored.request_id == "frame"
+    assert restored.payload == {key: value for key, value in payload.items() if key != "request_id"}
+
+
 def test_roundtrip_unary_ok() -> None:
     orig = AgentResponse(
         request_id="r1",

@@ -3500,6 +3500,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
             <div className="chat-input-toolbar" data-testid="chat-panel-input-toolbar">
               <div className="chat-input-toolbar-left" data-testid="chat-panel-input-toolbar-left">
+                {isTeamMode && organizationUiEnabled && (
+                  <TeamSelector sessionId={activeSessionId} isProcessing={isProcessing} />
+                )}
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -3887,8 +3890,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             />
                           )}
                         </div>
-                  {isTeamMode && organizationUiEnabled && <TeamSelector sessionId={activeSessionId} isProcessing={isProcessing} />}
-                  {!isTeamMode && (
+                        {!isTeamMode && (
                           <div className="chat-attach-menu-item-anchor">
                             <button
                               type="button"

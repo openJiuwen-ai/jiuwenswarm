@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -12,6 +13,72 @@ from jiuwenswarm.agents.harness.team.expert_org.launcher import (
     JiuwenExpertTeamLauncher,
     _align_spec_storage,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["org_summary_background", "org_expert_background"])
+async def test_only_summary_errors_notify_organization_runtime(monkeypatch, source):
+    from jiuwenswarm.server.runtime.agent_adapter import team_helpers
+    from jiuwenswarm.server.utils import stream_utils
+
+    monkeypatch.setattr(team_helpers, "_is_leader_output", lambda chunk: False)
+    monkeypatch.setattr(team_helpers, "_is_teammate_output", lambda chunk: True)
+    monkeypatch.setattr(team_helpers, "_enrich_teammate_event", lambda parsed, chunk: parsed)
+    monkeypatch.setattr(stream_utils, "parse_stream_chunk", lambda chunk: {
+        "event_type": "chat.error", "member_name": "delivery-drafter", "error": "iteration limit",
+    })
+    org_runtime = SimpleNamespace(notify_summary_member_failure=AsyncMock())
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=SimpleNamespace(), organization_runtime=org_runtime)
+    launcher._push_expert_payload = AsyncMock(return_value=True)
+    await launcher._relay_expert_chunk(
+        object(), team_id="summary", session_id="session", channel_id="web",
+        round_id="org-turn", frame_sequence=12, source=source,
+    )
+    assert org_runtime.notify_summary_member_failure.await_count == (1 if source == "org_summary_background" else 0)
+    if source == "org_summary_background":
+        assert org_runtime.notify_summary_member_failure.call_args.kwargs["turn_id"] == "org-turn:12"
+    launcher._push_expert_payload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", [
+    "org_expert_background", "org_summary_background", "org_root_background", "org_root_delivery",
+])
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+async def test_organization_stream_keeps_round_id_through_web_gateway(source: str, role: str) -> None:
+    """Transport frames stay unique while browser chunks share one request boundary."""
+    import json
+
+    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+
+    transport = SimpleNamespace(send_push=AsyncMock(return_value=True))
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=SimpleNamespace())
+    launcher._get_push_transport = lambda: transport
+    chunks = [
+        ("chat.delta", "**处理"), ("chat.delta", "结论**"), ("chat.delta", "：完成。"),
+        ("chat.final", "**处理结论**：完成。"),
+    ]
+    for sequence, (event, content) in enumerate(chunks):
+        assert await launcher._push_expert_payload(
+            {"event_type": event, "content": content, "role": role, "member_name": "analyst"},
+            team_id="expert", session_id="session", channel_id="web",
+            round_id="org-round", frame_sequence=sequence, source=source,
+        )
+    pushes = [call.args[0] for call in transport.send_push.call_args_list]
+    assert len({push["request_id"] for push in pushes}) == 4
+    events = []
+    for push in pushes:
+        wire = json.loads(json.dumps(build_server_push_wire(push)))
+        chunk = parse_agent_server_wire_chunk(wire)
+        assert chunk.request_id == push["request_id"]
+        message = MessageHandler._chunk_to_message(chunk, "session")
+        events.append(WebChannel._build_event_payload(message, chunk.payload["event_type"]))
+    assert {event["request_id"] for event in events} == {"org-round"}
+    assert "".join(event["content"] for event in events[:-1]) == events[-1]["content"]
+    assert all(event["role"] == role and event["member_name"] == "analyst" for event in events)
 
 
 class _FakeSpec:

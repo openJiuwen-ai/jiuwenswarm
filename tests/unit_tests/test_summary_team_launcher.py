@@ -10,6 +10,15 @@ from jiuwenswarm.agents.harness.team.summary_org.launcher import (
 from jiuwenswarm.agents.harness.team.summary_org.spec import build_summary_team_spec
 
 
+@pytest.mark.parametrize("budget", [None, 0, -1, True, 37])
+def test_summary_agent_uses_a_finite_configured_budget(budget):
+    from jiuwenswarm.agents.harness.team.summary_org.spec import _summary_agent_spec
+
+    source = SimpleNamespace(model=None, language="cn", max_iterations=budget)
+    spec = _summary_agent_spec(source, system_prompt="summary")
+    assert spec.max_iterations == (37 if budget == 37 else 200)
+
+
 @pytest.mark.asyncio
 async def test_summary_team_launcher_pauses_after_build(monkeypatch):
     """A newly created Summary Team must be paused before organization scheduling begins."""

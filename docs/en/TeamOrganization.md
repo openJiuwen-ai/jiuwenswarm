@@ -69,7 +69,7 @@ This is a collaboration test, not full due diligence. Answer only whether Zed is
 - Open-source and license overview: https://zed.dev/software-overview
 - Repository: https://github.com/zed-industries/zed
 
-Create a collaboration organization and bring in the legal, technical, and market expert groups to work with the current investment and finance group. The person responsible for the overall matter should choose an aggregation approach appropriate to the work, preferably using an independent summary team for accepted results. The current Team's investment view must also be a formal, reviewable deliverable.
+Create a collaboration organization and bring in the legal, technical, and market expert groups to work with the current investment and finance group. Please create and claim the overall task before splitting it into the four domain work items below. The person responsible for the overall matter should choose an aggregation approach appropriate to the work, preferably using an independent summary team for accepted results. The current Team's investment view must also be a formal, reviewable deliverable.
 
 Put four work items in the shared task pool and let capable expert groups claim them. Do not assign them to internal individual members. Each item must be at most 120 Chinese characters or an equivalently brief English paragraph, contain one confirmed finding and one risk or item to verify, and cite at most one of the sources above:
 

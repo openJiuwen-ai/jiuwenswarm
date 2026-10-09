@@ -282,6 +282,8 @@ class JiuwenExpertTeamLauncher:
         finalized = False
         round_id = str(request_id or "").strip() or f"org-{uuid.uuid4().hex}"
         frame_sequence = 0
+        summary_key = turn_inputs.get("_org_summary_key") if isinstance(turn_inputs, dict) else None
+        summary_task_id = str(summary_key[2]) if isinstance(summary_key, (list, tuple)) and len(summary_key) == 3 else None
         leader_text_parts: list[str] = []
         saw_leader_final = False
         try:
@@ -335,6 +337,7 @@ class JiuwenExpertTeamLauncher:
                         round_id=round_id,
                         frame_sequence=frame_sequence,
                         source=source,
+                        summary_task_id=summary_task_id,
                     )
                     if relayed is not None:
                         frame_sequence += 1
@@ -418,6 +421,7 @@ class JiuwenExpertTeamLauncher:
         round_id: str,
         frame_sequence: int = 0,
         source: str = "org_expert_background",
+        summary_task_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Convert one Team output frame to a team-attributed server push."""
         from openjiuwen.agent_teams.schema.team import TeamRole
@@ -444,6 +448,19 @@ class JiuwenExpertTeamLauncher:
         else:
             parsed["role"] = TeamRole.LEADER.value
         parsed = _truncate_team_tool_result_event(parsed)
+        if source == "org_summary_background" and parsed.get("event_type") == "chat.error":
+            notify = getattr(self._organization_runtime, "notify_summary_member_failure", None)
+            if callable(notify):
+                try:
+                    await notify(
+                        team_id=team_id, session_id=session_id,
+                        member_name=str(parsed.get("member_name") or "summary-leader"),
+                        reason=str(parsed.get("error") or "Summary execution failed"),
+                        turn_id=f"{round_id}:{frame_sequence}",
+                        summary_task_id=summary_task_id,
+                    )
+                except Exception:
+                    logger.exception("[ExpertTeamLauncher] Summary failure notification failed team=%s", team_id)
         await self._push_expert_payload(
             parsed,
             team_id=team_id,
@@ -472,6 +489,9 @@ class JiuwenExpertTeamLauncher:
 
         parsed = dict(payload)
         parsed["rid"] = round_id
+        # WebGateway preserves request_id, not rid. Keep the browser turn
+        # stable while the outer push ID remains unique for each frame.
+        parsed["request_id"] = round_id
         parsed["source"] = source
         parsed = _tag_team_output_origin(parsed, team_id)
         event_type = str(parsed.get("event_type") or "")

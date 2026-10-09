@@ -8,9 +8,12 @@ from typing import Any
 
 
 def _summary_agent_spec(source: Any, *, system_prompt: str) -> Any:
-    """Keep only the configured model and language while dropping user-team capabilities."""
+    """Keep model, language and a finite budget while dropping user-team capabilities."""
     from openjiuwen.harness.schema.deep_agent_spec import DeepAgentSpec, WorkspaceSpec
 
+    budget = getattr(source, "max_iterations", None)
+    if isinstance(budget, bool) or not isinstance(budget, int) or budget <= 0:
+        budget = 200
     return DeepAgentSpec(
         model=getattr(source, "model", None),
         system_prompt=system_prompt,
@@ -24,7 +27,7 @@ def _summary_agent_spec(source: Any, *, system_prompt: str) -> Any:
         add_general_purpose_agent=False,
         enable_security_rail=True,
         enable_tool_resilience_rail=True,
-        max_iterations=12,
+        max_iterations=budget,
         workspace=WorkspaceSpec(stable_base=True),
         cwd=None,
         project_root=None,
@@ -43,7 +46,7 @@ def build_summary_team_spec(
     """Build the fixed leader-plus-two-teammate Summary Team spec.
 
     The host's normal resolver is consulted only for its configured default
-    model connection. No user Team members, tools, workspace, AgentGroup, or
+    model connection and finite iteration budgets. No user Team members, tools, workspace, AgentGroup, or
     template prompt is copied into the returned specification.
     """
     from openjiuwen.agent_teams.schema.blueprint import (
@@ -70,18 +73,26 @@ def build_summary_team_spec(
         "and has a non-empty concise abstract. If it does not, ask delivery-drafter for one focused revision. "
         "After the verification passes, call org_summary_complete exactly once. Do not poll, wait, create, "
         "claim, delegate, review, or modify organization tasks."
+        " Send the initial drafting instruction once and request at most one focused revision. "
+        "If a teammate reports an execution failure, inspect its existing draft instead of waiting for it. "
+        "Never treat an error or a draft file alone as completion. Resolve internal tasks truthfully before "
+        "submission; cancel abandoned internal work rather than marking it completed."
     )
     integrator_prompt = (
         "You are the source integrator. Turn the supplied source snapshot into a structured factual "
         "outline with source attribution, then send the complete outline back to summary-leader by internal "
         "Team message or write it to the Summary Team workspace. Do not modify Organization source artifacts "
         "or create tasks."
+        " After delivering the outline, complete the assigned internal task with claim_task(status=completed)."
     )
     drafter_prompt = (
         "You are the delivery drafter. Create a user-facing draft only from the supplied source snapshot. "
         "Return the complete draft and a concise abstract to summary-leader by internal Team message or the "
         "Summary Team workspace. Final deliverables belong in the Organization workspace summary/ directory. "
         "Do not modify source-Team artifacts or create tasks."
+        " Perform at most one format check and one focused correction; do not repeatedly generate counting "
+        "scripts. Send the complete draft, abstract and artifact path to summary-leader, then complete the "
+        "assigned internal task with claim_task(status=completed). A file write alone is not delivery."
     )
     metadata = {
         "summary_team": True,

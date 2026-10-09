@@ -6,17 +6,16 @@
  * （organization_id / display_name / owner_team_id / leaders / metadata），
  * tasks 是 OrgTask.brief() 的列表。
  *
- * 这里刻意不做轮询：org 快照只在"选中的 team 变了"和用户手动刷新时才拉，
- * 因为 task pool 的实时变动已经由 team.task 事件流覆盖了任务板，再叠一层定时
- * 请求只是白烧配额。
+ * 面板先解析当前会话的 Team，再查询组织。相关事件触发刷新，低频刷新兜底，
+ * 请求与订阅只在实验开关开启且面板挂载时启用。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
-import { webClient } from '../../services/webClient';
 import { useChatStore, useTeamSelectorStore } from '../../stores';
+import { useOrganizationSnapshot } from '../../features/teamOrganization/useOrganizationSnapshot';
 
 interface OrgTeamHandle {
   organization_id?: string | null;
@@ -119,47 +118,9 @@ export interface OrgInfoPanelProps {
 export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const selectedTeamId = useTeamSelectorStore((s) =>
-    activeSessionId ? (s.runtimes[activeSessionId]?.selectedTeamId ?? null) : null,
-  );
   const runtimeTeams = useTeamSelectorStore((s) => (activeSessionId ? s.runtimes[activeSessionId]?.teams : undefined));
 
-  const [snapshot, setSnapshot] = useState<OrgSnapshotPayload | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const requestSeqRef = useRef(0);
-
-  const load = useCallback(async (sessionId: string, teamId: string | null) => {
-    const requestSeq = ++requestSeqRef.current;
-    setSnapshot(null);
-    setError(null);
-    setLoading(true);
-    try {
-      const payload = await webClient.request<OrgSnapshotPayload>(
-        'org.snapshot',
-        { session_id: sessionId, team_id: teamId ?? undefined },
-        { timeoutMs: 8000 },
-      );
-      if (requestSeq !== requestSeqRef.current) return;
-      setSnapshot(payload ?? null);
-    } catch (e) {
-      if (requestSeq !== requestSeqRef.current) return;
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (requestSeq === requestSeqRef.current) setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!activeSessionId) {
-      requestSeqRef.current += 1;
-      setSnapshot(null);
-      setError(null);
-      setLoading(false);
-      return;
-    }
-    void load(activeSessionId, selectedTeamId);
-  }, [activeSessionId, selectedTeamId, load]);
+  const { snapshot, loading, error, noTeam, refresh } = useOrganizationSnapshot<OrgSnapshotPayload>(activeSessionId);
 
   const organization = snapshot?.organization ?? null;
   const tasks = snapshot?.tasks ?? [];
@@ -193,7 +154,17 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
             {t('team.org.title')}
           </div>
           <div className="truncate text-xs text-text-muted" data-testid="team-area-org-info-org-name">
-            {organization?.display_name?.trim() || organization?.organization_id || t('team.org.noOrganization')}
+            {organization?.display_name?.trim() ||
+              organization?.organization_id ||
+              (error
+                ? t('team.org.loadFailed')
+                : loading
+                  ? t('team.org.loading')
+                  : noTeam
+                    ? t('team.org.noTeam')
+                    : snapshot
+                      ? t('team.org.noOrganization')
+                      : t('team.org.loading'))}
           </div>
         </div>
         <button
@@ -202,21 +173,33 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
           data-testid="team-area-org-info-refresh"
           title={t('team.org.refresh')}
           disabled={loading}
-          onClick={() => void load(activeSessionId, selectedTeamId)}
+          onClick={() => void refresh()}
         >
           <RefreshCw size={13} className={loading ? 'animate-spin' : undefined} />
         </button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3" data-testid="team-area-org-info-body">
-        {!organization && !loading && (
+        {(loading || noTeam) && !snapshot && !error && (
+          <div
+            className="py-6 text-center text-xs text-text-muted"
+            data-testid="team-area-org-info-status"
+            data-variant={noTeam ? 'no-team' : 'loading'}
+          >
+            {t(noTeam ? 'team.org.noTeam' : 'team.org.loading')}
+          </div>
+        )}
+        {!organization && snapshot && !loading && !error && (
           <div className="py-6 text-center text-xs text-text-muted" data-testid="team-area-org-info-empty">
             {t('team.org.empty')}
           </div>
         )}
 
         {error && (
-          <div className="mb-3 rounded border border-danger/30 bg-danger-subtle px-2 py-1.5 text-xs text-danger">
+          <div
+            className="mb-3 rounded border border-danger/30 bg-danger-subtle px-2 py-1.5 text-xs text-danger"
+            data-testid="team-area-org-info-error"
+          >
             {error}
           </div>
         )}
@@ -276,115 +259,122 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
           </section>
         )}
 
-        <section className="mb-4" data-testid="team-area-org-info-stats">
-          <div className="grid grid-cols-2 gap-2">
-            {statCards.map((card) => (
-              <div
-                key={card.key}
-                className="rounded border border-border bg-secondary/40 px-2 py-1.5"
-                data-testid="team-area-org-info-stat-card"
-                data-variant={card.key}
-              >
-                <div className="text-[10px] text-text-muted">{card.label}</div>
-                <div className="text-sm font-semibold text-text">{card.value}</div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section data-testid="team-area-org-info-task-pool">
-          <div className="mb-1.5 flex items-baseline justify-between">
-            <span className="text-xs font-medium text-text-muted">{t('team.org.taskPool')}</span>
-            <span className="text-[10px] text-text-muted">{tasks.length}</span>
-          </div>
-
-          {tasks.length === 0 ? (
-            <div className="py-3 text-center text-xs text-text-muted" data-testid="team-area-org-info-task-pool-empty">
-              {t('team.org.taskPoolEmpty')}
-            </div>
-          ) : (
-            <div className="space-y-1.5">
-              {tasks.map((task) => (
-                <div
-                  key={task.task_id}
-                  className="rounded border border-border px-2 py-1.5"
-                  data-testid="team-area-org-info-task-row"
-                  data-task-id={task.task_id}
-                  data-task-status={task.status ?? ''}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <span
-                      className="min-w-0 flex-1 truncate text-xs font-medium text-text"
-                      title={task.description || task.title || task.task_id}
-                    >
-                      {task.title?.trim() || task.task_id}
-                    </span>
-                    {task.status && (
-                      <span
-                        className={clsx(
-                          'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
-                          statusTone(task.status),
-                        )}
-                        data-testid="team-area-org-info-task-status"
-                      >
-                        {task.status}
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-text-muted">
-                    <span className="font-mono" data-testid="team-area-org-info-task-id">
-                      {task.task_id}
-                    </span>
-                    {task.task_type && <span>{task.task_type}</span>}
-                    {assignmentLabel(task) && (
-                      <span data-testid="team-area-org-info-task-assignee">{assignmentLabel(task)}</span>
-                    )}
-                    {task.parent_task_id && (
-                      <span>
-                        {t('team.org.taskParent')}: {task.parent_task_id}
-                      </span>
-                    )}
-                    {formatUpdatedAt(task.updated_at) && <span>{formatUpdatedAt(task.updated_at)}</span>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section className="mt-4" data-testid="team-area-org-info-pending-reviews">
-          <div className="mb-1.5 flex items-baseline justify-between">
-            <span className="text-xs font-medium text-text-muted">{t('team.org.pendingReviews')}</span>
-            <span className="text-[10px] text-text-muted">{reviews.length}</span>
-          </div>
-          {reviews.length === 0 ? (
-            <div className="py-2 text-center text-[11px] text-text-muted">{t('team.org.pendingReviewsEmpty')}</div>
-          ) : (
-            <div className="space-y-1">
-              {reviews.map((entry, index) => {
-                const task = entry.task;
-                const reviewer =
-                  typeof entry.review?.reviewer_member_name === 'string'
-                    ? entry.review.reviewer_member_name
-                    : typeof entry.review?.reviewer_id === 'string'
-                      ? entry.review.reviewer_id
-                      : '';
-                return (
+        {snapshot && (
+          <>
+            <section className="mb-4" data-testid="team-area-org-info-stats">
+              <div className="grid grid-cols-2 gap-2">
+                {statCards.map((card) => (
                   <div
-                    key={`${task?.task_id ?? index}`}
-                    className="flex items-baseline justify-between gap-2 rounded border border-border px-2 py-1 text-[11px]"
-                    data-testid="team-area-org-info-pending-review-row"
+                    key={card.key}
+                    className="rounded border border-border bg-secondary/40 px-2 py-1.5"
+                    data-testid="team-area-org-info-stat-card"
+                    data-variant={card.key}
                   >
-                    <span className="min-w-0 flex-1 truncate text-text" title={task?.title ?? ''}>
-                      {task?.title?.trim() || task?.task_id || '-'}
-                    </span>
-                    {reviewer && <span className="shrink-0 text-text-muted">{reviewer}</span>}
+                    <div className="text-[10px] text-text-muted">{card.label}</div>
+                    <div className="text-sm font-semibold text-text">{card.value}</div>
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
+                ))}
+              </div>
+            </section>
+
+            <section data-testid="team-area-org-info-task-pool">
+              <div className="mb-1.5 flex items-baseline justify-between">
+                <span className="text-xs font-medium text-text-muted">{t('team.org.taskPool')}</span>
+                <span className="text-[10px] text-text-muted">{tasks.length}</span>
+              </div>
+
+              {tasks.length === 0 ? (
+                <div
+                  className="py-3 text-center text-xs text-text-muted"
+                  data-testid="team-area-org-info-task-pool-empty"
+                >
+                  {t('team.org.taskPoolEmpty')}
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {tasks.map((task) => (
+                    <div
+                      key={task.task_id}
+                      className="rounded border border-border px-2 py-1.5"
+                      data-testid="team-area-org-info-task-row"
+                      data-task-id={task.task_id}
+                      data-task-status={task.status ?? ''}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span
+                          className="min-w-0 flex-1 truncate text-xs font-medium text-text"
+                          title={task.description || task.title || task.task_id}
+                        >
+                          {task.title?.trim() || task.task_id}
+                        </span>
+                        {task.status && (
+                          <span
+                            className={clsx(
+                              'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
+                              statusTone(task.status),
+                            )}
+                            data-testid="team-area-org-info-task-status"
+                          >
+                            {task.status}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-text-muted">
+                        <span className="font-mono" data-testid="team-area-org-info-task-id">
+                          {task.task_id}
+                        </span>
+                        {task.task_type && <span>{task.task_type}</span>}
+                        {assignmentLabel(task) && (
+                          <span data-testid="team-area-org-info-task-assignee">{assignmentLabel(task)}</span>
+                        )}
+                        {task.parent_task_id && (
+                          <span>
+                            {t('team.org.taskParent')}: {task.parent_task_id}
+                          </span>
+                        )}
+                        {formatUpdatedAt(task.updated_at) && <span>{formatUpdatedAt(task.updated_at)}</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="mt-4" data-testid="team-area-org-info-pending-reviews">
+              <div className="mb-1.5 flex items-baseline justify-between">
+                <span className="text-xs font-medium text-text-muted">{t('team.org.pendingReviews')}</span>
+                <span className="text-[10px] text-text-muted">{reviews.length}</span>
+              </div>
+              {reviews.length === 0 ? (
+                <div className="py-2 text-center text-[11px] text-text-muted">{t('team.org.pendingReviewsEmpty')}</div>
+              ) : (
+                <div className="space-y-1">
+                  {reviews.map((entry, index) => {
+                    const task = entry.task;
+                    const reviewer =
+                      typeof entry.review?.reviewer_member_name === 'string'
+                        ? entry.review.reviewer_member_name
+                        : typeof entry.review?.reviewer_id === 'string'
+                          ? entry.review.reviewer_id
+                          : '';
+                    return (
+                      <div
+                        key={`${task?.task_id ?? index}`}
+                        className="flex items-baseline justify-between gap-2 rounded border border-border px-2 py-1 text-[11px]"
+                        data-testid="team-area-org-info-pending-review-row"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-text" title={task?.title ?? ''}>
+                          {task?.title?.trim() || task?.task_id || '-'}
+                        </span>
+                        {reviewer && <span className="shrink-0 text-text-muted">{reviewer}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </>
+        )}
       </div>
     </div>
   );

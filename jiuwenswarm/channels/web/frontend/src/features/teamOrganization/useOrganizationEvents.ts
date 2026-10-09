@@ -41,10 +41,11 @@ export function useOrganizationEvents(): void {
           return;
         }
         const member = String(payload.member_name ?? 'team_leader');
-        const streamKey = `${key}:${member}:${payload.rid ?? ''}`;
+        const streamKey = `${key}:${member}:${payload.request_id ?? payload.rid ?? ''}`;
         let id = streams.get(streamKey);
         const content = String(payload.content ?? '');
         if ((event === 'chat.delta' || event === 'chat.final') && content) {
+          chat.closeReasoning(key);
           if (!id) {
             id = `${payload.role === 'leader' || member === 'team_leader' ? 'team-leader-' : `team-member-${member}@`}${generateUuidV4()}`;
             streams.set(streamKey, id);
@@ -64,6 +65,7 @@ export function useOrganizationEvents(): void {
         } else if (event === 'chat.reasoning') {
           chat.appendReasoning(key, content);
         } else if (event === 'chat.tool_call') {
+          chat.closeReasoning(key);
           chat.addToolCall(key, normalizeToolCallPayload(payload));
         } else if (event === 'chat.tool_result') {
           chat.addToolResult(key, normalizeToolResultPayload(payload));
