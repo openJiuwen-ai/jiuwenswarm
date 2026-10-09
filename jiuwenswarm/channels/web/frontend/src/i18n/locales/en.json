@@ -873,6 +873,7 @@
     "resume": "Resume",
     "queuePausedConfirm": "You are about to send a message. Clear the {{count}} queued message(s)?\n\nClick \"OK\" to clear the queue and send; click \"Cancel\" to keep the queue (message will be added to the queue).",
     "goalAttachmentsBlocked": "Attachments are not supported when setting a goal. Remove them first, or send the attachment in a separate message.",
+    "commandRequiresSession": "This command requires an existing conversation. Start a conversation first.",
     "editTaskDropAttachments": "Editing will remove the {{count}} attachment(s) carried by this task. Continue?",
     "holdToSpeak": "Hold to speak",
     "send": "Send (Enter)",

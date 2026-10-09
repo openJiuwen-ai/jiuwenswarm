@@ -864,6 +864,7 @@
     "resume": "继续执行",
     "queuePausedConfirm": "你即将发送一条消息，要清除正在排队的{{count}}条消息吗？\n\n点击「确定」清空队列并发送；点击「取消」保持队列（消息将加入队列）。",
     "goalAttachmentsBlocked": "设为目标时不支持附件，请先移除附件，或先单独发送附件消息。",
+    "commandRequiresSession": "该命令需在对话详情页使用，请先开始一个对话。",
     "editTaskDropAttachments": "编辑将移除该任务携带的 {{count}} 个附件，是否继续？",
     "holdToSpeak": "按住说话",
     "send": "发送 (Enter)",

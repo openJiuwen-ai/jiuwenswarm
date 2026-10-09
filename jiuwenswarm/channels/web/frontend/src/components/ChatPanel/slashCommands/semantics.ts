@@ -8,6 +8,14 @@ export function getWebSlashCommandsForMode<T extends { name: string }>(commands:
   return supportsWebSlashCommands(mode) ? commands : [];
 }
 
+/** 菜单和执行入口共用：命令默认需要真实会话，显式声明 false 才允许在欢迎页使用。 */
+export function canUseSlashCommand(
+  command: { requiresSession?: boolean } | undefined,
+  hasRealSession: boolean,
+): boolean {
+  return command != null && (command.requiresSession === false || hasRealSession);
+}
+
 /** 命令说明由后端维护；旧服务端或缺少当前语言时回退到原 description。 */
 export function resolveSlashCommandDescription(
   command: { description: string; description_i18n?: Record<string, string> },
