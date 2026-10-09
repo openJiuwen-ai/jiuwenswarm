@@ -169,6 +169,45 @@ def _touch_remote_cron_session_catalog(session_id: str, *, now_ts: float) -> Non
         )
 
 
+async def _persist_remote_cron_history(job: CronJob, state: CronRunState) -> None:
+    """Save the execution body independently of Pod-local files and push delivery."""
+    if not is_remote_storage() or not state.exec_session_id or not state.result_text:
+        return
+    try:
+        from jiuwenswarm.channels.web.history_store.api import get_default_store
+
+        store = get_default_store()
+        request_id = f"cron-{state.run_id}"
+        query = str(job.description or job.name or "").strip()
+        if query:
+            await store.record_user(
+                request_id=request_id,
+                session_id=state.exec_session_id,
+                query=query,
+                ts=state.started_at or state.finished_at,
+                user=str(job.user_id or "").strip() or "guest",
+                group_id=job.group_id,
+                bot_id=job.bot_id,
+                project_id=job.project_id,
+                cron_id=job.id,
+                work_mode=job.work_mode or DEFAULT_WEB_WORK_MODE,
+            )
+        await store.record_assistant(
+            request_id=request_id,
+            session_id=state.exec_session_id,
+            content=state.result_text,
+            event_type="chat.final" if state.status == "succeeded" else "chat.error",
+            ts=state.finished_at,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[Cron] persist exec history failed job=%s session_id=%s",
+            job.id,
+            state.exec_session_id,
+            exc_info=True,
+        )
+
+
 def _extract_workflow_result_text(payload: dict | None) -> str | None:
     if not isinstance(payload, dict):
         return None
@@ -1732,9 +1771,9 @@ class CronSchedulerService:
                 # a job the user has removed.
                 if not state.result_text and state.error and not is_cancelled_ghost:
                     state.result_text = f"[cron] 任务执行失败: {state.error}"
-                # 仅在 local 模式写 gateway 本地磁盘兜底历史；remote 模式下会话
-                # 数据由 AgentServer 持久化，本地写入会污染 gateway 磁盘并被
-                # project.get_sessions 误读为普通会话(cron_id 丢失)。
+                if not is_cancelled_ghost:
+                    await _persist_remote_cron_history(job, state)
+                # local 模式保留磁盘兜底；remote 正文写历史库，避免依赖原 Pod。
                 local_fallback_ok = not is_cancelled_ghost and not is_remote_storage()
                 if state.result_text and not ok and local_fallback_ok:
                     query = ""
