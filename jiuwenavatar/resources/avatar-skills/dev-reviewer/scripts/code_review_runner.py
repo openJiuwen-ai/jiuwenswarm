@@ -66,6 +66,96 @@ REPORT_BODY_NOTE = "<!-- 以下正文由 report 根据 doc/<module>/review/resul
 DISCUSSION_LOCATIONS = {"(architecture)", "(documentation)"}
 
 
+def _find_committer_persona_yaml() -> Path | None:
+    """定位 committer persona yaml。
+
+    查找顺序：
+    1. runner 脚本目录往上找 resources/personas/committer.yaml（仓库源码 / 开发安装）
+    2. import jiuwenavatar 取包根 → resources/personas/committer.yaml（含工作区副本、wheel 安装）
+    3. 用户自定义 persona 目录（~/.jiuwenavatar/.../personas/committer.yaml）
+    """
+    # 1. 从脚本目录往上找
+    cur = _SCRIPT_DIR
+    for _ in range(8):
+        candidate = cur / "personas" / "committer.yaml"
+        if candidate.is_file():
+            return candidate
+        parent = cur.parent
+        if parent == cur:
+            break
+        cur = parent
+    # 2. 经由已安装的 jiuwenavatar 包定位 resources/personas
+    try:
+        import jiuwenavatar as _jw
+        pkg_root = Path(_jw.__file__).resolve().parent
+        candidate = pkg_root / "resources" / "personas" / "committer.yaml"
+        if candidate.is_file():
+            return candidate
+    except Exception:
+        pass
+    # 3. 用户自定义 persona 目录
+    home_persona = Path.home() / ".jiuwenavatar" / "agent" / "workspace" / "personas" / "committer.yaml"
+    if home_persona.is_file():
+        return home_persona
+    return None
+
+
+def _load_pr_review_limits() -> tuple[int, int, bool]:
+    """从 committer persona yaml 的 pr_review 段读取 PR 规模限制。
+
+    优先级：committer.yaml 的 pr_review > 环境变量（兼容旧用法）> 内置默认值。
+    返回 (max_diff_lines, max_changed_files, skip_pr_comment)。
+    设为 0 关闭对应检查；skip_pr_comment 控制超限时是否往 PR 发评论。
+    """
+    max_lines = 20000
+    max_files = 100
+    skip_comment = False
+    # 兼容旧的环境变量覆盖
+    env_lines = os.getenv("MAX_PR_DIFF_LINES")
+    env_files = os.getenv("MAX_PR_CHANGED_FILES")
+    env_skip = os.getenv("SKIP_PR_COMMENT")
+    if env_lines is not None:
+        try:
+            max_lines = int(env_lines)
+        except ValueError:
+            pass
+    if env_files is not None:
+        try:
+            max_files = int(env_files)
+        except ValueError:
+            pass
+    if env_skip is not None:
+        skip_comment = env_skip.strip() in ("1", "true", "True", "yes")
+    # committer.yaml 的 pr_review 段优先（配置单一来源，归属于 persona）
+    try:
+        import yaml as _yaml
+        path = _find_committer_persona_yaml()
+        if path is not None:
+            with path.open("r", encoding="utf-8") as f:
+                data = _yaml.safe_load(f) or {}
+            persona = data.get("persona") if isinstance(data, dict) else None
+            if isinstance(persona, dict):
+                pr_review = persona.get("pr_review") or {}
+                if isinstance(pr_review, dict):
+                    v = pr_review.get("max_diff_lines")
+                    if isinstance(v, int) or (isinstance(v, str) and v.strip().lstrip("-").isdigit()):
+                        max_lines = int(v)
+                    v = pr_review.get("max_changed_files")
+                    if isinstance(v, int) or (isinstance(v, str) and v.strip().lstrip("-").isdigit()):
+                        max_files = int(v)
+                    v = pr_review.get("skip_pr_comment")
+                    if isinstance(v, bool):
+                        skip_comment = v
+                    elif isinstance(v, str):
+                        skip_comment = v.strip() in ("1", "true", "True", "yes")
+    except Exception:
+        pass
+    return max_lines, max_files, skip_comment
+
+
+MAX_PR_DIFF_LINES, MAX_PR_CHANGED_FILES, SKIP_PR_COMMENT = _load_pr_review_limits()
+
+
 def module_doc_dir(repo_root: Path, module: str) -> Path:
     name = module.strip().strip("/\\")
     if not name or name in {".", ".."}:
@@ -273,6 +363,21 @@ def changed_files_from_diff(diff_text: str) -> list[str]:
     return sorted(files)
 
 
+def count_diff_changed_lines(diff_text: str) -> int:
+    """统计 diff 中真正的内容变更行数（+/- 行，排除文件头/hunk 头/No newline 等元信息）."""
+    count = 0
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git") or line.startswith("+++ ") or line.startswith("--- "):
+            continue
+        if line.startswith("@@"):
+            continue
+        if line.startswith("\\ No newline"):
+            continue
+        if line.startswith("+") or line.startswith("-"):
+            count += 1
+    return count
+
+
 def changed_files_from_status(status_text: str) -> list[str]:
     files: set[str] = set()
     for line in status_text.splitlines():
@@ -470,6 +575,24 @@ def command_collect(ns: argparse.Namespace) -> int:
         changed_files = local_result.changed_files
         diff_scope = local_result.scope
         fetch_method = resolve_fetch_method(diff_text, diff_scope)
+
+    # PR 规模限制：超限则跳过检视，不生成任何报告产物。
+    diff_changed_lines = count_diff_changed_lines(diff_text)
+    over_lines = MAX_PR_DIFF_LINES > 0 and diff_changed_lines > MAX_PR_DIFF_LINES
+    over_files = MAX_PR_CHANGED_FILES > 0 and len(changed_files) > MAX_PR_CHANGED_FILES
+    if over_lines or over_files:
+        reasons = []
+        if over_lines:
+            reasons.append(f"变更行数 {diff_changed_lines} > {MAX_PR_DIFF_LINES}")
+        if over_files:
+            reasons.append(f"变更文件 {len(changed_files)} > {MAX_PR_CHANGED_FILES}")
+        print(
+            "[SKIP] PR 规模超限，跳过检视：" + "，".join(reasons) + "。"
+            "本 PR 不予检视；请直接告知用户 PR 规模过大已跳过，"
+            "不要重试、不要修改环境变量、不要以其他方式绕过本限制继续检视。",
+            file=sys.stderr,
+        )
+        return 3  # 专用退出码 3 = 规模超限跳过
 
     issue_text, issue_source, issue_warnings = read_issue(ns.issue, token=gitcode_token)
     warnings.extend(issue_warnings)
