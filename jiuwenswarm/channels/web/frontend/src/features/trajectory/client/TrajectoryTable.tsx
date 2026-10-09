@@ -357,6 +357,9 @@ function AssistantTimingPanel({ metrics }: { metrics: AssistantMetricDetail }) {
       {metrics.retryCount ? <div><dt>Retries</dt><dd>{metrics.retryCount}</dd></div> : null}
       <div><dt>Generation</dt><dd>{generationTime(metrics)}</dd></div>
       <div><dt>Throughput</dt><dd>{throughput(metrics)}</dd></div>
+      {metrics.inputObserved === false
+        ? <div><dt>Request</dt><dd>Not observed; input unknown, output may be partial</dd></div>
+        : null}
     </dl>
   )
 }
