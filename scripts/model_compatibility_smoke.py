@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -175,7 +176,8 @@ def main() -> int:
     report["evaluated_at"] = datetime.now(UTC).isoformat()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"{args.provider}: {report['status']} ({output})")
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.getLogger(__name__).info("%s: %s (%s)", args.provider, report["status"], output)
     return 0 if report["status"] == "PASS" else 1
 
 

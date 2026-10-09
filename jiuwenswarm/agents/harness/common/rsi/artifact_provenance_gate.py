@@ -138,13 +138,12 @@ class ArtifactProvenanceGate:
         checks.append(manager_check)
         inputs.append(_input_for(run_dir, "manager_state", state_path))
 
-        reporting_reports = [
-            report
-            for report in manager_reports
-            if report.get("module") == "reporting"
-            and report.get("mode") == "run"
-            and report.get("outcome") == "succeeded"
-        ]
+        reporting_reports = []
+        for report in manager_reports:
+            if (report.get("module"), report.get("mode"), report.get("outcome")) == (
+                "reporting", "run", "succeeded"
+            ):
+                reporting_reports.append(report)
         artifact_check, artifact_inputs = self._check_reporting_artifacts(
             run_dir, reporting_reports
         )
@@ -254,13 +253,12 @@ class ArtifactProvenanceGate:
                 (("path", relative),),
             )
         manager_reports = [report for report in reports if isinstance(report, dict)]
-        reporting_reports = [
-            report
-            for report in manager_reports
-            if report.get("module") == "reporting"
-            and report.get("mode") == "run"
-            and report.get("outcome") == "succeeded"
-        ]
+        reporting_reports = []
+        for report in manager_reports:
+            if (report.get("module"), report.get("mode"), report.get("outcome")) == (
+                "reporting", "run", "succeeded"
+            ):
+                reporting_reports.append(report)
         if not reporting_reports:
             return manager_reports, _failure(
                 "APG002",
@@ -428,12 +426,8 @@ class ArtifactProvenanceGate:
             tokens = model_call.get("tokens") if isinstance(model_call, dict) else None
             input_tokens = tokens.get("input") if isinstance(tokens, dict) else None
             output_tokens = tokens.get("output") if isinstance(tokens, dict) else None
-            if (
-                not isinstance(call_id, str)
-                or not call_id.strip()
-                or not _valid_token_count(input_tokens)
-                or not _valid_token_count(output_tokens)
-            ):
+            valid_call_id = isinstance(call_id, str) and bool(call_id.strip())
+            if not valid_call_id or not _valid_token_count(input_tokens) or not _valid_token_count(output_tokens):
                 invalid_lines.append(line_number)
                 continue
             if call_id in unique:
@@ -509,12 +503,12 @@ class ArtifactProvenanceGate:
                 ),
                 None,
             )
-        cited = {
-            key.strip()
-            for group in _CITATION_RE.findall(content)
-            for key in group.split(",")
-            if key.strip() and key.strip() != "*"
-        }
+        cited = set()
+        for group in _CITATION_RE.findall(content):
+            for raw_key in group.split(","):
+                key = raw_key.strip()
+                if key and key != "*":
+                    cited.add(key)
         resolved = {key.strip() for key in _BIBCITE_RE.findall(content) if key.strip()}
         missing = sorted(cited - resolved)
         if missing:

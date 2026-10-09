@@ -476,12 +476,8 @@ class ArtifactEngineAdapter:
             raise RuntimeError("PAPER final artifact is outside the task run directory") from exc
         package_name = artifact_relative.as_posix()
         prefix = "paper-optimization-"
-        if (
-            len(artifact_relative.parts) != 1
-            or not artifact_path.is_dir()
-            or not package_name.startswith(prefix)
-            or not package_name[len(prefix) :].isdigit()
-        ):
+        valid_package_name = package_name.startswith(prefix) and package_name[len(prefix):].isdigit()
+        if len(artifact_relative.parts) != 1 or not artifact_path.is_dir() or not valid_package_name:
             raise RuntimeError("PAPER final artifact is not an iteration package")
 
         tree = _plain(self.get_tree(task_id))
@@ -505,7 +501,7 @@ class ArtifactEngineAdapter:
         if not manager_dir.is_dir():
             raise RuntimeError("PAPER Manager run directory is unavailable")
 
-        iteration = int(package_name[len(prefix) :])
+        iteration = int(package_name[len(prefix):])
 
         context = GateContext(
             task_id=task_id,

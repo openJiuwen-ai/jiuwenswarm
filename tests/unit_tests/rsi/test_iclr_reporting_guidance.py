@@ -73,3 +73,5 @@ async def test_actual_writer_prompts_bind_execution_and_completed_control_facts(
         assert 'output-length or compute matching' in prompt
         assert 'Shared initial-correct responses contribute zero to a paired arm contrast' in prompt
         assert 'Identical McNemar p-values may result from identical discordant counts' in prompt
+        assert 'Zero-call replay logs describe reproduction, not original model acquisition' in prompt
+        assert 'do not claim fresh evaluations from retained evidence' in prompt

@@ -436,3 +436,76 @@ async def test_stream_protocol_done_can_settle_usage_before_transport_eof(tmp_pa
     assert ledger.snapshot()["active_reservations"] == {}
     assert client.closed is True
     ledger.close()
+
+
+@pytest.mark.asyncio
+async def test_contract_violation_keeps_charge_and_unblocks_waiters_fail_closed(tmp_path):
+    policy = _policy(budget="2.30")
+    path = tmp_path / "contract-budget.json"
+    ledger = BudgetLedger(path, policy)
+    reservation = await ledger.reserve()
+    queued = asyncio.create_task(ledger.reserve())
+    try:
+        await asyncio.sleep(0)
+        usage = Usage(policy.max_input_tokens + 1, policy.max_output_tokens)
+        actual = policy.cost_micro_cny(usage)
+        with pytest.raises(ValueError, match="reserved model contract"):
+            await ledger.settle(reservation, usage)
+        snapshot = ledger.snapshot()
+        assert snapshot["charged_micro_cny"] == reservation.worst_micro_cny
+        assert snapshot["active_reservations"] == {reservation.reservation_id: reservation.worst_micro_cny}
+        assert snapshot["settled_calls"] == snapshot["unmetered_calls"] == 0
+        assert snapshot["contract_violations"] == {reservation.reservation_id: actual}
+        with pytest.raises(ValueError, match="recovery"):
+            await ledger.settle(reservation, None)
+        assert ledger.snapshot() == snapshot
+        with pytest.raises(ValueError, match="recovery"):
+            await asyncio.wait_for(asyncio.shield(queued), timeout=1)
+        ledger.close()
+        reloaded = BudgetLedger(path, policy)
+        try:
+            with pytest.raises(ValueError, match="recovery"):
+                await reloaded.reserve()
+            assert reloaded.snapshot()["contract_violations"] == snapshot["contract_violations"]
+        finally:
+            reloaded.close()
+    finally:
+        queued.cancel()
+        await asyncio.gather(queued, return_exceptions=True)
+        ledger.close()
+
+
+@pytest.mark.asyncio
+async def test_upstream_over_contract_returns_explicit_failure_and_stops_new_calls(tmp_path):
+    policy = _policy()
+    ledger = BudgetLedger(tmp_path / "contract-http.json", policy)
+    calls = []
+    def upstream(request):
+        calls.append(request.method)
+        return httpx.Response(200, json={"usage": {
+            "prompt_tokens": policy.max_input_tokens + 1,
+            "completion_tokens": policy.max_output_tokens,
+        }})
+    app = create_app(ProxySettings("https://offline.invalid", "offline"), ledger,
+                     upstream_transport=httpx.MockTransport(upstream))
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+                                     base_url="http://offline") as client:
+            first = await client.post("/chat/completions", json={"model": policy.model, "messages": []})
+            assert first.status_code == 502
+            assert first.json()["detail"]["code"] == "RSI_MODEL_CONTRACT_VIOLATION"
+            health = await client.get("/health")
+            assert health.json()["status"] == "degraded"
+            second = await client.post("/chat/completions", json={"model": policy.model, "messages": []})
+            assert second.status_code == 502
+        assert calls == ["POST"]
+        assert ledger.snapshot()["reserved_calls"] == 1
+    finally:
+        ledger.close()
+
+
+def test_bounded_usage_rounding_is_monotone():
+    policy = _policy()
+    for input_tokens in [0, 1, policy.max_input_tokens]:
+        for output_tokens in [0, 1, policy.max_output_tokens]:
+            assert policy.cost_micro_cny(Usage(input_tokens, output_tokens)) <= policy.worst_call_micro_cny

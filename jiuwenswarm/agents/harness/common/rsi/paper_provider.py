@@ -1056,13 +1056,14 @@ class PaperProvider:
         if source_root.is_dir():
             excluded = []
             relocated = []
-            declared = {
-                os.path.normcase(os.path.abspath(run_dir / raw))
-                for report in _read_json_file(source_root / "manager" / "state.json").get("reports", [])
-                if isinstance(report, dict)
-                for raw in report.get("artifact_paths", []) or []
-                if isinstance(raw, str)
-            }
+            declared = set()
+            reports = _read_json_file(source_root / "manager" / "state.json").get("reports", [])
+            for report in reports:
+                if not isinstance(report, dict):
+                    continue
+                for raw in report.get("artifact_paths", []) or []:
+                    if isinstance(raw, str):
+                        declared.add(os.path.normcase(os.path.abspath(run_dir / raw)))
 
             def ignore_nul_tool_outputs(directory: str, names: list[str]) -> list[str]:
                 ignored = []
@@ -1072,7 +1073,7 @@ class PaperProvider:
                     path = Path(directory) / name
                     if os.path.normcase(os.path.abspath(path)) in declared:
                         continue
-                    physical = Path("\\\\?\\" + str(path.absolute()))
+                    physical = Path("\\\\?\\{}".format(path.absolute()))
                     try:
                         size = physical.stat().st_size if physical.is_file() else None
                     except OSError:
@@ -1097,7 +1098,9 @@ class PaperProvider:
                             "size": len(content), "sha256": hashlib.sha256(content).hexdigest(),
                         })
                         ignored.append(name)
-                        logger.warning("[RSI] preserved nonempty Windows NUL tool output as package bytes: %s", relative)
+                        logger.warning(
+                            "[RSI] preserved nonempty Windows NUL tool output as package bytes: %s", relative
+                        )
                 return ignored
 
             shutil.copytree(source_root, destination, dirs_exist_ok=True, ignore=ignore_nul_tool_outputs)

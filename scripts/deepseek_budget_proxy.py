@@ -27,6 +27,10 @@ class BudgetExceeded(RuntimeError):
     """Raised before forwarding when the worst-case reservation cannot fit."""
 
 
+class BudgetContractViolation(ValueError):
+    """Reported cost exceeds admission bounds; retain charge and require recovery."""
+
+
 class LedgerLocked(RuntimeError):
     """Raised when another proxy process already owns the budget ledger."""
 
@@ -127,6 +131,8 @@ class BudgetLedger:
         async with self._settled:
             if self._persistence_failed:
                 raise LedgerPersistenceError("budget settlement requires local recovery")
+            if self._state.get("contract_violations"):
+                raise BudgetContractViolation("model contract violation requires local recovery")
             worst = self.policy.worst_call_micro_cny
             charged = int(self._state["charged_micro_cny"])
             while charged + worst > self.policy.budget_micro_cny:
@@ -136,6 +142,8 @@ class BudgetLedger:
                 await self._settled.wait()
                 if self._persistence_failed:
                     raise LedgerPersistenceError("budget settlement requires local recovery")
+                if self._state.get("contract_violations"):
+                    raise BudgetContractViolation("model contract violation requires local recovery")
                 charged = int(self._state["charged_micro_cny"])
             before = self.snapshot()
             reservation = Reservation(uuid.uuid4().hex, worst)
@@ -159,9 +167,19 @@ class BudgetLedger:
                 raise ValueError("reservation is not active")
             if int(persisted_worst) != reservation.worst_micro_cny:
                 raise ValueError("reservation does not match persisted state")
+            if reservation.reservation_id in self._state.get("contract_violations", {}):
+                raise BudgetContractViolation("model contract violation requires local recovery")
             actual = None if usage is None else self.policy.cost_micro_cny(usage)
             if actual is not None and actual > reservation.worst_micro_cny:
-                raise ValueError("reported usage exceeds the reserved model contract")
+                self._state.setdefault("contract_violations", {})[reservation.reservation_id] = actual
+                try:
+                    self._persist()
+                except LedgerPersistenceError:
+                    self._persistence_failed = True
+                    raise
+                finally:
+                    self._settled.notify_all()
+                raise BudgetContractViolation("reported usage exceeds the reserved model contract")
             before = self.snapshot()
             owned = reservation.reservation_id in self._owned_reservations
             active.pop(reservation.reservation_id)
@@ -169,7 +187,8 @@ class BudgetLedger:
             if usage is None:
                 self._state["unmetered_calls"] = int(self._state["unmetered_calls"]) + 1
             else:
-                assert actual is not None
+                if actual is None:
+                    raise ValueError("metered settlement requires an actual cost")
                 refund = reservation.worst_micro_cny - actual
                 self._state["charged_micro_cny"] = int(self._state["charged_micro_cny"]) - refund
             self._state["settled_calls"] = int(self._state["settled_calls"]) + 1
@@ -210,6 +229,10 @@ class BudgetLedger:
 
     def snapshot(self) -> dict[str, Any]:
         return json.loads(json.dumps(self._state))
+
+    @property
+    def degraded(self) -> bool:
+        return self._persistence_failed or bool(self._state.get("contract_violations"))
 
     def public_snapshot(self) -> dict[str, Any]:
         state = self.snapshot()
@@ -269,6 +292,12 @@ class BudgetLedger:
         charged = state["charged_micro_cny"]
         if charged > self.policy.budget_micro_cny or charged < sum(reservations.values()):
             raise ValueError("persisted budget ledger violates its budget invariant")
+        violations = state.get("contract_violations", {})
+        if not isinstance(violations, dict) or any(
+            key not in reservations or not isinstance(value, int) or isinstance(value, bool)
+            or value <= reservations[key] for key, value in violations.items()
+        ):
+            raise ValueError("persisted budget ledger has invalid contract violations")
         return state
 
     def _persist(self) -> None:
@@ -393,12 +422,23 @@ def create_app(
     async def persistence_failure(request: Request, exc: LedgerPersistenceError) -> JSONResponse:
         return JSONResponse(
             status_code=503,
-            content={"detail": {"code": "RSI_LEDGER_PERSIST_FAILED", "message": "local budget storage requires recovery"}},
+            content={"detail": {
+                "code": "RSI_LEDGER_PERSIST_FAILED", "message": "local budget storage requires recovery",
+            }},
+        )
+
+    @app.exception_handler(BudgetContractViolation)
+    async def contract_violation(_request: Request, _exc: BudgetContractViolation) -> JSONResponse:
+        return JSONResponse(
+            status_code=502,
+            content={"detail": {
+                "code": "RSI_MODEL_CONTRACT_VIOLATION", "message": "model usage contract requires local recovery",
+            }},
         )
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        return {"status": "degraded" if ledger._persistence_failed else "ok", **ledger.public_snapshot()}
+        return {"status": "degraded" if ledger.degraded else "ok", **ledger.public_snapshot()}
 
     async def forward_models() -> Response:
         return await _forward_unmetered(settings, "/models", upstream_transport, request_policy)
@@ -412,7 +452,7 @@ def create_app(
             if not isinstance(raw_body, dict):
                 raise ValueError("request body must be an object")
             body = bounded_chat_body(raw_body, ledger.policy)
-        except (json.JSONDecodeError, ValueError) as exc:
+        except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         _check_request_policy(request_policy)
         try:
@@ -539,7 +579,7 @@ def _check_request_policy(path: str | Path | None) -> None:
             deadline = datetime.fromisoformat(policy["stop_at_utc"])
             if deadline.tzinfo is None or deadline.utcoffset() != UTC.utcoffset(deadline):
                 raise ValueError("stop_at_utc must have a UTC timezone")
-    except (OSError, UnicodeError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         raise HTTPException(
             status_code=503,
             detail={"code": "RSI_REQUEST_POLICY_INVALID", "message": "local request policy is invalid or unreadable"},

@@ -24,20 +24,29 @@ _SHORT_PAPER_POLICY = (
     "missing sections, unknown citation keys, session errors and compiler errors remain blocking. "
     "On retry, inventory the existing sections once and write missing sections before rechecking existing ones. "
     "Use supplied exact host facts once; do not repeatedly reconstruct supplied verified_facts from results.json "
-    "or run shell Python queries to rederive already provided statistics. Preserve genuine numeric discrepancies for review. "
+    'or run shell Python queries to rederive already provided statistics. Preserve genuine numeric '
+    'discrepancies for review. '
     "If grep reports a sandbox access denial, switch to glob/read_file without widening sandbox roots. "
-    "Configured enabled modules do not prove actual execution; describe configured architecture separately from supplied actual run reports. "
-    "Without a supplied actual Reflection report, do not claim this run executed Reflection; identify it only as an optional architecture stage. "
-    "Use verified_facts to identify completed input-token matching; do not describe completed controls as future work, and distinguish them from output-length or compute matching. "
-    "Shared initial-correct responses contribute zero to a paired arm contrast; do not attribute a full-versus-control advantage to an initial policy shared by both arms. "
-    "Identical McNemar p-values may result from identical discordant counts; do not infer inheritance or absent recomputation from p-value equality, and rely on actual Execution evidence. "
-    "Read each enabled SKILL.md and supplied evidence once, then immediately write title.txt, contributions.txt, keywords.txt and all sections. "
+    'Configured enabled modules do not prove actual execution; describe configured architecture '
+    'separately from supplied actual run reports. '
+    'Without a supplied actual Reflection report, do not claim this run executed Reflection; identify it '
+    'only as an optional architecture stage. '
+    'Use verified_facts to identify completed input-token matching; do not describe completed controls as'
+    ' future work, and distinguish them from output-length or compute matching. '
+    'Shared initial-correct responses contribute zero to a paired arm contrast; do not attribute a full-'
+    'versus-control advantage to an initial policy shared by both arms. '
+    'Identical McNemar p-values may result from identical discordant counts; do not infer inheritance or '
+    'absent recomputation from p-value equality, and rely on actual Execution evidence. '
+    'Read each enabled SKILL.md and supplied evidence once, then immediately write title.txt, '
+    'contributions.txt, keywords.txt and all sections. '
     "Treat supplied skill CLIs as black boxes: do not read their Python implementations or inspect SDK/site-packages "
-    "with inspect.getsource or inspect.getsourcefile. Invoke documented CLIs and diagnose only their actual JSON/compiler errors. "
+    'with inspect.getsource or inspect.getsourcefile. Invoke documented CLIs and diagnose only their '
+    'actual JSON/compiler errors. '
     "Finish all seven drafts, including abstract, before any lint; write abstract after the other six drafts. "
     "Run the supplied real ts-latex compile before optional review. "
     "ts-review remains bounded: at most three repair attempts per section, then move on. "
-    "For each three-lens review pass, dispatch reviewer calls sequentially, with at most one reviewer task_tool call per assistant response; "
+    'For each three-lens review pass, dispatch reviewer calls sequentially, with at most one reviewer '
+    'task_tool call per assistant response; '
     "wait for its result before issuing the next. Keep the draft unchanged between these three isolated reviews "
     "and never include earlier reviewer outputs in a later prompt. "
     "Retain word-count and layout notes instead of padding to full-paper minima. "
@@ -45,6 +54,9 @@ _SHORT_PAPER_POLICY = (
     "inventing replacements or repeatedly querying known_numbers. "
     "All unknown citation keys and actual compiler errors must be resolved before claiming success. "
     "If review changes source, recompile before finishing."
+    " Zero-call replay logs describe reproduction, not original model acquisition; "
+    "distinguish original model experiments from offline reproducibility, and "
+    "do not claim fresh evaluations from retained evidence."
 )
 
 
@@ -121,7 +133,7 @@ class IclrReportingAgent(ReportingAgent):
         _, visible_start, visible_tail = visible["results"].partition(r"\begin{tabular}")
         _, end, suffix = tail.partition(r"\end{tabular}")
         display, visible_end, _ = visible_tail.partition(r"\end{tabular}")
-        if start and visible_start and end and visible_end:
+        if all((start, visible_start, end, visible_end)):
             evidence["results"] = prefix + start + display + end + suffix
         else:
             evidence["results"] += "\n\n" + visible["results"]
@@ -167,7 +179,10 @@ class IclrReportingAgent(ReportingAgent):
                                  ("900-1400", "350-500"), ("200-280", "130-180"), ("150-220", "150-200")):
                     text = text.replace(old, new)
             else:
-                text = text.replace("only after every section passes Step 1", "after bounded Step 1, with unresolved soft notes retained")
+                text = text.replace(
+                    "only after every section passes Step 1",
+                    "after bounded Step 1, with unresolved soft notes retained",
+                )
             skill.write_text(text, encoding="utf-8")
         return root
 
@@ -216,7 +231,8 @@ class IclrReportingAgent(ReportingAgent):
         if not script.is_file():
             return session_error or "host compile script is missing"
         if not all(path.is_file() and path.stat().st_size > 0 for path in required):
-            return "; ".join(note for note in (session_error, "host compile requires nonempty title, refs and all seven sections") if note)
+            notes = (session_error, "host compile requires nonempty title, refs and all seven sections")
+            return "; ".join(note for note in notes if note)
 
         logs = workspace / "logs"
         logs.mkdir(exist_ok=True)
@@ -245,7 +261,8 @@ class IclrReportingAgent(ReportingAgent):
             "command": command, "returncode": returncode, "timed_out": timed_out,
             "duration_seconds": time.monotonic() - started,
         }, indent=2), encoding="utf-8")
-        if timed_out or returncode != 0 or not compiled or not pdf.is_file() or pdf.stat().st_size == 0:
+        compile_failed = timed_out or returncode != 0 or not compiled
+        if compile_failed or not pdf.is_file() or pdf.stat().st_size == 0:
             pdf.unlink(missing_ok=True)
             failure = ("host compile timed out after 330s; see logs/host_compile.*" if timed_out else
                        "host compile did not produce a nonempty PDF; see logs/host_compile.*")
