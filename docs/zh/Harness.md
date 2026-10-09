@@ -88,7 +88,7 @@ Rail 是 Harness 的生命周期扩展面。它不替换主流程，而是在外
 
 - 执行控制：`TaskPlanningRail`、`TaskCompletionRail`、`AgentModeRail`。
 - 工具与系统：`SysOperationRail`、`ProgressiveToolRail`、`LspRail`、`McpRail`。
-- 安全与权限：`SafetyPromptRail`、`PermissionInterruptRail`、`VerificationRail`。
+- 安全与权限：`SafetyPromptRail`、`PermissionInterruptRail`、`VerificationRail`、`TeamVerificationRail`。
 - 上下文与记忆：`ContextAssembleRail`、`ContextProcessorRail`、`MemoryRail`、`CodingMemoryRail`、`ExternalMemoryRail`。
 - 技能与演进：`SkillUseRail`、`EvolutionRail`、`SkillCreateRail`、`SkillEvolutionRail`。
 - 子代理：`SubagentRail`、`VerificationContractRail`。
