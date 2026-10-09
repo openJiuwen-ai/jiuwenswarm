@@ -2626,6 +2626,39 @@ def test_remove_team_mode_session_dirs_at_startup_keeps_stable_team_sessions(
 # ===========================================================================
 # rebind_session_project：并发场景（陈旧异步快照 vs 重绑）
 # ===========================================================================
+def test_external_harness_checkpoint_survives_stale_snapshot(sessions_dir):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        _enqueue_write,
+        get_session_metadata,
+        init_session_metadata,
+        update_session_metadata,
+    )
+
+    session_id = "external-checkpoint-stale"
+    init_session_metadata(session_id=session_id, channel_id="web")
+    stale = get_session_metadata(session_id, cache_bust=True)
+    checkpoint = {
+        "agent_template_name": "codex-expert",
+        "provider_name": "codex",
+        "checkpoint": {
+            "checkpoint_id": "checkpoint-2",
+            "sequence": 2,
+        },
+    }
+    update_session_metadata(
+        session_id=session_id,
+        session_harness_checkpoint=checkpoint,
+        touch_last_message_at=False,
+        cache_bust=True,
+        sync_write=True,
+    )
+
+    _enqueue_write(session_id, stale, sync_write=True)
+
+    metadata = get_session_metadata(session_id, cache_bust=True)
+    assert metadata["session_harness_checkpoint"] == checkpoint
+
+
 class TestRebindSessionProjectConcurrency:
     """覆盖 P1 关键场景：rebind 的 sync 写入与队列中陈旧异步快照的竞态。
 

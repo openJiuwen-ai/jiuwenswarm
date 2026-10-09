@@ -860,6 +860,113 @@ class TestAgentGroupLifecycle:
 class TestCreateInstallUninstall:
     """create → local/; install copy or flip flags; uninstall deletes user copy."""
 
+    def test_install_external_runtime_preserves_typed_manifest(
+        self, extension_workspace: Path
+    ) -> None:
+        package = seed_package(
+            extension_workspace,
+            AGENT_TEMPLATES,
+            "codex-expert",
+            extra_manifest={
+                "name": "codex-expert",
+                "description": "External Codex expert.",
+                "runtime": {
+                    "provider_name": "codex",
+                    "provider_version": "1.2.3",
+                    "sdk_paths": ["sdk/codex"],
+                    "config": {"model": "test-model"},
+                },
+            },
+        )
+
+        catalog.install_agent_template({"id": "codex-expert"})
+
+        from openjiuwen.harness.resources import load_agent_template_package
+
+        spec = load_agent_template_package(package / "manifest.json")
+        runtime = catalog.agent_template_runtime(spec)
+        assert runtime is not None
+        assert runtime.provider_name == "codex"
+        assert runtime.provider_version == "1.2.3"
+        assert runtime.sdk_paths == ["sdk/codex"]
+        assert runtime.config == {"model": "test-model"}
+        assert next(
+            entry
+            for entry in catalog.read_agent_template_marketplace_entries()
+            if entry["id"] == "codex-expert"
+        )["installed"] is True
+
+    @pytest.mark.parametrize("provider_name", ["", "claude-code", "deepseek-harness", "native"])
+    def test_install_external_runtime_rejects_provider_outside_allowlist(
+        self, extension_workspace: Path, provider_name: str
+    ) -> None:
+        seed_package(
+            extension_workspace,
+            AGENT_TEMPLATES,
+            "invalid-runtime",
+            extra_manifest={
+                "name": "invalid-runtime",
+                "description": "External expert with an invalid provider.",
+                "runtime": {"provider_name": provider_name},
+            },
+        )
+
+        with pytest.raises(ValueError, match="provider_name.*claudecode.*codex.*dsh"):
+            catalog.install_agent_template({"id": "invalid-runtime"})
+
+        assert catalog.read_agent_template_marketplace_entries() == []
+
+    @pytest.mark.parametrize("unsupported_field", ["tools", "rails", "subagents"])
+    def test_install_external_runtime_rejects_native_agent_capabilities(
+        self, extension_workspace: Path, unsupported_field: str
+    ) -> None:
+        seed_package(
+            extension_workspace,
+            AGENT_TEMPLATES,
+            "unsupported-runtime",
+            extra_manifest={
+                "name": "unsupported-runtime",
+                "description": "External expert with unsupported native capabilities.",
+                "runtime": {"provider_name": "dsh"},
+                unsupported_field: [{"file": "unsupported.py"}],
+            },
+        )
+
+        with pytest.raises(ValueError, match=unsupported_field):
+            catalog.install_agent_template({"id": "unsupported-runtime"})
+
+        assert catalog.read_agent_template_marketplace_entries() == []
+
+    @pytest.mark.parametrize(
+        ("runtime", "error_field"),
+        [
+            ({"provider_name": "codex", "sdk_paths": ["C:/external/sdk"]}, "sdk_paths"),
+            ({"provider_name": "codex", "provider_version": 3}, "provider_version"),
+            ({"provider_name": "codex", "config": []}, "config"),
+        ],
+    )
+    def test_install_external_runtime_rejects_invalid_structure(
+        self,
+        extension_workspace: Path,
+        runtime: dict[str, object],
+        error_field: str,
+    ) -> None:
+        seed_package(
+            extension_workspace,
+            AGENT_TEMPLATES,
+            "malformed-runtime",
+            extra_manifest={
+                "name": "malformed-runtime",
+                "description": "External expert with malformed runtime metadata.",
+                "runtime": runtime,
+            },
+        )
+
+        with pytest.raises(ValueError, match=error_field):
+            catalog.install_agent_template({"id": "malformed-runtime"})
+
+        assert catalog.read_agent_template_marketplace_entries() == []
+
     @pytest.mark.parametrize("kind", _KINDS)
     def test_create_writes_local_uninstalled(
         self, extension_workspace: Path, kind: str

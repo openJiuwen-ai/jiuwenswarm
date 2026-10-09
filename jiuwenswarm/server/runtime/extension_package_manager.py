@@ -18,7 +18,7 @@ import zipfile
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlsplit
 
 import yaml
@@ -50,6 +50,9 @@ from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
 from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
     HubPackageDownloader,
 )
+
+if TYPE_CHECKING:
+    from openjiuwen.harness.resources import AgentTemplateSpec, RuntimeSpec
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,8 @@ _AGENT_TEMPLATE_KIND = "agent_templates"
 _AGENT_GROUP_KIND = "agent_groups"
 _PLUGIN_PACKAGE_KIND = "plugin_packages"
 _HUB_PREVIEW_ARCHIVE_LIMIT = 8
+_EXTERNAL_HARNESS_PROVIDERS = frozenset({"claudecode", "codex", "dsh"})
+_EXTERNAL_HARNESS_UNSUPPORTED_FIELDS = ("tools", "rails", "subagents")
 
 
 class _HubPreviewArchive(NamedTuple):
@@ -230,6 +235,60 @@ def _read_package_manifest(pkg_dir: Path) -> dict | None:
     except (ValueError, OSError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def agent_template_runtime(
+    manifest: AgentTemplateSpec | dict[str, Any],
+) -> RuntimeSpec | None:
+    """Return one normalized, installable External Harness runtime declaration."""
+    from openjiuwen.harness.resources import AgentTemplateSpec, RuntimeSpec
+
+    if isinstance(manifest, AgentTemplateSpec):
+        runtime = manifest.runtime
+    elif isinstance(manifest, dict):
+        raw_runtime = manifest.get("runtime")
+        if (
+            isinstance(raw_runtime, dict)
+            and raw_runtime.get("provider_name") not in _EXTERNAL_HARNESS_PROVIDERS
+        ):
+            allowed = ", ".join(sorted(_EXTERNAL_HARNESS_PROVIDERS))
+            raise ValueError(
+                f"runtime.provider_name must be one of: {allowed}; got {raw_runtime.get('provider_name')!r}"
+            )
+        runtime = None if raw_runtime is None else RuntimeSpec.model_validate(raw_runtime)
+    else:
+        raise TypeError("agent template manifest must be AgentTemplateSpec or dict")
+
+    if runtime is None:
+        return None
+    if runtime.provider_name not in _EXTERNAL_HARNESS_PROVIDERS:
+        allowed = ", ".join(sorted(_EXTERNAL_HARNESS_PROVIDERS))
+        raise ValueError(
+            f"runtime.provider_name must be one of: {allowed}; got {runtime.provider_name!r}"
+        )
+    return runtime
+
+
+def _validate_agent_template_runtime_package(package_dir: Path) -> None:
+    """Validate runtime-only constraints before an expert package is installed."""
+    manifest = _read_package_manifest(package_dir)
+    if manifest is None:
+        raise ValueError(
+            f"agent_template package missing/corrupt manifest.json: {package_dir.name}"
+        )
+    runtime = agent_template_runtime(manifest)
+    if runtime is None:
+        return
+    for field_name in _EXTERNAL_HARNESS_UNSUPPORTED_FIELDS:
+        if manifest.get(field_name):
+            raise ValueError(
+                f"External Harness agent_template does not support manifest field {field_name!r}"
+            )
+
+    from openjiuwen.harness.resources import load_agent_template_package
+
+    spec = load_agent_template_package(package_dir / "manifest.json")
+    agent_template_runtime(spec)
 
 
 def _source_from_pkg_dir(pkg_dir: Path) -> str:
@@ -3965,6 +4024,9 @@ def _install_package(
 def install_agent_template(params: dict) -> None:
     """Install an expert package."""
     package_id = _lifecycle_package_id(params, "agent_template")
+    resolved = _resolve_agent_template_definition_dir(package_id)
+    if resolved is not None:
+        _validate_agent_template_runtime_package(resolved[0])
     _install_package(
         package_id,
         kind=_AGENT_TEMPLATE_KIND,
