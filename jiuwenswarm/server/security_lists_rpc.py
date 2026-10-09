@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""统一安全名单 RPC（``security_lists.*`` 六个 WS 方法）。
+"""统一安全名单 RPC（``security_lists.*`` 九个 WS 方法）。
 
 dispatch 形态仿 :mod:`permissions_config_rpc` / :mod:`sandbox_config_rpc`，
 注册进 ``agent_ws_server``。
@@ -21,7 +21,8 @@ dispatch 形态仿 :mod:`permissions_config_rpc` / :mod:`sandbox_config_rpc`，
 
 写方法成功后：① 触发设计 4.4 双端同步（``security_lists_render`` 渲染沙箱副本
 → box-server 指纹重载，best-effort 不影响主路径）；② 写 ``security.list.change``
-审计。rail 侧经 get_config stamp 失效下次求值即新名单（热更新链路），无需重载广播。
+审计。写响应另返回 saved 与 sync；reload_scheduled 不代表执行端已完成。
+rail 侧经 get_config stamp 失效下次求值即新名单（热更新链路），无需重载广播。
 """
 from __future__ import annotations
 
@@ -225,7 +226,7 @@ def _audit_change(op: str, **fields: Any) -> None:
     audit.log_event(audit.AUDIT_CHANGE, op=op, **fields)
 
 
-def _trigger_sandbox_sync() -> None:
+def _trigger_sandbox_sync() -> str:
     """名单写后双端同步：渲染副本 → 触发 box-server 重载（best-effort）。
 
     rail 热读走 get_config stamp 失效链路，不受本步成败影响；
@@ -241,16 +242,18 @@ def _trigger_sandbox_sync() -> None:
         render_linux_copy()
     except Exception as exc:  # noqa: BLE001
         logger.warning("[security_lists] 沙箱副本渲染失败（rail 热读不受影响）: %s", exc)
-        return
+        return "failed"
     try:
         from jiuwenswarm.server.sandbox_config_rpc import trigger_sandbox_apply
 
         trigger_sandbox_apply("files")
+        return "reload_scheduled"
     except Exception as exc:  # noqa: BLE001
         logger.warning("[security_lists] 触发沙箱重载失败: %s", exc)
+        return "failed"
 
 
-def _publish_enforcement() -> None:
+def _publish_enforcement() -> str:
     """名单写后重发宿主出口策略（P3）。
 
     不做的话，新加的域名 deny 只在新会话/新 rail 组建时才进 net_guard——
@@ -262,14 +265,24 @@ def _publish_enforcement() -> None:
         )
 
         publish_host_exit_policy_from_config()
+        return "published"
     except Exception as exc:  # noqa: BLE001
         logger.warning("[security_lists] 重发宿主出口策略失败（rail 热读不受影响）: %s", exc)
+        return "failed"
 
 
-def _after_list_change() -> None:
+def _after_list_change() -> dict[str, str]:
     """名单写后的强制点同步：沙箱副本 + 宿主出口策略。"""
-    _trigger_sandbox_sync()
-    _publish_enforcement()
+    return {"sandbox": _trigger_sandbox_sync(), "host_exit": _publish_enforcement()}
+
+
+def _defaults_payload() -> dict[str, Any]:
+    """生效视图与可编辑用户兜底档分开，避免前端回写云侧值到用户区。"""
+    from jiuwenswarm.agents.harness.common.rails.security_lists import store
+
+    lists = store.get_security_lists()
+    return {"defaults": store.get_defaults(), "user_defaults": lists["defaults"],
+            "cloud_defaults": lists["cloud"].get("defaults", {})}
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +370,7 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
                     "mode": mode or current_permission_profile(),
                     "cloud_meta": cloud_meta,
                     # v3 兜底档（白名单模式）：随卡片视图一并下发，前端免二次请求
-                    "defaults": store.get_defaults(),
+                    **_defaults_payload(),
                 },
             )
 
@@ -374,8 +387,8 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
                 extra: dict[str, Any] = {"existing_id": existing_id} if existing_id else {}
                 return _err(request, str(exc), code="CONFLICT", **extra)
             _audit_change("upsert", record_id=stored.id, type=stored.type, pattern=stored.pattern)
-            _after_list_change()
-            return _ok(request, {"record": record_to_dict(stored)})
+            sync = _after_list_change()
+            return _ok(request, {"record": record_to_dict(stored), "saved": True, "sync": sync})
 
         # ---- cells.patch：格子级增改删 ----
         if m == ReqMethod.SECURITY_LISTS_CELLS_PATCH:
@@ -405,8 +418,8 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
                 set={f"{mode}.{op}": action for (mode, op), action in set_.items()},
                 unset=[f"{mode}.{op}" for mode, op in unset],
             )
-            _after_list_change()
-            return _ok(request, {"record": record_to_dict(stored)})
+            sync = _after_list_change()
+            return _ok(request, {"record": record_to_dict(stored), "saved": True, "sync": sync})
 
         # ---- delete：user 区整卡片删除 ----
         if m == ReqMethod.SECURITY_LISTS_DELETE:
@@ -416,11 +429,14 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
             if not store.delete_record(record_id):
                 return _err(request, f"记录不存在: {record_id}", code="NOT_FOUND")
             _audit_change("delete", record_id=record_id)
-            _after_list_change()
-            return _ok(request, {"ok": True})
+            sync = _after_list_change()
+            return _ok(request, {"ok": True, "saved": True, "sync": sync})
 
         # ---- cloud.sync：cloud 区整区替换 ----
         if m == ReqMethod.SECURITY_LISTS_CLOUD_SYNC:
+            # 桌面云通道是唯一调用方；这只是渠道门禁，传输层仍须鉴权。
+            if request.channel_id != "desktop":
+                return _err(request, "cloud.sync requires the desktop cloud channel", code="FORBIDDEN")
             records = params.get("records")
             if not isinstance(records, list):
                 return _err(request, "records must be list")
@@ -438,12 +454,12 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
                 applied=applied,
                 defaults=params.get("defaults"),
             )
-            _after_list_change()
-            return _ok(request, {"applied": applied})
+            sync = _after_list_change()
+            return _ok(request, {"applied": applied, "saved": True, "sync": sync})
 
         # ---- defaults.get / defaults.set：兜底档（白名单模式） ----
         if m == ReqMethod.SECURITY_LISTS_DEFAULTS_GET:
-            return _ok(request, {"defaults": store.get_defaults()})
+            return _ok(request, _defaults_payload())
 
         if m == ReqMethod.SECURITY_LISTS_DEFAULTS_SET:
             defaults = params.get("defaults")
@@ -451,8 +467,8 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
                 return _err(request, "defaults must be object")
             store.set_defaults(defaults)   # ValueError → 400，且不落盘
             _audit_change("defaults.set", defaults=defaults)
-            _after_list_change()
-            return _ok(request, {"defaults": store.get_defaults()})
+            sync = _after_list_change()
+            return _ok(request, {**_defaults_payload(), "saved": True, "sync": sync})
 
         # ---- migrate：legacy 段（net_guard.urls / file_guard.paths）一次性搬进 user 区 ----
         if m == ReqMethod.SECURITY_LISTS_MIGRATE:
@@ -469,6 +485,7 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
             if sources is not None:
                 kwargs["sources"] = sources
             result = store.migrate_legacy_once(**kwargs)  # ValueError → 400 未知来源
+            sync = None
             if not dry_run:
                 _audit_change(
                     "migrate",
@@ -477,13 +494,14 @@ def dispatch_security_lists_request(request: AgentRequest) -> AgentResponse:
                     sources=result["sources"],
                 )
                 if result["created"]:
-                    _after_list_change()
+                    sync = _after_list_change()
             return _ok(request, {
                 "created": result["created"],
                 "skipped": result["skipped"],
                 "candidates": result["candidates"],
                 "sources": result["sources"],
                 "records": [record_to_dict(r) for r in result["records"]],
+                **({"saved": True, "sync": sync} if not dry_run else {}),
             })
 
         # ---- audit.query：审计回溯 ----

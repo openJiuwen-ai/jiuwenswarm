@@ -128,6 +128,8 @@ def validate_pattern(list_type: str, match: str, pattern: str) -> None:
     """
     if not isinstance(pattern, str) or not pattern.strip():
         raise ValueError("pattern 不能为空")
+    if any(ord(c) < 32 or ord(c) == 127 for c in pattern):
+        raise ValueError("pattern 不应含控制字符")
     if list_type == "domain":
         s = pattern.strip()
         if "://" in s or any(c in s for c in "/:?#"):
@@ -136,6 +138,16 @@ def validate_pattern(list_type: str, match: str, pattern: str) -> None:
             raise ValueError(f"wildcard domain 须以 '*.' 开头: {pattern!r}")
         if match == "exact" and "*" in s:
             raise ValueError(f"exact domain 不应含通配符: {pattern!r}")
+        host = (s[2:] if match == "wildcard" else s).rstrip(".")
+        try:
+            host = host.encode("idna").decode("ascii").lower()
+        except UnicodeError as exc:
+            raise ValueError(f"非法 domain: {pattern!r}") from exc
+        if len(host) > 253 or not all(
+            re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+            for label in host.split(".")
+        ):
+            raise ValueError(f"非法 domain: {pattern!r}")
     if list_type == "command" and match == "regex":
         try:
             re.compile(pattern)

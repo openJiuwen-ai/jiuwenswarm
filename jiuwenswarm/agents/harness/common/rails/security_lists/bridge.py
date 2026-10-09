@@ -3,7 +3,7 @@
 
 **为什么需要**：规则归属收敛到本名单之后（设计 §4.4），名单里写的域名 deny 必须
 在**宿主 HTTP 出口**（P3，逐跳 3xx 校验）也生效。rail 只看得到 fetch 工具的
-参数，脚本里的 ``requests`` / ``urllib`` 出站它够不到——那正是 P3 存在的理由。
+参数；P3 保护显式接入宿主出口策略的 HTTP 客户端，不能覆盖任意脚本裸请求。
 
 **为什么不需要改 agent-core**：三处强制点的权限都由本仓组装的 dict 喂进去——
 
@@ -74,10 +74,13 @@ def _net_guard_keys(rec: Any) -> tuple[str, ...]:
     pattern = str(rec.pattern or "").strip().lower().rstrip(".")
     if not pattern:
         return ()
+    base = pattern[2:] if rec.match == "wildcard" else pattern
+    ascii_base = base.encode("idna").decode("ascii")
+    bases = tuple(dict.fromkeys((base, ascii_base)))
     if rec.match == "exact":
-        return (pattern, f"*.{pattern}")
+        return tuple(key for value in bases for key in (value, f"*.{value}"))
     if rec.match == "wildcard":
-        return (pattern,)
+        return tuple(f"*.{value}" for value in bases)
     return ()
 
 

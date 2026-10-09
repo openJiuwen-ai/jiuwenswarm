@@ -91,10 +91,17 @@ def collect_sandbox_lists(*, mode: str | None = None) -> dict[str, list[str]]:
                 _add("allow_write", rec.pattern)
         elif rec.type == "domain":
             value = resolve_cell(rec.cells, mode, "*")
+            pattern = rec.pattern.strip().lower().rstrip(".")
+            base = pattern[2:] if rec.match == "wildcard" else pattern
+            base = base.encode("idna").decode("ascii")
+            pattern = f"*.{base}" if rec.match == "wildcard" else base
+            domains = (pattern, f"*.{pattern}") if rec.match == "exact" else (pattern,)
             if value == "deny":
-                _add("blocked_domains", rec.pattern.lower())
+                for domain in domains:
+                    _add("blocked_domains", domain)
             elif value == "allow":
-                _add("allowed_domains", rec.pattern.lower())
+                for domain in domains:
+                    _add("allowed_domains", domain)
 
     # deny 优先：同对象经不同记录同时落 allow/deny → 从 allow 剔除
     for allow_key, deny_key in (
@@ -157,7 +164,7 @@ def _warn_unmanaged(
 def render_sandbox_copy(*, mode: str | None = None) -> dict[str, Any]:
     """把名单渲染进 **Windows** 运行时副本用户段（保留 ``disable_all``），返回各类条数。
 
-    复用 ``sandbox_policy_render`` 的副本读写与校验（原子写 + 非法条目跳过）。
+    复用 ``sandbox_policy_render`` 的副本读写与校验（原子写 + 非法/无法表达的条目拒绝渲染）。
     调用方负责触发 box-server 重载；本函数异常原样上抛（调用方 best-effort 捕获）。
 
     若本次渲染会丢掉副本里已有、而名单不知道的条目 → **照常渲染**（本模块是副本的
@@ -173,13 +180,13 @@ def render_sandbox_copy(*, mode: str | None = None) -> dict[str, Any]:
     _warn_unmanaged("windows", _copy_lists(data, spr), wanted, _LIST_KEYS, mode=mode)
 
     fs = data["windows"]["filesystem"]
-    fs["allow_read"] = spr._norm_file_paths(wanted["allow_read"])  # noqa: SLF001
-    fs["allow_write"] = spr._norm_file_paths(wanted["allow_write"])  # noqa: SLF001
-    fs["deny_read"] = spr._norm_file_paths(wanted["deny_read"])  # noqa: SLF001
-    fs["deny_write"] = spr._norm_file_paths(wanted["deny_write"])  # noqa: SLF001
+    fs["allow_read"] = spr._norm_file_paths(wanted["allow_read"], strict=True)  # noqa: SLF001
+    fs["allow_write"] = spr._norm_file_paths(wanted["allow_write"], strict=True)  # noqa: SLF001
+    fs["deny_read"] = spr._norm_file_paths(wanted["deny_read"], strict=True)  # noqa: SLF001
+    fs["deny_write"] = spr._norm_file_paths(wanted["deny_write"], strict=True)  # noqa: SLF001
     egress = data["windows"]["network"]["egress"]
-    egress["allowed_domains"] = spr._norm_domains(wanted["allowed_domains"])  # noqa: SLF001
-    egress["blocked_domains"] = spr._norm_domains(wanted["blocked_domains"])  # noqa: SLF001
+    egress["allowed_domains"] = spr._norm_domains(wanted["allowed_domains"], strict=True)  # noqa: SLF001
+    egress["blocked_domains"] = spr._norm_domains(wanted["blocked_domains"], strict=True)  # noqa: SLF001
     spr._save_copy(data)  # noqa: SLF001
     rendered: dict[str, Any] = {key: len(wanted[key]) for key in _LIST_KEYS}
     logger.info("security_lists → Windows 副本渲染完成: %s", rendered)
@@ -205,8 +212,8 @@ def render_linux_copy(*, mode: str | None = None) -> dict[str, Any]:
     current = {key: spr._norm_domains(egress.get(key) or []) for key in _LINUX_LIST_KEYS}  # noqa: SLF001
     _warn_unmanaged("linux", current, wanted, _LINUX_LIST_KEYS, mode=mode)
 
-    egress["allowed_domains"] = spr._norm_domains(wanted["allowed_domains"])  # noqa: SLF001
-    egress["blocked_domains"] = spr._norm_domains(wanted["blocked_domains"])  # noqa: SLF001
+    egress["allowed_domains"] = spr._norm_domains(wanted["allowed_domains"], strict=True)  # noqa: SLF001
+    egress["blocked_domains"] = spr._norm_domains(wanted["blocked_domains"], strict=True)  # noqa: SLF001
     spr._save_linux_copy(data)  # noqa: SLF001
     rendered: dict[str, Any] = {key: len(wanted[key]) for key in _LINUX_LIST_KEYS}
     logger.info("security_lists → Linux 副本渲染完成: %s", rendered)

@@ -31,8 +31,8 @@ from jiuwenswarm.common.permission_profile import current_permission_profile
 
 from .composer import SecurityListComposer
 from .evaluate import evaluate
-from .matcher import _exe_name, _hostname, _norm_path_text
-from .models import resolve_cell, resolve_default
+from .matcher import _exe_name, _hostname, _norm_path_text, parse_shell_for_permission
+from .models import MODE_KEYS, resolve_cell, resolve_default
 
 Action = Literal["allow", "ask", "deny", "none"]
 StaticAction = Literal["allow", "deny"]
@@ -92,7 +92,9 @@ class PathExport(NamedTuple):
 
 
 def _mode_or_current(mode: str | None) -> str:
-    return mode or current_permission_profile()
+    if mode is not None and mode not in MODE_KEYS:
+        raise ValueError(f"未知模式: {mode!r}")
+    return mode if mode is not None else current_permission_profile()
 
 
 def _reason(list_type: str, source: str, pattern: str) -> str:
@@ -182,9 +184,7 @@ def check_domain(
     """判定一个域名（网址或裸 host）：取 URL 的 host、小写、去尾点。"""
     host = _hostname(str(host_or_url or ""))
     if not host:
-        return RulesVerdict(
-            "none", "domain", str(host_or_url or ""), "*", "", "", "none", "空/非法域名"
-        )
+        raise ValueError("空/非法域名")
     return _verdict(
         "domain", host, op="*", mode=_mode_or_current(mode),
         composer=SecurityListComposer(), session_id=session_id,
@@ -203,7 +203,7 @@ def check_path(
         raise ValueError(f"op 须为 {_PATH_OPS}：{op!r}")
     target = _norm_path_text(str(path or ""))
     if not target:
-        return RulesVerdict("none", "file_path", "", op, "", "", "none", "空路径")
+        raise ValueError("空路径")
     return _verdict(
         "file_path", target, op=op, mode=_mode_or_current(mode),
         composer=SecurityListComposer(), session_id=session_id,
@@ -224,6 +224,17 @@ def check_command(
     line = str(cmdline or "").strip()
     if line:
         targets.append(line)
+        parsed = parse_shell_for_permission(line)
+        for subcommand in parsed.subcommands or ():
+            segment = subcommand.text.strip()
+            if segment:
+                targets.append(segment)
+                executable = _exe_name(segment)
+                if executable:
+                    targets.append(executable)
+        executable = _exe_name(line)
+        if executable:
+            targets.append(executable)
     name = str(exe or "").strip() or (_exe_name(line) if line else None)
     if name and name != line:
         targets.append(name)
@@ -234,7 +245,7 @@ def check_command(
             "command", target, op="*", mode=resolved_mode,
             composer=composer, session_id=session_id,
         )
-        for target in targets
+        for target in dict.fromkeys(targets)
     ]
     return _strictest(verdicts)
 

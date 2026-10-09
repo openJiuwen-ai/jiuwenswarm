@@ -1,6 +1,9 @@
 """Explicit NetGuard → sandbox domain synchronization. ASK is skipped."""
 
 from copy import deepcopy
+import hashlib
+import json
+import uuid
 
 
 def project_net_guard_to_sandbox(guard):
@@ -54,6 +57,7 @@ def sync_net_guard_to_sandbox():
         urls = {domain: "allow" for domain in network["allow_domains"]}
         urls.update({domain: "deny" for domain in network["deny_domains"]})
         data.setdefault("sandbox", {})["urls"] = urls
+        data["sandbox"]["urls_revision"] = uuid.uuid4().hex
         return data
 
     data = update_config(mutate)
@@ -81,7 +85,11 @@ def validate_sandbox_urls(urls):
 
 
 def render_saved_sandbox_urls(policy_path):
-    """Materialize saved config only when starting/applying the sandbox service."""
+    """Apply the saved snapshot under its own origin, preserving other writers.
+
+    Missing urls means there is no sync snapshot. An explicit empty snapshot
+    clears only records previously imported by this synchronization path.
+    """
     from pathlib import Path
 
     from jiuwenswarm.common.config import get_config
@@ -90,19 +98,50 @@ def render_saved_sandbox_urls(policy_path):
         _linux_runtime_copy_path,
         _runtime_copy_path,
         get_sandbox_network_config,
-        set_sandbox_network_config,
+        _panel_records,
+    )
+    from jiuwenswarm.agents.harness.common.rails.security_lists import audit, store
+    from jiuwenswarm.server.security_lists_render import (
+        collect_sandbox_lists, render_linux_copy, render_sandbox_copy,
     )
 
     sandbox = get_config().get("sandbox") or {}
-    urls = validate_sandbox_urls(sandbox.get("urls", {}))
     expected = _runtime_copy_path() if _is_windows() else _linux_runtime_copy_path()
     if policy_path is None or Path(policy_path).resolve() != expected.resolve():
         raise ValueError("sandbox.urls requires the platform runtime policy copy")
+    if "urls" in sandbox:
+        urls = validate_sandbox_urls(sandbox["urls"])
+        stamp = hashlib.sha256(json.dumps(
+            [urls, sandbox.get("urls_revision")], sort_keys=True,
+        ).encode("utf-8")).hexdigest()
+        cfg = get_config()
+        previous = ((cfg.get("security_lists") or {}).get("migrations") or {}).get("sandbox_urls_stamp")
+        if stamp != previous:
+            result = store.replace_records_by_origin(
+                origin="sandbox_network_sync", list_type="domain",
+                records=_panel_records("domain", list(urls.items())),
+                reject_conflicts=True,
+            )
+            audit.log_event(audit.AUDIT_CHANGE, op="sandbox.network.apply", **result)
+            if result["skipped"]:
+                # Keep a failed apply retryable; no stamp until the entire
+                # snapshot can be represented under its own editable origin.
+                raise ValueError(f"Sandbox domain rules owned by security_lists: {result['skipped']}")
+            from jiuwenswarm.common.config import update_config
+
+            def mark_applied(data):
+                section = data.setdefault("security_lists", {})
+                section.setdefault("migrations", {})["sandbox_urls_stamp"] = stamp
+                return data
+
+            update_config(mark_applied)
+    render_sandbox_copy()
+    render_linux_copy()
+    wanted = collect_sandbox_lists()
     current = get_sandbox_network_config()
-    stored = set_sandbox_network_config(
-        current["disable_all"],
-        [domain for domain, action in urls.items() if action == "allow"],
-        [domain for domain, action in urls.items() if action == "deny"],
-    )
-    if get_sandbox_network_config() != stored:
+    if (set(current["allow_domains"]) != set(wanted["allowed_domains"])
+            or set(current["deny_domains"]) != set(wanted["blocked_domains"])):
         raise OSError("Sandbox network configuration could not be saved")
+    from jiuwenswarm.server.security_lists_rpc import _publish_enforcement
+
+    _publish_enforcement()

@@ -15,13 +15,14 @@
 from __future__ import annotations
 
 import logging
+import ipaddress
 import os
 import re
 import shlex
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Mapping
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from openjiuwen.harness.security.permission_engine.fileguard.path_extract import (
     extract_accesses_native,
@@ -57,11 +58,22 @@ def _hostname(url: str) -> str | None:
         return None
     candidate = text if "://" in text else f"https://{text}"
     try:
-        parsed = urlparse(candidate)
-    except ValueError:
+        host = urlparse(candidate).hostname
+        if not host:
+            return None
+        host = unquote(host).lower().rstrip(".")
+        try:
+            return str(ipaddress.ip_address(host))
+        except ValueError:
+            host = host.encode("idna").decode("ascii")
+            if len(host) > 253 or not all(
+                re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                for label in host.split(".")
+            ):
+                return None
+            return host
+    except (ValueError, UnicodeError):
         return None
-    host = parsed.hostname
-    return host.lower() if host else None
 
 
 def _exe_name(segment: str) -> str | None:
@@ -72,7 +84,7 @@ def _exe_name(segment: str) -> str | None:
         tokens = segment.strip().split()
     if not tokens:
         return None
-    base = Path(tokens[0].strip('"').strip("'").replace("\\", "/")).name.lower()
+    base = PureWindowsPath(tokens[0].strip('"').strip("'")).name.lower()
     if base.endswith(".exe"):
         base = base[:-4]
     return base or None
@@ -112,6 +124,7 @@ def extract_targets(
         logger.warning(
             "[security_lists] extract_accesses_native 失败 tool=%s", tool_name, exc_info=True,
         )
+        raise  # 不完整的目标集合不能交给求值层当成无匹配；rail 将 fail-closed。
 
     # 2. 命令目标（shell 工具）
     if is_shell_tool(tool_name, shell_tools_from_config(permission_config)):
@@ -126,7 +139,11 @@ def extract_targets(
                     if sc.text and sc.text.strip()
                 ]
             except Exception:
-                segments = []
+                logger.warning("[security_lists] shell AST 解析失败", exc_info=True)
+                raise
+            # 部分解析器会在简单命令上返回空分段，仍须判定它的程序名。
+            if not segments:
+                segments = [cmd]
             for seg in segments:
                 if seg != cmd:
                     targets.append(("command", seg, "*"))
@@ -141,6 +158,8 @@ def extract_targets(
             host = _hostname(url)
             if host:
                 targets.append(("domain", host, "*"))
+            else:
+                raise ValueError("无法解析 fetch 的目标域名")
 
     return list(dict.fromkeys(targets))
 
@@ -182,13 +201,14 @@ def _match_file_glob(pattern: str, target: str) -> bool:
     if not pat or not tgt:
         return False
     # 引擎同款 wildcard：全串锚定，Windows 大小写不敏感；** 由字符类*覆盖跨分隔符
-    return match_wildcard(tgt, pat)
+    return match_wildcard(tgt, pat) or match_wildcard(_norm_path_text(_resolve_text(target)), pat)
 
 
 def _match_domain(rec: SecurityListRecord, host: str) -> bool:
     # 尾点在 DNS 上与裸域等价 → 两侧都归一，否则 `evil.example.` 可绕过 deny 规则（设计 §7）
-    pat = rec.pattern.strip().lower().rstrip(".")
-    h = host.strip().lower().rstrip(".")
+    raw_pattern = rec.pattern.strip()
+    pat = _hostname(raw_pattern[2:] if rec.match == "wildcard" else raw_pattern)
+    h = _hostname(host)
     if not pat or not h:
         return False
     if rec.match == "exact":
@@ -196,8 +216,7 @@ def _match_domain(rec: SecurityListRecord, host: str) -> bool:
         return h == pat or h.endswith("." + pat)
     if rec.match == "wildcard":
         # *.example.com 仅子域（不命中裸域）
-        suffix = pat[2:] if pat.startswith("*.") else pat
-        return h.endswith("." + suffix)
+        return h.endswith("." + pat)
     return False
 
 

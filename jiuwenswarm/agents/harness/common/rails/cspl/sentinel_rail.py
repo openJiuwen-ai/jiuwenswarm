@@ -189,10 +189,9 @@ class CsplSentinelRail(DeepAgentRail):
         其余 → 放行 + 审计 + 桌面提示；因总开关关闭而放行的 P2 打
         ``p2_fail_open_disabled`` 标记。
         """
-        level = ctx.extra.get(RISK_LEVEL_KEY)
-        if not level:
-            level = classify_risk(tool_name, ctx.inputs.tool_args)
-            ctx.extra[RISK_LEVEL_KEY] = level
+        # extra 可跨同一轮的多个工具调用复用，不能继承上一工具的低风险等级。
+        level = classify_risk(tool_name, ctx.inputs.tool_args)
+        ctx.extra[RISK_LEVEL_KEY] = level
         strict_mode = is_strict_profile()
         policy = self._effective_policy(strict_mode)
         closed = policy == "strict" or (level == RISK_P2 and p2_fail_closed_active())

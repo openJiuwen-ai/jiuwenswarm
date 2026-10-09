@@ -30,13 +30,17 @@ import yaml
 from jiuwenswarm.common.config import get_config, update_config
 
 from .models import (
+    DuplicateRecordError,
     SECURITY_LISTS_VERSION,
+    DEFAULT_TYPE_KEYS,
+    MODE_KEYS,
     SecurityListRecord,
     SecurityListsCorruptedError,
     has_glob_chars,
     new_record_id,
     record_from_dict,
     record_to_dict,
+    resolve_default,
     utc_now_iso,
     validate_defaults,
     validate_record,
@@ -113,13 +117,15 @@ def _parse_section(section: Any) -> dict[str, Any]:
     if not isinstance(section, dict):
         raise ValueError(f"security_lists 段须为映射: {type(section).__name__}")
     version = _parse_version(section.get("version"))
-    user = _parse_records(section.get("user") or [], default_source="user")
-    cloud_raw = section.get("cloud") or {}
+    user = _parse_records(section.get("user", []), default_source="user")
+    cloud_raw = section.get("cloud", {})
     if not isinstance(cloud_raw, dict):
         raise ValueError(f"security_lists.cloud 须为映射: {type(cloud_raw).__name__}")
-    cloud_records = _parse_records(cloud_raw.get("records") or [], default_source="cloud")
-    defaults_raw = section.get("defaults") or {}
+    cloud_records = _parse_records(cloud_raw.get("records", []), default_source="cloud")
+    defaults_raw = section.get("defaults", {})
     validate_defaults(defaults_raw)
+    cloud_defaults = cloud_raw.get("defaults", {})
+    validate_defaults(cloud_defaults)
     return {
         "version": version,
         "user": user,
@@ -127,6 +133,7 @@ def _parse_section(section: Any) -> dict[str, Any]:
             "sync_version": str(cloud_raw.get("sync_version") or ""),
             "synced_at": str(cloud_raw.get("synced_at") or ""),
             "records": cloud_records,
+            **({"defaults": cloud_defaults} if cloud_defaults else {}),
         },
         "defaults": {
             str(mode): {str(list_type): str(action) for list_type, action in row.items()}
@@ -186,7 +193,8 @@ def _ensure_section(data: dict[str, Any]) -> dict[str, Any]:
             raise SecurityListsCorruptedError(f"security_lists.version 非法，拒绝写入: {exc}") from exc
     # 存量 defaults 非法同样拒写（与读路径一致，不静默丢弃）
     try:
-        validate_defaults(section.get("defaults") or {})
+        validate_defaults(section.get("defaults", {}))
+        validate_defaults(section["cloud"].get("defaults", {}))
     except ValueError as exc:
         raise SecurityListsCorruptedError(f"security_lists.defaults 非法，拒绝写入: {exc}") from exc
     section.setdefault("defaults", {})
@@ -196,8 +204,24 @@ def _ensure_section(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_defaults() -> dict[str, Any]:
-    """读兜底档（``security_lists.defaults``）；空映射＝无兜底（交权限管线）。"""
-    return dict(get_security_lists().get("defaults") or {})
+    """读生效兜底档；用户格（包括通用格）优先于云侧格，物理存储隔离。"""
+    lists = get_security_lists()
+    user = lists.get("defaults") or {}
+    cloud = lists["cloud"].get("defaults") or {}
+    if not user or not cloud:
+        return {mode: dict(row) for mode, row in (user or cloud).items()}
+    merged: dict[str, Any] = {}
+    for mode in MODE_KEYS:
+        row = {}
+        for list_type in DEFAULT_TYPE_KEYS:
+            action = resolve_default(user, mode, list_type)
+            if action is None:
+                action = resolve_default(cloud, mode, list_type)
+            if action is not None:
+                row[list_type] = action
+        if row:
+            merged[mode] = row
+    return merged
 
 
 def set_defaults(defaults: dict[str, Any]) -> dict[str, Any]:
@@ -223,7 +247,7 @@ def set_defaults(defaults: dict[str, Any]) -> dict[str, Any]:
 def _parse_existing_user(section: dict[str, Any]) -> list[SecurityListRecord]:
     """mutator 内解析存量 user 记录；损坏则抛 CorruptedError（事务中止，不落盘）。"""
     try:
-        return _parse_records(section.get("user") or [], default_source="user")
+        return _parse_records(section.get("user", []), default_source="user")
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
         raise SecurityListsCorruptedError(f"security_lists.user 解析失败，拒绝写入: {exc}") from exc
 
@@ -310,6 +334,7 @@ def replace_records_by_origin(
     origin: str,
     list_type: str,
     records: list[SecurityListRecord],
+    reject_conflicts: bool = False,
 ) -> dict[str, Any]:
     """把 ``origin`` 名下、``list_type`` 类的记录**整体替换**为 ``records``（一个事务）。
 
@@ -347,6 +372,8 @@ def replace_records_by_origin(
         for rec in records:
             key = (rec.type, rec.pattern, rec.match)
             if key in occupied:
+                if reject_conflicts:
+                    raise DuplicateRecordError(f"操作对象已被其它来源占用: {rec.pattern}")
                 skipped.append(rec.pattern)
                 logger.warning(
                     "按来源替换跳过（操作对象已被其它来源占用）: origin=%s %s %r",
@@ -409,8 +436,8 @@ def cloud_sync(
     records 逐条校验，**任一非法整批拒绝**（抛 :class:`ValueError`，RPC 映射 400）；
     批次内 ``(type, pattern, match)`` 重复同样整批拒绝。
 
-    ``defaults`` 非 ``None`` 时同时整区替换兜底档（云侧可下发"未列出即拒"白名单）；
-    为 ``None``（缺省）时**保留现值**——云侧不下发就不动用户/前次云侧的档位设置。
+    ``defaults`` 非 ``None`` 时替换 cloud.defaults（用户 defaults 不动）；
+    缺省时保留前次云侧兜底档。用户完整回退链优先于云侧完整回退链。
     返回应用条数。
     """
     parsed: list[SecurityListRecord] = []
@@ -430,15 +457,17 @@ def cloud_sync(
                 rec.id = new_record_id()
             rec.created_at = rec.created_at or now
             rec.updated_at = now
+        previous_defaults = section["cloud"].get("defaults") or {}
         section["cloud"] = {
             "sync_version": str(sync_version or ""),
             "synced_at": str(synced_at or ""),
             "records": [record_to_dict(r) for r in parsed],
         }
-        if defaults is not None:
-            section["defaults"] = {
+        cloud_defaults = previous_defaults if defaults is None else defaults
+        if cloud_defaults:
+            section["cloud"]["defaults"] = {
                 str(mode): {str(list_type): str(action) for list_type, action in row.items()}
-                for mode, row in defaults.items()
+                for mode, row in cloud_defaults.items()
             }
         return data
 
@@ -459,11 +488,11 @@ def _default_copy_path() -> Path:
     return get_config_dir() / _RUNTIME_COPY_NAME
 
 
-def _migration_marker(section: dict[str, Any]) -> str | None:
+def _migration_marker(section: dict[str, Any], key: str = _MIGRATION_SANDBOX_COPY) -> str | None:
     migrations = section.get("migrations")
     if not isinstance(migrations, dict):
         return None
-    marker = migrations.get(_MIGRATION_SANDBOX_COPY)
+    marker = migrations.get(key)
     return str(marker) if marker else None
 
 
@@ -482,7 +511,7 @@ def _copy_file_rules(copy: dict[str, Any]) -> dict[str, list[str]]:
 def _copy_domain_rules(copy: dict[str, Any]) -> dict[str, list[str]]:
     """从副本提取网络域名黑/白名单。"""
     win = copy.get("windows") if isinstance(copy, dict) else None
-    net = win.get("network") if isinstance(win, dict) else None
+    net = win.get("network") if isinstance(win, dict) else copy.get("network")
     egress = net.get("egress") if isinstance(net, dict) else None
     if not isinstance(egress, dict):
         return {"allowed_domains": [], "blocked_domains": []}
@@ -560,14 +589,20 @@ def _build_migrated_records(copy: dict[str, Any], now: str) -> list[SecurityList
 
 
 def migrate_sandbox_copy_once(copy_path: Path | None = None) -> int:
-    """windows-policy.runtime.yaml 用户副本 → user 区聚合记录（幂等，只读副本）。
+    """Windows/Linux 运行时副本 → user 区聚合记录（幂等，只读副本）。
 
-    已迁移（``security_lists.migrations.sandbox_copy`` 有标记）→ 返回 0。
+    两份副本分别使用 sandbox_copy / sandbox_copy_linux 迁移标记。
     与存量 user 记录同 ``(type, pattern, match)`` 的迁移条目跳过（用户显式
     配置优先）。**不清空副本**（副本是沙箱侧活配置，见函数尾注释）。
     返回新建记录条数。
     """
-    copy_path = Path(copy_path) if copy_path is not None else _default_copy_path()
+    if copy_path is None:
+        windows_path = _default_copy_path()
+        return (migrate_sandbox_copy_once(windows_path)
+                + migrate_sandbox_copy_once(windows_path.with_name("default-policy.runtime.yaml")))
+    copy_path = Path(copy_path)
+    migration_key = ("sandbox_copy_linux" if copy_path.name == "default-policy.runtime.yaml"
+                     else _MIGRATION_SANDBOX_COPY)
     if not copy_path.is_file():
         return 0
     try:
@@ -586,7 +621,7 @@ def migrate_sandbox_copy_once(copy_path: Path | None = None) -> int:
     def _mutate(data: dict[str, Any]) -> dict[str, Any]:
         nonlocal migrated, already_done
         section = _ensure_section(data)
-        if _migration_marker(section):
+        if _migration_marker(section, migration_key):
             already_done = True
             return None  # 无变更不落盘（update_config 对 None 跳过写）
         existing = _parse_existing_user(section)
@@ -602,7 +637,7 @@ def migrate_sandbox_copy_once(copy_path: Path | None = None) -> int:
             existing.append(rec)
             occupied.add(key)
             migrated += 1
-        section.setdefault("migrations", {})[_MIGRATION_SANDBOX_COPY] = now
+        section.setdefault("migrations", {})[migration_key] = now
         return data
 
     update_config(_mutate)

@@ -44,7 +44,8 @@ def rpc_env(tmp_path, monkeypatch):
 
 def call(method: ReqMethod, params: dict | None = None):
     return dispatch_security_lists_request(
-        AgentRequest(request_id="r1", req_method=method, params=params or {})
+        AgentRequest(request_id="r1", req_method=method, params=params or {},
+                     channel_id="desktop" if method == ReqMethod.SECURITY_LISTS_CLOUD_SYNC else "web")
     )
 
 

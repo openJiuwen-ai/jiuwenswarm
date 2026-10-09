@@ -193,7 +193,7 @@ class TestEgressFilter:
         ok, _ = f.allow("x.evil.com", 443)
         assert ok is False
         ok, _ = f.allow("evil.com", 443)
-        assert ok is False
+        assert ok is True  # wildcard covers subdomains only
         ok, _ = f.allow("good.com", 443)
         assert ok is True
 

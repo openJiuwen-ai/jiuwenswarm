@@ -41,7 +41,7 @@ class SecurityListComposer:
         缺省/空映射 = 无兜底（``evaluate`` 回落到 NO_MATCH 存量语义）。
         段损坏原样上抛（rail fail-closed）。
         """
-        return dict(store.get_security_lists().get("defaults") or {})
+        return store.get_defaults()
 
     def collect(
         self,

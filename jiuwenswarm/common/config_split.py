@@ -54,6 +54,7 @@ _SCALAR_PATHS: tuple[tuple[str, ...], ...] = (
     # 沙箱本地回落三态（never|inline_only|always，设计 5.6）；Web 安全页与
     # 手改 config.yaml 都可能设它，模板缺失 → 不登记会被模板重同步整键抹掉。
     ("sandbox", "fallback_policy"),
+    ("sandbox", "urls_revision"),
 )
 
 # 小艺 PC/手机 HITL「永久记住」。按 id（路径条目按 path）upsert 回新模板 list。
@@ -63,6 +64,7 @@ LIST_PATHS: tuple[tuple[str, ...], ...] = (
     ("permissions", "file_guard", "paths"),
     # 统一安全名单的用户记录（按记录 id upsert）；含 M1 从沙箱副本迁移来的条目。
     ("security_lists", "user"),
+    ("sandbox", "files"),
 )
 
 # 与 LIST_PATHS 同语义，但值是映射：按键 upsert，仅写回与模板不同的键。
@@ -76,6 +78,7 @@ MAP_PATHS: tuple[tuple[str, ...], ...] = (
     # 一次性迁移幂等标记（如 sandbox_copy）。丢失会让迁移在每次升级后重跑，
     # 把用户已删掉的迁移条目再挂回来。
     ("security_lists", "migrations"),
+    ("sandbox", "urls"),
 )
 
 # 用户 config 目录；比的是包内模板哈希，不是用户 yaml 是否等于模板。

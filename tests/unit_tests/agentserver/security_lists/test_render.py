@@ -68,7 +68,7 @@ def test_collect_domain_lists(env):
 
     out = render.collect_sandbox_lists(mode="*")
     assert out["blocked_domains"] == ["*.evil.com"]  # 域名落盘统一小写
-    assert out["allowed_domains"] == ["mirror.org"]
+    assert out["allowed_domains"] == ["mirror.org", "*.mirror.org"]
 
 
 def test_collect_mode_resolution(env):
@@ -95,9 +95,9 @@ def test_collect_deny_priority_across_records(env):
     assert out["deny_read"] == ["C:/conflict"]
     assert out["allow_read"] == []
     # 模式未命中 deny 格 → 仅 allow
-    assert out["allowed_domains"] == ["x.com"]
+    assert out["allowed_domains"] == ["x.com", "*.x.com"]
     out2 = render.collect_sandbox_lists(mode="full_access")
-    assert out2["blocked_domains"] == ["x.com"]
+    assert out2["blocked_domains"] == ["x.com", "*.x.com"]
     assert out2["allowed_domains"] == []
 
 
@@ -117,7 +117,7 @@ def test_render_writes_copy_preserving_disable_all(env):
     store.upsert_record(rec(type="domain", pattern="ok.com", match="exact", cells={"*": {"*": "allow"}}))
 
     counts = render.render_sandbox_copy(mode="*")
-    assert counts["deny_read"] == 1 and counts["allowed_domains"] == 1
+    assert counts["deny_read"] == 1 and counts["allowed_domains"] == 2
 
     data = _read_copy(env["copy"])
     fs = data["windows"]["filesystem"]
@@ -126,7 +126,7 @@ def test_render_writes_copy_preserving_disable_all(env):
     assert fs["allow_read"] == []
     net = data["windows"]["network"]
     assert net["disable_all"] is True  # 总开关不碰
-    assert net["egress"]["allowed_domains"] == ["ok.com"]
+    assert net["egress"]["allowed_domains"] == ["ok.com", "*.ok.com"]
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +257,7 @@ def test_panel_network_set_writes_domain_records(env, monkeypatch):
     assert records["*.evil.example"].match == "wildcard"   # 仅子域
     assert records["ok.example"].migrated_from == "sandbox_panel"
     egress = _read_copy(env["copy"])["windows"]["network"]["egress"]
-    assert egress["allowed_domains"] == ["ok.example"]
+    assert egress["allowed_domains"] == ["ok.example", "*.ok.example"]
     assert egress["blocked_domains"] == ["*.evil.example"]
 
 
@@ -287,10 +287,10 @@ def test_render_linux_copy_writes_egress_from_lists(env):
 
     counts = render.render_linux_copy(mode="*")
 
-    assert counts == {"allowed_domains": 1, "blocked_domains": 1}
+    assert counts == {"allowed_domains": 1, "blocked_domains": 2}
     data = _read_copy(env["linux_copy"])
     assert data == {"network": {"egress": {
-        "allowed_domains": ["*.ok.example"], "blocked_domains": ["blocked.example"],
+        "allowed_domains": ["*.ok.example"], "blocked_domains": ["blocked.example", "*.blocked.example"],
     }}}
 
 
@@ -323,7 +323,7 @@ def test_panel_network_set_on_linux_writes_lists_not_copy(env, monkeypatch):
     assert records == {"ok.example", "*.evil.example"}
     # Linux 副本由渲染产出（而不是 set 直接写）
     egress = _read_copy(env["linux_copy"])["network"]["egress"]
-    assert egress == {"allowed_domains": ["ok.example"], "blocked_domains": ["*.evil.example"]}
+    assert egress == {"allowed_domains": ["ok.example", "*.ok.example"], "blocked_domains": ["*.evil.example"]}
     # 两份副本都由本次渲染统一产出（不做平台分支：哪台机器跑哪种沙箱，那份都是新的）
     assert _read_copy(env["copy"])["windows"]["network"]["egress"]["blocked_domains"] == [
         "*.evil.example"
@@ -335,13 +335,15 @@ def test_panel_network_set_on_linux_removal_propagates(env, monkeypatch):
     spr.set_sandbox_network_config(False, ["a.example", "b.example"], [])
     spr.set_sandbox_network_config(False, ["a.example"], [])
 
-    assert _read_copy(env["linux_copy"])["network"]["egress"]["allowed_domains"] == ["a.example"]
+    assert _read_copy(env["linux_copy"])["network"]["egress"]["allowed_domains"] == ["a.example", "*.a.example"]
 
 
-def test_render_skips_non_absolute_paths(env):
+def test_render_reports_non_absolute_paths(env):
     store.upsert_record(rec(pattern="*.pem", match="glob", cells={"*": {"read": "deny"}}))
     store.upsert_record(rec(pattern="C:/abs", cells={"*": {"read": "deny"}}))
 
-    render.render_sandbox_copy(mode="*")
-    fs = _read_copy(env["copy"])["windows"]["filesystem"]
-    assert fs["deny_read"] == ["C:/abs"]  # 相对路径校验跳过，不影响合法条目
+    before = env["copy"].read_bytes() if env["copy"].exists() else None
+    with pytest.raises(ValueError, match="absolute"):
+        render.render_sandbox_copy(mode="*")
+    if before is not None:
+        assert env["copy"].read_bytes() == before
