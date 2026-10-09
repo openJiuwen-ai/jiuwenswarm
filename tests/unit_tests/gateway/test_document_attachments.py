@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.server.runtime.attachments.document_attachments import (
+from jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments import (
     FORBIDDEN_DOCUMENT_EXTENSIONS,
     forbidden_formats,
     is_forbidden_document,
@@ -129,7 +129,7 @@ async def test_persist_base64_document_writes_to_upload_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.attachments.document_attachments.get_agent_sessions_dir",
+        "jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments.get_agent_sessions_dir",
         lambda: tmp_path,
     )
     result = persist_and_parse_documents(
@@ -159,7 +159,7 @@ async def test_persist_base64_document_rejects_forbidden_extension(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.attachments.document_attachments.get_agent_sessions_dir",
+        "jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments.get_agent_sessions_dir",
         lambda: tmp_path,
     )
     result = persist_and_parse_documents(
@@ -185,7 +185,7 @@ async def test_persist_base64_document_rejects_trailing_space_in_forbidden_exten
 ):
     """末尾空格/点的 .exe 不能绕过黑名单：先归一化文件名再校验。"""
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.attachments.document_attachments.get_agent_sessions_dir",
+        "jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments.get_agent_sessions_dir",
         lambda: tmp_path,
     )
     for evil_name in ("setup.exe ", "setup.exe."):
@@ -212,7 +212,7 @@ async def test_persist_base64_document_strips_content_from_response(
 ):
     """The persisted response must not echo base64 content back (WS frame size)."""
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.attachments.document_attachments.get_agent_sessions_dir",
+        "jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments.get_agent_sessions_dir",
         lambda: tmp_path,
     )
     result = persist_and_parse_documents(
@@ -246,7 +246,7 @@ async def test_persist_base64_document_strips_data_uri_prefix(
 ):
     """react-dropzone/readAsDataURL 等Library会带 data:...;base64, 前缀，需剥离后解码。"""
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.attachments.document_attachments.get_agent_sessions_dir",
+        "jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments.get_agent_sessions_dir",
         lambda: tmp_path,
     )
     # b"# uploaded doc" 的 base64，带 data URI 前缀
@@ -276,7 +276,7 @@ async def test_persist_passthrough_large_document_persisted(
 ):
     """A document already persisted by the gateway HTTP bridge is passed through."""
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.attachments.document_attachments.get_agent_sessions_dir",
+        "jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments.get_agent_sessions_dir",
         lambda: tmp_path,
     )
     upload_dir = tmp_path / "sess-1" / "uploads"
@@ -309,7 +309,7 @@ async def test_persist_passthrough_missing_persisted_path_is_dropped(
 ):
     """A _persisted item whose file no longer exists is dropped, not errored."""
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.attachments.document_attachments.get_agent_sessions_dir",
+        "jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments.get_agent_sessions_dir",
         lambda: tmp_path,
     )
     result = persist_and_parse_documents(

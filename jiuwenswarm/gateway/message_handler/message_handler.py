@@ -167,7 +167,7 @@ def apply_a2ui_text_fallback_to_gateway_payload(
     if not any(_A2UI_OPEN_TAG_MARKER in value for value in payload.values() if isinstance(value, str)):
         return payload
 
-    from jiuwenswarm.server.runtime.a2ui.integration import apply_non_web_text_fallback_to_payload
+    from jiuwenswarm.gateway.embedded.runtime.a2ui_text import apply_non_web_text_fallback_to_payload
 
     return apply_non_web_text_fallback_to_payload(payload, channel_id=channel_id)
 
@@ -4165,10 +4165,10 @@ class MessageHandler(ABC):
         if not is_legacy_shared_directory_client(self.agent_client):
             return ""
         try:
-            from jiuwenswarm.server.runtime.session.model_selection_store import (
+            from jiuwenswarm.gateway.embedded.runtime.session.model_selection_store import (
                 get_session_model_selection,
             )
-            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
 
             if get_session_model_selection(session_id) is not None:
                 return ""

@@ -78,7 +78,7 @@ def infer_work_mode_from_targets(job_item: dict[str, Any]) -> str:
 def build_cron_project_lookup() -> dict[str, str]:
     """构建 project_id → work_mode 映射,供 cron job 惰性迁移推断 work_mode。"""
     try:
-        from jiuwenswarm.server.runtime.session.project_store import list_projects
+        from jiuwenswarm.gateway.embedded.runtime.session.project_store import list_projects
 
         return {
             p.project_id: p.work_mode
@@ -344,7 +344,7 @@ def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
         else:
             from jiuwenswarm.common.model_selection import ModelSelection
             selection = ModelSelection.model_validate(raw_selection)
-            from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+            from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver
             ModelSelectionResolver().resolve(selection)
             updated = replace(updated, model_selection=selection.model_dump())
     if "credential_ref" in patch:

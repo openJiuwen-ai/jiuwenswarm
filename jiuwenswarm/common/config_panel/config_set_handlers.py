@@ -1577,7 +1577,7 @@ async def config_set_handler(
 
     if "enable_free_models" in apply_result.yaml_updated:
         try:
-            from jiuwenswarm.server.runtime.opencode_zen import warm_zen_free_models
+            from jiuwenswarm.runtime.opencode_zen import warm_zen_free_models
             await warm_zen_free_models(reason="config-toggle")
         except Exception as exc:  # noqa: BLE001
             logger.warning("[config.set] warm_zen_free_models failed: %s", exc)
@@ -1726,7 +1726,7 @@ async def config_save_all_handler(
 
         if "enable_free_models" in yaml_updated:
             try:
-                from jiuwenswarm.server.runtime.opencode_zen import warm_zen_free_models
+                from jiuwenswarm.runtime.opencode_zen import warm_zen_free_models
                 await warm_zen_free_models(reason="config-toggle")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[config.save_all] warm_zen_free_models failed: %s", exc)

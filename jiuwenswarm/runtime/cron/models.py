@@ -289,7 +289,7 @@ def resolve_cron_model(raw: Any) -> tuple[str | None, str]:
         return canonical, CRON_MODEL_SOURCE_CONFIG
 
     try:
-        from jiuwenswarm.server.runtime.opencode_zen import (
+        from jiuwenswarm.runtime.opencode_zen import (
             get_zen_free_model_entries,
         )
 

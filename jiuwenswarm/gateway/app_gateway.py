@@ -90,7 +90,7 @@ from jiuwenswarm.common.utils import (
 )
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod, Message, Mode
-from jiuwenswarm.server.runtime.attachments.media_attachments import (
+from jiuwenswarm.gateway.embedded.runtime.attachments.media_attachments import (
     normalize_chat_media_attachments,
 )
 _mark_startup_import_phase("gateway_core_imports_loaded")
@@ -125,7 +125,7 @@ def _agent_prewarm_enabled() -> bool:
     Prewarming is opt-in via JIUWENSWARM_AGENT_PREWARM; when off the Gateway
     must not emit agent.prewarm.sync requests or related log noise.
     """
-    from jiuwenswarm.server.runtime.agent_warm_pool import prewarm_enabled_by_env
+    from jiuwenswarm.gateway.embedded.runtime.agent_prewarm import prewarm_enabled_by_env
 
     return prewarm_enabled_by_env()
 
@@ -367,7 +367,7 @@ def _inject_session_work_mode(msg: Message) -> None:
         return
     channel_id = getattr(msg, "channel_id", None)
     try:
-        from jiuwenswarm.server.runtime.session.work_mode import resolve_session_work_mode_params
+        from jiuwenswarm.gateway.embedded.runtime.session.work_mode import resolve_session_work_mode_params
         binding = resolve_session_work_mode_params(params, channel_id=channel_id)
     except Exception:  # noqa: BLE001
         # 归一化异常时不写回,保留原始 params 由后续处理
@@ -2172,7 +2172,7 @@ async def _run(
     # 注入 Git diff 监控注册表(设计文档阶段10):
     # 1. 让 ``_mark_git_watcher_dirty`` 能通过 ``channel.git_watcher_registry`` 唤醒轮询
     # 2. 通过 ``set_channel`` 让 registry 拿到 send_event 的发送句柄
-    from jiuwenswarm.server.runtime.session.git_diff_watcher import (
+    from jiuwenswarm.gateway.embedded.runtime.session.git_diff_watcher import (
         get_git_diff_watcher_registry,
     )
     _git_watcher_registry = get_git_diff_watcher_registry()
@@ -3129,7 +3129,7 @@ async def _run(
     # shutdown 时 cancel（见本函数 finally）。
     zen_free_models_task: asyncio.Task | None = None
     try:
-        from jiuwenswarm.server.runtime.opencode_zen import (
+        from jiuwenswarm.runtime.opencode_zen import (
             warm_zen_free_models,
             set_main_event_loop,
             register_models_ready_callback,

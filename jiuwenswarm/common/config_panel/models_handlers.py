@@ -725,7 +725,7 @@ async def models_list_handler(
         # False），使前端把它视为可选模型，同时不会改变首个配置模型作为
         # active_model 的既有语义。
         try:
-            from jiuwenswarm.server.runtime.opencode_zen import (
+            from jiuwenswarm.runtime.opencode_zen import (
                 get_zen_free_model_entries,
             )
 

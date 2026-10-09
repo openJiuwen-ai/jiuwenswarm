@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 
 from jiuwenswarm.common.hooks_config import HooksConfig, HookEvent
-from jiuwenswarm.server.hooks.executor import HookExecutor
+from jiuwenswarm.gateway.embedded.hooks.executor import HookExecutor
 
 logger = logging.getLogger(__name__)
 
