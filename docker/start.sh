@@ -18,7 +18,9 @@ fi
 # 生成企业版配置（app 身份执行 → 覆盖上一步稀疏版；失败即退出，不 startup）
 echo "[start.sh] generating config via update_conf.py"
 echo "[start.sh] JIUWENSWARM_CONFIG_DIR='${JIUWENSWARM_CONFIG_DIR}'"
-if ! python3 "${SCRIPT_DIR}/update_conf.py"; then
+# 用绝对路径调用：UBI 镜像的 BASH_ENV 会激活 /opt/app-root venv，
+# 裸 python3 会命中 venv（无业务依赖）；/usr/local/bin/python3 恒为系统 3.11
+if ! /usr/local/bin/python3 "${SCRIPT_DIR}/update_conf.py"; then
     echo "[start.sh] update_conf.py FAILED" >&2
     exit 1
 fi
