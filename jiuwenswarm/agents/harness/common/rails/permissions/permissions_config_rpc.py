@@ -83,17 +83,16 @@ def _net_guard_payload() -> dict[str, Any]:
     from openjiuwen.harness.security.outbound import describe_host_exit
     from openjiuwen.harness.security.permission_engine.netguard.net_urls import load_package_net_urls
 
-    from jiuwenswarm.common.config import get_config
-
-    cfg = get_config() or {}
-    perms = cfg.get("permissions") if isinstance(cfg.get("permissions"), dict) else {}
-    raw = perms.get("net_guard") if isinstance(perms.get("net_guard"), dict) else {}
+    from jiuwenswarm.agents.harness.common.rails.security_lists.legacy_compat import guard_view
+    raw = guard_view("net_guard")
     section = {
         "enabled": bool(raw.get("enabled")),
         "defaults": str(raw.get("defaults") or "allow"),
         "urls": dict(raw.get("urls") or {}) if isinstance(raw.get("urls"), dict) else {},
         "enforce_host_exit": raw.get("enforce_host_exit", True) is not False,
     }
+    if raw.get("readonly_rules"):
+        section["readonly_rules"] = raw["readonly_rules"]
     warnings: list[str] = []
     if section["enabled"] and not section["enforce_host_exit"]:
         warnings.append("enforce_host_exit=false：宿主出站 HTTP 无强制")
@@ -160,7 +159,9 @@ def dispatch_permissions_config_request(request: AgentRequest) -> AgentResponse:
             return _ok(request, {"file_guard": get_file_guard_config()})
         if m == ReqMethod.PERMISSIONS_FILE_GUARD_UPDATE:
             from jiuwenswarm.common.file_guard_config import update_file_guard_config
-            return _ok(request, {"file_guard": update_file_guard_config(params.get("patch"))})
+            from jiuwenswarm.server.security_lists_rpc import _after_list_change
+            guard = update_file_guard_config(params.get("patch"))
+            return _ok(request, {"file_guard": guard, "saved": True, "sync": _after_list_change()})
         if m == ReqMethod.PERMISSIONS_TOOLS_GET:
             return _ok(request, dict(get_permissions_tools()))
 
@@ -244,10 +245,14 @@ def dispatch_permissions_config_request(request: AgentRequest) -> AgentResponse:
 
             patch = params.get("net_guard") if isinstance(params.get("net_guard"), dict) else params
             persist_net_guard_section(patch)
-            publish_host_exit_policy_from_config()
-            return _ok(request, _net_guard_payload())
+            from jiuwenswarm.server.security_lists_rpc import _after_list_change
+            sync = _after_list_change()
+            return _ok(request, {**_net_guard_payload(), "saved": True, "sync": sync})
 
     except ValueError as e:
+        from jiuwenswarm.agents.harness.common.rails.security_lists.models import DuplicateRecordError
+        if isinstance(e, DuplicateRecordError):
+            return _err(request, str(e), code="CONFLICT")
         return _err(request, str(e))
     except Exception as e:
         logger.exception("[%s] %s", tag, e)

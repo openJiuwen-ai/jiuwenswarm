@@ -34,12 +34,11 @@ def validate_paths(paths):
 
 
 def get_file_guard_config():
-    from jiuwenswarm.common.config import get_config
-    return deepcopy((get_config().get("permissions") or {}).get("file_guard") or {})
+    from jiuwenswarm.agents.harness.common.rails.security_lists.legacy_compat import guard_view
+    return guard_view("file_guard")
 
 
 def update_file_guard_config(patch):
-    from jiuwenswarm.common.config import update_config
     if not isinstance(patch, dict) or set(patch) - {"enabled", "defaults", "workspace", "paths"}:
         raise ValueError("patch accepts only enabled/defaults/workspace/paths")
     if "enabled" in patch and not isinstance(patch["enabled"], bool):
@@ -54,22 +53,11 @@ def update_file_guard_config(patch):
     if "paths" in patch:
         validate_paths(patch["paths"])
 
-    def mutate(data):
-        guard = data.setdefault("permissions", {}).setdefault("file_guard", {})
-        for key, value in patch.items():
-            if key in ("defaults", "workspace"):
-                guard.setdefault(key, {}).update(deepcopy(value))
-                if guard[key].get("read") == "deny" and guard[key].get("write") == "allow":
-                    raise ValueError(f"{key}: write allow requires read allow")
-            else:
-                replacement = deepcopy(value)
-                if key == "paths":
-                    replacement = validate_paths(replacement)
-                guard[key] = replacement
-        return data
-
-    data = update_config(mutate)
-    return deepcopy(data["permissions"]["file_guard"])
+    from jiuwenswarm.agents.harness.common.rails.security_lists.legacy_compat import update_guard
+    normalized = deepcopy(patch)
+    if "paths" in normalized:
+        normalized["paths"] = validate_paths(normalized["paths"])
+    return update_guard("file_guard", normalized)
 
 
 def sandbox_file_buckets(files):
@@ -103,6 +91,39 @@ def sandbox_file_buckets(files):
     return buckets, blocked
 
 
+def project_file_guard_to_sandbox(guard):
+    """Project the compatibility subset; return unsupported entries explicitly."""
+    skipped = []
+    paths = validate_paths(guard.get("paths", []))
+    defaults = guard.get("defaults") or {}
+    files = []
+    candidates = []
+    for rule in paths:
+        # FileGuard supports rules the sandbox cannot represent. Report those
+        # rules without preventing the supported paths from being synchronized.
+        candidate = {"path": rule["path"]}
+        for axis in ("read", "write"):
+            candidate[axis] = rule.get(axis, defaults.get(axis, "ask"))
+        if candidate["read"] == "deny":
+            candidate["write"] = "deny"
+        try:
+            sandbox_file_buckets([{**candidate, "match": rule.get("match", "prefix")}])
+        except ValueError as exc:
+            skipped.append({"path": rule["path"], "reason": str(exc)})
+            continue
+        candidates.append(candidate)
+    # Restrictive rules win regardless of their order in FileGuard.
+    candidates.sort(key=lambda r: (r["read"] != "deny", r["write"] != "deny"))
+    for candidate in candidates:
+        try:
+            sandbox_file_buckets([*files, candidate])
+        except ValueError as exc:
+            skipped.append({"path": candidate["path"], "reason": str(exc)})
+            continue
+        files.append(candidate)
+    return files, skipped
+
+
 def sync_file_guard_to_sandbox():
     from jiuwenswarm.common.config import update_config
     from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import build_filesystem_policy
@@ -110,41 +131,20 @@ def sync_file_guard_to_sandbox():
     skipped = []
 
     def mutate(data):
+        from jiuwenswarm.agents.harness.common.rails.security_lists import store
+        store._ensure_section(data)
         permissions = data.get("permissions") or {}
         if (data.get("sandbox") or {}).get("type", "jiuwenbox") != "jiuwenbox":
             raise ValueError("sandbox.files.sync currently supports jiuwenbox only")
-        guard = permissions.get("file_guard") or {}
+        from jiuwenswarm.agents.harness.common.rails.security_lists.legacy_compat import guard_view
+        guard = guard_view("file_guard", data=data, owned_only=True)
         if not permissions.get("enabled") or guard.get("enabled") is False:
             raise ValueError("FileGuard must be enabled before synchronization")
-        paths = validate_paths(guard.get("paths", []))
-        defaults = guard.get("defaults") or {}
-        files = []
-        candidates = []
-        for rule in paths:
-            # FileGuard supports rules the sandbox cannot represent. Report those
-            # rules without preventing the supported paths from being synchronized.
-            candidate = {"path": rule["path"]}
-            for axis in ("read", "write"):
-                candidate[axis] = rule.get(axis, defaults.get(axis, "ask"))
-            if candidate["read"] == "deny":
-                candidate["write"] = "deny"
-            try:
-                sandbox_file_buckets([{**candidate, "match": rule.get("match", "prefix")}])
-            except ValueError as exc:
-                skipped.append({"path": rule["path"], "reason": str(exc)})
-                continue
-            candidates.append(candidate)
-        # Restrictive rules win regardless of their order in FileGuard.
-        candidates.sort(key=lambda r: (r["read"] != "deny", r["write"] != "deny"))
-        for candidate in candidates:
-            try:
-                sandbox_file_buckets([*files, candidate])
-            except ValueError as exc:
-                skipped.append({"path": candidate["path"], "reason": str(exc)})
-                continue
-            files.append(candidate)
+        files, omitted = project_file_guard_to_sandbox(guard)
+        skipped.extend(omitted)
         build_filesystem_policy(files)
         data.setdefault("sandbox", {})["files"] = files
+        data["sandbox"]["files_from_security_lists"] = True
         return data
 
     data = update_config(mutate)

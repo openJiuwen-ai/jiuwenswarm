@@ -2504,6 +2504,14 @@ def get_sandbox_runtime() -> dict[str, Any]:
     if not isinstance(sandbox, dict):
         return _ensure_sandbox_runtime_shape(None)
     raw = {key: sandbox[key] for key in _SANDBOX_RUNTIME_KEYS if key in sandbox}
+    if sandbox.get("files_from_security_lists"):
+        from jiuwenswarm.common.file_guard_config import project_file_guard_to_sandbox
+        from jiuwenswarm.agents.harness.common.rails.security_lists.legacy_compat import guard_view
+        guard = guard_view("file_guard", data=cfg, owned_only=True)
+        files, skipped = project_file_guard_to_sandbox(guard) if guard.get("enabled") is not False else ([], [])
+        raw["files"] = files
+        if skipped:
+            logger.warning("Derived sandbox.files contains unsupported rules: %s", skipped)
     return _ensure_sandbox_runtime_shape(raw)
 
 

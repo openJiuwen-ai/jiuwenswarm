@@ -203,7 +203,7 @@ def project_approvals(
         match = str(entry.get("match") or "prefix").strip().lower()
         if match not in ("glob", "prefix"):
             match = "prefix"
-        if ("file_path", fpath, match) in occupied:
+        if ("file_path", fpath, match) in occupied and not (entry.get("mode") or entry.get("created_at")):
             # 已被物理记录接管的操作对象：legacy 让位，物理记录是唯一真源
             logger.debug("[security_lists] file_guard 条目让位于物理记录: %r", fpath)
             continue

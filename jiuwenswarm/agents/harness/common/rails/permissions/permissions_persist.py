@@ -788,29 +788,10 @@ def normalize_net_guard_patch(patch: Any) -> dict[str, Any]:
 
 
 def persist_net_guard_section(patch: Any) -> dict[str, Any]:
-    """把 ``net_guard`` 局部更新写入 config.yaml，返回落盘后的整段。"""
+    """兼容旧参数；规则写统一名单，控制项保留原段。"""
     normalized = normalize_net_guard_patch(patch)
-    from jiuwenswarm.common.config import update_config
-
-    stored: dict[str, Any] = {}
-
-    def mutator(data: dict[str, Any]) -> dict[str, Any]:
-        perms = _ensure_permissions_dict(data)
-        ng = perms.get("net_guard")
-        if not isinstance(ng, dict):
-            ng = {"enabled": True, "defaults": "allow", "urls": {}}
-            perms["net_guard"] = ng
-        for key, value in normalized.items():
-            ng[key] = value
-        stored.update(json.loads(json.dumps(ng, default=str)))
-        return data
-
-    update_config(mutator)
-    logger.info(
-        "[PermissionPersist] net_guard.persist keys=%s",
-        sorted(normalized.keys()),
-    )
-    return stored
+    from jiuwenswarm.agents.harness.common.rails.security_lists.legacy_compat import update_guard
+    return update_guard("net_guard", normalized)
 
 
 def persist_permission_allow_rule(tool_name: str, tool_args: dict | str) -> bool:
