@@ -419,6 +419,34 @@ def test_explicit_petal_snapshot_never_reads_bound_tenant_overlay():
     assert tenant_a_url not in repr((detected, loaded))
 
 
+def test_load_config_translates_model_gear_to_concrete_model():
+    """档位关键字只能到隔离子进程边界为止，必须翻成具体模型 id。
+
+    DeepResearch 子进程走 env 通道（relay OFFICE_CLAW_EFFECTIVE_MODEL → MODEL_NAME），
+    没有 rail 也没有 request params。裸档位关键字直送 MaaS 会得到
+    ``ModelArts.81009 Invalid model``（211800/181001 那串报错的根因）。
+    """
+    from jiuwenswarm.agents.harness.common.tools.deepresearch_task_manager import (
+        load_deepresearch_config,
+    )
+
+    base = {"API_BASE": "https://maas.example/v2/", "API_KEY": "k"}
+
+    assert load_deepresearch_config({**base, "MODEL_NAME": "extreme"})["LLM_MODEL_NAME"] == "glm-5.2"
+    for gear in ("fast", "balanced", "auto"):
+        assert load_deepresearch_config({**base, "MODEL_NAME": gear})["LLM_MODEL_NAME"] == "deepseek-v4.1-flash"
+    # 显式 LLM_MODEL_NAME 优先，但同样要过表（同一通道，同一风险）。
+    assert load_deepresearch_config({**base, "LLM_MODEL_NAME": "extreme", "MODEL_NAME": "glm-5.2"})[
+        "LLM_MODEL_NAME"
+    ] == "glm-5.2"
+
+    # 具体模型名原样透传，不能被误翻。
+    assert load_deepresearch_config({**base, "MODEL_NAME": "glm-5.2"})["LLM_MODEL_NAME"] == "glm-5.2"
+    assert load_deepresearch_config({**base, "MODEL_NAME": "deepseek-v4.1-flash"})["LLM_MODEL_NAME"] == (
+        "deepseek-v4.1-flash"
+    )
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
