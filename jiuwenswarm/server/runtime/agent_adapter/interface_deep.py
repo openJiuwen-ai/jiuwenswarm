@@ -164,6 +164,7 @@ from jiuwenswarm.server.invocation_context_builder import build_invocation_conte
 from jiuwenswarm.agents.harness.common.rails.execution_guard import (
     CircuitBreakerRail,
     CircuitBreakerConfig,
+    ModelResponseGuardRail,
 )
 from jiuwenswarm.common.config import get_model_names
 from jiuwenswarm.agents.harness.common.rails.cspl import CsplConfig, CsplSentinelRail
@@ -1276,6 +1277,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         # 延时重索引任务（debounce）：连续改多次 embedding 只在最后一次后跑一次。
         self._memory_reindex_task: asyncio.Task | None = None
         self._llm_retry_rail: LLMRetryRail | None = None
+        self._model_response_guard_rail: ModelResponseGuardRail | None = None
         self._heartbeat_rail: HeartbeatRail | None = None
         self._skill_evolution_rail: SkillEvolutionRail | None = None
         self._evolution_interrupt_rail: EvolutionInterruptRail | None = None
@@ -5149,6 +5151,29 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             logger.warning("[JiuWenSwarmDeepAdapter] CircuitBreakerRail create failed: %s", exc)
             return None
 
+    def _build_model_response_guard_rail(self) -> ModelResponseGuardRail | None:
+        """模型响应语义守卫：流不完整（缺 finish_reason）/ 空产出 → MODEL_CALL_FAILED.
+
+        对应 JiuwenTest 缺陷守护用例 mf_002（SSE 中途断连）/ mf_006（空响应）：
+        两类异常原本会被当作正常完成（终止帧 succeeded + 0 chat.error）。
+        默认启用，execution_guard.model_response_guard.enabled=false 可关闭。
+        """
+        try:
+            guard_cfg = (get_config() or {}).get("execution_guard") or {}
+            mr_cfg = guard_cfg.get("model_response_guard") or {}
+            if mr_cfg.get("enabled", True) is not True:
+                logger.info("[JiuWenSwarmDeepAdapter] ModelResponseGuardRail disabled by config")
+                return None
+            rail = ModelResponseGuardRail(
+                check_incomplete_stream=mr_cfg.get("check_incomplete_stream", True),
+                check_empty_response=mr_cfg.get("check_empty_response", True),
+            )
+            logger.info("[JiuWenSwarmDeepAdapter] ModelResponseGuardRail create success")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] ModelResponseGuardRail create failed: %s", exc)
+            return None
+
     def _build_cspl_sentinel_rail(self) -> CsplSentinelRail | None:
         from jiuwenswarm.common.behavior_security import BehaviorSecurityBridge, desktop_security_active
         if desktop_security_active():
@@ -5450,6 +5475,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 "_llm_retry_rail",
                 self._build_llm_retry_rail,
                 {"config_base": config_base},
+            ),
+            _RailBuildInfo(
+                "_model_response_guard_rail",
+                self._build_model_response_guard_rail,
             ),
             _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
             _RailBuildInfo("_cspl_sentinel_rail", self._build_cspl_sentinel_rail),
