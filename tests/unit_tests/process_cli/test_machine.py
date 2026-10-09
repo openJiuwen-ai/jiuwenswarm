@@ -195,6 +195,34 @@ async def _run(client, run_input=None, *, writer=None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("max_turns", "expected_code"),
+    [
+        (1, "TURN_LIMIT_EXCEEDED"),
+        (2, "RUNTIME_ERROR"),
+        (None, "RUNTIME_ERROR"),
+    ],
+)
+async def test_iteration_stop_reports_scoped_turn_limit_only_when_reached(
+    max_turns, expected_code
+) -> None:
+    class LimitClient(FakeClient):
+        def stream(self, request, *, on_agent_ready=None):
+            return super().stream(request)
+
+    usage = _event(
+        "chat.usage_metadata", metadata={"usage_metadata": {"total_cost": 0.01}}
+    )
+    client = LimitClient(events=[
+        usage,
+        _event("chat.error", error="Max iterations reached without completion"),
+    ])
+    result = await _run(client, OneShotRunInput(input="use a tool", max_turns=max_turns))
+    assert result.error.code == expected_code
+    assert result.usage.get("model_calls") == (1 if max_turns else None)
+
+
+@pytest.mark.asyncio
 async def test_session_guard_conflict_preserves_safe_error_message(monkeypatch) -> None:
     def reject_binding(*_args, **_kwargs):
         raise SessionGuardError(

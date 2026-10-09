@@ -96,7 +96,11 @@ are rejected and execution resumes; other interactions need a host answer.
 Optional `output_schema` is an object-root JSON Schema. The final answer must
 be exactly one matching JSON object; success includes parsed `output_json`.
 Invalid output fails with `OUTPUT_SCHEMA_MISMATCH`. `max_turns` (1 to 1000)
-caps the Agent model loop and reports `usage.model_calls`. `max_budget_usd`
+caps the Agent model loop and reports `usage.model_calls`. If the Agent has
+not finished when it reaches the cap, the result fails with
+`TURN_LIMIT_EXCEEDED`. A tool call may use one turn and require another model
+call to summarize its result. The tool can execute before the limit error; the
+result does not roll back its effects. `max_budget_usd`
 stops after reported model cost exceeds the bound. Costs are checked after
 each call, so one call can cross the limit. A model without usable cost data
 fails a budgeted run with `BUDGET_METER_UNAVAILABLE`.

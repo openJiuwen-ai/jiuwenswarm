@@ -79,7 +79,10 @@ different interaction types into a boolean.
 
 For structured results, send an object-root JSON Schema in `output_schema` and
 read `result["output_json"]`. Invalid model output fails the run. Use `max_turns`
-to bound model calls and `max_budget_usd` to bound reported USD cost. A model
+to bound model calls and `max_budget_usd` to bound reported USD cost. When a
+tool call consumes the last allowed turn, the run reports `TURN_LIMIT_EXCEEDED`
+because the Agent cannot make a follow-up model call. The tool may already
+have run; inspect callbacks before retrying. A model
 without cost data causes a budgeted run to fail closed. One model call may
 cross a cost bound before Runtime can stop it.
 

@@ -351,7 +351,7 @@ class _MachineRun:
         else:
             completed = await self.consume_noninteractive()
         if self.summary.error is not None:
-            self.fail(self.summary.error)
+            self.fail(self._normalize_run_error(self.summary.error))
         elif not completed:
             raise MachineRunError(
                 "Runtime stream ended without a completion event.",
@@ -367,11 +367,24 @@ class _MachineRun:
                     str(error), code="OUTPUT_SCHEMA_MISMATCH"
                 ) from error
 
+    def _normalize_run_error(self, error: RuntimeErrorInfo) -> RuntimeErrorInfo:
+        """Identify the Agent's iteration stop when this run requested the cap."""
+        if (
+            self.run_input.max_turns is not None
+            and self.limits.model_calls >= self.run_input.max_turns
+            and error.code == "RUNTIME_ERROR"
+            and error.message == "Max iterations reached without completion"
+        ):
+            return replace(
+                error,
+                code="TURN_LIMIT_EXCEEDED",
+                message="Run reached max_turns before completion.",
+            )
+        return error
+
     def observe(self, event: RuntimeEvent) -> None:
         self.writer.write_event(event)
         self.summary.observe(event)
-        if self.summary.error is not None:
-            self.fail(self.summary.error)
         limit_error = self.limits.observe(event)
         if limit_error is not None:
             messages = {
@@ -380,6 +393,8 @@ class _MachineRun:
                 "TURN_LIMIT_EXCEEDED": "Run exceeded max_turns.",
             }
             raise MachineRunError(messages[limit_error], code=limit_error)
+        if self.summary.error is not None:
+            self.fail(self._normalize_run_error(self.summary.error))
 
     async def consume_noninteractive(self) -> bool:
         completed = False
