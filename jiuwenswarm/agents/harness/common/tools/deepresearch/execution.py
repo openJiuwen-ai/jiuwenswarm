@@ -25,7 +25,12 @@ from jiuwenswarm.common.schema.ask_user import (
 from jiuwenswarm.perf.context import DeepResearchReportType
 
 from .stream_router import _format_outline_card_markdown
-from .tools import _call_deepresearch_stream_impl
+from .tools import (
+    _call_deepresearch_stream_impl,
+    _get_cached_outline_json,
+    _get_route,
+    _probe_resumable_checkpoint,
+)
 from .usage import normalize_workflow_llm_token_usage
 
 logger = logging.getLogger(__name__)
@@ -650,6 +655,30 @@ def _outline_sections(outline_text: str) -> list[str]:
     ]
 
 
+def _outline_review_interaction(outline_text: str) -> dict[str, Any]:
+    """The outline review ask-user card shared by all entry paths."""
+    return {
+        "query": "请审阅生成的研究报告大纲",
+        "return_json": True,
+        "questions": [
+            {
+                "header": "研究报告大纲审阅",
+                "question": "请审阅生成的研究报告大纲，确认后将继续执行深度研究。",
+                "options": [
+                    {"label": "确认大纲，继续研究"},
+                    {"label": "需要修改"},
+                ],
+                "preview": {
+                    "title": "研究报告大纲",
+                    "text": outline_text,
+                    "format": "markdown",
+                    "editable": True,
+                },
+            }
+        ],
+    }
+
+
 def _completion_content(
     state: Mapping[str, Any], html_style_status: Any = None
 ) -> str:
@@ -814,26 +843,7 @@ async def _handle_outcome(
             return _result(
                 "interaction",
                 state,
-                interaction={
-                    "query": "请审阅生成的研究报告大纲",
-                    "return_json": True,
-                    "questions": [
-                        {
-                            "header": "研究报告大纲审阅",
-                            "question": "请审阅生成的研究报告大纲，确认后将继续执行深度研究。",
-                            "options": [
-                                {"label": "确认大纲，继续研究"},
-                                {"label": "需要修改"},
-                            ],
-                            "preview": {
-                                "title": "研究报告大纲",
-                                "text": outline_text,
-                                "format": "markdown",
-                                "editable": True,
-                            },
-                        }
-                    ],
-                },
+                interaction=_outline_review_interaction(outline_text),
             )
         return _terminal_error(
             context,
@@ -902,13 +912,19 @@ async def _handle_outcome(
         "the standard detail, research-question, and outline review cards, "
         "resumes the same SDK conversation, and directly delivers the terminal result. "
         "report_type: 'professional' for in-depth multi-section reports, 'brief' for "
-        "single-page concise reports; infer from the user's original wording."
+        "single-page concise reports; infer from the user's original wording. "
+        "Optional conversation_id claims a previous DeepResearch conversation "
+        "that was interrupted while waiting for outline review: when its "
+        "generated outline is still cached, the outline review card is shown "
+        "immediately and the original conversation is resumed after the user "
+        "answers, instead of restarting the research from scratch."
     ),
 )
 async def deepresearch_execute(
     query: str,
     file_name: str = "",
     report_type: DeepResearchReportType | None = None,
+    conversation_id: str = "",
 ) -> dict[str, Any]:
     """Run the interactive workflow without Main Agent resume choreography."""
     context = _execution_context.get()
@@ -927,7 +943,10 @@ async def deepresearch_execute(
             "phase": "new",
             "query": query.strip(),
             "file_name": file_name.strip(),
-            "conversation_id": str(uuid.uuid4()),
+            # 传入 conversation_id 表示认领一个此前中断的旧会话（研究问题
+            # 确认或大纲确认阶段）；认领失败（checkpointer.db 与缓存均无可
+            # 恢复状态）时下面 start 分支会换成全新 id 重跑。
+            "conversation_id": conversation_id.strip() or str(uuid.uuid4()),
             # report_type 优先取 Main Agent 工具入参（从用户原话识别）；未传入时
             # 回退执行上下文（params 通道），最终兜底 brief。归一后写入 state，
             # resume 路径读此值不重新识别。deepresearch_stream:1918 据此写
@@ -959,7 +978,99 @@ async def deepresearch_execute(
         return _result(kind, state, content="DeepResearch 任务已经结束。")
 
     if phase == "new":
-        state = _persist(context, state, "starting")
+        claimed_cid = str(state.get("conversation_id") or "").strip()
+        probe = (
+            _probe_resumable_checkpoint(claimed_cid) if claimed_cid else None
+        )
+        probe_node = str(probe.get("node") or "") if probe else ""
+        if claimed_cid and probe_node == "feedback_handler":
+            # 认领成功：旧会话停在研究问题确认阶段（含跨进程重启），从
+            # checkpointer.db 恢复问题清单出反馈卡；用户答复后从原会话 resume。
+            questions = _split_questions(probe.get("questions"))
+            if questions:
+                options = await _generate_options(
+                    context,
+                    str(state.get("query") or ""),
+                    questions,
+                )
+                cards = [
+                    {
+                        "header": "研究方向反馈",
+                        "question": question,
+                        "options": options[index],
+                    }
+                    for index, question in enumerate(questions)
+                ]
+                state = _persist(
+                    context,
+                    state,
+                    "wait_feedback",
+                    conversation_id=claimed_cid,
+                    questions=questions,
+                )
+                logger.info(
+                    "[deepresearch_execute] claimed interrupted conversation "
+                    "tool_call_id=%s conversation_id=%s node=feedback_handler",
+                    context.tool_call_id,
+                    claimed_cid,
+                )
+                return _result(
+                    "interaction",
+                    state,
+                    interaction={
+                        "query": "请回答以下研究主题澄清问题",
+                        "return_json": True,
+                        "questions": cards,
+                    },
+                )
+        claimed_outline = (
+            probe.get("outline_json")
+            if probe_node == "outline_interaction"
+            else None
+        )
+        if not isinstance(claimed_outline, dict):
+            claimed_outline = (
+                _get_cached_outline_json(_get_route(), claimed_cid)
+                if claimed_cid
+                else {}
+            )
+        claimed_sections = claimed_outline.get("sections")
+        if claimed_cid and isinstance(claimed_sections, list) and claimed_sections:
+            # 认领成功：旧会话已生成大纲且停在大纲确认，直接复用 checkpointer.db
+            # （或内存缓存兜底）中的大纲出审阅卡片，跳过 start 重跑；用户答复后
+            # 从原会话 resume。
+            outline_text = (
+                _format_outline_card_markdown(claimed_outline)
+                or "大纲已生成，请确认是否继续研究。"
+            )
+            state = _persist(
+                context,
+                state,
+                "wait_outline",
+                conversation_id=claimed_cid,
+                outline_presented=True,
+                outline_sections=_outline_sections(outline_text),
+            )
+            logger.info(
+                "[deepresearch_execute] claimed interrupted conversation "
+                "tool_call_id=%s conversation_id=%s node=outline_interaction",
+                context.tool_call_id,
+                claimed_cid,
+            )
+            return _result(
+                "interaction",
+                state,
+                interaction=_outline_review_interaction(outline_text),
+            )
+        if claimed_cid:
+            # 认领失败：checkpointer.db 与内存缓存均无该会话可恢复的中断状态
+            # （已完结/已清理/不存在），绝不复用中断会话的 id 发起新跑，换成
+            # 全新 id 从头执行。
+            state = _persist(
+                context, state, "starting", conversation_id=str(uuid.uuid4())
+            )
+        else:
+            state = _persist(context, state, "starting")
         outcome = await _call_sdk(
             context,
             action="start",

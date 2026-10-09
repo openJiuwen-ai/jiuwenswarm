@@ -11,7 +11,9 @@ import io
 import json
 import logging
 import os
+import pickle
 import re
+import sqlite3
 import stat
 import tempfile
 import threading
@@ -281,6 +283,9 @@ _RESUME_NODE_CURRENT_STAGE = {
     "outline_interaction": 2,
     "user_feedback_processor": 3,
 }
+_CHECKPOINT_WORKFLOW_ID = "research_workflow"
+_CHECKPOINT_INTERRUPT_STATUS = "__interrupt__"
+_QUESTION_PARAGRAPH_SPLIT = re.compile(r"\n\s*\n(?=\s*\d+[.、)]\s)")
 
 
 def push_deepresearch_route(
@@ -1147,7 +1152,87 @@ def _resolve_outline_interaction_feedback(
             ensure_ascii=False,
         )
 
-    raise ValueError(f"unknown selected_options[0]={choice!r}")
+    expected_choices = ", ".join(
+        sorted(_OUTLINE_CONFIRM_CHOICES | _OUTLINE_EDIT_CHOICES)
+    )
+    raise ValueError(
+        f"unknown selected_options[0]={choice!r}; "
+        f"expected one of: {expected_choices}"
+    )
+
+
+def _build_interrupted_resume_hint(
+    node_id: str, conversation_id: str
+) -> dict[str, Any]:
+    """Build the self-describing resume hint for one interrupted outcome.
+
+    The stream tool hands the interrupted outcome back to the caller LLM
+    verbatim. Without an explicit contract the model has historically
+    improvised resume arguments (e.g. selected_options=["approve"]) and
+    looped on validation errors instead of asking the user, so the hint
+    pins the exact resume parameters for the two interactive nodes.
+    """
+    if node_id == "outline_interaction":
+        return {
+            "action": "resume",
+            "node": "outline_interaction",
+            "conversation_id": conversation_id,
+            "interaction_result_required": True,
+            "valid_selected_options": sorted(
+                _OUTLINE_CONFIRM_CHOICES | _OUTLINE_EDIT_CHOICES
+            ),
+            "interaction_result_example": json.dumps(
+                {
+                    "status": "answered",
+                    "answers": [
+                        {
+                            "question": "请审阅生成的研究报告大纲",
+                            "selected_options": ["outline_confirm"],
+                            "custom_input": "",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            "guidance": (
+                "The workflow paused for outline review. Present the outline "
+                "to the user, collect the user's decision, then resume with "
+                "action='resume', this conversation_id, "
+                "node='outline_interaction', and the user's answer encoded as "
+                "interaction_result (see interaction_result_example; "
+                "selected_options[0] must be one of valid_selected_options). "
+                "Never answer on the user's behalf or resume without the "
+                "user's input."
+            ),
+        }
+    return {
+        "action": "resume",
+        "node": "feedback_handler",
+        "conversation_id": conversation_id,
+        "feedback_required": True,
+        "interaction_result_example": json.dumps(
+            {
+                "status": "answered",
+                "answers": [
+                    {
+                        "question": "研究主题澄清",
+                        "selected_options": [],
+                        "custom_input": "用户输入的反馈内容",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        "guidance": (
+            "The workflow paused for research-direction feedback. Ask the "
+            "user the questions from marker.questions, collect the user's "
+            "answers, then resume with action='resume', this "
+            "conversation_id, node='feedback_handler', and the user's answer "
+            "text as feedback. interaction_result is optional and only "
+            "records whether the user actually answered. Never answer on "
+            "the user's behalf or resume without the user's input."
+        ),
+    }
 
 
 def _resolve_skill_root() -> str:
@@ -1196,6 +1281,112 @@ def _resolve_run_script() -> str:
     ):
         return ""
     return str(runner)
+
+
+def _read_checkpoint_kv_value(cursor: Any, key: str) -> Any:
+    cursor.execute("SELECT value FROM kv_store WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def _decode_checkpoint_blob(raw: Any) -> Any:
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    if not isinstance(raw, str) or not raw:
+        return None
+    payload = raw.split(":", 1)[1] if raw.startswith("__BYTES__:") else raw
+    try:
+        return pickle.loads(base64.b64decode(payload))
+    except Exception:  # pylint: disable=broad-exception-caught
+        return None
+
+
+def _probe_resumable_checkpoint(conversation_id: str) -> dict[str, Any] | None:
+    """Probe checkpointer.db for an interrupted DeepResearch conversation.
+
+    Reads only the pending interrupt node plus the search-context fields
+    needed to re-present an interaction card after a process restart.
+    Returns None whenever the conversation has no resumable interrupt, so a
+    failed probe simply falls back to a fresh start.
+    """
+    cid = str(conversation_id or "").strip()
+    if not cid:
+        return None
+    root = _resolve_skill_root()
+    if not root:
+        return None
+    db_path = os.path.join(root, "data", "checkpointer.db")
+    if not os.path.isfile(db_path):
+        return None
+    try:
+        connection = sqlite3.connect(
+            f"file:{db_path}?mode=ro", uri=True, timeout=1.0
+        )
+    except sqlite3.Error:
+        return None
+    try:
+        cursor = connection.cursor()
+        graph_state = _decode_checkpoint_blob(
+            _read_checkpoint_kv_value(
+                cursor,
+                f"{cid}:workflow-graph:{_CHECKPOINT_WORKFLOW_ID}:checkpoint_data_value",
+            )
+        )
+        pending_nodes = getattr(graph_state, "pending_node", None) or {}
+        node = ""
+        for node_name, pending in pending_nodes.items():
+            if (
+                str(getattr(pending, "status", ""))
+                == _CHECKPOINT_INTERRUPT_STATUS
+            ):
+                node = str(node_name)
+                break
+        if not node:
+            return None
+        result: dict[str, Any] = {"node": node}
+        workflow_state = _decode_checkpoint_blob(
+            _read_checkpoint_kv_value(
+                cursor,
+                f"{cid}:workflow:{_CHECKPOINT_WORKFLOW_ID}:workflow_state_blobs",
+            )
+        )
+        search_context: Mapping[str, Any] = {}
+        if isinstance(workflow_state, Mapping):
+            global_state = workflow_state.get("global_state")
+            if isinstance(global_state, Mapping):
+                candidate = global_state.get("search_context")
+                if isinstance(candidate, Mapping):
+                    search_context = candidate
+        questions = search_context.get("questions")
+        if isinstance(questions, str) and questions.strip():
+            result["questions"] = [
+                question.strip()
+                for question in _QUESTION_PARAGRAPH_SPLIT.split(questions.strip())
+                if question.strip()
+            ]
+        outline = search_context.get("current_outline")
+        sections = []
+        for section in getattr(outline, "sections", None) or []:
+            sections.append(
+                {
+                    "title": str(getattr(section, "title", "") or ""),
+                    "is_core_section": bool(
+                        getattr(section, "is_core_section", False)
+                    ),
+                }
+            )
+        if outline is not None and sections:
+            result["outline_json"] = {
+                "title": str(getattr(outline, "title", "") or ""),
+                "thought": str(getattr(outline, "thought", "") or ""),
+                "sections": sections,
+            }
+        return result
+    except Exception:  # pylint: disable=broad-exception-caught
+        return None
+    finally:
+        with suppress(sqlite3.Error):
+            connection.close()
 
 
 def _get_effective_request_output_dir() -> Path:
@@ -1788,7 +1979,18 @@ async def _call_deepresearch_stream_impl(
     description=(
         "Run or resume DeepResearch through the isolated external skill runner. "
         "Progress is pushed to the current Gateway route; only a terminal "
-        "interrupted, completed, or structured error outcome is returned."
+        "interrupted, completed, or structured error outcome is returned. "
+        "action='start' launches a new research run and requires query; "
+        "action='resume' continues an interrupted conversation and requires "
+        "the conversation_id and node from that interrupted outcome. When the "
+        "outcome status is 'interrupted', the workflow is paused waiting for "
+        "the USER's answer at an interaction node: present the marker content "
+        "to the user, collect the user's reply, then resume with it (the "
+        "user's answer text as feedback for feedback_handler; the user's "
+        "answer encoded as interaction_result for outline_interaction). "
+        "Follow outcome.resume_hint for the exact resume arguments and "
+        "accepted values. Never answer the interaction on the user's behalf "
+        "or resume without the user's input."
     ),
 )
 async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
@@ -2095,6 +2297,14 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
         )
     if (
         outcome.get("status") == "interrupted"
+        and outcome.get("node_id") in {"feedback_handler", "outline_interaction"}
+    ):
+        outcome["resume_hint"] = _build_interrupted_resume_hint(
+            str(outcome.get("node_id") or ""),
+            str(outcome.get("conversation_id") or conversation_id),
+        )
+    if (
+        outcome.get("status") == "interrupted"
         and outcome.get("node_id") == "outline_interaction"
     ):
         if action == "resume" and node == "outline_interaction":
@@ -2355,8 +2565,14 @@ async def _consume_stream(
                     )
                     if titles and resolved_cid:
                         _cache_outline_titles(route, resolved_cid, titles)
-                if outline_json_dict is not None and resolved_cid:
-                    _cache_outline_json(route, resolved_cid, outline_json_dict)
+                if resolved_cid:
+                    if outline_json_dict is not None:
+                        _cache_outline_json(route, resolved_cid, outline_json_dict)
+                    elif isinstance(marker.get("outline"), dict):
+                        # marker 自带完整 outline JSON 时同样写缓存：execute 认领
+                        # 旧会话与 outline_use_edited 编辑回传都依赖该缓存
+                        #（缺 sections 时下游 fail-closed）。
+                        _cache_outline_json(route, resolved_cid, marker["outline"])
             if node_id == "user_feedback_processor" and state.report_parts:
                 report = "".join(state.report_parts)
                 marker["report"] = report[:6000] + (
