@@ -26,7 +26,8 @@ class PromptPriority(IntEnum):
     # a monkey-patch of that external runtime section.
     TASK_EXECUTION = 31
     SKILLS = 40
-    MEMORY = 57  # After the runtime Skills section (56), before Input (60).
+    EXTENSION_POLICY = 57  # After the runtime Skills section (56).
+    MEMORY = 58  # Fixed rules, followed by dynamic memory (59), before Input (60).
     INPUT = 60
     A2UI = 61
     OUTPUT = 65

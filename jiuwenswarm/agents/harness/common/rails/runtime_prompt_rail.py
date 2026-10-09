@@ -403,7 +403,7 @@ class RuntimePromptRail(DeepAgentRail):
             self.system_prompt_builder.add_section(PromptSection(
                 name=_EXTENSION_SYSTEM_POLICY_SECTION,
                 content={"cn": policy, "en": policy},
-                priority=54,
+                priority=PromptPriority.EXTENSION_POLICY,
             ))
 
         # ── runtime ──
