@@ -22,7 +22,7 @@ def test_default_team_config_enables_managed_worktrees():
     assert data["modes"]["team"]["jiuwen_team"]["worktree"] == {"enabled": True}
 
 
-def test_default_code_configs_include_recommended_multimodal_tools():
+def test_default_code_configs_do_not_load_multimodal_tools():
     repo_root = Path(__file__).resolve().parents[2]
     config_files = [
         repo_root / "jiuwenswarm" / "resources" / "config.yaml",
@@ -37,7 +37,7 @@ def test_default_code_configs_include_recommended_multimodal_tools():
         / "conf"
         / "gateway-config-yuanrong.template.yaml",
     ]
-    expected = {
+    multimodal_tools = {
         "visual_question_answering",
         "image_ocr",
         "video_understanding",
@@ -46,7 +46,7 @@ def test_default_code_configs_include_recommended_multimodal_tools():
 
     for config_file in config_files:
         data = yaml.safe_load(config_file.read_text(encoding="utf-8"))
-        assert expected <= set(data["modes"]["code"]["tools"])
+        assert multimodal_tools.isdisjoint(data["modes"]["code"]["tools"])
 
 
 def test_default_round_level_compressor_config_uses_context_ratio():
