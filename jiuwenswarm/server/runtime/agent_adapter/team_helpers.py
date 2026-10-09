@@ -3027,11 +3027,15 @@ async def _consume_stream_with_query(
             },
         )
     finally:
+        # aclose 成功才表示 runner 已 finalize：persistent 团队已 pause、gate 已关。
+        # 只取消请求协程时不会进这个 finally，标记保留，下一句仍走 interact。
+        aclose_ok = False
         if team_stream is not None:
             stream_aclose = getattr(team_stream, "aclose", None)
             if callable(stream_aclose):
                 try:
                     await stream_aclose()
+                    aclose_ok = True
                 except Exception:
                     logger.debug(
                         "[TeamHelpers] team stream aclose failed: session_id=%s",
@@ -3073,6 +3077,8 @@ async def _consume_stream_with_query(
         if callable(clear_active_runtime):
             clear_active_runtime(session_id)
         team_manager.pop_stream_task(session_id)
+        if aclose_ok:
+            team_manager.clear_session_initialized(session_id)
 
 
 async def _consume_monitor_events(

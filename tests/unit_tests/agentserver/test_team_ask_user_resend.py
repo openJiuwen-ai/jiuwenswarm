@@ -219,6 +219,9 @@ class _ResendTestManager:
     def clear_active_runtime(self, session_id: str) -> None:
         pass
 
+    def clear_session_initialized(self, session_id: str) -> None:
+        pass
+
     def pop_stream_task(self, session_id: str):
         pass
 
