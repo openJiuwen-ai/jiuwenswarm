@@ -68,3 +68,30 @@ test('an AgentGroup selection can be locked optimistically while awaiting bindin
     useSessionStore.getState().removeRuntime(sessionId);
   }
 });
+
+test('an AgentGroup display identity survives catalog removal for the session', () => {
+  const sessionId = 'agent-group-display-identity';
+  const store = useSessionStore.getState();
+  store.ensureRuntime(sessionId);
+  try {
+    const identity = { id: 'group-a', displayName: '中文专家团', avatarUrl: null };
+    store.setMode(sessionId, 'team');
+    store.setAgentGroupBinding(sessionId, 'group-a');
+    store.setTeamGroupIdentity(sessionId, identity);
+
+    assert.deepEqual(
+      useSessionStore.getState().getRuntime(sessionId)?.teamGroupIdentity,
+      identity,
+    );
+
+    // Refreshing the local catalog after uninstall must not erase the
+    // identity that is already attached to this historical session.
+    store.setAgentGroupBinding(sessionId, 'group-a');
+    assert.deepEqual(
+      useSessionStore.getState().getRuntime(sessionId)?.teamGroupIdentity,
+      identity,
+    );
+  } finally {
+    useSessionStore.getState().removeRuntime(sessionId);
+  }
+});

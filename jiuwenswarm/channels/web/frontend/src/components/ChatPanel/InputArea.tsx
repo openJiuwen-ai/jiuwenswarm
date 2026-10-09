@@ -897,7 +897,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   useEffect(() => {
     if (!onAgentGroupIdentityChange) return;
-    onAgentGroupIdentityChange(selectedGroupId && selectedGroup ? selectedGroup : null);
+    // 卸载后的已绑定专家团不再出现在本地目录，但历史消息仍需要使用
+    // 原来的本地化展示名；只有确实没有选中专家团时才清空会话身份。
+    if (selectedGroup) {
+      onAgentGroupIdentityChange(selectedGroup);
+    } else if (!selectedGroupId) {
+      onAgentGroupIdentityChange(null);
+    }
   }, [onAgentGroupIdentityChange, selectedGroup, selectedGroupId]);
 
   useEffect(() => {
