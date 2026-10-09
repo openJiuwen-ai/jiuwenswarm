@@ -2,8 +2,9 @@
 """box-server 上的回收站转发.
 
 沙箱进程跑在 jbx-sandbox 名下, 不能把文件放进当前登录用户看得见的回收站.
-DLL 拦住删除后, 把路径发给本服务. 本服务用 box-server 自己的身份调用
-回收站接口. 回收没有确认成功时返回失败, 调用方必须留下原文件.
+DLL 先在沙箱进程里把相对路径变成完整路径, 再发给本服务. 本服务用
+box-server 自己的身份调用回收站接口. 接口成功且原文件消失才返回成功,
+调用方必须留下原文件.
 
 监听端口必须落在 WFP 已经放行的回环端口里. 沙箱出站只允许连
 127.0.0.1 上的代理端口范围, 随机端口会被直接拒绝, 删除就会停在原地.
@@ -18,9 +19,11 @@ import socket
 import struct
 import sys
 import threading
+import time
 from collections.abc import Callable
 
 from jiuwenbox.supervisor.win_softdelete import (
+    ENV_ARCHIVE,
     ENV_RECYCLE_PORT,
     ENV_RECYCLE_TOKEN,
     enabled_from_environ,
@@ -54,8 +57,55 @@ def _norm_key(path: str) -> str:
     return os.path.normcase(os.path.normpath(text))
 
 
-def _has_recycle_component(path: str) -> bool:
-    return any(part.lower() == "$recycle.bin" for part in _norm_key(path).split(os.sep))
+def _is_volume_recycle_bin(path: str) -> bool:
+    """只认盘符根上的系统回收站, 工作区里的同名文件夹不算."""
+    text = path[4:] if path.startswith("\\\\?\\") else path
+    drive, rest = os.path.splitdrive(text)
+    if len(drive) != 2 or drive[1] != ":":
+        return False
+    parts = [part for part in rest.replace("/", "\\").split("\\") if part]
+    return bool(parts) and parts[0].lower() == "$recycle.bin"
+
+
+def _under_archive(path: str) -> bool:
+    archive = _norm_key((os.environ.get(ENV_ARCHIVE) or "").strip())
+    if not archive:
+        return False
+    key = _norm_key(path)
+    return key == archive or key.startswith(archive + os.sep)
+
+
+_REPARSE_POINT = 0x400
+_INVALID_ATTR = 0xFFFFFFFF
+
+
+def _file_attrs(path: str) -> int | None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetFileAttributesW.argtypes = [wintypes.LPCWSTR]
+    kernel.GetFileAttributesW.restype = wintypes.DWORD
+    value = int(kernel.GetFileAttributesW(path))
+    if value == _INVALID_ATTR:
+        return None
+    return value
+
+
+def _path_has_reparse(path: str) -> bool:
+    """路径自己或任一父目录是连接点/符号链接时返回 True."""
+    current = os.path.abspath(path)
+    seen: set[str] = set()
+    while current not in seen:
+        seen.add(current)
+        attrs = _file_attrs(current)
+        if attrs is not None and attrs & _REPARSE_POINT:
+            return True
+        parent = os.path.dirname(current)
+        if parent == current:
+            return False
+        current = parent
+    return False
 
 
 def _root_variants(path: str) -> list[str]:
@@ -72,39 +122,22 @@ def _root_variants(path: str) -> list[str]:
 
 
 def path_allowed(path: str) -> str | None:
-    """返回可以回收的真实路径.
+    """返回可以回收的路径, 不展开连接点.
 
-    沙箱钩子拦下的删除不再按工作目录收口. 临时目录里的文件也能进回收站.
-    相对路径、回收站自身、不存在的路径和符号链接仍然拒绝.
+    沙箱钩子会先把相对路径变成完整路径再发过来. 这里仍拒绝没带盘符的路径,
+    因为本服务的当前目录不是那条命令的目录. 系统回收站、归档目录、不存在的
+    路径、符号链接和目录连接点仍然拒绝.
     """
     if not path or "\x00" in path or not os.path.isabs(path):
         return None
-    if _has_recycle_component(path):
-        return None
     normalized = os.path.normpath(os.path.abspath(path))
+    if _is_volume_recycle_bin(normalized) or _under_archive(normalized):
+        return None
     if not os.path.lexists(normalized) or os.path.islink(normalized):
         return None
-    real = os.path.normpath(os.path.realpath(normalized))
-    if not os.path.exists(real):
+    if _path_has_reparse(normalized) or not os.path.exists(normalized):
         return None
-    return real
-
-
-def recycle_info_original_path(data: bytes) -> str | None:
-    """从回收站 ``$I`` 文件 (version 2) 读出原始路径."""
-    if len(data) < 30:
-        return None
-    version = struct.unpack_from("<Q", data, 0)[0]
-    if version != 2:
-        return None
-    chars = struct.unpack_from("<I", data, 24)[0]
-    if chars <= 1 or chars > _PATH_MAX:
-        return None
-    blob = data[28:28 + chars * 2]
-    text = blob.decode("utf-16-le", errors="ignore").split("\x00", 1)[0]
-    if len(text) < 3 or not os.path.isabs(text):
-        return None
-    return text
+    return normalized
 
 
 def _recv_exact(conn: socket.socket, size: int) -> bytes:
@@ -175,99 +208,6 @@ def _set_hook_bypass(on: bool) -> None:
     ctypes.CFUNCTYPE(None, ctypes.c_int)(addr)(1 if on else 0)
 
 
-def _current_user_sid() -> str:
-    import ctypes
-    from ctypes import wintypes
-
-    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    advapi.OpenProcessToken.argtypes = [
-        wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE),
-    ]
-    advapi.OpenProcessToken.restype = wintypes.BOOL
-    advapi.GetTokenInformation.argtypes = [
-        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
-        ctypes.POINTER(wintypes.DWORD),
-    ]
-    advapi.GetTokenInformation.restype = wintypes.BOOL
-    advapi.ConvertSidToStringSidW.argtypes = [
-        ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p),
-    ]
-    advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
-    kernel.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel.CloseHandle.restype = wintypes.BOOL
-    kernel.LocalFree.argtypes = [ctypes.c_void_p]
-    kernel.LocalFree.restype = ctypes.c_void_p
-
-    token = wintypes.HANDLE()
-    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        needed = wintypes.DWORD(0)
-        advapi.GetTokenInformation(token, 1, None, 0, ctypes.byref(needed))
-        if needed.value == 0:
-            raise ctypes.WinError(ctypes.get_last_error())
-        buf = ctypes.create_string_buffer(needed.value)
-        if not advapi.GetTokenInformation(
-            token, 1, buf, needed.value, ctypes.byref(needed),
-        ):
-            raise ctypes.WinError(ctypes.get_last_error())
-        sid_ptr = ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0]
-        text = ctypes.c_wchar_p()
-        if not advapi.ConvertSidToStringSidW(sid_ptr, ctypes.byref(text)):
-            raise ctypes.WinError(ctypes.get_last_error())
-        try:
-            return text.value or ""
-        finally:
-            kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
-    finally:
-        kernel.CloseHandle(token)
-
-
-def _recycle_bin_dir(path: str, sid: str) -> str | None:
-    drive = os.path.splitdrive(path)[0]
-    if len(drive) != 2 or drive[1] != ":":
-        return None
-    return drive + "\\$Recycle.Bin\\" + sid
-
-
-def _info_snapshot(bin_dir: str) -> dict[str, int]:
-    found: dict[str, int] = {}
-    if not os.path.isdir(bin_dir):
-        return found
-    with os.scandir(bin_dir) as entries:
-        for entry in entries:
-            if not entry.name.startswith("$I"):
-                continue
-            try:
-                found[entry.name] = entry.stat().st_size
-            except OSError:
-                continue
-    return found
-
-
-def _new_info_names(before: dict[str, int], after: dict[str, int]) -> list[str]:
-    names: list[str] = []
-    for name, size in after.items():
-        if name not in before or before[name] != size:
-            names.append(name)
-    return names
-
-
-def _info_matches(bin_dir: str, names: list[str], wanted: str) -> bool:
-    wanted_key = _norm_key(wanted)
-    for name in names:
-        try:
-            with open(os.path.join(bin_dir, name), "rb") as handle:
-                recorded = recycle_info_original_path(handle.read(65536))
-        except OSError:
-            continue
-        if recorded is not None and _norm_key(recorded) == wanted_key:
-            return True
-    return False
-
-
 def _shell_delete(path: str) -> bool:
     import ctypes
     from ctypes import wintypes
@@ -306,37 +246,186 @@ def _shell_delete(path: str) -> bool:
     return not os.path.exists(path)
 
 
+def _recycle_bin_ready(path: str) -> bool:
+    """回收站关掉或这个文件放不下时返回 False, 避免接口把它直接删掉."""
+    import ctypes
+    import winreg
+    from ctypes import wintypes
+
+    try:
+        root = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket",
+        )
+    except OSError:
+        return False
+    try:
+        try:
+            nuke, typ = winreg.QueryValueEx(root, "NukeOnDelete")
+        except OSError:
+            nuke, typ = 0, winreg.REG_DWORD
+        if typ == winreg.REG_DWORD and int(nuke) != 0:
+            return False
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetVolumePathNameW.argtypes = [
+            wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD,
+        ]
+        kernel.GetVolumePathNameW.restype = wintypes.BOOL
+        kernel.GetVolumeNameForVolumeMountPointW.argtypes = [
+            wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD,
+        ]
+        kernel.GetVolumeNameForVolumeMountPointW.restype = wintypes.BOOL
+        kernel.GetDiskFreeSpaceExW.argtypes = [
+            wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_ulonglong),
+            ctypes.POINTER(ctypes.c_ulonglong), ctypes.POINTER(ctypes.c_ulonglong),
+        ]
+        kernel.GetDiskFreeSpaceExW.restype = wintypes.BOOL
+        vol_root = ctypes.create_unicode_buffer(32768)
+        vol_name = ctypes.create_unicode_buffer(32768)
+        if not kernel.GetVolumePathNameW(path, vol_root, 32768):
+            return False
+        if not kernel.GetVolumeNameForVolumeMountPointW(vol_root, vol_name, 32768):
+            return False
+        text = vol_name.value or ""
+        brace = text.find("{")
+        if brace < 0:
+            return False
+        subkey = "Volume\\" + text[brace:].rstrip("\\")
+        try:
+            volume = winreg.OpenKey(root, subkey)
+        except OSError:
+            return False
+        try:
+            try:
+                vol_nuke, vol_typ = winreg.QueryValueEx(volume, "NukeOnDelete")
+            except OSError:
+                vol_nuke, vol_typ = 0, winreg.REG_DWORD
+            if vol_typ == winreg.REG_DWORD and int(vol_nuke) != 0:
+                return False
+            try:
+                max_mb, max_typ = winreg.QueryValueEx(volume, "MaxCapacity")
+            except OSError:
+                max_mb, max_typ = None, None
+        finally:
+            winreg.CloseKey(volume)
+        if max_typ == winreg.REG_DWORD:
+            budget = int(max_mb) * 1024 * 1024
+        else:
+            free_bytes = ctypes.c_ulonglong()
+            total_bytes = ctypes.c_ulonglong()
+            if not kernel.GetDiskFreeSpaceExW(
+                vol_root, ctypes.byref(free_bytes), ctypes.byref(total_bytes), None,
+            ) or total_bytes.value == 0:
+                budget = 64 * 1024 * 1024
+            else:
+                budget = min(total_bytes.value // 100, 512 * 1024 * 1024)
+    finally:
+        winreg.CloseKey(root)
+    size = _tree_bytes(path)
+    if size is None:
+        return False
+    return size < budget
+
+
+def _tree_bytes(path: str) -> int | None:
+    """文件或目录的总字节数. 数不清或里面有连接点时返回 None."""
+    if os.path.isfile(path) and not os.path.islink(path):
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return None
+
+    class _TreeUnread(Exception):
+        pass
+
+    def _fail(_err: OSError) -> None:
+        raise _TreeUnread
+
+    total = 0
+    count = 0
+    try:
+        for dirpath, dirnames, filenames in os.walk(path, onerror=_fail, followlinks=False):
+            for dirname in dirnames:
+                attrs = _file_attrs(os.path.join(dirpath, dirname))
+                if attrs is not None and attrs & _REPARSE_POINT:
+                    return None
+            for filename in filenames:
+                count += 1
+                if count > 100000:
+                    return None
+                full = os.path.join(dirpath, filename)
+                attrs = _file_attrs(full)
+                if attrs is not None and attrs & _REPARSE_POINT:
+                    return None
+                try:
+                    total += os.path.getsize(full)
+                except OSError:
+                    return None
+    except _TreeUnread:
+        return None
+    return total
+
+
+def _archive_destination(archive: str, path: str) -> str | None:
+    """最外层名字后面加到秒的时间. 同一秒重名时再加序号. 目录内部的名字不动."""
+    leaf = os.path.basename(path.rstrip("\\/")) or "file"
+    safe_chars = []
+    for char in leaf[:80]:
+        if char in "\\/:*?\"<>|" or ord(char) < 32:
+            safe_chars.append("_")
+        else:
+            safe_chars.append(char)
+    safe = "".join(safe_chars) or "file"
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    for index in range(1000):
+        suffix = f"_{stamp}" if index == 0 else f"_{stamp}_{index}"
+        dest = os.path.join(archive, safe + suffix)
+        if not os.path.lexists(dest):
+            return dest
+    return None
+
+
+def _move_to_archive(path: str) -> bool:
+    """登录用户把还在原地的文件挪进归档目录. 跨盘不挪, 避免变成复制后删除."""
+    archive = (os.environ.get(ENV_ARCHIVE) or "").strip()
+    if not archive:
+        return False
+    if os.path.splitdrive(os.path.abspath(path))[0].casefold() != os.path.splitdrive(
+        os.path.abspath(archive),
+    )[0].casefold():
+        logger.warning("archive skipped: different volume path=%s", path)
+        return False
+    try:
+        os.makedirs(archive, exist_ok=True)
+    except OSError:
+        logger.warning("archive directory could not be created: %s", archive, exc_info=True)
+        return False
+    dest = _archive_destination(archive, path)
+    if dest is None:
+        return False
+    try:
+        os.rename(path, dest)
+    except OSError:
+        logger.warning("archive move failed %s -> %s", path, dest, exc_info=True)
+        return False
+    logger.info("archive %s -> %s", path, dest)
+    return True
+
+
 def recycle_with_shell(path: str) -> bool:
-    """用当前进程身份回收 ``path``. 源文件消失且回收站有对应记录才算成功."""
+    """用当前登录用户的身份回收 ``path``.
+
+    回收接口成功且原文件不在, 算成功. 回收站不收但文件还在时, 挪到归档目录,
+    也算成功. 和本机进程里的软删除同一条路.
+    """
     if sys.platform != "win32":
         return False
-    try:
-        sid = _current_user_sid()
-    except OSError:
-        logger.warning("recycle broker could not read the process SID", exc_info=True)
-        return False
-    bin_dir = _recycle_bin_dir(path, sid)
-    if bin_dir is None:
-        return False
-    try:
-        before = _info_snapshot(bin_dir)
-    except OSError:
-        logger.warning("recycle broker could not read %s", bin_dir, exc_info=True)
-        return False
-    if not _shell_delete(path):
-        return False
-    if os.path.exists(path):
-        return False
-    try:
-        after = _info_snapshot(bin_dir)
-    except OSError:
-        logger.warning("recycle broker could not re-read %s", bin_dir, exc_info=True)
-        return False
-    if _info_matches(bin_dir, _new_info_names(before, after), path):
+    # SHFileOperationW without the long-path prefix stops at MAX_PATH.
+    shell_ok = len(path) < 260 and _recycle_bin_ready(path) and _shell_delete(path)
+    if shell_ok:
         return True
-    logger.warning(
-        "recycle call removed %s but no matching recycle-bin entry was found", path,
-    )
+    if os.path.lexists(path):
+        return _move_to_archive(path)
     return False
 
 

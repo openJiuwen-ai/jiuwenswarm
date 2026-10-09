@@ -10,11 +10,12 @@
  * the host and the parent exits with STATUS_DLL_INIT_FAILED.
  *
  * Delete calls are turned into a recycle-bin move, or a same-volume rename
- * into the archive directory. A sandbox process asks box-server to recycle
- * the file as the logged-in user, and leaves the file in place when that
- * request fails. The original delete is not called after a successful soft
- * delete. A move that fails leaves the file in place and returns
- * STATUS_ACCESS_DENIED.
+ * into the archive directory. A sandbox process turns a relative name into a
+ * full path first, then asks box-server to recycle it as the logged-in user.
+ * box-server does not share this process's current directory. The file stays
+ * when that request fails. The original delete is not called after a
+ * successful soft delete. A move that fails leaves the file in place and
+ * returns STATUS_ACCESS_DENIED.
  */
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00
@@ -127,6 +128,7 @@ static int memory_ok(const void *ptr, size_t bytes, int writable) {
 
 #define ENV_ENABLED L"JIUWENBOX_SOFT_DELETE"
 #define ENV_ARCHIVE L"JIUWENBOX_SOFT_DELETE_ARCHIVE"
+#define ENV_DLL L"JIUWENBOX_SOFT_DELETE_DLL"
 #define ENV_RECYCLE_PORT L"JIUWENBOX_SOFT_DELETE_RECYCLE_PORT"
 #define ENV_RECYCLE_TOKEN L"JIUWENBOX_SOFT_DELETE_RECYCLE_TOKEN"
 #define RECYCLE_TOKEN_MAX 256u
@@ -865,36 +867,37 @@ static int path_exists(const wchar_t *path) {
 static void read_archive_dir(wchar_t *out, size_t cch) {
     DWORD n = GetEnvironmentVariableW(ENV_ARCHIVE, out, (DWORD)cch);
     if (n == 0 || n >= cch) {
-        wchar_t cwd[MAX_PATH];
+        /* No cwd fallback. A missing setting must not create .trash beside the command. */
         out[0] = L'\0';
-        if (GetCurrentDirectoryW(MAX_PATH, cwd) > 0) {
-            swprintf_s(out, cch, L"%s\\.trash", cwd);
-        }
-        return;
     }
 }
 
-static int path_has_component(const wchar_t *path, const wchar_t *name) {
-    size_t n = wcslen(name);
-    const wchar_t *cursor = path;
-    if (path == NULL || n == 0) {
+static int normalize_dos_path(const wchar_t *in, wchar_t *out, size_t cch) {
+    DWORD n;
+    if (in == NULL || in[0] == L'\0' || out == NULL || cch == 0) {
         return 0;
     }
-    while (*cursor != L'\0') {
-        wchar_t right;
-        int left_ok;
-        if (_wcsnicmp(cursor, name, n) != 0) {
-            cursor++;
-            continue;
-        }
-        right = cursor[n];
-        left_ok = (cursor == path) || cursor[-1] == L'\\' || cursor[-1] == L'/';
-        if (left_ok && (right == L'\0' || right == L'\\' || right == L'/')) {
-            return 1;
-        }
-        cursor++;
+    n = GetFullPathNameW(in, (DWORD)cch, out, NULL);
+    return n > 0 && n < cch;
+}
+
+/* X:\$Recycle.Bin only. A workspace folder with the same name stays soft-deleted. */
+static int is_volume_recycle_bin(const wchar_t *full) {
+    const wchar_t *cursor = full;
+    if (cursor == NULL) {
+        return 0;
     }
-    return 0;
+    if (wcsncmp(cursor, L"\\\\?\\", 4) == 0) {
+        cursor += 4;
+    }
+    if (cursor[0] == L'\0' || cursor[1] != L':' || (cursor[2] != L'\\' && cursor[2] != L'/')) {
+        return 0;
+    }
+    cursor += 3;
+    if (_wcsnicmp(cursor, L"$Recycle.Bin", 12) != 0) {
+        return 0;
+    }
+    return cursor[12] == L'\0' || cursor[12] == L'\\' || cursor[12] == L'/';
 }
 
 static int is_under_dir(const wchar_t *path, const wchar_t *dir) {
@@ -913,22 +916,30 @@ static int is_under_dir(const wchar_t *path, const wchar_t *dir) {
 }
 
 static int is_skipped_path(const wchar_t *dos_path) {
+    wchar_t *full;
     wchar_t *archive;
     int under;
     if (dos_path == NULL || dos_path[0] == L'\0') {
         return 1;
     }
-    /* Only the real $Recycle.Bin directory. A file named notes$recycle.bin.txt stays protected. */
-    if (path_has_component(dos_path, L"$recycle.bin")) {
+    full = (wchar_t *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, PATH_CAP * sizeof(wchar_t));
+    if (full == NULL || !normalize_dos_path(dos_path, full, PATH_CAP)) {
+        HeapFree(GetProcessHeap(), 0, full);
+        return 0;
+    }
+    if (is_volume_recycle_bin(full)) {
+        HeapFree(GetProcessHeap(), 0, full);
         return 1;
     }
     archive = (wchar_t *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, PATH_CAP * sizeof(wchar_t));
     if (archive == NULL) {
+        HeapFree(GetProcessHeap(), 0, full);
         return 0;
     }
     read_archive_dir(archive, PATH_CAP);
-    under = is_under_dir(dos_path, archive);
+    under = is_under_dir(full, archive);
     HeapFree(GetProcessHeap(), 0, archive);
+    HeapFree(GetProcessHeap(), 0, full);
     return under;
 }
 
@@ -1054,8 +1065,13 @@ static int tree_size(const wchar_t *path, ULONGLONG *total, int *count) {
                 free_dir_list(queue);
                 return 0;
             }
+            /* A junction inside the tree must not be walked by the recycle API. */
             if ((fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-                continue;
+                FindClose(find);
+                HeapFree(GetProcessHeap(), 0, cur->path);
+                HeapFree(GetProcessHeap(), 0, cur);
+                free_dir_list(queue);
+                return 0;
             }
             need = wcslen(cur->path) + 1 + wcslen(fd.cFileName) + 1;
             child = (wchar_t *)HeapAlloc(GetProcessHeap(), 0, need * sizeof(wchar_t));
@@ -1084,7 +1100,16 @@ static int tree_size(const wchar_t *path, ULONGLONG *total, int *count) {
                 HeapFree(GetProcessHeap(), 0, child);
             }
         } while (FindNextFileW(find, &fd));
-        FindClose(find);
+        {
+            DWORD find_error = GetLastError();
+            FindClose(find);
+            if (find_error != ERROR_NO_MORE_FILES) {
+                HeapFree(GetProcessHeap(), 0, cur->path);
+                HeapFree(GetProcessHeap(), 0, cur);
+                free_dir_list(queue);
+                return 0;
+            }
+        }
         HeapFree(GetProcessHeap(), 0, cur->path);
         HeapFree(GetProcessHeap(), 0, cur);
     }
@@ -1262,18 +1287,21 @@ static int move_to_archive(const wchar_t *dos_path) {
     }
     sanitize_name(dos_path, name, 96);
     GetLocalTime(&st);
+    /* Outer name only. A directory rename leaves names inside it unchanged. */
     for (i = 0; i < 1000; i++) {
+        int wrote;
         if (i == 0) {
-            if (swprintf_s(
-                    dest, PATH_CAP, L"%s\\%04u%02u%02uT%02u%02u%02u%03u-%lu-%s",
-                    archive, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
-                    st.wSecond, st.wMilliseconds, GetCurrentProcessId(), name) < 0) {
-                return 0;
-            }
-        } else if (swprintf_s(
-                       dest, PATH_CAP, L"%s\\%04u%02u%02uT%02u%02u%02u%03u-%lu-%s-%d",
-                       archive, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
-                       st.wSecond, st.wMilliseconds, GetCurrentProcessId(), name, i) < 0) {
+            wrote = swprintf_s(
+                dest, PATH_CAP, L"%s\\%s_%04u%02u%02u_%02u%02u%02u",
+                archive, name, st.wYear, st.wMonth, st.wDay,
+                st.wHour, st.wMinute, st.wSecond);
+        } else {
+            wrote = swprintf_s(
+                dest, PATH_CAP, L"%s\\%s_%04u%02u%02u_%02u%02u%02u_%d",
+                archive, name, st.wYear, st.wMonth, st.wDay,
+                st.wHour, st.wMinute, st.wSecond, i);
+        }
+        if (wrote < 0) {
             return 0;
         }
         if (!path_exists(dest)) {
@@ -1535,16 +1563,35 @@ static int soft_delete_path(const wchar_t *dos_path) {
         t_bypass = 0;
         return 0;
     }
-    /* Sandbox deletes are recycled by box-server. Failure keeps the file. */
+    /* Sandbox deletes are recycled by box-server. Failure keeps the file.
+     * Expand here: box-server's current directory is not this command's. */
     if (recycle_delegation_configured()) {
-        int delegated = ask_recycle_broker(dos_path);
+        wchar_t *full;
+        DWORD full_n;
+        int delegated;
+        full = (wchar_t *)HeapAlloc(
+            GetProcessHeap(), HEAP_ZERO_MEMORY, PATH_CAP * sizeof(wchar_t));
+        if (full == NULL) {
+            t_bypass = 0;
+            return 0;
+        }
+        full_n = GetFullPathNameW(dos_path, PATH_CAP, full, NULL);
+        if (full_n == 0 || full_n >= PATH_CAP) {
+            HeapFree(GetProcessHeap(), 0, full);
+            t_bypass = 0;
+            log_line(L"recycle broker refused; path could not be made absolute");
+            return 0;
+        }
+        delegated = ask_recycle_broker(full);
         t_bypass = 0;
         if (delegated) {
             wchar_t msg[1024];
-            swprintf_s(msg, 1024, L"recycle-delegated %s", dos_path);
+            swprintf_s(msg, 1024, L"recycle-delegated %s", full);
             log_line(msg);
+            HeapFree(GetProcessHeap(), 0, full);
             return 1;
         }
+        HeapFree(GetProcessHeap(), 0, full);
         log_line(L"recycle broker refused; source left in place");
         return 0;
     }
@@ -1724,10 +1771,38 @@ static int rename_replace_dest(ULONG cls, const uint8_t *info, ULONG length, wch
 /* Hooks.                                                                     */
 /* -------------------------------------------------------------------------- */
 
+static int path_has_file_id(
+    const wchar_t *path, int have_id, DWORD volume, DWORD index_high, DWORD index_low) {
+    BY_HANDLE_FILE_INFORMATION info;
+    HANDLE opened;
+    int same;
+    /* A delete-only handle cannot be identified. Keep the recorded path. */
+    if (!have_id) {
+        return 1;
+    }
+    opened = CreateFileW(
+        path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (opened == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    same = GetFileInformationByHandle(opened, &info)
+        && info.dwVolumeSerialNumber == volume
+        && info.nFileIndexHigh == index_high
+        && info.nFileIndexLow == index_low;
+    CloseHandle(opened);
+    return same;
+}
+
 static NTSTATUS NTAPI hook_NtClose(HANDLE handle) {
     wchar_t *path;
     NTSTATUS status;
     int pending;
+    int have_id = 0;
+    DWORD volume = 0;
+    DWORD index_high = 0;
+    DWORD index_low = 0;
+    BY_HANDLE_FILE_INFORMATION before;
     if (t_bypass) {
         return g_nt_close(handle);
     }
@@ -1736,6 +1811,12 @@ static NTSTATUS NTAPI hook_NtClose(HANDLE handle) {
         return STATUS_ACCESS_DENIED;
     }
     pending = pending_take(handle, path, PATH_CAP);
+    if (pending && GetFileInformationByHandle(handle, &before)) {
+        have_id = 1;
+        volume = before.dwVolumeSerialNumber;
+        index_high = before.nFileIndexHigh;
+        index_low = before.nFileIndexLow;
+    }
     status = g_nt_close(handle);
     if (!pending) {
         HeapFree(GetProcessHeap(), 0, path);
@@ -1745,6 +1826,10 @@ static NTSTATUS NTAPI hook_NtClose(HANDLE handle) {
         pending_put(handle, path);
         HeapFree(GetProcessHeap(), 0, path);
         return status;
+    }
+    if (!path_has_file_id(path, have_id, volume, index_high, index_low)) {
+        HeapFree(GetProcessHeap(), 0, path);
+        return STATUS_ACCESS_DENIED;
     }
     if (is_skipped_path(path)) {
         HeapFree(GetProcessHeap(), 0, path);
@@ -2369,6 +2454,12 @@ static int created_image_skip_inject(HANDLE process, HANDLE file) {
 
 static volatile LONG g_debuggee_count;
 static volatile DWORD g_await_pid;
+/* A suspended process that is never resumed. WaitForDebugEvent stops
+ * honoring its timeout after the last real debuggee exits, which leaves
+ * the next Git Bash create waiting forever. This one stays alive so the
+ * timeout keeps working. */
+static DWORD g_placeholder_pid;
+static HANDLE g_placeholder_process;
 
 static void on_debug_create(DEBUG_EVENT *ev) {
     CREATE_PROCESS_DEBUG_INFO *info = &ev->u.CreateProcessInfo;
@@ -2436,6 +2527,19 @@ static int inject_at_breakpoint(DebugChild *slot, DEBUG_EVENT *held) {
 
 static int dispatch_debug_event(DEBUG_EVENT *ev) {
     int i;
+    if (g_placeholder_pid != 0 && ev->dwProcessId == g_placeholder_pid) {
+        if (ev->dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT) {
+            close_create_handles(&ev->u.CreateProcessInfo);
+        } else if (ev->dwDebugEventCode == LOAD_DLL_DEBUG_EVENT && ev->u.LoadDll.hFile != NULL) {
+            CloseHandle(ev->u.LoadDll.hFile);
+            ev->u.LoadDll.hFile = NULL;
+        } else if (ev->dwDebugEventCode == CREATE_THREAD_DEBUG_EVENT
+            && ev->u.CreateThread.hThread != NULL) {
+            CloseHandle(ev->u.CreateThread.hThread);
+            ev->u.CreateThread.hThread = NULL;
+        }
+        return 0;
+    }
     if (ev->dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT) {
         on_debug_create(ev);
         return 0;
@@ -2501,19 +2605,46 @@ static CRITICAL_SECTION g_debug_submit_lock;
 static volatile LONG g_debug_worker_started;
 static volatile LONG g_debug_lock_ready;
 
+static void start_placeholder_debuggee(void) {
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    wchar_t sysdir[MAX_PATH];
+    wchar_t cmdline[MAX_PATH + 32];
+    if (GetSystemDirectoryW(sysdir, MAX_PATH) == 0) {
+        return;
+    }
+    if (swprintf_s(cmdline, MAX_PATH + 32, L"\"%s\\cmd.exe\" /c exit", sysdir) < 0) {
+        return;
+    }
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    memset(&pi, 0, sizeof pi);
+    /* The hook must not debug or inject this process. */
+    t_worker_creating = 1;
+    if (CreateProcessW(
+            NULL, cmdline, NULL, NULL, FALSE,
+            CREATE_SUSPENDED | DEBUG_ONLY_THIS_PROCESS | CREATE_NO_WINDOW,
+            NULL, NULL, &si, &pi)) {
+        g_placeholder_pid = pi.dwProcessId;
+        g_placeholder_process = pi.hProcess;
+        CloseHandle(pi.hThread);
+    }
+    t_worker_creating = 0;
+    (void)g_placeholder_process;
+}
+
 static DWORD WINAPI debug_worker(LPVOID unused) {
     (void)unused;
     DebugSetProcessKillOnExit(FALSE);
+    start_placeholder_debuggee();
     for (;;) {
         DEBUG_EVENT ev;
         DebugReq *req;
         DWORD used;
-        /* After the last debuggee exits, WaitForDebugEvent on this thread
-         * stops honoring its timeout. Keep waiting only while some debuggee
-         * is alive, or the process just created has not reported in yet.
-         * Match that process by pid: another CREATE still in the queue must
-         * not clear the wait, or the new Bash stays frozen at the loader. */
-        if (g_debuggee_count > 0 || g_await_pid != 0) {
+        /* The placeholder keeps a debuggee alive, so this timeout returns
+         * after the real Bash tree exits. Without it the call never returns
+         * and the next create waits forever. */
+        if (g_placeholder_pid != 0 || g_debuggee_count > 0 || g_await_pid != 0) {
             if (WaitForDebugEvent(&ev, 15)) {
                 if (!dispatch_debug_event(&ev)) {
                     ContinueDebugEvent(
@@ -2545,7 +2676,8 @@ static DWORD WINAPI debug_worker(LPVOID unused) {
             SetEvent(req->done);
             continue;
         }
-        if (g_debuggee_count <= 0 && g_await_pid == 0 && g_debug_req_event != NULL) {
+        if (g_placeholder_pid == 0 && g_debuggee_count <= 0 && g_await_pid == 0
+            && g_debug_req_event != NULL) {
             WaitForSingleObject(g_debug_req_event, 50);
         }
     }
@@ -2618,6 +2750,95 @@ static BOOL submit_posix_create(
     return req.ok;
 }
 
+static int env_block_has(const wchar_t *block, const wchar_t *key) {
+    size_t key_len = wcslen(key);
+    const wchar_t *cursor;
+    if (block == NULL) {
+        return 0;
+    }
+    for (cursor = block; *cursor != L'\0'; cursor += wcslen(cursor) + 1) {
+        if (_wcsnicmp(cursor, key, key_len) == 0 && cursor[key_len] == L'=') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static wchar_t *parent_env_value(const wchar_t *key) {
+    DWORD n = GetEnvironmentVariableW(key, NULL, 0);
+    wchar_t *value;
+    if (n <= 1) {
+        return NULL;
+    }
+    value = (wchar_t *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, n * sizeof(wchar_t));
+    if (value == NULL || GetEnvironmentVariableW(key, value, n) == 0) {
+        HeapFree(GetProcessHeap(), 0, value);
+        return NULL;
+    }
+    return value;
+}
+
+/* A sandboxed child that builds its own environment must still see the recycle port. */
+static wchar_t *merge_child_soft_env(const wchar_t *block) {
+    static const wchar_t *keys[] = {
+        ENV_ENABLED, ENV_ARCHIVE, ENV_DLL, ENV_RECYCLE_PORT, ENV_RECYCLE_TOKEN,
+    };
+    wchar_t *values[5];
+    size_t base = 1;
+    size_t extra = 0;
+    size_t pos = 0;
+    const wchar_t *cursor;
+    wchar_t *out;
+    int i;
+    memset(values, 0, sizeof values);
+    for (cursor = block; *cursor != L'\0'; cursor += wcslen(cursor) + 1) {
+        base += wcslen(cursor) + 1;
+    }
+    for (i = 0; i < 5; i++) {
+        if (env_block_has(block, keys[i])) {
+            continue;
+        }
+        values[i] = parent_env_value(keys[i]);
+        if (values[i] != NULL) {
+            extra += wcslen(keys[i]) + 1 + wcslen(values[i]) + 1;
+        }
+    }
+    if (extra == 0) {
+        return NULL;
+    }
+    out = (wchar_t *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (base + extra) * sizeof(wchar_t));
+    if (out == NULL) {
+        for (i = 0; i < 5; i++) {
+            HeapFree(GetProcessHeap(), 0, values[i]);
+        }
+        return NULL;
+    }
+    for (cursor = block; *cursor != L'\0'; cursor += wcslen(cursor) + 1) {
+        size_t count = wcslen(cursor) + 1;
+        memcpy(out + pos, cursor, count * sizeof(wchar_t));
+        pos += count;
+    }
+    for (i = 0; i < 5; i++) {
+        int wrote;
+        if (values[i] == NULL) {
+            continue;
+        }
+        wrote = swprintf_s(out + pos, base + extra - pos, L"%s=%s", keys[i], values[i]);
+        HeapFree(GetProcessHeap(), 0, values[i]);
+        values[i] = NULL;
+        if (wrote < 0) {
+            for (; i < 5; i++) {
+                HeapFree(GetProcessHeap(), 0, values[i]);
+            }
+            HeapFree(GetProcessHeap(), 0, out);
+            return NULL;
+        }
+        pos += (size_t)wrote + 1;
+    }
+    out[pos] = L'\0';
+    return out;
+}
+
 static BOOL WINAPI hook_CreateProcessInternalW(
     HANDLE token, LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES process_attr,
     LPSECURITY_ATTRIBUTES thread_attr, BOOL inherit, DWORD flags, LPVOID env,
@@ -2625,19 +2846,35 @@ static BOOL WINAPI hook_CreateProcessInternalW(
     DWORD used = flags;
     int added_suspend = 0;
     BOOL ok;
+    wchar_t *owned_env = NULL;
+    LPVOID use_env = env;
     if (t_worker_creating || parent_is_posix_runtime()) {
         return g_create_process(
             token, app, cmd, process_attr, thread_attr, inherit, flags, env, cwd, startup, pi,
             new_token);
     }
+    if (GetEnvironmentVariableW(ENV_RECYCLE_PORT, NULL, 0) > 1 && env != NULL) {
+        if ((flags & CREATE_UNICODE_ENVIRONMENT) == 0) {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return FALSE;
+        }
+        owned_env = merge_child_soft_env((const wchar_t *)env);
+        if (owned_env == NULL && !env_block_has((const wchar_t *)env, ENV_RECYCLE_PORT)) {
+            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+            return FALSE;
+        }
+        if (owned_env != NULL) {
+            use_env = owned_env;
+            used |= CREATE_UNICODE_ENVIRONMENT;
+        }
+    }
     if (child_is_posix_image(app, cmd)) {
-        if (!submit_posix_create(
-                token, app, cmd, process_attr, thread_attr, inherit, flags, env, cwd, startup,
-                pi)) {
-            log_line(L"softdelete: debug start failed, bash child will not be hooked");
-            return g_create_process(
-                token, app, cmd, process_attr, thread_attr, inherit, flags, env, cwd, startup, pi,
-                new_token);
+        ok = submit_posix_create(
+            token, app, cmd, process_attr, thread_attr, inherit, used, use_env, cwd, startup, pi);
+        HeapFree(GetProcessHeap(), 0, owned_env);
+        if (!ok) {
+            log_line(L"softdelete: debug start failed, bash child was not started");
+            return FALSE;
         }
         return TRUE;
     }
@@ -2646,7 +2883,9 @@ static BOOL WINAPI hook_CreateProcessInternalW(
         added_suspend = 1;
     }
     ok = g_create_process(
-        token, app, cmd, process_attr, thread_attr, inherit, used, env, cwd, startup, pi, new_token);
+        token, app, cmd, process_attr, thread_attr, inherit, used, use_env, cwd, startup, pi,
+        new_token);
+    HeapFree(GetProcessHeap(), 0, owned_env);
     if (!ok || pi == NULL || pi->hProcess == NULL) {
         return ok;
     }
