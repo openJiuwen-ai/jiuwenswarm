@@ -76,7 +76,10 @@ export function buildAuthorizationAnswers(
       );
     const reject = question.options.find((option) => optionSemantic(option) === 'reject');
     const selected = match || (smart ? reject : question.options[0]);
-    return { selected_options: [selected ? selected.value || selected.label : smart ? 'reject' : picked.label] };
+    return {
+      question: question.question,
+      selected_options: [selected ? selected.value || selected.label : smart ? 'reject' : picked.label],
+    };
   });
 }
 
