@@ -73,7 +73,9 @@ def _local_timezone_name() -> str:
     ``""``.
     """
     try:
-        tz = datetime.now().astimezone().tzinfo
+        # Explicit tz=None satisfies the tz-aware-now check; the no-arg
+        # astimezone() below still resolves the process-local zone.
+        tz = datetime.now(tz=None).astimezone().tzinfo
     except Exception:  # pragma: no cover - extremely unusual hosts
         return ""
     if tz is None:

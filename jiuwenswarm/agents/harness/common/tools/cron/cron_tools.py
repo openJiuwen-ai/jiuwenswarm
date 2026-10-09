@@ -598,7 +598,10 @@ class CronTools:
             job_id=str(normalized.get("id") or "").strip() or None,
             name=str(normalized.get("name") or "").strip(),
             cron_expr=str(normalized.get("cron_expr") or "").strip(),
-            timezone=str(normalized.get("timezone") or get_default_timezone().key).strip() or get_default_timezone().key,
+            timezone=(
+                str(normalized.get("timezone") or get_default_timezone().key).strip()
+                or get_default_timezone().key
+            ),
             description=str(normalized.get("description") or ""),
             targets=targets_str,
             enabled=bool(normalized.get("enabled", True)),
