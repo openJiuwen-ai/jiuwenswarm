@@ -86,7 +86,16 @@ export function resolveEffectiveModel(
 ): ModelEntry | null {
   if (chatAvailableModels.length === 0) return null;
   const displayed = selectedModelName || defaultModelName;
+  // selectedModelName 可能存的是展示名（用户从下拉框选择时存的是 alias），
+  // 也可能存的是真实 API id（后端 session.metadata.model 回传恢复时是
+  // model_name，例如 Zen 免费模型的 "deepseek-v4-flash-free"）。两者都要能
+  // 命中同一个 entry，否则后端回传 model_name 后无法匹配有 alias 的免费
+  // 模型，会回退到 chatAvailableModels[0]（首个配置模型），表现为"对话
+  // 完成后下拉框自动切回配置的模型"。
   return (
+    chatAvailableModels.find(
+      (m) => m.alias === displayed || m.model_name === displayed,
+    ) ??
     chatAvailableModels.find((m) => (m.alias || m.model_name) === displayed) ??
     chatAvailableModels[0]
   );
@@ -471,7 +480,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       runtime.selectedModelName,
       state.defaultModelName,
     );
-    return resolved ? (resolved.alias || resolved.model_name) : runtime.selectedModelName;
+    return resolved ? resolved.model_name : runtime.selectedModelName;
   },
 
   removeRuntime: (sessionId) => {
