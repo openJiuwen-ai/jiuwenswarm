@@ -1279,6 +1279,74 @@ async def test_consume_stream_with_query_launches_watcher_after_runtime_ready(mo
     ]
 
 
+@pytest.mark.anyio
+async def test_consume_stream_clears_initialized_only_after_aclose_succeeds(monkeypatch):
+    """Paused-team follow-up depends on this marker surviving a failed aclose."""
+    cleared: list[str] = []
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            return None
+
+        @staticmethod
+        def clear_active_runtime(session_id: str) -> None:
+            return None
+
+        @staticmethod
+        def pop_stream_task(session_id: str):
+            return None
+
+        @staticmethod
+        def clear_session_initialized(session_id: str) -> None:
+            cleared.append(session_id)
+
+    class _ClosingStream:
+        def __init__(self, *, fail: bool) -> None:
+            self._fail = fail
+            self.aclose_calls = 0
+
+        def __aiter__(self):
+            return self
+
+        def __anext__(self):
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            self.aclose_calls += 1
+            if self._fail:
+                raise RuntimeError("aclose failed")
+
+    async def _release(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(team_helpers, "_await_runner_pool_release", _release)
+
+    ok_stream = _ClosingStream(fail=False)
+    monkeypatch.setattr(team_helpers, "_run_agent_team_streaming", lambda **kwargs: ok_stream)
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-aclose-ok",
+        SimpleNamespace(team_name="spec-team"),
+        "hello",
+    )
+    assert ok_stream.aclose_calls == 1
+    assert cleared == ["sess-aclose-ok"]
+
+    cleared.clear()
+    bad_stream = _ClosingStream(fail=True)
+    monkeypatch.setattr(team_helpers, "_run_agent_team_streaming", lambda **kwargs: bad_stream)
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-aclose-fail",
+        SimpleNamespace(team_name="spec-team"),
+        "hello",
+    )
+    assert bad_stream.aclose_calls == 1
+    assert cleared == []
+
+
 def test_sync_team_identity_metadata_persists_ready_team_for_any_activation(monkeypatch):
     updates: list[dict[str, object]] = []
 
