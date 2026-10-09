@@ -179,6 +179,71 @@ async def test_full_waiter_does_not_block_delivery_to_other_waiters() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pause_in_progress_marker_covers_stream_exit_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pause 标记全程可见（含 _wait_for_stream_task_exit 窗口——流任务
+    finally 的流末强制补终态判定正是在该窗口内执行），pause 结束后复位。"""
+    manager = TeamManager()
+    manager._stream_tasks["sess-pause"] = object()  # 仅 membership 判定
+    monkeypatch.setattr(manager, "_resolve_session_team_name", lambda _sid: "team-x")
+
+    seen_during_wait: list[bool] = []
+
+    async def _fake_pause_agent_team(**_kwargs):
+        return True
+
+    async def _fake_wait(sid: str, **_kwargs):
+        # 关键断言：等待流任务退出时标记仍在（此刻流 finally 正在跑补终态判定）
+        seen_during_wait.append(manager.is_pause_in_progress(sid))
+        return True
+
+    async def _fake_cleanup(_sid: str, **_kwargs):
+        pass
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner",
+        SimpleNamespace(pause_agent_team=_fake_pause_agent_team),
+    )
+    monkeypatch.setattr(manager, "_wait_for_stream_task_exit", _fake_wait)
+    monkeypatch.setattr(manager, "_cleanup_runtime_locals", _fake_cleanup)
+
+    result = await manager.pause_session_runtime("sess-pause")
+
+    assert result is True
+    assert seen_during_wait == [True]
+    assert manager.is_pause_in_progress("sess-pause") is False
+
+
+@pytest.mark.asyncio
+async def test_pause_in_progress_marker_cleared_on_runner_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runner.pause 抛异常 → 标记仍由 finally 复位，
+    不残留误伤后续流的补终态判定。"""
+    manager = TeamManager()
+    manager._stream_tasks["sess-boom"] = object()
+    monkeypatch.setattr(manager, "_resolve_session_team_name", lambda _sid: "team-x")
+
+    async def _boom(**_kwargs):
+        raise RuntimeError("pause exploded")
+
+    async def _fake_cleanup(_sid: str, **_kwargs):
+        pass
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner",
+        SimpleNamespace(pause_agent_team=_boom),
+    )
+    monkeypatch.setattr(manager, "_cleanup_runtime_locals", _fake_cleanup)
+
+    result = await manager.pause_session_runtime("sess-boom")
+
+    assert result is True  # runner pause 失败被吞（warning 日志），返回 True
+    assert manager.is_pause_in_progress("sess-boom") is False
+
+
+@pytest.mark.asyncio
 async def test_update_evolution_config_updates_member_skill_evolution_signal_trigger(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

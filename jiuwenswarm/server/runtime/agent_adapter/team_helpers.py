@@ -3333,25 +3333,42 @@ async def _consume_stream_with_query(
                 # 流末零终态兜底：team.completed 门禁未达标 + settle 放弃时回合可能没有任何
                 # 终态帧，流尽是最后机会。流被取消（stream_cancelled）不补——外层 if 已拦；
                 # 有挂起交互时回合是暂停待恢复，不补。
+                # pause 进行中（用户主动停止 intent=pause / 判死级联 park）同样不补：
+                # 回合是挂起待续而非终结，且 settle 复核在 pause 执行中必然非 True，
+                # 补了必是带 error 的误伤帧（前端「已停止」被翻成「失败」）。
                 if completion_signals == 0 and not saw_pending_interaction:
-                    try:
-                        await _emit_forced_terminal_at_stream_end(
-                            channel_id, session_id, round_id,
-                            unrecovered_error=round_unrecovered_error,
-                        )
-                        completion_signals += 1
-                        tm_.mark_stream_round_terminal(session_id)
-                    except Exception:
-                        # 同上：补发失败仅记日志不传播（CancelledError 不捕，
-                        # 取消语义不吞）
-                        logger.warning(
-                            "[TeamHelpers] forced terminal emission failed: "
+                    _pause_check = getattr(tm_, "is_pause_in_progress", None)
+                    _pause_in_progress = (
+                        bool(_pause_check(session_id)) if callable(_pause_check) else False
+                    )
+                    if _pause_in_progress:
+                        logger.info(
+                            "[TeamHelpers] forced terminal skipped (pause in progress): "
                             "channel_id=%s session_id=%s round_id=%s",
                             _resolve_channel_id(channel_id),
                             session_id,
                             round_id,
-                            exc_info=True,
                         )
+                    else:
+                        try:
+                            await _emit_forced_terminal_at_stream_end(
+                                channel_id, session_id, round_id,
+                                unrecovered_error=round_unrecovered_error,
+                            )
+                            completion_signals += 1
+                            tm_.mark_stream_round_terminal(session_id)
+                        except Exception as e:
+                            # 补发失败仅记日志不传播（CancelledError 不捕，取消语义不吞）；
+                            # 异常本体由 exc_info 的 traceback 携带，模板不再重复拼 e
+                            logger.warning(
+                                "[TeamHelpers] forced terminal emission failed: "
+                                "channel_id=%s session_id=%s round_id=%s: %s",
+                                _resolve_channel_id(channel_id),
+                                session_id,
+                                round_id,
+                                e,
+                                exc_info=True,
+                            )
                 elif completion_signals == 0:
                     logger.info(
                         "[TeamHelpers] forced terminal skipped (pending interaction): "

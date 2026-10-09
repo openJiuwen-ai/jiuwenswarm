@@ -371,6 +371,11 @@ class TeamManager:
         self._cancel_requested: dict[str, bool] = {}
         # 追踪当前正在执行的 pause 任务，供 cancel 抢占取消
         self._active_pause_tasks: dict[str, asyncio.Task] = {}
+        # pause_session_runtime 全程置位（覆盖到 _wait_for_stream_task_exit 之后）：
+        # 流任务 finally 的"流末强制补终态"判定正是在该等待窗口内执行的——
+        # pause 语义是回合挂起待续而非终结，此时流尽不得补终态帧（否则 settle
+        # 复核必然非 True，误补带 error 的终态帧，前端「已停止」被翻成「失败」）。
+        self._pause_in_progress: set[str] = set()
         self._active_team_names: dict[str, str] = {}
         self._pending_team_names: dict[str, str] = {}
         # session_id → list of (request_id, asyncio.Queue) waiters
@@ -427,6 +432,15 @@ class TeamManager:
 
     def has_stream_task(self, session_id: str) -> bool:
         return session_id in self._stream_tasks
+
+    def is_pause_in_progress(self, session_id: str) -> bool:
+        """Return whether a pause is currently executing for this session.
+
+        覆盖 pause_session_runtime 全程（含 _wait_for_stream_task_exit 窗口），
+        供流收尾的"流末强制补终态"判定识别"pause 导致的流结束"——此时回合是
+        挂起待续而非终结，不得补终态帧。
+        """
+        return session_id in self._pause_in_progress
 
     def pop_stream_task(self, session_id: str) -> asyncio.Task | None:
         return self._stream_tasks.pop(session_id, None)
@@ -2639,62 +2653,68 @@ class TeamManager:
                 )
                 return False
 
-            logger.info(
-                "[TeamManager] %s pause team session runtime: session_id=%s",
-                reason,
-                session_id,
-            )
+            self._pause_in_progress.add(session_id)
+            try:
+                logger.info(
+                    "[TeamManager] %s pause team session runtime: session_id=%s",
+                    reason,
+                    session_id,
+                )
 
-            team_name = self._resolve_session_team_name(session_id)
-            runner_paused = False
-            if team_name:
-                try:
-                    # 再次检查 cancel 标志，避免在等待 Runner.pause 时 cancel 已到达
-                    if self._cancel_requested.get(session_id):
-                        logger.info(
-                            "[TeamManager] %s pause aborted before Runner.pause: session_id=%s",
-                            reason, session_id,
-                        )
-                        return False
-
-                    # 注册当前 pause 任务，供 cancel 抢占取消
-                    self._active_pause_tasks[session_id] = asyncio.current_task()
+                team_name = self._resolve_session_team_name(session_id)
+                runner_paused = False
+                if team_name:
                     try:
-                        runner_paused = await Runner.pause_agent_team(
-                            team_name=team_name,
-                            session_id=session_id,
-                        )
-                    except asyncio.CancelledError:
-                        logger.info(
-                            "[TeamManager] %s pause aborted: cancelled by cancel request, session_id=%s",
-                            reason, session_id,
-                        )
-                        team_name = self._resolve_session_team_name(session_id)
-                        if team_name:
-                            await self._stop_runner_team_runtime(
-                                session_id, team_name, "pause aborted"
+                        # 再次检查 cancel 标志，避免在等待 Runner.pause 时 cancel 已到达
+                        if self._cancel_requested.get(session_id):
+                            logger.info(
+                                "[TeamManager] %s pause aborted before Runner.pause: session_id=%s",
+                                reason, session_id,
                             )
-                        await self._finalize_runtime_cleanup(session_id, "pause aborted")
-                        return False
-                    finally:
-                        self._active_pause_tasks.pop(session_id, None)
+                            return False
 
-                except Exception as exc:
-                    logger.warning(
-                        "[TeamManager] runner pause failed: session_id=%s team_name=%s error=%s",
-                        session_id,
-                        team_name,
-                        exc,
-                    )
+                        # 注册当前 pause 任务，供 cancel 抢占取消
+                        self._active_pause_tasks[session_id] = asyncio.current_task()
+                        try:
+                            runner_paused = await Runner.pause_agent_team(
+                                team_name=team_name,
+                                session_id=session_id,
+                            )
+                        except asyncio.CancelledError:
+                            logger.info(
+                                "[TeamManager] %s pause aborted: cancelled by cancel request, session_id=%s",
+                                reason, session_id,
+                            )
+                            team_name = self._resolve_session_team_name(session_id)
+                            if team_name:
+                                await self._stop_runner_team_runtime(
+                                    session_id, team_name, "pause aborted"
+                                )
+                            await self._finalize_runtime_cleanup(session_id, "pause aborted")
+                            return False
+                        finally:
+                            self._active_pause_tasks.pop(session_id, None)
 
-            if runner_paused:
-                await self._wait_for_stream_task_exit(session_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "[TeamManager] runner pause failed: session_id=%s team_name=%s error=%s",
+                            session_id,
+                            team_name,
+                            exc,
+                        )
 
-            # Pause parks the runtime in place (resumable via a later chat.send),
-            # so running workflows may still continue — do NOT finalize them.
-            await self._cleanup_runtime_locals(session_id, finalize_workflows=False)
-            self.clear_active_runtime(session_id)
-            self.clear_pending_runtime(session_id)
+                if runner_paused:
+                    await self._wait_for_stream_task_exit(session_id)
+
+                # Pause parks the runtime in place (resumable via a later chat.send),
+                # so running workflows may still continue — do NOT finalize them.
+                await self._cleanup_runtime_locals(session_id, finalize_workflows=False)
+                self.clear_active_runtime(session_id)
+                self.clear_pending_runtime(session_id)
+            finally:
+                # 标记须覆盖到 _wait_for_stream_task_exit 之后：流任务 finally 的
+                # 流末强制补终态判定在该等待窗口内执行，须能看到 pause 进行中。
+                self._pause_in_progress.discard(session_id)
 
         logger.info(
             "[TeamManager] %steam session paused: session_id=%s runner_paused=%s",
