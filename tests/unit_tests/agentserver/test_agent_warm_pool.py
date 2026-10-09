@@ -112,6 +112,19 @@ def test_prewarm_is_disabled_unless_the_environment_opts_in(
     assert build()._enabled is True
 
 
+@pytest.mark.asyncio
+async def test_disabled_pool_skips_foreground_bookkeeping() -> None:
+    pool = AgentWarmPool(_FakeManager(_FakeRootAgent()), enabled=False)
+
+    await pool.begin_foreground()
+    await pool.end_foreground()
+
+    assert pool._foreground_count == 0
+    assert pool._foreground_idle.is_set()
+    assert pool._background_pump_task is None
+    await pool.close()
+
+
 def test_prewarm_disabled_on_enterprise_even_if_env_opts_in(
     monkeypatch, tmp_path: Path
 ) -> None:

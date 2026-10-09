@@ -100,6 +100,13 @@ async def _start_gateway_a2a_ingress(a2a_manager: Any) -> None:
 _PROMPT_IDLE_FINALIZE_SECONDS = 3.0
 _AGENT_PREWARM_EXCLUDED_CHANNELS = frozenset({"acp", "a2a"})
 
+
+def _agent_prewarm_enabled() -> bool:
+    """Return whether background session prewarming is switched on."""
+    from jiuwenswarm.server.runtime.agent_warm_pool import prewarm_enabled_by_env
+
+    return prewarm_enabled_by_env()
+
 # IM 平台官方 API 域名（仅作为 config.yaml 缺字段时的加载兜底，不在 Config 类里硬编码）
 _FEISHU_DEFAULT_API_BASE = "https://open.feishu.cn"
 _DINGTALK_DEFAULT_API_BASE = "https://api.dingtalk.com"    # 新版 v1.0 接口域名
@@ -1884,7 +1891,7 @@ async def _run_with_telemetry(
     prewarm_sync_task: asyncio.Task[None] | None = None
 
     async def _sync_agent_prewarm_channels() -> None:
-        if is_enterprise():
+        if is_enterprise() or not _agent_prewarm_enabled():
             return
         try:
             prewarm_channels = {
@@ -1917,7 +1924,7 @@ async def _run_with_telemetry(
         name: str, *, delay_seconds: float = 1.0
     ) -> None:
         """Coalesce startup/config/channel churn into one settled sync."""
-        if is_enterprise():
+        if is_enterprise() or not _agent_prewarm_enabled():
             return
         nonlocal prewarm_sync_debounce_task
         previous = prewarm_sync_debounce_task
@@ -2825,7 +2832,7 @@ async def _run_with_telemetry(
         "agent-prewarm-sync-after-startup",
         delay_seconds=3.0,
     )
-    if not is_enterprise():
+    if not is_enterprise() and _agent_prewarm_enabled():
         prewarm_sync_task = asyncio.create_task(
             _periodic_agent_prewarm_sync(),
             name="agent-prewarm-periodic-sync",
