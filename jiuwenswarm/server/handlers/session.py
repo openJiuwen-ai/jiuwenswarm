@@ -11,15 +11,20 @@ import shutil
 from typing import Any
 from weakref import WeakValueDictionary
 
+from openjiuwen.core.single_agent import create_agent_session
+
+from jiuwenswarm.agents.harness.common.tools.todo_resume import (
+    get_todo_generation_token,
+)
 from jiuwenswarm.common.e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
 )
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
-from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
+    _agent_workspace_dir_for_request,
     _background_session_kvc_tasks,
     _sessions_dir_for_request,
     _is_team_metadata_mode,
@@ -51,6 +56,46 @@ _LIMIT_MAX = 200
 _session_switch_locks: WeakValueDictionary[str, asyncio.Lock] = (
     WeakValueDictionary()
 )
+
+
+async def _todo_generation_token_for_history(
+    ctx: RequestContext,
+    session_id: str,
+) -> str | None:
+    """Restore the current todo generation from the session checkpoint."""
+    try:
+        resolved = await _resolve_rewind_agent(
+            ctx,
+            ctx.request.channel_id or "default",
+            session_id,
+        )
+        if resolved is None:
+            return None
+        deep_agent, _ = resolved
+        live_session = getattr(deep_agent, "_interaction_session", None)
+        if live_session is not None:
+            try:
+                live_session_id = str(live_session.get_session_id() or "").strip()
+            except Exception:  # noqa: BLE001 - tolerate session implementations
+                live_session_id = ""
+            if live_session_id == session_id:
+                token = get_todo_generation_token(live_session)
+                if token:
+                    return token
+
+        checkpoint_session = create_agent_session(
+            session_id=session_id,
+            card=deep_agent.card,
+        )
+        await checkpoint_session.pre_run(inputs=None)
+        return get_todo_generation_token(checkpoint_session)
+    except Exception:  # noqa: BLE001 - history restore must remain fail-open
+        logger.warning(
+            "[history.get] todo generation restore failed: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+        return None
 
 
 def _coerce_int(value: object, default: int) -> int:
@@ -891,7 +936,17 @@ async def handle_history_get_stream(ctx: RequestContext) -> None:
 
     next_sequence = len(messages) if isinstance(messages, list) else 0
     if page_idx == 1 and isinstance(session_id, str) and session_id.strip():
-        todos = load_todo_snapshot_for_frontend(session_id)
+        normalized_session_id = session_id.strip()
+        generation_token = await _todo_generation_token_for_history(
+            ctx,
+            normalized_session_id,
+        )
+        todo_root = _agent_workspace_dir_for_request(request) / "todo"
+        todos = load_todo_snapshot_for_frontend(
+            normalized_session_id,
+            todo_root=todo_root,
+            generation_token=generation_token,
+        )
         todo_chunk = AgentResponseChunk(
             request_id=request.request_id,
             channel_id=request.channel_id,

@@ -17,6 +17,11 @@ from typing import Any, List, Sequence
 
 from openjiuwen.harness.tools.todo import TODO_GENERATION_TOKEN_SESSION_KEY
 
+from jiuwenswarm.common.todo_generation import (
+    filter_todos_by_generation as filter_todos_by_generation,
+    todo_item_generation_token as todo_item_generation_token,
+)
+
 _ACTIVE_TODO_STATUS_VALUES = frozenset({"pending", "in_progress"})
 
 _RESUME_QUERY_PATTERNS = (
@@ -125,31 +130,6 @@ def get_todo_generation_token(session: Any) -> str | None:
     """Read the current todo generation token; None when unset (fail-open)."""
     value = session.get_state(TODO_GENERATION_TOKEN_SESSION_KEY)
     return value if isinstance(value, str) and value else None
-
-
-def todo_item_generation_token(item: Any) -> str | None:
-    """Extract the generation token from a TodoItem or its persisted dict."""
-    if isinstance(item, dict):
-        value = item.get("generation_token")
-    else:
-        value = getattr(item, "generation_token", None)
-    return value if isinstance(value, str) and value else None
-
-
-def filter_todos_by_generation(items: Sequence[Any], token: str | None) -> List[Any]:
-    """Drop entries from superseded generations; unstamped entries pass.
-
-    ``token`` 为 None（未启用隔离 / 会话无该标志）时原样放行，退化到
-    旧版行为（fail-open），不新增故障点。
-    """
-    if not token:
-        return list(items)
-    kept: List[Any] = []
-    for item in items:
-        item_token = todo_item_generation_token(item)
-        if not item_token or item_token == token:
-            kept.append(item)
-    return kept
 
 
 def _todo_status_value(item: Any) -> str:

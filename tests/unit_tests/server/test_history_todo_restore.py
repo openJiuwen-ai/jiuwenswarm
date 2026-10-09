@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -55,10 +56,30 @@ def _history(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_history_first_page_emits_todo_snapshot_before_done(monkeypatch, _history):
+    captured = {}
+
+    async def _token(_ctx, _session_id):
+        return "current-token"
+
+    def _load(_session_id, *, todo_root, generation_token):
+        captured["todo_root"] = todo_root
+        captured["generation_token"] = generation_token
+        return [{"id": "t1", "status": "pending"}]
+
+    monkeypatch.setattr(
+        session_handlers,
+        "_todo_generation_token_for_history",
+        _token,
+    )
+    monkeypatch.setattr(
+        session_handlers,
+        "_agent_workspace_dir_for_request",
+        lambda _request: Path("tenant-agent-workspace"),
+    )
     monkeypatch.setattr(
         session_handlers,
         "load_todo_snapshot_for_frontend",
-        lambda _session_id: [{"id": "t1", "status": "pending"}],
+        _load,
     )
     ctx, sink = _context(1)
 
@@ -68,6 +89,10 @@ async def test_history_first_page_emits_todo_snapshot_before_done(monkeypatch, _
     assert event_types == ["history.message", "todo.updated", "history.message"]
     assert sink.sent[1]["sequence"] == 1
     assert sink.sent[2]["sequence"] == 2
+    assert captured == {
+        "todo_root": Path("tenant-agent-workspace") / "todo",
+        "generation_token": "current-token",
+    }
 
 
 @pytest.mark.asyncio

@@ -54,3 +54,41 @@ def test_load_snapshot_accepts_json_and_rejects_unsafe_session(tmp_path, monkeyp
         "status": "in_progress",
     }]
     assert load_todo_snapshot_for_frontend("../web_session_1") == []
+
+
+def test_load_snapshot_filters_old_generation_and_overlays_serial_statuses(tmp_path):
+    root = tmp_path / "tenant" / "agent" / "jiuwenclaw_workspace" / "todo"
+    snapshot = root / "web_session_2" / "todo.json"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text(
+        json.dumps([
+            {
+                "id": "old",
+                "content": "old generation",
+                "status": "completed",
+                "generation_token": "old-token",
+            },
+            {
+                "id": "current-open",
+                "content": "current open",
+                "status": "in_progress",
+                "generation_token": "current-token",
+            },
+            {
+                "id": "current-late",
+                "content": "completed out of order",
+                "status": "completed",
+                "generation_token": "current-token",
+            },
+        ]),
+        encoding="utf-8",
+    )
+
+    restored = load_todo_snapshot_for_frontend(
+        "web_session_2",
+        todo_root=root,
+        generation_token="current-token",
+    )
+
+    assert [item["id"] for item in restored] == ["current-open", "current-late"]
+    assert [item["status"] for item in restored] == ["in_progress", "pending"]
