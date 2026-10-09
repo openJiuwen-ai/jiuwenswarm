@@ -1892,6 +1892,7 @@ class JiuWenSwarmDeepAdapter:
         # any DeepAgent/TaskTool is created below.
         apply_task_tool_event_patch()
         self._instance: DeepAgent | None = None
+        self._process_cli_run_options: tuple[int | None, tuple[Any, ...]] | None = None
         self._interaction_output_handoff: OutputHandoff | None = None
         self._session_input_guard: SessionInputGuard | None = None
         self._voice_agent_task_rail = None

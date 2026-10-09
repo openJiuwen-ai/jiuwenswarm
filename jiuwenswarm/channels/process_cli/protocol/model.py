@@ -3,7 +3,8 @@
 """Value contracts for one Process CLI command and one Runtime lifecycle.
 
 These types describe a future machine-facing adapter. They deliberately do not
-implement a resident server, JSON-RPC methods, or Session control plane. The Process CLI remains the transport owner and converts the shared
+implement a resident server, JSON-RPC methods, or Session control plane.
+The Process CLI remains the transport owner and converts the shared
 Runtime event stream into these records.
 """
 

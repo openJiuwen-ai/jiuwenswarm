@@ -130,7 +130,9 @@ class DuplexControl:
                 object.__setattr__(
                     self, "session_id", _required_text("session_id", self.session_id)
                 )
-            if self.interaction_id is not None or self.answers != () or self.call_id is not None or self.error is not None:
+            has_answer_fields = self.interaction_id is not None or self.answers != ()
+            has_tool_fields = self.call_id is not None or self.error is not None
+            if has_answer_fields or has_tool_fields:
                 raise DuplexProtocolError("cancel must not contain answer fields or tool fields")
 
     def to_dict(self) -> dict[str, Any]:

@@ -22,7 +22,7 @@ async def test_sdk_p0_real_model(tmp_path: Path) -> None:
     for name in ("config.yaml", ".env"):
         shutil.copyfile(source / name, config / name)
     root = Path(__file__).resolve().parents[2]
-    sys.path.insert(0, str(root / "sdks" / "python" / "src"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sdks" / "python" / "src"))
     from jiuwenswarm_sdk import Client
 
     client = Client(
@@ -100,7 +100,7 @@ async def test_unattended_permission_real_model(tmp_path: Path) -> None:
     for name in ("config.yaml", ".env"):
         shutil.copyfile(source / name, config / name)
     root = Path(__file__).resolve().parents[2]
-    sys.path.insert(0, str(root / "sdks" / "python" / "src"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sdks" / "python" / "src"))
     from jiuwenswarm_sdk import Client
 
     client = Client(

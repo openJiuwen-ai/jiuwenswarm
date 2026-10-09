@@ -369,12 +369,13 @@ class _MachineRun:
 
     def _normalize_run_error(self, error: RuntimeErrorInfo) -> RuntimeErrorInfo:
         """Identify the Agent's iteration stop when this run requested the cap."""
-        if (
-            self.run_input.max_turns is not None
-            and self.limits.model_calls >= self.run_input.max_turns
-            and error.code == "RUNTIME_ERROR"
+        max_turns = self.run_input.max_turns
+        at_turn_limit = max_turns is not None and self.limits.model_calls >= max_turns
+        is_iteration_error = (
+            error.code == "RUNTIME_ERROR"
             and error.message == "Max iterations reached without completion"
-        ):
+        )
+        if at_turn_limit and is_iteration_error:
             return replace(
                 error,
                 code="TURN_LIMIT_EXCEEDED",
@@ -392,7 +393,10 @@ class _MachineRun:
                 "BUDGET_EXCEEDED": "Run exceeded max_budget_usd.",
                 "TURN_LIMIT_EXCEEDED": "Run exceeded max_turns.",
             }
-            raise MachineRunError(messages[limit_error], code=limit_error)
+            raise MachineRunError(
+                messages.get(limit_error, "Run exceeded a configured limit."),
+                code=limit_error,
+            )
         if self.summary.error is not None:
             self.fail(self._normalize_run_error(self.summary.error))
 

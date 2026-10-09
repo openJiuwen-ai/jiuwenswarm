@@ -73,12 +73,9 @@ class RunLimits:
         self.model_calls += 1
         if self.max_budget_usd is not None:
             raw = usage.get("total_cost")
-            if (
-                isinstance(raw, bool)
-                or not isinstance(raw, (int, float))
-                or not math.isfinite(raw)
-                or raw < 0
-            ):
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                return "BUDGET_METER_UNAVAILABLE"
+            if not math.isfinite(raw) or raw < 0:
                 return "BUDGET_METER_UNAVAILABLE"
             self.total_cost += float(raw)
             if self.total_cost > self.max_budget_usd:

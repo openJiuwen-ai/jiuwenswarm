@@ -92,10 +92,12 @@ class DuplexController:
             self._owner.cancel()
 
     async def _read_controls(self) -> None:
-        assert self.reader is not None
+        reader = self.reader
+        if reader is None:
+            raise RuntimeError("control input reader is unavailable")
         try:
             while not self._stopping_input:
-                line = await self.reader.read_line()
+                line = await reader.read_line()
                 if self._stopping_input:
                     return
                 if line is None:
