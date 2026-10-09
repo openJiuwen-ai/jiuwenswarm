@@ -22,7 +22,7 @@ from jiuwenswarm.common.etcd.client import (
     EtcdJsonClient,
     prefix_range_end,
 )
-from jiuwenswarm.runtime.cron.models import CronJob
+from jiuwenswarm.runtime.cron.models import CronJob, cron_job_from_dict
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +127,7 @@ class EtcdCronJobStore:
         try:
             item = json.loads(result.kvs[0].value.decode("utf-8"))
             if isinstance(item, dict):
-                return CronJob.from_dict(item)
+                return cron_job_from_dict(item)
         except Exception:
             return None
         return None
@@ -142,7 +142,7 @@ class EtcdCronJobStore:
         try:
             item = json.loads(kv.value.decode("utf-8"))
             if isinstance(item, dict):
-                return CronJob.from_dict(item), int(kv.mod_revision)
+                return cron_job_from_dict(item), int(kv.mod_revision)
         except Exception:
             return None, int(kv.mod_revision)
         return None, int(kv.mod_revision)

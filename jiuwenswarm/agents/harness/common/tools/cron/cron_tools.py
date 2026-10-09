@@ -16,6 +16,7 @@ from jiuwenswarm.runtime.cron.store import CronJobStore, _PROACTIVE_TICK_MODE
 from jiuwenswarm.runtime.cron.models import (
     CronJob,
     CronTargetChannel,
+    cron_job_from_dict,
     cron_job_modes_for_tools,
     is_valid_target_channel_id,
     normalize_cron_job_mcp,
@@ -80,7 +81,7 @@ def install_gateway_jobs_snapshot(rows: list[Any], *, user_id: str = "") -> int:
         if not isinstance(row, dict):
             continue
         try:
-            job = CronJob.from_dict(row)
+            job = cron_job_from_dict(row)
         except Exception as exc:  # noqa: BLE001 - ignore one malformed stored row
             logger.warning("[CronTools] ignore malformed Gateway cron snapshot row: %s", exc)
             continue
@@ -418,7 +419,7 @@ class CronTools:
                 data.pop(key, None)
             else:
                 data[key] = value
-        return CronJob.from_dict(data)
+        return cron_job_from_dict(data)
 
     @staticmethod
     def _is_valid_target(value: str) -> bool:

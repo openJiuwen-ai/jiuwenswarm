@@ -15,6 +15,7 @@ import pytest
 from jiuwenswarm.common.auth.model_catalog import LoginModel
 from jiuwenswarm.gateway.cron.models import (
     CronJob,
+    cron_job_from_dict,
     normalize_cron_job_mcp,
     resolve_cron_model,
     validate_cron_model,
@@ -367,7 +368,7 @@ def test_cron_job_mcp_round_trip() -> None:
     job = _mcp_round_trip_job()
     d = job.to_dict()
     assert d["mcp"] == ["feishu-doc", "github"]
-    restored = CronJob.from_dict(d)
+    restored = cron_job_from_dict(d)
     assert restored.mcp == ["feishu-doc", "github"]
 
 
@@ -376,4 +377,4 @@ def test_cron_job_without_mcp_round_trip_keeps_none() -> None:
     job = _mcp_round_trip_job()
     legacy = {k: v for k, v in job.to_dict().items() if k != "mcp"}
     assert "mcp" not in legacy
-    assert CronJob.from_dict(legacy).mcp is None
+    assert cron_job_from_dict(legacy).mcp is None

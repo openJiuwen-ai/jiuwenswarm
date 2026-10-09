@@ -21,6 +21,7 @@ from jiuwenswarm.gateway.cron.models import (
     CRON_TEAM_DEFAULT_TIMEOUT_SECONDS,
     CronJob,
     coerce_cron_job_mode,
+    cron_job_from_dict,
     cron_job_metadata,
     is_team_cron_mode,
     normalize_cron_job_mode,
@@ -90,7 +91,7 @@ def test_cron_job_from_dict_rejects_unknown_mode() -> None:
     ).to_dict()
 
     with pytest.raises(ValueError, match="Invalid cron job mode"):
-        CronJob.from_dict(raw)
+        cron_job_from_dict(raw)
 
 
 @pytest.mark.parametrize(
@@ -264,7 +265,7 @@ def test_legacy_persisted_mode_routes_correctly_via_predicate(legacy_mode: str) 
 def test_legacy_persisted_mode_routes_correctly_via_from_dict() -> None:
     """端到端钉住:from_dict 读取存量旧 canonical mode 后,coerce 落新 canonical,
     is_team_cron_mode 谓词仍正确判定为 team。"""
-    job = CronJob.from_dict({
+    job = cron_job_from_dict({
         "id": "j-legacy",
         "name": "legacy job",
         "enabled": True,

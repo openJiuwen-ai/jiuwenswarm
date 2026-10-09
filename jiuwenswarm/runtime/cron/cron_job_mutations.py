@@ -16,6 +16,7 @@ from jiuwenswarm.common.work_mode import (
 from jiuwenswarm.runtime.cron.models import (
     CRON_JOB_DEFAULT_MODE,
     CronJob,
+    cron_job_from_dict,
     normalize_cron_job_mcp,
     normalize_cron_job_mode,
     normalize_cron_job_timeout_seconds,
@@ -123,7 +124,7 @@ def parse_cron_jobs(jobs_raw: list[Any]) -> list[CronJob]:
         if not isinstance(item, dict):
             continue
         try:
-            jobs.append(CronJob.from_dict(item))
+            jobs.append(cron_job_from_dict(item))
         except Exception as exc:  # noqa: BLE001
             # Keep one corrupt entry from disabling the scheduler, but
             # make the rejected job and reason observable to operators.
@@ -218,7 +219,7 @@ def build_new_cron_job(
         user_id=str(user_id or "").strip(),
         credential_ref=str(credential_ref or "").strip(),
     )
-    CronJob.from_dict(job.to_dict())
+    cron_job_from_dict(job.to_dict())
     return job
 
 
@@ -364,5 +365,5 @@ def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
         )
 
     updated.updated_at = time.time()
-    CronJob.from_dict(updated.to_dict())
+    cron_job_from_dict(updated.to_dict())
     return updated

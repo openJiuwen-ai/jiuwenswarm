@@ -15,11 +15,13 @@ from jiuwenswarm.gateway.cron.dingtalk_routing import (
     is_usable_dingtalk_staff_id,
     resolve_dingtalk_push_metadata,
 )
-from jiuwenswarm.gateway.cron.models import (
+from gateway_protocol.cron_models import (
     CRON_JOB_DEFAULT_MODE,
     CronJob,
     CronRunState,
     CronTargetChannel,
+)
+from jiuwenswarm.gateway.cron.models import (
     is_team_cron_mode,
     normalize_cron_job_mode,
     resolve_cron_job_timeout_seconds,
