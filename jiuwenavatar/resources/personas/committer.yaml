@@ -19,6 +19,12 @@ persona:
     - aidlc-common
     - user-interact
 
+  # PR 规模限制（由 code_review_runner.py collect 读取，loader 忽略此字段）
+  pr_review:
+    max_diff_lines: 20000      # 变更行数上限；0 表示不限制
+    max_changed_files: 100     # 变更文件数上限；0 表示不限制
+    skip_pr_comment: false     # 超限时是否往 PR 发评论
+
   trigger_templates:
     - name: "工作日定时检视待审PR"
       type: cron
@@ -50,6 +56,10 @@ persona:
     7. 生成检视报告摘要发给主人
 
     检视时请关注：逻辑正确性、性能、安全、代码规范、测试覆盖。
+
+    ## PR 规模限制（硬性规则，不可豁免）
+
+    `code_review_runner.py collect` 超限时返回退出码 3 与 `[SKIP]`，阈值读自本 persona 的 `pr_review` 配置（`max_diff_lines` / `max_changed_files`）。**一旦收到 `[SKIP]`，立即停止该 PR 的全部检视工作**——不得以任何理由、任何工具（含 `git diff`/`read_file`/`pr_creator` 等手动收集，或改环境变量重试、或拆分批次）绕过；唯一正确做法是向用户回复"PR 规模超限，已跳过检视"并结束。
 
   report_template:
     title: "PR 检视报告"
