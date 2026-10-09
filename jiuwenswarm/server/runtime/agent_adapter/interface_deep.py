@@ -967,6 +967,15 @@ _SYS_OPERATION_REFCOUNTS: dict[str, int] = {}
 _SYS_OPERATION_REFCOUNT_LOCK = threading.Lock()
 
 
+def _team_turn_text(inputs: dict) -> str:
+    """Team 模式的用户原文：信封化后 ``inputs["query"]`` 是渲染信封，
+    以原文开头的判定（如 ``/evolve_rebuild`` 前缀）必须读 turn.text（CR-5）。"""
+    turn = inputs.get(TEAM_USER_TURN_KEY)
+    if isinstance(turn, UserTurn) and isinstance(turn.text, str):
+        return turn.text
+    return str(inputs.get("query") or "")
+
+
 class JiuWenSwarmDeepAdapter:
 
     # auto_harness / agent_ws_server 通过 getattr(类, ...) 查找，拆分后需挂回类属性。
@@ -16113,7 +16122,7 @@ class JiuWenSwarmDeepAdapter:
                     ),
                 }
                 if (
-                    evolution_slash_command_name(str(inputs.get("query") or ""))
+                    evolution_slash_command_name(_team_turn_text(inputs))
                     == "evolve_rebuild"
                 ):
                     team_stream_kwargs["rebuild_skill"] = (
