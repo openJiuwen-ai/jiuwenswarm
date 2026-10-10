@@ -21,7 +21,8 @@ dependencies = [
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@dev-stable",
     # Gateway/AgentServer share the reviewed Runtime foundation implementation.
     "openjiuwen-runtime-foundation[link-mtls] @ git+https://gitcode.com/openJiuwen/agent-runtime.git@develop#subdirectory=foundation",
-    "openjiuwen_deepsearch @ git+https://gitcode.com/openJiuwen/deepsearch.git@dev-stable#subdirectory=deepsearch",
+    # deepsearch 来源见 [tool.uv.sources]（本地联调临时改用 dev 分支，原为 dev-stable）
+    "openjiuwen_deepsearch",
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
     "websockets>=12.0",
@@ -191,9 +192,21 @@ jiuwenswarm = [
 
 [tool.uv]
 default-groups = ['dev']
+# 本地联调临时覆盖：deepsearch dev 钉死 openjiuwen==0.1.17，但该 tag 内容比 dev-stable 分支旧
+# （缺 openjiuwen.harness.observability，jiuwenswarm AgentServer 启动即失败）。
+# 故覆盖为 agent-core dev-stable HEAD（4f56db4@0.1.16）：需含 AgentRASConfig.ignored_tool_calls，
+# 因 jiuwenswarm dev-stable 的 config.yaml 模板（!7558）已带该字段，而其 uv.lock 钉的 8484f4cb
+# 尚无此字段，会导致 sidecar 创建 agent 时 pydantic extra_forbidden 报错（对话全挂）。
+# 回退：git checkout pyproject.toml uv.lock && uv sync
+override-dependencies = [
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@4f56db4886c75878b121d869a1397e6a595d49ec",
+]
 
 [tool.uv.sources]
 jiuwenswarm-tui = { path = "./packages/jiuwenswarm-tui" }
+# 本地联调临时覆盖：deepsearch 用 dev 分支验证新功能（原 dev-stable）。
+# 回退方式：git checkout pyproject.toml uv.lock && uv sync
+openjiuwen_deepsearch = { git = "https://gitcode.com/openJiuwen/deepsearch.git", branch = "dev", subdirectory = "deepsearch" }
 
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)
