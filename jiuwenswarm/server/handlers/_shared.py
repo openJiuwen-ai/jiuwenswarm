@@ -17,7 +17,6 @@ from weakref import WeakValueDictionary
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
-from jiuwenswarm.common.mode_matrix import canonicalize_mode_text
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import (
