@@ -432,6 +432,18 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
                 exc_info=True,
             )
 
+    try:
+        from jiuwenswarm.server.runtime.workspace.usage_reconciler import (
+            start_usage_reconciler,
+        )
+
+        start_usage_reconciler()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] workspace usage reconciler start skipped",
+            exc_info=True,
+        )
+
     # 会话 metadata 的字段补全已改为惰性迁移:读取时按需推断并写回磁盘
     # (见 session_metadata._apply_metadata_defaults_with_inference),无需启动全量扫描。
 
@@ -532,6 +544,16 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
         pass
     finally:
         logger.info("[AgentServer] stopping…")
+        try:
+            from jiuwenswarm.server.runtime.workspace.usage_reconciler import (
+                stop_usage_reconciler,
+            )
+
+            await stop_usage_reconciler()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentServer] workspace usage reconciler stop failed: %s", exc
+            )
         try:
             await stop_mcp_registry_runtime()
         except Exception as exc:

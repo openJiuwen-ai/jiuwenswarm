@@ -176,6 +176,7 @@ async def _history_page_from_pg(
             "timestamp": m.get("timestamp"),
             "session_id": sid,
             "request_id": m.get("request_id"),
+            **({"event_type": "chat.error"} if m.get("event_type") == "chat.error" else {}),
         }
         for m in ordered[start:start + _HISTORY_PG_PAGE_SIZE]
     ]

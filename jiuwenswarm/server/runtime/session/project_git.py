@@ -1077,7 +1077,8 @@ class ProjectGitService:
         Args:
             project: 项目实体
             branch: 目标分支名
-            require_clean: True 时要求工作区干净,否则返回 ``WORKTREE_DIRTY``
+            require_clean: 默认为 False。为 True 时要求已跟踪文件没有未提交
+                修改;未跟踪文件不阻止切换,否则返回 ``WORKTREE_DIRTY``
         """
         try:
             branch = _validate_branch_name(branch, project)
@@ -1109,10 +1110,16 @@ class ProjectGitService:
                 repo_status=pre_status,
                 error=err,
             )
-        if require_clean and pre_status.is_dirty:
+        # ``is_dirty`` 也包含 untracked 文件，但未跟踪文件本身不会被 Git
+        # checkout/switch 改写。分支选择器的“保护性切换”只应阻止已跟踪
+        # 文件的暂存、未暂存或冲突修改，保持与 Git 的实际行为一致。
+        has_tracked_changes = bool(
+            pre_status.staged or pre_status.unstaged or pre_status.conflicted
+        )
+        if require_clean and has_tracked_changes:
             err = _make_repo_error(
                 "WORKTREE_DIRTY",
-                "working tree is dirty",
+                "tracked files have uncommitted changes",
                 project,
                 branch=pre_status.branch,
                 hint="请先提交或 stash 改动",
@@ -1285,6 +1292,9 @@ class ProjectGitService:
             elif held:
                 msg = "分支被其他 worktree 占用"
                 hint = "请先解散占用该分支的团队,或手动处理对应 worktree 后重试"
+            elif "untracked working tree files would be overwritten" in cp_co.stderr:
+                msg = "切换分支失败:未跟踪文件会被目标分支覆盖"
+                hint = "请移走冲突的未跟踪文件,或执行 git stash -u 后重试"
             elif "would be overwritten" in cp_co.stderr:
                 msg = "切换分支失败:本地改动阻止切换"
                 hint = "请先提交或 stash 改动后重试"

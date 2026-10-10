@@ -162,6 +162,24 @@ async def _pre_check_mcp_server(server_payload: dict[str, Any]) -> tuple[bool, s
             pass
 
 
+async def _pre_check_mcp_http_auth(server_payload: dict[str, Any]) -> tuple[bool, str]:
+    """Probe remote MCP auth without entering the SDK client's task group."""
+    from jiuwenswarm.common.mcp_config import (
+        build_mcp_server_config,
+        preflight_mcp_server_reachable,
+    )
+
+    name = str(server_payload.get("name", "") or "").strip()
+    transport = str(server_payload.get("transport", "") or "").strip().lower()
+    cfg = build_mcp_server_config(server_payload, server_id_scope="jiuwenswarm")
+    if cfg is None:
+        return False, f"{name} ({transport}) pre-check failed: invalid config entry"
+    ok, reason = await preflight_mcp_server_reachable(cfg)
+    if ok:
+        return True, f"{name} ({transport}) pre-check passed: {reason}"
+    return False, f"{name} ({transport}) pre-check failed: {reason}"
+
+
 async def _fetch_mcp_tools_from_config(entry: dict[str, Any]) -> list[dict[str, Any]]:
     """Create a temporary MCP connection from config entry and list tools."""
     from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
@@ -305,46 +323,65 @@ async def handle_command_mcp(ctx: RequestContext) -> None:
         elif action == "add":
             server_payload = _normalize_mcp_add_payload(ctx, params)
 
-            # 远程 MCP：可选连通性预检查失败不阻断写入（历史行为保留为仅记录）。
-            # stdio 走静态 PATH/文件预检，不 spawn。
-            name = server_payload.get("name", "")
-            old_item = get_mcp_server_config(name) if name else None
-
-            _, created = upsert_mcp_server_in_config(server_payload)
-            applied = True
-            error_message = ""
-
-            # 判断是否需要 reload: 新增必然需要；更新时做完整比较，
-            # 配置完全一致才跳过（dict 比较成本极低，避免漏字段导致改了不生效）。
-            config_changed = created
-            if not created and old_item is not None:
-                config_changed = (dict(old_item) != dict(server_payload))
-                if not config_changed:
-                    logger.info(
-                        "[command.mcp] add/update skipped reload: '%s' config unchanged", name
+            pre_check_failed = False
+            if bool(server_payload.get("enabled", True)):
+                transport = str(server_payload.get("transport", "") or "").strip().lower()
+                if transport in _REMOTE_MCP_TRANSPORTS:
+                    check_ok, check_message = await _pre_check_mcp_http_auth(server_payload)
+                else:
+                    check_ok, check_message = await _pre_check_mcp_server(server_payload)
+                if not check_ok:
+                    resp = AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=False,
+                        payload={
+                            "type": "add_failed",
+                            "name": server_payload["name"],
+                            "error": check_message,
+                        },
                     )
+                    pre_check_failed = True
 
-            if config_changed:
-                try:
-                    await ctx.services.agent_manager.reload_agents_config(get_config(), None)
-                except Exception as reload_exc:  # noqa: BLE001
-                    applied = False
-                    error_message = str(reload_exc)
-                    logger.warning("[command.mcp] reload after add failed: %s", reload_exc)
+            if not pre_check_failed:
+                name = server_payload.get("name", "")
+                old_item = get_mcp_server_config(name) if name else None
 
-            resp_payload: dict[str, Any] = {
-                "type": "added" if created else "updated",
-                "name": server_payload["name"],
-                "applied": applied,
-            }
-            if error_message:
-                resp_payload["error"] = error_message
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=True,
-                payload=resp_payload,
-            )
+                _, created = upsert_mcp_server_in_config(server_payload)
+                applied = True
+                error_message = ""
+
+                # 判断是否需要 reload: 新增必然需要；更新时做完整比较，
+                # 配置完全一致才跳过（dict 比较成本极低，避免漏字段导致改了不生效）。
+                config_changed = created
+                if not created and old_item is not None:
+                    config_changed = dict(old_item) != dict(server_payload)
+                    if not config_changed:
+                        logger.info(
+                            "[command.mcp] add/update skipped reload: '%s' config unchanged", name
+                        )
+
+                if config_changed:
+                    try:
+                        await ctx.services.agent_manager.reload_agents_config(get_config(), None)
+                    except Exception as reload_exc:  # noqa: BLE001
+                        applied = False
+                        error_message = str(reload_exc)
+                        logger.warning("[command.mcp] reload after add failed: %s", reload_exc)
+
+                resp_payload: dict[str, Any] = {
+                    "type": "added" if created else "updated",
+                    "name": server_payload["name"],
+                    "applied": applied,
+                }
+                if error_message:
+                    resp_payload["error"] = error_message
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload=resp_payload,
+                )
         elif action in {"enable", "disable"}:
             name = str(params.get("name", "")).strip()
             if not name:
@@ -429,29 +466,49 @@ async def handle_command_mcp(ctx: RequestContext) -> None:
             )
         elif action == "update":
             normalized = _normalize_mcp_update_payload(ctx, params)
-            _, _created = upsert_mcp_server_in_config(normalized)
-            applied = True
-            error_message = ""
-            try:
-                await ctx.services.agent_manager.reload_agents_config(get_config(), None)
-            except Exception as reload_exc:  # noqa: BLE001
-                applied = False
-                error_message = str(reload_exc)
-                logger.warning("[command.mcp] reload after update failed: %s", reload_exc)
-            payload = {
-                "type": "updated",
-                "name": normalized["name"],
-                "applied": applied,
-                "item": _mask_sensitive_fields(normalized),
-            }
-            if error_message:
-                payload["error"] = error_message
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=True,
-                payload=payload,
-            )
+            pre_check_failed = False
+            if bool(normalized.get("enabled", True)):
+                transport = str(normalized.get("transport", "") or "").strip().lower()
+                if transport in _REMOTE_MCP_TRANSPORTS:
+                    check_ok, check_message = await _pre_check_mcp_http_auth(normalized)
+                else:
+                    check_ok, check_message = await _pre_check_mcp_server(normalized)
+                if not check_ok:
+                    resp = AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=False,
+                        payload={
+                            "type": "update_failed",
+                            "name": normalized["name"],
+                            "error": check_message,
+                        },
+                    )
+                    pre_check_failed = True
+            if not pre_check_failed:
+                _, _created = upsert_mcp_server_in_config(normalized)
+                applied = True
+                error_message = ""
+                try:
+                    await ctx.services.agent_manager.reload_agents_config(get_config(), None)
+                except Exception as reload_exc:  # noqa: BLE001
+                    applied = False
+                    error_message = str(reload_exc)
+                    logger.warning("[command.mcp] reload after update failed: %s", reload_exc)
+                payload = {
+                    "type": "updated",
+                    "name": normalized["name"],
+                    "applied": applied,
+                    "item": _mask_sensitive_fields(normalized),
+                }
+                if error_message:
+                    payload["error"] = error_message
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload=payload,
+                )
         elif action == "list_tools":
             name = str(params.get("name", "")).strip()
             if not name:

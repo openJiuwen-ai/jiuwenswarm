@@ -617,6 +617,22 @@ def is_subagent_runtime_enabled(config: dict[str, Any] | None = None) -> bool:
     return bool(runtime_cfg.get("enabled")) if isinstance(runtime_cfg, dict) else False
 
 
+def is_subagent_mirror_child_stream_enabled(config: dict[str, Any] | None = None) -> bool:
+    """Return ``react.subagent_runtime.mirror_child_stream``.
+
+    When true, raw child stream chunks (reasoning and tool frames) are
+    replayed onto the parent session stream with ``stream_source_id`` set to
+    the subagent id, so hosts that route by source render them like any other
+    stream. Missing key is False: Swarm Web keeps its roster projection.
+    """
+    cfg = config if config is not None else get_config()
+    react = cfg.get("react") if isinstance(cfg, dict) else None
+    runtime_cfg = react.get("subagent_runtime") if isinstance(react, dict) else None
+    if not isinstance(runtime_cfg, dict):
+        return False
+    return bool(runtime_cfg.get("mirror_child_stream"))
+
+
 def get_ttse_embedding_config(config: dict[str, Any] | None) -> dict[str, str]:
     """Return normalized ``react.ttse.embedding`` fields for TTSE retrieval.
 

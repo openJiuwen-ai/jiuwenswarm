@@ -1,6 +1,7 @@
 import { Message, MessageRole, UsageSummary, FileDownloadItem, MediaItem, WsEvent, ToolExecution, AskUserQuestionPayload } from '../types';
 import { webClient } from '../services/webClient';
 import { normalizeFinalContent } from '../utils/finalContent';
+import i18n from '../i18n';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs, timestampMsToIso } from '../utils/timestamp';
 import { isA2UIClientEventContent } from './a2ui/a2uiContent';
@@ -17,6 +18,7 @@ export const HISTORY_MESSAGE_EVENT = 'history.message';
 /** 助手侧仅恢复这些事件；用户消息无 event_type，单独保留 */
 const ALLOWED_ASSISTANT_EVENT_TYPES = new Set([
   'chat.final',
+  'chat.error',
   'chat.tool_call',
   'chat.tool_result',
   'chat.usage_summary',
@@ -497,6 +499,20 @@ function parseHistoryTimelineEntry(
   }
 
   const payload = buildEventPayloadForRecord(record);
+
+  if (eventType === 'chat.error') {
+    const error = pickFirstString(payload, ['error', 'content']);
+    if (!error) return null;
+    return {
+      kind: 'message',
+      message: {
+        id: pickFirstString(record, ['id', 'message_id', 'msg_id']) ?? `hist-error-${sessionId}-${at}`,
+        role: 'system',
+        content: i18n.t('network.errorPrefix', { message: error }),
+        timestamp: at,
+      },
+    };
+  }
 
   if (eventType === 'chat.final') {
     let content = normalizeFinalContent(payload);

@@ -1,0 +1,51 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+USER root
+
+ARG AGENT_RUNTIME_REPOS=https://gitcode.com/openJiuwen/agent-runtime.git
+ARG AGENT_RUNTIME_BRANCH=develop
+ARG AGENT_CORE_REPOS=https://gitcode.com/openJiuwen/agent-core.git
+ARG AGENT_CORE_BRANCH=dev-stable
+ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
+
+# 业务用户 app(1000)
+RUN groupadd --gid 1000 app \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash app \
+    && mkdir -p /app/jiuwenswarm /app/config /opt/tiktoken-cache \
+    && chown 1000:0 /app/jiuwenswarm /app/config /opt/tiktoken-cache /home/app \
+    && chmod -R g+rwX /app/jiuwenswarm /app/config /opt/tiktoken-cache /home/app
+
+WORKDIR /app/jiuwenswarm
+COPY --chown=1000:0 . /app/jiuwenswarm/
+RUN chgrp -R 0 /app/jiuwenswarm && chmod -R g+rwX /app/jiuwenswarm
+
+# openjiuwen 改由构建参数安装
+RUN sed -i '/openjiuwen-runtime-foundation/d' pyproject.toml
+RUN sed -i '0,/"openjiuwen @ git+/{/"openjiuwen @ git+/d;}' pyproject.toml
+RUN if [ -f packages/jiuwenclaw-ee/gateway/extensions/runtime_management_extension/pyproject.toml ]; then \
+        sed -i '/openjiuwen_runtime_management/d' packages/jiuwenclaw-ee/gateway/extensions/runtime_management_extension/pyproject.toml; \
+    fi
+
+RUN uv pip install --system \
+    -e . \
+    git+${AGENT_CORE_REPOS}@${AGENT_CORE_BRANCH} \
+    git+${AGENT_RUNTIME_REPOS}@${AGENT_RUNTIME_BRANCH}#subdirectory=foundation \
+    git+${AGENT_RUNTIME_REPOS}@${AGENT_RUNTIME_BRANCH}#subdirectory=management \
+    "rich>=13.7.0" \
+    ${PIP_EXTRA_ARGS}
+
+# tiktoken BPE 预热
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache
+RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
+
+# symphony extension.yaml 存在才清理依赖
+RUN if [ -f jiuwenswarm/extensions/symphony/extension.yaml ]; then \
+        yq -i '.dependencies = {}' jiuwenswarm/extensions/symphony/extension.yaml; \
+    fi
+
+ENV HOME=/home/app \
+    PATH=/usr/local/bin:$PATH:/home/app/.local/bin
+USER 1000
+
+CMD ["/app/jiuwenswarm/docker/start.sh"]

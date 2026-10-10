@@ -14,6 +14,7 @@ from jiuwenswarm.common.workspace.quota import (
     WORKSPACE_QUOTA_EXCEEDED,
     QuotaGateDecision,
     WorkspaceQuotaExceeded,
+    is_workspace_quota_enabled,
     resolve_effective_quota,
 )
 
@@ -34,6 +35,8 @@ _COMMAND_TOOLS = frozenset(
 
 def check_workspace_command_tool() -> QuotaGateDecision:
     """命令工具无法预估增量；已是 block 则拒绝。"""
+    if not is_workspace_quota_enabled():
+        return QuotaGateDecision(allowed=True, status="ok", detail=None, snapshot=None)
     snap = resolve_effective_quota()
     if snap.status == "block":
         decision = QuotaGateDecision(
@@ -55,6 +58,8 @@ class WorkspaceQuotaRail(AgentRail):
         super().init(agent)
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
+        if not is_workspace_quota_enabled():
+            return
         tool_inputs = ctx.inputs
         if not isinstance(tool_inputs, dict):
             tool_name = getattr(tool_inputs, "tool_name", "") or ""

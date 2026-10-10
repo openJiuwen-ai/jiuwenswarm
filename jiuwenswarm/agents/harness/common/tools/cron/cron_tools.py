@@ -21,6 +21,7 @@ from jiuwenswarm.gateway.cron.models import (
     is_valid_target_channel_id,
     normalize_cron_job_mode,
     normalize_target_channel_id,
+    validate_cron_job_payload,
     validate_cron_model,
 )
 from jiuwenswarm.server.gateway_push import (
@@ -623,6 +624,31 @@ class CronTools:
         resolved_project_id = binding.project_id
         work_mode = binding.work_mode
 
+        # Shared field hard-rules before enterprise push / local write so Deep tools
+        # (cron / cron_create_job) fail as tool results instead of optimistic success.
+        timezone_val = (
+            str(normalized.get("timezone") or "Asia/Shanghai").strip() or "Asia/Shanghai"
+        )
+        preflight: dict[str, Any] = {
+            "id": job_id,
+            "name": str(normalized.get("name") or "").strip(),
+            "cron_expr": str(normalized.get("cron_expr") or "").strip(),
+            "timezone": timezone_val,
+            "description": str(normalized.get("description") or ""),
+            "targets": targets_str,
+            "enabled": bool(normalized.get("enabled", True)),
+            "wake_offset_seconds": normalized.get("wake_offset_seconds", 0),
+            "delete_after_run": normalized.get("delete_after_run"),
+            "project_id": resolved_project_id,
+            "work_mode": work_mode,
+            **session_kw,
+            **mode_kw,
+            **model_kw,
+        }
+        if "timeout_seconds" in normalized:
+            preflight["timeout_seconds"] = normalized.get("timeout_seconds")
+        validate_cron_job_payload(preflight, strict_mode=True)
+
         if self._enterprise_ready():
             identity = self._require_enterprise_identity()
             push_payload = {
@@ -697,11 +723,13 @@ class CronTools:
             if existing_row is None:
                 raise KeyError("job not found")
             existing_work_mode = str(existing_row.get("work_mode") or "")
+            existing_for_preflight: dict[str, Any] = dict(existing_row)
         else:
             existing = await self._local_store.get_job(job_id)
             if existing is None:
                 raise KeyError("job not found")
             existing_work_mode = existing.work_mode or ""
+            existing_for_preflight = existing.to_dict()
 
         channel_id_val = self._resolve_channel_id() or "web"
         from jiuwenswarm.server.runtime.session.project_store import resolve_cron_job_patch
@@ -717,6 +745,26 @@ class CronTools:
         if "session_id" in normalized_patch or "targets" in normalized_patch:
             chat_type = self._route().chat_type
             normalized_patch["chat_type"] = chat_type if chat_type else None
+
+        # Normalize incomplete existing rows (e.g. trimmed enterprise mocks / sparse
+        # mirrors) before full-payload hard-rules, so rename-only updates are not
+        # rejected solely because targets/timezone were absent on the baseline dict.
+        merged_preflight = {**existing_for_preflight, **normalized_patch}
+        merged_preflight["id"] = str(
+            existing_for_preflight.get("id") or job_id or ""
+        ).strip()
+        if not str(merged_preflight.get("targets") or "").strip():
+            merged_preflight["targets"] = self._normalize_targets_param(
+                merged_preflight.get("targets")
+            )
+        if not str(merged_preflight.get("timezone") or "").strip():
+            merged_preflight["timezone"] = "Asia/Shanghai"
+        if merged_preflight.get("wake_offset_seconds") is None:
+            merged_preflight["wake_offset_seconds"] = 0
+        # Lenient on the merged baseline so rename-only updates keep working for
+        # legacy rows with unknown modes (from_dict coerce path). Patch ``mode``
+        # is already strictly checked above via normalize_cron_job_mode when present.
+        validate_cron_job_payload(merged_preflight, strict_mode=False)
 
         if self._enterprise_ready():
             patch_payload = self._sync_patch_payload(normalized_patch)

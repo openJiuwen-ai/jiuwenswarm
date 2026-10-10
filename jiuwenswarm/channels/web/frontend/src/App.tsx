@@ -121,6 +121,7 @@ import {
   setDiagnosisEnabled,
   useDiagnosisEnabled,
 } from './features/trajectory/featureConfig';
+import { useWorkspaceQuotaEnabled } from './features/workspace/useWorkspaceQuotaEnabled';
 import './App.css';
 
 const LazyTrajectoryPanel = lazy(async () => {
@@ -372,6 +373,7 @@ function AppContent() {
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
   const trajectoryUiEnabled = useTrajectoryUiEnabled();
   const diagnosisEnabled = useDiagnosisEnabled();
+  const workspaceQuotaEnabled = useWorkspaceQuotaEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
   const [restartModalOpen, setRestartModalOpen] = useState(false);
@@ -455,10 +457,23 @@ function AppContent() {
     }
   }, [activeNav, diagnosisEnabled]);
 
+  // 配额特性关闭时隐藏工作空间；申请页仅企业版 + 配额开，残留会话态回退对话页。
+  useEffect(() => {
+    if (activeNav === 'agents' && !workspaceQuotaEnabled) {
+      setActiveNav('chat');
+      return;
+    }
+    if (activeNav === 'approvals' && (!enterpriseMode || !workspaceQuotaEnabled)) {
+      setActiveNav('chat');
+    }
+  }, [activeNav, enterpriseMode, workspaceQuotaEnabled]);
+
   useEffect(() => {
     const handler = (e: Event) => {
       const nav = (e as CustomEvent<MainNavKey>).detail;
       if (!nav || enterpriseBlockedNav.has(nav)) return;
+      if (nav === 'agents' && !workspaceQuotaEnabled) return;
+      if (nav === 'approvals' && (!enterpriseMode || !workspaceQuotaEnabled)) return;
       setActiveNav(nav);
       if (nav === 'skills') setHasVisitedSkills(true);
       if (nav === 'channels') setHasVisitedChannels(true);
@@ -467,7 +482,7 @@ function AppContent() {
     };
     window.addEventListener('jiuwen:nav', handler);
     return () => window.removeEventListener('jiuwen:nav', handler);
-  }, [enterpriseMode]);
+  }, [enterpriseBlockedNav, enterpriseMode, workspaceQuotaEnabled]);
 
   const restartAutoCloseTimerRef = useRef<number | null>(null);
   const saveToastTimerRef = useRef<number | null>(null);
@@ -2422,6 +2437,8 @@ function AppContent() {
 
   const handleNavigate = useCallback((nav: MainNavKey) => {
     if (enterpriseBlockedNav.has(nav)) return;
+    if (nav === 'agents' && !workspaceQuotaEnabled) return;
+    if (nav === 'approvals' && (!enterpriseMode || !workspaceQuotaEnabled)) return;
     setActiveNav(nav);
     if (modelSetupGuideStep === 1 && nav === 'configpanel') {
       setModelSetupGuideStep(2);
@@ -2430,7 +2447,7 @@ function AppContent() {
     if (nav === 'channels') setHasVisitedChannels(true);
     if (nav === 'personalContext') setHasVisitedPersonalContext(true);
     if (nav === 'diagnosis') setHasVisitedDiagnosis(true);
-  }, [enterpriseBlockedNav, modelSetupGuideStep]);
+  }, [enterpriseBlockedNav, enterpriseMode, modelSetupGuideStep, workspaceQuotaEnabled]);
 
   const skipModelSetupGuide = useCallback(() => {
     setModelSetupGuideStep(null);
@@ -2556,10 +2573,17 @@ function AppContent() {
         onNewSession={handleNewSession}
         showNewSession={false}
         hiddenNavItems={(() => {
+          // 个人版 base 恒藏 approvals（申请页仅企业版）；企业版由 quota flag 决定是否藏。
           const base: MainNavKey[] = enterpriseMode
             ? ['sessions', 'history', ...ENTERPRISE_HIDDEN_NAV_ITEMS]
             : ['sessions', 'history', 'approvals'];
-          return diagnosisEnabled ? base : [...base, 'diagnosis'];
+          const withDiagnosis = diagnosisEnabled ? base : [...base, 'diagnosis' as MainNavKey];
+          if (workspaceQuotaEnabled) {
+            return withDiagnosis;
+          }
+          return enterpriseMode
+            ? [...withDiagnosis, 'agents', 'approvals']
+            : [...withDiagnosis, 'agents'];
         })()}
         onMorePanelOpenChange={setSidebarMorePanelOpen}
       />
@@ -2692,12 +2716,12 @@ function AppContent() {
             </div>
           </>
         )}
-        {activeNav === 'agents' && (
+        {activeNav === 'agents' && workspaceQuotaEnabled && (
           <div className="app-section">
             <WorkspacePanel sessionId={sessionId} />
           </div>
         )}
-        {activeNav === 'approvals' && (
+        {activeNav === 'approvals' && enterpriseMode && workspaceQuotaEnabled && (
           <div className="app-section">
             <ApprovalsPanel />
           </div>

@@ -16,7 +16,7 @@ RUN groupadd --gid 1000 app \
 WORKDIR /app/jiuwenswarm
 COPY --chown=app:app . /app/jiuwenswarm/
 
-RUN sed -i '/openjiuwen_runtime_foundation/d' pyproject.toml
+RUN sed -i '/openjiuwen-runtime-foundation/d' pyproject.toml
 RUN sed -i '/openjiuwen_runtime_management/d' packages/jiuwenclaw-ee/gateway/extensions/runtime_management_extension/pyproject.toml
 
 # 构建期使用 uv（运行时 ExtensionLoader 同样依赖）；要求构建机 docker >= 20.10.10

@@ -18,18 +18,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from openjiuwen.core.foundation.llm import Model
 from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
-from openjiuwen.core.runner import Runner
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness.factory import create_deep_agent
 from openjiuwen.harness.prompts import resolve_language
 from openjiuwen.harness.rails import (
     AgentModeRail,
-    CodingMemoryRail,
+    CodingMemoryRail as _BaseCodingMemoryRail,
     SysOperationRail,
     LspRail
 )
@@ -56,7 +54,6 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _AGENT_CARD_ID,
     _CRON_TOOL_CHANNEL_ID,
     _RailBuildInfo,
-    _agent_def_to_subagent_config,
     _deep_agent_kv_cache_affinity_config,
     _optional_enable_subagent_runtime,
     _resolve_instance_config_base,
@@ -75,7 +72,7 @@ from jiuwenswarm.agents.harness.common.rails import (
     ProjectMemoryRail,
     StructuredAskUserRail,
 )
-from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_memory_enabled
+from jiuwenswarm.agents.harness.common.memory.config import is_memory_enabled
 from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
     get_office_ace_user_profile_config,
 )
@@ -97,8 +94,6 @@ from jiuwenswarm.common.coding_memory_paths import (
     resolve_project_coding_memory_workspace_path,
 )
 from jiuwenswarm.server.runtime.agent_adapter.code_agent_rail import CodeAgentRail
-from jiuwenswarm.common.hooks_config import load_hooks_config
-from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
 from jiuwenswarm.common.utils import (
     DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL,
     get_agent_workspace_dir,
@@ -106,6 +101,60 @@ from jiuwenswarm.common.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class CodingMemoryRail(_BaseCodingMemoryRail):
+    """Keep Coding Memory cold-start indexing out of the request path."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._manager_init_task: asyncio.Task[None] | None = None
+
+    async def before_invoke(self, ctx: Any) -> None:
+        """Start manager initialization without delaying the user request."""
+        if not self._manager_initialized and self._manager_init_task is None:
+            self._manager_init_task = asyncio.create_task(
+                self._initialize_manager_in_background(ctx),
+                name="coding-memory-init",
+            )
+
+        self._recalled_content = None
+        self._prefetch_task = None
+
+        is_read_only = self._is_read_only(ctx.inputs)
+        if not is_read_only and self._manager:
+            query = self._extract_last_user_query(ctx)
+            if query:
+                self._prefetch_task = asyncio.create_task(self._auto_recall(query))
+
+    async def _initialize_manager_in_background(self, ctx: Any) -> None:
+        """Run the base initializer and record success or degraded state."""
+        cancelled = False
+        try:
+            await self._init_coding_memory_manager(ctx)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            if not cancelled and self._manager_init_task is asyncio.current_task():
+                self._manager_initialized = True
+
+    @staticmethod
+    def _is_read_only(inputs: Any) -> bool:
+        """Support callback inputs and lightweight test doubles."""
+        values = []
+        for name in ("is_cron", "is_heartbeat"):
+            value = getattr(inputs, name, False)
+            values.append(value() if callable(value) else value)
+        return any(values)
+
+    def uninit(self, agent: Any) -> None:
+        """Cancel pending initialization before the rail is torn down."""
+        task = self._manager_init_task
+        self._manager_init_task = None
+        if task is not None and not task.done():
+            task.cancel()
+        super().uninit(agent)
 
 
 def _parse_config_bool(value: Any, *, default: bool = False) -> bool:
@@ -703,6 +752,20 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     self._build_a2a_outbound_toolkit_rail,
                 ),
             )
+            # 四档档位路由（ModelRoutingRail）同样只在单 agent code 模式挂载。
+            # relay 的单 agent 通道不下发具体模型 id，档位关键字（fast/balanced/
+            # extreme/auto）原样进 params.model_name，靠这条 rail 翻成具体模型 +
+            # 思考深度；code.team / team.plan 已由 relay 侧翻成具体 id，挂上只会
+            # 拿到具体名走能力表兜底，故与 team profile 一并排除。
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_model_routing_rail",
+                    self._build_model_routing,
+                    {"config": config_base},
+                ),
+            )
+        else:
+            self._model_routing_rail = None
 
         # 动态 Rails — 从 config.yaml::modes.code.rails 读取
         # 跳过已在固定列表中的 rail，避免重复注册
@@ -1372,6 +1435,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             self._runtime_prompt_rail.set_runtime_paths(
                 cwd=task_cwd,
                 project_dir=runtime_config.project_dir or self._project_dir,
+                # Agent data root (skills/memory/todo), not project context.
+                workspace_dir=self._agent_workspace_dir,
             )
             self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
             self._runtime_prompt_rail.set_request_system_prompt(

@@ -9,7 +9,7 @@ import SimpleSelect from './SimpleSelect';
 import TemplateClusterIcon from './TemplateClusterIcon';
 import { isEnterprise } from '../../edition';
 import { validateCronExpr } from './cronExprValidation';
-import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
+import { normalizeWakeOffsetSeconds, wakeOffsetSecondsToMinutes, isWakeOffsetMinutesValid } from './cronWakeOffset';
 import { cronExprToSchedule, isOnceScheduleExpired } from './scheduleConvert';
 import { TIMEZONE_OPTIONS } from './constants';
 import { isDefaultLikeProject } from './cronProjectDisplay';
@@ -137,6 +137,10 @@ export default function CronTaskDrawer({ mode, initial, projects, targetOptions,
   const { t } = useTranslation();
   const enterpriseMode = isEnterprise();
   const [form, setForm] = useState<CronTaskFormValue>(initial ?? emptyForm());
+  // 提前唤醒超限时 ScheduleEditor 不截断、不回写秒数，用此标志禁用保存
+  const [wakeOffsetValid, setWakeOffsetValid] = useState(() =>
+    isWakeOffsetMinutesValid(String(wakeOffsetSecondsToMinutes((initial ?? emptyForm()).wakeOffsetSeconds))),
+  );
 
   const title = mode === 'edit' ? t('cron.drawer.titleEdit') : mode === 'template' ? t('cron.drawer.titleTemplate') : t('cron.drawer.titleCreate');
   // 显式加一条 value 为空串的"-"选项，代表"未选项目"，放在真实项目列表最后面（列表顺序：
@@ -154,6 +158,7 @@ export default function CronTaskDrawer({ mode, initial, projects, targetOptions,
   if (!form.name.trim()) missingFieldLabels.push(t('cron.drawer.fieldName'));
   if (!form.description.trim()) missingFieldLabels.push(t('cron.drawer.fieldDescription'));
   if (!form.cronExpr.trim() || !validateCronExpr(form.cronExpr).valid) missingFieldLabels.push(t('cron.schedule.title'));
+  if (!wakeOffsetValid) missingFieldLabels.push(t('cron.schedule.wakeOffset'));
   // "单次"排班选的日期时间已经过去：字段本身不是"没填"，属于另一类校验失败，
   // 单独提示（而不是塞进"还需要填写"的缺失字段列表里，语义对不上）
   const parsedSchedule = form.cronExpr.trim() ? cronExprToSchedule(form.cronExpr) : null;
@@ -311,6 +316,7 @@ export default function CronTaskDrawer({ mode, initial, projects, targetOptions,
             timezone={form.timezone}
             wakeOffsetSeconds={form.wakeOffsetSeconds}
             onWakeOffsetSecondsChange={(wakeOffsetSeconds) => setForm({ ...form, wakeOffsetSeconds })}
+            onWakeOffsetValidChange={setWakeOffsetValid}
             wakeOffsetDisabled={proactiveLocked}
           />
 

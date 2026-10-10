@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import pickle
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -20,6 +23,7 @@ from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
     JiuSwarmStreamEventRail,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch import execution as de
+from jiuwenswarm.agents.harness.common.tools.deepresearch import tools as dt
 
 
 class _Session:
@@ -68,6 +72,7 @@ async def _invoke(
     query="研究智能家电竞争格局",
     file_name="智能家电报告",
     requested_report_type=None,
+    conversation_id="",
 ):
     saved: list[dict] = []
     token = de.bind_deepresearch_execution_context(
@@ -79,7 +84,11 @@ async def _invoke(
         requested_report_type=requested_report_type,
     )
     try:
-        result = await de.deepresearch_execute._func(query=query, file_name=file_name)
+        result = await de.deepresearch_execute._func(
+            query=query,
+            file_name=file_name,
+            conversation_id=conversation_id,
+        )
     finally:
         de.reset_deepresearch_execution_context(token)
     return result, saved
@@ -164,6 +173,288 @@ async def test_new_query_persists_request_report_type_before_sdk_start():
     assert saved[0]["phase"] == "starting"
     assert saved[0]["requested_report_type"] == "brief"
     assert stream.await_args.kwargs["report_type"] == "brief"
+
+
+@pytest.mark.asyncio
+async def test_execute_claims_interrupted_conversation_with_cached_outline():
+    """传入 conversation_id 且缓存有大纲 → 跳过 start 重跑，直接呈现大纲审阅卡片。"""
+    outline = {
+        "title": "智能家电竞争格局研究",
+        "sections": [
+            {"id": "1", "title": "市场规模", "is_core_section": True, "description": "整体规模"},
+            {"id": "2", "title": "主要玩家"},
+        ],
+    }
+    route_token = dt.push_deepresearch_route("R1", "CH1", "S1")
+    try:
+        dt._cache_outline_json(dt._get_route(), "C-OLD", outline)
+        with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream:
+            result, saved = await _invoke(conversation_id="C-OLD")
+    finally:
+        dt.reset_deepresearch_route(route_token)
+        with dt._OUTLINE_JSON_CACHES_GUARD:
+            dt._OUTLINE_JSON_CACHES.clear()
+        with dt._OUTLINE_TITLE_CACHES_GUARD:
+            dt._OUTLINE_TITLE_CACHES.clear()
+
+    assert result["kind"] == "interaction"
+    stream.assert_not_awaited()
+    final = saved[-1]
+    assert final["phase"] == "wait_outline"
+    assert final["conversation_id"] == "C-OLD"
+    assert final["outline_presented"] is True
+    question = result["interaction"]["questions"][0]
+    assert [option["label"] for option in question["options"]] == [
+        "确认大纲，继续研究",
+        "需要修改",
+    ]
+    assert "### P1: 市场规模（重点）" in question["preview"]["text"]
+    assert "### P2: 主要玩家" in question["preview"]["text"]
+
+
+@pytest.mark.asyncio
+async def test_execute_claim_without_cached_outline_restarts_with_fresh_id():
+    """认领失败（缓存无大纲）→ 换全新 conversation_id 从头执行，绝不复用旧 id 发起新跑。"""
+    outcome = {
+        "status": "error",
+        "error_code": "runner_failed",
+        "error": "boom",
+    }
+    route_token = dt.push_deepresearch_route("R1", "CH1", "S2")
+    try:
+        with patch.object(
+            de,
+            "_call_deepresearch_stream_impl",
+            new=AsyncMock(return_value=json.dumps(outcome, ensure_ascii=False)),
+        ) as stream:
+            result, saved = await _invoke(conversation_id="C-GONE")
+    finally:
+        dt.reset_deepresearch_route(route_token)
+
+    assert result["kind"] == "error"
+    assert saved[-1]["phase"] == "error"
+    stream.assert_awaited_once()
+    assert stream.await_args.kwargs["action"] == "start"
+    new_cid = stream.await_args.kwargs["conversation_id"]
+    assert new_cid and new_cid != "C-GONE"
+
+
+def _encode_checkpoint_blob(value):
+    return "__BYTES__:" + base64.b64encode(pickle.dumps(value)).decode("ascii")
+
+
+def _write_checkpoint_db(
+    root,
+    conversation_id,
+    *,
+    node,
+    node_status="__interrupt__",
+    questions="",
+    outline=None,
+):
+    data_dir = root / "data"
+    data_dir.mkdir(exist_ok=True)
+    connection = sqlite3.connect(str(data_dir / "checkpointer.db"))
+    try:
+        connection.execute(
+            "CREATE TABLE kv_store (key VARCHAR(255), value VARCHAR(4096))"
+        )
+        graph_state = SimpleNamespace(
+            pending_node={node: SimpleNamespace(status=node_status)}
+        )
+        search_context = {}
+        if questions:
+            search_context["questions"] = questions
+        if outline is not None:
+            search_context["current_outline"] = outline
+        workflow_state = {"global_state": {"search_context": search_context}}
+        connection.executemany(
+            "INSERT INTO kv_store (key, value) VALUES (?, ?)",
+            [
+                (
+                    f"{conversation_id}:workflow-graph:research_workflow:checkpoint_data_value",
+                    _encode_checkpoint_blob(graph_state),
+                ),
+                (
+                    f"{conversation_id}:workflow:research_workflow:workflow_state_blobs",
+                    _encode_checkpoint_blob(workflow_state),
+                ),
+            ],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def test_probe_resumable_checkpoint_reads_feedback_stage(tmp_path):
+    """停研究问题阶段的会话 → 探测出节点与按段落切分的问题清单。"""
+    _write_checkpoint_db(
+        tmp_path,
+        "C-FB",
+        node="feedback_handler",
+        questions="1. 重点研究哪些品类？\n第一问的补充限定\n\n2. 覆盖哪些市场？",
+    )
+
+    with patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)):
+        probe = dt._probe_resumable_checkpoint("C-FB")
+
+    assert probe == {
+        "node": "feedback_handler",
+        "questions": ["1. 重点研究哪些品类？\n第一问的补充限定", "2. 覆盖哪些市场？"],
+    }
+
+
+def test_probe_resumable_checkpoint_reads_outline_stage(tmp_path):
+    """停大纲确认阶段的会话 → 探测出节点与工具层大纲 JSON。"""
+    outline = SimpleNamespace(
+        title="智能家电竞争格局研究",
+        thought="先规模后玩家",
+        sections=[
+            SimpleNamespace(title="市场规模", is_core_section=True),
+            SimpleNamespace(title="主要玩家", is_core_section=False),
+        ],
+    )
+    _write_checkpoint_db(
+        tmp_path,
+        "C-OL",
+        node="outline_interaction",
+        questions="1. 问题",
+        outline=outline,
+    )
+
+    with patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)):
+        probe = dt._probe_resumable_checkpoint("C-OL")
+
+    assert probe == {
+        "node": "outline_interaction",
+        "questions": ["1. 问题"],
+        "outline_json": {
+            "title": "智能家电竞争格局研究",
+            "thought": "先规模后玩家",
+            "sections": [
+                {"title": "市场规模", "is_core_section": True},
+                {"title": "主要玩家", "is_core_section": False},
+            ],
+        },
+    }
+
+
+def test_probe_resumable_checkpoint_returns_none_without_resumable_interrupt(tmp_path):
+    """非中断状态 / 会话不存在 / db 不存在 → 均探测不到，认领退回新跑。"""
+    _write_checkpoint_db(
+        tmp_path,
+        "C-ERR",
+        node="feedback_handler",
+        node_status="__error__",
+        questions="1. 问题",
+    )
+
+    with patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)):
+        assert dt._probe_resumable_checkpoint("C-ERR") is None
+        assert dt._probe_resumable_checkpoint("C-UNKNOWN") is None
+    (tmp_path / "data" / "checkpointer.db").unlink()
+    with patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)):
+        assert dt._probe_resumable_checkpoint("C-ERR") is None
+    with patch.object(dt, "_resolve_skill_root", return_value=""):
+        assert dt._probe_resumable_checkpoint("C-ERR") is None
+
+
+@pytest.mark.asyncio
+async def test_execute_claims_feedback_stage_from_checkpoint_probe():
+    """checkpointer.db 探测到停研究问题阶段 → 出反馈卡，state 进入 wait_feedback。"""
+    probe = {
+        "node": "feedback_handler",
+        "questions": ["1. 重点研究哪些品类？", "2. 覆盖哪些市场？"],
+    }
+    model = _Model(_option_payload("重点研究哪些品类？", "覆盖哪些市场？"))
+    with (
+        patch.object(
+            de, "_probe_resumable_checkpoint", new=Mock(return_value=probe)
+        ) as probe_mock,
+        patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
+    ):
+        result, saved = await _invoke(model=model, conversation_id="C-FB")
+
+    probe_mock.assert_called_once_with("C-FB")
+    stream.assert_not_awaited()
+    assert result["kind"] == "interaction"
+    assert result["interaction"]["query"] == "请回答以下研究主题澄清问题"
+    cards = result["interaction"]["questions"]
+    assert [card["question"] for card in cards] == [
+        "重点研究哪些品类？",
+        "覆盖哪些市场？",
+    ]
+    assert all(len(card["options"]) == 2 for card in cards)
+    final = saved[-1]
+    assert final["phase"] == "wait_feedback"
+    assert final["conversation_id"] == "C-FB"
+    assert final["questions"] == ["重点研究哪些品类？", "覆盖哪些市场？"]
+
+
+@pytest.mark.asyncio
+async def test_execute_claims_outline_stage_from_checkpoint_probe():
+    """checkpointer.db 探测到停大纲确认 → 无需内存缓存直接出审阅卡（跨重启认领）。"""
+    probe = {
+        "node": "outline_interaction",
+        "outline_json": {
+            "title": "智能家电竞争格局研究",
+            "thought": "先规模后玩家",
+            "sections": [
+                {"title": "市场规模", "is_core_section": True},
+                {"title": "主要玩家", "is_core_section": False},
+            ],
+        },
+    }
+    with (
+        patch.object(de, "_probe_resumable_checkpoint", new=Mock(return_value=probe)),
+        patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
+    ):
+        result, saved = await _invoke(conversation_id="C-OL")
+
+    stream.assert_not_awaited()
+    assert result["kind"] == "interaction"
+    final = saved[-1]
+    assert final["phase"] == "wait_outline"
+    assert final["conversation_id"] == "C-OL"
+    assert final["outline_presented"] is True
+    question = result["interaction"]["questions"][0]
+    assert "**研究思路**：先规模后玩家" in question["preview"]["text"]
+    assert "### P1: 市场规模（重点）" in question["preview"]["text"]
+    assert "### P2: 主要玩家" in question["preview"]["text"]
+
+
+@pytest.mark.asyncio
+async def test_execute_restarts_fresh_when_checkpoint_lacks_questions():
+    """db 指向研究问题阶段但取不到问题清单 → 认领失败，换全新 id 重跑。"""
+    outcome = {
+        "status": "error",
+        "error_code": "runner_failed",
+        "error": "boom",
+    }
+    route_token = dt.push_deepresearch_route("R1", "CH1", "S3")
+    try:
+        with (
+            patch.object(
+                de,
+                "_probe_resumable_checkpoint",
+                new=Mock(return_value={"node": "feedback_handler"}),
+            ),
+            patch.object(
+                de,
+                "_call_deepresearch_stream_impl",
+                new=AsyncMock(return_value=json.dumps(outcome, ensure_ascii=False)),
+            ) as stream,
+        ):
+            result, saved = await _invoke(conversation_id="C-FB2")
+    finally:
+        dt.reset_deepresearch_route(route_token)
+
+    assert result["kind"] == "error"
+    assert saved[-1]["phase"] == "error"
+    stream.assert_awaited_once()
+    assert stream.await_args.kwargs["action"] == "start"
+    new_cid = stream.await_args.kwargs["conversation_id"]
+    assert new_cid and new_cid != "C-FB2"
 
 
 @pytest.mark.asyncio

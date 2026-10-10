@@ -65,7 +65,7 @@ def install_write_quota_guard(sys_operation: Any) -> None:
             add = estimate_text_write_additional(
                 path, payload, encoding=encoding, append=append
             )
-            # du / walk 可能阻塞；卸到线程池，避免卡住 Agent 事件循环。
+            # 默认线程内读缓存；近限时线程内同步 du，避免堵事件循环。
             await asyncio.to_thread(
                 functools.partial(check_workspace_write, additional_bytes=add)
             )

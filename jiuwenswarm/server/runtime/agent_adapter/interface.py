@@ -446,6 +446,19 @@ def _should_defer_a2ui_processing_status(
     )
 
 
+def _is_foreign_stream_source(payload: Any) -> bool:
+    """True for frames mirrored from a nested stream (subagent / skill node).
+
+    Such frames carry a non-empty ``stream_source_id`` other than the ``main``
+    sentinel the gateway fills in. They must not move parent-turn bookkeeping
+    or land in the parent history.
+    """
+    if not isinstance(payload, dict):
+        return False
+    source_id = payload.get("stream_source_id")
+    return isinstance(source_id, str) and bool(source_id) and source_id != "main"
+
+
 def _is_duplicate_full_body_delta(pending_chunks: list[str], content: str) -> bool:
     """True when ``content`` is an exact replay of the already-buffered answer body.
 
@@ -2876,7 +2889,9 @@ class JiuWenSwarm:
             ):
                 try:
                     hook_adapter = await adapter._get_or_create_session_adapter(  # pylint: disable=protected-access
-                        session_id, request=request
+                        session_id,
+                        request=request,
+                        history_before_request_id=request.request_id,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -3296,7 +3311,9 @@ class JiuWenSwarm:
             ):
                 try:
                     hook_adapter = await adapter._get_or_create_session_adapter(  # pylint: disable=protected-access
-                        session_id, request=request
+                        session_id,
+                        request=request,
+                        history_before_request_id=request.request_id,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -3444,7 +3461,9 @@ class JiuWenSwarm:
             ):
                 try:
                     _guard_adapter = await _guard_adapter._get_or_create_session_adapter(  # pylint: disable=protected-access
-                        session_id, request=request
+                        session_id,
+                        request=request,
+                        history_before_request_id=request.request_id,
                     )
                 except Exception:
                     _guard_adapter = adapter
@@ -3769,14 +3788,21 @@ class JiuWenSwarm:
                                 durable_pending_final_chunks.append(payload_content)
                                 should_record = False
                             elif et == "chat.reasoning":
-                                durable_pending_reasoning_chunks.append(payload_content)
+                                # Reasoning mirrored from a nested stream stays
+                                # out of the parent's reasoning buffer.
+                                if not _is_foreign_stream_source(data.payload):
+                                    durable_pending_reasoning_chunks.append(payload_content)
                                 should_record = False
                             elif et == "chat.tool_call":
-                                _persist_pending_final_text()
-                                # Post-tool LLM rounds must not inherit pre-tool
-                                # delta visibility; otherwise reasoning-only
-                                # follow-ups skip the empty-final rescue.
-                                final_answer_chunks = []
+                                # A child tool call must not close the parent's
+                                # in-flight answer segment or reset its delta
+                                # visibility.
+                                if not _is_foreign_stream_source(data.payload):
+                                    _persist_pending_final_text()
+                                    # Post-tool LLM rounds must not inherit pre-tool
+                                    # delta visibility; otherwise reasoning-only
+                                    # follow-ups skip the empty-final rescue.
+                                    final_answer_chunks = []
                             elif et == "chat.final":
                                 if isinstance(data.payload, dict):
                                     ensure_final_mode_inplace(data.payload)
@@ -3860,7 +3886,7 @@ class JiuWenSwarm:
                                         )
                                 durable_pending_final_chunks = []
 
-                            if should_record:
+                            if should_record and not _is_foreign_stream_source(data.payload):
                                 payload_dict = dict(data.payload)
                                 extra_fields = {k: v for k, v in payload_dict.items() if
                                                 k not in ("event_type", "content", "task_id")}
@@ -3972,11 +3998,13 @@ class JiuWenSwarm:
                             durable_pending_final_chunks.append(payload_content)
                             should_record = False
                         elif et == "chat.reasoning":
-                            durable_pending_reasoning_chunks.append(payload_content)
+                            if not _is_foreign_stream_source(data):
+                                durable_pending_reasoning_chunks.append(payload_content)
                             should_record = False
                         elif et == "chat.tool_call":
-                            _persist_pending_final_text()
-                            final_answer_chunks = []
+                            if not _is_foreign_stream_source(data):
+                                _persist_pending_final_text()
+                                final_answer_chunks = []
                         elif et == "chat.final":
                             if suppress_a2ui_stream or a2ui_split is not None:
                                 first_a2ui_suppression = not suppress_a2ui_stream
@@ -4040,7 +4068,7 @@ class JiuWenSwarm:
                                 )
                             durable_pending_final_chunks = []
 
-                        if should_record:
+                        if should_record and not _is_foreign_stream_source(data):
                             extra_fields = {
                                 k: v
                                 for k, v in data.items()
@@ -4274,7 +4302,11 @@ class JiuWenSwarm:
             raise ValueError("Agent adapter not available")
         return await adapter.get_context_usage(session_id=session_id)
 
-    async def generate_recap(self, session_id: str) -> dict[str, Any]:
+    async def generate_recap(
+        self,
+        session_id: str,
+        request: AgentRequest | None = None,
+    ) -> dict[str, Any]:
         """生成会话快速回顾（read-only，不修改对话历史）。
 
         取最近30条消息 → fast model → 1-2句摘要。
@@ -4291,7 +4323,10 @@ class JiuWenSwarm:
         adapter = self._adapter
         if adapter is None:
             raise ValueError("Agent adapter not available")
-        return await adapter.generate_recap(session_id=session_id)
+        return await adapter.generate_recap(
+            session_id=session_id,
+            request=request,
+        )
 
     async def compact_partial(
         self,

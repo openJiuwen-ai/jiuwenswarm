@@ -334,6 +334,25 @@ async def _prepare_code_mode_chat_turn(
         and isinstance(params.get("answers"), list)
         and bool(str(params.get("request_id") or "").strip())
     )
+    from jiuwenswarm.server.runtime.session.work_mode import (
+        resolve_request_work_mode,
+    )
+
+    request_work_mode, work_mode_error = resolve_request_work_mode(
+        params,
+        request.channel_id or "web",
+    )
+    if work_mode_error is not None:
+        raw_work_mode = params.get("work_mode")
+        logger.warning(
+            "[_prepare_code_mode_chat_turn] invalid work_mode=%r for channel=%s "
+            "session=%s",
+            raw_work_mode,
+            request.channel_id,
+            request.session_id,
+        )
+        raise ValueError(f"invalid work_mode: {raw_work_mode!r}")
+
     runtime_work_mode = None
     sid = str(request.session_id or "").strip()
     sessions_root = _sessions_dir_for_request(request)
@@ -378,14 +397,21 @@ async def _prepare_code_mode_chat_turn(
         }:
             runtime_work_mode = stored_work_mode.strip().lower()
     if runtime_work_mode is None:
-        request_work_mode = params.get("work_mode")
-        if isinstance(request_work_mode, str) and request_work_mode.strip().lower() in {
-            "code",
-            "work",
-        }:
-            runtime_work_mode = request_work_mode.strip().lower()
-    if runtime_work_mode is not None:
-        params["work_mode"] = runtime_work_mode
+        runtime_work_mode = request_work_mode
+        raw_work_mode = params.get("work_mode")
+        if raw_work_mode is None or (
+            isinstance(raw_work_mode, str) and not raw_work_mode.strip()
+        ):
+            logger.warning(
+                "[_prepare_code_mode_chat_turn] work_mode missing in both session "
+                "metadata and request params; defaulting to %r for channel=%s session=%s",
+                runtime_work_mode,
+                request.channel_id or "web",
+                request.session_id,
+            )
+    if runtime_work_mode is None:
+        raise RuntimeError("work_mode resolution returned no value")
+    params["work_mode"] = runtime_work_mode
     # An explicit/hydrated concrete mode is the stronger routing identity.
     # A stale session work_mode (OfficeClaw historically initialized it as
     # ``work``) must not turn an explicit ``code.normal`` request into agent.

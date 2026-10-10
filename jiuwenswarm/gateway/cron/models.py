@@ -103,6 +103,80 @@ _CRON_JOB_MODE_ALIASES: dict[str, str] = {
 }
 
 
+def validate_cron_job_payload(
+    data: dict[str, Any],
+    *,
+    strict_mode: bool = False,
+) -> None:
+    """Validate cron job field constraints shared by deserialize and create/update.
+
+    Does not mutate ``data``. Raises ``ValueError`` on violation.
+
+    * ``strict_mode=False`` (``CronJob.from_dict``, Agent update merged preflight):
+      field hard-rules only; ``mode`` stays lenient so legacy rows with unknown
+      modes can still load / be renamed via coerce. Patch ``mode`` is still
+      strictly checked separately when present on update.
+    * ``strict_mode=True`` (Agent create preflight): also reject invalid ``mode``
+      via ``normalize_cron_job_mode`` (aligned with create APIs).
+    """
+    # Align with build_new_cron_job: missing/None → 0 (not "must be int").
+    wake_offset_seconds_raw = data.get("wake_offset_seconds", 0)
+    if wake_offset_seconds_raw is None:
+        wake_offset_seconds_raw = 0
+    try:
+        int(wake_offset_seconds_raw)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("wake_offset_seconds must be int") from exc
+
+    description = str(data.get("description") or "").strip()
+    if not description:
+        raise ValueError("description is required")
+    if len(description) > CRON_JOB_DESCRIPTION_MAX_LENGTH:
+        raise ValueError(
+            f"description must be at most {CRON_JOB_DESCRIPTION_MAX_LENGTH} characters"
+        )
+
+    targets_raw = data.get("targets", "")
+    targets_str = ""
+    if isinstance(targets_raw, str):
+        targets_str = targets_raw.strip()
+    elif isinstance(targets_raw, list):
+        for item in targets_raw:
+            if isinstance(item, dict):
+                ch = str(item.get("channel_id") or "").strip()
+                if ch:
+                    targets_str = ch
+                    break
+
+    job_id = str(data.get("id") or "").strip()
+    name = str(data.get("name") or "").strip()
+    cron_expr = str(data.get("cron_expr") or "").strip()
+    timezone = str(data.get("timezone") or "").strip()
+
+    if not job_id:
+        raise ValueError("id is required")
+    if not name:
+        raise ValueError("name is required")
+    if len(name) > CRON_JOB_NAME_MAX_LENGTH:
+        raise ValueError(f"name must be at most {CRON_JOB_NAME_MAX_LENGTH} characters")
+    if not cron_expr:
+        raise ValueError("cron_expr is required")
+    if not timezone:
+        raise ValueError("timezone is required")
+    validate_cron_expression(cron_expr, timezone=timezone)
+    if not targets_str:
+        raise ValueError("targets is required")
+
+    timeout_seconds_raw = data.get("timeout_seconds", None)
+    if timeout_seconds_raw is not None:
+        normalize_cron_job_timeout_seconds(timeout_seconds_raw)
+
+    if strict_mode:
+        mode_raw = data.get("mode", None)
+        if mode_raw is not None and str(mode_raw).strip():
+            normalize_cron_job_mode(mode_raw)
+
+
 def normalize_cron_job_mode(raw: Any, *, default: str = CRON_JOB_DEFAULT_MODE) -> str:
     """Normalize and validate a cron job execution mode (strict, for create/update APIs).
 
@@ -348,6 +422,9 @@ class CronJob:
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "CronJob":
+        # Shared field hard-rules (lenient mode: do not reject unknown legacy modes).
+        validate_cron_job_payload(data, strict_mode=False)
+
         job_id = str(data.get("id") or "").strip()
         name = str(data.get("name") or "").strip()
         cron_expr = str(data.get("cron_expr") or "").strip()
@@ -356,20 +433,13 @@ class CronJob:
         expired = bool(data.get("expired", False))
 
         wake_offset_seconds_raw = data.get("wake_offset_seconds", 0)
-        try:
-            wake_offset_seconds = int(wake_offset_seconds_raw)
-        except Exception as exc:  # noqa: BLE001
-            raise ValueError("wake_offset_seconds must be int") from exc
+        if wake_offset_seconds_raw is None:
+            wake_offset_seconds_raw = 0
+        wake_offset_seconds = int(wake_offset_seconds_raw)
         if wake_offset_seconds < 0:
             wake_offset_seconds = 0
 
         description = str(data.get("description") or "").strip()
-        if not description:
-            raise ValueError("description is required")
-        if len(description) > CRON_JOB_DESCRIPTION_MAX_LENGTH:
-            raise ValueError(
-                f"description must be at most {CRON_JOB_DESCRIPTION_MAX_LENGTH} characters"
-            )
 
         # targets 新格式是字符串；旧格式是 list[dict]，此处做兼容。
         targets_raw = data.get("targets", "")
@@ -406,20 +476,6 @@ class CronJob:
 
         next_run_at_f = _epoch_field("next_run_at")
         last_run_at_f = _epoch_field("last_run_at")
-
-        if not job_id:
-            raise ValueError("id is required")
-        if not name:
-            raise ValueError("name is required")
-        if len(name) > CRON_JOB_NAME_MAX_LENGTH:
-            raise ValueError(f"name must be at most {CRON_JOB_NAME_MAX_LENGTH} characters")
-        if not cron_expr:
-            raise ValueError("cron_expr is required")
-        if not timezone:
-            raise ValueError("timezone is required")
-        validate_cron_expression(cron_expr, timezone=timezone)
-        if not targets_str:
-            raise ValueError("targets is required")
 
         targets_str = _normalize_targets_str(targets_str)
 

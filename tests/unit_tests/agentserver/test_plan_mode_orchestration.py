@@ -157,6 +157,93 @@ async def test_prepare_chat_normalizes_agent_request_for_code_workspace() -> Non
 
 
 @pytest.mark.asyncio
+async def test_prepare_chat_defaults_missing_e2a_work_mode() -> None:
+    agent = MagicMock()
+    manager = MagicMock()
+    manager.get_agent = AsyncMock(return_value=agent)
+    manager.wait_for_session_prewarm = AsyncMock()
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = manager
+    request = _chat_request("sess_e2a_default", mode="agent")
+    request.channel_id = "e2a"
+
+    with patch(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        return_value={},
+    ):
+        mode, sub_mode, resolved_agent = await _default._prepare_code_mode_chat_turn(
+            _default_ctx(server, request),
+            request,
+            "e2a",
+            sync_metadata=False,
+        )
+
+    assert (mode, sub_mode, resolved_agent) == ("agent", None, agent)
+    assert request.params["work_mode"] == "work"
+    manager.get_agent.assert_awaited_once_with(
+        channel_id="e2a",
+        mode="agent",
+        project_dir=None,
+        sub_mode=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepare_chat_defaults_missing_web_work_mode() -> None:
+    agent = MagicMock()
+    manager = MagicMock()
+    manager.get_agent = AsyncMock(return_value=agent)
+    manager.wait_for_session_prewarm = AsyncMock()
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = manager
+    request = _chat_request("sess_web_default", mode="agent")
+    request.channel_id = "web"
+
+    with patch(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        return_value={},
+    ):
+        mode, sub_mode, resolved_agent = await _default._prepare_code_mode_chat_turn(
+            _default_ctx(server, request),
+            request,
+            "web",
+            sync_metadata=False,
+        )
+
+    assert (mode, sub_mode, resolved_agent) == ("agent", None, agent)
+    assert request.params["work_mode"] == "work"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_work_mode", ["invalid", 123])
+async def test_prepare_chat_rejects_invalid_work_mode(invalid_work_mode: object) -> None:
+    manager = MagicMock()
+    manager.get_agent = AsyncMock()
+    manager.wait_for_session_prewarm = AsyncMock()
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = manager
+    request = _chat_request(
+        "sess_invalid_work_mode",
+        mode="agent",
+        extra_params={"work_mode": invalid_work_mode},
+    )
+
+    with patch(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        return_value={"work_mode": "work"},
+    ), pytest.raises(ValueError, match="invalid work_mode"):
+        await _default._prepare_code_mode_chat_turn(
+            _default_ctx(server, request),
+            request,
+            "web",
+            sync_metadata=False,
+        )
+
+    assert request.params["work_mode"] == invalid_work_mode
+    manager.get_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_prepare_team_chat_turn_propagates_locked_project_dir() -> None:
     """The session-locked project dir reaches TeamSpec request metadata.
 

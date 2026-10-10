@@ -706,7 +706,7 @@ async def test_handle_command_mcp_add_triggers_reload(server, fake_ws, monkeypat
     async def _pre_check_ok(_payload):
         return True, "pre-check ok"
 
-    patch_handler_name(monkeypatch, "_pre_check_mcp_server", _pre_check_ok)
+    patch_handler_name(monkeypatch, "_pre_check_mcp_http_auth", _pre_check_ok)
 
     called = {"reload": 0}
 
@@ -830,6 +830,76 @@ async def test_handle_command_mcp_update(server, fake_ws, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_handle_command_mcp_add_http_auth_rejected(server, fake_ws, monkeypatch):
+    upsert_calls = []
+    monkeypatch.setattr(
+        mcp_handlers,
+        "upsert_mcp_server_in_config",
+        lambda payload: (upsert_calls.append(payload), (payload, True))[1],
+    )
+
+    async def _pre_check_fail(_payload):
+        return False, "github (streamable-http) pre-check failed: http 401 from server"
+
+    monkeypatch.setattr(mcp_handlers, "_pre_check_mcp_http_auth", _pre_check_fail)
+    request = AgentRequest(
+        request_id="req-mcp-add-http-401",
+        channel_id="web",
+        req_method=ReqMethod.COMMAND_MCP,
+        params={
+            "action": "add",
+            "name": "github",
+            "transport": "streamable-http",
+            "url": "https://api.githubcopilot.com/mcp",
+            "headers": {"Authorization": "Bearer bad_token"},
+        },
+    )
+
+    await server.handle_command_mcp_for_test(fake_ws, request, asyncio.Lock())
+
+    assert upsert_calls == []
+    assert fake_ws.sent[0]["ok"] is False
+    assert fake_ws.sent[0]["payload"]["type"] == "add_failed"
+
+
+@pytest.mark.asyncio
+async def test_handle_command_mcp_update_http_auth_rejected(server, fake_ws, monkeypatch):
+    monkeypatch.setattr(
+        mcp_handlers,
+        "get_mcp_server_config",
+        lambda name: {
+            "name": name,
+            "enabled": True,
+            "transport": "streamable-http",
+            "url": "https://api.githubcopilot.com/mcp",
+        },
+    )
+    upsert_calls = []
+    monkeypatch.setattr(
+        mcp_handlers,
+        "upsert_mcp_server_in_config",
+        lambda payload: (upsert_calls.append(payload), (payload, False))[1],
+    )
+
+    async def _pre_check_fail(_payload):
+        return False, "github (streamable-http) pre-check failed: http 401 from server"
+
+    monkeypatch.setattr(mcp_handlers, "_pre_check_mcp_http_auth", _pre_check_fail)
+    request = AgentRequest(
+        request_id="req-mcp-update-http-401",
+        channel_id="web",
+        req_method=ReqMethod.COMMAND_MCP,
+        params={"action": "update", "name": "github"},
+    )
+
+    await server.handle_command_mcp_for_test(fake_ws, request, asyncio.Lock())
+
+    assert upsert_calls == []
+    assert fake_ws.sent[0]["ok"] is False
+    assert fake_ws.sent[0]["payload"]["type"] == "update_failed"
+
+
+@pytest.mark.asyncio
 async def test_handle_command_mcp_minimal_flow_add_list_disable(server, fake_ws, monkeypatch):
     state = {"servers": []}
 
@@ -857,6 +927,11 @@ async def test_handle_command_mcp_minimal_flow_add_list_disable(server, fake_ws,
         return None
 
     monkeypatch.setattr(server.get_agent_manager(), "reload_agents_config", _reload)
+
+    async def _pre_check_ok(_payload):
+        return True, "pre-check ok"
+
+    patch_handler_name(monkeypatch, "_pre_check_mcp_http_auth", _pre_check_ok)
 
     add_req = AgentRequest(
         request_id="req-flow-add",

@@ -140,9 +140,9 @@ async def _run_real_chain(selection: str) -> list[str]:
     routing_rail = ModelRoutingRail(
         capability_table=[
             ModelCapability(
-                model_name="deepseek-v4-flash-0731",
+                model_name="deepseek-v4.1-flash",
                 model_id="flash-0731",
-                model=_build_model("deepseek-v4-flash-0731"),
+                model=_build_model("deepseek-v4.1-flash"),
             ),
             ModelCapability(
                 model_name="glm-5.2",
@@ -195,7 +195,7 @@ async def test_applied_model_crosses_outer_to_inner_ctx_boundary(tmp_path, monke
     contents = await _run_real_chain("fast")
 
     assert contents, "runtime.setting 没有被注入，真实事件链没跑到内层 before_model_call"
-    assert _current_model(contents[-1]) == "deepseek-v4-flash-0731"
+    assert _current_model(contents[-1]) == "deepseek-v4.1-flash"
 
 
 @pytest.mark.asyncio

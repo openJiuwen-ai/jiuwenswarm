@@ -2022,8 +2022,19 @@ def get_default_project_session_workspace_dir(session_id: str | None = None) -> 
     return workspace
 
 
+_VALID_SESSION_ID_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,78}[A-Za-z0-9])?$"
+)
+
+
+def is_valid_session_id(session_id: str) -> bool:
+    """Return whether a session id is safe to use as one path component."""
+
+    return _VALID_SESSION_ID_RE.fullmatch(session_id) is not None
+
+
 def get_prompt_attachment_dir() -> Path:
-    """Get the jiuwenswarm prompt attachment directory path."""
+    """Return the legacy prompt-attachment path without creating it."""
 
     overridden = _dispatch_path(PathCategory.PROMPT_ATTACHMENT)
     if overridden is not None:

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
+from jiuwenswarm.gateway.cron.models import CRON_JOB_DESCRIPTION_MAX_LENGTH
 from jiuwenswarm.gateway.cron.store import CronJobStore
 from jiuwenswarm.gateway.cron.tenant_registry import CronTenantRegistry
 
@@ -45,6 +46,7 @@ _ENTERPRISE_JOB = {
     "cron_expr": "0 9 * * *",
     "timezone": "Asia/Shanghai",
     "description": "喝水",
+    "targets": "web",
     "enabled": True,
     "work_mode": "work",
     "mode": "agent",
@@ -115,6 +117,30 @@ async def test_enterprise_list_uses_bound_route_filters(tmp_path, monkeypatch) -
 
 
 @pytest.mark.asyncio
+async def test_enterprise_create_rejects_overlong_description_before_push(
+    tmp_path, monkeypatch
+) -> None:
+    tools, push = _make_tools(tmp_path, monkeypatch, enterprise=True)
+    token = tools.push_cron_route(
+        CronToolRoute(group_id="g1", bot_id="b1", user_id="u1", session_id="sess-1")
+    )
+    try:
+        with pytest.raises(ValueError, match="description must be at most"):
+            await tools.create_job(
+                {
+                    "name": "每日阅读提醒",
+                    "cron_expr": "0 0 9 * * ? *",
+                    "timezone": "Asia/Shanghai",
+                    "description": "x" * (CRON_JOB_DESCRIPTION_MAX_LENGTH + 1),
+                    "targets": "web",
+                }
+            )
+    finally:
+        tools.reset_cron_route(token)
+    assert push.payloads == []
+
+
+@pytest.mark.asyncio
 async def test_enterprise_update_does_not_require_local_json(tmp_path, monkeypatch) -> None:
     tools, push = _make_tools(tmp_path, monkeypatch, enterprise=True)
     monkeypatch.setattr(
@@ -140,6 +166,75 @@ async def test_enterprise_update_does_not_require_local_json(tmp_path, monkeypat
     assert body["patch"]["name"] == "renamed"
     assert body["group_id"] == "g1"
     assert body["user_id"] == "u1"
+
+
+@pytest.mark.asyncio
+async def test_enterprise_update_tolerates_sparse_existing_row_without_targets(
+    tmp_path, monkeypatch
+) -> None:
+    """Rename-only update must not fail solely because the baseline dict omits targets."""
+    tools, push = _make_tools(tmp_path, monkeypatch, enterprise=True)
+    sparse = {
+        "id": "job-1",
+        "name": "drink",
+        "cron_expr": "0 9 * * *",
+        "timezone": "Asia/Shanghai",
+        "description": "喝水",
+        "enabled": True,
+        "mode": "agent",
+    }
+    monkeypatch.setattr(
+        tools,
+        "_get_job_enterprise",
+        AsyncMock(side_effect=[dict(sparse), {**sparse, "name": "renamed", "targets": "web"}]),
+    )
+    token = tools.push_cron_route(CronToolRoute(group_id="g1", bot_id="b1", user_id="u1"))
+    try:
+        result = await tools.update_job("job-1", {"name": "renamed"})
+    finally:
+        tools.reset_cron_route(token)
+    assert result["name"] == "renamed"
+    assert push.payloads[-1]["body"]["data"]["patch"]["name"] == "renamed"
+
+
+@pytest.mark.asyncio
+async def test_enterprise_update_tolerates_legacy_unknown_mode_on_rename(
+    tmp_path, monkeypatch
+) -> None:
+    """Rename-only must not reject historical unknown modes that from_dict still loads."""
+    tools, push = _make_tools(tmp_path, monkeypatch, enterprise=True)
+    legacy = {
+        **_ENTERPRISE_JOB,
+        "mode": "legacy.custom",
+    }
+    monkeypatch.setattr(
+        tools,
+        "_get_job_enterprise",
+        AsyncMock(side_effect=[dict(legacy), {**legacy, "name": "renamed"}]),
+    )
+    token = tools.push_cron_route(CronToolRoute(group_id="g1", bot_id="b1", user_id="u1"))
+    try:
+        result = await tools.update_job("job-1", {"name": "renamed"})
+    finally:
+        tools.reset_cron_route(token)
+    assert result["name"] == "renamed"
+    assert push.payloads[-1]["body"]["data"]["patch"]["name"] == "renamed"
+    assert "mode" not in push.payloads[-1]["body"]["data"]["patch"]
+
+
+@pytest.mark.asyncio
+async def test_enterprise_update_still_rejects_invalid_mode_in_patch(
+    tmp_path, monkeypatch
+) -> None:
+    tools, push = _make_tools(tmp_path, monkeypatch, enterprise=True)
+    monkeypatch.setattr(tools, "_get_job_enterprise", AsyncMock(return_value=dict(_ENTERPRISE_JOB)))
+    token = tools.push_cron_route(CronToolRoute(group_id="g1", bot_id="b1", user_id="u1"))
+    try:
+        with pytest.raises(ValueError, match="Invalid cron job mode"):
+            await tools.update_job("job-1", {"mode": "not-a-mode"})
+    finally:
+        tools.reset_cron_route(token)
+    assert push.payloads == []
 
 
 @pytest.mark.asyncio

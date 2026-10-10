@@ -70,12 +70,15 @@ def test_user_web_runtime_mode_injection_preserves_property_names(
     ).read_text(encoding="utf-8")
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
+    monkeypatch.setenv("WORKSPACE_QUOTA_ENABLED", "true")
     rendered = _inject_user_web_runtime_config(frontend_index)
 
     assert f"window.__JIUWENSWARM_EDITION__ = '{edition}'" in rendered
     assert "__JIUWENSWARM_EDITION_VALUE__" not in rendered
     assert "window.__JIUWEN_LOGIN_AUTH_SIMULATE__ = 'true'" in rendered
     assert "__JIUWEN_LOGIN_AUTH_SIMULATE_VALUE__" not in rendered
+    assert "window.__WORKSPACE_QUOTA_ENABLED__ = 'true'" in rendered
+    assert "__WORKSPACE_QUOTA_ENABLED_VALUE__" not in rendered
 
 
 def test_login_auth_simulate_config_is_strict_and_defaults_to_true() -> None:

@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
 
-from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir
+from jiuwenswarm.common.utils import (
+    get_agent_sessions_dir,
+    get_agent_workspace_dir,
+    is_valid_session_id,
+)
 from jiuwenswarm.common.mode_matrix import NEW_AGENT_CODE_NORMAL, NEW_AGENT_WORK_NORMAL
 from jiuwenswarm.server.runtime.session.work_mode import (
     DEFAULT_WEB_WORK_MODE,
@@ -416,9 +420,7 @@ def _safe_session_subdir(
     stripped = (session_id or "").strip()
     if not stripped or "\x00" in stripped:
         return None
-    from jiuwenswarm.server.runtime.prompt_attachment_loader import sanitize_session_id
-
-    if sanitize_session_id(stripped) != stripped:
+    if not is_valid_session_id(stripped):
         return None
     root = Path(sessions_root) if sessions_root else get_agent_sessions_dir()
     try:

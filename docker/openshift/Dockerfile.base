@@ -1,0 +1,37 @@
+FROM registry.access.redhat.com/ubi9/python-311:latest
+
+USER root
+ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
+ARG ARCH=amd64
+
+RUN dnf remove -y subscription-manager || true
+
+# CRB：gcc / *-devel 头文件所在仓库
+RUN dnf install -y dnf-plugins-core \
+    && dnf config-manager --set-enabled ubi-9-codeready-builder-rpms || true
+
+RUN dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm || true
+
+# 补齐缺失的工具（编译链/git/mariadb-connector 等已预装）
+RUN dnf install -y --allowerasing \
+        curl \
+        iputils \
+        nmap-ncat \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+# 统一指向 python3.11
+RUN ln -sf /usr/bin/python3.11 /usr/local/bin/python3 \
+    && ln -sf /usr/bin/python3.11 /usr/local/bin/python \
+    && ln -sf /usr/bin/pip3.11 /usr/local/bin/pip3 \
+    && ln -sf /usr/bin/pip3.11 /usr/local/bin/pip
+
+# /opt/app-root 为 venv（不含系统 site-packages），前置 /usr/local/bin 使 python 命中系统环境
+ENV PATH=/usr/local/bin:$PATH
+
+# yq（mikefarah Go 版）
+RUN curl -fL https://openjiuwen-ci.obs.cn-north-4.myhuaweicloud.com/jiuwenclaw/software/yq_linux_${ARCH} \
+      -o /usr/local/bin/yq \
+    && chmod +x /usr/local/bin/yq
+
+RUN pip install --progress-bar off "uv>=0.9,<1.0" ${PIP_EXTRA_ARGS}
