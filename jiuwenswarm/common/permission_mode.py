@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 MANUAL_PERMISSION_MODE = "manual"
 AUTO_PERMISSION_MODE = "auto"
-_VALID_RUNTIME_MODES = {MANUAL_PERMISSION_MODE}
+_VALID_RUNTIME_MODES = {MANUAL_PERMISSION_MODE, AUTO_PERMISSION_MODE}
 
 
 def resolve_permission_runtime_mode(permission_config: Mapping[str, Any]) -> str:

@@ -45,7 +45,6 @@ def overlays(tmp_path, monkeypatch):
     return user_path, session_path
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_installed_snapshot_owns_base_auto_and_host_after_inputs_change(tmp_path, overlays):
     snapshot = _policy()
     caller = {"permissions": _policy()}
@@ -76,7 +75,6 @@ def test_installed_snapshot_owns_base_auto_and_host_after_inputs_change(tmp_path
     assert rail.installed_permission_config() == expected
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_installed_snapshot_never_reloads_overlays(tmp_path, monkeypatch):
     def unexpected_read(*_args, **_kwargs):
         raise AssertionError("installed snapshot must not reload any layer")
@@ -143,7 +141,6 @@ def test_manual_snapshot_uses_replaced_global_policy(overlays):
     assert current["tools"]["session_tool"] == "allow"
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_without_installed_snapshot_keeps_composed_build(overlays, tmp_path):
     rail = build_permission_rail(
         {"permissions": _policy()}, session_id="auto", enable_auto_permission=True,

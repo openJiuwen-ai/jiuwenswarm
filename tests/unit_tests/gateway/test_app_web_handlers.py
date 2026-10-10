@@ -1787,7 +1787,7 @@ async def test_media_capability_provider_identity_round_trips_through_config_rpc
     ("permissions", "expected_profile", "expected_enabled"),
     [
         ({"enabled": True, "mode": "manual"}, "default", "true"),
-        ({"enabled": True, "mode": "auto"}, "default", "true"),
+        ({"enabled": True, "mode": "auto"}, "automatic", "true"),
         ({"enabled": False, "mode": "auto"}, "full_access", "false"),
         ({"enabled": True, "mode": "future"}, "default", "true"),
     ],
@@ -1841,9 +1841,9 @@ async def test_config_set_rejects_invalid_permission_facade(monkeypatch, params)
     ("params", "saved_profile", "canonical"),
     [
         (
-            {"permissions_profile": "default"},
-            "default",
-            {"permissions_profile": "default", "permissions_enabled": "true"},
+            {"permissions_profile": "automatic"},
+            "automatic",
+            {"permissions_profile": "automatic", "permissions_enabled": "true"},
         ),
         (
             {"permissions_enabled": "false"},
@@ -1959,7 +1959,7 @@ async def test_permission_profile_write_failure_returns_no_canonical_success(
     await channel.methods["config.set"](
         object(),
         "req-profile-write-failure",
-        {"permissions_profile": "default"},
+        {"permissions_profile": "automatic"},
         "sess-profile",
     )
 
@@ -2014,7 +2014,7 @@ async def test_config_save_all_kvc_failure_does_not_persist_permission_profile(
         object(),
         "req-save-all-invalid-kvc",
         {
-            "config": {"permissions_profile": "default"},
+            "config": {"permissions_profile": "automatic"},
             "models": [
                 {
                     "model_name": "model-one",
