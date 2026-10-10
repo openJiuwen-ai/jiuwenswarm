@@ -671,6 +671,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             if base_prompt
             else instruction_prompt
         )
+        from jiuwenswarm.runtime.tool_allowlist import apply_tool_policy_prompt
+
+        system_prompt = apply_tool_policy_prompt(system_prompt, definition.get("tools", "*"))
         updates: dict[str, Any] = {
             "card": card,
             "system_prompt": system_prompt,
@@ -1061,6 +1064,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         #
         # 安全性：ensure_initialized 操作的是 self._pending_rails、workspace 文件等实例自己的资源，
         # 不碰全局 asyncio 原语，不跨 loop 访问主 loop 对象，不会死锁。
+        if agent_definition is not None and agent_definition.get("tools") != "*":
+            from jiuwenswarm.runtime.tool_allowlist import install_tool_allowlist
+
+            install_tool_allowlist(self._instance.ability_manager, agent_definition["tools"])
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             None,
@@ -1108,9 +1115,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # create_instance 对齐，否则 code 模式新建实例时不携带已激活扩展。
         await self._load_active_packages()
         await self.load_user_rails()
-        if agent_definition is not None and agent_definition.get("tools") != "*":
-            from jiuwenswarm.runtime.tool_allowlist import install_tool_allowlist
-            install_tool_allowlist(self._instance.ability_manager, agent_definition["tools"])
 
     def _capture_code_spec_rail_attributes(
         self,

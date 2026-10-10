@@ -59,6 +59,7 @@ dependencies = [
     "httpx[http2,socks]>=0.27,<1.0",
     "certifi>=2024.8.30,<2027",
     "json-repair>=0.30.0,<0.60",
+    "jsonschema>=4.20,<5",
     "gitcode-api>=1.2.20,<2",
     "faiss-cpu>=1.7.0,<2",
     "numpy>=1.24.0,<3",
@@ -108,6 +109,7 @@ harmony = [
     "pyyaml>=6.0",
     "httpx[socks]>=0.27",
     "json-repair>=0.30.0",
+    "jsonschema>=4.20,<5",
     "gitcode-api>=1.2.20",
 ]
 a2a = ["a2a-sdk[http-server]==1.0.0"]
@@ -164,6 +166,7 @@ namespaces = false
 [tool.setuptools.package-data]
 "*" = ["LICENSE"]
 jiuwenswarm = [
+    "channels/process_cli/protocol/schema.json",
     "channels/web/frontend/dist/**/*",
     "channels/web/frontend/dist/*",
     "agents/harness/common/rsi/harness_config.yaml",

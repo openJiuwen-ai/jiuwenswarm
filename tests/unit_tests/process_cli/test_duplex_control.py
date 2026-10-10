@@ -310,6 +310,79 @@ async def test_normal_completion_closes_reader_with_parent_input_still_open(
 
 
 @pytest.mark.asyncio
+async def test_unattended_permission_rejects_and_continues_via_runtime(run_factory) -> None:
+    run = run_factory()
+    run.control = DuplexController(None, run.writer, unattended=True)
+    run.client.original.emit(_event(
+        "chat.ask_user_question", request_id="permission-card",
+        source="permission_interrupt",
+        questions=[{"options": [{"value": "allow"}, {"value": "reject"}]}],
+    ))
+    run.client.original.emit(None)
+    run.start()
+    answer, continuation = await asyncio.wait_for(run.client.answer_calls.get(), 1)
+    assert answer.answers == ({"selected_options": ["reject"]},)
+    assert answer.source == "permission_interrupt"
+    continuation.emit(_event("chat.final", content="permission denied; continued"))
+    continuation.emit(None)
+    result = await asyncio.wait_for(run.task, 1)
+    assert result.status == "completed"
+    assert result.output == "permission denied; continued"
+    assert any(record.get("event_type") == "interaction.auto_denied"
+               for record in run.output.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "questions", "code", "message"),
+    [
+        (
+            "ask_user_interrupt",
+            [{"question": "secret-user-prompt"}],
+            "INTERACTION_REQUIRED",
+            "A non-permission interaction needs a host answer.",
+        ),
+        (
+            "permission_interrupt",
+            [],
+            "INTERACTION_UNSUPPORTED",
+            "Permission card cannot be safely rejected.",
+        ),
+        (
+            "permission_interrupt",
+            [{"options": [{"value": "allow", "label": "secret-tool-input"}]}],
+            "INTERACTION_UNSUPPORTED",
+            "Permission card has no explicit reject option.",
+        ),
+    ],
+)
+async def test_unattended_interaction_preserves_safe_failure_reason(
+    source, questions, code, message, run_factory
+) -> None:
+    run = run_factory()
+    run.control = DuplexController(None, run.writer, unattended=True)
+    run.client.original.emit(
+        _event(
+            "chat.ask_user_question",
+            request_id="unattended-card",
+            source=source,
+            questions=questions,
+        )
+    )
+    run.start()
+
+    result = await asyncio.wait_for(run.task, timeout=1)
+
+    assert result.status == "failed"
+    assert result.error.code == code
+    assert result.error.message == message
+    assert "secret" not in result.error.message
+    assert run.client.answer_inputs == []
+    assert run.client.original.closed
+    assert run.client.calls[-3:] == ["cancel", "cleanup_session", "close"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "original_eof", [False, True], ids=["original-waiting", "original-eof"]
 )

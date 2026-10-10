@@ -160,10 +160,10 @@ def test_agent_capabilities_match_existing_definition_semantics() -> None:
 
     assert configured.to_dict()["tools"] == ["*"]
     assert configured.to_dict()["skills"] == []
-    with pytest.raises(ValueError, match="tools must not be empty"):
-        AgentSpec.from_dict(
-            {"name": "empty_tools", "instructions": "invalid", "tools": []}
-        )
+    disabled = AgentSpec.from_dict(
+        {"name": "empty_tools", "instructions": "Use no tools", "tools": []}
+    )
+    assert disabled.to_dict()["tools"] == []
     with pytest.raises(ValueError, match="must be the only"):
         AgentSpec(
             name="mixed_tools",
@@ -173,15 +173,23 @@ def test_agent_capabilities_match_existing_definition_semantics() -> None:
 
 
 def test_run_scoped_capabilities_round_trip_and_validate() -> None:
-    run = OneShotRunInput.from_dict({
-        "schema_version": "0.1",
-        "type": "run",
-        "input": "hello",
-        "model": "model:example",
-        "skills": ["review"],
-        "mcp": [],
-        "permissions": {"tools": {"read_file": "allow", "write_file": "ask", "run_shell": "deny"}},
-    })
+    run = OneShotRunInput.from_dict(
+        {
+            "schema_version": "0.1",
+            "type": "run",
+            "input": "hello",
+            "model": "model:example",
+            "skills": ["review"],
+            "mcp": [],
+            "permissions": {
+                "tools": {
+                    "read_file": "allow",
+                    "write_file": "ask",
+                    "run_shell": "deny",
+                }
+            },
+        }
+    )
     assert run.to_dict()["permissions"]["tools"]["write_file"] == "ask"
     assert OneShotRunInput.from_dict(run.to_dict()) == run
     with pytest.raises(ValueError, match="levels must be"):

@@ -1893,6 +1893,7 @@ class JiuWenSwarmDeepAdapter:
         # any DeepAgent/TaskTool is created below.
         apply_task_tool_event_patch()
         self._instance: DeepAgent | None = None
+        self._process_cli_run_options: tuple[int | None, tuple[Any, ...]] | None = None
         self._interaction_output_handoff: OutputHandoff | None = None
         self._session_input_guard: SessionInputGuard | None = None
         self._voice_agent_task_rail = None
@@ -10220,6 +10221,46 @@ class JiuWenSwarmDeepAdapter:
             return f"{_AGENT_CARD_ID}_s_{self._session_adapter_key(self._parent_session_id)}"
         return f"{_AGENT_CARD_ID}_root"
 
+    async def configure_process_cli_run(
+        self, *, max_turns: int | None, host_tools: tuple[Any, ...]
+    ) -> None:
+        """Apply ephemeral Process CLI limits and host tools to this Agent only.
+
+        Runtime calls this after startup rails and the Agent allowlist are in
+        place, but before the first model invocation. No persistent Agent
+        definition or other channel configuration is changed.
+        """
+        if self._channel_id != "process_cli":
+            raise ValueError("process CLI run options require a Process CLI Agent")
+        if not self._is_session_scoped_adapter:
+            # The root is a router; the DeepAgent is created on first stream
+            # in a session child. Apply there after selection, before model I/O.
+            self._process_cli_run_options = (max_turns, host_tools)
+            return
+        if self._instance is None:
+            raise ValueError("process CLI session Agent is not ready")
+        if max_turns is not None:
+            from jiuwenswarm.runtime.iteration_limit import ProcessCliIterationLimitRail
+
+            react = self._instance.react_agent
+            if react is None:
+                raise RuntimeError("Agent model loop is unavailable")
+            config = react.config.model_copy()
+            existing = config.max_iterations
+            iteration_limit = min(existing, max_turns) if existing else max_turns
+            # A resumed final tool can enter the next iteration solely to
+            # report the limit. The rail prevents that iteration's model call.
+            config.max_iterations = iteration_limit + 1
+            react.configure(config)
+            await self._instance.register_rail(ProcessCliIterationLimitRail(iteration_limit))
+        manager = self._instance.ability_manager
+        existing_names = {card.name for card in manager.list()}
+        for tool in host_tools:
+            if tool.card.name in existing_names:
+                raise ValueError("host tool name conflicts with a Runtime tool")
+            manager.add_ability(tool.card, tool)
+            existing_names.add(tool.card.name)
+
     @staticmethod
     def _register_shared_tool(tool: Any) -> None:
         """Declare a tool instance shared across adapters, then register it.
@@ -10815,6 +10856,9 @@ class JiuWenSwarmDeepAdapter:
                 f"{system_prompt.rstrip()}\n\n# Agent Instructions\n"
                 f"{agent_definition['instructions'].strip()}"
             )
+            from jiuwenswarm.runtime.tool_allowlist import apply_tool_policy_prompt
+
+            system_prompt = apply_tool_policy_prompt(system_prompt, agent_definition.get("tools", "*"))
         common_kwargs = dict(
             model=model,
             card=agent_card,
@@ -10922,10 +10966,12 @@ class JiuWenSwarmDeepAdapter:
         # All host-level startup providers have now registered their tools.
         # Initialize the DeepAgent only after that point; its normal startup
         # path builds the initial BM25 snapshot after all pending rails.
-        await self._instance.ensure_initialized()
         if agent_definition is not None and agent_definition.get("tools") != "*":
             from jiuwenswarm.runtime.tool_allowlist import install_tool_allowlist
             install_tool_allowlist(self._instance.ability_manager, agent_definition["tools"])
+        # Startup rails build discovery indexes and prompts from the ability
+        # manager. Apply the boundary first, including to tools added by rails.
+        await self._instance.ensure_initialized()
         if self._enable_auto_permission:
             expected = PermissionRailGroup(
                 self._permission_rail, self._root_permission_queue_rail,
@@ -12535,7 +12581,18 @@ class JiuWenSwarmDeepAdapter:
         """Stop this adapter's DeepAgent interaction loop if it was started."""
         if self._instance is None:
             return
+        session = (
+            self._instance.loop_session
+            if self._channel_id == "process_cli"
+            and getattr(self._instance, "interaction_started", False) is True
+            else None
+        )
         await self._instance.stop()
+        if session is not None:
+            # The product owns this Session's lifecycle. Persist cleared HITL
+            # state after the loop stops, before this one-shot process exits.
+            # Otherwise the next process can replay an already approved tool.
+            await session.post_run()
 
     async def cleanup(self) -> None:
         """Release adapter-owned external runtime resources."""
@@ -16035,6 +16092,13 @@ class JiuWenSwarmDeepAdapter:
                 reserve_activity=True,
             )
             try:
+                process_options = getattr(self, "_process_cli_run_options", None)
+                if process_options is not None:
+                    # Consume before applying so failed runs cannot leak callbacks.
+                    self._process_cli_run_options = None
+                    await session_adapter.configure_process_cli_run(
+                        max_turns=process_options[0], host_tools=process_options[1]
+                    )
                 child_stream = session_adapter.process_message_stream_impl(request, inputs)
                 async with aclosing(child_stream):
                     async for chunk in child_stream:
@@ -17948,10 +18012,14 @@ class JiuWenSwarmDeepAdapter:
                 if chunk_type == "answer":
                     if isinstance(payload, dict):
                         if payload.get("result_type") == "error":
-                            return {
+                            error_payload = {
                                 "event_type": "chat.error",
                                 "error": payload.get("output", "未知错误"),
                             }
+                            code = payload.get("code")
+                            if isinstance(code, str) and code.strip():
+                                error_payload["code"] = code
+                            return error_payload
                         output = payload.get("output", {})
                         content = (
                             output.get("output", "") if isinstance(output, dict) else str(output)
