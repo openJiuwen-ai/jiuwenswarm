@@ -1,4 +1,5 @@
 import { settingsNavigationIcons } from '../../../../assets/settings';
+import { A2ADuplexSettings } from './A2ADuplexSettings';
 import type { SettingsModuleDefinition } from '../../registry/types';
 import { AgentMediaSettings, AgentSearchSettings, VideoGenSettings, VisualGenSettings } from './AgentSettings';
 
@@ -38,6 +39,11 @@ export const agentModule: SettingsModuleDefinition = {
         { id: 'video-gen-settings', component: 'custom', render: VideoGenSettings },
         { id: 'visual-gen-settings', component: 'custom', render: VisualGenSettings },
       ],
+    },
+    {
+      id: 'a2a-duplex-router',
+      titleKey: 'settingsPanel.agent.a2aDuplexRouter',
+      items: [{ id: 'a2a-duplex-router-settings', component: 'custom', render: A2ADuplexSettings }],
     },
   ],
 };

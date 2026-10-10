@@ -22,6 +22,8 @@
 
 ---
 
+[A2A 双工监工接入说明](duplex-a2a-shadow.md)：消息路由、安全打断与监工后端配置。
+
 <table width="100%" style="display: table; width: 100%; table-layout: fixed;">
   <colgroup>
     <col width="22%">
