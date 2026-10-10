@@ -3,7 +3,7 @@
   --skill-graph-font-size-base: 14px;
   --skill-graph-font-size-xs: 12px;
   display: grid;
-  grid-template-columns: 400px minmax(0, 1fr);
+  grid-template-columns: clamp(300px, 30%, 400px) minmax(0, 1fr);
   gap: 14px;
   height: 100%;
   min-height: 0;
@@ -30,16 +30,21 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
-  overflow: hidden;
   padding: 14px;
 }
 
 .skill-graph-panel__sidebar {
+  overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .skill-graph-panel__sidebar > * {
   flex-shrink: 0;
+}
+
+.skill-graph-panel__detail {
+  overflow-y: auto;
 }
 
 .skill-graph-panel h2,
@@ -122,11 +127,11 @@
   font-size: var(--skill-graph-font-size-xs);
 }
 
-.skill-graph-panel__filters label>span {
+.skill-graph-panel__filters label > span {
   font-weight: 600;
 }
 
-.skill-graph-panel__filters input[type="range"] {
+.skill-graph-panel__filters input[type='range'] {
   width: 100%;
   accent-color: var(--color-action-primary);
 }
@@ -192,9 +197,10 @@
 }
 
 .skill-graph-panel__actions-help li {
+  overflow-wrap: anywhere;
   font-size: var(--skill-graph-font-size-xs);
   line-height: 1.45;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .skill-graph-panel__error {
@@ -319,13 +325,10 @@
 
 .skill-graph-panel__node-list {
   display: flex;
-  min-height: 0;
+  min-height: 180px;
+  flex: 1 0 180px;
   flex-direction: column;
   gap: 8px;
-}
-
-.skill-graph-panel__node-list {
-  flex: 1 0 auto;
 }
 
 .skill-graph-panel__node-list-items {
@@ -334,6 +337,8 @@
   flex: 1;
   flex-direction: column;
   gap: 8px;
+  overflow: auto;
+  padding-right: 8px;
 }
 
 .skill-graph-panel__node-list h3 {
@@ -517,7 +522,9 @@
   opacity: 0;
   pointer-events: none;
   transform: translateX(calc(100% + 14px));
-  transition: transform 180ms ease, opacity 180ms ease;
+  transition:
+    transform 180ms ease,
+    opacity 180ms ease;
 }
 
 .skill-graph-panel--fullscreen .skill-graph-panel__detail {
@@ -703,11 +710,11 @@
   font-size: var(--skill-graph-font-size-xs);
 }
 
-.skill-graph-panel__detail-head>p {
+.skill-graph-panel__detail-head > p {
   font-size: var(--skill-graph-font-size-xs);
 }
 
-.skill-graph-panel__detail-head-content>p {
+.skill-graph-panel__detail-head-content > p {
   font-size: var(--skill-graph-font-size-xs);
 }
 
