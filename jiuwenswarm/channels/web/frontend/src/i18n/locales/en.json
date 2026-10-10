@@ -4381,5 +4381,14 @@
     "sectionError": "Error",
     "charUnit": "chars",
     "clickToViewDetail": "Click to view details"
+  },
+  "mcpApp": {
+    "loading": "Loading app…",
+    "loadFailed": "Could not load app",
+    "approvalPrompt": "The app wants to run",
+    "allow": "Allow",
+    "deny": "Deny",
+    "allowAlways": "Always allow in this app",
+    "readOnlyHint": "The server marks this tool as read-only (not verified)."
   }
 }
