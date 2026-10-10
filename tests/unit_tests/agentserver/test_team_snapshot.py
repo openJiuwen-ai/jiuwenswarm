@@ -32,6 +32,7 @@ class _FakeMonitorHandler:
     def __init__(self, snapshot: dict[str, Any] | None, *, running: bool = True) -> None:
         self._snapshot = snapshot
         self.is_running = running
+        self.team_id = snapshot.get("team_id") if snapshot is not None else None
 
     async def get_team_snapshot(self) -> dict[str, Any] | None:
         return self._snapshot

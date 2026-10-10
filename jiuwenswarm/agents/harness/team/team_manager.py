@@ -1233,6 +1233,11 @@ class TeamManager:
             leader["model_name"] = name
 
     @staticmethod
+    def load_default_team_spec(session_id: str) -> TeamAgentSpec:
+        """Load the default Team specification for host organization adapters."""
+        return TeamManager._load_team_spec(session_id)
+
+    @staticmethod
     def _load_team_spec(
         session_id: str,
         *,

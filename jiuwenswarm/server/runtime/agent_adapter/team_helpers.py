@@ -985,6 +985,17 @@ def _safe_query_preview(query: Any, limit: int = DEFAULT_PREVIEW_MAX_CHARS) -> s
 # on the same stream.
 _MODEL_OUTPUT_EVENT_TYPES = frozenset({"chat.delta", "chat.final", "chat.reasoning"})
 
+# 前端按 team 分流对话视图时，需要知道这些帧属于哪个 team。见 _tag_team_output_origin。
+_TEAM_ATTRIBUTED_EVENT_TYPES = frozenset({
+    "chat.delta",
+    "chat.final",
+    "chat.reasoning",
+    "chat.tool_call",
+    "chat.tool_result",
+    "chat.usage",
+    "chat.error",
+})
+
 
 def _resolve_user_turn(
     inputs: dict[str, Any],
@@ -1889,6 +1900,28 @@ def _enrich_teammate_event(parsed: dict[str, Any], chunk: Any) -> dict[str, Any]
 
 
 _TEAM_TOOL_RESULT_TEXT_LIMIT = 512
+
+
+def _tag_team_output_origin(parsed: dict[str, Any], team_name: str) -> dict[str, Any]:
+    """给模型产出的帧打上 team_name/team_id，供前端分流到各自的对话视图。
+
+    一个 session 可以同时挂多个 team（TeamRuntimePool 以 team_name 为键、按
+    current_session_id 归属），而 chat.delta / chat.reasoning 这些帧本身不带任何
+    team 标识——前端只有一个 session_id 可用于归属，于是多个 team 的流会混进同一份
+    messages 里，切换 team 时看到的是同一段对话。
+
+    只标注模型产出与工具事件：team.member / team.task / team.completed 这类控制帧
+    的归属由 payload 内层的 team_id 表达，重复注入外层 team_name 反而会让既有的
+    fan_out / agent_ref 推导（_build_team_event_chunk_meta 读 event.event 内层）
+    与外层字段不一致。
+    """
+    if not team_name:
+        return parsed
+    if parsed.get("event_type") not in _TEAM_ATTRIBUTED_EVENT_TYPES:
+        return parsed
+    parsed["team_name"] = team_name
+    parsed["team_id"] = team_name
+    return parsed
 
 
 def _truncate_team_tool_result_event(parsed: dict[str, Any]) -> dict[str, Any]:
@@ -3359,6 +3392,48 @@ def _run_lamp_active(run: WorkflowRunState) -> bool:
     )
 
 
+async def _finalize_org_bound_team_after_idle(
+    *,
+    session_id: str,
+    team_name: str,
+) -> None:
+    """Pause org-bound teams after a chat stream ends so organization wakes can run.
+
+    Org background turns (unclaimed revision/expired, parent review, ...) only
+    resume leaders in ``RuntimeState.PAUSED``. Call this from stream ``finally``
+    (and ``team.completed``), never from ``team.idle`` while the stream is open.
+    """
+    name = str(team_name or "").strip()
+    sid = str(session_id or "").strip()
+    if not name or not sid:
+        return
+    try:
+        from openjiuwen.agent_teams.runtime.pool import RuntimeState
+        from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+        from jiuwenswarm.agents.harness.team.team_manager import (
+            _runner_team_runtime_manager,
+        )
+
+        runtime = _runner_team_runtime_manager(GLOBAL_RUNNER)
+        entry = await runtime.pool.get(name)
+        if entry is None or getattr(entry, "current_session_id", None) != sid:
+            return
+        if getattr(entry, "state", None) is RuntimeState.PAUSED:
+            return
+        backend = getattr(getattr(entry, "agent", None), "team_backend", None)
+        if getattr(backend, "org_task_manager", None) is None:
+            return
+        await runtime.finalize(team_name=name, session_id=sid)
+    except Exception:
+        logger.exception(
+            "[TeamHelpers] finalize org-bound team after idle failed "
+            "session_id=%s team_name=%s",
+            sid,
+            name,
+        )
+
+
 async def _consume_stream_with_query(
     channel_id: str | None,
     session_id: str,
@@ -3493,6 +3568,8 @@ async def _consume_stream_with_query(
                         parsed.get("event_type"),
                         parsed.get("role") or getattr(chunk, "role", None),
                     )
+                # Preserve foreground Team reasoning visibility. Expert streams
+                # use their own organization relay and conversation runtime.
                 if not is_leader and parsed.get("event_type") == "chat.reasoning":
                     continue
                 if _is_duplicate_ask_user_question(parsed, emitted_ask_user_request_ids):
@@ -3503,6 +3580,10 @@ async def _consume_stream_with_query(
                 if not is_leader and parsed.get("event_type") == "chat.ask_user_question":
                     continue
                 parsed["rid"] = round_id
+                # 标注来源 team，让前端能把这一帧分流到对应 team 的对话视图。
+                # 放在 role 标记之前：_enrich_teammate_event 会覆盖 member_name，
+                # 但不动 team_name，顺序上只是先钉住归属再补身份。
+                parsed = _tag_team_output_origin(parsed, roster_team_name)
                 if is_teammate:
                     parsed = _enrich_teammate_event(parsed, chunk)
                 elif is_leader:
@@ -3610,6 +3691,10 @@ async def _consume_stream_with_query(
                         },
                     )
                     terminal_broadcasted = True
+                    await _finalize_org_bound_team_after_idle(
+                        session_id=session_id,
+                        team_name=roster_team_name,
+                    )
                     continue
                 elif parsed.get("event_type") == "team.idle":
                     # A swarmflow workflow may still be running while the leader
@@ -3660,6 +3745,8 @@ async def _consume_stream_with_query(
                         },
                     )
                     terminal_broadcasted = True
+                    # Do not finalize here: the leader stream stays open after
+                    # idle. Org-bound pause happens in finally / team.completed.
                     continue
                 elif (
                     is_leader
@@ -3811,6 +3898,10 @@ async def _consume_stream_with_query(
                         "session_id=%s",
                         session_id,
                     )
+                await _finalize_org_bound_team_after_idle(
+                    session_id=session_id,
+                    team_name=roster_team_name,
+                )
         finally:
             # Registry release must run even if cancellation arrives while a
             # normal stream is delivering its final snapshot.

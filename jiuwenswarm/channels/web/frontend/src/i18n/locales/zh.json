@@ -365,6 +365,7 @@
       "rsi": "RSI 递归自我改进",
       "trajectoryUi": "轨迹界面",
       "kvCacheAffinity": "算力亲和",
+      "teamOrganization": "Team Organization",
       "skillPack": "技能包",
       "proactive": "主动推荐",
       "proactiveLimits": "推荐频率限制",
@@ -512,6 +513,10 @@
       "trajectory_ui_enabled": {
         "title": "启用轨迹界面",
         "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。"
+      },
+      "team_organization_ui_enabled": {
+        "title": "启用 Team Organization 界面",
+        "description": "显示实验性的多 Team 视图和组织任务池。此开关不关闭后端组织能力。"
       },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
@@ -733,6 +738,42 @@
         "cancelled": "已取消",
         "failed": "任务失败"
       }
+    },
+    "org": {
+      "tab": "组织信息",
+      "title": "Task Pool 与组织",
+      "refresh": "刷新",
+      "loading": "加载中…",
+      "empty": "当前 Team 未绑定 organization",
+      "noOrganization": "未绑定组织",
+      "noTeam": "当前会话暂无可查询的 Team",
+      "loadFailed": "组织信息加载失败",
+      "organizationId": "Organization ID",
+      "displayName": "名称",
+      "description": "描述",
+      "ownerTeam": "Owner Team",
+      "teams": "Team 列表",
+      "leadTeam": "Team",
+      "leadMember": "Leader",
+      "metadata": "元数据",
+      "taskPool": "Task Pool",
+      "taskPoolEmpty": "任务池为空",
+      "taskId": "Task ID",
+      "taskTitle": "标题",
+      "taskStatus": "状态",
+      "taskAssignee": "执行者",
+      "taskTeam": "Team",
+      "taskType": "类型",
+      "taskUnclaimed": "待认领",
+      "taskParent": "父任务",
+      "pendingReviews": "待评审",
+      "pendingReviewsEmpty": "没有待评审的任务",
+      "reviewTask": "任务",
+      "reviewReviewer": "评审人",
+      "statsTotal": "任务总数",
+      "statsOpen": "进行中",
+      "statsUnclaimed": "待认领",
+      "statsPendingReviews": "待评审"
     }
   },
   "artifacts": {
@@ -900,6 +941,11 @@
       "noBreakdown": "后端未返回分类明细"
     },
     "modeSwitchDisabledProcessing": "当前对话运行中，请新建对话后选择模式",
+    "teamSelect": {
+      "tooltip": "切换当前查看的 Team",
+      "loadingLabel": "加载 Team…",
+      "fallbackLabel": "选择 Team"
+    },
     "configLockedHistory": "会话已有消息，请新建会话后更改配置",
     "modeSwitchTitle": "切换模式",
     "modeSwitchConfirm": "当前会话有历史消息，切换模式将新建会话。是否继续？",

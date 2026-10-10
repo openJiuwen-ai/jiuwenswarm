@@ -20,6 +20,7 @@ import {
   useSessionStore,
   useSubagentStore,
   useTodoStore,
+  useTeamSelectorStore,
   useWorkspaceStore,
 } from '../../stores';
 import type { ProjectInfo, Session } from '../../types';
@@ -310,6 +311,7 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     forgetCreatedConversation(sessionId);
     useSessionStore.getState().removeSession(sessionId);
     useSessionStore.getState().removeRuntime(sessionId);
+    useTeamSelectorStore.getState().removeRuntime(sessionId);
     useChatStore.getState().removeRuntime(sessionId);
     useSubagentStore.getState().removeRuntime(sessionId);
     useTodoStore.getState().removeRuntime(sessionId);
