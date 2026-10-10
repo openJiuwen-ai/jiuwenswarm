@@ -62,5 +62,16 @@ export function makeEventDedupKey(eventName: string, payload: Record<string, unk
     eventName === 'chat.processing_status'
       ? `::proc:${payload.is_processing === true ? '1' : '0'}`
       : '';
-  return `${eventName}::${payloadSessionId}::${payloadEventType}::${contentKey}${processingFlag}`;
+  // A retry notice updates one status message throughout the request. Do not
+  // mistake a new attempt or another member's retry for a duplicate delivery.
+  const modelRetryKey =
+    eventName === 'chat.notice' && payload.notice_type === 'model_retry'
+      ? `::retry:${stringifyPayloadForDedup({
+          attempt: payload.attempt,
+          max_attempts: payload.max_attempts,
+          member_name: payload.member_name,
+          content: payload.content,
+        })}`
+      : '';
+  return `${eventName}::${payloadSessionId}::${payloadEventType}::${contentKey}${processingFlag}${modelRetryKey}`;
 }
