@@ -3750,6 +3750,225 @@ async def test_channel_wechat_set_conf_accepts_valid_numeric(monkeypatch):
     assert cm.configs.get("wechat", {}).get("backoff_max_sec") == 30.0
 
 
+# =====================================================================
+# channel.*.set_conf — 部分更新合并（设置页只发它认识的键）
+# =====================================================================
+
+# 每项：(channel_id, 载荷, 载荷未发送但已存的键 -> 期望留存的值)。
+# 载荷取自前端 channelAdapters.ts 的 build*FormPayload；wecom / wechat 当前无
+# 设置页表单，取其 handler 可接收的部分载荷。未发送的键取自 config.yaml 模板
+# 或 app_gateway 实际读取的配置项。
+_PARTIAL_CONF_CASES = [
+    (
+        "dingtalk",
+        {"enabled": True, "client_id": "id-new", "client_secret": "sec-new", "allow_from": ["u1"]},
+        {
+            "api_base": "https://api.dingtalk.internal",
+            "oapi_base": "https://oapi.dingtalk.internal",
+            "send_file_allowed": False,
+        },
+    ),
+    (
+        "whatsapp",
+        {
+            "enabled": True,
+            "bridge_ws_url": "ws://127.0.0.1:19600/ws",
+            "default_jid": "6500000000@s.whatsapp.net",
+            "allow_from": [],
+            "enable_streaming": True,
+            "auto_start_bridge": False,
+            "bridge_command": "node scripts/whatsapp-bridge.js",
+            "bridge_workdir": "",
+        },
+        {"bridge_env": {"HTTPS_PROXY": "http://proxy.internal:3128"}},
+    ),
+    (
+        "telegram",
+        {
+            "enabled": True,
+            "bot_token": "tg-new",
+            "allow_from": [],
+            "parse_mode": "HTML",
+            "group_chat_mode": "all",
+        },
+        {"api_base": "https://telegram.internal"},
+    ),
+    (
+        "discord",
+        {
+            "enabled": True,
+            "bot_token": "dc-new",
+            "application_id": "app-1",
+            "guild_id": "g-1",
+            "channel_id": "c-1",
+            "block_dm": False,
+            "allow_from": [],
+        },
+        {"send_file_allowed": False},
+    ),
+    (
+        "slack",
+        {
+            "enabled": True,
+            "bot_token": "xoxb-new",
+            "app_token": "xapp-new",
+            "allow_from": [],
+            "allowed_channel_ids": [],
+            "default_channel_id": "C1",
+            "reply_in_thread": True,
+        },
+        {"send_file_allowed": False},
+    ),
+    (
+        "wecom",
+        {"enabled": True, "bot_id": "bot-new", "secret": "sec-new", "allow_from": []},
+        {
+            "ws_url": "wss://openws.work.weixin.internal",
+            "send_file_allowed": False,
+            "my_user_id": "zhangsan",
+        },
+    ),
+    (
+        "wechat",
+        {"enabled": True, "bot_token": "wx-new", "allow_from": []},
+        {"base_url": "https://ilink.internal", "credential_file": "~/creds.json"},
+    ),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel_id,payload,unposted", _PARTIAL_CONF_CASES)
+async def test_channel_set_conf_keeps_keys_absent_from_payload(
+    monkeypatch, channel_id, payload, unposted
+):
+    """设置页保存一次不得删掉它没有字段的键，载荷里的键照常生效。"""
+    channel = FakeWebChannel()
+    cm = FakeChannelManager()
+    cm.configs[channel_id] = {**unposted, "enabled": False, "allow_from": ["old"]}
+    written: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.update_channel_in_config",
+        lambda cid, conf: written.append((cid, dict(conf))),
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+
+    await channel.methods[f"channel.{channel_id}.set_conf"](
+        object(), f"req-{channel_id}", payload, "sess-1"
+    )
+
+    assert channel.responses[-1]["ok"] is True, channel.responses[-1]
+    stored = cm.configs[channel_id]
+    for key, value in unposted.items():
+        assert stored[key] == value, key
+    for key, value in payload.items():
+        assert stored[key] == value, key
+    # 落盘的是合并后的 section，不是载荷。
+    assert written and written[0][0] == channel_id
+    for key, value in unposted.items():
+        assert written[0][1][key] == value, key
+
+
+@pytest.mark.asyncio
+async def test_channel_set_conf_clears_value_the_payload_empties(monkeypatch):
+    """载荷里出现但为空的键是清空，不是没说：合并不得退化成忽略空值。"""
+    channel = FakeWebChannel()
+    cm = FakeChannelManager()
+    cm.configs["dingtalk"] = {
+        "enabled": True,
+        "client_id": "id-old",
+        "client_secret": "sec-old",
+        "allow_from": ["u1"],
+        "api_base": "https://api.dingtalk.internal",
+        "oapi_base": "https://oapi.dingtalk.internal",
+    }
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.update_channel_in_config",
+        lambda cid, conf: None,
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+
+    await channel.methods["channel.dingtalk.set_conf"](
+        object(),
+        "req-clear",
+        {"enabled": False, "client_id": "", "client_secret": "", "allow_from": []},
+        "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    stored = cm.configs["dingtalk"]
+    assert stored["client_id"] == ""
+    assert stored["client_secret"] == ""
+    assert stored["allow_from"] == []
+    assert stored["enabled"] is False
+    # 清空表单没有波及表单没有字段的键。
+    assert stored["api_base"] == "https://api.dingtalk.internal"
+    assert stored["oapi_base"] == "https://oapi.dingtalk.internal"
+
+
+@pytest.mark.asyncio
+async def test_channel_set_conf_adds_key_posted_for_the_first_time(monkeypatch):
+    """首次出现的键应写入，不因已存 section 没有它而被丢弃。"""
+    channel = FakeWebChannel()
+    cm = FakeChannelManager()
+    cm.configs["dingtalk"] = {"enabled": False, "api_base": "https://api.dingtalk.internal"}
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.update_channel_in_config",
+        lambda cid, conf: None,
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+
+    await channel.methods["channel.dingtalk.set_conf"](
+        object(),
+        "req-add",
+        {"enabled": True, "client_id": "id-1", "client_secret": "sec-1", "allow_from": ["u1"]},
+        "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert cm.configs["dingtalk"] == {
+        "enabled": True,
+        "client_id": "id-1",
+        "client_secret": "sec-1",
+        "allow_from": ["u1"],
+        "api_base": "https://api.dingtalk.internal",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel_id", ["feishu", "xiaoyi"])
+async def test_channel_multi_app_set_conf_still_writes_only_apps(monkeypatch, channel_id):
+    """feishu / xiaoyi 的载荷按 apps 整体提交，仍整体替换 section，不走部分合并。"""
+    channel = FakeWebChannel()
+    cm = FakeChannelManager()
+    cm.configs[channel_id] = {"send_file_allowed": True, "apps": [{"app_id": "a1"}]}
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.replace_channel_subsection_with_cleanup",
+        lambda *a, **kw: None,
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+
+    await channel.methods[f"channel.{channel_id}.set_conf"](
+        object(), f"req-{channel_id}", {"apps": [{"app_id": "a1", "name": "app one"}]}, "sess-1"
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    stored = cm.configs[channel_id]
+    assert set(stored) == {"apps"}
+    assert [app["app_id"] for app in stored["apps"]] == ["a1"]
+
+
+def test_merge_partial_channel_conf_rules():
+    """合并规则本身：出现即生效（含空值），缺席即保留；只合并一层。"""
+    stored = {"kept": "yes", "cleared": "old", "replaced": {"a": 1}}
+    merged = app_web_handlers._merge_partial_channel_conf(
+        stored, {"cleared": "", "replaced": {"b": 2}, "added": 3}
+    )
+    assert merged == {"kept": "yes", "cleared": "", "replaced": {"b": 2}, "added": 3}
+    # 不改动传入的已存配置。
+    assert stored == {"kept": "yes", "cleared": "old", "replaced": {"a": 1}}
+    assert app_web_handlers._merge_partial_channel_conf(None, {"a": 1}) == {"a": 1}
+    assert app_web_handlers._merge_partial_channel_conf({"a": 1}, None) == {"a": 1}
+
 def test_update_channel_subsection_in_config_persists_to_disk(tmp_path, monkeypatch):
     """验证 update_channel_subsection_in_config 确实将数据写到 config.yaml 文件。"""
     import yaml

@@ -1404,6 +1404,40 @@ def _merge_apps_by_id(
     ]
 
 
+def _merge_partial_channel_conf(
+    stored: dict[str, Any] | None,
+    params: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """将设置页载荷按部分更新合并到已存 section 上，保留表单没有字段的键。
+
+    ``channel.*.set_conf`` 的载荷只含设置页表单拥有的键，并非整个 section 的快照。
+    原样交给 ``ChannelManager.set_conf`` 会整体替换该 section，把表单没有字段的键
+    （如 ``channels.dingtalk.api_base``）从运行配置中删除，并据此重建通道。
+
+    两条规则：
+
+    * 载荷中**出现**的键生效，**包括空值**：清空输入框即是清除该项（如删除凭据）。
+    * 载荷中**缺席**的键保留已存值：客户端没提它，不等于要删它。
+
+    只合并一层：一个载荷键代表一整项设置，故列表或字典整体替换，不做内部打补丁。
+
+    Parameters
+    ----------
+    stored : dict[str, Any] | None
+        ``cm.get_conf`` 读出的已存 section。
+    params : dict[str, Any] | None
+        设置页提交的载荷。
+
+    Returns
+    -------
+    dict[str, Any]
+        合并后的完整 section，可直接交给 ``set_conf``。
+    """
+    merged = dict(stored) if isinstance(stored, dict) else {}
+    merged.update(dict(params or {}))
+    return merged
+
+
 def _normalize_feishu_conf(raw: dict) -> dict:
     """将 channels.feishu 统一为 apps 格式，并为每个 app 补充缺省字段。
 
@@ -4177,7 +4211,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            await cm.set_conf("telegram", params)
+            await cm.set_conf(
+                "telegram",
+                _merge_partial_channel_conf(cm.get_conf("telegram"), params),
+            )
             conf = cm.get_conf("telegram")
             try:
                 update_channel_in_config("telegram", conf)
@@ -4228,7 +4265,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            await cm.set_conf("dingtalk", params)
+            await cm.set_conf(
+                "dingtalk",
+                _merge_partial_channel_conf(cm.get_conf("dingtalk"), params),
+            )
             conf = cm.get_conf("dingtalk")
             should_clear_agent_config_cache = False
             try:
@@ -4284,7 +4324,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            await cm.set_conf("whatsapp", params)
+            await cm.set_conf(
+                "whatsapp",
+                _merge_partial_channel_conf(cm.get_conf("whatsapp"), params),
+            )
             conf = cm.get_conf("whatsapp")
             try:
                 update_channel_in_config("whatsapp", conf)
@@ -4335,7 +4378,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            await cm.set_conf("discord", params)
+            await cm.set_conf(
+                "discord",
+                _merge_partial_channel_conf(cm.get_conf("discord"), params),
+            )
             conf = cm.get_conf("discord")
             try:
                 update_channel_in_config("discord", conf)
@@ -4386,7 +4432,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            await cm.set_conf("slack", params)
+            await cm.set_conf(
+                "slack",
+                _merge_partial_channel_conf(cm.get_conf("slack"), params),
+            )
             conf = cm.get_conf("slack")
             try:
                 update_channel_in_config("slack", conf)
@@ -4437,7 +4486,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            await cm.set_conf("wecom", params)
+            await cm.set_conf(
+                "wecom",
+                _merge_partial_channel_conf(cm.get_conf("wecom"), params),
+            )
             conf = cm.get_conf("wecom")
             try:
                 update_channel_in_config("wecom", conf)
@@ -4499,7 +4551,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            await cm.set_conf("wechat", params)
+            await cm.set_conf(
+                "wechat",
+                _merge_partial_channel_conf(cm.get_conf("wechat"), params),
+            )
             conf = cm.get_conf("wechat")
             try:
                 update_channel_in_config("wechat", conf)
