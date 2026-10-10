@@ -12,6 +12,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_ORIGIN_EXTERNAL,
     HOST_USER_ORIGIN_INTERNAL,
 )
+from zoneinfo import ZoneInfo
+
+from jiuwenswarm.server.runtime.agent_adapter import user_turn as user_turn_module
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import UserTurn
 
 
@@ -188,7 +191,7 @@ def test_render_prefixes_interaction_context():
     assert rendered.startswith("\n上一轮被中断\n\n")
 
 
-def test_render_uses_cron_job_timezone_for_envelope_clock():
+def test_render_uses_cron_job_timezone_for_envelope_clock(monkeypatch):
     # The cron scheduler stamps the job timezone into metadata.cron so scheduled
     # tasks like "print the current time" render in the job's timezone.
     turn = _turn(
@@ -199,6 +202,9 @@ def test_render_uses_cron_job_timezone_for_envelope_clock():
     envelope = _envelope(turn.render())
 
     assert envelope["timestamp"].endswith("(UTC+09:00, Asia/Tokyo)")
+    # Pin the instance default so the clock comparison is machine-independent:
+    # with no config/env the default is now the process-local timezone.
+    monkeypatch.setattr(user_turn_module, "get_default_timezone", lambda: ZoneInfo("Asia/Shanghai"))
     shanghai = _envelope(_turn().render())
     assert shanghai["timestamp"].endswith("(UTC+08:00, Asia/Shanghai)")
     # Tokyo is UTC+9: same instant renders one wall-clock hour ahead of Shanghai.
@@ -207,7 +213,8 @@ def test_render_uses_cron_job_timezone_for_envelope_clock():
     assert (tokyo_hh - shanghai_hh) % 24 == 1
 
 
-def test_render_falls_back_to_shanghai_for_invalid_timezone():
+def test_render_falls_back_to_instance_default_for_invalid_timezone(monkeypatch):
+    monkeypatch.setattr(user_turn_module, "get_default_timezone", lambda: ZoneInfo("Asia/Shanghai"))
     turn = _turn(metadata={"timezone": "Invalid/Zone"})
 
     envelope = _envelope(turn.render())

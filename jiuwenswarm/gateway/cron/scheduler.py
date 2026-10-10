@@ -31,6 +31,7 @@ from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
+from jiuwenswarm.common.timezone import get_default_timezone
 from jiuwenswarm.runtime.cron.cron_expr import next_cron_datetime
 
 logger = logging.getLogger(__name__)
@@ -1325,7 +1326,7 @@ class CronSchedulerService:
                 enabled=False,
                 expired=False,
                 cron_expr="",
-                timezone=state.timezone or "Asia/Shanghai",
+                timezone=state.timezone or get_default_timezone().key,
                 targets=state.targets or "",
                 session_id=state.session_id,
                 chat_type=state.chat_type,

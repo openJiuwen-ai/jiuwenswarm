@@ -28,6 +28,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_PROMPT_PREFIX_ZH,
 )
 from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from jiuwenswarm.common.timezone import get_default_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -186,10 +187,13 @@ class UserTurn:
     def _resolve_timezone(self) -> tuple[str, ZoneInfo]:
         """Return the envelope timezone as ``(name, tzinfo)``.
 
-        Defaults to ``Asia/Shanghai``; a caller-declared timezone in metadata
-        (top-level ``timezone`` or ``cron.timezone`` — the cron scheduler stamps
-        the job's timezone there) wins, so scheduled tasks like "print the
-        current time" render in the job's configured timezone.
+        A caller-declared timezone in metadata (top-level ``timezone`` or
+        ``cron.timezone`` — the cron scheduler stamps the job's timezone there)
+        wins, so scheduled tasks like "print the current time" render in the
+        job's configured timezone. Otherwise the instance default applies
+        (config.yaml ``timezone:`` > ``JIUWENSWARM_TIMEZONE`` env >
+        process-local timezone > ``Asia/Shanghai``) — this is what tells the
+        agent which timezone its user is in.
         """
         candidates: list[Any] = []
         if self.metadata:
@@ -205,7 +209,8 @@ class UserTurn:
                 return name, ZoneInfo(name)
             except (KeyError, ValueError):
                 logger.warning("[UserTurn] invalid metadata timezone %r, falling back", name)
-        return "Asia/Shanghai", ZoneInfo("Asia/Shanghai")
+        tz = get_default_timezone()
+        return tz.key, tz
 
     def _resolve_skills(self, content: Any) -> list[str]:
         """Resolve skill names from the explicit list or the message text.
