@@ -129,7 +129,8 @@ class SlackChannel(BaseChannel):
     ) -> None:
         if self._client is None:
             return
-        if msg.event_type == EventType.CHAT_DELTA:
+        # Stream chunk events, one Slack message each: post completed text only.
+        if msg.event_type in (EventType.CHAT_DELTA, EventType.CHAT_REASONING):
             return
 
         content = self._extract_outgoing_text(msg)
