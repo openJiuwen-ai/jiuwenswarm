@@ -92,6 +92,14 @@ class AgentRequest:
         repr=False,
         compare=False,
     )
+    # AgentServer-only runtime dispatch result. The facade resolves it before
+    # MCP reconciliation so the root adapter and session child consume the
+    # same manifest-derived binding without resolving the package twice.
+    trusted_runtime_binding: dict[str, Any] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass

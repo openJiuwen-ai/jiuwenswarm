@@ -2671,6 +2671,15 @@ class JiuWenSwarm:
             )
 
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
+        external_session_checker = getattr(
+            adapter,
+            "is_external_harness_session",
+            None,
+        )
+        is_external_session = bool(
+            callable(external_session_checker)
+            and external_session_checker(request.session_id)
+        )
 
         if intent == "pause":
             # 暂停：不取消任务，只暂停 ReAct 循环
@@ -2683,6 +2692,8 @@ class JiuWenSwarm:
         if intent == "supplement":
             # 取消当前 session 的任务
             response = await adapter.process_interrupt(request)
+            if is_external_session:
+                return response
             await self._session_manager.cancel_session_task(session_id, "interrupt(supplement): ")
             return response
 
@@ -2690,6 +2701,8 @@ class JiuWenSwarm:
         # guard 能通过），再 cancel_session_task（其 finally 会把 session 从 _active_session_ids 移除）。
         # 顺序不能反，否则 process_interrupt 的 session guard 会误判为 "not active" 而跳过 abort。
         response = await adapter.process_interrupt(request)
+        if is_external_session:
+            return response
         await self._cancel_team_work_for_session(
             session_id,
             request.channel_id,
@@ -3037,11 +3050,30 @@ class JiuWenSwarm:
         # connectors before the agent runs. Always pass a list (never None):
         # empty clears selection when neither side contributes names.
         params = request.params if isinstance(request.params, dict) else {}
+        try:
+            runtime_binding = self._resolve_runtime_binding_for_request(
+                adapter,
+                request,
+                session_id,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc)},
+                metadata=request.metadata,
+            )
+        reconcile_kwargs: dict[str, Any] = {
+            "model_name": params.get("model_name"),
+            "history_before_request_id": request.request_id,
+        }
+        if runtime_binding is not None:
+            reconcile_kwargs["runtime_binding"] = runtime_binding
         await self.reconcile_session_mcp(
             request.session_id,
             compute_chat_send_mcp_needed(params),
-            model_name=params.get("model_name"),
-            history_before_request_id=request.request_id,
+            **reconcile_kwargs,
         )
 
         # cloud memory: before chat hook
@@ -3619,11 +3651,30 @@ class JiuWenSwarm:
         # connectors before the agent runs. Always pass a list (never None):
         # empty clears selection when neither side contributes names.
         params = request.params if isinstance(request.params, dict) else {}
+        try:
+            runtime_binding = self._resolve_runtime_binding_for_request(
+                adapter,
+                request,
+                session_id,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=cid,
+                payload={"event_type": "chat.error", "error": str(exc)},
+                is_complete=True,
+            )
+            return
+        reconcile_kwargs: dict[str, Any] = {
+            "model_name": params.get("model_name"),
+            "history_before_request_id": request.request_id,
+        }
+        if runtime_binding is not None:
+            reconcile_kwargs["runtime_binding"] = runtime_binding
         await self.reconcile_session_mcp(
             request.session_id,
             compute_chat_send_mcp_needed(params),
-            model_name=params.get("model_name"),
-            history_before_request_id=request.request_id,
+            **reconcile_kwargs,
         )
         # Team 的交互回答走普通流式路径，不经过 deliver_control_input。
         # 与单 Agent 使用同一落盘格式，按原问题的 params.request_id 配对。
@@ -4912,6 +4963,7 @@ class JiuWenSwarm:
         *,
         model_name: str | None = None,
         history_before_request_id: str | None = None,
+        runtime_binding: dict[str, Any] | None = None,
     ) -> None:
         """Reconcile this session's MCP set to ``needed`` (idempotent diff).
 
@@ -4949,7 +5001,26 @@ class JiuWenSwarm:
                 supported_kwargs["history_before_request_id"] = (
                     history_before_request_id
                 )
+            if "runtime_binding" in parameters or accepts_kwargs:
+                supported_kwargs["runtime_binding"] = runtime_binding
         await reconcile(session_id, needed, **supported_kwargs)
+
+    @staticmethod
+    def _resolve_runtime_binding_for_request(
+        adapter: AgentAdapter,
+        request: AgentRequest,
+        session_id: str,
+    ) -> dict[str, Any] | None:
+        """Resolve one chat's runtime before any session-child side effects."""
+        if request.req_method is not ReqMethod.CHAT_SEND:
+            return None
+        resolver = getattr(adapter, "resolve_runtime_binding", None)
+        if not callable(resolver):
+            return None
+        params = request.params if isinstance(request.params, dict) else {}
+        runtime_binding = resolver(session_id, params)
+        request.trusted_runtime_binding = runtime_binding
+        return runtime_binding
 
     def sync_mcp_credentials(self) -> bool:
         """Sync connected MCPs' tokens into os.environ (skill scripts).
