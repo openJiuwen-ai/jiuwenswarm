@@ -651,7 +651,9 @@ def _outline_sections(outline_text: str) -> list[str]:
 
 
 def _completion_content(
-    state: Mapping[str, Any], html_style_status: Any = None
+    state: Mapping[str, Any],
+    html_style_status: Any = None,
+    brief_upgrade_available: bool = False,
 ) -> str:
     file_name = str(state.get("file_name") or "研究报告").strip()
     title = re.sub(r"\.(?:md|markdown)$", "", file_name, flags=re.IGNORECASE)
@@ -690,6 +692,20 @@ def _completion_content(
             "报告已通过系统自动交付，您可以直接查看完整内容。",
         ]
     )
+    # brief→professional 升级追问：仅精简报告且 metadata 缓存成功时附带的
+    # 话术（缓存缺失不承诺"沿用大纲"，直接不问）。rail 以本文案强收尾，
+    # Main Agent 在工具完成后没有下一轮 LLM，追问只能由工具侧拼装。
+    if (
+        str(state.get("requested_report_type") or "") == "brief"
+        and brief_upgrade_available
+    ):
+        lines.extend(
+            [
+                "",
+                "📄 以上为精简版报告。如需基于此报告大纲生成完整的专业版深度研究报告，"
+                "请回复「生成完整报告」。",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -854,7 +870,11 @@ async def _handle_outcome(
         ):
             html_style_phase = None
             html_style_reason_code = None
-        content = _completion_content(state, html_style_status)
+        content = _completion_content(
+            state,
+            html_style_status,
+            brief_upgrade_available=outcome.get("brief_upgrade_available") is True,
+        )
         completed_updates: dict[str, Any] = {"conversation_id": conversation_id}
         if html_style_status is not None:
             completed_updates["html_style_status"] = html_style_status
@@ -902,13 +922,17 @@ async def _handle_outcome(
         "the standard detail, research-question, and outline review cards, "
         "resumes the same SDK conversation, and directly delivers the terminal result. "
         "report_type: 'professional' for in-depth multi-section reports, 'brief' for "
-        "single-page concise reports; infer from the user's original wording."
+        "single-page concise reports; infer from the user's original wording. "
+        "upgrade_from_brief: set true only when the user confirms expanding the "
+        "just-delivered brief report in the same session into a full professional "
+        "report; it reuses the cached brief outline and skips intent recognition."
     ),
 )
 async def deepresearch_execute(
     query: str,
     file_name: str = "",
     report_type: DeepResearchReportType | None = None,
+    upgrade_from_brief: bool = False,
 ) -> dict[str, Any]:
     """Run the interactive workflow without Main Agent resume choreography."""
     context = _execution_context.get()
@@ -967,6 +991,9 @@ async def deepresearch_execute(
             conversation_id=str(state.get("conversation_id") or ""),
             file_name=str(state.get("file_name") or file_name),
             report_type=state.get("requested_report_type"),
+            # upgrade_from_brief 不入 state：start 一次性语义，仅本次调用在
+            # tools.py 注入缓存大纲；resume 路径不透传（SDK checkpoint 续跑）。
+            upgrade_from_brief=upgrade_from_brief,
         )
         return await _handle_outcome(context, state, outcome, action="start")
     if phase == "wait_feedback":

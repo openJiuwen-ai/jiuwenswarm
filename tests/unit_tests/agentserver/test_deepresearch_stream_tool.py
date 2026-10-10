@@ -7,6 +7,7 @@ import asyncio
 import base64
 import io
 import json
+import logging
 import os
 import stat
 import sys
@@ -4781,3 +4782,356 @@ def test_brief_final_pipeline_completion_is_recognized():
     )
 
     assert dt._has_completed_final_pipeline_node(state) is True
+
+
+# ── brief→professional 升级：metadata 缓存 + METADATA 注入 ──────────────────
+
+
+def _brief_upgrade_route() -> dict[str, str]:
+    return {
+        "request_id": "R1",
+        "channel_id": "CH1",
+        "session_id": "S1",
+        "service_id": "default",
+        "agent_id": "default",
+    }
+
+
+def _brief_upgrade_metadata() -> dict[str, Any]:
+    return {
+        "brief_outline": [{"title": "第一章"}, {"title": "第二章"}],
+        "research_intent": "研究新能源汽车市场",
+        "language": "zh",
+    }
+
+
+def _completed_stream_lines(final_result: dict[str, Any]) -> list[str]:
+    """Proven completed-marker stream: reaches the completed branch of _consume_stream."""
+    return [
+        json.dumps({"__deepsearch_status__": "started", "conversation_id": "C1"}),
+        json.dumps(
+            {
+                "agent": "sub_reporter",
+                "section_idx": "1",
+                "section_total": 2,
+                "event": "done",
+            }
+        ),
+        json.dumps(
+            {
+                "agent": "reporter",
+                "section_idx": "0",
+                "event": "start",
+                "content": "assembling report",
+            }
+        ),
+        json.dumps(
+            {
+                "agent": "end",
+                "section_idx": "0",
+                "event": "summary_response",
+                "content": json.dumps(final_result),
+            }
+        ),
+        json.dumps(
+            {
+                "__deepsearch_status__": "completed",
+                "conversation_id": "C1",
+                "final_result": final_result,
+            }
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_brief_completion_caches_metadata_and_marks_upgrade_available(
+    tmp_path: Path,
+):
+    """brief 完成态 metadata（含 brief_outline）→ 缓存 + outcome 打升级可用标。"""
+    final_result = {
+        "response_content": "# Brief",
+        "metadata": _brief_upgrade_metadata(),
+    }
+    proc = _Proc(_completed_stream_lines(final_result))
+    route = _brief_upgrade_route()
+    patches = _stream_patches(proc, route=route)
+    try:
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(
+                patch.object(
+                    dt, "WebSocketGatewayPushTransport", return_value=AsyncMock()
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    dt,
+                    "_write_report_artifacts_stream",
+                    new=AsyncMock(return_value={"md": str(tmp_path / "r.md")}),
+                )
+            )
+            outcome = json.loads(
+                await dt.deepresearch_stream._func(
+                    action="start", query="q", report_type="brief"
+                )
+            )
+
+        assert outcome == {
+            "status": "completed",
+            "conversation_id": "C1",
+            "report_delivered": True,
+            "brief_upgrade_available": True,
+        }
+        assert dt._get_cached_brief_metadata(route) == _brief_upgrade_metadata()
+    finally:
+        dt._BRIEF_METADATA_CACHES.clear()
+
+
+@pytest.mark.asyncio
+async def test_professional_completion_does_not_overwrite_brief_cache(tmp_path: Path):
+    """professional 完成不覆写缓存、不打标（缓存只收 brief 完成态）。"""
+    seeded = {"brief_outline": [{"title": "旧大纲"}], "research_intent": "旧意图"}
+    route = _brief_upgrade_route()
+    dt._BRIEF_METADATA_CACHES[dt._outline_cache_key(route)] = dict(seeded)
+    final_result = {
+        "response_content": "# Professional",
+        "metadata": {
+            "brief_outline": [{"title": "不应进入缓存"}],
+            "research_intent": "不应进入缓存",
+        },
+    }
+    proc = _Proc(_completed_stream_lines(final_result))
+    patches = _stream_patches(proc, route=route)
+    try:
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(
+                patch.object(
+                    dt, "WebSocketGatewayPushTransport", return_value=AsyncMock()
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    dt,
+                    "_write_report_artifacts_stream",
+                    new=AsyncMock(return_value={"md": str(tmp_path / "r.md")}),
+                )
+            )
+            outcome = json.loads(
+                await dt.deepresearch_stream._func(
+                    action="start", query="q", report_type="professional"
+                )
+            )
+
+        assert outcome == {
+            "status": "completed",
+            "conversation_id": "C1",
+            "report_delivered": True,
+        }
+        assert dt._get_cached_brief_metadata(route) == seeded
+    finally:
+        dt._BRIEF_METADATA_CACHES.clear()
+
+
+@pytest.mark.asyncio
+async def test_brief_completion_without_metadata_neither_caches_nor_flags(
+    tmp_path: Path,
+):
+    """final_result 无 metadata（或无 brief_outline）→ 不缓存不打标。"""
+    final_result = {"response_content": "# Brief"}  # 无 metadata
+    proc = _Proc(_completed_stream_lines(final_result))
+    route = _brief_upgrade_route()
+    patches = _stream_patches(proc, route=route)
+    try:
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(
+                patch.object(
+                    dt, "WebSocketGatewayPushTransport", return_value=AsyncMock()
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    dt,
+                    "_write_report_artifacts_stream",
+                    new=AsyncMock(return_value={"md": str(tmp_path / "r.md")}),
+                )
+            )
+            outcome = json.loads(
+                await dt.deepresearch_stream._func(
+                    action="start", query="q", report_type="brief"
+                )
+            )
+
+        assert outcome == {
+            "status": "completed",
+            "conversation_id": "C1",
+            "report_delivered": True,
+        }
+        assert dt._get_cached_brief_metadata(route) == {}
+
+        # metadata 存在但缺 brief_outline → 同样不缓存不打标
+        dt._BRIEF_METADATA_CACHES.clear()
+        proc2 = _Proc(
+            _completed_stream_lines(
+                {"response_content": "# Brief", "metadata": {"language": "zh"}}
+            )
+        )
+        patches2 = _stream_patches(proc2, route=route)
+        with ExitStack() as stack:
+            for item in patches2:
+                stack.enter_context(item)
+            stack.enter_context(
+                patch.object(
+                    dt, "WebSocketGatewayPushTransport", return_value=AsyncMock()
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    dt,
+                    "_write_report_artifacts_stream",
+                    new=AsyncMock(return_value={"md": str(tmp_path / "r2.md")}),
+                )
+            )
+            outcome2 = json.loads(
+                await dt.deepresearch_stream._func(
+                    action="start", query="q", report_type="brief"
+                )
+            )
+
+        assert "brief_upgrade_available" not in outcome2
+        assert dt._get_cached_brief_metadata(route) == {}
+    finally:
+        dt._BRIEF_METADATA_CACHES.clear()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_start_injects_cached_metadata_into_config_frame():
+    """升级 start（professional + upgrade_from_brief + 缓存命中）→ METADATA 入 config 帧。"""
+    route = _brief_upgrade_route()
+    metadata = _brief_upgrade_metadata()
+    dt._BRIEF_METADATA_CACHES[dt._outline_cache_key(route)] = dict(metadata)
+    proc = _Proc(
+        [
+            json.dumps(
+                {
+                    "__deepsearch_status__": "error",
+                    "error_code": "workflow_error",
+                    "error": "done",
+                }
+            )
+        ]
+    )
+    patches = _stream_patches(proc, route=route)
+    try:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            await dt.deepresearch_stream._func(
+                action="start",
+                query="q",
+                report_type="professional",
+                upgrade_from_brief=True,
+            )
+
+        frame = json.loads(bytes(proc.stdin.data))
+        assert frame["config"]["REPORT_TYPE"] == "professional"
+        assert json.loads(frame["config"]["METADATA"]) == metadata
+    finally:
+        dt._BRIEF_METADATA_CACHES.clear()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_start_without_cache_degrades_to_plain_professional(caplog):
+    """缓存缺失 → 不注入 METADATA，降级普通 professional，留 warning。"""
+    route = _brief_upgrade_route()
+    proc = _Proc(
+        [
+            json.dumps(
+                {
+                    "__deepsearch_status__": "error",
+                    "error_code": "workflow_error",
+                    "error": "done",
+                }
+            )
+        ]
+    )
+    patches = _stream_patches(proc, route=route)
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+        with caplog.at_level(
+            logging.WARNING,
+            logger="jiuwenswarm.agents.harness.common.tools.deepresearch.tools",
+        ):
+            await dt.deepresearch_stream._func(
+                action="start",
+                query="q",
+                report_type="professional",
+                upgrade_from_brief=True,
+            )
+
+    frame = json.loads(bytes(proc.stdin.data))
+    assert frame["config"]["REPORT_TYPE"] == "professional"
+    assert "METADATA" not in frame["config"]
+    assert "no cached brief metadata" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_resume_does_not_inject_metadata_even_with_upgrade_flag():
+    """resume 路径不注入 METADATA（SDK checkpoint 续跑，StartNode 不重跑）。"""
+    route = _brief_upgrade_route()
+    dt._BRIEF_METADATA_CACHES[dt._outline_cache_key(route)] = _brief_upgrade_metadata()
+    proc = _Proc(
+        [
+            json.dumps(
+                {
+                    "__deepsearch_status__": "error",
+                    "error_code": "workflow_error",
+                    "error": "done",
+                }
+            )
+        ]
+    )
+    patches = _stream_patches(proc, route=route)
+    try:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            await dt.deepresearch_stream._func(
+                action="resume",
+                conversation_id="C1",
+                node="feedback_handler",
+                feedback="补充研究方向",
+                report_type="professional",
+                upgrade_from_brief=True,
+            )
+
+        frame = json.loads(bytes(proc.stdin.data))
+        assert "METADATA" not in frame["config"]
+    finally:
+        dt._BRIEF_METADATA_CACHES.clear()
+
+
+def test_cache_brief_metadata_rejects_empty_and_oversize(caplog):
+    """空 dict 拒收；超 48KiB 拒收 + warning；合法载荷可存取。"""
+    route = _brief_upgrade_route()
+    try:
+        assert dt._cache_brief_metadata(route, {}) is False
+        assert dt._get_cached_brief_metadata(route) == {}
+
+        oversize = {
+            "brief_outline": [{"title": "x" * 1024}] * 64,  # > 64KiB 序列化
+            "research_intent": "i",
+            "language": "zh",
+        }
+        with caplog.at_level(
+            logging.WARNING,
+            logger="jiuwenswarm.agents.harness.common.tools.deepresearch.tools",
+        ):
+            assert dt._cache_brief_metadata(route, oversize) is False
+        assert "too large to cache" in caplog.text
+        assert dt._get_cached_brief_metadata(route) == {}
+
+        valid = _brief_upgrade_metadata()
+        assert dt._cache_brief_metadata(route, valid) is True
+        assert dt._get_cached_brief_metadata(route) == valid
+    finally:
+        dt._BRIEF_METADATA_CACHES.clear()

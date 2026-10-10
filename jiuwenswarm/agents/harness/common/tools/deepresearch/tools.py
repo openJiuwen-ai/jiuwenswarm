@@ -100,6 +100,9 @@ DEEPRESEARCH_OUTLINE_CACHE_TENANTS = 256
 DEEPRESEARCH_OUTLINE_CACHE_CONVERSATIONS = 128
 DEEPRESEARCH_OUTLINE_CACHE_TITLES = 128
 DEEPRESEARCH_OUTLINE_CACHE_TEXT_CHARS = 64 * 1024
+# brief 完成态 metadata 缓存上限：给 config frame 其余字段（LLM/搜索配置）留余量，
+# 确保不击穿 64KiB frame 上限（DEEPRESEARCH_CONFIG_MAX_BYTES）。
+DEEPRESEARCH_BRIEF_METADATA_CACHE_TEXT_CHARS = 48 * 1024
 DEEPRESEARCH_ZIP_MAX_MEMBERS = 1024
 DEEPRESEARCH_ZIP_MEMBER_MAX_BYTES = 64 * 1024 * 1024
 DEEPRESEARCH_ZIP_TOTAL_MAX_BYTES = 128 * 1024 * 1024
@@ -217,6 +220,11 @@ _OUTLINE_JSON_CACHES: dict[
     tuple[str, str, str], dict[str, dict[str, Any]]
 ] = {}
 _OUTLINE_JSON_CACHES_GUARD = threading.Lock()
+# brief→professional 升级注入用：route key → 最近一份 brief 完成态 metadata。
+# 不按 conversation 分桶——升级是全新 conversation（新 conversation_id），
+# 只能按会话取"最近一次 brief"。
+_BRIEF_METADATA_CACHES: dict[tuple[str, str, str], dict[str, Any]] = {}
+_BRIEF_METADATA_CACHES_GUARD = threading.Lock()
 
 
 class _ReportPublicationCollision(FileExistsError):
@@ -459,6 +467,41 @@ def _clear_outline_json_cache(
         cache.pop(conversation, None)
         if not cache:
             _OUTLINE_JSON_CACHES.pop(key, None)
+
+
+def _get_cached_brief_metadata(route: dict[str, object]) -> dict[str, Any]:
+    # brief→professional 升级注入：取该会话最近一份 brief 完成态 metadata（拷贝）。
+    key = _outline_cache_key(route)
+    with _BRIEF_METADATA_CACHES_GUARD:
+        metadata = _BRIEF_METADATA_CACHES.get(key)
+        return dict(metadata) if metadata is not None else {}
+
+
+def _cache_brief_metadata(
+    route: dict[str, object], metadata: dict[str, Any]
+) -> bool:
+    # 缓存 brief 完成态 metadata 供升级注入。空 dict / 超限拒收（返回 False，
+    # 升级将降级为普通 professional 运行）；锁内 tenant LRU。
+    if not isinstance(metadata, dict) or not metadata:
+        return False
+    serialized = json.dumps(metadata, ensure_ascii=False)
+    if len(serialized) > DEEPRESEARCH_BRIEF_METADATA_CACHE_TEXT_CHARS:
+        logger.warning(
+            "[deepresearch_stream] brief metadata too large to cache "
+            "request_id=%s session_id=%s chars=%d limit=%d; "
+            "brief upgrade will degrade to plain professional",
+            _safe_log_correlation_id(route.get("request_id")),
+            _safe_log_correlation_id(route.get("session_id")),
+            len(serialized),
+            DEEPRESEARCH_BRIEF_METADATA_CACHE_TEXT_CHARS,
+        )
+        return False
+    key = _outline_cache_key(route)
+    with _BRIEF_METADATA_CACHES_GUARD:
+        while len(_BRIEF_METADATA_CACHES) >= DEEPRESEARCH_OUTLINE_CACHE_TENANTS:
+            _BRIEF_METADATA_CACHES.pop(next(iter(_BRIEF_METADATA_CACHES)))
+        _BRIEF_METADATA_CACHES[key] = dict(metadata)
+    return True
 
 
 def _map_provider_to_type(provider: str) -> str:
@@ -1800,6 +1843,7 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
     file_name: str = "",
     interaction_result: str = "",
     report_type: DeepResearchReportType | None = None,
+    upgrade_from_brief: bool = False,
 ) -> str:
     skill_started_ns = time.monotonic_ns()
     route = _get_route()
@@ -1923,6 +1967,26 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
         )
         if report_type is not None:
             config["REPORT_TYPE"] = report_type
+        if (
+            upgrade_from_brief
+            and action == "start"
+            and report_type == "professional"
+        ):
+            # 仅 start 注入：resume 由 SDK checkpoint 续跑，StartNode 不重跑。
+            cached_brief_metadata = _get_cached_brief_metadata(route)
+            if cached_brief_metadata:
+                config["METADATA"] = json.dumps(
+                    cached_brief_metadata, ensure_ascii=False
+                )
+            else:
+                # 缓存缺失（超限/重启/会话不符）：降级普通 professional，不阻断用户诉求
+                logger.warning(
+                    "[deepresearch_stream] brief upgrade requested but no cached "
+                    "brief metadata request_id=%s session_id=%s; falling back to "
+                    "plain professional run",
+                    _safe_log_correlation_id(route.get("request_id")),
+                    _safe_log_correlation_id(route.get("session_id")),
+                )
         child_env = _build_deepresearch_child_env(
             interactive_ask=True,
             service_id=str(route.get("service_id") or "default"),
@@ -2025,6 +2089,7 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             query=query,
             conversation_id=conversation_id,
             file_name=file_name,
+            report_type=report_type or "",
             secrets=_config_secret_values(config),
             skill_started_ns=skill_started_ns,
         )
@@ -2138,6 +2203,7 @@ async def _consume_stream(
     conversation_id: str,
     file_name: str,
     secrets: tuple[str, ...],
+    report_type: str = "",
     skill_started_ns: int | None = None,
 ) -> dict[str, Any]:
     push = WebSocketGatewayPushTransport()
@@ -2509,6 +2575,18 @@ async def _consume_stream(
                 "conversation_id": chunk.get("conversation_id", outcome_cid),
                 "report_delivered": True,
             }
+            # brief→professional 升级：缓存完成态 metadata（含 brief_outline 才收），
+            # 供同会话后续升级注入；成功才打标，execution.py 据此在完成文案里追问。
+            brief_metadata = (
+                final_result.get("metadata") if isinstance(final_result, dict) else None
+            )
+            if (
+                report_type == "brief"
+                and isinstance(brief_metadata, dict)
+                and brief_metadata.get("brief_outline")
+            ):
+                if _cache_brief_metadata(route, brief_metadata):
+                    completed_outcome["brief_upgrade_available"] = True
             if html_style_status in {"applied", "fallback"}:
                 completed_outcome["html_style_status"] = html_style_status
                 if html_style_status == "fallback":

@@ -68,6 +68,8 @@ async def _invoke(
     query="研究智能家电竞争格局",
     file_name="智能家电报告",
     requested_report_type=None,
+    report_type=None,
+    upgrade_from_brief=False,
 ):
     saved: list[dict] = []
     token = de.bind_deepresearch_execution_context(
@@ -79,7 +81,12 @@ async def _invoke(
         requested_report_type=requested_report_type,
     )
     try:
-        result = await de.deepresearch_execute._func(query=query, file_name=file_name)
+        result = await de.deepresearch_execute._func(
+            query=query,
+            file_name=file_name,
+            report_type=report_type,
+            upgrade_from_brief=upgrade_from_brief,
+        )
     finally:
         de.reset_deepresearch_execution_context(token)
     return result, saved
@@ -937,3 +944,109 @@ async def test_same_outer_tool_call_survives_multiple_native_interrupts():
     assert "✅ **深度研究已完成！**" in second.force_finish_requests[0]["output"]
     assert session.state[DEEPRESEARCH_EXECUTION_STATE_KEY] == {}
     assert session.state[DEEPRESEARCH_EXECUTION_ALIAS_KEY] == {}
+
+
+# ── brief→professional 升级：upgrade_from_brief 透传 + 完成文案追问 ──────────
+
+
+@pytest.mark.asyncio
+async def test_start_passes_upgrade_from_brief_to_stream_and_not_state():
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+    }
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+    ) as stream:
+        result, saved = await _invoke(
+            report_type="professional",
+            upgrade_from_brief=True,
+        )
+
+    assert result["kind"] == "completed"
+    assert stream.await_args.kwargs["report_type"] == "professional"
+    assert stream.await_args.kwargs["upgrade_from_brief"] is True
+    assert saved[0]["requested_report_type"] == "professional"
+    # start 一次性语义：不入 state（resume 路径不透传）
+    assert "upgrade_from_brief" not in saved[0]
+
+
+@pytest.mark.asyncio
+async def test_upgrade_from_brief_defaults_to_false_without_flag():
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+    }
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+    ) as stream:
+        await _invoke()
+
+    assert stream.await_args.kwargs["upgrade_from_brief"] is False
+
+
+@pytest.mark.asyncio
+async def test_completed_brief_with_upgrade_available_appends_question():
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+        "brief_upgrade_available": True,
+    }
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+    ):
+        result, _ = await _invoke(requested_report_type="brief")
+
+    assert result["kind"] == "completed"
+    assert "请回复「生成完整报告」" in result["content"]
+    assert "精简版报告" in result["content"]
+
+
+@pytest.mark.asyncio
+async def test_completed_without_upgrade_available_has_no_question():
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+    }
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+    ):
+        result, _ = await _invoke(requested_report_type="brief")
+
+    assert result["kind"] == "completed"
+    assert "生成完整报告" not in result["content"]
+
+
+def test_completion_content_question_gates():
+    brief_state = {"file_name": "智能家电报告", "requested_report_type": "brief"}
+    professional_state = {
+        "file_name": "智能家电报告",
+        "requested_report_type": "professional",
+    }
+
+    # brief + 缓存成功 → 追问
+    assert "请回复「生成完整报告」" in de._completion_content(
+        brief_state, brief_upgrade_available=True
+    )
+    # brief + 缓存缺失 → 不追问（不承诺"沿用大纲"）
+    assert "生成完整报告" not in de._completion_content(
+        brief_state, brief_upgrade_available=False
+    )
+    # professional → 永不追问
+    assert "生成完整报告" not in de._completion_content(
+        professional_state, brief_upgrade_available=True
+    )
+    # 兼容旧调用（无新参数）
+    assert "生成完整报告" not in de._completion_content(brief_state)
