@@ -1,0 +1,13 @@
+id: flash_slim_tools
+name: FlashSlimTools
+version: 0.1.0
+description: Tool surface slimming (remove wiki/acp_chat/audio_metadata/powershell/list_files, merge skill tools) as a runtime-patched extension
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.3"
+dependencies: {}
+config_schema:
+  type: object
+  properties:
+    FLASH_ENABLED:
+      type: string
+      description: "Set to 1 to enable all Flash extensions (default off)"

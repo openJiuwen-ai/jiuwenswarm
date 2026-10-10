@@ -1,0 +1,16 @@
+id: flash_glob
+name: FlashGlob
+version: 0.1.0
+description: Enhanced glob tool with mtime sorting, gitignore filtering, and exclude_patterns support
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.3"
+dependencies: {}
+config_schema:
+  type: object
+  properties:
+    FLASH_ENABLED:
+      type: string
+      description: "Set to 1 to enable all Flash extensions (default off)"
+    FLASH_GLOB_ENABLED:
+      type: string
+      description: "Set to 1 to enable enhanced glob tool only (default off)"
