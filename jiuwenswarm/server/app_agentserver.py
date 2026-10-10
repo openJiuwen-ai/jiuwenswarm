@@ -171,6 +171,14 @@ def _apply_runtime_entry_patches() -> None:
     except Exception:  # noqa: BLE001 — 补丁装不上不该拖垮启动
         logging.getLogger(__name__).warning("[LoginCredential] 凭据钩子安装失败", exc_info=True)
 
+    # ``TaskTool`` 的 /debug 跟踪补丁按首个开启 subagent trace 的请求再加载。
+    # 普通启动无需导入 SDK 的 TaskTool 实现；实际补丁仍会在请求 dispatch 前完成。
+    from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
+        apply_task_tool_debug_patch,
+    )
+
+    apply_task_tool_debug_patch()
+
     def _should_apply_sse_invoke_patch() -> bool:
         try:
             from jiuwenswarm.common.config import get_config
@@ -290,9 +298,20 @@ async def _start_runtime_backend(front: object, host: str, port: int) -> object:
         attach(server)
     log_startup_stage("runtime_backend_attached")
 
-    from openjiuwen.harness.observability import install_subagent_observability_hook
+    from openjiuwen.harness.observability import (
+        install_subagent_observability_hook as install_openjiuwen_subagent_observability_hook,
+    )
+    # 让所有分发路径创建的 subagent 都带上 OTel 观测 rail（内置 task_tool、自定义
+    # agent 工具、后台 subagent），这样子 agent 的 llm/tool span 归属自己的
+    # agent.<type>.invoke span，而不是挂到派发它的 agent 身上。
+    from jiuwenswarm.agents.harness.agent_observability import (
+        install_subagent_llm_history_forwarder,
+        install_subagent_observability_hook,
+    )
 
+    install_openjiuwen_subagent_observability_hook()
     install_subagent_observability_hook()
+    install_subagent_llm_history_forwarder()
     log_startup_stage("observability_installed")
 
     schedule_warmup = getattr(server, "schedule_image_modality_warmup", None)
