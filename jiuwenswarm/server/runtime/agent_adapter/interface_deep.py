@@ -1831,6 +1831,14 @@ class _GeneralPurposeAskUserRail(StructuredAskUserRail):
         return type(self)(language=self._language, strict_continuation_contract=False)
 
 
+def _subagent_name(spec: Any) -> str:
+    """Return the roster name of one subagent spec, or an empty string."""
+    if isinstance(spec, SubAgentConfig):
+        return str(getattr(spec.agent_card, "name", "") or "")
+    card = getattr(spec, "card", None)
+    return str(getattr(card, "name", "") or "")
+
+
 class JiuWenSwarmDeepAdapter:
     SESSION_ADAPTER_IDLE_TTL_SEC = 2 * 60 * 60
     SESSION_ADAPTER_EVICT_BATCH_SIZE = 3
@@ -1990,6 +1998,8 @@ class JiuWenSwarmDeepAdapter:
         self._skill_create_rail: SkillCreateRail | None = None
         self._symphony_graph_evolution_rail: Any = None
         self._subagent_rail: SubagentRail | None = None
+        # Full delegation roster, kept only while one request restricts it.
+        self._subagent_roster_snapshot: list[Any] | None = None
         self._general_purpose_rail_snapshot: tuple[Any, ...] = ()
         self._root_permission_queue = RootPermissionQueue()
         self._permission_dispatch = RootPermissionDispatch(self._root_permission_queue)
@@ -2618,7 +2628,7 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def _equipment_error_response(request: AgentRequest, message: str) -> AgentResponse:
-        """Build a terminal chat.error AgentResponse for equipment failures."""
+        """Build a terminal chat.error AgentResponse for a rejected request."""
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -2705,6 +2715,84 @@ class JiuWenSwarmDeepAdapter:
             mcp=params.get("mcp"),
         )
         return None
+
+    SUBAGENTS_AVAILABLE_PARAM = "agent_subagents_available"
+
+    def _restrict_request_subagents(
+        self, request: AgentRequest
+    ) -> AgentResponse | None:
+        """Narrow the delegation roster to ``params.agent_subagents_available``.
+
+        The key holds the template names this one request may delegate to. Both
+        delegation tools resolve their target against ``deep_config.subagents``,
+        and the rail builds the tool cards from the same list, so narrowing the
+        roster restricts delegation and the text that advertises it together.
+
+        The key is tri-state, as ``agent_template_name`` is: omitted keeps the
+        whole roster, an empty list refuses delegation, names select templates.
+        A value that is not a list of strings, or a name the agent does not
+        configure, returns a terminal ``chat.error`` response.
+        """
+        params = request.params if isinstance(request.params, dict) else {}
+        # Always start from the full roster: a turn that ended before its
+        # release still leaves the next request with the behaviour it asked for.
+        self._release_request_subagents()
+        if self.SUBAGENTS_AVAILABLE_PARAM not in params:
+            return None
+        requested = params[self.SUBAGENTS_AVAILABLE_PARAM]
+        if not isinstance(requested, list) or any(
+            not isinstance(name, str) for name in requested
+        ):
+            return self._equipment_error_response(
+                request,
+                f"{self.SUBAGENTS_AVAILABLE_PARAM} must be a list of strings",
+            )
+        deep_config = getattr(self._instance, "deep_config", None)
+        if deep_config is None:
+            return None
+        roster = list(getattr(deep_config, "subagents", None) or [])
+        wanted = {name.strip() for name in requested if name.strip()}
+        unknown = sorted(wanted - {_subagent_name(spec) for spec in roster})
+        if unknown:
+            return self._equipment_error_response(
+                request, f"subagent not configured: {', '.join(unknown)}"
+            )
+        self._subagent_roster_snapshot = roster
+        deep_config.subagents = [
+            spec for spec in roster if _subagent_name(spec) in wanted
+        ]
+        self._refresh_delegation_tool_cards()
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] request %s may delegate to %s of %s subagent(s)",
+            request.request_id,
+            len(deep_config.subagents),
+            len(roster),
+        )
+        return None
+
+    def _release_request_subagents(self) -> None:
+        """Restore the full delegation roster after a restricted request."""
+        roster = self._subagent_roster_snapshot
+        if roster is None:
+            return
+        self._subagent_roster_snapshot = None
+        deep_config = getattr(self._instance, "deep_config", None)
+        if deep_config is None:
+            return
+        deep_config.subagents = roster
+        self._refresh_delegation_tool_cards()
+
+    def _refresh_delegation_tool_cards(self) -> None:
+        """Rebuild the delegation tool cards from the current roster.
+
+        The rail rewrites each card description and resets the per-tool list of
+        accepted types. The model picks its target from the description, so a
+        roster change that leaves the description alone makes the model ask for
+        a template the tool now refuses.
+        """
+        if self._subagent_rail is None or self._instance is None:
+            return
+        self._subagent_rail.refresh_available_agents(self._instance)
 
     @staticmethod
     def _marketplace_equipment_gate(params: dict) -> str | None:
@@ -15477,6 +15565,8 @@ class JiuWenSwarmDeepAdapter:
                 )
 
         equipment_error = await self._ensure_chat_extensions(request)
+        if equipment_error is None:
+            equipment_error = self._restrict_request_subagents(request)
         if equipment_error is not None:
             return equipment_error
 
@@ -15752,6 +15842,7 @@ class JiuWenSwarmDeepAdapter:
             self._permission_dispatch.finalize(inputs)
             self._unregister_session_agent_task(session_id)
             cleanup_permission_context(token_perm)
+            self._release_request_subagents()
             self._reset_runtime_cron_context(cron_context_tokens)
             reset_session_messaging_route(session_message_context_token)
             self._unmark_session_active(session_id)
@@ -16458,6 +16549,8 @@ class JiuWenSwarmDeepAdapter:
             return payload
 
         equipment_error = await self._ensure_chat_extensions(request)
+        if equipment_error is None:
+            equipment_error = self._restrict_request_subagents(request)
         if equipment_error is not None:
             yield AgentResponseChunk(
                 request_id=request.request_id,
@@ -17432,6 +17525,7 @@ class JiuWenSwarmDeepAdapter:
             self._permission_dispatch.finalize(inputs)
             self._unregister_session_agent_task(session_id)
             cleanup_permission_context(token_perm)
+            self._release_request_subagents()
             if not stream_consumer_cancelled:
                 self._reset_runtime_cron_context(cron_context_tokens)
                 reset_session_messaging_route(session_message_context_token)
