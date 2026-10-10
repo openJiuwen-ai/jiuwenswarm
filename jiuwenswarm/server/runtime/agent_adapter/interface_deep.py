@@ -371,7 +371,6 @@ from jiuwenswarm.common.mode_matrix import (
 from jiuwenswarm.common.stage_timer import StageTimer
 from jiuwenswarm.common.tool_ownership import mark_stateless, register_tool, unregister_tool
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
-from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
     setup_permission_context,
@@ -554,7 +553,6 @@ from jiuwenswarm.common.config import (
     get_evolution_signal_trigger_enabled,
     get_passive_skill_evolution_triggers,
     get_skill_evolution_enabled,
-    get_sandbox_endpoint,
     get_sandbox_runtime,
     get_sandbox_startup_mode,
     get_skill_create_enabled,
@@ -633,6 +631,7 @@ from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
     create_local_sysop_card,
     create_sandbox_sysop_card,
+    resolve_sandbox_endpoint,
 )
 from jiuwenswarm.server.runtime.context_read_patch import apply_context_read_patch
 from jiuwenswarm.server.runtime.memory_init_patch import apply_memory_init_patch
@@ -7530,25 +7529,11 @@ class JiuWenSwarmDeepAdapter:
         供 ``apply_sandbox_runtime_patch`` 等运行时热更使用。
         """
         try:
-            endpoint = get_sandbox_endpoint()
-            sandbox_type = endpoint.get("type") or None
-            # box-server 端口运行时分配且可变, 优先取 runner 本轮存活的 endpoint,
-            # 避免陈旧 url 钉进 isolation key 与 card base_url; 端口进 key 后,
-            # 端口变 → 新 key → 新 card, 不被 registry 去重复用旧端口。
-            # 仅 jiuwenbox 覆盖: get_owned_endpoint 与 sandbox.type 无关, 对其它
-            # type 会误用 jiuwenbox 端点污染其 isolation key。runner 未 spawn
-            # (冷启动窗口) / 进程死亡 / 非本 runner 拥有时返回 None, 回落 config。
-            sandbox_url = endpoint.get("url") or None
-            if sandbox_type == "jiuwenbox":
-                try:
-                    owned = JiuwenBoxRunner.instance().get_owned_endpoint()
-                    if owned is not None:
-                        sandbox_url = f"http://{owned[0]}:{owned[1]}"
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "[sandbox_lifecycle] resolve live sandbox endpoint from runner "
-                        "failed, fall back to config/holder url: %s", exc,
-                    )
+            # box-server 端口运行时分配且可变，jiuwenbox 时优先取 runner 本轮存活
+            # 端口；端口进 isolation key，故必须与 team 成员注入路径取同一来源
+            # （见 sysop_builder.resolve_sandbox_endpoint），否则成员与主 agent 各起
+            # 独立沙箱。runner 未 spawn / 进程死亡时回落 config url。
+            sandbox_type, sandbox_url = resolve_sandbox_endpoint()
             runtime = get_sandbox_runtime()
             sysop_card: SysOperationCard | None
             if runtime.get("enabled") and sandbox_url and sandbox_type:

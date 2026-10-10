@@ -589,6 +589,20 @@ def build_filesystem_policy(
     if resolved_workspace is not None:
         _mount_rw_dir(resolved_workspace)
 
+    # Team 成员 workspace 落在 ~/.jiuwenswarm/.agent_teams/<team>/workspaces/<member>/，
+    # 是 agent/ 挂载根的兄弟目录、不在其下；挂父目录使 team 派生时才建的子目录
+    # 随建随可见可写，绕开"沙箱先于 team 派生"的时间线。单 agent 沙箱也挂（空目录
+    # 无害），保证后续 team 复用同一项目级容器时挂载已就位。get_agent_teams_home()
+    # 随 app 对 openjiuwen home 的重定向而 tenant-correct。
+    try:
+        from openjiuwen.agent_teams.paths import get_agent_teams_home
+        agent_teams_home = get_agent_teams_home()
+        if agent_teams_home is not None:
+            agent_teams_home.mkdir(parents=True, exist_ok=True)
+            _mount_rw_dir(agent_teams_home.resolve())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[sysop_builder] mount .agent_teams rw failed: %s", exc)
+
     resolved_project = _resolve_project_dir(project_dir)
     if resolved_project is not None:
         _mount_rw_dir(resolved_project)
@@ -697,6 +711,34 @@ def build_process_policy() -> dict[str, Any]:
         "run_as_group": groupname,
     }
     return process_policy
+
+
+def resolve_sandbox_endpoint() -> tuple[str | None, str | None]:
+    """解析当前生效的沙箱类型与 base url，与主 agent ``_resolve_sys_operation`` 同源。
+
+    读 ``get_sandbox_endpoint()``；jiuwenbox 时用 ``JiuwenBoxRunner`` 本轮存活端口
+    覆盖 config url（端口会进 isolation key，必须与主 agent 取同一来源，否则 team
+    成员与主 agent 的 isolation key 不一致 → 各起独立沙箱）。runner 未 spawn /
+    进程死亡时返回 None，回落 config url。
+
+    Returns:
+        ``(sandbox_type, sandbox_url)``，任一不可得时对应元素为 None。
+    """
+    endpoint = get_sandbox_endpoint()
+    sandbox_type = endpoint.get("type") or None
+    sandbox_url = endpoint.get("url") or None
+    if (sandbox_type or "").strip().lower() == "jiuwenbox":
+        try:
+            from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
+            owned = JiuwenBoxRunner.instance().get_owned_endpoint()
+            if owned is not None:
+                sandbox_url = f"http://{owned[0]}:{owned[1]}"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[sysop_builder] resolve live sandbox endpoint failed, "
+                "fall back to config url: %s", exc,
+            )
+    return sandbox_type, sandbox_url
 
 
 def create_sandbox_sysop_card(
@@ -852,6 +894,63 @@ def create_sandbox_sysop_card(
             (time.monotonic() - _t0) * 1000,
         )
         return None
+
+
+def create_sandbox_sysop_spec(
+    sandbox_url: str,
+    sandbox_type: str,
+    *,
+    team_id: str,
+    files_runtime: dict[str, Any] | None = None,
+    excluded_commands: list[str] | None = None,
+    idle_ttl_seconds: int | None = None,
+    idle_check_interval: int | None = None,
+    fallback_on_failure: bool = False,
+    project_dir: str | Path | None = None,
+    is_code_agent: bool = False,
+    startup_mode: str | None = None,
+    shared_dir: str | Path | None = None,
+) -> "SysOperationSpec | None":  # type: ignore[name-defined]
+    """构建 team 成员共享的 SANDBOX ``SysOperationSpec``。
+
+    复用 :func:`create_sandbox_sysop_card` 的 ``gateway_config``（同 policy、
+    同 isolation key 输入），保证成员与主 agent 命中同一项目级沙箱容器。spec
+    形态供 ``agent_configurator`` 的 ``agent_spec.sys_operation or LOCAL`` override
+    命中——成员 spec 设此项后，``DeepAgentSpec.build()`` 会 ``.resolve()`` 成
+    SANDBOX ``SysOperation`` 实例，成员的 fs/shell/code 工具随之走沙箱。
+
+    Args:
+        team_id: 稳定 spec id 后缀（用 ``spec.team_name``），全队共用一个 spec →
+            ``resolve()`` 只 add 一次、成员间复用同一 ``SysOperation``。
+    """
+    from openjiuwen.agent_teams.schema.deep_agent_spec import SysOperationSpec
+
+    card = create_sandbox_sysop_card(
+        sandbox_url,
+        sandbox_type,
+        files_runtime=files_runtime,
+        excluded_commands=excluded_commands,
+        idle_ttl_seconds=idle_ttl_seconds,
+        idle_check_interval=idle_check_interval,
+        fallback_on_failure=fallback_on_failure,
+        project_dir=project_dir,
+        is_code_agent=is_code_agent,
+        startup_mode=startup_mode,
+        shared_dir=shared_dir,
+    )
+    if card is None or card.gateway_config is None:
+        return None
+    stable_id = (
+        f"team_sandbox_{team_id}"
+        if team_id
+        else f"team_sandbox_{_sandbox_isolation_custom_id(project_dir, shared_dir=shared_dir, sandbox_url=sandbox_url)}"
+    )
+    return SysOperationSpec(
+        id=stable_id,
+        mode=OperationMode.SANDBOX,
+        work_config=LocalWorkConfig(shell_allowlist=None),
+        gateway_config=card.gateway_config,
+    )
 
 
 def create_local_sysop_card(work_dir: str | None = None) -> SysOperationCard:
@@ -1150,11 +1249,13 @@ __all__ = [
     "build_process_policy",
     "build_yuanrong_sandbox_status_view",
     "create_sandbox_sysop_card",
+    "create_sandbox_sysop_spec",
     "create_local_sysop_card",
     "effective_files_from_policy",
     "find_auto_managed_match",
     "find_nested_files_conflict",
     "list_auto_managed_sandbox_paths",
     "list_effective_sandbox_files",
+    "resolve_sandbox_endpoint",
     "validate_sandbox_files_runtime",
 ]

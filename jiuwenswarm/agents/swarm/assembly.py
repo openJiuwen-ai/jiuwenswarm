@@ -34,9 +34,14 @@ from jiuwenswarm.agents.swarm.registry import (
     STREAM_EVENT,
     register_swarm_providers,
 )
-from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.config import get_config, get_sandbox_runtime, get_sandbox_startup_mode
 from jiuwenswarm.common.mcp_config import build_enabled_mcp_server_configs
 from jiuwenswarm.common.utils import get_agent_skills_dir
+from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+    create_sandbox_sysop_spec,
+    resolve_sandbox_endpoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +107,43 @@ def _with_project_cwd(member_spec: Any, project_dir: str | None) -> Any:
     return member_spec.model_copy(update={"cwd": project_root, "project_root": project_root})
 
 
+def _build_shared_sandbox_spec(spec: Any, *, project_dir: str | None) -> Any:
+    """构建 team 成员共享的 SANDBOX ``sys_operation`` spec（个人版）。
+
+    复用主 agent 的 gateway_config（同 ``project_dir`` + ``sandbox_url``，个人版
+    ``shared_dir=None`` → 同 isolation key → 复用同一项目级容器）。沙箱未启用 /
+    企业版（isolation key 折入主 adapter 私有 ``shared_dir``，此层不可得）/
+    解析失败时返回 None，成员维持 LOCAL，无回归。
+    """
+    runtime = get_sandbox_runtime()
+    if not runtime.get("enabled") or is_enterprise():
+        return None
+    sandbox_type, sandbox_url = resolve_sandbox_endpoint()
+    if not sandbox_url or not sandbox_type:
+        return None
+    try:
+        return create_sandbox_sysop_spec(
+            sandbox_url,
+            sandbox_type,
+            team_id=spec.team_name,
+            files_runtime=runtime.get("files"),
+            excluded_commands=runtime.get("excluded_commands"),
+            idle_ttl_seconds=runtime.get("idle_ttl_seconds"),
+            idle_check_interval=runtime.get("idle_check_interval"),
+            fallback_on_failure=bool(runtime.get("fallback_on_failure", False)),
+            project_dir=project_dir,
+            is_code_agent=False,
+            startup_mode=get_sandbox_startup_mode(),
+            shared_dir=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[swarm.assembly] build shared sandbox spec failed (members stay LOCAL): %s",
+            exc,
+        )
+        return None
+
+
 def enrich_team_spec_for_swarm(
     spec: Any,
     *,
@@ -165,6 +207,15 @@ def enrich_team_spec_for_swarm(
         server_id_scope=f"team:{spec.team_name}",
     )
 
+    # Team 成员接入沙箱：个人版下构建全队共享的 SANDBOX sys_operation spec，注入
+    # 每个成员的 DeepAgentSpec。复用主 agent 的 gateway_config（同 project_dir +
+    # sandbox_url → 同 isolation key → 同一项目级容器）；agent_configurator 读
+    # agent_spec.sys_operation 命中此 spec，DeepAgentSpec.build() 再 .resolve() 成
+    # SANDBOX SysOperation 实例，成员 fs/shell/code 工具随之走沙箱而非宿主机。
+    # 企业版 isolation key 折入 shared_dir（= 主 adapter self._workspace_dir.parent.parent，
+    # 此层不可得）暂跳过——成员维持 LOCAL，无回归；后续经 ContextVar 下发 gateway_config 补。
+    shared_sandbox_spec = _build_shared_sandbox_spec(spec, project_dir=project_dir)
+
     for role in _MEMBER_ROLES:
         if role in spec.agents:
             member_spec = build_member_deep_agent_spec(
@@ -176,6 +227,10 @@ def enrich_team_spec_for_swarm(
                 mcp_configs=mcp_configs,
             )
             member_spec = _with_project_cwd(member_spec, project_dir)
+            if shared_sandbox_spec is not None:
+                member_spec = member_spec.model_copy(
+                    update={"sys_operation": shared_sandbox_spec}
+                )
             spec.agents[role] = member_spec
 
     named_members = _collect_named_teammate_members(spec)
@@ -190,6 +245,10 @@ def enrich_team_spec_for_swarm(
             mcp_configs=mcp_configs,
         )
         member_spec = _with_project_cwd(member_spec, project_dir)
+        if shared_sandbox_spec is not None:
+            member_spec = member_spec.model_copy(
+                update={"sys_operation": shared_sandbox_spec}
+            )
         spec.agents[member_name] = member_spec
 
     named_teammates = _mount_named_teammate_runtime_rails(spec)
