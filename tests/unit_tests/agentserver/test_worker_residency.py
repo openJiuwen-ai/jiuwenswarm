@@ -201,6 +201,52 @@ def test_replayed_frame_retains_authoritative_session_and_app_routing():
     assert wire["session_id"] == "untrusted-event-session"
 
 
+def test_mailbox_push_and_execution_are_owned_by_target_session():
+    from dataclasses import replace
+    from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+    from jiuwenswarm.runtime.execution_telemetry import observe_execution_entry
+
+    bridge = WorkerGatewayBridge(ConnHolder())
+    source = request()
+    source_record = bridge.events.register(source, "source-dispatch")
+    source_record.is_processing = True
+    token = begin_request_dispatch(source_record.dispatch_id)
+    target = replace(source, session_id="target-session", request_id="mailbox-execution",
+                     params={"session_id": "target-session"})
+    try:
+        queued = bridge.events.append({"request_id": target.request_id, "session_id": target.session_id,
+            "channel": "web", "metadata": {E2A_WIRE_SERVER_PUSH_KEY: True},
+            "body": {"event_type": "chat.processing_status", "is_processing": True}}, "source-dispatch")
+        with bridge.execution_scope(target):
+            observe_execution_entry(target, "agent")
+            # The mailbox reader still sends completion after the source
+            # transport disconnects; target state must not finish the source.
+            frame = bridge.events.append({"request_id": target.request_id, "session_id": target.session_id,
+                "channel": "web", "metadata": {E2A_WIRE_SERVER_PUSH_KEY: True},
+                "body": {"event_type": "chat.final", "execution_id": "target-execution"}},
+                queued["dispatch_id"])
+        snapshot = bridge.events.snapshot(target)
+        assert snapshot["dispatches"][0]["execution_id"] == "target-execution"
+        assert snapshot["dispatches"][0]["entered_at_ns"] is not None
+        assert not snapshot["is_processing"]
+        assert frame["payload"]["session_id"] == target.session_id
+        assert [row["payload"]["session_id"] for row in bridge.events.replay(target, after=0)] == [
+            "target-session", "target-session"]
+        assert bridge.events.replay(source, after=0) == []
+        assert source_record.is_processing
+        assert source_record.last_execution_id == ""
+        assert bridge.events.snapshot(replace(target, user_id="other"))["dispatches"] == []
+    finally:
+        end_request_dispatch(token)
+
+
+def test_unspecified_and_resolved_default_agent_have_same_scope():
+    from dataclasses import replace
+    from jiuwenswarm.server.ipc.protocol import request_scope
+
+    assert request_scope(request()) == request_scope(replace(request(), agent_ref={"mode": "agent", "id": "default"}))
+
+
 @pytest.mark.asyncio
 async def test_warming_cancel_returns_response_without_waiting_for_runtime():
     holder = ConnHolder()

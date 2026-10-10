@@ -72,6 +72,11 @@ class WorkerDispatcher:
             attach(self._bridge, self._lock)
 
     async def mark_ready(self) -> None:
+        # Mailbox execution is owned by the resident Runtime. It must not wait
+        # for the legacy in-process WebSocket connection handler to run.
+        service = getattr(self._runtime, "_session_message_service", None)
+        if service is not None:
+            await service.set_available(True)
         async with self._state_lock:
             self._ready = True
             queued = self._queued
@@ -247,6 +252,8 @@ class WorkerDispatcher:
 
     def _forget_task(self, task: asyncio.Task) -> None:
         self._tasks.pop(task, None)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("[Worker] background dispatch failed", exc_info=task.exception())
 
     async def _drop_queued_cancel(self, request: AgentRequest) -> bool:
         """Drop a cancel that arrived before Runtime exists. Return True when handled."""
@@ -419,6 +426,9 @@ class WorkerDispatcher:
                                      metadata=request.metadata)
             await self._bridge.send(__import__("json").dumps(encode_response(response, response_id=request.request_id)))
             await self._finish(generation, request.request_id, ok=True, error="", delivered=True,
+                               dispatch_id=dispatch_id)
+        except Exception as exc:
+            await self._finish(generation, request.request_id, ok=False, error=str(exc), delivered=False,
                                dispatch_id=dispatch_id)
         finally:
             end_request_dispatch(token)

@@ -13,10 +13,12 @@ import copy
 import json
 import uuid
 from collections import OrderedDict, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY
 from jiuwenswarm.server.ipc.protocol import request_scope
 
 
@@ -70,10 +72,21 @@ class WorkerEventStore:
             del self._active[key]
         while len(self.records) > 512:
             removable = next((key for key, value in self.records.items()
-                              if not value.active and not value.interactions), None)
+                              if not value.active and not value.is_processing and not value.interactions), None)
             if removable is None:
                 break
             del self.records[removable]
+
+    def internal_record(self, request: AgentRequest) -> DispatchRecord:
+        """Track an authorized server execution, including mailbox background work."""
+        scope = request_scope(request)
+        existing = next((record for record in reversed(self.records.values())
+                         if record.scope == scope and record.request.request_id == request.request_id), None)
+        if existing is not None:
+            if existing.active or existing.is_processing:
+                self._active[(*scope, str(request.request_id or ""))] = existing.dispatch_id
+            return existing
+        return self.register(request, uuid.uuid4().hex)
 
     def complete(self, dispatch_id: str, *, state: str, error: str = "") -> None:
         record = self.records.get(dispatch_id)
@@ -85,8 +98,28 @@ class WorkerEventStore:
         self.finish(dispatch_id)
 
     def append(self, wire: dict[str, Any], dispatch_id: str) -> dict[str, Any]:
-        self._sequence += 1
         record = self.records.get(dispatch_id)
+        metadata = wire.get("metadata") or {}
+        target = str(wire.get("session_id") or "")
+        if metadata.get(E2A_WIRE_SERVER_PUSH_KEY) and target and (record is None or target != record.scope[-1]):
+            # This is an authorized AgentServer push, often produced by a
+            # mailbox task inheriting the source request's ContextVars. Its
+            # target must own the journal and processing state, not the source.
+            owner = metadata.get(SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY)
+            request = replace(record.request, session_id=target,
+                              request_id=str(wire.get("request_id") or ""),
+                              channel_id=str(wire.get("channel") or record.request.channel_id),
+                              params={"session_id": target},
+                              user_id=str(owner or record.request.user_id),
+                              metadata={**(record.request.metadata or {}), **metadata}) if record else AgentRequest(
+                                  request_id=str(wire.get("request_id") or ""),
+                                  session_id=target, channel_id=str(wire.get("channel") or ""),
+                                  user_id=str(owner or metadata.get("user_id") or ""), metadata=metadata,
+                                  params={"session_id": target})
+            record = self.internal_record(request)
+            dispatch_id = record.dispatch_id
+            self.finish(dispatch_id)
+        self._sequence += 1
         scope = record.scope if record else ("", "", "", "null", str(wire.get("session_id") or ""))
         payload = copy.deepcopy(wire)
         if record and record.scope[-1]:

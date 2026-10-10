@@ -169,6 +169,7 @@ def request_scope(request: AgentRequest) -> tuple[str, ...]:
         str(request.channel_id or ""),
         str(request.user_id or metadata.get("user_id") or ""),
         str(metadata.get("app_id") or ""),
-        json.dumps(_dump_agent_ref(request.agent_ref), sort_keys=True, default=str),
+        json.dumps(_dump_agent_ref(request.agent_ref) or {"mode": "agent", "id": "default"},
+                   sort_keys=True, default=str),
         str(params.get("session_id") or request.session_id or ""),
     )

@@ -10,6 +10,8 @@ import logging
 import time
 import uuid
 from contextvars import ContextVar
+from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any
 
 from jiuwenswarm.server.ipc.protocol import KIND_WIRE
@@ -144,6 +146,28 @@ class WorkerGatewayBridge:
 
     async def close(self) -> None:
         return None
+
+    @contextmanager
+    def execution_scope(self, request: Any):
+        """Give an internal authorized execution its own journal and entry hook."""
+        from jiuwenswarm.runtime.execution_telemetry import execution_entry_sink
+
+        parent = self.events.records.get(_DISPATCH_ID.get())
+        metadata = dict(request.metadata or {})
+        if parent and parent.scope[2]:
+            metadata.setdefault("app_id", parent.scope[2])
+        accepted = replace(request, metadata=metadata)
+        record = self.events.internal_record(accepted)
+        record.active = True
+        record.is_processing = True
+        token = _DISPATCH_ID.set(record.dispatch_id)
+        entry = execution_entry_sink.set(self.observe_execution_entry)
+        try:
+            yield
+        finally:
+            execution_entry_sink.reset(entry)
+            _DISPATCH_ID.reset(token)
+            self.events.finish(record.dispatch_id)
 
     def observe_execution_entry(self, request: Any, mode: str) -> None:
         record = self.events.records.get(_DISPATCH_ID.get())
