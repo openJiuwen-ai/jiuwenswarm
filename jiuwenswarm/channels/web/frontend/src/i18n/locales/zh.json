@@ -473,6 +473,8 @@
     "stop": "停止",
     "modelSelector": {
       "tooltip": "切换对话使用的模型",
+      "tooltipSessionLocked": "当前会话不支持切换模型，新建会话可选择",
+      "tooltipLockedEnterprise": "企业版模型统一配置，不支持修改",
       "configured": "已配置模型",
       "addModel": "添加自定义模型",
       "placeholder": "选择模型",
