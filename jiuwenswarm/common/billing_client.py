@@ -68,14 +68,17 @@ _REPORT_TASKS: set[asyncio.Task] = set()
 # 在手机端选择工作空间时拼入的 <claw_workspace> + 【工作空间】指令尾段不进计费上报——
 # 工作空间路径不随计费接口出网，且与桌面侧同口径（BillingService.report 经
 # restoreVisibleUserText 剥离 claw_context/claw_workspace/claw_cron_create 注入段；
-# 手机端不产生 claw_context，本侧唯一注入源即该尾段）。
+# 手机端不产生 claw_context，本侧注入源即该尾段及未选工作空间时的 <claw_time> 时间尾段）。
 _WORKSPACE_DIRECTIVE_TAIL_RE = re.compile(
-    r"\s*<claw_workspace>[^\r\n]*</claw_workspace>\r?\n【工作空间】[^\r\n]*\s*$"
+    r"\s*(?:"
+    r"<claw_workspace>[^\r\n]*</claw_workspace>\r?\n【工作空间】"
+    r"|<claw_time>[^\r\n]*</claw_time>\r?\n【当前时间】"
+    r")[^\r\n]*\s*$"
 )
 
 
 def _strip_injected_directives(query: str) -> str:
-    """NEW 上报前剥离渠道注入段（当前仅 <claw_workspace> 尾段；受限/完全访问两档文案同形态）。"""
+    """NEW 上报前剥离渠道注入段（<claw_workspace>/<claw_time> 尾段；各档文案同形态）。"""
     return _WORKSPACE_DIRECTIVE_TAIL_RE.sub("", query).rstrip()
 
 

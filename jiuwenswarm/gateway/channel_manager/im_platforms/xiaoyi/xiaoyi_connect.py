@@ -62,6 +62,7 @@ from jiuwenswarm.common.permission_profile import (
     normalize_permission_profile,
     resolve_client_workspace,
     resolve_trusted_dirs,
+    with_time_directive,
     with_workspace_directive,
 )
 
@@ -2882,6 +2883,9 @@ class XiaoyiChannel(BaseChannel):
         # 附带 trusted_dirs 与工作空间约束指令（与桌面端本地对话行为完全一致）
         if client_workspace:
             text = with_workspace_directive(text, client_workspace, permission_profile)
+        else:
+            # 未选工作空间也要保留时间感知（与桌面端 claw_context timestamp 同口径）
+            text = with_time_directive(text)
         # =================================================================
 
         # Add media payload to metadata

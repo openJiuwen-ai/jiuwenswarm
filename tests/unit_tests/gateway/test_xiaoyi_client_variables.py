@@ -28,6 +28,7 @@ from jiuwenswarm.common.permission_profile import (
     permission_profile_config_patch,
     resolve_client_workspace,
     resolve_trusted_dirs,
+    with_time_directive,
     with_workspace_directive,
 )
 from jiuwenswarm.common.schema.message import EventType
@@ -213,6 +214,15 @@ def test_with_workspace_directive(workspace):
     assert with_workspace_directive("你好", "", "default") == "你好"
 
 
+def test_with_time_directive():
+    """未选工作空间时仅注入时间尾段（与工作空间尾段同构，可被既有剥离链处理）。"""
+    text = with_time_directive("你好")
+    assert text.startswith("你好\n\n")
+    assert "<claw_time>" in text and "【当前时间】现在是" in text
+    # payload 携带本条消息的动态时间戳（本地时间，YYYY-MM-DD HH:MM:SS）
+    assert re.search(r'"timestamp": "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"', text)
+
+
 def test_update_permission_profile_in_config(cfg_file):
     overlay = cfg_file.with_name("config.user.yaml")
     assert cfgmod.update_permission_profile_in_config("default") is True
@@ -331,10 +341,13 @@ async def test_message_stream_applies_workspace_and_permission(cfg_file, workspa
         assert data["permissions"]["enabled"] is True
         assert data["permissions"]["permission_mode"] == "strict"
 
-        # 不携带 clientVariables：行为不变
+        # 不携带 clientVariables：无工作空间 → 仅注入时间尾段（时间感知不丢）
         await ch._handle_message_stream(_build_stream_msg("普通消息", None, task="task-3"))
         m = captured[-1]
-        assert "project_dir" not in m.params and m.params["query"] == "普通消息"
+        assert "project_dir" not in m.params
+        assert m.params["query"].startswith("普通消息\n\n")
+        assert "<claw_time>" in m.params["query"] and "【当前时间】现在是" in m.params["query"]
+        assert re.search(r'"timestamp": "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"', m.params["query"])
 
         # 空消息（仅 variables）：不触发路由
         n = len(captured)

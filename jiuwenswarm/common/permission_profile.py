@@ -145,3 +145,20 @@ def with_workspace_directive(text: str, workspace: str, profile: Optional[str]) 
         f"<claw_workspace>{payload}</claw_workspace>\n"
         f"【工作空间】当前项目目录是 `{path}`。除非用户明确指定其他位置，否则所有新建与写入文件必须落在该目录下（可用相对路径）。"
     )
+
+
+def with_time_directive(text: str) -> str:
+    """无工作空间时仅注入当前时间提示（与 with_workspace_directive 同构的尾段）。
+
+    手机端未选择工作空间时 xiaoyi 渠道没有任何时间来源（不产生 claw_context，
+    也无 with_workspace_directive 的 payload），此函数保证时间感知不因缺工作空间而丢失。
+    尾段形态与工作空间指令一致（标签 + 【当前时间】说明行），可被既有剥离链处理
+    （billing_client 计费剥离、user_prompt_builder 尾段切分、桌面端 stripWorkspaceDirective）。
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = json.dumps({"timestamp": timestamp}, ensure_ascii=False)
+    return (
+        f"{text}\n\n"
+        f"<claw_time>{payload}</claw_time>\n"
+        f"【当前时间】现在是 {timestamp}，回答依赖当前时间的问题时以此为准。"
+    )

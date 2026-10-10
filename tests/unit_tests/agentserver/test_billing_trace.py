@@ -177,6 +177,21 @@ class TestXiaoyiBillingClient:
         assert post.calls[0]["payload"]["query"] == "整理桌面文件"
         assert post.calls[1]["payload"]["query"] == "整理桌面文件"
 
+    async def test_new_query_strips_time_directive(self, monkeypatch) -> None:
+        """未选工作空间时 with_time_directive 拼入的 <claw_time> 尾段不进计费 query。"""
+        post = _RecordingPost()
+        monkeypatch.setattr(billing_client, "_post_once", post)
+
+        timed = (
+            "现在几点了"
+            '\n\n<claw_time>{"timestamp": "2026-10-10 17:20:00"}</claw_time>\n'
+            "【当前时间】现在是 2026-10-10 17:20:00，回答依赖当前时间的问题时以此为准。"
+        )
+        assert billing_client.report_new(timed, "sess-1&abcd1234") is True
+        await _drain_report_tasks()
+
+        assert post.calls[0]["payload"]["query"] == "现在几点了"
+
     async def test_new_query_without_injection_untouched(self, monkeypatch) -> None:
         """无注入段的 query 原样透传（不误伤用户正文）。"""
         post = _RecordingPost()
