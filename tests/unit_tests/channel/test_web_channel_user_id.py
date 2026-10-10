@@ -161,9 +161,19 @@ def test_resolve_connection_user_id_empty():
     assert uid is None
 
 
-def test_resolve_connection_user_id_does_not_fallback_after_authentication():
-    ws = type("Ws", (), {"authenticated_user_id": ""})()
-    uid = WebChannel._resolve_connection_user_id({"user_id": "other"}, ws)
+def test_resolve_connection_user_id_client_declared_overrides_authenticated():
+    # 与 agent_os 稳定版契约一致：客户端声明（query user_id / X-User-Id，值为
+    # username）优先；authenticated_user_id（IAM UUID）只作认证门禁，
+    # 不参与连接身份推导（否则 /home/agentos/users/<uuid> 工作区不存在）。
+    ws = type("Ws", (), {"authenticated_user_id": "d8e63255-9dfd-4aa0-8b59-2b9096442154"})()
+    uid = WebChannel._resolve_connection_user_id({"user_id": "zhw"}, ws)
+    assert uid == "zhw"
+    assert WebChannel._connection_user_id(ws) == "zhw"
+
+
+def test_resolve_connection_user_id_ignores_authenticated_without_declaration():
+    ws = type("Ws", (), {"authenticated_user_id": "d8e63255-9dfd-4aa0-8b59-2b9096442154"})()
+    uid = WebChannel._resolve_connection_user_id({}, ws)
     assert uid is None
 
 

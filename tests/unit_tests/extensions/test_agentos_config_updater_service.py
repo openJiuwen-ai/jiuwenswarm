@@ -219,6 +219,7 @@ async def test_retryable_apply_retries_without_restarting_watch(monkeypatch):
         client=fake,
     )
     attempts = 0
+    applied = asyncio.Event()
 
     class FakeApplier:
         async def apply(self, fetched):
@@ -230,6 +231,7 @@ async def test_retryable_apply_retries_without_restarting_watch(monkeypatch):
                     errors=["temporary read failure"],
                     retryable=True,
                 )
+            applied.set()
             return ApplyResult(applied=True)
 
     async def watch_loop(on_event):
@@ -244,6 +246,7 @@ async def test_retryable_apply_retries_without_restarting_watch(monkeypatch):
     )
     task = asyncio.create_task(service._watch(fake, FakeApplier()))  # type: ignore[arg-type]
     await asyncio.wait_for(fake.watch_called.wait(), timeout=2)
+    await asyncio.wait_for(applied.wait(), timeout=2)
 
     assert attempts == 2
     assert fake.closed is False

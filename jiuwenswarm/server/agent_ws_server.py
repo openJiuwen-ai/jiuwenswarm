@@ -1076,6 +1076,31 @@ _MCP_KEY_SENSITIVE_SUBSTRINGS = frozenset({
 })
 
 
+def resolve_status_code_graph(config: dict | None, workspace: str) -> dict[str, object]:
+    """Port agent_os's SDK-backed status; do not create an Agent to inspect it."""
+    from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
+        product_code_graph_config, resolve_code_graph_flags, rewrite_code_graph_limit_message,
+    )
+
+    if not resolve_code_graph_flags(config).enabled:
+        return {"present": False, "state": "absent"}
+    try:
+        from openjiuwen.core.retrieval.code_graph.manager import get_code_graph_manager
+
+        cfg = product_code_graph_config(config)
+        stats = get_code_graph_manager(cfg).stats(workspace, config=cfg)
+        if not isinstance(stats, dict):
+            return {"present": False, "state": "absent"}
+        payload = dict(stats)
+        if payload.get("limit_exceeded"):
+            payload["state"] = "unavailable"
+        if payload.get("message"):
+            payload["message"] = rewrite_code_graph_limit_message(payload["message"])
+        return payload
+    except Exception as exc:
+        return {"present": False, "state": "unavailable", "message": str(exc)}
+
+
 class AgentWebSocketServer:
     """Gateway 与 AgentServer 之间的 WebSocket 服务端（单例）.
 
@@ -10796,6 +10821,9 @@ class AgentWebSocketServer:
                         "memory_warnings": memory_warnings,
                     },
                 )
+                from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+                if is_agentos_runtime():
+                    resp.payload["code_graph"] = resolve_status_code_graph(config, workspace_dir)
         except Exception as e:  # noqa: BLE001
             logger.exception("[AgentWebSocketServer] command.status failed: %s", e)
             resp = AgentResponse(

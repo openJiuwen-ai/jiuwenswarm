@@ -287,6 +287,8 @@ def _extract_watch_kvs(obj: Any) -> list[EtcdKv]:
     result = obj.get("result") if isinstance(obj.get("result"), dict) else obj
     if not isinstance(result, dict):
         return []
+    if result.get("canceled") or result.get("compact_revision"):
+        raise EtcdError(str(result.get("cancel_reason") or "watch canceled or compacted"))
     raw_events = result.get("events") or []
     if not isinstance(raw_events, list):
         return []

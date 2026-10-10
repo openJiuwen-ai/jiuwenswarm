@@ -78,8 +78,12 @@ async def test_web_channel_routes_session_message_status_to_owner_only(owner_use
     WebChannel._resolve_connection_user_id(
         {"user_id": owner_user_id} if owner_user_id else {}, owner
     )
-    other.authenticated_user_id = "other"
-    WebChannel._resolve_connection_user_id({"user_id": owner_user_id or "local"}, other)
+    # Session identity comes from the declared username; the authenticated IAM
+    # ID is only an authentication gate and does not replace that username.
+    other.authenticated_user_id = "other-iam-id"
+    WebChannel._resolve_connection_user_id({"user_id": "other"}, other)
+    assert WebChannel.connection_user_id(owner) == owner_user_id
+    assert WebChannel.connection_user_id(other) == "other"
     for client, user_id in ((owner, owner_user_id or "local-peer"), (other, "other")):
         await channel.register_ws(
             client,

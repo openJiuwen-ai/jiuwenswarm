@@ -67,6 +67,10 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _deep_agent_kv_cache_affinity_config,
     parse_int,
 )
+from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
+    CodeGraphFlags, parse_source_volume_to_bytes, resolve_code_graph_flags,
+)
 from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
     DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
     STATUSLINE_SETUP_AGENT_TYPE,
@@ -556,6 +560,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def __init__(self) -> None:
         super().__init__()
+        self._code_graph_sdk_available: bool | None = None
+        self._code_graph_profile_rail: Any = None
+        self._code_graph_settings: tuple[Any, ...] | None = None
+        self._code_graph_warmup_task: asyncio.Task[Any] | None = None
         # Code 模式专属 rails — 父类不定义这些属性
         self._lsp_rail: LspRail | None = None
         self._project_memory_rail: ProjectMemoryRail | None = None
@@ -580,6 +588,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._session_instance_spec: DeepAgentSpec | None = None
         self._session_instance_build_context: BuildContext | None = None
         self._session_instance_agent_definition: dict[str, Any] | None = None
+
+    async def cleanup(self) -> None:
+        if self._code_graph_warmup_task is not None:
+            self._code_graph_warmup_task.cancel()
+        await super().cleanup()
 
     # ─── Language override ────────────────────────
 
@@ -846,7 +859,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             react_config=config,
             model=model,
             card=agent_card,
-            system_prompt=build_code_system_prompt(),
+            system_prompt=build_code_system_prompt(
+                code_graph_profile=self._code_graph_flags(config_base).root_prompt_profile,
+            ),
             workspace_root=self._agent_workspace_dir,
             project_dir=self._project_dir,
             sys_operation=self._sys_operation,
@@ -1116,6 +1131,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # create_instance 对齐，否则 code 模式新建实例时不携带已激活扩展。
         await self._load_active_packages()
         await self.load_user_rails()
+        await self._sync_code_graph(config_base)
 
     def _capture_code_spec_rail_attributes(
         self,
@@ -1652,6 +1668,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         await self._sync_mcp_servers_for_runtime(config_base, tag="code.reload")
         await self._load_active_packages()
         await self.load_user_rails()
+        await self._sync_code_graph(config_base)
 
         await self._fan_out_reload_to_session_adapters(
             config_base,
@@ -1773,9 +1790,137 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 rail_name,
             )
 
-        return self._instantiate_rails(rail_infos, config_base)
+        rails = self._instantiate_rails(rail_infos, config_base)
+        if self._code_graph_flags(config_base).on_root:
+            self._code_graph_profile_rail = self._build_code_graph_profile_rail(config_base)
+            rails.append(self._code_graph_profile_rail)
+        return rails
 
     # ─── Code 专属 Rail 构建 ────────────────
+
+    def _code_graph_flags(self, config_base: dict[str, Any] | None) -> CodeGraphFlags:
+        """agent_os flags, enabled only in the AgentOS deployment."""
+        if not is_agentos_runtime():
+            return CodeGraphFlags()
+        flags = resolve_code_graph_flags(config_base)
+        if not flags.enabled:
+            return flags
+        if self._code_graph_sdk_available is None:
+            try:
+                from openjiuwen.core.retrieval.code_graph.models import CodeGraphConfig  # noqa: F401
+                from openjiuwen.core.retrieval.code_graph.manager import get_code_graph_manager  # noqa: F401
+                from openjiuwen.harness.rails.code_graph_profile_rail import CodeGraphProfileRail  # noqa: F401
+            except ImportError:
+                self._code_graph_sdk_available = False
+                logger.warning("[CodeGraph] SDK lacks Code Graph support; using text search")
+            else:
+                self._code_graph_sdk_available = True
+        return flags if self._code_graph_sdk_available else CodeGraphFlags()
+
+    def _resolve_code_graph_cache_dir(self, raw_cache: object) -> str:
+        """Port agent_os: relative paths follow the existing agent workspace."""
+        from pathlib import Path
+
+        workspace = self._agent_workspace_dir or self._project_dir
+        base = Path(workspace) if workspace else Path.cwd()
+        path = Path(str(raw_cache)).expanduser() if raw_cache else Path(".code_graph_cache")
+        return str((path if path.is_absolute() else base / path).resolve())
+
+    def _build_code_graph_config(self, config_base: dict[str, Any] | None) -> Any:
+        """Port agent_os's config construction without a separate coordinator."""
+        from openjiuwen.core.retrieval.code_graph.models import CodeGraphConfig
+
+        raw = (config_base or {}).get("code_graph")
+        if not isinstance(raw, dict):
+            raw = {}
+        defaults = CodeGraphConfig()
+        return CodeGraphConfig(
+            cache_dir=self._resolve_code_graph_cache_dir(raw.get("cache_dir")),
+            max_files=parse_int(raw.get("max_files"), defaults.max_files),
+            max_source_bytes=parse_source_volume_to_bytes(raw.get("max_source_bytes"), defaults.max_source_bytes),
+            max_build_rss_mb=parse_int(raw.get("max_build_rss_mb"), defaults.max_build_rss_mb),
+            max_cache_size_mb=parse_int(raw.get("max_cache_size_mb"),
+                                       defaults.max_cache_size_mb if defaults.max_cache_size_mb is not None else 2048),
+        )
+
+    def _build_code_graph_profile_rail(self, config_base: dict[str, Any]) -> Any:
+        # Keep agent_os's optional retrieval_interface argument handling.
+        import inspect
+        from openjiuwen.harness.rails.code_graph_profile_rail import CodeGraphProfileRail
+
+        flags = self._code_graph_flags(config_base)
+        kwargs = {"config": self._build_code_graph_config(config_base)}
+        if "retrieval_interface" in inspect.signature(CodeGraphProfileRail.__init__).parameters:
+            kwargs["retrieval_interface"] = flags.retrieval_interface
+        return CodeGraphProfileRail(flags.profile, **kwargs)
+
+    def _code_agent_graph_kwargs(self, config_base: dict[str, Any]) -> dict[str, Any]:
+        """Port agent_os's code_agent build kwargs; personal calls stay unchanged."""
+        flags = self._code_graph_flags(config_base)
+        if not flags.on_code_agent:
+            return {}
+        import inspect
+        from openjiuwen.harness.subagents.code_agent import create_code_agent
+
+        kwargs = {"code_graph_profile": flags.profile,
+                  "code_graph_config": self._build_code_graph_config(config_base)}
+        if "code_graph_retrieval_interface" in inspect.signature(create_code_agent).parameters:
+            kwargs["code_graph_retrieval_interface"] = flags.retrieval_interface
+        return kwargs
+
+    async def _sync_code_graph(self, config_base: dict[str, Any]) -> None:
+        """Apply the original rail after develop's tool/skill reload, then warm it."""
+        flags = self._code_graph_flags(config_base)
+        if not flags.enabled:
+            if self._code_graph_warmup_task is not None:
+                self._code_graph_warmup_task.cancel()
+                self._code_graph_warmup_task = None
+            self._code_graph_settings = None
+            if self._code_graph_profile_rail is None:
+                return
+        from openjiuwen.core.retrieval.code_graph.manager import get_code_graph_manager
+        from openjiuwen.harness.rails.code_graph_profile_rail import CodeGraphProfileRail
+
+        root = getattr(self, "_runtime_workspace_dir", None) or self._project_dir or self._workspace_dir
+        settings = (flags, root, deepcopy(config_base.get("code_graph")))
+        changed = settings != self._code_graph_settings
+        cfg = self._build_code_graph_config(config_base)
+        self._instance.deep_config.code_graph_config = cfg
+        await self._instance.ensure_initialized()
+        for old in list(self._instance.find_rails_by_type((CodeGraphProfileRail,))):
+            await self._instance.unregister_rail(old)
+        rail = self._code_graph_profile_rail
+        if changed or rail is None:
+            rail = self._build_code_graph_profile_rail(config_base) if flags.on_root else CodeGraphProfileRail("off")
+        remove_pending = getattr(self._instance, "remove_pending_rail", None)
+        if callable(remove_pending):
+            remove_pending(rail)
+        await self._instance.register_rail(rail)
+        self._code_graph_profile_rail = rail if flags.on_root else None
+        self._code_graph_settings = settings
+        stats = get_code_graph_manager(cfg).stats(str(root or ""), config=cfg)
+        if flags.on_root and (stats.get("limit_exceeded") or stats.get("state") in {"limit_exceeded", "unavailable"}):
+            rail.abandon_graph(self._instance, reason=str(stats.get("message") or "unavailable"))
+        if changed:
+            if self._code_graph_warmup_task is not None:
+                self._code_graph_warmup_task.cancel()
+            if flags.enabled and root:
+                self._code_graph_warmup_task = asyncio.create_task(self._warm_code_graph(str(root), cfg))
+
+    async def _warm_code_graph(self, root: str, cfg: Any) -> None:
+        # agent_os's background ensure_fresh, using its grammar preload helper.
+        from jiuwenswarm.server.runtime.agent_adapter.code_graph_setup import preload_code_graph_grammars
+        from openjiuwen.core.retrieval.code_graph.manager import get_code_graph_manager
+
+        try:
+            if not await asyncio.to_thread(preload_code_graph_grammars):
+                raise RuntimeError("Code Graph grammars unavailable")
+            await get_code_graph_manager(cfg).ensure_fresh(root, cfg)
+        except Exception as exc:
+            logger.warning("[CodeGraph] warmup failed: %s", exc)
+            rail = self._code_graph_profile_rail
+            if rail is not None:
+                rail.abandon_graph(self._instance, reason=str(exc))
 
     def _build_filesystem_rail(self) -> SysOperationRail | None:
         """构建 SysOperationRail（FileSystemRail）."""
@@ -2143,6 +2288,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         """
         react_cfg = config if isinstance(config, dict) else {}
         subagents_cfg = react_cfg.get("subagents")
+        if self._code_graph_flags(config_base).on_code_agent and not isinstance(subagents_cfg, dict):
+            subagents_cfg = {}
 
         resolved_language = self._resolve_runtime_language()
         workspace = self._workspace_dir or "./"
@@ -2217,7 +2364,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         if isinstance(subagents_cfg, dict):
             # code_agent subagent — 按配置启用
             code_agent_cfg = subagents_cfg.get("code_agent")
-            if self._is_subagent_enabled(code_agent_cfg):
+            if self._is_subagent_enabled(code_agent_cfg) or self._code_graph_flags(config_base).on_code_agent:
+                if not isinstance(code_agent_cfg, dict):
+                    code_agent_cfg = {}
                 code_agent_rails = None
                 # 复用主 Agent 已构建的 CodingMemoryRail
                 coding_memory_rail = self._coding_memory_rail
@@ -2235,8 +2384,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         code_agent_cfg.get("max_iterations"),
                         parse_int(react_cfg.get("max_iterations"), 100),
                     ),
+                    **self._code_agent_graph_kwargs(config_base),
                 )
-                code_spec.factory_kwargs = {"auto_create_workspace": False}
+                if self._code_graph_flags(config_base).on_code_agent:
+                    code_spec.factory_kwargs["auto_create_workspace"] = False
+                else:
+                    code_spec.factory_kwargs = {"auto_create_workspace": False}
                 subagents.append(code_spec)
 
             # browser_agent
@@ -2532,6 +2685,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             runtime_config.request_metadata,
         )
         self._update_prompt_for_mode(runtime_config.mode, resolved_language)
+        await self._sync_code_graph(self._active_code_config())
 
         # user_todos channel_id per-request sync
         try:
