@@ -65,6 +65,7 @@ import {
   useTodoStore,
   useGoalStore,
   useHarnessStore,
+  usePlanStore,
   useWorkspaceStore,
   useCronStore,
   useSubagentStore,
@@ -1936,6 +1937,19 @@ function AppContent() {
         const pendingSkills = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID)?.selectedSkills ?? [];
         pendingSkills.forEach((skill) => useSessionStore.getState().addSelectedSkill(newSid, skill));
         useSessionStore.getState().clearSelectedSkills(NEW_CONVERSATION_ID);
+        // Plan 开关是按 session 存的。欢迎页上开关记在 'new' 名下，这里必须搬到真实
+        // 会话，否则 sendMessage 取到的是新会话的默认值 false，这条消息就不会带
+        // `.plan`，整个 Plan 流程（只读约束、计划审批弹窗）全都不会触发。
+        if (usePlanStore.getState().isActive(NEW_CONVERSATION_ID)) {
+          // 连"用户手动打开开关"这个一次性标记一起搬过去：欢迎页那次点击就是显式
+          // 进入 Plan，标记决定这条消息是否带 plan_entry_source。
+          usePlanStore.getState().setActive(newSid, true, {
+            explicitEntry: usePlanStore
+              .getState()
+              .hasPendingExplicitEntry(NEW_CONVERSATION_ID),
+          });
+        }
+        usePlanStore.getState().removeRuntime(NEW_CONVERSATION_ID);
         useWorkspaceStore.getState().upsertSession(createdSession, { isNew: true });
         promotedFromNewSessionIdsRef.current.add(newSid);
         useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
@@ -2079,7 +2093,7 @@ function AppContent() {
   ) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) {
-      return Promise.resolve();
+      return Promise.resolve(false);
     }
     return sendUserAnswer(currentSessionId, requestId, answers, source, status);
   }, [sendUserAnswer]);

@@ -49,6 +49,15 @@ from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.runtime.skill.workspace_provider import SkillWorkspaceProvider
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.common.config import get_config, get_permissions_file_guard_workspace_access
+from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
+    PLAN_EXECUTE_OPTION_VALUES,
+    PLAN_SKIP_OPTION_VALUES,
+    plan_skip_feedback,
+)
+from jiuwenswarm.common.mode_matrix import (
+    is_web_composable_mode,
+    read_request_work_mode,
+)
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.ask_user import normalize_ask_user_response
@@ -1518,16 +1527,34 @@ class JiuWenSwarm:
 
     @staticmethod
     def _adapter_mode_for_request(request: AgentRequest) -> str:
+        """选择 Deep / Code adapter。
+
+        Web 请求（显式携带 ``work_mode``）由 ``work_mode`` 决定 profile：
+        ``code`` 走 CodeAdapter，``work`` 走 DeepAdapter。TUI 等历史客户端不带
+        ``work_mode``，继续按完整 mode 串判定，行为不变。
+        """
         params = request.params if isinstance(request.params, dict) else {}
+        work_mode = read_request_work_mode(params)
         raw_mode = params.get("mode", "")
-        if isinstance(raw_mode, str):
-            mode = raw_mode.strip().lower()
-            if mode == "team.plan":
-                return "code"
-            if mode == "code" or mode.startswith("code."):
-                return "code"
-            if mode == "flash" or mode.startswith("flash."):
-                return "flash"
+        mode = raw_mode.strip().lower() if isinstance(raw_mode, str) else ""
+        # 新版 mode_matrix 把 ``team`` 也列为 Web 可组合模式，但集群 adapter
+        # 选型从不随 work_mode 改变（4413 的矩阵尚未把 team 纳入组合集）。
+        # 当前所有发送方都保证 mode 非空（Web 出站恒带 mode、cron 恒非空、
+        # IM/TUI 不带 work_mode 走 legacy 分支），``mode or "agent"`` 仅为
+        # 防御性兜底；空 mode + work_mode=code 理论上会选 CodeAdapter（与
+        # 历史默认 DeepAdapter 不同），该组合现不可达。
+        if (
+            work_mode is not None
+            and mode != "team"
+            and is_web_composable_mode(mode or "agent")
+        ):
+            return "code" if work_mode == "code" else "agent"
+        if mode == "team.plan":
+            return "code"
+        if mode == "code" or mode.startswith("code."):
+            return "code"
+        if mode == "flash" or mode.startswith("flash."):
+            return "flash"
         return "agent"
 
     async def create_instance(
@@ -2185,6 +2212,27 @@ class JiuWenSwarm:
                 "auto_confirm": True,
                 "persist_allow": True,
                 "feedback": "",
+            }
+        elif value in PLAN_EXECUTE_OPTION_VALUES:
+            # Web 的"执行"：批准并退出 plan，但本轮不再调模型。真正的执行由前端
+            # 紧接着补发的普通消息开启新一轮完成。``plan_execute`` 是额外键，
+            # ConfirmPayload 会忽略它，rail 在校验前从原始 dict 读取。
+            confirm_payload = {
+                "approved": True,
+                "auto_confirm": False,
+                "feedback": "",
+                "plan_execute": True,
+            }
+        elif value in PLAN_SKIP_OPTION_VALUES:
+            # Web 的"跳过"：不退出 plan，也不继续修改，直接结束本轮。
+            # ``plan_skip`` 是额外键，ConfirmPayload 会忽略它；
+            # PlanApprovalInterruptRail 在校验前从原始 dict 读取该标记。
+            confirm_payload = {
+                "approved": False,
+                "auto_confirm": False,
+                "feedback": custom_input
+                or plan_skip_feedback(get_config().get("preferred_language")),
+                "plan_skip": True,
             }
         elif value in ("reject", "拒绝", "Reject", "继续规划", "其他意见"):
             feedback = custom_input or (
@@ -4241,6 +4289,20 @@ class JiuWenSwarm:
         if self._adapter is None:
             return None
         return await self._adapter.ensure_instance()
+
+    def get_live_session_instance(self, session_id: str | None):
+        """Return the DeepAgent already running ``session_id``, if any.
+
+        Returns None when no adapter exists, when the adapter predates this
+        accessor, or when the session has not started a child adapter yet.
+        """
+        adapter = self._adapter
+        if adapter is None:
+            return None
+        getter = getattr(adapter, "get_live_session_instance", None)
+        if getter is None:
+            return None
+        return getter(session_id)
 
     async def apply_package_change_to_session_adapters(
         self,
