@@ -27,11 +27,19 @@ def _parse_chunk(chunk_str: str) -> dict | None:
     """解析单个数据块 JSON。"""
     if not chunk_str or not chunk_str.startswith("data:"):
         return None
+    payload = chunk_str[5:].strip()
+    if payload == "[DONE]":
+        return None
     try:
-        return json.loads(chunk_str[5:].strip())
+        chunk = json.loads(payload)
     except json.JSONDecodeError as e:
         logger.info("[ParserPatch] JSON 解析错误: %s", e)
         return None
+    if isinstance(chunk, dict) and chunk.get("error") is not None:
+        raise RuntimeError(
+            "Upstream SSE error: " + json.dumps(chunk["error"], ensure_ascii=False)
+        )
+    return chunk
 
 
 def _extract_message_content(chunk: dict) -> tuple[str, str]:
@@ -92,6 +100,8 @@ def assemble_openai_response(response: str) -> Any:
                     content += out
                     last_chunk = chunk
         elif line.startswith("data:"):
+            # Validate before buffering: a later frame must not hide an error.
+            _parse_chunk(line)
             cache_chunk = line
 
     # 处理最后一个 chunk

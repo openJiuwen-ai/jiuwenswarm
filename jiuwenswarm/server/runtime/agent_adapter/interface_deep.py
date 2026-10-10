@@ -45,6 +45,7 @@ from openjiuwen.core.session.checkpointer import CheckpointerFactory
 from openjiuwen.core.session.checkpointer.checkpointer import CheckpointerConfig
 from openjiuwen.core.session.checkpointer.persistence import PersistenceCheckpointerProvider
 from openjiuwen.core.single_agent import AgentCard, ReActAgentConfig
+from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentRail
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
 from openjiuwen.core.sys_operation import (
     SysOperation,
@@ -3902,7 +3903,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         *,
         model_name_override: str | None = None,
     ) -> None:
-        """将指定模型应用到 react_agent 实例（替换 _llm 和 _config 字段）。
+        """将当前请求的有效模型同步到主执行器和子代理继承配置。
 
         react_agent._railed_model_call 使用 self._config.model_name 作为 model= 参数，
         因此需要同时替换 _llm 和 _config 中的模型相关字段。
@@ -3914,15 +3915,23 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         react_agent = getattr(self._instance, "_react_agent", None)
         if react_agent is None:
             return
-        if callable(getattr(react_agent, "set_llm", None)):
-            react_agent.set_llm(model)
         override = (model_name_override or "").strip() or None
         base_name = getattr(model.model_config, "model_name", None)
         effective_name = override or base_name
         request_config = model.model_config
-        if override and request_config is not None:
+        if override and override != base_name and request_config is not None:
             request_config = copy.copy(request_config)
             request_config.model_name = override
+            model = TraceAwareModel(
+                model_client_config=model.model_client_config,
+                model_config=request_config,
+                trace_header_exporters=get_xiaoyi_trace_header_exporters(),
+            )
+        if callable(getattr(react_agent, "set_llm", None)):
+            react_agent.set_llm(model)
+        deep_config = getattr(self._instance, "_deep_config", None)
+        if deep_config is not None:
+            deep_config.model = model
         config = getattr(react_agent, "_config", None)
         if config is not None:
             config.model_name = effective_name
@@ -13522,7 +13531,7 @@ def _load_custom_subagents(
     return result
 
 
-# === [JiuWenSwarm patch] subagent sandbox follows config.yaml ===============
+# === [JiuWenSwarm patch] subagent streaming and sandbox defaults ===========
 # 子代理创建后按 config.yaml 的 sandbox.enabled 设置本地路径检查。
 # 调用方：create_subagent 补丁，以及自定义 Agent 的 create_deep_agent。
 # - false：restrict_to_sandbox=False，不拦截工作区外路径。
@@ -13570,15 +13579,30 @@ def _jws_sync_subagent_sandbox(sub, subagent_type: str, shared_root: str | None 
     # pylint: enable=protected-access
 
 
-def _jws_install_subagent_sandbox_widen_patch() -> None:
+class _SubagentStreamingRail(AgentRail):
+    """Use ReAct's native stream accumulation while keeping invoke's result.
+
+    The desktop gateway can return empty messages for non-streaming calls.
+    Set the core's streaming flag on the inner model-call context, not the
+    outer DeepAgent context, so tool rounds and resumes use the same path.
+    """
+
+    async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        ctx.extra["_streaming"] = True
+
+
+def _jws_install_subagent_runtime_patch() -> None:
     # DeepAgent 已在模块级导入(顶部 `from openjiuwen.harness import DeepAgent`),
     # 此处直接复用,避免函数内重复 import 造成同名遮蔽(huawei-redefined-outer-name)。
-    if getattr(DeepAgent, "_jws_subagent_sandbox_widen", False):
+    if getattr(DeepAgent, "_jws_subagent_runtime", False):
         return
     _orig_create_subagent = DeepAgent.create_subagent
 
-    def _create_subagent_widen_sandbox(self, subagent_type, subsession_id, *args, **kwargs):
+    def _create_subagent_with_runtime_defaults(self, subagent_type, subsession_id, *args, **kwargs):
         sub = _orig_create_subagent(self, subagent_type, subsession_id, *args, **kwargs)
+        # A configured DeepAgent instance may be reused across task calls.
+        if not sub.find_rails_by_type((_SubagentStreamingRail,)):
+            sub.add_rail(_SubagentStreamingRail())
         # pylint: disable=protected-access
         parent_ws = getattr(self._deep_config, "workspace", None)
         # pylint: enable=protected-access
@@ -13589,14 +13613,14 @@ def _jws_install_subagent_sandbox_widen_patch() -> None:
             str(shared_root) if shared_root else None,
         )
         return sub
-    DeepAgent.create_subagent = _create_subagent_widen_sandbox
-    DeepAgent._jws_subagent_sandbox_widen = True  # pylint: disable=protected-access
+    DeepAgent.create_subagent = _create_subagent_with_runtime_defaults
+    DeepAgent._jws_subagent_runtime = True  # pylint: disable=protected-access
     logger.info(
-        "[JiuWenSwarm] installed general-purpose subagent sandbox-widen patch"
+        "[JiuWenSwarm] installed subagent streaming and sandbox defaults"
     )
 
 
-_jws_install_subagent_sandbox_widen_patch()
+_jws_install_subagent_runtime_patch()
 # === [JiuWenSwarm patch end] ================================================
 
 
