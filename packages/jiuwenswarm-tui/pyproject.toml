@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "workswarm-tui"  # build-config: tui-name
+name = "jiuwenswarm-tui"  # build-config: tui-name
 version = "0.2.5.beta1"  # build-config: tui-version
 description = "Native terminal UI launcher for JiuwenSwarm"
 requires-python = ">=3.11,<3.14"

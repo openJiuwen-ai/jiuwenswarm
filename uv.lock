@@ -2002,6 +2002,329 @@ wheels = [
 ]
 
 [[package]]
+name = "jiuwenswarm"
+version = "0.2.5b1"
+source = { editable = "." }
+dependencies = [
+    { name = "a2ui-agent-sdk" },
+    { name = "aiosqlite" },
+    { name = "certifi" },
+    { name = "chromadb" },
+    { name = "croniter" },
+    { name = "dingtalk-stream" },
+    { name = "discord-py" },
+    { name = "faiss-cpu" },
+    { name = "fastapi" },
+    { name = "fastmcp" },
+    { name = "filelock" },
+    { name = "gitcode-api" },
+    { name = "gitcode-cli" },
+    { name = "google-adk" },
+    { name = "google-api-core" },
+    { name = "google-genai" },
+    { name = "greenlet" },
+    { name = "httpx", extra = ["http2", "socks"] },
+    { name = "json-repair" },
+    { name = "lark-oapi" },
+    { name = "loguru" },
+    { name = "lxml" },
+    { name = "mcp" },
+    { name = "mutagen" },
+    { name = "numpy" },
+    { name = "openjiuwen" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-sdk" },
+    { name = "pgvector" },
+    { name = "pillow" },
+    { name = "playwright" },
+    { name = "portalocker" },
+    { name = "prompt-toolkit" },
+    { name = "protobuf" },
+    { name = "psutil" },
+    { name = "pydantic" },
+    { name = "python-multipart" },
+    { name = "python-socks" },
+    { name = "python-telegram-bot" },
+    { name = "pyyaml" },
+    { name = "ruamel-yaml" },
+    { name = "skillnet-ai" },
+    { name = "slack-bolt" },
+    { name = "sqlite-vec" },
+    { name = "starlette" },
+    { name = "tree-sitter" },
+    { name = "tree-sitter-bash" },
+    { name = "uv" },
+    { name = "uvicorn", extra = ["standard"] },
+    { name = "websockets" },
+    { name = "wecom-aibot-sdk" },
+]
+
+[package.optional-dependencies]
+a2a = [
+    { name = "a2a-sdk", extra = ["http-server"] },
+]
+claude = [
+    { name = "openjiuwen", extra = ["claude"] },
+]
+codex = [
+    { name = "openjiuwen", extra = ["codex"] },
+]
+desktop = [
+    { name = "pywebview" },
+]
+dev = [
+    { name = "pyinstaller" },
+    { name = "pywebview" },
+]
+distribute = [
+    { name = "openjiuwen", extra = ["postgres", "zmq"] },
+]
+harmony = [
+    { name = "a2ui-agent-sdk" },
+    { name = "aiosqlite" },
+    { name = "croniter" },
+    { name = "dingtalk-stream" },
+    { name = "discord-py" },
+    { name = "fastapi" },
+    { name = "filelock" },
+    { name = "gitcode-api" },
+    { name = "google-genai" },
+    { name = "greenlet" },
+    { name = "httptools" },
+    { name = "httpx", extra = ["socks"] },
+    { name = "json-repair" },
+    { name = "lark-oapi" },
+    { name = "loguru" },
+    { name = "lxml" },
+    { name = "mutagen" },
+    { name = "openjiuwen" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-sdk" },
+    { name = "pgvector" },
+    { name = "pillow" },
+    { name = "portalocker" },
+    { name = "pydantic" },
+    { name = "python-multipart" },
+    { name = "python-socks" },
+    { name = "python-telegram-bot" },
+    { name = "pyyaml" },
+    { name = "ruamel-yaml" },
+    { name = "skillnet-ai" },
+    { name = "slack-bolt" },
+    { name = "uvicorn", extra = ["standard"] },
+    { name = "wecom-aibot-sdk" },
+]
+ssh = [
+    { name = "asyncssh" },
+]
+test = [
+    { name = "a2a-sdk", extra = ["http-server"] },
+    { name = "asyncssh" },
+    { name = "coverage" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-html" },
+    { name = "pytest-mock" },
+    { name = "pyyaml" },
+]
+tui = [
+    { name = "jiuwenswarm-tui" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "a2a-sdk", extra = ["http-server"] },
+    { name = "asyncssh" },
+    { name = "codespell" },
+    { name = "coverage" },
+    { name = "httpx", extra = ["socks"] },
+    { name = "mypy" },
+    { name = "pylint" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-html" },
+    { name = "pytest-mock" },
+    { name = "pyyaml" },
+    { name = "ruff" },
+]
+lint = [
+    { name = "codespell" },
+    { name = "httpx", extra = ["socks"] },
+    { name = "mypy" },
+    { name = "pylint" },
+    { name = "ruff" },
+]
+test = [
+    { name = "a2a-sdk", extra = ["http-server"] },
+    { name = "asyncssh" },
+    { name = "coverage" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-html" },
+    { name = "pytest-mock" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'a2a'", specifier = "==1.0.0" },
+    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'test'", specifier = "==1.0.0" },
+    { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
+    { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
+    { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
+    { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
+    { name = "asyncssh", marker = "extra == 'ssh'", specifier = ">=2.14.0,<2.24" },
+    { name = "asyncssh", marker = "extra == 'test'", specifier = ">=2.14.0,<2.24" },
+    { name = "certifi", specifier = ">=2024.8.30,<2027" },
+    { name = "chromadb", specifier = ">=1.5.0,<2" },
+    { name = "coverage", marker = "extra == 'test'", specifier = ">=7.7.1" },
+    { name = "croniter", specifier = ">=2.0.0,<7" },
+    { name = "croniter", marker = "extra == 'harmony'", specifier = ">=2.0.0" },
+    { name = "dingtalk-stream", specifier = ">=0.24.3,<0.25" },
+    { name = "dingtalk-stream", marker = "extra == 'harmony'", specifier = ">=0.24.3" },
+    { name = "discord-py", specifier = ">=2.4.0,<3" },
+    { name = "discord-py", marker = "extra == 'harmony'", specifier = ">=2.4.0" },
+    { name = "faiss-cpu", specifier = ">=1.7.0,<2" },
+    { name = "fastapi", specifier = ">=0.115,<1.0" },
+    { name = "fastapi", marker = "extra == 'harmony'", specifier = ">=0.115" },
+    { name = "fastmcp", specifier = ">=2.14.2,<3.4.1" },
+    { name = "filelock", specifier = ">=3.25.0,<4" },
+    { name = "filelock", marker = "extra == 'harmony'", specifier = ">=3.25.0,<4" },
+    { name = "gitcode-api", specifier = ">=1.2.20,<2" },
+    { name = "gitcode-api", marker = "extra == 'harmony'", specifier = ">=1.2.20" },
+    { name = "gitcode-cli", specifier = "==0.12.0" },
+    { name = "google-adk", specifier = ">=1.28.0,<2.2" },
+    { name = "google-api-core", specifier = ">=1.26,<2.36" },
+    { name = "google-genai", specifier = ">=1.68.0,<2" },
+    { name = "google-genai", marker = "extra == 'harmony'", specifier = ">=1.68.0" },
+    { name = "greenlet", specifier = ">=3.3.2,<4" },
+    { name = "greenlet", marker = "extra == 'harmony'", specifier = ">=3.3.2" },
+    { name = "httptools", marker = "extra == 'harmony'", specifier = ">=0.6.3" },
+    { name = "httpx", extras = ["http2", "socks"], specifier = ">=0.27,<1.0" },
+    { name = "httpx", extras = ["socks"], marker = "extra == 'harmony'", specifier = ">=0.27" },
+    { name = "jiuwenswarm-tui", marker = "extra == 'tui'", directory = "packages/jiuwenswarm-tui" },
+    { name = "json-repair", specifier = ">=0.30.0,<0.60" },
+    { name = "json-repair", marker = "extra == 'harmony'", specifier = ">=0.30.0" },
+    { name = "lark-oapi", specifier = ">=1.5.3,<2" },
+    { name = "lark-oapi", marker = "extra == 'harmony'", specifier = ">=1.5.3" },
+    { name = "loguru", specifier = ">=0.7.3,<0.8" },
+    { name = "loguru", marker = "extra == 'harmony'", specifier = ">=0.7.3" },
+    { name = "lxml", specifier = ">=6.1.0,<7" },
+    { name = "lxml", marker = "extra == 'harmony'", specifier = ">=6.1.0" },
+    { name = "mcp", specifier = ">=1.28.1,<2" },
+    { name = "mutagen", specifier = ">=1.47.0,<2" },
+    { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
+    { name = "numpy", specifier = ">=1.24.0,<3" },
+    { name = "openjiuwen", specifier = "==0.1.19" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", specifier = "==0.1.19" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'" },
+    { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
+    { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28.0,<1.42" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
+    { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.28.0,<1.42" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
+    { name = "opentelemetry-sdk", specifier = ">=1.28.0,<1.42" },
+    { name = "opentelemetry-sdk", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
+    { name = "pgvector", specifier = ">=0.4.2,<0.5" },
+    { name = "pgvector", marker = "extra == 'harmony'", specifier = ">=0.4.2" },
+    { name = "pillow", specifier = ">=12.2.0,<13" },
+    { name = "pillow", marker = "extra == 'harmony'", specifier = ">=12.2.0" },
+    { name = "playwright", specifier = ">=1.40,<2" },
+    { name = "portalocker", specifier = ">=3.2.0,<4" },
+    { name = "portalocker", marker = "extra == 'harmony'", specifier = ">=3.2.0" },
+    { name = "prompt-toolkit", specifier = ">=3.0,<4.0" },
+    { name = "protobuf", specifier = ">=5.29.5,<7" },
+    { name = "psutil", specifier = ">=7.2.2,<8" },
+    { name = "pydantic", specifier = ">=2.0,<3.0" },
+    { name = "pydantic", marker = "extra == 'harmony'", specifier = ">=2.0" },
+    { name = "pyinstaller", marker = "extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.3.5" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=1.0.0" },
+    { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=7.0.0" },
+    { name = "pytest-html", marker = "extra == 'test'", specifier = ">=4.1.1" },
+    { name = "pytest-mock", marker = "extra == 'test'", specifier = ">=3.14.0" },
+    { name = "python-multipart", specifier = ">=0.0.31,<0.1" },
+    { name = "python-multipart", marker = "extra == 'harmony'", specifier = ">=0.0.31" },
+    { name = "python-socks", specifier = ">=2.8.1,<3" },
+    { name = "python-socks", marker = "extra == 'harmony'", specifier = ">=2.8.1" },
+    { name = "python-telegram-bot", specifier = ">=20.0,<23" },
+    { name = "python-telegram-bot", marker = "extra == 'harmony'", specifier = ">=20.0" },
+    { name = "pywebview", marker = "extra == 'desktop'", specifier = ">=5.4,<7" },
+    { name = "pywebview", marker = "extra == 'dev'", specifier = ">=5.4,<7" },
+    { name = "pyyaml", specifier = ">=6.0,<7" },
+    { name = "pyyaml", marker = "extra == 'harmony'", specifier = ">=6.0" },
+    { name = "pyyaml", marker = "extra == 'test'", specifier = ">=6.0" },
+    { name = "ruamel-yaml", specifier = ">=0.18.0,<0.20" },
+    { name = "ruamel-yaml", marker = "extra == 'harmony'", specifier = ">=0.18.0" },
+    { name = "skillnet-ai", specifier = "==0.0.16" },
+    { name = "skillnet-ai", marker = "extra == 'harmony'", specifier = "==0.0.16" },
+    { name = "slack-bolt", specifier = ">=1.30.0,<2" },
+    { name = "slack-bolt", marker = "extra == 'harmony'", specifier = ">=1.30.0" },
+    { name = "sqlite-vec", specifier = "==0.1.6" },
+    { name = "starlette", specifier = ">=0.49.1,<1" },
+    { name = "tree-sitter", specifier = ">=0.25.0,<0.26.0" },
+    { name = "tree-sitter-bash", specifier = ">=0.25.0,<0.26.0" },
+    { name = "uv", specifier = ">=0.4.0,<0.13" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'harmony'", specifier = ">=0.30" },
+    { name = "websockets", specifier = ">=12.0,<16" },
+    { name = "wecom-aibot-sdk", specifier = ">=1.0.5,<2" },
+    { name = "wecom-aibot-sdk", marker = "extra == 'harmony'", specifier = ">=1.0.5" },
+]
+provides-extras = ["harmony", "a2a", "ssh", "desktop", "dev", "tui", "distribute", "claude", "codex", "shell-ast", "test"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "a2a-sdk", extras = ["http-server"], specifier = "==1.0.0" },
+    { name = "asyncssh", specifier = ">=2.14.0,<2.24" },
+    { name = "codespell", specifier = ">=2.2.4" },
+    { name = "coverage", specifier = ">=7.7.1" },
+    { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
+    { name = "mypy", specifier = ">=1.12.0" },
+    { name = "pylint", specifier = ">=3.0.0" },
+    { name = "pytest", specifier = ">=8.3.5" },
+    { name = "pytest-asyncio", specifier = ">=1.0.0" },
+    { name = "pytest-cov", specifier = ">=7.0.0" },
+    { name = "pytest-html", specifier = ">=4.1.1" },
+    { name = "pytest-mock", specifier = ">=3.14.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "ruff", specifier = ">=0.11.2" },
+]
+lint = [
+    { name = "codespell", specifier = ">=2.2.4" },
+    { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
+    { name = "mypy", specifier = ">=1.12.0" },
+    { name = "pylint", specifier = ">=3.0.0" },
+    { name = "ruff", specifier = ">=0.11.2" },
+]
+test = [
+    { name = "a2a-sdk", extras = ["http-server"], specifier = "==1.0.0" },
+    { name = "asyncssh", specifier = ">=2.14.0,<2.24" },
+    { name = "coverage", specifier = ">=7.7.1" },
+    { name = "pytest", specifier = ">=8.3.5" },
+    { name = "pytest-asyncio", specifier = ">=1.0.0" },
+    { name = "pytest-cov", specifier = ">=7.0.0" },
+    { name = "pytest-html", specifier = ">=4.1.1" },
+    { name = "pytest-mock", specifier = ">=3.14.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+]
+
+[[package]]
+name = "jiuwenswarm-tui"
+version = "0.2.5b1"
+source = { directory = "packages/jiuwenswarm-tui" }
+
+[[package]]
 name = "joserfc"
 version = "1.6.4"
 source = { registry = "https://pypi.org/simple" }
@@ -2953,8 +3276,8 @@ wheels = [
 
 [[package]]
 name = "openjiuwen"
-version = "0.1.18"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=4fd009e175515775af1d069978d833d7989d5fad#4fd009e175515775af1d069978d833d7989d5fad" }
+version = "0.1.19"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },
@@ -2997,6 +3320,10 @@ dependencies = [
     { name = "tiktoken" },
     { name = "trafilatura" },
     { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/34/75/d88edbdb0916dd10266c60eca8461f0b2c3eae95bceddaa33a07e5a6719a/openjiuwen-0.1.19.tar.gz", hash = "sha256:bb830be188968d6f46d83443121e2abf1ca469c187ec64ae443335281c32fbb4", size = 6177143, upload-time = "2026-09-30T02:04:05.652Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b5/66/41b5a462a251bcb9b0dee7f2ba3985f0f1404e96524e677da299afd88549/openjiuwen-0.1.19-py3-none-any.whl", hash = "sha256:cfe93af9642325adaabbac1b09630527d181a3af14b4d9e7b91fe1f777f7bf53", size = 7741321, upload-time = "2026-09-30T02:04:02.216Z" },
 ]
 
 [package.optional-dependencies]
@@ -5647,329 +5974,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/b3/8f/705086c9d734d3b66
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/07/c6fe3ad3e685340704d314d765b7912993bcb8dc198f0e7a89382d37974b/win32_setctime-1.2.0-py3-none-any.whl", hash = "sha256:95d644c4e708aba81dc3704a116d8cbc974d70b3bdb8be1d150e36be6e9d1390", size = 4083, upload-time = "2024-12-07T15:28:26.465Z" },
 ]
-
-[[package]]
-name = "workswarm"
-version = "0.2.5b1"
-source = { editable = "." }
-dependencies = [
-    { name = "a2ui-agent-sdk" },
-    { name = "aiosqlite" },
-    { name = "certifi" },
-    { name = "chromadb" },
-    { name = "croniter" },
-    { name = "dingtalk-stream" },
-    { name = "discord-py" },
-    { name = "faiss-cpu" },
-    { name = "fastapi" },
-    { name = "fastmcp" },
-    { name = "filelock" },
-    { name = "gitcode-api" },
-    { name = "gitcode-cli" },
-    { name = "google-adk" },
-    { name = "google-api-core" },
-    { name = "google-genai" },
-    { name = "greenlet" },
-    { name = "httpx", extra = ["http2", "socks"] },
-    { name = "json-repair" },
-    { name = "lark-oapi" },
-    { name = "loguru" },
-    { name = "lxml" },
-    { name = "mcp" },
-    { name = "mutagen" },
-    { name = "numpy" },
-    { name = "openjiuwen" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-exporter-otlp-proto-grpc" },
-    { name = "opentelemetry-exporter-otlp-proto-http" },
-    { name = "opentelemetry-sdk" },
-    { name = "pgvector" },
-    { name = "pillow" },
-    { name = "playwright" },
-    { name = "portalocker" },
-    { name = "prompt-toolkit" },
-    { name = "protobuf" },
-    { name = "psutil" },
-    { name = "pydantic" },
-    { name = "python-multipart" },
-    { name = "python-socks" },
-    { name = "python-telegram-bot" },
-    { name = "pyyaml" },
-    { name = "ruamel-yaml" },
-    { name = "skillnet-ai" },
-    { name = "slack-bolt" },
-    { name = "sqlite-vec" },
-    { name = "starlette" },
-    { name = "tree-sitter" },
-    { name = "tree-sitter-bash" },
-    { name = "uv" },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "websockets" },
-    { name = "wecom-aibot-sdk" },
-]
-
-[package.optional-dependencies]
-a2a = [
-    { name = "a2a-sdk", extra = ["http-server"] },
-]
-claude = [
-    { name = "openjiuwen", extra = ["claude"] },
-]
-codex = [
-    { name = "openjiuwen", extra = ["codex"] },
-]
-desktop = [
-    { name = "pywebview" },
-]
-dev = [
-    { name = "pyinstaller" },
-    { name = "pywebview" },
-]
-distribute = [
-    { name = "openjiuwen", extra = ["postgres", "zmq"] },
-]
-harmony = [
-    { name = "a2ui-agent-sdk" },
-    { name = "aiosqlite" },
-    { name = "croniter" },
-    { name = "dingtalk-stream" },
-    { name = "discord-py" },
-    { name = "fastapi" },
-    { name = "filelock" },
-    { name = "gitcode-api" },
-    { name = "google-genai" },
-    { name = "greenlet" },
-    { name = "httptools" },
-    { name = "httpx", extra = ["socks"] },
-    { name = "json-repair" },
-    { name = "lark-oapi" },
-    { name = "loguru" },
-    { name = "lxml" },
-    { name = "mutagen" },
-    { name = "openjiuwen" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-exporter-otlp-proto-grpc" },
-    { name = "opentelemetry-exporter-otlp-proto-http" },
-    { name = "opentelemetry-sdk" },
-    { name = "pgvector" },
-    { name = "pillow" },
-    { name = "portalocker" },
-    { name = "pydantic" },
-    { name = "python-multipart" },
-    { name = "python-socks" },
-    { name = "python-telegram-bot" },
-    { name = "pyyaml" },
-    { name = "ruamel-yaml" },
-    { name = "skillnet-ai" },
-    { name = "slack-bolt" },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "wecom-aibot-sdk" },
-]
-ssh = [
-    { name = "asyncssh" },
-]
-test = [
-    { name = "a2a-sdk", extra = ["http-server"] },
-    { name = "asyncssh" },
-    { name = "coverage" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-html" },
-    { name = "pytest-mock" },
-    { name = "pyyaml" },
-]
-tui = [
-    { name = "workswarm-tui" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "a2a-sdk", extra = ["http-server"] },
-    { name = "asyncssh" },
-    { name = "codespell" },
-    { name = "coverage" },
-    { name = "httpx", extra = ["socks"] },
-    { name = "mypy" },
-    { name = "pylint" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-html" },
-    { name = "pytest-mock" },
-    { name = "pyyaml" },
-    { name = "ruff" },
-]
-lint = [
-    { name = "codespell" },
-    { name = "httpx", extra = ["socks"] },
-    { name = "mypy" },
-    { name = "pylint" },
-    { name = "ruff" },
-]
-test = [
-    { name = "a2a-sdk", extra = ["http-server"] },
-    { name = "asyncssh" },
-    { name = "coverage" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-html" },
-    { name = "pytest-mock" },
-    { name = "pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'a2a'", specifier = "==1.0.0" },
-    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'test'", specifier = "==1.0.0" },
-    { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
-    { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
-    { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
-    { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
-    { name = "asyncssh", marker = "extra == 'ssh'", specifier = ">=2.14.0,<2.24" },
-    { name = "asyncssh", marker = "extra == 'test'", specifier = ">=2.14.0,<2.24" },
-    { name = "certifi", specifier = ">=2024.8.30,<2027" },
-    { name = "chromadb", specifier = ">=1.5.0,<2" },
-    { name = "coverage", marker = "extra == 'test'", specifier = ">=7.7.1" },
-    { name = "croniter", specifier = ">=2.0.0,<7" },
-    { name = "croniter", marker = "extra == 'harmony'", specifier = ">=2.0.0" },
-    { name = "dingtalk-stream", specifier = ">=0.24.3,<0.25" },
-    { name = "dingtalk-stream", marker = "extra == 'harmony'", specifier = ">=0.24.3" },
-    { name = "discord-py", specifier = ">=2.4.0,<3" },
-    { name = "discord-py", marker = "extra == 'harmony'", specifier = ">=2.4.0" },
-    { name = "faiss-cpu", specifier = ">=1.7.0,<2" },
-    { name = "fastapi", specifier = ">=0.115,<1.0" },
-    { name = "fastapi", marker = "extra == 'harmony'", specifier = ">=0.115" },
-    { name = "fastmcp", specifier = ">=2.14.2,<3.4.1" },
-    { name = "filelock", specifier = ">=3.25.0,<4" },
-    { name = "filelock", marker = "extra == 'harmony'", specifier = ">=3.25.0,<4" },
-    { name = "gitcode-api", specifier = ">=1.2.20,<2" },
-    { name = "gitcode-api", marker = "extra == 'harmony'", specifier = ">=1.2.20" },
-    { name = "gitcode-cli", specifier = "==0.12.0" },
-    { name = "google-adk", specifier = ">=1.28.0,<2.2" },
-    { name = "google-api-core", specifier = ">=1.26,<2.36" },
-    { name = "google-genai", specifier = ">=1.68.0,<2" },
-    { name = "google-genai", marker = "extra == 'harmony'", specifier = ">=1.68.0" },
-    { name = "greenlet", specifier = ">=3.3.2,<4" },
-    { name = "greenlet", marker = "extra == 'harmony'", specifier = ">=3.3.2" },
-    { name = "httptools", marker = "extra == 'harmony'", specifier = ">=0.6.3" },
-    { name = "httpx", extras = ["http2", "socks"], specifier = ">=0.27,<1.0" },
-    { name = "httpx", extras = ["socks"], marker = "extra == 'harmony'", specifier = ">=0.27" },
-    { name = "json-repair", specifier = ">=0.30.0,<0.60" },
-    { name = "json-repair", marker = "extra == 'harmony'", specifier = ">=0.30.0" },
-    { name = "lark-oapi", specifier = ">=1.5.3,<2" },
-    { name = "lark-oapi", marker = "extra == 'harmony'", specifier = ">=1.5.3" },
-    { name = "loguru", specifier = ">=0.7.3,<0.8" },
-    { name = "loguru", marker = "extra == 'harmony'", specifier = ">=0.7.3" },
-    { name = "lxml", specifier = ">=6.1.0,<7" },
-    { name = "lxml", marker = "extra == 'harmony'", specifier = ">=6.1.0" },
-    { name = "mcp", specifier = ">=1.28.1,<2" },
-    { name = "mutagen", specifier = ">=1.47.0,<2" },
-    { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
-    { name = "numpy", specifier = ">=1.24.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=4fd009e175515775af1d069978d833d7989d5fad" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=4fd009e175515775af1d069978d833d7989d5fad" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=4fd009e175515775af1d069978d833d7989d5fad" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=4fd009e175515775af1d069978d833d7989d5fad" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=4fd009e175515775af1d069978d833d7989d5fad" },
-    { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
-    { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
-    { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28.0,<1.42" },
-    { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
-    { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.28.0,<1.42" },
-    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
-    { name = "opentelemetry-sdk", specifier = ">=1.28.0,<1.42" },
-    { name = "opentelemetry-sdk", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
-    { name = "pgvector", specifier = ">=0.4.2,<0.5" },
-    { name = "pgvector", marker = "extra == 'harmony'", specifier = ">=0.4.2" },
-    { name = "pillow", specifier = ">=12.2.0,<13" },
-    { name = "pillow", marker = "extra == 'harmony'", specifier = ">=12.2.0" },
-    { name = "playwright", specifier = ">=1.40,<2" },
-    { name = "portalocker", specifier = ">=3.2.0,<4" },
-    { name = "portalocker", marker = "extra == 'harmony'", specifier = ">=3.2.0" },
-    { name = "prompt-toolkit", specifier = ">=3.0,<4.0" },
-    { name = "protobuf", specifier = ">=5.29.5,<7" },
-    { name = "psutil", specifier = ">=7.2.2,<8" },
-    { name = "pydantic", specifier = ">=2.0,<3.0" },
-    { name = "pydantic", marker = "extra == 'harmony'", specifier = ">=2.0" },
-    { name = "pyinstaller", marker = "extra == 'dev'", specifier = ">=6.0.0" },
-    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.3.5" },
-    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=1.0.0" },
-    { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=7.0.0" },
-    { name = "pytest-html", marker = "extra == 'test'", specifier = ">=4.1.1" },
-    { name = "pytest-mock", marker = "extra == 'test'", specifier = ">=3.14.0" },
-    { name = "python-multipart", specifier = ">=0.0.31,<0.1" },
-    { name = "python-multipart", marker = "extra == 'harmony'", specifier = ">=0.0.31" },
-    { name = "python-socks", specifier = ">=2.8.1,<3" },
-    { name = "python-socks", marker = "extra == 'harmony'", specifier = ">=2.8.1" },
-    { name = "python-telegram-bot", specifier = ">=20.0,<23" },
-    { name = "python-telegram-bot", marker = "extra == 'harmony'", specifier = ">=20.0" },
-    { name = "pywebview", marker = "extra == 'desktop'", specifier = ">=5.4,<7" },
-    { name = "pywebview", marker = "extra == 'dev'", specifier = ">=5.4,<7" },
-    { name = "pyyaml", specifier = ">=6.0,<7" },
-    { name = "pyyaml", marker = "extra == 'harmony'", specifier = ">=6.0" },
-    { name = "pyyaml", marker = "extra == 'test'", specifier = ">=6.0" },
-    { name = "ruamel-yaml", specifier = ">=0.18.0,<0.20" },
-    { name = "ruamel-yaml", marker = "extra == 'harmony'", specifier = ">=0.18.0" },
-    { name = "skillnet-ai", specifier = "==0.0.16" },
-    { name = "skillnet-ai", marker = "extra == 'harmony'", specifier = "==0.0.16" },
-    { name = "slack-bolt", specifier = ">=1.30.0,<2" },
-    { name = "slack-bolt", marker = "extra == 'harmony'", specifier = ">=1.30.0" },
-    { name = "sqlite-vec", specifier = "==0.1.6" },
-    { name = "starlette", specifier = ">=0.49.1,<1" },
-    { name = "tree-sitter", specifier = ">=0.25.0,<0.26.0" },
-    { name = "tree-sitter-bash", specifier = ">=0.25.0,<0.26.0" },
-    { name = "uv", specifier = ">=0.4.0,<0.13" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
-    { name = "uvicorn", extras = ["standard"], marker = "extra == 'harmony'", specifier = ">=0.30" },
-    { name = "websockets", specifier = ">=12.0,<16" },
-    { name = "wecom-aibot-sdk", specifier = ">=1.0.5,<2" },
-    { name = "wecom-aibot-sdk", marker = "extra == 'harmony'", specifier = ">=1.0.5" },
-    { name = "workswarm-tui", marker = "extra == 'tui'", directory = "packages/jiuwenswarm-tui" },
-]
-provides-extras = ["harmony", "a2a", "ssh", "desktop", "dev", "tui", "distribute", "claude", "codex", "shell-ast", "test"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "a2a-sdk", extras = ["http-server"], specifier = "==1.0.0" },
-    { name = "asyncssh", specifier = ">=2.14.0,<2.24" },
-    { name = "codespell", specifier = ">=2.2.4" },
-    { name = "coverage", specifier = ">=7.7.1" },
-    { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
-    { name = "mypy", specifier = ">=1.12.0" },
-    { name = "pylint", specifier = ">=3.0.0" },
-    { name = "pytest", specifier = ">=8.3.5" },
-    { name = "pytest-asyncio", specifier = ">=1.0.0" },
-    { name = "pytest-cov", specifier = ">=7.0.0" },
-    { name = "pytest-html", specifier = ">=4.1.1" },
-    { name = "pytest-mock", specifier = ">=3.14.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "ruff", specifier = ">=0.11.2" },
-]
-lint = [
-    { name = "codespell", specifier = ">=2.2.4" },
-    { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
-    { name = "mypy", specifier = ">=1.12.0" },
-    { name = "pylint", specifier = ">=3.0.0" },
-    { name = "ruff", specifier = ">=0.11.2" },
-]
-test = [
-    { name = "a2a-sdk", extras = ["http-server"], specifier = "==1.0.0" },
-    { name = "asyncssh", specifier = ">=2.14.0,<2.24" },
-    { name = "coverage", specifier = ">=7.7.1" },
-    { name = "pytest", specifier = ">=8.3.5" },
-    { name = "pytest-asyncio", specifier = ">=1.0.0" },
-    { name = "pytest-cov", specifier = ">=7.0.0" },
-    { name = "pytest-html", specifier = ">=4.1.1" },
-    { name = "pytest-mock", specifier = ">=3.14.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-]
-
-[[package]]
-name = "workswarm-tui"
-version = "0.2.5b1"
-source = { directory = "packages/jiuwenswarm-tui" }
 
 [[package]]
 name = "wrapt"
