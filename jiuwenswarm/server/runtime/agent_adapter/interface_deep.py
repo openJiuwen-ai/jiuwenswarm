@@ -4156,11 +4156,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         )
         if not enabled:
             return
-        # The frozen desktop executable moves the on-disk ``jiuwenbox`` data
-        # directory to ``jiuwenbox_legacy_overlay`` before agents start, so the
-        # generic agent-core resolver cannot infer the DLL location from the
-        # package module alone.  Publish JiuwenBox's layout-aware resolution
-        # without overriding an explicitly configured DLL path.
+        # 冻结包把 DLL 放在 jiuwenbox_native, 不放在 jiuwenbox 目录里。
+        # agent-core 只按包路径找, 找不到这一份, 所以先把实际路径写进环境变量。
+        # 已经配过的路径不覆盖。
         from jiuwenbox.supervisor.win_softdelete import dll_path as jiuwenbox_soft_delete_dll_path
 
         os.environ.setdefault(

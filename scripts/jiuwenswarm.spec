@@ -310,20 +310,22 @@ for _native_pkg in ("grpc", "Crypto"):
     hiddenimports += _np_hidden
     _bundled_binaries = _bundled_binaries + _np_binaries
 
-# YAML 抽到 jiuwenbox_configs/, 不要落到 _internal/jiuwenbox/ 以免盖住 PYZ。
-def _reloc_jiuwenbox_yaml(entries):
+# 不要在 _internal/jiuwenbox/ 留下任何文件, 否则该目录会盖住 PYZ 里的同名包。
+# YAML 抽到 jiuwenbox_configs/; DLL 和其他数据抽到 jiuwenbox_native/。
+def _reloc_jiuwenbox_datas(entries):
     relocated = []
     for src, dest in entries:
         dest_n = str(dest).replace("\\", "/")
-        # `collect_data_files("jiuwenbox")` also returns native payloads such
-        # as `native/jiuwen_softdelete.dll`.  Only configuration YAML belongs
-        # in jiuwenbox_configs; the DLL is resolved from jiuwenbox/native at
-        # runtime by jiuwenbox.supervisor.win_softdelete.
-        if (
-            os.path.splitext(src)[1].lower() in {".yaml", ".yml"}
-            and (dest_n == "jiuwenbox" or dest_n.startswith("jiuwenbox/"))
-        ):
-            dest = "jiuwenbox_configs" + dest_n[len("jiuwenbox"):]
+        under_pkg = dest_n == "jiuwenbox" or dest_n.startswith("jiuwenbox/")
+        if not under_pkg:
+            relocated.append((src, dest))
+            continue
+        suffix = dest_n[len("jiuwenbox"):]
+        ext = os.path.splitext(src)[1].lower()
+        if ext in {".yaml", ".yml"}:
+            dest = "jiuwenbox_configs" + suffix
+        else:
+            dest = "jiuwenbox_native" + suffix
         relocated.append((src, dest))
     return relocated
 
@@ -336,7 +338,7 @@ if not getattr(_jbx_pkg, "__file__", None):
     )
 print("jiuwenswarm.spec: jiuwenbox.__file__ =", _jbx_pkg.__file__)
 
-datas += _reloc_jiuwenbox_yaml(collect_data_files("jiuwenbox", include_py_files=False))
+datas += _reloc_jiuwenbox_datas(collect_data_files("jiuwenbox", include_py_files=False))
 hiddenimports += collect_submodules("jiuwenbox")
 hiddenimports += [
     "jiuwenbox",
