@@ -111,8 +111,8 @@ harmony = [
 ]
 a2a = ["a2a-sdk[http-server]==1.0.0"]
 ssh = ["asyncssh>=2.14.0,<2.24"]
-desktop = ["pywebview>=5.4,<7"]
-dev = ["pyinstaller>=6.0.0", "pywebview>=5.4,<7"]
+desktop = ["pywebview>=5.4,<7", "pystray>=0.19,<1"]
+dev = ["pyinstaller>=6.0.0", "pywebview>=5.4,<7", "pystray>=0.19,<1"]
 tui = ["workswarm-tui==0.2.5.beta1"]  # build-config: tui-dependency
 distribute = ["openjiuwen[postgres,zmq]"]
 claude = ["openjiuwen[claude]"]
