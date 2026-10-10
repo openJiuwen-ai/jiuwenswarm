@@ -243,7 +243,6 @@ def get_config():
 
     from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
     if is_agentos_runtime():
-        import json
         for section, env_key in (
             ("code_graph", "JIUWENSWARM_AGENTOS_CODE_GRAPH_CONFIG"),
             ("sandbox", "JIUWENSWARM_AGENTOS_SANDBOX_CONFIG"),

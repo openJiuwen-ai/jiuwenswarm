@@ -233,6 +233,11 @@ def _first_nonempty(*values: Any) -> str:
     return ""
 
 
+def _pick_keys(source: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    """Copy the subset of ``keys`` that is present in ``source``."""
+    return {key: source[key] for key in keys if key in source}
+
+
 def _extract_placement_ips(instance_info: Mapping[str, Any] | None) -> tuple[str, str]:
     """Read node / sandbox IP from YuanRong GET, including jiuwenbox aliases.
 
@@ -2417,15 +2422,15 @@ class AgentOSRouterClient(AgentServerClient):
             if isinstance(sandbox_config, dict):
                 # Deployment defaults only: do not broadcast local host paths,
                 # file lists, credentials or YuanRong resource knobs to users.
-                deployment = {key: sandbox_config[key] for key in (
+                deployment = _pick_keys(sandbox_config, (
                     "type", "enabled", "startup_mode", "url", "template_name",
                     "user", "group",
-                ) if key in sandbox_config}
+                ))
                 conch = sandbox_config.get("conch")
                 if isinstance(conch, dict):
-                    deployment["conch"] = {key: conch[key] for key in (
-                        "vcpu_num", "vcpu_max", "ram_mb", "network",
-                    ) if key in conch}
+                    deployment["conch"] = _pick_keys(
+                        conch, ("vcpu_num", "vcpu_max", "ram_mb", "network"),
+                    )
                 env_vars["JIUWENSWARM_AGENTOS_SANDBOX_CONFIG"] = json.dumps(deployment)
                 sdk_config = str(sandbox_config.get("conch_sdk_config") or "").strip()
                 if sdk_config:

@@ -40,6 +40,15 @@ def _record(value: Any) -> Any:
     return {**value, "mode": projected_mode}
 
 
+def _needs_ambiguity_alias(name: Any, index: Any, counts: Counter, item: dict) -> bool:
+    """True for an unaliased AgentOS entry whose name is shared by several models."""
+    if not isinstance(name, str) or not name or counts[name] <= 1:
+        return False
+    if item.get("is_agentos") is not True or item.get("alias"):
+        return False
+    return type(index) is int and index >= 0
+
+
 def _models(entries: list[Any]) -> list[Any]:
     """Keep agent_os's modelSelectKey format through alias-or-name clients.
 
@@ -53,9 +62,7 @@ def _models(entries: list[Any]) -> list[Any]:
     for item in entries:
         if isinstance(item, dict):
             name, index = item.get("model_name"), item.get("origin_index")
-            if (isinstance(name, str) and name and counts[name] > 1
-                    and item.get("is_agentos") is True and not item.get("alias")
-                    and type(index) is int and index >= 0):
+            if _needs_ambiguity_alias(name, index, counts, item):
                 item = {**item, "alias": f"{name}#{index}"}
         result.append(item)
     return result

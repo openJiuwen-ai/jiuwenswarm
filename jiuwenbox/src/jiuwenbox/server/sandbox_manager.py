@@ -57,7 +57,14 @@ def _is_daemon_ipc_file_op_failure(result: RuntimeFileOpResult) -> bool:
 
 from jiuwenbox.logging_config import configure_logging
 from jiuwenbox.models.common import AuditEventType
-from jiuwenbox.models.policy import ConchDirectionPolicy, ConchNetworkPolicy, NetworkMode, NetworkRulePolicy, SecurityPolicy, TimeoutPolicy
+from jiuwenbox.models.policy import (
+    ConchDirectionPolicy,
+    ConchNetworkPolicy,
+    NetworkMode,
+    NetworkRulePolicy,
+    SecurityPolicy,
+    TimeoutPolicy,
+)
 from jiuwenbox.models.sandbox import (
     BackgroundExecResult,
     BackgroundJobStatus,
@@ -89,6 +96,7 @@ from jiuwenbox.server.runtime.errors import SandboxNotFoundError, SandboxConflic
 
 RUNTIME_PROCESS = "process"
 RUNTIME_CONCH = "conch"
+
 
 def normalize_sandbox_runtime(sandbox_runtime: str | None) -> str:
     """Map API ``sandbox_runtime`` create values to stored SandboxRef values."""
@@ -151,7 +159,10 @@ class SandboxManager:
     ) -> None:
         self.runtime = runtime or ProcessRuntime()
         self._conch_runtime = None
-        self._policy_updates_enabled = os.getenv("JIUWENBOX_RUNTIME_PROFILE", "").lower() == "agentos" or update_policy_path is not None
+        self._policy_updates_enabled = (
+            os.getenv("JIUWENBOX_RUNTIME_PROFILE", "").lower() == "agentos"
+            or update_policy_path is not None
+        )
         self.update_store = PolicyUpdateStore(path=update_policy_path)
         self.policy_engine = policy_engine or PolicyEngine()
         self.audit = audit_logger or AuditLogger()
@@ -1684,6 +1695,25 @@ class SandboxManager:
                 )
             return updated
 
+    def _is_fast_path_batch_update(
+        self,
+        update_default_policy: bool,
+        update_existing_sandboxes: bool,
+    ) -> bool:
+        """Whether the legacy all-network update path applies.
+
+        Requires policy persistence to be disabled, no default policy update
+        requested, sandbox updates requested, and no conch-runtime sandboxes
+        registered (the fast path only understands process sandboxes).
+        """
+        if self._policy_updates_enabled or update_default_policy:
+            return False
+        if not update_existing_sandboxes:
+            return False
+        return all(
+            ref.runtime != RUNTIME_CONCH for ref in self._sandboxes.values()
+        )
+
     async def update_all_policies(
         self,
         policy_data: Mapping[str, object] | None,
@@ -1703,8 +1733,8 @@ class SandboxManager:
         When ``update_existing_sandboxes`` is true only ``network`` /
         ``conch.network`` egress/ingress are hot-applied to registered sandboxes.
         """
-        if not self._policy_updates_enabled and not update_default_policy and update_existing_sandboxes and all(
-            ref.runtime != RUNTIME_CONCH for ref in self._sandboxes.values()
+        if self._is_fast_path_batch_update(
+            update_default_policy, update_existing_sandboxes
         ):
             result = await self._update_all_network_policies(policy_data=policy_data, policy_mode=policy_mode)
             return {**result, "default_updated": False, "default_policy": None}
