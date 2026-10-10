@@ -21,6 +21,7 @@ from openjiuwen.core.foundation.llm import (
     AssistantMessage,
     ToolMessage,
 )
+from openjiuwen.core.runner.callback import AbortError
 from openjiuwen.core.session.agent import Session
 from openjiuwen.core.session.stream import OutputSchema
 from openjiuwen.core.single_agent.ability_manager import resolve_tool_result_text
@@ -77,6 +78,40 @@ from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
 
 _TODO_TOOL_NAMES = frozenset(["todo_create", "todo_get", "todo_list", "todo_modify"])
 _TERMINAL_PROJECTION_STATE_ATTRIBUTE = "_jiuwenswarm_terminal_projection_v1"
+# finish_reason values that mean the provider stopped at the output-token cap
+# instead of at the model's own stop point. OpenAI-compatible APIs report
+# "length"; some gateways forward the cap name instead.
+_OUTPUT_CAP_FINISH_REASONS = frozenset(["length", "max_tokens", "max_output_tokens"])
+
+
+def _malformed_tool_call_name(response: Any) -> str | None:
+    """Return the name of the first tool call whose arguments are not JSON.
+
+    Returns None when every tool call has parsable arguments, including
+    when the response has no tool calls at all.
+    """
+    for tool_call in getattr(response, "tool_calls", None) or []:
+        arguments = getattr(tool_call, "arguments", "")
+        try:
+            parsed = json.loads(arguments) if arguments else {}
+        except (TypeError, ValueError):
+            return getattr(tool_call, "name", "") or "unknown"
+        if not isinstance(parsed, dict):
+            return getattr(tool_call, "name", "") or "unknown"
+    return None
+
+
+def _configured_output_cap(agent: Any) -> int | None:
+    """Return the configured output-token cap, or None when no cap is set.
+
+    ``ModelRequestConfig.max_tokens`` is the number of tokens the model may
+    generate. It is optional: when it is unset the provider applies its own
+    default, and the cap has no value to report.
+    """
+    config = getattr(agent, "_config", None)
+    model_config = getattr(config, "model_config_obj", None)
+    cap = getattr(model_config, "max_tokens", None)
+    return cap if isinstance(cap, int) and not isinstance(cap, bool) else None
 
 
 def _structured_tool_result_payload(result: Any) -> Any | None:
@@ -1049,6 +1084,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 )
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        # Runs before the context-usage early returns below: a truncated
+        # response must be reported whichever side emits the usage snapshot.
+        self._report_output_cap_truncation(ctx)
         # New agent-core versions emit the complete pre/post context usage
         # snapshots themselves.  The report on the callback context is the
         # capability marker; emitting the legacy rail event as well would add
@@ -1066,6 +1104,47 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             member_name=self._member_name or None,
             role=self._role or None,
         )
+
+    def _report_output_cap_truncation(self, ctx: AgentCallbackContext) -> None:
+        """Log a response the provider cut at the output-token cap, and fail
+        the step when the cut left a tool call with malformed arguments.
+
+        The provider sets ``finish_reason`` to ``"length"`` when it stopped
+        generating at the cap. Such a response is incomplete. A cut inside the
+        JSON arguments of a tool call leaves those arguments malformed, and the
+        step must fail here. agent-core otherwise repairs the fragment by
+        balancing the missing closing brackets, so a value cut in half becomes
+        a well-formed argument and the tool runs on the half value. When that
+        repair fails, the tool call reports a JSON syntax error that names no
+        token limit. A truncated text reply still reaches the reader; this
+        method only records it.
+        """
+        response = getattr(getattr(ctx, "inputs", None), "response", None)
+        reason = str(getattr(response, "finish_reason", "") or "").strip().lower()
+        if reason not in _OUTPUT_CAP_FINISH_REASONS:
+            return
+        usage = getattr(response, "usage_metadata", None)
+        cap = _configured_output_cap(getattr(ctx, "agent", None))
+        detail = (
+            f"session_id={self._resolve_sid(ctx, getattr(ctx, 'session', None))} "
+            f"model={getattr(usage, 'model_name', '') or 'unknown'} "
+            f"response_id={getattr(response, 'response_id', None) or 'unknown'} "
+            f"output_tokens={getattr(usage, 'output_tokens', None)} "
+            f"max_tokens={cap if cap is not None else 'unset'} "
+            f"finish_reason={reason}"
+        )
+        logger.warning(
+            "[StreamEventRail] model output truncated at the output-token cap: %s",
+            detail,
+        )
+        tool_name = _malformed_tool_call_name(response)
+        if tool_name is not None:
+            raise AbortError(
+                reason=(
+                    "model_output_truncated_at_output_token_cap: "
+                    f"the arguments of tool={tool_name} are not valid JSON. {detail}"
+                ),
+            )
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         sid = self._resolve_sid(ctx, ctx.session)
