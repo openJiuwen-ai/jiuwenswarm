@@ -2100,13 +2100,13 @@
       "actions": {
         "read": "读谱",
         "incrementalBuild": "增量构建",
-        "pauseBuild": "暂停构建",
+        "cancelBuild": "取消构建",
         "fullRebuild": "全量重新构建",
         "fitView": "适配视图"
       },
       "status": {
         "refreshing": "正在刷新技能总谱",
-        "paused": "技能总谱构建已暂停",
+        "cancelled": "技能总谱构建已取消",
         "reading": "正在读取技能总谱",
         "noBuildLogs": "暂无构建日志",
         "waitingBuildLogs": "等待构建日志...",
@@ -2116,21 +2116,22 @@
       "errors": {
         "readFailed": "无法读取技能总谱，请先刷新总谱。",
         "refreshFailed": "技能总谱刷新失败",
-        "pauseFailed": "技能总谱暂停失败",
+        "cancelFailed": "技能总谱取消失败",
         "buildFailedWithDetail": "Symphony 总谱构建失败: {{detail}}"
       },
       "serverDetails": {
         "noRunningBuild": "当前没有正在运行的技能总谱构建。",
-        "pauseRequested": "已请求暂停技能总谱构建，已完成的缓存和 checkpoint 会保留。",
-        "buildRunning": "已有技能总谱构建正在运行，请等待完成或先暂停当前构建。",
-        "buildPaused": "技能总谱构建已暂停，可再次执行增量构建继续。",
-        "scoreMissing": "技能总谱不存在或不完整，请先构建总谱。"
+        "buildStarted": "技能总谱后台构建已启动。",
+        "cancelRequested": "技能总谱构建已取消，已完成的缓存和 checkpoint 会保留。",
+        "buildRunning": "技能总谱已在后台构建中。",
+        "buildCancelled": "技能总谱构建已取消，可再次执行增量构建继续。",
+        "graphMissing": "技能总谱不存在或不完整，请先构建总谱。"
       },
       "buildStages": {
         "idle": "暂无构建日志",
         "updateStart": "开始构建技能总谱",
-        "updatePauseRequested": "正在暂停技能总谱构建",
-        "updatePaused": "技能总谱构建已暂停",
+        "updateCancelRequested": "正在取消技能总谱构建",
+        "updateCancelled": "技能总谱构建已取消",
         "scanStart": "扫描技能目录",
         "scanDone": "技能目录扫描完成",
         "diffDone": "计算技能变更",
@@ -2151,8 +2152,8 @@
         "graphResolveDone": "候选关系解析完成",
         "graphMaterializeStart": "生成总谱结构",
         "graphMaterializeDone": "总谱结构生成完成",
-        "graphScoreStart": "构建乐谱检索结构",
-        "graphScoreDone": "乐谱检索结构构建完成",
+        "graphLookupStart": "构建总谱检索结构",
+        "graphLookupDone": "总谱检索结构构建完成",
         "graphBuildDone": "技能关系图构建完成",
         "artifactGraphWriteStart": "写入总谱文件",
         "artifactGraphWriteDone": "总谱文件写入完成",

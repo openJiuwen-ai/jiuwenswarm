@@ -2113,13 +2113,13 @@
       "actions": {
         "read": "Read score",
         "incrementalBuild": "Incremental build",
-        "pauseBuild": "Pause build",
+        "cancelBuild": "Cancel build",
         "fullRebuild": "Full rebuild",
         "fitView": "Fit view"
       },
       "status": {
         "refreshing": "Refreshing skill score",
-        "paused": "Skill score build paused",
+        "cancelled": "Skill score build cancelled",
         "reading": "Reading skill score",
         "noBuildLogs": "No build logs",
         "waitingBuildLogs": "Waiting for build logs...",
@@ -2129,21 +2129,22 @@
       "errors": {
         "readFailed": "Unable to read the skill score. Refresh the score first.",
         "refreshFailed": "Failed to refresh the skill score",
-        "pauseFailed": "Failed to pause the skill score build",
+        "cancelFailed": "Failed to cancel the skill score build",
         "buildFailedWithDetail": "Symphony score build failed: {{detail}}"
       },
       "serverDetails": {
         "noRunningBuild": "No skill score build is currently running.",
-        "pauseRequested": "Skill score build pause requested. Completed cache and checkpoints will be kept.",
-        "buildRunning": "A skill score build is already running. Wait for it to finish or pause the current build first.",
-        "buildPaused": "Skill score build paused. Run an incremental build again to continue.",
-        "scoreMissing": "The skill score is missing or incomplete. Build the score first."
+        "buildStarted": "Skill score background build started.",
+        "cancelRequested": "Skill score build cancelled. Completed cache and checkpoints will be kept.",
+        "buildRunning": "A skill score build is already running in the background.",
+        "buildCancelled": "Skill score build cancelled. Run an incremental build again to continue.",
+        "graphMissing": "The skill score is missing or incomplete. Build the score first."
       },
       "buildStages": {
         "idle": "No build logs",
         "updateStart": "Starting skill score build",
-        "updatePauseRequested": "Pausing skill score build",
-        "updatePaused": "Skill score build paused",
+        "updateCancelRequested": "Cancelling skill score build",
+        "updateCancelled": "Skill score build cancelled",
         "scanStart": "Scanning skill directories",
         "scanDone": "Skill directory scan complete",
         "diffDone": "Checking skill changes",
@@ -2164,8 +2165,8 @@
         "graphResolveDone": "Candidate relation resolution complete",
         "graphMaterializeStart": "Generating score structure",
         "graphMaterializeDone": "Score structure generated",
-        "graphScoreStart": "Building score retrieval structure",
-        "graphScoreDone": "Score retrieval structure built",
+        "graphLookupStart": "Building score lookup structure",
+        "graphLookupDone": "Score lookup structure built",
         "graphBuildDone": "Skill relation graph built",
         "artifactGraphWriteStart": "Writing score files",
         "artifactGraphWriteDone": "Score files written",

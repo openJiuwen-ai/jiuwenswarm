@@ -38,7 +38,7 @@ DEFAULT_ORCHESTRATION_MIN_EDGE_CONFIDENCE = 0.5
 @dataclass(frozen=True)
 class SymphonyPathsConfig:
     skills_root: Path
-    score_dir: Path
+    graph_dir: Path
 
 
 @dataclass(frozen=True)
@@ -151,9 +151,9 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
                 paths.get("skills_root"),
                 get_agent_workspace_dir() / "skills",
             ),
-            score_dir=_resolve_path(
-                paths.get("score_dir"),
-                get_agent_workspace_dir() / "symphony" / "score",
+            graph_dir=_resolve_path(
+                paths.get("graph_dir"),
+                get_agent_workspace_dir() / "symphony" / "graph",
             ),
         ),
         fingerprint=SymphonyFingerprintConfig(

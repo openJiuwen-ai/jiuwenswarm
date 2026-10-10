@@ -19,7 +19,7 @@ test('ordinary tool result is returned unchanged', () => {
 
 test('final result inherits the last streamed beam graph when omitted', () => {
   const beamSearch = { roundIndex: 2, graph: { nodes: [], edges: [] } };
-  const incoming = result({ toolName: 'symphony_compose_score' });
+  const incoming = result({ toolName: 'symphony_compose_graph' });
 
   assert.deepEqual(mergeToolResultProgress(result({ beamSearch }), incoming), { ...incoming, beamSearch });
 });

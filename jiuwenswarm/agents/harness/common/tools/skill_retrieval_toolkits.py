@@ -103,7 +103,7 @@ class SkillRetrievalToolkit:
                     "shortlist by Name and Description, then read a returned SKILL.md only after the skill "
                     "looks likely useful. "
                     "To guide Symphony composition, pass shortlisted skill worker_id values to "
-                    "symphony_compose_score.candidate_skill_ids. "
+                    "symphony_compose_graph.candidate_skill_ids. "
                     "Do not read every skill or explore skill names as branch ids. "
                     "This is not an execution tool or a full execution plan. If the index is missing or stale, "
                     "follow the returned instruction to call skill_index_build once, then retry."
