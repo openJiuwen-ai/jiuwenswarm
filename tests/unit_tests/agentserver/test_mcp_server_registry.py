@@ -372,6 +372,36 @@ async def test_scanner_failure_keeps_tools(registry: McpServerRegistry, monkeypa
     assert got["tools"][0]["name"] == "live"
 
 
+@pytest.mark.asyncio
+async def test_snapshot_carries_discovery_error_kind(registry: McpServerRegistry, monkeypatch) -> None:
+    async def ok(name, config):
+        return (
+            [{"name": "live", "description": "", "input_params": {}}],
+            {"_mcp_client_type": "streamable-http"},
+        )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        ok,
+    )
+    await registry.add_servers([_remote_cfg()])
+
+    async def fail(name, config):
+        return [], {}
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        fail,
+    )
+    await registry.scan_once()
+    snap = await registry.snapshot_for_chat(["qichacha"])
+    assert snap[0][0] == "qichacha"
+    assert snap[0][3] == "other"
+    got = await registry.get_server("qichacha")
+    assert got is not None
+    assert got["last_error_kind"] == "other"
+
+
 def test_redact_auth_headers() -> None:
     masked = redact_mcp_config(_remote_cfg())
     assert masked["auth_headers"] == {"Authorization": "***"}
@@ -1260,12 +1290,14 @@ async def test_discover_passes_stdio_and_remote_timeouts(
         "jiuwenswarm.common.mcp_server_registry.asyncio.wait_for",
         capture_wait_for,
     )
-    _, _, err = await registry._discover("local", {"command": "node", "args": ["mcp.js"]})
+    _, _, err, error_kind = await registry._discover("local", {"command": "node", "args": ["mcp.js"]})
     assert err == ""
-    _, _, err = await registry._discover(
+    assert error_kind == ""
+    _, _, err, error_kind = await registry._discover(
         "remote", {"type": "streamable-http", "url": "https://example.com/mcp"}
     )
     assert err == ""
+    assert error_kind == ""
     assert seen == [300.0, 30.0]
 
 
@@ -1504,7 +1536,7 @@ async def test_registry_add_servers_respects_tool_filter(monkeypatch) -> None:
 
     # 快照路径同样只暴露过滤后的工具
     snapshots = await registry.snapshot_for_chat(["conn_full", "conn_half", "conn_none"])
-    snap_by_name = {name: [tool["name"] for tool in tools] for name, tools, _ in snapshots}
+    snap_by_name = {name: [tool["name"] for tool in tools] for name, tools, _, _ in snapshots}
     assert snap_by_name["conn_full"] == ["conn_full_a", "conn_full_b", "conn_full_c"]
     assert snap_by_name["conn_half"] == ["conn_half_a", "conn_half_c"]
     assert snap_by_name["conn_none"] == []

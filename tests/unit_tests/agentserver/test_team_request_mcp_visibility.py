@@ -46,7 +46,7 @@ async def test_request_tools_are_visible_to_all_llm_members(mode, source, sessio
     connection = {"url": "http://localhost:12345/mcp", "_mcp_client_type": "streamable-http"}
     monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", AsyncMock(return_value=(definitions, connection)))
     monkeypatch.setattr(interface_deep, "get_mcp_server_registry", lambda: SimpleNamespace(
-        snapshot_for_chat=AsyncMock(return_value=[("connector", definitions, connection)]),
+        snapshot_for_chat=AsyncMock(return_value=[("connector", definitions, connection, "")]),
     ))
     roles = ["leader", "teammate", "analyst"]
     spec = TeamAgentSpec(
