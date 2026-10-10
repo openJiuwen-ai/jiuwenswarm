@@ -1515,3 +1515,71 @@ def test_verify_started_replay_dedupes_by_verify_id():
             verify_reviewer_labels=["verify-verdict-0"], verify_id="same",
         ))
     assert len(state.phases[0].verify_groups) == 1
+
+
+
+class TestAgentActivity:
+    """agent_activity progress events append live entries to a worker's node."""
+
+    @staticmethod
+    def _started_agent(state: WorkflowRunState, agent_id: str = "main/call:0") -> None:
+        state.apply(_make_progress("workflow_started", workflow_name="wf"))
+        state.apply(_make_progress(
+            "agent_started", phase="review", label="coder", agent_id=agent_id,
+        ))
+
+    @staticmethod
+    def test_agent_activity_appends_live_entry_and_returns_phase_delta():
+        state = WorkflowRunState()
+        TestAgentActivity._started_agent(state)
+        agent = state.phases[0].agents[0]
+        assert agent.activity == []
+
+        delta = state.apply(_make_progress(
+            "agent_activity", phase="review", label="coder",
+            agent_id="main/call:0", text="tool: write_file",
+        ))
+        assert delta is not None
+        assert len(agent.activity) == 1
+        entry = agent.activity[0]
+        assert entry.type == "tool_call"
+        assert entry.content == "tool: write_file"
+        assert entry.timestamp
+        # Delta carries the phase with the updated activity list.
+        assert delta["phases"][0]["agents"][0]["activity"][0]["content"] == "tool: write_file"
+
+    @staticmethod
+    def test_agent_activity_resolves_second_instance_by_agent_id():
+        """Same-label loop instances get activity on their own node, not the first."""
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="wf"))
+        state.apply(_make_progress(
+            "agent_started", phase="review", label="coder", agent_id="main/call:1",
+        ))
+        state.apply(_make_progress(
+            "agent_started", phase="review", label="coder", agent_id="main/call:2",
+        ))
+        state.apply(_make_progress(
+            "agent_activity", phase="review", label="coder",
+            agent_id="main/call:2", text="tool: bash",
+        ))
+        a1, a2 = state.phases[0].agents
+        assert a1.activity == []
+        assert len(a2.activity) == 1
+        assert a2.activity[0].content == "tool: bash"
+
+    @staticmethod
+    def test_agent_activity_empty_or_unknown_node_is_noop():
+        state = WorkflowRunState()
+        TestAgentActivity._started_agent(state)
+        # Unknown agent_id -> no node found -> no delta, no activity.
+        assert state.apply(_make_progress(
+            "agent_activity", phase="review", label="coder",
+            agent_id="missing/call:9", text="tool: bash",
+        )) is None
+        # Blank text -> nothing appended.
+        assert state.apply(_make_progress(
+            "agent_activity", phase="review", label="coder",
+            agent_id="main/call:0", text="",
+        )) is None
+        assert state.phases[0].agents[0].activity == []
