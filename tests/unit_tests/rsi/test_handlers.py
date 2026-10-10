@@ -61,6 +61,33 @@ def handlers():
 
 
 class TestDispatch:
+    def test_task_get_includes_harness_publication_availability(
+        self, handlers, monkeypatch
+    ):
+        h, ctx, _ = handlers
+
+        monkeypatch.setattr(
+            ctx.task_service,
+            "get",
+            lambda *args, **kwargs: {"task_id": "rsi-ready", "status": "COMPLETED"},
+        )
+        monkeypatch.setattr(ctx, "adapter_for_task", lambda task_id: None)
+
+        class Installer:
+            def publication_availability(self, task_id):
+                assert task_id == "rsi-ready"
+                return {
+                    "harness_installable": True,
+                    "harness_publication_status": "published",
+                }
+
+        ctx.harness_installer = Installer()
+        result = h.handle(FakeRequest(ReqMethod.RSI_TASK_GET, {"task_id": "rsi-ready"}))
+
+        assert result["ok"] is True
+        assert result["payload"]["harness_installable"] is True
+        assert result["payload"]["harness_publication_status"] == "published"
+
     def test_harness_install_dispatches_to_context_installer(self, handlers):
         h, ctx, _ = handlers
         calls = []
