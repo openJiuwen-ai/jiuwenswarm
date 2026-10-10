@@ -40,6 +40,7 @@ class DynamicMemoryGateway:
         self.invoke_timeout = invoke_timeout
         self._init_lock = asyncio.Lock()
         self._initialized = False
+        self._processes: set[asyncio.subprocess.Process] = set()
 
     async def ensure_initialized(self) -> None:
         if self._initialized:
@@ -57,6 +58,11 @@ class DynamicMemoryGateway:
         await self.ensure_initialized()
         return await self._invoke(*args, include_root=True)
 
+    async def abort(self) -> None:
+        """Kill in-flight CLI processes so cancelled Tasks can leave communicate()."""
+        for process in list(self._processes):
+            await _stop_process(process)
+
     async def _invoke(self, *args: str, include_root: bool) -> dict[str, Any]:
         self.root.mkdir(parents=True, exist_ok=True)
         command = [sys.executable, str(self.script)]
@@ -70,16 +76,17 @@ class DynamicMemoryGateway:
             *command,
             cwd=str(self.root),
             env=env,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        self._processes.add(process)
         try:
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(), timeout=self.invoke_timeout
             )
         except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
+            await _stop_process(process)
             elapsed_ms = (asyncio.get_running_loop().time() - started) * 1000
             await self.evidence.append_audit(
                 "memory-cli-calls",
@@ -95,12 +102,13 @@ class DynamicMemoryGateway:
             ) from None
         except asyncio.CancelledError:
             # Session/loop teardown may cancel an in-flight invoke. Without
-            # this handler the child is abandoned still running and its
+            # stopping the child here it is abandoned still running and its
             # transport detonates later as unraisable ResourceWarnings
             # attributed to whichever test is running when GC fires.
-            process.kill()
-            await process.wait()
+            await _stop_process(process)
             raise
+        finally:
+            self._processes.discard(process)
         elapsed_ms = (asyncio.get_running_loop().time() - started) * 1000
         text = stdout.decode("utf-8", errors="replace")
         error_text = stderr.decode("utf-8", errors="replace")
@@ -136,6 +144,19 @@ class DynamicMemoryGateway:
 
     async def projection(self) -> dict[str, Any]:
         return await self.call("get-state")
+
+
+async def _stop_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        process.kill()
+    except ProcessLookupError:
+        return
+    try:
+        await process.wait()
+    except (ProcessLookupError, asyncio.CancelledError):
+        return
 
 
 __all__ = ["DynamicMemoryGateway", "VENDORED_SKILL"]
