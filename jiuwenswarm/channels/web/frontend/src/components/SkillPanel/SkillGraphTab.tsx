@@ -10,6 +10,7 @@ import { SkillGraphPanel, type SkillGraphPanelHandle } from '../SkillGraphPanel'
 import { Switch } from '../Switch';
 
 interface SkillGraphTabProps {
+  isActive: boolean;
   isConnected: boolean;
   symphonySaving: boolean;
   symphonyEnabledDraft: boolean;
@@ -20,6 +21,7 @@ interface SkillGraphTabProps {
 }
 
 export function SkillGraphTab({
+  isActive,
   isConnected,
   symphonySaving,
   symphonyEnabledDraft,
@@ -71,6 +73,7 @@ export function SkillGraphTab({
       <div className="flex-1 min-h-0">
         <SkillGraphPanel
           ref={skillGraphPanelRef}
+          isActive={isActive}
           onReadingChange={onGraphReadingChange}
           onBuildAccepted={(mode) => void onStartRetrievalIndexBuild(mode === 'full')}
         />
