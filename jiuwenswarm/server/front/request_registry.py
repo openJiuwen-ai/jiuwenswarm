@@ -2,9 +2,9 @@
 
 """Front-owned in-flight request table.
 
-Phase 1 keeps execution in-process. The registry still owns request IDs so
-queued chat can be cancelled before Runtime is ``AGENT_READY``, and so
-cancel/timeout have a single Front-side owner.
+The registry owns request IDs on the Front side so queued chat can be
+cancelled before the Worker is ``AGENT_READY``. The Worker owns the active
+execution and its cancel token after dispatch.
 """
 
 from __future__ import annotations
