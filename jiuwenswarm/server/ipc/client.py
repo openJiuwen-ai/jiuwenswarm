@@ -46,11 +46,9 @@ def endpoint_is_listening(path: str) -> bool:
     POSIX checks the lifetime owner lease. Windows named pipes are not files, so this
     waits briefly for a pipe instance without connecting to it.
     """
-    if os.name != "nt":
-        if not os.path.exists(path):
-            return False
-        # A crashed Unix Worker leaves its socket inode behind. Its lifetime
-        # lease, rather than the inode, tells us whether it is still resident.
+    if os.path.exists(path + ".owner.lock"):
+        # The lifetime lease also detects a busy Windows pipe instance, for
+        # which WaitNamedPipeW returns false while its Front is disconnecting.
         from filelock import FileLock, Timeout
         lease = FileLock(path + ".owner.lock", timeout=0)
         try:
@@ -58,6 +56,8 @@ def endpoint_is_listening(path: str) -> bool:
                 return False
         except Timeout:
             return True
+    if os.name != "nt":
+        return False
     return _windows_pipe_is_listening(endpoint_address(path))
 
 

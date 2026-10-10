@@ -7,9 +7,8 @@ import argparse
 import json
 import logging
 import time
-from pathlib import Path
 
-from jiuwenswarm.server.ipc.client import connect
+from jiuwenswarm.server.ipc.client import connect, endpoint_is_listening
 from jiuwenswarm.server.ipc.protocol import PROTOCOL_VERSION
 from jiuwenswarm.server.supervisor.identity import data_scope
 from jiuwenswarm.server.supervisor.worker_process import default_socket_path
@@ -60,7 +59,7 @@ async def shutdown_resident_worker(*, timeout: float = 30.0) -> dict:
     upgrade. Unvalidated processes are never terminated.
     """
     socket_path = default_socket_path()
-    if not Path(socket_path).exists():
+    if not endpoint_is_listening(socket_path):
         return {"ok": True, "absent": True}
     deadline = time.monotonic() + timeout
     connection = None
