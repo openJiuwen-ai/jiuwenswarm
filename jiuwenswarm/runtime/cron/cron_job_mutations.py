@@ -159,6 +159,7 @@ def build_new_cron_job(
     work_mode: str = DEFAULT_WEB_WORK_MODE,
     user_id: str = "",
     credential_ref: str = "",
+    origin_channel_id: str = "",
 ) -> CronJob:
     """Construct and validate a ``CronJob`` without persisting it."""
     now = time.time()
@@ -217,6 +218,7 @@ def build_new_cron_job(
         work_mode=normalize_work_mode(work_mode, default=DEFAULT_WEB_WORK_MODE),
         user_id=str(user_id or "").strip(),
         credential_ref=str(credential_ref or "").strip(),
+        origin_channel_id=origin_channel_id if isinstance(origin_channel_id, str) and sid else "",
     )
     CronJob.from_dict(job.to_dict())
     return job
@@ -290,6 +292,14 @@ def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
             else None
         )
         updated = replace(updated, session_id=new_sid)
+        if new_sid != existing.session_id:
+            updated = replace(updated, origin_channel_id="")
+    if "origin_channel_id" in patch:
+        origin = patch["origin_channel_id"]
+        updated = replace(
+            updated,
+            origin_channel_id=origin.strip() if isinstance(origin, str) and updated.session_id else "",
+        )
     if "chat_type" in patch:
         raw_ct = patch.get("chat_type")
         new_ct = (

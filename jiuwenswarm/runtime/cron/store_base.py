@@ -47,6 +47,7 @@ class CronJobStoreBackend(Protocol):
         work_mode: str = "work",
         user_id: str = "",
         credential_ref: str = "",
+        origin_channel_id: str = "",
     ) -> CronJob:
         ...
 

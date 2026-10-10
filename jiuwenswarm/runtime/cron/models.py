@@ -427,6 +427,7 @@ class CronJob:
     # from_dict 仅做 normalize + 兜底 "work"，不做跨层 Project 反查；
     # 精确值由创建/更新路径从 Project 记录注入，或由展示层二次查询覆盖。
     work_mode: str = DEFAULT_WEB_WORK_MODE
+    origin_channel_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -471,6 +472,8 @@ class CronJob:
             d["user_id"] = self.user_id
         if self.credential_ref:
             d["credential_ref"] = self.credential_ref
+        if self.origin_channel_id:
+            d["origin_channel_id"] = self.origin_channel_id
         return d
 
     @staticmethod
@@ -638,6 +641,12 @@ class CronJob:
             user_id=job_user_id,
             credential_ref=job_credential_ref,
             work_mode=job_work_mode,
+            origin_channel_id=(
+                data["origin_channel_id"].strip()
+                if isinstance(data.get("origin_channel_id"), str)
+                and job_session_id
+                else ""
+            ),
         )
 
 

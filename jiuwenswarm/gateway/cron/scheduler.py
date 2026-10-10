@@ -25,6 +25,7 @@ from jiuwenswarm.gateway.cron.models import (
     resolve_cron_job_timeout_seconds,
 )
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
+from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES
 from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
@@ -1539,6 +1540,21 @@ class CronSchedulerService:
                 # 未配置（None）时保持既有行为（仅 init 全局默认集）。
                 if job.mcp:
                     params["mcp"] = list(job.mcp)
+                request_metadata: dict[str, Any] = {
+                    "cron": {"job_id": job.id, "run_id": run_id, "timezone": job.timezone},
+                    "targets": str(job.targets or "").strip(),
+                }
+                hooks = ExtensionRegistry.cron_hooks().get(job.origin_channel_id)
+                if hooks is not None:
+                    callback = getattr(hooks, "run_metadata", None)
+                    if callback:
+                        try:
+                            added = callback(job)
+                            if request_metadata.keys() & added.keys():
+                                raise ValueError("Cron hook cannot replace core metadata")
+                            request_metadata.update(added)
+                        except Exception:
+                            logger.exception("Cron metadata hook failed for job %s", job.id)
                 envelope = e2a_from_agent_fields(
                     request_id=f"cron-{run_id}",
                     channel_id=channel_id,
@@ -1547,19 +1563,7 @@ class CronSchedulerService:
                     params=params,
                     is_stream=is_team_cron_mode(mode),
                     timestamp=self._now_fn(),
-                    metadata={
-                        "cron": {
-                            "job_id": job.id,
-                            "run_id": run_id,
-                            # 传给 UserTurn 信封：让「打印当前时间」类任务按任务
-                            # 时区渲染 timezone/timestamp，而非固定 Asia/Shanghai。
-                            "timezone": job.timezone,
-                        },
-                        # 真实推送渠道（普通模式 channel 是内部 "__cron__"）。
-                        # AgentServer 用它注册 send_file 等按渠道开关的工具，并作为
-                        # 文件推送的 channel_id，与 cron 文本结果推送到同一批渠道。
-                        "targets": str(job.targets or "").strip(),
-                    },
+                    metadata=request_metadata,
                     user_id=job.user_id or None,
                 )
                 if not str(job.user_id or "").strip():

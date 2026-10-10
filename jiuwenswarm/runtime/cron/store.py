@@ -137,6 +137,7 @@ class FileCronJobStore:
         work_mode: str = DEFAULT_WEB_WORK_MODE,
         user_id: str = "",
         credential_ref: str = "",
+        origin_channel_id: str = "",
     ) -> CronJob:
         """Construct and validate a ``CronJob`` without persisting it.
 
@@ -166,6 +167,7 @@ class FileCronJobStore:
             work_mode=work_mode,
             user_id=user_id,
             credential_ref=credential_ref,
+            origin_channel_id=origin_channel_id,
         )
 
     async def create_job(
@@ -192,6 +194,7 @@ class FileCronJobStore:
         work_mode: str = DEFAULT_WEB_WORK_MODE,
         user_id: str = "",
         credential_ref: str = "",
+        origin_channel_id: str = "",
     ) -> CronJob:
         job = self.build_job(
             job_id=job_id,
@@ -215,6 +218,7 @@ class FileCronJobStore:
             work_mode=work_mode,
             user_id=user_id,
             credential_ref=credential_ref,
+            origin_channel_id=origin_channel_id,
         )
         await self._upsert_job(job)
         return job

@@ -3502,7 +3502,9 @@ class MessageHandler(ABC):
                 # 与用户目录隔离时，允许 controller 跳过其本地反查。
                 if is_agentos:
                     params["_agentos_project_binding_verified"] = True
-                data = await cc.create_job(params)
+                data = await cc.create_job(
+                    params, request_channel_id=channel_id, request_session_id=session_id
+                )
             elif action == "update":
                 job_id = str(params.get("job_id") or "")
                 if await _get_owned_job(job_id) is None:
@@ -3513,7 +3515,9 @@ class MessageHandler(ABC):
                     patch["_auth_session"] = auth_session
                 if is_agentos:
                     patch["_agentos_project_binding_verified"] = True
-                data = await cc.update_job(job_id, patch)
+                data = await cc.update_job(
+                    job_id, patch, request_channel_id=channel_id, request_session_id=session_id
+                )
             elif action == "delete":
                 job_id = str(params.get("job_id") or "")
                 if await _get_owned_job(job_id) is None:

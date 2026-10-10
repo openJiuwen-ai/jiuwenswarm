@@ -524,11 +524,14 @@ def _extract_legacy_params(
         out: dict[str, Any] = {}
         if cron_expr or require_schedule:
             out["cron_expr"] = cron_expr
-        if timezone or require_schedule:
+        if (
+            require_schedule or kind == "at" or "tz" in schedule
+            or "timezone" in schedule or "timezone" in data
+        ):
             out["timezone"] = timezone
         if description:
             out["description"] = description
-        if targets:
+        if targets and (require_schedule or "channel" in delivery or "targets" in data):
             out["targets"] = targets
         if "name" in data:
             out["name"] = str(data.get("name") or "").strip()
@@ -590,9 +593,13 @@ def _extract_legacy_params(
         if context_app_id:
             out["app_id"] = context_app_id
 
-        context_mode = getattr(context, "mode", None)
-        mode_resolved = context_mode or data.get("mode") or CRON_JOB_DEFAULT_MODE
-        out["mode"] = coerce_cron_job_mode(mode_resolved, default=CRON_JOB_DEFAULT_MODE)
+        if require_schedule or "mode" in data:
+            mode_resolved = data.get("mode")
+            if require_schedule:
+                mode_resolved = getattr(context, "mode", None) or mode_resolved
+            out["mode"] = coerce_cron_job_mode(
+                mode_resolved or CRON_JOB_DEFAULT_MODE, default=CRON_JOB_DEFAULT_MODE
+            )
 
         # 从 context 取 user_id，agent 内部调 cron_create_job 时无 web 连接来源，
         # 靠 _bind_runtime_cron_context 从会话 metadata.user_id 注入。

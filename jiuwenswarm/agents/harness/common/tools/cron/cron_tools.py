@@ -632,8 +632,6 @@ class CronTools:
                 sid = self._route().session_id
                 if isinstance(sid, str) and sid.strip():
                     normalized_patch["session_id"] = sid.strip()
-            else:
-                normalized_patch["session_id"] = None
         if "mode" in normalized_patch:
             normalized_patch["mode"] = normalize_cron_job_mode(normalized_patch.get("mode"))
         if "model_name" in normalized_patch:

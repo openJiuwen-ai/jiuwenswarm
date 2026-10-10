@@ -28,10 +28,33 @@ from jiuwenswarm.gateway.cron.models import (
 )
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService, _cron_next_push_dt
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
+from jiuwenswarm.extensions.registry import ExtensionRegistry
 
 
 # 列表/调度等批量路径查询"项目准入"闸门时的最大并发数。
 _GATE_QUERY_CONCURRENCY = 8
+
+
+def _verified_origin(channel_id: str, request_session_id: str | None, job_session_id: str | None) -> str:
+    if (
+        isinstance(channel_id, str)
+        and channel_id.strip()
+        and isinstance(request_session_id, str)
+        and request_session_id.strip()
+        and request_session_id == job_session_id
+    ):
+        return channel_id.strip()
+    return ""
+
+
+def _notify_cron_mutation(job: Any, action: str, request_channel_id: str) -> None:
+    for hooks in ExtensionRegistry.cron_hooks().values():
+        callback = getattr(hooks, "mutation", None)
+        if callback:
+            try:
+                callback(job, action=action, request_channel_id=request_channel_id)
+            except Exception:
+                logging.exception("Cron mutation hook failed for job %s", job.id)
 
 
 def _login_credential_ref_from_session(auth_session: str) -> str:
@@ -271,11 +294,14 @@ class CronController:
         return cron_job_metadata()
 
     @_serialize_mutation
-    async def create_job(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def create_job(
+        self, params: dict[str, Any], *, request_channel_id: str = "", request_session_id: str | None = None
+    ) -> dict[str, Any]:
         # This marker is set only by the AgentServer-to-Gateway path after the
         # project has been resolved against the user's AgentServer directory.
         # Do not persist it with the job payload.
         params = dict(params or {})
+        params.pop("origin_channel_id", None)
         allow_unresolved_project_id = bool(
             params.pop("_agentos_project_binding_verified", False)
         )
@@ -407,13 +433,18 @@ class CronController:
             work_mode=work_mode,
             user_id=user_id,
             credential_ref=credential_ref,
+            origin_channel_id=_verified_origin(request_channel_id, request_session_id, routing_sid),
         )
         await self._scheduler.reload()
+        _notify_cron_mutation(job, "create", request_channel_id)
         return job.to_dict()
 
     @_serialize_mutation
-    async def update_job(self, job_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+    async def update_job(
+        self, job_id: str, patch: dict[str, Any], *, request_channel_id: str = "", request_session_id: str | None = None
+    ) -> dict[str, Any]:
         patch = dict(patch or {})
+        patch.pop("origin_channel_id", None)
         allow_unresolved_project_id = bool(
             patch.pop("_agentos_project_binding_verified", False)
         )
@@ -486,9 +517,11 @@ class CronController:
             patch["session_id"] = self._routing_session_id(
                 final_targets, patch.get("session_id")
             )
-        elif "targets" in patch:
-            patch["session_id"] = self._routing_session_id(
-                final_targets, existing.session_id
+        elif "targets" in patch and final_targets != existing.targets:
+            patch["session_id"] = None
+        if "session_id" in patch and patch["session_id"] != existing.session_id:
+            patch["origin_channel_id"] = _verified_origin(
+                request_channel_id, request_session_id, patch["session_id"]
             )
 
         if patch.get("enabled") or any(
@@ -500,6 +533,7 @@ class CronController:
                 raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
         job = await self._store.update_job(job_id, patch)
         await self._scheduler.reload()
+        _notify_cron_mutation(job, "update", request_channel_id)
         return job.to_dict()
 
     async def delete_job(

@@ -1135,6 +1135,17 @@ class TestExtractLegacyParamsKindAt:
         assert out["timezone"] == "Asia/Tokyo"
         assert out["cron_expr"] == "0 0 9 1 1 ? 2026"
 
+    def test_kind_at_update_uses_conversion_timezone(self) -> None:
+        context = SimpleNamespace(channel_id="web", session_id="sess-1")
+        out = _extract_legacy_params(
+            {"schedule": {"kind": "at", "at": "2026-07-24T18:25:31+08:00"}},
+            context=context,
+            require_schedule=False,
+        )
+
+        assert out["timezone"] == "Asia/Shanghai"
+        assert out["cron_expr"] == "31 25 18 24 7 ? 2026"
+
     def test_kind_every_still_raises(self) -> None:
         context = SimpleNamespace(channel_id="web", session_id="sess-1")
         payload = {
@@ -1435,3 +1446,74 @@ class TestBuildToolsAllowCreate:
         result = await unified._func(action="list")
 
         assert result == {"jobs": [{"id": "job-1"}]}
+
+@pytest.mark.asyncio
+async def test_current_chat_reminder_payload_update_keeps_delivery_session(tmp_path, monkeypatch):
+    """A payload-only follow-up must not revoke the current chat's delivery."""
+    from jiuwenswarm.gateway.cron.controller import CronController
+
+    _setup_project_store(tmp_path, monkeypatch)
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    backend = _CronToolsCronBackend(tools)
+    session = "feishu_team_room_user"
+    context = CronToolContext(
+        channel_id="feishu", session_id=session, metadata={"request_id": "req-reminder"}
+    )
+    controller = CronController(
+        store=tools._local_store,
+        scheduler=SimpleNamespace(
+            reload=AsyncMock(), project_execution_allowed=AsyncMock(return_value=True)
+        ),
+    )
+    await backend.create_job(
+        {
+            "name": "Reminder",
+            "schedule": {"kind": "cron", "expr": "0 0 9 * * ? *", "tz": "UTC"},
+            "payload": {"kind": "systemEvent", "message": "Reminder"},
+            "delivery": {"mode": "announce", "channel": "feishu"},
+            "mode": "team",
+            "sessionTarget": "current",
+        },
+        context=context,
+    )
+    create = push.payloads.pop()
+    created = await controller.create_job(
+        create["body"]["data"],
+        request_channel_id=create["channel_id"],
+        request_session_id=create["session_id"],
+    )
+    assert created["session_id"] == session
+    assert created["origin_channel_id"] == "feishu"
+    assert created["mode"] == "team.work.normal"
+
+    await backend.update_job(
+        created["id"], {"payload": {"kind": "systemEvent", "message": "Updated reminder"}},
+        context=context,
+    )
+    update = push.payloads.pop()
+    patch = update["body"]["data"]["patch"]
+    assert "targets" not in patch
+    assert "timezone" not in patch
+    assert "mode" not in patch
+    assert "session_id" not in patch
+    assert patch["description"] == "Updated reminder"
+    updated = await controller.update_job(
+        created["id"], patch,
+        request_channel_id=update["channel_id"],
+        request_session_id=update["session_id"],
+    )
+    assert updated["session_id"] == session
+    assert updated["origin_channel_id"] == "feishu"
+    assert updated["timezone"] == "UTC"
+    assert updated["cron_expr"] == "0 0 9 * * ? *"
+    assert updated["targets"] == "feishu"
+    assert updated["mode"] == "team.work.normal"
+    assert updated["description"] == "Updated reminder"
+
+    same_target = await controller.update_job(created["id"], {"targets": "feishu"})
+    assert same_target["session_id"] == session
+    assert same_target["origin_channel_id"] == "feishu"
+
+    moved = await controller.update_job(created["id"], {"targets": "web"})
+    assert "session_id" not in moved
+    assert "origin_channel_id" not in moved
