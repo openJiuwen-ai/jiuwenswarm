@@ -6,6 +6,7 @@ import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+from jiuwenswarm.server.runtime.agent_manager import _effective_single_agent_mode
 
 
 def _request(params, channel_id="web"):
@@ -33,6 +34,34 @@ def test_web_work_mode_drives_adapter_choice(mode, work_mode, expected_adapter):
     request = _request({"mode": mode, "work_mode": work_mode})
 
     assert JiuWenSwarm._adapter_mode_for_request(request) == expected_adapter
+
+
+@pytest.mark.parametrize("mode", ["agent", "code.normal", "code.plan", "design"])
+def test_desktop_single_agent_modes_route_to_office_adapter(mode):
+    """小艺 Work 保持 desktop 通道，但复用 Web 的单 agent 三合一路由。"""
+    request = _request({"mode": mode, "work_mode": "code"}, channel_id="desktop")
+
+    assert JiuWenSwarm._adapter_mode_for_request(request) == "agent"
+
+
+@pytest.mark.parametrize("mode", ["agent", "agent.plan", "code.normal", "code.plan", "design"])
+def test_desktop_single_agent_modes_are_assembled_as_office_profile(mode):
+    """Adapter selection alone is insufficient: root prompt assembly must also be agent."""
+    assert _effective_single_agent_mode("desktop", mode) == "agent"
+
+
+@pytest.mark.parametrize("mode", ["team", "team.plan", "code.team"])
+def test_desktop_team_modes_keep_their_assembled_profile(mode):
+    assert _effective_single_agent_mode("desktop", mode) == mode
+
+
+@pytest.mark.parametrize("mode", ["team", "team.plan", "code.team"])
+def test_desktop_team_modes_keep_existing_adapter_routing(mode):
+    """三合一只覆盖单 agent，Desktop 团队模式必须保持原有路由。"""
+    request = _request({"mode": mode, "work_mode": "code"}, channel_id="desktop")
+
+    expected = "code" if mode in {"team.plan", "code.team"} else "agent"
+    assert JiuWenSwarm._adapter_mode_for_request(request) == expected
 
 
 @pytest.mark.parametrize("work_mode", ["work", "code"])

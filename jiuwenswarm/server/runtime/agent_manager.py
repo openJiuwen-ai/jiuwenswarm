@@ -16,6 +16,7 @@ from weakref import WeakValueDictionary
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
 from jiuwenswarm.agents.harness.team import get_team_manager
 from jiuwenswarm.common.config import get_config, get_default_models
+from jiuwenswarm.common.mode_matrix import is_team_mode
 
 if TYPE_CHECKING:
     from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
@@ -33,6 +34,21 @@ def _normalize_channel_id(channel_id: str | None) -> str:
 
 def _normalize_mode(mode: str | None) -> str:
     return str(mode or "agent").strip() or "agent"
+
+
+def _effective_single_agent_mode(channel_id: str | None, mode: str | None) -> str:
+    """Return the assembled profile mode for unified Web/Desktop requests.
+
+    The transport-level ``mode`` remains code/design for session metadata and
+    project bucketing, but the root instance must be assembled as ``agent``.
+    Otherwise a DeepAdapter is selected later while its static system prompt
+    has already been created from the code/design profile.
+    """
+    channel_key = _normalize_channel_id(channel_id)
+    mode_key = _normalize_mode(mode)
+    if channel_key in {"web", "desktop"} and not is_team_mode(mode_key):
+        return "agent"
+    return mode_key
 
 
 def _normalize_sub_mode(sub_mode: str | None) -> str:
@@ -416,7 +432,7 @@ class AgentManager:
             else:
                 os.environ[key] = str(env_value)
         channel_key = _normalize_channel_id(agent_key)
-        mode_key = _normalize_mode(mode)
+        mode_key = _effective_single_agent_mode(channel_key, mode)
         # 用并轨后的子模式装配实例，和缓存键保持同一套语义。
         sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
         project_dir = _normalize_project_dir((config or {}).get("project_dir"))
@@ -728,7 +744,7 @@ class AgentManager:
             JiuWenSwarm | None: Agent 实例
         """
         channel_key = _normalize_channel_id(channel_id)
-        mode_key = _normalize_mode(mode)
+        mode_key = _effective_single_agent_mode(channel_key, mode)
         sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
         project_key = _normalize_project_dir(project_dir)
         cache_key = _make_agent_cache_key(mode_key, sub_mode_key, project_key)
@@ -780,14 +796,18 @@ class AgentManager:
             return None
 
         if mode is not None or project_dir is not None or sub_mode is not None:
-            cache_key = _make_agent_cache_key(mode, sub_mode, project_dir)
+            cache_key = _make_agent_cache_key(
+                _effective_single_agent_mode(channel_key, mode), sub_mode, project_dir
+            )
             agent = channel_agents.get(cache_key)
             if agent is not None:
                 return self._borrow_agent(agent)
 
-        requested_mode = _normalize_mode(mode) if mode is not None else ""
+        requested_mode = (
+            _effective_single_agent_mode(channel_key, mode) if mode is not None else ""
+        )
         requested_sub_mode = (
-            collapse_plan_sub_mode(mode, sub_mode) if sub_mode is not None else ""
+            collapse_plan_sub_mode(requested_mode, sub_mode) if sub_mode is not None else ""
         )
         requested_project_dir = _normalize_project_dir(project_dir) if project_dir is not None else ""
         for agent in channel_agents.values():
