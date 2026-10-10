@@ -113,7 +113,13 @@ def test_prewarm_is_disabled_unless_the_environment_opts_in(
 
 
 @pytest.mark.asyncio
-async def test_disabled_pool_skips_foreground_bookkeeping() -> None:
+async def test_disabled_pool_skips_foreground_bookkeeping(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_warm_pool.get_agent_sessions_dir",
+        lambda: tmp_path,
+    )
     pool = AgentWarmPool(_FakeManager(_FakeRootAgent()), enabled=False)
 
     await pool.begin_foreground()
