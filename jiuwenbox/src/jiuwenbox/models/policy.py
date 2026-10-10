@@ -612,7 +612,6 @@ class InferencePrivacyProxyPolicy(BaseModel):
     @field_validator("listen_host", mode="after")
     @classmethod
     def validate_listen_host(cls, value: str | None, info) -> str | None:
-        import ipaddress
         listen_port = info.data.get("listen_port", 0)
         if listen_port <= 0:
             return value
@@ -633,8 +632,6 @@ class NetworkUplinkPolicy(BaseModel):
     @field_validator("subnet", mode="after")
     @classmethod
     def validate_subnet(cls, value: str) -> str:
-        import ipaddress
-
         if not value.strip():
             return ""
         try:
