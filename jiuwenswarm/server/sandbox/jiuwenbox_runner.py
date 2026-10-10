@@ -195,6 +195,47 @@ def _resolve_jiuwenbox_src_dir() -> Optional[Path]:
     return None
 
 
+def _prepend_jiuwenbox_src(env: dict[str, str]) -> Optional[Path]:
+    """Use the same source path for box-server startup and runner import probes."""
+    local_src = _resolve_jiuwenbox_src_dir()
+    if local_src is not None and not getattr(sys, "frozen", False):
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(local_src), existing)))
+    return local_src
+
+
+RUNNER_PROBE_IMPORT = (
+    "from jiuwenbox.supervisor import win_exec, win_job, win_softdelete, win_acl, win_setup"
+)
+
+
+def probe_runner_python(
+    python_exe: str, extra_env: dict[str, str], timeout: float = 15.0,
+) -> Optional[str]:
+    """Check host-side runner imports; sandbox account access is checked at startup."""
+    import subprocess
+
+    env = {key: os.environ[key] for key in (
+        "PATH", "PATHEXT", "SystemRoot", "windir", "COMSPEC",
+        "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
+        "PYTHONPATH", "PYTHONHOME", "PYTHONIOENCODING",
+    ) if key in os.environ}
+    env.update(extra_env)
+    _prepend_jiuwenbox_src(env)
+    try:
+        proc = subprocess.run(
+            [python_exe, "-c", RUNNER_PROBE_IMPORT],
+            env=env, capture_output=True, encoding="utf-8", errors="replace",
+            timeout=timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return str(exc)
+    if proc.returncode:
+        lines = proc.stderr.strip().splitlines()
+        return lines[-1][:1000] if lines else f"exit {proc.returncode}"
+    return None
+
+
 def _resolve_jiuwenbox_configs_dir() -> Optional[Path]:
     """探测 ``jiuwenbox/configs/`` 目录 (policy 模板所在).
 
@@ -531,13 +572,8 @@ class JiuwenBoxRunner:
             if sys.platform == "win32":
                 _apply_soft_delete_env(env)
             # 若 jiuwenbox 未安装到 site-packages, 尝试用仓库内源码目录注入 PYTHONPATH
-            local_src = _resolve_jiuwenbox_src_dir()
+            local_src = _prepend_jiuwenbox_src(env)
             if local_src is not None and not getattr(sys, "frozen", False):
-                existing = env.get("PYTHONPATH", "")
-                parts = [str(local_src)]
-                if existing:
-                    parts.append(existing)
-                env["PYTHONPATH"] = os.pathsep.join(parts)
                 logger.info(
                     "[JiuwenBoxRunner] prepending local jiuwenbox src to PYTHONPATH: %s",
                     local_src,

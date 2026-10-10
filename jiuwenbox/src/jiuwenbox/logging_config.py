@@ -30,7 +30,13 @@ def patch_uvicorn_logging() -> None:
     messages (not errors). Rename it to ``uvicorn`` for clearer log output, and
     apply jiuwenbox's timestamped format to the default formatter.
     """
-    from uvicorn.config import LOGGING_CONFIG
+    try:
+        from uvicorn.config import LOGGING_CONFIG
+    except ModuleNotFoundError as exc:
+        # The sandbox runner only needs standard-library logging.
+        if exc.name != "uvicorn":
+            raise
+        return
 
     LOGGING_CONFIG["formatters"]["default"]["fmt"] = LOG_FORMAT
     LOGGING_CONFIG["formatters"]["default"]["datefmt"] = LOG_DATE_FORMAT

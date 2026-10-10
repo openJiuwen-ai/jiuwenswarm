@@ -128,7 +128,7 @@ from jiuwenswarm.common.config import (
     upsert_mcp_server_in_config,
     upsert_subagent_in_config,
 )
-from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
+from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner, probe_runner_python
 from jiuwenswarm.common.connectors import is_connector_exclude_glob
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.security.ws_origin import (
@@ -419,6 +419,156 @@ def _is_std_cpython(python_exe: str) -> bool:
     # 标准 CPython 根目录有 python313.dll / python312.dll 等
     has_dll = any(parent.glob("python3*.dll"))
     return has_dll
+
+
+async def _select_runner_python(
+    candidates: list[str], sandbox_env: dict[str, str], *, explicit: bool = False,
+) -> str | None:
+    """Only select interpreters whose runner imports succeed, without blocking startup."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 30.0
+    rejected: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or (not explicit and not _is_std_cpython(candidate)):
+            continue
+        candidate = str(Path(candidate).resolve())
+        key = os.path.normcase(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            rejected.append("runner Python 探测总时限已到")
+            break
+        reason = await asyncio.to_thread(
+            probe_runner_python, candidate, sandbox_env, min(15.0, remaining),
+        )
+        if reason is None:
+            return candidate
+        rejected.append(f"{candidate}: {reason}")
+    logger.error(
+        "[AgentWebSocketServer][sandbox] %s, 不启动沙箱: %s",
+        "JIUWENBOX_RUNNER_PYTHON 显式配置的解释器不可用" if explicit
+        else "没有可用的 runner Python",
+        rejected or "未找到标准 CPython",
+    )
+    return None
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    child = os.path.normcase(str(path.resolve()))
+    parent = os.path.normcase(str(root.resolve()))
+    return child == parent or child.startswith(parent.rstrip("\\/") + os.sep)
+
+
+def _runner_python_candidates() -> list[str]:
+    """Return auto-detected runner interpreters in preference order."""
+    import glob
+
+    candidates: list[str] = []
+    if sys.executable and _is_std_cpython(sys.executable):
+        candidates.append(sys.executable)
+    candidates.append(str(Path(__file__).resolve().parents[2] / "tools" / "python" / "python.exe"))
+    base_python = Path(sys.base_prefix) / "python.exe"
+    roaming = os.environ.get("APPDATA", "")
+    uv_python_root = Path(roaming) / "uv" / "python" if roaming else None
+    # jbx-sandbox 对宿主 AppData 下的 uv 解释器可能没有访问权限, 只排在独立安装的 CPython 之后.
+    base_is_uv = uv_python_root is not None and _is_under(base_python, uv_python_root)
+    if not base_is_uv:
+        candidates.append(str(base_python))
+    candidates += sorted(glob.glob(r"C:\Python3*\python.exe"))
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    if local_appdata:
+        candidates += sorted(glob.glob(
+            str(Path(local_appdata) / "Programs" / "Python" / "Python3*" / "python.exe")))
+    if base_is_uv:
+        candidates.append(str(base_python))
+    if uv_python_root is not None:
+        candidates += sorted(glob.glob(str(uv_python_root / "cpython-*" / "python.exe")))
+    which = shutil.which("python") or shutil.which("python3")
+    if which:
+        candidates.append(which)
+    return candidates
+
+
+async def _build_sandbox_env() -> dict[str, str] | None:
+    """Build box-server env for Windows sandboxes; ``None`` means no usable runner Python.
+
+    P0-5: 不写 os.environ (主进程全局污染), 构建 dict 给 ensure_running(extra_env=...).
+    """
+    sandbox_env: dict[str, str] = {}
+    if sys.platform != "win32":
+        return sandbox_env
+    try:
+        from jiuwenswarm.server.runtime.pip_env import (
+            ensure_runtime_venv, resolve_base_python,
+        )
+        try:
+            bundled_python = resolve_base_python()
+            sandbox_env["JIUWENBOX_BUNDLED_PYTHON"] = str(bundled_python.parent)
+            sandbox_env["JIUWENCLAW_BASE_PYTHON"] = str(bundled_python)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentWebSocketServer] inject JIUWENBOX_BUNDLED_PYTHON failed: %s",
+                exc,
+            )
+        try:
+            venv_dir = ensure_runtime_venv()
+            sandbox_env["JIUWENBOX_VENV_DIR"] = str(venv_dir)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentWebSocketServer] inject JIUWENBOX_VENV_DIR failed: %s",
+                exc,
+            )
+        # skills 目录注入：policy 基底 allow_read 用 %JIUWENBOX_SKILLS_DIR%
+        # 占位（os.path.expandvars 语义），不注入则展不开 → apply_sandbox_acl
+        # 跳过 → 沙箱受限 token 读技能文件 Errno 13（skill_tool 读取失败）。
+        try:
+            skills_dir = Path(get_agent_workspace_dir()) / "skills"
+            if skills_dir.is_dir():
+                sandbox_env["JIUWENBOX_SKILLS_DIR"] = str(skills_dir)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentWebSocketServer] inject JIUWENBOX_SKILLS_DIR failed: %s",
+                exc,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[AgentWebSocketServer] inject sandbox python/venv env failed: %s",
+            exc,
+        )
+    for py_key in ("CLAW_PYTHON_HOME", "JIUWENCLAW_BASE_PYTHON"):
+        py_val = (os.environ.get(py_key) or "").strip()
+        if py_val and not sandbox_env.get(py_key):
+            sandbox_env[py_key] = py_val
+    desktop_data = (os.environ.get("JIUWENBOX_DESKTOP_DATA_DIR") or "").strip()
+    if desktop_data:
+        sandbox_env["JIUWENBOX_DESKTOP_DATA_DIR"] = desktop_data
+    if getattr(sys, "frozen", False):
+        runner_py: str | None = str(Path(sys.executable).resolve())
+    else:
+        explicit_py = (os.environ.get("JIUWENBOX_RUNNER_PYTHON") or "").strip()
+        if explicit_py:
+            runner_py = await _select_runner_python([explicit_py], sandbox_env, explicit=True)
+        else:
+            logger.info(
+                "[AgentWebSocketServer][sandbox] JIUWENBOX_RUNNER_PYTHON "
+                "未注入, 探测候选路径..."
+            )
+            runner_py = await _select_runner_python(_runner_python_candidates(), sandbox_env)
+    if runner_py is None:
+        return None
+    sandbox_env["JIUWENBOX_RUNNER_PYTHON"] = runner_py
+    logger.info(
+        "[AgentWebSocketServer][sandbox] injected env: "
+        "JIUWENBOX_VENV_DIR=%s, JIUWENBOX_BUNDLED_PYTHON=%s, "
+        "JIUWENBOX_RUNNER_PYTHON=%s",
+        sandbox_env.get("JIUWENBOX_VENV_DIR") or "<未注入>",
+        sandbox_env.get("JIUWENBOX_BUNDLED_PYTHON") or "<未注入>",
+        runner_py,
+    )
+    return sandbox_env
 
 
 from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported for tests / handlers
@@ -1495,102 +1645,11 @@ class AgentWebSocketServer:
                     port,
                 )
 
-            # 注入动态路径 env 给 box-server 子进程 (Windows 沙箱用):
-            # JIUWENBOX_BUNDLED_PYTHON / JIUWENBOX_VENV_DIR / JIUWENBOX_RUNNER_PYTHON
-            # (runner 用的标准 CPython, 非 uv venv — jbx-sandbox 跑不了 uv trampoline).
-            # P0-5: 不写 os.environ (主进程全局污染), 改构建 sandbox_env dict 给
-            # ensure_running(extra_env=...) 传子进程. 仅 Windows 需要.
-            sandbox_env: dict[str, str] = {}
-            if sys.platform == "win32":
-                try:
-                    from jiuwenswarm.server.runtime.pip_env import (
-                        ensure_runtime_venv, resolve_base_python,
-                    )
-                    try:
-                        bundled_python = resolve_base_python()
-                        sandbox_env["JIUWENBOX_BUNDLED_PYTHON"] = str(bundled_python.parent)
-                        sandbox_env["JIUWENCLAW_BASE_PYTHON"] = str(bundled_python)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "[AgentWebSocketServer] inject JIUWENBOX_BUNDLED_PYTHON failed: %s",
-                            exc,
-                        )
-                    try:
-                        venv_dir = ensure_runtime_venv()
-                        sandbox_env["JIUWENBOX_VENV_DIR"] = str(venv_dir)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "[AgentWebSocketServer] inject JIUWENBOX_VENV_DIR failed: %s",
-                            exc,
-                        )
-                    # skills 目录注入：policy 基底 allow_read 用 %JIUWENBOX_SKILLS_DIR%
-                    # 占位（os.path.expandvars 语义），不注入则展不开 → apply_sandbox_acl
-                    # 跳过 → 沙箱受限 token 读技能文件 Errno 13（skill_tool 读取失败）。
-                    try:
-                        skills_dir = Path(get_agent_workspace_dir()) / "skills"
-                        if skills_dir.is_dir():
-                            sandbox_env["JIUWENBOX_SKILLS_DIR"] = str(skills_dir)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "[AgentWebSocketServer] inject JIUWENBOX_SKILLS_DIR failed: %s",
-                            exc,
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "[AgentWebSocketServer] inject sandbox python/venv env failed: %s",
-                        exc,
-                    )
-                for _py_key in ("CLAW_PYTHON_HOME", "JIUWENCLAW_BASE_PYTHON"):
-                    _py_val = (os.environ.get(_py_key) or "").strip()
-                    if _py_val and not sandbox_env.get(_py_key):
-                        sandbox_env[_py_key] = _py_val
-                _desktop_data = (os.environ.get("JIUWENBOX_DESKTOP_DATA_DIR") or "").strip()
-                if _desktop_data:
-                    sandbox_env["JIUWENBOX_DESKTOP_DATA_DIR"] = _desktop_data
-                if getattr(sys, "frozen", False):
-                    sandbox_env["JIUWENBOX_RUNNER_PYTHON"] = str(Path(sys.executable).resolve())
-                elif not (sandbox_env.get("JIUWENBOX_RUNNER_PYTHON")
-                        or os.environ.get("JIUWENBOX_RUNNER_PYTHON") or "").strip():
-                    logger.info(
-                        "[AgentWebSocketServer][sandbox] JIUWENBOX_RUNNER_PYTHON "
-                        "未注入, 探测候选路径..."
-                    )
-                    import shutil as _shutil
-                    import glob as _glob
-                    _runner_py: str | None = None
-                    _candidates: list[str] = []
-                    _candidates.append(
-                        str(Path(__file__).resolve().parents[2] / "tools" / "python" / "python.exe"))
-                    _candidates += sorted(_glob.glob(r"C:\Python3*\python.exe"))
-                    _lad = os.environ.get("LOCALAPPDATA", "")
-                    if _lad:
-                        _candidates += sorted(_glob.glob(
-                            str(Path(_lad) / "Programs" / "Python" / "Python3*" / "python.exe")))
-                    # uv 管理的标准 CPython (非 Scripts trampoline)
-                    _roaming = os.environ.get("APPDATA", "")
-                    if _roaming:
-                        _candidates += sorted(_glob.glob(
-                            str(Path(_roaming) / "uv" / "python" / "cpython-*" / "python.exe")))
-                    if sys.executable and _is_std_cpython(sys.executable):
-                        _candidates.insert(0, sys.executable)
-                    for _cand in _candidates:
-                        if _cand and Path(_cand).is_file() and _is_std_cpython(_cand):
-                            _runner_py = str(Path(_cand).resolve())
-                            break
-                    if not _runner_py:
-                        _which = _shutil.which("python") or _shutil.which("python3")
-                        if _which and _is_std_cpython(_which):
-                            _runner_py = str(Path(_which).resolve())
-                    if _runner_py:
-                        sandbox_env["JIUWENBOX_RUNNER_PYTHON"] = _runner_py
-                logger.info(
-                    "[AgentWebSocketServer][sandbox] injected env: "
-                    "JIUWENBOX_VENV_DIR=%s, JIUWENBOX_BUNDLED_PYTHON=%s, "
-                    "JIUWENBOX_RUNNER_PYTHON=%s",
-                    sandbox_env.get("JIUWENBOX_VENV_DIR") or "<未注入>",
-                    sandbox_env.get("JIUWENBOX_BUNDLED_PYTHON") or "<未注入>",
-                    sandbox_env.get("JIUWENBOX_RUNNER_PYTHON") or "<未注入>",
-                )
+            # Windows 沙箱: 注入 JIUWENBOX_BUNDLED_PYTHON / JIUWENBOX_VENV_DIR /
+            # JIUWENBOX_RUNNER_PYTHON 等动态路径 (runner 用的标准 CPython, 非 uv venv).
+            sandbox_env = await _build_sandbox_env()
+            if sandbox_env is None:
+                return
 
             ok = await self._jiuwenbox_runner.ensure_running(
                 host=host,
@@ -7332,11 +7391,20 @@ class AgentWebSocketServer:
             port = preferred_port
 
         # 3. 启动 / 健康检查本地 jiuwenbox; 失败直接报错
+        sandbox_env: dict[str, str] | None = None
+        if startup_mode == "internal":
+            sandbox_env = await _build_sandbox_env()
+            if sandbox_env is None:
+                raise RuntimeError(
+                    "没有可用的沙箱 runner Python (详见 agent-server 日志); "
+                    "请将 JIUWENBOX_RUNNER_PYTHON 设为可导入 jiuwenbox 的标准 CPython"
+                )
         ok = await self._jiuwenbox_runner.ensure_running(
             host=host,
             port=port,
             startup_mode=startup_mode,
             policy_path=policy_path,
+            extra_env=sandbox_env or None,
         )
         if not ok:
             if startup_mode == "external":

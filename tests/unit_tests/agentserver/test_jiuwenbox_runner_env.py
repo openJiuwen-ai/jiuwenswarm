@@ -1,6 +1,9 @@
 """Policy reload must preserve the Windows runner's bootstrap environment."""
 
 import asyncio
+import os
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -56,3 +59,33 @@ async def test_policy_reload_retains_bootstrap_env_until_explicitly_replaced(tmp
     assert "JIUWENBOX_RUNNER_PYTHON" not in spawn.await_args.kwargs["env"]
     assert "JIUWENBOX_SKILLS_DIR" not in spawn.await_args.kwargs["env"]
     await asyncio.sleep(0)  # Complete mocked stdout/stderr drain tasks.
+
+
+def test_runner_probe_uses_startup_source_path(monkeypatch, tmp_path):
+    source = tmp_path / "src"
+    monkeypatch.setattr(runner_module, "_resolve_jiuwenbox_src_dir", lambda: source)
+    monkeypatch.setenv("PYTHONPATH", "existing-source")
+    monkeypatch.setenv("UNRELATED_TEST_SECRET", "must-not-be-forwarded")
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    run = Mock(return_value=SimpleNamespace(returncode=0, stderr=""))
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert runner_module.probe_runner_python("runner-python", {"SystemRoot": "C:/Windows"}) is None
+    env = run.call_args.kwargs["env"]
+    assert env["PYTHONPATH"] == os.pathsep.join((str(source), "existing-source"))
+    assert env["SystemRoot"] == "C:/Windows"
+    assert "UNRELATED_TEST_SECRET" not in env
+    assert os.environ["PYTHONPATH"] == "existing-source"
+
+
+@pytest.mark.parametrize("result,reason", [
+    (SimpleNamespace(returncode=1, stderr="Traceback\nModuleNotFoundError: missing"),
+     "ModuleNotFoundError: missing"),
+    (SimpleNamespace(returncode=7, stderr=""), "exit 7"),
+    (subprocess.TimeoutExpired("runner-python", 15), "timed out"),
+    (OSError("cannot start interpreter"), "cannot start interpreter"),
+])
+def test_runner_probe_reports_failure(monkeypatch, result, reason):
+    run = Mock(side_effect=result) if isinstance(result, Exception) else Mock(return_value=result)
+    monkeypatch.setattr(subprocess, "run", run)
+    assert reason in runner_module.probe_runner_python("runner-python", {})
