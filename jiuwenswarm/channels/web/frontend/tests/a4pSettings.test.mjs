@@ -27,7 +27,7 @@ await build({
             'export const useSettingsServices = () => globalThis.a4pFixture.services;',
           '../../services/SettingsSourceProvider':
             'export const useSettingsSource = () => globalThis.a4pFixture.source;',
-          '../../components': 'export const SettingRow = ({children}) => children;',
+          '../../components': 'export { SettingRow } from "./src/features/settings/components/SettingRow";',
           'react-i18next': 'export const useTranslation = () => ({t: key => key, i18n:{resolvedLanguage:"zh"}});',
         };
         builder.onResolve({ filter: /.*/ }, (args) =>
@@ -100,7 +100,11 @@ async function mount(options, run) {
         if (method === 'a4p.webauthn.credentials.get') {
           if (rejectStatus) throw new Error('offline');
           if (options.pending) return new Promise(() => {});
-          return { expectedOrigin: 'http://localhost:5173', rpId: 'localhost', credentials: [] };
+          return {
+            expectedOrigin: 'http://localhost:5173',
+            rpId: 'localhost',
+            credentials: [{ credentialId: 'test-credential', createdAt: '2026-10-01T00:00:00Z' }],
+          };
         }
         if (options.registrationError) throw options.registrationError;
         throw new Error('registration reached');
@@ -153,8 +157,8 @@ for (const [name, options, reason] of [
       assert.equal(get('environment-error').textContent, 'a4pSettings.' + reason);
       assert.equal(get('signature').getAttribute('aria-checked'), 'false');
       assert.deepEqual(saves, []);
-      await click('register');
-      assert.equal(get('environment-error').textContent, 'a4pSettings.' + reason);
+      assert.equal(get('register'), null);
+      assert.equal(get('passkeys'), null);
       assert.deepEqual(calls, ['a4p.webauthn.credentials.get', 'a4p.config.get']);
       assert.equal(browserCalls(), 0);
     });
@@ -177,16 +181,23 @@ test('enabled signature shows error and can be disabled even with A4P off', asyn
 
 test('supported origin allows enable and reaches registration RPC', async () => {
   await mount({}, async ({ get, click, saves, calls }) => {
+    assert.equal(get('passkeys'), null);
+    assert.equal(get('credential-id'), null);
     await click('signature');
+    assert.ok(get('passkey-count'));
+    assert.match(get('credential-id').textContent, /test-credential/);
     assert.deepEqual(saves, [{ require_user_signature: true }]);
     assert.equal(get('environment-error'), null);
     await click('register');
     assert.ok(calls.includes('a4p.webauthn.registration.options'));
+    await click('signature');
+    assert.equal(get('passkeys'), null);
+    assert.equal(get('credential-id'), null);
   });
 });
 
 test('status recovery clears stale environment hint', async () => {
-  await mount({ rejectStatus: true }, async ({ get, click, recover }) => {
+  await mount({ rejectStatus: true, signed: true }, async ({ get, click, recover }) => {
     await click('register');
     assert.ok(get('environment-error'));
     recover();
@@ -240,7 +251,7 @@ test('missing session blocks config and credential requests', async () => {
   await mount({ session: null }, async ({ get, calls }) => {
     assert.deepEqual(calls, []);
     assert.equal(get('enabled').disabled, true);
-    assert.equal(get('register').disabled, true);
+    assert.equal(get('register'), null);
   });
 });
 
@@ -267,7 +278,7 @@ test('session switch ignores a stale update response', async () => {
 test('duplicate registration displays an actionable message instead of browser error', async () => {
   const error = new Error('The object is in an invalid state.');
   error.name = 'InvalidStateError';
-  await mount({ registrationError: error }, async ({ get, click }) => {
+  await mount({ registrationError: error, signed: true }, async ({ get, click }) => {
     await click('register');
     assert.equal(get('operation-error').textContent, 'a4pSettings.alreadyRegistered');
     assert.equal(get('register').disabled, false);

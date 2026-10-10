@@ -202,61 +202,63 @@ export function A4PSettings({ disabled }: SettingsCustomItemProps) {
           onChange={(next) => void updateSetting('require_user_signature', next)}
         />
       </SettingRow>
-      <div className="settings-page__section-body" data-testid="settings-a4p-passkeys">
-        <SettingRow
-          title={
-            <span data-testid="settings-a4p-passkey-count">
-              {t('a4pSettings.passkeyCount', { count: credentials.length })}
-            </span>
-          }
-          subSettings={
-            credentials.length > 0 ? (
-              <div className="space-y-2 px-4 pb-4 pt-3" data-testid="settings-a4p-credential-list">
-                {credentials.map((credential) => (
-                  <div
-                    data-testid="settings-a4p-credential-item"
-                    data-variant={credential.credentialId}
-                    key={credential.credentialId}
-                    className="text-sm"
-                  >
-                    <div data-testid="settings-a4p-credential-id">
-                      {t('a4pSettings.credentialId')}:{' '}
-                      <code title={credential.credentialId}>{shortCredentialId(credential.credentialId)}</code>
+      {signatureRequired && (
+        <div className="settings-page__section-body" data-testid="settings-a4p-passkeys">
+          <SettingRow
+            title={
+              <span data-testid="settings-a4p-passkey-count">
+                {t('a4pSettings.passkeyCount', { count: credentials.length })}
+              </span>
+            }
+            subSettings={
+              credentials.length > 0 ? (
+                <div className="space-y-2 px-4 pb-4 pt-3" data-testid="settings-a4p-credential-list">
+                  {credentials.map((credential) => (
+                    <div
+                      data-testid="settings-a4p-credential-item"
+                      data-variant={credential.credentialId}
+                      key={credential.credentialId}
+                      className="text-sm"
+                    >
+                      <div data-testid="settings-a4p-credential-id">
+                        {t('a4pSettings.credentialId')}:{' '}
+                        <code title={credential.credentialId}>{shortCredentialId(credential.credentialId)}</code>
+                      </div>
+                      <span className="text-text-muted" data-testid="settings-a4p-credential-created-at">
+                        {t('a4pSettings.createdAt')}:{' '}
+                        {credential.createdAt ? new Date(credential.createdAt).toLocaleString(locale) : '-'}
+                      </span>
                     </div>
-                    <span className="text-text-muted" data-testid="settings-a4p-credential-created-at">
-                      {t('a4pSettings.createdAt')}:{' '}
-                      {credential.createdAt ? new Date(credential.createdAt).toLocaleString(locale) : '-'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            ) : undefined
-          }
-        >
-          <Button
-            data-testid="settings-a4p-refresh"
-            disabled={controlsDisabled || busy || saving}
-            onClick={() => {
-              void loadStatus();
-              void loadConfig();
-            }}
+                  ))}
+                </div>
+              ) : undefined
+            }
           >
-            {t('a4pSettings.refresh')}
-          </Button>
-          <Button
-            data-testid="settings-a4p-register"
-            disabled={controlsDisabled || busy || saving}
-            onClick={() => void registerPasskey()}
-          >
-            {busy ? t('a4pSettings.registering') : t('a4pSettings.register')}
-          </Button>
-        </SettingRow>
-        {environmentMessage ? (
-          <div className="settings-page__error" role="alert" data-testid="settings-a4p-environment-error">
-            {environmentMessage}
-          </div>
-        ) : null}
-      </div>
+            <Button
+              data-testid="settings-a4p-refresh"
+              disabled={controlsDisabled || busy || saving}
+              onClick={() => {
+                void loadStatus();
+                void loadConfig();
+              }}
+            >
+              {t('a4pSettings.refresh')}
+            </Button>
+            <Button
+              data-testid="settings-a4p-register"
+              disabled={controlsDisabled || busy || saving}
+              onClick={() => void registerPasskey()}
+            >
+              {busy ? t('a4pSettings.registering') : t('a4pSettings.register')}
+            </Button>
+          </SettingRow>
+        </div>
+      )}
+      {environmentMessage ? (
+        <div className="settings-page__error" role="alert" data-testid="settings-a4p-environment-error">
+          {environmentMessage}
+        </div>
+      ) : null}
       {error ? (
         <div className="settings-page__error" role="alert" data-testid="settings-a4p-operation-error">
           {error}
