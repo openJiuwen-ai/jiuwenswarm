@@ -37,6 +37,9 @@ from jiuwenswarm.agents.harness.common.rails.eternal_conversation.prompts import
 from jiuwenswarm.agents.harness.common.rails.eternal_conversation.registry import (
     get_session_coordinator,
 )
+from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    INTERRUPT_RESUME_SOURCES,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
@@ -722,6 +725,29 @@ def test_registry_reuses_coordinator_for_recreated_adapter(tmp_path: Path) -> No
 def test_frontend_runtime_flag_is_explicit_and_default_off(value, expected) -> None:
     params = {} if value is None else {"eternal_conversation_enabled": value}
     assert JiuWenSwarmDeepAdapter._resolve_eternal_conversation_enabled(params) is expected
+
+
+@pytest.mark.parametrize(
+    "source",
+    sorted(INTERRUPT_RESUME_SOURCES),
+)
+
+
+def test_eternal_interaction_resume_covers_all_hitl_resume_sources(source) -> None:
+    """Every HITL resume source must resume the suspended natural task.
+
+    A missed source (e.g. ask_user_interrupt) makes the adapter treat the user's
+    answer as a brand-new natural task: task-started/task-finished on a fresh
+    task_id while the interrupted task stays suspended forever, splitting one
+    natural task in the evidence chain.
+    """
+    assert JiuWenSwarmDeepAdapter._is_eternal_interaction_resume({"source": source}) is True
+
+
+def test_eternal_interaction_resume_rejects_natural_query_source() -> None:
+    assert JiuWenSwarmDeepAdapter._is_eternal_interaction_resume({"source": "query"}) is False
+    assert JiuWenSwarmDeepAdapter._is_eternal_interaction_resume({}) is False
+    assert JiuWenSwarmDeepAdapter._is_eternal_interaction_resume(None) is False
 
 
 class _AbilityManager:

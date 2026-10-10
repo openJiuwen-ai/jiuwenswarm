@@ -275,6 +275,7 @@ from jiuwenswarm.server.runtime.agent_adapter.llm_io_trace import (
 )
 from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    INTERRUPT_RESUME_SOURCES,
     SKILL_EVOLUTION_APPROVAL_SCHEMA,
     PermissionRailBuildOptions,
     build_permission_rail,
@@ -9767,6 +9768,15 @@ class JiuWenSwarmDeepAdapter:
         """Stop overlapping semantic session memory through a stable Adapter API."""
         session_memory_manager = getattr(context_processor_rail, "_session_memory_mgr", None)
         if session_memory_manager is None:
+            # _session_memory_mgr is a private agent-core attribute; a renamed
+            # attribute or an uninitialized rail would otherwise fail silently
+            # and leave SessionMemoryManager writing beside eternal conversation.
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] shutdown_context_session_memory found no "
+                "_session_memory_mgr on %r; SessionMemoryManager may keep running "
+                "beside eternal conversation (double memory backend)",
+                type(context_processor_rail).__name__,
+            )
             return False
         session_memory_manager.shutdown()
         setattr(context_processor_rail, "_session_memory_mgr", None)
@@ -10078,9 +10088,6 @@ class JiuWenSwarmDeepAdapter:
             _RailBuildInfo("_request_summary_rail", self._build_request_summary_rail),
             _RailBuildInfo("_model_routing_rail", self._build_model_routing, {"config": config_base}),
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
-            _RailBuildInfo(
-                "_eternal_conversation_rail", self._build_eternal_conversation_rail
-            ),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
             _RailBuildInfo(
                 "_multimodal_image_rail",
@@ -10137,6 +10144,11 @@ class JiuWenSwarmDeepAdapter:
                 "_context_processor_rail",
                 _build_context_processor_rail,
                 {"config": self._config_cache},
+            ),
+            # 与上游 02957a531 对齐：挂到 context_processor_rail 之后，
+            # 保证 ON_USER_MESSAGE 投影替换发生在上下文初始化链路之后。
+            _RailBuildInfo(
+                "_eternal_conversation_rail", self._build_eternal_conversation_rail
             ),
         ]
 
@@ -12834,10 +12846,12 @@ class JiuWenSwarmDeepAdapter:
     def _is_eternal_interaction_resume(params: Any) -> bool:
         if not isinstance(params, dict):
             return False
-        return str(params.get("source") or "").strip() in {
-            "permission_interrupt",
-            "confirm_interrupt",
-        }
+        # Single source of truth with the HITL resume dispatch: every source the
+        # framework treats as an interrupt resume (permission/confirm/ask_user/
+        # evolution) must resume the suspended natural task instead of starting
+        # a new one, otherwise ask_user answers would split one natural task in
+        # the eternal-conversation evidence chain.
+        return str(params.get("source") or "").strip() in INTERRUPT_RESUME_SOURCES
 
     async def configure_session_runtime(
         self,
