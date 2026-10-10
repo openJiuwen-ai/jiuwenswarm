@@ -378,7 +378,7 @@ The system automatically identifies and filters the following types of sensitive
 
 ## 9. Skill Symphony and Skill Retrieval Configuration
 
-Symphony settings control two related capabilities: **Skill Retrieval** finds candidate skills from installed skills, and **Skill Orchestration** uses the skill graph to organize candidates into a confirmable, executable skill chain.
+Symphony settings control two related capabilities: **Skill Retrieval** finds candidate Skills from installed Skills, and **Skill Orchestration** uses the skill graph to organize candidates into an explainable, executable chain.
 
 ### 9.1 Frontend switches
 
@@ -386,10 +386,10 @@ The configuration panel exposes two related switches:
 
 | Switch | Config key | Default | Purpose |
 | --- | --- | --- | --- |
-| **Enable Skill Retrieval** | `symphony.skill_retrieval.enabled` | `false` | Registers skill-tree retrieval tools such as `skill_branch_explore`, `skill_branch_peek`, and `skill_index_build` |
+| **Enable Skill Retrieval** | `symphony.skill_retrieval.enabled` | `false` | Registers `skill_index` with `list` / `search`; each new session then freezes a compact full-snapshot or progressive-retrieval strategy based on candidate scale |
 | **Enable Skill Symphony** | `symphony.enabled` | `false` | Registers skill graph and orchestration tools such as `symphony_read_graph`, `symphony_refresh_graph`, and `symphony_compose_graph` |
 
-The two switches are independent. Skill Retrieval answers "how to find candidate skills"; Skill Symphony answers "how to orchestrate candidate skills into a route". If only Skill Retrieval is enabled, the system only gets skill-tree retrieval. If only Skill Symphony is enabled, the system can read and refresh the skill graph, but candidate skills do not automatically come from Skill Retrieval.
+The two switches are independent. Skill Retrieval answers "how to find candidate skills"; Skill Symphony answers "how to orchestrate candidate skills into a route". If only Skill Retrieval is enabled, the system gets Skill discovery and retrieval, but not graph orchestration. If only Skill Symphony is enabled, the system can read and refresh the skill graph, but candidate skills do not automatically come from Skill Retrieval.
 
 ### 9.2 Skill index and skill graph
 
@@ -419,22 +419,25 @@ settings are mapped by the JiuwenSwarm Adapter to agent-core's
 | Setting | Default | Description |
 | --- | --- | --- |
 | `symphony.paths.skills_root` | Empty string | Skill source directory; empty means the runtime default is used |
-| `symphony.paths.graph_dir` | Empty string | Skill score artifact directory; empty means the runtime default is used |
+| `symphony.paths.graph_dir` | Empty string | Skill graph artifact directory; empty means the runtime default is used |
 | `symphony.fingerprint.scan.max_depth` | Empty | Maximum skill-file scan depth mapped to agent-core `SkillFolderScanner`; empty means the runtime default is used |
 | `symphony.fingerprint.extraction.workers` | `4` | Fingerprint extraction concurrency mapped to agent-core `FingerprintService` |
 | `symphony.fingerprint.extraction.batch_size` | `2` | Fingerprint extraction batch size mapped to agent-core `FingerprintService` |
 | `symphony.fingerprint.extraction.body_limit` | Empty | Body length limit mapped to agent-core `FingerprintService`; empty means the runtime default is used |
 | `symphony.build.workers` | `4` | Skill graph build concurrency |
 | `symphony.build.batch_size` | `16` | Skill graph build batch size |
+| `symphony.build.max_candidates_per_skill_relation` | `32` | Maximum matching candidates considered per Skill relationship |
 | `symphony.build.require_consensus` | `false` | Whether multiple judgments must agree before accepting a relationship |
-| `symphony.build.min_edge_confidence` | `0.1` | Minimum edge confidence written into the skill graph |
-| `symphony.orchestration.mode` | `fast` | Orchestration mode. The current runtime uses the fast orchestration path |
+| `symphony.build.min_edge_confidence` | `0.5` | Minimum edge confidence written into the skill graph |
+| `symphony.evolution.enabled` | `false` | Whether to enable dynamic-graph and experience updates from real execution evidence |
+| `symphony.orchestration.mode` | `fast` | Default orchestration mode; supports `fast` and `beam` |
+| `symphony.orchestration.top_k` | `3` | Maximum Beam-search candidates retained after each round |
 | `symphony.orchestration.max_depth` | `4` | Maximum skill-chain search depth |
-| `symphony.orchestration.min_edge_confidence` | `0.3` | Minimum skill-graph edge confidence preferred by orchestration |
+| `symphony.orchestration.min_edge_confidence` | `0.5` | Minimum confidence for an edge to enter orchestration candidates |
 | `symphony.skill_retrieval.artifact_root` | Empty string | Skill index artifact directory; empty means the default workspace is used; can be supplied by `SYMPHONY_SKILL_RETRIEVAL_ROOT` |
 | `symphony.skill_retrieval.build.branching_factor` | `128` | Skill-tree split-threshold base; controls how coarse or fine the tree is |
 | `symphony.skill_retrieval.build.max_depth` | `6` | Maximum skill-tree depth |
-| `symphony.skill_retrieval.build.root_categories` | Empty string | Root taxonomy configuration used to stabilize the first tree layer |
+| `symphony.skill_retrieval.build.root_categories` | Unset | Root taxonomy list used to stabilize the first tree layer |
 | `symphony.skill_retrieval.build.max_workers` | `2` | Skill index build concurrency |
 | `symphony.skill_retrieval.build.max_retries` | `2` | Retry count for failed LLM classification or grouping calls |
 | `symphony.skill_retrieval.build.request_timeout_seconds` | `420` | Timeout for one LLM build request |
@@ -443,12 +446,9 @@ settings are mapped by the JiuwenSwarm Adapter to agent-core's
 | `symphony.skill_retrieval.build.postprocess_enabled` | `true` | Whether to clean up unclear or too-small branches after build |
 | `symphony.skill_retrieval.build.postprocess_max_passes` | `1` | Maximum number of postprocess passes after build |
 | `symphony.skill_retrieval.build.postprocess_min_skills` | `6` | Minimum skill-count reference used by postprocess branch cleanup |
-| `symphony.skill_retrieval.build.equivalence_enabled` | `false` | Whether to merge semantically duplicate branches |
-| `symphony.skill_retrieval.retrieve.compact_codes_enabled` | `false` | Whether retrieval uses more compact node codes |
-| `symphony.skill_retrieval.retrieve.flatten_tree` | `false` | Whether retrieval flattens the skill tree |
-| `symphony.skill_retrieval.retrieve.max_exposure_depth` | `1` | Maximum tree depth exposed by one `skill_branch_explore` call |
+| `symphony.skill_retrieval.build.equivalence_enabled` | `false` | Whether to group functionally equivalent Skills under one equivalence node |
 
-> 📖 For details about Skill Retrieval, the skill graph, and Skill Orchestration, see [Symphony: Skill Retrieval, Orchestration, and Dispatch](symphony.md).
+> 📖 For details about Skill Retrieval, the skill graph, and Skill Orchestration, see [Symphony: Skill Retrieval, Orchestration, and Dispatch](Symphony.md).
 
 ---
 
