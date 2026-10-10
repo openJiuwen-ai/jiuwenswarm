@@ -19,6 +19,8 @@ class ChatSendParams(TypedDict, total=False):
     - mode: 运行模式（agent.plan / agent.fast / code.normal / team 等）
     - attachments: 附件列表（@file 等）
     - files: 文件更新字典（传统字段，逐步迁出到 attachments）
+    - agent_template_name: 当前会话期望专家名；缺失保持，非空 load/切换，"" 卸载当前专家。
+    - plugin_names: 当前会话期望插件名全集；缺失保持，list[str] 差量同步，[] 卸载全部插件。
     """
 
     content: str
@@ -119,3 +121,9 @@ class ChatSendParams(TypedDict, total=False):
 
     cron: NotRequired[dict]
     """定时任务信息（由 Gateway cron scheduler 注入）。"""
+
+    agent_template_name: NotRequired[str]
+    """Desired expert package name for this turn ("" clears)."""
+
+    plugin_names: NotRequired[list[str]]
+    """Desired plugin package names for this turn ([] clears all)."""
