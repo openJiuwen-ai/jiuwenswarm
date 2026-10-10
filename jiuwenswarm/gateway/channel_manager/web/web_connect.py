@@ -272,6 +272,10 @@ class WebChannel(BaseChannel):
     async def stop_http(self) -> None:
         await self.http.stop()
 
+    async def handle_connection(self, ws: Any, path: str | None = None) -> None:
+        """Public entry for serving one accepted WebSocket (dual-protocol / adapters)."""
+        await self.ws.handle_connection(ws, path=path)
+
     async def start(self) -> None:
         """Start WebSocket and Gateway Web HTTP; block until WS server closes."""
         if self._running:
