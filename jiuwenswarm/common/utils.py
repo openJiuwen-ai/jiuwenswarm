@@ -1442,6 +1442,7 @@ def update_config() -> None:
     # 模板合并会注入新模板 permissions.mode，cleanup 会删 override 的
     # permission_mode/defaults/tools，两者都会令 enabled:false→full_access、
     # permission_mode:strict 等 legacy 语义不可达，静默改变用户权限（CR-1）。
+    migrate_ok = True
     try:
         from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
             migrate_and_write_global_permissions,
@@ -1449,11 +1450,16 @@ def update_config() -> None:
 
         migrate_and_write_global_permissions()
     except Exception as e:  # noqa: BLE001
+        migrate_ok = False
         logger.warning("[update_config] permissions legacy migrate failed: %s", e)
-    # 稀疏 override 模式：清理 override 中模板已删除的废弃字段
-    from jiuwenswarm.common.config import cleanup_override_against_template
+    # 迁移失败时跳过本次废弃键清理：cleanup 会删 override 的
+    # permission_mode/defaults/tools 等 legacy 键，令迁移语义不可逆
+    # 丢失、下次启动无法重试迁移；跳过后随下次启动重试。
+    if migrate_ok:
+        # 稀疏 override 模式：清理 override 中模板已删除的废弃字段
+        from jiuwenswarm.common.config import cleanup_override_against_template
 
-    cleanup_override_against_template(config_yaml_src, config_yaml_dest)
+        cleanup_override_against_template(config_yaml_src, config_yaml_dest)
 
 
 def prepare_workspace(
