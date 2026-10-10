@@ -16,7 +16,7 @@ from jiuwenswarm.runtime.cron.cron_job_mutations import (
     migrate_work_mode_on_items,
     parse_cron_jobs,
 )
-from jiuwenswarm.runtime.cron.etcd_client import (
+from jiuwenswarm.common.etcd.client import (
     EtcdCasError,
     EtcdError,
     EtcdJsonClient,

@@ -2160,6 +2160,37 @@ async def _run(
                 logger.warning("[App] proactive.tick sync on config save failed: %s", e)
         return True
 
+    # 数据面统一配置：watch AgentOS etcd key，合并为运行期配置快照。
+    # 本期有意复用 gateway.cron.etcd_endpoints 连接同一 etcd 集群；
+    # gateway.cron.store_backend 只控制 Cron 存储后端，不控制 ConfigUpdater。
+    # 后续若两者需要连接不同集群，再新增独立的 config_updater endpoint。
+    # 无 etcd 端点则不启动。生效链路：内存合并 → Gateway 本地刷新（不 reload AgentServer）。
+    # refresh_handler 在此注入，使 config_updater 无需反向 import 本模块。
+    config_updater_service: ConfigUpdaterService | None = None
+    try:
+        from jiuwenswarm.extensions.agentos.config_updater.service import ConfigUpdaterService
+        from jiuwenswarm.extensions.agentos.config_updater.service import (
+            build_refresh_handler,
+        )
+        from jiuwenswarm.gateway.cron.factory import load_cron_store_settings
+
+        apply_local = build_refresh_handler(client)
+
+        async def _on_remote_config_applied(merged: dict[str, Any]) -> None:
+            # 管理面(etcd)下发只做 Gateway 本地应用，不再 reload AgentServer：
+            # reload 失败会被升级成 Gateway 自重启（工作区/沙箱等环境问题尤其
+            # 容易触发，进而反复重启）。托管字段在 Gateway 侧消费即可。
+            apply_local(merged)
+
+        config_updater_service = ConfigUpdaterService(
+            etcd_endpoints=list(load_cron_store_settings(full_cfg).endpoints),
+            config=full_cfg,
+            config_provider=get_config,
+            refresh_handler=_on_remote_config_applied,
+        )
+    except Exception as exc:  # noqa: BLE001 - must not block startup
+        logger.warning("[App] config sync setup failed: %s", exc)
+
     web_channel = None
     tui_channel = None
     web_config = WebChannelConfig(
@@ -2279,6 +2310,10 @@ async def _run(
     log_startup_stage("message_dispatch_started")
     await cron_scheduler.start()
     log_startup_stage("cron_scheduler_started")
+
+    # 数据面统一配置：watch AgentOS etcd key，热更新运行期配置（无端点则不启动）
+    if config_updater_service is not None:
+        await config_updater_service.start()
 
     # Give the browser event loop a chance to complete its pending WebSocket
     # handshake and deliver connection.ack before optional route setup does
@@ -3446,6 +3481,8 @@ async def _run(
             _set_agentos_ssh_key_issuer(None)
 
         await cron_scheduler.stop()
+        if config_updater_service is not None:
+            await config_updater_service.stop()
         await channel_manager.stop_dispatch()
         await heartbeat_service.stop()
         await message_handler.stop_forwarding()
