@@ -202,7 +202,14 @@ class CredentialStore:
         self._root.mkdir(parents=True, exist_ok=True)
 
     def _path(self, name: str) -> Path:
-        return self._root / f"{str(name or '').strip()}.json"
+        n = str(name or "").strip()
+        # Defensive: names reach this path builder from several callers
+        # (save_token, wipe, load). Reject anything that could escape the
+        # credentials dir even if an entry point missed registry-side
+        # validation.
+        if not n or "/" in n or "\\" in n or ".." in n:
+            raise ValueError(f"invalid mcp credential name: {name!r}")
+        return self._root / f"{n}.json"
 
     def _load(self, name: str) -> dict[str, str]:
         p = self._path(name)
