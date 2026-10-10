@@ -29,6 +29,7 @@ import {
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '../../stores';
+import type { AgentGroupIdentity } from '../../features/agentManagement';
 import {
   AgentMode,
   MediaItem,
@@ -40,7 +41,6 @@ import {
   type ProjectInfo,
 } from '../../types';
 import type { HumanShareCommand } from '../../stores/sessionStore';
-import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
 import { InputArea, type InputAreaHandle } from './InputArea';
@@ -1088,11 +1088,17 @@ export const ChatPanel = React.memo(function ChatPanel({
   const contextCompressionRuntime = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionRuntime);
   const contextCompressionSummary = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionSummary);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
-  const [teamGroupIdentity, setTeamGroupIdentity] = useState<AgentGroupIdentity | null>(null);
+  const teamGroupIdentity = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.teamGroupIdentity ?? null,
+  );
+  const setTeamGroupIdentity = useSessionStore((s) => s.setTeamGroupIdentity);
+  const handleTeamGroupIdentityChange = useCallback(
+    (identity: AgentGroupIdentity | null) => {
+      if (activeSessionId) setTeamGroupIdentity(activeSessionId, identity);
+    },
+    [activeSessionId, setTeamGroupIdentity],
+  );
   const [agentGroupDeletedNoticeOpen, setAgentGroupDeletedNoticeOpen] = useState(false);
-  useEffect(() => {
-    setTeamGroupIdentity(null);
-  }, [activeSessionId]);
   useEffect(() => {
     setAgentGroupDeletedNoticeOpen(agentGroupUnavailable);
   }, [agentGroupUnavailable, activeSessionId]);
@@ -2030,7 +2036,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   autoFocusKey={autoFocusKey}
                   onNavigateToSkills={onNavigateToSkills}
                   onNavigateToAgents={onNavigateToAgents}
-                  onAgentGroupIdentityChange={setTeamGroupIdentity}
+                  onAgentGroupIdentityChange={handleTeamGroupIdentityChange}
                   permissionProfile={permissionProfile}
                   onSavePermission={onSavePermission}
                   onSetGoal={onSetGoal}
@@ -2105,7 +2111,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             autoFocusKey={autoFocusKey}
             onNavigateToSkills={onNavigateToSkills}
             onNavigateToAgents={onNavigateToAgents}
-            onAgentGroupIdentityChange={setTeamGroupIdentity}
+            onAgentGroupIdentityChange={handleTeamGroupIdentityChange}
             permissionProfile={permissionProfile}
             onSavePermission={onSavePermission}
             onSetGoal={onSetGoal}
