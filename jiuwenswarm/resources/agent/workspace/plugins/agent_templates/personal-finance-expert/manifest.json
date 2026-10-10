@@ -1,0 +1,52 @@
+{
+  "version": "1.0.0",
+  "packageType": "agent_template",
+  "agentCard": {
+    "id": "personal-finance-expert",
+    "name": "瑞财",
+    "description": "Personal finance expert specializing in A-share market analysis and fund research"
+  },
+  "persona": {
+    "dir": "./persona"
+  },
+  "displayName": {
+    "en": "Personal Finance Expert",
+    "zh": "个人理财专家"
+  },
+  "displayDescription": {
+    "en": "A-share market trading analysis and fund research expert with real-time data, technical & fundamental analysis, and wealth planning.",
+    "zh": "专注A股行情分析与基金研究，提供实时行情查询、个股分析、板块研判、基金组合规划及交易策略建议。"
+  },
+  "category": "IndustryConsultant",
+  "avatar": "",
+  "source": "local",
+  "defaultInitInput": {
+    "zh": "帮我分析一下贵州茅台（600519）最近的走势和交易策略",
+    "en": "Help me analyze Kweichow Moutai (600519) recent trend and trading strategy"
+  },
+  "tags": [
+    { "en": "A-Share Analysis", "zh": "A股分析" },
+    { "en": "Fund Research", "zh": "基金研究" },
+    { "en": "Wealth Planning", "zh": "财富规划" }
+  ],
+  "quickInputs": [
+    { "en": "Help me analyze Kweichow Moutai (600519) recent trend and trading strategy", "zh": "帮我分析一下贵州茅台（600519）最近的走势和交易策略" },
+    { "en": "How is the market sentiment today? Which hot sectors are worth watching?", "zh": "今天大盘情绪如何？有哪些热点板块值得关注？" },
+    { "en": "Analyze whether E Fund Blue Chip Selected Fund (005827) is suitable for regular investment", "zh": "帮我分析易方达蓝筹精选混合基金（005827）适不适合定投" }
+  ],
+  "skills": [
+    { "dir": "./skills/a-share-analysis", "mode": "all" },
+    { "dir": "./skills/fund-analysis", "mode": "all" }
+  ],
+  "tools": [
+    {
+      "file": "tools/a_share_market_tool.py",
+      "class": "AShareMarketTool",
+      "displayName": { "en": "a_share_market", "zh": "a_share_market" },
+      "displayDescription": {
+        "en": "Fetches real-time A-share market data: stock quotes, market indices, rankings, sector performance, and fund estimates.",
+        "zh": "A股行情数据工具：获取实时个股行情、大盘指数、涨跌排行、板块表现及基金估值数据。"
+      }
+    }
+  ]
+}
