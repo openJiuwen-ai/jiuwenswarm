@@ -9,6 +9,7 @@ import type { ProjectInfo } from '../../features/workspace/projectTypes';
 import type { Session } from '../../types';
 import type { CronJobDTO, CronTaskUI, CronTemplateUI } from '../../types/cron';
 import { CRON_TEMPLATES } from './constants';
+import { DEFAULT_MAX_ENABLED_CRON_JOBS } from './cronIntegerInput';
 import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
 import { cronExprToSchedule, summarizeSchedule } from './scheduleConvert';
 import StatusBadge, { BoldRingIcon, RunningIcon } from './StatusBadge';
@@ -239,6 +240,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const loadCronSessions = useCronStore((s) => s.loadCronSessions);
 
   const [jobs, setJobs] = useState<CronTaskUI[]>([]);
+  const [maxEnabledJobs, setMaxEnabledJobs] = useState(DEFAULT_MAX_ENABLED_CRON_JOBS);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [enabledChannels, setEnabledChannels] = useState<Set<string>>(new Set());
   // 小艺推送依赖 api_id；频道已注册但未配 api_id 时仍应置灰（Issue #2497）
@@ -399,6 +401,18 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     })();
   }, [loadChannels, loadJobs, loadProjects]);
 
+  useEffect(() => {
+    void (async () => {
+      try {
+        const meta = await webRequest<{ max_jobs_per_user?: number }>('cron.job.meta');
+        const limit = Number(meta?.max_jobs_per_user);
+        if (Number.isInteger(limit) && limit >= 0) setMaxEnabledJobs(limit);
+      } catch {
+        // 读不到配置时沿用默认上限，不打断任务列表。
+      }
+    })();
+  }, []);
+
   // 供轮询/可见性刷新的静默重拉使用：始终指向最新的 projects，避免定时器闭包拿到挂载时
   // 的旧值（projects 是异步加载的，轮询早于它变化时也不该被锁死在空数组上）
   const projectsRef = useRef<ProjectInfo[]>(projects);
@@ -513,10 +527,15 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   // 完整三态，不依赖后端；"运行失败"是执行历史维度的概念（某一次执行的结果），不属于这里，见
   // StatusBadge.tsx 顶部注释
   const runningCount = useMemo(() => jobs.filter((j) => jobStatusKey(j) === 'running').length, [jobs]);
+  const enabledQuotaFull = runningCount >= maxEnabledJobs;
   const pausedCount = useMemo(() => jobs.filter((j) => jobStatusKey(j) === 'paused').length, [jobs]);
   const expiredCount = useMemo(() => jobs.filter((j) => jobStatusKey(j) === 'expired').length, [jobs]);
 
   async function handleCreateSubmit(value: CronTaskFormValue) {
+    if (value.enabled && runningCount >= maxEnabledJobs) {
+      setError(t('cron.errors.enabledQuotaReached', { max: maxEnabledJobs }));
+      return;
+    }
     try {
       const isOnce = cronExprToSchedule(value.cronExpr.trim())?.kind === 'once';
       await webRequest<{ job: CronJobDTO }>('cron.job.create', {
@@ -567,6 +586,12 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   }
 
   async function handleEditSubmit(jobId: string, value: CronTaskFormValue) {
+    const existing = jobs.find((job) => job.id === jobId);
+    const wasRunning = existing ? jobStatusKey(existing) === 'running' : false;
+    if (!wasRunning && value.enabled && runningCount >= maxEnabledJobs) {
+      setError(t('cron.errors.enabledQuotaReached', { max: maxEnabledJobs }));
+      return;
+    }
     try {
       const isProactive = jobId === PROACTIVE_AUTO_JOB_ID;
       const isOnce = cronExprToSchedule(value.cronExpr.trim())?.kind === 'once';
@@ -629,6 +654,10 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
 
   // "启动"（恢复已暂停任务）是低风险操作，不需要像"停止"那样二次确认弹窗
   async function handleStart(job: CronTaskUI) {
+    if (runningCount >= maxEnabledJobs) {
+      setError(t('cron.errors.enabledQuotaReached', { max: maxEnabledJobs }));
+      return;
+    }
     try {
       await webRequest<{ job: CronJobDTO }>('cron.job.toggle', { id: job.id, enabled: true });
       setSuccess(t('cron.success.statusUpdated'));
@@ -763,6 +792,11 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
   }
+
+  const editingJobId = drawer?.mode === 'edit' ? drawer.jobId : '';
+  const editingCurrentlyRunning = editingJobId
+    ? jobs.some((job) => job.id === editingJobId && jobStatusKey(job) === 'running')
+    : false;
 
   return (
     <div className="flex-1 min-h-0 relative overflow-y-auto" data-testid="cron-panel" data-session-id={sessionId}>
@@ -1069,6 +1103,13 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                             >
                               {t('cron.table.stop')}
                             </button>
+                          ) : enabledQuotaFull ? (
+                            <span
+                              className="text-sm text-text-muted/50 cursor-not-allowed select-none"
+                              title={t('cron.errors.enabledQuotaReached', { max: maxEnabledJobs }) ?? undefined}
+                            >
+                              {t('cron.table.start')}
+                            </span>
                           ) : (
                             <button
                               onClick={() => void handleStart(job)}
@@ -1249,6 +1290,9 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             projects={projects}
             targetOptions={targetOptions}
             proactiveLocked={drawer.mode === 'edit' && drawer.jobId === PROACTIVE_AUTO_JOB_ID}
+            enabledQuotaFull={enabledQuotaFull}
+            maxEnabledJobs={maxEnabledJobs}
+            editingCurrentlyRunning={editingCurrentlyRunning}
             onClose={() => setDrawer(null)}
             onSwitchToManual={drawer.mode === 'template' ? () => setDrawer({ mode: 'create', initial: drawer.initial }) : undefined}
             onSwitchToTemplate={drawer.mode === 'create' ? () => { setDrawer(null); setActiveTab('template'); } : undefined}

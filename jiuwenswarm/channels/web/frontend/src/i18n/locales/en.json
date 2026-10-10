@@ -1675,8 +1675,8 @@
       "every": "Every",
       "everyHoursPlaceholder": "Hours",
       "everyMinutesPlaceholder": "Minutes",
-      "integerOnlyHint": "Interval must be an integer from 1 to {{max}}",
-      "intervalRangeHint": "Interval must be an integer from 1 to {{max}}",
+      "integerOnlyHint": "Interval must be an integer from {{min}} to {{max}}",
+      "intervalRangeHint": "Interval must be an integer from {{min}} to {{max}}",
       "hoursUnit": "hours",
       "minutesUnit": "minutes",
       "intervalUnit": {
@@ -1823,6 +1823,7 @@
       "expiredCannotRunNow": "Task has expired and cannot be run",
       "disabledCannotRunNow": "Task is stopped and cannot be run",
       "expiredCannotEnable": "Task has expired and cannot be enabled",
+      "enabledQuotaReached": "Running scheduled tasks have reached the limit ({{max}}). Stop some tasks first",
       "loadDetailFailed": "Failed to load task details",
       "nameRequired": "Task name is required",
       "cronRequired": "Cron expression is required",

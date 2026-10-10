@@ -862,6 +862,11 @@ embed:
   embed_base_url: ${EMBED_API_BASE}
   embed_model: ${EMBED_MODEL}
 
+# 定时任务面板限制。只作用于 Web 界面上「运行中」任务的新建和启动；
+# 会话、Cron 表达式、TUI 不读这项。企业版由 Manager 下发的 cron_policy 覆盖。
+cron:
+  max_jobs_per_user: 5
+
 task_memory:
   # Set enabled: true to activate TaskMemoryService skill tools
   # (experience_retrieve, experience_learn, experience_clear)

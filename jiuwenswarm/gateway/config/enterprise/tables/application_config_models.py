@@ -110,6 +110,24 @@ MEMORY_CONFIG_TABLE_DEF = TableDefinition(
     indexes=[],
 )
 
+CRON_POLICY_TABLE_DEF = TableDefinition(
+    table_name="cron_policy",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        # 界面允许同时处于运行中的定时任务数。0 表示不能再从界面启用新任务。
+        ColumnDefinition("max_jobs_per_user", "integer", nullable=False, default=5),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[],
+)
+
 AUDIT_LOG_CONFIG_TABLE_DEF = TableDefinition(
     table_name="audit_log_config",
     columns=[

@@ -116,6 +116,11 @@ interface CronTaskDrawerProps {
   // 其余字段（名称/模型/描述/推送频道/启用）由 ConfigPanel/cron_sync 管理，只读展示
   // （沿用 upstream 提交 59cf6de7 的约束，见 index.tsx handleEditSubmit）
   proactiveLocked?: boolean;
+  /** 运行中任务已达上限。新建一条启用任务、或把暂停任务改成启用时，不能保存。 */
+  enabledQuotaFull?: boolean;
+  maxEnabledJobs?: number;
+  /** 正在编辑的任务当前算运行中。已在跑的任务改名称或时间，不占新的名额。 */
+  editingCurrentlyRunning?: boolean;
   onClose: () => void;
   onSubmit: (value: CronTaskFormValue) => void;
   onSwitchToManual?: () => void;
@@ -133,7 +138,7 @@ function filterNonDefaultProjects(projects: ProjectInfo[]): ProjectInfo[] {
   return projects.filter((p) => !isDefaultLikeProject(p));
 }
 
-export default function CronTaskDrawer({ mode, initial, projects, targetOptions, proactiveLocked = false, onClose, onSubmit, onSwitchToManual, onSwitchToTemplate }: CronTaskDrawerProps) {
+export default function CronTaskDrawer({ mode, initial, projects, targetOptions, proactiveLocked = false, enabledQuotaFull = false, maxEnabledJobs = 5, editingCurrentlyRunning = false, onClose, onSubmit, onSwitchToManual, onSwitchToTemplate }: CronTaskDrawerProps) {
   const { t } = useTranslation();
   const enterpriseMode = isEnterprise();
   const [form, setForm] = useState<CronTaskFormValue>(initial ?? emptyForm());
@@ -163,12 +168,16 @@ export default function CronTaskDrawer({ mode, initial, projects, targetOptions,
   // 单独提示（而不是塞进"还需要填写"的缺失字段列表里，语义对不上）
   const parsedSchedule = form.cronExpr.trim() ? cronExprToSchedule(form.cronExpr) : null;
   const scheduleAlreadyExpired = parsedSchedule ? isOnceScheduleExpired(parsedSchedule, form.timezone) : false;
-  const canSubmit = missingFieldLabels.length === 0 && !scheduleAlreadyExpired;
-  const missingFieldsHint = missingFieldLabels.length > 0
-    ? t('cron.drawer.missingFieldsHint', { fields: missingFieldLabels.join(t('cron.schedule.listSeparator')) })
-    : scheduleAlreadyExpired
-      ? t('cron.drawer.scheduleAlreadyExpiredHint')
-      : undefined;
+  // 已在运行的任务继续保持启用，不增加运行中数量。新建，或把暂停任务改成启用，才会占名额。
+  const enablingWouldExceed = enabledQuotaFull && form.enabled && !(mode === 'edit' && editingCurrentlyRunning);
+  const canSubmit = missingFieldLabels.length === 0 && !scheduleAlreadyExpired && !enablingWouldExceed;
+  const missingFieldsHint = enablingWouldExceed
+    ? t('cron.errors.enabledQuotaReached', { max: maxEnabledJobs })
+    : missingFieldLabels.length > 0
+      ? t('cron.drawer.missingFieldsHint', { fields: missingFieldLabels.join(t('cron.schedule.listSeparator')) })
+      : scheduleAlreadyExpired
+        ? t('cron.drawer.scheduleAlreadyExpiredHint')
+        : undefined;
   const lockedTitle = proactiveLocked ? t('cron.autoManagedToggleDisabled') ?? undefined : undefined;
 
   return (
