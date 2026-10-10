@@ -233,8 +233,13 @@ def _merge_models_for_replace_all(
 
         if raw_entry is not None and isinstance(raw_entry, dict):
             new_entry = _copy.deepcopy(raw_entry)
+            # setdefault 对"键存在但值为 null"的脏条目返回 None，归一回空 dict
             new_mcc = new_entry.setdefault("model_client_config", {})
+            if not isinstance(new_mcc, dict):
+                new_mcc = new_entry["model_client_config"] = {}
             new_mco = new_entry.setdefault("model_config_obj", {})
+            if not isinstance(new_mco, dict):
+                new_mco = new_entry["model_config_obj"] = {}
             resolved_mcc = (resolved_entry or {}).get("model_client_config", {}) or {}
             resolved_mco = (resolved_entry or {}).get("model_config_obj", {}) or {}
 
@@ -679,8 +684,13 @@ async def models_list_handler(
         result = []
         active_model = ""
         for idx, entry in enumerate(models):
-            mcc = entry.get("model_client_config", {})
-            mco = entry.get("model_config_obj", {})
+            # 脏配置防御：YAML 里 `model_config_obj:` 后只跟注释时值为 null，
+            # dict.get 的默认值不生效；非 dict 条目（旧版/手改 YAML）直接跳过。
+            # 跳过而非删除以保持 origin_index 与 models.defaults 原始位置对齐。
+            if not isinstance(entry, dict):
+                continue
+            mcc = entry.get("model_client_config") or {}
+            mco = entry.get("model_config_obj") or {}
             is_default = entry.get("is_default", False)
             model_name = str(mcc.get("model_name", "") or "").strip()
             result_entry = {

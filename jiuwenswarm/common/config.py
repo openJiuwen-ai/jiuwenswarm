@@ -1428,6 +1428,9 @@ def _infer_is_default(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     groups: OrderedDict[str, list[int]] = OrderedDict()
     for i, entry in enumerate(result):
+        if not isinstance(entry, dict):
+            # 非 dict 的脏条目不参与分组，但保留原位置以维持下标稳定
+            continue
         name = (entry.get("model_client_config") or {}).get("model_name", "")
         if name not in groups:
             groups[name] = []
@@ -1476,6 +1479,12 @@ def _decrypt_model_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]
         )
 
     for entry in result:
+        if not isinstance(entry, dict):
+            continue
+        # YAML 里 `model_config_obj:` 后只跟注释时解析为 null（键存在，
+        # dict.get 的默认值不生效），统一回填为空 dict，下游 .get 不再崩。
+        if entry.get("model_config_obj") is None:
+            entry["model_config_obj"] = {}
         mcc = entry.get("model_client_config")
         if isinstance(mcc, dict):
             if mcc.get("api_key") and crypto:
