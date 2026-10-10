@@ -29,7 +29,9 @@ def live_host(tmp_path):
         shutil.copyfile(source / name, config / name)
     repo = Path(__file__).resolve().parents[2]
     sdk = repo / "sdks/python/src"
-    sys.path.insert(0, str(sdk))
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parents[2] / "sdks" / "python" / "src")
+    )
     from jiuwenswarm_sdk import Client
 
     env = {

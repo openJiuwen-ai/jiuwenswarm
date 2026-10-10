@@ -429,21 +429,22 @@ class _SchemaBuilder:
             ),
             extra=True,
         )
-        self.defs["event"]["allOf"] = [
-            {
-                "if": {
-                    "properties": {"event_type": {"enum": names}},
-                    "required": ["event_type"],
-                },
-                "then": {"properties": {"payload": ref(payload)}},
-            }
-            for names, payload in (
-                (["chat.delta", "chat.final"], "text_payload"),
-                (["chat.tool_call", "chat.tool_result"], "tool_observation_payload"),
-                (["interaction.requested"], "interaction_payload"),
-                (["host_tool.requested"], "host_tool_payload"),
+        self.defs["event"]["allOf"] = []
+        for names, payload in (
+            (["chat.delta", "chat.final"], "text_payload"),
+            (["chat.tool_call", "chat.tool_result"], "tool_observation_payload"),
+            (["interaction.requested"], "interaction_payload"),
+            (["host_tool.requested"], "host_tool_payload"),
+        ):
+            self.defs["event"]["allOf"].append(
+                {
+                    "if": {
+                        "properties": {"event_type": {"enum": names}},
+                        "required": ["event_type"],
+                    },
+                    "then": {"properties": {"payload": ref(payload)}},
+                }
             )
-        ]
 
     def _capabilities(self) -> None:
         self.defs["capabilities"] = obj(
@@ -497,16 +498,15 @@ class _SchemaBuilder:
             ("mode", "work_mode", "is_plan", "supports_custom_agent_definitions"),
             extra=True,
         )
-        model_fields = {
-            name: {"type": "string"}
-            for name in (
-                "selection_key",
-                "display_name",
-                "model_name",
-                "provider",
-                "reasoning_level",
-            )
-        }
+        model_fields = {}
+        for name in (
+            "selection_key",
+            "display_name",
+            "model_name",
+            "provider",
+            "reasoning_level",
+        ):
+            model_fields[name] = {"type": "string"}
         model_fields.update(
             {
                 name: {"type": "boolean"}
@@ -514,19 +514,18 @@ class _SchemaBuilder:
             }
         )
         self.defs["model"] = obj(model_fields, model_fields, extra=True)
-        session_fields = {
-            name: {"type": "string"}
-            for name in (
-                "session_id",
-                "channel_id",
-                "title",
-                "mode",
-                "work_mode",
-                "project_id",
-                "project_dir",
-                "model",
-            )
-        }
+        session_fields = {}
+        for name in (
+            "session_id",
+            "channel_id",
+            "title",
+            "mode",
+            "work_mode",
+            "project_id",
+            "project_dir",
+            "model",
+        ):
+            session_fields[name] = {"type": "string"}
         session_fields.update(
             {name: {"type": "number"} for name in ("created_at", "last_message_at")}
         )
@@ -633,36 +632,33 @@ class _SchemaBuilder:
                 extra=True,
             ),
         }
-        self.defs["query_result"]["allOf"].extend(
-            {
-                "if": {
-                    "properties": {
-                        "status": {"const": "completed"},
-                        "operation": {"const": operation},
-                    }
-                },
-                "then": {"properties": {"data": data_schema}},
-            }
-            for operation, data_schema in query_data.items()
-        )
+        for operation, data_schema in query_data.items():
+            self.defs["query_result"]["allOf"].append(
+                {
+                    "if": {
+                        "properties": {
+                            "status": {"const": "completed"},
+                            "operation": {"const": operation},
+                        }
+                    },
+                    "then": {"properties": {"data": data_schema}},
+                }
+            )
 
     def _usage(self) -> None:
-        self.defs["usage"] = obj(
-            {
-                name: {"type": "number", "minimum": 0}
-                for name in (
-                    "input_tokens",
-                    "output_tokens",
-                    "total_tokens",
-                    "cache_tokens",
-                    "input_cost",
-                    "output_cost",
-                    "total_cost",
-                    "model_calls",
-                )
-            },
-            extra=True,
-        )
+        usage_fields = {}
+        for name in (
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "cache_tokens",
+            "input_cost",
+            "output_cost",
+            "total_cost",
+            "model_calls",
+        ):
+            usage_fields[name] = {"type": "number", "minimum": 0}
+        self.defs["usage"] = obj(usage_fields, extra=True)
         self.defs["result"]["properties"]["usage"] = ref("usage")
 
     def build(self) -> dict:
@@ -676,6 +672,18 @@ class _SchemaBuilder:
         self._catalogs()
         self._query_results()
         self._usage()
+        message_schemas = []
+        for name in (
+            "run",
+            "query",
+            "answer",
+            "cancel",
+            "tool_result",
+            "event",
+            "result",
+            "query_result",
+        ):
+            message_schemas.append(ref(name))
         return {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$id": "urn:jiuwenswarm:process-cli:0.1:revision:1",
@@ -686,19 +694,7 @@ class _SchemaBuilder:
                 "Validate JSONL ordering and OS exit status separately. "
                 "Unknown output fields and event types are compatible additions."
             ),
-            "oneOf": [
-                ref(name)
-                for name in (
-                    "run",
-                    "query",
-                    "answer",
-                    "cancel",
-                    "tool_result",
-                    "event",
-                    "result",
-                    "query_result",
-                )
-            ],
+            "oneOf": message_schemas,
             "$defs": self.defs,
         }
 

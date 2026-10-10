@@ -20,32 +20,33 @@ from jiuwenswarm.channels.process_cli.protocol.version import (
 def protocol_capabilities() -> dict[str, Any]:
     """Advertise implemented features; model/tool availability is queried separately."""
     schema = protocol_schema()
+    features = dict.fromkeys(
+        (
+            "custom_agent",
+            "run_model",
+            "run_skills",
+            "run_mcp",
+            "run_permissions",
+            "structured_output",
+            "max_turns",
+            "max_budget_usd",
+            "host_tools",
+            "interaction_callback",
+            "unattended_permission_rejection",
+            "cancel",
+            "session_resume",
+            "stable_event_fields",
+            "field_errors",
+            "empty_tools",
+            "protocol_schema",
+        ),
+        True,
+    )
     return {
         "schema_version": CURRENT_SCHEMA_VERSION,
         "supported_schema_versions": list(SUPPORTED_SCHEMA_VERSIONS),
         "protocol_revision": PROTOCOL_REVISION,
-        "features": {
-            name: True
-            for name in (
-                "custom_agent",
-                "run_model",
-                "run_skills",
-                "run_mcp",
-                "run_permissions",
-                "structured_output",
-                "max_turns",
-                "max_budget_usd",
-                "host_tools",
-                "interaction_callback",
-                "unattended_permission_rejection",
-                "cancel",
-                "session_resume",
-                "stable_event_fields",
-                "field_errors",
-                "empty_tools",
-                "protocol_schema",
-            )
-        },
+        "features": features,
         "run_fields": list(schema["$defs"]["run"]["properties"]),
         "query_operations": schema["$defs"]["query"]["properties"]["operation"]["enum"],
         "control_types": ["answer", "tool_result", "cancel"],
