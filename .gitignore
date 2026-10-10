@@ -85,6 +85,10 @@ workspace/agent/memory/*.db-shm
 workspace/agent/memory/*.db-wal
 
 jiuwenswarm/workspace/.whatsapp-auth/
+# Work files that the packaged config directory collects. A checkout without a
+# user data directory resolves its config here, so these files land in the tree.
+jiuwenswarm/resources/*.lock
+jiuwenswarm/resources/*.pending
 jiuwenswarm/resources/agent/workspace/
 jiuwenswarm/resources/tui/bin/
 packages/jiuwenswarm-tui/jiuwenswarm_tui/resources/tui/bin/

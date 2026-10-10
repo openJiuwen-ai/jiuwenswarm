@@ -44,6 +44,20 @@ def _configured_value(
     return str(persisted.get(key) or "").strip()
 
 
+def media_capability_sidecar_paths(env_path: str | Path) -> tuple[Path, Path]:
+    """Return the lock and the staged file the migration writes beside ``env_path``.
+
+    An import of an app module inside a checkout writes both files into the
+    tree, so ``.gitignore`` covers both by name. A rename here needs a matching
+    change there.
+    """
+    target = Path(env_path)
+    return (
+        target.with_name(f"{target.name}.media-capability.lock"),
+        target.with_name(f".{target.name}.media-capability.pending"),
+    )
+
+
 def _append_env_updates_atomic(env_path: Path, updates: dict[str, str]) -> None:
     """Append missing keys while the caller holds the migration file lock."""
     original = env_path.read_text(encoding="utf-8") if env_path.is_file() else ""
@@ -54,7 +68,7 @@ def _append_env_updates_atomic(env_path: Path, updates: dict[str, str]) -> None:
 
     env_path.parent.mkdir(parents=True, exist_ok=True)
     original_mode = stat.S_IMODE(env_path.stat().st_mode) if env_path.exists() else None
-    staged_path = env_path.with_name(f".{env_path.name}.media-capability.pending")
+    _, staged_path = media_capability_sidecar_paths(env_path)
     try:
         staged_path.write_text(content, encoding="utf-8")
         if original_mode is not None:
@@ -79,7 +93,7 @@ def migrate_media_capability_switches(
     target = Path(env_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     runtime_env = os.environ if environ is None else environ
-    lock_path = target.with_name(f"{target.name}.media-capability.lock")
+    lock_path, _ = media_capability_sidecar_paths(target)
 
     with portalocker.Lock(str(lock_path), timeout=lock_timeout):
         persisted = dict(dotenv_values(target)) if target.is_file() else {}
