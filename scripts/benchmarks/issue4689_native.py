@@ -26,6 +26,53 @@ from websockets.legacy.client import connect
 
 GATEWAY = False
 
+_DELIVERY_FAULT = '''
+import importlib.abc
+import importlib.machinery
+import sys
+import os
+import json
+class Fault(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name not in {"jiuwenswarm.server.front.event_forwarder", "jiuwenswarm.runtime.service"}:
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(name, path)
+        loader = spec.loader
+        class Loader(importlib.abc.Loader):
+            def create_module(self, spec):
+                return loader.create_module(spec)
+            def exec_module(self, module):
+                loader.exec_module(module)
+                if name == "jiuwenswarm.runtime.service":
+                    for operation in ("commit", "abort"):
+                        original = getattr(module.AgentRuntime, operation + "_session_provision")
+                        def observe(original, operation):
+                            async def wrapped(instance, prepared, *args, **kwargs):
+                                result = await original(instance, prepared, *args, **kwargs)
+                                with open(os.environ["ISSUE4689_CREATE_LIFECYCLE"], "a", encoding="utf-8") as file:
+                                    file.write(json.dumps({"operation": operation,
+                                        "session_id": prepared.result.session_id,
+                                        "state": prepared.state.value}) + "\\n")
+                                return result
+                            return wrapped
+                        setattr(module.AgentRuntime, operation + "_session_provision", observe(original, operation))
+                    return
+                send = module.EventForwarder.send
+                dropped = set()
+                async def fail_once(instance, payload, **kwargs):
+                    rid = payload.get("request_id")
+                    if rid == "failed-create" and payload.get("status") == "succeeded" and rid not in dropped:
+                        dropped.add(rid)
+                        with open(os.environ["ISSUE4689_FAILED_DELIVERY"], "w", encoding="utf-8") as file:
+                            json.dump(payload, file)
+                        return False
+                    return await send(instance, payload, **kwargs)
+                module.EventForwarder.send = fail_once
+        spec.loader = Loader()
+        return spec
+sys.meta_path.insert(0, Fault())
+'''
+
 
 class ModelFixture(BaseHTTPRequestHandler):
     entered = threading.Event()
@@ -54,9 +101,17 @@ class ModelFixture(BaseHTTPRequestHandler):
                 tool = {"index": 0, "id": "fixture-side-effect", "type": "function", "function": {
                     "name": "powershell", "arguments": json.dumps({"command":
                         f"Add-Content -LiteralPath '{target}' -Value once; Start-Sleep -Seconds 3"})}}
+            elif fixture.main_calls == 1 and fixture.scenario == "mcp":
+                name = next(name for name in fixture.names if "resident_echo" in name)
+                tool = {"index": 0, "id": "fixture-mcp-effect", "type": "function", "function": {
+                    "name": name, "arguments": json.dumps({"value": "once"})}}
             elif fixture.main_calls == 1 and fixture.scenario == "interaction":
                 tool = {"index": 0, "id": "fixture-question", "type": "function", "function": {
                     "name": "ask_user", "arguments": json.dumps({"query": "Continue?"})}}
+            elif fixture.main_calls == 1 and fixture.scenario == "cross-session":
+                tool = {"index": 0, "id": "fixture-cross-session", "type": "function", "function": {
+                    "name": "session_send_message", "arguments": json.dumps({"target_session_id": "target-session",
+                        "message": "[4689-original] Cross-session input once", "input_mode": "follow_up"})}}
             else:
                 fixture.release.wait(timeout=60)
         if request.get("stream"):
@@ -198,17 +253,49 @@ async def run(args):
         config.setdefault("react", {})["enable_skill_evolution"] = False
         config["react"]["enable_read_image_multimodal"] = False
         config["permissions"]["enabled"] = False
+        if args.scenario == "mcp":
+            mcp_fixture = Path(tmp) / "mcp_fixture.py"
+            mcp_fixture.write_text('''
+import os, sys, time
+from pathlib import Path
+from mcp.server.fastmcp import FastMCP
+Path(sys.argv[2]).write_text(str(os.getpid()))
+server = FastMCP("resident-fixture")
+@server.tool()
+def resident_echo(value: str) -> str:
+    with Path(sys.argv[1]).open("a") as file:
+        file.write(value + "\\n")
+    time.sleep(3)
+    return value
+server.run(transport="stdio")
+''', encoding="utf-8")
+            config["mcp"] = {"servers": [{"name": "resident-fixture", "enabled": True,
+                "transport": "stdio", "command": sys.executable,
+                "args": [str(mcp_fixture), str(data / "side-effects.txt"), str(data / "mcp.pid")]}]}
         (config_dir / "config.yaml").write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
         (config_dir / ".env").write_text("# isolated protocol fixture\n", encoding="utf-8")
         session = data / "agent" / "sessions" / "resident-session"
         session.mkdir(parents=True)
         (session / "metadata.json").write_text(json.dumps({"session_id": "resident-session", "mode": args.mode,
-            "title": "Resident acceptance", "work_mode": "code" if args.mode.startswith("code") else "work",
+            "channel_id": "web", "user_id": "acceptance-owner", "title": "Resident acceptance", "work_mode": "code" if args.mode.startswith("code") else "work",
             "project_dir": str(data / "agent" / "workspace"), "created_at": time.time()}), encoding="utf-8")
+        if args.scenario == "cross-session":
+            target = session.parent / "target-session"
+            target.mkdir()
+            (target / "metadata.json").write_text(json.dumps({"session_id": "target-session", "mode": args.mode,
+                "user_id": "acceptance-owner", "channel_id": "web", "title": "Target acceptance", "work_mode": "work",
+                "project_dir": str(data / "agent" / "workspace"), "created_at": time.time()}), encoding="utf-8")
         env = os.environ.copy()
         env.update(PYTHONPATH=str(code), JIUWENSWARM_DATA_DIR=str(data), JIUWENSWARM_HOME=str(Path(tmp) / "home"),
                    JIUWENSWARM_RUNTIME_PROFILE=args.profile, NO_PROXY="127.0.0.1,localhost")
         env.pop("PYTHONPROFILEIMPORTTIME", None)
+        if args.scenario == "failed-create":
+            observer = Path(tmp) / "observer"
+            observer.mkdir()
+            (observer / "sitecustomize.py").write_text(_DELIVERY_FAULT, encoding="utf-8")
+            env["PYTHONPATH"] = os.pathsep.join((str(observer), str(code)))
+            env["ISSUE4689_FAILED_DELIVERY"] = str(Path(tmp) / "failed-delivery.json")
+            env["ISSUE4689_CREATE_LIFECYCLE"] = str(Path(tmp) / "create-lifecycle.jsonl")
         front_port = port()
         gateway_port = port()
         ModelFixture.scenario = args.scenario
@@ -233,9 +320,17 @@ async def run(args):
                 gateway_proc = launch_gateway()
                 ws = await open_front(gateway_port, "/ws?user_id=acceptance-owner")
             await send(ws, "original-chat", "chat.send", "resident-session",
-                       {"query": "[4689-original] Say resident-worker-ok", "mode": args.mode}, stream=True)
+                       {"query": "[4689-original] Say resident-worker-ok", "mode": args.mode,
+                        **({"mcp": ["resident-fixture"]} if args.scenario == "mcp" else {})}, stream=True)
             deadline = time.monotonic() + 60
-            while not ModelFixture.entered.is_set():
+            if args.scenario == "warming-cancel":
+                started_cancel = time.perf_counter_ns()
+                result["warming_cancel"] = await rpc(ws, "warming-cancel", "chat.interrupt", "resident-session",
+                    {"intent": "cancel", "request_id": "original-chat"})
+                result["warming_cancel_ms"] = (time.perf_counter_ns() - started_cancel) / 1e6
+                if not result["warming_cancel"].get("success"):
+                    raise AssertionError("warming request was not cancelled")
+            while not ModelFixture.entered.is_set() and args.scenario != "warming-cancel":
                 worker_processes = [(child.pid, child.create_time()) for child in
                     module_processes(proc, "jiuwenswarm.server.worker.main")]
                 if time.monotonic() > deadline:
@@ -249,11 +344,13 @@ async def run(args):
                     if isinstance(event, dict) and event.get("event_type") == "chat.ask_user_question":
                         interaction = event
                         result["interaction"] = interaction
-            if args.scenario == "tool":
+            if args.scenario in {"tool", "mcp"}:
                 while not ModelFixture.counter.exists():
                     if time.monotonic() > deadline:
                         raise TimeoutError("native tool did not write its side effect")
                     await asyncio.sleep(.05)
+                if args.scenario == "mcp":
+                    result["mcp_pid_before"] = int((data / "mcp.pid").read_text())
             if args.scenario in {"queue", "steer"}:
                 await send(ws, "supplemental", "chat.send", "resident-session",
                            {"query": "[4689-original] Supplemental input for the same execution", "mode": args.mode,
@@ -261,8 +358,8 @@ async def run(args):
                 await asyncio.sleep(.15)
             snapshot = await rpc(ws, "before", "session.get_metadata", "resident-session")
             runtime = snapshot.get("runtime", {})
-            entered = next(item for item in runtime["dispatches"] if item["request_id"] == "original-chat")
-            if not entered["entered_at_ns"]:
+            entered = next((item for item in runtime.get("dispatches", []) if item["request_id"] == "original-chat"), {})
+            if not entered.get("entered_at_ns") and args.scenario != "warming-cancel":
                 raise AssertionError("restarting before the prepared native execution entry")
             result["before"] = runtime
             children = psutil.Process(proc.pid).children(recursive=True)
@@ -271,6 +368,34 @@ async def run(args):
                 raise RuntimeError("native Worker PID not found")
             worker = (candidates[-1].pid, candidates[-1].create_time())
             result["worker_pid"] = worker[0]
+            if args.scenario == "cross-session":
+                for attempt in range(100):
+                    target_before = await rpc(ws, f"target-before-{attempt}", "session.get_metadata", "target-session")
+                    target_entered = next((item for item in target_before.get("runtime", {}).get("dispatches", [])
+                                           if item.get("entered_at_ns")), None)
+                    if target_entered:
+                        break
+                    await asyncio.sleep(.05)
+                if not target_entered:
+                    raise AssertionError("target execution did not enter before transport restart")
+                result["target_before"] = target_before["runtime"]
+            if args.scenario == "failed-create":
+                existing_sessions = {path.name for path in session.parent.iterdir() if path.is_dir()}
+                await send(ws, "failed-create", "session.create", None,
+                    {"mode": args.mode, "work_mode": "work", "project_id": "default",
+                     "create_token": "acceptance-failed-delivery"})
+                failure = await response(ws, "failed-create")
+                result["create_failure"] = failure
+                result["undelivered_creation"] = json.loads(Path(env["ISSUE4689_FAILED_DELIVERY"]).read_text(encoding="utf-8"))
+                await asyncio.sleep(.3)
+                result["sessions_after_failed_delivery"] = sorted(path.name for path in session.parent.iterdir() if path.is_dir())
+                result["sessions_before_failed_delivery"] = sorted(existing_sessions)
+                result["create_lifecycle"] = [json.loads(line) for line in
+                    Path(env["ISSUE4689_CREATE_LIFECYCLE"]).read_text(encoding="utf-8").splitlines()]
+                if [event["operation"] for event in result["create_lifecycle"]] != ["abort"]:
+                    raise AssertionError("failed business delivery did not abort the prepared transaction")
+                if failure.get("status") != "failed" and failure.get("ok") is not False:
+                    raise AssertionError("delivery failure was not reported as a business error")
             await ws.close()
             ws = None
             if gateway_proc is not None:
@@ -307,7 +432,7 @@ async def run(args):
                     break
                 await asyncio.sleep(.05)
             result["after"] = recovered.get("runtime", {})
-            if args.scenario != "crash":
+            if args.scenario not in {"crash", "warming-cancel"}:
                 restored = next(item for item in result["after"]["dispatches"]
                                 if item["request_id"] == "original-chat")
                 if entered["execution_id"] != restored["execution_id"]:
@@ -332,7 +457,7 @@ async def run(args):
             finished_requests = set()
             expected_requests = {"original-chat", "supplemental"} if args.scenario == "queue" else {
                 "answer" if args.scenario == "interaction" else "original-chat"}
-            while args.scenario not in {"cancel", "crash"}:
+            while args.scenario not in {"cancel", "crash", "warming-cancel"}:
                 wire = json.loads(await asyncio.wait_for(ws.recv(), 30))
                 event = payload(wire)
                 if isinstance(event, dict) and event.get("event_type") == "chat.error":
@@ -345,6 +470,24 @@ async def run(args):
                     break
             final = await rpc(ws, "final-state", "session.get_metadata", "resident-session")
             result["final"] = final.get("runtime", {})
+            if args.scenario == "cross-session":
+                target_history = target / "history.jsonl"
+                for attempt in range(300):
+                    if target_history.exists() and "resident-worker-ok" in target_history.read_text(encoding="utf-8"):
+                        break
+                    await asyncio.sleep(.05)
+                result["target_history_complete"] = target_history.exists() and "resident-worker-ok" in target_history.read_text(encoding="utf-8")
+                result["target_snapshot"] = await rpc(ws, "target-state", "session.get_metadata", "target-session",
+                    {"runtime_resume": {"after": 0, "worker_instance": runtime["worker_instance"]}})
+                if not result["target_history_complete"]:
+                    raise AssertionError("cross-session target did not complete after transport restart")
+                if not result["target_snapshot"].get("runtime", {}).get("dispatches"):
+                    raise AssertionError("cross-session target is missing from its scoped execution journal")
+                target_after = next(item for item in result["target_snapshot"]["runtime"]["dispatches"]
+                                    if item["dispatch_id"] == target_entered["dispatch_id"])
+                if target_after["execution_id"] != target_entered["execution_id"]:
+                    raise AssertionError("cross-session target execution was replaced")
+                result["same_target_execution"] = True
             history = session / "history.jsonl"
             result["history_records"] = len(history.read_text(encoding="utf-8").splitlines()) if history.exists() else 0
             if args.scenario in {"queue", "steer"}:
@@ -360,10 +503,16 @@ async def run(args):
                           tool_names=ModelFixture.names,
                           same_worker=same_worker,
                           same_instance=result["before"].get("worker_instance") == result["after"].get("worker_instance"))
+            if args.scenario == "warming-cancel" and ModelFixture.main_calls:
+                raise AssertionError("cancelled warming input entered the model")
             if args.scenario != "crash" and (not result["same_worker"] or not result["same_instance"]):
                 raise AssertionError("Worker was replaced on transport restart")
-            if args.scenario == "tool" and result["side_effects"] != ["once"]:
+            if args.scenario in {"tool", "mcp"} and result["side_effects"] != ["once"]:
                 raise AssertionError("tool side effect missing or duplicated")
+            if args.scenario == "mcp":
+                result["mcp_pid_after"] = int((data / "mcp.pid").read_text())
+                if result["mcp_pid_before"] != result["mcp_pid_after"]:
+                    raise AssertionError("MCP server was restarted by Front restart")
             # End through the explicit IPC lifecycle authority, testing the
             # shared shutdown budget, persistence barrier and final resource close.
             workers = module_processes(proc, "jiuwenswarm.server.worker.main")
@@ -419,7 +568,7 @@ if __name__ == "__main__":
     parser.add_argument("--code", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--mode", default="agent", choices=("agent", "code.normal"))
-    parser.add_argument("--scenario", default="restart", choices=("restart", "tool", "interaction", "offline", "cancel", "crash", "queue", "steer"))
+    parser.add_argument("--scenario", default="restart", choices=("restart", "tool", "mcp", "interaction", "offline", "cancel", "crash", "queue", "steer", "cross-session", "warming-cancel", "failed-create"))
     parser.add_argument("--profile", default="desktop", choices=("desktop", "agentos"))
     parser.add_argument("--gateway", action="store_true")
     asyncio.run(run(parser.parse_args()))
