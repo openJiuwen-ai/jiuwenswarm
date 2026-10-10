@@ -115,6 +115,7 @@ from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
 )
 from jiuwenswarm.agents.harness.flash import (
     FlashMemoryRail,
+    FlashSubagentRail,
     FlashTodoRail,
     SlimSkillToolkit,
     SlimSysOperationRail,
@@ -802,6 +803,49 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         return
 
     # ── 工具面覆盖（rail 构建 / 工具卡注册） ──────────────────────
+
+    def _flash_general_agent_enabled(self) -> bool:
+        """react.subagents.general_agent.enabled 显式 true 才注入（对齐 stock 门控语义）。
+
+        flash 冷启动门控（interface_deep 的 mode 检查）不含 flash，工厂不注入
+        general-purpose 子代理；此开关交由 FlashSubagentRail 自注入 spec。
+        """
+        react_cfg = getattr(self, "_config_cache", None)
+        if not isinstance(react_cfg, dict):
+            try:
+                react_cfg = (get_config() or {}).get("react") or {}
+            except Exception:
+                react_cfg = {}
+        subagents_cfg = (
+            react_cfg.get("subagents") if isinstance(react_cfg, dict) else None
+        )
+        general_cfg = (
+            subagents_cfg.get("general_agent")
+            if isinstance(subagents_cfg, dict)
+            else None
+        )
+        return isinstance(general_cfg, dict) and bool(general_cfg.get("enabled", False))
+
+    def _build_subagent_rail(
+        self, config_base: dict[str, Any] | None = None
+    ) -> FlashSubagentRail | None:
+        """flash 用调优版 subagent rail 替换 stock SubagentRail.
+
+        spec 自注入 + 提示段/工具卡描述替换（见 FlashSubagentRail docstring）；
+        注册机制（task_tool / available_agents / 授权绑定）全部复用 stock。
+        兼容两处调用：冷启动 rail 表传 ``config_base`` 关键字参数（与
+        ``_build_task_planning_rail`` 同理），当前实现未用到，接收并忽略。
+        """
+        _ = config_base
+        try:
+            rail = FlashSubagentRail(
+                inject_general_purpose=self._flash_general_agent_enabled(),
+            )
+            logger.info("[JiuwenSwarmFlashAdapter] FlashSubagentRail create success")
+        except Exception as exc:
+            logger.warning("[JiuwenSwarmFlashAdapter] FlashSubagentRail create failed: %s", exc)
+            rail = None
+        return rail
 
     def _build_task_planning_rail(
         self, config: dict[str, Any] | None = None
