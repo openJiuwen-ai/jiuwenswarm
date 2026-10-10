@@ -213,6 +213,32 @@ def migrate_legacy_permissions(
     return cfg
 
 
+def _merge_approval_overrides(
+    user_cfg: dict[str, Any],
+    session_cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """合并 user/session ``approval_overrides``（按 id 去重，session 后写优先）。"""
+    by_id: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    anon: list[dict[str, Any]] = []
+    for source in (user_cfg, session_cfg):
+        entries = source.get("approval_overrides")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            copied = deepcopy(entry)
+            entry_id = str(entry.get("id") or "").strip()
+            if not entry_id:
+                anon.append(copied)
+                continue
+            if entry_id not in by_id:
+                order.append(entry_id)
+            by_id[entry_id] = copied
+    return [by_id[key] for key in order] + anon
+
+
 def _compose_effective_local(
     global_cfg: dict[str, Any] | None,
     user_cfg: dict[str, Any] | None = None,
@@ -263,6 +289,25 @@ def _compose_effective_local(
         "file_guard": deepcopy(preset["file_guard"]),
         "sandbox_intent": preset["sandbox_intent"],
     }
+    # 回退合成保真：模板/用户 rules 与 HITL 写盘增量必须往返存活——
+    # snapshot 路径的 update_config 会用本输出整体覆盖判定配置，
+    # 丢键即 rules 审批/永久允许静默失效（复审 Must Fix）。
+    merged_rules = [
+        rule
+        for chunk in (global_migrated.get("rules"), user_migrated.get("rules"))
+        if isinstance(chunk, list)
+        for rule in chunk
+        if isinstance(rule, dict)
+    ]
+    if merged_rules:
+        out["rules"] = merged_rules
+    merged_overrides = _merge_approval_overrides(user_migrated, session_migrated)
+    if merged_overrides:
+        out["approval_overrides"] = merged_overrides
+    for source in (user_migrated, session_migrated):
+        file_guard = source.get("file_guard")
+        if isinstance(file_guard, dict) and isinstance(file_guard.get("paths"), list):
+            _merge_file_guard_path_entries(out, file_guard["paths"])
     if deny_unique:
         out["deny_tools"] = deny_unique
     if ask_unique:

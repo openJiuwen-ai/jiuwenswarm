@@ -213,6 +213,7 @@ def test_session_persist_uses_meta_session_id_and_file_guard_delta(
 
 def test_session_persist_merges_file_guard_delta(isolated_data_dir: Path) -> None:
     from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        compose_host_effective_permissions,
         load_session_permissions,
         persist_session_overlay_from_effective,
     )
@@ -249,6 +250,107 @@ def test_session_persist_merges_file_guard_delta(isolated_data_dir: Path) -> Non
     paths = (load_session_permissions(sid).get("file_guard") or {}).get("paths") or []
     assert len(paths) == 1
     assert paths[0]["write"] == "allow"
+    # compose 读回：写盘增量必须在合成输出中存活（snapshot→update_config 往返）
+    eff = compose_host_effective_permissions(session_id=sid)
+    eff_paths = (eff.get("file_guard") or {}).get("paths") or []
+    assert any(
+        p.get("path") == "C:/tmp/a.txt" and p.get("write") == "allow" for p in eff_paths
+    )
+
+
+def test_compose_round_trips_rules_overrides_and_paths(isolated_data_dir: Path) -> None:
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        compose_host_effective_permissions,
+        get_user_permissions_path,
+        persist_user_overlay_from_effective,
+    )
+
+    _write_global(
+        isolated_data_dir,
+        {
+            "enabled": True,
+            "mode": "auto",
+            "rules": [
+                {
+                    "id": "shell_sensitive_read",
+                    "tools": ["bash"],
+                    "pattern": "grep *",
+                    "severity": "HIGH",
+                },
+            ],
+        },
+    )
+    user_path = get_user_permissions_path()
+    user_path.parent.mkdir(parents=True, exist_ok=True)
+    user_path.write_text(
+        yaml.safe_dump(
+            {
+                "permissions": {
+                    "approval_overrides": [
+                        {
+                            "id": "always_git_status",
+                            "tools": ["bash"],
+                            "match_type": "command",
+                            "pattern": "git status*",
+                            "action": "allow",
+                        },
+                    ],
+                    "rules": [
+                        {
+                            "id": "user_deny_wipe",
+                            "tools": ["bash"],
+                            "pattern": "rm -rf *",
+                            "severity": "CRITICAL",
+                        },
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    # HITL 永久允许写盘：pattern 类 + path 类增量
+    assert persist_user_overlay_from_effective(
+        {
+            "approval_overrides": [
+                {
+                    "id": "always_git_status",
+                    "tools": ["bash"],
+                    "match_type": "command",
+                    "pattern": "git status*",
+                    "action": "allow",
+                },
+                {
+                    "id": "always_pytest",
+                    "tools": ["bash"],
+                    "match_type": "command",
+                    "pattern": "pytest*",
+                    "action": "allow",
+                },
+            ],
+            "_file_guard_paths_added": [
+                {
+                    "path": "C:/tmp/b.txt",
+                    "read": "allow",
+                    "write": "allow",
+                    "exec": "ask",
+                    "match": "prefix",
+                },
+            ],
+        }
+    )
+    eff = compose_host_effective_permissions(session_id="sess_roundtrip_1")
+    rule_ids = [rule.get("id") for rule in eff.get("rules") or []]
+    assert "shell_sensitive_read" in rule_ids
+    assert "user_deny_wipe" in rule_ids
+    override_ids = [entry.get("id") for entry in eff.get("approval_overrides") or []]
+    assert "always_git_status" in override_ids
+    assert "always_pytest" in override_ids
+    eff_paths = (eff.get("file_guard") or {}).get("paths") or []
+    assert any(
+        p.get("path") == "C:/tmp/b.txt" and p.get("write") == "allow" for p in eff_paths
+    )
+    # preset 底线（敏感路径）仍在
+    assert any(p.get("path") == "**/.ssh/**" for p in eff_paths)
 
 
 def test_append_session_allow_tool_persists_and_reloads(isolated_data_dir: Path) -> None:
