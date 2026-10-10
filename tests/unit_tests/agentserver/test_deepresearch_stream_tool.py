@@ -1158,6 +1158,117 @@ async def test_feedback_handler_interrupt_behavior_unchanged(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_outline_interrupt_resume_hint_pins_resume_contract(tmp_path: Path):
+    """interrupted outline_interaction outcome embeds a self-describing resume_hint."""
+    outline = json.dumps(
+        {"title": "AI Agent", "sections": [{"id": "1", "title": "架构"}]},
+        ensure_ascii=False,
+    )
+    proc = _Proc(
+        [
+            json.dumps({"__deepsearch_status__": "started", "conversation_id": "C1"}),
+            json.dumps({"agent": "outline", "content": outline}, ensure_ascii=False),
+            json.dumps(
+                {
+                    "__deepsearch_status__": "interrupted",
+                    "agent": "outline_interaction",
+                    "conversation_id": "C1",
+                    "outline": outline,
+                },
+                ensure_ascii=False,
+            ),
+        ]
+    )
+    route = {
+        "request_id": "R1",
+        "channel_id": "CH1",
+        "session_id": "S1",
+        "service_id": "default",
+        "agent_id": "default",
+    }
+    artifact = dt._ProgressArtifact(Path("/private/progress"), (1, 2), (3, 4))
+    remove = Mock()
+    manager = Mock()
+    patches = _stream_patches(proc, route=route)
+    try:
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=AsyncMock()))
+            stack.enter_context(patch.object(dt, "get_deepresearch_manager", return_value=manager))
+            stack.enter_context(patch.object(dt, "_create_progress_artifact", return_value=artifact))
+            stack.enter_context(patch.object(dt, "_remove_progress_artifact", remove))
+            outcome = json.loads(
+                await dt.deepresearch_stream._func(action="start", query="q", file_name="report")
+            )
+
+        assert outcome["status"] == "interrupted"
+        hint = outcome["resume_hint"]
+        assert hint["action"] == "resume"
+        assert hint["node"] == "outline_interaction"
+        assert hint["conversation_id"] == "C1"
+        assert "outline_confirm" in hint["valid_selected_options"]
+        assert "outline_use_edited" in hint["valid_selected_options"]
+        example = json.loads(hint["interaction_result_example"])
+        assert example["answers"][0]["selected_options"] == ["outline_confirm"]
+        assert "Never answer on the user's behalf" in hint["guidance"]
+    finally:
+        with dt._OUTLINE_JSON_CACHES_GUARD:
+            dt._OUTLINE_JSON_CACHES.clear()
+        with dt._OUTLINE_TITLE_CACHES_GUARD:
+            dt._OUTLINE_TITLE_CACHES.clear()
+
+
+@pytest.mark.asyncio
+async def test_feedback_handler_interrupt_resume_hint_pins_feedback_contract(tmp_path: Path):
+    """interrupted feedback_handler outcome embeds a feedback-oriented resume_hint."""
+    proc = _Proc(
+        [
+            json.dumps({"__deepsearch_status__": "started", "conversation_id": "C2"}),
+            json.dumps(
+                {
+                    "__deepsearch_status__": "interrupted",
+                    "agent": "feedback_handler",
+                    "conversation_id": "C2",
+                    "questions": [{"id": "q1", "question": "什么?"}],
+                },
+                ensure_ascii=False,
+            ),
+        ]
+    )
+    route = {
+        "request_id": "R1",
+        "channel_id": "CH1",
+        "session_id": "S1",
+        "service_id": "default",
+        "agent_id": "default",
+    }
+    artifact = dt._ProgressArtifact(Path("/private/progress"), (1, 2), (3, 4))
+    remove = Mock()
+    manager = Mock()
+    patches = _stream_patches(proc, route=route)
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=AsyncMock()))
+        stack.enter_context(patch.object(dt, "get_deepresearch_manager", return_value=manager))
+        stack.enter_context(patch.object(dt, "_create_progress_artifact", return_value=artifact))
+        stack.enter_context(patch.object(dt, "_remove_progress_artifact", remove))
+        outcome = json.loads(
+            await dt.deepresearch_stream._func(action="start", query="q", file_name="report")
+        )
+
+    assert outcome["status"] == "interrupted"
+    hint = outcome["resume_hint"]
+    assert hint["action"] == "resume"
+    assert hint["node"] == "feedback_handler"
+    assert hint["conversation_id"] == "C2"
+    assert hint["feedback_required"] is True
+    assert "valid_selected_options" not in hint
+    assert "Never answer on the user's behalf" in hint["guidance"]
+
+
+@pytest.mark.asyncio
 async def test_repeated_outline_interrupt_returns_loop_error():
     proc = _Proc(
         [
@@ -4723,6 +4834,20 @@ def test_resolve_outline_malformed_result_raises_value_error(interaction_result:
             dt._OUTLINE_JSON_CACHES.clear()
         with dt._OUTLINE_TITLE_CACHES_GUARD:
             dt._OUTLINE_TITLE_CACHES.clear()
+
+
+def test_resolve_outline_unknown_choice_error_lists_valid_choices() -> None:
+    """未知 selected_options 的报错必须列出全部合法值，避免调用方瞎猜参数。"""
+    with pytest.raises(ValueError) as excinfo:
+        dt._resolve_outline_interaction_feedback(
+            _outline_interaction_result("definitely_not_a_choice"),
+            conversation_id="C1",
+            route=_outline_route(),
+        )
+    message = str(excinfo.value)
+    assert "expected one of" in message
+    assert "outline_confirm" in message
+    assert "outline_use_edited" in message
 
 
 def test_resolve_outline_cancel_status_returns_cancel_feedback() -> None:
