@@ -13,6 +13,7 @@ metadata comes from the marketplace index ``index.json`` (same dir, keyed by
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,27 @@ from jiuwenswarm.server.runtime.mcp.paths import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 外部输入的 MCP 名称直接用于构造 mcp/credentials、mcp/skills、
+# mcp/mcp_builtins 下的文件系统路径；拒绝路径分隔符与 ".."，防止
+# 形如 ../../x 的名称逃逸出对应目录（任意文件写入/覆盖）。
+_MCP_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\-]*")
+
+
+def _validate_mcp_name(n: str) -> str:
+    """Validate an externally supplied MCP name before it reaches the filesystem.
+
+    Returns the name unchanged when valid; raises ``ValueError`` otherwise.
+    Applied at the external-input entry points (register_custom_mcp,
+    save_mcp_credentials); names read back from state.json were validated
+    here on the way in.
+    """
+    if not _MCP_NAME_PATTERN.fullmatch(n):
+        raise ValueError(
+            "mcp name must match [A-Za-z0-9][A-Za-z0-9._-]* "
+            "(no path separators or '..')"
+        )
+    return n
 
 # MCP 工作区根目录：所有 MCP 相关数据（内置包缓存/连接状态/凭证/
 # 已装 skill）统一收敛到 <workspace>/mcp/ 下（实现在 paths.py）。
@@ -1144,6 +1166,7 @@ def register_custom_mcp(name: str, config: dict[str, Any]) -> dict[str, Any]:
     n = str(name or "").strip()
     if not n:
         raise ValueError("mcp name is required")
+    _validate_mcp_name(n)
     raw_transport = str(config.get("transport", "")).strip().lower()
     if raw_transport not in {"stdio", "sse", "http", "streamable-http", "streamable_http"}:
         raise ValueError("transport must be one of stdio|sse|http|streamable-http")
@@ -1253,6 +1276,7 @@ def save_mcp_credentials(name: str, tokens: dict[str, Any]) -> dict[str, Any]:
     n = str(name or "").strip()
     if not n:
         raise ValueError("mcp name is required")
+    _validate_mcp_name(n)
     if not isinstance(tokens, dict) or not tokens:
         raise ValueError("tokens (non-empty dict) is required")
     store = CredentialStore()
