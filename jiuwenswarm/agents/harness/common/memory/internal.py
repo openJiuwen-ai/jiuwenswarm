@@ -163,10 +163,11 @@ def build_fts_query(query: str) -> str:
 
 
 def bm25_rank_to_score(rank: float) -> float:
-    """Convert BM25 rank to similarity score (0-1)."""
-    if rank >= 0:
-        return 1.0 / (1.0 + rank)
-    return 1.0 / (1.0 - rank)
+    """Map negative FTS5 BM25 ranks to 0..1 scores. Other ranks score zero."""
+    strength = -float(rank)
+    if strength <= 0.0:
+        return 0.0
+    return strength / (1.0 + strength)
 
 
 def is_memory_path(rel_path: str) -> bool:
