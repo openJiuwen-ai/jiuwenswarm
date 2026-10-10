@@ -152,6 +152,26 @@ def resolve_env_vars(value: Any) -> Any:
 
         return re.sub(pattern, replace_env, value)
     elif isinstance(value, dict):
+        # mcp.servers entries hold ${VAR} placeholders in headers/env that
+        # are meant for the CredentialStore (resolved at McpServerConfig build
+        # time), NOT for the process env. If resolve_env_vars touches them
+        # here, an unset env var collapses ${GITHUB_TOKEN} to "" and the
+        # adapter receives ``Authorization: "Bearer "`` — an empty token that
+        # httpx rejects as ``Illegal header value b'Bearer '``. Preserve these
+        # credential subtrees verbatim on mcp server entries (identified by
+        # the transport + name + url/command shape, or the server_id_scope
+        # stamp the mcp registry adds).
+        mcp_credential_keys = ("headers", "env", "staticHeaders", "static_headers")
+        is_mcp_server_entry = (
+            "transport" in value
+            and "name" in value
+            and ("url" in value or "command" in value)
+        ) or "server_id_scope" in value
+        if is_mcp_server_entry:
+            return {
+                k: (v if k in mcp_credential_keys else resolve_env_vars(v))
+                for k, v in value.items()
+            }
         return {k: resolve_env_vars(v) for k, v in value.items()}
     elif isinstance(value, list):
         return [resolve_env_vars(item) for item in value]
@@ -2361,15 +2381,56 @@ def update_swarmflow_enabled_in_config(enabled: bool) -> None:
 
 
 def get_mcp_servers() -> list[dict[str, Any]]:
-    """读取 config.yaml 中的 mcp.servers（原始结构，不解析环境变量）。"""
+    """合并 config.yaml mcp.servers（command.mcp/TUI 手填）+ mcp/state.json（连接器）。
+
+    两套事实源永久并存（非迁移期重叠）：
+    - config.yaml mcp.servers 是 command.mcp（TUI channel）手动管理 MCP 的
+      事实源；add/remove/enable/disable 经 agent_ws_server 的 command.mcp
+      handler 直接读写 config.yaml。这条链路不动。
+    - mcp/state.json 是MCP（marketplace + custom）的事实源；
+      connect/disconnect/enable/disable 经 mcp handler 写 state.json。
+    """
+    # A. config.yaml — 手填 MCP（raw, no env resolve）.
+    data = get_config_raw()
+    mcp_cfg = data.get("mcp", {})
+    if not isinstance(mcp_cfg, dict):
+        servers_yaml: list[dict[str, Any]] = []
+    else:
+        servers_yaml = [item for item in mcp_cfg.get("servers", [])
+                        if isinstance(item, dict)]
+
+    # B. mcp/state.json — 已连接 MCP（state==connected）.
+    state_mcps: list[dict[str, Any]] = []
+    try:
+        from jiuwenswarm.server.runtime.mcp.state_store import (
+            list_connected_mcps,
+            record_to_mcp_entry,
+        )
+        for rec in list_connected_mcps():
+            name = rec.get("name", "")
+            if not name:
+                continue
+            entry = record_to_mcp_entry(name, rec)
+            # skill-only MCPs return None
+            if entry is not None:
+                state_mcps.append(entry)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[config] failed to merge mcp state.json: %s", exc)
+
+    # Merge: state.json wins on name conflict (dedup by name, state first).
+    state_names = {s["name"] for s in state_mcps}
+    merged = [s for s in servers_yaml if s.get("name") not in state_names]
+    merged.extend(state_mcps)
+    return merged
+
+
+def get_config_yaml_mcp_servers() -> list[dict[str, Any]]:
+    """只读 config.yaml 的 mcp.servers（TUI/command.mcp 手配）。"""
     data = get_config_raw()
     mcp_cfg = data.get("mcp", {})
     if not isinstance(mcp_cfg, dict):
         return []
-    servers = mcp_cfg.get("servers", [])
-    if not isinstance(servers, list):
-        return []
-    return [item for item in servers if isinstance(item, dict)]
+    return [item for item in mcp_cfg.get("servers", []) if isinstance(item, dict)]
 
 
 def upsert_mcp_server_in_config(server: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -2456,6 +2517,103 @@ def remove_mcp_server_in_config(name: str) -> dict[str, Any]:
         dump_yaml_round_trip(_current_config_yaml_path(), data)
         return removed
     raise KeyError(f"MCP server '{target}' not found")
+
+
+def _mcp_name_in_state(name: str) -> bool:
+    """Whether state.json has a record for ``name`` (any state)."""
+    try:
+        from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
+        return get_mcp_record(name) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _mcp_name_in_config_yaml(name: str) -> bool:
+    """Whether config.yaml mcp.servers has an entry for ``name``."""
+    return any(str(s.get("name", "")).strip() == name
+               for s in get_config_yaml_mcp_servers())
+
+
+def upsert_mcp_server(server: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Upsert a TUI-managed MCP, routing by source: update in place if the
+    name already lives in config.yaml (legacy stock) or state.json (TUI-
+    created / web-connected); otherwise create new in state.json.
+
+    TUI ``add``/``update`` lands here. New MCPs always go to state.json
+    (``enabled`` defaults to the payload's ``enabled``, True for TUI add) —
+    config.yaml is no longer a creation target, only legacy stock edited
+    in place. Returns ``(entry, created)``. Raises ``ValueError`` if no name.
+    """
+    name = str(server.get("name", "")).strip()
+    if not name:
+        raise ValueError("MCP server name is required")
+    # Legacy stock in config.yaml: update in place (keeps its source).
+    if _mcp_name_in_config_yaml(name):
+        return upsert_mcp_server_in_config(server)
+    # Else state.json is the creation/update home for TUI MCPs.
+    from jiuwenswarm.server.runtime.mcp.state_store import upsert_mcp_record
+    prior = _mcp_name_in_state(name)
+    enabled = bool(server.get("enabled", True)) if "enabled" in server else None
+    rec = upsert_mcp_record(name, server, state="connected",
+                            integration_type=_integration_type_for(server),
+                            enabled=enabled)
+    # Shape a config-like entry for the response (carries enabled through).
+    entry = dict(rec)
+    entry["name"] = name
+    if "enabled" not in entry:
+        entry["enabled"] = bool(server.get("enabled", True))
+    return entry, (not prior)
+
+
+def set_mcp_server_enabled(name: str, enabled: bool) -> dict[str, Any]:
+    """Flip a TUI-managed MCP's ``enabled`` flag, routing by source: state.json
+    first (TUI-created / web-connected), then config.yaml (legacy stock).
+
+    Only the TUI channel reads ``enabled``; web ignores it. Raises
+    ``KeyError`` if the name is in neither source.
+    """
+    target = str(name or "").strip()
+    if not target:
+        raise ValueError("MCP server name is required")
+    if _mcp_name_in_state(target):
+        from jiuwenswarm.server.runtime.mcp.state_store import (
+            get_mcp_record, set_mcp_enabled,
+        )
+        set_mcp_enabled(target, enabled=enabled)
+        rec = get_mcp_record(target) or {}
+        entry = dict(rec)
+        entry["name"] = target
+        return entry
+    # Legacy stock in config.yaml.
+    return set_mcp_server_enabled_in_config(target, enabled)
+
+
+def remove_mcp_server(name: str) -> dict[str, Any]:
+    """Remove a TUI-managed MCP, routing by source: state.json first, then
+    config.yaml (legacy stock). Returns the removed entry. Raises
+    ``KeyError`` if the name is in neither source.
+    """
+    target = str(name or "").strip()
+    if not target:
+        raise ValueError("MCP server name is required")
+    if _mcp_name_in_state(target):
+        from jiuwenswarm.server.runtime.mcp.state_store import remove_mcp_record
+        removed = remove_mcp_record(target) or {}
+        entry = dict(removed)
+        entry["name"] = target
+        return entry
+    # Legacy stock in config.yaml.
+    return remove_mcp_server_in_config(target)
+
+
+def _integration_type_for(server: dict[str, Any]) -> str:
+    """Derive the state.json integration_type from a TUI payload's transport."""
+    t = str(server.get("transport", "")).strip().lower()
+    if t == "stdio":
+        return "stdio-mcp"
+    if t in {"sse", "http", "streamable-http", "streamable_http"}:
+        return "remote-mcp"
+    return "remote-mcp"
 
 
 # ---------------------------------------------------------------------------
