@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "gateway_contract": "jiuwenswarm-java-web-v1",
+  "maintenance": "in-repository",
+  "source_baseline": "2aa7fea7e55fbe1edaae0d468ef666b088c76fa9",
+  "integration_base": "483f2be45172712c6650000538bfc879dc5091c0",
+  "legacy_patch_sha256": "53a4322eec297589d8311b99fba9b165834d2e6dc2bc312b32aa55c1fd062156"
+}

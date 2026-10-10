@@ -13,6 +13,7 @@ import type { SettingsSaveErrorScope } from '../../services/SettingsSaveQueue';
 import { SettingsConfirmDialog, SettingsSection } from '../../components';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { ModelDialog } from './ModelDialog';
+import { parseModelConfigurationJson } from './modelConfigImport';
 import { getVendorLabel } from './ModelProviderSelect';
 import { displayModelProtocol, parseVendorCatalog } from './modelAdapters';
 import { useSessionStore } from '../../../../stores/sessionStore';
@@ -429,9 +430,30 @@ export function ModelsSettings() {
         title={t('settingsPanel.models.primaryModels')}
         separatedRows
         action={
+          <>
+          {import.meta.env.VITE_JIUWENSWARM_BACKEND === 'java' ? (
+            <label data-testid="settings-models-import-label">
+              {t('javaBackend.importModels')}
+              <input type="file" accept="application/json,.json" disabled={actionsDisabled}
+                data-testid="settings-models-import-input" onChange={async event => {
+                  const file = event.currentTarget.files?.[0];
+                  event.currentTarget.value = '';
+                  if (!file) return;
+                  try {
+                    if (file.size > 1024 * 1024) throw new Error('Model configuration exceeds 1 MiB');
+                    const imported = parseModelConfigurationJson(await file.text());
+                    await saveModels([...getEditableModels(models).filter(model => model.model_name !== 'your-model-name'),
+                      ...imported], 'model.import');
+                  } catch (error) {
+                    setSaveError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
+                  }
+                }} />
+            </label>
+          ) : null}
           <Button variant="primary" disabled={actionsDisabled} onClick={() => openModelDialog({})} data-testid="settings-models-add-btn">
             {t('settingsPanel.models.addModel')}
           </Button>
+          </>
         }
       >
         {modelsError ? (

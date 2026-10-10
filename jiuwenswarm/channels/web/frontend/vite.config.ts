@@ -1422,8 +1422,9 @@ function portFromEnv(name: string, fallback: number): number {
   return Number.isInteger(value) && value > 0 && value <= 65535 ? value : fallback
 }
 
-const frontendPort = portFromEnv('FRONTEND_PORT', 5173)
-const webPort = portFromEnv('WEB_PORT', 19000)
+const javaBackend = process.env.JIUWENSWARM_BACKEND === 'java'
+const frontendPort = portFromEnv('FRONTEND_PORT', javaBackend ? 5174 : 5173)
+const webPort = portFromEnv('WEB_PORT', javaBackend ? 18999 : 19000)
 const webTarget = `http://127.0.0.1:${webPort}`
 // In Vite development, reuse the Python OAuth receiver instead of maintaining
 // a second in-memory handoff implementation.
@@ -1433,7 +1434,8 @@ const isElectronBuild = process.env.ELECTRON === 'true'
 
 export default defineConfig({
   base: isElectronBuild ? './' : '/',
-  plugins: [suppressWsProxySocketErrors(), devWsTrafficLogger(), devFileContentApi(), react(), svgr()],
+  define: { 'import.meta.env.VITE_JIUWENSWARM_BACKEND': JSON.stringify(javaBackend ? 'java' : 'python') },
+  plugins: [suppressWsProxySocketErrors(), ...(javaBackend ? [] : [devWsTrafficLogger(), devFileContentApi()]), react(), svgr()],
   optimizeDeps: {
     include: ['exceljs', 'jszip', 'saxes', 'ssf'],
   },
@@ -1448,11 +1450,15 @@ export default defineConfig({
     },
   },
   server: {
-    host: true,
+    host: javaBackend ? '127.0.0.1' : true,
     allowedHosts: ['127.0.0.1'],
     port: frontendPort,
     strictPort: true,
     proxy: {
+      ...(javaBackend ? {
+        '/file-api': { target: webTarget, changeOrigin: true },
+        '/ws/git': { target: webTarget, ws: true, changeOrigin: true },
+      } : {}),
       ...(hubOAuthBroker ? {
         '/marketplace-oauth/hub': { target: hubOAuthBroker },
         '/oauth/hub': { target: hubOAuthBroker },

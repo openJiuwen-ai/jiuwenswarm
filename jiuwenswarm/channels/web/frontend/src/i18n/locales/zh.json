@@ -1,4 +1,5 @@
 {
+  "javaBackend": { "importModels": "导入模型 JSON" },
   "common": {
     "noData": "暂无数据",
     "confirm": "确认",
@@ -3506,6 +3507,16 @@
       "read": "已完成已读"
     },
     "project": {
+      "directoryBrowserTitle": "选择服务器上的工作目录",
+      "directoryRoots": "允许访问的位置",
+      "directoryParent": "返回上一级目录",
+      "directoryLoading": "正在加载目录…",
+      "directoryEmpty": "此目录中没有可选的子目录",
+      "directoryNewName": "新文件夹名称",
+      "directoryCreate": "新建文件夹",
+      "directoryCreateFailed": "无法创建文件夹",
+      "directoryTruncated": "目录内容较多，仅显示前 500 项",
+      "selectCurrentDirectory": "选择当前目录",
       "projects": "项目",
       "newConversation": "新建对话",
       "pinned": "置顶",

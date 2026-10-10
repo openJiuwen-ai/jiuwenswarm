@@ -56,7 +56,7 @@ interface DevWsLogEntry {
 }
 
 function logDevWsTraffic(entry: DevWsLogEntry): void {
-  if (!import.meta.env.DEV) {
+  if (!import.meta.env?.DEV) {
     return;
   }
 
@@ -267,6 +267,11 @@ class WebClient {
     params?: Record<string, unknown>,
     options: WebRequestOptions = {}
   ): Promise<T> {
+    if (import.meta.env?.VITE_JIUWENSWARM_BACKEND === 'java') {
+      const { checkJavaCapability, javaRequestParams } = await import('./javaCapabilities');
+      params = javaRequestParams(params);
+      await checkJavaCapability(method, params);
+    }
     await this.ensureReady();
 
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -794,7 +799,7 @@ export async function sendGoalStreamCommand(params: {
 }
 
 // Expose webClient to window for debugging in development
-if (import.meta.env.DEV) {
+if (import.meta.env?.DEV) {
   (window as any).webClient = webClient;
 }
 
