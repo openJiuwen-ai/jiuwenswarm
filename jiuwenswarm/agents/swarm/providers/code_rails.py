@@ -535,7 +535,7 @@ def build_user_hooks(params: dict[str, Any], ctx: SwarmBuildContext) -> Any:
         inp = UserHooksInput.resolve(params, ctx)
         hooks_config = load_hooks_config({"hooks": inp.hooks_section})
         if getattr(hooks_config, "events", None):
-            return UserHookRail(hooks_config)
+            return UserHookRail(hooks_config, subagent_type=ctx.member_name or "swarm_member")
         return None
     except Exception as exc:
         logger.warning("[swarm.user_hooks] create failed: %s", exc)
