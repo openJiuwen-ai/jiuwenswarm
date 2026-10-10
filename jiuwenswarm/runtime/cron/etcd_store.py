@@ -109,7 +109,7 @@ class EtcdCronJobStore:
                     )
                 except EtcdError as exc:
                     logger.warning("[Cron] etcd work_mode migrate put failed job=%s: %s", job_id, exc)
-        return parse_cron_jobs(jobs_raw)
+        return parse_cron_jobs(jobs_raw, source=self._prefix)
 
     async def get_job(self, job_id: str) -> CronJob | None:
         job_id = str(job_id or "").strip()
