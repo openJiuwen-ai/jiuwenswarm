@@ -12,7 +12,7 @@ import asyncio
 import logging
 from typing import Final
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.control.methods import CONTROL_SESSION_METHODS
 from jiuwenswarm.server.control.responses import (

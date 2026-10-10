@@ -154,7 +154,7 @@ def test_thread_rmw_does_not_lose_unrelated_user_fields(storage):
         from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
             dispatch_permissions_config_request,
         )
-        from jiuwenswarm.common.schema.agent import AgentRequest
+        from gateway_protocol.e2a.agent_models import AgentRequest
         from jiuwenswarm.common.schema.message import ReqMethod
         return dispatch_permissions_config_request(AgentRequest(
             request_id="storage-test",
@@ -252,7 +252,7 @@ def test_exact_path_increment_retains_other_user_and_session_paths(storage):
 
 
 def test_rpc_reports_write_failure(storage, monkeypatch):
-    from jiuwenswarm.common.schema.agent import AgentRequest
+    from gateway_protocol.e2a.agent_models import AgentRequest
     from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import dispatch_permissions_config_request
 

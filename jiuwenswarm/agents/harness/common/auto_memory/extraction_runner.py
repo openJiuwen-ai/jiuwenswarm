@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from openjiuwen.core.context_engine.engine import ContextEngine
     from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import AgentAdapter
-    from jiuwenswarm.common.schema.agent import AgentRequest
+    from gateway_protocol.e2a.agent_models import AgentRequest
 
 logger = logging.getLogger(__name__)
 

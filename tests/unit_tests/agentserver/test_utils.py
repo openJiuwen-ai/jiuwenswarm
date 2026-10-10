@@ -2,8 +2,8 @@
 
 """Tests for agentserver utility functions."""
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.server.utils.utils import get_chat_id
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 
 

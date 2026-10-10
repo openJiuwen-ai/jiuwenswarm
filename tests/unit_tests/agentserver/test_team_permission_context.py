@@ -9,10 +9,10 @@ from typing import Any
 
 import pytest
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
     TOOL_PERMISSION_CHANNEL_ID,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,

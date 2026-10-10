@@ -11,11 +11,11 @@ from concurrent.futures import Future
 from dataclasses import asdict
 from typing import Any, Awaitable, Optional
 
-from jiuwenswarm.common.e2a.wire_codec import (
+from gateway_protocol.e2a.wire_codec import (
     parse_agent_server_wire_chunk,
     parse_agent_server_wire_unary,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 
 

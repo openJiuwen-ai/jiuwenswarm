@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.evolution import (
     is_interrupt_evolution_approval_answer_payload,

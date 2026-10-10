@@ -22,6 +22,23 @@ from gateway_protocol.hooks import AgentServerChatHookContext, AgentServerHookEv
 from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
+from gateway_protocol.e2a.constants import (
+    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+    E2A_INTERNAL_CANCEL_SOURCE_KEY,
+    E2A_WIRE_INTERNAL_METADATA_KEYS,
+)
+from gateway_protocol.e2a.gateway_normalize import (
+    E2A_FALLBACK_FAILED_KEY,
+    E2A_INTERNAL_CONTEXT_KEY,
+    E2A_LEGACY_AGENT_REQUEST_KEY,
+)
+from gateway_protocol.e2a.models import E2AEnvelope
+from gateway_protocol.e2a.wire_codec import (
+    encode_agent_chunk_for_wire,
+    encode_agent_response_for_wire,
+    encode_json_parse_error_wire,
+)
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
 
 from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService, reset_harness_packages_state
@@ -43,24 +60,7 @@ from jiuwenswarm.common.session_message import (
 )
 from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.common.e2a.constants import (
-    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
-    E2A_INTERNAL_CANCEL_SOURCE_KEY,
-    E2A_WIRE_INTERNAL_METADATA_KEYS,
-)
-from jiuwenswarm.common.e2a.gateway_normalize import (
-    E2A_FALLBACK_FAILED_KEY,
-    E2A_INTERNAL_CONTEXT_KEY,
-    E2A_LEGACY_AGENT_REQUEST_KEY,
-)
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import (
-    encode_agent_chunk_for_wire,
-    encode_agent_response_for_wire,
-    encode_json_parse_error_wire,
-)
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.version import __version__
 from jiuwenswarm.common.ws_diagnostics import (
     describe_ws_exception,

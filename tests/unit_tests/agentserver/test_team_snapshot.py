@@ -16,7 +16,7 @@ from unittest import mock
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 
 
@@ -71,7 +71,7 @@ async def _invoke(
     active_team_name: str | None = "team-sess-1",
     metadata_team_name: str | None = None,
 ):
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+    from gateway_protocol.e2a.wire_codec import parse_agent_server_wire_unary
     from jiuwenswarm.server import agent_ws_server
 
     ws = _FakeWS()

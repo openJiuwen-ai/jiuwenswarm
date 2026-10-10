@@ -13,7 +13,7 @@ import logging
 import os
 from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse, AgentResponseChunk
 
 logger = logging.getLogger(__name__)
 

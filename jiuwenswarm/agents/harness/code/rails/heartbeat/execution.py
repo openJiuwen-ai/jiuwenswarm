@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.agent_models import AgentRequest
 
 from .models import HeartbeatJob
 

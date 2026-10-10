@@ -24,12 +24,12 @@ from openjiuwen.core.session.agent import create_agent_session
 from openjiuwen.harness import create_deep_agent
 from openjiuwen.harness.schema.interaction import SendInputRequest
 
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponseChunk
 from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
     SessionMessagingRoute, SessionMessagingRouteRail, SessionMessagingToolkit,
     with_session_messaging_route,
 )
 from jiuwenswarm.common.config import get_config, get_default_models
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.service import AgentRuntime
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer

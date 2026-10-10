@@ -85,7 +85,7 @@ def test_build_app_exposes_ws_routes_only() -> None:
 def test_build_app_mounts_application_plugin_websocket_routes() -> None:
     from types import SimpleNamespace
 
-    from jiuwenswarm.extensions.sdk import WebSocketRouteContribution
+    from gateway_protocol.sdk import WebSocketRouteContribution
 
     async def endpoint(websocket) -> None:  # noqa: ANN001
         await websocket.close()

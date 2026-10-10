@@ -17,10 +17,10 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit
 
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
-from jiuwenswarm.common.schema.agent import AgentResponse
+from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from gateway_protocol.e2a.models import E2AEnvelope
+from gateway_protocol.e2a.wire_codec import parse_agent_server_wire_unary
+from gateway_protocol.e2a.agent_models import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.server.runtime.skill.skill_manager import (

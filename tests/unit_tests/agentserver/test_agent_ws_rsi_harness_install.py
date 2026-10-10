@@ -5,9 +5,9 @@ import asyncio
 import json
 import pytest
 
+from gateway_protocol.e2a.wire_codec import parse_agent_server_wire_unary
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.common.rsi.harness_activation import RsiHarnessActivationStore
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 

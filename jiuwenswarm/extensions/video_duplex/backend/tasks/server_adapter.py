@@ -3,7 +3,7 @@
 import asyncio
 import re
 
-from jiuwenswarm.common.schema.agent import AgentResponse
+from gateway_protocol.e2a.agent_models import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter
 

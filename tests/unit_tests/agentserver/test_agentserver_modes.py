@@ -4,8 +4,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module

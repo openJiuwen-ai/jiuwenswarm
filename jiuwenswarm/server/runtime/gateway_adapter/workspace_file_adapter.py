@@ -30,7 +30,7 @@ import stat
 from pathlib import Path
 from typing import Any, Final
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_agent_workspace_dir, get_user_workspace_dir
 from jiuwenswarm.agents.harness.common.tools.web_file_download import is_path_within_user_dirs

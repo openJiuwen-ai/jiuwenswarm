@@ -1,7 +1,7 @@
 """Extension public surface with transport adapters loaded lazily.
 
-纯契约符号（SDK 基类/数据类型）已迁 ``gateway_protocol.{sdk,types}``（支线
-计划 E 后 source of truth，转发别名同一对象）；ExtensionLoader/Manager/Registry
+纯契约符号（SDK 基类/数据类型）以 ``gateway_protocol.{sdk,types}`` 为
+source of truth，import 直指协议包；ExtensionLoader/Manager/Registry
 为具体实现，仍由本仓扩展框架提供、待 gateway 仓迁移。
 """
 

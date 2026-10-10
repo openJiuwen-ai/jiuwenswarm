@@ -14,13 +14,13 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, List, TYPE_CHECKING
 
-from jiuwenswarm.common.e2a.constants import (
+from gateway_protocol.e2a.constants import (
     E2A_RESPONSE_KIND_ACP_OUTPUT_REQUEST,
     E2A_RESPONSE_STATUS_IN_PROGRESS,
     E2A_SOURCE_PROTOCOL_E2A,
     E2A_WIRE_SERVER_PUSH_KEY,
 )
-from jiuwenswarm.common.e2a.models import (
+from gateway_protocol.e2a.models import (
     E2A_PROTOCOL_VERSION,
     E2AProvenance,
     E2AResponse,

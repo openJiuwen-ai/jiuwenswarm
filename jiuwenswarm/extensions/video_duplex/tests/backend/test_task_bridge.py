@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.video_duplex.backend import task_adapter
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
@@ -241,7 +241,7 @@ async def test_checkpoint_ack_can_finish_while_session_is_closing(routed_task, m
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.runtime.gateway_adapter.base import AdapterRegistry
     from jiuwenswarm.server.runtime.session import lifecycle
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+    from gateway_protocol.e2a.wire_codec import parse_agent_server_wire_unary
 
     r = routed_task
     server = object.__new__(AgentWebSocketServer)

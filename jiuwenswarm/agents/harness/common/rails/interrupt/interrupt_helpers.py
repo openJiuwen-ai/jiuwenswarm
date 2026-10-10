@@ -229,7 +229,7 @@ def build_permission_rail(
         normalize_permissions_for_runtime,
     )
     from jiuwenswarm.common.config import get_config
-    from jiuwenswarm.common.e2a.acp.acp_tool_updates import build_acp_tool_descriptor
+    from gateway_protocol.e2a.acp.acp_tool_updates import build_acp_tool_descriptor
     from jiuwenswarm.common.utils import get_config_file
 
     inline_permissions = config.get("permissions", {})

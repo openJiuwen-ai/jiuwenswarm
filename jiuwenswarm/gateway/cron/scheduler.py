@@ -10,16 +10,20 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+from gateway_protocol.cron_models import (
+    CRON_JOB_DEFAULT_MODE,
+    CronJob,
+    CronRunState,
+    CronTargetChannel,
+)
+from gateway_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.gateway.routing.agent_client import AgentServerClient, AgentServerUnaryTimeout
 from jiuwenswarm.gateway.cron.dingtalk_routing import (
     is_usable_dingtalk_staff_id,
     resolve_dingtalk_push_metadata,
 )
 from jiuwenswarm.gateway.cron.models import (
-    CRON_JOB_DEFAULT_MODE,
-    CronJob,
-    CronRunState,
-    CronTargetChannel,
     is_team_cron_mode,
     normalize_cron_job_mode,
     resolve_cron_job_timeout_seconds,
@@ -27,8 +31,6 @@ from jiuwenswarm.gateway.cron.models import (
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.runtime.cron.cron_expr import next_cron_datetime

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
 from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
@@ -37,7 +38,6 @@ from jiuwenswarm.server.runtime.session.session_message_store import (
     SessionMessageIdempotencyConflict,
     SessionMessageStore,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.request import sync_chat_request_metadata
 from jiuwenswarm.runtime.events import RuntimeEvent

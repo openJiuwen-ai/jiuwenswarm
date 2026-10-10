@@ -4,10 +4,10 @@
 
 import time
 
+from gateway_protocol.e2a.gateway_normalize import message_to_e2a_or_fallback
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.server.utils.utils import get_chat_id
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.common.e2a.gateway_normalize import message_to_e2a_or_fallback
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 
 

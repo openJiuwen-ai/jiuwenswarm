@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime import agent_manager as manager_module
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep

@@ -18,7 +18,7 @@ from typing import Any, AsyncIterator, List
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponseChunk
 from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 from jiuwenswarm.server.runtime.session import session_history

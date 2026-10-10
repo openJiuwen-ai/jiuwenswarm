@@ -11,24 +11,19 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-# --- Early --dotenv parsing (before jiuwenswarm imports) ---
-from jiuwenswarm.dotenv_early import parse_dotenv_early
-parse_dotenv_early("jiuwenswarm-acp-channel")
-
-# --- Now safe to import jiuwenswarm modules ---
-from jiuwenswarm.common.e2a.acp.protocol import (
+from gateway_protocol.e2a.acp.protocol import (
     build_acp_initialize_result,
     build_acp_prompt_result,
     build_acp_session_list_result,
     build_acp_session_new_result,
 )
-from jiuwenswarm.common.e2a.acp.session_updates import (
+from gateway_protocol.e2a.acp.session_updates import (
     build_acp_final_text_update,
     build_acp_session_update,
     build_acp_usage_update,
 )
-from jiuwenswarm.common.e2a.adapters import envelope_from_acp_jsonrpc
-from jiuwenswarm.common.e2a.constants import (
+from gateway_protocol.e2a.adapters import envelope_from_acp_jsonrpc
+from gateway_protocol.e2a.constants import (
     E2A_RESPONSE_KIND_ACP_JSONRPC_ERROR,
     E2A_RESPONSE_KIND_ACP_PROMPT_RESULT,
     E2A_RESPONSE_KIND_ACP_SESSION_UPDATE,
@@ -38,7 +33,12 @@ from jiuwenswarm.common.e2a.constants import (
     E2A_RESPONSE_STATUS_SUCCEEDED,
     E2A_SOURCE_PROTOCOL_E2A,
 )
-from jiuwenswarm.common.e2a.models import E2AEnvelope, E2AProvenance, E2AResponse, utc_now_iso
+from gateway_protocol.e2a.models import E2AEnvelope, E2AProvenance, E2AResponse, utc_now_iso
+# --- Early --dotenv parsing (before jiuwenswarm imports) ---
+from jiuwenswarm.dotenv_early import parse_dotenv_early
+parse_dotenv_early("jiuwenswarm-acp-channel")
+
+# --- Now safe to import jiuwenswarm modules ---
 from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
 from jiuwenswarm.common.version import __version__
 from jiuwenswarm.gateway.channel_manager.base import BaseChannel, RobotMessageRouter
@@ -184,7 +184,7 @@ class AcpGatewayBridge:
         ):
             return False
 
-        from jiuwenswarm.common.e2a.adapters import build_acp_tool_response_message
+        from gateway_protocol.e2a.adapters import build_acp_tool_response_message
 
         jsonrpc_id = str(data.get("id") or "").strip()
         pending = self._pending_client_rpc_session_by_id.pop(jsonrpc_id, None)
@@ -846,7 +846,7 @@ class AcpChannel(BaseChannel):
         await self._dispatch_message(msg)
 
     async def _handle_jsonrpc_response(self, data: dict[str, Any]) -> None:
-        from jiuwenswarm.common.e2a.adapters import build_acp_tool_response_message
+        from gateway_protocol.e2a.adapters import build_acp_tool_response_message
 
         jsonrpc_id = str(data.get("id") or "").strip()
         if not jsonrpc_id:

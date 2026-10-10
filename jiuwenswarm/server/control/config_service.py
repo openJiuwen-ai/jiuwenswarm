@@ -19,7 +19,7 @@ from typing import Any
 
 import yaml
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file
 from jiuwenswarm.common.version import __version__

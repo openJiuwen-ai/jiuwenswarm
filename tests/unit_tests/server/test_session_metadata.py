@@ -1538,7 +1538,7 @@ def clean_model_env(monkeypatch):
 
 
 def _make_agent_request(params=None, metadata=None, session_id="sess_1", channel_id="web", req_method=None):
-    from jiuwenswarm.common.schema.agent import AgentRequest
+    from gateway_protocol.e2a.agent_models import AgentRequest
 
     return AgentRequest(
         request_id="req-1",
@@ -1918,7 +1918,7 @@ class TestSessionGetMetadataHandler:
 
     @staticmethod
     def _adapter_get_metadata(session_id: str):
-        from jiuwenswarm.common.schema.agent import AgentRequest
+        from gateway_protocol.e2a.agent_models import AgentRequest
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.server.runtime.gateway_adapter.session_adapter import (
             SessionAdapter,
@@ -1974,7 +1974,7 @@ class TestSessionGetMetadataHandler:
     @pytest.mark.asyncio
     async def test_missing_session_id_returns_bad_request(registered_channel):
         """session_id 缺失 → BAD_REQUEST"""
-        from jiuwenswarm.common.schema.agent import AgentRequest
+        from gateway_protocol.e2a.agent_models import AgentRequest
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.server.runtime.gateway_adapter.session_adapter import (
             SessionAdapter,

@@ -3,11 +3,11 @@ from __future__ import annotations
 import pytest
 from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
     RootPermissionQueue,
     RootPermissionQueueError,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter

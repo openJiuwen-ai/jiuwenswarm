@@ -132,7 +132,7 @@ unexpected = sorted(
     name for name in sys.modules
     if name.startswith("jiuwenswarm.gateway")
     or name.startswith("jiuwenswarm.server.agent_ws_server")
-    or name.startswith("jiuwenswarm.common.e2a.wire_codec")
+    or name.startswith("gateway_protocol.e2a.wire_codec")
     or name == "websockets"
 )
 print("TRANSPORT_MODULES=" + repr(unexpected))

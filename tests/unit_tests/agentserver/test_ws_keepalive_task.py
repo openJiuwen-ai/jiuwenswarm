@@ -12,8 +12,8 @@ from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 from websockets.legacy.client import connect as websocket_connect
 from websockets.legacy.server import serve as websocket_serve
 
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.wire_codec import parse_agent_server_wire_chunk
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.server import agent_ws_server

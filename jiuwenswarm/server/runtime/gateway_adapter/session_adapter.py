@@ -28,7 +28,7 @@ import logging
 import time
 from typing import Final
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_agent_root_dir
 from jiuwenswarm.server.runtime.gateway_adapter.base import (

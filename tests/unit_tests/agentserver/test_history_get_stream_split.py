@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.wire_truncate import _HISTORY_WIRE_RECORD_MAX_BYTES

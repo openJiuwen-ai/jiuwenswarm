@@ -11,6 +11,7 @@ import pytest
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent.interrupt.response import ToolCallInterruptRequest
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     convert_interactions_to_ask_user_question,
 )
@@ -19,7 +20,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_r
     bind_root_permission_request, reset_root_permission_request,
 )
 from jiuwenswarm.agents.harness.common.rails import stream_event_rail as stream_producers
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk

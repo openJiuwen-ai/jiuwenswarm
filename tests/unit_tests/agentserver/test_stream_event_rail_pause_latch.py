@@ -31,6 +31,7 @@ from unittest.mock import MagicMock
 import pytest
 from openjiuwen.core.single_agent.rail.base import InvokeInputs
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
     JiuSwarmStreamEventRail,
     _parse_pause_wait_timeout,
@@ -38,7 +39,6 @@ from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
     RootPermissionQueue,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,

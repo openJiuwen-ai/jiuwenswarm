@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
 from jiuwenswarm.channels.process_cli.duplex_control import DuplexControlError
 from jiuwenswarm.channels.process_cli.machine_io import OneShotWriter
@@ -38,7 +39,6 @@ from jiuwenswarm.channels.process_cli.protocol import (
     RunStatus,
     RuntimeErrorInfo,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
 

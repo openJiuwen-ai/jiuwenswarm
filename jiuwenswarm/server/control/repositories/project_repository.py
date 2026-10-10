@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.control.methods import CONTROL_PROJECT_METHODS
 from jiuwenswarm.server.control.responses import build_error_response

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.run_permissions import RUN_PERMISSIONS, overlay_run_permissions
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter

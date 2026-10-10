@@ -5,11 +5,11 @@ from typing import Any, Iterable
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
-from jiuwenswarm.extensions.registry import ExtensionRegistry
-from jiuwenswarm.extensions.sdk.application_plugin import (
+from gateway_protocol.sdk.application_plugin import (
     ApplicationPluginExtension,
     WebSocketRouteContribution,
 )
+from jiuwenswarm.extensions.registry import ExtensionRegistry
 
 
 APPLICATION_PLUGIN_API_PREFIX = "/api/application-plugins"

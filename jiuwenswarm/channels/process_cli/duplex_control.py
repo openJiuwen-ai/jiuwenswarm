@@ -12,12 +12,12 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
 from jiuwenswarm.channels.process_cli.duplex_input import DuplexLineReader
 from jiuwenswarm.channels.process_cli.duplex_protocol import decode_control
 from jiuwenswarm.channels.process_cli.machine_io import OneShotWriter
 from jiuwenswarm.channels.process_cli.protocol import RunStatus, RuntimeErrorInfo
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.interaction import InteractionAnswerInput
 

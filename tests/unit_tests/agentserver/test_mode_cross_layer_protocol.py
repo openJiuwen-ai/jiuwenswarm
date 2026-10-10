@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
+from gateway_protocol.e2a.wire_codec import parse_agent_server_wire_chunk
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.gateway.channel_manager.tui.tui_channel import TuiChannel
 from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel

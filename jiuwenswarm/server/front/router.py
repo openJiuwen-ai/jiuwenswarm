@@ -8,7 +8,7 @@ import asyncio
 import logging
 from typing import Any
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.control.health_service import handle_readiness
 from jiuwenswarm.server.control.methods import (

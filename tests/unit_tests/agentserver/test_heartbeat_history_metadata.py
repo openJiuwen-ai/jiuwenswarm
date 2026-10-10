@@ -8,7 +8,7 @@ from typing import Any, AsyncIterator
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_ORIGIN_EXTERNAL,

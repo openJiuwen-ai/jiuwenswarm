@@ -354,7 +354,7 @@ class JoinExitHandlers:
         timestamp < anchor_ts 的记录：anchor 之后的消息已走实时 fan_out 转发，
         不再进历史，避免同一条消息既实时又历史造成重复。
         """
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
 
         channel_id = msg.channel_id
@@ -445,7 +445,7 @@ class JoinExitHandlers:
         查到返回席位名列表，查不到（server ok=False / members 空 / RPC 异常）返回 None，
         由调用方统一拼"team 不存在"文案。channel_id 不参与业务查询，仅回填 E2A envelope。
         """
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
 
         try:

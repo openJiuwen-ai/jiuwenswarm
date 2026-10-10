@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import (
     ALLOW_ONCE,
     ALWAYS_ALLOW,
@@ -18,7 +19,6 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import
     normalize_option_value,
     resolve_permission_action,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest
 
 # 修改前那份字面量元组接受的全部取值。放宽识别范围只能增不能减，任何一个从这里
 # 掉出去都意味着一个曾经可用的按钮变成了拒绝。

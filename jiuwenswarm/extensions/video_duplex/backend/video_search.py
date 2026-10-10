@@ -366,7 +366,7 @@ async def execute_core_agent(
     managed_task_binding: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Run one delegated video task through the standard, full Core Agent API."""
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+    from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
     from jiuwenswarm.common.schema.message import ReqMethod
 
     client = (

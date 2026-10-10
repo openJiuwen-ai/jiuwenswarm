@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse
 from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.runtime.events import RuntimeEvent

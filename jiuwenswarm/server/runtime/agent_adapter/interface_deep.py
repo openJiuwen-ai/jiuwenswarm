@@ -132,6 +132,7 @@ from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
 from openjiuwen.harness.schema.config import SubAgentConfig
 
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.server.runtime.session.history_io import (
     run_history_io, run_stream_parser, stream_chunk_writes_history,
 )
@@ -587,7 +588,6 @@ from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KE
 from jiuwenswarm.agents.harness.common.auto_harness.service import _HARNESS_PACKAGES_FILE
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.runtime.cron import CronTargetChannel
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.playwright_mcp_runtime import (
     clear_managed_launch_environment,
@@ -6915,7 +6915,7 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def _login_required_message(request: AgentRequest) -> str:
-        from jiuwenswarm.common.e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY
+        from gateway_protocol.e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY
 
         params = request.params if isinstance(request.params, dict) else {}
         hint = params.get(E2A_LOGIN_REQUIRED_HINT_PARAM_KEY)

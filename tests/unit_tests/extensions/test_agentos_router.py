@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from gateway_protocol.e2a.models import E2AEnvelope
+from gateway_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
     AgentManager,

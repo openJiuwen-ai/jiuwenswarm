@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.chat_send import ChatSendParams
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (

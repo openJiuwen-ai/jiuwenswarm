@@ -7,13 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
     supports_phase_auto_root,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
     RootPermissionQueueError,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.request import prepare_chat_turn
 from jiuwenswarm.server.runtime import agent_manager as agent_manager_module

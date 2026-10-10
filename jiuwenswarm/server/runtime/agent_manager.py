@@ -15,7 +15,7 @@ from copy import deepcopy
 from typing import Any, Callable, NamedTuple, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
-from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
+from gateway_protocol.e2a.acp.protocol import build_acp_initialize_result
 from jiuwenswarm.common.version import __version__
 from jiuwenswarm.agents.harness.team import get_team_manager
 from jiuwenswarm.common.config import get_available_models, get_config

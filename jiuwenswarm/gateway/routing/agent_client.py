@@ -14,13 +14,14 @@ from urllib.parse import urlsplit
 
 from websockets.exceptions import ConnectionClosed, PayloadTooBig
 
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import (
+from gateway_protocol.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from gateway_protocol.e2a.models import E2AEnvelope
+from gateway_protocol.e2a.wire_codec import (
     parse_agent_server_wire_chunk,
     parse_agent_server_wire_unary,
 )
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from gateway_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
+from gateway_protocol.agent_client import AgentServerClient  # noqa: F401
 from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.common.ws_diagnostics import (
     describe_ws_exception,
@@ -102,9 +103,8 @@ def _build_ws_origin(uri: str) -> str | None:
     return f"{scheme}://{parsed.netloc}"
 
 
-# AgentServerClient 抽象契约已下沉 ``jiuwenswarm.common.client.agent_client``
+# AgentServerClient 抽象契约已下沉 ``gateway_protocol.agent_client``
 # （保留侧与 Gateway 仓共用契约）。此处 re-export 保持既有 import 路径兼容。
-from jiuwenswarm.common.client.agent_client import AgentServerClient  # noqa: F401
 
 
 def _e2a_to_wire(envelope: E2AEnvelope) -> dict[str, Any]:
@@ -710,7 +710,7 @@ async def mock_agent_server_handler(ws: Any) -> None:
     """
     import websockets
 
-    from jiuwenswarm.common.e2a.wire_codec import (
+    from gateway_protocol.e2a.wire_codec import (
         encode_agent_chunk_for_wire,
         encode_agent_response_for_wire,
     )
@@ -782,7 +782,7 @@ async def run_mock_agent_server(
 
 async def _run_verification() -> None:
     """用内存 Mock 服务端验证 WebSocketAgentServerClient 的 connect/send_request/send_request_stream."""
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+    from gateway_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 
     port = 18765
     uri = f"ws://127.0.0.1:{port}"

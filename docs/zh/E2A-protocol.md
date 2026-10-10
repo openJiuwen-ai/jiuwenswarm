@@ -127,7 +127,7 @@
 
 ## 6. `constants.py` 中的 ACP 字符串（桥接参考）
 
-以下**仅**用于 ACP 桥接或文档对照，**运行时**以 `jiuwenswarm.common.e2a.constants` 中元组为准：
+以下**仅**用于 ACP 桥接或文档对照，**运行时**以 `gateway_protocol.e2a.constants` 中元组为准：
 
 - **`ACP_CLIENT_TO_AGENT_METHODS`**：客户端 → Agent 的 JSON-RPC method 名
 - **`ACP_AGENT_TO_CLIENT_METHODS`**、**`ACP_NOTIFICATION_NAMES`**：下行 / 通知

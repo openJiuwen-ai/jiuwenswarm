@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from weakref import WeakValueDictionary
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
     PLAN_REMINDER_ORIGINAL_QUERY_KEY,
@@ -19,7 +20,6 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
     is_interrupt_resume_payload,
 )
 from jiuwenswarm.common.mode_matrix import is_plan_mode
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.chat_send import PLAN_ENTRY_SOURCES
 from jiuwenswarm.runtime.request import (
     CHAT_TURN_METHODS,

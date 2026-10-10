@@ -13,7 +13,7 @@ from unittest import mock
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentResponse
+from gateway_protocol.e2a.agent_models import AgentResponse
 from jiuwenswarm.gateway.message_handler.join_exit_handlers import JoinExitHandlers
 
 

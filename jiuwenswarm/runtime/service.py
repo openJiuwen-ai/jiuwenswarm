@@ -65,7 +65,7 @@ from jiuwenswarm.server.runtime.agent_manager import AgentManager
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 
-    from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+    from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse
     from jiuwenswarm.runtime.agent_definition import (
         RuntimeAgentDefinition,
         RuntimeAgentExecution,
@@ -837,7 +837,7 @@ class AgentRuntime:
                 channel_id=target.channel_id,
             )
 
-        from jiuwenswarm.common.schema.agent import AgentRequest
+        from gateway_protocol.e2a.agent_models import AgentRequest
 
         message_request_id = str(request_id or "").strip() or uuid.uuid4().hex
         params = {

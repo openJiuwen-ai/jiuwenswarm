@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.wire_codec import parse_agent_server_wire_unary
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.runtime.session_provisioner import (

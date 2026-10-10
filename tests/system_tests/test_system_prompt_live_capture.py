@@ -29,10 +29,10 @@ import pytest
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.runner.callback.events import LLMCallEvents
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.agent_adapter.interface import build_user_prompt
 from jiuwenswarm.common.config import get_config
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 
 OUTPUT_DIR = Path(__file__).parent / "output"

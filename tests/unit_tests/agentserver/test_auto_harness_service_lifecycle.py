@@ -12,12 +12,12 @@ from typing import Any
 
 import pytest
 
+from gateway_protocol.e2a.agent_models import AgentResponseChunk
 from jiuwenswarm.agents.harness.common.auto_harness import service as service_module
 from jiuwenswarm.agents.harness.common.auto_harness.service import (
     ActiveAutoHarnessRun,
     AutoHarnessService,
 )
-from jiuwenswarm.common.schema.agent import AgentResponseChunk
 
 
 def _bare_service() -> AutoHarnessService:

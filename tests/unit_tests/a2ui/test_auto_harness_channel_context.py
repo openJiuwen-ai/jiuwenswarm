@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponseChunk
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 

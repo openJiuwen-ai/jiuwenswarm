@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from gateway_protocol.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentManager
 from jiuwenswarm.extensions.agentos.agentos_router.config import (

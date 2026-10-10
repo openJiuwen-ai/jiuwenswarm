@@ -22,8 +22,8 @@ from openjiuwen.core.foundation.llm import AssistantMessage, Model, ToolCall
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter import interface
 from tests.unit_tests.agentserver.permissions.test_permission_answer_cutover import (

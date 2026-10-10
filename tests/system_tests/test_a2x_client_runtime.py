@@ -11,10 +11,10 @@ from openjiuwen.core.foundation.llm.schema.config import ModelClientConfig
 
 import pytest
 
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.agent_adapter.interface import build_user_prompt
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 
 pytestmark = [pytest.mark.integration, pytest.mark.system]

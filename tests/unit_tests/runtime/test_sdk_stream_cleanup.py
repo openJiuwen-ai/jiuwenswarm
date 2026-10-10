@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponseChunk
 from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.agent_definition import RuntimeAgentDefinition
 from jiuwenswarm.runtime.context import get_current_runtime

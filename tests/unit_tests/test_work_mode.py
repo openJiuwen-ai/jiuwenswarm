@@ -12,7 +12,7 @@ from jiuwenswarm.common.work_mode import (
     normalize_work_mode,
     resolve_default_project_id,
 )
-from jiuwenswarm.gateway.cron.models import CronJob
+from jiuwenswarm.gateway.cron.models import CronJob, cron_job_from_dict
 from jiuwenswarm.server.runtime.session.project_store import Project
 from jiuwenswarm.server.runtime.session.work_mode import (
     DEFAULT_TUI_WORK_MODE,
@@ -109,9 +109,9 @@ class TestModelRoundtrip:
 
         base_job = {"id": "j1", "name": "n", "enabled": True, "cron_expr": "0 0 * * *",
                     "timezone": "UTC", "description": "d", "targets": "web"}
-        assert CronJob.from_dict(dict(base_job)).to_dict()["work_mode"] == "work"
+        assert cron_job_from_dict(dict(base_job)).to_dict()["work_mode"] == "work"
         raw_code = dict(base_job, work_mode="code")
-        assert CronJob.from_dict(raw_code).to_dict()["work_mode"] == "code"
+        assert cron_job_from_dict(raw_code).to_dict()["work_mode"] == "code"
 
     @pytest.mark.parametrize("raw_overrides, expected_work_mode", [
         ({}, "work"),
@@ -121,7 +121,7 @@ class TestModelRoundtrip:
     def test_cronjob_from_dict(self, raw_overrides, expected_work_mode):
         base = {"id": "j1", "name": "n", "enabled": True, "cron_expr": "0 0 * * *",
                 "timezone": "UTC", "description": "d", "targets": "web"}
-        cj = CronJob.from_dict({**base, **raw_overrides})
+        cj = cron_job_from_dict({**base, **raw_overrides})
         assert cj.work_mode == expected_work_mode
 
 

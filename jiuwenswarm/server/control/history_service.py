@@ -7,8 +7,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponse
 from jiuwenswarm.common.mode_matrix import is_team_mode
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.server.control.responses import build_error_response
 from jiuwenswarm.server.runtime.session.session_history import (
     HistorySnapshotChanged,

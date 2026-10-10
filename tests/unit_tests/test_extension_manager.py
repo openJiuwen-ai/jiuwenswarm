@@ -5,8 +5,8 @@ from typing import get_type_hints
 
 import pytest
 
+import gateway_protocol.sdk as extension_sdk
 import jiuwenswarm.extensions as extensions
-import jiuwenswarm.extensions.sdk as extension_sdk
 from jiuwenswarm.extensions.manager import (
     ExtensionManager,
     _extension_dir_paths_from_config,

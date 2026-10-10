@@ -7,7 +7,7 @@
 第一个动作，但仍保留只读约束说明。
 """
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.server.agent_ws_server import _inject_plan_mode_activation_reminder
 
 

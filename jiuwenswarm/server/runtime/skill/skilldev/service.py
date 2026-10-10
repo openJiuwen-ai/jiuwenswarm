@@ -26,7 +26,7 @@ import logging
 from pathlib import Path
 from typing import AsyncIterator
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
+from gateway_protocol.e2a.agent_models import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.skill.skilldev.deps import SkillDevDeps
 from jiuwenswarm.server.runtime.skill.skilldev.pipeline import SkillDevPipeline

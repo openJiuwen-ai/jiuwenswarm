@@ -24,13 +24,13 @@ from openjiuwen.core.single_agent.rail.base import (
     AgentRail,
     ToolCallInputs,
 )
+from gateway_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
 from jiuwenswarm.agents.harness.common import electron_sideview
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as deep_interface_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.playwright_mcp_runtime import PlaywrightMcpLaunch
 
 

@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from gateway_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.gateway.cron.models import CronJob, CronRunState
 from jiuwenswarm.gateway.cron.scheduler import (
