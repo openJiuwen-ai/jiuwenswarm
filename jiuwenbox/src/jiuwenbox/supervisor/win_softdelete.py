@@ -22,6 +22,7 @@ ENV_ARCHIVE = "JIUWENBOX_SOFT_DELETE_ARCHIVE"
 ENV_DLL = "JIUWENBOX_SOFT_DELETE_DLL"
 ENV_RECYCLE_PORT = "JIUWENBOX_SOFT_DELETE_RECYCLE_PORT"
 ENV_RECYCLE_TOKEN = "JIUWENBOX_SOFT_DELETE_RECYCLE_TOKEN"
+_DLL_NAME = "jiuwen_softdelete.dll"
 
 _LOADER_PATH_OFF = 0x100
 _LOADER_RESULT_OFF = 0x80
@@ -37,27 +38,37 @@ def enabled_from_environ() -> bool:
     return os.environ.get(ENV_ENABLED) == "1"
 
 
+def _frozen_dll_candidates(meipass: str) -> list[Path]:
+    """冻结包里的查找顺序. 新包在 jiuwenbox_native, 旧包在改名后的目录."""
+    root = Path(meipass)
+    return [
+        root / "jiuwenbox_native" / "native" / _DLL_NAME,
+        root / "jiuwenbox_legacy_overlay" / "native" / _DLL_NAME,
+    ]
+
+
 def dll_path() -> Path:
     """返回软删除 DLL 路径。
 
-    环境变量优先。正常布局下 DLL 位于本包的 ``native`` 目录；冻结的
-    JiuwenSwarm 启动时会将磁盘 ``jiuwenbox`` 目录挪到
-    ``jiuwenbox_legacy_overlay``，以免它遮蔽 PYZ 内的同名 Python 包。
-    因此该布局下原生 DLL 也随目录移动，需要在 legacy overlay 中查找。
+    环境变量优先。开发布局用本包 ``native`` 目录。
+    冻结包不能把 DLL 留在 ``jiuwenbox`` 目录里, 那个目录会盖住 PYZ 里的同名包,
+    打包脚本把它放到 ``jiuwenbox_native/native``。
+    ``jiuwenbox_legacy_overlay`` 只留给已经把整个目录改名的旧安装包。
     """
     raw = (os.environ.get(ENV_DLL) or "").strip()
     if raw:
         return Path(raw)
-    package_dir = Path(__file__).resolve().parents[1]
-    native_dll = package_dir / "native" / "jiuwen_softdelete.dll"
-    if native_dll.is_file():
-        return native_dll
-    return (
-        package_dir.parent
-        / f"{package_dir.name}_legacy_overlay"
-        / "native"
-        / "jiuwen_softdelete.dll"
-    )
+    packaged = Path(__file__).resolve().parents[1] / "native" / _DLL_NAME
+    if packaged.is_file():
+        return packaged
+    meipass = getattr(sys, "_MEIPASS", None)
+    frozen = _frozen_dll_candidates(meipass) if meipass else []
+    for candidate in frozen:
+        if candidate.is_file():
+            return candidate
+    if frozen:
+        return frozen[0]
+    return packaged
 
 
 def merge_soft_delete_env(env: dict[str, str]) -> None:
