@@ -63,11 +63,14 @@ def apply_task_tool_debug_patch() -> None:
         from jiuwenswarm.server.runtime.debug_trace.context import (
             get_debug_trace_logger_for_session,
         )
+        from jiuwenswarm.server.runtime.usage_cost import get_subagent_usage_sink
 
         debug_logger = get_debug_trace_logger()
         if debug_logger is None:
             debug_logger = get_debug_trace_logger_for_session(parent_session_id)
-        if debug_logger is None or not debug_logger.captures_subagent_flow():
+        if (
+            debug_logger is None or not debug_logger.captures_subagent_flow()
+        ) and get_subagent_usage_sink() is None:
             return await original_dispatch(
                 self,
                 subagent,
