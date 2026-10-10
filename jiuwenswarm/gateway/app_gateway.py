@@ -2893,6 +2893,7 @@ async def _run(
                         allowed_channel_ids=slack_conf.get("allowed_channel_ids") or [],
                         default_channel_id=str(slack_conf.get("default_channel_id") or "").strip(),
                         reply_in_thread=reply_in_thread,
+                        session=str(slack_conf.get("session") or "thread"),
                     )
                     slack_channel = SlackChannel(slack_config, _DummyBus())
                     channel_manager.register_channel(slack_channel)

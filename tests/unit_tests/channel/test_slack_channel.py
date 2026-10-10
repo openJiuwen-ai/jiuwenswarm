@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import time
+from dataclasses import fields
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -115,6 +118,65 @@ async def test_direct_message_is_not_restricted_by_channel_allowlist() -> None:
     assert len(received) == 1
     assert received[0].session_id == "slack_T1_D1_U1"
     assert received[0].metadata["slack_thread_ts"] == ""
+
+
+async def _session_ids(session: str | None) -> list[str]:
+    """Session ids for two top-level channel messages and one direct message."""
+    options: dict[str, Any] = {
+        "enabled": True,
+        "allow_from": ["U1"],
+        "allowed_channel_ids": ["C1"],
+    }
+    if session is not None:
+        options["session"] = session
+    channel = SlackChannel(SlackChannelConfig(**options), RobotMessageRouter())
+    channel._running = True
+    received: list[Message] = []
+    channel.on_message(received.append)
+
+    for ts, event_id in (("1710000000.000100", "Ev1"), ("1710000500.000900", "Ev2")):
+        await channel._handle_app_mention(
+            {
+                "type": "app_mention",
+                "user": "U1",
+                "channel": "C1",
+                "channel_type": "channel",
+                "text": "<@B1> hello",
+                "ts": ts,
+            },
+            {"event_id": event_id, "team_id": "T1"},
+        )
+    await channel._handle_message_event(
+        {
+            "type": "message",
+            "channel_type": "im",
+            "channel": "D1",
+            "user": "U1",
+            "text": "hello",
+            "ts": "1710000900.001300",
+        },
+        {"event_id": "Ev3", "team_id": "T1"},
+    )
+    return [message.session_id for message in received]
+
+
+@pytest.mark.parametrize("session", [None, "thread", "sideways"])
+@pytest.mark.asyncio
+async def test_thread_sessions_are_the_default_and_the_fallback(session: str | None) -> None:
+    assert await _session_ids(session) == [
+        "slack_T1_C1_1710000000.000100",
+        "slack_T1_C1_1710000500.000900",
+        "slack_T1_D1_U1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_channel_session_merges_top_level_messages_and_keeps_dms_apart() -> None:
+    assert await _session_ids("channel") == [
+        "slack_T1_C1",
+        "slack_T1_C1",
+        "slack_T1_D1_U1",
+    ]
 
 
 @pytest.mark.asyncio
@@ -229,6 +291,35 @@ async def test_send_falls_back_to_metadata_session_and_default_channel() -> None
     assert "thread_ts" not in client.calls[2]
 
 
+@pytest.mark.parametrize(
+    ("session_id", "channel_id", "thread_ts"),
+    [
+        ("slack_T1_C1", "C1", ""),
+        ("slack_T1_C1_1710000000.000100", "C1", "1710000000.000100"),
+        ("slack_T1_D1_U1", "D1", ""),
+        ("slack_T1_C1_plain", "C1", ""),
+        ("slack_T1", "C-DEFAULT", ""),
+    ],
+)
+@pytest.mark.asyncio
+async def test_send_reads_a_channel_wide_session_id_back(
+    session_id: str, channel_id: str, thread_ts: str
+) -> None:
+    """A channel-wide id names three fields; an id with a fourth keeps its target."""
+    channel = SlackChannel(
+        SlackChannelConfig(enabled=True, default_channel_id="C-DEFAULT"),
+        RobotMessageRouter(),
+    )
+    client = _FakeSlackClient()
+    channel._client = client
+
+    await channel.send(_message(metadata={}, session_id=session_id))
+
+    assert len(client.calls) == 1
+    assert client.calls[0]["channel"] == channel_id
+    assert client.calls[0].get("thread_ts", "") == thread_ts
+
+
 @pytest.mark.asyncio
 async def test_start_and_stop_socket_mode_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
@@ -301,3 +392,20 @@ def test_make_delivery_target_builds_slack_thread_target() -> None:
     assert target.thread_ts == "1710000006.000700"
     assert target.physical_user_id == "U1"
     assert target.get_container_id() == "C1:1710000006.000700"
+
+
+def test_gateway_passes_every_slack_config_field() -> None:
+    """A field the gateway call omits keeps its default, whatever the operator wrote."""
+    gateway = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "gateway" / "app_gateway.py"
+    calls = [
+        node
+        for node in ast.walk(ast.parse(gateway.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "SlackChannelConfig"
+    ]
+
+    assert len(calls) == 1
+    assert {keyword.arg for keyword in calls[0].keywords} == {
+        field.name for field in fields(SlackChannelConfig)
+    }

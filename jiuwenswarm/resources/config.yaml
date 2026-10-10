@@ -1063,6 +1063,9 @@ channels:
     # Optional fallback channel for messages without request metadata.
     default_channel_id:
     reply_in_thread: true
+    # Session boundary for channel messages: "thread" or "channel".
+    # A direct message always keeps one session per user.
+    session: thread
     enabled: false
   whatsapp:
     # WhatsApp 配置（通过本地 Baileys bridge）
