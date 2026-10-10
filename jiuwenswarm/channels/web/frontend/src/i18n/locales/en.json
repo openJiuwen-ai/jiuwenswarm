@@ -472,6 +472,8 @@
     "stop": "Stop",
     "modelSelector": {
       "tooltip": "Switch the model used for chat",
+      "tooltipSessionLocked": "This session has a fixed model. Start a new session to switch.",
+      "tooltipLockedEnterprise": "Enterprise models are centrally configured and cannot be changed.",
       "configured": "Configured Models",
       "addModel": "Add Custom Model",
       "placeholder": "Select Model",
