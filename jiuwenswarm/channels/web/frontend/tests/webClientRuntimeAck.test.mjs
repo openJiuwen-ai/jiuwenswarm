@@ -181,3 +181,36 @@ test('timeout and disconnect reject runtime-ack requests after gateway acceptanc
   await assert.rejects(disconnected, (error) => error.code === 'WS_CLOSED');
   await closed;
 });
+
+test('reconnect resumes the original event cursor without resubmitting input', async () => {
+  await webClient.connect();
+  let deltas = 0;
+  let processing;
+  const offDelta = webClient.on('chat.delta', () => { deltas += 1; });
+  const offStatus = webClient.on('chat.processing_status', (event) => { processing = event.payload.is_processing; });
+  const payload = { session_id: 'resume-session', content: 'original-output',
+    runtime_event: { worker_instance: 'worker-original', sequence: 17, dispatch_id: 'original-dispatch' } };
+  try {
+    runtimeEvent('chat.delta', 'original-request', payload);
+    runtimeEvent('chat.delta', 'original-request', payload);
+    assert.equal(deltas, 1);
+    await webClient.disconnect();
+    await webClient.connect();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const query = FakeWebSocket.instance.lastRequest;
+    assert.equal(query.method, 'session.get_metadata');
+    assert.deepEqual(query.params, { session_id: 'resume-session',
+      runtime_resume: { worker_instance: 'worker-original', after: 17 } });
+    FakeWebSocket.instance.receive({ type: 'res', id: query.id, ok: true,
+      payload: { runtime: { is_processing: false, history_required: false } } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    runtimeEvent('chat.delta', 'original-request', payload);
+    runtimeEvent('chat.delta', 'original-request', { ...payload,
+      runtime_event: { ...payload.runtime_event, sequence: 18, replayed: true } });
+    assert.equal(deltas, 2);
+    assert.equal(processing, false);
+  } finally {
+    offDelta(); offStatus();
+    await webClient.disconnect();
+  }
+});
