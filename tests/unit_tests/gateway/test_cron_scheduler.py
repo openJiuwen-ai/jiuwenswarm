@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -395,9 +397,10 @@ class TestWithWorkspaceDir:
     def test_appends_constraint_after_task_text(self, tmp_path):
         workspace = tmp_path / "定时任务-ws"
         result = with_workspace_dir("生成图片", str(workspace))
-        payload = json.dumps({"path": str(workspace)}, ensure_ascii=False, separators=(",", ":"))
         assert result.startswith("生成图片\n\n<claw_workspace>")
-        assert payload in result
+        assert f'"path":{json.dumps(str(workspace), ensure_ascii=False)}' in result
+        # payload 携带本次触发的动态时间戳（本地时间，YYYY-MM-DD HH:MM:SS）
+        assert re.search(r'"timestamp":"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"', result)
         assert f"【工作空间】当前项目目录是 `{workspace}`" in result
         assert result.count("<claw_workspace>") == 1
 
@@ -410,6 +413,22 @@ class TestWithWorkspaceDir:
     def test_skips_empty_path(self):
         assert with_workspace_dir("task", "") == "task"
         assert with_workspace_dir("task", None) == "task"
+
+    def test_timestamp_honors_tz(self, monkeypatch):
+        """tz 参数传入时打点使用该时区（与 cron_meta["current_time"] 同源口径）。"""
+        calls: list = []
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                calls.append(tz)
+                return datetime(2026, 10, 10, 12, 0, 0, tzinfo=tz)
+
+        monkeypatch.setattr(cron_scheduler_module, "datetime", _FixedDatetime)
+        tz = timezone(timedelta(hours=8))
+        result = with_workspace_dir("生成图片", "D:/ws/proj", tz=tz)
+        assert '"timestamp":"2026-10-10 12:00:00"' in result
+        assert calls[-1] is tz
 
 
 class TestCronExecutionCwd:

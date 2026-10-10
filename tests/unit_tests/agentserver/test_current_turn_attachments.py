@@ -442,6 +442,21 @@ def test_image_tool_question_excludes_combined_protocol_suffixes(newline, suffix
     assert extract_image_tool_question(query) == "这是什么" + newline + "请描述颜色。"
 
 
+@pytest.mark.parametrize("suffixes", ["time", "time_cron"])
+def test_image_tool_question_excludes_time_directive_suffix(suffixes):
+    """未选工作空间时的 <claw_time> 尾段（含与 cron 组合）不进识图提问。"""
+    from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import extract_image_tool_question
+
+    time_suffix = (
+        '\n\n<claw_time>{"timestamp":"2026-10-10 17:20:00"}</claw_time>\n'
+        "【当前时间】现在是 2026-10-10 17:20:00，回答依赖当前时间的问题时以此为准。"
+    )
+    cron = "\n\n<claw_cron_create></claw_cron_create>\n【定时任务】创建任务时使用当前对话。"
+    suffix = {"time": time_suffix, "time_cron": time_suffix + cron}[suffixes]
+
+    assert extract_image_tool_question("这是什么" + suffix) == "这是什么"
+
+
 @pytest.mark.parametrize("query", [
     "解释【工作空间】当前项目目录是这句话。",
     "这是什么\n\n<claw_workspace>not-json</claw_workspace>\n【工作空间】示例",

@@ -37,6 +37,7 @@ _INJECTED_PROTOCOL_SUFFIX = re.compile(
     r"\r?\n\r?\n(?:"
     r"<claw_workspace>(?P<workspace>[^\r\n]*)</claw_workspace>\r?\n【工作空间】"
     r"|<claw_cron_create></claw_cron_create>\r?\n【定时任务】"
+    r"|<claw_time>[^\r\n]*</claw_time>\r?\n【当前时间】"
     r")[^\r\n]*\s*\Z"
 )
 

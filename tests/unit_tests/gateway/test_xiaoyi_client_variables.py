@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 
 import pytest
@@ -27,6 +28,7 @@ from jiuwenswarm.common.permission_profile import (
     permission_profile_config_patch,
     resolve_client_workspace,
     resolve_trusted_dirs,
+    with_time_directive,
     with_workspace_directive,
 )
 from jiuwenswarm.common.schema.message import EventType
@@ -202,11 +204,23 @@ def test_with_workspace_directive(workspace):
     assert text.startswith("你好\n\n")
     assert "<claw_workspace>" in text and "【工作空间】当前项目目录是" in text
     assert "必须落在该目录" in text
+    # payload 携带本条消息的动态时间戳（本地时间，YYYY-MM-DD HH:MM:SS）
+    assert re.search(r'"timestamp": "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"', text)
     # full_access：也注入（位置提示，不含约束措辞）——否则该档下模型对工作空间零感知
     full = with_workspace_directive("你好", str(workspace), "full_access")
     assert full.startswith("你好\n\n") and "<claw_workspace>" in full
     assert "必须落在该目录" not in full
+    assert re.search(r'"timestamp": "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"', full)
     assert with_workspace_directive("你好", "", "default") == "你好"
+
+
+def test_with_time_directive():
+    """未选工作空间时仅注入时间尾段（与工作空间尾段同构，可被既有剥离链处理）。"""
+    text = with_time_directive("你好")
+    assert text.startswith("你好\n\n")
+    assert "<claw_time>" in text and "【当前时间】现在是" in text
+    # payload 携带本条消息的动态时间戳（本地时间，YYYY-MM-DD HH:MM:SS）
+    assert re.search(r'"timestamp": "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"', text)
 
 
 def test_update_permission_profile_in_config(cfg_file):
@@ -327,10 +341,13 @@ async def test_message_stream_applies_workspace_and_permission(cfg_file, workspa
         assert data["permissions"]["enabled"] is True
         assert data["permissions"]["permission_mode"] == "strict"
 
-        # 不携带 clientVariables：行为不变
+        # 不携带 clientVariables：无工作空间 → 仅注入时间尾段（时间感知不丢）
         await ch._handle_message_stream(_build_stream_msg("普通消息", None, task="task-3"))
         m = captured[-1]
-        assert "project_dir" not in m.params and m.params["query"] == "普通消息"
+        assert "project_dir" not in m.params
+        assert m.params["query"].startswith("普通消息\n\n")
+        assert "<claw_time>" in m.params["query"] and "【当前时间】现在是" in m.params["query"]
+        assert re.search(r'"timestamp": "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"', m.params["query"])
 
         # 空消息（仅 variables）：不触发路由
         n = len(captured)
