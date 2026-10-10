@@ -16,6 +16,7 @@ from jiuwenswarm.gateway.cron.models import (
     normalize_cron_job_mode,
     normalize_cron_job_timeout_seconds,
     resolve_cron_job_timeout_seconds,
+    validate_cron_model,
 )
 
 
@@ -56,6 +57,75 @@ def test_is_team_cron_mode_false(mode: str | None) -> None:
 def test_coerce_cron_job_mode_passthrough_unknown() -> None:
     assert coerce_cron_job_mode("future.mode") == "future.mode"
     assert coerce_cron_job_mode("Future.Mode") == "future.mode"
+
+
+def _patch_model_registry(
+    monkeypatch: pytest.MonkeyPatch,
+    entry: dict | None,
+    names: list[str],
+) -> None:
+    """让 validate_cron_model 的延迟导入拿到假模型注册表。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_model_config",
+        lambda name, index=None: entry,
+    )
+    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: names)
+
+
+def test_validate_cron_model_resolves_env_placeholder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归：models.defaults 模板的 ${MODEL_NAME} 占位符必须解析成真值。
+
+    config.yaml 的 model_client_config.model_name 存的是占位符（真值在 .env），
+    get_model_config 按契约返回未解析的原始配置——旧实现直接把它回存，
+    cron.job.create 应答里 model_name 字段返回字面 "${MODEL_NAME}"，
+    执行侧 chat.send 也会把占位符当显式模型名写进会话元数据。
+    """
+    monkeypatch.setenv("MODEL_NAME", "LLM_DeepSeekV4_Think")
+    _patch_model_registry(
+        monkeypatch,
+        entry={"model_client_config": {"model_name": "${MODEL_NAME}"}},
+        names=["LLM_DeepSeekV4_Think"],
+    )
+
+    assert validate_cron_model("LLM_DeepSeekV4_Think") == "LLM_DeepSeekV4_Think"
+
+
+def test_validate_cron_model_plain_name_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    """非占位符的 canonical 原样返回（不被 resolve 改写）。"""
+    _patch_model_registry(
+        monkeypatch,
+        entry={"model_client_config": {"model_name": "RealModel-7B"}},
+        names=["RealModel-7B"],
+    )
+
+    assert validate_cron_model("real-alias") == "RealModel-7B"
+
+
+def test_validate_cron_model_env_missing_falls_back_to_raw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """占位符但 env 缺失：保守回退原始值，不产生空串。"""
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+    _patch_model_registry(
+        monkeypatch,
+        entry={"model_client_config": {"model_name": "${MODEL_NAME}"}},
+        names=["${MODEL_NAME}"],
+    )
+
+    assert validate_cron_model("${MODEL_NAME}") == "${MODEL_NAME}"
+
+
+def test_validate_cron_model_unknown_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """未知模型名照旧抛 ValueError（可用模型提示里用解析后的名字）。"""
+    monkeypatch.setenv("MODEL_NAME", "LLM_DeepSeekV4_Think")
+    _patch_model_registry(
+        monkeypatch,
+        entry=None,
+        names=["LLM_DeepSeekV4_Think"],
+    )
+
+    with pytest.raises(ValueError, match="Unknown model"):
+        validate_cron_model("no-such-model")
 
 
 def test_coerce_cron_job_mode_known_values() -> None:
