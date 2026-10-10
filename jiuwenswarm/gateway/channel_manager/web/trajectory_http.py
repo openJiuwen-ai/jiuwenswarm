@@ -34,7 +34,7 @@ from jiuwenswarm.observability.config import (
     load_trajectory_store_settings,
 )
 from jiuwenswarm.observability.store import AsyncTrajectoryReader, TrajectoryCursorError
-from jiuwenswarm.server.runtime.session.session_history import is_valid_session_id
+from jiuwenswarm.common.utils import is_valid_session_id
 
 if TYPE_CHECKING:
     from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel

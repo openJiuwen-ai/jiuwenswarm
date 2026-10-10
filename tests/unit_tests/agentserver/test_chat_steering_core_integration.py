@@ -136,7 +136,6 @@ def _isolate_configuration(monkeypatch, adapter, model):
     monkeypatch.setattr(adapter, "_apply_model_to_react_agent", lambda *_: None)
     monkeypatch.setattr(adapter, "_handle_slash_command", AsyncMock(return_value=None))
     monkeypatch.setattr(adapter, "_update_runtime_config", AsyncMock())
-    monkeypatch.setattr(adapter, "_sync_prompt_attachments_for_request", AsyncMock())
     monkeypatch.setattr(
         adapter, "_try_skill_turbo_resume", AsyncMock(return_value=None)
     )

@@ -395,7 +395,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
 from jiuwenswarm.server.runtime.session.session_history import append_history_record, load_history_records
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
-from jiuwenswarm.server.runtime.prompt_attachment_loader import PromptAttachmentLoader
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     EVOLUTION_ACCEPT_LABELS,
     AUTO_REBUILD_SOURCE_MANUAL,
@@ -704,7 +703,6 @@ from jiuwenswarm.common.utils import (
     get_checkpoint_dir,
     get_default_project_session_workspace_dir,
     get_env_file,
-    get_prompt_attachment_dir,
     get_runtime_state_path,
     get_user_workspace_dir,
     resolve_tenant_sessions_dir,
@@ -2613,7 +2611,6 @@ class JiuWenSwarmDeepAdapter:
         self._context_processor_rail: ContextProcessorRail | None = None
         self._runtime_prompt_rail: RuntimePromptRail | None = None
         self._response_prompt_rail: ResponsePromptRail | None = None
-        self._prompt_attachment_loader: PromptAttachmentLoader | None = None
         self._personal_context_rail: PersonalContextRail | None = None
         self._personal_context_rail_lock = asyncio.Lock()
         # im_search tools ride the PersonalContext switch: mounted only while
@@ -11304,9 +11301,6 @@ class JiuWenSwarmDeepAdapter:
                         for name in (sync_result.prebuilt_skill_dirs or [])
                         if str(name).strip()
                     }
-                self._prompt_attachment_loader = PromptAttachmentLoader(self._prompt_attachment_root())
-                self._prompt_attachment_loader.ensure_layout()
-
                 self._log_active_model_on_startup(phase=f"create_instance:{mode}")
                 try:
                     model = self._create_model(config_base)
@@ -11574,31 +11568,6 @@ class JiuWenSwarmDeepAdapter:
             if all(seg in ("*", "**") for seg in segments[1:]):
                 return True
         return False
-
-    async def _sync_prompt_attachments_for_request(self, session_id: str) -> None:
-        """Hot-load prompt attachment files for the current request.
-
-        Prompt attachment loading must not block the user request path. Failures are
-        logged and the original Runner flow continues without attachment injection.
-        """
-
-        if self._instance is None:
-            return
-        if self._prompt_attachment_loader is None:
-            self._prompt_attachment_loader = PromptAttachmentLoader(self._prompt_attachment_root())
-            self._prompt_attachment_loader.ensure_layout()
-        try:
-            await self._prompt_attachment_loader.sync_to_agent(
-                self._instance,
-                session_id=session_id,
-            )
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] prompt attachment sync skipped: %s", exc)
-
-    def _prompt_attachment_root(self) -> Path:
-        if self._workspace_dir == str(get_agent_workspace_dir()):
-            return get_prompt_attachment_dir()
-        return Path(self._workspace_dir) / "prompt_attachment"
 
     async def load_user_rails(self) -> None:
         """动态加载用户自定义的 Rail 扩展."""
@@ -19132,7 +19101,6 @@ class JiuWenSwarmDeepAdapter:
                 inputs,
                 enable_read_image_multimodal=enable_read_image_multimodal,
             )
-            await self._sync_prompt_attachments_for_request(session_id)
             from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
                 set_current_multimodal_image_files,
             )
@@ -20304,7 +20272,6 @@ class JiuWenSwarmDeepAdapter:
                     payload=image_tool_fallback_notice,
                     is_complete=False,
                 )
-            await self._sync_prompt_attachments_for_request(session_id)
             from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
                 set_current_multimodal_image_files,
             )

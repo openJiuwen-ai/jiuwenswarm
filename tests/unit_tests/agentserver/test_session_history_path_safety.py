@@ -63,8 +63,8 @@ def test_create_does_not_mkdir_before_rejecting_traversal(patched_sessions_root,
     """
     # 让白名单失效（模拟被绕过），强制走第二道 relative_to 防线
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.prompt_attachment_loader.sanitize_session_id",
-        lambda s: s,
+        "jiuwenswarm.server.runtime.session.session_metadata.is_valid_session_id",
+        lambda _s: True,
     )
 
     # sessions_root 之外的目标，调用前必须不存在
@@ -138,9 +138,7 @@ def test_whitespace_only_id_rejected(patched_sessions_root):
 
 
 # ---------------------------------------------------------------------------
-# 纵深防御：白名单被绕过（sanitize 假装放行）时，resolve() 越界校验仍拦截。
-# resolve_session_dir 内部用 `from ... import sanitize_session_id`（函数级 import），
-# 每次调用都重新解析到 prompt_attachment_loader 模块的当前属性，故 patch 模块属性即可生效。
+# 纵深防御：白名单被绕过时，resolve() 越界校验仍拦截。
 # ---------------------------------------------------------------------------
 
 def test_second_line_defense_blocks_outside_root(patched_sessions_root, monkeypatch, tmp_path):
@@ -149,16 +147,13 @@ def test_second_line_defense_blocks_outside_root(patched_sessions_root, monkeypa
     outside = tmp_path / "outside_target"
     outside.mkdir()
 
-    # 让白名单失效：sanitize 原样返回，模拟"白名单被绕过"的假设场景
+    # 让白名单失效，模拟"白名单被绕过"的假设场景
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.prompt_attachment_loader.sanitize_session_id",
-        lambda s: s,
+        "jiuwenswarm.server.runtime.session.session_metadata.is_valid_session_id",
+        lambda _s: True,
     )
 
     # 确认白名单确实被绕过（否则后续断言无意义）
-    from jiuwenswarm.server.runtime.prompt_attachment_loader import sanitize_session_id
-    assert sanitize_session_id("../outside_target") == "../outside_target"
-
     # 即便白名单放过，../outside_target 解析后落在 sessions_root 之外，必须被拒
     p, err = resolve_session_dir("../outside_target")
     assert p is None, f"second line of defense failed: {p}"
@@ -194,6 +189,24 @@ def test_dot_and_dotdot_rejected(patched_sessions_root, session_id):
     p, err = resolve_session_dir(session_id)
     assert p is None, f"LEAK: {session_id!r} resolved to {p}"
     assert err is not None
+
+
+@pytest.mark.parametrize(
+    "session_id",
+    [
+        ".hidden",
+        "_hidden",
+        "-hidden",
+        "hidden.",
+        "hidden_",
+        "hidden-",
+    ],
+)
+def test_reserved_edge_character_rejected(patched_sessions_root, session_id):
+    """Keep the legacy rule that ``._-`` may occur only inside a session id."""
+    p, err = resolve_session_dir(session_id)
+    assert p is None
+    assert err == "invalid session_id"
 
 
 def test_default_fallback_value_is_accepted(patched_sessions_root):
@@ -234,10 +247,10 @@ def test_max_length_id_accepted(patched_sessions_root):
 def test_symlink_escape_blocked(patched_sessions_root, tmp_path, monkeypatch):
     """sessions_root 内建 symlink 指向外部目录，resolve 后必须被拒。"""
     # symlink 的链接名合法（字母数字），白名单会放行；重点测第二道防线。
-    # 用 monkeypatch 让 sanitize 放行（模拟白名单被绕过），强制走 resolve 越界检查
+    # 用 monkeypatch 让白名单放行，强制走 resolve 越界检查
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.prompt_attachment_loader.sanitize_session_id",
-        lambda s: s,
+        "jiuwenswarm.server.runtime.session.session_metadata.is_valid_session_id",
+        lambda _s: True,
     )
 
     # 在 sessions_root 之外造一个真实目录（攻击目标）

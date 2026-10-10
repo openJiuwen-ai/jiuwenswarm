@@ -71,7 +71,7 @@ def _session_id_prefix_for_channel(channel_id: str | None) -> str:
     """Path-safe session id prefix; may differ from logical ``channel_id``.
 
     Cron scheduler uses channel ``__cron__`` for routing, but ids like
-    ``__cron___{ts}_{uuid}`` fail ``sanitize_session_id`` and cannot be
+    ``__cron___{ts}_{uuid}`` fail the session-id whitelist and cannot be
     used as sessions directory names.
     """
     channel_key = _normalize_channel_id(channel_id)
