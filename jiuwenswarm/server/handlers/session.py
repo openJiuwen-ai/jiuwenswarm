@@ -81,13 +81,22 @@ async def _resolve_rewind_agent(
         user turn will read — updating them leaves the model still seeing
         rewound turns.
         """
-    agent = ctx.services.agent_manager.get_agent_nowait(
-        channel_id=channel_id or "default"
+    sid = str(session_id or "").strip()
+    agent = (
+        ctx.services.agent_manager.get_agent_for_session_nowait(
+            channel_id=channel_id or "default",
+            session_id=sid,
+        )
+        if sid
+        else None
     )
+    if agent is None:
+        agent = ctx.services.agent_manager.get_agent_nowait(
+            channel_id=channel_id or "default"
+        )
     if agent is None:
         return None
     deep_agent = None
-    sid = str(session_id or "").strip()
     if sid:
         adapter = ctx.services.resolve_adapter(agent)
         if adapter is not None:
