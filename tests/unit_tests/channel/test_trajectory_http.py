@@ -820,7 +820,7 @@ async def test_archive_get_download_preserves_execution_subject_and_access(
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
-        base_url="http://test",
+        base_url="http://localhost",
     ) as client:
         response = await client.get(
             f"{TRAJECTORY_API_PREFIX}/sessions/session-1/archive"
@@ -830,7 +830,7 @@ async def test_archive_get_download_preserves_execution_subject_and_access(
         )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=team_app),
-        base_url="http://test",
+        base_url="http://localhost",
     ) as client:
         forbidden = await client.get(
             f"{TRAJECTORY_API_PREFIX}/sessions/session-1/archive"
@@ -1318,7 +1318,7 @@ async def test_route_query_validation_keeps_no_store_header(tmp_path: Path) -> N
         metadata_loader=_metadata_loader(),
     )
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         list_response = await client.get(
             f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects?after_revision=invalid",
         )
@@ -1371,7 +1371,7 @@ async def test_framework_trajectory_errors_are_json_and_non_cacheable(
         return {"required": required}
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         not_found = await client.get(f"{TRAJECTORY_API_PREFIX}/missing")
         method_not_allowed = await client.post(
             f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects"
