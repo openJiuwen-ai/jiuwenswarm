@@ -65,7 +65,9 @@ def test_delete_removes_symlink_without_following_target(tmp_path: Path) -> None
     rel = f"{_DELETABLE_PREFIX}/demo/escape-link"
     result = svc.delete_entries([rel])
 
-    assert result["results"] == [{"relative_path": rel, "ok": True, "error": None}]
+    assert result["results"] == [
+        {"relative_path": rel, "ok": True, "error": None, "freed_bytes": 0}
+    ]
     assert not link.exists()
     assert not link.is_symlink()
     assert victim.read_text(encoding="utf-8") == "safe"
@@ -93,7 +95,9 @@ def test_delete_directory_does_not_follow_nested_symlink(tmp_path: Path) -> None
     rel = f"{_DELETABLE_PREFIX}/demo/nested"
     result = svc.delete_entries([rel])
 
-    assert result["results"] == [{"relative_path": rel, "ok": True, "error": None}]
+    assert result["results"] == [
+        {"relative_path": rel, "ok": True, "error": None, "freed_bytes": 5}
+    ]
     assert not nested.exists()
     assert victim.read_text(encoding="utf-8") == "keep"
 

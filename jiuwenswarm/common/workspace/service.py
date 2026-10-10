@@ -161,7 +161,12 @@ class WorkspaceService:
                 # Only remove the link node. Never follow to delete the target
                 # (zone bypass / cross-tenant wipe via symlink).
                 lexical.unlink()
-                return {"relative_path": rel, "ok": True, "error": None}
+                return {
+                    "relative_path": rel,
+                    "ok": True,
+                    "error": None,
+                    "freed_bytes": 0,
+                }
 
             # Real file/dir: resolve and re-check tenant + deletable zone on the
             # final path (defense in depth against odd mount/junction cases).
@@ -176,9 +181,13 @@ class WorkspaceService:
                 return {"relative_path": rel, "ok": False, "error": "forbidden_zone"}
 
             if resolved.is_dir():
-                self._assert_dir_delete_budget(resolved)
+                freed = self._assert_dir_delete_budget(resolved)
                 self._rmtree_nofollow(resolved)
             else:
+                try:
+                    freed = max(0, int(resolved.stat().st_size))
+                except OSError:
+                    freed = 0
                 resolved.unlink()
         except WorkspaceError as exc:
             return {"relative_path": rel, "ok": False, "error": exc.message}
@@ -187,12 +196,19 @@ class WorkspaceService:
         except OSError as exc:
             logger.warning("[workspace] delete failed path=%s err=%s", rel, exc)
             return {"relative_path": rel, "ok": False, "error": "io_error"}
-        return {"relative_path": rel, "ok": True, "error": None}
+        return {
+            "relative_path": rel,
+            "ok": True,
+            "error": None,
+            "freed_bytes": int(freed),
+        }
 
-    def _assert_dir_delete_budget(self, root: Path) -> None:
+    def _assert_dir_delete_budget(self, root: Path) -> int:
+        """校验删除预算，并返回目录内文件占用字节估算（不跟随符号链接）。"""
         depth_cap = max(1, int(self.max_delete_depth))
         entry_cap = max(1, int(self.max_delete_entries))
         count = 0
+        freed = 0
         # followlinks=False：预算统计不跟随符号链接，与删除实现一致。
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
             dirnames[:] = [
@@ -207,6 +223,15 @@ class WorkspaceService:
             count += len(dirnames) + len(filenames)
             if count > entry_cap:
                 raise WorkspaceError("BAD_REQUEST", "delete_too_many")
+            for name in filenames:
+                path = Path(dirpath) / name
+                if path.is_symlink():
+                    continue
+                try:
+                    freed += max(0, int(path.stat().st_size))
+                except OSError:
+                    continue
+        return freed
 
     @staticmethod
     def _rmtree_nofollow(root: Path) -> None:

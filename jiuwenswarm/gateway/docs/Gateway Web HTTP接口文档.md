@@ -1708,9 +1708,12 @@ sequenceDiagram
 > 契约对齐《用户空间与配额管理设计方案》§2.5。路径前缀 `/api/v1/workspace`，信封与 **§1** 相同（**不是** Config Receiver 的 `{ code, message, data }`）。  
 > 企业版 list / delete / usage / preview / download **转发 AgentServer 真实盘**；个人版可同机直读。  
 > 扩容申请提交走 Manager 用户面 API，**不**经本节。管理面策略下发 / 用量拉取见 [Gateway对接管理面接口文档.md](./Gateway对接管理面接口文档.md) §16。  
-> 特性开关 `WORKSPACE_QUOTA_ENABLED`（默认关闭）控制写盘门禁与前端入口；关闭时本节只读接口仍可调用，但用户面导航会隐藏。
+> 特性开关 `WORKSPACE_QUOTA_ENABLED`（默认关闭）控制写盘门禁与前端入口；关闭时本节只读接口仍可调用，但用户面导航会隐藏。  
+> **用量计量：** Agent 权威仍是计量根全量 `du`，但热路径默认读进程内缓存；仅近限写门禁、`force_refresh`、后台校准（约 5 分钟）会同步 `du`。详见设计方案 §2.4。
 
 身份来自登录会话与企业信任头（`X-User-Id` / `X-Group-Id` / `X-Bot-Id`），只能操作本人工作区。调用方不能在参数里指定他人。
+
+**会话绑定（企业 Runtime 路由）：** 推荐在 Query/Body 或 `X-Session-Id` 中携带**当前真实聊天** `session_id`（与 Skill 一致），复用对话亲和，避免缺省时每次发明临时 `webhttp_*`。无真实会话时前端用量横幅应不轮询。
 
 ### 7.1 列目录 — `workspace.tree`
 
@@ -1721,6 +1724,7 @@ sequenceDiagram
 | 字段名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | `relative_path` | string | 否 | 相对租户根的目录；空表示根。禁止 `..` 与绝对路径 |
+| `session_id` | string | 否 | 真实聊天会话 id（亦可 `X-Session-Id`）；用于企业版 Runtime 路由 |
 
 - **返回参数**（`data`）：
 
@@ -1729,7 +1733,7 @@ sequenceDiagram
 | `relative_path` | string | 本次列出的目录 |
 | `entries[]` | object[] | 直接子项：`name`、`relative_path`、`is_dir`、`size_bytes`、`mtime_ms`、`ctime_ms`、`zone`、`deletable`、`mime_hint` |
 
-成功时刷新本集群 `workspace_quota_usage` 缓存（`used_bytes` / `reported_at`）。
+**不**附带全量用量，也**不**因本接口单独触发 Agent 全量 `du`。用量请走 §7.2。
 
 ```http
 GET /api/v1/workspace/tree?relative_path=agent/jiuwenclaw_workspace/projects HTTP/1.1
@@ -1737,6 +1741,7 @@ Host: 127.0.0.1:19002
 X-User-Id: u_123
 X-Group-Id: g_sales
 X-Bot-Id: bot_writer
+X-Session-Id: web_a1b2c3d4e5f6
 ```
 
 ```json
@@ -1770,20 +1775,26 @@ X-Bot-Id: bot_writer
 
 - **请求方法**：`GET`
 - **请求路径**：`/api/v1/workspace/usage`
-- **请求参数**：无
+- **请求参数**（Query，均可选）：
+
+| 字段名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `force_refresh` / `forceRefresh` / `refresh` | bool | 否 | 为真时 Agent 同步全量 `du` 后再返回；默认只读 Agent 进程内缓存 |
+| `session_id` | string | 否 | 真实聊天会话 id（亦可 `X-Session-Id`）；用于企业版 Runtime 路由 |
+
 - **返回参数**（`data`）：
 
 | 字段名 | 类型 | 说明 |
 |--------|------|------|
 | `user_id` / `group_id` / `bot_id` | string | 当前身份三元组 |
-| `used_bytes` | int | 计量根 `du` 结果 |
+| `used_bytes` | int | 已用字节（默认 Agent 缓存；`force_refresh` 时为当次 `du`） |
 | `limit_bytes` | int | 本集群策略现算配额（`-1` 表示无限制时见 `unlimited`） |
 | `percent` | number | `used / limit * 100` |
 | `status` | string | `ok` / `warn` / `block` |
 | `source_policy_id` | string | 命中的 `workspace_quota_policy.policy_id` |
 | `unlimited` | bool | 是否无限制 |
 
-Gateway 向 Agent 取 `used_bytes` 后写入用量缓存；`limit_bytes` / `status` 等合成字段**不**落用量表。
+Gateway 向 Agent 取 `used_bytes` 后写入本集群 `workspace_quota_usage`（`used_bytes` / `reported_at`）；`limit_bytes` / `status` 等合成字段**不**落用量表。工作空间页「刷新」应带 `force_refresh=true`。
 
 ```http
 GET /api/v1/workspace/usage HTTP/1.1
@@ -1791,6 +1802,16 @@ Host: 127.0.0.1:19002
 X-User-Id: u_123
 X-Group-Id: g_sales
 X-Bot-Id: bot_writer
+X-Session-Id: web_a1b2c3d4e5f6
+```
+
+```http
+GET /api/v1/workspace/usage?force_refresh=true HTTP/1.1
+Host: 127.0.0.1:19002
+X-User-Id: u_123
+X-Group-Id: g_sales
+X-Bot-Id: bot_writer
+X-Session-Id: web_a1b2c3d4e5f6
 ```
 
 ```json
@@ -1824,14 +1845,23 @@ X-Bot-Id: bot_writer
 | 字段名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | `relative_paths` | string[] | 是 | 相对租户根；仅 `session_workspace` / `session_todo` / `artifact` 可删 |
+| `session_id` | string | 否 | 真实聊天会话 id（亦可 `X-Session-Id`）；用于企业版 Runtime 路由 |
 
-- **返回参数**（`data.results[]`）：逐项 `{ relative_path, ok, error }`，单条失败不整批回滚。成功后刷新用量缓存。
+- **返回参数**（`data`）：
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| `results[]` | object[] | 逐项 `{ relative_path, ok, error, freed_bytes? }`，单条失败不整批回滚 |
+| `used_bytes` | int | 可选；删除后刷新的用量（读缓存或按实现返回） |
+
+成功后刷新 Gateway `workspace_quota_usage` 缓存。
 
 ```json
 {
   "relative_paths": [
     "agent/jiuwenclaw_workspace/projects/web_1a0ae04ff01_bfbe238f04bb/outline_test.json"
-  ]
+  ],
+  "session_id": "web_a1b2c3d4e5f6"
 }
 ```
 
@@ -1844,7 +1874,8 @@ X-Bot-Id: bot_writer
       {
         "relative_path": "agent/jiuwenclaw_workspace/projects/web_1a0ae04ff01_bfbe238f04bb/outline_test.json",
         "ok": true,
-        "error": null
+        "error": null,
+        "freed_bytes": 1024
       }
     ]
   },
@@ -1922,9 +1953,9 @@ Content-Disposition: attachment; filename="outline_test.json"
 | `chat.interrupt`   | `POST …/actions/interrupt`   | 含 `event_type=chat.interrupt_result`    | 前端可合成 interrupt 事件；原 SSE 不保证再推           |
 | `chat.user_answer` | `POST …/actions/user_answer` | `{ accepted, session_id, request_id? }` | 续流在**原** send SSE                        |
 | `chat.resume`      | `POST /chat/resume`          | `{ accepted, session_id }`（一元，非 SSE）   | **不保证**原 SSE 续接；结果用 history（§4.6）     |
-| `workspace.tree`   | `GET /workspace/tree`        | `{ relative_path, entries[] }`          | 无；见 §7.1                                 |
-| `workspace.usage`  | `GET /workspace/usage`       | 用量快照（含 `status`）                       | 无；见 §7.2                                 |
-| `workspace.entries.delete` | `DELETE /workspace/entries` | `{ results[] }`                   | 无；见 §7.3                                 |
+| `workspace.tree`   | `GET /workspace/tree`        | `{ relative_path, entries[] }`（不附带全量用量） | 可选 `session_id`；见 §7.1              |
+| `workspace.usage`  | `GET /workspace/usage`       | 用量快照（含 `status`）                       | 可选 `force_refresh` / `session_id`；见 §7.2 |
+| `workspace.entries.delete` | `DELETE /workspace/entries` | `{ results[] }`（可含 `freed_bytes`） | 可选 `session_id`；见 §7.3              |
 | `workspace.preview` | `GET /workspace/preview`    | `{ relative_path, truncated, content }` | 无；见 §7.4                                 |
 | `workspace.download` | `GET /workspace/download`  | 成功为文件流；失败为一元 JSON                     | 无；见 §7.5                                 |
 
@@ -1955,6 +1986,8 @@ Content-Disposition: attachment; filename="outline_test.json"
 18. 工作空间企业版须带齐租户头，否则可能落到错误 `workspace_key` → 树接口 404。
 19. `workspace.download` 成功是文件流，不是 `{ ok, data }`；失败才是一元 JSON。
 20. 扩容申请不走 `/api/v1/workspace`，走 Manager 用户面。
+21. `workspace.usage` 默认读 Agent 缓存，不是每次全量 `du`；需要最新盘值时带 `force_refresh=true`。
+22. 工作空间 RPC 应绑定当前真实聊天 `session_id`（或 `X-Session-Id`），避免临时 `webhttp_*` 占 Runtime 槽；`tree` 不再刷新用量缓存。
 
 ---
 
@@ -1984,9 +2017,10 @@ Content-Disposition: attachment; filename="outline_test.json"
 - [ ] cron 无 SSE push；轮询 `last_session_id` 变化可感知新结果  
 - [ ] Header 与 body 身份不一致 → `400 IDENTITY_CONFLICT`  
 - [ ] 图片附件使用 `base64Data` / `base64_data`（不是 `data`）  
-- [ ] `GET /workspace/tree` → `data.entries[]`（含 `size_bytes` / `mtime_ms` / `deletable`）  
-- [ ] `GET /workspace/usage` → `data.status` 为 `ok`/`warn`/`block`  
-- [ ] `DELETE /workspace/entries` → `data.results[]` 逐项结果  
+- [ ] `GET /workspace/tree` → `data.entries[]`（含 `size_bytes` / `mtime_ms` / `deletable`）；响应无全量用量  
+- [ ] `GET /workspace/usage` → `data.status` 为 `ok`/`warn`/`block`；默认读缓存，`?force_refresh=true` 可同步 `du`  
+- [ ] 企业版工作空间请求带真实聊天 `session_id` / `X-Session-Id`  
+- [ ] `DELETE /workspace/entries` → `data.results[]` 逐项结果（可含 `freed_bytes`）  
 - [ ] `GET /workspace/download` 成功为附件流；失败为一元 JSON  
 
 ---

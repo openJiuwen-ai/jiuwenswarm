@@ -23,8 +23,12 @@ DEFAULT_FALLBACK_LIMIT_BYTES = 10 * 1024**4
 FALLBACK_POLICY_ID = "local_default"
 FALLBACK_LIMIT_ENV = "AGENT_WORKSPACE_QUOTA_DEFAULT_LIMIT_BYTES"
 USED_TTL_ENV = "AGENT_WORKSPACE_QUOTA_USED_TTL_SECONDS"
+RECONCILE_INTERVAL_ENV = "AGENT_WORKSPACE_QUOTA_RECONCILE_INTERVAL_SECONDS"
 FEATURE_ENABLED_ENV = "WORKSPACE_QUOTA_ENABLED"
+# 同根两次校准最小间隔（近限同步 / 手动刷新不受此限）。
 DEFAULT_USED_TTL_SECONDS = 5.0
+# 后台定时全量 du 周期，默认 5 分钟。
+DEFAULT_RECONCILE_INTERVAL_SECONDS = 300.0
 
 # 策略 ``limit_bytes == -1`` 表示无限制；``0`` 表示零配额（满额阻断）。
 UNLIMITED_LIMIT_BYTES = -1
@@ -121,9 +125,24 @@ _DB_POLICIES: list[dict[str, Any]] = []
 _DB_LOADED = False
 _DB_LOADED_AT = 0.0
 
-# resolved root path -> (monotonic timestamp, used_bytes)
-_USED_BYTES_CACHE: dict[str, tuple[float, int]] = {}
-_USED_BYTES_CACHE_LOCK = threading.Lock()
+
+@dataclass
+class UsageCacheEntry:
+    """进程内用量缓存：仅保存最近一次 du 结果（无增量）。"""
+
+    root: str
+    used_bytes: int = 0
+    reconciled_at: float = 0.0
+    has_value: bool = False
+    active: bool = False
+    user_id: str = ""
+    group_id: str = ""
+    bot_id: str = ""
+
+
+# resolved root path -> cache entry
+_USAGE_CACHE: dict[str, UsageCacheEntry] = {}
+_USAGE_CACHE_LOCK = threading.Lock()
 
 
 def db_policies_loaded() -> bool:
@@ -148,7 +167,7 @@ def set_db_policy_cache(rows: list[dict[str, Any]]) -> None:
 
 
 def used_bytes_ttl_seconds() -> float:
-    """用量 du 结果 TTL；``0`` 关闭缓存；非法值回落默认 5s。"""
+    """同一租户根两次后台校准的最小间隔；``0`` 表示不额外限频。非法值回落默认 5s。"""
     raw = os.getenv(USED_TTL_ENV, "").strip()
     if not raw:
         return DEFAULT_USED_TTL_SECONDS
@@ -173,26 +192,176 @@ def used_bytes_ttl_seconds() -> float:
     return value
 
 
+def reconcile_interval_seconds() -> float:
+    """后台校准循环休眠间隔；非法值回落默认 300s（5 分钟）。"""
+    raw = os.getenv(RECONCILE_INTERVAL_ENV, "").strip()
+    if not raw:
+        return DEFAULT_RECONCILE_INTERVAL_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "[workspace.quota] invalid %s=%r; using default %s",
+            RECONCILE_INTERVAL_ENV,
+            raw,
+            DEFAULT_RECONCILE_INTERVAL_SECONDS,
+        )
+        return DEFAULT_RECONCILE_INTERVAL_SECONDS
+    if value <= 0:
+        logger.warning(
+            "[workspace.quota] non-positive %s=%r; using default %s",
+            RECONCILE_INTERVAL_ENV,
+            raw,
+            DEFAULT_RECONCILE_INTERVAL_SECONDS,
+        )
+        return DEFAULT_RECONCILE_INTERVAL_SECONDS
+    return value
+
+
+def _root_key(root: Path | str) -> str:
+    return str(Path(root).resolve())
+
+
 def clear_used_bytes_cache() -> None:
-    with _USED_BYTES_CACHE_LOCK:
-        _USED_BYTES_CACHE.clear()
+    """清空用量缓存（测试 / 热重载）。"""
+    with _USAGE_CACHE_LOCK:
+        _USAGE_CACHE.clear()
 
 
-def _measure_used_bytes_cached(root: Path) -> int:
-    """按 tenant root 缓存 ``measure_used_bytes``，避免热路径反复全量 du。"""
-    key = str(Path(root).resolve())
-    ttl = used_bytes_ttl_seconds()
-    if ttl > 0:
-        now = time.monotonic()
-        with _USED_BYTES_CACHE_LOCK:
-            hit = _USED_BYTES_CACHE.get(key)
-            if hit is not None and (now - hit[0]) < ttl:
-                return hit[1]
-    used = max(0, int(measure_used_bytes(Path(root))))
-    if ttl > 0:
-        with _USED_BYTES_CACHE_LOCK:
-            _USED_BYTES_CACHE[key] = (time.monotonic(), used)
-    return used
+def _touch_identity(
+    entry: UsageCacheEntry,
+    *,
+    user_id: str = "",
+    group_id: str = "",
+    bot_id: str = "",
+) -> None:
+    uid = (user_id or "").strip()
+    gid = (group_id or "").strip()
+    bid = (bot_id or "").strip()
+    if uid:
+        entry.user_id = uid
+    if gid:
+        entry.group_id = gid
+    if bid:
+        entry.bot_id = bid
+    if not (entry.user_id and entry.bot_id):
+        identity = _get_quota_identity()
+        if not entry.user_id:
+            entry.user_id = (identity.get("user_id") or "").strip()
+        if not entry.group_id:
+            entry.group_id = (identity.get("group_id") or "").strip()
+        if not entry.bot_id:
+            entry.bot_id = (identity.get("bot_id") or "").strip()
+
+
+def get_cached_used(tenant_root: Path | str) -> int:
+    """热路径读缓存；无缓存返回 0（偏松，等后台 / 近限 / 手动刷新）。"""
+    key = _root_key(tenant_root)
+    with _USAGE_CACHE_LOCK:
+        entry = _USAGE_CACHE.get(key)
+        if entry is None or not entry.has_value:
+            return 0
+        return max(0, int(entry.used_bytes))
+
+
+def set_cached_used(
+    tenant_root: Path | str,
+    used_bytes: int,
+    *,
+    user_id: str = "",
+    group_id: str = "",
+    bot_id: str = "",
+) -> int:
+    """写入最近一次 du 结果。"""
+    key = _root_key(tenant_root)
+    used = max(0, int(used_bytes))
+    with _USAGE_CACHE_LOCK:
+        entry = _USAGE_CACHE.get(key)
+        if entry is None:
+            entry = UsageCacheEntry(root=key)
+            _USAGE_CACHE[key] = entry
+        entry.used_bytes = used
+        entry.has_value = True
+        entry.reconciled_at = time.monotonic()
+        entry.active = True
+        _touch_identity(entry, user_id=user_id, group_id=group_id, bot_id=bot_id)
+        return entry.used_bytes
+
+
+def mark_usage_active(
+    tenant_root: Path | str,
+    *,
+    user_id: str = "",
+    group_id: str = "",
+    bot_id: str = "",
+) -> None:
+    """登记活跃租户，供后台定时扫盘（不执行 du）。"""
+    key = _root_key(tenant_root)
+    with _USAGE_CACHE_LOCK:
+        entry = _USAGE_CACHE.get(key)
+        if entry is None:
+            entry = UsageCacheEntry(root=key, active=True)
+            _USAGE_CACHE[key] = entry
+        else:
+            entry.active = True
+        _touch_identity(entry, user_id=user_id, group_id=group_id, bot_id=bot_id)
+
+
+def measure_and_cache(
+    tenant_root: Path | str,
+    *,
+    user_id: str = "",
+    group_id: str = "",
+    bot_id: str = "",
+) -> int:
+    """同步执行 du 并写入缓存（近限门禁 / 手动刷新 / 后台校准）。"""
+    root = Path(tenant_root)
+    used = max(0, int(measure_used_bytes(root)))
+    return set_cached_used(
+        root, used, user_id=user_id, group_id=group_id, bot_id=bot_id
+    )
+
+
+def list_usage_reconcile_targets(
+    *,
+    now: float | None = None,
+    min_interval_seconds: float | None = None,
+) -> list[UsageCacheEntry]:
+    """选出需后台校准的活跃缓存快照。"""
+    ts = time.monotonic() if now is None else float(now)
+    min_interval = (
+        reconcile_interval_seconds()
+        if min_interval_seconds is None
+        else float(min_interval_seconds)
+    )
+    # 与 USED_TTL 取较大者，避免过密扫盘。
+    min_interval = max(min_interval, used_bytes_ttl_seconds())
+    out: list[UsageCacheEntry] = []
+    with _USAGE_CACHE_LOCK:
+        for entry in _USAGE_CACHE.values():
+            if not entry.active and entry.has_value:
+                continue
+            age = (
+                (ts - entry.reconciled_at)
+                if entry.reconciled_at > 0
+                else float("inf")
+            )
+            if entry.has_value and age < min_interval:
+                continue
+            out.append(
+                UsageCacheEntry(
+                    root=entry.root,
+                    used_bytes=entry.used_bytes,
+                    reconciled_at=entry.reconciled_at,
+                    has_value=entry.has_value,
+                    active=entry.active,
+                    user_id=entry.user_id,
+                    group_id=entry.group_id,
+                    bot_id=entry.bot_id,
+                )
+            )
+    out.sort(key=lambda e: (e.has_value, e.reconciled_at))
+    return out
 
 
 def _is_unlimited_limit(limit_bytes: int) -> bool:
@@ -385,20 +554,8 @@ def _pick_policy(
     return hits[0][1]
 
 
-def resolve_effective_quota(
-    *,
-    user_id: str = "",
-    group_id: str = "",
-    bot_id: str = "",
-    used_bytes: int | None = None,
-    tenant_root: Path | None = None,
-) -> QuotaSnapshot:
-    """选路 + du → 配额快照。未命中策略时回落环境变量默认限额。"""
-    identity = _get_quota_identity()
-    uid = (user_id or identity.get("user_id") or "").strip()
-    gid = (group_id or identity.get("group_id") or "").strip()
-    bid = (bot_id or identity.get("bot_id") or "").strip()
-
+def resolve_tenant_root(tenant_root: Path | None = None) -> Path:
+    """解析当前请求绑定的租户根目录。"""
     root = tenant_root
     if root is None:
         try:
@@ -413,15 +570,18 @@ def resolve_effective_quota(
         from jiuwenswarm.common.utils import get_multi_tenant_user_workspace_dir
 
         root = get_multi_tenant_user_workspace_dir()
+    return Path(root)
 
-    used = (
-        int(used_bytes)
-        if used_bytes is not None
-        else _measure_used_bytes_cached(Path(root))
-    )
 
+def _snapshot_for_used(
+    used: int,
+    *,
+    user_id: str,
+    group_id: str,
+    bot_id: str,
+) -> QuotaSnapshot:
     policies = get_db_policy_cache() if db_policies_loaded() else []
-    policy = _pick_policy(policies, user_id=uid, group_id=gid, bot_id=bid)
+    policy = _pick_policy(policies, user_id=user_id, group_id=group_id, bot_id=bot_id)
     if policy is None:
         return compute_quota_status(
             used,
@@ -437,6 +597,47 @@ def resolve_effective_quota(
         hard_percent=int(policy.get("hard_percent") or 100),
         source_policy_id=str(policy.get("policy_id") or ""),
     )
+
+
+def resolve_effective_quota(
+    *,
+    user_id: str = "",
+    group_id: str = "",
+    bot_id: str = "",
+    used_bytes: int | None = None,
+    tenant_root: Path | None = None,
+    force_refresh: bool = False,
+    sync_on_near_limit: bool = True,
+) -> QuotaSnapshot:
+    """选路 + 用量 → 配额快照。
+
+    - 默认只读缓存（不 du）；
+    - ``force_refresh``：强制同步 du（页面刷新）；
+    - ``sync_on_near_limit``：缓存已是 warn/block 时门禁路径同步校准（展示路径应关）。
+    """
+    identity = _get_quota_identity()
+    uid = (user_id or identity.get("user_id") or "").strip()
+    gid = (group_id or identity.get("group_id") or "").strip()
+    bid = (bot_id or identity.get("bot_id") or "").strip()
+
+    root = resolve_tenant_root(tenant_root)
+    if used_bytes is not None:
+        return _snapshot_for_used(
+            int(used_bytes), user_id=uid, group_id=gid, bot_id=bid
+        )
+
+    mark_usage_active(root, user_id=uid, group_id=gid, bot_id=bid)
+    used = get_cached_used(root)
+    snap = _snapshot_for_used(used, user_id=uid, group_id=gid, bot_id=bid)
+    need_du = bool(force_refresh) or (
+        sync_on_near_limit and snap.status in ("warn", "block")
+    )
+    if need_du:
+        used = measure_and_cache(
+            root, user_id=uid, group_id=gid, bot_id=bid
+        )
+        snap = _snapshot_for_used(used, user_id=uid, group_id=gid, bot_id=bid)
+    return snap
 
 
 def check_workspace_write(
@@ -511,6 +712,7 @@ def check_path_write(
 
 __all__ = [
     "DEFAULT_FALLBACK_LIMIT_BYTES",
+    "DEFAULT_RECONCILE_INTERVAL_SECONDS",
     "DEFAULT_USED_TTL_SECONDS",
     "FALLBACK_LIMIT_ENV",
     "FALLBACK_POLICY_ID",
@@ -518,8 +720,10 @@ __all__ = [
     "QuotaGateDecision",
     "QuotaSnapshot",
     "QuotaStatus",
+    "RECONCILE_INTERVAL_ENV",
     "UNLIMITED_LIMIT_BYTES",
     "USED_TTL_ENV",
+    "UsageCacheEntry",
     "WORKSPACE_QUOTA_EXCEEDED",
     "WorkspaceQuotaExceeded",
     "bind_quota_identity",
@@ -531,10 +735,17 @@ __all__ = [
     "db_policy_cache_loaded_at",
     "estimate_text_write_additional",
     "fallback_limit_bytes",
+    "get_cached_used",
     "get_db_policy_cache",
     "is_workspace_quota_enabled",
+    "list_usage_reconcile_targets",
+    "mark_usage_active",
+    "measure_and_cache",
+    "reconcile_interval_seconds",
     "reset_quota_identity",
     "resolve_effective_quota",
+    "resolve_tenant_root",
+    "set_cached_used",
     "set_db_policy_cache",
     "snapshot_to_dict",
     "used_bytes_ttl_seconds",

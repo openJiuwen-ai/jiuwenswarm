@@ -161,7 +161,10 @@ def host_init_workspace_sync(
                 total += _estimate_nodes(list(node.get("children") or []))
             return total
 
-        check_workspace_write(additional_bytes=max(0, _estimate_nodes(dirs)))
+        check_workspace_write(
+            additional_bytes=max(0, _estimate_nodes(dirs)),
+            tenant_root=root_path,
+        )
     except WorkspaceQuotaExceeded:
         return {
             "status": "quota_exceeded",
