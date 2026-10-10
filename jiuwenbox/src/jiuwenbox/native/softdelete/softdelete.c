@@ -2331,13 +2331,21 @@ typedef struct DebugChild {
     int armed;
 } DebugChild;
 
+/* One Git Bash and the processes it starts. Owned by the thread that
+ * created that Bash, so one stuck tree cannot block the next command. */
+typedef struct DebugTree {
+    DWORD root_pid;
+    HANDLE root_process;
+    int root_exited;
+    int live;
+    DebugChild children[DEBUG_CHILD_MAX];
+} DebugTree;
+
 typedef struct InjectReq {
     HANDLE process;
     HANDLE done;
     int ok;
 } InjectReq;
-
-static DebugChild g_debug_children[DEBUG_CHILD_MAX];
 
 static DWORD WINAPI inject_worker(LPVOID arg) {
     InjectReq *req = (InjectReq *)arg;
@@ -2358,24 +2366,24 @@ static int debug_continue_status(const DEBUG_EVENT *ev) {
     return DBG_EXCEPTION_NOT_HANDLED;
 }
 
-static void forget_debug_child(DWORD pid) {
+static void forget_debug_child(DebugTree *tree, DWORD pid) {
     int i;
     for (i = 0; i < DEBUG_CHILD_MAX; i++) {
-        if (g_debug_children[i].pid != pid) {
+        if (tree->children[i].pid != pid) {
             continue;
         }
-        if (g_debug_children[i].process != NULL) {
-            CloseHandle(g_debug_children[i].process);
+        if (tree->children[i].process != NULL) {
+            CloseHandle(tree->children[i].process);
         }
-        if (g_debug_children[i].thread != NULL) {
-            CloseHandle(g_debug_children[i].thread);
+        if (tree->children[i].thread != NULL) {
+            CloseHandle(tree->children[i].thread);
         }
-        memset(&g_debug_children[i], 0, sizeof(g_debug_children[i]));
+        memset(&tree->children[i], 0, sizeof(tree->children[i]));
         return;
     }
 }
 
-static int remember_debug_child(DWORD pid, HANDLE process, HANDLE thread) {
+static int remember_debug_child(DebugTree *tree, DWORD pid, HANDLE process, HANDLE thread) {
     int i;
     HANDLE dup_process = NULL;
     HANDLE dup_thread = NULL;
@@ -2394,13 +2402,13 @@ static int remember_debug_child(DWORD pid, HANDLE process, HANDLE thread) {
         return 0;
     }
     for (i = 0; i < DEBUG_CHILD_MAX; i++) {
-        if (g_debug_children[i].pid != 0) {
+        if (tree->children[i].pid != 0) {
             continue;
         }
-        g_debug_children[i].pid = pid;
-        g_debug_children[i].process = dup_process;
-        g_debug_children[i].thread = dup_thread;
-        g_debug_children[i].armed = 1;
+        tree->children[i].pid = pid;
+        tree->children[i].process = dup_process;
+        tree->children[i].thread = dup_thread;
+        tree->children[i].armed = 1;
         return 1;
     }
     CloseHandle(dup_process);
@@ -2452,35 +2460,19 @@ static int created_image_skip_inject(HANDLE process, HANDLE file) {
     return image_is_posix(bare) || image_is_console_host(bare);
 }
 
-static volatile LONG g_debuggee_count;
-static volatile DWORD g_await_pid;
-/* A suspended process that is never resumed. WaitForDebugEvent stops
- * honoring its timeout after the last real debuggee exits, which leaves
- * the next Git Bash create waiting forever. This one stays alive so the
- * timeout keeps working. */
-static DWORD g_placeholder_pid;
-static HANDLE g_placeholder_process;
-
-static void on_debug_create(DEBUG_EVENT *ev) {
+static void on_debug_create(DebugTree *tree, DEBUG_EVENT *ev) {
     CREATE_PROCESS_DEBUG_INFO *info = &ev->u.CreateProcessInfo;
     int skip = created_image_skip_inject(info->hProcess, info->hFile);
-    int remembered = 1;
-    InterlockedIncrement(&g_debuggee_count);
-    if (ev->dwProcessId == g_await_pid) {
-        g_await_pid = 0;
-    }
-    if (!skip) {
-        remembered = remember_debug_child(ev->dwProcessId, info->hProcess, info->hThread);
-        if (!remembered) {
-            TerminateProcess(info->hProcess, 1);
-        }
+    tree->live += 1;
+    if (!skip && !remember_debug_child(tree, ev->dwProcessId, info->hProcess, info->hThread)) {
+        TerminateProcess(info->hProcess, 1);
     }
     close_create_handles(info);
 }
 
-static int dispatch_debug_event(DEBUG_EVENT *ev);
+static int dispatch_debug_event(DebugTree *tree, DEBUG_EVENT *ev);
 
-static int inject_at_breakpoint(DebugChild *slot, DEBUG_EVENT *held) {
+static int inject_at_breakpoint(DebugTree *tree, DebugChild *slot, DEBUG_EVENT *held) {
     InjectReq req;
     HANDLE worker;
     memset(&req, 0, sizeof req);
@@ -2501,7 +2493,7 @@ static int inject_at_breakpoint(DebugChild *slot, DEBUG_EVENT *held) {
         if (!WaitForDebugEvent(&nested, 100)) {
             continue;
         }
-        if (!dispatch_debug_event(&nested)) {
+        if (!dispatch_debug_event(tree, &nested)) {
             ContinueDebugEvent(
                 nested.dwProcessId, nested.dwThreadId, debug_continue_status(&nested));
         }
@@ -2525,28 +2517,20 @@ static int inject_at_breakpoint(DebugChild *slot, DEBUG_EVENT *held) {
     return 1;
 }
 
-static int dispatch_debug_event(DEBUG_EVENT *ev) {
+static int dispatch_debug_event(DebugTree *tree, DEBUG_EVENT *ev) {
     int i;
-    if (g_placeholder_pid != 0 && ev->dwProcessId == g_placeholder_pid) {
-        if (ev->dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT) {
-            close_create_handles(&ev->u.CreateProcessInfo);
-        } else if (ev->dwDebugEventCode == LOAD_DLL_DEBUG_EVENT && ev->u.LoadDll.hFile != NULL) {
-            CloseHandle(ev->u.LoadDll.hFile);
-            ev->u.LoadDll.hFile = NULL;
-        } else if (ev->dwDebugEventCode == CREATE_THREAD_DEBUG_EVENT
-            && ev->u.CreateThread.hThread != NULL) {
-            CloseHandle(ev->u.CreateThread.hThread);
-            ev->u.CreateThread.hThread = NULL;
-        }
-        return 0;
-    }
     if (ev->dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT) {
-        on_debug_create(ev);
+        on_debug_create(tree, ev);
         return 0;
     }
     if (ev->dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT) {
-        forget_debug_child(ev->dwProcessId);
-        InterlockedDecrement(&g_debuggee_count);
+        forget_debug_child(tree, ev->dwProcessId);
+        if (tree->live > 0) {
+            tree->live -= 1;
+        }
+        if (ev->dwProcessId == tree->root_pid) {
+            tree->root_exited = 1;
+        }
         return 0;
     }
     if (ev->dwDebugEventCode == LOAD_DLL_DEBUG_EVENT && ev->u.LoadDll.hFile != NULL) {
@@ -2567,21 +2551,34 @@ static int dispatch_debug_event(DEBUG_EVENT *ev) {
         return 0;
     }
     for (i = 0; i < DEBUG_CHILD_MAX; i++) {
-        if (g_debug_children[i].pid == ev->dwProcessId && g_debug_children[i].armed) {
-            g_debug_children[i].armed = 0;
-            return inject_at_breakpoint(&g_debug_children[i], ev);
+        if (tree->children[i].pid == ev->dwProcessId && tree->children[i].armed) {
+            tree->children[i].armed = 0;
+            return inject_at_breakpoint(tree, &tree->children[i], ev);
         }
     }
     return 0;
 }
 
+/* The root can be killed while still suspended, before it reports any
+ * debug event. The process handle is then the only sign that it is gone. */
+static int debug_tree_finished(DebugTree *tree) {
+    if (tree->live > 0) {
+        return 0;
+    }
+    if (tree->root_exited) {
+        return 1;
+    }
+    return tree->root_process != NULL
+        && WaitForSingleObject(tree->root_process, 0) == WAIT_OBJECT_0;
+}
+
 /* CreateProcessW is what actually attaches the debugger. Setting
  * DEBUG_PROCESS only inside CreateProcessInternalW does not, and it
- * leaves Git Bash stuck. The worker calls the outer API so the debug
- * port belongs to this thread, then keeps that thread pumping events. */
+ * leaves Git Bash stuck. Each Bash is created on its own thread, so the
+ * debug port belongs to that thread and one tree cannot block the next. */
 static SOFT_TLS int t_worker_creating;
 
-typedef struct DebugReq {
+typedef struct PosixStart {
     HANDLE token;
     LPCWSTR app;
     LPWSTR cmd;
@@ -2595,130 +2592,79 @@ typedef struct DebugReq {
     LPPROCESS_INFORMATION pi_out;
     BOOL ok;
     DWORD error;
-    HANDLE done;
-    int started;
-} DebugReq;
+    HANDLE created;
+} PosixStart;
 
-static DebugReq *g_debug_req;
-static HANDLE g_debug_req_event;
-static CRITICAL_SECTION g_debug_submit_lock;
-static volatile LONG g_debug_worker_started;
-static volatile LONG g_debug_lock_ready;
-
-static void start_placeholder_debuggee(void) {
-    STARTUPINFOW si;
-    PROCESS_INFORMATION pi;
-    wchar_t sysdir[MAX_PATH];
-    wchar_t cmdline[MAX_PATH + 32];
-    if (GetSystemDirectoryW(sysdir, MAX_PATH) == 0) {
-        return;
-    }
-    if (swprintf_s(cmdline, MAX_PATH + 32, L"\"%s\\cmd.exe\" /c exit", sysdir) < 0) {
-        return;
-    }
-    memset(&si, 0, sizeof si);
-    si.cb = sizeof si;
-    memset(&pi, 0, sizeof pi);
-    /* The hook must not debug or inject this process. */
-    t_worker_creating = 1;
-    if (CreateProcessW(
-            NULL, cmdline, NULL, NULL, FALSE,
-            CREATE_SUSPENDED | DEBUG_ONLY_THIS_PROCESS | CREATE_NO_WINDOW,
-            NULL, NULL, &si, &pi)) {
-        g_placeholder_pid = pi.dwProcessId;
-        g_placeholder_process = pi.hProcess;
-        CloseHandle(pi.hThread);
-    }
-    t_worker_creating = 0;
-    (void)g_placeholder_process;
-}
-
-static DWORD WINAPI debug_worker(LPVOID unused) {
-    (void)unused;
+static DWORD WINAPI posix_debug_thread(LPVOID arg) {
+    PosixStart *req = (PosixStart *)arg;
+    DebugTree tree;
+    PROCESS_INFORMATION *pi;
+    DWORD used;
+    memset(&tree, 0, sizeof tree);
     DebugSetProcessKillOnExit(FALSE);
-    start_placeholder_debuggee();
-    for (;;) {
-        DEBUG_EVENT ev;
-        DebugReq *req;
-        DWORD used;
-        /* The placeholder keeps a debuggee alive, so this timeout returns
-         * after the real Bash tree exits. Without it the call never returns
-         * and the next create waits forever. */
-        if (g_placeholder_pid != 0 || g_debuggee_count > 0 || g_await_pid != 0) {
-            if (WaitForDebugEvent(&ev, 15)) {
-                if (!dispatch_debug_event(&ev)) {
-                    ContinueDebugEvent(
-                        ev.dwProcessId, ev.dwThreadId, debug_continue_status(&ev));
-                }
-            }
+    used = req->flags | DEBUG_PROCESS;
+    t_worker_creating = 1;
+    if (req->token == NULL) {
+        req->ok = CreateProcessW(
+            req->app, req->cmd, req->process_attr, req->thread_attr, req->inherit, used,
+            req->env, req->cwd, req->startup, req->pi_out);
+    } else {
+        req->ok = CreateProcessAsUserW(
+            req->token, req->app, req->cmd, req->process_attr, req->thread_attr,
+            req->inherit, used, req->env, req->cwd, req->startup, req->pi_out);
+    }
+    req->error = GetLastError();
+    t_worker_creating = 0;
+    pi = req->pi_out;
+    if (!req->ok || pi == NULL || pi->hProcess == NULL) {
+        req->ok = FALSE;
+        if (req->error == 0) {
+            req->error = ERROR_INVALID_PARAMETER;
         }
-        req = g_debug_req;
-        if (req != NULL && !req->started) {
-            req->started = 1;
-            used = req->flags | DEBUG_PROCESS;
-            t_worker_creating = 1;
-            if (req->token == NULL) {
-                req->ok = CreateProcessW(
-                    req->app, req->cmd, req->process_attr, req->thread_attr, req->inherit, used,
-                    req->env, req->cwd, req->startup, req->pi_out);
-            } else {
-                req->ok = CreateProcessAsUserW(
-                    req->token, req->app, req->cmd, req->process_attr, req->thread_attr,
-                    req->inherit, used, req->env, req->cwd, req->startup, req->pi_out);
-            }
-            req->error = GetLastError();
-            t_worker_creating = 0;
-            if (req->ok && req->pi_out != NULL) {
-                g_await_pid = req->pi_out->dwProcessId;
-            } else {
-                g_await_pid = 0;
-            }
-            SetEvent(req->done);
+        SetEvent(req->created);
+        return 0;
+    }
+    tree.root_pid = pi->dwProcessId;
+    if (!DuplicateHandle(
+            GetCurrentProcess(), pi->hProcess, GetCurrentProcess(), &tree.root_process,
+            0, FALSE, DUPLICATE_SAME_ACCESS)) {
+        TerminateProcess(pi->hProcess, 1);
+        CloseHandle(pi->hProcess);
+        if (pi->hThread != NULL) {
+            CloseHandle(pi->hThread);
+        }
+        pi->hProcess = NULL;
+        pi->hThread = NULL;
+        pi->dwProcessId = 0;
+        pi->dwThreadId = 0;
+        req->ok = FALSE;
+        req->error = ERROR_NOT_ENOUGH_MEMORY;
+        SetEvent(req->created);
+        return 0;
+    }
+    SetEvent(req->created);
+    while (!debug_tree_finished(&tree)) {
+        DEBUG_EVENT ev;
+        if (!WaitForDebugEvent(&ev, 50)) {
             continue;
         }
-        if (g_placeholder_pid == 0 && g_debuggee_count <= 0 && g_await_pid == 0
-            && g_debug_req_event != NULL) {
-            WaitForSingleObject(g_debug_req_event, 50);
+        if (!dispatch_debug_event(&tree, &ev)) {
+            ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, debug_continue_status(&ev));
         }
     }
-}
-
-static int ensure_debug_worker(void) {
-    HANDLE thread;
-    if (g_debug_lock_ready == 0) {
-        if (InterlockedCompareExchange(&g_debug_lock_ready, 1, 0) == 0) {
-            InitializeCriticalSection(&g_debug_submit_lock);
-            g_debug_req_event = CreateEventW(NULL, FALSE, FALSE, NULL);
-        } else {
-            while (g_debug_req_event == NULL) {
-                Sleep(0);
-            }
-        }
-    }
-    if (g_debug_req_event == NULL) {
-        return 0;
-    }
-    if (g_debug_worker_started) {
-        return 1;
-    }
-    if (InterlockedCompareExchange(&g_debug_worker_started, 1, 0) != 0) {
-        return 1;
-    }
-    thread = CreateThread(NULL, 0, debug_worker, NULL, 0, NULL);
-    if (thread == NULL) {
-        InterlockedExchange(&g_debug_worker_started, 0);
-        return 0;
-    }
-    CloseHandle(thread);
-    return 1;
+    CloseHandle(tree.root_process);
+    return 0;
 }
 
 static BOOL submit_posix_create(
     HANDLE token, LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES process_attr,
     LPSECURITY_ATTRIBUTES thread_attr, BOOL inherit, DWORD flags, LPVOID env, LPCWSTR cwd,
     LPSTARTUPINFOW startup, LPPROCESS_INFORMATION pi) {
-    DebugReq req;
-    if (pi == NULL || !ensure_debug_worker()) {
+    PosixStart req;
+    HANDLE thread;
+    HANDLE waits[2];
+    DWORD which;
+    if (pi == NULL) {
         return FALSE;
     }
     memset(&req, 0, sizeof req);
@@ -2733,17 +2679,24 @@ static BOOL submit_posix_create(
     req.cwd = cwd;
     req.startup = startup;
     req.pi_out = pi;
-    req.done = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (req.done == NULL) {
+    req.created = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (req.created == NULL) {
         return FALSE;
     }
-    EnterCriticalSection(&g_debug_submit_lock);
-    g_debug_req = &req;
-    SetEvent(g_debug_req_event);
-    WaitForSingleObject(req.done, INFINITE);
-    g_debug_req = NULL;
-    LeaveCriticalSection(&g_debug_submit_lock);
-    CloseHandle(req.done);
+    thread = CreateThread(NULL, 0, posix_debug_thread, &req, 0, NULL);
+    if (thread == NULL) {
+        CloseHandle(req.created);
+        return FALSE;
+    }
+    waits[0] = req.created;
+    waits[1] = thread;
+    which = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+    CloseHandle(thread);
+    CloseHandle(req.created);
+    if (which != WAIT_OBJECT_0) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
     if (!req.ok) {
         SetLastError(req.error);
     }
@@ -2776,6 +2729,41 @@ static wchar_t *parent_env_value(const wchar_t *key) {
         return NULL;
     }
     return value;
+}
+
+/* CreateProcess without CREATE_UNICODE_ENVIRONMENT passes an ANSI block. */
+static wchar_t *ansi_env_to_wide(const char *block) {
+    const char *cursor = block;
+    size_t bytes;
+    int chars;
+    wchar_t *wide;
+    if (block == NULL) {
+        return NULL;
+    }
+    if (*cursor == '\0') {
+        bytes = 1;
+    } else {
+        while (*cursor != '\0') {
+            cursor += strlen(cursor) + 1;
+        }
+        bytes = (size_t)(cursor - block) + 1;
+    }
+    if (bytes == 0 || bytes > 0x7fffffff) {
+        return NULL;
+    }
+    chars = MultiByteToWideChar(CP_ACP, 0, block, (int)bytes, NULL, 0);
+    if (chars <= 0) {
+        return NULL;
+    }
+    wide = (wchar_t *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (size_t)chars * sizeof(wchar_t));
+    if (wide == NULL) {
+        return NULL;
+    }
+    if (MultiByteToWideChar(CP_ACP, 0, block, (int)bytes, wide, chars) != chars) {
+        HeapFree(GetProcessHeap(), 0, wide);
+        return NULL;
+    }
+    return wide;
 }
 
 /* A sandboxed child that builds its own environment must still see the recycle port. */
@@ -2847,6 +2835,8 @@ static BOOL WINAPI hook_CreateProcessInternalW(
     int added_suspend = 0;
     BOOL ok;
     wchar_t *owned_env = NULL;
+    wchar_t *converted_env = NULL;
+    const wchar_t *wide_env;
     LPVOID use_env = env;
     if (t_worker_creating || parent_is_posix_runtime()) {
         return g_create_process(
@@ -2854,19 +2844,32 @@ static BOOL WINAPI hook_CreateProcessInternalW(
             new_token);
     }
     if (GetEnvironmentVariableW(ENV_RECYCLE_PORT, NULL, 0) > 1 && env != NULL) {
+        wide_env = (const wchar_t *)env;
         if ((flags & CREATE_UNICODE_ENVIRONMENT) == 0) {
-            SetLastError(ERROR_INVALID_PARAMETER);
-            return FALSE;
+            converted_env = ansi_env_to_wide((const char *)env);
+            if (converted_env == NULL) {
+                log_line(L"softdelete: ANSI environment could not be converted, child was not started");
+                SetLastError(ERROR_INVALID_PARAMETER);
+                return FALSE;
+            }
+            wide_env = converted_env;
         }
-        owned_env = merge_child_soft_env((const wchar_t *)env);
-        if (owned_env == NULL && !env_block_has((const wchar_t *)env, ENV_RECYCLE_PORT)) {
+        owned_env = merge_child_soft_env(wide_env);
+        if (owned_env == NULL && !env_block_has(wide_env, ENV_RECYCLE_PORT)) {
+            HeapFree(GetProcessHeap(), 0, converted_env);
             SetLastError(ERROR_NOT_ENOUGH_MEMORY);
             return FALSE;
         }
         if (owned_env != NULL) {
             use_env = owned_env;
-            used |= CREATE_UNICODE_ENVIRONMENT;
+            HeapFree(GetProcessHeap(), 0, converted_env);
+            converted_env = NULL;
+        } else if (converted_env != NULL) {
+            use_env = converted_env;
+            owned_env = converted_env;
+            converted_env = NULL;
         }
+        used |= CREATE_UNICODE_ENVIRONMENT;
     }
     if (child_is_posix_image(app, cmd)) {
         ok = submit_posix_create(
