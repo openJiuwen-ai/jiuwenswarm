@@ -3836,6 +3836,7 @@
       "runtimeMissing": "This connector requires a runtime environment that isn't installed. Please install it before using this connector.",
       "runtimeMissingNamed": "This connector requires {{runtime}}. Please install {{runtime}} before using this connector.",
       "installNetwork": "Failed to download a dependency. Please check your network connection and retry.",
+      "installScriptDep": "The CLI install script requires PowerShell. Please enable or restore PowerShell and retry.",
       "cliIncomplete": "The CLI is incomplete or outdated. Please reconnect to retry.",
       "cliIncompleteNamed": "The CLI is incomplete or outdated. Please run the following command to install or upgrade it, then retry: {{command}}"
     },
