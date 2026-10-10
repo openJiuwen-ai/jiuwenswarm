@@ -108,10 +108,7 @@ class WebClient {
     };
   }
 
-  on<TPayload = Record<string, unknown>>(
-    eventName: string,
-    handler: TypedEventHandler<TPayload>
-  ): () => void {
+  on<TPayload = Record<string, unknown>>(eventName: string, handler: TypedEventHandler<TPayload>): () => void {
     const set = this.handlers.get(eventName) ?? new Set<EventHandler>();
     const eventHandler = handler as EventHandler;
     set.add(eventHandler);
@@ -176,12 +173,7 @@ class WebClient {
           direction: 'lifecycle',
           data: { event: 'error' },
         });
-        const error = this.createWebError(
-          i18n.t('network.wsError'),
-          'WS_ERROR',
-          undefined,
-          true
-        );
+        const error = this.createWebError(i18n.t('network.wsError'), 'WS_ERROR', undefined, true);
         this.connectPromise = null;
         if (this.state !== 'ready') {
           reject(error);
@@ -205,8 +197,8 @@ class WebClient {
             i18n.t('network.connectionClosedWithCode', { code: closeEvent.code }),
             'WS_DISCONNECTED',
             undefined,
-            true
-          )
+            true,
+          ),
         );
         if (this.manualClose || closeEvent.code === 1000) {
           this.updateState('closed');
@@ -236,9 +228,7 @@ class WebClient {
   disconnect(reason = 'User disconnect'): Promise<void> {
     this.manualClose = true;
     this.clearReconnectTimer();
-    this.rejectAllPending(
-      this.createWebError(i18n.t('network.connectionClosed'), 'WS_CLOSED', undefined, false)
-    );
+    this.rejectAllPending(this.createWebError(i18n.t('network.connectionClosed'), 'WS_CLOSED', undefined, false));
     const currentWs = this.ws;
     let closedPromise = Promise.resolve();
     if (currentWs) {
@@ -260,7 +250,7 @@ class WebClient {
             window.clearTimeout(timeoutId);
             finish();
           },
-          { once: true }
+          { once: true },
         );
         currentWs.close(1000, reason);
       });
@@ -274,7 +264,7 @@ class WebClient {
   async request<T = unknown>(
     method: string,
     params?: Record<string, unknown>,
-    options: WebRequestOptions = {}
+    options: WebRequestOptions = {},
   ): Promise<T> {
     await this.ensureReady();
 
@@ -349,7 +339,7 @@ class WebClient {
   async sendFireAndForget(
     method: string,
     params?: Record<string, unknown>,
-    options: { isStream?: boolean } = {}
+    options: { isStream?: boolean } = {},
   ): Promise<void> {
     await this.ensureReady();
 
@@ -461,7 +451,8 @@ class WebClient {
       const payload = this.normalizePayload(msg.payload);
       return {
         type: 'event',
-        event: mappedEvent === 'chat.final' && payload.event_type === 'runtime.accepted' ? 'runtime.accepted' : mappedEvent,
+        event:
+          mappedEvent === 'chat.final' && payload.event_type === 'runtime.accepted' ? 'runtime.accepted' : mappedEvent,
         payload,
       };
     }
@@ -472,20 +463,32 @@ class WebClient {
   private async resumeExecutions(): Promise<void> {
     for (const query of this.runtimeResume.queries()) {
       try {
-        const metadata = await this.request<{ runtime?: Record<string, unknown> }>(
-          'session.get_metadata', query, { timeoutMs: 10_000 }
-        );
+        const metadata = await this.request<{ runtime?: Record<string, unknown> }>('session.get_metadata', query, {
+          timeoutMs: 10_000,
+        });
         const runtime = metadata?.runtime;
         if (!runtime) continue;
-        this.dispatchEvent({ type: 'event', event: 'chat.processing_status',
-          payload: { session_id: query.session_id, is_processing: runtime.is_processing } });
-        this.dispatchEvent({ type: 'event', event: 'runtime.snapshot',
-          payload: { session_id: query.session_id, ...runtime } });
+        this.dispatchEvent({
+          type: 'event',
+          event: 'chat.processing_status',
+          payload: { session_id: query.session_id, is_processing: runtime.is_processing },
+        });
+        this.dispatchEvent({
+          type: 'event',
+          event: 'runtime.snapshot',
+          payload: { session_id: query.session_id, ...runtime },
+        });
         if (runtime.interrupted === true) {
-          this.dispatchEvent({ type: 'event', event: 'chat.error', payload: {
-            session_id: query.session_id, code: 'WORKER_EXECUTION_INTERRUPTED',
-            error: i18n.t('network.workerExecutionInterrupted'), recoverable: false,
-          } });
+          this.dispatchEvent({
+            type: 'event',
+            event: 'chat.error',
+            payload: {
+              session_id: query.session_id,
+              code: 'WORKER_EXECUTION_INTERRUPTED',
+              error: i18n.t('network.workerExecutionInterrupted'),
+              recoverable: false,
+            },
+          });
         }
         if (runtime.history_required === true) {
           const dispatches = Array.isArray(runtime.dispatches) ? runtime.dispatches : [];
@@ -493,13 +496,19 @@ class WebClient {
             const interactions = Array.isArray(dispatch.pending_interactions) ? dispatch.pending_interactions : [];
             for (const interaction of interactions) {
               if (typeof interaction.event_type === 'string') {
-                this.dispatchEvent({ type: 'event', event: interaction.event_type,
-                  payload: { ...interaction, session_id: query.session_id } });
+                this.dispatchEvent({
+                  type: 'event',
+                  event: interaction.event_type,
+                  payload: { ...interaction, session_id: query.session_id },
+                });
               }
             }
           }
-          this.dispatchEvent({ type: 'event', event: 'runtime.history_required',
-            payload: { session_id: query.session_id } });
+          this.dispatchEvent({
+            type: 'event',
+            event: 'runtime.history_required',
+            payload: { session_id: query.session_id },
+          });
         }
       } catch {
         // The next reconnect/history query reconciles state. Never retry chat.send.
@@ -536,8 +545,8 @@ class WebClient {
         message.code,
         message.id,
         this.isRetriableCode(message.code),
-        message.payload
-      )
+        message.payload,
+      ),
     );
   }
 
@@ -559,10 +568,7 @@ class WebClient {
       pending.resolve(message.payload);
       return;
     }
-    const error =
-      typeof message.payload.error === 'string'
-        ? message.payload.error
-        : i18n.t('network.requestFailed');
+    const error = typeof message.payload.error === 'string' ? message.payload.error : i18n.t('network.requestFailed');
     const code = typeof message.payload.code === 'string' ? message.payload.code : undefined;
     pending.reject(this.createWebError(error, code, requestId, true, message.payload));
   }
@@ -652,7 +658,7 @@ class WebClient {
     code?: string,
     requestId?: string,
     retriable = false,
-    payload?: unknown
+    payload?: unknown,
   ): WebError {
     const error = new Error(message) as WebError;
     error.code = code;
@@ -663,11 +669,7 @@ class WebClient {
   }
 
   private isRetriableCode(code?: string): boolean {
-    return (
-      code === 'REQUEST_TIMEOUT' ||
-      code === 'WS_DISCONNECTED' ||
-      code === 'WS_NOT_READY'
-    );
+    return code === 'REQUEST_TIMEOUT' || code === 'WS_DISCONNECTED' || code === 'WS_NOT_READY';
   }
 }
 
@@ -676,7 +678,7 @@ export const webClient = new WebClient();
 export async function webRequest<T = unknown>(
   method: string,
   params?: Record<string, unknown>,
-  options?: WebRequestOptions
+  options?: WebRequestOptions,
 ): Promise<T> {
   return webClient.request<T>(method, params, options);
 }
@@ -835,7 +837,7 @@ export async function sendGoalStreamCommand(params: {
       ...(action === 'set' ? { objective, overwrite_confirmed: true } : {}),
       ...(modelName ? { model_name: modelName } : {}),
     },
-    { isStream: true }
+    { isStream: true },
   );
 }
 

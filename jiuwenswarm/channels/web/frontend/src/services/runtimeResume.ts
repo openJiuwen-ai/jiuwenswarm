@@ -7,8 +7,13 @@ export class RuntimeResume {
   observe(event: WsEvent): boolean {
     const sessionId = event.payload.session_id;
     const marker = event.payload.runtime_event as Record<string, unknown> | undefined;
-    if (typeof sessionId !== 'string' || !marker || typeof marker.worker_instance !== 'string' ||
-        typeof marker.sequence !== 'number') return true;
+    if (
+      typeof sessionId !== 'string' ||
+      !marker ||
+      typeof marker.worker_instance !== 'string' ||
+      typeof marker.sequence !== 'number'
+    )
+      return true;
     let cursor = this.sessions.get(sessionId);
     if (!cursor || cursor.instance !== marker.worker_instance) {
       cursor = { instance: marker.worker_instance, after: 0, seen: new Set() };
@@ -26,7 +31,8 @@ export class RuntimeResume {
 
   queries(): Array<{ session_id: string; runtime_resume: { worker_instance: string; after: number } }> {
     return Array.from(this.sessions, ([session_id, cursor]) => ({
-      session_id, runtime_resume: { worker_instance: cursor.instance, after: cursor.after },
+      session_id,
+      runtime_resume: { worker_instance: cursor.instance, after: cursor.after },
     }));
   }
 

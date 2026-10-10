@@ -129,12 +129,10 @@ async def _runtime_for_shutdown(
     uses ``asyncio.wait`` and continues cleanup while that thread runs.
     """
     runtime = loaded.get("runtime")
-    if runtime is not None or runtime_task is None:
+    if runtime_task is None:
         return runtime
     done, _pending = await asyncio.wait({runtime_task}, timeout=timeout)
     runtime = loaded.get("runtime")
-    if runtime is not None:
-        return runtime
     if runtime_task not in done:
         logger.warning(
             "[Worker] runtime load still running after %.0fs during shutdown; continuing cleanup",
@@ -144,13 +142,13 @@ async def _runtime_for_shutdown(
         runtime_task.add_done_callback(_log_late_runtime_load)
         raise WorkerForceExit("runtime load did not drain before shutdown deadline")
     try:
-        return runtime_task.result()
+        return runtime_task.result() or runtime
     except asyncio.CancelledError:
         logger.info("[Worker] runtime load cancelled during shutdown")
         return None
     except Exception:  # noqa: BLE001
         logger.exception("[Worker] runtime load failed during shutdown")
-        return None
+        return runtime
 
 
 async def _retire_session(holder: ConnHolder, dispatcher: WorkerDispatcher) -> None:
@@ -233,14 +231,20 @@ async def _load_runtime(
     dispatcher: WorkerDispatcher,
     loaded: dict[str, Any],
 ) -> Any:
-    from jiuwenswarm.server.worker.lifecycle import start_worker_runtime
+    from jiuwenswarm.server.worker.lifecycle import WorkerRuntime, start_worker_runtime
+
+    async def constructed(server: Any) -> None:
+        # Retain a cleanup owner even when preparation fails after construction.
+        # Shutdown still waits for the loader to stop before releasing resources.
+        loaded["runtime"] = WorkerRuntime(server=server, stop_event=asyncio.Event())
+        await dispatcher.bind_runtime(server)
 
     try:
         runtime = await start_worker_runtime(
             host,
             port,
             signals,
-            on_constructed=dispatcher.bind_runtime,
+            on_constructed=constructed,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[Worker] runtime load failed: %s", exc)

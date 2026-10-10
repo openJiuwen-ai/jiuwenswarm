@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -179,6 +180,7 @@ async def run(args):
     result = {}
     with tempfile.TemporaryDirectory(prefix="jiuwenswarm-4689-native-chat-") as tmp:
         data = Path(tmp) / "data"
+        result.update(data_dir=str(data), profile=args.profile, scenario=args.scenario, gateway=GATEWAY)
         config_dir = data / "config"
         config_dir.mkdir(parents=True)
         config = yaml.safe_load((code / "jiuwenswarm/resources/config.yaml").read_text(encoding="utf-8"))
@@ -246,6 +248,11 @@ async def run(args):
                     if time.monotonic() > deadline:
                         raise TimeoutError("native tool did not write its side effect")
                     await asyncio.sleep(.05)
+            if args.scenario in {"queue", "steer"}:
+                await send(ws, "supplemental", "chat.send", "resident-session",
+                           {"query": "[4689-original] Supplemental input for the same execution", "mode": args.mode,
+                            **({"input_mode": "steer"} if args.scenario == "steer" else {})}, stream=True)
+                await asyncio.sleep(.15)
             snapshot = await rpc(ws, "before", "session.get_metadata", "resident-session")
             runtime = snapshot.get("runtime", {})
             entered = next(item for item in runtime["dispatches"] if item["request_id"] == "original-chat")
@@ -316,20 +323,28 @@ async def run(args):
             if args.scenario == "crash" and not result["after"].get("interrupted"):
                 raise AssertionError("crashed Worker execution was not reported interrupted")
             ModelFixture.release.set()
+            finished_requests = set()
+            expected_requests = {"original-chat", "supplemental"} if args.scenario == "queue" else {
+                "answer" if args.scenario == "interaction" else "original-chat"}
             while args.scenario not in {"cancel", "crash"}:
                 wire = json.loads(await asyncio.wait_for(ws.recv(), 30))
                 event = payload(wire)
                 if isinstance(event, dict) and event.get("event_type") == "chat.error":
                     raise RuntimeError(str(event.get("message") or event.get("error")))
-                terminal_request = "answer" if args.scenario == "interaction" else "original-chat"
                 final_id = wire.get("request_id") or wire.get("id") or (event.get("request_id") if isinstance(event, dict) else None)
                 complete = wire.get("is_final") or (GATEWAY and wire.get("event") == "chat.final")
-                if final_id == terminal_request and complete and event.get("final_mode") != "patch_segment":
+                if final_id in expected_requests and complete and event.get("final_mode") != "patch_segment":
+                    finished_requests.add(final_id)
+                if finished_requests == expected_requests:
                     break
             final = await rpc(ws, "final-state", "session.get_metadata", "resident-session")
             result["final"] = final.get("runtime", {})
             history = session / "history.jsonl"
             result["history_records"] = len(history.read_text(encoding="utf-8").splitlines()) if history.exists() else 0
+            if args.scenario in {"queue", "steer"}:
+                result["supplemental_persisted"] = "Supplemental input" in history.read_text(encoding="utf-8")
+                if not result["supplemental_persisted"]:
+                    raise AssertionError("supplemental input absent from durable history")
             if args.scenario == "crash":
                 same_worker = False
             else:
@@ -394,6 +409,7 @@ async def run(args):
             log.close()
             model_server.shutdown()
             model_server.server_close()
+            logging.shutdown()
 
 
 if __name__ == "__main__":
@@ -401,7 +417,7 @@ if __name__ == "__main__":
     parser.add_argument("--code", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--mode", default="agent", choices=("agent", "code.normal"))
-    parser.add_argument("--scenario", default="restart", choices=("restart", "tool", "interaction", "offline", "cancel", "crash"))
+    parser.add_argument("--scenario", default="restart", choices=("restart", "tool", "interaction", "offline", "cancel", "crash", "queue", "steer"))
     parser.add_argument("--profile", default="desktop", choices=("desktop", "agentos"))
     parser.add_argument("--gateway", action="store_true")
     asyncio.run(run(parser.parse_args()))
