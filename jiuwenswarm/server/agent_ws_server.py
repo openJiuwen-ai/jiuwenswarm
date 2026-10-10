@@ -4855,6 +4855,122 @@ class AgentWebSocketServer:
                             abort_exc,
                         )
 
+        # A tool-approval prompt is delivered exactly once, in-stream. If the
+        # web client was between WebSocket connections when it was published
+        # (page reload / dev-server restart mid-turn), the prompt reached zero
+        # subscribers while the engine keeps the tool call parked forever.
+        # session.switch is the one call every (re)attaching client makes, so
+        # re-push the still-unanswered prompt here. Best effort: a failure must
+        # never break the switch itself.
+        try:
+            await self._republish_pending_interrupt_ask(channel_id, target)
+        except Exception:
+            logger.debug(
+                "[AgentWebSocketServer] pending interrupt ask republish failed: "
+                "session_id=%s",
+                target,
+                exc_info=True,
+            )
+
+    def _peek_session_deep_agent(self, channel_id: str, session_id: str) -> Any:
+        """Return the live session-scoped DeepAgent, never creating one."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        agent = self._agent_manager.get_agent_for_session_nowait(
+            channel_id=channel_id or "default",
+            session_id=sid,
+        )
+        if agent is None:
+            agent = self._agent_manager.get_agent_nowait(
+                channel_id=channel_id or "default"
+            )
+        if agent is None:
+            return None
+        adapter = self._resolve_adapter(agent)
+        if adapter is None:
+            return None
+        if getattr(adapter, "_is_session_scoped_adapter", False):
+            return getattr(adapter, "_instance", None)
+        get_cached = getattr(adapter, "_get_cached_session_adapter", None)
+        if callable(get_cached):
+            session_adapter = get_cached(sid)
+            if session_adapter is not None:
+                return getattr(session_adapter, "_instance", None)
+        return None
+
+    async def _republish_pending_interrupt_ask(
+        self,
+        channel_id: str,
+        session_id: str,
+    ) -> bool:
+        """Re-push a parked tool-approval prompt to a freshly attached client.
+
+        The race being closed: the ``chat.ask_user_question`` chunk rides the
+        response stream once, but the client's WebSocket lifetime is shorter
+        than the turn — a reload between the chunk's publish and the user's
+        click loses the prompt with no persisted copy and no re-delivery,
+        while ``ToolInterruptionState`` waits in the session indefinitely.
+        Rebuilding the payload from that parked state and pushing it after
+        session.switch restores the prompt without any frontend change; the
+        state is cleared as soon as a resume answer is consumed, so this never
+        re-arms an already-answered prompt (worst case is a benign duplicate
+        of a prompt still on screen).
+        """
+        sid = str(session_id or "").strip()
+        if not sid:
+            return False
+        deep_agent = self._peek_session_deep_agent(channel_id, sid)
+        loop_session = getattr(deep_agent, "_loop_session", None)
+        if loop_session is None:
+            return False
+        try:
+            loop_sid = str(loop_session.get_session_id() or "").strip()
+        except Exception:
+            loop_sid = ""
+        if loop_sid and loop_sid != sid:
+            return False
+        try:
+            from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
+
+            state = loop_session.get_state(INTERRUPTION_KEY)
+        except Exception:
+            logger.debug(
+                "[AgentWebSocketServer] pending interrupt state read failed: "
+                "session_id=%s",
+                sid,
+                exc_info=True,
+            )
+            return False
+        if state is None:
+            return False
+
+        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+            pending_interrupt_ask_payload_from_state,
+        )
+
+        ask_payload = pending_interrupt_ask_payload_from_state(state)
+        if not ask_payload:
+            return False
+        ask_payload = dict(ask_payload)
+        ask_payload.setdefault("session_id", sid)
+        pushed = bool(
+            await self.send_push(
+                {
+                    "channel_id": channel_id or "default",
+                    "session_id": sid,
+                    "payload": ask_payload,
+                }
+            )
+        )
+        if pushed:
+            logger.info(
+                "[AgentWebSocketServer] pending interrupt ask republished: "
+                "session_id=%s request_id=%s",
+                sid,
+                ask_payload.get("request_id", ""),
+            )
+        return pushed
 
     async def _find_team_session_ids(self, team_name: str) -> list[str]:
         sessions_dir = get_agent_sessions_dir()
