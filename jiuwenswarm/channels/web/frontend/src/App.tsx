@@ -4,7 +4,7 @@
  * 应用主布局，整合所有组件
  */
 
-import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense } from 'react';
+import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense, type PointerEvent as ReactPointerEvent } from 'react';
 import { ChatPanel } from './components/ChatPanel';
 import { SessionSidebar } from './components/SessionSidebar';
 import { SkillPanel } from './components/SkillPanel';
@@ -85,6 +85,7 @@ import {
   forgetCreatedConversation,
   isConversationMissing,
   registerCreatedConversation,
+  resolveNewConversationEntrySettings,
   resetNewConversationRuntime,
 } from './multi-session/state/newConversationLifecycle';
 import { toDisplaySessionTitle } from './utils/documentMessage';
@@ -134,6 +135,16 @@ const LazyDiagnosisHistoryPanel = lazy(async () => {
 });
 
 const TEAM_SESSION_MODES = new Set(['team', 'team.plan', 'code.team']);
+const CHAT_PANEL_DEFAULT_WIDTH_PCT = 33.33;
+const CHAT_PANEL_MIN_WIDTH_PCT = 20;
+const CHAT_PANEL_MAX_WIDTH_PCT = 70;
+
+type ChatPanelResizeDrag = {
+  pointerId: number;
+  startX: number;
+  startPct: number;
+  containerWidth: number;
+};
 const PREVIEW_MODEL_SETUP_GUIDE = import.meta.env.DEV
   && new URLSearchParams(window.location.search).get('modelSetupGuide') === '1';
 
@@ -425,12 +436,11 @@ function AppContent() {
       setConfigInitialExpandGroup(null);
     }
     if (activeNav === 'chat') {
-      const { availableModels, setSelectedModelName } = useSessionStore.getState();
-      const defaultModel = availableModels[0];
+      const { defaultModelName, setSelectedModelName } = useSessionStore.getState();
       const runtime = useSessionStore.getState().getRuntime(sessionId);
-      if (defaultModel && !runtime?.selectedModelName) {
+      if (defaultModelName && !runtime?.selectedModelName) {
         useSessionStore.getState().ensureRuntime(sessionId);
-        setSelectedModelName(sessionId, defaultModel.alias || defaultModel.model_name);
+        setSelectedModelName(sessionId, defaultModelName);
       }
     }
   }, [activeNav, sessionId]);
@@ -504,7 +514,9 @@ function AppContent() {
   const historyPageCancelRef = useRef(new Map<string, () => void>());
   const historyBackgroundPrefetchTokensRef = useRef(new Map<string, number>());
   const creatingSessionRef = useRef(false);
-  const promotedFromNewSessionIdsRef = useRef(new Set<string>());
+  /** 离开新建任务页后，仍未发送的临时会话可以被再次打开。 */
+  const pendingNewConversationRef = useRef(route.kind === 'chat-new');
+  const sessionIdsCreatedInThisPageRef = useRef(new Set<string>());
   const shareExportRef = useRef<HTMLDivElement>(null);
   const shareExportFilenameRef = useRef('jiuwenswarm-share.png');
   const shareExportTokenRef = useRef(0);
@@ -571,6 +583,7 @@ function AppContent() {
     } else if (route.kind === 'chat-new') {
       const newChatPath = chatRoutePath({ kind: 'chat-new' }).split('?')[0];
       if (window.location.pathname !== newChatPath) navigate({ kind: 'chat-new' }, { replace: true });
+      pendingNewConversationRef.current = true;
       if (preserveSelectedProjectOnChatNewRef.current) {
         preserveSelectedProjectOnChatNewRef.current = false;
       } else {
@@ -640,7 +653,8 @@ function AppContent() {
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
-  const [chatPanelWidthPct, setChatPanelWidthPct] = useState(33.33);
+  const [chatPanelWidthPct, setChatPanelWidthPct] = useState(CHAT_PANEL_DEFAULT_WIDTH_PCT);
+  const chatPanelResizeDragRef = useRef<ChatPanelResizeDrag | null>(null);
   const [codeReviewTarget, setCodeReviewTarget] = useState<CodeReviewTarget | null>(null);
 
   useEffect(() => {
@@ -660,28 +674,49 @@ function AppContent() {
     setTeamAreaExpanded(true);
   }, [setTeamAreaActiveTab, setTeamAreaExpanded]);
 
-  const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startPct = chatPanelWidthPct;
-    const container = (e.currentTarget as HTMLElement).parentElement;
+  const handleDividerPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || chatPanelResizeDragRef.current) return;
+    const container = event.currentTarget.parentElement;
     if (!container) return;
     const containerWidth = container.getBoundingClientRect().width;
+    if (containerWidth <= 0) return;
 
-    const onMouseMove = (ev: MouseEvent) => {
-      const dx = ev.clientX - startX;
-      const newPct = Math.min(70, Math.max(20, startPct + (dx / containerWidth) * 100));
-      setChatPanelWidthPct(newPct);
+    event.preventDefault();
+    document.body.classList.add('workspace-resize-active');
+    event.currentTarget.setPointerCapture(event.pointerId);
+    chatPanelResizeDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startPct: chatPanelWidthPct,
+      containerWidth,
     };
-
-    const onMouseUp = () => {
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
   }, [chatPanelWidthPct]);
+
+  const handleDividerPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = chatPanelResizeDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startX;
+    const nextWidthPct = drag.startPct + (dx / drag.containerWidth) * 100;
+    const clampedWidthPct = Math.min(
+      CHAT_PANEL_MAX_WIDTH_PCT,
+      Math.max(CHAT_PANEL_MIN_WIDTH_PCT, nextWidthPct),
+    );
+    setChatPanelWidthPct(clampedWidthPct);
+  }, []);
+
+  const clearChatPanelResize = useCallback((pointerId?: number): boolean => {
+    if (pointerId !== undefined && chatPanelResizeDragRef.current?.pointerId !== pointerId) return false;
+    chatPanelResizeDragRef.current = null;
+    document.body.classList.remove('workspace-resize-active');
+    return true;
+  }, []);
+
+  const finishDividerResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!clearChatPanelResize(event.pointerId)) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, [clearChatPanelResize]);
 
   const clearMessages = useChatStore((s) => s.clearMessages);
   const clearSubtasks = useChatStore((s) => s.clearSubtasks);
@@ -1746,7 +1781,7 @@ function AppContent() {
   useEffect(() => {
     if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
     
-    if (promotedFromNewSessionIdsRef.current.has(sessionId)) {
+    if (sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
       setHistoryPagerMeta(sessionId, null);
       setHistoryLoadingMore(false);
       setLoadingHistory(sessionId, false);
@@ -1762,8 +1797,8 @@ function AppContent() {
       return;
     }
 
-    // 已有完整历史恢复状态则跳过历史加载，直接使用内存数据。
-    // historyPagerMeta 是唯一可靠的"history 是否完整加载过"标记。
+    // 当前页面新建的会话已在上方复用实时内存数据；对于其他会话，
+    // historyPagerMeta 表示已完成 history 首屏恢复，可直接复用并继续补齐剩余分页。
     const existingRuntime = useChatStore.getState().getRuntime(sessionId);
     if (existingRuntime && existingRuntime.historyPagerMeta) {
       setLoadingHistory(sessionId, false);
@@ -1821,6 +1856,11 @@ function AppContent() {
   const enterNewConversation = useCallback((targetMode: AgentMode = mode, options: NewConversationOptions = {}) => {
     const currentSessionId = sessionIdRef.current;
     const currentRuntime = useSessionStore.getState().getRuntime(currentSessionId);
+    const pendingNewRuntime = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
+    const shouldRestorePendingNewConversation =
+      currentSessionId !== NEW_CONVERSATION_ID
+      && pendingNewConversationRef.current
+      && Boolean(pendingNewRuntime);
     newConversationPreviousSessionRef.current =
       currentSessionId && currentSessionId !== NEW_CONVERSATION_ID
         ? {
@@ -1828,16 +1868,22 @@ function AppContent() {
           mode: currentRuntime?.mode ?? mode,
         }
         : null;
-    // 新建会话固定使用配置的默认模型，不继承当前会话手动切换过的模型；
+    // 返回尚未发送的新建任务时，恢复该临时会话自己的模式和模型；真正开始一个新任务时，
+    // 仍固定使用配置的默认模型，不继承当前正式会话手动切换过的模型。
     // 默认模型列表尚未加载完成时兜底沿用当前会话的模型，避免新会话没有模型可用。
-    const selectedModelName = useSessionStore.getState().defaultModelName ?? currentRuntime?.selectedModelName ?? null;
+    const { mode: nextMode, selectedModelName } = resolveNewConversationEntrySettings(
+      targetMode,
+      useSessionStore.getState().defaultModelName,
+      currentRuntime?.selectedModelName ?? null,
+      shouldRestorePendingNewConversation ? pendingNewRuntime : null,
+    );
     const selectedProject = options.project ?? useWorkspaceStore.getState().selectedProject;
     const projectDir = options.project?.project_dir ?? selectedProject?.project_dir ?? null;
     disposeInFlightHistoryHandles(
       currentSessionId !== NEW_CONVERSATION_ID ? currentSessionId : undefined,
     );
     setHistoryLoadingMore(false);
-    resetNewConversationRuntime({ mode: targetMode, selectedModelName, projectDir });
+    resetNewConversationRuntime({ mode: nextMode, selectedModelName, projectDir });
     if (options.initialInputValue) {
       useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, options.initialInputValue);
     }
@@ -1936,8 +1982,10 @@ function AppContent() {
         const pendingSkills = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID)?.selectedSkills ?? [];
         pendingSkills.forEach((skill) => useSessionStore.getState().addSelectedSkill(newSid, skill));
         useSessionStore.getState().clearSelectedSkills(NEW_CONVERSATION_ID);
+        pendingNewConversationRef.current = false;
+        useSessionStore.getState().removeRuntime(NEW_CONVERSATION_ID);
         useWorkspaceStore.getState().upsertSession(createdSession, { isNew: true });
-        promotedFromNewSessionIdsRef.current.add(newSid);
+        sessionIdsCreatedInThisPageRef.current.add(newSid);
         useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
         sessionIdRef.current = newSid;
         setSessionId(newSid);
@@ -2182,7 +2230,7 @@ function AppContent() {
         !options?.skipHistoryLoad &&
         !existingRuntime?.historyPagerMeta &&
         !existingRuntime?.isNewSession &&
-        !promotedFromNewSessionIdsRef.current.has(targetSessionId);
+        !sessionIdsCreatedInThisPageRef.current.has(targetSessionId);
       if (willLoadHistory) {
         setHistoryPagerMeta(targetSessionId, null);
         setLoadingHistory(targetSessionId, true);
@@ -2230,9 +2278,9 @@ function AppContent() {
       setSessionId(targetSessionId);
       if (targetSession) {
         upsertSessionMetadata(targetSession, { setCurrent: true });
-        // 还原后端记录的会话模型：打开会话时若后端 metadata 带 model，写进
-        // runtime.selectedModelName，避免 selectedModelName 为空被全局默认兜底，
-        // 导致界面显示成默认模型（如定时任务选了非默认模型的会话，bug002）。
+        // 会话打开时若后端 metadata 带 model（首条 chat.send 显式携带 model_name 时
+        // 由后端落盘），写进 runtime.selectedModelName——单 Agent 与集群（team）会话
+        // 同样恢复，保证刷新页面后模型选择不回退到默认模型。
         if (targetSession.model) {
           useSessionStore.getState().setSelectedModelName(targetSessionId, targetSession.model);
         }
@@ -2555,8 +2603,16 @@ function AppContent() {
     && missingSessionId === routeSessionId
     && isConversationMissing(routeSessionId, true, sessions);
   const showConversationNotFound = route.kind === 'not-found' || routeSessionMissing;
-  const isNewSessionPromotion = Boolean(sessionId && promotedFromNewSessionIdsRef.current.has(sessionId));
+  const showWorkspaceDivider = isTeamAreaExpanded && !showConversationNotFound;
+  const isNewSessionPromotion = Boolean(sessionId && sessionIdsCreatedInThisPageRef.current.has(sessionId));
   const composerFocusKey = showConversationNotFound ? null : `${sessionId}:${composerFocusNonce}`;
+
+  useEffect(() => {
+    if (!showWorkspaceDivider) clearChatPanelResize();
+    return () => {
+      clearChatPanelResize();
+    };
+  }, [clearChatPanelResize, showWorkspaceDivider]);
 
   return (
     <div
@@ -2685,10 +2741,18 @@ function AppContent() {
                 </div>
 
                 {/* 可拖拽分割线 */}
-                {effectiveTeamAreaExpanded && !showConversationNotFound && (
+                {showWorkspaceDivider && (
                   <div
-                    className="resize-divider"
-                    onMouseDown={handleDividerMouseDown}
+                    className="resize-divider resize-divider--workspace touch-none select-none"
+                    role="separator"
+                    aria-orientation="vertical"
+                    onPointerDown={handleDividerPointerDown}
+                    onPointerMove={handleDividerPointerMove}
+                    onPointerUp={finishDividerResize}
+                    onPointerCancel={finishDividerResize}
+                    onLostPointerCapture={(event) => {
+                      clearChatPanelResize(event.pointerId);
+                    }}
                   />
                 )}
 

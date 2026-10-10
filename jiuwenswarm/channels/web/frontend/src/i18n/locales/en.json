@@ -472,7 +472,8 @@
     "stop": "Stop",
     "modelSelector": {
       "tooltip": "Switch the model used for chat",
-      "clusterLockedTooltip": "Cluster mode uses the configured default model and cannot be changed",
+      "tooltipSessionLocked": "This session has a fixed model. Start a new session to switch.",
+      "tooltipLockedEnterprise": "Enterprise models are centrally configured and cannot be changed.",
       "configured": "Configured Models",
       "addModel": "Add Custom Model",
       "placeholder": "Select Model",
@@ -2913,12 +2914,26 @@
     }
   },
   "mermaid": {
-    "image": "Image",
-    "code": "Code",
-    "copyCode": "Copy code",
+    "rendering": "Drawing…",
     "zoomIn": "Zoom in",
     "zoomOut": "Zoom out",
     "fitView": "Fit view"
+  },
+  "diagram": {
+    "image": "Image",
+    "code": "Code",
+    "moreActions": "More diagram actions",
+    "downloadImage": "Download as image",
+    "copyCode": "Copy code",
+    "copied": "Copied",
+    "copyFailed": "Copy failed",
+    "preparingImage": "Preparing image…",
+    "downloadImageFailed": "Could not save image"
+  },
+  "svg": {
+    "streaming": "Drawing…",
+    "invalid": "SVG code contains errors",
+    "previewTitle": "SVG image preview"
   },
   "authPrompt": {
     "title": "Authorization",

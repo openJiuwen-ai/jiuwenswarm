@@ -369,6 +369,14 @@ JiuwenSwarm 使用独立的内部数据目录保存启动配置、Agent 身份�
 - 启动配置目录：JiuwenSwarm 启动配置目录只用于保存 JiuwenSwarm 自身配置，不得用于存放普通任务产物或项目文件。
 - 不要仅因为 Agent 内部数据目录的物理路径名包含 `workspace`，就把它当作用户项目的输出目录。
 
+## 产物格式偏好
+
+- 矢量产物（流程图、架构图、示意图、图标、插画等）默认用 ```svg 围栏包裹完整自包含的 `<svg>...</svg>` 源码写在最终回复正文里；不生成 .svg 文件、不调 `generate_image`、不落盘投递。
+- **词义消歧**：用户说“给我 svg”“用 svg 画”“要矢量图标”指源码而非 .svg 文件附件；仅当明确出现“文件/下载/导出/保存为 .svg”时才生成并
+  投递文件。Mermaid 仅用于标准结构图，超出其表达或用户明确要 SVG 时直接给源码。
+- SVG 源码须在**最后一条无工具调用的消息**里；同一产物不要既内联又发文件。
+- 仅当产物本质是位图（照片、AI 生图）或用户明确要 png/jpg/pdf 时才 `generate_image` + `send_file_to_user`；用户指定格式时以用户为准。
+
 ## 文件发送
 
 当你的工具列表中存在 `send_file_to_user` 工具时，**必须**在以下场景主动调用该工具将文件发送给用户：
@@ -506,6 +514,23 @@ If the user does not specify a location, follow these rules:
   for JiuwenSwarm's own configuration, not ordinary task artifacts or project files.
 - Do not treat the Agent internal data directory as the user's project output directory merely because
   its physical path name contains the word `workspace`.
+
+## Artifact Format Preference
+
+- Vector artifacts (flowcharts, architecture diagrams, schematics, icons, illustrations, etc.)
+  default to inline SVG source in the final reply body — a complete, self-contained
+  `<svg>...</svg>` wrapped in a ```svg fenced code block. Do NOT generate .svg files, call
+  `generate_image`, or save to disk to deliver.
+- **Lexical disambiguation**: "give me an svg", "draw it in svg", "I want a vector/icon" means
+  SVG source, NOT a .svg file attachment. Only generate and deliver a file when the user
+  explicitly says "file/download/export/save as .svg". Use Mermaid only for standard structured
+  charts; when the user explicitly asks for SVG or the diagram is beyond Mermaid, output SVG
+  source.
+- SVG source MUST go in the **last message with no tool calls**; do not both inline and send a
+  file for the same artifact.
+- Call `generate_image` + `send_file_to_user` only for inherently raster artifacts (photos, AI
+  image gen) or when the user explicitly requests png/jpg/pdf; honor any explicit format the
+  user specifies.
 
 ## Sending Files
 

@@ -398,6 +398,9 @@ const PROACTIVE_KEYS = new Set([
 ]);
 // ConfigPanel 暂不展示这些配置；保留后端下发值，并在比较/提交时跳过。
 const HIDDEN_FROM_UI_CONFIG_KEYS = new Set([
+  "a2ui_enabled",
+  "a2ui_generation_enabled",
+  "a2ui_rendering_enabled",
   "proactive_recommendation_tick_interval_minutes",
   "kv_cache_release_enabled",
   "kv_cache_affinity_enabled",
@@ -1116,13 +1119,13 @@ const OPENAI_ACCOUNT_LOGIN_START_TIMEOUT_MS = 90_000;
 
 const MODEL_PROVIDER_OPTIONS = [
   "OpenAI",
-  OPENAI_ACCOUNT_PROVIDER,
   "OpenRouter",
   "DashScope",
   "SiliconFlow",
   "InferenceAffinity",
   "DeepSeek",
 ] as const;
+
 const REASONING_LEVEL_OPTIONS = ["off", "low", "medium", "high"] as const;
 
 function isOpenAIAccountProvider(provider?: string): boolean {
@@ -2274,9 +2277,9 @@ function MultiModelSection({
                 </div>
               </div>
               {isExpanded && (
-                <div className="border-t border-border px-3 py-2 space-y-2">
+                <div className="border-t border-border px-3 py-2 space-y-2" data-testid="config-panel-model-item-detail">
                   {(["model_name", "alias", "api_base", "api_key", "model_provider", "reasoning_level"] as const).map((field) => (
-                    <div key={field} className="flex items-center gap-2 text-xs">
+                    <div key={field} className="flex items-center gap-2 text-xs" data-testid="config-panel-model-item-field" data-variant={field}>
                       <label className="w-28 text-text-muted shrink-0">
                         <ConfigFieldHintLabel
                           label={
@@ -2292,10 +2295,14 @@ function MultiModelSection({
                         <select
                           value={models[idx]?.[field] ?? ""}
                           onChange={(e) => updateModel(idx, field, e.target.value)}
-                          className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
+                          disabled={modelIsOpenAIAccount}
+                          className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs disabled:cursor-not-allowed disabled:bg-secondary/30 disabled:text-text-muted"
                         >
                           <option value="" disabled>{t("config.selectModelProvider")}</option>
                           {MODEL_PROVIDER_OPTIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+                          {/* OAuth 托管模型不在可选 provider 列表中：兜底渲染当前值，
+                              避免受控 select 空白；同时禁用切换，防止误改后无法改回。 */}
+                          {modelIsOpenAIAccount && <option value={OPENAI_ACCOUNT_PROVIDER}>{OPENAI_ACCOUNT_PROVIDER}</option>}
                         </select>
                       ) : field === "reasoning_level" ? (
                         <select
@@ -2360,9 +2367,9 @@ function MultiModelSection({
         })}
 
         {addingNew ? (
-          <div className="rounded-lg border border-accent/40 bg-accent/5 px-3 py-2 space-y-2">
+          <div className="rounded-lg border border-accent/40 bg-accent/5 px-3 py-2 space-y-2" data-testid="config-panel-model-add">
             {(["model_name", "alias", "api_base", "api_key", "model_provider", "reasoning_level"] as const).map((field) => (
-              <div key={field} className="flex items-center gap-2 text-xs">
+              <div key={field} className="flex items-center gap-2 text-xs" data-testid="config-panel-model-add-field" data-variant={field}>
                 <label className="w-28 text-text-muted shrink-0">
                   <ConfigFieldHintLabel
                     label={
@@ -2378,10 +2385,15 @@ function MultiModelSection({
                   <select
                     value={newModel[field]}
                     onChange={(e) => handleNewModelChange(field, e.target.value)}
-                    className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
+                    disabled={newModelIsOpenAIAccount}
+                    className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs disabled:cursor-not-allowed disabled:bg-secondary/30 disabled:text-text-muted"
                   >
                     <option value="" disabled>{t("config.selectModelProvider")}</option>
                     {MODEL_PROVIDER_OPTIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+                    {/* OAuth 托管流程经 onModelPatch 将 provider 置为 OpenAIAccount：
+                        兜底渲染当前值并禁用切换，与 api_key/api_base/model_name 的
+                        禁用策略一致。 */}
+                    {newModelIsOpenAIAccount && <option value={OPENAI_ACCOUNT_PROVIDER}>{OPENAI_ACCOUNT_PROVIDER}</option>}
                   </select>
                 ) : field === "reasoning_level" ? (
                   <select
@@ -3918,6 +3930,10 @@ export function ConfigPanel({
     for (const [key, value] of Object.entries(normalizedConfig)) {
       if (HIDDEN_CONFIG_KEYS.has(key) || HIDDEN_FROM_UI_CONFIG_KEYS.has(key)) continue;
       const tag = classifyKey(key);
+      // 按产品要求暂不在配置页展示三方 Agent，保留后端下发值及运行能力。
+      if (tag === "external_cli_agents") continue;
+      // 按产品要求暂不在配置页展示记忆敏感信息过滤，保留后端下发值及运行能力。
+      if (tag === "memory") continue;
       // 临时注释：先隐藏邮件配置，后续需要时可恢复。
       if (tag === "email") continue;
       // 飞书配置已迁移到 ChannelsPanel 管理，这里不再展示。

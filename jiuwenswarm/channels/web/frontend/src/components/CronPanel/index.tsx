@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronLeft, ChevronRight, Search, TrendingUp, Newspaper, Briefcase } from 'lucide-react';
 import { webRequest, webClient } from '../../services/webClient';
-import { useCronStore } from '../../stores';
+import { resolveConfiguredModelName, useCronStore, useSessionStore } from '../../stores';
 import { isEnterprise } from '../../edition';
 import { projectRegistryClient } from '../../features/workspace/projectRegistryClient';
 import type { ProjectInfo } from '../../features/workspace/projectTypes';
@@ -210,6 +210,15 @@ function cronJobToUI(job: CronJobDTO, projects: ProjectInfo[]): CronTaskUI {
 function isTeamCronModeValue(raw: string | undefined | null): boolean {
   const value = String(raw ?? '').trim().toLowerCase();
   return value === 'team' || value === 'team.plan' || value === 'code.team';
+}
+
+// 提交时把抽屉里选的模型（alias 或 model_name）归一成后端需要的 canonical model_name；
+// 单 Agent 与集群（team）任务统一处理——后端 scheduler 对 team 任务同样透传
+// job.model_name 给 chat.send（见 gateway/cron/scheduler.py _run_agent）。
+function resolveSubmittedCronModelName(value: CronTaskFormValue): string | null {
+  if (!value.modelName) return null;
+  const { availableModels } = useSessionStore.getState();
+  return resolveConfiguredModelName(availableModels, value.modelName) ?? value.modelName;
 }
 
 type StatusFilterKey = 'running' | 'paused' | 'expired';
@@ -517,6 +526,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const expiredCount = useMemo(() => jobs.filter((j) => jobStatusKey(j) === 'expired').length, [jobs]);
 
   async function handleCreateSubmit(value: CronTaskFormValue) {
+    const modelName = resolveSubmittedCronModelName(value);
     try {
       const isOnce = cronExprToSchedule(value.cronExpr.trim())?.kind === 'once';
       await webRequest<{ job: CronJobDTO }>('cron.job.create', {
@@ -540,7 +550,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         ...(value.projectId ? { project_id: value.projectId } : {}),
         // 企业版不支持用户选择模型（无模型下拉框），不提交 model_name，走 AgentServer 默认模型，
         // 避免后端 validate_cron_model 对企业库模型的校验误伤（个人版保留模型选择）。
-        ...(!isEnterprise() && value.modelName ? { model_name: value.modelName } : {}),
+        ...(!isEnterprise() && modelName ? { model_name: modelName } : {}),
         mode: value.mode,
         session_id: sessionId,
         ...(isOnce ? { delete_after_run: true } : {}),
@@ -567,6 +577,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   }
 
   async function handleEditSubmit(jobId: string, value: CronTaskFormValue) {
+    const modelName = resolveSubmittedCronModelName(value);
     try {
       const isProactive = jobId === PROACTIVE_AUTO_JOB_ID;
       const isOnce = cronExprToSchedule(value.cronExpr.trim())?.kind === 'once';
@@ -584,7 +595,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             enabled: value.enabled,
             wake_offset_seconds: normalizeWakeOffsetSeconds(value.wakeOffsetSeconds),
             // 企业版不支持用户选择模型，不提交 model_name（同 handleCreateSubmit）。
-            ...(!isEnterprise() && value.modelName ? { model_name: value.modelName } : {}),
+            ...(!isEnterprise() && modelName ? { model_name: modelName } : {}),
             mode: value.mode,
             delete_after_run: isOnce,
           };

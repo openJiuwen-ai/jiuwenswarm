@@ -49,6 +49,32 @@ DESKTOP_ENV_FLAG = "JIUWENSWARM_DESKTOP"
 STARTUP_TIMEOUT_SECONDS = 60.0
 PNG_DATA_URL_PREFIX = "data:image/png;base64,"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+@dataclass(frozen=True)
+class _DataUrlExportSpec:
+    allowed_suffixes: frozenset[str]
+    allowed_parameters: frozenset[str]
+    file_types: tuple[str, ...]
+
+
+DATA_URL_EXPORT_SPECS = {
+    "image/png": _DataUrlExportSpec(
+        allowed_suffixes=frozenset({".png"}),
+        allowed_parameters=frozenset(),
+        file_types=("PNG Image (*.png)",),
+    ),
+    "image/svg+xml": _DataUrlExportSpec(
+        allowed_suffixes=frozenset({".svg"}),
+        allowed_parameters=frozenset({"charset=utf-8"}),
+        file_types=("SVG Image (*.svg)",),
+    ),
+    "text/plain": _DataUrlExportSpec(
+        allowed_suffixes=frozenset({".mmd"}),
+        allowed_parameters=frozenset({"charset=utf-8"}),
+        file_types=("Mermaid Diagram (*.mmd)",),
+    ),
+}
 DesktopSaveResult = dict[str, bool]
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".jfif"})
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -540,7 +566,7 @@ class _WindowApi:
         return self._runtime.download_file(full_url, filename)
 
     def save_data_url(self, data_url: str, filename: str) -> DesktopSaveResult:
-        """保存前端生成的 data URL 文件，供分享图片导出使用。"""
+        """保存前端生成的 data URL 文件，供分享图片和图表导出使用。"""
         return self._runtime.save_data_url(data_url, filename)
 
     def select_project_directory(self) -> str | None:
@@ -1155,33 +1181,101 @@ class DesktopRuntime:
         threading.Timer(3.0, _retry).start()
 
     def save_data_url(self, data_url: str, filename: str) -> DesktopSaveResult:
-        """选择保存位置并保存 PNG data URL。"""
-        if not isinstance(data_url, str) or not data_url.startswith(PNG_DATA_URL_PREFIX):
-            logger.error("[desktop] invalid data url for share export")
+        """选择保存位置并保存受支持的 base64 data URL。"""
+        try:
+            safe_name = self._sanitize_filename(filename)
+        except ValueError as exc:
+            logger.error("[desktop] invalid export filename: %s", exc)
+            return _desktop_save_result(False)
+
+        if not isinstance(data_url, str) or not data_url.startswith("data:"):
+            logger.error("[desktop] invalid data url for export")
+            return _desktop_save_result(False)
+
+        header, separator, encoded_data = data_url.partition(",")
+        metadata = header[5:].split(";")
+        if not separator or len(metadata) < 2 or metadata[-1].lower() != "base64":
+            logger.error("[desktop] export data url must use base64 encoding")
+            return _desktop_save_result(False)
+
+        mime_type = metadata[0].lower()
+        export_spec = DATA_URL_EXPORT_SPECS.get(mime_type)
+        if export_spec is None:
+            logger.error("[desktop] unsupported export data url type: %s", mime_type)
+            return _desktop_save_result(False)
+
+        parameters = [parameter.lower() for parameter in metadata[1:-1]]
+        if len(parameters) != len(set(parameters)) or any(
+            parameter not in export_spec.allowed_parameters for parameter in parameters
+        ):
+            logger.error(
+                "[desktop] unsupported export data url parameters for %s: %s",
+                mime_type,
+                parameters,
+            )
+            return _desktop_save_result(False)
+
+        if Path(safe_name).suffix.lower() not in export_spec.allowed_suffixes:
+            logger.error(
+                "[desktop] export filename extension does not match %s: %s",
+                mime_type,
+                safe_name,
+            )
             return _desktop_save_result(False)
 
         try:
-            image_bytes = base64.b64decode(data_url[len(PNG_DATA_URL_PREFIX):], validate=True)
-        except binascii.Error as exc:
-            logger.error("[desktop] failed to decode share export data url: %s", exc)
+            file_bytes = base64.b64decode(encoded_data, validate=True)
+        except ValueError as exc:
+            logger.error("[desktop] failed to decode export data url: %s", exc)
             return _desktop_save_result(False)
 
-        if not image_bytes.startswith(PNG_SIGNATURE):
-            logger.error("[desktop] share export data is not a PNG")
+        if mime_type == "image/png" and not file_bytes.startswith(PNG_SIGNATURE):
+            logger.error("[desktop] export data is not a PNG")
             return _desktop_save_result(False)
 
+        temp_fd: int | None = None
+        temp_path: Path | None = None
         try:
-            selected_path = self._select_save_path(filename, ("PNG Image (*.png)",))
+            selected_path = self._select_save_path(safe_name, export_spec.file_types)
             if selected_path is None:
-                logger.info("[desktop] share image save cancelled by user")
+                logger.info("[desktop] data url export cancelled by user")
                 return _desktop_save_result(False, cancelled=True)
 
-            selected_path.write_bytes(image_bytes)
-            logger.info("[desktop] share image saved to: %s", selected_path)
+            temp_fd, temp_name = tempfile.mkstemp(
+                dir=selected_path.parent,
+                prefix=f".{selected_path.name}.",
+                suffix=".part",
+            )
+            temp_path = Path(temp_name)
+            export_file = os.fdopen(temp_fd, "wb")
+            temp_fd = None
+            with export_file:
+                export_file.write(file_bytes)
+            os.replace(temp_path, selected_path)
+            temp_path = None
+            logger.info("[desktop] data url export saved to: %s", selected_path)
             return _desktop_save_result(True)
         except (OSError, RuntimeError, ValueError) as exc:
-            logger.error("[desktop] failed to save share image: %s", exc)
+            logger.error("[desktop] failed to save data url export: %s", exc)
             return _desktop_save_result(False)
+        finally:
+            if temp_fd is not None:
+                try:
+                    os.close(temp_fd)
+                except OSError as cleanup_exc:
+                    logger.warning(
+                        "[desktop] failed to close partial export: %s",
+                        cleanup_exc,
+                    )
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError as cleanup_exc:
+                    logger.warning(
+                        "[desktop] failed to remove partial export %s: %s",
+                        temp_path,
+                        cleanup_exc,
+                    )
 
     @staticmethod
     def _show_download_complete(file_path: str) -> None:
