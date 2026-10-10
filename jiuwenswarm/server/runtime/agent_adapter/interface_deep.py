@@ -1886,6 +1886,10 @@ class JiuWenSwarmDeepAdapter:
         # killed remote MCP server fails fast instead of hanging on the MCP
         # SDK's 300s SSE read timeout. Idempotent (module-level _PATCHED guard).
         apply_mcp_call_timeout_patch()
+        from jiuwenswarm.runtime.project_lsp import install_project_lsp_leases
+        install_project_lsp_leases()
+        self._kernel_identity = None
+        self._kernel_leases = {}
         # SDK TaskTool creates ephemeral subagents (browser_agent included)
         # without emitting roster events, so Web clients never learn the
         # browser agent exists and the desktop browser tab never appears.
@@ -1894,7 +1898,7 @@ class JiuWenSwarmDeepAdapter:
         # any DeepAgent/TaskTool is created below.
         apply_task_tool_event_patch()
         self._instance: DeepAgent | None = None
-        self._process_cli_run_options: tuple[int | None, tuple[Any, ...]] | None = None
+        self._process_cli_run_options = None
         self._interaction_output_handoff: OutputHandoff | None = None
         self._session_input_guard: SessionInputGuard | None = None
         self._voice_agent_task_rail = None
@@ -2119,6 +2123,7 @@ class JiuWenSwarmDeepAdapter:
         self._last_models_config_fingerprint: str | None = None
         self._registered_mcp_server_ids: set[str] = set()
         self._registered_mcp_servers: dict[str, McpServerConfig] = {}
+        self._mcp_kernel_leases: dict[str, Any] = {}
         # MCP names this session loaded via chat.send's ``mcp`` field
         # (reconcile_session_mcp). init-registered config.yaml MCPs are NOT in
         # this set — reconcile only adds/removes its own, never touching init's.
@@ -4964,6 +4969,50 @@ class JiuWenSwarmDeepAdapter:
     async def _register_mcp_server(self, cfg: McpServerConfig, *, tag: str) -> bool:
         if self._instance is None:
             return False
+        identity = getattr(self, "_kernel_identity", None)
+        if identity is not None:
+            from jiuwenswarm.runtime.kernel import ResourceKey, identity_reference, process_kernel
+            signature = cfg.model_dump(exclude={"credential_resolver", "server_id"})
+            key = ResourceKey(identity, "mcp", str(cfg.server_name),
+                              identity_reference((cfg.client_type, cfg.server_path)),
+                              identity_reference((getattr(cfg, "auth_headers", None),
+                                                  getattr(cfg, "auth_query_params", None))),
+                              identity_reference(signature))
+            leases = getattr(self, "_mcp_kernel_leases", None)
+            if leases is None:
+                leases = self._mcp_kernel_leases = {}
+            for lease in leases.values():
+                if lease.key == key:
+                    return True
+
+            async def prepare():
+                shared = cfg.model_copy(deep=True, update={"server_id": f"{cfg.server_id}-{uuid.uuid4().hex}"})
+                reachable, reason = await preflight_mcp_server_reachable(shared)
+                if not reachable:
+                    raise RuntimeError(f"MCP '{cfg.server_name}' unreachable: {reason}")
+                result = await Runner.resource_mgr.add_mcp_server(shared, tag=tag)
+                check = getattr(result, "is_ok", None)
+                ok = bool(check()) if callable(check) else result is not False
+                if not ok:
+                    raise RuntimeError(f"MCP '{cfg.server_name}' registration failed")
+                return shared
+
+            async def close(shared):
+                # Isolate SDK transport cancellation scopes from the caller.
+                await asyncio.wait_for(asyncio.create_task(
+                    Runner.resource_mgr.remove_mcp_server(shared.server_id)), timeout=10)
+
+            lease = await process_kernel().acquire_async(key, prepare, close=close)
+            shared = lease.value
+            try:
+                self._instance.ability_manager.add(shared)
+            except BaseException:
+                await lease.release()
+                raise
+            leases[shared.server_id] = lease
+            self._registered_mcp_server_ids.add(shared.server_id)
+            self._registered_mcp_servers[shared.server_id] = shared
+            return True
         # stdio: command 必须可执行（npx/uvx/node 等），否则 SDK 启动子进程会
         # 抛 OSError 但被 connect() 的 except 吞掉，前端只看到笼统失败。
         # 提前 shutil.which 检查，缺失则直接报"命令不存在"，不发到 SDK。
@@ -5057,7 +5106,13 @@ class JiuWenSwarmDeepAdapter:
         # inconsistent). Isolate the removal in a fresh task so the cancel-scope
         # error stays contained; the bookkeeping below runs regardless of the
         # removal outcome.
-        await self._safe_remove_mcp_server(server_id)
+        lease = getattr(self, "_mcp_kernel_leases", {}).pop(server_id, None)
+        if lease is not None:
+            from jiuwenswarm.runtime.kernel import process_kernel
+            process_kernel().retire(lambda key: key == lease.key)
+            await lease.release()
+        else:
+            await self._safe_remove_mcp_server(server_id)
         if server_name:
             try:
                 self._instance.ability_manager.remove(server_name)
@@ -6428,9 +6483,10 @@ class JiuWenSwarmDeepAdapter:
         name_counter[model_name] = idx + 1
         cache_key = f"{model_name}#{idx}"
         try:
-            model = build_model_from_entry(
+            model = self._build_kernel_model(
                 mcc,
                 entry.get("model_config_obj") or {},
+                resource_id=str(entry.get("model_id") or model_name),
             )
             self._model_cache[cache_key] = model
         except Exception as exc:
@@ -6496,7 +6552,7 @@ class JiuWenSwarmDeepAdapter:
             or {}
         )
         try:
-            self._model_cache[model_name] = build_model_from_entry(mcc, mco)
+            self._model_cache[model_name] = self._build_kernel_model(mcc, mco)
         except Exception as exc:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] 跳过无效模型条目(legacy) %s: %s",
@@ -6509,7 +6565,44 @@ class JiuWenSwarmDeepAdapter:
         from jiuwenswarm.common.openrouter_attribution import inject_attribution_to_config
         inject_attribution_to_config(config)
 
+    def _build_kernel_model(self, mcc: dict, mco: dict, *, resource_id: str = "") -> Model:
+        from jiuwenswarm.runtime.kernel import (
+            KernelIdentity, ResourceKey, identity_reference, process_kernel,
+        )
+        identity = getattr(self, "_kernel_identity", None)
+        if identity is None:
+            identity = KernelIdentity.for_agent(
+                project_dir=str(getattr(self, "_project_dir", "") or ""),
+                work_mode=str(getattr(self, "_session_instance_mode", "agent")),
+                definition=getattr(self, "_session_instance_agent_definition", None),
+                capabilities={}, configuration=getattr(self, "_config_base_cache", {}),
+            )
+            self._kernel_identity = identity
+        key = ResourceKey(identity, "model", resource_id or str(mcc.get("model_name") or "legacy"),
+                          identity_reference((mcc.get("api_base"), mcc.get("endpoint_profile"))),
+                          identity_reference(mcc), identity_reference((mcc, mco)))
+        leases = getattr(self, "_kernel_leases", None)
+        if leases is None:
+            leases = self._kernel_leases = {}
+        lease = leases.get(key)
+        if lease is None:
+            lease = process_kernel().acquire(key, lambda: build_model_from_entry(mcc, mco))
+            leases[key] = lease
+        return lease.value
+
     def _create_model(self, config: dict) -> Model:
+        from jiuwenswarm.runtime.kernel import KernelIdentity, process_kernel
+        identity = KernelIdentity.for_agent(
+            project_dir=str(getattr(self, "_project_dir", "") or ""),
+            work_mode=str(getattr(self, "_session_instance_mode", "agent")),
+            definition=getattr(self, "_session_instance_agent_definition", None),
+            capabilities={name: config.get(name) for name in ("permissions", "tools", "skills", "mcp")},
+            configuration=config,
+        )
+        previous = getattr(self, "_kernel_identity", None)
+        if previous is not None and previous != identity:
+            process_kernel().retire(lambda key: key.identity == previous)
+        self._kernel_identity = identity
         # 指纹比对：模型配置未变且缓存非空时跳过重建，避免热更新时反复销毁/重建 Model 实例
         new_fp = self._models_config_fingerprint(config)
         if (
@@ -6580,7 +6673,7 @@ class JiuWenSwarmDeepAdapter:
             if zen_default is not None:
                 zmcc = zen_default["model_client_config"]
                 zname = zmcc["model_name"]
-                self._model_cache[zname] = build_model_from_entry(
+                self._model_cache[zname] = self._build_kernel_model(
                     zmcc, zen_default.get("model_config_obj") or {}
                 )
                 default_name = zname
@@ -6728,7 +6821,7 @@ class JiuWenSwarmDeepAdapter:
             for zent in get_zen_free_model_entries():
                 zmcc = zent.get("model_client_config") or {}
                 if (zmcc.get("model_name") or "") == requested:
-                    built = build_model_from_entry(
+                    built = self._build_kernel_model(
                         zmcc, zent.get("model_config_obj") or {}
                     )
                     self._model_cache[requested] = built
@@ -10247,7 +10340,8 @@ class JiuWenSwarmDeepAdapter:
         if not self._is_session_scoped_adapter:
             # The root is a router; the DeepAgent is created on first stream
             # in a session child. Apply there after selection, before model I/O.
-            self._process_cli_run_options = (max_turns, host_tools)
+            from jiuwenswarm.runtime.run_context import RunContext
+            self._process_cli_run_options = RunContext(max_turns=max_turns, host_tools=host_tools)
             return
         if self._instance is None:
             raise ValueError("process CLI session Agent is not ready")
@@ -12589,6 +12683,10 @@ class JiuWenSwarmDeepAdapter:
             project_dir=project_dir,
         )
 
+    async def prepare_kernel(self) -> None:
+        """Prepare shared model resources without an artificial session/Agent."""
+        self._create_model(self._config_base_cache or get_config())
+
     async def stop_interaction(self) -> None:
         """Stop this adapter's DeepAgent interaction loop if it was started."""
         if self._instance is None:
@@ -12678,6 +12776,14 @@ class JiuWenSwarmDeepAdapter:
             self._mcp_prewarm_task.cancel()
         self._mcp_prewarm_task = None
         await self._close_a2x_client()
+        mcp_leases = getattr(self, "_mcp_kernel_leases", {})
+        self._mcp_kernel_leases = {}
+        for lease in mcp_leases.values():
+            await lease.release()
+        leases = getattr(self, "_kernel_leases", {})
+        self._kernel_leases = {}
+        for lease in leases.values():
+            await lease.release()
         # 释放本实例在全局 RailManager 中的 per-agent 注册状态，避免会话
         # adapter 销毁后状态泄漏（issue #3711）。
         if self._instance is not None:
@@ -13456,6 +13562,8 @@ class JiuWenSwarmDeepAdapter:
                 stream = OutputHandoff(self._instance, stream)
                 self._interaction_output_handoff = stream
             mode = self._resolve_input_dispatch_mode(request.params)
+            from jiuwenswarm.runtime.execution_telemetry import observe_execution_entry
+            observe_execution_entry(request, str((request.params or {}).get("mode") or self._session_instance_mode))
             dispatched = await self._send_input_with_permission_resume_guard(
                 SendInputRequest(
                     request_id=request.request_id,
@@ -16109,7 +16217,7 @@ class JiuWenSwarmDeepAdapter:
                     # Consume before applying so failed runs cannot leak callbacks.
                     self._process_cli_run_options = None
                     await session_adapter.configure_process_cli_run(
-                        max_turns=process_options[0], host_tools=process_options[1]
+                        max_turns=process_options.max_turns, host_tools=process_options.host_tools
                     )
                 child_stream = session_adapter.process_message_stream_impl(request, inputs)
                 async with aclosing(child_stream):
