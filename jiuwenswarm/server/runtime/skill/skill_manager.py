@@ -2625,6 +2625,17 @@ class SkillManager:
                     author=author,
                     source_type="prebuilt",
                 )
+            try:
+                from jiuwenswarm.common.audit_emit import emit_audit_ua
+
+                emit_audit_ua(
+                    SUBMDL="agent",
+                    PROC="skill_install_prebuilt",
+                    UA="prebuilt skill installed",
+                    DETAIL=f"skill_id={skill_id};version={version};source_id={source_id}",
+                )
+            except Exception as _emit_exc:  # noqa: BLE001
+                logger.debug("audit emit failed: %s", _emit_exc)
             return {
                 "ok": True,
                 "skill_name": str(record.get("name") or skill_name).strip(),
@@ -3472,6 +3483,18 @@ class SkillManager:
                 "detail": "",
             }
             out["detail_params"] = exc.detail_params
+            try:
+                from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+                emit_audit_evt(
+                    SUBMDL="agent",
+                    PROC="skill_install_failed",
+                    RSPCD="E005",
+                    EVT="skill install failed",
+                    DETAIL=f"skill_url={skill_url};reason=empty_download",
+                )
+            except Exception as _emit_exc:  # noqa: BLE001
+                logger.debug("audit emit failed: %s", _emit_exc)
             return out
         except SkillNetInstallError as exc:
             logger.error("SkillNet 安装失败: %s", exc.detail or exc.detail_key)
@@ -3482,6 +3505,18 @@ class SkillManager:
             }
             if exc.detail_params:
                 out2["detail_params"] = exc.detail_params
+            try:
+                from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+                emit_audit_evt(
+                    SUBMDL="agent",
+                    PROC="skill_install_failed",
+                    RSPCD="E005",
+                    EVT="skill install failed",
+                    DETAIL=f"skill_url={skill_url};reason=install_error",
+                )
+            except Exception as _emit_exc:  # noqa: BLE001
+                logger.debug("audit emit failed: %s", _emit_exc)
             return out2
         except Exception as exc:
             logger.error("SkillNet 下载失败: %s", exc)
@@ -3490,6 +3525,18 @@ class SkillManager:
             extra: dict[str, Any] = {}
             if not raw:
                 extra["detail_key"] = "skills.skillNet.errors.installFailedFallback"
+            try:
+                from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+                emit_audit_evt(
+                    SUBMDL="agent",
+                    PROC="skill_install_failed",
+                    RSPCD="E005",
+                    EVT="skill install failed",
+                    DETAIL=f"skill_url={skill_url};reason=exception",
+                )
+            except Exception as _emit_exc:  # noqa: BLE001
+                logger.debug("audit emit failed: %s", _emit_exc)
             return {"ok": False, "detail": detail, **extra}
 
     def install_skill_sync(
@@ -3540,6 +3587,18 @@ class SkillManager:
             installation is not None
             and str(installation.get("source_type") or "").strip() in {"builtin", "prebuilt"}
         ):
+            try:
+                from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+                emit_audit_evt(
+                    SUBMDL="agent",
+                    PROC="skill_uninstall_rejected",
+                    RSPCD="E005",
+                    EVT="uninstall prebuilt skill rejected",
+                    DETAIL=f"name={raw_name};reason=prebuilt_not_removable",
+                )
+            except Exception as _emit_exc:  # noqa: BLE001
+                logger.debug("audit emit failed: %s", _emit_exc)
             return {
                 "success": False,
                 "error_code": "prebuilt_not_removable",
@@ -3991,6 +4050,18 @@ class SkillManager:
             }
         source_type = str(installation.get("source_type") or "").strip()
         if source_type not in {"", "user"}:
+            try:
+                from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+                emit_audit_evt(
+                    SUBMDL="agent",
+                    PROC="skill_uninstall_rejected",
+                    RSPCD="E005",
+                    EVT="uninstall prebuilt skill rejected",
+                    DETAIL=f"name={name};reason=prebuilt_not_removable",
+                )
+            except Exception as _emit_exc:  # noqa: BLE001
+                logger.debug("audit emit failed: %s", _emit_exc)
             return {
                 "success": False,
                 "error_code": "prebuilt_not_removable",
@@ -6383,6 +6454,17 @@ class SkillManager:
             item for item in records if item is not record
         ]
         self._save_state()
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_ua
+
+            emit_audit_ua(
+                SUBMDL="agent",
+                PROC="skill_remove_installation",
+                UA="skill installation removed",
+                DETAIL=f"name={name};origin={origin}",
+            )
+        except Exception as _emit_exc:  # noqa: BLE001
+            logger.debug("audit emit failed: %s", _emit_exc)
         return True
 
     @_state_transactional
