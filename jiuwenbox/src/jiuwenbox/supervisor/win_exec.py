@@ -398,12 +398,15 @@ def _build_runner_command(
 
     优先级: ``JIUWENBOX_RUNNER_PYTHON`` env (显式指定) > 默认系统 python 路径.
     dev 实测设 ``JIUWENBOX_RUNNER_PYTHON`` 指向系统 CPython 安装;
-    打包环境设 tools/python/python.exe. 系统 python 需先装 jiuwenbox_dev.pth
-    指向源码 (否则 ``-m jiuwenbox...`` 找不到) + pip install uvicorn
-    (logging_config 触发).
+    打包环境设 tools/python/python.exe. 源码环境由 agent-server 把 jiuwenbox
+    源码目录注入 box-server 的 PYTHONPATH, 再由 box-server 传给 runner;
+    runner 日志不依赖 uvicorn. 显式指定的解释器不存在时直接报错, 不回退
+    sys.executable (dev 下是 .venv launcher, jbx-sandbox 启动必然 WinError 5).
     """
     py = (os.environ.get("JIUWENBOX_RUNNER_PYTHON") or "").strip()
-    if not py or not os.path.isfile(py):
+    if py and not os.path.isfile(py):
+        raise RuntimeError(f"JIUWENBOX_RUNNER_PYTHON 指向的解释器不存在: {py}")
+    if not py:
         py = sys.executable or "python"
     parts = [
         py,
