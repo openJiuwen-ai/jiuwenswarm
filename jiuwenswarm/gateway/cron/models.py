@@ -199,13 +199,26 @@ def validate_cron_model(raw: Any) -> str | None:
     value = str(raw).strip()
     if not value:
         return None
-    from jiuwenswarm.common.config import get_model_config, get_model_names
+    from jiuwenswarm.common.config import (
+        get_model_config,
+        get_model_names,
+        resolve_env_vars,
+    )
 
     entry = get_model_config(value)
     if entry is not None:
         mcc = entry.get("model_client_config") or {}
         canonical = (mcc.get("model_name") or "").strip()
-        return canonical if canonical else value
+        if not canonical:
+            return value
+        # models.defaults 模板用 ${MODEL_NAME} 等占位符（真值在 .env）。
+        # get_model_config 按契约返回「未解析环境变量的原始配置」，直接回存
+        # 会把字面 "${MODEL_NAME}" 写进任务记录并在 cron.job.create 应答里
+        # 原样返回；执行侧 chat.send 还会把它当显式 model_name 写进会话元
+        # 数据。这里统一解析成真值，与 get_model_names 的展示口径一致；
+        # 解析为空（无对应 env）时保守回退原值。
+        resolved = str(resolve_env_vars(canonical) or "").strip()
+        return resolved or canonical
     available = get_model_names()
     hint = ", ".join(available[:20]) if available else "(no models configured)"
     if len(available) > 20:
