@@ -31,6 +31,10 @@ if TYPE_CHECKING:
 
 PREVIOUS_SESSION_MODE_KEY = "_session_previous_mode"
 
+# Older session metadata can contain history tags instead of runtime modes.
+# Reject them before AgentManager selects an instance for the session.
+_NON_RUNTIME_SESSION_MODES = frozenset({"subagent", "unknown"})
+
 CHAT_TURN_METHODS = frozenset(
     {
         ReqMethod.CHAT_SEND,
@@ -359,12 +363,22 @@ async def prepare_chat_turn(
         )
         if isinstance(stored_session_mode, str) and stored_session_mode.strip():
             stored_session_mode = stored_session_mode.strip()
-            params[PREVIOUS_SESSION_MODE_KEY] = stored_session_mode
-            if not explicit_mode_provided:
-                # Internal turns (including Heartbeat) inherit the Session's
-                # locked mode without turning that inheritance into an
-                # explicit client-requested transition.
-                params["mode"] = stored_session_mode
+            if stored_session_mode.lower() in _NON_RUNTIME_SESSION_MODES:
+                # A history tag cannot select an agent or become its previous mode.
+                logger.warning(
+                    "[prepare_chat_turn] ignoring non-runtime stored session "
+                    "mode %r for session=%s",
+                    stored_session_mode,
+                    session_id,
+                )
+                stored_session_mode = ""
+            else:
+                params[PREVIOUS_SESSION_MODE_KEY] = stored_session_mode
+                if not explicit_mode_provided:
+                    # Internal turns (including Heartbeat) inherit the Session's
+                    # locked mode without turning that inheritance into an
+                    # explicit client-requested transition.
+                    params["mode"] = stored_session_mode
         if isinstance(stored_work_mode, str) and stored_work_mode.strip().lower() in {
             "code",
             "work",
