@@ -223,12 +223,38 @@ class FileCronJobStore:
         job_id = str(job_id or "").strip()
         if not job_id:
             raise ValueError("id is required")
-        existing = await self.get_job(job_id)
-        if existing is None:
-            raise KeyError("job not found")
-        updated = apply_cron_job_patch(existing, dict(patch or {}))
-        await self._upsert_job(updated)
-        return updated
+
+        def _body() -> CronJob:
+            # 原子 read-modify-write：在单次锁内完成读取、打 patch、写回，
+            # 避免调度器状态标记与执行完成回写并发时 last_session_id 被覆盖
+            # （issue #7562）。
+            data = self._read_json_unlocked()
+            jobs_raw = data.get("jobs") or []
+            if not isinstance(jobs_raw, list):
+                jobs_raw = []
+            jobs_raw, changed = migrate_work_mode_on_items(jobs_raw)
+            if changed:
+                data["jobs"] = jobs_raw
+            existing_raw = None
+            for item in jobs_raw:
+                if isinstance(item, dict) and str(item.get("id") or "").strip() == job_id:
+                    existing_raw = item
+                    break
+            if existing_raw is None:
+                raise KeyError("job not found")
+            existing = parse_cron_jobs([existing_raw])[0]
+            updated = apply_cron_job_patch(existing, dict(patch or {}))
+            updated_dict = updated.to_dict()
+            for i, item in enumerate(jobs_raw):
+                if isinstance(item, dict) and str(item.get("id") or "").strip() == job_id:
+                    jobs_raw[i] = updated_dict
+                    break
+            data["version"] = int(data.get("version") or 1)
+            data["jobs"] = jobs_raw
+            self._write_json_unlocked(data)
+            return updated
+
+        return await self._run_locked(_body)
 
     async def delete_job(self, job_id: str, *, force: bool = False) -> bool:
         job_id = str(job_id or "").strip()
