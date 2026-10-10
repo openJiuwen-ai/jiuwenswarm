@@ -3,7 +3,12 @@
 # 用法: .\scripts\build-exe.ps1  或  pwsh -File scripts\build-exe.ps1
 
 param(
-    [string]$NodeDir = ""
+    [string]$NodeDir = "",
+    [string]$SigningCertificateThumbprint = "",
+    [string]$SignToolPath = "",
+    [string]$TimestampUrl = "http://time.certum.pl",
+    [switch]$NoSign,
+    [switch]$RequireSigning
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,9 +17,243 @@ $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
+$PreviousProcessorArchitecture = $env:PROCESSOR_ARCHITECTURE
+$env:PROCESSOR_ARCHITECTURE = "AMD64"
+
+try {
+
+function Resolve-SignToolPath {
+    param([string]$ExplicitPath)
+
+    $Candidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitPath)) {
+        $Candidates += $ExplicitPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:WORKSWARM_SIGNTOOL_PATH)) {
+        $Candidates += $env:WORKSWARM_SIGNTOOL_PATH
+    }
+
+    $WindowsKitsBin = "C:\Program Files (x86)\Windows Kits\10\bin"
+    if (Test-Path -LiteralPath $WindowsKitsBin) {
+        $Candidates += Get-ChildItem $WindowsKitsBin -Filter signtool.exe -Recurse -File `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -ExpandProperty FullName
+    }
+
+    $Command = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($Command) {
+        $Candidates += $Command.Source
+    }
+
+    $Resolved = $Candidates |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_) } |
+        Select-Object -First 1
+    if (-not $Resolved) {
+        throw "signtool.exe was not found. Install Windows SDK Signing Tools or pass -SignToolPath."
+    }
+    return [System.IO.Path]::GetFullPath($Resolved)
+}
+
+function Resolve-CodeSigningCertificate {
+    param([string]$ExplicitThumbprint)
+
+    $RequestedThumbprint = $ExplicitThumbprint
+    if ([string]::IsNullOrWhiteSpace($RequestedThumbprint)) {
+        $RequestedThumbprint = $env:WORKSWARM_SIGNING_CERTIFICATE_THUMBPRINT
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedThumbprint)) {
+        $RequestedThumbprint = ($RequestedThumbprint -replace '\s', '').ToUpperInvariant()
+        $Certificate = Get-Item `
+            -LiteralPath "Cert:\CurrentUser\My\$RequestedThumbprint" `
+            -ErrorAction SilentlyContinue
+        if (-not $Certificate) {
+            throw "Configured code-signing certificate '$RequestedThumbprint' is not available in Cert:\CurrentUser\My."
+        }
+        $Candidates = @($Certificate)
+    } else {
+        $Now = Get-Date
+        $Candidates = @(
+            Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.HasPrivateKey -and ($Now -ge $_.NotBefore) -and ($Now -le $_.NotAfter)
+                }
+        )
+        if ($Candidates.Count -gt 1) {
+            $Available = ($Candidates | ForEach-Object { "$($_.Thumbprint) ($($_.Subject))" }) -join '; '
+            throw "Multiple code-signing certificates are available. Pass -SigningCertificateThumbprint or set WORKSWARM_SIGNING_CERTIFICATE_THUMBPRINT. Available: $Available"
+        }
+    }
+
+    if ($Candidates.Count -eq 0) {
+        return $null
+    }
+
+    $Certificate = $Candidates[0]
+    if (-not $Certificate.HasPrivateKey) {
+        throw "Code-signing certificate '$($Certificate.Thumbprint)' does not expose a private key."
+    }
+    if ((Get-Date) -lt $Certificate.NotBefore -or (Get-Date) -gt $Certificate.NotAfter) {
+        throw "Code-signing certificate '$($Certificate.Thumbprint)' is outside its validity period."
+    }
+    return $Certificate
+}
+
+function Test-PortableExecutable {
+    param([Parameter(Mandatory)][string]$Path)
+
+    try {
+        $Stream = [System.IO.File]::Open(
+            $Path,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::Read
+        )
+        try {
+            if ($Stream.Length -lt 64) { return $false }
+            $Reader = [System.IO.BinaryReader]::new($Stream)
+            if ($Reader.ReadUInt16() -ne 0x5A4D) { return $false }
+            $Stream.Position = 0x3C
+            $PeOffset = $Reader.ReadInt32()
+            if (($PeOffset -lt 0) -or (($PeOffset + 4) -gt $Stream.Length)) { return $false }
+            $Stream.Position = $PeOffset
+            return $Reader.ReadUInt32() -eq 0x00004550
+        } finally {
+            $Stream.Dispose()
+        }
+    } catch {
+        throw "Unable to inspect PE file '$Path': $($_.Exception.Message)"
+    }
+}
+
+function Assert-ValidAuthenticodeSignature {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string]$ExpectedThumbprint = "",
+        [switch]$RequireTimestamp
+    )
+
+    $Signature = Get-AuthenticodeSignature -LiteralPath $Path
+    if ($Signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+        throw "Authenticode verification failed for '$Path': $($Signature.Status) $($Signature.StatusMessage)"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedThumbprint)) {
+        $ActualThumbprint = [string]$Signature.SignerCertificate.Thumbprint
+        if ($ActualThumbprint -ne $ExpectedThumbprint) {
+            throw "Unexpected signing certificate for '$Path': $ActualThumbprint"
+        }
+    }
+    if ($RequireTimestamp -and -not $Signature.TimeStamperCertificate) {
+        throw "The Authenticode signature for '$Path' does not contain a timestamp."
+    }
+}
+
+function Invoke-CodeSigning {
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$ResolvedSignTool,
+        [Parameter(Mandatory)][string]$CertificateThumbprint,
+        [Parameter(Mandatory)][string]$TimestampServer
+    )
+
+    $PortableExecutables = @(
+        Get-ChildItem -LiteralPath $Root -Recurse -File |
+            Where-Object { Test-PortableExecutable -Path $_.FullName } |
+            Sort-Object FullName
+    )
+    if ($PortableExecutables.Count -eq 0) {
+        throw "No PE files were found under '$Root'."
+    }
+
+    $UnsignedFiles = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
+    $AlreadySignedCount = 0
+    foreach ($File in $PortableExecutables) {
+        $Signature = Get-AuthenticodeSignature -LiteralPath $File.FullName
+        if ($Signature.Status -eq [System.Management.Automation.SignatureStatus]::Valid) {
+            $AlreadySignedCount++
+        } elseif ($Signature.Status -eq [System.Management.Automation.SignatureStatus]::NotSigned) {
+            $UnsignedFiles.Add($File)
+        } else {
+            throw "Refusing to replace the invalid signature on '$($File.FullName)': $($Signature.Status)"
+        }
+    }
+
+    $BatchSize = 20
+    for ($Offset = 0; $Offset -lt $UnsignedFiles.Count; $Offset += $BatchSize) {
+        $LastIndex = [Math]::Min($Offset + $BatchSize - 1, $UnsignedFiles.Count - 1)
+        $BatchPaths = @($UnsignedFiles[$Offset..$LastIndex] | ForEach-Object { $_.FullName })
+        & $ResolvedSignTool sign `
+            /sha1 $CertificateThumbprint `
+            /fd SHA256 `
+            /tr $TimestampServer `
+            /td SHA256 `
+            /v `
+            @BatchPaths
+        if ($LASTEXITCODE -ne 0) {
+            throw "SignTool failed for PE batch beginning with '$($BatchPaths[0])'."
+        }
+    }
+
+    foreach ($File in $PortableExecutables) {
+        Assert-ValidAuthenticodeSignature -Path $File.FullName
+    }
+    foreach ($File in $UnsignedFiles) {
+        Assert-ValidAuthenticodeSignature `
+            -Path $File.FullName `
+            -ExpectedThumbprint $CertificateThumbprint `
+            -RequireTimestamp
+    }
+
+    Write-Host (
+        "[sign] PE files: {0}; newly signed: {1}; existing valid signatures: {2}" -f `
+            $PortableExecutables.Count, $UnsignedFiles.Count, $AlreadySignedCount
+    ) -ForegroundColor Gray
+}
+
 # 项目根 = 脚本所在目录的上一层，基于脚本自身位置推导，换路径不坏
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $ProjectRoot
+
+$DetectedMachine = uv run --no-project --python 3.11 python -c "import platform; print(platform.machine())"
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$DetectedMachine = ([string]$DetectedMachine).Trim()
+if ($DetectedMachine -ne "AMD64") {
+    throw "Windows x64 packaging requires platform.machine() == AMD64; detected '$DetectedMachine'."
+}
+
+Write-Host "Architecture: $DetectedMachine" -ForegroundColor Gray
+
+$NoSignRequested = $NoSign -or ($env:NOSIGN -eq "1")
+$RequireSigningRequested = $RequireSigning -or ($env:REQUIRE_SIGNING -eq "1")
+if ($NoSignRequested -and $RequireSigningRequested) {
+    throw "Signing cannot be both disabled and required."
+}
+
+$DoSign = $false
+$SigningCertificate = $null
+$ResolvedSignToolPath = $null
+if (-not $NoSignRequested) {
+    $SigningCertificate = Resolve-CodeSigningCertificate `
+        -ExplicitThumbprint $SigningCertificateThumbprint
+    if ($SigningCertificate) {
+        $DoSign = $true
+        $SigningCertificateThumbprint = $SigningCertificate.Thumbprint
+        $ResolvedSignToolPath = Resolve-SignToolPath -ExplicitPath $SignToolPath
+    } elseif ($RequireSigningRequested) {
+        throw "A release signature is required, but no usable code-signing certificate was found. Sign in to the signing provider or configure a certificate thumbprint."
+    }
+}
+
+if ($DoSign) {
+    Write-Host "SignTool: $ResolvedSignToolPath" -ForegroundColor Gray
+    Write-Host "Signing certificate: $($SigningCertificate.Subject)" -ForegroundColor Gray
+} elseif ($NoSignRequested) {
+    Write-Host "Signing: disabled explicitly; output is for local testing only" -ForegroundColor Yellow
+} else {
+    Write-Host "Signing: skipped because no usable code-signing certificate was found; output is for local testing only" -ForegroundColor Yellow
+}
 
 # node/uv 运行时的解析与绑定函数在共享模块 build-runtimes.psm1，与
 # build-electron-exe.ps1 单一来源；契约测试 test_desktop_electron_contract.py 钉住两侧同步。
@@ -139,6 +378,20 @@ if (Test-Truthy $BundleUv) {
     Write-Host "`n[3.6/4] Skipping bundled uv runtime (BUNDLE_UV=$BundleUv)" -ForegroundColor Yellow
 }
 
+# Sign every PE payload only after all bundled runtimes are in place. Existing
+# valid vendor signatures are preserved; unsigned PE files receive our release
+# signature and timestamp before Inno Setup compresses them.
+if ($DoSign) {
+    Write-Host "`n[3.7/4] Signing frozen PE payloads..." -ForegroundColor Yellow
+    Invoke-CodeSigning `
+        -Root $FrozenDir `
+        -ResolvedSignTool $ResolvedSignToolPath `
+        -CertificateThumbprint $SigningCertificateThumbprint `
+        -TimestampServer $TimestampUrl
+} else {
+    Write-Host "`n[3.7/4] Skipping PE signing (unsigned local build)." -ForegroundColor Yellow
+}
+
 # 4. Build installer (Inno Setup)
 Write-Host "`n[4/4] Building installer (Inno Setup)..." -ForegroundColor Yellow
 $IsccPaths = @(
@@ -174,7 +427,16 @@ $InnoDefines = @(
     "/DBuildDistDirName=$BuildDistDirName",
     "/DBuildSetupBaseName=$BuildSetupBaseName"
 )
-& $Iscc @InnoDefines "$ProjectRoot\scripts\installer.iss"
+$InnoArguments = @($InnoDefines)
+if ($DoSign) {
+    $InnoArguments += "/DBuildSignToolName=certumsha256"
+    $InnoSignCommand = '$q' + $ResolvedSignToolPath + '$q sign' +
+        " /sha1 $SigningCertificateThumbprint /fd SHA256" +
+        " /tr $TimestampUrl /td SHA256 /v " + '$f'
+    $InnoArguments += "/Scertumsha256=$InnoSignCommand"
+}
+$InnoArguments += "$ProjectRoot\scripts\installer.iss"
+& $Iscc @InnoArguments
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $InstallerPath = Join-Path $ProjectRoot "dist\$BuildSetupFilename"
@@ -182,6 +444,30 @@ if (-not (Test-Path -LiteralPath $InstallerPath)) {
     throw "Installer was not created at the configured path: $InstallerPath"
 }
 
+if ($DoSign) {
+    Assert-ValidAuthenticodeSignature `
+        -Path $InstallerPath `
+        -ExpectedThumbprint $SigningCertificateThumbprint `
+        -RequireTimestamp
+    & $ResolvedSignToolPath verify /pa /all /v $InstallerPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "SignTool verification failed for installer '$InstallerPath'."
+    }
+}
+
 Write-Host "`n=== Build complete ===" -ForegroundColor Green
 Write-Host "Installer: $InstallerPath" -ForegroundColor Green
 Write-Host "Size: $([math]::Round((Get-Item $InstallerPath).Length / 1MB, 1)) MB" -ForegroundColor Green
+Write-Host "SHA-256: $((Get-FileHash -LiteralPath $InstallerPath -Algorithm SHA256).Hash)" -ForegroundColor Green
+if ($DoSign) {
+    Write-Host "Signature: valid and timestamped" -ForegroundColor Green
+} else {
+    Write-Host "Signature: not applied; this installer is for local testing only" -ForegroundColor Yellow
+}
+} finally {
+    if ($null -eq $PreviousProcessorArchitecture) {
+        Remove-Item Env:PROCESSOR_ARCHITECTURE -ErrorAction SilentlyContinue
+    } else {
+        $env:PROCESSOR_ARCHITECTURE = $PreviousProcessorArchitecture
+    }
+}
