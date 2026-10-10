@@ -61,6 +61,11 @@ logger = logging.getLogger(__name__)
 
 _ENV_VAR_PLACEHOLDER_RE = re.compile(r"^\$\{([^:}]+)(?::-([^}]*))?\}$")
 
+# 掩码规则：密钥长度达到此阈值时展示前 4 位与后 4 位明文；
+# 过短的密钥整体掩码以免泄露大部分内容。
+_API_KEY_MASK_MIN_REVEAL_LEN = 12
+_API_KEY_MASK_ASTERISKS = "******"
+
 
 class ConfigPanelBadRequest(ValueError):
     """models/config 域参数校验失败（HTTP 语义 400）。"""
@@ -122,6 +127,23 @@ def reasoning_level_display(value: Any) -> str:
 is_env_var_placeholder = _is_env_var_placeholder  # noqa: F401
 values_match = _values_match  # noqa: F401
 _reasoning_level_display = reasoning_level_display  # noqa: F401
+
+
+def mask_api_key(value: Any) -> str:
+    """返回 API Key 的部分掩码展示形式。
+
+    展示前 4 位与后 4 位明文，中间以固定长度的 ``*`` 填充，
+    便于用户辨识当前使用的是哪个凭据。环境变量占位符（如 ``${API_KEY}``）
+    本身不含敏感信息，原样返回。过短的密钥整体掩码。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if _is_env_var_placeholder(text):
+        return text
+    if len(text) < _API_KEY_MASK_MIN_REVEAL_LEN:
+        return "****"
+    return f"{text[:4]}{_API_KEY_MASK_ASTERISKS}{text[-4:]}"
 
 
 def normalize_provider_value(value: str) -> str:
@@ -286,9 +308,17 @@ def _merge_models_for_replace_all(
             else:
                 new_mcc.pop("endpoint_profile", None)
             new_entry["is_default"] = item["is_default"]
-            # api_key: resolved holds the decrypted plaintext shown to the frontend.
-            # Unchanged → keep raw (placeholder or ciphertext); changed → encrypt new value.
-            if not _values_match(item["api_key"], resolved_mcc.get("api_key")):
+            # api_key：后端返回计算掩码（前/后 4 位明文 + 固定 ``*``）
+            # 而非解密后的明文。前端回传值与存储值的掩码一致时视为
+            # "未修改"，保留原始持久化值（占位符或密文）。与旧明文
+            # 匹配的值同样视为未修改，保持向后兼容。
+            sent_key = str(item["api_key"] or "").strip()
+            resolved_plain = str(resolved_mcc.get("api_key") or "").strip()
+            key_unchanged = (
+                sent_key == mask_api_key(resolved_plain)
+                or _values_match(item["api_key"], resolved_plain)
+            )
+            if not key_unchanged:
                 new_mcc["api_key"] = (
                     crypto.encrypt(item["api_key"]) if (item["api_key"] and crypto) else item["api_key"]
                 )
@@ -511,6 +541,33 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
     return _infer_is_default(new_models)
 
 
+def _resolve_masked_api_key(api_key: str, model_name: str) -> str:
+    """将掩码形式的 API Key 替换为存储的真实密钥，供连接验证探测使用。
+
+    前端在连接测试时回传掩码值，需要从持久化配置中还原真实密钥，以便探测请求使用实际凭据。
+    匹配方式：先按模型名/别名精确匹配，再遍历所有存储条目按掩码比对（兼容用户改名后仍回传旧掩码的场景）。
+    """
+    if not api_key:
+        return api_key
+    try:
+        config = get_config()
+        models = get_default_models(config)
+        for match_by_name in (True, False):
+            for entry in models:
+                mcc = entry.get("model_client_config", {})
+                if match_by_name and model_name:
+                    entry_name = str(mcc.get("model_name", "")).strip()
+                    entry_alias = str(entry.get("alias", "")).strip()
+                    if entry_name != model_name and entry_alias != model_name:
+                        continue
+                stored_key = str(mcc.get("api_key", "")).strip()
+                if stored_key and api_key == mask_api_key(stored_key):
+                    return stored_key
+    except Exception:  # noqa: BLE001
+        logger.debug("[config.validate_model] failed to resolve masked api_key", exc_info=True)
+    return api_key
+
+
 # --------------------------------------------------------------------------- #
 # handler 实现（channel 语义与 app_web_handlers 原实现一致）
 # --------------------------------------------------------------------------- #
@@ -545,8 +602,8 @@ async def config_validate_model_handler(
         await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
         return
     api_base = str(params.get("api_base") or "").strip()
-    api_key = str(params.get("api_key") or "").strip()
     model = str(params.get("model") or "").strip()
+    api_key = _resolve_masked_api_key(str(params.get("api_key") or "").strip(), model)
     model_provider = normalize_provider_value(str(params.get("model_provider") or ""))
     needs_api_key = not is_openai_account_provider(model_provider)
     if not all([api_base, model, model_provider]) or (needs_api_key and not api_key):
@@ -692,7 +749,7 @@ async def models_list_handler(
                 "model_name": model_name,
                 "api_base": mcc.get("api_base", ""),
                 # 凭据绝不能随列表下发到浏览器
-                "api_key": "" if is_login_model(entry) else mcc.get("api_key", ""),
+                "api_key": "" if is_login_model(entry) else mask_api_key(mcc.get("api_key", "")),
                 "model_provider": mcc.get("client_provider", ""),
                 "temperature": mco.get("temperature"),
                 "reasoning_level": reasoning_level_display(mco.get("reasoning_level")),

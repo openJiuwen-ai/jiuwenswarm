@@ -8,6 +8,7 @@ from jiuwenswarm.common.config_panel.models_handlers import (
     _merge_models_for_replace_all,
     _reasoning_level_display,
     _values_match,
+    mask_api_key,
 )
 
 
@@ -371,6 +372,68 @@ def test_new_entry_without_origin_index_uses_payload_verbatim():
     assert mcc["plan"] == "custom_api"
     assert out[0]["model_config_obj"]["context_window"] == DEFAULT_CONTEXT_WINDOW_TOKENS
     assert out[0]["alias"] == "claude"
+
+
+def test_mask_api_key_shows_first_and_last_four_chars():
+    assert mask_api_key("sk-abc123xyz789wxyz") == "sk-a******wxyz"
+    assert mask_api_key("") == ""
+    assert mask_api_key(None) == ""
+    assert mask_api_key("${API_KEY}") == "${API_KEY}"
+    # 过短密钥无法安全展示首尾各 4 位，整体掩码。
+    assert mask_api_key("short") == "****"
+    assert mask_api_key("abc") == "****"
+
+
+def test_masked_api_key_round_trip_preserves_raw_value():
+    """前端收到计算掩码后原样回传，原始持久化值（占位符或密文）必须保留。"""
+    raw = _raw_entry_with_placeholder()
+    plain = "sk-real-secret-key-here"
+    resolved = _resolved_entry_for(raw, api_key_plain=plain, api_base="https://api.example.com")
+    expected_mask = mask_api_key(plain)
+
+    parsed = [{
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": expected_mask,
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "gpt",
+        "origin_index": 0,
+    }]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    # 原始占位符被保留，没有被掩码值覆盖。
+    assert out[0]["model_client_config"]["api_key"] == "${API_KEY}"
+
+    # 掩码展示前 4 位（"sk-r"）与后 4 位（"here"）供辨识。
+    assert expected_mask == "sk-r******here"
+
+
+def test_plaintext_api_key_round_trip_still_preserves_raw_value():
+    """向后兼容：缓存了真实明文的客户端仍通过 _values_match 走"未修改"路径。"""
+    raw = _raw_entry_with_placeholder()
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+
+    parsed = [{
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "gpt",
+        "origin_index": 0,
+    }]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    assert out[0]["model_client_config"]["api_key"] == "${API_KEY}"
 
 
 def test_existing_entry_persists_explicit_one_million_context_window():
