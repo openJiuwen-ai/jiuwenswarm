@@ -803,6 +803,30 @@ class TestHandleEventStoreValidation:
         assert content == "result: 9am now"
 
     @pytest.mark.asyncio
+    async def test_push_update_keeps_post_as_root(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await store.create_job(
+            name="daily", cron_expr="0 0 9 * * ? *", timezone="Asia/Shanghai",
+            description="reminder", targets="tui", post_as_root=True,
+        )
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler)
+        await svc.reload()
+        run_id = f"{job.id}:1234"
+        svc.runs[run_id] = CronRunState(
+            run_id=run_id, job_id=job.id, wake_at_iso="2026-06-09T08:55:00+08:00",
+            push_at_iso="2026-06-09T09:00:00+08:00", job_name=job.name,
+            targets=job.targets, session_id=None, chat_type=None,
+            timezone=job.timezone, result_text="result",
+        )
+
+        await svc.handle_event(
+            _Event(at_ts=time.time(), seq=1, kind="push_update", job_id=job.id, run_id=run_id)
+        )
+
+        assert handler.published[0].metadata["post_as_root"] is True
+
+    @pytest.mark.asyncio
     async def test_web_push_update_includes_execution_session_id(self, tmp_path):
         store_file = tmp_path / "cron_jobs.json"
         store = CronJobStore(path=store_file)

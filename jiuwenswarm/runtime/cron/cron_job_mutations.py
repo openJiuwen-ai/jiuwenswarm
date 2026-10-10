@@ -144,6 +144,7 @@ def build_new_cron_job(
     timezone: str,
     description: str,
     targets: str,
+    post_as_root: bool = False,
     enabled: bool = True,
     wake_offset_seconds: int | None = None,
     session_id: str | None = None,
@@ -202,6 +203,7 @@ def build_new_cron_job(
         wake_offset_seconds=int(wake_offset_seconds) if wake_offset_seconds is not None else 0,
         description=str(description or ""),
         targets=str(targets or "").strip(),
+        post_as_root=bool(post_as_root),
         session_id=sid,
         created_at=now,
         updated_at=now,
@@ -282,6 +284,8 @@ def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
         updated = replace(updated, description=str(patch.get("description") or ""))
     if "targets" in patch:
         updated = replace(updated, targets=str(patch.get("targets") or "").strip())
+    if "post_as_root" in patch:
+        updated = replace(updated, post_as_root=bool(patch["post_as_root"]))
     if "session_id" in patch:
         raw_sid = patch.get("session_id")
         new_sid = (

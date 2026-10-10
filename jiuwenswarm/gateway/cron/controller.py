@@ -291,6 +291,7 @@ class CronController:
         description = str(params.get("description") or "")
         wake_offset_seconds = params.get("wake_offset_seconds", None)
         raw_targets = params.get("targets")
+        post_as_root = bool(params.get("post_as_root", False))
         mode = params.get("mode")
         if mode is not None and str(mode).strip():
             mode = normalize_cron_job_mode(mode)
@@ -394,6 +395,7 @@ class CronController:
             else None,
             description=description,
             targets=targets,
+            post_as_root=post_as_root,
             session_id=routing_sid,
             chat_type=chat_type,
             mode=mode,

@@ -198,6 +198,25 @@ async def test_send_uses_routing_target_chunks_text_and_ignores_delta() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_post_as_root_omits_thread_even_with_routing_target() -> None:
+    channel = SlackChannel(SlackChannelConfig(enabled=True), RobotMessageRouter())
+    client = _FakeSlackClient()
+    channel._client = client
+    target = RoutingTarget(
+        intent="godview",
+        delivery=SlackDeliveryTarget(
+            target_channel_id="C-TARGET", thread_ts="1710000003.000400"
+        ),
+    )
+
+    await channel.send(
+        _message(metadata={"post_as_root": True}), routing_target=target
+    )
+
+    assert client.calls == [{"channel": "C-TARGET", "text": "response"}]
+
+
+@pytest.mark.asyncio
 async def test_send_falls_back_to_metadata_session_and_default_channel() -> None:
     channel = SlackChannel(
         SlackChannelConfig(enabled=True, default_channel_id="C-DEFAULT"),

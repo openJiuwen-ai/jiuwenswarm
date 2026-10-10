@@ -159,6 +159,18 @@ def test_extract_legacy_params_delivery_channel_takes_priority_over_targets() ->
     assert out["targets"] == "web"
 
 
+def test_extract_legacy_params_keeps_post_as_root() -> None:
+    payload = {
+        "schedule": {"kind": "cron", "expr": "0 8 * * *"},
+        "payload": {"kind": "agentTurn", "message": "daily report"},
+        "delivery": {"channel": "web", "post_as_root": True},
+    }
+
+    out = _extract_legacy_params(payload, context=None, require_schedule=True)
+
+    assert out["post_as_root"] is True
+
+
 def test_extract_legacy_params_context_mode_takes_priority_over_payload() -> None:
     context = SimpleNamespace(
         channel_id="web",
@@ -247,6 +259,7 @@ async def test_cron_tools_create_job_does_not_persist_locally(tmp_path, monkeypa
                 "timezone": "Asia/Shanghai",
                 "description": "hello",
                 "targets": "web",
+                "post_as_root": True,
             }
         )
     finally:
@@ -257,6 +270,7 @@ async def test_cron_tools_create_job_does_not_persist_locally(tmp_path, monkeypa
     # 已转发 Gateway（单源落库）
     assert len(push.payloads) == 1
     assert push.payloads[0]["body"]["action"] == "create"
+    assert push.payloads[0]["body"]["data"]["post_as_root"] is True
     # 本地 cron_jobs.json 未被写入（单源）
     assert not (tmp_path / "cron_jobs.json").exists()
 

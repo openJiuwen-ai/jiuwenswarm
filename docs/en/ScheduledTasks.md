@@ -284,6 +284,8 @@ Currently supported channels:
 - `xiaoyi` - Xiaoyi
 - `dingtalk` - DingTalk
 
+Set `post_as_root: true` to request a new top-level message instead of a reply in the source thread. Channels without thread support ignore this option. The default is `false`.
+
 ---
 
 ## Pushing to TUI Channel

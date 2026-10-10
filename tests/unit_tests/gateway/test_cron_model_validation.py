@@ -23,6 +23,7 @@ from jiuwenswarm.gateway.cron.models import (
     resolve_cron_model,
     validate_cron_model,
 )
+from jiuwenswarm.runtime.cron.cron_job_mutations import apply_cron_job_patch
 
 
 @pytest.fixture(autouse=True)
@@ -53,6 +54,23 @@ def _user_model_entry() -> dict:
         "is_default": True,
         "alias": "我的模型",
     }
+
+
+def test_post_as_root_round_trip_and_patch() -> None:
+    data = {
+        "id": "job-1",
+        "name": "daily",
+        "enabled": True,
+        "cron_expr": "0 0 9 * * ? *",
+        "timezone": "Asia/Shanghai",
+        "description": "reminder",
+        "targets": "web",
+        "post_as_root": True,
+    }
+    job = CronJob.from_dict(data)
+    assert CronJob.from_dict(job.to_dict()).post_as_root is True
+    assert apply_cron_job_patch(job, {"post_as_root": False}).post_as_root is False
+    assert CronJob.from_dict(data | {"post_as_root": False}).post_as_root is False
 
 
 def _environment_model_entry(model_name: str = "${MODEL_NAME}") -> dict:
