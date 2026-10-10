@@ -38,6 +38,11 @@ from openjiuwen.harness.rails import (
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+from jiuwenswarm.agents.swarm.review_feedback_journal import (
+    ReviewFeedbackEvolutionJournal,
+    journal_review_feedback_attribution,
+    supports_attribution_sink,
+)
 from jiuwenswarm.common.config import (
     get_evolution_review_feedback_min_confidence,
     get_skill_evolution_enabled,
@@ -608,11 +613,30 @@ def build_team_skill_evolution_rail(
             ),
         )
         if inp.global_skills_dir:
-            rail.configure_review_feedback_evolution(
-                session_id=str(inp.session_id or ""),
-                team_id=str(inp.team_id or ""),
-                min_confidence=get_evolution_review_feedback_min_confidence(ctx.config),
-            )
+            # Journaling is the durable, schema-frozen audit trail of what the
+            # reviewer-feedback attributor concluded; it never gates evolution.
+            # The sink keyword is a core extension: only pass it when the
+            # mounted openjiuwen core accepts it (signature-checked).
+            journal = ReviewFeedbackEvolutionJournal(inp.team_ws_root)
+            configure_kwargs: dict[str, Any] = {
+                "session_id": str(inp.session_id or ""),
+                "team_id": str(inp.team_id or ""),
+                "min_confidence": get_evolution_review_feedback_min_confidence(ctx.config),
+            }
+            if supports_attribution_sink(rail):
+                configure_kwargs["attribution_sink"] = (
+                    lambda attribution, task_id, review_round, _j=journal: (
+                        journal_review_feedback_attribution(
+                            _j, attribution, task_id, review_round
+                        )
+                    )
+                )
+            else:
+                logger.info(
+                    "[swarm.team_skill_evolution] review-feedback evolution journal "
+                    "inactive: mounted openjiuwen core exposes no attribution_sink"
+                )
+            rail.configure_review_feedback_evolution(**configure_kwargs)
         else:
             logger.warning(
                 "[swarm.team_skill_evolution] review-feedback integration skipped: "
