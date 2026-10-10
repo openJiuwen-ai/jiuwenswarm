@@ -144,11 +144,21 @@ class ResourceKernel:
     async def _drain_disposals(self) -> None:
         with self._lock:
             entries, self._disposals = self._disposals, []
+        await self._close_entries(entries)
+
+    @staticmethod
+    async def _close_entries(entries: list[_Entry]) -> None:
+        failures = []
         for entry in entries:
             if entry.close is not None:
-                result = entry.close(entry.value)
-                if inspect.isawaitable(result):
-                    await result
+                try:
+                    result = entry.close(entry.value)
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception as exc:
+                    failures.append(exc)
+        if failures:
+            raise RuntimeError(f"Kernel resource cleanup failed for {len(failures)} resource(s)") from failures[0]
 
     async def acquire_async(self, key: ResourceKey, factory: Callable[[], Any], *,
                             close: Callable[[Any], Any] | None = None) -> ResourceLease:
@@ -203,11 +213,7 @@ class ResourceKernel:
             entries = list(self._entries.values()) + self._disposals
             self._entries.clear()
             self._disposals = []
-        for entry in entries:
-            if entry.close is not None:
-                result = entry.close(entry.value)
-                if inspect.isawaitable(result):
-                    await result
+        await self._close_entries(entries)
 
     def _release(self, key: ResourceKey, entry: _Entry) -> Callable[[Any], Any] | None:
         with self._lock:

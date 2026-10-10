@@ -93,6 +93,26 @@ async def test_async_preparation_is_single_flight_and_survives_a_cancelled_waite
 
 
 @pytest.mark.asyncio
+async def test_shutdown_attempts_other_resources_when_one_close_fails():
+    kernel = ResourceKernel()
+    closed = []
+
+    def broken(value):
+        closed.append(value)
+        raise ValueError("connection cleanup failed")
+
+    first = kernel.acquire(key(), object, close=broken)
+    second = kernel.acquire(replace(key(), resource_id="second"), object, close=closed.append)
+    values = [first.value, second.value]
+    await first.release()
+    await second.release()
+    with pytest.raises(RuntimeError, match="cleanup failed for 1"):
+        await kernel.close()
+    assert closed == values
+    assert kernel.resource_count == 0
+
+
+@pytest.mark.asyncio
 async def test_retiring_inflight_preparation_disposes_it_and_builds_a_fresh_resource():
     kernel = ResourceKernel()
     started, release = asyncio.Event(), asyncio.Event()

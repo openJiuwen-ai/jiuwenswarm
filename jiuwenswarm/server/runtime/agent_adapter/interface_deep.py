@@ -4967,8 +4967,14 @@ class JiuWenSwarmDeepAdapter:
         return out
 
     async def _register_mcp_server(self, cfg: McpServerConfig, *, tag: str) -> bool:
+        import uuid
         if self._instance is None:
             return False
+        if str(cfg.client_type).strip().lower() == "stdio":
+            import shutil
+            command = str((cfg.params or {}).get("command", "")).strip()
+            if command and not shutil.which(command):
+                raise RuntimeError(f"MCP '{cfg.server_name}' command '{command}' not found on PATH")
         identity = getattr(self, "_kernel_identity", None)
         if identity is not None:
             from jiuwenswarm.runtime.kernel import ResourceKey, identity_reference, process_kernel
@@ -5361,6 +5367,7 @@ class JiuWenSwarmDeepAdapter:
             # persist that optimistic snapshot after a transient registration
             # failure. A restored profile remains the authoritative state.
             child.discard_transient_skill_retrieval_session_profile()
+            raise RuntimeError("Requested MCP capability unavailable: " + ", ".join(sorted(failed_names)))
 
     def _start_mcp_prewarm(self) -> None:
         """后台预热 connected MCP 的进程级连接缓存（仅 web root adapter）。
@@ -6989,6 +6996,11 @@ class JiuWenSwarmDeepAdapter:
         把 id_token 登记进本进程的凭据表：每个请求的模型检查都会先走到这里，所以集群
         模式的追问（不重建模型）也能把在跑成员的 token 续上。
         """
+        from jiuwenswarm.runtime.run_context import CURRENT_RUN_CONTEXT
+        context = CURRENT_RUN_CONTEXT.get()
+        if (context is not None and context.request_id == request.request_id
+                and context.session_id == str(request.session_id or "") and context.credential_context is not None):
+            return context.credential_context
         from jiuwenswarm.common.auth.login_credentials import login_auth_from_params
 
         return login_auth_from_params(request.params)
@@ -13563,7 +13575,8 @@ class JiuWenSwarmDeepAdapter:
                 self._interaction_output_handoff = stream
             mode = self._resolve_input_dispatch_mode(request.params)
             from jiuwenswarm.runtime.execution_telemetry import observe_execution_entry
-            observe_execution_entry(request, str((request.params or {}).get("mode") or self._session_instance_mode))
+            observe_execution_entry(request, str((request.params or {}).get("mode")
+                                                or getattr(self, "_session_instance_mode", "agent")))
             dispatched = await self._send_input_with_permission_resume_guard(
                 SendInputRequest(
                     request_id=request.request_id,
@@ -15461,6 +15474,7 @@ class JiuWenSwarmDeepAdapter:
         """Bind Host request identity for streaming and non-streaming execution."""
         request_params = request.params if isinstance(request.params, dict) else {}
         from jiuwenswarm.runtime.run_permissions import RUN_PERMISSIONS
+        from jiuwenswarm.runtime.run_context import CURRENT_RUN_CONTEXT, RunContext
         run_permissions = (
             request_params.get("run_permissions")
             if request.channel_id == "process_cli" else None
@@ -15469,6 +15483,16 @@ class JiuWenSwarmDeepAdapter:
         if (tool_levels is not None and self._permission_rail is None
                 and self._is_session_scoped_adapter):
             raise ValueError("run permissions require an enabled Runtime permission rail")
+        inherited = CURRENT_RUN_CONTEXT.get()
+        context = RunContext(
+            request_id=str(request.request_id or ""),
+            session_id=str(request.session_id or ""),
+            max_turns=inherited.max_turns if inherited and inherited.request_id == request.request_id else None,
+            max_budget_usd=inherited.max_budget_usd if inherited and inherited.request_id == request.request_id else None,
+            host_tools=inherited.host_tools if inherited and inherited.request_id == request.request_id else (),
+            tool_permissions=tuple(tool_levels.items()) if isinstance(tool_levels, dict) else None,
+            credential_context=self._scoped_login_auth(request),
+        )
         permission_rail = self._permission_rail
         previous_rail_levels = (
             getattr(permission_rail, "run_permission_levels", None)
@@ -15500,9 +15524,11 @@ class JiuWenSwarmDeepAdapter:
                     == OperationMode.SANDBOX
                 ),
             )
+        context_token = CURRENT_RUN_CONTEXT.set(context)
         try:
             yield
         finally:
+            CURRENT_RUN_CONTEXT.reset(context_token)
             if permission_rail is not None:
                 permission_rail.run_permission_levels = previous_rail_levels
             RUN_PERMISSIONS.reset(run_permissions_token)
