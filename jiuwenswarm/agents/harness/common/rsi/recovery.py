@@ -70,7 +70,7 @@ class RsiWorkspaceRecovery:
 
     def _target_status(self, task: Any) -> tuple[str, str]:
         if task.status == TaskStatus.QUEUED.value:
-            return TaskStatus.PAUSED.value, "agentserver_restart.queue_lost"
+            return TaskStatus.TERMINATED.value, "agentserver_restart.queue_lost"
 
         adapter = self.adapter_resolver(task.scenario, task.artifact_type)
         provider_state = _read_provider_state(adapter, task.task_id)
@@ -82,7 +82,10 @@ class RsiWorkspaceRecovery:
                 if reason:
                     return terminal, reason
             return terminal, f"provider_snapshot.{terminal.lower()}"
-        return TaskStatus.PAUSED.value, "agentserver_restart.execution_detached"
+        # The in-memory execution owner is gone after an AgentServer restart.
+        # Do not turn an interrupted run into a resumable task: the user must
+        # create a new experiment after an unexpected AgentServer shutdown.
+        return TaskStatus.TERMINATED.value, "agentserver_restart.execution_interrupted"
 
 
 def _read_provider_state(adapter: Any, task_id: str) -> Any:
