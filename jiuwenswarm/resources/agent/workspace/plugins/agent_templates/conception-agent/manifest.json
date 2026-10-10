@@ -1,0 +1,63 @@
+{
+  "version": "1.3.1",
+  "packageType": "agent_template",
+  "agentCard": {
+    "id": "conception-agent",
+    "name": "科研构思智能体",
+    "description": "管理科研构思会话，调用原生 research_agent 的多来源文献检索 Skill，并支持用户主动反馈修改"
+  },
+  "name": "conception-agent",
+  "description": "管理科研构思会话，调用原生 research_agent 的多来源文献检索 Skill，并支持用户主动反馈修改",
+  "persona": {
+    "dir": "./persona"
+  },
+  "skills": [
+    {
+      "dir": "./skills/conception-orchestration",
+      "mode": "all"
+    }
+  ],
+  "display_name": {
+    "en": "Research Conception Agent",
+    "zh": "科研构思智能体"
+  },
+  "display_description": {
+    "en": "Creates evidence-backed conceptions from multiple literature APIs with 10 verified references.",
+    "zh": "通过多来源真实文献 API，生成含 10 篇可核验参考文献的科研构思。"
+  },
+  "category": "Others",
+  "avatar": "",
+  "source": "local",
+  "default_init_input": {
+    "zh": "请根据我的研究方向生成一版构思，包含恰好 10 篇可核验参考文献，并整理成规划模块可直接接收的结构化结果",
+    "en": "Create a research conception with exactly 10 verified references and structure it for direct use by the planning module"
+  },
+  "tags": [
+    {
+      "en": "Research Conception",
+      "zh": "科研构思"
+    },
+    {
+      "en": "Literature Grounding",
+      "zh": "文献核验"
+    },
+    {
+      "en": "Multi-source Search",
+      "zh": "多源检索"
+    }
+  ],
+  "quick_inputs": [
+    {
+      "en": "Create a research conception with exactly 10 verified references and structure it for direct use by the planning module",
+      "zh": "请根据我的研究方向生成一版构思，包含恰好 10 篇可核验参考文献，并整理成规划模块可直接接收的结构化结果"
+    },
+    {
+      "en": "Create a conception using arXiv, Semantic Scholar, OpenAlex, and Crossref literature",
+      "zh": "请结合 arXiv、Semantic Scholar、OpenAlex 和 Crossref 文献生成构思"
+    },
+    {
+      "en": "Revise the current conception from my feedback while preserving unaffected valid content",
+      "zh": "请根据我的反馈修改当前构思，并保留未受影响且仍然有效的内容"
+    }
+  ]
+}

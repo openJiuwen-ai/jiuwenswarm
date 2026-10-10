@@ -1,0 +1,28 @@
+{
+  "agent_name": "experiment-execution-agent",
+  "agentName": "experiment-execution-agent",
+  "display_description": {
+    "en": "Executes frozen experiment tasks and preserves logs plus raw metrics.",
+    "zh": "执行冻结的实验任务并保留日志和原始指标。"
+  },
+  "displayDescription": {
+    "en": "Executes frozen experiment tasks and preserves logs plus raw metrics.",
+    "zh": "执行冻结的实验任务并保留日志和原始指标。"
+  },
+  "persona": { "dir": "persona" },
+  "tools": [
+    {
+      "file": "../../tools/experiment_agent_tools.py",
+      "class": "ExperimentExecutionTool"
+    }
+  ],
+  "rails": [
+    {
+      "file": "../../tools/experiment_agent_rails.py",
+      "class": "ExperimentSpecialistSkillRail"
+    }
+  ],
+  "skills": [
+    { "dir": "../../skills/experiment-orchestration", "mode": "all" }
+  ]
+}

@@ -1,0 +1,12 @@
+python: ">=3.11,<3.14"
+required:
+  pydantic: ">=2.0,<3.0"
+  matplotlib: ">=3.8,<4"
+optional:
+  psutil: ">=7.2.2,<8"
+  pymupdf: ">=1.26,<2"
+  pandas: ">=2.0,<3"
+  scikit-learn: ">=1.4,<2"
+  xgboost: ">=2.0,<3"
+  torch: ">=2.2,<3"
+  transformers: ">=4.40,<5"
