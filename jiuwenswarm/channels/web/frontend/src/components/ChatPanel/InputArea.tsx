@@ -2860,6 +2860,12 @@ function ModelSelector({
     window.dispatchEvent(new CustomEvent<string>('jiuwen:nav', { detail: 'configpanel' }));
   };
 
+  // 只读态（企业版统一配置 / 已创建会话固定模型）不再提示"切换对话使用的模型"，
+  // 按禁用原因给出准确文案，避免误导用户点击。
+  const modelSelectorTooltip = disabled
+    ? t(isEnterprise() ? 'chat.modelSelector.tooltipLockedEnterprise' : 'chat.modelSelector.tooltipSessionLocked')
+    : t('chat.modelSelector.tooltip');
+
   return (
     <div
       ref={menuRef}
@@ -2868,7 +2874,7 @@ function ModelSelector({
       <button
         type="button"
         className="chat-mode-select__trigger"
-        title={t('chat.modelSelector.tooltip')}
+        title={modelSelectorTooltip}
         onClick={() => {
           if (disabled) return;
           if (!isOpen && menuRef.current) {
