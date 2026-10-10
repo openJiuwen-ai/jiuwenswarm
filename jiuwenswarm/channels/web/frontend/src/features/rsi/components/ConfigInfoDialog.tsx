@@ -73,11 +73,15 @@ export function ConfigInfoDialog({ open, task, onClose }: ConfigInfoDialogProps)
       onClick={(event) => {
         if (event.target === ref.current) onClose();
       }}
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
     >
       <div className="rsi-config-dialog__inner">
         <div className="rsi-config-dialog__header">
           <h2 id="rsi-config-title">{t('rsi.configDialog.title')}</h2>
-          <button type="button" className="rsi-config-dialog__close" onClick={onClose} aria-label="close">
+          <button type="button" className="rsi-config-dialog__close" onClick={onClose} aria-label={t('common.close')}>
             ×
           </button>
         </div>

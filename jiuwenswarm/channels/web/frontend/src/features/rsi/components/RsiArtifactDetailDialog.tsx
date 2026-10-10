@@ -216,6 +216,14 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
     setCopyState('idle');
   }, [selectedPath]);
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
   const previewArtifact = useMemo(() => {
     if (!selectedEntry || !preview || preview.path !== selectedEntry.path) return null;
     return {
@@ -311,7 +319,7 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
       <div className="rsi-artifact-dialog__panel" onClick={(event) => event.stopPropagation()}>
         <header className="rsi-artifact-dialog__header">
           <span className="rsi-artifact-dialog__title">{title}</span>
-          <button type="button" className="rsi-artifact-dialog__close" onClick={onClose} aria-label="close">
+          <button type="button" className="rsi-artifact-dialog__close" onClick={onClose} aria-label={t('common.close')}>
             <X size={18} />
           </button>
         </header>
