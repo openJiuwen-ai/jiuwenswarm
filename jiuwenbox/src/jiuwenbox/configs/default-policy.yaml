@@ -230,7 +230,9 @@ network:
   # Uplink for isolated network namespaces. Each sandbox gets a veth pair,
   # a default route, and optional NAT through the host/container default route.
   # When subnet is omitted, jiuwenbox selects a private IPv4 range that does
-  # not overlap with current routes.
+  # not overlap with local/direct routes, non-default main-table routes, or
+  # typed safety routes. Near-global policy capture tables are excluded from
+  # allocation conflicts, but their holes are not.
   uplink:
     nat: true
     interface: ""
