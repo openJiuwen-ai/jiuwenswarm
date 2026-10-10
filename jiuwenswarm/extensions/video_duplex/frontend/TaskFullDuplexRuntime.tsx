@@ -16,6 +16,7 @@ import type {
   SearchProgressEntry,
 } from "./VideoLivePanel/types";
 import { TaskDuplexJobs } from "./taskDuplexJobs";
+import { describeDuplexError } from "./duplexErrorMessage";
 import {
   registerTaskFullDuplexController,
   setTaskFullDuplexRuntimeError,
@@ -261,9 +262,9 @@ export function TaskFullDuplexRuntime({
           "Jiuwen Core Agent",
         status,
         sequence: latest?.sequence || 0,
-        detail:
-          payload.error ||
-          [latest?.title, latest?.detail].filter(Boolean).join("\n"),
+        detail: payload.error
+          ? describeDuplexError(payload.error, "task")
+          : [latest?.title, latest?.detail].filter(Boolean).join("\n"),
         createdAt: (entries[0]?.timestamp || Date.now() / 1000) * 1000,
         steps: plan,
         searchSessionId: payload.search_session_id,

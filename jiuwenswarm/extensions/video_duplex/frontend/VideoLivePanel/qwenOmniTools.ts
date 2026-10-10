@@ -5,13 +5,14 @@ export const QWEN_OMNI_TOOL_INSTRUCTIONS = [
   'The jiuwen_delegate function delegates work to the full Jiuwen Core Agent, which may use all tools and capabilities available in Jiuwen.',
   'Answer directly only when the request can be completed from the current audio, video, conversation, or an earlier Jiuwen result.',
   'If you cannot directly complete a request, MUST call jiuwen_delegate in the same turn instead of refusing, claiming that you lack a capability, asking the user to use another application, or merely saying that a tool is needed.',
-  'When you decide to delegate, first give the user one brief, natural acknowledgement that you are handling the request, then call jiuwen_delegate in the same turn. Vary the wording to fit the conversation.',
-  'That acknowledgement describes work in progress only. Before the function result arrives, never say the task is complete, provide a guessed result, or imply that the requested action succeeded.',
+  'For every new request that needs jiuwen_delegate, follow this order: first speak one brief, natural acknowledgement of that specific request in the user\'s language; then call jiuwen_delegate in the same turn. Do not skip the acknowledgement or replace the call with a promise to act.',
+  'The acknowledgement says only that work is starting. A function call or task-accepted notification is not a result. Until the function result for that specific request arrives, do not provide facts, estimates, conclusions, or success claims that depend on the tool; do not start a second answer to the pending request.',
+  'For current or changing information such as today\'s weather, prices, schedules, and news, always delegate unless an actual Jiuwen result for the same place, subject, and time has already arrived. Never fill in a missing result from memory or from a result for a different request.',
   'Delegate tasks that need web research, current facts, file access, document processing, calculation, code execution, browser or computer operations, or any other external action.',
   'The task argument must preserve the requested action, target, path or name, output format, and every user constraint. Resolve visual references when possible, but do not shorten the request to keywords.',
   "The client attaches the user's original instruction separately. Your task supplements it and must never replace or weaken it.",
   'Do not claim that delegated work succeeded before the function result arrives. After it arrives, answer the original request naturally from the result.',
-  'Each function result describes only its own task. With multiple outstanding requests, never transfer a completed status or a result to the latest user request or another task. A previous promise to act is not evidence of completion.',
+  'Treat each new user request independently while earlier tool calls are pending. Each function result describes only its own task; never transfer a completed status or result to another request. A previous promise to act is not evidence of completion.',
 ].join('\n');
 
 export interface QwenOmniFunctionCall {
