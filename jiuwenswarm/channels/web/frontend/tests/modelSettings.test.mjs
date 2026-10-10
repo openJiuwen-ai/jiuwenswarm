@@ -25,7 +25,6 @@ import {
   getModelDisplayGroups,
   promotePrimaryModel,
   removeEditableModel,
-  setGroupDefaultModel,
 } from '../node_modules/.cache/settings-refactor/modules/models/modelListOperations.js';
 
 const root = new URL('../', import.meta.url);
@@ -471,7 +470,7 @@ test('custom vendor uses server reasoning data even when there are no built-in p
   );
 });
 
-test('default and deletion operations preserve identity, group semantics, and read-only filtering', () => {
+test('default and deletion operations preserve identity and read-only filtering', () => {
   const primary = { model_name: 'same', alias: 'first', is_default: true };
   const target = { model_name: 'same', alias: 'second', is_default: false };
   const other = { model_name: 'other', alias: 'third', is_default: true };
@@ -507,11 +506,7 @@ test('default and deletion operations preserve identity, group semantics, and re
   assert.equal(promoted.length, models.length);
   assert.equal(promoted[0].alias, 'second');
   assert.equal(promoted[0].is_default, true);
-  assert.equal(promoted.filter((model) => model.model_name === 'same' && model.is_default).length, 1);
-  const groupDefault = setGroupDefaultModel(models, target);
-  assert.equal(groupDefault.length, models.length);
-  assert.equal(groupDefault[0].alias, 'second');
-  assert.equal(groupDefault.filter((model) => model.model_name === 'same' && model.is_default).length, 1);
+  assert.equal(promoted[1].alias, 'first');
   assert.throws(() => removeEditableModel([primary, agentOs], primary), /LAST_EDITABLE_MODEL/);
 });
 
@@ -542,10 +537,14 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.match(page, /const refreshedPayload = await request\('models\.list'\)/);
   assert.match(page, /setAvailableModels\(parsed\.models, parsed\.activeModel\)/);
   assert.match(page, /const reloadModels = useCallback[\s\S]*await loadModels\(\)/);
-  assert.match(
-    page,
-    /<SettingsSection\s+title=\{t\('settingsPanel\.models\.primaryModels'\)\}\s+separatedRows\s+action=\{\s*<Button variant="primary"[\s\S]{0,180}settingsPanel\.models\.addModel[\s\S]{0,40}<\/Button>\s*\}/,
-  );
+  assert.match(page, /title=\{t\('settingsPanel\.models\.customModels'\)\}/);
+  assert.match(page, /<FreeModelsSettings\s*\/>/);
+  assert.match(page, /data-testid="settings-models-add-btn"/);
+  assert.match(page, /const \[activeTab, setActiveTab\] = useState<'models' \| 'groups'>\('models'\)/);
+  assert.match(page, /wrapperTestId="settings-models-tabs"/);
+  assert.match(page, /activeTab === 'models'/);
+  assert.match(page, /value: 'models', label: t\('settingsPanel\.models\.modelsTab'\)/);
+  assert.match(page, /value: 'groups', label: t\('settingsPanel\.models\.modelGroups'\)/);
   assert.match(page, /setDialog\(nextDialog\);\s*void loadCatalog\(\)/);
   assert.match(page, /type SaveModelsOptions = \{ errorScope\?: SettingsSaveErrorScope \};/);
   assert.match(page, /saveQueue\.enqueue\([\s\S]{0,320}\{ errorScope \},/);
@@ -554,22 +553,24 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
     page,
     /await saveModels\(nextModels, dialog\.model \? 'model\.edit' : 'model\.add', \{ errorScope: 'caller' \}\)/,
   );
-  assert.match(page, /const baseName = model\.alias\?\.trim\(\) \|\| model\.model_name/);
-  assert.match(page, /`\$\{baseName\} #\$\{groupOrdinal\}`/);
-  assert.match(page, /modelDisplayGroups\.map\(\(group, displayGroupIndex\)/);
-  assert.match(page, /className="settings-model-group"/);
-  assert.match(page, /renderModelCard\(item\.model, item\.index, group\.items\.indexOf\(item\) \+ 1\)/);
+  assert.match(page, /const customName = model\.alias\?\.trim\(\) \|\| model\.model_name/);
+  assert.match(page, /models\.map\(\(model, index\) => renderModelCard\(model, index\)\)/);
+  assert.doesNotMatch(page, /getModelDisplayGroups|setGroupDefaultModel|settings-model-group"/);
   assert.match(page, /const protocol = displayModelProtocol\(model\)/);
   assert.match(page, /vendorKey \? getVendorLabel\(vendorKey, t\) : t\('settingsPanel\.models\.customVendor'\)/);
   assert.match(page, /\[providerLabel, protocolLabel, model\.model_name\]\.join\(' · '\)/);
   assert.match(
     page,
-    /<h3 title=\{presentation\.customName\} data-testid="settings-models-card-title" data-variant=\{model\.origin_index \?\? 'new'\}>\{presentation\.customName\}<\/h3>/,
+    /<h3[\s\S]{0,240}title=\{presentation\.customName\}[\s\S]{0,240}data-testid="settings-models-card-title"[\s\S]{0,240}>\s*\{presentation\.customName\}\s*<\/h3>/,
   );
   assert.match(
     page,
-    /<p title=\{presentation\.metadata\} data-testid="settings-models-card-metadata" data-variant=\{model\.origin_index \?\? 'new'\}>\{presentation\.metadata\}<\/p>/,
+    /<p[\s\S]{0,240}title=\{presentation\.metadata\}[\s\S]{0,240}data-testid="settings-models-card-metadata"[\s\S]{0,240}>\s*\{presentation\.metadata\}\s*<\/p>/,
   );
+  assert.match(page, /'model_groups\.upsert'/);
+  assert.match(page, /'model_groups\.delete'/);
+  assert.match(page, /'models\.references'/);
+  assert.match(page, /setAvailableModelGroups\(parsed\.modelGroups\)/);
   assert.doesNotMatch(page, /accountMode|connectOpenAIAccount/);
   assert.doesNotMatch(dialog, /accountMode/);
   assert.doesNotMatch(page, /Promise\.all\(\[loadModels\(\), loadCatalog\(\)\]\)/);
@@ -619,7 +620,7 @@ test('provider search is isolated from unrelated session-store updates', () => {
 
   assert.match(
     app,
-    /const \{\s*setCurrentSession,\s*setAvailableModels,\s*setMode,\s*setTeamLeaderMemberIds,?\s*\} = useSessionStore\.getState\(\)/,
+    /const \{\s*setCurrentSession,\s*setAvailableModels,\s*setAvailableModelGroups,\s*setMode,\s*setTeamLeaderMemberIds,?\s*\} = useSessionStore\.getState\(\)/,
   );
   assert.match(
     form,
@@ -629,44 +630,37 @@ test('provider search is isolated from unrelated session-store updates', () => {
   assert.doesNotMatch(sessionStore, /connectionStats|setConnectionStats/);
 });
 
-test('grouped models use an accessible accordion and keep only the group default visible when collapsed', () => {
+test('models are listed flat without same-name auto grouping', () => {
   const page = source('src/features/settings/modules/models/ModelsSettings.tsx');
   const settingsCss = source('src/features/settings/SettingsPage.css');
+  const settingsAssets = source('src/assets/settings/index.ts');
   const zh = JSON.parse(source('src/i18n/locales/zh.json'));
   const en = JSON.parse(source('src/i18n/locales/en.json'));
 
-  assert.match(page, /import \{ Check, ChevronRight \} from 'lucide-react'/);
-  assert.match(
-    page,
-    /const \[expandedModelGroups, setExpandedModelGroups\] = useState<Record<string, boolean>>\(\{\}\)/,
-  );
-  assert.match(page, /const defaultItem = group\.items\.find\(\(\{ model \}\) => model\.is_default === true\)!/);
-  assert.match(page, /const alternativeItems = group\.items\.filter\(\(item\) => item !== defaultItem\)/);
-  assert.match(
-    page,
-    /const canSetPrimary = !readOnly && !isPrimary && \(!isDuplicate \|\| model\.is_default === true\)/,
-  );
-  assert.match(page, /\{canSetPrimary \? \(\s*<Button[\s\S]{0,480}settingsPanel\.models\.setPrimary/);
-  assert.match(
-    page,
-    /<button[\s\S]{0,240}className="settings-model-group__header"[\s\S]{0,240}aria-expanded=\{isExpanded\}[\s\S]{0,160}aria-controls=\{groupContentId\}/,
-  );
-  assert.match(page, /renderModelCard\(defaultItem\.model, defaultItem\.index, defaultOrdinal\)/);
-  assert.match(page, /className="settings-model-group__alternatives"[\s\S]{0,80}hidden=\{!isExpanded\}/);
-  assert.match(page, /settings-model-group__toggle-icon--expanded/);
-  assert.match(
-    page,
-    /<strong title=\{group\.modelName\}>\{group\.modelName\}<\/strong>\s*<\/div>\s*<span className="settings-model-group__meta" data-testid="settings-models-group-meta" data-variant=\{group\.modelName\}>[\s\S]{0,120}settingsPanel\.models\.groupMeta/,
-  );
-  assert.doesNotMatch(page, /settings-model-group__count/);
-  assert.match(settingsCss, /\.settings-model-group__header\s*\{[^}]*justify-content: space-between/s);
-  assert.match(settingsCss, /\.settings-model-group__header:hover\s*\{[^}]*var\(--color-surface-hover\)/s);
-  assert.match(settingsCss, /\.settings-model-group__toggle-icon--expanded\s*\{[^}]*rotate\(90deg\)/s);
-  assert.match(settingsCss, /\.settings-model-group > \.settings-model-card--grouped,/);
-  assert.match(settingsCss, /\.settings-model-group__alternatives\s*\{[^}]*var\(--color-surface-card\)/s);
-  assert.equal(zh.settingsPanel.models.groupMeta, '模型组 · {{count}} 个配置');
-  assert.equal(en.settingsPanel.models.groupMeta, 'Model group · {{count}} configurations');
-  assert.doesNotMatch(page, /settings-model-group__alternatives-heading/);
+  assert.match(page, /import \{ Check, CheckCircle2, ChevronDown \} from 'lucide-react'/);
+  assert.doesNotMatch(page, /copyModelName|settings-models-group-route-copy-btn/);
+  assert.match(page, /settings-models-group-route-test-btn/);
+  assert.match(page, /if \(model\) void testSavedModel\(model, modelIndex\)/);
+  assert.match(settingsAssets, /ConnectivityIcon from '\.\/actions\/connectivity\.svg\?react'/);
+  assert.match(settingsAssets, /test: ConnectivityIcon/);
+  assert.doesNotMatch(page, /ChevronRight|expandedModelGroups|getModelDisplayGroups|setGroupDefaultModel/);
+  assert.match(page, /models\.map\(\(model, index\) => renderModelCard\(model, index\)\)/);
+  assert.match(page, /const canSetPrimary = !readOnly && !isPrimary/);
+  assert.doesNotMatch(page, /settings-model-group__header|groupOrdinal|isDuplicate/);
+  assert.doesNotMatch(settingsCss, /\.settings-model-group\s*\{/);
+  assert.match(settingsCss, /\.settings-models-group-card\s*\{/);
+  assert.match(settingsCss, /\.settings-models-group-route\s*\{/);
+  assert.match(page, /settings-models-group-card__toggle/);
+  assert.match(page, /promoteGroupRouteDefault/);
+  assert.match(page, /settingsPanel\.models\.modelGroupsManagement/);
+  assert.equal(zh.settingsPanel.models.modelGroups, '模型组');
+  assert.equal(en.settingsPanel.models.modelGroups, 'Model groups');
+  assert.equal(zh.settingsPanel.models.modelGroupsManagement, '模型组管理');
+  assert.equal(en.settingsPanel.models.modelGroupsManagement, 'Model group management');
+  assert.equal(zh.settingsPanel.models.modelGroupRouteDefault, '组内默认');
+  assert.equal(en.settingsPanel.models.modelGroupRouteDefault, 'Group default');
+  assert.equal(zh.settingsPanel.models.groupMeta, undefined);
+  assert.equal(en.settingsPanel.models.groupMeta, undefined);
 });
 
 test('model dialog uses provider terminology and validates as part of confirmation', () => {

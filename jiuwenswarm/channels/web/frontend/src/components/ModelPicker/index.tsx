@@ -7,12 +7,20 @@ import { requestLogin } from '../../stores/authStore';
 import { useFreeModelsCampaign } from '../../features/free-models/campaign';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
+import type { ModelEntry, ModelGroup, ModelSelection } from '../../types';
+import { getModelSelectionLabel } from '../../features/settings/modules/models/modelGroupAdapters';
 import { ModelProviderIcon } from '../ModelProviderIcon';
+import ModelGroupIcon from '../../assets/model-group.svg?react';
 
 interface ModelPickerProps {
   value: string | null;
   /** Both conversation and scheduled-task callers receive the canonical model_name. */
   onChange: (modelName: string) => void;
+  /** Stable `{type,id}` selection when the caller participates in the new API. */
+  selection?: ModelSelection | null;
+  onSelectionChange?: (selection: ModelSelection) => void;
+  /** Cron / personal-context keep model_name-only until their contracts are migrated. */
+  includeModelGroups?: boolean;
   disabled?: boolean;
   onAddModel?: () => void;
   /** 过滤掉登录/免费模型，用于无法持久化免费模型凭据的场景；默认不过滤。 */
@@ -23,10 +31,17 @@ interface ModelPickerProps {
 const MENU_GAP = 10;
 const MENU_MAX_HEIGHT = 300;
 
+function isSameSelection(left: ModelSelection | null | undefined, right: ModelSelection): boolean {
+  return Boolean(left && left.type === right.type && left.id === right.id);
+}
+
 /** A shared model catalog and menu, with selection owned by the caller. */
 export default function ModelPicker({
   value,
   onChange,
+  selection = null,
+  onSelectionChange,
+  includeModelGroups = true,
   disabled = false,
   onAddModel,
   excludeFreeModels = false,
@@ -40,19 +55,45 @@ export default function ModelPicker({
   );
   const campaign = useFreeModelsCampaign();
   const { tooltip, handlers } = useAdaptiveTooltip();
+  const modelGroups = useSessionStore((state) => state.availableModelGroups);
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<CSSProperties | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const selected = models.find((model) => model.model_name === value);
   const freeModels = models.filter((model) => model.is_free === true);
+  const enabledGroups = includeModelGroups
+    ? modelGroups.filter((group) => group.enabled !== false && Boolean(group.model_group_id))
+    : [];
+  const selectionLabel = getModelSelectionLabel(selection, models, modelGroups);
+  const displayLabel =
+    selection?.type === 'model_group'
+      ? selectionLabel || selection.id
+      : selected
+        ? selected.alias || selected.model_name
+        : value || t('chat.modelSelector.placeholder');
   const groups = [
+    {
+      id: 'configuredGroups',
+      label: t('chat.modelSelector.configuredGroups'),
+      models: [] as ModelEntry[],
+      modelGroups: enabledGroups,
+      alwaysShow: false,
+    },
     {
       id: 'configured',
       label: t('chat.modelSelector.configured'),
       models: models.filter((model) => model.is_free !== true),
+      modelGroups: [] as ModelGroup[],
+      alwaysShow: false,
     },
-    { id: 'free', label: t('chat.modelSelector.free'), models: freeModels },
+    {
+      id: 'free',
+      label: t('chat.modelSelector.free'),
+      models: freeModels,
+      modelGroups: [] as ModelGroup[],
+      alwaysShow: false,
+    },
   ];
   const showFreeModelsCta = !excludeFreeModels && campaign.state !== 'off' && freeModels.length === 0;
 
@@ -95,16 +136,25 @@ export default function ModelPicker({
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
     };
-  }, [open, disabled, models, t, onAddModel]);
+  }, [open, disabled, models, modelGroups, includeModelGroups, t, onAddModel]);
 
   function handleTriggerClick(): void {
     setPosition(null);
     setOpen((current) => !current);
   }
 
-  function handleSelect(modelName: string): void {
+  function handleSelectModel(model: ModelEntry): void {
     setOpen(false);
-    onChange(modelName);
+    onChange(model.model_name);
+    if (onSelectionChange && model.model_id?.trim()) {
+      onSelectionChange({ type: 'model', id: model.model_id.trim() });
+    }
+  }
+
+  function handleSelectGroup(group: ModelGroup): void {
+    if (!group.model_group_id || !onSelectionChange) return;
+    setOpen(false);
+    onSelectionChange({ type: 'model_group', id: group.model_group_id });
   }
 
   return (
@@ -132,13 +182,18 @@ export default function ModelPicker({
         data-testid={`${testIdPrefix}-trigger`}
       >
         <span className="chat-mode-select__value">
-          {selected && (
+          {selection?.type === 'model_group' && (
+            <span className="chat-mode-select__icon" aria-hidden="true">
+              <ModelGroupIcon />
+            </span>
+          )}
+          {selected && selection?.type !== 'model_group' && (
             <span className="chat-mode-select__icon" aria-hidden="true">
               <ModelProviderIcon model={selected} />
             </span>
           )}
-          <span className={clsx('chat-mode-select__label', !value && 'text-text-muted')}>
-            {selected ? selected.alias || selected.model_name : value || t('chat.modelSelector.placeholder')}
+          <span className={clsx('chat-mode-select__label', !value && !selection && 'text-text-muted')}>
+            {displayLabel}
           </span>
         </span>
         {!disabled && (
@@ -166,13 +221,19 @@ export default function ModelPicker({
             data-testid={`${testIdPrefix}-menu`}
             style={{ position: 'fixed', zIndex: 9999, visibility: position ? 'visible' : 'hidden', ...position }}
           >
-            {models.length === 0 && !showFreeModelsCta && (
+            {models.length === 0 && enabledGroups.length === 0 && !showFreeModelsCta && (
               <div className="px-2 py-2 text-xs text-text-muted" role="status" data-testid={`${testIdPrefix}-empty`}>
                 {t('chat.modelSelector.empty')}
               </div>
             )}
             {groups
-              .filter((group) => group.models.length > 0 || (group.id === 'free' && showFreeModelsCta))
+              .filter(
+                (group) =>
+                  group.alwaysShow ||
+                  group.models.length > 0 ||
+                  group.modelGroups.length > 0 ||
+                  (group.id === 'free' && showFreeModelsCta),
+              )
               .map((group) => (
                 <Fragment key={group.id}>
                   <div
@@ -213,40 +274,91 @@ export default function ModelPicker({
                       </svg>
                     </button>
                   )}
-                  {group.models.map((model, index) => (
-                    <button
-                      key={`${model.model_name}-${index}`}
-                      type="button"
-                      onClick={() => handleSelect(model.model_name)}
-                      className={clsx(
-                        'chat-mode-select__option',
-                        model === selected && 'chat-mode-select__option--active',
-                      )}
-                      role="menuitemradio"
-                      aria-checked={model === selected}
-                      data-testid={`${testIdPrefix}-option`}
-                      data-variant={model.model_name}
-                    >
-                      <span className="chat-mode-select__option-main">
-                        <span className="chat-mode-select__icon" aria-hidden="true">
-                          <ModelProviderIcon model={model} />
+                  {group.modelGroups.map((modelGroup) => {
+                    const groupId = modelGroup.model_group_id!;
+                    const label = modelGroup.display_name?.trim() || groupId;
+                    const active = isSameSelection(selection, { type: 'model_group', id: groupId });
+                    const canSelect = Boolean(onSelectionChange);
+                    return (
+                      <button
+                        key={groupId}
+                        type="button"
+                        disabled={!canSelect}
+                        onClick={() => handleSelectGroup(modelGroup)}
+                        className={clsx(
+                          'chat-mode-select__option',
+                          active && 'chat-mode-select__option--active',
+                          !canSelect && 'chat-mode-select__option--disabled',
+                        )}
+                        role="menuitemradio"
+                        aria-checked={active}
+                        title={!canSelect ? t('chat.modelSelector.selectionFailed') : undefined}
+                        data-testid={`${testIdPrefix}-group-option`}
+                        data-variant={groupId}
+                      >
+                        <span className="chat-mode-select__option-main">
+                          <span className="chat-mode-select__icon" aria-hidden="true">
+                            <ModelGroupIcon />
+                          </span>
+                          <span className="chat-mode-select__label">{label}</span>
                         </span>
-                        <span className="chat-mode-select__label">{model.alias || model.model_name}</span>
-                      </span>
-                      {model === selected && (
-                        <svg
-                          className="chat-mode-select__check"
-                          viewBox="0 0 20 20"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth={2}
-                          aria-hidden="true"
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
-                        </svg>
-                      )}
-                    </button>
-                  ))}
+                        {active && (
+                          <svg
+                            className="chat-mode-select__check"
+                            viewBox="0 0 20 20"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth={2}
+                            aria-hidden="true"
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
+                          </svg>
+                        )}
+                      </button>
+                    );
+                  })}
+                  {group.models.map((model, index) => {
+                    const modelSelection = model.model_id?.trim()
+                      ? ({ type: 'model', id: model.model_id.trim() } as const)
+                      : null;
+                    const active = modelSelection
+                      ? isSameSelection(selection, modelSelection)
+                      : model === selected && selection?.type !== 'model_group';
+                    return (
+                      <button
+                        key={`${model.model_id ?? model.model_name}-${index}`}
+                        type="button"
+                        onClick={() => handleSelectModel(model)}
+                        className={clsx(
+                          'chat-mode-select__option',
+                          active && 'chat-mode-select__option--active',
+                        )}
+                        role="menuitemradio"
+                        aria-checked={active}
+                        data-testid={`${testIdPrefix}-option`}
+                        data-variant={model.model_id ?? model.model_name}
+                      >
+                        <span className="chat-mode-select__option-main">
+                          <span className="chat-mode-select__icon" aria-hidden="true">
+                            <ModelProviderIcon model={model} />
+                          </span>
+                          <span className="chat-mode-select__label">{model.alias || model.model_name}</span>
+                        </span>
+                        {active && (
+                          <svg
+                            className="chat-mode-select__check"
+                            viewBox="0 0 20 20"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth={2}
+                            aria-hidden="true"
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
+                          </svg>
+                        )}
+                      </button>
+                    );
+                  })}
                 </Fragment>
               ))}
             {onAddModel && (

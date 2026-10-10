@@ -13,6 +13,12 @@ export * from './contextUsage';
 export * from '../features/workspace/projectTypes';
 
 // 会话类型
+/** Stable selection DTO used by session/cron/runtime APIs. */
+export type ModelSelection = {
+  type: 'model' | 'model_group';
+  id: string;
+};
+
 export interface Session {
   session_id: string;
   title: string;
@@ -30,6 +36,8 @@ export interface Session {
   /** Direct parent session when this conversation was created by fork. */
   forked_from?: string;
   model?: string;
+  /** Stable selection persisted via session.selection.set / metadata. */
+  model_selection?: ModelSelection | null;
   mode: AgentMode;
   status: SessionStatus;
   message_count: number;
@@ -106,6 +114,8 @@ export type ModelReasoningCatalog = {
 };
 
 export interface ModelEntry {
+  /** Backend stable model ID. Zen free models may omit this field. */
+  model_id?: string;
   model_name: string;
   api_base: string;
   api_key: string;
@@ -141,6 +151,31 @@ export interface ModelEntry {
   /** 登录来源的模型是只读的：改了也不会写进 config.yaml（服务端会过滤）。 */
   read_only?: boolean;
 }
+
+export type ModelRoute = {
+  route_id?: string;
+  model_id: string;
+  enabled?: boolean;
+  request_overrides?: Record<string, unknown>;
+  tpm?: number;
+  rpm?: number;
+  timeout?: number;
+};
+
+export type ModelGroup = {
+  model_group_id?: string;
+  display_name?: string | null;
+  enabled?: boolean | null;
+  is_default?: boolean | null;
+  routes: ModelRoute[];
+  request_config?: Record<string, unknown> | null;
+  routing?: Record<string, unknown> | null;
+};
+
+export type ModelSelectionReference = {
+  scope: string;
+  scope_id?: string;
+};
 
 export interface VendorPreset {
   vendor_key: string;

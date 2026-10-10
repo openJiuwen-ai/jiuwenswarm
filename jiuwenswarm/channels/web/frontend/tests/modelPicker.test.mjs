@@ -74,6 +74,13 @@ async function withFixture(run, language = 'en') {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'http://localhost/',
   });
+  if (!dom.window.ResizeObserver) {
+    dom.window.ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  }
   const previousGlobals = new Map();
   for (const [name, value] of Object.entries({
     window: dom.window,
@@ -82,6 +89,7 @@ async function withFixture(run, language = 'en') {
     // 组件里会 new CustomEvent（如 requestLogin 派发的 jiuwen:auth-required），
     // 不挂到全局的话那句直接 ReferenceError
     CustomEvent: dom.window.CustomEvent,
+    ResizeObserver: dom.window.ResizeObserver,
     IS_REACT_ACT_ENVIRONMENT: true,
   })) {
     previousGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));

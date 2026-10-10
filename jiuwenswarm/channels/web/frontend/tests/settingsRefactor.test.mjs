@@ -1469,11 +1469,11 @@ test('Settings tags use the shared UI Tag component and semantic variants', () =
   const modelsSettings = source('src/features/settings/modules/models/ModelsSettings.tsx');
   const settingRow = source('src/features/settings/components/SettingRow.tsx');
 
-  assert.match(generalSettings, /<Tag\s+variant=\{connectionVariant\}\s+role="status">/s);
+  assert.match(generalSettings, /<Tag\s+variant=\{connectionVariant\}\s+role="status"/s);
   assert.match(generalSettings, /const connectionVariant:\s*TagVariant/);
-  assert.match(modelsSettings, /<Tag\s+variant="info">\{t\('settingsPanel\.models\.primary'\)\}<\/Tag>/);
-  assert.match(modelsSettings, /<Tag\s+variant="neutral">\{t\('settingsPanel\.models\.groupDefault'\)\}<\/Tag>/);
-  assert.match(modelsSettings, /<Tag\s+variant="neutral">\{t\('settingsPanel\.models\.agentOsReadonly'\)\}<\/Tag>/);
+  assert.match(modelsSettings, /<Tag\s+variant="info"[\s\S]*?settingsPanel\.models\.primary/);
+  assert.match(modelsSettings, /<Tag\s+variant="neutral"[\s\S]*?settingsPanel\.models\.agentOsReadonly/);
+  assert.doesNotMatch(modelsSettings, /settingsPanel\.models\.groupDefault/);
   assert.match(uiIndex, /export \{ Tag, type TagProps, type TagVariant \} from '\.\/Tag\/Tag'/);
   assert.match(tagSource, /export type TagVariant = 'success' \| 'info' \| 'warning' \| 'danger' \| 'neutral'/);
   assert.match(
@@ -1577,9 +1577,12 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   );
   assert.doesNotMatch(generalDefinition, /groupedRows|separatedRows/);
   assert.match(modelsDefinition, /id: 'model-manager',[\s\S]{0,80}separatedRows: true/);
+  assert.doesNotMatch(modelsDefinition, /id: 'limited-free-models'|id: 'free-models'/);
+  assert.match(modelsSettings, /<FreeModelsSettings\s*\/>/);
+  assert.match(modelsSettings, /settingsPanel\.models\.customModels/);
   assert.ok(
-    modelsDefinition.indexOf("id: 'model-manager'") < modelsDefinition.indexOf("id: 'free-models'"),
-    'free models should render after the chat model manager',
+    modelsSettings.indexOf('<FreeModelsSettings') < modelsSettings.indexOf("settingsPanel.models.customModels"),
+    'free models banner should render above the custom model manager',
   );
   assert.match(channelsDefinition, /id: 'channels',[\s\S]{0,80}separatedRows: true/);
   assert.match(modelsSettings, /<SettingsSection[\s\S]{0,120}separatedRows/);
@@ -1629,14 +1632,10 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
     settingsPageCss,
     /\.settings-models__toast--error\s*\{[^}]*border-color:\s*var\(--color-feedback-danger\)[^}]*background:\s*var\(--color-feedback-danger-toast\)/s,
   );
-  assert.match(
-    settingsPageCss,
-    /\.settings-model-group\s*\{[^}]*border:\s*1px solid var\(--color-settings-border\)[^}]*border-radius:\s*var\(--radius-xl\)[^}]*background:\s*var\(--color-surface-card\)/s,
-  );
-  assert.match(
-    settingsPageCss,
-    /\.settings-model-group__items > \.settings-model-card--grouped\s*\{[^}]*border:\s*0[^}]*border-radius:\s*0[^}]*background:\s*transparent/s,
-  );
+  assert.doesNotMatch(settingsPageCss, /\.settings-model-group\s*\{/);
+  assert.doesNotMatch(settingsPageCss, /\.settings-model-group__items/);
+  assert.match(settingsPageCss, /\.settings-models-group-card\s*\{/);
+  assert.match(settingsPageCss, /\.settings-models-group-route\s*\{/);
   assert.match(settingsPageCss, /container:\s*settings-models-list\s*\/\s*inline-size/);
   assert.match(settingsPageCss, /\.settings-model-card__actions\s*\{[^}]*flex-wrap:\s*nowrap/s);
   assert.match(settingsPageCss, /@container\s+settings-models-list\s*\(max-width:\s*36rem\)/);

@@ -1,29 +1,31 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronRight } from 'lucide-react';
+import { Check, CheckCircle2, ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { ModelEntry, VendorPresetMap } from '../../../../types';
-import { Button, Tag } from '../../../../components/ui';
-import {
-  settingsActionIcons,
-  settingsEmptyBoxIllustration,
-} from '../../../../assets/settings';
+import type { ModelEntry, ModelGroup, VendorPresetMap } from '../../../../types';
+import { Button, Tabs, Tag } from '../../../../components/ui';
+import { settingsActionIcons, settingsEmptyBoxIllustration } from '../../../../assets/settings';
 import { getModelLogoUrl } from '../../../../assets/providers';
 import { buildModelValidationPayload, buildModelsSavePayload } from '../../services/settingsContract';
 import type { SettingsSaveErrorScope } from '../../services/SettingsSaveQueue';
 import { SettingsConfirmDialog, SettingsSection } from '../../components';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
+import { FreeModelsSettings } from './FreeModelsSettings';
 import { ModelDialog } from './ModelDialog';
+import { ModelGroupDialog } from './ModelGroupDialog';
 import { getVendorLabel } from './ModelProviderSelect';
 import { displayModelProtocol, parseVendorCatalog } from './modelAdapters';
-import { useSessionStore } from '../../../../stores/sessionStore';
 import {
-  addEditableModel,
-  getEditableModels,
-  getModelDisplayGroups,
-  promotePrimaryModel,
-  removeEditableModel,
-  setGroupDefaultModel,
-} from './modelListOperations';
+  extractModelSelectionReferences,
+  getGroupDefaultModelId,
+  getModelGroupDisplayName,
+  parseModelGroup,
+  parseModelGroups,
+  parseModelSelectionReferences,
+  promoteGroupRouteDefault,
+  removeGroupRoute,
+} from './modelGroupAdapters';
+import { useSessionStore } from '../../../../stores/sessionStore';
+import { addEditableModel, getEditableModels, promotePrimaryModel, removeEditableModel } from './modelListOperations';
 
 const EMPTY_VENDOR_CATALOG: VendorPresetMap = {
   reasoning: null,
@@ -33,18 +35,23 @@ const EMPTY_VENDOR_CATALOG: VendorPresetMap = {
 };
 
 type ModelConfirmation =
-  | { type: 'group-default'; model: ModelEntry; message: string }
-  | { type: 'delete'; model: ModelEntry; message: string };
+  | { type: 'delete-model'; model: ModelEntry; message: string }
+  | { type: 'delete-group'; group: ModelGroup; message: string }
+  | { type: 'remove-group-route'; group: ModelGroup; modelId: string; message: string };
 
 type ValidationToast = { success: boolean; message: string };
 type ReplaceModelsResult = { count: number; applied_without_restart: boolean };
 type SaveModelsOptions = { errorScope?: SettingsSaveErrorScope };
 
 function modelIdentity(model: ModelEntry, index: number): string {
-  return `${model.origin_index ?? `new-${index}`}:${model.model_name}:${model.alias ?? ''}`;
+  return `${model.model_id ?? model.origin_index ?? `new-${index}`}:${model.model_name}:${model.alias ?? ''}`;
 }
 
-export function parseModelsPayload(payload: unknown): { models: ModelEntry[]; activeModel?: string } {
+export function parseModelsPayload(payload: unknown): {
+  models: ModelEntry[];
+  modelGroups: ModelGroup[];
+  activeModel?: string;
+} {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('INVALID_MODELS_LIST');
   const models = (payload as { models?: unknown }).models;
   if (!Array.isArray(models)) throw new Error('INVALID_MODELS_LIST');
@@ -65,14 +72,17 @@ export function parseModelsPayload(payload: unknown): { models: ModelEntry[]; ac
   }
   const activeModel = (payload as { active_model?: unknown }).active_model;
   if (activeModel !== undefined && typeof activeModel !== 'string') throw new Error('INVALID_MODELS_LIST');
-  return { models: models as ModelEntry[], activeModel };
+  const modelGroups = parseModelGroups((payload as { model_groups?: unknown }).model_groups);
+  return { models: models as ModelEntry[], modelGroups, activeModel };
 }
 
 export function ModelsSettings() {
   const { t } = useTranslation();
   const { isConnected, request, saveQueue } = useSettingsServices();
   const setAvailableModels = useSessionStore((state) => state.setAvailableModels);
+  const setAvailableModelGroups = useSessionStore((state) => state.setAvailableModelGroups);
   const [models, setModels] = useState<ModelEntry[]>([]);
+  const [modelGroups, setModelGroups] = useState<ModelGroup[]>([]);
   const [catalog, setCatalog] = useState<VendorPresetMap>(EMPTY_VENDOR_CATALOG);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -81,25 +91,32 @@ export function ModelsSettings() {
   const [saveError, setSaveError] = useState('');
   const [saving, setSaving] = useState(false);
   const [dialog, setDialog] = useState<{ model?: ModelEntry } | null>(null);
+  const [groupDialog, setGroupDialog] = useState<{ group?: ModelGroup } | null>(null);
   const [confirmation, setConfirmation] = useState<ModelConfirmation | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState('');
   const [validationStates, setValidationStates] = useState<Record<string, 'testing' | 'success'>>({});
   const [validationToast, setValidationToast] = useState<ValidationToast | null>(null);
-  const [expandedModelGroups, setExpandedModelGroups] = useState<Record<string, boolean>>({});
+  const [activeTab, setActiveTab] = useState<'models' | 'groups'>('models');
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Record<string, true>>({});
   const modelsRequestId = useRef(0);
   const catalogRequestId = useRef(0);
   const validationRequestIds = useRef<Record<string, number>>({});
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const editableModels = useMemo(() => getEditableModels(models), [models]);
-  const modelDisplayGroups = useMemo(() => getModelDisplayGroups(models), [models]);
   const hasModelsError = Boolean(modelsError);
   const actionsDisabled = !isConnected || modelsLoading || hasModelsError || saving;
 
-  const toggleModelGroup = useCallback((modelName: string) => {
-    setExpandedModelGroups((current) => ({ ...current, [modelName]: !current[modelName] }));
-  }, []);
+  const applyCatalog = useCallback(
+    (parsed: { models: ModelEntry[]; modelGroups: ModelGroup[]; activeModel?: string }) => {
+      setModels(parsed.models);
+      setModelGroups(parsed.modelGroups);
+      setAvailableModels(parsed.models, parsed.activeModel);
+      setAvailableModelGroups(parsed.modelGroups);
+    },
+    [setAvailableModelGroups, setAvailableModels],
+  );
 
   const loadModels = useCallback(async () => {
     if (!isConnected) {
@@ -112,9 +129,7 @@ export function ModelsSettings() {
     try {
       const payload = await request('models.list');
       if (currentRequestId !== modelsRequestId.current) return;
-      const parsed = parseModelsPayload(payload);
-      setModels(parsed.models);
-      setAvailableModels(parsed.models, parsed.activeModel);
+      applyCatalog(parseModelsPayload(payload));
     } catch (error) {
       if (currentRequestId === modelsRequestId.current) {
         setModelsError(
@@ -126,7 +141,7 @@ export function ModelsSettings() {
     } finally {
       if (currentRequestId === modelsRequestId.current) setModelsLoading(false);
     }
-  }, [isConnected, request, setAvailableModels, t]);
+  }, [applyCatalog, isConnected, request, t]);
 
   const loadCatalog = useCallback(async () => {
     if (!isConnected) {
@@ -216,9 +231,7 @@ export function ModelsSettings() {
         throw new Error(t('settingsPanel.models.saveResponseInvalid'));
       }
       const refreshedPayload = await request('models.list');
-      const parsed = parseModelsPayload(refreshedPayload);
-      setModels(parsed.models);
-      setAvailableModels(parsed.models, parsed.activeModel);
+      applyCatalog(parseModelsPayload(refreshedPayload));
       showValidationToast({
         success: true,
         message: t(
@@ -236,22 +249,148 @@ export function ModelsSettings() {
     }
   };
 
+  const saveModelGroup = async (group: ModelGroup) => {
+    setSaving(true);
+    setSaveError('');
+    try {
+      const result = await saveQueue.enqueue(
+        group.model_group_id ? 'model_group.edit' : 'model_group.add',
+        () => request<{ group?: unknown }>('model_groups.upsert', { group }, { timeoutMs: 600_000 }),
+        { errorScope: 'caller' },
+      );
+      const savedGroup = parseModelGroup(result?.group);
+      if (savedGroup) {
+        setModelGroups((current) => {
+          const without = current.filter((item) => item.model_group_id !== savedGroup.model_group_id);
+          return [...without, savedGroup];
+        });
+      }
+      const refreshedPayload = await request('models.list');
+      applyCatalog(parseModelsPayload(refreshedPayload));
+      showValidationToast({
+        success: true,
+        message: t('settingsPanel.models.savedApplied'),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed');
+      throw new Error(message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const requestDeleteModelGroup = async (group: ModelGroup) => {
+    if (!group.model_group_id) return;
+    setConfirmError('');
+    try {
+      const referencesPayload = await request('models.references', {
+        type: 'model_group',
+        id: group.model_group_id,
+      });
+      const references = parseModelSelectionReferences(referencesPayload);
+      if (references.length > 0) {
+        showValidationToast({
+          success: false,
+          message: t('settingsPanel.models.modelGroupReferenced', {
+            count: references.length,
+            scopes: references.map((item) => item.scope).join(', '),
+          }),
+        });
+        return;
+      }
+      setConfirmation({
+        type: 'delete-group',
+        group,
+        message: t('settingsPanel.models.deleteModelGroupConfirm', {
+          name: getModelGroupDisplayName(group),
+        }),
+      });
+    } catch (error) {
+      const referenced = extractModelSelectionReferences(error);
+      if (referenced.length > 0 || (error as { code?: string })?.code === 'MODEL_SELECTION_REFERENCED') {
+        showValidationToast({
+          success: false,
+          message: t('settingsPanel.models.modelGroupReferenced', {
+            count: referenced.length || 1,
+            scopes: referenced.map((item) => item.scope).join(', ') || 'unknown',
+          }),
+        });
+        return;
+      }
+      showValidationToast({
+        success: false,
+        message: error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'),
+      });
+    }
+  };
+
   const confirmModelOperation = async () => {
     if (!confirmation || confirming || saving) return;
     setConfirming(true);
     setConfirmError('');
     try {
-      if (confirmation.type === 'delete') {
+      if (confirmation.type === 'delete-model') {
         await saveModels(removeEditableModel(models, confirmation.model), 'model.delete');
-      } else {
-        await saveModels(setGroupDefaultModel(models, confirmation.model), 'model.group_default');
+      } else if (confirmation.type === 'remove-group-route') {
+        const nextGroup = removeGroupRoute(confirmation.group, confirmation.modelId);
+        if (nextGroup.routes.length === 0) {
+          throw new Error(t('settingsPanel.models.keepOneGroupRoute'));
+        }
+        await saveModelGroup(nextGroup);
+      } else if (confirmation.group.model_group_id) {
+        setSaving(true);
+        try {
+          await saveQueue.enqueue(
+            'model_group.delete',
+            () =>
+              request(
+                'model_groups.delete',
+                { model_group_id: confirmation.group.model_group_id },
+                {
+                  timeoutMs: 600_000,
+                },
+              ),
+            { errorScope: 'page' },
+          );
+        } catch (error) {
+          const referenced = extractModelSelectionReferences(error);
+          if (referenced.length > 0 || (error as { code?: string })?.code === 'MODEL_SELECTION_REFERENCED') {
+            throw new Error(
+              t('settingsPanel.models.modelGroupReferenced', {
+                count: referenced.length || 1,
+                scopes: referenced.map((item) => item.scope).join(', ') || 'unknown',
+              }),
+            );
+          }
+          throw error;
+        }
+        const refreshedPayload = await request('models.list');
+        applyCatalog(parseModelsPayload(refreshedPayload));
+        showValidationToast({ success: true, message: t('settingsPanel.models.savedApplied') });
       }
       setConfirmation(null);
     } catch (error) {
       setConfirmError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
     } finally {
       setConfirming(false);
+      setSaving(false);
     }
+  };
+
+  const setGroupRouteDefault = async (group: ModelGroup, modelId: string) => {
+    if (getGroupDefaultModelId(group) === modelId) return;
+    await saveModelGroup(promoteGroupRouteDefault(group, modelId));
+  };
+
+  const toggleGroupExpanded = (groupId: string) => {
+    setCollapsedGroupIds((current) => {
+      if (current[groupId]) {
+        const next = { ...current };
+        delete next[groupId];
+        return next;
+      }
+      return { ...current, [groupId]: true };
+    });
   };
 
   const testSavedModel = async (model: ModelEntry, index: number) => {
@@ -285,9 +424,8 @@ export function ModelsSettings() {
     await saveModels(promotePrimaryModel(models, model), 'model.primary');
   };
 
-  const getCardPresentation = (model: ModelEntry, groupOrdinal?: number) => {
-    const baseName = model.alias?.trim() || model.model_name;
-    const customName = groupOrdinal === undefined ? baseName : `${baseName} #${groupOrdinal}`;
+  const getCardPresentation = (model: ModelEntry) => {
+    const customName = model.alias?.trim() || model.model_name;
     const protocol = displayModelProtocol(model);
     const protocolLabel = t(`settingsPanel.models.protocols.${protocol}`);
     if (model.model_provider === 'OpenAIAccount') {
@@ -306,34 +444,58 @@ export function ModelsSettings() {
     };
   };
 
-  const renderModelCard = (model: ModelEntry, index: number, groupOrdinal?: number) => {
+  const renderModelCard = (model: ModelEntry, index: number) => {
     const key = modelIdentity(model, index);
     const validationState = validationStates[key];
-    const isDuplicate = groupOrdinal !== undefined;
-    const presentation = getCardPresentation(model, groupOrdinal);
+    const presentation = getCardPresentation(model);
     const isPrimary = model === editableModels[0];
     const readOnly = model.is_agentos === true;
-    const canSetPrimary = !readOnly && !isPrimary && (!isDuplicate || model.is_default === true);
+    const canSetPrimary = !readOnly && !isPrimary;
     return (
       <article
-        className={`settings-model-card${isDuplicate ? ' settings-model-card--grouped' : ''}${presentation.logo ? '' : ' settings-model-card--no-logo'}`}
+        className={`settings-model-card${presentation.logo ? '' : ' settings-model-card--no-logo'}`}
         key={key}
         data-testid="settings-models-card"
-        data-variant={model.origin_index ?? 'new'}
+        data-variant={model.model_id ?? model.origin_index ?? 'new'}
       >
         {presentation.logo ? (
           <img className="settings-model-card__logo" src={presentation.logo} alt="" aria-hidden />
         ) : null}
         <div className="settings-model-card__copy">
           <div className="settings-model-card__title-row">
-            <h3 title={presentation.customName} data-testid="settings-models-card-title" data-variant={model.origin_index ?? 'new'}>{presentation.customName}</h3>
-            {isPrimary ? <Tag variant="info" data-testid="settings-models-card-primary-tag" data-variant={model.origin_index ?? 'new'}>{t('settingsPanel.models.primary')}</Tag> : null}
-            {isDuplicate && model.is_default ? (
-              <Tag variant="neutral" data-testid="settings-models-card-group-default-tag" data-variant={model.origin_index ?? 'new'}>{t('settingsPanel.models.groupDefault')}</Tag>
+            <h3
+              title={presentation.customName}
+              data-testid="settings-models-card-title"
+              data-variant={model.model_id ?? model.origin_index ?? 'new'}
+            >
+              {presentation.customName}
+            </h3>
+            {isPrimary ? (
+              <Tag
+                variant="info"
+                data-testid="settings-models-card-primary-tag"
+                data-variant={model.model_id ?? model.origin_index ?? 'new'}
+              >
+                {t('settingsPanel.models.primary')}
+              </Tag>
             ) : null}
-            {readOnly ? <Tag variant="neutral" data-testid="settings-models-card-readonly-tag" data-variant={model.origin_index ?? 'new'}>{t('settingsPanel.models.agentOsReadonly')}</Tag> : null}
+            {readOnly ? (
+              <Tag
+                variant="neutral"
+                data-testid="settings-models-card-readonly-tag"
+                data-variant={model.model_id ?? model.origin_index ?? 'new'}
+              >
+                {t('settingsPanel.models.agentOsReadonly')}
+              </Tag>
+            ) : null}
           </div>
-          <p title={presentation.metadata} data-testid="settings-models-card-metadata" data-variant={model.origin_index ?? 'new'}>{presentation.metadata}</p>
+          <p
+            title={presentation.metadata}
+            data-testid="settings-models-card-metadata"
+            data-variant={model.model_id ?? model.origin_index ?? 'new'}
+          >
+            {presentation.metadata}
+          </p>
         </div>
         <div className="settings-model-card__actions">
           {canSetPrimary ? (
@@ -344,35 +506,9 @@ export function ModelsSettings() {
               disabled={actionsDisabled}
               onClick={() => void setPrimary(model).catch(() => undefined)}
               data-testid="settings-models-card-set-primary-btn"
-              data-variant={model.origin_index ?? 'new'}
+              data-variant={model.model_id ?? model.origin_index ?? 'new'}
             >
               {t('settingsPanel.models.setPrimary')}
-            </Button>
-          ) : null}
-          {!readOnly && isDuplicate && !model.is_default ? (
-            <Button
-              className="settings-model-card__text-action"
-              variant="quiet"
-              size="sm"
-              disabled={actionsDisabled}
-              onClick={() => {
-                const isPrimaryGroup = model.model_name === editableModels[0]?.model_name;
-                setConfirmError('');
-                setConfirmation({
-                  type: 'group-default',
-                  model,
-                  message: t(
-                    isPrimaryGroup
-                      ? 'settingsPanel.models.setPrimaryGroupDefaultConfirm'
-                      : 'settingsPanel.models.setGroupDefaultConfirm',
-                    { model: model.model_name },
-                  ),
-                });
-              }}
-              data-testid="settings-models-card-set-group-default-btn"
-              data-variant={model.origin_index ?? 'new'}
-            >
-              {t('settingsPanel.models.setGroupDefault')}
             </Button>
           ) : null}
           <Button
@@ -383,7 +519,7 @@ export function ModelsSettings() {
             disabled={actionsDisabled}
             onClick={() => void testSavedModel(model, index)}
             data-testid="settings-models-card-test-btn"
-            data-variant={model.origin_index ?? 'new'}
+            data-variant={model.model_id ?? model.origin_index ?? 'new'}
           />
           {!readOnly ? (
             <Button
@@ -393,7 +529,7 @@ export function ModelsSettings() {
               disabled={actionsDisabled}
               onClick={() => openModelDialog({ model })}
               data-testid="settings-models-card-edit-btn"
-              data-variant={model.origin_index ?? 'new'}
+              data-variant={model.model_id ?? model.origin_index ?? 'new'}
             />
           ) : null}
           {!readOnly ? (
@@ -406,7 +542,7 @@ export function ModelsSettings() {
               onClick={() => {
                 setConfirmError('');
                 setConfirmation({
-                  type: 'delete',
+                  type: 'delete-model',
                   model,
                   message: t('settingsPanel.models.deleteConfirm', {
                     alias: model.alias || t('settingsPanel.models.missingCustomName'),
@@ -415,7 +551,7 @@ export function ModelsSettings() {
                 });
               }}
               data-testid="settings-models-card-delete-btn"
-              data-variant={model.origin_index ?? 'new'}
+              data-variant={model.model_id ?? model.origin_index ?? 'new'}
             />
           ) : null}
         </div>
@@ -423,101 +559,352 @@ export function ModelsSettings() {
     );
   };
 
-  return (
-    <>
-      <SettingsSection
-        title={t('settingsPanel.models.primaryModels')}
-        separatedRows
-        action={
-          <Button variant="primary" disabled={actionsDisabled} onClick={() => openModelDialog({})} data-testid="settings-models-add-btn">
-            {t('settingsPanel.models.addModel')}
-          </Button>
-        }
+  const renderModelGroupCard = (group: ModelGroup) => {
+    const groupId = group.model_group_id ?? getModelGroupDisplayName(group);
+    const title = getModelGroupDisplayName(group);
+    const expanded = !collapsedGroupIds[groupId];
+    const defaultModelId = getGroupDefaultModelId(group);
+    const headerLabel = t('settingsPanel.models.modelGroupCardHeader', {
+      name: title,
+      count: group.routes.length,
+    });
+    return (
+      <article
+        className="settings-models-group-card"
+        key={groupId}
+        data-testid="settings-models-group-card"
+        data-variant={groupId}
+        data-expanded={expanded || undefined}
       >
-        {modelsError ? (
-          <div className="settings-page__error" role="alert" data-testid="settings-models-error">
-            {modelsError}
-          </div>
-        ) : null}
-        {saveError ? (
-          <div className="settings-page__error settings-models__save-error" role="alert" data-testid="settings-models-save-error">
-            <span>{saveError}</span>
-            <Button size="sm" disabled={!isConnected || modelsLoading || saving} onClick={() => void reloadModels()} data-testid="settings-models-reload-btn">
-              {t('settingsPanel.models.reloadAfterFailure')}
+        <div className="settings-models-group-card__heading">
+          <button
+            type="button"
+            className="settings-models-group-card__toggle"
+            aria-expanded={expanded}
+            aria-label={t(
+              expanded ? 'settingsPanel.models.collapseModelGroup' : 'settingsPanel.models.expandModelGroup',
+            )}
+            onClick={() => toggleGroupExpanded(groupId)}
+            data-testid="settings-models-group-card-toggle"
+            data-variant={groupId}
+          >
+            <span
+              className="settings-models-group-card__title"
+              title={headerLabel}
+              data-testid="settings-models-group-card-title"
+              data-variant={groupId}
+            >
+              <span className="settings-models-group-card__title-label">
+                {t('settingsPanel.models.modelGroupLabel')}
+              </span>
+              <span className="settings-models-group-card__title-name">{title}</span>
+              <span className="settings-models-group-card__title-count">
+                {t('settingsPanel.models.modelGroupCount', { count: group.routes.length })}
+              </span>
+            </span>
+            {group.is_default === true ? (
+              <Tag variant="info" data-testid="settings-models-group-card-default-tag" data-variant={groupId}>
+                {t('settingsPanel.models.modelGroupDefault')}
+              </Tag>
+            ) : null}
+            {group.enabled === false ? (
+              <Tag variant="neutral" data-testid="settings-models-group-card-disabled-tag" data-variant={groupId}>
+                {t('settingsPanel.models.modelGroupDisabled')}
+              </Tag>
+            ) : null}
+            <ChevronDown
+              className="settings-models-group-card__chevron"
+              aria-hidden
+              data-expanded={expanded || undefined}
+            />
+          </button>
+          <div className="settings-models-group-card__heading-actions">
+            <Button
+              className="settings-models-group-card__edit"
+              variant="quiet"
+              size="sm"
+              icon={<settingsActionIcons.edit aria-hidden />}
+              disabled={actionsDisabled || !group.model_group_id}
+              onClick={() => setGroupDialog({ group })}
+              data-testid="settings-models-group-card-edit-btn"
+              data-variant={groupId}
+            >
+              {t('settingsPanel.models.editModelGroup')}
             </Button>
+            <Button
+              variant="quiet"
+              icon={<settingsActionIcons.delete aria-hidden />}
+              aria-label={t('common.delete')}
+              title={t('common.delete')}
+              disabled={actionsDisabled || !group.model_group_id}
+              onClick={() => void requestDeleteModelGroup(group)}
+              data-testid="settings-models-group-card-delete-btn"
+              data-variant={groupId}
+            />
           </div>
-        ) : null}
-        {!hasModelsError && !modelsLoading && editableModels.length === 0 ? (
-          <div className="settings-models__empty" data-testid="settings-models-empty">
-            <img src={settingsEmptyBoxIllustration} alt="" aria-hidden />
-            <strong>{t('settingsPanel.models.empty')}</strong>
-            <p>{t('settingsPanel.models.emptyDescription')}</p>
-            <Button variant="primary" disabled={!isConnected || saving} onClick={() => openModelDialog({})} data-testid="settings-models-empty-add-btn">
-              {t('settingsPanel.models.addModel')}
-            </Button>
-          </div>
-        ) : null}
-        <div className="settings-models__list" aria-busy={saving || undefined} data-testid="settings-models-list">
-          {!hasModelsError && !modelsLoading
-            ? modelDisplayGroups.map((group, displayGroupIndex) => {
-                if (group.items.length === 1) {
-                  const [{ model, index }] = group.items;
-                  return renderModelCard(model, index);
-                }
-                const defaultItem = group.items.find(({ model }) => model.is_default === true)!;
-                const defaultOrdinal = group.items.indexOf(defaultItem) + 1;
-                const alternativeItems = group.items.filter((item) => item !== defaultItem);
-                const isExpanded = expandedModelGroups[group.modelName] === true;
-                const groupContentId = `settings-model-group-${displayGroupIndex}-alternatives`;
+        </div>
+        {expanded ? (
+          <div
+            className="settings-models-group-card__routes"
+            data-testid="settings-models-group-card-routes"
+            data-variant={groupId}
+          >
+            {group.routes.length === 0 ? (
+              <p
+                className="settings-models-group-card__empty"
+                data-testid="settings-models-group-card-empty"
+                data-variant={groupId}
+              >
+                {t('settingsPanel.models.modelGroupNoRoutes')}
+              </p>
+            ) : (
+              group.routes.map((route) => {
+                const modelIndex = models.findIndex((entry) => entry.model_id === route.model_id);
+                const model = modelIndex >= 0 ? models[modelIndex] : undefined;
+                const validationState = model ? validationStates[modelIdentity(model, modelIndex)] : undefined;
+                const presentation = model
+                  ? getCardPresentation(model)
+                  : {
+                      customName: route.model_id,
+                      metadata: t('settingsPanel.models.missingConfiguredModel'),
+                      logo: undefined as string | undefined,
+                    };
+                const isRouteDefault = route.model_id === defaultModelId;
+                const canRemove = group.routes.length > 1;
                 return (
-                  <section
-                    className="settings-model-group"
-                    aria-label={t('settingsPanel.models.groupAriaLabel', {
-                      model: group.modelName,
-                      count: group.items.length,
-                    })}
-                    key={`group:${group.modelName}`}
-                    data-testid="settings-models-group"
-                    data-variant={group.modelName}
+                  <div
+                    className={`settings-models-group-route${presentation.logo ? '' : ' settings-models-group-route--no-logo'}`}
+                    key={route.route_id ?? route.model_id}
+                    data-testid="settings-models-group-route"
+                    data-variant={route.model_id}
                   >
-                    <button
-                      type="button"
-                      className="settings-model-group__header"
-                      aria-expanded={isExpanded}
-                      aria-controls={groupContentId}
-                      aria-label={t(
-                        isExpanded ? 'settingsPanel.models.collapseGroup' : 'settingsPanel.models.expandGroup',
-                        { model: group.modelName },
-                      )}
-                      onClick={() => toggleModelGroup(group.modelName)}
-                      data-testid="settings-models-group-toggle-btn"
-                      data-variant={group.modelName}
-                    >
-                      <div className="settings-model-group__title">
-                        <ChevronRight
-                          className={`settings-model-group__toggle-icon${isExpanded ? ' settings-model-group__toggle-icon--expanded' : ''}`}
-                          aria-hidden
-                        />
-                        <strong title={group.modelName}>{group.modelName}</strong>
+                    {presentation.logo ? (
+                      <img className="settings-models-group-route__logo" src={presentation.logo} alt="" aria-hidden />
+                    ) : null}
+                    <div className="settings-models-group-route__copy">
+                      <div className="settings-models-group-route__title-row">
+                        <h3
+                          title={presentation.customName}
+                          data-testid="settings-models-group-route-title"
+                          data-variant={route.model_id}
+                        >
+                          {presentation.customName}
+                        </h3>
+                        {isRouteDefault ? (
+                          <CheckCircle2
+                            className="settings-models-group-route__default-icon"
+                            aria-hidden
+                            data-testid="settings-models-group-route-default-icon"
+                            data-variant={route.model_id}
+                          />
+                        ) : null}
+                        {isRouteDefault ? (
+                          <span
+                            className="settings-models-group-route__default-badge"
+                            data-testid="settings-models-group-route-default-badge"
+                            data-variant={route.model_id}
+                          >
+                            {t('settingsPanel.models.modelGroupRouteDefault')}
+                          </span>
+                        ) : null}
                       </div>
-                      <span className="settings-model-group__meta" data-testid="settings-models-group-meta" data-variant={group.modelName}>
-                        {t('settingsPanel.models.groupMeta', { count: group.items.length })}
-                      </span>
-                    </button>
-                    {renderModelCard(defaultItem.model, defaultItem.index, defaultOrdinal)}
-                    <div id={groupContentId} className="settings-model-group__alternatives" hidden={!isExpanded} data-testid="settings-models-group-alternatives" data-variant={group.modelName}>
-                      <div className="settings-model-group__items">
-                        {alternativeItems.map((item) =>
-                          renderModelCard(item.model, item.index, group.items.indexOf(item) + 1),
-                        )}
-                      </div>
+                      <p
+                        title={presentation.metadata}
+                        data-testid="settings-models-group-route-metadata"
+                        data-variant={route.model_id}
+                      >
+                        {presentation.metadata}
+                      </p>
                     </div>
-                  </section>
+                    <div className="settings-models-group-route__actions">
+                      {!isRouteDefault ? (
+                        <Button
+                          className="settings-models-group-route__set-default"
+                          variant="quiet"
+                          size="sm"
+                          disabled={actionsDisabled || !group.model_group_id}
+                          onClick={() => void setGroupRouteDefault(group, route.model_id).catch(() => undefined)}
+                          data-testid="settings-models-group-route-set-default-btn"
+                          data-variant={route.model_id}
+                        >
+                          {t('settingsPanel.models.setModelGroupRouteDefault')}
+                        </Button>
+                      ) : null}
+                      <span className="settings-models-group-route__divider" aria-hidden />
+                      <Button
+                        variant="quiet"
+                        icon={<settingsActionIcons.test aria-hidden />}
+                        aria-label={t('settingsPanel.models.testConnection')}
+                        title={t('settingsPanel.models.testConnection')}
+                        loading={validationState === 'testing'}
+                        disabled={actionsDisabled || !model}
+                        onClick={() => {
+                          if (model) void testSavedModel(model, modelIndex);
+                        }}
+                        data-testid="settings-models-group-route-test-btn"
+                        data-variant={route.model_id}
+                      />
+                      <Button
+                        variant="quiet"
+                        icon={<settingsActionIcons.delete aria-hidden />}
+                        aria-label={t('settingsPanel.models.removeModelFromGroup')}
+                        title={
+                          canRemove
+                            ? t('settingsPanel.models.removeModelFromGroup')
+                            : t('settingsPanel.models.keepOneGroupRoute')
+                        }
+                        disabled={actionsDisabled || !group.model_group_id || !canRemove}
+                        onClick={() => {
+                          setConfirmError('');
+                          setConfirmation({
+                            type: 'remove-group-route',
+                            group,
+                            modelId: route.model_id,
+                            message: t('settingsPanel.models.removeModelFromGroupConfirm', {
+                              name: presentation.customName,
+                            }),
+                          });
+                        }}
+                        data-testid="settings-models-group-route-remove-btn"
+                        data-variant={route.model_id}
+                      />
+                    </div>
+                  </div>
                 );
               })
-            : null}
+            )}
+          </div>
+        ) : null}
+      </article>
+    );
+  };
+
+  return (
+    <>
+      <Tabs
+        role="tablist"
+        ariaLabel={t('settingsPanel.models.tabsLabel')}
+        bordered
+        className="settings-models__tabs"
+        wrapperTestId="settings-models-tabs"
+        itemTestId="settings-models-tab"
+        value={activeTab}
+        onChange={setActiveTab}
+        items={[
+          { value: 'models', label: t('settingsPanel.models.modelsTab') },
+          { value: 'groups', label: t('settingsPanel.models.modelGroups') },
+        ]}
+      />
+      {activeTab === 'models' ? (
+        <>
+          <SettingsSection
+            title={t('settingsPanel.models.customModels')}
+            separatedRows
+            action={
+              <Button
+                variant="primary"
+                disabled={actionsDisabled}
+                onClick={() => openModelDialog({})}
+                data-testid="settings-models-add-btn"
+              >
+                {t('settingsPanel.models.addModel')}
+              </Button>
+            }
+          >
+            {modelsError ? (
+              <div className="settings-page__error" role="alert" data-testid="settings-models-error">
+                {modelsError}
+              </div>
+            ) : null}
+            {saveError ? (
+              <div
+                className="settings-page__error settings-models__save-error"
+                role="alert"
+                data-testid="settings-models-save-error"
+              >
+                <span>{saveError}</span>
+                <Button
+                  size="sm"
+                  disabled={!isConnected || modelsLoading || saving}
+                  onClick={() => void reloadModels()}
+                  data-testid="settings-models-reload-btn"
+                >
+                  {t('settingsPanel.models.reloadAfterFailure')}
+                </Button>
+              </div>
+            ) : null}
+            {!hasModelsError && !modelsLoading && editableModels.length === 0 ? (
+              <div className="settings-models__empty" data-testid="settings-models-empty">
+                <img src={settingsEmptyBoxIllustration} alt="" aria-hidden />
+                <strong>{t('settingsPanel.models.empty')}</strong>
+                <p>{t('settingsPanel.models.emptyDescription')}</p>
+                <Button
+                  variant="primary"
+                  disabled={!isConnected || saving}
+                  onClick={() => openModelDialog({})}
+                  data-testid="settings-models-empty-add-btn"
+                >
+                  {t('settingsPanel.models.addModel')}
+                </Button>
+              </div>
+            ) : null}
+            <div className="settings-models__list" aria-busy={saving || undefined} data-testid="settings-models-list">
+              <FreeModelsSettings />
+              {!hasModelsError && !modelsLoading ? models.map((model, index) => renderModelCard(model, index)) : null}
+            </div>
+          </SettingsSection>
+        </>
+      ) : (
+        <div className="settings-models__groups-pane">
+          <SettingsSection
+            title={t('settingsPanel.models.modelGroupsManagement')}
+            separatedRows
+            action={
+              <Button
+                className="settings-models__groups-add"
+                variant="secondary"
+                disabled={actionsDisabled}
+                onClick={() => setGroupDialog({})}
+                data-testid="settings-models-groups-add-btn"
+              >
+                {t('settingsPanel.models.addModelGroup')}
+              </Button>
+            }
+          >
+            {!hasModelsError && !modelsLoading && modelGroups.length === 0 ? (
+              <div className="settings-models__empty" data-testid="settings-models-groups-empty">
+                <img src={settingsEmptyBoxIllustration} alt="" aria-hidden />
+                <strong>{t('settingsPanel.models.modelGroupsEmpty')}</strong>
+                <p>{t('settingsPanel.models.modelGroupsEmptyDescription')}</p>
+                <Button
+                  variant="primary"
+                  disabled={!isConnected || saving}
+                  onClick={() => setGroupDialog({})}
+                  data-testid="settings-models-groups-empty-add-btn"
+                >
+                  {t('settingsPanel.models.addModelGroup')}
+                </Button>
+              </div>
+            ) : null}
+            <div
+              className="settings-models__list"
+              aria-busy={saving || undefined}
+              data-testid="settings-models-groups-list"
+            >
+              {!hasModelsError && !modelsLoading ? modelGroups.map((group) => renderModelGroupCard(group)) : null}
+            </div>
+          </SettingsSection>
         </div>
-      </SettingsSection>
+      )}
+      {groupDialog ? (
+        <ModelGroupDialog
+          models={models}
+          group={groupDialog.group}
+          saving={saving}
+          onClose={() => setGroupDialog(null)}
+          onSave={saveModelGroup}
+        />
+      ) : null}
       {dialog ? (
         <ModelDialog
           model={dialog.model}
@@ -539,9 +926,11 @@ export function ModelsSettings() {
       <SettingsConfirmDialog
         open={confirmation !== null}
         title={t(
-          confirmation?.type === 'delete'
-            ? 'settingsPanel.models.deleteConfirmTitle'
-            : 'settingsPanel.models.groupDefaultConfirmTitle',
+          confirmation?.type === 'delete-group'
+            ? 'settingsPanel.models.deleteModelGroupConfirmTitle'
+            : confirmation?.type === 'remove-group-route'
+              ? 'settingsPanel.models.removeModelFromGroupConfirmTitle'
+              : 'settingsPanel.models.deleteConfirmTitle',
         )}
         message={confirmation?.message ?? ''}
         confirming={confirming}

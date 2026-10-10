@@ -18,6 +18,7 @@ import {
   Image as ImageIcon,
   Info,
   LoaderCircle,
+  Megaphone,
   PanelBottomClose,
   PanelBottomOpen,
   Presentation,
@@ -88,6 +89,7 @@ import { useDesktopLocalFilePickerReady, useWelcomeBubblePosition } from '../../
 import { ApplicationPluginTaskRuntimes } from '../../applicationPlugins/ApplicationPluginOutlet';
 import { generateUuidV4 } from '../../utils/uuid';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
+import { requestLogin, useAuthStore } from '../../stores/authStore';
 
 export interface ChatHistoryPagerProps {
   loadedBatchSeq: number;
@@ -1181,15 +1183,18 @@ export const ChatPanel = React.memo(function ChatPanel({
   const shouldShowShareExport = Boolean(onExportShare);
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
+  const isAuthorized = useAuthStore((state) => state.islogin);
   const [bubbleVisible, setBubbleVisible] = useState(false);
+  const [freeModelsPromptDismissed, setFreeModelsPromptDismissed] = useState(false);
   const bubbleHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleBubbleShow = useCallback(() => {
+    if (!isAuthorized && freeModelsPromptDismissed) return;
     if (bubbleHideTimerRef.current) {
       clearTimeout(bubbleHideTimerRef.current);
       bubbleHideTimerRef.current = null;
     }
     setBubbleVisible(true);
-  }, []);
+  }, [freeModelsPromptDismissed, isAuthorized]);
   const handleBubbleLeave = useCallback(() => {
     if (bubbleHideTimerRef.current) {
       clearTimeout(bubbleHideTimerRef.current);
@@ -1198,6 +1203,14 @@ export const ChatPanel = React.memo(function ChatPanel({
       bubbleHideTimerRef.current = null;
       setBubbleVisible(false);
     }, WELCOME_BUBBLE_HIDE_DELAY);
+  }, []);
+  const handleFreeModelsPromptClose = useCallback(() => {
+    if (bubbleHideTimerRef.current) {
+      clearTimeout(bubbleHideTimerRef.current);
+      bubbleHideTimerRef.current = null;
+    }
+    setFreeModelsPromptDismissed(true);
+    setBubbleVisible(false);
   }, []);
   useEffect(() => {
     return () => {
@@ -2001,10 +2014,41 @@ export const ChatPanel = React.memo(function ChatPanel({
                   <>
                     <div
                       ref={bubbleRef}
-                      className={`chat-welcome__banner chat-welcome__banner--bubble${bubbleVisible ? ' chat-welcome__banner--bubble--visible' : ''}`}
+                      className={`chat-welcome__banner chat-welcome__banner--bubble${!isAuthorized ? ' chat-welcome__banner--bubble--campaign' : ''}${bubbleVisible ? ' chat-welcome__banner--bubble--visible' : ''}`}
                       data-testid="chat-panel-welcome-banner-bubble"
+                      onMouseEnter={handleBubbleShow}
+                      onMouseLeave={handleBubbleLeave}
                     >
-                      {t('chat.welcomeBubbleText')}
+                      {isAuthorized ? (
+                        t('chat.welcomeBubbleText')
+                      ) : (
+                        <>
+                          <div className="chat-welcome__campaign-heading">
+                            <span>
+                              <Megaphone aria-hidden />
+                              {t('chat.freeModelsCampaign.title')}
+                            </span>
+                            <button
+                              type="button"
+                              className="chat-welcome__campaign-close"
+                              onClick={handleFreeModelsPromptClose}
+                              aria-label={t('common.close')}
+                              title={t('common.close')}
+                            >
+                              <X aria-hidden />
+                            </button>
+                          </div>
+                          <p>{t('chat.freeModelsCampaign.description')}</p>
+                          <button
+                            type="button"
+                            className="chat-welcome__campaign-claim"
+                            onClick={() => requestLogin()}
+                            data-testid="chat-panel-free-models-claim"
+                          >
+                            {t('chat.freeModelsCampaign.claim')}
+                          </button>
+                        </>
+                      )}
                     </div>
                     <BeeBanner
                       className="chat-welcome__banner chat-welcome__banner--bee"

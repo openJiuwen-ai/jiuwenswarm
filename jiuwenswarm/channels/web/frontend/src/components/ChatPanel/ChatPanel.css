@@ -1499,6 +1499,21 @@
   min-width: 0;
 }
 
+.chat-model-selector {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.chat-model-selector__error {
+  max-width: 220px;
+  color: var(--color-danger, #c23);
+  font-size: 11px;
+  line-height: 16px;
+}
+
 .chat-mode-select__trigger {
   display: inline-flex;
   align-items: center;
@@ -4190,6 +4205,87 @@
 .chat-welcome__banner--bubble--visible {
   opacity: 1;
   transform: scale(1);
+}
+
+.chat-welcome__banner--bubble--campaign {
+  box-sizing: border-box;
+  width: 186px;
+  padding: 12px 16px;
+  color: #191919;
+  background: linear-gradient(135deg, #f1edff 0%, #fff4ef 100%);
+  pointer-events: auto;
+  transform-origin: right bottom;
+}
+
+.chat-welcome__campaign-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.chat-welcome__campaign-heading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-welcome__campaign-heading > span svg {
+  width: 16px;
+  height: 16px;
+}
+
+.chat-welcome__campaign-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: #191919;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+}
+
+.chat-welcome__campaign-close:hover {
+  background: rgba(25, 25, 25, 0.08);
+}
+
+.chat-welcome__campaign-close svg {
+  width: 15px;
+  height: 15px;
+}
+
+.chat-welcome__banner--bubble--campaign > p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.chat-welcome__campaign-claim {
+  display: block;
+  min-width: 68px;
+  height: 28px;
+  margin: 8px 0 0 auto;
+  padding: 0 12px;
+  color: #191919;
+  font: inherit;
+  font-size: 12px;
+  line-height: 26px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid #686868;
+  border-radius: 999px;
+}
+
+.chat-welcome__campaign-claim:hover {
+  background: #fff;
+  border-color: #191919;
 }
 
 .chat-welcome__banner--bee {
