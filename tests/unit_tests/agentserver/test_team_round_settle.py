@@ -549,6 +549,62 @@ async def test_no_forced_terminal_when_interaction_pending(monkeypatch) -> None:
     assert terminals == []
 
 
+class _PauseInFlightManager(_SettleRecordingManager):
+    """pause 进行中的 TeamManager fake。"""
+
+    def is_pause_in_progress(self, session_id: str) -> bool:
+        return True
+
+
+@pytest.mark.asyncio
+async def test_no_forced_terminal_when_pause_in_progress(monkeypatch) -> None:
+    """pause 守卫：用户主动停止（intent=pause）/判死级联 park 导致的
+    流结束 → 不强制补终态（回合挂起待续而非终结；settle 复核在 pause 执行中
+    必然非 True，补了必是带 error 的误伤帧，前端「已停止」被翻成「失败」）。"""
+    manager = _PauseInFlightManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _cid: manager)
+
+    forced_calls: list = []
+    real_emit = team_helpers._emit_forced_terminal_at_stream_end
+
+    async def _spy_emit(*args, **kwargs):
+        forced_calls.append((args, kwargs))
+        await real_emit(*args, **kwargs)
+
+    monkeypatch.setattr(
+        team_helpers, "_emit_forced_terminal_at_stream_end", _spy_emit
+    )
+
+    def _fake_parse(chunk):
+        if getattr(chunk, "type", None) == "team.member":
+            return {
+                "event_type": "team.member",
+                "event": {"type": "team.member.status_changed", "member_id": "m1"},
+            }
+        return None
+
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _fake_parse)
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", _fake_stream)
+    await team_helpers._consume_stream_with_query(
+        "web", "sess-pause", SimpleNamespace(team_name="spec-team"), "问", round_id=1,
+    )
+    # 强制补终态未被调用（pause 守卫在 settle 复核前短路）
+    assert forced_calls == []
+    terminals = [
+        e for e in manager.events
+        if e.get("event_type") == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert terminals == []
+    # 回合挂起待续：不得标记轮次终态（下一条消息按 RESUME_FROM_PAUSE 新流处理）
+    assert manager.is_stream_round_terminal("sess-pause") is False
+    # team.completed 收尾广播不受影响（cron watcher 收尾依赖）
+    assert any(e.get("event_type") == "team.completed" for e in manager.events)
+
+
 @pytest.mark.asyncio
 async def test_no_forced_terminal_when_stream_cancelled(monkeypatch) -> None:
     """取消守卫：流被取消（用户停止/级联收流）→ 不强制补终态。"""
