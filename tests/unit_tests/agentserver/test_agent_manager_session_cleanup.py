@@ -4,7 +4,10 @@ import asyncio
 
 import pytest
 
-from jiuwenswarm.server.runtime.agent_manager import AgentManager
+from jiuwenswarm.server.runtime.agent_manager import (
+    AgentManager,
+    _make_agent_cache_key,
+)
 
 
 class _SessionRuntimeAgent:
@@ -141,7 +144,10 @@ async def test_concurrent_get_agent_creates_one_cached_root() -> None:
 async def test_same_key_creation_waits_for_old_root_cleanup() -> None:
     manager = _SlowCreateAgentManager()
     old_agent = _BlockingRootCleanupAgent()
-    cache_key = "code:normal:/tmp/shared-project"
+    # 预置 key 必须与 get_agent 现算的 key 一致：_normalize_project_dir 会做
+    # abspath+normcase，Windows 上 "/tmp/x" → "c:\tmp\x"，硬编码 POSIX 形态
+    # 会导致键不匹配、get_agent 不等旧 agent 清理直接新建（断言失败）。
+    cache_key = _make_agent_cache_key("code", "normal", "/tmp/shared-project")
     manager.agents["tui"] = {cache_key: old_agent}
 
     cleanup_task = asyncio.create_task(
