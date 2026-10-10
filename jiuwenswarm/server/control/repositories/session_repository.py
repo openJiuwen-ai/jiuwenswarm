@@ -80,6 +80,23 @@ def _ok(request: AgentRequest, payload: dict) -> AgentResponse:
     )
 
 
+def _owner_mismatch(meta: dict | None, caller_user_id: str) -> bool:
+    """True when ``meta`` belongs to a different, identified user than the caller.
+
+    ``AgentRequest.user_id`` exists specifically so session-list/control
+    endpoints can isolate session history per user (see the field's own
+    docstring in ``common/schema/agent.py``). A session with no recorded
+    owner (legacy data predating that field) or a caller with no identified
+    user_id (single-user/desktop/TUI callers) are treated as unscoped, for
+    backward compatibility — only an identified caller against an
+    identified, differently-owned session counts as a mismatch.
+    """
+    if not caller_user_id or not meta:
+        return False
+    owner = str(meta.get("user_id") or "")
+    return bool(owner) and owner != caller_user_id
+
+
 async def handle_list(request: AgentRequest) -> AgentResponse:
     params = request.params if isinstance(request.params, dict) else {}
     limit = _SESSION_LIST_LIMIT_DEFAULT
@@ -93,7 +110,9 @@ async def handle_list(request: AgentRequest) -> AgentResponse:
             maximum=_SESSION_LIST_LIMIT_MAX,
         )
         offset = parse_int_param(params, "offset", 0, minimum=0, maximum=10**9)
-        sessions, total = get_all_sessions_metadata(limit=limit, offset=offset)
+        sessions, total = get_all_sessions_metadata(
+            limit=limit, offset=offset, user_id=str(request.user_id or "")
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[session_repository] session.list failed: %s", exc)
         channel_id = str(request.channel_id or "").strip().lower()
@@ -204,10 +223,23 @@ async def handle_session_request(request: AgentRequest) -> AgentResponse:
         from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError, guard
 
         params = request.params if isinstance(request.params, dict) else {}
+        target_session_id = str(params.get("session_id") or request.session_id or "")
         try:
-            guard(str(params.get("session_id") or request.session_id or ""))
+            guard(target_session_id)
         except LifecycleError as exc:
             return build_error_response(request, str(exc), code=exc.code)
+        # Reject before dispatch: get_metadata/pin/color_set/preview all take
+        # an arbitrary caller-supplied session_id with no other authorization
+        # gate, so an identified caller must own the session it targets.
+        if target_session_id:
+            try:
+                target_meta = get_session_metadata(target_session_id, cache_bust=True)
+            except Exception:  # noqa: BLE001
+                target_meta = None
+            if _owner_mismatch(target_meta, str(request.user_id or "")):
+                return build_error_response(
+                    request, "session not found", code="NOT_FOUND"
+                )
     if request.req_method == ReqMethod.SESSION_GET_METADATA:
         return await handle_get_metadata(request)
     if request.req_method == ReqMethod.SESSION_PIN:
