@@ -204,6 +204,49 @@ function TeamLeaderPlainTextMessage({
   teamLeaderIdentity?: TeamLeaderIdentity | null;
   teamGroupIdentity?: AgentGroupIdentity | null;
 }) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
+
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current !== null) clearTimeout(copyTimeoutRef.current);
+    };
+  }, []);
+
+  const handleCopy = useCallback(async () => {
+    if (!content || isStreaming) return;
+    const success = await writeClipboard(a2uiContentToText(content) || content);
+    if (copyTimeoutRef.current !== null) clearTimeout(copyTimeoutRef.current);
+    setCopied(success);
+    if (success) {
+      copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
+    }
+  }, [content, isStreaming]);
+
+  // TTS，与单 Agent 回复保持一致
+  const { isSpeaking, speak, stop, isSupported: ttsSupported } = useSpeechSynthesis({
+    language: 'zh-CN',
+    rate: 1.1,
+  });
+
+  const handleSpeak = useCallback(() => {
+    if (isSpeaking) {
+      stop();
+      return;
+    }
+    const cleanContent = sanitizeTtsText(a2uiContentToText(content) || content);
+    if (cleanContent) {
+      speak(cleanContent);
+    }
+  }, [content, isSpeaking, speak, stop]);
+
+  useEffect(() => onTtsStop(stop), [stop]);
+
+  // 复制/朗读仅对 leader 回复开放：中间回复已由 hideMeta 收起，成员直发用户的消息不提供操作
+  const showActions = isTeamLeaderMember(member) && Boolean(content);
+
   return (
     <TeamMemberMessageFrame
       member={member}
@@ -235,6 +278,53 @@ function TeamLeaderPlainTextMessage({
           className="flex items-center gap-1 text-sm mt-2 text-text-meta justify-start"
         >
           <span data-testid="chat-panel-message-timestamp">{formatTimestamp(timestamp)}</span>
+          {showActions && (
+            <div className="relative" data-testid="chat-panel-message-copy">
+              <button
+                type="button"
+                data-testid="chat-panel-message-copy-btn"
+                aria-label={copied ? t('chatUi.copied') : t('chatUi.copyMessage')}
+                data-tooltip={copied ? t('chatUi.copied') : t('chatUi.copyMessage')}
+                {...tooltipHandlers}
+                onClick={handleCopy}
+                className={clsx(
+                  'p-1.5 rounded-md',
+                  copied ? 'text-accent' : 'hover:text-accent hover:bg-secondary',
+                )}
+              >
+                {copied ? (
+                  <Check className="w-4 h-4" strokeWidth={1.5} />
+                ) : (
+                  <Copy className="w-4 h-4" strokeWidth={1.5} />
+                )}
+              </button>
+              {tooltip}
+            </div>
+          )}
+          {showActions && ttsSupported && (
+            <div className="relative" data-testid="chat-panel-message-tts">
+              <button
+                type="button"
+                data-testid="chat-panel-message-tts-btn"
+                data-variant={isSpeaking ? 'playing' : 'idle'}
+                aria-label={isSpeaking ? t('chatUi.stopReading') : t('chatUi.readMessage')}
+                data-tooltip={isSpeaking ? t('chatUi.stopReading') : t('chatUi.readMessage')}
+                {...tooltipHandlers}
+                onClick={handleSpeak}
+                className={clsx(
+                  'p-1.5 rounded-md',
+                  isSpeaking ? 'text-accent bg-accent/10' : 'hover:text-accent hover:bg-secondary',
+                )}
+              >
+                {isSpeaking ? (
+                  <Square className="w-4 h-4 fill-current" strokeWidth={1.5} />
+                ) : (
+                  <Volume2 className="w-4 h-4" strokeWidth={1.5} />
+                )}
+              </button>
+              {tooltip}
+            </div>
+          )}
         </div>
       )}
     </TeamMemberMessageFrame>
