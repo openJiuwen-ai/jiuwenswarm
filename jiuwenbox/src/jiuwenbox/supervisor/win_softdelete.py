@@ -38,11 +38,26 @@ def enabled_from_environ() -> bool:
 
 
 def dll_path() -> Path:
-    """DLL 位置: 环境变量优先, 否则用本包 ``native/jiuwen_softdelete.dll``."""
+    """返回软删除 DLL 路径。
+
+    环境变量优先。正常布局下 DLL 位于本包的 ``native`` 目录；冻结的
+    JiuwenSwarm 启动时会将磁盘 ``jiuwenbox`` 目录挪到
+    ``jiuwenbox_legacy_overlay``，以免它遮蔽 PYZ 内的同名 Python 包。
+    因此该布局下原生 DLL 也随目录移动，需要在 legacy overlay 中查找。
+    """
     raw = (os.environ.get(ENV_DLL) or "").strip()
     if raw:
         return Path(raw)
-    return Path(__file__).resolve().parents[1] / "native" / "jiuwen_softdelete.dll"
+    package_dir = Path(__file__).resolve().parents[1]
+    native_dll = package_dir / "native" / "jiuwen_softdelete.dll"
+    if native_dll.is_file():
+        return native_dll
+    return (
+        package_dir.parent
+        / f"{package_dir.name}_legacy_overlay"
+        / "native"
+        / "jiuwen_softdelete.dll"
+    )
 
 
 def merge_soft_delete_env(env: dict[str, str]) -> None:
