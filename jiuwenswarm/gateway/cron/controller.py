@@ -11,12 +11,12 @@ from zoneinfo import ZoneInfo
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
+from jiuwenswarm.common.channels import CRON_TARGET_CHANNEL_IDS, ChannelType
 from jiuwenswarm.gateway.cron.cron_expr import normalize_cron_expr
 from jiuwenswarm.gateway.cron.models import (
     CRON_JOB_DESCRIPTION_MAX_LENGTH,
     CRON_JOB_NAME_MAX_LENGTH,
     CRON_MODEL_SOURCE_LOGIN,
-    CronTargetChannel,
     cron_job_metadata,
     cron_job_modes_for_tools,
     is_valid_target_channel_id,
@@ -76,7 +76,7 @@ class CronController:
         if not hasattr(scheduler, "_lifecycle_mutation_lock"):
             scheduler._lifecycle_mutation_lock = asyncio.Lock()
         self.mutation_lock = scheduler._lifecycle_mutation_lock
-        self._target_channel: CronTargetChannel | None = None
+        self._target_channel: ChannelType | None = None
         # 准入闸门是跨进程 RPC,列表时按项目去重后并发查询,这里限制并发上限,
         # 避免任务/项目很多时一次性打出上百个请求。
         self._gate_concurrency = asyncio.Semaphore(_GATE_QUERY_CONCURRENCY)
@@ -95,7 +95,7 @@ class CronController:
         """The underlying cron scheduler service."""
         return self._scheduler
 
-    def set_target_channel(self, channel: CronTargetChannel) -> None:
+    def set_target_channel(self, channel: ChannelType) -> None:
         self._target_channel = channel
 
     @classmethod
@@ -152,7 +152,7 @@ class CronController:
     )
 
     def _normalize_targets(self, raw: Any) -> str:
-        """将 targets 规范为 CronTargetChannel 枚举值。"""
+        """将 targets 规范为声明过的推送渠道 id。"""
         raw_s = str(raw or "").strip()
         if self._target_channel is None and not raw_s:
             raise ValueError("targets is required when target_channel is not set")
@@ -726,11 +726,10 @@ class CronController:
                         },
                         "targets": {
                             "type": "string",
-                            "enum": [e.value for e in CronTargetChannel],
+                            "enum": sorted(CRON_TARGET_CHANNEL_IDS),
                             "description": (
-                                "Delivery channel: tui, web, feishu, dingtalk, "
-                                "whatsapp, wecom, xiaoyi, wechat. "
-                                "If omitted, use the current request source channel."
+                                "Delivery channel. If omitted, use the current "
+                                "request source channel."
                             ),
                         },
                         "enabled": {
@@ -837,10 +836,8 @@ class CronController:
                             "properties": {
                                 "targets": {
                                     "type": "string",
-                                    "enum": [e.value for e in CronTargetChannel],
-                                    "description": (
-                                        "推送频道：web/tui/feishu/dingtalk/whatsapp/wecom/xiaoyi/wechat"
-                                    ),
+                                    "enum": sorted(CRON_TARGET_CHANNEL_IDS),
+                                    "description": "推送频道",
                                 },
                                 "mode": {
                                     "type": "string",

@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from openjiuwen.harness.tools.cron import CronToolBackend, CronToolContext, create_cron_tools
 
-from jiuwenswarm.runtime.cron import CronTargetChannel
+from jiuwenswarm.common.channels import CRON_TARGET_CHANNEL_IDS, ChannelType
 from jiuwenswarm.runtime.cron.dingtalk_routing import (
     build_dingtalk_cron_session_id_from_context,
     dingtalk_chat_type_from_metadata,
@@ -76,7 +76,7 @@ class _CronToolsCronBackend(CronToolBackend):
             return CronToolRoute()
         metadata = context.metadata if isinstance(context.metadata, dict) else {}
         request_id = str(metadata.get("request_id") or "").strip()
-        channel_id = str(context.channel_id or "").strip() or CronTargetChannel.WEB.value
+        channel_id = str(context.channel_id or "").strip() or ChannelType.WEB.value
         session_id = (
             str(context.session_id).strip()
             if isinstance(context.session_id, str) and context.session_id.strip()
@@ -403,7 +403,7 @@ class _CronToolsCronBackend(CronToolBackend):
             {
                 "mode": "announce",
                 "channel": str(
-                    row.get("targets") or CronTargetChannel.WEB.value).strip() or CronTargetChannel.WEB.value,
+                    row.get("targets") or ChannelType.WEB.value).strip() or ChannelType.WEB.value,
             },
         )
         row.setdefault("session_target", "isolated")
@@ -424,7 +424,7 @@ def _extract_legacy_params(
         if context_channel.startswith("feishu_enterprise:"):
             context_target = normalize_target_channel_id(
                 context_channel,
-                default=CronTargetChannel.WEB.value,
+                default=ChannelType.WEB.value,
             )
         elif is_valid_target_channel_id(context_channel):
             context_target = context_channel
@@ -495,12 +495,12 @@ def _extract_legacy_params(
             delivery.get("channel")
             or data.get("targets")
             or (context.channel_id if context else "")
-            or CronTargetChannel.WEB.value
-        ).strip() or CronTargetChannel.WEB.value
+            or ChannelType.WEB.value
+        ).strip() or ChannelType.WEB.value
         # Per-request routing: when DeepAgent tool injects implicit delivery.channel=web,
         # use current request context channel instead of sticky tool-level default.
         has_context_target = bool(context_target)
-        is_web_target = targets == CronTargetChannel.WEB.value
+        is_web_target = targets == ChannelType.WEB.value
         has_explicit_targets = "targets" in data
         has_delivery_channel = "channel" in delivery
         should_use_context_target = (
@@ -1035,7 +1035,7 @@ class CronRuntimeBridge:
         tools = create_cron_tools(
             effective_backend,
             context=context,
-            target_channels=[channel.value for channel in CronTargetChannel],
+            target_channels=sorted(CRON_TARGET_CHANNEL_IDS),
             default_target_channel=None,
             agent_id=agent_id,
             language=language,

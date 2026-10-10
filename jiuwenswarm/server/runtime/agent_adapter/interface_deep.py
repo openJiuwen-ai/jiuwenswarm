@@ -586,7 +586,7 @@ from jiuwenswarm.server.runtime.agent_adapter.browser_runtime_security import (
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
 from jiuwenswarm.agents.harness.common.auto_harness.service import _HARNESS_PACKAGES_FILE
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
-from jiuwenswarm.runtime.cron import CronTargetChannel
+from jiuwenswarm.common.channels import ChannelType
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.playwright_mcp_runtime import (
@@ -624,7 +624,7 @@ _react_config = get_config().get("react", {})
 
 _CRON_TOOL_CHANNEL_ID: ContextVar[str] = ContextVar(
     "cron_tool_channel_id",
-    default=CronTargetChannel.WEB.value,
+    default=ChannelType.WEB.value,
 )
 _CRON_TOOL_SESSION_ID: ContextVar[str | None] = ContextVar(
     "cron_tool_session_id",
@@ -1766,7 +1766,7 @@ class _RuntimeCronToolContext:
 
     def __init__(self, tool_scope: str) -> None:
         self._tool_scope = tool_scope
-        self._fallback_channel_id = CronTargetChannel.WEB.value
+        self._fallback_channel_id = ChannelType.WEB.value
         self._fallback_session_id: str | None = None
         self._fallback_metadata: dict[str, Any] | None = None
         self._fallback_mode: str | None = None
@@ -11335,7 +11335,7 @@ class JiuWenSwarmDeepAdapter:
             set_shell_session_id,
         )
 
-        normalized_channel = str(channel_id or "").strip() or CronTargetChannel.WEB.value
+        normalized_channel = str(channel_id or "").strip() or ChannelType.WEB.value
         normalized_mode = str(mode).strip() if isinstance(mode, str) and mode.strip() else None
         normalized_metadata = dict(metadata) if isinstance(metadata, dict) else None
         if normalized_metadata is None:

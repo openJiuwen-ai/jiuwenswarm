@@ -15,7 +15,6 @@ from jiuwenswarm.runtime.cron.cron_expr import normalize_cron_expr
 from jiuwenswarm.runtime.cron.store import CronJobStore, _PROACTIVE_TICK_MODE
 from jiuwenswarm.runtime.cron.models import (
     CronJob,
-    CronTargetChannel,
     cron_job_modes_for_tools,
     is_valid_target_channel_id,
     normalize_cron_job_mcp,
@@ -23,6 +22,7 @@ from jiuwenswarm.runtime.cron.models import (
     normalize_target_channel_id,
     validate_cron_model,
 )
+from jiuwenswarm.common.channels import CRON_TARGET_CHANNEL_IDS, ChannelType, channel_for_id
 from jiuwenswarm.common.utils import get_cron_jobs_path
 from jiuwenswarm.runtime.host_services import send_runtime_push
 
@@ -129,7 +129,7 @@ class CronToolRoute:
     """当前请求同步到 Gateway 时使用的路由（request_id / channel / session / chat_type / app_id）。"""
 
     request_id: str = ""
-    channel_id: str = CronTargetChannel.WEB.value
+    channel_id: str = ChannelType.WEB.value
     session_id: str | None = None
     chat_type: str | None = None  # "group" 表示群聊, "p2p" 或 None 表示私聊
     app_id: str = ""
@@ -408,25 +408,12 @@ class CronTools:
 
     def _default_target_from_channel(self) -> str:
         channel_raw = self._resolve_channel_id()
-        channel = channel_raw.lower()
-        if channel.startswith("feishu_enterprise:"):
-            return normalize_target_channel_id(channel_raw, default=CronTargetChannel.WEB.value)
-        if channel.startswith("feishu"):
-            return CronTargetChannel.FEISHU.value
-        if channel.startswith("wecom"):
-            return CronTargetChannel.WECOM.value
-        if channel.startswith("xiaoyi"):
-            return CronTargetChannel.XIAOYI.value
-        if channel.startswith("whatsapp"):
-            return CronTargetChannel.WHATSAPP.value
-        if channel.startswith("wechat"):
-            return CronTargetChannel.WECHAT.value
-        if channel.startswith("dingtalk"):
-            return CronTargetChannel.DINGTALK.value
-        if channel.startswith("tui"):
-            return CronTargetChannel.TUI.value
-
-        return CronTargetChannel.WEB.value
+        if channel_raw.lower().startswith("feishu_enterprise:"):
+            return normalize_target_channel_id(channel_raw, default=ChannelType.WEB.value)
+        channel = channel_for_id(channel_raw)
+        if channel is None or channel.value not in CRON_TARGET_CHANNEL_IDS:
+            return ChannelType.WEB.value
+        return channel.value
 
     def _resolve_channel_id(self) -> str:
         r = self._route()
@@ -441,7 +428,7 @@ class CronTools:
     def _normalize_targets_param(self, raw: Any) -> str:
         target = str(raw or "").strip()
         if self._is_valid_target(target):
-            normalized = normalize_target_channel_id(target, default=CronTargetChannel.WEB.value)
+            normalized = normalize_target_channel_id(target, default=ChannelType.WEB.value)
             logger.info(
                 "[CronTools] normalize targets from explicit value: raw=%s normalized=%s route_channel=%s",
                 target,
@@ -980,10 +967,8 @@ class CronTools:
                                 "delete_after_run": {"type": "boolean"},
                                 "targets": {
                                     "type": "string",
-                                    "enum": [e.value for e in CronTargetChannel],
-                                    "description": (
-                                        "推送频道：web/tui/feishu/dingtalk/whatsapp/wecom/xiaoyi/wechat"
-                                    ),
+                                    "enum": sorted(CRON_TARGET_CHANNEL_IDS),
+                                    "description": "推送频道",
                                 },
                                 "mode": {
                                     "type": "string",

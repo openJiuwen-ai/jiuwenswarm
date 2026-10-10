@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+from jiuwenswarm.common.channels import ChannelType, channel_for_id
+from jiuwenswarm.gateway.channel_manager.channel_specs import spec_for
 from jiuwenswarm.gateway.routing.agent_client import AgentServerClient, AgentServerUnaryTimeout
 from jiuwenswarm.gateway.cron.dingtalk_routing import (
     is_usable_dingtalk_staff_id,
@@ -19,7 +21,6 @@ from jiuwenswarm.gateway.cron.models import (
     CRON_JOB_DEFAULT_MODE,
     CronJob,
     CronRunState,
-    CronTargetChannel,
     is_team_cron_mode,
     normalize_cron_job_mode,
     resolve_cron_job_timeout_seconds,
@@ -118,7 +119,7 @@ def _resolve_cron_execution_context(
     carries ``cron_id``), keeping team and single-agent linkage identical.
     """
     _ = message_handler
-    channel_id = (job.targets or CronTargetChannel.TUI.value).strip() or CronTargetChannel.TUI.value
+    channel_id = (job.targets or ChannelType.CLI.value).strip() or ChannelType.CLI.value
     return channel_id, f"cron_{ts}_{job.id}"
 
 
@@ -2242,7 +2243,7 @@ class CronSchedulerService:
                     # 仅在 binding 场景用真实 staff 作为发送目标已写入 metadata。
                     pass
 
-        # 针对 feishu/xiaoyi/whatsapp/dingtalk：从 config.yaml 取最近一次可回发的平台身份，写入 metadata
+        # 从渠道声明里取最近一次可回发的平台身份（config.yaml 的 channels.<id>.last_*），写入 metadata
         # 这样即使 cron 推送没有 session_id，也能让 Channel.send 正常路由到对应会话。
         if metadata is None:
             channels_cfg: dict = {}
@@ -2253,102 +2254,14 @@ class CronSchedulerService:
                 cfg = get_config_raw() or {}
                 channels_cfg = cfg.get("channels") or {}
                 ch_cfg = channels_cfg.get(channel_id) or {}
-                if channel_id == "feishu" or channel_id.startswith("feishu:"):
-                    # V2 多应用：从 apps 列表取对应 app 的 last_*（而非平铺字段）
-                    target_app_id = str(getattr(job, "app_id", None) or "").strip()
-                    if not target_app_id:
-                        if channel_id.startswith("feishu:") and not channel_id.startswith("feishu_enterprise:"):
-                            target_app_id = channel_id.split(":", 1)[1].strip()
-                    apps = ch_cfg.get("apps") or []
-                    if isinstance(apps, list):
-                        for app in apps:
-                            if not isinstance(app, dict):
-                                continue
-                            if target_app_id and app.get("app_id") != target_app_id:
-                                continue
-                            if not target_app_id and not app.get("is_default", False):
-                                continue
-                            last_chat_id = str(app.get("last_chat_id") or "").strip()
-                            last_open_id = str(app.get("last_open_id") or "").strip()
-                            if last_chat_id or last_open_id:
-                                metadata = {
-                                    "feishu_chat_id": last_chat_id,
-                                    "feishu_open_id": last_open_id,
-                                }
-                            break
-                    # 兜底：如果 apps 列表为空或无匹配，回退到旧平铺字段
-                    if metadata is None:
-                        last_chat_id = str(ch_cfg.get("last_chat_id") or "").strip()
-                        last_open_id = str(ch_cfg.get("last_open_id") or "").strip()
-                        if last_chat_id or last_open_id:
-                            metadata = {
-                                "feishu_chat_id": last_chat_id,
-                                "feishu_open_id": last_open_id,
-                            }
-                elif channel_id.startswith("feishu_enterprise:"):
-                    app_id = channel_id.split(":", 1)[1].strip()
-                    enterprise_cfg = channels_cfg.get("feishu_enterprise") or {}
-                    if isinstance(enterprise_cfg, dict) and app_id:
-                        for _, bot_cfg in enterprise_cfg.items():
-                            if not isinstance(bot_cfg, dict):
-                                continue
-                            bot_app_id = str(bot_cfg.get("app_id") or "").strip()
-                            if bot_app_id != app_id:
-                                continue
-                            last_chat_id = str(bot_cfg.get("last_chat_id") or "").strip()
-                            last_open_id = str(bot_cfg.get("last_open_id") or "").strip()
-                            if last_chat_id or last_open_id:
-                                metadata = {
-                                    "feishu_chat_id": last_chat_id,
-                                    "feishu_open_id": last_open_id,
-                                }
-                            break
-                elif channel_id == "xiaoyi":
-                    last_session_id = str(ch_cfg.get("last_session_id") or "").strip()
-                    last_task_id = str(ch_cfg.get("last_task_id") or "").strip()
-                    if last_session_id or last_task_id:
-                        metadata = {
-                            "xiaoyi_session_id": last_session_id,
-                            "xiaoyi_task_id": last_task_id,
-                        }
-                elif channel_id == "whatsapp":
-                    last_jid = str(ch_cfg.get("last_jid") or "").strip()
-                    if last_jid:
-                        metadata = {
-                            "whatsapp_jid": last_jid,
-                        }
-                elif channel_id == "wecom":
-                    last_chat_id = str(ch_cfg.get("last_chat_id") or "").strip()
-                    last_user_id = str(ch_cfg.get("last_user_id") or "").strip()
-                    if last_chat_id or last_user_id:
-                        metadata = {
-                            "wecom_chat_id": last_chat_id,
-                            "wecom_user_id": last_user_id,
-                        }
-                elif channel_id == "wechat":
-                    last_user_id = str(ch_cfg.get("last_user_id") or "").strip()
-                    last_context_token = str(ch_cfg.get("last_context_token") or "").strip()
-                    if last_user_id:
-                        metadata = {
-                            "wechat_user_id": last_user_id,
-                            "reply_to_user_id": last_user_id,
-                        }
-                        if last_context_token:
-                            metadata["wechat_context_token"] = last_context_token
-                            metadata["context_token"] = last_context_token
-                elif channel_id == "dingtalk":
-                    last_sender_id = str(ch_cfg.get("last_sender_id") or "").strip()
-                    last_conversation_id = str(ch_cfg.get("last_conversation_id") or "").strip()
-                    last_conversation_type = str(ch_cfg.get("last_conversation_type") or "").strip()
-                    # 钉钉 send() 依赖 metadata 决定单聊/群聊（conversation_type + conversation_id）。
-                    # sender_id 作为单聊兜底接收者；群聊以 conversation_id 为主。
-                    if last_sender_id or last_conversation_id:
-                        metadata = {
-                            "dingtalk_sender_id": last_sender_id,
-                            "dingtalk_chat_id": last_conversation_id,
-                            "conversation_id": last_conversation_id,
-                            "conversation_type": last_conversation_type or "1",
-                        }
+                spec = spec_for(channel_for_id(channel_id))
+                if spec is not None and spec.default_metadata is not None:
+                    metadata = spec.default_metadata(
+                        channel_id=channel_id,
+                        ch_cfg=ch_cfg,
+                        channels_cfg=channels_cfg,
+                        app_id=str(getattr(job, "app_id", None) or "").strip(),
+                    )
             except Exception:
                 metadata = None
 

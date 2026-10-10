@@ -320,75 +320,29 @@ def make_delivery_target(
     ws_id: str = "",
     **kwargs: Any,
 ) -> DeliveryTarget:
-    """按 channel_id 构造对应渠道的 DeliveryTarget 子类实例。
+    """按 channel_id 取渠道声明的工厂，构造对应的 DeliveryTarget 子类实例。
 
-    各渠道只传自己需要的字段，其余由子类默认值填充。
+    各渠道只读自己需要的字段，其余由子类默认值填充。
     """
-    _ch = channel_id or "web"
-    if _ch in ("web",):
+    # 延迟 import：渠道注册表 import 本模块的值对象。
+    from jiuwenswarm.common.channels import ChannelType
+    from jiuwenswarm.gateway.channel_manager.channel_specs import spec_for
+
+    _ch = channel_id or ChannelType.WEB.value
+    try:
+        # 精确匹配：带 ``:<实例>`` 后缀的 id 从来没有自己的工厂。
+        _channel = ChannelType(_ch)
+    except ValueError:
+        _channel = None
+    _spec = spec_for(_channel)
+    if _spec is None or _spec.delivery is None:
+        # fallback: 未知渠道，返回基础实例（不推荐）
         return WebDeliveryTarget(channel_id=_ch, ws_id=ws_id)
-    if _ch in ("tui",):
-        return TuiDeliveryTarget(channel_id=_ch, ws_id=ws_id)
-    if _ch in ("acp",):
-        return AcpDeliveryTarget(channel_id=_ch, request_id=kwargs.get("request_id", ""))
-    if _ch in ("xiaoyi",):
-        return XiaoyiDeliveryTarget(
-            channel_id=_ch,
-            agent_id=physical_user_id,
-            push_id=kwargs.get("push_id", ""),
-            xiaoyi_session_id=kwargs.get("xiaoyi_session_id", "") or chat_id,
-            conversation_id=kwargs.get("conversation_id", ""),
-            url_key=kwargs.get("url_key", ""),
-        )
-    if _ch in ("feishu", "feishu_enterprise"):
-        return FeishuDeliveryTarget(
-            channel_id=_ch,
-            chat_type="group" if chat_id else "p2p",
-            chat_id=chat_id,
-            receive_id=receive_id or chat_id or physical_user_id,
-            id_type="chat_id" if chat_id else "open_id",
-            physical_user_id=physical_user_id,
-        )
-    if _ch in ("wecom",):
-        return WecomDeliveryTarget(
-            channel_id=_ch,
-            chat_type="group" if chat_id else "p2p",
-            chat_id=chat_id,
-            physical_user_id=physical_user_id,
-        )
-    if _ch in ("dingtalk",):
-        return DingTalkDeliveryTarget(
-            channel_id=_ch,
-            physical_user_id=physical_user_id,
-        )
-    if _ch in ("telegram",):
-        return TelegramDeliveryTarget(
-            channel_id=_ch,
-            chat_id=int(chat_id or "0"),
-            physical_user_id=physical_user_id,
-        )
-    if _ch in ("discord",):
-        return DiscordDeliveryTarget(
-            channel_id=_ch,
-            physical_user_id=physical_user_id,
-        )
-    if _ch in ("slack",):
-        return SlackDeliveryTarget(
-            channel_id=_ch,
-            chat_type=kwargs.get("chat_type", "group"),
-            target_channel_id=chat_id or receive_id,
-            thread_ts=kwargs.get("thread_ts", ""),
-            physical_user_id=physical_user_id,
-        )
-    if _ch in ("whatsapp",):
-        return WhatsAppDeliveryTarget(
-            channel_id=_ch,
-            target_jid=chat_id or receive_id,
-        )
-    if _ch in ("wechat",):
-        return WechatDeliveryTarget(
-            channel_id=_ch,
-            user_id=physical_user_id or receive_id,
-        )
-    # fallback: 未知渠道，返回基础实例（不推荐）
-    return WebDeliveryTarget(channel_id=_ch, ws_id=ws_id)
+    return _spec.delivery(
+        _ch,
+        chat_id=chat_id,
+        receive_id=receive_id,
+        physical_user_id=physical_user_id,
+        ws_id=ws_id,
+        **kwargs,
+    )
