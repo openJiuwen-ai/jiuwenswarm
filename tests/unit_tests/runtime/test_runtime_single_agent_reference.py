@@ -240,6 +240,65 @@ async def test_unadapted_modes_keep_their_existing_executor(mode: str) -> None:
     await runtime.close()
 
 
+def test_stale_ask_user_answer_is_rerouted_as_chat_work() -> None:
+    stale_answer = AgentRequest(
+        request_id="stale-answer",
+        channel_id="web",
+        session_id="stale-answer-session",
+        req_method=ReqMethod.CHAT_SEND,
+        is_stream=True,
+        params={
+            "mode": "agent",
+            "work_mode": "work",
+            "source": "ask_user_interrupt",
+            "request_id": "call_ask_user_1",
+            "answers": [{"question": "用哪个方案?", "selected_options": ["A"]}],
+        },
+    )
+
+    assert AgentRuntime.session_work_kind(stale_answer) is SessionWorkKind.CONTROL_INPUT
+    assert AgentRuntime.session_work_kind(
+        stale_answer, resume_interrupt_as_chat=True
+    ) is SessionWorkKind.CHAT_STREAM
+    assert AgentRuntime._is_stale_ask_user_answer(stale_answer) is True
+
+
+def test_permission_answer_is_not_rerouted() -> None:
+    permission_answer = AgentRequest(
+        request_id="permission-answer",
+        channel_id="web",
+        session_id="permission-answer-session",
+        req_method=ReqMethod.CHAT_SEND,
+        is_stream=True,
+        params={
+            "mode": "agent",
+            "work_mode": "work",
+            "source": "permission_interrupt",
+            "request_id": "call_tool_1",
+            "answers": [{"action": "allow_once"}],
+        },
+    )
+
+    assert AgentRuntime.session_work_kind(permission_answer) is SessionWorkKind.CONTROL_INPUT
+    assert AgentRuntime._is_stale_ask_user_answer(permission_answer) is False
+
+
+def test_interactive_input_shape_matches_resume_contract() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    interactive_input = JiuWenSwarm._build_interactive_input_from_answers(
+        "call_ask_user_1",
+        [{"question": "用哪个方案?", "selected_options": ["A"]}],
+        "ask_user_interrupt",
+    )
+
+    assert isinstance(interactive_input, InteractiveInput)
+    assert interactive_input.user_inputs == {
+        "call_ask_user_1": {"answers": {"用哪个方案?": "A"}}
+    }
+
+
 @pytest.mark.asyncio
 async def test_cancel_runs_semantic_interrupt_before_coordinator_cancel(
     monkeypatch: pytest.MonkeyPatch,

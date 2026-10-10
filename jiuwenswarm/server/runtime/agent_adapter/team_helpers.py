@@ -30,6 +30,7 @@ from openjiuwen.agent_teams.monitor import TeamStreamLogger
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger, team_logger
 from openjiuwen.core.session.agent_team import create_agent_team_session
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.harness import DeepAgent
 
 from jiuwenswarm.server.runtime.session.history_io import (
@@ -612,6 +613,24 @@ class _FirstTeamRequestPreparation:
     error_chunks: list[AgentResponseChunk] | None = None
 
 
+def _is_ask_user_answer_payload(query: Any) -> bool:
+    """Whether the interactive input carries self-describing ask_user answers.
+
+    Ask_user answers can resume against a rebuilt runtime because the question
+    text is the dict key and the answer the value. Permission/evolution
+    approvals carry a bare ``action`` payload bound to the original execution
+    context, so they must not be replayed after a rebuild.
+    """
+    user_inputs = getattr(query, "user_inputs", None)
+    if not isinstance(user_inputs, dict) or not user_inputs:
+        return False
+    for value in user_inputs.values():
+        answers = value.get("answers") if isinstance(value, dict) else None
+        if not isinstance(answers, dict) or not answers:
+            return False
+    return True
+
+
 async def _prepare_first_team_request(
     *,
     team_manager: Any,
@@ -621,8 +640,6 @@ async def _prepare_first_team_request(
     query: Any,
 ) -> _FirstTeamRequestPreparation:
     """Apply first-request preprocessing shared by cold starts and fallback starts."""
-    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
-
     hide_dm = False
     debug = False
 
@@ -649,6 +666,23 @@ async def _prepare_first_team_request(
             )
             return _FirstTeamRequestPreparation(
                 recovered_runtime=True,
+                query=query,
+                hide_dm=hide_dm,
+                debug=debug,
+            )
+
+        if _is_ask_user_answer_payload(query):
+            # The checkpoint persists the leader's interruption state, so the
+            # cold-start dispatch (COLD_RECOVER) rebuilds the runtime and the
+            # untouched InteractiveInput resumes the pending ask_user call.
+            logger.info(
+                "[TeamHelpers] stale ask_user answer will resume via cold rebuild: "
+                "channel_id=%s session_id=%s",
+                _resolve_channel_id(channel_id),
+                session_id,
+            )
+            return _FirstTeamRequestPreparation(
+                recovered_runtime=False,
                 query=query,
                 hide_dm=hide_dm,
                 debug=debug,
@@ -3428,9 +3462,19 @@ async def _consume_stream_with_query(
             session_id=session_id,
             kv_cache_runtime=get_kv_cache_runtime(),
         )
+        # A bare InteractiveInput must reach TeamAgent.stream untouched: the
+        # dict wrapper would push the object into the str routing parser, and
+        # wrapping it as a str query would drop the resume semantics. COLD_RECOVER
+        # restores the leader's interruption state, so this object resumes the
+        # pending ask_user call directly.
+        inputs = (
+            initial_query
+            if isinstance(initial_query, InteractiveInput)
+            else {"query": initial_query}
+        )
         async for chunk in Runner.run_agent_team_streaming(
             agent_team=team_spec,
-            inputs={"query": initial_query},
+            inputs=inputs,
             session=team_session,
             envs=envs,
             stream_logger=lg,
