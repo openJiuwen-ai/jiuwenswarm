@@ -70,6 +70,70 @@ def test_append_history_skips_empty_chat_final_and_heartbeat(tmp_path, monkeypat
     assert session_history.load_history_records("heartbeat_abc") == []
 
 
+def test_empty_cancel_marker_survives_history_reload(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    session_history.append_history_record(
+        session_id="s-stopped", request_id="picture", channel_id="xiaoyi",
+        role="assistant", event_type="chat.final", content="", timestamp=1.0,
+        extra={"aborted": True},
+    )
+    records = _wait_history("s-stopped")
+    assert len(records) == 1
+    assert records[0]["aborted"] is True
+    assert records[0]["request_id"] == "picture"
+
+
+def test_resumed_same_request_final_replaces_stop_marker():
+    records = [
+        {"id": "picture:assistant", "event_type": "chat.final", "content": "", "aborted": True},
+        {"id": "picture:assistant", "event_type": "chat.final", "content": "识别完成"},
+    ]
+    restored = session_history._dedup_records_last_wins(records)
+    assert restored == [records[1]]
+
+
+def test_resume_keeps_distinct_partial_text_but_clears_its_stop_flag():
+    records = [
+        {"id": "picture:assistant", "event_type": "chat.final", "content": "识别了一部分", "aborted": True},
+        {"id": "picture:assistant", "event_type": "chat.final", "content": "继续识别的结果"},
+    ]
+    restored = session_history._dedup_records_last_wins(records)
+    assert [r["content"] for r in restored] == ["识别了一部分", "继续识别的结果"]
+    assert not any(r.get("aborted") for r in restored)
+    assert records[0]["aborted"] is True
+
+
+@pytest.mark.parametrize("event_type,content,extra", [
+    ("chat.final", "正在识别图片", {}),
+    ("chat.tool_call", "", {"tool_call": {"name": "bash", "tool_call_id": "picture-call"}}),
+])
+def test_empty_stop_marker_merges_into_existing_round_record(event_type, content, extra):
+    records = [
+        {"id": "picture:assistant", "event_type": event_type, "content": content, **extra},
+        {"id": "weather:user", "role": "user", "content": "深圳天气"},
+        {"id": "picture:assistant", "event_type": "chat.final", "content": "", "aborted": True},
+    ]
+    restored = session_history._dedup_records_last_wins(records)
+    assert len(restored) == 2
+    assert restored[0]["aborted"] is True
+    assert restored[0]["content"] == content
+    assert restored[1] == records[1]
+    assert "aborted" not in records[0]
+
+
+def test_resume_clears_tool_stop_flag_after_history_rewrite():
+    records = [
+        {"id": "picture:assistant", "event_type": "chat.tool_call", "content": "",
+         "tool_call": {"name": "bash", "tool_call_id": "picture-call"}},
+        {"id": "picture:assistant", "event_type": "chat.final", "content": "", "aborted": True},
+    ]
+    rewritten = session_history._dedup_records_last_wins(records)
+    rewritten.append({"id": "picture:assistant", "event_type": "chat.final", "content": "识别完成"})
+    restored = session_history._dedup_records_last_wins(rewritten)
+    assert not any(r.get("aborted") for r in restored)
+    assert restored[0]["tool_call"]["tool_call_id"] == "picture-call"
+
+
 def test_assistant_file_event_is_restored_for_team_history() -> None:
     assert session_history._is_team_relevant(
         {

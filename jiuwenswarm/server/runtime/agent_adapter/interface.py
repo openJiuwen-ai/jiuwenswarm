@@ -38,6 +38,7 @@ from jiuwenswarm.server.runtime.session.session_manager import SessionManager
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.stall_watchdog import stall_watchdog
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_EXECUTE_OPTION_VALUES,
     PLAN_REMINDER_ORIGINAL_QUERY_KEY,
@@ -2636,7 +2637,8 @@ class JiuWenSwarm:
             nonlocal durable_pending_final_chunks, durable_final_content
             pending_text = "".join(durable_pending_final_chunks)
             durable_pending_final_chunks = []
-            if not pending_text or pending_text == durable_final_content:
+            # 取消终态独立于正文：工具阶段/零正文也必须留痕。
+            if not aborted and (not pending_text or pending_text == durable_final_content):
                 return
             from jiuwenswarm.server.runtime.expert.expert_service import (
                 history_expert_identity_extra,
@@ -2685,6 +2687,10 @@ class JiuWenSwarm:
             try:
                 producer_stream = adapter.process_message_stream_impl(request, inputs)
                 async for chunk in producer_stream:
+                    # 底层读取清理可能吞掉 CancelledError；消费者已退出时，
+                    # 不能继续写入有界队列，否则会卡住并一直占用输出租约。
+                    if asyncio.current_task().cancelling():
+                        raise asyncio.CancelledError
                     _put_count += 1
                     if _put_count <= 3:
                         _pl = getattr(chunk, "payload", None) or {}
@@ -3160,7 +3166,10 @@ class JiuWenSwarm:
                             payload=data,
                             is_complete=False,
                         )
-        except asyncio.CancelledError:
+            # 生产者自行取消时也走同一收尾；不能在 try 外直接 raise 丢失留痕。
+            if producer_cancellation is not None:
+                raise producer_cancellation
+        except (asyncio.CancelledError, GeneratorExit) as exc:
             # 中断/停止留痕：pending 缓冲里是本轮已流式的半截正文（思考随
             # _persist_pending_final_text 一并附挂，aborted 标记"已停止"语义），
             # 不落盘则重启后该轮只剩前端本地台账的「已停止」标记。
@@ -3168,21 +3177,22 @@ class JiuWenSwarm:
             # 覆盖本条半截记录（aborted 标记随之消失），语义安全。
             # 留痕是磁盘 I/O，失败不得顶替 CancelledError 向上传播（否则取消
             # 链路中断：下方 log/raise 不执行，调用方收到普通异常）。
-            try:
-                _persist_pending_final_text(aborted=True)
-            except Exception:
-                logger.warning(
-                    "[JiuWenSwarm] failed to persist aborted final text: request_id=%s",
-                    rid,
-                    exc_info=True,
-                )
-            logger.info("[JiuWenSwarm] 流式处理被中断: request_id=%s", rid)
+            if not completed_yielded:
+                try:
+                    _persist_pending_final_text(aborted=True)
+                except Exception:
+                    logger.warning(
+                        "[JiuWenSwarm] failed to persist aborted final text: request_id=%s",
+                        rid,
+                        exc_info=True,
+                    )
+            logger.info("[JiuWenSwarm] 流式处理被中断: request_id=%s reason=%s", rid, type(exc).__name__)
             # 取消不再让流静默死亡：补发一个如实标注 cancelled 的终止帧，
             # 客户端从此可用"收到终止帧"确定性收尾，无需靠超时区分
             # "服务端慢"与"流已取消"。复用 chat.error 形状（信封映射现成：
             # is_final + status=failed + details.code=cancelled），不新增
             # 事件类型。已有终止帧时不双发。
-            if not completed_yielded:
+            if not completed_yielded and isinstance(exc, asyncio.CancelledError):
                 yield AgentResponseChunk(
                     request_id=rid,
                     channel_id=cid,
@@ -3198,10 +3208,14 @@ class JiuWenSwarm:
             # The adapter producer owns RuntimeOutputStream.  Cancelling and
             # awaiting it releases the runtime output lease and aborts the
             # in-flight round when the outer WebSocket consumer disappears.
+            logger.info("[JiuWenSwarm] stream cleanup begin: request_id=%s producer_done=%s",
+                        rid, stream_task.done())
             if not stream_task.done():
                 stream_task.cancel()
             try:
-                await stream_task
+                async with stall_watchdog(f"stream_cleanup request_id={rid} session_id={session_id}",
+                                          first_after_seconds=3.0, max_dumps=1):
+                    await stream_task
             except asyncio.CancelledError:
                 pass
             except Exception:
@@ -3212,13 +3226,8 @@ class JiuWenSwarm:
                     rid,
                     exc_info=True,
                 )
-
-        # A producer may cancel itself without the outer WebSocket consumer
-        # being cancelled.  Keep that terminal state out of the bounded queue
-        # (which may be full after a disconnect), but preserve the public
-        # cancellation contract once all already-produced chunks are drained.
-        if producer_cancellation is not None:
-            raise producer_cancellation
+            finally:
+                logger.info("[JiuWenSwarm] stream cleanup end: request_id=%s", rid)
 
         assistant_message = final_answer_content or "".join(final_answer_chunks)
         repair_call = getattr(adapter, "repair_model_response", None)

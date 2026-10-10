@@ -20,6 +20,7 @@ import subprocess
 import threading
 import time
 from collections import Counter
+from contextlib import aclosing
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
@@ -7899,37 +7900,68 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         return cancelled_tool_results
 
     @staticmethod
-    def _append_cancelled_tools_to_history(
+    async def _append_cancelled_tools_to_history(
         request: AgentRequest,
         cancelled_tool_results: list[dict[str, Any]],
+        target_request_id: str | None = None,
     ) -> None:
         """Persist cancelled tool results so refresh does not leave spinners."""
         if not cancelled_tool_results:
             return
+        # 流可能已关闭、active_round 已清除；用 tool_call_id 从历史找原轮。
+        records = []
+        try:
+            if request.session_id:
+                if not target_request_id:
+                    # active 已清除时确保原 tool_call 可见；不能在事件循环 join。
+                    await asyncio.to_thread(flush_history_writes)
+                records = await asyncio.to_thread(load_history_records, request.session_id)
+        except Exception:
+            logger.warning("failed to read cancelled tool history: session=%s",
+                           request.session_id, exc_info=True)
+        tool_requests: dict[str, str] = {}
+        for record in records:
+            tool_call = record.get("tool_call")
+            if record.get("event_type") != "chat.tool_call" or not isinstance(tool_call, dict):
+                continue
+            call_id = tool_call.get("tool_call_id") or record.get("tool_call_id")
+            rid = record.get("request_id")
+            if isinstance(call_id, str) and isinstance(rid, str) and rid:
+                tool_requests[call_id] = rid
         mode = (
             request.params.get("mode", "unknown")
             if isinstance(request.params, dict)
             else "unknown"
         )
         for tool_info in cancelled_tool_results:
-            append_history_record(
-                session_id=request.session_id,
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                role="assistant",
-                event_type="chat.tool_result",
-                content=tool_info.get("result", ""),
-                timestamp=time.time(),
-                extra={
-                    "tool_result": {
-                        "tool_name": tool_info.get("tool_name", ""),
-                        "tool_call_id": tool_info.get("tool_call_id", ""),
-                        "result": tool_info.get("result", ""),
-                        "status": tool_info.get("status", "error"),
+            rid = tool_requests.get(tool_info.get("tool_call_id", "")) or target_request_id
+            if not rid:
+                # 不知道原轮时不能用中断 RPC 的 id 伪造一轮回复。
+                logger.warning("cancelled tool history missing target: session=%s tool_call_id=%s",
+                               request.session_id, tool_info.get("tool_call_id"))
+                continue
+            try:
+                append_history_record(
+                    session_id=request.session_id,
+                    request_id=rid,
+                    channel_id=request.channel_id,
+                    role="assistant",
+                    event_type="chat.tool_result",
+                    content="",
+                    timestamp=time.time(),
+                    extra={
+                        "tool_result": {
+                            "tool_name": tool_info.get("tool_name", ""),
+                            "tool_call_id": tool_info.get("tool_call_id", ""),
+                            "result": tool_info.get("result", ""),
+                            "status": tool_info.get("status", "error"),
+                        },
                     },
-                },
-                mode=mode,
-            )
+                    mode=mode,
+                )
+            except Exception:
+                logger.warning("failed to persist cancelled tool history: session=%s request_id=%s",
+                               request.session_id, rid, exc_info=True)
 
     def _has_active_goal_round(self) -> bool:
         """Whether DeepAgent is currently executing a goal round.
@@ -8343,6 +8375,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
 
         intent = request.params.get("intent", "cancel")
         new_input = request.params.get("new_input")
+        # 在任何取消 await 前固定目标；取消结束时 active_round 可能已是下一轮。
+        active = getattr(self._instance, "active_round", None)
+        target_request_id = getattr(getattr(active, "work", None), "request_id", None)
+        if not isinstance(target_request_id, str):
+            target_request_id = None
 
         # Interaction-managed sessions: route cancel/supplement through
         # DeepAgent.cancel_round instead of the global DeepAgent abort + raw
@@ -8358,7 +8395,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             and self._instance_interaction_started()
             and intent in ("cancel", "supplement")
         ):
-            return await self._process_interaction_interrupt(request, intent, new_input)
+            return await self._process_interaction_interrupt(request, intent, new_input, target_request_id)
 
         # Session guard: only execute interrupt operations if the target session
         # is currently active on this adapter. Without this guard, a shared adapter
@@ -8510,7 +8547,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         if cancelled_tool_results:
             payload["cancelled_tools"] = cancelled_tool_results
             # 写入历史记录，确保刷新网页后工具状态正确显示
-            self._append_cancelled_tools_to_history(request, cancelled_tool_results)
+            await self._append_cancelled_tools_to_history(request, cancelled_tool_results, target_request_id)
 
         # 方案A：用户 cancel/supplement 单回合后，agent 实例仍存活、会话仍
         # 会被复用。刷新主 adapter 的 last_used，避免本会话被随后的
@@ -8533,6 +8570,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         request: "AgentRequest",
         intent: str,
         new_input: Any,
+        target_request_id: str | None = None,
     ) -> "AgentResponse":
         """Handle cancel/supplement for an interaction-managed session.
 
@@ -8542,6 +8580,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         without clearing GoalRecord.  For user cancel, pause an ACTIVE goal
         first so the GoalBar stops continuing after the round is aborted.
         """
+        if target_request_id is None:
+            active = getattr(self._instance, "active_round", None)
+            rid = getattr(getattr(active, "work", None), "request_id", None)
+            target_request_id = rid if isinstance(rid, str) else None
         paused_goal_payload: dict[str, Any] | None = None
         if intent == "cancel":
             try:
@@ -8622,7 +8664,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             payload["goal"] = paused_goal_payload
         if cancelled_tool_results:
             payload["cancelled_tools"] = cancelled_tool_results
-            self._append_cancelled_tools_to_history(request, cancelled_tool_results)
+            await self._append_cancelled_tools_to_history(request, cancelled_tool_results, target_request_id)
 
         # Best-effort todo cancellation for user cancel (does not touch runtime).
         if cancelled and intent == "cancel" and request.session_id:
@@ -10296,8 +10338,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 warmup_exclude_request_id=request.request_id,
             )
             try:
-                async for chunk in session_adapter.process_message_stream_impl(request, inputs):
-                    yield chunk
+                # 委托层也拥有内层流；关闭不能依赖 async generator 的 GC。
+                async with aclosing(session_adapter.process_message_stream_impl(request, inputs)) as stream:
+                    async for chunk in stream:
+                        yield chunk
                 return
             finally:
                 await self._evict_idle_session_adapters()
@@ -11430,11 +11474,15 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 reset_current_multimodal_image_files(image_files_token)
             if interaction_stream is not None:
                 try:
+                    logger.info("[JiuWenSwarmDeepAdapter] output stream close begin: request_id=%s session=%s abort=%s",
+                                rid, session_id, interaction_stream_abort)
                     await interaction_stream.close(
                         abort_active_round=interaction_stream_abort,
                     )
+                    logger.info("[JiuWenSwarmDeepAdapter] output stream close end: request_id=%s session=%s", rid, session_id)
                 except Exception:
-                    logger.debug("[Goal] interaction stream close failed", exc_info=True)
+                    logger.warning("[JiuWenSwarmDeepAdapter] output stream close failed: request_id=%s session=%s",
+                                   rid, session_id, exc_info=True)
             self._unregister_session_agent_task(session_id)
             TOOL_PERMISSION_CHANNEL_ID.reset(token_perm_cid)
             CURRENT_CHANNEL_ID.reset(token_cid)

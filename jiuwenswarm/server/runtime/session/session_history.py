@@ -52,6 +52,8 @@ def _has_persistable_assistant_payload(
 
     et = str(event_type or "").strip()
     payload = extra if isinstance(extra, dict) else {}
+    if et == "chat.final" and payload.get("aborted") is True:
+        return True
     if content:
         return True
     if str(payload.get("reasoning_content") or "").strip():
@@ -293,9 +295,19 @@ def _dedup_records_last_wins(records: list[dict[str, Any]]) -> list[dict[str, An
         final_indices_by_key.setdefault(key, []).append((index, _record_text(record)))
 
     drop_indices: set[int] = set()
+    resumed_stop_indices: set[int] = set()
+    # fork/截断可能把已归并的停止字段写回工具记录；恢复时一并清除。
+    for index, record in enumerate(records):
+        finals = final_indices_by_key.get(_dedup_key(record))
+        if record.get("aborted") is True and finals and index < finals[-1][0]:
+            resumed_stop_indices.add(index)
     for finals in final_indices_by_key.values():
         later_texts: list[str] = []
         for index, text in reversed(finals):
+            # 同 rid 恢复执行后的新 final 取代停止标记（包括无正文标记）。
+            if index in resumed_stop_indices and not text:
+                drop_indices.add(index)
+                continue
             if text and any(later.startswith(text) for later in later_texts):
                 drop_indices.add(index)
             later_texts.append(text)
@@ -303,6 +315,8 @@ def _dedup_records_last_wins(records: list[dict[str, Any]]) -> list[dict[str, An
     kept: list[dict[str, Any]] = []
     kept_text_by_key: dict[str, str] = {}
     for index, record in enumerate(records):
+        if index in resumed_stop_indices:
+            record = {k: v for k, v in record.items() if k != "aborted"}
         if str(record.get("event_type") or "") != "chat.final":
             kept.append(record)
             continue
@@ -318,7 +332,25 @@ def _dedup_records_last_wins(records: list[dict[str, Any]]) -> list[dict[str, An
             continue
         kept_text_by_key[key] = text
         kept.append(record)
-    return kept
+    # 空停止记录附到原轮已有记录上，避免同 assistant id 多记录在前端串轮。
+    # 零产出轮没有可合并对象，保留独立标记供历史恢复。
+    merged: list[dict[str, Any]] = []
+    previous_assistant: dict[str, int] = {}
+    for record in kept:
+        key = _dedup_key(record)
+        et = str(record.get("event_type") or "")
+        previous = previous_assistant.get(key) if key else None
+        if et == "chat.final" and record.get("aborted") is True and not _record_text(record) and previous is not None:
+            marked = {**merged[previous], "aborted": True}
+            reasoning = str(record.get("reasoning_content") or "")
+            if reasoning:
+                marked["reasoning_content"] = str(marked.get("reasoning_content") or "") + reasoning
+            merged[previous] = marked
+            continue
+        merged.append(record)
+        if key and (record.get("role") == "assistant" or et.startswith("chat.")):
+            previous_assistant[key] = len(merged) - 1
+    return merged
 
 
 def load_history_records(session_id: str) -> list[dict[str, Any]]:
