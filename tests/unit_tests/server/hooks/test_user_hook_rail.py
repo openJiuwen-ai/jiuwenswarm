@@ -70,9 +70,10 @@ class TestBeforeToolCall:
         assert "_skip_tool" not in ctx.extra
 
     @pytest.mark.asyncio
-    async def test_passes_session_id_from_context_session(self):
+    async def test_passes_session_id_from_context_session_to_tool_and_stop_hooks(self):
         config = self._make_config(
-            PreToolUse=[("*", [{"command": "echo ok", "timeout": 5}])]
+            PreToolUse=[("*", [{"command": "echo ok", "timeout": 5}])],
+            Stop=[("*", [{"command": "echo ok", "timeout": 5}])],
         )
         rail = _rail_with_mocked_executor(config, [])
         ctx = MockCallbackContext(
@@ -85,6 +86,12 @@ class TestBeforeToolCall:
         )
 
         await rail.before_tool_call(ctx)
+
+        hook_input = rail._executor.run_all.await_args.kwargs["hook_input"]
+        assert hook_input["session_id"] == "session-5081"
+
+        rail._executor.run_all.reset_mock()
+        await rail.after_invoke(ctx)
 
         hook_input = rail._executor.run_all.await_args.kwargs["hook_input"]
         assert hook_input["session_id"] == "session-5081"
