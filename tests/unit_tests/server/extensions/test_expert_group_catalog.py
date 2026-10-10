@@ -16,6 +16,31 @@ from jiuwenswarm.agents.harness.team.expert_org.catalog import (
 from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package_bundle
 
 
+@pytest.mark.parametrize("with_resources", [False, True])
+def test_catalog_search_roots_preserve_sources_and_paths(monkeypatch, tmp_path, with_resources):
+    from jiuwenswarm.agents.harness.team.expert_org.catalog import _iter_agent_group_dirs
+    from jiuwenswarm.server.runtime import extension_package_manager
+
+    home = tmp_path / "home"
+    resources = tmp_path / "resources" if with_resources else None
+    monkeypatch.setattr(extension_package_manager, "get_user_workspace_dir", lambda: home)
+    monkeypatch.setattr(extension_package_manager, "get_equipment_resources_agent_groups_dir", lambda: resources)
+    group_root = home / ".agent_teams" / "agent_groups"
+    roots = [
+        ("local", group_root / "local"),
+        ("built_in", group_root / "built_in"),
+        ("resources", resources),
+    ]
+    assert extension_package_manager.get_agent_group_search_roots() == roots
+    observed = []
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.expert_org.agent_group_scan.scan_agent_group_dirs",
+        lambda search_roots: observed.extend(search_roots) or [],
+    )
+    assert _iter_agent_group_dirs() == []
+    assert observed == roots
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")

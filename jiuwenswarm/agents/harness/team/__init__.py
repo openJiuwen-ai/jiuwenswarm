@@ -50,7 +50,7 @@ def __getattr__(name: str):
             "get_team_template_snapshot": get_team_template_snapshot,
             "list_team_template_summaries": list_team_template_summaries,
         }
-        return mapping[name]
+        return mapping.get(name)
     if name in {
         "TeamManager",
         "cancel_all_team_stream_tasks_across_managers",
@@ -87,7 +87,7 @@ def __getattr__(name: str):
             ),
             "stop_team_session_runtime_across_managers": stop_team_session_runtime_across_managers,
         }
-        return mapping[name]
+        return mapping.get(name)
     if name in {"TeamNameGenerationError", "generate_team_name"}:
         from jiuwenswarm.agents.harness.team.team_name_generator import (
             TeamNameGenerationError,

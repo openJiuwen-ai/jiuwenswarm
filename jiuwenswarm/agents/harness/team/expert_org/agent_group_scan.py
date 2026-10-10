@@ -71,8 +71,7 @@ def scan_agent_group_dirs(
             by_name.setdefault(safe_name, []).append((source, candidate))
 
     results: list[tuple[str, Path]] = []
-    for name in sorted(by_name):
-        matches = by_name[name]
+    for name, matches in sorted(by_name.items()):
         if len(matches) != 1:
             continue
         results.append((name, matches[0][1]))

@@ -11,7 +11,7 @@ import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-from jiuwenswarm.server.runtime.session import session_metadata
+from jiuwenswarm.server import agent_ws_server
 
 
 def request(method=ReqMethod.CHAT_SEND, team="expert"):
@@ -35,7 +35,7 @@ def backend(org):
 async def test_cancel_isolated_from_owner(monkeypatch, organization, allowed):
     server = object.__new__(AgentWebSocketServer)
     monkeypatch.setattr(
-        session_metadata, "get_session_metadata", lambda _: {"team_name": "owner"}
+        agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"}
     )
     monkeypatch.setattr(
         server,
@@ -177,18 +177,16 @@ async def test_direct_expert_failure_persists_error_once(monkeypatch, succeeded)
     from jiuwenswarm.agents.harness.team.expert_org.launcher import (
         JiuwenExpertTeamLauncher,
     )
-    from jiuwenswarm.server.runtime.session import session_history
-
     server = object.__new__(AgentWebSocketServer)
     history = []
     monkeypatch.setattr(
-        session_metadata, "get_session_metadata", lambda _: {"team_name": "owner"}
+        agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"}
     )
     monkeypatch.setattr(
         server, "_resolve_team_backend", lambda sid, team: backend("org")
     )
     monkeypatch.setattr(
-        session_history,
+        agent_ws_server,
         "append_history_record",
         lambda **kwargs: history.append(kwargs),
     )
@@ -221,18 +219,16 @@ async def test_direct_expert_failure_persists_error_once(monkeypatch, succeeded)
 
 @pytest.mark.asyncio
 async def test_denied_expert_request_does_not_write_history(monkeypatch):
-    from jiuwenswarm.server.runtime.session import session_history
-
     server = object.__new__(AgentWebSocketServer)
     history = []
     monkeypatch.setattr(
-        session_metadata, "get_session_metadata", lambda _: {"team_name": "owner"}
+        agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"}
     )
     monkeypatch.setattr(
         server, "_resolve_team_backend", lambda sid, team: backend(team)
     )
     monkeypatch.setattr(
-        session_history,
+        agent_ws_server,
         "append_history_record",
         lambda **kwargs: history.append(kwargs),
     )

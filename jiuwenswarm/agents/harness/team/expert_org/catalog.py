@@ -31,20 +31,15 @@ class ExpertGroupDescriptor:
 
 
 def _iter_agent_group_dirs() -> list[tuple[str, Path]]:
-    """Enumerate AgentGroup packages without adding APIs on extension_package_manager."""
+    """Enumerate AgentGroup packages using the extension manager search roots."""
     from jiuwenswarm.agents.harness.team.expert_org.agent_group_scan import (
         scan_agent_group_dirs,
     )
-    from jiuwenswarm.server.runtime import extension_package_manager as epm
-
-    kind = epm._AGENT_GROUP_KIND
-    return scan_agent_group_dirs(
-        [
-            ("local", epm._local_root(kind)),
-            ("built_in", epm._built_in_root(kind)),
-            ("resources", epm._resources_root(kind)),
-        ]
+    from jiuwenswarm.server.runtime.extension_package_manager import (
+        get_agent_group_search_roots,
     )
+
+    return scan_agent_group_dirs(get_agent_group_search_roots())
 
 
 def _resolve_agent_group_dir(name: str) -> Path:
@@ -86,9 +81,8 @@ def descriptor_from_agent_group_dir(
 class JiuwenExpertGroupCatalog:
     """Scan AgentGroup roots, validate packages, return ExpertGroupDescriptor list."""
 
-    def list(
-        self, *, capabilities: set[str] | None = None
-    ) -> list[ExpertGroupDescriptor]:
+    @staticmethod
+    def list(*, capabilities: set[str] | None = None) -> list[ExpertGroupDescriptor]:
         required = set(capabilities or ())
         results: list[ExpertGroupDescriptor] = []
         for name, package_dir in _iter_agent_group_dirs():
@@ -106,7 +100,8 @@ class JiuwenExpertGroupCatalog:
             results.append(descriptor)
         return results
 
-    def get(self, name: str) -> ExpertGroupDescriptor:
+    @staticmethod
+    def get(name: str) -> ExpertGroupDescriptor:
         package_dir = _resolve_agent_group_dir(str(name).strip())
         return descriptor_from_agent_group_dir(str(name).strip(), package_dir)
 

@@ -6190,6 +6190,7 @@ class AgentWebSocketServer:
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
+
     @staticmethod
     def _organization_stream_key(request: AgentRequest) -> str:
         params = request.params if isinstance(request.params, dict) else {}
@@ -6202,8 +6203,6 @@ class AgentWebSocketServer:
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(request.session_id or "").strip()
         team_id = str(params.get("target_team_id") or "").strip()
-        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
-
         owner_id = str((get_session_metadata(session_id) or {}).get("team_name") or "")
         owner = self._resolve_team_backend(session_id, owner_id)
         target = self._resolve_team_backend(session_id, team_id)
@@ -6245,10 +6244,6 @@ class AgentWebSocketServer:
         if not team_id:
             return False
 
-        from jiuwenswarm.server.runtime.session.session_metadata import (
-            get_session_metadata,
-        )
-
         session_id = str(request.session_id or params.get("session_id") or "").strip()
         owner_team_id = str(
             (get_session_metadata(session_id) or {}).get("team_name") or ""
@@ -6287,10 +6282,6 @@ class AgentWebSocketServer:
         error = ""
         owner_team_id = ""
         if session_id:
-            from jiuwenswarm.server.runtime.session.session_metadata import (
-                get_session_metadata,
-            )
-
             owner_team_id = str(
                 (get_session_metadata(session_id) or {}).get("team_name") or ""
             ).strip()
@@ -6315,10 +6306,6 @@ class AgentWebSocketServer:
             from jiuwenswarm.agents.harness.team.expert_org.launcher import (
                 JiuwenExpertTeamLauncher,
             )
-            from jiuwenswarm.server.runtime.session.session_history import (
-                append_history_record,
-            )
-
             query = _request_query_text(request)
             append_history_record(
                 session_id=session_id,
@@ -6370,10 +6357,6 @@ class AgentWebSocketServer:
                 "source": "org_expert_direct",
             }
             if not precheck_failed:
-                from jiuwenswarm.server.runtime.session.session_history import (
-                    append_history_record,
-                )
-
                 # The stream owns direct-turn errors; persist the same payload
                 # without also pushing a duplicate event through the launcher.
                 append_history_record(
@@ -6552,7 +6535,6 @@ class AgentWebSocketServer:
         Later sources only fill gaps, so a pooled entry keeps its live state.
         """
         from jiuwenswarm.agents.harness.team import get_team_manager
-        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 
         entries: dict[str, dict[str, Any]] = {}
 

@@ -283,7 +283,11 @@ class JiuwenExpertTeamLauncher:
         round_id = str(request_id or "").strip() or f"org-{uuid.uuid4().hex}"
         frame_sequence = 0
         summary_key = turn_inputs.get("_org_summary_key") if isinstance(turn_inputs, dict) else None
-        summary_task_id = str(summary_key[2]) if isinstance(summary_key, (list, tuple)) and len(summary_key) == 3 else None
+        summary_task_id = (
+            str(summary_key[2])
+            if isinstance(summary_key, (list, tuple)) and len(summary_key) == 3
+            else None
+        )
         leader_text_parts: list[str] = []
         saw_leader_final = False
         try:
@@ -355,7 +359,7 @@ class JiuwenExpertTeamLauncher:
             if not saw_leader_final and (
                 leader_text_parts or source == "org_expert_direct"
             ):
-                await self._push_expert_payload(
+                await self.push_expert_payload(
                     {
                         "event_type": "chat.final",
                         "content": "".join(leader_text_parts),
@@ -379,7 +383,7 @@ class JiuwenExpertTeamLauncher:
                 exc_info=True,
             )
             if source != "org_expert_direct":
-                await self._push_expert_payload(
+                await self.push_expert_payload(
                     {
                         "event_type": "chat.error",
                         "error": str(exc),
@@ -461,7 +465,7 @@ class JiuwenExpertTeamLauncher:
                     )
                 except Exception:
                     logger.exception("[ExpertTeamLauncher] Summary failure notification failed team=%s", team_id)
-        await self._push_expert_payload(
+        await self.push_expert_payload(
             parsed,
             team_id=team_id,
             session_id=session_id,
@@ -472,7 +476,7 @@ class JiuwenExpertTeamLauncher:
         )
         return parsed
 
-    async def _push_expert_payload(
+    async def push_expert_payload(
         self,
         payload: dict[str, Any],
         *,
@@ -506,7 +510,7 @@ class JiuwenExpertTeamLauncher:
                     "is_complete": False,
                 }
             )
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 "[ExpertTeamLauncher] expert output push raised team=%s session=%s",
                 team_id,
@@ -514,7 +518,7 @@ class JiuwenExpertTeamLauncher:
                 exc_info=True,
             )
             if source == "org_expert_direct":
-                raise RuntimeError("failed to deliver direct expert output")
+                raise RuntimeError("failed to deliver direct expert output") from exc
             return False
         if not delivered:
             logger.warning(
@@ -593,7 +597,7 @@ class JiuwenExpertTeamLauncher:
         from jiuwenswarm.agents.harness.team.team_manager import TeamManager
         from jiuwenswarm.agents.swarm.assembly import enrich_team_spec_for_swarm
 
-        spec = TeamManager._load_team_spec(session_id)
+        spec = TeamManager.load_default_team_spec(session_id)
         updates: dict[str, Any] = {"team_name": team_id, "lifecycle": "persistent"}
         metadata = dict(getattr(spec, "metadata", None) or {})
         metadata["agent_group_name"] = agent_group_name
