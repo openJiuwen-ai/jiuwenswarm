@@ -63,15 +63,11 @@ from gateway_protocol.e2a import (  # noqa: F401
     build_fallback_e2a,
     channel_context_for_channel_reply,
     e2a_from_agent_fields,
-    e2a_response_from_agent_chunk,
     e2a_response_from_agent_response,
-    e2a_response_to_agent_chunk,
     e2a_response_to_agent_response,
-    encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
     encode_json_parse_error_wire,
     is_e2a_response_wire_dict,
-    parse_agent_server_wire_chunk,
     parse_agent_server_wire_unary,
     message_to_e2a,
     message_to_e2a_or_fallback,
@@ -84,6 +80,14 @@ from gateway_protocol.e2a.agent_models import (  # noqa: F401
     PermissionContext,
 )
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request  # noqa: F401
+from jiuwenswarm.common.e2a.gateway_normalize import (  # noqa: F401
+    e2a_response_from_agent_chunk,
+    e2a_response_to_agent_chunk,
+)
+from jiuwenswarm.common.e2a.wire_codec import (  # noqa: F401
+    encode_agent_chunk_for_wire,
+    parse_agent_server_wire_chunk,
+)
 
 __all__ = [
     "ACP_AGENT_TO_CLIENT_METHODS",
