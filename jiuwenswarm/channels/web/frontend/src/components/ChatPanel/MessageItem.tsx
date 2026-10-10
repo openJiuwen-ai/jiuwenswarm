@@ -549,9 +549,31 @@ export const MessageItem = memo(function MessageItem({
     );
   }
 
-  // 交互问答「问题澄清」回显卡（ask_user 确认后前端合成注入）
+  // 交互问答「问题澄清」回显卡（ask_user 确认后前端合成注入）。
+  // 注意：ask_user 中断会清空 currentStreamId，恢复执行后 send_file_to_user 的
+  // 文件可能经 addFileItems 兜底挂到本合成卡片消息上（历史恢复同理），需一并
+  // 渲染 FileDownloadList，否则产物卡片（含技能保存按钮）不可见。
   if (isQaSummaryContent(content)) {
-    return <QaSummaryCard content={content} />;
+    const qaFileItems = fileItems?.length ? fileItems : null;
+    return (
+      <>
+        <QaSummaryCard content={content} />
+        {qaFileItems && (
+          <div className="flex justify-start" data-testid="chat-panel-qa-summary-file-list">
+            <div className="w-full max-w-[640px]">
+              <FileDownloadList
+                files={qaFileItems}
+                className="chat-message-file-list"
+                onPreview={(index) => {
+                  if (openFileInDesktopBrowser(qaFileItems[index])) return;
+                  openArtifactPanelForActiveMode(fileArtifactId(qaFileItems[index]));
+                }}
+              />
+            </div>
+          </div>
+        )}
+      </>
+    );
   }
 
   // 目标完成回显卡（目标实时跳变到 completed 时前端合成注入）
