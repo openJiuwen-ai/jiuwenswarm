@@ -1153,8 +1153,19 @@ class WebWsTransport(BaseWsChannel):
                 )
 
         try:
+            inflight: set[Any] = set()
             async for raw in ws:
-                await self._handle_raw_message(ws, raw, query)
+                task = asyncio.create_task(self._handle_raw_message(ws, raw, query))
+                inflight.add(task)
+                task.add_done_callback(inflight.discard)
+            # connection closing: let in-flight handlers finish (bounded) to avoid
+            # truncating responses mid-flight; cancel if they exceed a grace period.
+            if inflight:
+                try:
+                    await asyncio.wait_for(asyncio.gather(*inflight, return_exceptions=True), timeout=5.0)
+                except asyncio.TimeoutError:
+                    for t in inflight:
+                        t.cancel()
         except WebSocketConnectionClosed as e:  # pragma: no cover - 连接生命周期容错
             logger.info(
                 "WebChannel 连接关闭: %s",

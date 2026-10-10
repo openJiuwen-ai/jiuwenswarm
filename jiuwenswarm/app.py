@@ -38,8 +38,16 @@ _old_workspace = _workspace_dir / "agent" / "workspace"
 # 始终清理 Team 旧版本遗留文件（幂等操作，在 prepare_workspace 之前执行）
 cleanup_team_files(_workspace_dir)
 
-# Initialize if config doesn't exist, or if legacy workspace exists but new doesn't (migration)
-if not _config_file.exists() or (_old_workspace.exists() and not _new_workspace.exists()):
+# Initialize if config doesn't exist, or if legacy workspace exists but new doesn't (migration),
+# or if the preset MCP package dir isn't seated yet (e.g. an install predating
+# the mcp_builtins zip-seed feature — the gate above would otherwise skip an
+# already-initialized workspace, leaving mcp_builtins absent and mcp.list empty).
+_mcp_builtins_dir = _new_workspace / "mcp" / "mcp_builtins"
+config_missing = not _config_file.exists()
+workspace_migration_needed = _old_workspace.exists() and not _new_workspace.exists()
+mcp_builtins_missing = not _mcp_builtins_dir.is_dir()
+
+if config_missing or workspace_migration_needed or mcp_builtins_missing:
     prepare_workspace(overwrite=False)
 
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)

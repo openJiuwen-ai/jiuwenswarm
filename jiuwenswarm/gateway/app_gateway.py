@@ -48,7 +48,11 @@ migrate_legacy_user_config_if_needed()
 # Ensure workspace initialized
 _workspace_dir = get_user_workspace_dir()
 _config_file = _workspace_dir / "config" / "config.yaml"
-if not _config_file.exists():
+# Re-init when the preset MCP package dir isn't seated yet (an install predating the
+# mcp_builtins zip-seed feature would otherwise skip an already-initialized
+# workspace, leaving mcp_builtins absent and mcp.list empty).
+_mcp_builtins_dir = _workspace_dir / "agent" / "jiuwenclaw_workspace" / "mcp" / "mcp_builtins"
+if not _config_file.exists() or not _mcp_builtins_dir.is_dir():
     prepare_workspace(overwrite=False)
 
 # Pin openjiuwen log dir before any openjiuwen-heavy imports
