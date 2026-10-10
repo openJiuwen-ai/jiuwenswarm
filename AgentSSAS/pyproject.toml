@@ -1,0 +1,117 @@
+[build-system]
+requires = ["setuptools>=62.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-ssas"
+version = "0.1.0"
+description = "AgentSSAS - Agent Security Situational Awareness System"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+http = [
+    "httpx>=0.27",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# 检测模块的 module.yaml、决策策略 decision_policies.yaml 等数据文件必须随包分发；
+# 模块管理器(detection_modules/)与策略加载器(decision_policies.yaml)均按安装路径定位文件，
+# 缺失该配置会导致正式安装(非 editable)场景下检测模块无法加载
+[tool.setuptools.package-data]
+agent_ssas = ["**/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+markers = [
+    "unit: 快速确定性单元测试",
+    "integration: 集成测试",
+    "system: 系统测试 (需真实环境, CI 跳过)",
+    "level0: 冒烟/快乐路径, PR 门禁必须绿色",
+    "level1: 功能分支/错误路径/边缘场景",
+    "slow: 耗时较长的测试",
+]
+addopts = "-v --strict-markers --tb=short"
+
+# ============================================================================
+# Lint / Format / Type-check 配置 (参照 openJiuwen 社区规范)
+# ============================================================================
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# BLE001: fail-open 逻辑需要捕获 broad Exception (设计要求)
+# S110: 关闭连接时静默 pass (设计要求)
+# SIM102: 嵌套 if 可读性更好, 不合并
+# TRY004: 类型校验用 ValueError 提供更友好错误信息
+extend-ignore = ["E203", "BLE001", "S110", "SIM102", "TRY004"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "F401",      # 测试中 mock 导入可能未使用
+    "F841",      # 测试中可能有未使用变量
+    "RUF012",    # 测试 fixture 的可变类属性
+    "C408",      # 测试中 dict() 调更简洁
+    "ASYNC230",  # 测试中可使用同步 open
+    "PLW1510",   # 测试中 subprocess 不需 check
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+docstring-code-format = true
+
+[tool.pylint.MAIN]
+py-version = "3.11"
+
+[tool.pylint.FORMAT]
+max-line-length = 120
+
+[tool.pylint.DESIGN]
+max-return = 5
+max-args = 10
+max-locals = 15
+max-branches = 25
+
+[tool.pylint."MESSAGES CONTROL"]
+disable = [
+    "import-outside-toplevel",
+    "missing-module-docstring",
+    "too-few-public-methods",
+    "broad-exception-caught",
+]
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+ignore_missing_imports = true
+disallow_untyped_defs = false
+show_error_codes = true
