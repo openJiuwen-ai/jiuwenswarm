@@ -1175,7 +1175,7 @@ class JiuWenSwarm:
     # chunks, which raises the process RSS across short-lived TUI sessions.
     STREAM_QUEUE_MAXSIZE = 64
 
-    def configure_process_cli_run(
+    async def configure_process_cli_run(
         self, *, max_turns: int | None, host_tools: tuple[Any, ...]
     ) -> None:
         """Apply a transient machine invocation to the ready single-Agent adapter."""
@@ -1183,7 +1183,7 @@ class JiuWenSwarm:
         configure = getattr(adapter, "configure_process_cli_run", None)
         if not callable(configure):
             raise ValueError("process CLI run options require a single-Agent adapter")
-        configure(max_turns=max_turns, host_tools=host_tools)
+        await configure(max_turns=max_turns, host_tools=host_tools)
 
     def __init__(self) -> None:
         self._prepare_skill_library()

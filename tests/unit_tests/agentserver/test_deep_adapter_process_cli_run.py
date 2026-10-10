@@ -25,7 +25,7 @@ def _session_child(failure_stage: str | None = None) -> SimpleNamespace:
         )
 
     return SimpleNamespace(
-        configure_process_cli_run=MagicMock(
+        configure_process_cli_run=AsyncMock(
             side_effect=ValueError("first run failed")
             if failure_stage == "configure"
             else None
@@ -64,13 +64,13 @@ async def test_run_options_are_not_reused_by_later_sessions(
         ]
 
     old_tool = object()
-    parent.configure_process_cli_run(max_turns=5, host_tools=(old_tool,))
+    await parent.configure_process_cli_run(max_turns=5, host_tools=(old_tool,))
     if failure_stage is None:
         assert len(await run("first")) == 1
     else:
         with pytest.raises(ValueError, match="first run failed"):
             await run("first")
-    children[0].configure_process_cli_run.assert_called_once_with(
+    children[0].configure_process_cli_run.assert_awaited_once_with(
         max_turns=5, host_tools=(old_tool,)
     )
 
@@ -80,9 +80,9 @@ async def test_run_options_are_not_reused_by_later_sessions(
     children[1].configure_process_cli_run.assert_not_called()
 
     new_tool = object()
-    parent.configure_process_cli_run(max_turns=7, host_tools=(new_tool,))
+    await parent.configure_process_cli_run(max_turns=7, host_tools=(new_tool,))
     assert len(await run("third")) == 1
-    children[2].configure_process_cli_run.assert_called_once_with(
+    children[2].configure_process_cli_run.assert_awaited_once_with(
         max_turns=7, host_tools=(new_tool,)
     )
     for child, session_id in zip(children, ("first", "second", "third"), strict=True):

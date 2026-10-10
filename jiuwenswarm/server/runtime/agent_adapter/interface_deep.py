@@ -10157,7 +10157,7 @@ class JiuWenSwarmDeepAdapter:
             return f"{_AGENT_CARD_ID}_s_{self._session_adapter_key(self._parent_session_id)}"
         return f"{_AGENT_CARD_ID}_root"
 
-    def configure_process_cli_run(
+    async def configure_process_cli_run(
         self, *, max_turns: int | None, host_tools: tuple[Any, ...]
     ) -> None:
         """Apply ephemeral Process CLI limits and host tools to this Agent only.
@@ -10176,13 +10176,19 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             raise ValueError("process CLI session Agent is not ready")
         if max_turns is not None:
+            from jiuwenswarm.runtime.iteration_limit import ProcessCliIterationLimitRail
+
             react = self._instance.react_agent
             if react is None:
                 raise RuntimeError("Agent model loop is unavailable")
             config = react.config.model_copy()
             existing = config.max_iterations
-            config.max_iterations = min(existing, max_turns) if existing else max_turns
+            iteration_limit = min(existing, max_turns) if existing else max_turns
+            # A resumed final tool can enter the next iteration solely to
+            # report the limit. The rail prevents that iteration's model call.
+            config.max_iterations = iteration_limit + 1
             react.configure(config)
+            await self._instance.register_rail(ProcessCliIterationLimitRail(iteration_limit))
         manager = self._instance.ability_manager
         existing_names = {card.name for card in manager.list()}
         for tool in host_tools:
@@ -16015,7 +16021,7 @@ class JiuWenSwarmDeepAdapter:
                 if process_options is not None:
                     # Consume before applying so failed runs cannot leak callbacks.
                     self._process_cli_run_options = None
-                    session_adapter.configure_process_cli_run(
+                    await session_adapter.configure_process_cli_run(
                         max_turns=process_options[0], host_tools=process_options[1]
                     )
                 child_stream = session_adapter.process_message_stream_impl(request, inputs)
@@ -17926,10 +17932,14 @@ class JiuWenSwarmDeepAdapter:
                 if chunk_type == "answer":
                     if isinstance(payload, dict):
                         if payload.get("result_type") == "error":
-                            return {
+                            error_payload = {
                                 "event_type": "chat.error",
                                 "error": payload.get("output", "未知错误"),
                             }
+                            code = payload.get("code")
+                            if isinstance(code, str) and code.strip():
+                                error_payload["code"] = code
+                            return error_payload
                         output = payload.get("output", {})
                         content = (
                             output.get("output", "") if isinstance(output, dict) else str(output)

@@ -199,12 +199,15 @@ async def _run(client, run_input=None, *, writer=None):
     ("max_turns", "expected_code"),
     [
         (1, "TURN_LIMIT_EXCEEDED"),
-        (2, "RUNTIME_ERROR"),
-        (None, "RUNTIME_ERROR"),
+        (2, "MAX_ITERATIONS_REACHED"),
+        (None, "MAX_ITERATIONS_REACHED"),
     ],
 )
+@pytest.mark.parametrize(
+    "message", ["Iteration budget exhausted.", "已达到迭代次数上限。"]
+)
 async def test_iteration_stop_reports_scoped_turn_limit_only_when_reached(
-    max_turns, expected_code
+    max_turns, expected_code, message
 ) -> None:
     class LimitClient(FakeClient):
         def stream(self, request, *, on_agent_ready=None):
@@ -215,11 +218,64 @@ async def test_iteration_stop_reports_scoped_turn_limit_only_when_reached(
     )
     client = LimitClient(events=[
         usage,
-        _event("chat.error", error="Max iterations reached without completion"),
+        _event("chat.error", code="MAX_ITERATIONS_REACHED", error=message),
     ])
     result = await _run(client, OneShotRunInput(input="use a tool", max_turns=max_turns))
     assert result.error.code == expected_code
     assert result.usage.get("model_calls") == (1 if max_turns else None)
+
+
+@pytest.mark.asyncio
+async def test_run_awaits_ready_configuration_before_consuming_runtime_events() -> None:
+    configured = []
+
+    class ReadyAgent:
+        async def configure_process_cli_run(self, *, max_turns, host_tools):
+            await asyncio.sleep(0)
+            configured.append((max_turns, host_tools))
+
+    class ReadyClient(FakeClient):
+        def stream(self, request, *, on_agent_ready=None):
+            original = super().stream(request)
+
+            async def events():
+                await on_agent_ready(ReadyAgent())
+                assert configured == [(1, ())]
+                async for event in original:
+                    yield event
+
+            return events()
+
+    client = ReadyClient(events=[
+        _event("chat.usage_metadata", metadata={"usage_metadata": {"total_cost": 0.01}}),
+        _event("chat.final", content="completed on the last turn"),
+    ])
+
+    result = await _run(client, OneShotRunInput(input="answer directly", max_turns=1))
+
+    assert result.status == "completed"
+    assert result.error is None
+    assert result.usage["model_calls"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["RUNTIME_ERROR", "MODEL_FAILED", "TOOL_FAILED"])
+async def test_last_turn_failure_does_not_infer_iteration_limit_from_message(code) -> None:
+    class LimitClient(FakeClient):
+        def stream(self, request, *, on_agent_ready=None):
+            return super().stream(request)
+
+    message = "Max iterations reached without completion"
+    client = LimitClient(events=[
+        _event("chat.usage_metadata", metadata={"usage_metadata": {"total_cost": 0.01}}),
+        _event("chat.error", code=code, error=message),
+    ])
+
+    result = await _run(client, OneShotRunInput(input="use a tool", max_turns=1))
+
+    assert result.error.code == code
+    assert result.error.message == message
+    assert result.usage["model_calls"] == 1
 
 
 @pytest.mark.asyncio

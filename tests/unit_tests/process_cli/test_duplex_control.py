@@ -334,6 +334,56 @@ async def test_unattended_permission_rejects_and_continues_via_runtime(run_facto
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("source", "questions", "code", "message"),
+    [
+        (
+            "ask_user_interrupt",
+            [{"question": "secret-user-prompt"}],
+            "INTERACTION_REQUIRED",
+            "A non-permission interaction needs a host answer.",
+        ),
+        (
+            "permission_interrupt",
+            [],
+            "INTERACTION_UNSUPPORTED",
+            "Permission card cannot be safely rejected.",
+        ),
+        (
+            "permission_interrupt",
+            [{"options": [{"value": "allow", "label": "secret-tool-input"}]}],
+            "INTERACTION_UNSUPPORTED",
+            "Permission card has no explicit reject option.",
+        ),
+    ],
+)
+async def test_unattended_interaction_preserves_safe_failure_reason(
+    source, questions, code, message, run_factory
+) -> None:
+    run = run_factory()
+    run.control = DuplexController(None, run.writer, unattended=True)
+    run.client.original.emit(
+        _event(
+            "chat.ask_user_question",
+            request_id="unattended-card",
+            source=source,
+            questions=questions,
+        )
+    )
+    run.start()
+
+    result = await asyncio.wait_for(run.task, timeout=1)
+
+    assert result.status == "failed"
+    assert result.error.code == code
+    assert result.error.message == message
+    assert "secret" not in result.error.message
+    assert run.client.answer_inputs == []
+    assert run.client.original.closed
+    assert run.client.calls[-3:] == ["cancel", "cleanup_session", "close"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "original_eof", [False, True], ids=["original-waiting", "original-eof"]
 )
 async def test_answer_continuation_works_with_either_original_stream_lifetime(

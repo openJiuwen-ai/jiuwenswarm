@@ -14,6 +14,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
+from jiuwenswarm.channels.process_cli.duplex_control import DuplexControlError
 from jiuwenswarm.channels.process_cli.machine_io import OneShotWriter
 from jiuwenswarm.channels.process_cli.machine_policy import (
     RunLimits,
@@ -96,7 +97,7 @@ def _exception_info(error: Exception) -> RuntimeErrorInfo:
     # Unknown dependency exceptions may contain credentials or full requests.
     message = (
         str(error)
-        if isinstance(error, (MachineRunError, SessionGuardError))
+        if isinstance(error, (MachineRunError, SessionGuardError, DuplexControlError))
         else "Runtime operation failed."
     )
     return RuntimeErrorInfo(
@@ -334,7 +335,7 @@ class _MachineRun:
         ready = None
         if self.run_input.max_turns is not None or self.run_input.host_tools:
 
-            def configure(agent: Any) -> None:
+            async def configure(agent: Any) -> None:
                 from jiuwenswarm.channels.process_cli.host_tools import HostCallbackTool
 
                 tools = (
@@ -345,7 +346,7 @@ class _MachineRun:
                     if self.control is not None
                     else ()
                 )
-                agent.configure_process_cli_run(
+                await agent.configure_process_cli_run(
                     max_turns=self.run_input.max_turns,
                     host_tools=tools,
                 )
@@ -397,10 +398,7 @@ class _MachineRun:
         """Identify the Agent's iteration stop when this run requested the cap."""
         max_turns = self.run_input.max_turns
         at_turn_limit = max_turns is not None and self.limits.model_calls >= max_turns
-        is_iteration_error = (
-            error.code == "RUNTIME_ERROR"
-            and error.message == "Max iterations reached without completion"
-        )
+        is_iteration_error = error.code == "MAX_ITERATIONS_REACHED"
         if at_turn_limit and is_iteration_error:
             return replace(
                 error,
