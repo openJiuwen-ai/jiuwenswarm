@@ -106,7 +106,9 @@ def list_skill_workspace_files(skill_root: Path) -> list[dict[str, Any]]:
     root = skill_root.resolve()
     entries: list[dict[str, Any]] = []
 
-    for path in sorted(root.rglob("*"), key=lambda p: _posix_rel(root, p).lower()):
+    # Sort lexical workspace paths before resolving them. A link to an outside
+    # or missing target must be filtered below, not crash the entire sort.
+    for path in sorted(root.rglob("*"), key=lambda p: p.relative_to(root).as_posix().lower()):
         if path.is_symlink():
             continue
         try:
@@ -213,6 +215,8 @@ def is_text_previewable(path: Path, mime_type: str) -> bool:
 
 def read_text_preview(path: Path, *, max_bytes: int = DEFAULT_TEXT_PREVIEW_MAX_BYTES) -> str | None:
     """尝试按 UTF-8 读取文本预览；不可预览返回 None."""
+    if max_bytes < 0:
+        raise ValueError("max_bytes must not be negative")
     try:
         size = path.stat().st_size
     except OSError as exc:
@@ -220,15 +224,18 @@ def read_text_preview(path: Path, *, max_bytes: int = DEFAULT_TEXT_PREVIEW_MAX_B
     if size > max_bytes:
         return None
     try:
-        data = path.read_bytes()
+        # stat may be stale for a growing log. Bound the actual read too.
+        with path.open("rb") as stream:
+            data = stream.read(max_bytes + 1)
     except OSError as exc:
         raise SkillFilesError(ERROR_NOT_FOUND, f"无法读取文件: {path.name}") from exc
+    if len(data) > max_bytes:
+        return None
     if b"\x00" in data[:8192]:
         return None
     try:
-        return data.decode("utf-8")
+        # A BOM is valid UTF-8, so decoding as utf-8 first never reached the
+        # old utf-8-sig fallback. This handles both encodings in one step.
+        return data.decode("utf-8-sig")
     except UnicodeDecodeError:
-        try:
-            return data.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            return None
+        return None
