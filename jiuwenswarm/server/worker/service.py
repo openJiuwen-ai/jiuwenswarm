@@ -11,10 +11,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import uuid
+import time
 from typing import Any
 
-from jiuwenswarm.server.ipc.protocol import KIND_HELLO, PROTOCOL_VERSION
+from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN_DONE, PROTOCOL_VERSION
 from jiuwenswarm.server.ipc.server import IpcServer
 from jiuwenswarm.server.ipc.stream import IpcConnection
 from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
@@ -24,8 +24,9 @@ from jiuwenswarm.server.worker.signals import RuntimeSignalSink
 logger = logging.getLogger(__name__)
 
 _RUNTIME_LOAD_SHUTDOWN_TIMEOUT = 10.0
-_DISPATCH_SHUTDOWN_TIMEOUT = 5.0
-_RUNTIME_SHUTDOWN_TIMEOUT = 5.0
+_DISPATCH_SHUTDOWN_TIMEOUT = 10.0
+_RUNTIME_SHUTDOWN_TIMEOUT = 30.0
+SHUTDOWN_TIMEOUT = 30.0
 
 
 class WorkerForceExit(RuntimeError):
@@ -35,24 +36,30 @@ class WorkerForceExit(RuntimeError):
 async def serve_worker(socket_path: str, *, host: str, port: int) -> None:
     holder = ConnHolder()
     bridge = WorkerGatewayBridge(holder)
-    signals = RuntimeSignalSink(holder)
     dispatcher = WorkerDispatcher(bridge)
+    signals = RuntimeSignalSink(holder, on_ready=dispatcher.mark_ready)
     server = IpcServer(socket_path)
     await server.start()
     logger.info("[Worker] ipc listening: %s", socket_path)
     loaded: dict[str, Any] = {"runtime": None}
     runtime_task: asyncio.Task | None = None
-    instance = uuid.uuid4().hex
+    instance = bridge.events.instance
+    shutdown_conn: IpcConnection | None = None
     try:
         while True:
             conn = await server.accept()
             generation = holder.open_session(conn)
-            await _send_hello(
-                conn,
-                runtime_loaded=loaded["runtime"] is not None,
-                generation=generation,
-                instance=instance,
-            )
+            try:
+                await _send_hello(
+                    conn,
+                    runtime_loaded=loaded["runtime"] is not None,
+                    generation=generation,
+                    instance=instance,
+                )
+            except (OSError, RuntimeError):
+                await _retire_session(holder, dispatcher)
+                await conn.close()
+                continue
             if runtime_task is None:
                 runtime_task = asyncio.create_task(
                     _load_runtime(host, port, signals, dispatcher, loaded),
@@ -65,14 +72,32 @@ async def serve_worker(socket_path: str, *, host: str, port: int) -> None:
             except (OSError, asyncio.IncompleteReadError):
                 logger.info("[Worker] supervisor disconnected; runtime stays resident")
                 await _retire_session(holder, dispatcher)
+                await conn.close()
                 continue
             await _retire_session(holder, dispatcher)
             if not keep_running or dispatcher.shutdown_requested:
+                shutdown_conn = conn
                 break
+            await conn.close()
     except asyncio.CancelledError:
         logger.info("[Worker] stop requested")
     finally:
-        await _close_worker(dispatcher, runtime_task, loaded, server)
+        try:
+            try:
+                await _close_worker(dispatcher, runtime_task, loaded, server)
+            except Exception as exc:
+                if shutdown_conn is not None:
+                    try:
+                        await shutdown_conn.send({"kind": KIND_SHUTDOWN_DONE, "ok": False,
+                                                  "error": str(exc)})
+                    except (OSError, RuntimeError):
+                        pass
+                raise
+            if shutdown_conn is not None:
+                await shutdown_conn.send({"kind": KIND_SHUTDOWN_DONE, "ok": True})
+        finally:
+            if shutdown_conn is not None:
+                await shutdown_conn.close()
 
 
 def _log_late_runtime_load(task: asyncio.Task) -> None:
@@ -117,7 +142,7 @@ async def _runtime_for_shutdown(
         )
         runtime_task.cancel()
         runtime_task.add_done_callback(_log_late_runtime_load)
-        return None
+        raise WorkerForceExit("runtime load did not drain before shutdown deadline")
     try:
         return runtime_task.result()
     except asyncio.CancelledError:
@@ -145,6 +170,7 @@ async def _close_worker(
     dispatch_timeout: float = _DISPATCH_SHUTDOWN_TIMEOUT,
     load_timeout: float = _RUNTIME_LOAD_SHUTDOWN_TIMEOUT,
     runtime_timeout: float = _RUNTIME_SHUTDOWN_TIMEOUT,
+    total_timeout: float = SHUTDOWN_TIMEOUT,
 ) -> None:
     """Cancel active dispatch before shutting the Runtime down.
 
@@ -152,14 +178,19 @@ async def _close_worker(
     reference to Runtime. Skip the graceful shutdown and force the process
     to exit instead of releasing that Runtime underneath it.
     """
-    if not await dispatcher.drain(timeout=dispatch_timeout):
+    deadline = time.monotonic() + total_timeout
+
+    def remaining(stage_limit: float) -> float:
+        return max(0.001, min(stage_limit, deadline - time.monotonic()))
+
+    if not await dispatcher.drain(timeout=remaining(dispatch_timeout)):
         logger.error(
             "[Worker] dispatch still running after shutdown timeout; skipping runtime shutdown"
         )
         raise WorkerForceExit("dispatch still running")
-    runtime = await _runtime_for_shutdown(runtime_task, loaded, timeout=load_timeout)
+    runtime = await _runtime_for_shutdown(runtime_task, loaded, timeout=remaining(load_timeout))
     if runtime is not None:
-        await _shutdown_runtime(runtime, timeout=runtime_timeout)
+        await _shutdown_runtime(runtime, timeout=remaining(runtime_timeout))
     close = getattr(server, "close", None)
     if callable(close):
         await close()
@@ -175,19 +206,24 @@ async def _shutdown_runtime(runtime: Any, *, timeout: float) -> None:
         )
         task.cancel()
         task.add_done_callback(_log_late_runtime_load)
-        return
+        raise WorkerForceExit("runtime shutdown exceeded shared deadline")
     try:
         task.result()
     except asyncio.CancelledError:
         logger.info("[Worker] runtime shutdown cancelled")
     except Exception:  # noqa: BLE001
         logger.exception("[Worker] runtime shutdown failed")
+        raise WorkerForceExit("runtime shutdown failed; persistence or resource cleanup incomplete") from None
 
 
 async def _invoke_shutdown(runtime: Any) -> None:
     shutdown = getattr(runtime, "shutdown", None)
     if callable(shutdown):
         await shutdown()
+    else:
+        stop = getattr(runtime, "stop", None)
+        if callable(stop):
+            await stop()
 
 
 async def _load_runtime(
@@ -209,6 +245,7 @@ async def _load_runtime(
     except Exception as exc:  # noqa: BLE001
         logger.exception("[Worker] runtime load failed: %s", exc)
         signals.failed(str(exc))
+        await dispatcher.mark_failed(str(exc))
         raise
     loaded["runtime"] = runtime
     return runtime
@@ -221,6 +258,8 @@ async def _send_hello(
     generation: int,
     instance: str,
 ) -> None:
+    from jiuwenswarm.server.supervisor.identity import code_identity, data_scope
+    identity = await asyncio.to_thread(code_identity)
     await conn.send(
         {
             "kind": KIND_HELLO,
@@ -230,6 +269,8 @@ async def _send_hello(
             "stub": False,
             "runtime_loaded": runtime_loaded,
             "generation": generation,
+            "data_scope": data_scope(),
+            "code_identity": identity,
         }
     )
 

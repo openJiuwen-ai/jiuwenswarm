@@ -98,7 +98,7 @@ class _FakeRuntime:
     ) -> None:
         _ = send_lock
         self.requests.append(request)
-        await ws.send(json.dumps({"request_id": request.request_id, "ok": True, "method": request.req_method.value if request.req_method else ""}))
+        await ws.send(json.dumps({"request_id": request.request_id, "ok": True, "is_stream": request.is_stream, "method": request.req_method.value if request.req_method else ""}))
 
 
 def test_frame_and_request_roundtrip() -> None:
@@ -159,6 +159,7 @@ async def test_ipc_request_stream_and_cancel() -> None:
         conn = await server.accept()
         holder.open_session(conn)
         await dispatcher.bind_runtime(runtime)
+        await dispatcher.mark_ready()
         while True:
             message = await conn.recv()
             if not await dispatcher.handle(message, conn):
@@ -177,7 +178,8 @@ async def test_ipc_request_stream_and_cancel() -> None:
         assert done["kind"] == KIND_REQUEST_DONE
         assert done["generation"] == wire["generation"]
         assert done["ok"] is True
-        assert done["delivered"] is True
+        # Stream delivery is acknowledged independently of dispatch completion.
+        assert "delivered" in done
 
         await client.send(
             {
@@ -188,6 +190,8 @@ async def test_ipc_request_stream_and_cancel() -> None:
             }
         )
         cancel_wire = await asyncio.wait_for(client.recv(), 2)
+        await client.send({"kind": "wire.ack", "wire_id": cancel_wire["wire_id"],
+                           "generation": cancel_wire["generation"], "delivered": True})
         cancel_done = await asyncio.wait_for(client.recv(), 2)
         assert cancel_wire["payload"]["method"] == ReqMethod.CHAT_CANCEL.value
         assert cancel_done["ok"] is True
@@ -400,7 +404,7 @@ class _BlockingRuntime:
 
 
 @pytest.mark.asyncio
-async def test_reconnect_drops_old_generation_output() -> None:
+async def test_reconnect_keeps_execution_but_rejects_stale_unary_reply() -> None:
     holder = ConnHolder()
     bridge = WorkerGatewayBridge(holder)
     dispatcher = WorkerDispatcher(bridge)
@@ -409,6 +413,7 @@ async def test_reconnect_drops_old_generation_output() -> None:
     second = _RecordingConn()
     holder.open_session(first)
     await dispatcher.bind_runtime(runtime)
+    await dispatcher.mark_ready()
     request = _request(ReqMethod.CHAT_SEND, is_stream=True)
     dispatcher._spawn(dispatcher._run_request(request, holder.generation), holder.generation)
     await asyncio.wait_for(runtime.started.wait(), 1)
@@ -416,7 +421,8 @@ async def test_reconnect_drops_old_generation_output() -> None:
     await dispatcher.retire_generation(old)
     holder.open_session(second)
     runtime.release.set()
-    assert runtime.cancelled is True
+    await asyncio.gather(*list(dispatcher._tasks))
+    assert runtime.cancelled is False
     assert second.sent == []
     assert first.sent == []
 
@@ -431,6 +437,7 @@ async def test_stale_generation_output_stays_off_the_new_connection() -> None:
     second = _RecordingConn()
     holder.open_session(first)
     await dispatcher.bind_runtime(runtime)
+    await dispatcher.mark_ready()
     request = _request(ReqMethod.CHAT_SEND, is_stream=True)
     task = asyncio.create_task(dispatcher._run_request(request, 1))
     await asyncio.wait_for(runtime.started.wait(), 1)
@@ -469,6 +476,7 @@ async def test_shutdown_stops_dispatch_before_runtime_shutdown() -> None:
     runtime = _Runtime()
     holder.open_session(_RecordingConn())
     await dispatcher.bind_runtime(runtime)
+    await dispatcher.mark_ready()
     dispatcher._spawn(dispatcher._run_request(_request(ReqMethod.CHAT_SEND), 1), 1)
     task = next(iter(dispatcher._tasks))
     for _ in range(50):
@@ -510,6 +518,7 @@ async def test_drain_timeout_skips_runtime_shutdown() -> None:
     runtime = _Runtime()
     holder.open_session(_RecordingConn())
     await dispatcher.bind_runtime(runtime)
+    await dispatcher.mark_ready()
     dispatcher._spawn(dispatcher._run_request(_request(ReqMethod.CHAT_SEND), 1), 1)
     task = next(iter(dispatcher._tasks))
     for _ in range(50):
@@ -642,7 +651,7 @@ async def _serve_one_session(server: IpcServer, holder: ConnHolder, dispatcher: 
 
 
 @pytest.mark.asyncio
-async def test_ipc_drop_runs_gateway_disconnect_once() -> None:
+async def test_ipc_drop_does_not_cancel_runtime_work() -> None:
     path = _socket_path()
     server = IpcServer(path)
     await server.start()
@@ -651,6 +660,7 @@ async def test_ipc_drop_runs_gateway_disconnect_once() -> None:
     dispatcher = WorkerDispatcher(bridge)
     runtime = _FakeRuntime()
     await dispatcher.bind_runtime(runtime)
+    await dispatcher.mark_ready()
     serve = asyncio.create_task(_serve_one_session(server, holder, dispatcher))
     try:
         client = await connect(path)
@@ -662,7 +672,7 @@ async def test_ipc_drop_runs_gateway_disconnect_once() -> None:
         assert runtime.attached is True
         await client.close()
         await asyncio.wait_for(serve, 2)
-        assert runtime.disconnects == ["supervisor disconnected"]
+        assert runtime.disconnects == []
     finally:
         if not serve.done():
             serve.cancel()
@@ -680,6 +690,7 @@ async def test_explicit_gateway_detach_is_not_repeated_on_ipc_drop() -> None:
     dispatcher = WorkerDispatcher(bridge)
     runtime = _FakeRuntime()
     await dispatcher.bind_runtime(runtime)
+    await dispatcher.mark_ready()
     serve = asyncio.create_task(_serve_one_session(server, holder, dispatcher))
     try:
         client = await connect(path)
@@ -695,7 +706,7 @@ async def test_explicit_gateway_detach_is_not_repeated_on_ipc_drop() -> None:
             await asyncio.sleep(0.01)
         await client.close()
         await asyncio.wait_for(serve, 2)
-        assert runtime.disconnects == ["front-stop"]
+        assert runtime.disconnects == []
     finally:
         if not serve.done():
             serve.cancel()
@@ -750,8 +761,9 @@ async def test_front_stop_leaves_spawned_worker_running() -> None:
         assert second.runtime_loaded is True
         assert await second_ready.wait_agent_ready(2) is True
         await second.stop(terminate_worker=True)
-        assert endpoint_is_listening(path)
-        assert owned.returncode is None
+        await asyncio.sleep(0.05)
+        assert not endpoint_is_listening(path)
+        assert await owned.wait(timeout=2) == 0
     finally:
         if second is not None and not second._stopping:
             await second.stop()
@@ -845,8 +857,8 @@ async def test_shutdown_does_not_wait_out_a_stuck_runtime_load() -> None:
     assert await asyncio.to_thread(entered.wait, 1.0)
     started = time.monotonic()
     try:
-        runtime = await _runtime_for_shutdown(task, {"runtime": None}, timeout=0.2)
-        assert runtime is None
+        with pytest.raises(WorkerForceExit, match="runtime load did not drain"):
+            await _runtime_for_shutdown(task, {"runtime": None}, timeout=0.2)
         assert time.monotonic() - started < 1.0
         assert task.cancelling()
     finally:

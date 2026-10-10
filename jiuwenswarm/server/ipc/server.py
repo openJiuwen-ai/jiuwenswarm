@@ -29,8 +29,9 @@ logger = logging.getLogger(__name__)
 
 def _restrict_runtime_dir(parent: Path) -> None:
     """Tighten ``~/.jiuwenswarm/run`` when the socket lives there."""
-    home = os.environ.get("JIUWENSWARM_HOME") or os.path.expanduser("~")
-    run_dir = Path(home) / ".jiuwenswarm" / "run"
+    from jiuwenswarm.common.utils import get_user_workspace_dir
+
+    run_dir = get_user_workspace_dir() / "run"
     if parent != run_dir:
         return
     try:
@@ -76,13 +77,26 @@ class IpcServer:
         self._thread: threading.Thread | None = None
         self._closed = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._owner_lease: object | None = None
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
-        if os.name == "nt":
-            await self._start_pipe()
-            return
-        await self._start_unix()
+        from filelock import FileLock
+
+        lease_path = Path(self.path + ".owner.lock")
+        lease_path.parent.mkdir(parents=True, exist_ok=True)
+        lease = FileLock(str(lease_path), timeout=0, thread_local=False)
+        lease.acquire()
+        self._owner_lease = lease
+        try:
+            if os.name == "nt":
+                await self._start_pipe()
+            else:
+                await self._start_unix()
+        except BaseException:
+            lease.release()
+            self._owner_lease = None
+            raise
 
     async def _start_unix(self) -> None:
         target = Path(self.path)
@@ -151,7 +165,11 @@ class IpcServer:
         return await self._queue.get()
 
     async def close(self) -> None:
+        if self._closed:
+            return
         self._closed = True
+        while not self._queue.empty():
+            await self._queue.get_nowait().close()
         if self._unix is not None:
             self._unix.close()
             await self._unix.wait_closed()
@@ -167,3 +185,6 @@ class IpcServer:
                 Path(self.path).unlink()
             except OSError:
                 pass
+        if self._owner_lease is not None:
+            self._owner_lease.release()
+            self._owner_lease = None

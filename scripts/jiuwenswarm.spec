@@ -249,7 +249,7 @@ http2_submodules = [
 ]
 
 # 部分包需要显式声明隐藏导入
-hiddenimports = webview_hiddenimports + http2_submodules + [
+hiddenimports = collect_submodules("jiuwenswarm.server.worker") + webview_hiddenimports + http2_submodules + [
     "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
     # ``--doctor`` imports these targets dynamically before business imports.

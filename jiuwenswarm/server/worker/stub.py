@@ -20,6 +20,7 @@ from jiuwenswarm.server.ipc.protocol import (
     KIND_REQUEST,
     KIND_REQUEST_DONE,
     KIND_SHUTDOWN,
+    KIND_SHUTDOWN_DONE,
     KIND_WIRE,
     PROTOCOL_VERSION,
 )
@@ -76,6 +77,8 @@ async def _serve_one(
     runtime_loaded: bool,
     instance: str,
 ) -> bool:
+    from jiuwenswarm.server.supervisor.identity import code_identity, data_scope
+
     send = getattr(conn, "send")
     recv = getattr(conn, "recv")
     await send(
@@ -87,6 +90,8 @@ async def _serve_one(
             "stub": True,
             "runtime_loaded": runtime_loaded,
             "generation": generation,
+            "data_scope": data_scope(),
+            "code_identity": code_identity(),
         }
     )
     if ready_delay > 0:
@@ -96,6 +101,7 @@ async def _serve_one(
         message = await recv()
         kind = str(message.get("kind") or "")
         if kind == KIND_SHUTDOWN:
+            await send({"kind": KIND_SHUTDOWN_DONE, "ok": True})
             return True
         if kind == KIND_HEARTBEAT:
             await send({"kind": KIND_HEARTBEAT, "pid": os.getpid()})
@@ -115,6 +121,7 @@ async def _serve_one(
                 {
                     "kind": KIND_WIRE,
                     "request_id": request_id,
+                    "dispatch_id": message.get("dispatch_id"),
                     "generation": frame_generation,
                     "payload": {
                         "request_id": request_id,
@@ -127,6 +134,7 @@ async def _serve_one(
                 {
                     "kind": KIND_REQUEST_DONE,
                     "request_id": request_id,
+                    "dispatch_id": message.get("dispatch_id"),
                     "generation": frame_generation,
                     "ok": True,
                     "delivered": True,

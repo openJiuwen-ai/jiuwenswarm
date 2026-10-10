@@ -633,7 +633,10 @@ def _dispatch() -> int | None:
             if sys.argv[2] == "ruff":
                 return _forward_to_ruff_binary(sys.argv[3:])
             import runpy
-            runpy.run_module(sys.argv[2], run_name="__main__", alter_sys=True)
+            module_name = sys.argv[2]
+            # Match Python -m: the target parser must not see -m/module again.
+            sys.argv = [module_name, *sys.argv[3:]]
+            runpy.run_module(module_name, run_name="__main__", alter_sys=True)
             return 0
 
         # 其他有参数的情况：直接执行，不检查单实例锁

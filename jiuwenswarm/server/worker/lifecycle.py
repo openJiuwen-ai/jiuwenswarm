@@ -210,9 +210,13 @@ class WorkerRuntime:
     stop_event: asyncio.Event
     teammate_task: asyncio.Task | None = None
     zen_task: asyncio.Task | None = None
+    proactive_task: asyncio.Task | None = None
 
     async def shutdown(self) -> None:
         self.stop_event.set()
+        if self.proactive_task is not None:
+            self.proactive_task.cancel()
+            await asyncio.gather(self.proactive_task, return_exceptions=True)
         if self.teammate_task is not None:
             self.teammate_task.cancel()
             try:
@@ -238,6 +242,20 @@ class WorkerRuntime:
         stop = getattr(self.server, "stop", None)
         if callable(stop):
             await stop()
+        # Both stores may still have queued writes after execution cleanup.
+        # The enclosing Worker deadline covers this concurrent barrier too.
+        from jiuwenswarm.server.runtime.session.session_history import flush_pending_writes as flush_history
+        from jiuwenswarm.server.runtime.session.session_metadata import flush_pending_writes as flush_metadata
+        flushed = await asyncio.gather(
+            asyncio.to_thread(flush_history, 10.0),
+            asyncio.to_thread(flush_metadata, 10.0),
+        )
+        if not all(flushed):
+            raise RuntimeError("Worker shutdown persistence barrier did not complete")
+        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import get_kv_cache_application_owner
+        await get_kv_cache_application_owner().close()
+        from jiuwenswarm.runtime.kernel import process_kernel
+        await process_kernel().close()
         try:
             from jiuwenswarm.agents.harness.team.team_manager import shutdown_team_observability
 
@@ -363,16 +381,20 @@ async def start_worker_runtime(
         trajectory_gateway_hint_bridge.bind(asyncio.get_running_loop(), send_push)
 
     from jiuwenswarm.common.config import get_config
-    from jiuwenswarm.server.runtime.proactive_adapter import init_proactive_engine
-
     full_cfg = get_config()
     proactive_config = full_cfg.get("proactive_recommendation", {}) if isinstance(full_cfg, dict) else {}
-    try:
-        await init_proactive_engine(server, proactive_config)
-        log_startup_stage("proactive_engine_initialized")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[Worker] proactive engine init failed: %s", exc)
-        signals.degraded(str(exc))
+
+    async def prepare_proactive():
+        from jiuwenswarm.server.runtime.proactive_adapter import init_proactive_engine
+        try:
+            await init_proactive_engine(server, proactive_config)
+            log_startup_stage("proactive_engine_initialized")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Worker] proactive engine init failed: %s", exc)
+            signals.degraded(str(exc))
+
+    proactive_task = asyncio.create_task(prepare_proactive(), name="proactive-prepare")
+    server._proactive_prepare_task = proactive_task
 
     stop_event = asyncio.Event()
     teammate_task: asyncio.Task | None = None
@@ -386,4 +408,5 @@ async def start_worker_runtime(
         stop_event=stop_event,
         teammate_task=teammate_task,
         zen_task=zen_task,
+        proactive_task=proactive_task,
     )

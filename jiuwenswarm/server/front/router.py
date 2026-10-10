@@ -153,6 +153,14 @@ class MethodRouter:
             if method in CONTROL_SESSION_METHODS:
                 _load_session_service()
                 response = await _HANDLE_SESSION(request)
+                if request.req_method == ReqMethod.SESSION_GET_METADATA and response.ok:
+                    backend = self._admission.backend
+                    snapshot_getter = getattr(backend, "get_runtime_snapshot", None)
+                    if callable(snapshot_getter):
+                        snapshot = await snapshot_getter(request)
+                        if isinstance(snapshot, dict):
+                            response.payload = {**response.payload, "runtime": snapshot,
+                                                "is_processing": snapshot["is_processing"]}
             elif method in CONTROL_PROJECT_METHODS:
                 _load_project_service()
                 response = await _HANDLE_PROJECT(request)
