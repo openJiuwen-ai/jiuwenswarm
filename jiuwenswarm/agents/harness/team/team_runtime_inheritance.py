@@ -482,6 +482,100 @@ def resolve_model_config(
     return model_client_config, model_config_obj, model_name
 
 
+def resolve_fallback_models(
+    config: dict[str, Any],
+    agent_key: str = "agent_teammate",
+    *,
+    strict_validation: bool = False,
+) -> list[dict[str, Any]]:
+    """Parse fallback model chain from config.
+
+    Reads ``agents.<agent_key>.fallback_models`` (a list of model name
+    strings) and resolves each to a full model config dict by looking
+    up the name in ``models.defaults``.  When a name is not found in
+    the defaults list, a config is synthesised by copying the primary
+    model's ``api_base`` / ``api_key`` and overriding ``model_name``.
+
+    **Validation**: When a fallback model name is not found in
+    ``models.defaults``, a warning is always logged.  Set
+    ``strict_validation=True`` to also skip the invalid entry (instead
+    of synthesising a config from the primary model).  This prevents
+    hard-to-debug failures where a typo in the model name silently
+    routes to a wrong endpoint.
+
+    Args:
+        config: Configuration dict.
+        agent_key: Agent config key (``agent_leader`` / ``agent_teammate``).
+        strict_validation: When *True*, skip fallback models whose names
+            are not found in ``models.defaults`` (log a warning and
+            continue).  When *False* (default), synthesise a config
+            from the primary model — preserving backward compatibility.
+
+    Returns:
+        List of dicts, each with keys ``model_client_config``,
+        ``model_config_obj``, ``model_name``.  Empty list when no
+        fallback is configured.
+    """
+    agents_cfg = config.get("agents", {})
+    agent_cfg = agents_cfg.get(agent_key, {})
+    fallback_names = agent_cfg.get("fallback_models", [])
+    if not fallback_names:
+        return []
+
+    models_cfg = config.get("models", {})
+    defaults_list = models_cfg.get("defaults", [])
+    if not isinstance(defaults_list, list):
+        defaults_list = []
+
+    # Build model_name → config index from defaults list
+    model_index: dict[str, dict] = {}
+    for entry in defaults_list:
+        if isinstance(entry, dict):
+            mcc = entry.get("model_client_config") or {}
+            name = mcc.get("model_name", "")
+            if name:
+                model_index[name] = entry
+
+    # Resolve primary model config for synthesising fallback entries
+    primary_mcc, primary_mco, _primary_name = resolve_model_config(config)
+
+    result: list[dict[str, Any]] = []
+    for fb_name in fallback_names:
+        fb_name = fb_name.strip()
+        if not fb_name:
+            continue
+        entry = model_index.get(fb_name)
+        if entry:
+            mcc = (entry.get("model_client_config") or {}).copy()
+            mco = (entry.get("model_config_obj") or {}).copy()
+        else:
+            # Model name not found in models.defaults — log a warning.
+            # In strict mode, skip this entry entirely to avoid routing
+            # requests to a potentially wrong endpoint.
+            logger.warning(
+                "[TeamRuntime] fallback model '%s' not found in models.defaults "
+                "(agent_key=%s). %s",
+                fb_name,
+                agent_key,
+                "Skipping (strict_validation=True)."
+                if strict_validation
+                else "Synthesising config from primary model.",
+            )
+            if strict_validation:
+                continue
+            # Synthesise: copy primary api_base/api_key, override model_name
+            mcc = primary_mcc.copy()
+            mcc["model_name"] = fb_name
+            mco = primary_mco.copy()
+        result.append({
+            "model_client_config": mcc,
+            "model_config_obj": mco,
+            "model_name": fb_name,
+        })
+
+    return result
+
+
 def build_evolution_llm(
     config: dict[str, Any] | None = None,
 ) -> tuple[Any, str]:
