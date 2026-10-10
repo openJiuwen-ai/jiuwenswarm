@@ -30,6 +30,10 @@ a2ui:
 rsi:
   enabled: true
 
+a4p:
+  enabled: false
+  require_user_signature: false
+
 symphony:
   enabled: null  # null = 跟随程序默认；用户切换后保存 true/false
   paths:
