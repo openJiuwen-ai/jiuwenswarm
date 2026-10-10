@@ -2,6 +2,8 @@ import ast
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -195,6 +197,166 @@ async def test_stream_stops_after_oversized_chunk_is_replaced(monkeypatch):
 
     assert send_count == 1
     assert foreground_manager.events == ["begin", "end"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exit_kind", ["cancel_during_send", "oversized"])
+async def test_stream_host_exit_releases_output_before_next_request(monkeypatch, exit_kind):
+    """取消发生在发送帧时或提前返回，仍须立即归还输出租约。"""
+    from openjiuwen.harness.schema.interaction import OutputLeaseManager
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    leases = OutputLeaseManager()
+    sending = asyncio.Event()
+
+    async def no_checkpointer():
+        return None
+
+    monkeypatch.setattr(interface_deep, "ensure_persistent_checkpointer", no_checkpointer)
+
+    async def output():
+        lease = await leases.attach()
+        try:
+            yield AgentResponseChunk(request_id="old", channel_id="web", payload={"content": "partial"})
+            await asyncio.Event().wait()
+        finally:
+            await leases.detach(lease.token)
+
+    stream = output()  # 保留引用，避免 GC 代替宿主完成关闭。
+    agent = SimpleNamespace(process_message_stream=lambda request: stream)
+    server = agent_ws_server.AgentWebSocketServer.__new__(agent_ws_server.AgentWebSocketServer)
+    server._session_stream_tasks = {}
+    server._is_stateless_method_request = lambda request: True
+
+    async def get_agent(channel_id):
+        return agent
+
+    async def no_plan_exit_check(request, agent):
+        return None
+
+    async def send(ws, wire):
+        sending.set()
+        if exit_kind == "cancel_during_send":
+            await asyncio.Event().wait()
+        return False
+
+    server._get_stateless_agent = get_agent
+    server._check_post_process_plan_exit = no_plan_exit_check
+    monkeypatch.setattr(agent_ws_server, "send_wire_payload", send)
+    request = AgentRequest(request_id="old", channel_id="web", session_id="same-session",
+                           req_method=ReqMethod.CHAT_SEND, params={}, is_stream=True)
+    task = asyncio.create_task(server._handle_stream(FakeWebSocket(), request, asyncio.Lock()))
+    try:
+        await asyncio.wait_for(sending.wait(), timeout=5)
+        if exit_kind == "cancel_during_send":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            await task
+        assert not leases.has_consumer()
+        assert await leases.attach() is not None
+        assert server._session_stream_tasks == {}
+    finally:
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        await stream.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_at", ["send", "read", "read_cleanup"])
+async def test_ws_facade_delegation_cancellation_releases_output(monkeypatch, cancel_at):
+    from openjiuwen.harness.schema.interaction import OutputLeaseManager
+    from jiuwenswarm.server.runtime.agent_adapter import interface as facade
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    leases = OutputLeaseManager()
+    sending = asyncio.Event()
+    reading = asyncio.Event()
+    read_cleanup = asyncio.Event()
+
+    class SlowCloseEvent(asyncio.Event):
+        async def wait(self):
+            try:
+                return await super().wait()
+            except asyncio.CancelledError:
+                # next_item cancels its loser task and then awaits it under
+                # suppress(CancelledError). Cancel the host in that window.
+                read_cleanup.set()
+                await asyncio.Event().wait()
+                raise
+
+    async def output():
+        lease = await leases.attach()
+        if cancel_at == "read_cleanup":
+            lease.closed = SlowCloseEvent()
+        try:
+            yield AgentResponseChunk(request_id="old", channel_id="web",
+                                     payload={"event_type": "chat.delta", "content": "partial"})
+            reading.set()
+            if cancel_at == "read_cleanup":
+                await leases.emit("next")
+                await leases.next_item(lease)
+                # Model output may already be buffered when the cancel is
+                # swallowed; the facade's bounded queue then fills forever.
+                for _ in range(200):
+                    yield AgentResponseChunk(request_id="old", channel_id="web",
+                                             payload={"event_type": "chat.delta", "content": "late"})
+            await asyncio.Event().wait()
+        finally:
+            await leases.detach(lease.token)
+
+    inner = output()
+    scoped = SimpleNamespace(process_message_stream_impl=lambda *_: inner)
+    root = object.__new__(interface_deep.JiuWenSwarmDeepAdapter)
+    root._is_session_scoped_adapter = False
+    root._get_or_create_session_adapter = AsyncMock(return_value=scoped)
+    root._evict_idle_session_adapters = AsyncMock()
+    monkeypatch.setattr(facade.JiuWenSwarm, "_ensure_adapter", lambda *_args, **_kwargs: root)
+    monkeypatch.setattr(facade, "get_config", lambda: {"memory": {"mode": "disabled"}})
+    monkeypatch.setattr(facade, "get_memory_mode", lambda _: "disabled")
+    monkeypatch.setattr(facade, "append_history_record", lambda **_: None)
+    monkeypatch.setattr(facade, "_schedule_symphony_session_feedback", lambda *_: None)
+    monkeypatch.setattr(interface_deep, "ensure_persistent_checkpointer", AsyncMock())
+    agent = facade.JiuWenSwarm()
+    server = agent_ws_server.AgentWebSocketServer.__new__(agent_ws_server.AgentWebSocketServer)
+    server._session_stream_tasks = {}
+    server._is_stateless_method_request = lambda _: True
+    server._get_stateless_agent = AsyncMock(return_value=agent)
+    server._check_post_process_plan_exit = AsyncMock()
+
+    async def send(ws, wire):
+        sending.set()
+        if cancel_at in ("send", "read_cleanup"):
+            await asyncio.Event().wait()
+        return True
+
+    monkeypatch.setattr(agent_ws_server, "send_wire_payload", send)
+    request = AgentRequest(request_id="old", channel_id="web", session_id="same-session",
+                           req_method=ReqMethod.CHAT_SEND, params={"query": "hello"}, is_stream=True)
+    task = asyncio.create_task(server._handle_stream(FakeWebSocket(), request, asyncio.Lock()))
+    try:
+        await asyncio.wait_for(sending.wait(), timeout=5)
+        if cancel_at == "read":
+            await asyncio.wait_for(reading.wait(), timeout=5)
+            await asyncio.sleep(0.01)
+        if cancel_at == "read_cleanup":
+            await asyncio.wait_for(read_cleanup.wait(), timeout=5)
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=1)
+        assert task in done, "cancel cleanup is stuck and still owns the output lease"
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not leases.has_consumer()
+        assert await leases.attach() is not None
+        assert server._session_stream_tasks == {}
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await inner.aclose()
 
 
 @pytest.mark.asyncio

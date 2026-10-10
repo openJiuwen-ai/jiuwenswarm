@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -77,6 +78,39 @@ def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
     for name, value in state.items():
         setattr(adapter, name, value)
     return adapter
+
+
+@pytest.mark.asyncio
+async def test_closing_delegated_stream_releases_session_output_lease():
+    """根 adapter 在 yield 处关闭时，同步关闭内层消费流，不依赖异步 GC。"""
+    from openjiuwen.harness.schema.interaction import OutputLeaseManager
+
+    leases = OutputLeaseManager()
+
+    async def output():
+        lease = await leases.attach()
+        try:
+            yield "partial"
+            await asyncio.Event().wait()
+        finally:
+            await leases.detach(lease.token)
+
+    inner = output()
+    scoped = SimpleNamespace(process_message_stream_impl=lambda *_: inner)
+    root = _make_adapter(
+        _is_session_scoped_adapter=False,
+        _get_or_create_session_adapter=AsyncMock(return_value=scoped),
+        _evict_idle_session_adapters=AsyncMock(),
+    )
+    outer = root.process_message_stream_impl(_build_chat_send_request({"query": "hello"}), {})
+    try:
+        assert await anext(outer) == "partial"
+        await outer.aclose()
+        assert not leases.has_consumer()
+        assert await leases.attach() is not None
+    finally:
+        await outer.aclose()
+        await inner.aclose()
 
 
 @pytest.mark.asyncio
@@ -364,7 +398,14 @@ async def test_interaction_cancel_appends_cancelled_tools_to_history(
     instance = MagicMock()
     instance._interaction_started = True
     instance.goal_manager = None
-    instance.cancel_round = AsyncMock(return_value=True)
+    instance.active_round = SimpleNamespace(work=SimpleNamespace(request_id="req-picture"))
+
+    async def cancel_round(**_kwargs):
+        # 下一轮已成为 active，工具历史仍必须关联原轮。
+        instance.active_round = SimpleNamespace(work=SimpleNamespace(request_id="req-weather"))
+        return True
+
+    instance.cancel_round = AsyncMock(side_effect=cancel_round)
 
     adapter = _make_adapter(
         _active_session_ids={"sess-tools": 1},
@@ -391,6 +432,84 @@ async def test_interaction_cancel_appends_cancelled_tools_to_history(
     append_mock.assert_called_once()
     assert append_mock.call_args.kwargs["event_type"] == "chat.tool_result"
     assert append_mock.call_args.kwargs["extra"]["tool_result"]["tool_call_id"] == "call_1"
+    assert append_mock.call_args.kwargs["request_id"] == "req-picture"
+    assert append_mock.call_args.kwargs["content"] == ""
+
+
+@pytest.mark.asyncio
+async def test_cancel_history_waits_for_pending_tool_call_write(tmp_path, monkeypatch):
+    """active_round 已清除时，仍按尚未写盘的 call_id 归属原轮。"""
+    import asyncio
+    import threading
+    from jiuwenswarm.server.runtime.session import session_history
+
+    sid = "sess-pending-cancel"
+    started, release = threading.Event(), threading.Event()
+    write = session_history._write_item
+
+    def delayed_write(session_id, item):
+        if session_id == sid and item.get("event_type") == "chat.tool_call":
+            started.set()
+            release.wait(timeout=5)
+        write(session_id, item)
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(session_history, "_write_item", delayed_write)
+    session_history.append_history_record(
+        session_id=sid, request_id="req-picture", channel_id="tui", role="assistant",
+        event_type="chat.tool_call", content="", timestamp=1,
+        extra={"tool_call": {"name": "bash", "tool_call_id": "picture-call"}},
+    )
+    await asyncio.to_thread(started.wait, 5)
+    assert started.is_set()
+    rail = MagicMock()
+    rail.get_cancelled_tool_results.return_value = [{
+        "tool_name": "bash", "tool_call_id": "picture-call", "result": "cancelled", "status": "error"
+    }]
+    instance = MagicMock()
+    instance._interaction_started = True
+    instance.active_round = None
+    instance.goal_manager = None
+    instance.cancel_round = AsyncMock(return_value=True)
+    adapter = _make_adapter(_instance=instance, _stream_event_rail=rail, _active_session_ids={sid: 1})
+    adapter._cancel_pending_todos = AsyncMock(return_value=None)
+    asyncio.get_running_loop().call_later(0.05, release.set)
+    try:
+        await adapter.process_interrupt(_build_cancel_request(sid))
+    finally:
+        release.set()
+        await asyncio.to_thread(session_history.flush_history_writes)
+    results = [r for r in session_history.load_history_records(sid) if r.get("event_type") == "chat.tool_result"]
+    assert len(results) == 1
+    assert results[0]["request_id"] == "req-picture"
+    assert results[0]["content"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_io", ["read", "write"])
+async def test_history_io_failure_does_not_replace_successful_cancel(monkeypatch, failed_io):
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    def fail(*_args, **_kwargs):
+        raise OSError("history disk unavailable")
+
+    rail = MagicMock()
+    rail.get_cancelled_tool_results.return_value = [{
+        "tool_name": "bash", "tool_call_id": "picture-call", "result": "cancelled", "status": "error"
+    }]
+    instance = MagicMock()
+    instance._interaction_started = True
+    instance.goal_manager = None
+    instance.active_round = SimpleNamespace(work=SimpleNamespace(request_id="req-picture"))
+    instance.cancel_round = AsyncMock(return_value=True)
+    adapter = _make_adapter(_instance=instance, _stream_event_rail=rail, _active_session_ids={"sess-io": 1})
+    adapter._cancel_pending_todos = AsyncMock(return_value=None)
+    monkeypatch.setattr(interface_deep, "load_history_records", fail if failed_io == "read" else lambda *_: [])
+    monkeypatch.setattr(interface_deep, "append_history_record", fail if failed_io == "write" else lambda **_: None)
+    response = await adapter.process_interrupt(_build_cancel_request("sess-io"))
+    assert response.ok is True
+    assert response.payload["success"] is True
+    assert response.payload["cancelled_tools"][0]["tool_call_id"] == "picture-call"
 
 
 @pytest.mark.asyncio

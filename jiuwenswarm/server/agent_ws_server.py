@@ -12,6 +12,7 @@ import math
 import os
 import shutil
 import sys
+from contextlib import aclosing
 from pathlib import Path
 from typing import Any, ClassVar, Optional
 from weakref import WeakValueDictionary
@@ -3515,118 +3516,120 @@ class AgentWebSocketServer:
         # 手机侧会新建会话。
         _inject_session_xiaoyi_routing(request)
         try:
-            async for chunk in agent.process_message_stream(request):
-                chunk_count += 1
-                if is_xiaoyi_request:
-                    logger.info(
-                        "[GUI_AGENT_DIAG] phase=AGENT_CHUNK_GENERATED "
-                        "request_id=%s sequence=%s event_type=%s "
-                        "is_complete=%s payload=%r",
-                        request.request_id,
-                        chunk_count - 1,
-                        (
-                            chunk.payload.get("event_type")
-                            if isinstance(chunk.payload, dict)
-                            else None
-                        ),
-                        chunk.is_complete,
-                        chunk.payload,
-                    )
-                # 通知心跳任务有真实 chunk 发送，重置心跳计时
-                heartbeat_event.set()
-                # V2: chunk 回带请求侧 agent_ref，供 gateway 3 元组精确路由
-                # （设计 §6.3）。is None 守卫：保留 team 模式由事件派生的 agent_ref
-                # （_build_team_event_chunk_meta 已设值），不覆盖。
-                if chunk.agent_ref is None:
-                    chunk.agent_ref = request.agent_ref
-                wire = encode_agent_chunk_for_wire(
-                    chunk,
-                    response_id=request.request_id,
-                    sequence=chunk_count - 1,
-                )
-                chunk_payload = getattr(chunk, "payload", None)
-                if (
-                    isinstance(chunk_payload, dict)
-                    and chunk_payload.get("event_type") == "chat.ask_user_question"
-                ):
-                    logger.info(
-                        format_permission_wire_diagnostic(
-                            request_id=request.request_id,
-                            sequence=chunk_count - 1,
-                            payload=chunk_payload,
-                            wire=wire,
-                        )
-                    )
-                # 诊断：全量打印 chunk 载荷（E2A 帧内容排查，经桌面端 stderr 转发进 app.log）。
-                # chat.reasoning/chat.delta 是高频增量帧：只打印 is_complete=True 的
-                # （增量帧全部 is_complete=False，即不打印，避免淹没其它帧）；
-                # 其余事件（tool_call/tool_result/todo/usage/error/final 等）全量打印。
-                _pl = getattr(chunk, "payload", None) or {}
-                _et = _pl.get("event_type", "") if isinstance(_pl, dict) else ""
-                _is_complete = bool(getattr(chunk, "is_complete", False))
-                # 思考/正文增量块计数（stream_audit：见上）
-                if _et in ("chat.reasoning", "chat.delta"):
-                    _audit_kind = "R" if _et == "chat.reasoning" else "T"
-                    _audit_text = (
-                        str(_pl.get("content", "") or "") if isinstance(_pl, dict) else ""
-                    )
-                    if stream_audit["last_kind"] and stream_audit["last_kind"] != _audit_kind:
-                        stream_audit["switches"] += 1
-                        if stream_audit["first_switch_seq"] < 0:
-                            stream_audit["first_switch_seq"] = chunk_count - 1
-                    stream_audit["last_kind"] = _audit_kind
-                    if _audit_kind == "R":
-                        stream_audit["reasoning"] += 1
-                    else:
-                        stream_audit["text"] += 1
-                        stream_audit["text_chars"] += len(_audit_text.strip())
-                        if len(stream_audit["samples"]) < 3:
-                            stream_audit["samples"].append(
-                                _audit_text.strip().replace("\n", " ")[:24]
-                            )
-                if not (_et in ("chat.reasoning", "chat.delta") and not _is_complete):
-                    _pl_repr = repr(_pl)
-                    if len(_pl_repr) > 8000:
-                        _pl_repr = _pl_repr[:8000] + f"…(truncated {len(_pl_repr)})"
-                    logger.info(
-                        "[AgentWebSocketServer] chunk payload: request_id=%s seq=%s"
-                        " event_type=%s is_complete=%s payload=%s",
-                        request.request_id, chunk_count - 1, _et, _is_complete, _pl_repr,
-                    )
-                try:
-                    async with send_lock:
-                        if is_xiaoyi_request:
-                            logger.info(
-                                "[GUI_AGENT_DIAG] phase=AGENT_CHUNK_WS_SEND_BEGIN "
-                                "request_id=%s sequence=%s wire=%r",
-                                request.request_id,
-                                chunk_count - 1,
-                                wire,
-                            )
-                        sent_original = await send_wire_payload(ws, wire)
-                        if is_xiaoyi_request:
-                            logger.info(
-                                "[GUI_AGENT_DIAG] phase=AGENT_CHUNK_WS_SEND_DONE "
-                                "request_id=%s sequence=%s",
-                                request.request_id,
-                                chunk_count - 1,
-                            )
-                    if not sent_original:
-                        logger.warning(
-                            "[AgentWebSocketServer] 流式响应因单个 chunk 超限而停止: "
-                            "request_id=%s seq=%s",
+            # 在宿主上下文仍有效时关闭流，释放输出租约和生产者任务。
+            async with aclosing(agent.process_message_stream(request)) as stream:
+                async for chunk in stream:
+                    chunk_count += 1
+                    if is_xiaoyi_request:
+                        logger.info(
+                            "[GUI_AGENT_DIAG] phase=AGENT_CHUNK_GENERATED "
+                            "request_id=%s sequence=%s event_type=%s "
+                            "is_complete=%s payload=%r",
                             request.request_id,
                             chunk_count - 1,
+                            (
+                                chunk.payload.get("event_type")
+                                if isinstance(chunk.payload, dict)
+                                else None
+                            ),
+                            chunk.is_complete,
+                            chunk.payload,
+                        )
+                    # 通知心跳任务有真实 chunk 发送，重置心跳计时
+                    heartbeat_event.set()
+                    # V2: chunk 回带请求侧 agent_ref，供 gateway 3 元组精确路由
+                    # （设计 §6.3）。is None 守卫：保留 team 模式由事件派生的 agent_ref
+                    # （_build_team_event_chunk_meta 已设值），不覆盖。
+                    if chunk.agent_ref is None:
+                        chunk.agent_ref = request.agent_ref
+                    wire = encode_agent_chunk_for_wire(
+                        chunk,
+                        response_id=request.request_id,
+                        sequence=chunk_count - 1,
+                    )
+                    chunk_payload = getattr(chunk, "payload", None)
+                    if (
+                        isinstance(chunk_payload, dict)
+                        and chunk_payload.get("event_type") == "chat.ask_user_question"
+                    ):
+                        logger.info(
+                            format_permission_wire_diagnostic(
+                                request_id=request.request_id,
+                                sequence=chunk_count - 1,
+                                payload=chunk_payload,
+                                wire=wire,
+                            )
+                        )
+                    # 诊断：全量打印 chunk 载荷（E2A 帧内容排查，经桌面端 stderr 转发进 app.log）。
+                    # chat.reasoning/chat.delta 是高频增量帧：只打印 is_complete=True 的
+                    # （增量帧全部 is_complete=False，即不打印，避免淹没其它帧）；
+                    # 其余事件（tool_call/tool_result/todo/usage/error/final 等）全量打印。
+                    _pl = getattr(chunk, "payload", None) or {}
+                    _et = _pl.get("event_type", "") if isinstance(_pl, dict) else ""
+                    _is_complete = bool(getattr(chunk, "is_complete", False))
+                    # 思考/正文增量块计数（stream_audit：见上）
+                    if _et in ("chat.reasoning", "chat.delta"):
+                        _audit_kind = "R" if _et == "chat.reasoning" else "T"
+                        _audit_text = (
+                            str(_pl.get("content", "") or "") if isinstance(_pl, dict) else ""
+                        )
+                        if stream_audit["last_kind"] and stream_audit["last_kind"] != _audit_kind:
+                            stream_audit["switches"] += 1
+                            if stream_audit["first_switch_seq"] < 0:
+                                stream_audit["first_switch_seq"] = chunk_count - 1
+                        stream_audit["last_kind"] = _audit_kind
+                        if _audit_kind == "R":
+                            stream_audit["reasoning"] += 1
+                        else:
+                            stream_audit["text"] += 1
+                            stream_audit["text_chars"] += len(_audit_text.strip())
+                            if len(stream_audit["samples"]) < 3:
+                                stream_audit["samples"].append(
+                                    _audit_text.strip().replace("\n", " ")[:24]
+                                )
+                    if not (_et in ("chat.reasoning", "chat.delta") and not _is_complete):
+                        _pl_repr = repr(_pl)
+                        if len(_pl_repr) > 8000:
+                            _pl_repr = _pl_repr[:8000] + f"…(truncated {len(_pl_repr)})"
+                        logger.info(
+                            "[AgentWebSocketServer] chunk payload: request_id=%s seq=%s"
+                            " event_type=%s is_complete=%s payload=%s",
+                            request.request_id, chunk_count - 1, _et, _is_complete, _pl_repr,
+                        )
+                    try:
+                        async with send_lock:
+                            if is_xiaoyi_request:
+                                logger.info(
+                                    "[GUI_AGENT_DIAG] phase=AGENT_CHUNK_WS_SEND_BEGIN "
+                                    "request_id=%s sequence=%s wire=%r",
+                                    request.request_id,
+                                    chunk_count - 1,
+                                    wire,
+                                )
+                            sent_original = await send_wire_payload(ws, wire)
+                            if is_xiaoyi_request:
+                                logger.info(
+                                    "[GUI_AGENT_DIAG] phase=AGENT_CHUNK_WS_SEND_DONE "
+                                    "request_id=%s sequence=%s",
+                                    request.request_id,
+                                    chunk_count - 1,
+                                )
+                        if not sent_original:
+                            logger.warning(
+                                "[AgentWebSocketServer] 流式响应因单个 chunk 超限而停止: "
+                                "request_id=%s seq=%s",
+                                request.request_id,
+                                chunk_count - 1,
+                            )
+                            return
+                    except TRANSPORT_CLOSED_ERRORS:
+                        logger.info(
+                            "[AgentWebSocketServer] 流式响应停止，连接已关闭: request_id=%s",
+                            request.request_id,
                         )
                         return
-                except TRANSPORT_CLOSED_ERRORS:
-                    logger.info(
-                        "[AgentWebSocketServer] 流式响应停止，连接已关闭: request_id=%s",
-                        request.request_id,
-                    )
-                    return
-                # 清除 event，让心跳任务重新开始计时
-                heartbeat_event.clear()
+                    # 清除 event，让心跳任务重新开始计时
+                    heartbeat_event.clear()
         finally:
             # 通知 heartbeat_loop 立即退出（即使 stream task 卡在 process_message_stream 中）
             stream_stop_event.set()

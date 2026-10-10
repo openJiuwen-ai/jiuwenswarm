@@ -186,3 +186,83 @@ def test_cancelled_terminal_chunk_encodes_as_final_error_envelope() -> None:
     assert wire["status"] == "failed"
     assert wire["response_kind"] == "e2a.error"
     assert wire["body"]["details"]["code"] == "cancelled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("already_flushed", [False, True])
+@pytest.mark.parametrize("cancel_producer", [False, True])
+async def test_cancel_persists_stop_without_pending_text(
+    monkeypatch, already_flushed, cancel_producer,
+) -> None:
+    """工具阶段/零正文取消也要留下原轮停止记录，覆盖两种取消来源。"""
+    ready = asyncio.Event()
+    producer = None
+    rid = "req-stop-history"
+
+    class Adapter:
+        @staticmethod
+        async def process_message_stream_impl(*_args):
+            nonlocal producer
+            producer = asyncio.current_task()
+            if already_flushed:
+                yield AgentResponseChunk(request_id=rid, channel_id="tui", payload={
+                    "event_type": "chat.final", "content": "正在识别图片"
+                })
+            yield AgentResponseChunk(request_id=rid, channel_id="tui", payload={
+                "event_type": "chat.tool_call", "tool_call": {"name": "bash", "tool_call_id": "call-picture"}
+            })
+            await asyncio.Event().wait()
+
+    _patch_common(monkeypatch, Adapter)
+    records = []
+    monkeypatch.setattr(interface_module, "append_history_record", lambda **kwargs: records.append(kwargs))
+    swarm = interface_module.JiuWenSwarm()
+    chunks = []
+
+    async def consume():
+        async for chunk in swarm.process_message_stream(_request(rid)):
+            chunks.append(chunk)
+            if chunk.payload.get("event_type") == "chat.tool_call":
+                ready.set()
+
+    consumer = asyncio.create_task(consume())
+    await asyncio.wait_for(ready.wait(), timeout=5)
+    (producer if cancel_producer else consumer).cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(consumer, timeout=5)
+    stopped = [r for r in records if (r.get("extra") or {}).get("aborted")]
+    assert len(stopped) == 1
+    assert stopped[0]["request_id"] == rid
+    assert stopped[0]["event_type"] == "chat.final"
+    assert len(_cancelled_chunks(chunks)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_sent", [False, True])
+async def test_close_while_downstream_is_sending_preserves_cancel_history(monkeypatch, terminal_sent):
+    """消费者停在 yield 外侧时，aclose 必须留痕且不能再 yield。"""
+    rid = "req-close-history"
+
+    class Adapter:
+        @staticmethod
+        async def process_message_stream_impl(*_args):
+            yield _delta(rid, "图片分析了一部分")
+            if terminal_sent:
+                yield _terminal(rid)
+            await asyncio.Event().wait()
+
+    _patch_common(monkeypatch, Adapter)
+    records = []
+    monkeypatch.setattr(interface_module, "append_history_record", lambda **kwargs: records.append(kwargs))
+    stream = interface_module.JiuWenSwarm().process_message_stream(_request(rid))
+    await anext(stream)
+    if terminal_sent:
+        await anext(stream)
+    await stream.aclose()
+    stopped = [r for r in records if (r.get("extra") or {}).get("aborted")]
+    if terminal_sent:
+        assert stopped == []
+    else:
+        assert len(stopped) == 1
+        assert stopped[0]["request_id"] == rid
+        assert stopped[0]["content"] == "图片分析了一部分"
