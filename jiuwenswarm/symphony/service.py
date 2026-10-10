@@ -1023,7 +1023,7 @@ class SwarmSymphonyService:
             )
             if installed is None:
                 try:
-                    installed = skill_manager.install_symphony_skill_artifact(
+                    installed = await skill_manager.install_symphony_skill_artifact(
                         artifact_dir,
                         expected_root=flow_root,
                         package_id=actual_package_id,
