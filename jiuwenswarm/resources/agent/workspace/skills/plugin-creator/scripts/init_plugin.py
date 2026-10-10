@@ -34,6 +34,7 @@ MANIFEST_TEMPLATE = """{
   },
   "category": "[TODO: category]",
   "source": "local",
+  "avatar": "",
   "default_init_input": {
     "zh": "[TODO: 中文首次对话提示]",
     "en": "[TODO: English first prompt]"

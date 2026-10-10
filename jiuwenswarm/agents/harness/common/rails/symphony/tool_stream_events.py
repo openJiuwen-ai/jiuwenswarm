@@ -25,9 +25,6 @@ class SymphonyToolStreamHandler:
     _RESULT_FIELDS = (
         "graph_status",
         "graph_build",
-        "direct_display",
-        "continue_after_display",
-        "followup_action",
     )
 
     @classmethod
@@ -44,7 +41,11 @@ class SymphonyToolStreamHandler:
             return
 
         async def progress_callback(event: dict[str, Any]) -> None:
-            await self._emit_progress(session, tool_call, event)
+            await self._emit_progress(
+                session,
+                tool_call,
+                event,
+            )
 
         ctx.extra[self._PROGRESS_TOKEN_KEY] = bind_tool_progress(progress_callback)
 
@@ -69,6 +70,7 @@ class SymphonyToolStreamHandler:
         tool_call: Any,
         result: Any,
     ) -> None:
+        """Honor Symphony direct-display results without another model turn."""
         if not self.matches(tool_call):
             return
         content = self._direct_display_content(result)
@@ -80,19 +82,11 @@ class SymphonyToolStreamHandler:
     def _direct_display_content(result: Any) -> str:
         if not isinstance(result, dict) or not bool(result.get("direct_display")):
             return ""
-        rendered = result.get("content")
-        return rendered.strip() if isinstance(rendered, str) else ""
+        return str(result.get("content") or result.get("result") or "").strip()
 
     @staticmethod
     def _continues_after_display(result: Any) -> bool:
-        if not isinstance(result, dict):
-            return False
-        value = result.get("continue_after_display")
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return value != 0
-        return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+        return bool(isinstance(result, dict) and result.get("continue_after_display"))
 
     @staticmethod
     def _tool_name(tool_call: Any) -> str:
@@ -107,18 +101,17 @@ class SymphonyToolStreamHandler:
         if not isinstance(event.get("graph"), dict):
             return
         try:
+            payload = {
+                "tool_name": getattr(tool_call, "name", ""),
+                "tool_call_id": getattr(tool_call, "id", ""),
+                "status": "in_progress",
+                "beam_search_event": event,
+            }
             await session.write_stream(
                 OutputSchema(
                     type="tool_update",
                     index=0,
-                    payload={
-                        "tool_update": {
-                            "tool_name": getattr(tool_call, "name", ""),
-                            "tool_call_id": getattr(tool_call, "id", ""),
-                            "status": "in_progress",
-                            "beam_search_event": event,
-                        }
-                    },
+                    payload={"tool_update": payload},
                 )
             )
         except Exception:

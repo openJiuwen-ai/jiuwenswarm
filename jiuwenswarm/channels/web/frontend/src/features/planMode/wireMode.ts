@@ -6,21 +6,26 @@
  * Web 项目分桶键。发送请求时把三者组合成后端认识的三段命名 mode 字符串：
  *
  * ```text
- * agent + plan off              -> "agent"
- * agent + plan on + work        -> "agent.work.plan"（work profile + plan 段）
- * agent + plan on + code        -> "agent.code.plan"（code profile + plan 段）
- * team  + plan off              -> "team"
- * team  + plan on + work        -> "team.work.plan"（work profile + plan 段）
- * team  + plan on + code        -> "team.code.plan"（code profile + plan 段）
+ * agent + plan off + work       -> "agent.work.normal"
+ * agent + plan on  + work       -> "agent.work.plan"
+ * agent + plan off + code       -> "agent.code.normal"
+ * agent + plan on  + code       -> "agent.code.plan"
+ * team  + plan off + work       -> "team.work.normal"
+ * team  + plan on  + work       -> "team.work.plan"
+ * team  + plan off + code       -> "team.code.normal"
+ * team  + plan on  + code       -> "team.code.plan"
  * ```
  *
- * 新三段命名 `{base}.{profile}.plan` 直接携带 profile + plan 段，不再依赖请求里的
- * `work_mode` 字段做 mode 解析（但 `work_mode` 仍由 `getSessionWorkContext` 写入
- * session/project 元数据作项目分桶键，后端 `resolve_request_mode` 优先识别新串）。
+ * 统一输出新三段命名 `{base}.{profile}.{state}`：state=plan 段单独对应 UI 的
+ * Plan 开关，plan 关闭时（normal）也带 profile 段。后端
+ * `resolve_request_mode` 优先走 `resolve_new_canonical_mode` 按串本身语义短路，
+ * 不再依赖请求里 `work_mode` 字段做 mode 解析（`work_mode` 仍由
+ * `getSessionWorkContext` 写入 session/project 元数据作项目分桶键）。
  *
  * D1 修复前 `resolvePlanWireMode` 硬编码 `'agent.work.plan'`，导致 Web UI 永远
  * 产不出 `agent.code.plan`——code profile 下用户打开 Plan，后端仍按 work
- * profile 解析。现在 profile 由调用方传入，agent / team 两条路径都能产出。
+ * profile 解析。plus 修复前 plan 关闭时输出裸 `agent`/`team`，规范为
+ * `*.normal` 后 wire 层不再出现裸值。
  */
 
 /** UI 层的基础模式。agent 与 team 都支持 Plan。 */
@@ -56,13 +61,16 @@ export function isTeamAgentMode(mode: string | undefined | null): boolean {
 }
 
 /**
- * 组合出发送给后端的 mode。
+ * 组合出发送给后端的 mode（统一新三段命名）。
+ *
+ * plan 开关关闭时也输出 `{base}.{profile}.normal`，不再回落到裸 `agent`/`team`，
+ * 使 wire 层与后端 canonical 命名完全一致。仅处理 `agent`/`team` 两个基础模式；
+ * `auto_harness` 等不参与 plan 组合的取值原样透传。
  *
  * @param baseMode UI 当前的基础模式。
  * @param planActive 该会话的 Plan 开关是否打开。
- * @param profile 当前 workspace 的 work/code profile（默认 `work`）。仅当
- *                `planActive` 为真时使用，决定三段命名的中间段：
- *                `work` -> `{base}.work.plan`，`code` -> `{base}.code.plan`。
+ * @param profile 当前 workspace 的 work/code profile（默认 `work`），决定
+ *                三段命名的中间段：`work` -> `.work`，`code` -> `.code`。
  * @returns 后端认识的 wire mode。
  */
 export function resolvePlanWireMode(
@@ -71,9 +79,10 @@ export function resolvePlanWireMode(
   profile: PlanWorkProfile | string | null | undefined = 'work',
 ): string {
   const base = typeof baseMode === 'string' && baseMode ? baseMode : 'agent';
-  if (!planActive || !supportsPlanMode(base)) return base;
+  if (!supportsPlanMode(base)) return base;
   const env = profile === 'code' ? 'code' : 'work';
-  return `${base}.${env}.plan`;
+  const state = planActive ? 'plan' : 'normal';
+  return `${base}.${env}.${state}`;
 }
 
 /** wire mode 是否处于 Plan（识别 `agent.work.plan` / `agent.code.plan` 与
@@ -87,9 +96,11 @@ export function isPlanWireMode(wireMode: string | undefined): boolean {
   );
 }
 
-/** 去掉 Plan 后缀，得到基础模式。 */
+/** 去掉 Plan 后缀 / 归一 `*.normal`，得到基础模式（`agent` / `team`）。 */
 export function stripPlanSuffix(wireMode: string | undefined): string {
   if (wireMode === 'agent.work.plan' || wireMode === 'agent.code.plan') return 'agent';
   if (wireMode === 'team.work.plan' || wireMode === 'team.code.plan') return 'team';
+  if (wireMode === 'agent.work.normal' || wireMode === 'agent.code.normal') return 'agent';
+  if (wireMode === 'team.work.normal' || wireMode === 'team.code.normal') return 'team';
   return typeof wireMode === 'string' && wireMode ? wireMode : 'agent';
 }

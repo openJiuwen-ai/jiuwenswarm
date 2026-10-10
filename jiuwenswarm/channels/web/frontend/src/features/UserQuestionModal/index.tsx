@@ -10,13 +10,12 @@ import { useChatStore } from '../../stores';
 import { Question, UserAnswer } from '../../types';
 
 interface UserQuestionModalProps {
-  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => void;
+  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => Promise<boolean>;
 }
 
 export function UserQuestionModal({ onSubmit }: UserQuestionModalProps) {
   const { t } = useTranslation();
-  const pendingQuestion = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.pendingQuestion ?? null);
-  const setPendingQuestion = useChatStore((s) => s.setPendingQuestion);
+  const pendingQuestion = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.pendingQuestions[0] ?? null);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const [answers, setAnswers] = useState<Map<number, UserAnswer>>(new Map());
 
@@ -91,15 +90,20 @@ export function UserQuestionModal({ onSubmit }: UserQuestionModalProps) {
       }
     );
 
-    onSubmit(pendingQuestion.request_id, finalAnswers, pendingQuestion.source);
-    setAnswers(new Map());
+    void onSubmit(pendingQuestion.request_id, finalAnswers, pendingQuestion.source).then(
+      (accepted) => {
+        if (accepted) setAnswers(new Map());
+      },
+    );
   }, [pendingQuestion, answers, onSubmit]);
 
   // 取消/关闭
   const handleCancel = useCallback(() => {
-    if (activeSessionId) setPendingQuestion(activeSessionId, null);
+    if (activeSessionId && pendingQuestion) {
+      useChatStore.getState().consumePendingQuestion(activeSessionId, pendingQuestion);
+    }
     setAnswers(new Map());
-  }, [activeSessionId, setPendingQuestion]);
+  }, [activeSessionId, pendingQuestion]);
 
   if (!pendingQuestion) {
     return null;

@@ -1,9 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 """Standalone AgentServer entrypoint.
 
-This process only starts:
-- JiuWenSwarm (agent runtime)
-- AgentWebSocketServer (ws server for Gateway)
+Phase 1 Front listens first. OpenJiuwen, extensions, and Agent Runtime load
+in the same process after ``TRANSPORT_READY`` / ``CONTROL_READY``.
 
 Gateway should be started separately and connect to this ws server.
 Both processes share the same user workspace directory (~/.jiuwenswarm).
@@ -19,64 +18,63 @@ import logging
 import logging.handlers
 import os
 import sys
+import time
 
-from openjiuwen.core.common.logging import LogManager
+
+# Include entry-module import/configuration work in later startup phase logs.
+# PyInstaller boot time is intentionally outside this boundary.
+_PROCESS_START_T0 = time.monotonic()
+_STARTUP_IMPORT_PHASES: list[tuple[str, float]] = [("entry", _PROCESS_START_T0)]
+
+
+def _mark_startup_import_phase(stage: str) -> None:
+    _STARTUP_IMPORT_PHASES.append((stage, time.monotonic()))
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
 parse_dotenv_early("jiuwenswarm-agentserver")
+_mark_startup_import_phase("dotenv_parsed")
 
-# --- Now safe to import jiuwenswarm modules ---
-from jiuwenswarm.common.debug_dump import install_async_dump_handler
+# Standalone entrypoints retain workspace preparation; Desktop/app already do
+# it before spawning us and pass the marker to avoid duplicate disk work.
+# OpenJiuwen-touching prep (stale desc cleanup, config migrate) waits until
+# the Runtime backend starts, so Front can listen without importing it.
 from jiuwenswarm.common.utils import (
-    ensure_config_migrated_from_template,
-    ensure_default_builtin_skills,
     get_env_file,
-    get_root_dir,
-    get_user_workspace_dir,
     logger,
-    prepare_workspace,
-    reset_free_search_runtime_flags,
 )
 
-# Ensure workspace initialized
-_workspace_dir = get_user_workspace_dir()
-_config_file = _workspace_dir / "config" / "config.yaml"
-_new_workspace = _workspace_dir / "agent" / "workspace"
-_old_workspace = _workspace_dir / "agent" / "jiuwenclaw_workspace"
+_env_file = get_env_file()
+load_dotenv_runtime(dotenv_path=_env_file, override=True)
+_mark_startup_import_phase("runtime_environment_applied")
+_mark_startup_import_phase("runtime_workspace_deferred")
+_mark_startup_import_phase("entry_module_ready")
 
-# Initialize if config doesn't exist, or if legacy workspace exists but new doesn't (migration),
-# or if the preset MCP package dir isn't seated yet (an install predating the
-# mcp_builtins zip-seed feature would otherwise skip an already-initialized
-# workspace, leaving mcp_builtins absent and mcp.list empty).
-_mcp_builtins_dir = _new_workspace / "mcp" / "mcp_builtins"
-config_missing = not _config_file.exists()
-workspace_migration_needed = _old_workspace.exists() and not _new_workspace.exists()
-mcp_builtins_missing = not _mcp_builtins_dir.is_dir()
 
-if config_missing or workspace_migration_needed or mcp_builtins_missing:
-    prepare_workspace(overwrite=False)
+def _configure_openjiuwen_logging() -> None:
+    """Install OpenJiuwen logging after Front is already listening."""
+    from jiuwenswarm.common.media_capability_config import (
+        migrate_media_capability_switches,
+    )
+    from jiuwenswarm.common.utils import (
+        apply_free_search_runtime_defaults,
+        get_root_dir,
+    )
+    from openjiuwen.core.common.logging import LogManager
 
-# 每次启动合并模板新增配置项（保留用户已有值）
-ensure_config_migrated_from_template()
+    migrate_media_capability_switches(_env_file)
+    apply_free_search_runtime_defaults()
 
-# 幂等地补齐默认内置技能（对已有工作区也生效，新增默认技能时自动安装）
-ensure_default_builtin_skills()
+    _logging_yaml = get_root_dir() / "config" / "logging.yaml"
+    if _logging_yaml.exists():
+        from openjiuwen.core.common.logging.log_config import configure_log
+        configure_log(str(_logging_yaml))
+        return
 
-_logging_yaml = get_root_dir() / "config" / "logging.yaml"
-if _logging_yaml.exists():
-    from openjiuwen.core.common.logging.log_config import configure_log
-    configure_log(str(_logging_yaml))
-else:
-    # Inject openjiuwen log_path to user dir ~/.jiuwenswarm/logs/ so agentcore
-    # logs land beside jiuwenswarm's own logs, independent of process cwd.
-    # openjiuwen reads HOME (sandbox: /root), not JIUWENSWARM_HOME, so resolve
-    # the root ourselves and inject an absolute log_path. Failure falls back
-    # to the original degraded logging below without blocking startup.
     try:
         from openjiuwen.core.common.logging.log_config import configure_log_config
 
-        _oj_home = os.environ.get("JIUWENSWARM_HOME") or os.path.expanduser("~")
+        _oj_home = os.environ.get("JIUWENSWARM_HOME") or os.environ.get("HOME") or os.path.expanduser("~")
         _oj_log_dir = f"{_oj_home}/.jiuwenswarm/logs/"
         configure_log_config({
             "backend": "default",
@@ -89,10 +87,10 @@ else:
             "prompt_builder_interface_log_file": "interface/jiuwen_prompt_builder_interface.log",
             "performance_log_file": "performance/jiuwen_performance.log",
         })
-    # Startup must never block on logging config; degraded logging follows.
     except Exception as _log_cfg_exc:  # noqa: BLE001
         logging.getLogger(__name__).warning(
-            "openjiuwen log config failed; using degraded logging: %s", _log_cfg_exc
+            "openjiuwen log config failed; using degraded logging: %s",
+            _log_cfg_exc,
         )
 
     for _lg in LogManager.get_all_loggers().values():
@@ -156,127 +154,273 @@ else:
         _perm_ns_logger.addHandler(_perm_sh)
     _perm_ns_logger.propagate = False
 
-# Load env from user workspace config/.env
-load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
-reset_free_search_runtime_flags()
 
-from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
-    install_shell_tool_safety_hooks,
-)
+def _apply_runtime_entry_patches() -> None:
+    from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
+        install_shell_tool_safety_hooks,
+    )
+    from jiuwenswarm.llm_provider_compat_patch import apply_provider_compat_patches
+    from jiuwenswarm.llm_sse_patch import apply_openai_sse_invoke_patch
 
-install_shell_tool_safety_hooks()
-
-# 兼容 SSE-only 网关：让非流式 invoke()（subagent / 心跳等）能解析 text/event-stream 响应
-# 仅当 channels.xiaoyi.mode == xiaoyi_claw 时才打补丁（该网关以 SSE-only 方式返回非流式响应）。
-from jiuwenswarm.llm_sse_patch import apply_openai_sse_invoke_patch
-
-
-def _should_apply_sse_invoke_patch() -> bool:
-    """检测 channels.xiaoyi.mode 是否为 xiaoyi_claw。"""
+    install_shell_tool_safety_hooks()
+    apply_provider_compat_patches()
     try:
-        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.common.auth.login_credentials import apply_login_credential_patch
 
-        mode = (
-            get_config()
-            .get("channels", {})
-            .get("xiaoyi", {})
-            .get("mode")
+        apply_login_credential_patch()
+    except Exception:  # noqa: BLE001 — 补丁装不上不该拖垮启动
+        logging.getLogger(__name__).warning("[LoginCredential] 凭据钩子安装失败", exc_info=True)
+
+    def _should_apply_sse_invoke_patch() -> bool:
+        try:
+            from jiuwenswarm.common.config import get_config
+
+            mode = (
+                get_config()
+                .get("channels", {})
+                .get("xiaoyi", {})
+                .get("mode")
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[app_agentserver] 读取 channels.xiaoyi.mode 失败，默认应用 SSE 兼容补丁: %s",
+                exc,
+            )
+            return True
+        return str(mode or "").strip() == "xiaoyi_claw"
+
+    if _should_apply_sse_invoke_patch():
+        apply_openai_sse_invoke_patch()
+
+
+def _spawn_teammate_bootstrap(stop_event: asyncio.Event, server: object) -> asyncio.Task:
+    from jiuwenswarm.agents.harness.team.remote_member_bootstrap import (
+        run_teammate_bootstrap_daemon,
+    )
+
+    get_agent_manager = getattr(server, "get_agent_manager", None)
+    return asyncio.create_task(
+        run_teammate_bootstrap_daemon(
+            stop_event=stop_event,
+            agent_manager=get_agent_manager() if callable(get_agent_manager) else None,
         )
-    except Exception as exc:  # noqa: BLE001 - 启动早期读配置失败时保守兜底
-        logger.warning(
-            "[app_agentserver] 读取 channels.xiaoyi.mode 失败，默认应用 SSE 兼容补丁: %s",
-            exc,
+    )
+
+
+def _preload_runtime_backend() -> None:
+    """OpenJiuwen-touching imports and workspace work. Must not run on Front loop."""
+    if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
+        from jiuwenswarm.common.utils import prepare_runtime_workspace
+
+        prepare_runtime_workspace(cleanup_stale_descs=True, migrate_config=True)
+    # Persist missing model/model-group/route IDs before any session or agent is
+    # restored. Validation happens against the complete candidate before writing.
+    # Runs here, not at import time: Front must listen without loading config.
+    from jiuwenswarm.common.config import migrate_model_business_ids
+
+    migrate_model_business_ids()
+    from jiuwenswarm.common.model_migration import migrate_legacy_model_selections
+
+    migrate_legacy_model_selections()
+    _configure_openjiuwen_logging()
+    _apply_runtime_entry_patches()
+    import openjiuwen.core.runner  # noqa: F401
+    import jiuwenswarm.extensions.manager  # noqa: F401
+    import jiuwenswarm.extensions.registry  # noqa: F401
+    import jiuwenswarm.server.agent_ws_server  # noqa: F401
+
+
+async def _start_runtime_backend(front: object, host: str, port: int) -> object:
+    """Load OpenJiuwen / extensions / AgentWebSocketServer after Front listen."""
+    await asyncio.sleep(0)
+    startup_t0 = time.monotonic()
+
+    def log_startup_stage(stage: str) -> None:
+        logger.info(
+            "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs",
+            stage,
+            time.monotonic() - _PROCESS_START_T0,
+            time.monotonic() - startup_t0,
         )
-        return True
 
-    return str(mode or "").strip() == "xiaoyi_claw"
+    await asyncio.to_thread(_preload_runtime_backend)
+    await asyncio.sleep(0)
+    log_startup_stage("runtime_imports_ready")
 
-
-if _should_apply_sse_invoke_patch():
-    apply_openai_sse_invoke_patch()
-
-# /debug 模式下捕获 builtin TaskTool 分发的 subagent 流（reasoning/tool_call/usage），
-# 内联写入主 dump。非 debug 或 include_subagent_flow 关闭时走原始 invoke，零回归。
-from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
-    apply_task_tool_debug_patch,
-)
-
-apply_task_tool_debug_patch()
-
-# 让所有分发路径创建的 subagent 都带上 OTel 观测 rail（内置 task_tool、自定义
-# agent 工具、后台 subagent），这样子 agent 的 llm/tool span 归属自己的
-# agent.<type>.invoke span，而不是挂到派发它的 agent 身上。
-from jiuwenswarm.agents.harness.agent_observability import (
-    install_subagent_observability_hook,
-)
-
-install_subagent_observability_hook()
-
-
-
-async def _run(host: str, port: int) -> None:
     from openjiuwen.core.runner import Runner
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-    from jiuwenswarm.agents.harness.team.remote_member_bootstrap import run_teammate_bootstrap_daemon
     from jiuwenswarm.extensions.manager import ExtensionManager
     from jiuwenswarm.extensions.registry import ExtensionRegistry
-    from jiuwenswarm.common.config import get_config
 
-    logger.info("[AgentServer] starting: ws://%s:%s", host, port)
-
-    # ---------- 扩展系统初始化 ----------
     callback_framework = Runner.callback_framework
     extension_registry = ExtensionRegistry.create_instance(
         callback_framework=callback_framework,
         config={},
         logger=logger,
     )
-    extension_manager = ExtensionManager(
-        registry=extension_registry,
+    extension_manager = ExtensionManager(registry=extension_registry)
+    log_startup_stage("extension_manager_created")
+    # AgentServer 为运行时直连进程，不加载传输类扩展（agentos / agent_client 等），
+    # 与 runtime/service.py 的加载策略保持一致；北向传输能力由独立 Gateway 承担。
+    await extension_manager.load_all_extensions(include_transport_extensions=False)
+    logger.info(
+        "[AgentServer] 扩展加载完成，共 %d 个 (elapsed %.2fs)",
+        len(extension_manager.list_extensions()),
+        time.monotonic() - startup_t0,
     )
-    await extension_manager.load_all_extensions()
-    logger.info("[AgentServer] 扩展加载完成，共 %d 个", len(extension_manager.list_extensions()))
+    log_startup_stage("extensions_loaded")
 
-    # 会话 metadata 的字段补全已改为惰性迁移:读取时按需推断并写回磁盘
-    # (见 session_metadata._apply_metadata_defaults_with_inference),无需启动全量扫描。
+    def _construct_runtime_server() -> object:
+        return AgentWebSocketServer.get_instance(host=host, port=port)
 
-    # ---------- 图像模态探针预热 ----------
-    # 在开始接受连接之前把探针缓存坐实：晚于这里的话，第一批 agent（含每个
-    # subagent）会各自在后台补探，多发无谓的 LLM 请求。
-    from jiuwenswarm.server.runtime.image_modality_warmup import warm_image_modality_cache
+    server = await asyncio.to_thread(_construct_runtime_server)
+    await asyncio.sleep(0)
+    log_startup_stage("runtime_constructed")
+    readiness = getattr(front, "readiness", None)
+    set_hooks = getattr(server, "set_runtime_lifecycle_hooks", None)
+    if callable(set_hooks) and readiness is not None:
+        set_hooks(
+            on_ready=getattr(readiness, "mark_agent_ready", None),
+            on_warmup_retry=getattr(readiness, "note_warmup_retry", None),
+            on_failed=getattr(readiness, "mark_failed", None),
+        )
+    await server.start(bind_transport=False)
+    attach = getattr(front, "attach_runtime_backend", None)
+    if callable(attach):
+        attach(server)
+    log_startup_stage("runtime_backend_attached")
 
-    await warm_image_modality_cache(get_config(), reason="startup")
+    from openjiuwen.harness.observability import install_subagent_observability_hook
 
-    # ---------- Opencode Zen 免费模型注入 ----------
-    # 开箱即用：从 Zen 拉取限时免费模型，追加到 models.defaults。失败兜底、不阻断启动。
-    from jiuwenswarm.server.runtime.opencode_zen import warm_zen_free_models
+    install_subagent_observability_hook()
+    log_startup_stage("observability_installed")
 
-    await warm_zen_free_models(reason="startup")
+    schedule_warmup = getattr(server, "schedule_image_modality_warmup", None)
+    if callable(schedule_warmup):
+        schedule_warmup(reason="startup")
 
-    server = AgentWebSocketServer.get_instance(
-        host=host,
-        port=port
+    from jiuwenswarm.server.runtime.opencode_zen import (
+        warm_zen_free_models,
+        set_main_event_loop,
+        register_models_ready_callback,
     )
-    await server.start()
 
-    # ---------- ProactiveEngine 初始化 ----------
-    # 适配逻辑（建专用 agent + 触发主 agent 回调）封装在 proactive_adapter，
-    # app_agentserver 只调 init_proactive_engine。
+    set_main_event_loop(asyncio.get_running_loop())
+
+    def _on_zen_models_ready() -> None:
+        reset_cache = getattr(server, "reset_model_cache", None)
+        if callable(reset_cache):
+            reset_cache()
+        logger.info("[AgentServer] zen free models ready: model cache reset for rebuild")
+        push = getattr(front, "send_push", None) or getattr(server, "send_push", None)
+        if not callable(push):
+            return
+        try:
+            asyncio.create_task(push({
+                "request_id": "zen-models-ready",
+                "channel_id": "web",
+                "payload": {"event_type": "models.updated"},
+            }))
+        except Exception:  # noqa: BLE001
+            logger.debug("[AgentServer] models.updated push failed", exc_info=True)
+
+    register_models_ready_callback(_on_zen_models_ready)
+    zen_free_models_task = asyncio.create_task(
+        warm_zen_free_models(reason="startup"),
+        name="zen-free-models-warmup",
+    )
+    setattr(server, "_front_zen_free_models_task", zen_free_models_task)
+
+    from jiuwenswarm.observability.gateway_hints import trajectory_gateway_hint_bridge
+
+    send_push = getattr(front, "send_push", None) or getattr(server, "send_push", None)
+    if send_push is not None:
+        trajectory_gateway_hint_bridge.bind(asyncio.get_running_loop(), send_push)
+
+    from jiuwenswarm.common.config import get_config
     from jiuwenswarm.server.runtime.proactive_adapter import init_proactive_engine
+
     full_cfg = get_config()
     proactive_config = full_cfg.get("proactive_recommendation", {}) if isinstance(full_cfg, dict) else {}
-    await init_proactive_engine(server, proactive_config)
+    try:
+        await init_proactive_engine(server, proactive_config)
+        log_startup_stage("proactive_engine_initialized")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[AgentServer] proactive engine init failed: %s", exc)
+        from jiuwenswarm.server.lifecycle import ReadinessState
 
-    logger.info("[AgentServer] ready: ws://%s:%s  Ctrl+C to stop", host, port)
+        if getattr(readiness, "state", None) is ReadinessState.AGENT_READY:
+            mark_degraded = getattr(readiness, "mark_degraded", None)
+            if callable(mark_degraded):
+                mark_degraded()
+    log_startup_stage("ready")
+    return server
+
+
+async def _run(host: str, port: int) -> None:
+    from jiuwenswarm.server.front.server import AgentServerFront
+
+    startup_t0 = time.monotonic()
+    logger.info("[AgentServer] starting: ws://%s:%s", host, port)
+    for import_stage, marked_at in _STARTUP_IMPORT_PHASES:
+        logger.info(
+            "[AgentServer] startup import stage=%s process_elapsed=%.2fs",
+            import_stage,
+            marked_at - _PROCESS_START_T0,
+        )
+    logger.info(
+        "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs",
+        "run_entered",
+        time.monotonic() - _PROCESS_START_T0,
+        time.monotonic() - startup_t0,
+    )
+
+    front = AgentServerFront(host=host, port=port)
+    await front.start()
+    logger.info(
+        "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
+        host,
+        port,
+        time.monotonic() - startup_t0,
+    )
+    logger.info(
+        "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs control_ready=%s",
+        "agent_ws_listening",
+        time.monotonic() - _PROCESS_START_T0,
+        time.monotonic() - startup_t0,
+        front.readiness.snapshot().get("control_ready"),
+    )
 
     stop_event = asyncio.Event()
     teammate_bootstrap_task: asyncio.Task | None = None
-
-    # Distributed teammate can receive bootstrap before any team-mode request arrives.
-    # Keep a lightweight daemon alive so remote member bootstrap is consumed proactively.
-    teammate_bootstrap_task = asyncio.create_task(
-        run_teammate_bootstrap_daemon(stop_event=stop_event)
+    server: object | None = None
+    backend_task = asyncio.create_task(
+        _start_runtime_backend(front, host, port),
+        name="runtime-backend",
     )
+
+    async def _watch_backend() -> None:
+        nonlocal server, teammate_bootstrap_task
+        try:
+            server = await backend_task
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[AgentServer] runtime backend failed: %s", exc)
+            front.readiness.mark_failed(str(exc))
+            return
+        if server is None:
+            return
+        try:
+            teammate_bootstrap_task = _spawn_teammate_bootstrap(stop_event, server)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[AgentServer] teammate bootstrap daemon start failed: %s", exc)
+        logger.info(
+            "[AgentServer] runtime backend attached: ws://%s:%s (elapsed %.2fs)",
+            host,
+            port,
+            time.monotonic() - startup_t0,
+        )
+
+    watcher = asyncio.create_task(_watch_backend(), name="runtime-backend-watch")
 
     def _on_signal() -> None:
         stop_event.set()
@@ -296,6 +440,11 @@ async def _run(host: str, port: int) -> None:
         pass
     finally:
         logger.info("[AgentServer] stopping…")
+        stop_event.set()
+        begin_drain = getattr(front, "begin_drain", None)
+        if callable(begin_drain):
+            begin_drain()
+        await asyncio.sleep(0)
         if teammate_bootstrap_task is not None:
             teammate_bootstrap_task.cancel()
             try:
@@ -304,16 +453,51 @@ async def _run(host: str, port: int) -> None:
                 pass
             except Exception as exc:
                 logger.warning("[AgentServer] teammate bootstrap daemon stop failed: %s", exc)
-        await server.stop()
-        # Shutdown team observability (flush & close spans)
+        if not watcher.done():
+            watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.warning("[AgentServer] runtime backend watch failed: %s", exc)
+        if not backend_task.done():
+            backend_task.cancel()
+            try:
+                await backend_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.warning("[AgentServer] runtime backend boot failed: %s", exc)
+        elif server is None:
+            try:
+                server = backend_task.result()
+            except Exception:
+                server = None
+        zen_task = getattr(server, "_front_zen_free_models_task", None) if server is not None else None
+        if zen_task is not None:
+            zen_task.cancel()
+            try:
+                await zen_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.warning("[AgentServer] zen free models warmup stop failed: %s", exc)
+        try:
+            from jiuwenswarm.observability.gateway_hints import trajectory_gateway_hint_bridge
+
+            await trajectory_gateway_hint_bridge.unbind()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[AgentServer] trajectory hint bridge unbind failed: %s", exc)
+        if server is not None:
+            stop = getattr(server, "stop", None)
+            if callable(stop):
+                await stop()
         try:
             from jiuwenswarm.agents.harness.team.team_manager import shutdown_team_observability
             shutdown_team_observability()
         except Exception as exc:
             logger.warning("[AgentServer] team observability shutdown failed: %s", exc)
-        # Shutdown single-agent / coding-agent observability. Independently
-        # tracked from team observability; no-op unless an agent run owned the
-        # provider (it will not tear down a provider the team still owns).
         try:
             from jiuwenswarm.agents.harness.agent_observability import (
                 shutdown_agent_observability,
@@ -321,10 +505,60 @@ async def _run(host: str, port: int) -> None:
             shutdown_agent_observability()
         except Exception as exc:
             logger.warning("[AgentServer] agent observability shutdown failed: %s", exc)
+        await front.stop()
         logger.info("[AgentServer] stopped")
 
 
+def _detect_sandbox_local_ip() -> str | None:
+    """Best-effort 检测当前进程所在网络命名空间的非 loopback IPv4。
+
+    用 UDP socket 连一个远端地址(不实际发包),取 ``getsockname()`` 的本端 IP。
+    ISOLATED 沙箱(独立 netns)里拿到 veth 地址;HOST 模式拿到宿主出口 IP。
+    失败或仅有 loopback 时返回 None,由调用方回退 127.0.0.1。
+    """
+    import socket
+
+    for target in ("169.254.1.1", "1.1.1.1", "8.8.8.8"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.settimeout(0.2)
+                s.connect((target, 80))
+                ip = s.getsockname()[0]
+            if ip and not ip.startswith("127."):
+                return ip
+        except OSError:
+            continue
+    return None
+
+
+def _resolve_bind_host() -> str:
+    """决定 agentserver 的 bind host,兼顾单机版与沙箱一体机模式。"""
+    env_host = os.getenv("AGENT_SERVER_HOST", "").strip()
+    if env_host:
+        return env_host
+
+    if os.getenv("JIUWENBOX_LISTEN"):
+        detected = _detect_sandbox_local_ip()
+        if detected:
+            logger.info(
+                "[AgentServer] AGENT_SERVER_HOST unset in sandbox; "
+                "detected sandbox local IP: %s",
+                detected,
+            )
+            return detected
+        logger.info(
+            "[AgentServer] AGENT_SERVER_HOST unset in sandbox but no non-loopback "
+            "IP detected; falling back to 127.0.0.1"
+        )
+
+    return "127.0.0.1"
+
+
 def main() -> None:
+    from jiuwenswarm.common.debug_dump import (
+        install_async_dump_handler,
+        install_crash_exit_handler,
+    )
     from jiuwenswarm.dotenv_early import get_parsed_dotenv
 
     parser = argparse.ArgumentParser(
@@ -351,13 +585,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Handle --name: check if bootstrap .env was loaded successfully
-    # (parse_dotenv_early() already processed it at module import time)
     if args.name and get_parsed_dotenv() is None:
-        # Early parsing failed - error was already printed
         raise SystemExit(1)
 
-    host = os.getenv("AGENT_SERVER_HOST", "127.0.0.1")
+    host = _resolve_bind_host()
     port = args.port
     if port is None:
         for key in ("AGENT_SERVER_PORT", "AGENT_PORT"):
@@ -368,11 +599,10 @@ def main() -> None:
         else:
             port = 18092
 
+    install_crash_exit_handler("agentserver")
     install_async_dump_handler("agentserver")
     asyncio.run(_run(host=host, port=port))
 
 
 if __name__ == "__main__":
     main()
-
-

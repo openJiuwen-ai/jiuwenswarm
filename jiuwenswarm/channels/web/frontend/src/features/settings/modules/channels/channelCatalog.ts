@@ -9,7 +9,6 @@ export const SETTINGS_CHANNEL_IDS: readonly SettingsChannelId[] = [
   'telegram',
   'discord',
   'slack',
-  'whatsapp',
 ];
 
 const CHANNEL_LOGOS: Record<SettingsChannelId, string> = {

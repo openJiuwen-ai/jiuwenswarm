@@ -107,7 +107,7 @@ def _entry_from_manifest(manifest: dict[str, Any], package_id: str) -> dict[str,
     return {
         "id": package_id,
         "source": "local",
-        "installed": False,
+        "installed": True,
     }
 
 
@@ -226,7 +226,7 @@ def main() -> int:
     write_stdout(f"  Version:     {entry.pop('_version', '')}\n")
     write_stdout(f"  installed:   {entry['installed']}  source: {entry['source']}\n")
     write_stdout(
-        "\nNEXT:   在插件中心安装该插件（installed=true）后方可对话装备\n"
+        "\nNEXT:   已登记为可使用；新开对话并勾选该插件即可\n"
     )
     return 0
 

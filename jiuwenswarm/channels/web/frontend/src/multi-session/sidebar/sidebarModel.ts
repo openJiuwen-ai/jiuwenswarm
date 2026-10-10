@@ -1,21 +1,9 @@
 export type SessionIndicator = 'waiting' | 'processing' | 'unread' | 'error' | 'time';
 
-export type SidebarMenuAction =
-  | 'pin'
-  | 'rename'
-  | 'delete';
-
-export type SidebarMenuItem = {
-  action: SidebarMenuAction;
-  label: string;
-  danger?: boolean;
-  pinned?: boolean;
-};
-
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 type RuntimeLike = {
-  pendingQuestion?: unknown;
+  pendingQuestions?: readonly unknown[];
   isProcessing?: boolean;
   executionError?: string | null;
 };
@@ -57,7 +45,7 @@ export function getSessionIndicator(
   sessionError = false,
 ): SessionIndicator {
   if (sessionError) return 'error';
-  if (runtime?.pendingQuestion) return 'waiting';
+  if (runtime?.pendingQuestions?.[0]) return 'waiting';
   if (runtime?.isProcessing || sessionProcessing) return 'processing';
   if (unread) return 'unread';
   return 'time';
@@ -73,39 +61,6 @@ export function getTaskStatusLabel(indicator: SessionIndicator, translate: Trans
 
 export function getProjectNewLabel(projectName: string, translate: Translate): string {
   return translate('multiSession.project.startConversation', { projectName });
-}
-
-const PIN_LABEL_PAIRS = {
-  project: ['multiSession.project.pinProject', 'multiSession.project.unpinProject'],
-  projectSession: ['multiSession.project.pinConversation', 'multiSession.project.unpinConversation'],
-  conversation: ['multiSession.project.pin', 'multiSession.project.unpin'],
-} as const;
-
-function buildSidebarMenuItems(
-  isPinned: boolean,
-  pinLabels: readonly [string, string],
-  translate: Translate,
-): SidebarMenuItem[] {
-  const items: SidebarMenuItem[] = [
-    { action: 'pin', label: translate(isPinned ? pinLabels[1] : pinLabels[0]), pinned: isPinned },
-  ];
-  items.push(
-    { action: 'rename', label: translate('multiSession.project.rename') },
-    { action: 'delete', label: translate('multiSession.delete'), danger: true },
-  );
-  return items;
-}
-
-export function getProjectMenuItems(isPinned: boolean, translate: Translate): SidebarMenuItem[] {
-  return buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.project, translate);
-}
-
-export function getProjectSessionMenuItems(isPinned: boolean, translate: Translate): SidebarMenuItem[] {
-  return buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.projectSession, translate);
-}
-
-export function getConversationMenuItems(isPinned: boolean, translate: Translate): SidebarMenuItem[] {
-  return buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.conversation, translate);
 }
 
 export function sortSessionsForSidebar<T extends SessionLike>(sessions: T[]): T[] {

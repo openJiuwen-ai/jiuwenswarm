@@ -88,6 +88,10 @@ export const CHANNEL_FIELD_REQUIREMENTS = {
   },
 } as const satisfies ChannelFieldRequirements;
 
+export function shouldConfirmXiaoyiEnable(enabled: boolean, apiId: string): boolean {
+  return enabled && apiId.trim().length === 0;
+}
+
 function getFieldRequirement(channelId: SettingsChannelId, field: PropertyKey): FieldRequirement {
   const requirement = (CHANNEL_FIELD_REQUIREMENTS[channelId] as Record<PropertyKey, FieldRequirement | undefined>)[
     field

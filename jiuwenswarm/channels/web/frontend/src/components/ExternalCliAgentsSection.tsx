@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
-import { AlertCircle, CheckCircle2, FileSearch, Loader2, RefreshCw } from 'lucide-react';
+// Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertCircle, Check, CheckCircle2, Copy, FileSearch, Loader2, RefreshCw } from 'lucide-react';
 
 export type ExternalCliAgentKind = 'claude' | 'codex';
 
@@ -13,18 +15,46 @@ export type ExternalCliDetectResult = {
   message?: string;
 };
 
-export type CodexDependencyInstallStatus = {
+export type ExternalCliDependencyInstallStatus = {
+  cli_agent?: ExternalCliAgentKind;
   status?: string;
   phase?: string;
+  progress_kind?: 'installer_activity' | 'download_metrics';
   error?: string;
+  last_log?: string;
   log_tail?: string[];
+  downloaded_bytes?: number;
+  total_bytes?: number;
+  bytes_per_second?: number;
+  eta_seconds?: number;
+  artifact_index?: number;
+  artifact_count?: number;
+  current_package?: string;
+  current_version?: string;
+  download_attempt?: number;
+  download_max_attempts?: number;
+  switching_source?: boolean;
 };
 
 export type ExternalCliConfigSaveResult = {
-  codex_dependency_install?: CodexDependencyInstallStatus;
+  codex_dependency_install?: ExternalCliDependencyInstallStatus;
+  external_cli_dependency_installs?: Partial<Record<ExternalCliAgentKind, ExternalCliDependencyInstallStatus>>;
+};
+
+/**
+ * User choices for one CLI agent captured when its save was deferred behind a
+ * dependency install. Held at the App layer so they survive Settings unmount,
+ * and replayed automatically once the install reports success.
+ */
+export type ExternalCliPendingChoice = {
+  enabled: string;
+  useBuiltin: string;
+  cliPath: string;
 };
 
 export const EXTERNAL_CLI_AGENT_KINDS: ExternalCliAgentKind[] = ['claude', 'codex'];
+
+const EXTERNAL_CLI_AUTO_DETECT_DELAY_MS = 400;
 
 export const EXTERNAL_CLI_AGENT_CONFIG_KEYS = new Set([
   'external_cli_agent_claude_enabled',
@@ -71,8 +101,43 @@ export function applyExternalCliAgentAtomicUpdates(
   updates[cliPathKey] = enabled && !useBuiltin ? cliPath : '';
 }
 
-export function isCodexDependencyInstalling(result: ExternalCliConfigSaveResult | void): boolean {
-  return result?.codex_dependency_install?.status === 'running';
+export function externalCliDependencyInstalls(
+  result: ExternalCliConfigSaveResult | void,
+): Partial<Record<ExternalCliAgentKind, ExternalCliDependencyInstallStatus>> {
+  const installs = { ...(result?.external_cli_dependency_installs ?? {}) };
+  if (result?.codex_dependency_install?.status === 'running' && !installs.codex) {
+    installs.codex = { ...result.codex_dependency_install, cli_agent: 'codex' };
+  }
+  return installs;
+}
+
+/**
+ * Validate an enabled agent against its latest detect result before saving, so
+ * the user gets a localized message instead of the backend's raw English
+ * "cli_path is not available" error. Returns '' when saving may proceed.
+ */
+export function externalCliSaveValidationMessage(
+  cliAgent: ExternalCliAgentKind,
+  draftValues: Record<string, string>,
+  result: ExternalCliDetectResult | undefined,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  if (draftValues[externalCliKey(cliAgent, 'enabled')] !== 'true') return '';
+  if (draftValues[externalCliKey(cliAgent, 'use_builtin')] === 'true') return '';
+  const requestedPath = (draftValues[externalCliKey(cliAgent, 'cli_path')] ?? '').trim();
+  if (!result || result.status === 'ok' || result.status === 'warning') return '';
+  const agentName = cliAgent === 'claude' ? 'Claude' : 'Codex';
+  if (result.status === 'missing') {
+    return requestedPath
+      ? t('config.externalCli.missingPath', { path: requestedPath })
+      : t('config.externalCli.missingInPath', { agent: agentName });
+  }
+  if (result.reason === 'directory') return t('config.externalCli.directoryPath', { path: requestedPath });
+  if (result.status === 'unsupported') return t('config.externalCli.windowsScriptPath');
+  return t('config.externalCli.unavailableCli', {
+    agent: agentName,
+    reason: result.message || '',
+  });
 }
 
 type ExternalCliAgentsSectionProps = {
@@ -80,6 +145,10 @@ type ExternalCliAgentsSectionProps = {
   onChange: (key: string, value: string) => void;
   onDetect?: (cliAgent: ExternalCliAgentKind, cliPath?: string) => Promise<ExternalCliDetectResult>;
   onSelectFile?: (cliAgent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
+  /** Latest detect results, owned by the App layer so they survive unmount. */
+  initialResults?: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>;
+  /** Reports detect results upward so the save flow can pre-validate them. */
+  onResultsChange?: (results: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>) => void;
   t: (key: string, options?: Record<string, unknown>) => string;
   disabled?: boolean;
 };
@@ -89,31 +158,109 @@ export function ExternalCliAgentsSection({
   onChange,
   onDetect,
   onSelectFile,
+  initialResults,
+  onResultsChange,
   t,
   disabled = false,
 }: ExternalCliAgentsSectionProps) {
   const [detecting, setDetecting] = useState<Record<ExternalCliAgentKind, boolean>>({ claude: false, codex: false });
   const [selecting, setSelecting] = useState<Record<ExternalCliAgentKind, boolean>>({ claude: false, codex: false });
-  const [results, setResults] = useState<Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>>({});
+  const [results, setResults] = useState<Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>>(
+    () => ({ ...initialResults }),
+  );
+  const [copied, setCopied] = useState<Record<ExternalCliAgentKind, boolean>>({ claude: false, codex: false });
+  const copiedTimersRef = useRef<Partial<Record<ExternalCliAgentKind, number>>>({});
+  const detectRequestIdsRef = useRef<Record<ExternalCliAgentKind, number>>({ claude: 0, codex: 0 });
+  const observedCliPathsRef = useRef<Record<ExternalCliAgentKind, string>>({
+    claude: draftValues[externalCliKey('claude', 'cli_path')] || '',
+    codex: draftValues[externalCliKey('codex', 'cli_path')] || '',
+  });
+
+  useEffect(
+    () => () => {
+      for (const timer of Object.values(copiedTimersRef.current)) {
+        if (timer !== undefined) window.clearTimeout(timer);
+      }
+    },
+    [],
+  );
+
+  const copyDetectedPath = useCallback(
+    async (cliAgent: ExternalCliAgentKind, path: string) => {
+      if (!path) return;
+      try {
+        await navigator.clipboard.writeText(path);
+        setCopied((prev) => ({ ...prev, [cliAgent]: true }));
+        if (copiedTimersRef.current[cliAgent] !== undefined) {
+          window.clearTimeout(copiedTimersRef.current[cliAgent]);
+        }
+        copiedTimersRef.current[cliAgent] = window.setTimeout(() => {
+          setCopied((prev) => ({ ...prev, [cliAgent]: false }));
+          copiedTimersRef.current[cliAgent] = undefined;
+        }, 2000);
+      } catch {
+        setCopied((prev) => ({ ...prev, [cliAgent]: false }));
+      }
+    },
+    [],
+  );
 
   const detect = useCallback(
     async (cliAgent: ExternalCliAgentKind, cliPath?: string) => {
       if (!onDetect) return;
+      const requestId = detectRequestIdsRef.current[cliAgent] + 1;
+      detectRequestIdsRef.current[cliAgent] = requestId;
       setDetecting((prev) => ({ ...prev, [cliAgent]: true }));
       try {
         const result = await onDetect(cliAgent, cliPath);
-        setResults((prev) => ({ ...prev, [cliAgent]: result }));
+        if (detectRequestIdsRef.current[cliAgent] !== requestId) return;
+        setResults((prev) => {
+          const next = { ...prev, [cliAgent]: result };
+          onResultsChange?.(next);
+          return next;
+        });
       } catch (error) {
+        if (detectRequestIdsRef.current[cliAgent] !== requestId) return;
         const message = error instanceof Error ? error.message : String(error);
-        setResults((prev) => ({
-          ...prev,
-          [cliAgent]: { cli_agent: cliAgent, status: 'unavailable', message },
-        }));
+        setResults((prev) => {
+          const next = {
+            ...prev,
+            [cliAgent]: { cli_agent: cliAgent, status: 'unavailable', message },
+          };
+          onResultsChange?.(next);
+          return next;
+        });
       } finally {
-        setDetecting((prev) => ({ ...prev, [cliAgent]: false }));
+        if (detectRequestIdsRef.current[cliAgent] === requestId) {
+          setDetecting((prev) => ({ ...prev, [cliAgent]: false }));
+        }
       }
     },
-    [onDetect],
+    [onDetect, onResultsChange],
+  );
+
+  const clearDetectResult = useCallback(
+    (cliAgent: ExternalCliAgentKind) => {
+      detectRequestIdsRef.current[cliAgent] += 1;
+      setDetecting((prev) => ({ ...prev, [cliAgent]: false }));
+      setResults((prev) => {
+        if (!prev[cliAgent]) return prev;
+        const next = { ...prev };
+        delete next[cliAgent];
+        onResultsChange?.(next);
+        return next;
+      });
+    },
+    [onResultsChange],
+  );
+
+  const changeCliPath = useCallback(
+    (cliAgent: ExternalCliAgentKind, cliPathKey: string, value: string) => {
+      observedCliPathsRef.current[cliAgent] = value;
+      clearDetectResult(cliAgent);
+      onChange(cliPathKey, value);
+    },
+    [clearDetectResult, onChange],
   );
 
   const selectFile = useCallback(
@@ -123,8 +270,11 @@ export function ExternalCliAgentsSection({
       try {
         const selectedPath = await onSelectFile(cliAgent, draftValues[cliPathKey] || '');
         if (!selectedPath) return;
-        onChange(cliPathKey, selectedPath);
-        await detect(cliAgent, selectedPath);
+        const currentPath = draftValues[cliPathKey] || '';
+        changeCliPath(cliAgent, cliPathKey, selectedPath);
+        if (selectedPath === currentPath) {
+          await detect(cliAgent, selectedPath);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setResults((prev) => ({
@@ -139,15 +289,41 @@ export function ExternalCliAgentsSection({
         setSelecting((prev) => ({ ...prev, [cliAgent]: false }));
       }
     },
-    [detect, draftValues, onChange, onSelectFile, t],
+    [changeCliPath, detect, draftValues, onSelectFile, t],
   );
 
+  const claudeCliPath = draftValues[externalCliKey('claude', 'cli_path')] || '';
+  const codexCliPath = draftValues[externalCliKey('codex', 'cli_path')] || '';
+
   useEffect(() => {
-    if (!onDetect) return;
+    const currentPaths: Record<ExternalCliAgentKind, string> = {
+      claude: claudeCliPath,
+      codex: codexCliPath,
+    };
     for (const cliAgent of EXTERNAL_CLI_AGENT_KINDS) {
-      void detect(cliAgent, draftValues[externalCliKey(cliAgent, 'cli_path')] || '');
+      if (observedCliPathsRef.current[cliAgent] === currentPaths[cliAgent]) continue;
+      observedCliPathsRef.current[cliAgent] = currentPaths[cliAgent];
+      clearDetectResult(cliAgent);
     }
-  }, [detect, onDetect]);
+  }, [claudeCliPath, clearDetectResult, codexCliPath]);
+
+  useEffect(() => {
+    if (!onDetect) return undefined;
+    const timer = window.setTimeout(
+      () => void detect('claude', claudeCliPath),
+      EXTERNAL_CLI_AUTO_DETECT_DELAY_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [claudeCliPath, detect, onDetect]);
+
+  useEffect(() => {
+    if (!onDetect) return undefined;
+    const timer = window.setTimeout(
+      () => void detect('codex', codexCliPath),
+      EXTERNAL_CLI_AUTO_DETECT_DELAY_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [codexCliPath, detect, onDetect]);
 
   const statusClass = (status?: ExternalCliDetectResult['status']) => {
     if (status === 'ok') return 'text-ok';
@@ -164,20 +340,42 @@ export function ExternalCliAgentsSection({
     return t('config.externalCli.statusUnavailable');
   };
 
-  const resultMessage = (result: ExternalCliDetectResult | undefined, useBuiltin: boolean) => {
+  const resultMessage = (
+    result: ExternalCliDetectResult | undefined,
+    useBuiltin: boolean,
+    cliAgent: ExternalCliAgentKind,
+    requestedPath: string,
+  ) => {
     if (!result || useBuiltin) return '';
     if (result.status === 'warning') {
       return result.reference_version
         ? t('config.externalCli.compatibilityWarningWithVersion', { version: result.reference_version })
         : t('config.externalCli.compatibilityWarning');
     }
+    if (result.reason === 'directory') {
+      return t('config.externalCli.directoryPath', { path: requestedPath.trim() });
+    }
     if (result.reason === 'windows_script') return t('config.externalCli.windowsScriptPath');
-    return result.message || '';
+    if (result.status === 'missing') {
+      // Backend reports the raw English path error; localize it here and point
+      // the user at the built-in CLI fallback.
+      const agentName = cliAgent === 'claude' ? 'Claude' : 'Codex';
+      return requestedPath.trim()
+        ? t('config.externalCli.missingPath', { path: requestedPath.trim() })
+        : t('config.externalCli.missingInPath', { agent: agentName });
+    }
+    if (result.status === 'unavailable') {
+      return t('config.externalCli.unavailableCli', {
+        agent: cliAgent === 'claude' ? 'Claude' : 'Codex',
+        reason: result.message || '',
+      });
+    }
+    return '';
   };
 
   return (
     <div className="space-y-3" data-testid="settings-panel-external-cli-agents">
-      {EXTERNAL_CLI_AGENT_KINDS.map(cliAgent => {
+      {EXTERNAL_CLI_AGENT_KINDS.map((cliAgent) => {
         const enabledKey = externalCliKey(cliAgent, 'enabled');
         const useBuiltinKey = externalCliKey(cliAgent, 'use_builtin');
         const cliPathKey = externalCliKey(cliAgent, 'cli_path');
@@ -185,8 +383,12 @@ export function ExternalCliAgentsSection({
         const useBuiltin = draftValues[useBuiltinKey] === 'true';
         const result = results[cliAgent];
         const displayResult = useBuiltin ? undefined : result;
-        const message = resultMessage(displayResult, useBuiltin);
+        const message = resultMessage(displayResult, useBuiltin, cliAgent, draftValues[cliPathKey] ?? '');
         const label = cliAgent === 'claude' ? t('config.externalCli.claude') : t('config.externalCli.codex');
+        // Detected PATH is only copyable when the input still shows it as a
+        // placeholder (user hasn't typed an explicit path over it).
+        const detectedPath =
+          displayResult?.path && (draftValues[cliPathKey] ?? '').trim() === '' ? displayResult.path : '';
 
         return (
           <div
@@ -222,62 +424,112 @@ export function ExternalCliAgentsSection({
                   type="checkbox"
                   checked={useBuiltin}
                   disabled={disabled || !enabled}
-                  onChange={event => onChange(useBuiltinKey, event.target.checked ? 'true' : 'false')}
+                  onChange={(event) => onChange(useBuiltinKey, event.target.checked ? 'true' : 'false')}
                   className="h-3.5 w-3.5 rounded border-border"
                   data-testid="settings-panel-external-cli-agent-use-builtin-input"
                   data-variant={cliAgent}
                 />
                 {t('config.externalCli.useBuiltin')}
               </label>
-              <button
-                type="button"
-                className="settings-button settings-button--secondary inline-flex shrink-0 flex-nowrap items-center gap-1.5 whitespace-nowrap !px-2.5 !py-1 text-xs"
-                disabled={disabled || !onDetect || detecting[cliAgent] || useBuiltin}
-                onClick={() => void detect(cliAgent, draftValues[cliPathKey] || '')}
-                data-testid="settings-panel-external-cli-agent-detect-btn"
-                data-variant={cliAgent}
-              >
-                {detecting[cliAgent] ? <Loader2 className="w-3.5 h-3.5 settings-spinner" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                {t('config.externalCli.detect')}
-              </button>
+              {!useBuiltin ? (
+                <button
+                  type="button"
+                  className="settings-button settings-button--secondary inline-flex shrink-0 flex-nowrap items-center gap-1.5 whitespace-nowrap !px-2.5 !py-1 text-xs"
+                  disabled={disabled || !enabled || !onDetect || detecting[cliAgent]}
+                  onClick={() => void detect(cliAgent, draftValues[cliPathKey] || '')}
+                  title={
+                    disabled || !enabled || !onDetect ? undefined : t('config.externalCli.detectHint')
+                  }
+                  aria-label={
+                    disabled || !enabled || !onDetect ? undefined : t('config.externalCli.detectHint')
+                  }
+                  data-testid="settings-panel-external-cli-agent-detect-btn"
+                  data-variant={cliAgent}
+                >
+                  {detecting[cliAgent] ? (
+                    <Loader2 className="w-3.5 h-3.5 settings-spinner" />
+                  ) : (
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  )}
+                  {t('config.externalCli.detect')}
+                </button>
+              ) : null}
               {!useBuiltin ? (
                 <span
                   className={`text-xs ${statusClass(displayResult?.status)}`}
                   data-testid="settings-panel-external-cli-agent-status"
                   data-variant={cliAgent}
                 >
-                  {displayResult?.status === 'ok' ? <CheckCircle2 className="inline w-3.5 h-3.5 mr-1" /> : <AlertCircle className="inline w-3.5 h-3.5 mr-1" />}
+                  {displayResult?.status === 'ok' ? (
+                    <CheckCircle2 className="inline w-3.5 h-3.5 mr-1" />
+                  ) : (
+                    <AlertCircle className="inline w-3.5 h-3.5 mr-1" />
+                  )}
                   {statusText(displayResult)}
                 </span>
               ) : null}
               {displayResult?.version ? (
-                <span className="text-xs text-text-muted">{t('config.externalCli.version', { version: displayResult.version })}</span>
+                <span className="text-xs text-text-muted">
+                  {t('config.externalCli.version', { version: displayResult.version })}
+                </span>
               ) : null}
             </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={draftValues[cliPathKey] ?? ''}
-                disabled={disabled || !enabled || useBuiltin}
-                onChange={event => onChange(cliPathKey, event.target.value)}
-                placeholder={displayResult?.path || t('config.externalCli.cliPathPlaceholder', { agent: cliAgent })}
-                data-testid="settings-panel-external-cli-agent-cli-path-input"
-                data-variant={cliAgent}
-                className="flex-1 rounded-md border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-accent disabled:opacity-60"
-              />
-              <button
-                type="button"
-                className="inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border border-border bg-bg text-text-muted hover:bg-secondary/30 disabled:opacity-50"
-                disabled={disabled || !enabled || useBuiltin || !onSelectFile || selecting[cliAgent]}
-                title={t('config.externalCli.selectFile')}
-                aria-label={t('config.externalCli.selectFile')}
-                onClick={() => void selectFile(cliAgent, cliPathKey)}
-                data-testid="settings-panel-external-cli-agent-select-file-btn"
-                data-variant={cliAgent}
-              >
-                {selecting[cliAgent] ? <Loader2 className="w-4 h-4 settings-spinner" /> : <FileSearch className="w-4 h-4" />}
-              </button>
-            </div>
+            {!useBuiltin ? (
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={draftValues[cliPathKey] ?? ''}
+                  disabled={disabled || !enabled}
+                  onChange={(event) => changeCliPath(cliAgent, cliPathKey, event.target.value)}
+                  placeholder={displayResult?.path || t('config.externalCli.cliPathPlaceholder', { agent: cliAgent })}
+                  data-testid="settings-panel-external-cli-agent-cli-path-input"
+                  data-variant={cliAgent}
+                  className="flex-1 rounded-md border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-accent disabled:opacity-60"
+                />
+                {detectedPath ? (
+                  <button
+                    type="button"
+                    className="inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border border-border bg-bg text-text-muted hover:bg-secondary/30 disabled:opacity-50"
+                    disabled={disabled}
+                    onClick={() => void copyDetectedPath(cliAgent, detectedPath)}
+                    title={
+                      disabled
+                        ? undefined
+                        : copied[cliAgent]
+                          ? t('config.externalCli.copied')
+                          : t('config.externalCli.copyPath')
+                    }
+                    aria-label={
+                      disabled
+                        ? undefined
+                        : copied[cliAgent]
+                          ? t('config.externalCli.copied')
+                          : t('config.externalCli.copyPath')
+                    }
+                    data-testid="settings-panel-external-cli-agent-copy-path-btn"
+                    data-variant={cliAgent}
+                  >
+                    {copied[cliAgent] ? <Check className="w-4 h-4 text-ok" /> : <Copy className="w-4 h-4" />}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border border-border bg-bg text-text-muted hover:bg-secondary/30 disabled:opacity-50"
+                  disabled={disabled || !enabled || !onSelectFile || selecting[cliAgent]}
+                  title={disabled || !enabled || !onSelectFile ? undefined : t('config.externalCli.selectFile')}
+                  aria-label={disabled || !enabled || !onSelectFile ? undefined : t('config.externalCli.selectFile')}
+                  onClick={() => void selectFile(cliAgent, cliPathKey)}
+                  data-testid="settings-panel-external-cli-agent-select-file-btn"
+                  data-variant={cliAgent}
+                >
+                  {selecting[cliAgent] ? (
+                    <Loader2 className="w-4 h-4 settings-spinner" />
+                  ) : (
+                    <FileSearch className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+            ) : null}
             {message ? <div className="text-[11px] leading-4 text-text-muted">{message}</div> : null}
           </div>
         );

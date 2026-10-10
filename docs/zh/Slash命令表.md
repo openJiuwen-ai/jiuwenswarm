@@ -247,7 +247,6 @@ SwarmFlow 专用命令；完整流程见 **[TUI 使用 SwarmFlow 指南](TUI使�
 | 边界 | 值 | 行为 |
 |---|---|---|
 | 详情最大文件数 | 50 | 仅前 50 个已跟踪文件有 hunks；统计仍覆盖所有变更文件 |
-| 单文件最大行数 | 400 | 超过 400 行的 hunk 被截断，设置 `isTruncated` 标志 |
 | 单文件最大 diff 大小 | 1 MB | diff 超过 1 MB 的文件跳过 hunk 解析，设置 `isLargeFile` 标志，统计仍计入 |
 | 详情最大文件数阈值 | 500 | 变更文件超过 500 时，仅返回汇总统计（无逐文件 hunk） |
 | Git 命令超时 | 10s | 超过 10 秒的 git 命令返回 `None` |
@@ -351,16 +350,16 @@ SwarmFlow 专用命令；完整流程见 **[TUI 使用 SwarmFlow 指南](TUI使�
 
 这组命令由 TUI 本地注册并解析，随后通过普通聊天通道把 slash 文本转发给后端。实际演进逻辑在 Agent / Team 侧完成：
 
-- Agent 模式：由 `SkillEvolutionRail` 处理，仅 `agent.plan` 可用。
-- Team 模式：由 `TeamSkillEvolutionRail` 处理，用于团队技能演进。
+- Agent 模式：使用单 Agent 演进运行时，自动建议面向普通 Skill。
+- Team 模式：使用团队演进运行时，自动建议面向 Team/Swarm Skill。
 - Code 模式与 `agent.fast` 不支持这组命令。
 
 #### 子命令
 
 | 命令 | 说明 |
 |---|---|
-| `/evolve <skill_name> [user_query]` | 为指定 Skill 触发演进。`agent.plan` 会扫描当前会话中的工具失败、用户纠错等信号；Team 模式必须提供 `user_query`。 |
-| `/evolve_list <skill_name> [--sort score]` | 按分数查看某个 Skill 的演进经验，展示记录数、平均分、使用/反馈统计、section 与内容预览。 |
+| `/evolve <skill_name> [user_intent]` | 为指定 Skill 发起演进审查；尾随文本是可选的审查意图。显式命令按目标实际类型处理，支持 Team 模式手动演进普通 Skill，也支持普通模式手动演进 Team/Swarm Skill。 |
+| `/evolve_list <skill_name>` | 按分数查看某个 Skill 的演进经验，展示记录数、平均分、使用/反馈统计、section 与内容预览。 |
 | `/evolve_simplify <skill_name> [user_intent]` | 生成经验库整理方案，用于合并重复经验、拆分过长经验或清理低价值经验；尾随文本会作为整理意图传入后端。 |
 | `/evolve_rebuild <skill_name> [user_intent]` | 生成重建 `SKILL.md` 的 follow-up prompt，并继续作为一次普通 Agent / Team 任务执行。 |
 
@@ -375,7 +374,7 @@ SwarmFlow 专用命令；完整流程见 **[TUI 使用 SwarmFlow 指南](TUI使�
 
 ```bash
 /evolve pptx 修复导出失败时的错误处理
-/evolve_list pptx --sort score
+/evolve_list pptx
 /evolve_simplify pptx 合并重复的导出失败经验
 /evolve_rebuild pptx 强化 Troubleshooting 和 Examples
 ```
@@ -836,6 +835,7 @@ Hooks 是在特定事件触发时自动执行的扩展逻辑，支持以下 17 �
 | `prompt` | 调用 LLM 审查。模板中 `$ARGUMENTS` 替换为 JSON 上下文，`$TOOL_NAME` 替换为工具名。LLM 响应中的 JSON `decision: "block"` 可阻断。 | `prompt`、`timeout`（默认 15s）、`model` |
 
 - **阻断行为**：退出码 2（command）或 `decision: "block"`（prompt）会阻止当前操作（如跳过工具调用），并将原因反馈给模型。
+- **PreToolUse 终止**：阻断时跳过该工具及同批尚未开始执行的工具（包括审批恢复后的调用），将原因保留在工具消息并作为最终响应返回，结束当前 Agent 执行及任务循环，不再调用模型自动重试。Goal 轮次（包括其审批恢复）被阻断时，会将原 Goal 标记为 `blocked` 并清除其排队的续跑任务，需解决 Hook 限制后显式恢复。被跳过工具的 `PostToolUse` 不会执行；用户仍可发起新的请求。已经开始执行的其他并行工具不会被撤销。
 - **输入修改**：PreToolUse hook 可通过 stdout JSON 的 `modifiedInput` 字段修改工具输入参数。
 - **附加上下文**：可通过 stdout JSON 的 `additionalContext` 字段注入额外信息到工具结果或模型上下文。
 - **全局开关**：`config.yaml` 中 `hooks.disable_all_hooks: true` 可禁用所有 hooks。

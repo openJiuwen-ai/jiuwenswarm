@@ -9,12 +9,15 @@ the live model catalog from Zen, keep the free ones (model id ending in
 ``-free``, plus the always-free ``big-pickle``), and hold them in a process-wide
 in-memory cache. Nothing is written to ``config.yaml``.
 
-Consumers read the cache through :func:`get_zen_free_model_entries`:
+Consumers read the cache through :func:`get_zen_free_model_entries`. They all
+run in the AgentServer process:
 
-- ``models.list`` (Gateway web) appends them after the user's own models so
-  they show up in the frontend dropdown.
+- ``ConfigAdapter`` appends them to ``models.list`` and answers
+  ``models.zen_entries`` so Gateway can merge the same rows into a local list.
 - ``AgentWebSocketServer._build_model_cache`` builds a :class:`Model` per entry
   so a Zen free model is resolvable when a chat selects it.
+- Cron tools accept a Zen free model id or alias. Gateway asks this process
+  for the same rows before it stores a Web or TUI job.
 
 If the catalog cannot be reached, the cache stays empty and no free models are
 offered — per the requirement that free models are only available when Zen is.
@@ -83,10 +86,9 @@ MODELS_DEV_URL = "https://models.opencode.ai/api.json"
 _WARM_TOTAL_TIMEOUT_SECONDS = 15.0
 _FETCH_TIMEOUT_SECONDS = 10.0
 
-# Conservative context window for free models; used only for display in the
-# frontend dropdown, not for truncation logic. models.dev may carry the real
-# ``limit.context``; we fall back to this when it is missing.
-_ZEN_FREE_CONTEXT_WINDOW = 200000
+# Fixed context window for free models; do not derive it from remote catalog
+# metadata so the UI and runtime use the same deterministic default.
+_ZEN_FREE_CONTEXT_WINDOW = 256 * 1024
 
 # 用户自配的默认模型仍为 .env 占位符（首次启动）时，回退使用的免费模型。
 # 已确认 deepseek-v4-flash-free 长期匿名免费服务（models.dev cost.input==0），
@@ -119,8 +121,8 @@ _background_retry_started: bool = False
 _last_fetch_error: str = ""
 
 # ---------- 免费模型就绪回调 ----------
-# 后台重试/惰性重试成功后通知 Gateway 广播 models.updated 事件，
-# 让前端自动刷新模型列表，无需用户手动刷新。
+# 后台重试/惰性重试成功后通知 AgentServer：重建模型缓存，并向 Gateway
+# 推送 models.updated，由 Gateway 广播给页面。
 _main_event_loop: asyncio.AbstractEventLoop | None = None
 _models_ready_callbacks: list = []
 
@@ -128,21 +130,10 @@ _models_ready_callbacks: list = []
 def _zen_free_models_enabled() -> bool:
     """Whether Zen free-model fetching is turned on.
 
-    Reads ``models.enable_free_models`` from config.yaml (default ``true``).
-    Returns ``True`` (enabled) on any config-read failure so start-up is never
-    broken.
+    Hard-disabled: ignore ``models.enable_free_models`` so frontend/config
+    cannot turn the probe back on.
     """
-    try:
-        from jiuwenswarm.common.config import get_config
-        cfg = get_config() or {}
-        val = (cfg.get("models") or {}).get("enable_free_models", None)
-        if val is None:
-            return True
-        if isinstance(val, bool):
-            return val
-        return str(val).strip().lower() not in ("0", "false", "no", "off")
-    except Exception:  # noqa: BLE001 - config unavailable; default on
-        return True
+    return False
 
 
 def _is_free_model(model_meta: dict[str, Any]) -> bool:
@@ -309,16 +300,7 @@ def _fetch_zen_free_models() -> list[dict[str, Any]]:
         if mid not in live_ids:
             continue  # free in catalog but not currently served by Zen
         name = str(meta.get("name") or mid).strip()
-        context = _ZEN_FREE_CONTEXT_WINDOW
-        limit = meta.get("limit")
-        if isinstance(limit, dict):
-            try:
-                ctx = int(limit.get("context", 0) or 0)
-                if ctx > 0:
-                    context = ctx
-            except (TypeError, ValueError):
-                pass
-        free.append({"id": mid, "name": name, "context": context})
+        free.append({"id": mid, "name": name, "context": _ZEN_FREE_CONTEXT_WINDOW})
 
     if not free:
         logger.info(
@@ -392,7 +374,16 @@ async def warm_zen_free_models(*, reason: str) -> None:
     On failure, schedules a background retry loop that keeps retrying
     (high-frequency then low-frequency) until success or the free-models
     toggle is turned off, so free models auto-recover without a restart.
+
+    When ``models.enable_free_models`` is off, returns immediately: no Zen
+    fetch, no startup probe, no background retry.
     """
+    if not _zen_free_models_enabled():
+        logger.info(
+            "[OpencodeZen] fetching disabled; skipping warm (reason=%s)",
+            reason,
+        )
+        return
     try:
         await asyncio.wait_for(
             asyncio.to_thread(_populate_zen_free_entries),
@@ -507,9 +498,9 @@ def get_zen_free_model_entries() -> list[dict[str, Any]]:
     Returns an empty list when fetching is disabled, failed, or found nothing.
     The entries are in-memory only (never written to config.yaml).
 
-    Honors the live toggle: when ``models.enable_free_models`` is ``false``,
-    returns ``[]`` immediately even if a previously-warmed cache exists, so
-    disabling via ``config.set`` takes effect without a restart.
+    Honors the live toggle: when Zen is disabled (always, after login models
+    replaced it), returns ``[]`` immediately even if a previously-warmed cache
+    exists.
     """
     if not _zen_free_models_enabled():
         return []
@@ -534,6 +525,67 @@ def get_zen_default_free_model_entry() -> dict[str, Any] | None:
         if (entry.get("model_client_config") or {}).get("model_name") == DEFAULT_FREE_MODEL_ID:
             return entry
     return entries[0] if entries else None
+
+
+def match_zen_free_model_name(raw: Any) -> str | None:
+    """Return the canonical Zen model id when ``raw`` is that id or its alias."""
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    for entry in get_zen_free_model_entries():
+        model_config = entry.get("model_client_config") or {}
+        model_name = str(model_config.get("model_name") or "").strip()
+        alias = str(entry.get("alias") or "").strip()
+        if model_name and value in {model_name, alias}:
+            return model_name
+    return None
+
+
+def append_zen_free_models(models: list[dict[str, Any]]) -> None:
+    """Append cached Zen free models to a ``models.list`` payload.
+
+    Called from AgentServer. Entries already present by ``model_name`` are
+    left unchanged. The appended rows are the public shape Gateway also
+    merges onto a locally built list.
+    """
+    from jiuwenswarm.common.config_panel.models_handlers import reasoning_level_display
+    from jiuwenswarm.common.context_window import (
+        DEFAULT_CONTEXT_WINDOW_TOKENS,
+        parse_positive_int,
+    )
+
+    existing_names = {str(item.get("model_name") or "") for item in models}
+    for entry in get_zen_free_model_entries():
+        model_config = entry.get("model_client_config") or {}
+        model_config_obj = entry.get("model_config_obj") or {}
+        model_name = str(model_config.get("model_name") or "").strip()
+        if not model_name or model_name in existing_names:
+            continue
+        models.append({
+            "model_name": model_name,
+            "api_base": model_config.get("api_base", ""),
+            "api_key": model_config.get("api_key", ""),
+            "model_provider": model_config.get("client_provider", ""),
+            "temperature": model_config_obj.get("temperature"),
+            "reasoning_level": reasoning_level_display(model_config_obj.get("reasoning_level")),
+            "is_default": entry.get("is_default"),
+            "is_agentos": False,
+            "is_free": True,
+            "alias": entry.get("alias", ""),
+            "context_window_tokens": (
+                parse_positive_int(entry.get("context_window_tokens"))
+                or parse_positive_int(model_config_obj.get("context_window"))
+                or DEFAULT_CONTEXT_WINDOW_TOKENS
+            ),
+        })
+        existing_names.add(model_name)
+
+
+def public_zen_free_model_rows() -> list[dict[str, Any]]:
+    """Return the public Zen rows Gateway can merge without reading this cache."""
+    rows: list[dict[str, Any]] = []
+    append_zen_free_models(rows)
+    return rows
 
 
 def set_main_event_loop(loop: asyncio.AbstractEventLoop | None) -> None:

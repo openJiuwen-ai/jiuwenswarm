@@ -39,6 +39,13 @@ test('scheduleDtoToForm/scheduleFormToDto round-trip for cron', () => {
   assert.deepEqual(scheduleFormToDto(form), dto);
 });
 
+test('scheduleDtoToForm/scheduleFormToDto preserves a 7-field cron expression', () => {
+  const dto = { type: 'cron', cron_expr: '30 15 10 20 12 ? 2027', timezone: 'Asia/Shanghai' };
+  const form = scheduleDtoToForm(dto, 'UTC');
+  assert.equal(form.cronExpr, dto.cron_expr);
+  assert.deepEqual(scheduleFormToDto(form), dto);
+});
+
 test('scheduleFormToDto trims cron_expr whitespace', () => {
   const form = emptyHeartbeatScheduleForm('Asia/Shanghai');
   form.kind = 'cron';

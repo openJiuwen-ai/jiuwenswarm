@@ -40,6 +40,7 @@ from openjiuwen.harness.schema.deep_agent_spec import (
 from jiuwenswarm.common.config import (
     get_progressive_tool_enabled,
     get_skill_evolution_enabled,
+    is_subagent_runtime_enabled,
 )
 from jiuwenswarm.common.tool_ownership import register_tool
 
@@ -149,12 +150,15 @@ def _build_code_subagent_bundle(
         raise RuntimeError("code sub-agent provider did not receive the parent model")
     react_snapshot = dict(ctx.react_config)
     react_snapshot["subagents"] = deepcopy(factory_kwargs.get("subagents") or {})
-    react_snapshot["max_iterations"] = int(
-        factory_kwargs.get(
-            "max_iterations",
-            react_snapshot.get("max_iterations", 15),
-        )
-    )
+    if "max_iterations" in factory_kwargs:
+        raw_max_iterations = factory_kwargs.get("max_iterations")
+    else:
+        raw_max_iterations = react_snapshot.get("max_iterations")
+    coerced_max_iterations = _optional_max_iterations(raw_max_iterations)
+    if coerced_max_iterations is None:
+        react_snapshot.pop("max_iterations", None)
+    else:
+        react_snapshot["max_iterations"] = coerced_max_iterations
     config_snapshot = deepcopy(ctx.config_base)
     config_snapshot["react"] = react_snapshot
     with ctx.adapter._code_spec_config_scope(  # pylint: disable=protected-access
@@ -170,6 +174,13 @@ def _build_code_subagent_bundle(
 
 
 _PROVIDERS_REGISTERED = False
+
+
+def _optional_max_iterations(value: Any) -> int | None:
+    """Parse an optional inner ReAct cap; missing/blank means unbounded."""
+    if value is None or value == "":
+        return None
+    return int(value)
 
 
 def register_code_spec_providers() -> None:
@@ -238,6 +249,10 @@ def convert_code_config_to_deep_agent_spec(
     configured_subagents = (
         deepcopy(configured_subagents) if isinstance(configured_subagents, dict) else {}
     )
+    max_iterations = _optional_max_iterations(react_snapshot.get("max_iterations"))
+    subagent_factory_kwargs: dict[str, Any] = {"subagents": configured_subagents}
+    if max_iterations is not None:
+        subagent_factory_kwargs["max_iterations"] = max_iterations
     context = CodeBuildContext(
         adapter=adapter,
         config_base=config_snapshot,
@@ -272,17 +287,15 @@ def convert_code_config_to_deep_agent_spec(
                 ),
                 system_prompt="",
                 factory_name=CODE_SUBAGENT_BUNDLE,
-                factory_kwargs={
-                    "subagents": configured_subagents,
-                    "max_iterations": int(react_snapshot.get("max_iterations", 15)),
-                },
+                factory_kwargs=subagent_factory_kwargs,
             )
         ],
         enable_task_loop=(
             bool(react_snapshot.get("enable_task_loop", True))
             or get_skill_evolution_enabled(config_snapshot)
         ),
-        max_iterations=int(react_snapshot.get("max_iterations", 15)),
+        enable_subagent_runtime=is_subagent_runtime_enabled(config_snapshot),
+        **({"max_iterations": max_iterations} if max_iterations is not None else {}),
         workspace=WorkspaceSpec(root_path=workspace_root or "./", language=language),
         sys_operation=_sys_operation_spec(sys_operation, sys_operation_card),
         language=language,

@@ -2,9 +2,11 @@
 
 """Unit tests for the replace_all merge helper preserving YAML env-var placeholders."""
 
-from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
+from jiuwenswarm.common.config_panel.models_handlers import (
     _is_env_var_placeholder,
     _merge_models_for_replace_all,
+    _reasoning_level_display,
     _values_match,
 )
 
@@ -73,6 +75,92 @@ def test_values_match_normalizes_numeric_string_from_env_resolution():
 def test_values_match_treats_none_and_empty_as_equal():
     assert _values_match("", None)
     assert _values_match(None, None)
+
+
+def test_reasoning_level_display_maps_legacy_yaml_booleans():
+    # Bare on/off YAML scalars load as booleans under YAML 1.1 loaders.
+    assert _reasoning_level_display(True) == "on"
+    assert _reasoning_level_display(False) == "off"
+    assert _reasoning_level_display(None) == ""
+    assert _reasoning_level_display("") == ""
+    assert _reasoning_level_display("high") == "high"
+
+
+def test_clearing_reasoning_level_over_legacy_boolean_off_removes_it():
+    """Regression: stored bare `off` loads as False; switching the UI back to
+    "default" (empty level) must delete the stored value instead of being
+    swallowed by _values_match's boolean branch (bool("")==bool(False))."""
+    raw = _raw_entry_with_placeholder()
+    raw["model_config_obj"]["reasoning_level"] = False  # legacy bare `off`
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+
+    parsed = [{
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "gpt",
+        "origin_index": 0,
+        "reasoning_level": "",
+    }]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    assert "reasoning_level" not in out[0]["model_config_obj"]
+
+
+def test_reasoning_level_over_legacy_boolean_on_is_rewritten_as_string():
+    raw = _raw_entry_with_placeholder()
+    raw["model_config_obj"]["reasoning_level"] = True  # legacy bare `on`
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+
+    parsed = [{
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "gpt",
+        "origin_index": 0,
+        "reasoning_level": "off",
+    }]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    level = out[0]["model_config_obj"]["reasoning_level"]
+    assert level == "off"
+    assert isinstance(level, str)
+
+
+def test_unchanged_reasoning_level_string_keeps_raw_value():
+    raw = _raw_entry_with_placeholder()
+    raw["model_config_obj"]["reasoning_level"] = "high"
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+
+    parsed = [{
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "gpt",
+        "origin_index": 0,
+        "reasoning_level": "high",
+    }]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    assert out[0]["model_config_obj"]["reasoning_level"] == "high"
 
 
 def test_is_env_var_placeholder():
@@ -281,7 +369,52 @@ def test_new_entry_without_origin_index_uses_payload_verbatim():
     assert mcc["verify_ssl"] is True
     assert mcc["vendor_key"] == "anthropic"
     assert mcc["plan"] == "custom_api"
+    assert out[0]["model_config_obj"]["context_window"] == DEFAULT_CONTEXT_WINDOW_TOKENS
     assert out[0]["alias"] == "claude"
+
+
+def test_existing_entry_persists_explicit_one_million_context_window():
+    raw = _raw_entry_with_placeholder()
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+    parsed = [{
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "gpt",
+        "origin_index": 0,
+        "context_window_tokens": 1048576,
+        "context_window_tokens_provided": True,
+    }]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    assert out[0]["model_config_obj"]["context_window"] == 1048576
+
+
+def test_existing_entry_without_context_field_keeps_it_absent_for_compatibility():
+    raw = _raw_entry_with_placeholder()
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+    parsed = [{
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "gpt",
+        "origin_index": 0,
+    }]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    assert "context_window" not in out[0]["model_config_obj"]
 
 
 def test_existing_entry_updates_and_clears_exact_vendor_identity():
@@ -406,3 +539,55 @@ def test_reordering_two_entries_keeps_each_entries_placeholders():
     assert out[1]["model_client_config"]["api_key"] == "${KEY_A}"
     assert out[1]["model_client_config"]["api_base"] == "${BASE_A}"
     assert out[1]["is_default"] is False
+
+
+def test_new_model_without_temperature_omits_sampling_parameter():
+    item = {
+        "model_name": "kimi-k3",
+        "api_base": "https://api.example.com/v1",
+        "api_key": "key",
+        "model_provider": "OpenAI",
+        "temperature": None,
+        "is_default": True,
+        "timeout": 1800,
+        "verify_ssl": True,
+        "alias": "kimi",
+        "reasoning_level": "",
+        "origin_index": None,
+        "vendor_key": None,
+        "plan": None,
+        "endpoint_profile": None,
+    }
+
+    merged = _merge_models_for_replace_all([item], [], [], _StubCrypto())
+
+    assert "temperature" not in merged[0]["model_config_obj"]
+
+
+def test_clearing_existing_temperature_removes_persisted_key():
+    raw = _raw_entry_with_placeholder()
+    resolved = _resolved_entry_for(
+        raw,
+        api_key_plain="sk-real-secret",
+        api_base="https://api.example.com",
+    )
+    item = {
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": None,
+        "is_default": True,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "alias": "gpt",
+        "reasoning_level": "",
+        "origin_index": 0,
+        "vendor_key": None,
+        "plan": None,
+        "endpoint_profile": None,
+    }
+
+    merged = _merge_models_for_replace_all([item], [raw], [resolved], _StubCrypto())
+
+    assert "temperature" not in merged[0]["model_config_obj"]

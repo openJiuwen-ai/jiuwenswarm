@@ -4,15 +4,14 @@
 import i18n from '../i18n';
 
 /**
- * 格式化时间戳
+ * 格式化时间戳，统一显示 YYYY-MM-DD HH:MM
  */
 export function formatTimestamp(timestamp: string): string {
   const date = new Date(timestamp);
-  return date.toLocaleTimeString(i18n.language, {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const dateStr = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  const timeStr = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${dateStr} ${timeStr}`;
 }
 
 /**

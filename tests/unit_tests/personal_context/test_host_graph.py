@@ -33,21 +33,19 @@ def _write_source(home: Path) -> tuple[str, Path]:
 
 def _link(page: Path, target: Path) -> str:
     relative = os.path.relpath(target, start=page.parent).replace("\\", "/")
-    return f"[PR 42]({relative})"
+    return f"[来源1]({relative})"
 
 
 @pytest.mark.asyncio
-async def test_graph_is_empty_without_root_description(tmp_path: Path) -> None:
+async def test_host_graph_and_tree_are_empty_without_context(tmp_path: Path) -> None:
     host = PersonalContextHostAPI(home=tmp_path / "personal_context")
-    assert await host.get_graph() == {
-        "context_ready": False,
-        "nodes": [],
-        "edges": [],
-    }
+
+    assert await host.get_graph() == {"context_ready": False, "nodes": [], "edges": []}
+    assert await host.get_tree() == {"context_ready": False, "nodes": [], "edges": []}
 
 
 @pytest.mark.asyncio
-async def test_host_returns_atomic_source_graph_without_rebuilding_fields(
+async def test_host_delegates_breadth_first_graph_and_tree_slices(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "personal_context"
@@ -56,53 +54,39 @@ async def test_host_returns_atomic_source_graph_without_rebuilding_fields(
     page.parent.mkdir(parents=True)
     source_id, source_path = _write_source(home)
     (context / "description.md").write_text(
-        "# Context\n\n- [Topics](topics/description.md)\n",
+        "# Context\n\n[Topics](topics/description.md)\n",
         encoding="utf-8",
     )
     (context / "topics" / "description.md").write_text(
-        "# Topics\n\n- [Agent](agent.md)\n",
+        "# Topics\n\n[Agent](agent.md)\n",
         encoding="utf-8",
     )
-    page.write_text(
-        "# Agent\n\nSee [root](../description.md) and "
-        + _link(page, source_path)
-        + ".\n",
-        encoding="utf-8",
+    page.write_text("# Agent\n\n" + _link(page, source_path) + "\n", encoding="utf-8")
+    host = PersonalContextHostAPI(home=home)
+
+    graph = await host.get_graph(root_id=None, depth=2)
+    tree = await host.get_tree(root_id="page:topics/description.md", depth=1)
+
+    assert [node["id"] for node in graph["nodes"]] == [
+        "page:description.md",
+        "page:topics/description.md",
+    ]
+    assert [node["id"] for node in tree["nodes"]] == ["page:topics/agent.md"]
+    assert all(
+        not str(node["id"]).startswith("source:")
+        for node in graph["nodes"] + tree["nodes"]
     )
-
-    graph = await PersonalContextHostAPI(home=home).get_graph()
-
-    assert graph["context_ready"] is True
-    assert {node["id"]: (node["kind"], node["subkind"]) for node in graph["nodes"]} == {
-        "page:description.md": ("directory", "directory.0"),
-        "page:topics/description.md": ("directory", "directory.1"),
-        "page:topics/agent.md": ("document", "document.0"),
-        f"source:{source_id}": ("source", "source.0"),
-    }
-    assert {
-        (edge["source"], edge["target"], edge["kind"]) for edge in graph["edges"]
-    } >= {
-        ("page:description.md", "page:topics/description.md", "contains"),
-        ("page:topics/description.md", "page:topics/agent.md", "contains"),
-        ("page:description.md", "page:topics/description.md", "navigates_to"),
-        ("page:topics/agent.md", f"source:{source_id}", "links_to"),
-    }
-    assert all(edge["kind"] != "derived_from" for edge in graph["edges"])
+    assert all(source_id not in str(edge) for edge in graph["edges"] + tree["edges"])
 
 
 @pytest.mark.asyncio
-async def test_host_returns_source_metadata_through_shared_page_detail(
-    tmp_path: Path,
-) -> None:
+async def test_host_exposes_source_detail_separately(tmp_path: Path) -> None:
     home = tmp_path / "personal_context"
-    source_id, source_path = _write_source(home)
-    markdown = source_path.read_text(encoding="utf-8")
+    source_id, _source_path = _write_source(home)
 
-    assert await PersonalContextHostAPI(home=home).get_graph_page(
-        f"source:{source_id}"
-    ) == {
-        "node_id": f"source:{source_id}",
-        "title": "GitHub PR 42",
-        "path": f"{source_id}.md",
-        "markdown": markdown,
-    }
+    detail = await PersonalContextHostAPI(home=home).get_source(source_id)
+
+    assert detail["source_id"] == source_id
+    assert detail["title"] == "GitHub PR 42"
+    assert detail["service_id"] == "github-main"
+    assert "markdown" not in detail

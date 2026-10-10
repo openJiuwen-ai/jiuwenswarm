@@ -1,0 +1,14 @@
+/* 共用 .ui-dialog 的原生 <dialog>，尺寸和外观沿用原来的登录弹窗（App.css 的 .app-restart-modal__panel） */
+.ui-dialog.login-dialog {
+  width: min(24rem, calc(100vw - 2rem));
+  border-radius: 0.75rem;
+  background: var(--color-surface-card);
+}
+
+.ui-dialog.login-dialog::backdrop {
+  backdrop-filter: blur(4px);
+}
+
+.login-dialog__body {
+  padding: 1.5rem;
+}

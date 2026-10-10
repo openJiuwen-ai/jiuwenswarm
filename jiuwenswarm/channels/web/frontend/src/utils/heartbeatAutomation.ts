@@ -57,6 +57,24 @@ export function heartbeatErrorMessageId(runId: string): string {
   return `heartbeat-error-${runId}`;
 }
 
+/**
+ * Heartbeat 自动轮开始时，每个 run 只请求刷新一次任务列表。
+ *
+ * processing_status=true 可能为同一个 run 重复下发；如果每帧都刷新会产生重复 RPC，
+ * 但完全不刷新又会让任务卡片一直保留旧的 next_run_at，直到执行结束。
+ */
+export function refreshHeartbeatListAtRunStart(
+  refreshedRunIds: Set<string>,
+  runId: string,
+  sessionId: string,
+  dispatchRefresh: (sessionId: string) => void,
+): boolean {
+  if (refreshedRunIds.has(runId)) return false;
+  refreshedRunIds.add(runId);
+  dispatchRefresh(sessionId);
+  return true;
+}
+
 /** 判断一条已存在消息是否属于某 Heartbeat run（精确匹配三种已知消息 ID，供归并/去重使用）。 */
 export function isHeartbeatRunMessage(messageId: string | undefined, runId: string): boolean {
   if (!messageId || !runId) return false;

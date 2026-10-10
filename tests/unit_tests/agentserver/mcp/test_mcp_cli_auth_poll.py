@@ -162,3 +162,60 @@ async def test_await_multi_step_advances_step_index_then_connected() -> None:
     # must adopt for call 3.
     assert calls == [0, 0, 1, 1], f"step_index did not advance: {calls}"
     assert result["type"] == "connected"
+
+@pytest.mark.anyio
+async def test_await_returns_cancelled_when_user_cancels() -> None:
+    """If the user cancels (mcp.cancel_connect) while the poller waits, the
+    hold-open RPC unwinds with ``cancelled`` instead of polling to timeout."""
+    from jiuwenswarm.server.runtime.mcp import registry
+
+    server = _new_server()
+    server._finalize_cli_auth = AsyncMock()  # must not run on cancel
+
+    with (
+        patch("jiuwenswarm.server.runtime.mcp.cli_driver.cancel_pending_auth_proc"),
+        patch("jiuwenswarm.server.runtime.mcp.state_store.get_mcp_record", return_value=None),
+    ):
+        registry.cancel_connect("feishu")
+    try:
+        with patch(
+            "jiuwenswarm.server.runtime.mcp.registry.complete_cli_auth",
+            return_value=_pending_item(),
+        ):
+            result = await server._await_cli_auth(
+                "feishu", 0, max_attempts=10, delay=0,
+            )
+    finally:
+        registry.clear_connect_cancel("feishu")
+
+    server._finalize_cli_auth.assert_not_called()
+    assert result["type"] == "cancelled"
+    assert result["name"] == "feishu"
+
+
+@pytest.mark.anyio
+async def test_await_returns_cancelled_when_cancel_arrives_mid_poll() -> None:
+    """Cancel landing between polls is picked up on the next iteration."""
+    from jiuwenswarm.server.runtime.mcp import registry
+
+    server = _new_server()
+    server._finalize_cli_auth = AsyncMock()
+
+    def _pending_then_cancel(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        # First poll returns pending, then the user cancels.
+        registry.cancel_connect("feishu")
+        return _pending_item()
+
+    try:
+        with patch(
+            "jiuwenswarm.server.runtime.mcp.registry.complete_cli_auth",
+            side_effect=_pending_then_cancel,
+        ):
+            result = await server._await_cli_auth(
+                "feishu", 0, max_attempts=10, delay=0,
+            )
+    finally:
+        registry.clear_connect_cancel("feishu")
+
+    server._finalize_cli_auth.assert_not_called()
+    assert result["type"] == "cancelled"

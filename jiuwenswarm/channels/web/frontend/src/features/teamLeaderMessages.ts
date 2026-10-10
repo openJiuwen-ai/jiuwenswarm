@@ -31,11 +31,19 @@ export function extractTeamLeaderRawContent(content: string | undefined): string
   return content;
 }
 
-export function findActiveTeamLeaderMessage(messages: Message[]): Message | undefined {
-  const latestUserIndex = findLatestUserIndex(messages);
+export function findActiveTeamLeaderMessage(
+  messages: Message[],
+  requestId?: string,
+): Message | undefined {
+  // 有请求标识时允许找到新用户轮之前的迟到输出；无标识事件仅属于当前用户轮。
+  const latestUserIndex = requestId ? -1 : findLatestUserIndex(messages);
   for (let index = messages.length - 1; index > latestUserIndex; index -= 1) {
     const message = messages[index];
-    if (isTeamLeaderMessage(message) && message.isStreaming) {
+    if (
+      isTeamLeaderMessage(message) &&
+      message.teamStream &&
+      message.teamStream.requestId === requestId
+    ) {
       return message;
     }
   }

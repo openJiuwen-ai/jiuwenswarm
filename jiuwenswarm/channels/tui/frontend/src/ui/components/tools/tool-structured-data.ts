@@ -214,6 +214,15 @@ export function extractTrailingBracketNotices(text: string): {
   return { mainLines: lines.slice(0, end).filter((line) => line.length > 0), notices };
 }
 
+/**
+ * Text shown for a tool result: the text the model read, or the compatibility
+ * `result` string for events that predate it. Structured parsers keep reading
+ * `result` until the renderers move to structured data.
+ */
+export function toolResultText(tool: ToolCallDisplay): string {
+  return tool.renderedResult ?? tool.result ?? "";
+}
+
 export function parseToolResultPayload(tool: ToolCallDisplay): Record<string, unknown> | undefined {
   if (!tool.result) return undefined;
   const parsed = tryParseStructuredText(tool.result);
@@ -244,7 +253,7 @@ export function parseFetchResult(tool: ToolCallDisplay): {
       contentLines: nonEmptyLines(parsed.content),
     };
   }
-  const lines = tool.result.split("\n").map((line) => line.trimEnd());
+  const lines = toolResultText(tool).split("\n").map((line) => line.trimEnd());
   const contentStartIndex = lines.findIndex((line) => line.trim().toLowerCase() === "content:");
   return {
     url: lines
@@ -262,7 +271,7 @@ export function parseFetchResult(tool: ToolCallDisplay): {
     contentLines:
       contentStartIndex >= 0
         ? lines.slice(contentStartIndex + 1).filter((line) => line.trim().length > 0)
-        : nonEmptyLines(tool.result),
+        : nonEmptyLines(toolResultText(tool)),
   };
 }
 

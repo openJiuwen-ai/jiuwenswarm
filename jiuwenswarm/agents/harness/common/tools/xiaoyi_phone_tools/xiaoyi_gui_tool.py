@@ -12,7 +12,7 @@ from typing import Any, Dict
 from openjiuwen.core.foundation.tool import tool
 
 from jiuwenswarm.common.utils import logger
-from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import get_xiaoyi_channel
+from jiuwenswarm.runtime.host_services import get_runtime_xiaoyi_channel
 
 from .utils import ToolInputError, format_success_response
 
@@ -54,7 +54,7 @@ async def xiaoyi_gui_agent(query: str) -> Dict[str, Any]:
         raise ToolInputError("缺少有效参数 query（非空字符串）")
 
     query = query.strip()
-    channel = get_xiaoyi_channel()
+    channel = get_runtime_xiaoyi_channel()
     if channel is None:
         raise RuntimeError(
             "无活跃小艺会话，xiaoyi_gui_agent 仅能在小艺会话活跃时使用。"

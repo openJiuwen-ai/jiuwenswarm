@@ -13,22 +13,16 @@ if/elif 链直接处理（已有 E2A handler）。
 - 适配器不得反向依赖或导入 ``gateway.*``；可复用逻辑必须来自
   ``server/runtime`` 等中立模块；
 - 适配器不得根据请求中的 ``user_id`` 选择、切换或推导用户目录。
+
+Eager re-export is avoided so AgentServer Front can import
+``gateway_adapter.base`` / ``session_adapter`` without loading MemoryAdapter
+(Harness) or ConfigAdapter (OpenJiuwen).
 """
 
 from __future__ import annotations
 
-from jiuwenswarm.server.runtime.gateway_adapter.base import (
-    AdapterRegistry,
-    GatewayAdapter,
-)
-from jiuwenswarm.server.runtime.gateway_adapter.session_adapter import SessionAdapter
-from jiuwenswarm.server.runtime.gateway_adapter.memory_adapter import MemoryAdapter
-from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import ProjectAdapter
-from jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter import (
-    WorkspaceFileAdapter,
-)
-from jiuwenswarm.server.runtime.gateway_adapter.harmonyos_adapter import HarmonyOSAdapter
-from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import ConfigAdapter
+from importlib import import_module
+from typing import Any
 
 __all__ = [
     "AdapterRegistry",
@@ -40,3 +34,25 @@ __all__ = [
     "HarmonyOSAdapter",
     "ConfigAdapter",
 ]
+
+_EXPORTS = {
+    "AdapterRegistry": "jiuwenswarm.server.runtime.gateway_adapter.base",
+    "GatewayAdapter": "jiuwenswarm.server.runtime.gateway_adapter.base",
+    "SessionAdapter": "jiuwenswarm.server.runtime.gateway_adapter.session_adapter",
+    "MemoryAdapter": "jiuwenswarm.server.runtime.gateway_adapter.memory_adapter",
+    "ProjectAdapter": "jiuwenswarm.server.runtime.gateway_adapter.project_adapter",
+    "WorkspaceFileAdapter": "jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter",
+    "HarmonyOSAdapter": "jiuwenswarm.server.runtime.gateway_adapter.harmonyos_adapter",
+    "ConfigAdapter": "jiuwenswarm.server.runtime.gateway_adapter.config_adapter",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(import_module(module_name), name)
+
+
+def __dir__() -> list[str]:
+    return sorted(list(globals()) + list(_EXPORTS))

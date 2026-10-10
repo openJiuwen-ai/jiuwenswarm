@@ -16,7 +16,7 @@ export default function HeartbeatStatusBadge({ status }: { status: HeartbeatJobS
   const variant = heartbeatStatusVariant(status);
   const Icon = variant === 'running' ? RunningIcon : BoldRingIcon;
   return (
-    <span className={`inline-flex items-center gap-1.5 text-sm ${VARIANT_CLASS[variant]}`}>
+    <span className={`inline-flex items-center gap-1.5 text-sm ${VARIANT_CLASS[variant]}`} data-testid="heartbeat-panel-status-badge" data-variant={variant}>
       <Icon />
       {t(heartbeatStatusLabelKey(status))}
     </span>

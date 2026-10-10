@@ -23,6 +23,7 @@ import {
 } from "./core/history-parser.js";
 import { getToolGroupIds } from "./core/transcript-timeline.js";
 import {
+  bindPermissionCardAnswer,
   handleIncomingFrame,
   type AppEventDelegate,
   type PendingQuestion,
@@ -79,15 +80,17 @@ import {
   collectWaitingForHuman,
   countWaitingForHuman,
   findWorkflowAgent,
-  isHumanPromptTruncated,
   mergeHumanPromptText,
   mergeWorkflowRun,
   normalizeWorkflowRun,
+  reassembleAgentFieldParts,
   isSessionNode,
   phaseLocalTurnNumber,
   sessionTurnLabelNumber,
   shouldShowTurnInDetailOrReply,
   type WorkflowRun,
+  type WorkflowPhase,
+  type WorkflowAgent,
 } from "./core/workflows.js";
 import type { PendingHumanPrompt } from "./core/event-handlers.js";
 import { spawnSync } from "node:child_process";
@@ -163,6 +166,12 @@ export interface AppSnapshot {
   contextWindowLimit: number | null;
   contextUsedPercentage: number | null;
   modelInfo: { provider: string; model: string; version: string };
+  /** 全局选中的 agentos 备份模型名（请求级注入）；null 表示使用启动默认 */
+  selectedAgentosModel: string | null;
+  /** 全局选中的 agentos 备份模型 provider（仅展示用，头部 Provider 行）；空表示未取到 */
+  selectedAgentosProvider: string;
+  /** 注入用 key（model_name#global_idx）；后端 model_key 缺省时回退到 selectedAgentosModel */
+  selectedAgentosModelKey: string | null;
   preferredLanguage: PreferredLanguage;
   sessionTitle: string;
   statusLineText: string | null;
@@ -386,6 +395,18 @@ export class CliPiAppState {
     model: "",
     version: "",
   };
+  /**
+   * 全局选中的 agentos 备份模型名（请求级注入）。
+   * 非空时 sendMessage 在 params 注入 model_name，由 AgentServer
+   * _resolve_model_for_request 命中 agentos 缓存条目。切回 defaults 模型
+   * 时由 setModel 清空（恢复启动默认模型路由）。
+   */
+  private selectedAgentosModel: string | null = null;
+  private selectedAgentosProvider: string = "";
+  // 注入用 key（model_name#global_idx），仅用于 chat.send 的 model_name 参数，
+  // 后端 _resolve_model_by_name 据此精确命中同名 agentos 条目，避免纯名误路由到
+  // defaults。展示一律用 selectedAgentosModel（纯名）。无后端 model_key 时回退到纯名。
+  private selectedAgentosModelKey: string | null = null;
   private preferredLanguage: PreferredLanguage = "zh";
   private memoryWarnings: {
     path: string;
@@ -1077,6 +1098,15 @@ export class CliPiAppState {
     const hasActiveSubtasks = [...this.activeSubtasks.values()].some(
       (s) => s.status !== "completed" && s.status !== "error",
     );
+    // swarmflow 后台 run 独立于 leader round：round 收尾后 isProcessing/工具/成员
+    // 全部归零，但 run 仍在烧 token。Esc（cancellableWork）与 Ctrl+C
+    // （hasServerTask）都必须把它视为"进行中的工作"，否则后台跑期间两把
+    // 中止键都按不出任何消息（Esc 退化为清空输入框、Ctrl+C 同样只清输入框）。
+    const hasActiveSwarmflowRun =
+      isTeamMode(this.mode) &&
+      this.workflowRuns.some(
+        (wf) => wf.status === "running" || wf.status === "waiting_for_human",
+      );
     // 与「Ctrl+C 强制结束当前任务」对齐：有任一进行中工作则为 true。
     // 包含 activeCommandRequestId 以确保 /btw 等命令请求在等待响应期间
     // 也能被 Esc 取消（WS 请求会被立即中止，避免等待超时）。
@@ -1087,6 +1117,7 @@ export class CliPiAppState {
       hasActiveSubtasks ||
       this.evolutionStatus === "running" ||
       this.activeCommandRequestId !== null ||
+      hasActiveSwarmflowRun ||
       (isTeamMode(this.mode) && isTeamWorking(this.teamMemberEvents, this.teamMessageEvents));
     return {
       connectionStatus: this.connectionStatus,
@@ -1139,6 +1170,9 @@ export class CliPiAppState {
       contextWindowLimit: this.contextWindowLimit,
       contextUsedPercentage: this.contextUsedPercentage,
       modelInfo: this.modelInfo,
+      selectedAgentosModel: this.selectedAgentosModel,
+      selectedAgentosProvider: this.selectedAgentosProvider,
+      selectedAgentosModelKey: this.selectedAgentosModelKey,
       preferredLanguage: this.preferredLanguage,
       sessionTitle: this.sessionTitle,
       statusLineText: this.statusLineText,
@@ -1235,6 +1269,7 @@ export class CliPiAppState {
       setMode: this.setMode,
       markPlanEntryFromSlashCommand: this.markPlanEntryFromSlashCommand,
       setModel: this.setModel,
+      setSelectedAgentosModel: this.setSelectedAgentosModel,
       setPreferredLanguage: this.setPreferredLanguage,
       setThemeName: this.setThemeName,
       setAccentColor: this.setAccentColor,
@@ -1281,8 +1316,8 @@ export class CliPiAppState {
           code: "NOT_SUPERVISED",
           message: "Running outside agentos-tui launcher; start via `agentos-tui` to use /switch",
         },
-      requestHandoff: (target, switchContent) => this.handoffPort
-        ? this.handoffPort.requestHandoff(target, switchContent)
+      requestHandoff: (target, switchContent, cmd) => this.handoffPort
+        ? this.handoffPort.requestHandoff(target, switchContent, cmd)
         : Promise.reject(new Error("Handoff port not available (not supervised)")),
       hasServerTask: () => this.taskLifecycle?.hasServerTask() ?? this.hasServerTask(),
       cancelAndWaitForIdle: (opts) => this.taskLifecycle
@@ -1652,16 +1687,13 @@ export class CliPiAppState {
       workflows?: unknown[];
       session_id?: string;
       total?: number;
-      truncated?: boolean;
+      has_more?: boolean;
     }>(
       "command.workflows",
       {
         action: "list",
         session_id: sessionId,
       },
-      // Align with get / get_human_prompt. 10s was too tight when the Gateway
-      // outbound writer is busy with workflow.updated / chat stream frames
-      // (list itself finishes in ms on AgentServer).
       30000,
     );
     this.applyWorkflowSnapshotPayload(payload);
@@ -1670,17 +1702,20 @@ export class CliPiAppState {
   readonly loadWorkflowDetail = async (
     workflowId: string,
     sessionId = this.sessionId,
+    phaseOffset = 0,
   ): Promise<void> => {
     const payload = await this.request<{
       type?: string;
       workflow?: unknown;
-      truncated?: boolean;
+      phase_total?: number;
+      has_more?: boolean;
     }>(
       "command.workflows",
       {
-        action: "get",
+        action: "get_workflow",
         workflow_id: workflowId,
         session_id: sessionId,
+        phase_offset: phaseOffset,
       },
       30000,
     );
@@ -1692,52 +1727,91 @@ export class CliPiAppState {
       "id" in payload.workflow
     ) {
       const workflow = payload.workflow as WorkflowRun;
-      if (payload.truncated === true) {
-        workflow.truncated = true;
+      if (payload.has_more === true) {
+        workflow.has_more = true;
+      }
+      if (typeof payload.phase_total === "number") {
+        workflow.phase_total = payload.phase_total;
       }
       this.applyWorkflowUpdate(workflow);
     }
   };
 
-  readonly loadHumanPrompt = async (
+  readonly loadPhaseAgents = async (
     workflowId: string,
+    phaseId: string,
+    sessionId = this.sessionId,
+    agentOffset = 0,
+  ): Promise<void> => {
+    const payload = await this.request<{
+      type?: string;
+      phase?: unknown;
+      agent_total?: number;
+      has_more?: boolean;
+      error?: unknown;
+    }>(
+      "command.workflows",
+      {
+        action: "get_phase",
+        workflow_id: workflowId,
+        phase_id: phaseId,
+        session_id: sessionId,
+        agent_offset: agentOffset,
+      },
+      30000,
+    );
+    if (payload.error || !payload.phase || typeof payload.phase !== "object") return;
+    const phase = payload.phase as WorkflowPhase & { workflow_id?: string };
+    const existing = this.workflowRuns.find((item) => item.id === workflowId);
+    if (!existing) return;
+    // Hand the incoming phase (agent summaries) to applyWorkflowUpdate's merge
+    // path — mergeWorkflowAgent preserves already-loaded full bodies (from
+    // get_agent) and stamps detail_pending on summary-only agents.
+    this.applyWorkflowUpdate({
+      ...existing,
+      phases: [...(existing.phases ?? []), phase],
+    });
+  };
+
+  readonly loadAgentDetail = async (
+    workflowId: string,
+    phaseId: string,
     agentId: string,
     sessionId = this.sessionId,
   ): Promise<string> => {
     const payload = await this.request<{
       type?: string;
-      human_prompt?: unknown;
-      agent_id?: unknown;
+      agent?: unknown;
       error?: unknown;
     }>(
       "command.workflows",
       {
-        action: "get_human_prompt",
+        action: "get_agent",
         workflow_id: workflowId,
+        phase_id: phaseId,
         agent_id: agentId,
         session_id: sessionId,
       },
       30000,
     );
-    if (payload.error) {
-      throw new Error(String(payload.error));
-    }
-    const prompt = typeof payload.human_prompt === "string" ? payload.human_prompt.trim() : "";
-    if (!prompt) return "";
+    if (payload.error || !payload.agent || typeof payload.agent !== "object") return "";
+    const agent = reassembleAgentFieldParts(payload.agent as WorkflowAgent);
 
     const existing = this.workflowRuns.find((item) => item.id === workflowId);
-    if (!existing) return prompt;
+    if (!existing) return agent.human_prompt ?? "";
 
-    const updatedPhases = (existing.phases ?? []).map((phase) => ({
-      ...phase,
-      agents: (phase.agents ?? []).map((agent) =>
-        agent.id === agentId
-          ? { ...agent, human_prompt: mergeHumanPromptText(agent.human_prompt, prompt) }
-          : agent,
-      ),
-    }));
+    const updatedPhases = (existing.phases ?? []).map((phase) =>
+      phase.id === phaseId
+        ? {
+            ...phase,
+            agents: (phase.agents ?? []).map((a) =>
+              a.id === agentId ? { ...a, ...agent } : a,
+            ),
+          }
+        : phase,
+    );
     this.applyWorkflowUpdate({ ...existing, phases: updatedPhases });
-    return prompt;
+    return agent.human_prompt ?? "";
   };
 
   readonly ensureHumanPromptLoaded = async (
@@ -1745,10 +1819,11 @@ export class CliPiAppState {
     agentId: string,
   ): Promise<void> => {
     const lookup = findWorkflowAgent(this.workflowRuns, workflowId, agentId);
-    const current = lookup?.agent.human_prompt?.trim() ?? "";
-    if (current && !isHumanPromptTruncated(current)) return;
+    if (!lookup) return;
+    const current = lookup.agent.human_prompt?.trim() ?? "";
+    if (current) return;
     try {
-      await this.loadHumanPrompt(workflowId, agentId);
+      await this.loadAgentDetail(workflowId, lookup.phase.id, agentId);
     } catch {
       // Best-effort — pending list still shows whatever partial text we have.
     }
@@ -1758,7 +1833,7 @@ export class CliPiAppState {
     type?: unknown;
     workflows?: unknown;
     total?: unknown;
-    truncated?: unknown;
+    has_more?: unknown;
     [key: string]: unknown;
   }): void => {
     const workflows = Array.isArray(payload.workflows) ? payload.workflows : [];
@@ -2069,6 +2144,41 @@ export class CliPiAppState {
       this.modelInfo = { ...this.modelInfo, model: trimmed };
       this.emitChange();
     }
+    // 切回 defaults 模型 → 放弃 agentos 请求级注入，恢复启动默认模型路由
+    if (this.selectedAgentosModel !== null) {
+      this.selectedAgentosModel = null;
+      this.selectedAgentosProvider = "";
+      this.selectedAgentosModelKey = null;
+      this.emitChange();
+    }
+  };
+
+  /**
+   * 全局选中 agentos 备份模型（请求级注入）。与 setModel 互斥：
+   * 选 agentos 不改 modelInfo（启动默认不变），仅记录注入名；
+   * setModel 会清空本字段。
+   *
+   * name 为展示用纯名；key 为后端 model_key（model_name#global_idx），供
+   * chat.send 精确注入同名 agentos 条目，缺省时回退到 name。
+   */
+  readonly setSelectedAgentosModel = (
+    name: string | null,
+    provider?: string,
+    key?: string | null,
+  ): void => {
+    const trimmed = name ? name.trim() : "";
+    const next = trimmed || null;
+    const nextKey = key ? key.trim() || null : null;
+    if (
+      this.selectedAgentosModel !== next
+      || this.selectedAgentosProvider !== (provider ?? "")
+      || this.selectedAgentosModelKey !== (next ? nextKey : null)
+    ) {
+      this.selectedAgentosModel = next;
+      this.selectedAgentosProvider = next ? (provider ?? "") : "";
+      this.selectedAgentosModelKey = next ? nextKey : null;
+      this.emitChange();
+    }
   };
 
   readonly setPreferredLanguage = (language: PreferredLanguage): void => {
@@ -2168,6 +2278,13 @@ export class CliPiAppState {
       ...(attachments?.length ? { attachments } : {}),
       ...(planEntrySource ? { plan_entry_source: planEntrySource } : {}),
       ...(skills?.length ? { skills } : {}),
+      // agentos 备份模型：请求级注入 model_name，AgentServer 据此路由到 agentos 缓存条目。
+      // 为空时省略，沿用启动默认模型。优先用后端 model_key（model_name#global_idx），
+      // 后端 _resolve_model_by_name 据 #global_idx 精确命中同名 agentos 条目；
+      // 无 key 时回退纯名（同名时会被解析到 defaults，仅作兼容兜底）。
+      ...((this.selectedAgentosModelKey || this.selectedAgentosModel)
+        ? { model_name: this.selectedAgentosModelKey || this.selectedAgentosModel }
+        : {}),
     };
     // Pre-check: reject messages whose serialized frame exceeds 7 MB (gateway
     // server max_size is 8 MB; leave 1 MB margin for JSON overhead).
@@ -2356,6 +2473,10 @@ export class CliPiAppState {
       return;
     }
     const source = this.pendingQuestion.source;
+    const outboundAnswers =
+      source === "permission_interrupt"
+        ? bindPermissionCardAnswer(answers, this.pendingQuestion.questions)
+        : answers;
     const approvalTransport =
       this.pendingQuestion.evolutionMeta &&
       typeof this.pendingQuestion.evolutionMeta.approval_transport === "string"
@@ -2383,7 +2504,7 @@ export class CliPiAppState {
         {
           query: "",
           request_id: this.pendingQuestion.requestId,
-          answers,
+          answers: outboundAnswers,
           source,
           mode: resumeMode,
           ...structuredPlanPayload,
@@ -2954,6 +3075,7 @@ export class CliPiAppState {
           ...tool,
           status: orphan.tool.status,
           result: orphan.tool.result,
+          renderedResult: orphan.tool.renderedResult,
           summary: orphan.tool.summary,
           isError: orphan.tool.isError,
         }

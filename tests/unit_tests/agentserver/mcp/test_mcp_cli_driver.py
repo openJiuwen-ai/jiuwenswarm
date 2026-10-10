@@ -10,24 +10,26 @@ copying + enable flipping is exercised for real.
 
 from __future__ import annotations
 
-import json
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from jiuwenswarm.server.runtime.mcp import cli_driver
 from jiuwenswarm.server.runtime.mcp.cli_driver import (
-    AuthStepResult,
     CliDriver,
     CliManifest,
     CommandResult,
     ERR_BINARY_NOT_FOUND,
-    StatusResult,
     _extract_url,
     _is_binary_not_found,
     _parse_version,
-    _version_ge,
+    _pin_init_command,
+    _safe_split_command,
+    _version_eq,
 )
+from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
 
 
 def _mkmanifest() -> CliManifest:
@@ -86,9 +88,96 @@ class TestVersionUtils:
         assert _parse_version("lark-cli 1.0.79 build 123") == "1.0.79"
         assert _parse_version("no version here") is None
 
-    def test_version_ge(self) -> None:
-        assert _version_ge("1.0.79", "1.0.77") is True
-        assert _version_ge("1.0.70", "1.0.77") is False
+    def test_version_eq(self) -> None:
+        assert _version_eq("1.0.79", "1.0.79") is True
+        assert _version_eq("1.0.90", "1.0.79") is False
+        assert _version_eq("1.0.70", "1.0.79") is False
+
+    def test_pin_init_command(self) -> None:
+        assert _pin_init_command("npm install -g @wecom/cli@{version}", "0.1.9") == "npm install -g @wecom/cli@0.1.9"
+        assert _pin_init_command("py -m pip install gitcode-cli=={version}", "0.9.0") == "py -m pip install gitcode-cli==0.9.0"
+        assert _pin_init_command("npm install -g @wecom/cli", "0.1.9") == "npm install -g @wecom/cli"
+        assert _pin_init_command("", "0.1.9") == ""
+
+
+class TestCommandResolution:
+    def test_harmony_resolves_bare_executable_to_absolute_path(self, monkeypatch) -> None:
+        monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+        monkeypatch.setattr(cli_driver.sys, "platform", "linux")
+        monkeypatch.setattr(
+            shutil,
+            "which",
+            lambda name: f"/data/app/hnp/bin/{name}",
+        )
+
+        assert _safe_split_command("npm install -g @larksuite/cli") == [
+            "/data/app/hnp/bin/npm",
+            "install",
+            "-g",
+            "@larksuite/cli",
+        ]
+
+    def test_harmony_hnp_path_enables_resolution_without_marker(self, monkeypatch) -> None:
+        monkeypatch.delenv("JIUWEN_HARMONY_RUNTIME", raising=False)
+        monkeypatch.setattr(cli_driver.sys, "platform", "linux")
+        monkeypatch.setenv(
+            "PATH",
+            "/data/app/el1/bundle/100/hnp/com.example/bin:/system/bin",
+        )
+        monkeypatch.setattr(shutil, "which", lambda _: "/data/app/hnp/bin/node")
+
+        assert _safe_split_command("node --version") == [
+            "/data/app/hnp/bin/node",
+            "--version",
+        ]
+
+    def test_harmony_keeps_explicit_executable_path(self, monkeypatch) -> None:
+        monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+        monkeypatch.setattr(cli_driver.sys, "platform", "linux")
+
+        def fail_which(_: str) -> None:
+            raise AssertionError("explicit paths must not be resolved")
+
+        monkeypatch.setattr(shutil, "which", fail_which)
+        command = "/data/app/hnp/bin/node --version"
+
+        assert _safe_split_command(command) == [
+            "/data/app/hnp/bin/node",
+            "--version",
+        ]
+
+    def test_non_harmony_posix_keeps_existing_bare_command_behavior(self, monkeypatch) -> None:
+        monkeypatch.delenv("JIUWEN_HARMONY_RUNTIME", raising=False)
+        monkeypatch.setattr(cli_driver.sys, "platform", "linux")
+
+        def fail_which(_: str) -> None:
+            raise AssertionError("non-Harmony POSIX must keep existing behavior")
+
+        monkeypatch.setattr(shutil, "which", fail_which)
+
+        assert _safe_split_command("node --version") == ["node", "--version"]
+
+    def test_default_runner_passes_harmony_absolute_path_to_subprocess(self, monkeypatch) -> None:
+        monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+        monkeypatch.setattr(cli_driver.sys, "platform", "linux")
+        monkeypatch.setattr(shutil, "which", lambda _: "/data/app/hnp/bin/node")
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return cli_driver.subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout="v24.13.0\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(cli_driver.subprocess, "run", fake_run)
+
+        result = cli_driver.default_runner("node --version")
+
+        assert result.succeeded is True
+        assert calls[0][0] == ["/data/app/hnp/bin/node", "--version"]
 
 
 class TestExtractUrl:
@@ -134,15 +223,58 @@ class TestCliDriverInstall:
     def test_install_skips_init_when_version_ok(self) -> None:
         runner = _FakeRunner({
             "lark-cli.cmd --version": CommandResult(
-                "lark-cli.cmd --version", 0, stdout="lark-cli 1.0.90"
+                "lark-cli.cmd --version", 0, stdout="lark-cli 1.0.79"
             ),
         })
         drv = CliDriver("feishu", _mkmanifest(), runner)
         res = drv.install()
         assert res.version_ok is True
-        assert res.version == "1.0.90"
-        # init (npm install) must NOT run when versionCheck already passes
+        assert res.version == "1.0.79"
+        # init (npm install) must NOT run when versionCheck already matches
         assert "npm install -g @larksuite/cli" not in runner.calls
+
+    def test_install_downgrades_newer_version_to_pin(self) -> None:
+        """A newer install (1.0.90) is not interchangeable — the CLI's command
+        output is tied to the pinned version. install() must run the pinned
+        init (`@1.0.79`) to downgrade, then re-check and pass."""
+        m = _mkmanifest()
+        m.init_cmd = "npm install -g @larksuite/cli@{version}"
+        calls: list[str] = []
+        downgraded = {"done": False}
+
+        def runner(command: str) -> CommandResult:
+            calls.append(command)
+            if command == "lark-cli.cmd --version":
+                ver = "1.0.79" if downgraded["done"] else "1.0.90"
+                return CommandResult(command, 0, stdout=f"lark-cli {ver}")
+            if command == "npm install -g @larksuite/cli@1.0.79":
+                downgraded["done"] = True
+                return CommandResult(command, 0)
+            return CommandResult(command, 1, stderr="unknown")
+
+        drv = CliDriver("feishu", m, runner)
+        res = drv.install()
+        assert res.version_ok is True
+        assert res.version == "1.0.79"
+        # init must run with the pinned version, not the bare "latest" command
+        assert "npm install -g @larksuite/cli@1.0.79" in calls
+
+    def test_install_cmd_carries_pinned_version(self) -> None:
+        """InstallResult.install_cmd carries the {version}-filled command so
+        the frontend hint can show the exact upgrade/downgrade command."""
+        m = _mkmanifest()
+        m.init_cmd = "npm install -g @larksuite/cli@{version}"
+        runner = _FakeRunner({
+            "lark-cli.cmd --version": CommandResult(
+                "lark-cli.cmd --version", 0, stdout="lark-cli 1.0.70"
+            ),
+            "npm install -g @larksuite/cli@1.0.79": CommandResult(
+                "npm install -g @larksuite/cli@1.0.79", 0
+            ),
+        })
+        drv = CliDriver("feishu", m, runner)
+        res = drv.install()
+        assert res.install_cmd == "npm install -g @larksuite/cli@1.0.79"
 
     def test_install_binary_not_found_classified(self) -> None:
         """Runtime/CLI binary missing (node/npm/dws not on PATH) surfaces as
@@ -338,6 +470,9 @@ class TestSkillInstaller:
         )
         (pkg / "references").mkdir()
         (pkg / "references" / "ref.md").write_text("ref", encoding="utf-8")
+        package = pkg.parents[1]
+        (package / "cli.json").write_text("{}", encoding="utf-8")
+        write_manifest(package, "cli", credentials_type="cli-oauth", skills=True)
         return ws
 
     def test_install_copies_and_enables(self, tmp_path: Path) -> None:
@@ -465,6 +600,9 @@ class TestFlatSkillLayout:
         )
         (skills_dir / "references").mkdir()
         (skills_dir / "references" / "ui-locator.md").write_text("ref", encoding="utf-8")
+        package = skills_dir.parent
+        (package / "cli.json").write_text("{}", encoding="utf-8")
+        write_manifest(package, "cli", credentials_type="cli-oauth", skills=True)
         return ws
 
     def test_install_flat_skill_named_after_connector(self, tmp_path: Path) -> None:
@@ -584,7 +722,7 @@ class TestClassifyInstallFailure:
     carrying a structured code + runtime, so mcp.connect can surface an
     actionable i18n hint instead of raw WinError."""
 
-    def _mk(self, **kw) -> "InstallResult":
+    def _mk(self, **kw):
         from jiuwenswarm.server.runtime.mcp.cli_driver import InstallResult
         base = dict(
             name="dingtalk", installed=True, version=None,
@@ -657,4 +795,3 @@ class TestClassifyInstallFailure:
         exc = _classify_install_failure("dingtalk", self._mk())
         assert isinstance(exc, CliConnectError)
         assert isinstance(exc, ValueError)
-

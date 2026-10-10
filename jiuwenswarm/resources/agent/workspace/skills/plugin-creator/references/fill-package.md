@@ -29,7 +29,7 @@
 
 | 文件              | 参考                             | 要点                                                                                                                                   |
 | --------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `manifest.json` | `@references/manifest-spec.md` | 展示字段填实；`id` = 目录名；`name` / `description` 非空；`default_init_input` ≡ `quick_inputs[0]`；禁止 `persona` / `agent_card` / `model` / `subagents` / `mcps` |
+| `manifest.json` | `@references/manifest-spec.md` | 展示字段填实；`id` = 目录名；`name` / `description` 非空；`default_init_input` ≡ `quick_inputs[0]`；`avatar` 可选（`""` 或 `avatars/avatar.png`）；禁止 `persona` / `agent_card` / `model` / `subagents` / `mcps` |
 | `README.md`     | —                              | 描述插件**能力**与使用方式（配合专家装备），不写人设                                                                                                         |
 
 

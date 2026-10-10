@@ -28,19 +28,23 @@ JiuwenSwarm session data is stored in the local workspace with the following str
     └── sessions/
         ├── sess_19ddd41cbc0_fd1e4d/    # Regular session directory
         │   ├── metadata.json          # Session metadata
-        │   └── history.json           # Conversation history
-        ├── sess_19ddd5cc729_09bb02/   # Another session
+        │   └── history.jsonl          # Conversation history
+        ├── cron_19ddd5cc729_09bb02/   # Cron session
         │   ├── metadata.json
-        │   └── history.json
+        │   └── history.jsonl
         └── ...
 ```
 
-**Session Types:**
+**Session directory prefix description:**
 
 | Directory Prefix | Type | Description |
 |------------------|------|-------------|
-| `sess_` | Regular Session | Conversation sessions initiated via Web, Feishu, etc. |
+| `sess_` | Regular Session | Conversation sessions initiated via Web, TUI, etc. (default prefix) |
 | `cron_` | Cron Session | Scheduled task sessions (`cron_id` is non-empty in `metadata.json`) |
+| `heartbeat_` | Heartbeat Session | One-shot heartbeat tasks, generally not shown in `session.list` |
+| `feishu_` / `wechat_` / `tui_`, etc. | Channel Session | Sessions from specific channels (Feishu/WeChat/TUI, etc.); historical data may retain channel prefixes |
+
+> **Note**: In the current code, Web/TUI channels generate `sess_`-prefixed sessions by default; earlier versions or different channels may use `web_`, `tui_`, etc. The system recognizes all of them. The session list UI auto-categorizes by prefix.
 
 **Session type distinction:**
 
@@ -62,28 +66,28 @@ JiuwenSwarm session data is stored in the local workspace with the following str
 | `last_message_at` | Last message time | `1716253200.865117` |
 | `title` | Session title (usually first message summary) | `Help me write a technical document` |
 | `message_count` | Total message count | `15` |
-| `mode` | Execution mode | `agent.plan` |
+| `mode` | Execution mode | `agent` (normal agent), `code.normal` (coding mode), `team` (cluster mode), `unknown` (uninitialized) |
 | `project_id` | Project ID the session belongs to | `proj_abc123` (empty string = default project) |
 | `cron_id` | Source cron job ID | Empty for regular sessions; non-empty for cron-triggered sessions |
 
-**history.json File Content:**
+**history.jsonl File Content:**
 
-history.json is a JSON array that records complete conversation history. Each message contains the following fields:
+history.jsonl is a JSONL-format file (one JSON object per line) that records the complete conversation history. Each message contains the following fields:
 
 ![history.json Example](../assets/images/session/jiuwenclaw_session_history_json.png)
 
 | Field | Description | Example |
 |-------|-------------|---------|
 | `id` | Unique message identifier, suffix `user` indicates user query, suffix `assistant` indicates agent response | `req_mol5noj7_22:user` |
-| `role` | Message role | `user` or `assistant` |
+| `role` | Message role | `user` (user), `assistant` (AI response), `leader` (cluster leader), `teammate` (cluster member) |
 | `request_id` | Request identifier | `req_mol5noj7_22` |
 | `channel_id` | Message source channel | `web` |
 | `timestamp` | Message timestamp | `1777533730.7309785` |
 | `content` | Message content | User input or AI response text |
-| `event_type` | Event type | `chat.delta`, `chat.final`, `chat.reasoning` |
-| `tool_calls` | Tool call information (only in assistant messages) | Contains tool name, parameters, etc. |
+| `event_type` | Event type | `chat.delta` (streaming increment), `chat.final` (final response), `chat.reasoning` (reasoning process), `chat.tool_call` (tool call), `chat.tool_result` (tool result), `chat.usage_summary` (usage stats), `chat.file` (file attachment) |
+| `tool_call` | Tool call information (only in assistant messages) | Contains tool name, parameters, etc. |
 
-> **Tip**: Agent response messages also contain `tool_calls` and other fields for recording tool call information.
+> **Tip**: Agent response messages also contain `tool_call` and other fields for recording tool call information.
 
 ### Why Sessions are Needed
 
@@ -128,14 +132,14 @@ You can view complete chat history of all sessions to understand past conversati
 **Steps:**
 
 1. **Via Web Interface**
-   - In JiuwenSwarm Web interface, click **Work** in the left navigation
-   - In the session list on the left side of the Work page, you can see all sessions under the current project
+   - In JiuwenSwarm Web interface, click **Tasks** in the left navigation
+   - In the session list on the left side of the Tasks page, you can see the sessions under the current project (including regular sessions and pinned sessions; pinned sessions are shown in a separate "Pinned" group at the top of the list)
    - Click any session to view its complete chat history
 
 2. **Via Local Files**
    - Navigate to session storage directory: `.jiuwenswarm/agent/sessions/`
    - Enter the corresponding session directory (e.g., `sess_19ddd41cbc0_fd1e4d/`)
-   - View conversation content in `history.json` file
+   - View conversation content in `history.jsonl` file
 
 ### Restore Session
 
@@ -161,7 +165,7 @@ Restoring a session syncs historical session content to the frontend to continue
 
 - After restoring a session, new messages will be appended to the original history
 - If the session contains incomplete tasks, the system will attempt to restore task state
-- Long inactive sessions may have been compressed and need decompression when restored
+- When the conversation history is long, the system will summarize and compress the context sent to the LLM (this only affects model input, not storage; `history.jsonl` always retains the complete original history)
 
 ### Delete Historical Session
 
@@ -195,7 +199,7 @@ Yes, when restoring a session, the system will attempt to restore previous task 
 
 ### Q4: Where is session data stored?
 
-Session data is stored in the `.jiuwenswarm/agent/sessions/` directory of the local workspace. Each session is an independent directory containing `metadata.json` and `history.json` files.
+Session data is stored in the `.jiuwenswarm/agent/sessions/` directory of the local workspace. Each session is an independent directory containing `metadata.json` and `history.jsonl` files.
 
 ### Q5: How to backup important sessions?
 

@@ -22,6 +22,7 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
   timeoutId: number;
+  awaitRuntimeAccepted: boolean;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -202,20 +203,25 @@ class WebClient {
           this.updateState('closed');
           return;
         }
-        // 1008 Policy Violation: gateway 鉴权失败 (token 失效/缺失)。
-        // 重载页面, AppWithAuth 会探测 cookie 失效 -> 回到登录页。
-        if (closeEvent.code === 1008) {
-          this.updateState('closed');
-          if (typeof window !== 'undefined') {
-            window.location.reload();
-          }
-          return;
-        }
         this.scheduleReconnect();
       };
     });
 
     return this.connectPromise;
+  }
+
+  /**
+   * 断开后立刻用同一组参数重连。
+   *
+   * 登录态变化时必须调这个：登录会话 id 是 **WS 握手时**从 cookie / 请求头读的，
+   * 之后这条连接就一直用那份值。而登录走的是 HTTP，发生在握手之后——不重连的话，
+   * 连接上停留的还是登录前那份，服务端据此取凭据会取不到，
+   * 表现为"选了免费模型却跑了配置的模型"。
+   */
+  async reconnect(reason = 'Auth changed'): Promise<void> {
+    const options = this.lastConnectOptions;
+    await this.disconnect(reason);
+    await this.connect(options);
   }
 
   disconnect(reason = 'User disconnect'): Promise<void> {
@@ -287,6 +293,7 @@ class WebClient {
         resolve: (value) => resolve(value as T),
         reject,
         timeoutId,
+        awaitRuntimeAccepted: options.awaitRuntimeAccepted === true,
       };
       this.pending.set(id, pending);
 
@@ -311,7 +318,14 @@ class WebClient {
         messageType: 'req',
         data: message,
       });
-      this.ws?.send(JSON.stringify(message));
+      try {
+        options.onRequestId?.(id);
+        this.ws!.send(JSON.stringify(message));
+      } catch (error) {
+        window.clearTimeout(timeoutId);
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 
@@ -389,6 +403,7 @@ class WebClient {
       return;
     }
 
+    this.resolveRuntimeAcceptedPending(message);
     this.dispatchEvent(message);
   }
 
@@ -417,10 +432,12 @@ class WebClient {
       if (!eventName) {
         return null;
       }
+      const payload = this.normalizePayload(msg.payload);
       return {
         type: 'event',
-        event: eventName,
-        payload: this.normalizePayload(msg.payload),
+        // Older gateways wrap control ACKs in chat.final; an ACK must never close a turn.
+        event: eventName === 'chat.final' && payload.event_type === 'runtime.accepted' ? 'runtime.accepted' : eventName,
+        payload,
         seq: typeof msg.seq === 'number' ? msg.seq : undefined,
         stream_id: typeof msg.stream_id === 'string' ? msg.stream_id : undefined,
       };
@@ -431,10 +448,11 @@ class WebClient {
       if (!mappedEvent) {
         return null;
       }
+      const payload = this.normalizePayload(msg.payload);
       return {
         type: 'event',
-        event: mappedEvent,
-        payload: this.normalizePayload(msg.payload),
+        event: mappedEvent === 'chat.final' && payload.event_type === 'runtime.accepted' ? 'runtime.accepted' : mappedEvent,
+        payload,
       };
     }
 
@@ -451,6 +469,9 @@ class WebClient {
   private resolvePending(message: WsResponse): void {
     const pending = this.pending.get(message.id);
     if (!pending) {
+      return;
+    }
+    if (message.ok && pending.awaitRuntimeAccepted) {
       return;
     }
     window.clearTimeout(pending.timeoutId);
@@ -470,6 +491,32 @@ class WebClient {
         message.payload
       )
     );
+  }
+
+  private resolveRuntimeAcceptedPending(message: WsEvent): void {
+    if (message.event !== 'runtime.accepted' && message.event !== 'chat.error') {
+      return;
+    }
+    const requestId = message.payload.request_id;
+    if (typeof requestId !== 'string') {
+      return;
+    }
+    const pending = this.pending.get(requestId);
+    if (!pending?.awaitRuntimeAccepted) {
+      return;
+    }
+    window.clearTimeout(pending.timeoutId);
+    this.pending.delete(requestId);
+    if (message.event === 'runtime.accepted') {
+      pending.resolve(message.payload);
+      return;
+    }
+    const error =
+      typeof message.payload.error === 'string'
+        ? message.payload.error
+        : i18n.t('network.requestFailed');
+    const code = typeof message.payload.code === 'string' ? message.payload.code : undefined;
+    pending.reject(this.createWebError(error, code, requestId, true, message.payload));
   }
 
   private dispatchEvent(event: WsEvent): void {
@@ -584,6 +631,100 @@ export async function webRequest<T = unknown>(
   options?: WebRequestOptions
 ): Promise<T> {
   return webClient.request<T>(method, params, options);
+}
+
+// ── SwarmFlow workflow 分页 RPC 封装（command.workflows） ─────────
+
+export interface WorkflowListResponse {
+  type?: string;
+  workflows?: unknown[];
+  session_id?: string;
+  total?: number;
+  has_more?: boolean;
+}
+
+export interface WorkflowDetailResponse {
+  type?: string;
+  workflow?: unknown;
+  session_id?: string;
+  phase_total?: number;
+  has_more?: boolean;
+}
+
+export interface WorkflowPhaseResponse {
+  type?: string;
+  phase?: unknown;
+  session_id?: string;
+  agent_total?: number;
+  has_more?: boolean;
+  error?: unknown;
+}
+
+export interface WorkflowAgentResponse {
+  type?: string;
+  agent?: unknown;
+  session_id?: string;
+  error?: unknown;
+}
+
+export async function requestWorkflowList(
+  sessionId: string,
+  offset = 0,
+  limit?: number,
+): Promise<WorkflowListResponse> {
+  return webRequest<WorkflowListResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'list',
+    offset,
+    ...(limit == null ? {} : { limit }),
+  });
+}
+
+export async function requestWorkflowDetail(
+  sessionId: string,
+  workflowId: string,
+  phaseOffset = 0,
+  phaseLimit?: number,
+): Promise<WorkflowDetailResponse> {
+  return webRequest<WorkflowDetailResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'get_workflow',
+    workflow_id: workflowId,
+    phase_offset: phaseOffset,
+    ...(phaseLimit == null ? {} : { phase_limit: phaseLimit }),
+  });
+}
+
+export async function requestPhaseAgents(
+  sessionId: string,
+  workflowId: string,
+  phaseId: string,
+  agentOffset = 0,
+  agentLimit?: number,
+): Promise<WorkflowPhaseResponse> {
+  return webRequest<WorkflowPhaseResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'get_phase',
+    workflow_id: workflowId,
+    phase_id: phaseId,
+    agent_offset: agentOffset,
+    ...(agentLimit == null ? {} : { agent_limit: agentLimit }),
+  });
+}
+
+export async function requestAgentDetail(
+  sessionId: string,
+  workflowId: string,
+  phaseId: string,
+  agentId: string,
+): Promise<WorkflowAgentResponse> {
+  return webRequest<WorkflowAgentResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'get_agent',
+    workflow_id: workflowId,
+    phase_id: phaseId,
+    agent_id: agentId,
+  });
 }
 
 interface GoalCommandResponsePayload {

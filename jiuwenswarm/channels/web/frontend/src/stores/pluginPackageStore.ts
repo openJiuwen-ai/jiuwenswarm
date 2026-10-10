@@ -1,4 +1,6 @@
+import { scheduleCatalogRefresh, catalogScope } from '../features/catalogCache';
 import { create } from 'zustand';
+import { extractRpcErrorMessage } from '../features/agentManagement/upload';
 import { PluginInstallPendingError, pluginPackagesApi } from '../services/pluginPackagesApi';
 import type { PluginConnectionState, PluginPackageDetail, PluginPackageSummary } from '../types/pluginPackage';
 
@@ -102,19 +104,21 @@ interface PluginPackageState {
    * 成功提示，统一在 install() 里 set 一次即可覆盖，不用调用方各自维护。 */
   successMessage: string | null;
   busyId: string | null;
+  installingIds: Record<string, boolean>;
 
-  loadList: (filter?: 'builtin' | 'local', options?: { silent?: boolean }) => Promise<void>;
-  // 返回是否成功——PluginDetailPage.tsx 卸载后要重新 show() 探测这个插件还在不在（新方案
-  // "我的插件"卸载后的收尾逻辑：还能读到就留在详情页，读不到才退出到列表页），需要知道结果。
+  loadList: (filter?: 'builtin+hub' | 'mine', options?: { silent?: boolean }) => Promise<void>;
+  // 返回是否成功，供详情页在加载失败时保留当前导航状态。
   loadDetail: (id: string) => Promise<boolean>;
-  /** 跟 loadDetail 几乎一样，唯一区别是失败时不 set 全局 error——2026-08-21 用户反馈根因确认：
-   * 卸载插件（uninstall_plugin_package）后端会把整个包目录删掉（不是只翻 installed 标记），
-   * 卸载后探测"这个包还在不在"时 show() 404 是预期中的正常结果（走 onDeleted 退出到列表页），
-   * 不该弹一条吓人的红色错误提示——真正的卸载结果反馈已经由 uninstall()/deletePackage() 自己的
-   * successMessage/error 负责，这个探测只是导航判断用。 */
-  probeExists: (id: string) => Promise<boolean>;
-  create: (params: { id: string; name: string; description: string; skills: string[]; mcps: string[] }) => Promise<boolean>;
-  importLocal: (params: { path: string }) => Promise<boolean>;
+  create: (params: {
+    id: string;
+    name: string;
+    description: string;
+    skills: string[];
+    mcps: string[];
+  }) => Promise<boolean>;
+  importLocal: (
+    params: { path: string },
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
   install: (id: string) => Promise<void>;
   uninstall: (id: string) => Promise<void>;
   deletePackage: (id: string) => Promise<boolean>;
@@ -126,6 +130,8 @@ interface PluginPackageState {
 }
 
 const persisted = loadPersistedLocalState();
+const persistedInstalled = { ...persisted.installed };
+const initialConnectionStates: Record<string, PluginConnectionState> = {};
 
 // 2026-08-18：同 connectorStore.ts 的 listRequestSeq——ExtensionPickerPanel 每次打开都无条件
 // 重新 loadList，同一个 filter 桶（'local' 或 packages 那半，undefined/'builtin' 共用）可能有
@@ -133,7 +139,7 @@ const persisted = loadPersistedLocalState();
 // 写入的 state 字段分桶（跟下面 `filter === 'local' ? localPackages : packages` 的判断保持一致），
 // 不是按 filter 原始取值分——undefined 和 'builtin' 本来就写同一个 packages 字段，理应共用同一个
 // 序号桶，否则这两者各自的序号互不感知，挡不住彼此的旧请求覆盖。
-const listRequestSeq: Record<'local' | 'packages', number> = { local: 0, packages: 0 };
+const listRequestSeq: Record<'mine' | 'packages', number> = { mine: 0, packages: 0 };
 
 // 照抄 connectorStore.ts 的 scheduleQuickRefresh：install() 成功后本地乐观 patch
 // connectionStateMap 只是让 UI 立刻可信，仍需要一次真实的 loadList('local') 兜底校准，防止
@@ -146,34 +152,37 @@ function scheduleQuickRefresh(): void {
   if (quickRefreshTimer !== null) window.clearTimeout(quickRefreshTimer);
   quickRefreshTimer = window.setTimeout(() => {
     quickRefreshTimer = null;
-    void usePluginPackageStore.getState().loadList('local', { silent: true });
+    void usePluginPackageStore.getState().loadList('mine', { silent: true });
   }, QUICK_REFRESH_DELAY_MS);
 }
 
-export const usePluginPackageStore = create<PluginPackageState>((set) => ({
+export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
   packages: [],
   localPackages: [],
   detailCache: {},
-  installed: persisted.installed,
-  connectionStateMap: {},
+  installed: persistedInstalled,
+  connectionStateMap: initialConnectionStates,
   installPendingMap: {},
   isLoading: false,
   error: null,
   noticeMessage: null,
   successMessage: null,
   busyId: null,
+  installingIds: {},
 
-  // silent=true 用于切页/回到市场页时的轮询兜底刷新（每 10s，见 ConnectorMarketPanel）：
-  // 不切 isLoading、失败时保留现有列表且不弹 error——同款静默刷新模式见 connectorStore.ts
-  // 的 loadList(options)、抄自 CronPanel/index.tsx 的 loadJobs(silent)。
+  // silent=true 仅用于安装/卸载后的快速校准，不改变页面的加载状态。
   loadList: async (filter, options) => {
     const silent = options?.silent ?? false;
-    const seqKey = filter === 'local' ? 'local' : 'packages';
+    const seqKey = filter === 'mine' ? 'mine' : 'packages';
     const mySeq = ++listRequestSeq[seqKey];
+    const requestScope = catalogScope();
     if (!silent) set({ isLoading: true, error: null });
     try {
-      const packages = await pluginPackagesApi.list(filter);
+      const freshPackages = await pluginPackagesApi.list(filter);
+      if (requestScope !== catalogScope()) return;
+      scheduleCatalogRefresh('pluginPackageStore.ts:' + seqKey, freshPackages.cache, () => { void get().loadList(filter, { silent: true }); }, () => listRequestSeq[seqKey] === mySeq);
       if (listRequestSeq[seqKey] !== mySeq) return; // 已有更新的同桶调用发起过，这次结果作废
+      const packages = freshPackages;
       set((state) => {
         // installed/connectionStateMap 是 packages+localPackages 两份列表的并集，合并写入而不是
         // 整份覆盖——否则市场页（filter=undefined）和会话面板（filter='local'）交替 loadList 时，
@@ -186,7 +195,7 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
         }
         persistLocalState({ installed: nextInstalled });
         return {
-          ...(filter === 'local' ? { localPackages: packages } : { packages }),
+          ...(filter === 'mine' ? { localPackages: packages } : { packages }),
           isLoading: false,
           installed: nextInstalled,
           connectionStateMap: nextConnectionStateMap,
@@ -196,7 +205,6 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
       if (listRequestSeq[seqKey] !== mySeq) return;
       if (silent) return;
       set({
-        ...(filter === 'local' ? { localPackages: [] } : { packages: [] }),
         isLoading: false,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -217,34 +225,17 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
     }
   },
 
-  probeExists: async (id: string) => {
-    try {
-      const detail = await pluginPackagesApi.show(id);
-      set((state) => ({
-        detailCache: { ...state.detailCache, [id]: detail },
-        connectionStateMap: { ...state.connectionStateMap, [id]: detail.connectionState },
-      }));
-      return true;
-    } catch {
-      return false;
-    }
-  },
-
   // 和 install 不同：create 产出的是一个全新实体，后续 show() 还要能读到它，前端没法安全地
   // "假装成功"——后端没实现这个接口时（backend-requests.md 需求2），这里如实失败，让调用方给
   // 用户看错误提示，而不是伪造一条本地数据后刷新就消失。
   //
-  // 2026-08-21：create_plugin_package 落盘时固定 installed=False，手动创建的插件永远是"已创建
-  // 但未安装"。这里一度改成创建成功后自动串联调用 install(id)（照抄 MCP 侧 registerCustom 自动
-  // connect 的模式），但用户跟同事对齐产品方案后明确要求撤回——创建这一步只管创建，不自动安装，
-  // 用户需要自己再点一次安装。
+  // 创建落盘仍是 installed=False（与专家团 create_agent_group 相同）。对齐专家团前端：
+  // 创建成功后立刻 install，用户回到「我的」即可使用；依赖未就绪则记进 installPendingMap。
   create: async (params) => {
     try {
       await pluginPackagesApi.create(params);
-      // 新建的包必然是 source==='local'，刷新 localPackages（'我的插件'桶）即可；2026-08-19
-      // loadList() 的 filter 语义改成跟 MCP 侧对齐后，裸调 loadList()（等价于 filter='builtin'）
-      // 会用只含 builtin 的结果覆盖 packages，刷不出刚创建的这条、还会短暂污染"插件广场"数据。
-      await usePluginPackageStore.getState().loadList('local');
+      await get().install(params.id);
+      await usePluginPackageStore.getState().loadList('mine');
       return true;
     } catch (error) {
       set({ error: error instanceof Error ? error.message : String(error) });
@@ -252,17 +243,18 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
     }
   },
 
-  // 上传文件创建插件（plugin_packages.import_local，见 pluginPackagesApi.ts 头注释）：跟 create
-  // 一样是产出全新实体，没法安全地本地模拟成功，如实报错。成功后刷新 localPackages（'我的插件'
-  // 桶，导入的包必然是 source==='local'）。
+  // 上传文件创建插件：对齐专家团 import + install。导入成功后立刻 install，再刷新「我的插件」。
   importLocal: async (params) => {
     try {
-      await pluginPackagesApi.importLocal(params);
-      await usePluginPackageStore.getState().loadList('local');
-      return true;
+      const created = await pluginPackagesApi.importLocal(params);
+      if (created?.id) await get().install(created.id);
+      await usePluginPackageStore.getState().loadList('mine');
+      return { ok: true };
     } catch (error) {
-      set({ error: error instanceof Error ? error.message : String(error) });
-      return false;
+      return {
+        ok: false,
+        error: extractRpcErrorMessage(error, 'plugin package import failed'),
+      };
     }
   },
 
@@ -283,7 +275,13 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
   // scheduleQuickRefresh 一次真实 loadList('local') 兜底校准（同 connectorStore.ts 的
   // scheduleQuickRefresh，避免乐观值和后端真实状态长期不同步）。
   install: async (id: string) => {
-    set((state) => ({ busyId: id, error: null, successMessage: null, installPendingMap: { ...state.installPendingMap, [id]: undefined } }));
+    if (get().installingIds[id]) return;
+    set((state) => ({
+      installingIds: { ...state.installingIds, [id]: true },
+      error: null,
+      successMessage: null,
+      installPendingMap: { ...state.installPendingMap, [id]: undefined },
+    }));
     try {
       await pluginPackagesApi.install(id);
       set((state) => {
@@ -291,7 +289,7 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
         persistLocalState({ installed: nextInstalled });
         return {
           installed: nextInstalled,
-          busyId: null,
+          installingIds: { ...state.installingIds, [id]: false },
           successMessage: successKey.pluginInstalled,
           connectionStateMap: { ...state.connectionStateMap, [id]: 'connected' },
         };
@@ -300,21 +298,17 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
     } catch (error) {
       if (error instanceof PluginInstallPendingError) {
         set((state) => ({
-          busyId: null,
+          installingIds: { ...state.installingIds, [id]: false },
           installPendingMap: { ...state.installPendingMap, [id]: error.pendingConnectors },
         }));
         return;
       }
-      set({ busyId: null, error: error instanceof Error ? error.message : String(error) });
+      set((state) => ({ installingIds: { ...state.installingIds, [id]: false }, error: error instanceof Error ? error.message : String(error) }));
     }
   },
 
-  // 2026-08-21 用户反馈根因确认：这条注释原来写的是"卸载只让 installed 变 false，不影响是否
-  // 还留在'我的'里"——实测发现是错的，后端 uninstall_plugin_package 会把整个包目录 rmtree 掉
-  // 并从 marketplace 名单里移除条目（不是只翻 installed 标记），卸载后这个包在 list/show 里
-  // 就是真的查不到了。PluginDetailPage.tsx 的"我的"视角卸载收尾（探测还在不在，不在就退出到
-  // 列表页）原来就是按这个真实行为写的，只是探测用的 loadDetail 会在探测失败时顺带弹一条红色
-  // 错误 Toast，把"预期内的 404"和"真错误"混在一起了，已经改成用不弹 error 的 probeExists。
+  // 后端卸载会删除插件的本地文件和市场记录。从“我的扩展”触发时使用 deletePackage，成功后
+  // 立即从本地列表移除卡片并返回列表页；广场视角仍使用 uninstall 保留广场资产卡片。
   //
   // 之前这里从来没有默认的"卸载成功"提示——只有后端返回 notice（该插件依赖的 connector 仍
   // 保持连接）时才会弹一条绿色 Toast，没有 notice 就什么反馈都没有，用户看不出卸载到底成没成功。
@@ -345,22 +339,27 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
 
   // 插件没有真正的"删除"接口（backend-requests.md 需求20，全文档没有 plugin_packages.delete），
   // 复用 plugin_packages.uninstall——和上面的 uninstall action 调用的是同一个后端方法，只是
-  // "我的插件"详情页调用这个入口，方便调用方（PluginDetailPage.tsx）在卸载后按需要做
-  // 探测收尾（见该组件注释）。等后端真的给出独立的删除接口再拆开。
+  // "我的插件"详情页调用这个入口，成功后同步清理本地列表与详情缓存。等后端真的给出独立的
+  // 删除接口再拆开。
   deletePackage: async (id: string) => {
     set({ busyId: id, error: null, successMessage: null });
     try {
       const { notice } = await pluginPackagesApi.uninstall(id);
       set((state) => {
         const nextInstalled = { ...state.installed, [id]: false };
+        const nextDetailCache = { ...state.detailCache };
+        delete nextDetailCache[id];
         persistLocalState({ installed: nextInstalled });
         return {
           installed: nextInstalled,
+          localPackages: state.localPackages.filter((item) => item.id !== id),
+          detailCache: nextDetailCache,
           busyId: null,
           noticeMessage: notice ?? null,
           successMessage: notice ? null : successKey.pluginUninstalled,
         };
       });
+      scheduleQuickRefresh();
       return true;
     } catch (error) {
       set({ busyId: null, error: error instanceof Error ? error.message : String(error) });

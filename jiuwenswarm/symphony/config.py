@@ -23,6 +23,9 @@ DEFAULT_BUILD_MIN_EDGE_CONFIDENCE = 0.5
 DEFAULT_SYMPHONY_ENABLED = False
 DEFAULT_EVOLUTION_ENABLED = False
 
+DEFAULT_FLOW_MIN_SUCCESSES = 3
+DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE = 0.8
+
 DEFAULT_ORCHESTRATION_MODE = "fast"
 DEFAULT_ORCHESTRATION_TOP_K = 3
 DEFAULT_ORCHESTRATION_MAX_DEPTH = 4
@@ -65,8 +68,27 @@ class SymphonyBuildConfig:
 
 
 @dataclass(frozen=True)
-class SymphonyEvolutionConfig:
+class SymphonyFlowDistillConfig:
+    """Flow 沉淀开关与阈值；成功次数同时约束 Core 的两个判级阶段。"""
+
     enabled: bool = DEFAULT_EVOLUTION_ENABLED
+    min_successes: int = DEFAULT_FLOW_MIN_SUCCESSES
+    min_pack_success_rate: float = DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE
+
+
+@dataclass(frozen=True)
+class SymphonyEvolutionConfig:
+    flow: SymphonyFlowDistillConfig = SymphonyFlowDistillConfig()
+
+
+def evolution_flow_enabled(config: Any) -> bool:
+    """Read the Flow switch, including test doubles that only set ``evolution.enabled``."""
+
+    evolution = getattr(config, "evolution", None)
+    flow = getattr(evolution, "flow", None)
+    if flow is not None and hasattr(flow, "enabled"):
+        return bool(flow.enabled)
+    return bool(getattr(evolution, "enabled", False))
 
 
 @dataclass(frozen=True)
@@ -110,10 +132,14 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
     extraction = _mapping(fingerprint.get("extraction"))
     build = _mapping(data.get("build"))
     evolution = _mapping(data.get("evolution"))
+    flow_cfg = _mapping(evolution.get("flow"))
+    flow_enabled = flow_cfg.get("enabled")
+    if flow_enabled is None:
+        flow_enabled = evolution.get("enabled")
     orchestration = _mapping(data.get("orchestration"))
 
     return SymphonyConfig(
-        enabled=_bool(data.get("enabled"), DEFAULT_SYMPHONY_ENABLED),
+        enabled=resolve_symphony_enabled(data.get("enabled")),
         paths=SymphonyPathsConfig(
             skills_root=_resolve_path(
                 paths.get("skills_root"),
@@ -166,9 +192,17 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
             ),
         ),
         evolution=SymphonyEvolutionConfig(
-            enabled=_bool(
-                evolution.get("enabled"),
-                DEFAULT_EVOLUTION_ENABLED,
+            flow=SymphonyFlowDistillConfig(
+                # enabled 移到 flow 下；旧配置（enabled 在 evolution 层）向后兼容
+                enabled=resolve_symphony_evolution_enabled(flow_enabled),
+                min_successes=_positive_int(
+                    flow_cfg.get("min_successes"),
+                    DEFAULT_FLOW_MIN_SUCCESSES,
+                ),
+                min_pack_success_rate=_clamped_float(
+                    flow_cfg.get("min_pack_success_rate"),
+                    DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE,
+                ),
             ),
         ),
         orchestration=SymphonyOrchestrationConfig(
@@ -250,6 +284,18 @@ def _bool(value: Any, default: bool) -> bool:
     if text in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def resolve_symphony_enabled(value: Any) -> bool:
+    """Resolve an explicit switch or inherit the code default for ``null``."""
+
+    return _bool(value, DEFAULT_SYMPHONY_ENABLED)
+
+
+def resolve_symphony_evolution_enabled(value: Any) -> bool:
+    """Resolve an explicit evolution switch or inherit the code default."""
+
+    return _bool(value, DEFAULT_EVOLUTION_ENABLED)
 
 
 def _orchestration_mode(value: Any, default: str) -> str:

@@ -26,9 +26,9 @@ from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
     WorkflowRunState,
 )
 from jiuwenswarm.server.wire_truncate import (
-    _collapse_oversized_workflow_snapshot_item,
-    _sanitize_workflow_snapshot_item_for_wire,
-    _WORKFLOW_SNAPSHOT_KEEP_KEYS,
+    _build_workflow_detail_paginated,
+    _build_phase_detail_paginated,
+    _WORKFLOW_LIST_SUMMARY_KEEP_KEYS,
 )
 
 _DEFAULT_RUN_ID = "wf_sdd0010_e2e"
@@ -338,7 +338,7 @@ class TestThreePathParity:
     across all three output paths:
       1. ``_build_phases_delta`` (incremental delta)
       2. ``to_workflow_run_dict`` (full snapshot)
-      3. ``_sanitize_workflow_snapshot_item_for_wire`` (wire-sanitized)
+      3. ``_build_workflow_detail_paginated`` (paged wire meta + phase summaries)
     """
 
     @staticmethod
@@ -392,7 +392,7 @@ class TestThreePathParity:
         return r
 
     def test_budget_identical_across_paths(self):
-        """budget dict is identical in delta, snapshot, and wire-sanitized."""
+        """budget dict is identical in delta, snapshot, and paged wire meta."""
         r = self._build_full_scenario()
         assert r.budget is not None
 
@@ -404,12 +404,12 @@ class TestThreePathParity:
         snapshot = r.to_workflow_run_dict()
         assert snapshot["budget"] == r.budget
 
-        # Path 3: wire-sanitized (no collapse — data is tiny)
-        wire_sanitized = _sanitize_workflow_snapshot_item_for_wire(snapshot)
-        assert wire_sanitized["budget"] == r.budget
+        # Path 3: paged wire meta (run-level fields preserved)
+        detail = _build_workflow_detail_paginated(snapshot, session_id="s1")
+        assert detail["workflow"]["budget"] == r.budget
 
     def test_token_count_identical_across_paths(self):
-        """token_count is identical in delta, snapshot, and wire-sanitized."""
+        """token_count is identical in delta, snapshot, and paged wire meta."""
         r = self._build_full_scenario()
         expected = 2000 + 3000 + 4000  # = 9000
         assert r.token_count == expected
@@ -420,17 +420,16 @@ class TestThreePathParity:
         snapshot = r.to_workflow_run_dict()
         assert snapshot["token_count"] == expected
 
-        wire_sanitized = _sanitize_workflow_snapshot_item_for_wire(snapshot)
-        assert wire_sanitized["token_count"] == expected
+        detail = _build_workflow_detail_paginated(snapshot, session_id="s1")
+        assert detail["workflow"]["token_count"] == expected
 
     def test_child_metadata_identical_across_paths(self):
-        """Child phase fields (phase_type, parent_phase) appear
-        identically in delta, snapshot, and wire-sanitized."""
+        """Child phase fields (phase_type, parent_phase, name) appear
+        identically in delta, snapshot, and paged phase summaries."""
         r = self._build_full_scenario()
         child_phases = [p for p in r.phases if p.phase_type == "child"]
         assert len(child_phases) == 2
 
-        # Collect child metadata from each path and compare.
         def _child_meta(phases_list):
             result = []
             for ph in phases_list:
@@ -450,34 +449,35 @@ class TestThreePathParity:
         snapshot = r.to_workflow_run_dict()
         snap_meta = _child_meta(snapshot["phases"])
 
-        # Path 3: wire-sanitized
-        wire_sanitized = _sanitize_workflow_snapshot_item_for_wire(snapshot)
-        wire_meta = _child_meta(wire_sanitized["phases"])
+        # Path 3: paged phase summaries
+        detail = _build_workflow_detail_paginated(snapshot, session_id="s1")
+        wire_meta = _child_meta(detail["workflow"]["phases"])
 
         assert delta_meta == snap_meta == wire_meta
 
-    def test_collapse_path_also_preserves_budget_and_token_count(self):
-        """Even after ``_collapse_oversized_workflow_snapshot_item`` (the
-        collapse path), budget, token_count, and child meta are preserved."""
+    def test_phase_detail_preserves_budget_and_token_count(self):
+        """``_build_phase_detail_paginated`` preserves child phase meta and
+        full agent token_count without truncation."""
         r = self._build_full_scenario()
         snapshot = r.to_workflow_run_dict()
-        collapsed = _collapse_oversized_workflow_snapshot_item(dict(snapshot))
-
-        assert collapsed["budget"] == r.budget
-        assert collapsed["token_count"] == r.token_count
-        # Child metadata preserved in collapsed phases.
-        for ph in collapsed.get("phases", []):
-            if ph.get("name", "").startswith("▸ intro"):
-                assert ph.get("phase_type") == "child"
-                assert "phase_type" in ph
-                assert "parent_phase" in ph
+        child = next(p for p in snapshot["phases"] if p.get("phase_type") == "child")
+        phase_detail = _build_phase_detail_paginated(
+            snapshot, session_id="s1", phase_id=child["id"],
+        )
+        phase = phase_detail["phase"]
+        assert phase["phase_type"] == "child"
+        assert phase["parent_phase"] == child.get("parent_phase")
+        assert phase["name"] == child.get("name")
+        for agent in phase["agents"]:
+            if agent["id"] in ("s0", "s1"):
+                assert agent.get("token_count") in (3000, 4000)
 
     def test_snapshot_keep_keys_includes_budget_and_token_count(self):
         """The KEEP_KEYS set used for wire truncation includes budget,
         token_count, and estimated_token_count."""
-        assert "budget" in _WORKFLOW_SNAPSHOT_KEEP_KEYS
-        assert "token_count" in _WORKFLOW_SNAPSHOT_KEEP_KEYS
-        assert "estimated_token_count" in _WORKFLOW_SNAPSHOT_KEEP_KEYS
+        assert "budget" in _WORKFLOW_LIST_SUMMARY_KEEP_KEYS
+        assert "token_count" in _WORKFLOW_LIST_SUMMARY_KEEP_KEYS
+        assert "estimated_token_count" in _WORKFLOW_LIST_SUMMARY_KEEP_KEYS
 
 
 def test_parent_phase_agent_count_aggregates_children():

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -99,6 +100,11 @@ class _TestMessageHandler(MessageHandler):
         # legacy 别名经 canonicalize → DEPRECATION_MAP 两步映射
         ("team.plan", "team.work.plan"),   # team.plan → team.plan.normal → team.work.plan
         ("team.code", "team.code.normal"),  # team.code → code.team → team.code.normal
+        # issue #4168: shorthand names work for /mode too
+        ("team.work", "team.work.normal"),
+        ("team.normal", "team.work.normal"),
+        ("agent.work", "agent.work.normal"),
+        ("agent.code", "agent.code.normal"),
     ],
 )
 def test_mode_switch_uses_deprecation_map(input_mode: str, expected_state: str) -> None:
@@ -133,7 +139,7 @@ def test_valid_mode_inputs_covers_new_and_legacy() -> None:
     assert NEW_CANONICAL_MODES <= _VALID_MODE_INPUTS
     assert set(DEPRECATION_MAP.keys()) <= _VALID_MODE_INPUTS
     assert set(MODE_ALIASES.keys()) <= _VALID_MODE_INPUTS
-    # 额外 sanity：8 + 10 + 2 = 20（DEPRECATION_MAP 含裸 code），三集合互不相交
+    # 额外 sanity：8 + 10 + 6 = 24（DEPRECATION_MAP 含裸 code），三集合互不相交
     assert len(_VALID_MODE_INPUTS) == (
         len(NEW_CANONICAL_MODES)
         + len(DEPRECATION_MAP.keys())
@@ -259,3 +265,96 @@ def test_switch_ok_dispatches_to_target_canonical(
     assert processed is True
     assert isinstance(state.mode, ChannelMode)
     assert state.mode.value == (expected if expected is not None else start_mode)
+
+
+@pytest.mark.asyncio
+async def test_persist_creates_locked_session_and_forwards_first_task(monkeypatch) -> None:
+    handler = _TestMessageHandler.create()
+    state = ChannelControlState(
+        session_id="old-session",
+        mode=ChannelMode.AGENT_WORK_NORMAL,
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(handler, "get_or_create_channel_state", lambda _msg: state)
+    monkeypatch.setattr(handler._join_exit, "sender_has_joined", lambda _msg: False)
+
+    async def _allocate(_msg, target_state, *, persist_session=False):
+        captured["persist_session"] = persist_session
+        target_state.session_id = "persist-session"
+        return "persist-session"
+
+    async def _cancel_and_notice(params, _msg):
+        captured["old_sid"] = params.old_sid
+        captured["new_sid"] = params.new_sid
+
+    monkeypatch.setattr(handler, "_allocate_channel_session", _allocate)
+    monkeypatch.setattr(handler, "_new_session_cancel_and_notice", _cancel_and_notice)
+    handler._gateway_hook_handler = None
+
+    msg = _control_message("/persist 跟进发布\n重点关注回滚方案")
+    msg.params["content"] = msg.params["query"]
+    processed = await handler._handle_channel_control(msg)
+    await asyncio.sleep(0)
+
+    assert processed is False
+    assert captured == {
+        "persist_session": True,
+        "old_sid": "old-session",
+        "new_sid": "persist-session",
+    }
+    assert state.session_id == "persist-session"
+    assert msg.session_id == "persist-session"
+    assert msg.params["query"] == "跟进发布\n重点关注回滚方案"
+    assert msg.params["content"] == msg.params["query"]
+    assert msg.metadata["persist_session_first_task"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "expected_error"),
+    [
+        ("/new_session", "创建新会话失败，请稍后重试"),
+        ("/persist 跟进发布", "创建永续会话失败，请稍后重试"),
+    ],
+)
+async def test_session_creation_failure_hides_internal_error(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+    command: str,
+    expected_error: str,
+) -> None:
+    handler = _TestMessageHandler.create()
+    state = ChannelControlState(
+        session_id="old-session",
+        mode=ChannelMode.AGENT_WORK_NORMAL,
+    )
+    notices: list[object] = []
+
+    monkeypatch.setattr(handler, "get_or_create_channel_state", lambda _msg: state)
+    monkeypatch.setattr(handler._join_exit, "sender_has_joined", lambda _msg: False)
+
+    async def _allocate(*_args, **_kwargs):
+        raise RuntimeError("secret-database-path")
+
+    async def _notice(_user_infos, _channel, _session_id, content):
+        notices.append(content)
+
+    monkeypatch.setattr(handler, "_allocate_channel_session", _allocate)
+    monkeypatch.setattr(handler, "send_channel_notice", _notice)
+    target_logger = logging.getLogger(
+        "jiuwenswarm.gateway.message_handler.message_handler"
+    )
+    target_logger.addHandler(caplog.handler)
+    caplog.set_level(logging.ERROR, logger=target_logger.name)
+    try:
+        processed = await handler._handle_channel_control(_control_message(command))
+        await asyncio.sleep(0)
+    finally:
+        target_logger.removeHandler(caplog.handler)
+
+    assert processed is True
+    assert state.session_id == "old-session"
+    assert notices == [{"error": expected_error}]
+    assert "secret-database-path" not in str(notices)
+    assert "secret-database-path" in caplog.text

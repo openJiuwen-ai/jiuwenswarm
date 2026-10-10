@@ -1,0 +1,136 @@
+.free-models-points {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.free-models-points__label,
+.free-models-points__unit {
+  color: var(--color-settings-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.free-models-points__value {
+  color: var(--color-action-primary);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 28px;
+  letter-spacing: -0.01em;
+}
+
+.free-models-points[data-tone='warning'] .free-models-points__value {
+  color: var(--color-feedback-warning);
+}
+
+.free-models-quota__status {
+  color: var(--color-settings-text-secondary);
+  font-size: 13px;
+  line-height: 28px;
+  white-space: nowrap;
+}
+
+.free-models-quota__status[data-tone='danger'] {
+  color: var(--color-feedback-danger);
+  font-weight: 600;
+}
+
+.free-models-quota__hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.free-models-quota__hint svg {
+  flex: 0 0 auto;
+  color: var(--color-text-meta);
+}
+
+.free-models-quota__usage {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px 16px;
+}
+
+.free-models-quota__meter {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+}
+
+.free-models-quota__meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-action-primary);
+  transition: width 0.24s ease;
+}
+
+.free-models-quota__meter-fill[data-tone='warning'] {
+  background: var(--color-feedback-warning);
+}
+
+.free-models-quota__meter-fill[data-tone='danger'] {
+  background: var(--color-feedback-danger);
+}
+
+.free-models-quota__legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+  color: var(--color-settings-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.free-models-quota__legend strong {
+  margin-left: 6px;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.free-models-account {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.free-models-account:hover {
+  background: var(--color-surface-hover);
+}
+
+.free-models-account:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: -2px;
+}
+
+.free-models-account__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--color-action-primary-subtle);
+  color: var(--color-action-primary);
+}
+
+.free-models-account__chevron {
+  color: var(--color-text-meta);
+}
+
+.free-models-config-row__icon {
+  width: 18px;
+  height: 18px;
+  color: var(--color-text-meta);
+}

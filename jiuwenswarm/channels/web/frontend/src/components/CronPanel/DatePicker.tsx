@@ -91,7 +91,7 @@ export default function DatePicker({ value, onChange, placeholder, className = '
   return (
     <div className={`relative ${className}`} ref={rootRef}>
       <div
-        className="flex w-full items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-sm focus-within:border-accent"
+        className="flex w-full items-center gap-1.5 rounded-md border-input bg-card px-3 py-1.5 text-sm"
         onClick={() => setOpen(true)}
       >
         <input
@@ -111,7 +111,7 @@ export default function DatePicker({ value, onChange, placeholder, className = '
         />
         <Calendar
           size={15}
-          className="shrink-0 cursor-pointer text-text-muted"
+          className="shrink-0 cursor-pointer text-text"
           onClick={(e) => {
             e.stopPropagation();
             setOpen((v) => !v);

@@ -1,0 +1,49 @@
+# ── macOS ────────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+
+# ── Node / npm ───────────────────────────────────────────────
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── VS Code extension ────────────────────────────────────────
+packages/vscode-extension/out/
+packages/vscode-extension/*.vsix
+# Shared webview assets are copied from packages/shared-webview at build time
+packages/vscode-extension/resources/chat.html
+packages/vscode-extension/resources/swarm_map.html
+packages/vscode-extension/resources/icon.svg
+
+# ── JetBrains plugin — Gradle build output ───────────────────
+packages/jetbrains-plugin/build/
+packages/jetbrains-plugin/.gradle/
+# Shared webview assets are copied from packages/shared-webview at build time
+packages/jetbrains-plugin/src/main/resources/webview/chat.html
+packages/jetbrains-plugin/src/main/resources/webview/swarm_map.html
+packages/jetbrains-plugin/src/main/resources/icons/jiuwenswarm.svg
+
+# IntelliJ Platform Gradle Plugin local cache
+# (downloaded IDE artefact descriptors — regenerated on build)
+packages/jetbrains-plugin/.intellijPlatform/
+
+# Gradle wrapper jar is intentionally kept; ignore local overrides
+packages/jetbrains-plugin/local.properties
+
+# ── IDE project files ────────────────────────────────────────
+# Keep .idea checked in for shared run configs / code style,
+# but exclude workspace-local and per-machine state.
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/usage.statistics.xml
+.idea/dictionaries/
+.idea/shelf/
+**/.idea/workspace.xml
+**/.idea/tasks.xml
+
+# ── Misc ─────────────────────────────────────────────────────
+*.class
+*.log
+*.tmp

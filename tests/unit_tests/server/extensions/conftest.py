@@ -23,6 +23,7 @@ def extension_workspace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path
     monkeypatch.setattr(catalog, "get_equipment_resources_agent_templates_dir", lambda: None)
     monkeypatch.setattr(catalog, "get_equipment_resources_agent_groups_dir", lambda: None)
     monkeypatch.setattr(catalog, "get_equipment_resources_plugin_packages_dir", lambda: None)
+    catalog._clear_hub_preview_archives()
     return utils.get_agent_workspace_dir()
 
 

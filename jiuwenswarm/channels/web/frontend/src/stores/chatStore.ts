@@ -9,10 +9,12 @@ import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import {
   Message,
+  OutputOrder,
   ToolCall,
   ToolResult,
   ToolExecution,
   ToolExecutionStatus,
+  AutoReviewerMetadata,
   InterruptResultPayload,
   AskUserQuestionPayload,
   EvolutionStatusPayload,
@@ -23,12 +25,19 @@ import {
   MediaItem,
 } from '../types';
 import { useTodoStore } from './todoStore';
+import { findActiveTeamLeaderMessage } from '../features/teamLeaderMessages';
 import {
+  mergeReviewerProgress,
   mergeToolResultProgress,
   shouldDropToolResult,
 } from './toolResultLifecycle';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs } from '../utils/timestamp';
+import {
+  consumePendingQuestion as consumeQueuedQuestion,
+  clearPermissionQuestions as clearQueuedPermissionQuestions,
+  enqueuePendingQuestions,
+} from './pendingQuestionQueue';
 
 const TOOL_TIMEOUT_MS = 12_000_000;
 const EVOLUTION_STATUS_END_VISIBLE_MS = 3_000;
@@ -57,17 +66,50 @@ function resolveExecutionStatus(result: ToolResult): ToolExecutionStatus {
   return result.success ? 'completed' : 'error';
 }
 
+type TaskInputStatus = 'queued' | 'sending' | 'failed' | 'unknown';
+
+export interface TaskInputReceipt {
+  taskId: string;
+  content: string;
+  requestId?: string;
+  status: 'sending' | 'accepted' | 'failed' | 'unknown';
+  error?: string;
+  errorCode?: string;
+  timestamp: string;
+  supplementalInput: NonNullable<Message['supplementalInput']>;
+}
+
 interface TaskItem {
   id: string;
   content: string;
   timestamp: number;
+  status: TaskInputStatus;
+  requestId?: string;
+  error?: string;
   /** Persisted attachments (images/documents, incl. PDF); dispatched with the message when the queued task is sent */
   mediaItems?: MediaItem[];
 }
 
+export interface QueuedSessionMessage {
+  messageId: string;
+  sourceSessionId: string;
+  sourceTitle: string;
+  content: string;
+}
+
+export interface QueuedSessionMessageSnapshot {
+  generation: number;
+  previous: QueuedSessionMessage[];
+}
+
 export interface HistoryPagerMeta {
-  loadedPages: number;
-  totalPages: number;
+  nextCursor: string | null;
+  hasMore: boolean;
+  snapshotId: string | null;
+  snapshotEnd: number;
+  loadedBatchSeq: number;
+  publishedBatchSeq: number;
+  historyComplete: boolean;
 }
 
 /**
@@ -75,20 +117,28 @@ export interface HistoryPagerMeta {
  * 原全局字段全部迁移到这里，按 session 隔离。
  */
 export interface ReasoningSegment {
+  outputOrder?: OutputOrder;
   id: string;
   text: string;
   startedAt: number;
   closed: boolean;
+  /** 当前流式 reasoning 所属的 Web 单 Agent 专家。 */
+  agentTemplateName?: string;
   /** 最近一个 delta 到达时刻；即使 final 丢失，耗时终点也能落在最后一个真实帧。 */
   updatedAt?: number;
   /** 收尾时刻；用于延迟折进 streak。历史可省略。 */
   closedAt?: number;
+  /** 仅用于大历史渐进发布；实时思考没有该标记。 */
+  historyBatchSeq?: number;
 }
 
 export interface ChatRuntime {
   messages: Message[];
   isProcessing: boolean;
+  activeExecutionId: string | null;
   executionError: string | null;
+  /** The Team session's bound AgentGroup was deleted or uninstalled. */
+  agentGroupUnavailable: boolean;
   isThinking: boolean;
   isLoadingHistory: boolean;
   historyPagerMeta: HistoryPagerMeta | null;
@@ -100,9 +150,12 @@ export interface ChatRuntime {
   isNewSession: boolean;
   currentStreamContent: string;
   currentStreamId: string | null;
+  outputPhaseId?: string;
   /** 本轮是否已按工具边界分段（chat.final 去重）。 */
   assistantStreamSplit: boolean;
   reasoningSegments: ReasoningSegment[];
+  /** 已接受补充输入；仅在下一条 reasoning 真正到达时分段。 */
+  reasoningInputBoundaryPending: boolean;
   /** 「思考中」耗时锚点：仅在可见文字产出时前移。 */
   thinkingAnchorAt: number;
   messageRenderKeySeq: number;
@@ -119,8 +172,16 @@ export interface ChatRuntime {
     toolResultDedupDropped: number;
   };
   taskQueue: TaskItem[];
+  queuedSessionMessages: QueuedSessionMessage[];
+  queuedSessionMessageSnapshotGeneration: number;
+  /** A mailbox item cannot return to queued after it starts. */
+  settledQueuedSessionMessageIds: Set<string>;
+  /** Keep request ownership even after a receipt is dismissed, to isolate late ACK/errors. */
+  taskInputRequests: Record<string, { taskId: string; content: string; delivery?: 'chat' }>;
+  /** Message-level feedback survives removal from the executable queue. */
+  taskInputReceipts: Record<string, TaskInputReceipt>;
   queuePaused: boolean;
-  pendingQuestion: AskUserQuestionPayload | null;
+  pendingQuestions: AskUserQuestionPayload[];
   /**
    * 忙碌时设目标：用户气泡暂存在此（界面不立刻显示）；
    * 空 chat.final / processing 结束再正式入 messages。
@@ -137,7 +198,9 @@ function createEmptyRuntime(): ChatRuntime {
   return {
     messages: [],
     isProcessing: false,
+    activeExecutionId: null,
     executionError: null,
+    agentGroupUnavailable: false,
     isThinking: false,
     isLoadingHistory: false,
     historyPagerMeta: null,
@@ -151,6 +214,7 @@ function createEmptyRuntime(): ChatRuntime {
     currentStreamId: null,
     assistantStreamSplit: false,
     reasoningSegments: [],
+    reasoningInputBoundaryPending: false,
     thinkingAnchorAt: Date.now(),
     messageRenderKeySeq: 0,
     error: null,
@@ -165,8 +229,13 @@ function createEmptyRuntime(): ChatRuntime {
       toolResultDedupDropped: 0,
     },
     taskQueue: [],
+    queuedSessionMessages: [],
+    queuedSessionMessageSnapshotGeneration: 0,
+    settledQueuedSessionMessageIds: new Set(),
+    taskInputRequests: {},
+    taskInputReceipts: {},
     queuePaused: false,
-    pendingQuestion: null,
+    pendingQuestions: [],
     pendingGoalObjectiveBubble: null as ChatRuntime['pendingGoalObjectiveBubble'],
     inputValue: '',
     evolutionStatusClearTimer: null,
@@ -210,32 +279,73 @@ interface ChatState {
   replaceHistoryMessages: (sessionId: string, messages: Message[]) => void;
   updateMessage: (sessionId: string, id: string, updates: Partial<Message>) => void;
   appendStreamContent: (sessionId: string, content: string, streamKey?: string) => void;
-  appendReasoning: (sessionId: string, content: string, options?: { atMs?: number }) => void;
+  appendReasoning: (
+    sessionId: string,
+    content: string,
+    options?: { atMs?: number; agentTemplateName?: string; outputOrder?: OutputOrder },
+  ) => void;
   closeReasoning: (sessionId: string, options?: { atMs?: number }) => void;
-  restoreReasoningSegments: (sessionId: string, items: { at: string; text: string; updatedAt?: number }[]) => void;
+  restoreReasoningSegments: (
+    sessionId: string,
+    items: {
+      id?: string;
+      outputOrder?: OutputOrder;
+      at: string;
+      text: string;
+      agentTemplateName?: string;
+      updatedAt?: number;
+      historyBatchSeq?: number;
+    }[],
+  ) => void;
   startStreaming: (sessionId: string, messageId: string, streamKey?: string) => void;
   stopStreaming: (sessionId: string, streamKey?: string) => void;
   finalizeStreamSegment: (sessionId: string, streamKey?: string) => void;
-  finalizeTeamLeaderSegment: (sessionId: string) => void;
+  finalizeTeamLeaderSegment: (sessionId: string, requestId?: string) => void;
   clearStreamSplit: (sessionId: string) => void;
   collapseTurnFinal: (
     sessionId: string,
-    opts: { kind: 'agent' | 'team'; content: string; finalId: string; timestampIso: string }
+    opts: {
+      kind: 'agent' | 'team';
+      content: string;
+      finalId: string;
+      timestampIso: string;
+      agentTemplateName?: string;
+    }
   ) => void;
   bumpThinkingAnchor: (sessionId: string) => void;
   setExecutionError: (sessionId: string, error: string | null) => void;
+  setAgentGroupUnavailable: (sessionId: string, unavailable: boolean) => void;
   setProcessing: (sessionId: string, status: boolean) => void;
+  setActiveExecutionId: (sessionId: string, executionId: string) => void;
   setThinking: (sessionId: string, status: boolean) => void;
   setLoadingHistory: (sessionId: string, status: boolean) => void;
   setHistoryPagerMeta: (sessionId: string, meta: HistoryPagerMeta | null) => void;
   setEvolutionStatus: (sessionId: string, status: EvolutionStatusPayload | null) => void;
   setPaused: (sessionId: string, paused: boolean, task?: string | null) => void;
   setQueuePaused: (sessionId: string, paused: boolean) => void;
+  upsertQueuedSessionMessage: (sessionId: string, message: QueuedSessionMessage) => void;
+  removeQueuedSessionMessage: (sessionId: string, messageId: string) => void;
+  beginQueuedSessionMessageSnapshot: (sessionId: string) => QueuedSessionMessageSnapshot;
+  reconcileQueuedSessionMessageSnapshot: (
+    sessionId: string,
+    snapshot: QueuedSessionMessageSnapshot,
+    messages: QueuedSessionMessage[]
+  ) => void;
   setInterruptResult: (sessionId: string, result: InterruptResultPayload | null) => void;
   setSwitchingMode: (sessionId: string, switching: boolean) => void;
   setNewSession: (sessionId: string, isNew: boolean) => void;
-  addToolCall: (sessionId: string, toolCall: ToolCall, options?: { startedAt?: string; requestId?: string }) => void;
+  addToolCall: (
+    sessionId: string,
+    toolCall: ToolCall,
+    options?: {
+      startedAt?: string;
+      requestId?: string;
+      agentTemplateName?: string;
+      historyBatchSeq?: number;
+    },
+  ) => void;
   updateToolProgress: (sessionId: string, toolCallId: string, progress: Partial<ToolResult>) => void;
+  updateToolReviewer: (sessionId: string, toolCallId: string, reviewer: AutoReviewerMetadata) => void;
   addToolResult: (sessionId: string, toolResult: ToolResult, options?: { updatedAt?: string }) => void;
   markTimedOutExecutions: (sessionId: string) => void;
   /** 历史回放常只有 tool_call、无 tool_result：把仍 pending 的工具按 startedAt 结算，避免超时巡检用 now 污染耗时 */
@@ -244,13 +354,29 @@ interface ChatState {
   clearCurrentTurnData: (sessionId: string, requestId?: string) => void;
   prependMessages: (sessionId: string, olderFirst: Message[]) => void;
   addToTaskQueue: (sessionId: string, content: string, mediaItems?: MediaItem[]) => void;
+  claimQueuedTask: (sessionId: string, taskId?: string) => TaskItem | undefined;
+  claimTaskInput: (sessionId: string, taskId: string) => TaskItem | undefined;
+  bindTaskInputRequest: (sessionId: string, taskId: string, requestId: string) => void;
+  settleTaskInput: (
+    sessionId: string,
+    taskId: string,
+    requestId: string | undefined,
+    status: 'accepted' | 'failed' | 'unknown',
+    error?: string,
+    errorCode?: string,
+    delivery?: 'chat' | 'stream',
+  ) => void;
+  setOutputPhase: (sessionId: string, phaseId: string) => void;
   clearTaskQueue: (sessionId: string) => void;
   removeFromTaskQueue: (sessionId: string, id: string) => void;
   reorderTaskQueue: (sessionId: string, fromIndex: number, toIndex: number) => void;
-  setPendingQuestion: (sessionId: string, question: AskUserQuestionPayload | null) => void;
+  enqueuePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
+  consumePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
+  clearPendingQuestions: (sessionId: string) => void;
   setPendingGoalObjectiveBubble: (sessionId: string, content: string | null) => void;
   flushPendingGoalObjectiveBubble: (sessionId: string) => void;
   queueOrAddGoalObjectiveMessage: (sessionId: string, content: string) => void;
+  clearPermissionQuestions: (sessionId: string) => void;
   setInputValue: (sessionId: string, value: string) => void;
   setSessionError: (sessionId: string, error: string | null) => void;
   setUsageSummary: (sessionId: string, messageId: string, usage: UsageSummary) => void;
@@ -284,6 +410,14 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
   getRuntime: (sessionId) => {
     if (!sessionId) return undefined;
     return get().runtimes[sessionId];
+  },
+
+  setOutputPhase: (sessionId, phaseId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return { runtimes: { ...state.runtimes, [sessionId]: { ...runtime, outputPhaseId: phaseId } } };
+    });
   },
 
   setActiveSessionId: (sessionId) => {
@@ -322,7 +456,19 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             ...runtime,
             messages: [...runtime.messages, ...messages],
             messageRenderKeySeq,
-            ...(message.role === 'user' ? { assistantStreamSplit: false, reasoningSegments: runtime.reasoningSegments.filter((s) => s.closed) } : {}),
+            ...(message.role === 'user'
+              ? {
+                  assistantStreamSplit: false,
+                  // 上一轮被中断（暂停/停止）时思考段可能永远等不到 closeReasoning；
+                  // 新一轮开始只把它冻结收尾，不能整段丢弃——否则上一轮思考块连同头像
+                  // 会凭空消失（刷新后历史又能恢复）。closedAt 落在最后一个真实 delta 帧。
+                  reasoningSegments: runtime.reasoningSegments.map((segment) =>
+                    segment.closed
+                      ? segment
+                      : { ...segment, closed: true, closedAt: segment.updatedAt ?? Date.now() }
+                  ),
+                }
+              : {}),
           },  
         },
       };
@@ -365,7 +511,10 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               toolResultDedupDropped: 0,
             },
             taskQueue: [],
-            pendingQuestion: null,
+            // pendingQuestions 是后端通过 chat.ask_user_question 实时推送的交互状态，
+            // 不属于历史消息范畴。历史恢复只重建消息列表，不应清空 pendingQuestions——
+            // 否则切到/切回一个正在等待 ask_user/权限确认的会话时，吸附条会永久消失
+            // （后端不会重发 pending question）。仅在新会话首次创建时由 clearMessages 清空。
             pendingGoalObjectiveBubble: null,
           },
         },
@@ -429,22 +578,43 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           ? options.atMs
           : Date.now();
       let next: ReasoningSegment[];
-      if (last && !last.closed) {
+      if (last && !last.closed && !runtime.reasoningInputBoundaryPending) {
         // 每个 delta 都推进 updatedAt，使耗时终点不依赖 closeReasoning 收尾事件
-        next = segments.slice(0, -1).concat({ ...last, text: last.text + content, updatedAt: atMs });
+        next = segments.slice(0, -1).concat({
+          ...last,
+          text: last.text + content,
+          updatedAt: atMs,
+          ...(options?.agentTemplateName && !last.agentTemplateName
+            ? { agentTemplateName: options.agentTemplateName }
+            : {}),
+        });
       } else {
-        next = segments.concat({
+        const settledSegments =
+          last && !last.closed && runtime.reasoningInputBoundaryPending
+            ? segments.slice(0, -1).concat({
+                ...last,
+                closed: true,
+                closedAt: atMs,
+              })
+            : segments;
+        next = settledSegments.concat({
+          outputOrder: options?.outputOrder,
           id: createReasoningSegmentId(),
           text: content,
           startedAt: atMs,
           updatedAt: atMs,
           closed: false,
+          ...(options?.agentTemplateName ? { agentTemplateName: options.agentTemplateName } : {}),
         });
       }
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, reasoningSegments: next },
+          [sessionId]: {
+            ...runtime,
+            reasoningSegments: next,
+            reasoningInputBoundaryPending: false,
+          },
         },
       };
     });
@@ -456,7 +626,15 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       if (!runtime) return state;
       const segments = runtime.reasoningSegments;
       const last = segments[segments.length - 1];
-      if (!last || last.closed) return state;
+      if (!last || last.closed) {
+        if (!runtime.reasoningInputBoundaryPending) return state;
+        return {
+          runtimes: {
+            ...state.runtimes,
+            [sessionId]: { ...runtime, reasoningInputBoundaryPending: false },
+          },
+        };
+      }
       const atMs =
         typeof options?.atMs === 'number' && Number.isFinite(options.atMs)
           ? options.atMs
@@ -472,6 +650,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               closedAt: atMs,
               updatedAt: atMs,
             }),
+            reasoningInputBoundaryPending: false,
           },
         },
       };
@@ -486,8 +665,9 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const seen = new Set<string>();
       items.forEach((item, index) => {
         const text = item.text?.trim();
-        if (!text || seen.has(text)) return;
-        seen.add(text);
+        const identity = item.outputOrder ? `${item.outputOrder.requestId}:${item.outputOrder.sequence}` : text;
+        if (!text || seen.has(identity)) return;
+        seen.add(identity);
         const parsed = parseTimestampToMs(item.at);
         // 历史里思考与同一步 final/tool_call 共用落盘时间；减 1ms 仅补齐缺失的独立时间戳，
         // 使时间线能分出「先思考、后动作」，不做跨步骤重排。
@@ -504,13 +684,16 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             ? replayUpdatedAt
             : startedAt;
         segments.push({
-          id: `hist-rsn-${sessionId}-${index}-${createReasoningSegmentId()}`,
+          id: item.id ?? `hist-rsn-${sessionId}-${index}-${createReasoningSegmentId()}`,
           text,
+          outputOrder: item.outputOrder,
           startedAt,
           closed: true,
+          ...(item.agentTemplateName ? { agentTemplateName: item.agentTemplateName } : {}),
           // 历史已结束：closedAt 用 startedAt，立刻 settled，且比魔法 0 更可解释。
           closedAt: startedAt,
           updatedAt,
+          historyBatchSeq: item.historyBatchSeq,
         });
       });
       segments.sort((a, b) => a.startedAt - b.startedAt);
@@ -588,26 +771,12 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
-  finalizeTeamLeaderSegment: (sessionId) => {
+  finalizeTeamLeaderSegment: (sessionId, requestId) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
-      let latestUserIndex = -1;
-      for (let i = runtime.messages.length - 1; i >= 0; i -= 1) {
-        if (runtime.messages[i].role === 'user') {
-          latestUserIndex = i;
-          break;
-        }
-      }
-      let target: Message | undefined;
-      for (let i = runtime.messages.length - 1; i > latestUserIndex; i -= 1) {
-        const msg = runtime.messages[i];
-        if (msg.id.startsWith('team-leader-') && msg.isStreaming) {
-          target = msg;
-          break;
-        }
-      }
-      if (!target || !target.content?.trim()) return state;
+      const target = findActiveTeamLeaderMessage(runtime.messages, requestId);
+      if (!target) return state;
       const targetId = target.id;
       return {
         runtimes: {
@@ -615,7 +784,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           [sessionId]: {
             ...runtime,
             messages: runtime.messages.map((msg) =>
-              msg.id === targetId ? { ...msg, isStreaming: false } : msg
+              msg.id === targetId ? { ...msg, isStreaming: false, teamStream: undefined } : msg
             ),
             assistantStreamSplit: true,
           },
@@ -637,14 +806,14 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
-  collapseTurnFinal: (sessionId, { kind, content, finalId, timestampIso }) => {
+  collapseTurnFinal: (sessionId, { kind, content, finalId, timestampIso, agentTemplateName }) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       const msgs = runtime.messages;
       let turnStart = 0;
       for (let i = msgs.length - 1; i >= 0; i -= 1) {
-        if (msgs[i].role === 'user') {
+        if (msgs[i].role === 'user' && !msgs[i].supplementalInput) {
           turnStart = i + 1;
           break;
         }
@@ -654,10 +823,12 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           ? m.role === 'system' && typeof m.id === 'string' && m.id.startsWith('team-leader-')
           : m.role === 'assistant';
       const kept: Message[] = [];
+      const removedIds = new Set<string>();
       let removed = 0;
       for (let i = 0; i < msgs.length; i += 1) {
         if (i >= turnStart && isTarget(msgs[i])) {
           removed += 1;
+          removedIds.add(msgs[i].id);
           continue;
         }
         kept.push(msgs[i]);
@@ -667,20 +838,32 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         kind === 'team'
           ? `team.leader:${JSON.stringify({ content, timestamp: Date.parse(timestampIso) || Date.now() })}`
           : content;
-      kept.push({
+      const reboundMessages = kept.map((message) => {
+        const streamMessageId = message.supplementalInput?.streamMessageId;
+        if (!streamMessageId || !removedIds.has(streamMessageId)) return message;
+        return {
+          ...message,
+          supplementalInput: {
+            ...message.supplementalInput!,
+            streamMessageId: finalId,
+          },
+        };
+      });
+      reboundMessages.push({
         id: finalId,
         role: kind === 'team' ? 'system' : 'assistant',
         content: displayContent,
         timestamp: timestampIso,
         completedAt: timestampIso,
         isStreaming: false,
+        ...(kind === 'agent' && agentTemplateName ? { agentTemplateName } : {}),
       });
       return {
         runtimes: {
           ...state.runtimes,
           [sessionId]: {
             ...runtime,
-            messages: kept,
+            messages: reboundMessages,
             assistantStreamSplit: false,
             currentStreamId: null,
             currentStreamContent: '',
@@ -716,6 +899,29 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
+  setActiveExecutionId: (sessionId, executionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || runtime.activeExecutionId === executionId) return state;
+      return {
+        runtimes: { ...state.runtimes, [sessionId]: { ...runtime, activeExecutionId: executionId } },
+      };
+    });
+  },
+
+  setAgentGroupUnavailable: (sessionId, unavailable) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || runtime.agentGroupUnavailable === unavailable) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, agentGroupUnavailable: unavailable },
+        },
+      };
+    });
+  },
+
   setProcessing: (sessionId, status) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
@@ -728,6 +934,10 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           [sessionId]: {
             ...runtime,
             isProcessing: status,
+            ...(!status ? {
+              activeExecutionId: null,
+              reasoningInputBoundaryPending: false,
+            } : {}),
             executionError: status ? null : runtime.executionError,
             ...(status ? { error: null } : {}),
             ...(turnStart ? { thinkingAnchorAt: Date.now() } : {}),
@@ -847,6 +1057,84 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         runtimes: {
           ...state.runtimes,
           [sessionId]: { ...runtime, queuePaused: paused },
+        },
+      };
+    });
+  },
+
+  upsertQueuedSessionMessage: (sessionId, message) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      if (runtime.settledQueuedSessionMessageIds.has(message.messageId)) return state;
+      const existing = runtime.queuedSessionMessages.findIndex(
+        (item) => item.messageId === message.messageId
+      );
+      const queuedSessionMessages = [...runtime.queuedSessionMessages];
+      if (existing >= 0) queuedSessionMessages[existing] = message;
+      else queuedSessionMessages.push(message);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, queuedSessionMessages },
+        },
+      };
+    });
+  },
+
+  removeQueuedSessionMessage: (sessionId, messageId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      if (runtime.settledQueuedSessionMessageIds.has(messageId)) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            queuedSessionMessages: runtime.queuedSessionMessages.filter(
+              (item) => item.messageId !== messageId
+            ),
+            settledQueuedSessionMessageIds: new Set([...runtime.settledQueuedSessionMessageIds, messageId]),
+          },
+        },
+      };
+    });
+  },
+
+  beginQueuedSessionMessageSnapshot: (sessionId) => {
+    const runtime = get().ensureRuntime(sessionId);
+    const snapshot = {
+      generation: runtime.queuedSessionMessageSnapshotGeneration + 1,
+      previous: runtime.queuedSessionMessages,
+    };
+    set((state) => ({
+      runtimes: {
+        ...state.runtimes,
+        [sessionId]: {
+          ...state.runtimes[sessionId],
+          queuedSessionMessageSnapshotGeneration: snapshot.generation,
+        },
+      },
+    }));
+    return snapshot;
+  },
+
+  reconcileQueuedSessionMessageSnapshot: (sessionId, snapshot, messages) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || runtime.queuedSessionMessageSnapshotGeneration !== snapshot.generation) return state;
+      const queuedSessionMessages = messages.filter(
+        (message) => !runtime.settledQueuedSessionMessageIds.has(message.messageId)
+      );
+      for (const message of runtime.queuedSessionMessages) {
+        if (snapshot.previous.includes(message)) continue;
+        const existing = queuedSessionMessages.findIndex((item) => item.messageId === message.messageId);
+        if (existing >= 0) queuedSessionMessages[existing] = message;
+        else queuedSessionMessages.push(message);
+      }
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, queuedSessionMessages },
         },
       };
     });
@@ -986,6 +1274,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const timeoutAt = computeTimeoutAt(startedAt);
       const resultStatus = orphanResult ? resolveExecutionStatus(orphanResult) : 'pending';
       nextExecutions.set(toolCall.id, {
+        outputOrder: toolCall.outputOrder,
         toolCallId: toolCall.id,
         toolCall,
         result: orphanResult,
@@ -994,6 +1283,8 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         updatedAt: startedAt,
         timeoutAt,
         requestId: options?.requestId,
+        agentTemplateName: options?.agentTemplateName,
+        historyBatchSeq: options?.historyBatchSeq,
       });
 
       const nextOrder = [...runtime.toolExecutionOrder, toolCall.id];
@@ -1174,6 +1465,29 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
+  updateToolReviewer: (sessionId, toolCallId, reviewer) => {
+    if (!toolCallId) return;
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const execution = runtime.toolExecutions.get(toolCallId);
+      if (!execution) return state;
+      const nextReviewer = mergeReviewerProgress(execution.toolCall.reviewer, reviewer);
+      if (nextReviewer === execution.toolCall.reviewer) return state;
+      const nextExecutions = new Map(runtime.toolExecutions);
+      nextExecutions.set(toolCallId, {
+        ...execution,
+        toolCall: { ...execution.toolCall, reviewer: nextReviewer },
+      });
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, toolExecutions: nextExecutions },
+        },
+      };
+    });
+  },
+
   markTimedOutExecutions: (sessionId) => {
     const now = Date.now();
     set((state) => {
@@ -1279,7 +1593,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               toolExecutionOrder: nextOrder,
               orphanResults: new Map(),
               interruptResult: null,
-              pendingQuestion: null,
+              pendingQuestions: [],
               toolMetrics: {
                 toolCallDedupDropped: 0,
                 toolResultDedupDropped: 0,
@@ -1297,7 +1611,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             toolExecutionOrder: [],
             orphanResults: new Map(),
             interruptResult: null,
-            pendingQuestion: null,
+            pendingQuestions: [],
             toolMetrics: {
               toolCallDedupDropped: 0,
               toolResultDedupDropped: 0,
@@ -1360,7 +1674,8 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               toolResultDedupDropped: 0,
             },
             taskQueue: [],
-            pendingQuestion: null,
+            taskInputReceipts: {},
+            pendingQuestions: [],
             pendingGoalObjectiveBubble: null,
           },
         },
@@ -1383,6 +1698,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
                 id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
                 content,
                 timestamp: Date.now(),
+                status: 'queued',
                 ...(mediaItems && mediaItems.length > 0 ? { mediaItems } : {}),
               },
             ],
@@ -1392,6 +1708,169 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
+  claimQueuedTask: (sessionId, taskId) => {
+    let claimed: TaskItem | undefined;
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (
+        !runtime ||
+        runtime.isProcessing ||
+        runtime.isPaused ||
+        runtime.pendingQuestions.length ||
+        runtime.taskQueue.some((task) => task.status === 'sending')
+      )
+        return state;
+      const task = runtime.taskQueue.find((item) =>
+        taskId ? item.id === taskId && ['queued', 'failed'].includes(item.status) : item.status === 'queued',
+      );
+      if (!task) return state;
+      claimed = task;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            taskQueue: runtime.taskQueue.filter((item) => item.id !== task.id),
+          },
+        },
+      };
+    });
+    return claimed;
+  },
+
+  claimTaskInput: (sessionId, taskId) => {
+    let claimed: TaskItem | undefined;
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (
+        !runtime ||
+        runtime.isPaused ||
+        runtime.isLoadingHistory ||
+        runtime.switchingMode ||
+        runtime.pendingQuestions.length
+      )
+        return state;
+      const task = runtime.taskQueue.find((item) => item.id === taskId);
+      if (!task || !['queued', 'failed'].includes(task.status) || !task.content.trim() || task.mediaItems?.length)
+        return state;
+      claimed = task;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            taskQueue: runtime.taskQueue.map((item) =>
+              item.id === taskId ? { ...item, status: 'sending', requestId: undefined, error: undefined } : item,
+            ),
+            taskInputReceipts: {
+              ...runtime.taskInputReceipts,
+              [taskId]: {
+                taskId,
+                content: task.content,
+                status: 'sending',
+                timestamp: new Date().toISOString(),
+                supplementalInput: {
+                  executionId: runtime.activeExecutionId ?? '',
+                  streamMessageId: runtime.currentStreamId ?? undefined,
+                  streamOffset: runtime.currentStreamContent.length,
+                },
+              },
+            },
+          },
+        },
+      };
+    });
+    return claimed;
+  },
+
+  bindTaskInputRequest: (sessionId, taskId, requestId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      const receipt = runtime?.taskInputReceipts[taskId];
+      if (!runtime || !receipt || receipt.status !== 'sending') return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            taskInputRequests: {
+              ...runtime.taskInputRequests,
+              [requestId]: {
+                taskId,
+                content: runtime.taskQueue.find((task) => task.id === taskId)?.content ?? '',
+              },
+            },
+            taskQueue: runtime.taskQueue.map((task) =>
+              task.id === taskId && task.status === 'sending' ? { ...task, requestId } : task,
+            ),
+            taskInputReceipts: {
+              ...runtime.taskInputReceipts,
+              [taskId]: { ...receipt, requestId },
+            },
+          },
+        },
+      };
+    });
+  },
+
+  settleTaskInput: (sessionId, taskId, requestId, status, error, errorCode, delivery) => {
+    let chatMessage: Message | undefined;
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      const receipt = runtime?.taskInputReceipts[taskId];
+      // Late responses can settle unknown delivery, but cannot affect an accepted or retried item.
+      if (!runtime || !receipt || receipt.requestId !== requestId || !['sending', 'unknown'].includes(receipt.status))
+        return state;
+      if (status === 'accepted' && delivery === 'chat') {
+        chatMessage = {
+          id: `user-steer-${taskId}`, role: 'user', content: receipt.content, timestamp: receipt.timestamp,
+        };
+      }
+      const acceptedMessages = status === 'accepted' && !chatMessage && delivery !== 'stream'
+        ? assignMessageRenderKeys(runtime, [{
+            id: `user-steer-${taskId}`,
+            role: 'user',
+            content: receipt.content,
+            timestamp: receipt.timestamp,
+            supplementalInput: receipt.supplementalInput,
+          }])
+        : undefined;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            ...(chatMessage && requestId ? {
+              taskInputRequests: {
+                ...runtime.taskInputRequests,
+                [requestId]: { ...runtime.taskInputRequests[requestId], delivery: 'chat' as const },
+              },
+            } : {}),
+            ...(acceptedMessages ? {
+              messages: [...runtime.messages, ...acceptedMessages.messages],
+              messageRenderKeySeq: acceptedMessages.messageRenderKeySeq,
+              reasoningInputBoundaryPending: true,
+            } : {}),
+            taskQueue:
+              status === 'accepted'
+                ? runtime.taskQueue.filter((item) => item.id !== taskId)
+                : runtime.taskQueue.map((item) => (item.id === taskId ? { ...item, status, error } : item)),
+            taskInputReceipts: {
+              ...runtime.taskInputReceipts,
+              [taskId]: { ...receipt, status, error, errorCode },
+            },
+          },
+        },
+      };
+    });
+    if (chatMessage) {
+      // Ordinary chat uses the existing user-message boundary and lifecycle, only after Runtime admission.
+      get().addMessage(sessionId, chatMessage);
+      get().setProcessing(sessionId, true);
+      get().setThinking(sessionId, true);
+    }
+  },
+
   clearTaskQueue: (sessionId) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
@@ -1399,7 +1878,11 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, taskQueue: [], queuePaused: false },
+          [sessionId]: {
+            ...runtime,
+            taskQueue: runtime.taskQueue.filter((task) => ['sending', 'unknown'].includes(task.status)),
+            queuePaused: false,
+          },
         },
       };
     });
@@ -1414,7 +1897,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           ...state.runtimes,
           [sessionId]: {
             ...runtime,
-            taskQueue: runtime.taskQueue.filter((task) => task.id !== id),
+            taskQueue: runtime.taskQueue.filter((task) => task.id !== id || task.status === 'sending'),
           },
         },
       };
@@ -1440,14 +1923,48 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
-  setPendingQuestion: (sessionId, question) => {
+  enqueuePendingQuestion: (sessionId, question) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const pendingQuestions = enqueuePendingQuestions(runtime.pendingQuestions, question);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            pendingQuestions,
+          },
+        },
+      };
+    });
+  },
+
+  consumePendingQuestion: (sessionId, question) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const pendingQuestions = consumeQueuedQuestion(runtime.pendingQuestions, question);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            pendingQuestions,
+          },
+        },
+      };
+    });
+  },
+
+  clearPendingQuestions: (sessionId) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, pendingQuestion: question },
+          [sessionId]: { ...runtime, pendingQuestions: [] },
         },
       };
     });
@@ -1549,6 +2066,23 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         isGoalObjectiveMessage: true,
       });
     }
+  },
+
+  clearPermissionQuestions: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const pendingQuestions = clearQueuedPermissionQuestions(runtime.pendingQuestions);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            pendingQuestions,
+          },
+        },
+      };
+    });
   },
 
   setInputValue: (sessionId, value) => {

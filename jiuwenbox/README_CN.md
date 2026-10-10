@@ -537,12 +537,17 @@ jiuwenswarm 通过 `config.yaml` 的 `sandbox` 段决定**是否启用沙箱、�
 sandbox:
   # —— 端点 & 类型 ——
   url: "http://127.0.0.1:8321"      # jiuwenbox HTTP 端点；TCP 用 http://，UDS 用 unix:///abs/socket/path
+                                    # 未显式写 host 时 internal 拉起默认绑 127.0.0.1；显式写了（含 0.0.0.0）原样使用
   type: "jiuwenbox"                 # sandbox provider 名；当前固定为 jiuwenbox
 
   # —— 启动方式 & policy ——
   startup_mode: "internal"          # internal=agent-server 自动拉起 jiuwenbox-server；external=用户自行启动
   policy_file: "code-agent-policy.yaml"   # 仅文件名 → jiuwenbox/configs/<name>；含 / 或绝对路径 → 整路径
   preserve_file_sharing_mode: "mount"     # 仅支持 mount；写入其它值会被服务端拒绝
+
+  # —— API 认证（可选，二者互斥）——
+  token: ""                         # 固定 Bearer token；经 JIUWENBOX_API_TOKEN 注入 jiuwenbox
+  use_random_token: false           # true 时每次 agent-server 进程生命周期内随机生成一次（不落盘）；仅 internal
 
   # —— 运行时（也可由 /sandbox 命令维护） ——
   enabled: true                     # 是否处于沙箱模式
@@ -558,11 +563,13 @@ sandbox:
 
 | 字段 | 取值 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `sandbox.url` | URL 字符串 | `http://127.0.0.1:8321` | jiuwenbox 管理 API 端点。TCP 用 `http://host:port`；UDS 用 `unix:///abs/socket/path`（与 `JIUWENBOX_LISTEN` 配置的形态一致） |
+| `sandbox.url` | URL 字符串 | `http://127.0.0.1:8321` | jiuwenbox 管理 API 端点。TCP 用 `http://host:port`；UDS 用 `unix:///abs/socket/path`（与 `JIUWENBOX_LISTEN` 配置的形态一致）。**未显式指定 host**（url 缺失/空/解析不出 hostname）时 internal 拉起默认绑 `127.0.0.1`；**显式写了 host**（含 `0.0.0.0`、局域网 IP）则原样使用，不会被改写 |
 | `sandbox.type` | 字符串 | `jiuwenbox` | sandbox provider 名。当前 jiuwenswarm 只接通了 `jiuwenbox` |
 | `sandbox.startup_mode` | `internal` / `external` | `internal` | `internal`：agent-server 启动时自动 spawn `jiuwenbox-server` 子进程并落盘最终生效的 `url`（端口被占用时自动换端口）；`external`：jiuwenswarm 完全不碰 jiuwenbox 进程，要求按本 README 顶部的方式提前自己启动 |
 | `sandbox.policy_file` | 文件名 / 路径 | `code-agent-policy.yaml` | 仅给文件名 → 自动定位到 `jiuwenbox/configs/<name>`；包含 `/` `\` 或 `~` 时按整路径解析。**仅在 `startup_mode=internal` 下生效**——`external` 模式下 policy 由用户自启动时的 `JIUWENBOX_DEFAULT_POLICY_PATH` 决定 |
 | `sandbox.preserve_file_sharing_mode` | `mount` | `mount` | intrinsic 文件（`AGENT.md` 等）与 `project_dir` 通过 bind mount 注入沙箱，`project_dir/config/config.yaml` 自动加进 `deny_write`。 写入其它值会被服务端拒绝 |
+| `sandbox.token` | 字符串 | `""` | jiuwenswarm ↔ jiuwenbox 的固定 Bearer token。非空时经环境变量 `JIUWENBOX_API_TOKEN` 注入子进程，请求需带 `Authorization: Bearer <token>`。与 `use_random_token` **互斥** |
+| `sandbox.use_random_token` | bool | `false` | `true` 时在 agent-server 进程生命周期内随机生成一次 token（**不写回** `sandbox.token`），并同步注入父子进程。仅 `startup_mode=internal` 可用；与 `token` 同时配置会报错 |
 | `sandbox.enabled` | bool | `false` | 启用后 agent 在重建时会切到 sandbox provider；可用 `/sandbox enable` 触发 |
 | `sandbox.excluded_commands` | list[str] | `[]` | shell glob 列表；按 **simple-command 叶子**匹配。全命中→整条本地；全未命中→整条沙箱；混合→本地 bash 编排并用 `jiuwenbox sandbox exec` 包装远端段（需安装 CLI）。不安全的混合形态不改写，整条进沙箱 |
 | `sandbox.fallback_on_failure` | bool | `false` | jiuwenbox exec 异常（连接失败、daemon 不可用等）时回退宿主机本地执行；沙箱内命令非零 exit 不回退 |
@@ -586,8 +593,9 @@ sandbox:
 agent-server 启动时会：
 
 1. 把 `policy_file` 解析为宿主机绝对路径（仅文件名→`jiuwenbox/configs/<name>`；其它路径直接展开 `~` / `$VAR`）。
-2. 探测 `url` 里的端口是否可用；冲突就自动换端口，并把最终的 `url` 写回 `config.yaml`，TUI `/sandbox status` 看到的就是真实端口。
-3. spawn `jiuwenbox-server`，把 policy 路径传进去；启动失败会写一份 stderr 末尾到日志，TUI 仍能用 `/sandbox enable` 重试。
+2. 探测 `url` 里的端口是否可用；冲突就自动换端口，并把最终的 `url` 写回 `config.yaml`，TUI `/sandbox status` 看到的就是真实端口。未显式写 host 时默认绑 `127.0.0.1`。
+3. 按 `sandbox.token` / `sandbox.use_random_token` 解析 Bearer token，经 `JIUWENBOX_API_TOKEN` 注入子进程，并同步到 agent-server 进程环境（供 provider / CLI 带 Authorization）。
+4. spawn `jiuwenbox-server`，把 policy 路径与 `JIUWENBOX_LISTEN` 传进去；启动失败会写一份 stderr 末尾到日志，TUI 仍能用 `/sandbox enable` 重试。
 
 #### 方式 B: `startup_mode: external`（你自己启动 jiuwenbox-server）
 

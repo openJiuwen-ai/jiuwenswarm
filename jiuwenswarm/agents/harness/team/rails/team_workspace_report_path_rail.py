@@ -1,6 +1,13 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Prompt rail separating project deliverables from team collaboration files."""
+"""Prompt rail separating project deliverables from team-shared outputs.
+
+The team workspace is the team's config / internal-data directory (prompts,
+team.yaml, skill visibility, trajectories) accessed by absolute path — not a
+task cwd and not a deliverables drop. Final deliverables for a projectless
+member go to the shared team ``outputs/`` directory; deliverables for a member
+bound to a project go in the project, matching single-agent behaviour.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +32,7 @@ class TeamWorkspaceReportPathRail(DeepAgentRail):
         *,
         root_dir: str,
         project_dir: str | None = None,
+        outputs_dir: str | None = None,
         team_id: str | None = None,
         language: str = "cn",
     ) -> None:
@@ -32,6 +40,7 @@ class TeamWorkspaceReportPathRail(DeepAgentRail):
         self.system_prompt_builder = None
         self._root_dir = str(Path(root_dir))
         self._project_dir = str(Path(project_dir)) if project_dir else None
+        self._outputs_dir = str(Path(outputs_dir)) if outputs_dir else None
         self._team_id = team_id or ""
         self._language = language
         self._swarm_context: Any | None = None
@@ -115,34 +124,69 @@ class TeamWorkspaceReportPathRail(DeepAgentRail):
         if self.system_prompt_builder is None:
             return
 
-        project_lines = (
-            f"- User project root: `{self._project_dir}`\n"
-            if self._project_dir
-            else "- User project root: unavailable for this session.\n"
-        )
+        # The team workspace is a config / internal-data directory accessed by
+        # absolute path, never a deliverables drop. Final deliverables land in
+        # the project for members bound to one (matching single-agent
+        # behaviour), or in the shared team ``outputs/`` directory for
+        # projectless members.
+        outputs = self._outputs_dir
+        if self._project_dir:
+            deliverables_lines = (
+                f"- User project root: `{self._project_dir}`\n"
+                "- Source code, tests, configuration, project documentation, and "
+                "files the user asks to create or modify belong in the active "
+                "project working root. When worktree isolation is active, the "
+                "worktree is the active project working root: use its cwd and "
+                "never bypass it with an absolute path to the main checkout.\n"
+                "- Without worktree isolation, use project-relative paths or "
+                "absolute paths under the user project root.\n"
+                "- This member is bound to a project, so final deliverables stay "
+                "in the project — do not write them to the team shared "
+                "deliverables directory.\n"
+            )
+        elif outputs:
+            deliverables_lines = (
+                "- No user project root is bound to this member. Final "
+                "deliverables (reports, exports, data, and other output the user "
+                "will receive) go to the shared team deliverables directory:\n"
+                f"  - Final deliverables directory: `{outputs}`\n"
+                "- The whole team shares this one directory; distinguish your "
+                "outputs by filename.\n"
+                "- Intermediate files, caches, and temporary scripts stay in "
+                "your own working directory (the per-member temporary working "
+                "directory named in the directory boundaries section); only "
+                "final deliverables go to the shared directory above.\n"
+            )
+        else:
+            deliverables_lines = (
+                "- No user project root is available and no shared deliverables "
+                "directory is configured. Resolve the project directory or "
+                "confirm a destination before creating deliverables; do not "
+                "silently drop them in the team workspace.\n"
+            )
+
         content = (
             "# Project and Team Workspace File Policy\n\n"
-            f"{project_lines}"
-            f"- Team collaboration workspace: `{self._root_dir}`\n"
-            "- This policy overrides generic team-artifact guidance when deciding where a file belongs.\n"
-            "- Source code, tests, configuration, project documentation, and files the user asks to create or modify "
-            "belong in the active project working root. When worktree isolation is active, the worktree is the active "
-            "project working root: use its cwd and never bypass it with an absolute path to the main checkout.\n"
-            "- Without worktree isolation, use project-relative paths or absolute paths under the user project root.\n"
-            "- Do not place final project files in the team collaboration workspace, even when another member needs "
-            "to read them or they will be delivered to the user. Other members can use the project path directly.\n"
-            "- Use the team collaboration workspace only for internal coordination artifacts such as plans, drafts, "
-            "review notes, intermediate data, and handoff material that is not part of the user's project, or when the "
-            "user explicitly requests that exact team-workspace destination.\n"
-            "- `send_file_to_user` controls message delivery only; it never changes the required on-disk destination.\n"
-            "- A path mentioned in `send_message` or a completion summary does not deliver the file. Call "
-            "`send_file_to_user` only when the user requested a downloadable file.\n"
+            f"{deliverables_lines}"
+            f"- Team shared workspace (config / internal data): `{self._root_dir}`\n"
+            "- The team shared workspace holds the team's prompts, team.yaml, "
+            "skill-visibility metadata, trajectories, and the shared "
+            "deliverables directory. Access it by absolute path — do not create "
+            "a `.team` sub-directory under it or under your own workspace.\n"
+            "- Use the team shared workspace only for internal coordination "
+            "artifacts such as plans, drafts, review notes, intermediate data, "
+            "and handoff material that is not part of the user's project, or "
+            "when the user explicitly requests that exact team-workspace "
+            "destination.\n"
+            "- Do not place final project files in the team shared workspace "
+            "root; members bound to a project keep deliverables in the project "
+            "and projectless members use the deliverables directory above.\n"
+            "- `send_file_to_user` controls message delivery only; it never "
+            "changes the required on-disk destination.\n"
+            "- A path mentioned in `send_message` or a completion summary does "
+            "not deliver the file. Call `send_file_to_user` only when the user "
+            "requested a downloadable file.\n"
         )
-        if not self._project_dir:
-            content += (
-                "- No user project root is available. Do not silently use the team collaboration workspace for "
-                "project deliverables; resolve the project directory before creating them.\n"
-            )
         self.system_prompt_builder.add_section(
             PromptSection(
                 name="team_workspace_report_paths",

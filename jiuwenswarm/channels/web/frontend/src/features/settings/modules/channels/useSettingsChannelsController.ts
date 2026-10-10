@@ -26,7 +26,11 @@ import {
   readXiaoyiFormValues,
 } from './channelAdapters';
 import { buildSettingsChannels } from './channelCatalog';
-import { channelConfigurationChecks, isFeishuAppConfigured } from './channelRequirements';
+import {
+  channelConfigurationChecks,
+  isFeishuAppConfigured,
+  shouldConfirmXiaoyiEnable,
+} from './channelRequirements';
 import type {
   ChannelDialogTarget,
   ChannelItem,
@@ -52,6 +56,7 @@ export function useSettingsChannelsController({
   const [activeDialogBaseline, setActiveDialogBaseline] = useState<FormValues | null>(null);
   const [pendingDiscardAction, setPendingDiscardAction] = useState<PendingDiscardAction | null>(null);
   const [pendingDeletion, setPendingDeletion] = useState<PendingChannelDeletion | null>(null);
+  const [pendingXiaoyiEnable, setPendingXiaoyiEnable] = useState<{ accountName: string } | null>(null);
 
   const loadChannels = useCallback(async () => {
     setChannelsLoading(true);
@@ -304,6 +309,10 @@ export function useSettingsChannelsController({
         );
         return;
       case 'xiaoyi':
+        if (shouldConfirmXiaoyiEnable(enabled, xiaoyi.form.getValues().api_id)) {
+          setPendingXiaoyiEnable({ accountName });
+          return;
+        }
         await xiaoyi.replaceAndSave(buildXiaoyiFormPayload({ ...xiaoyi.form.getValues(), enabled }), successMessage);
         return;
       case 'dingtalk':
@@ -330,6 +339,20 @@ export function useSettingsChannelsController({
           successMessage,
         );
     }
+  };
+
+  const confirmXiaoyiEnable = async () => {
+    if (!pendingXiaoyiEnable) return;
+    const saved = await xiaoyi.replaceAndSave(
+      buildXiaoyiFormPayload({ ...xiaoyi.form.getValues(), enabled: true }),
+      t('channels.enableSuccess', { name: pendingXiaoyiEnable.accountName }),
+    );
+    if (saved) setPendingXiaoyiEnable(null);
+  };
+
+  const editPendingXiaoyiConfiguration = () => {
+    setPendingXiaoyiEnable(null);
+    void activateTarget({ channelId: 'xiaoyi' });
   };
 
   const confirmDeletion = async () => {
@@ -365,6 +388,7 @@ export function useSettingsChannelsController({
     dialogOpen,
     pendingDiscardAction,
     pendingDeletion,
+    pendingXiaoyiEnable,
     controllers,
     feishuApps,
     channelEnabled,
@@ -382,6 +406,9 @@ export function useSettingsChannelsController({
     toggleChannelEnabled,
     confirmDeletion,
     confirmDiscard,
+    confirmXiaoyiEnable,
+    editPendingXiaoyiConfiguration,
+    cancelXiaoyiEnable: () => setPendingXiaoyiEnable(null),
     cancelDeletion: () => setPendingDeletion(null),
     cancelDiscard: () => setPendingDiscardAction(null),
   };

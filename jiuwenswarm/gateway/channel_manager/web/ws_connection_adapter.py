@@ -17,8 +17,9 @@ class StarletteWsAdapter:
     Future HTTP routes on the same uvicorn app do not go through this adapter.
     """
 
-    def __init__(self, websocket: WebSocket) -> None:
+    def __init__(self, websocket: WebSocket, *, authenticated_user_id: str | None = None) -> None:
         self._ws = websocket
+        self.authenticated_user_id = authenticated_user_id
         self._closed = False
         self._close_code = 1006
         self._close_reason = ""

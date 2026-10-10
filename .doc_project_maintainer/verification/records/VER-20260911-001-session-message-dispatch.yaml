@@ -1,0 +1,58 @@
+id: VER-20260911-001-session-message-dispatch
+applies_to:
+  source_revision: c982b1e52+session-message-dispatch
+  modules: [runtime-session, agentserver-runtime, gateway, process-cli]
+  flows: [runtime-session-reference-chain, interaction-answer]
+  symbols:
+    - AgentRuntime.send_session_message
+    - RuntimeSessionCoordinator.submit_unary
+    - RuntimeSessionCoordinator.deliver_control
+    - SessionWorkScheduler.submit_and_wait
+  paths:
+    - jiuwenswarm/runtime/service.py
+    - jiuwenswarm/runtime/session
+    - jiuwenswarm/runtime/session_provisioner.py
+evidence:
+  level: live_provider
+  scenario: persisted-target-idle-dispatch-and-interaction-control
+  environment: Windows, repository .venv, Python 3.12.12
+  commands:
+    - >-
+      .venv/Scripts/python.exe -m pytest -o addopts=''
+      tests/unit_tests/runtime -q
+    - >-
+      .venv/Scripts/python.exe -m pytest -o addopts=''
+      tests/unit_tests/process_cli/test_process_cli.py
+      tests/unit_tests/agentserver/test_agentserver_boundary_characterization.py
+      tests/unit_tests/agentserver/test_session_create_runtime_boundary.py
+      tests/unit_tests/gateway/test_message_handler_stream_cancel.py -q
+    - >-
+      .venv/Scripts/python.exe -m ruff check jiuwenswarm/runtime/service.py
+      jiuwenswarm/runtime/session jiuwenswarm/runtime/session_provisioner.py
+      tests/unit_tests/runtime/test_runtime_service.py
+      tests/unit_tests/runtime/test_runtime_session_coordinator.py
+      tests/system_tests/test_process_cli_session_runtime_live.py
+    - >-
+      $env:RUN_LIVE_SESSION_RUNTIME_TESTS='1';
+      .venv/Scripts/python.exe -m pytest
+      -o addopts=''
+      tests/system_tests/test_process_cli_session_runtime_live.py -q
+  repetitions: 1
+  successes: 404
+  warnings: 6
+result: passed
+status: active
+recorded_at: 2026-09-11T11:40:00+08:00
+supersedes: []
+evidence_paths: []
+notes: >-
+  Runtime tests cover persisted Work/Code Normal target restoration, a new
+  execution for an idle target, FIFO message release after exact interaction
+  control, idempotent request ids, queued-message cancellation, strict owner
+  and persisted-channel validation, and stale control rejection. The selected
+  Process CLI, AgentServer, and Gateway
+  boundaries passed. The existing live Process CLI Work/Code resume and
+  Work/Goal ask-user scenarios passed, followed by live cross-Session dispatch
+  into unloaded persisted Work and Code targets. A broader repository run was
+  stopped after reaching the already documented unrelated permission-engine
+  Windows baseline failures; no changed file participates in those failures.

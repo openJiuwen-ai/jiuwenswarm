@@ -39,9 +39,10 @@ These items are always visible in the navigation bar:
 
 | Item | What it is | When to use it |
 |------|------------|----------------|
-| **Work** | Main entry for chat and task execution, including session management, scheduled tasks, and project management | Daily Q&A, task execution, code generation, etc. |
+| **Tasks** | Main entry for chat and task execution, including session management, scheduled tasks, and project management | Daily Q&A, task execution, code generation, etc. |
 | **Skills** | Skills library: browse, install, configure extensions | Extra capabilities (e.g. deep search, PPT) |
 | **Channels** | Outbound channels: Feishu, WeChat, Telegram, etc. | Push AI messages to other apps |
+| **Team** | Entry for team / cluster session management, used to orchestrate multi-agent collaboration | When multiple agents need to collaborate on complex tasks |
 | **Agent** | View agent workspace files and memory content | When you need to inspect agent files or memory |
 
 ### More menu
@@ -52,11 +53,12 @@ Click the **More** button to expand additional settings:
 |------|------------|----------------|
 | **Configuration** | System and model settings | Change behavior or switch models |
 | **Harness** | Harness Package management: select Agent runtime mode, import/export extension packages | Switching native/extended mode, customizing Agent capabilities |
+| **Browser** | Browser panel for browsing web pages and debugging frontend | When you need to view web pages or debug inside the built-in browser |
+| **Updates** | Version update check, check and install new versions | When you need to check for system updates or upgrade |
 
 ### Bottom buttons
 
-- **Setup guide**: Step-by-step configuration wizard
-- **More Settings**: Additional settings and preferences
+- **More Settings** (gear icon): Expand the advanced settings panel, including connection status, version number, language switcher
 
 ![More menu expanded](../assets/images/current-ui-en/06-More-Menu.png)
 
@@ -103,6 +105,7 @@ JiuwenSwarm offers two execution modes. Pick the one that fits the task.
 
 - Choose the mode in the **input area** of the main chat using the mode dropdown.
 - Modes change how the agent plans and runs; in **Cluster mode** you can usually see how work is split and parallel work (as the UI shows).
+- **Prerequisite**: You cannot switch modes while the session already has history messages or is processing a task; start a new session or wait for the current task to finish.
 
 ![Execution mode selector](../assets/images/current-ui-en/02-Mode-Selector.png)
 
@@ -123,7 +126,7 @@ The input area at the bottom of the chat page provides several controls:
 
 | Control | What it does |
 |---------|--------------|
-| **Add image** | Attach an image to your message |
+| **Add file** | Opens a menu with multiple entries: add file (upload a file for the agent to analyze), add goal, add plan, etc. |
 | **Agent/Cluster** | Switch execution mode |
 | **Full Access/Default** | Switch permission level for tool access |
 | **Skills** | Select skills to use for this conversation |

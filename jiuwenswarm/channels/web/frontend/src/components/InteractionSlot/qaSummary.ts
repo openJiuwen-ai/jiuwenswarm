@@ -20,8 +20,35 @@ export interface QaSummaryData {
   items: QaSummaryItem[];
 }
 
+const MASKED_ANSWER = '••••••';
+const SENSITIVE_QUESTION_MARKERS = [
+  'access token',
+  'client secret',
+  'api key',
+  'password',
+  'token',
+  'secret',
+  '密码',
+  '口令',
+  '令牌',
+  '密钥',
+  '秘钥',
+];
+
+function maskSensitiveSummary(data: QaSummaryData): QaSummaryData {
+  return {
+    ...data,
+    items: data.items.map((item) => ({
+      ...item,
+      answers: SENSITIVE_QUESTION_MARKERS.some((marker) => item.question.toLocaleLowerCase().includes(marker))
+        ? item.answers.map(() => MASKED_ANSWER)
+        : [...item.answers],
+    })),
+  };
+}
+
 export function buildQaSummaryContent(data: QaSummaryData): string {
-  return QA_SUMMARY_PREFIX + JSON.stringify(data);
+  return QA_SUMMARY_PREFIX + JSON.stringify(maskSensitiveSummary(data));
 }
 
 export function isQaSummaryContent(content: string | undefined | null): boolean {
@@ -34,7 +61,7 @@ export function parseQaSummaryContent(content: string): QaSummaryData | null {
     const raw = content.slice(QA_SUMMARY_PREFIX.length);
     const parsed = JSON.parse(raw) as QaSummaryData;
     if (!parsed || !Array.isArray(parsed.items)) return null;
-    return parsed;
+    return maskSensitiveSummary(parsed);
   } catch {
     return null;
   }

@@ -3,6 +3,7 @@ import { Button } from '../../../../components/ui';
 import { SettingsConfirmDialog } from '../../components';
 import { ChannelConfigDialog } from './components/ChannelConfigDialog';
 import { ChannelListSection } from './components/ChannelListSection';
+import { XiaoyiEnableConfirmDialog } from './components/XiaoyiEnableConfirmDialog';
 import { useSettingsChannelsController } from './useSettingsChannelsController';
 import './SettingsChannelsPanel.css';
 
@@ -33,7 +34,7 @@ export function SettingsChannelsPanel({
           <span>
             {t('channels.fetchFailed')}: {controller.channelsError}
           </span>
-          <Button variant="quiet" size="sm" onClick={() => void controller.loadChannels()}>
+          <Button variant="quiet" size="sm" onClick={() => void controller.loadChannels()} data-testid="settings-channels-panel-retry-btn">
             {t('channels.retry')}
           </Button>
         </div>
@@ -65,6 +66,7 @@ export function SettingsChannelsPanel({
         onCancel={controller.closeDialog}
         onSaved={controller.closeDialogAfterSave}
       />
+      <XiaoyiEnableConfirmDialog controller={controller} />
 
       <SettingsConfirmDialog
         open={controller.pendingDiscardAction !== null}

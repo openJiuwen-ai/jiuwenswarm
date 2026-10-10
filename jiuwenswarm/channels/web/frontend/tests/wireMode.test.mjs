@@ -26,9 +26,16 @@ test('resolvePlanWireMode defaults profile to work when omitted', () => {
   assert.equal(resolvePlanWireMode('agent', true, undefined), 'agent.work.plan');
 });
 
-test('resolvePlanWireMode keeps agent base when plan off regardless of profile', () => {
-  assert.equal(resolvePlanWireMode('agent', false, 'work'), 'agent');
-  assert.equal(resolvePlanWireMode('agent', false, 'code'), 'agent');
+test('resolvePlanWireMode produces agent.work.normal when agent + plan off + work profile', () => {
+  // 统一三段命名后 plan off 也带 profile 段，不再回落到裸 agent。
+  assert.equal(resolvePlanWireMode('agent', false, 'work'), 'agent.work.normal');
+  assert.equal(resolvePlanWireMode('agent', false, 'code'), 'agent.code.normal');
+});
+
+test('resolvePlanWireMode defaults profile to work when omitted', () => {
+  assert.equal(resolvePlanWireMode('agent', true), 'agent.work.plan');
+  assert.equal(resolvePlanWireMode('agent', true, undefined), 'agent.work.plan');
+  assert.equal(resolvePlanWireMode('agent', false), 'agent.work.normal');
 });
 
 test('resolvePlanWireMode defaults to agent.work.plan when base is empty', () => {
@@ -44,9 +51,9 @@ test('resolvePlanWireMode produces team.code.plan when team + plan on + code pro
   assert.equal(resolvePlanWireMode('team', true, 'code'), 'team.code.plan');
 });
 
-test('resolvePlanWireMode keeps team base when plan off regardless of profile', () => {
-  assert.equal(resolvePlanWireMode('team', false, 'work'), 'team');
-  assert.equal(resolvePlanWireMode('team', false, 'code'), 'team');
+test('resolvePlanWireMode produces team.{work|code}.normal when team + plan off', () => {
+  assert.equal(resolvePlanWireMode('team', false, 'work'), 'team.work.normal');
+  assert.equal(resolvePlanWireMode('team', false, 'code'), 'team.code.normal');
 });
 
 test('resolvePlanWireMode keeps auto_harness as-is (no plan support)', () => {
@@ -73,6 +80,14 @@ test('isPlanWireMode returns false for plain agent / team / undefined', () => {
   assert.equal(isPlanWireMode(undefined), false);
 });
 
+test('isPlanWireMode returns false for plan-off normal wires', () => {
+  // 统一三段命名后 plan off 产出 *.normal，非 plan 状态。
+  assert.equal(isPlanWireMode('agent.work.normal'), false);
+  assert.equal(isPlanWireMode('agent.code.normal'), false);
+  assert.equal(isPlanWireMode('team.work.normal'), false);
+  assert.equal(isPlanWireMode('team.code.normal'), false);
+});
+
 // ── stripPlanSuffix 去掉新 plan 段（agent / team 两种 profile）──────────────
 
 test('stripPlanSuffix returns agent for agent plan wires and team for team plan wires', () => {
@@ -80,6 +95,14 @@ test('stripPlanSuffix returns agent for agent plan wires and team for team plan 
   assert.equal(stripPlanSuffix('agent.code.plan'), 'agent');
   assert.equal(stripPlanSuffix('team.work.plan'), 'team');
   assert.equal(stripPlanSuffix('team.code.plan'), 'team');
+});
+
+test('stripPlanSuffix collapses normal wires to base agent / team', () => {
+  // plan off 的 *.normal 也要归一到基础模式，使 normalizeAgentMode 折叠成 agent/team。
+  assert.equal(stripPlanSuffix('agent.work.normal'), 'agent');
+  assert.equal(stripPlanSuffix('agent.code.normal'), 'agent');
+  assert.equal(stripPlanSuffix('team.work.normal'), 'team');
+  assert.equal(stripPlanSuffix('team.code.normal'), 'team');
 });
 
 test('stripPlanSuffix is identity for non-plan wires', () => {

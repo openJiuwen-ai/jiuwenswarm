@@ -9,6 +9,7 @@ export * from './beamSearch';
 export * from './todo';
 export * from './websocket';
 export * from './subagent';
+export * from './contextUsage';
 export * from '../features/workspace/projectTypes';
 
 // 会话类型
@@ -26,6 +27,8 @@ export interface Session {
   display_title?: string | null;
   is_custom_title?: boolean;
   title_source?: 'auto' | 'user';
+  /** Direct parent session when this conversation was created by fork. */
+  forked_from?: string;
   model?: string;
   mode: AgentMode;
   status: SessionStatus;
@@ -34,14 +37,33 @@ export interface Session {
   updated_at: string;
   is_active?: boolean;
   is_processing?: boolean;
+  queued_session_messages?: Array<{
+    message_id: string;
+    target_session_id: string;
+    source_session_id: string;
+    source_title: string;
+    content: string;
+    status: string;
+  }>;
   current_task?: string;
   tools?: string[];
   team_name?: string;
+  /** 首条团队消息成功绑定的 AgentGroup id；后端 metadata 读回后成为只读绑定。 */
+  agent_group_name?: string | null;
+  /** 首次 AgentGroup 绑定时锁定的 leader 身份；旧 session 可能没有该字段。 */
+  team_leader_identity?: unknown;
   // ---- session.list 扩展字段 ----
   channel_id?: string;         // 渠道ID
   user_id?: string;            // 创建人ID
   last_message_at?: number;    // 最近对话时间(Unix时间戳)
   last_user_message_at?: number; // 最后一条用户消息时间(Unix时间戳)
+  cron_id?: string;            // 定时任务ID；非空表示 cron 触发的会话，侧栏仅归属定时任务分组
+  /** 后端保存的会话级装备快照，用于刷新页面后恢复插件/MCP选择。 */
+  session_equipment?: {
+    agent_template_name?: string;
+    plugin_names?: string[];
+    mcp?: string[];
+  };
 }
 
 export type AgentMode =
@@ -59,9 +81,29 @@ export type AgentMode =
   | 'team.code.normal'
   | 'team.code.plan';
 export type SessionStatus = 'active' | 'paused' | 'completed' | 'interrupted';
-export type Permission = 'default' | 'full_access';
+export type Permission = 'default' | 'automatic' | 'full_access';
 
 export type ModelPlan = 'token_plan' | 'coding_plan' | 'custom_api';
+
+export type ModelReasoningCapability = {
+  options: string[];
+  recommended: string | null;
+};
+
+export type ModelReasoningProtocols = {
+  openai: ModelReasoningCapability;
+  anthropic?: ModelReasoningCapability;
+};
+
+export type ModelReasoningRule = {
+  patterns: string[];
+  capabilities: Required<ModelReasoningProtocols>;
+};
+
+export type ModelReasoningCatalog = {
+  protocol_defaults: Required<ModelReasoningProtocols>;
+  model_fallbacks: ModelReasoningRule[];
+};
 
 export interface ModelEntry {
   model_name: string;
@@ -90,10 +132,14 @@ export interface ModelEntry {
   plan?: ModelPlan;
   /** OpenAI 兼容接口的端点方言；Anthropic 协议不携带此字段。 */
   endpoint_profile?: string;
-  /** 免费模型标识（如 Opencode Zen 免费模型）。前端据此归入"免费模型"分组；非免费模型不带此字段。 */
-  is_free?: boolean;
   /** AgentOS 备份模型只读标识；此类条目不参与 models.replace_all。 */
   is_agentos?: boolean;
+  /** RSI 模型目录中的免费模型标识；仅用于前端展示分组。 */
+  is_free?: boolean;
+  /** 模型来源。登录后自动获得的模型为 "huawei-maas-login"；用户自配的不带此字段。 */
+  source?: string;
+  /** 登录来源的模型是只读的：改了也不会写进 config.yaml（服务端会过滤）。 */
+  read_only?: boolean;
 }
 
 export interface VendorPreset {
@@ -111,9 +157,14 @@ export interface VendorPreset {
   supports_anthropic: boolean;
   anthropic_base: string | null;
   anthropic_client_provider: string | null;
+  reasoning_capabilities: Record<string, ModelReasoningProtocols>;
+  reasoning_rules: ModelReasoningRule[];
 }
 
-export type VendorPresetMap = Record<ModelPlan, VendorPreset[]>;
+export type VendorPresetMap = Record<ModelPlan, VendorPreset[]> & {
+  /** Null only while the server catalog has not loaded successfully. */
+  reasoning: ModelReasoningCatalog | null;
+};
 
 export interface VendorFetchModelsResult {
   models: string[];

@@ -4,7 +4,7 @@ import { getModelLogoUrl } from '../../assets/providers';
 /**
  * 模型厂商图标组件
  *
- * 与模型设置页共用同一套确定性分类：免费模型和没有 vendor_key 的配置显示自定义模型图标；
+ * 与模型设置页共用同一套确定性分类：没有 vendor_key 的配置显示自定义模型图标；
  * OpenAI 账号显示 OpenAI 图标；明确绑定厂商预设的模型显示 vendor_key 对应的厂商图标。
  */
 
@@ -13,7 +13,6 @@ export type ModelLike = {
   model_provider?: string;
   alias?: string;
   vendor_key?: string;
-  is_free?: boolean;
 };
 
 /** 获取与模型设置页一致的模型图标。 */

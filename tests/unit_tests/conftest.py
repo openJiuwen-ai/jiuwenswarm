@@ -42,6 +42,17 @@ _EXTERNAL_MEMORY_BASENAMES = frozenset(
 
 
 @pytest.fixture
+def internal_auto_mode(monkeypatch):
+    """Opt in retained Smart internals; product-entry tests keep real mode support."""
+    from jiuwenswarm.agents.harness.common.rails.permissions import auto_config
+
+    monkeypatch.setattr(
+        auto_config, "_VALID_RUNTIME_MODES",
+        auto_config._VALID_RUNTIME_MODES | {auto_config.AUTO_PERMISSION_MODE},
+    )
+
+
+@pytest.fixture
 def allow_macos_pytest_temp_sources(monkeypatch):
     """让使用 /private/var 临时目录的测试显式绕过内置 /var 黑名单。"""
     if sys.platform != "darwin":

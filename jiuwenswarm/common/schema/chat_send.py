@@ -187,3 +187,17 @@ class ChatSendParams(TypedDict, total=False):
 
     plugin_names: NotRequired[list[str]]
     """Desired plugin package names for this turn ([] clears all)."""
+
+    enable_swarmflow: NotRequired[bool]
+    """Whether Swarmflow is enabled for this session's Team mode.
+
+    When True, the server activates the swarmflow orchestration loop for the
+    session; when False or absent, swarmflow stays off.
+    """
+
+    swarmflow_budget: NotRequired[int]
+    """Swarmflow turn budget (max orchestration turns).
+
+    Only meaningful when ``enable_swarmflow`` is True. Absent means use the
+    server default budget.
+    """

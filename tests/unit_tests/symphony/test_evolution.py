@@ -197,15 +197,10 @@ def test_evolution_store_migrates_known_files_and_keeps_learning_across_versions
     assert (root_evolution / "events.jsonl").is_file()
     assert (root_evolution / "dynamic_graph_overlay.json").is_file()
     state_path = root_evolution / "session_feedback_state.json"
-    assert state_path.read_text(encoding="utf-8") == '{"source":"legacy"}\n'
+    legacy_state_path = legacy_evolution / "session_feedback_state.json"
+    assert not state_path.exists()
+    assert legacy_state_path.read_text(encoding="utf-8") == '{"source":"legacy"}\n'
     assert not (root_evolution / "unrelated.json").exists()
-
-    state_path.write_text('{"source":"root"}\n', encoding="utf-8")
-    (legacy_evolution / "session_feedback_state.json").write_text(
-        '{"source":"changed"}\n', encoding="utf-8"
-    )
-    prepare_evolution_store(graph_root)
-    assert state_path.read_text(encoding="utf-8") == '{"source":"root"}\n'
 
     overlay = load_dynamic_overlay(graph_root)
     assert overlay is not None

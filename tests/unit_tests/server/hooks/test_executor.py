@@ -513,3 +513,16 @@ class TestCommandHookE2E:
         r = results[0]
         assert r.outcome == HookOutcome.SUCCESS
         assert "2h ago" in r.additional_context
+
+
+def test_hook_input_serializes_structured_tool_results():
+    from openjiuwen.core.foundation.tool import ToolOutput
+
+    from jiuwenswarm.server.hooks.executor import _hook_input_json
+
+    payload = json.loads(
+        _hook_input_json({"tool_name": "Read", "tool_result": ToolOutput(success=True, data={"content": "a"})}),
+    )
+
+    assert payload["tool_result"]["success"] is True
+    assert payload["tool_result"]["data"] == {"content": "a"}

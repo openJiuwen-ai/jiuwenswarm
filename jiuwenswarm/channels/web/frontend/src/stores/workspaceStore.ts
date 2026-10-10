@@ -1,10 +1,13 @@
 import { create } from 'zustand';
 import i18n from '../i18n';
-import { projectRegistryClient } from '../features/workspace/projectRegistryClient';
+import { projectRegistryClient, ProjectRemoveResult } from '../features/workspace/projectRegistryClient';
+import { archivedTaskClient, findBatchSessionResult } from '../features/workspace/archivedTaskClient';
 import { persistWorkMode, readStoredWorkMode } from '../features/workspace/workModeStorage';
 import type { ProjectInfo, Session, WorkMode } from '../types';
 import { useChatStore } from './chatStore';
 import { useSessionStore } from './sessionStore';
+import { useCronStore } from './cronStore';
+import { parseChatRoute } from '../multi-session/routing/route';
 
 export const PROJECT_SESSION_PAGE_SIZE = 10;
 const DEFAULT_PROJECT_ID = 'default';
@@ -45,17 +48,32 @@ interface WorkspaceState {
   isLoadingProjects: boolean;
   error: string | null;
   setWorkMode: (workMode: WorkMode) => Promise<void>;
-  loadProjects: () => Promise<void>;
-  loadProjectSessions: (projectId: string, limit?: number) => Promise<void>;
+  loadProjects: (refreshEpoch?: number) => Promise<boolean>;
+  loadProjectSessions: (projectId: string, limit?: number, refreshEpoch?: number) => Promise<void>;
   showMoreSessions: (projectId: string) => Promise<void>;
   collapseSessions: (projectId: string) => Promise<void>;
-  loadPinnedSessions: () => Promise<void>;
+  loadPinnedSessions: (refreshEpoch?: number) => Promise<void>;
   setSelectedProject: (project: ProjectInfo | null) => void;
   toggleProjectExpanded: (projectId: string) => void;
   createProject: (name: string, projectDir: string) => Promise<ProjectInfo>;
   renameProject: (projectId: string, name: string) => Promise<void>;
   pinProject: (projectId: string, pinned: boolean) => Promise<void>;
-  removeProject: (projectId: string) => Promise<void>;
+  removeProject: (projectId: string) => Promise<ProjectRemoveResult>;
+  hideProjectLocally: (projectId: string) => void;
+  restoreProject: (projectId: string) => Promise<void>;
+  removeSessions: (sessionIds: string[]) => void;
+  archiveSession: (sessionId: string) => Promise<void>;
+  /** 归档成功后同步从侧边栏移除会话，供 toast 与列表同帧更新。 */
+  removeSessionLocally: (sessionId: string) => void;
+  refreshWorkspaceData: () => Promise<void>;
+  /**
+   * 刷新工作区并同步刷新定时任务列表。
+   *
+   * 项目隐藏会停用其下定时任务并把它们从 `cron.list` 中剔除；恢复（显式恢复、
+   * 同目录重建、撤销归档连带恢复项目）则让它们重新可见。只刷工作区会让
+   * 侧边栏的 cron 缓存停留在隐藏前的状态。
+   */
+  refreshWorkspaceAndCron: () => Promise<void>;
   upsertSession: (session: Session, options?: UpsertSessionOptions) => void;
   pinSession: (sessionId: string, pinned: boolean) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
@@ -83,6 +101,33 @@ function findDefaultProjectId(projects: ProjectInfo[]): string {
   return projects.find(isDefaultProject)?.project_id ?? DEFAULT_PROJECT_ID;
 }
 
+/**
+ * 收集项目在前端持有的会话 ID（项目会话列表 + 置顶区 + 已打开的会话）。
+ *
+ * 项目隐藏后其会话在后端完整保留，但前端一律不可见；侧边栏列表由
+ * `refreshWorkspaceData` 重新拉取即可消失，而 `sessionStore` 里已实例化的
+ * 会话（含聊天区正在展示的 `currentSession`）必须显式移除，否则出现
+ * “侧边栏节点消失了、聊天区内容还在”的割裂状态。
+ */
+function collectProjectSessionIds(state: WorkspaceState, projectId: string): string[] {
+  const ids = new Set<string>();
+  for (const session of state.projectSessions[projectId] || []) {
+    ids.add(session.session_id);
+  }
+  for (const session of state.pinnedSessions) {
+    if (session.project_id === projectId) ids.add(session.session_id);
+  }
+  const sessionState = useSessionStore.getState();
+  for (const session of sessionState.sessions) {
+    if (session.project_id === projectId) ids.add(session.session_id);
+  }
+  if (sessionState.currentSession?.project_id === projectId) {
+    ids.add(sessionState.currentSession.session_id);
+  }
+  return [...ids];
+}
+
+
 function findProjectIdForSession(projects: ProjectInfo[], session: Pick<Session, 'project_id'>): string {
   const projectId = session.project_id?.trim();
   if (!projectId || projectId === DEFAULT_PROJECT_ID) {
@@ -92,7 +137,7 @@ function findProjectIdForSession(projects: ProjectInfo[], session: Pick<Session,
     return projectId;
   }
   const project = findProject(projects, projectId);
-  return project && !project.hidden ? project.project_id : findDefaultProjectId(projects);
+  return project ? project.project_id : findDefaultProjectId(projects);
 }
 
 function patchSessionLists(
@@ -240,6 +285,9 @@ function getProjectSessionListsAfterPin(
   };
 }
 
+/** 工作区全量刷新代数：新刷新开始时递增，过期请求在写回前丢弃，避免归档/撤销竞态导致列表闪烁。 */
+let workspaceRefreshEpoch = 0;
+
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workMode: readStoredWorkMode(),
   projects: [],
@@ -269,12 +317,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     await get().loadProjects();
   },
 
-  loadProjects: async () => {
+  loadProjects: async (refreshEpoch?: number) => {
     const requestedWorkMode = get().workMode;
     set({ isLoadingProjects: true, error: null });
     try {
       const payload = await projectRegistryClient.list('all', requestedWorkMode);
-      if (get().workMode !== requestedWorkMode) return;
+      if (get().workMode !== requestedWorkMode) return true;
+      if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return true;
       const projects = (payload.projects || []).map((project) => (
         normalizeProject(project, requestedWorkMode)
       ));
@@ -297,16 +346,19 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           isLoadingProjects: false,
         };
       });
-      await get().loadPinnedSessions();
+      await get().loadPinnedSessions(refreshEpoch);
+      return true;
     } catch (error) {
       set({ isLoadingProjects: false, error: error instanceof Error ? error.message : String(error) });
+      return false;
     }
   },
 
-  loadProjectSessions: async (projectId, limit) => {
+  loadProjectSessions: async (projectId, limit, refreshEpoch) => {
     const requestedLimit = limit ?? getVisibleCount(get(), projectId);
     try {
       const payload = await projectRegistryClient.getSessions(projectId, requestedLimit);
+      if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return;
       const sessions = reconcileVisibleProjectSessions(
         payload.sessions || [],
         get().projectSessions[projectId] || [],
@@ -343,18 +395,24 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     await get().loadProjectSessions(projectId, PROJECT_SESSION_PAGE_SIZE);
   },
 
-  loadPinnedSessions: async () => {
-    const payload = await projectRegistryClient.pinnedSessions();
-    const { workMode, projects } = get();
-    const visibleProjectIds = new Set(projects.map((project) => project.project_id));
-    set({
-      pinnedSessions: mergeLocalSessionTitles(payload.sessions || [])
-        .filter((session) => {
-          if (session.work_mode) return session.work_mode === workMode;
-          if (session.project_id) return visibleProjectIds.has(session.project_id);
-          return workMode === 'work';
-        }),
-    });
+  loadPinnedSessions: async (refreshEpoch) => {
+    try {
+      const payload = await projectRegistryClient.pinnedSessions();
+      if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return;
+      const { workMode, projects } = get();
+      const visibleProjectIds = new Set(projects.map((project) => project.project_id));
+      set({
+        pinnedSessions: mergeLocalSessionTitles(payload.sessions || [])
+          .filter((session) => {
+            if (session.work_mode) return session.work_mode === workMode;
+            if (session.project_id) return visibleProjectIds.has(session.project_id);
+            return workMode === 'work';
+          }),
+      });
+    } catch (error) {
+      console.error('Failed to load pinned sessions', error);
+      set({ error: error instanceof Error ? error.message : String(error) });
+    }
   },
 
   setSelectedProject: (project) => set({ selectedProject: project }),
@@ -366,12 +424,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   })),
 
   createProject: async (name, projectDir) => {
-    const { project_id: projectId } = await projectRegistryClient.create(
-      name,
-      projectDir,
-      get().workMode,
-    );
+    const projectId = (await projectRegistryClient.create(name, projectDir, get().workMode)).project_id;
     await get().loadProjects();
+    // 用同一目录 + work_mode 创建项目会恢复被隐藏的同名项目，其定时任务
+    // 重新回到 cron 列表（默认停用）；cron 缓存必须跟着刷一次。
+    await useCronStore.getState().loadJobs();
     const project = findProject(get().projects, projectId);
     if (!project) throw new Error('project.create returned a project that is missing from project.list');
     set((state) => ({
@@ -391,20 +448,132 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     await get().loadProjects();
   },
 
+  hideProjectLocally: (projectId) => {
+    const ids = collectProjectSessionIds(get(), projectId);
+    const route = parseChatRoute(window.location.pathname);
+    if (route?.kind === 'chat-session' && ids.includes(route.sessionId)) {
+      window.history.replaceState(null, '', '/chat/new');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }
+    get().removeSessions(ids);
+    set((state) => ({
+      projects: state.projects.filter((project) => project.project_id !== projectId),
+      selectedProject: state.selectedProject?.project_id === projectId ? null : state.selectedProject,
+    }));
+  },
+
   removeProject: async (projectId) => {
-    await projectRegistryClient.remove(projectId);
-    await get().loadProjects();
+    const result = await projectRegistryClient.remove(projectId);
+    get().hideProjectLocally(projectId);
+    await get().refreshWorkspaceAndCron();
+    // 隐藏的项目不能再作为新建会话的默认归属：后端会拒绝它的会话绑定。
+    if (get().selectedProject?.project_id === projectId) {
+      const fallback = findProject(get().projects, findDefaultProjectId(get().projects));
+      set({ selectedProject: fallback });
+    }
+    return result;
+  },
+
+  restoreProject: async (projectId) => {
+    await projectRegistryClient.restore(projectId);
+    await get().refreshWorkspaceAndCron();
+  },
+
+  archiveSession: async (sessionId) => {
+    const response = await archivedTaskClient.archiveSession(sessionId);
+    const result = findBatchSessionResult(response, sessionId);
+    if (!result?.ok) {
+      const error = new Error(result?.error || 'Failed to archive session');
+      // finishing 透传给 UI：SESSION_BUSY 时区分「回合收尾中」与「运行中」文案。
+      Object.assign(error, { code: result?.code, finishing: result?.finishing === true });
+      throw error;
+    }
+  },
+
+  removeSessionLocally: (sessionId) => {
+    set((state) => {
+      let ownerProjectId: string | null = null;
+      for (const [projectId, sessions] of Object.entries(state.projectSessions)) {
+        if (sessions.some((session) => session.session_id === sessionId)) {
+          ownerProjectId = projectId;
+          break;
+        }
+      }
+      if (
+        !ownerProjectId
+        && !state.pinnedSessions.some((session) => session.session_id === sessionId)
+      ) {
+        return state;
+      }
+      return {
+        projectSessions: patchSessionLists(
+          state.projectSessions,
+          sessionId,
+          {},
+          { removeFromProjectLists: true },
+        ),
+        pinnedSessions: state.pinnedSessions.filter((session) => session.session_id !== sessionId),
+        projectSessionTotals: ownerProjectId
+          ? {
+              ...state.projectSessionTotals,
+              [ownerProjectId]: Math.max(0, (state.projectSessionTotals[ownerProjectId] ?? 1) - 1),
+            }
+          : state.projectSessionTotals,
+      };
+    });
+  },
+
+  // 归档/恢复/删除相关事件与操作后的统一对账入口：刷新项目、置顶会话
+  // 以及默认项目与已展开项目的会话列表。用 epoch 丢弃过期写回，避免归档/撤销交错时列表闪烁。
+  refreshWorkspaceData: async () => {
+    const epoch = ++workspaceRefreshEpoch;
+    // loadProjects 内部会以同一 epoch 刷新置顶会话，此处无需重复请求。
+    await get().loadProjects(epoch);
+    if (epoch !== workspaceRefreshEpoch) return;
     const state = get();
     await Promise.all(state.projects
       .filter((project) => isDefaultProject(project) || Boolean(state.expandedProjectIds[project.project_id]))
-      .map((project) => state.loadProjectSessions(project.project_id)));
+      .map((project) => state.loadProjectSessions(project.project_id, undefined, epoch)));
+  },
+
+  refreshWorkspaceAndCron: async () => {
+    await get().refreshWorkspaceData();
+    await useCronStore.getState().loadJobs();
+  },
+
+  removeSessions: (sessionIds) => {
+    const ids = new Set(sessionIds);
+    for (const id of ids) useSessionStore.getState().removeSession(id);
+    set((state) => ({
+      projectSessions: Object.fromEntries(Object.entries(state.projectSessions).map(([id, sessions]) => [
+        id, sessions.filter((session) => !ids.has(session.session_id)),
+      ])),
+      pinnedSessions: state.pinnedSessions.filter((session) => !ids.has(session.session_id)),
+    }));
   },
 
   upsertSession: (session, options = {}) => {
     const state = get();
-    const projectId = findProjectIdForSession(state.projects, session);
-    if (!projectId) return;
+    const isCronSession = Boolean(session.cron_id?.trim());
     set((current) => {
+      // cron 会话由 cronStore 在对应定时任务节点展示。WebSocket / metadata
+      // 的增量更新不能把它临时插入项目普通会话列表，否则在下一次全量刷新前
+      // 会同时出现在两个位置。已置顶的会话沿用现有规则，展示在置顶区。
+      if (isCronSession && !session.pinned) {
+        return {
+          projectSessions: patchSessionLists(
+            current.projectSessions,
+            session.session_id,
+            {},
+            { removeFromProjectLists: true },
+          ),
+          pinnedSessions: current.pinnedSessions.filter(
+            (item) => item.session_id !== session.session_id,
+          ),
+        };
+      }
+      const projectId = findProjectIdForSession(state.projects, session);
+      if (!projectId) return current;
       const currentProjectSessions = current.projectSessions[projectId] || [];
       const sessionWasVisible = currentProjectSessions.some((item) => item.session_id === session.session_id);
       const pinnedSessions = session.pinned

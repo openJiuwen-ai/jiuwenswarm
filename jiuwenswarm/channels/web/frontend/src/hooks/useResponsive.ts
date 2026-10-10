@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { breakpoints, canFitBoth, canFitToolPanelOnly, type BreakpointKey } from '../styles/breakpoints';
 
 /* ── 基础：通用媒体查询 ── */
@@ -32,6 +32,9 @@ export function useMinWidth(key: BreakpointKey): boolean {
 
 export function useResponsiveLayout() {
   const isMobile = useMaxWidth('sm');
+  // ≤1280px 时收起态工具浮层（tool-panel-collapsed）默认不自动打开：
+  // 页面加载与窗口变窄跨过断点时隐藏，用户仍可手动展开
+  const isToolPanelAutoHideViewport = useMaxWidth('toolPanelAutoHide');
   const [conversationSidebarCollapsed, setConversationSidebarCollapsed] = useState(false);
   const [conversationSidebarFloating, setConversationSidebarFloating] = useState(false);
   const [toolPanelHidden, setToolPanelHidden] = useState(false);
@@ -45,8 +48,15 @@ export function useResponsiveLayout() {
     }
   }, [isMobile]);
 
+  useEffect(() => {
+    if (isToolPanelAutoHideViewport) {
+      setToolPanelHidden(true);
+    }
+  }, [isToolPanelAutoHideViewport]);
+
   return {
     isMobile,
+    isToolPanelAutoHideViewport,
     conversationSidebarCollapsed,
     setConversationSidebarCollapsed,
     conversationSidebarFloating,
@@ -146,3 +156,47 @@ export function useResponsivePanelResize({
 
   return { shouldFullscreen };
 }
+
+/* ── 业务：Welcome 气泡定位 ── */
+
+export interface WelcomeBubblePositionParams {
+  panelRef: RefObject<HTMLDivElement>;
+  bubbleRef: RefObject<HTMLDivElement>;
+  active: boolean;
+}
+
+const BUBBLE_RIGHT_BREAKPOINTS: Array<{ minWidth: number; right: number }> = [
+  { minWidth: 1130, right: -114 },
+  { minWidth: 1000, right: -55 },
+  { minWidth: 800, right: -10 },
+];
+
+const BUBBLE_DEFAULT_RIGHT = -10;
+
+export function useWelcomeBubblePosition({ panelRef, bubbleRef, active }: WelcomeBubblePositionParams) {
+  useEffect(() => {
+    if (!active) return;
+    const panel = panelRef.current;
+    if (!panel || typeof ResizeObserver === 'undefined') return;
+
+    const updateBubbleRight = () => {
+      const bubble = bubbleRef.current;
+      if (!bubble) return;
+      const width = panel.offsetWidth;
+      const matched = BUBBLE_RIGHT_BREAKPOINTS.find((bp) => width >= bp.minWidth);
+      const rightValue = matched ? matched.right : BUBBLE_DEFAULT_RIGHT;
+      bubble.style.right = `${rightValue}px`;
+    };
+
+    const raf = requestAnimationFrame(updateBubbleRight);
+
+    const observer = new ResizeObserver(updateBubbleRight);
+    observer.observe(panel);
+    return () => {
+      cancelAnimationFrame(raf);
+      observer.disconnect();
+    };
+  }, [panelRef, bubbleRef, active]);
+}
+
+

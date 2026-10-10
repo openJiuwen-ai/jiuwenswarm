@@ -17,6 +17,7 @@ export function ModelNameField({
   id,
   value,
   mode,
+  allowCustomValue = false,
   options,
   disabled,
   invalid,
@@ -34,6 +35,7 @@ export function ModelNameField({
   id: string;
   value: string;
   mode: ModelInputMode;
+  allowCustomValue?: boolean;
   options: string[];
   disabled: boolean;
   invalid: boolean;
@@ -130,8 +132,10 @@ export function ModelNameField({
 
   const filteredOptions = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
-    return normalized ? options.filter((option) => option.toLocaleLowerCase().includes(normalized)) : options;
-  }, [options, query]);
+    const matches = normalized ? options.filter((option) => option.toLocaleLowerCase().includes(normalized)) : options;
+    const customValue = query.trim();
+    return allowCustomValue && customValue && !options.includes(customValue) ? [...matches, customValue] : matches;
+  }, [allowCustomValue, options, query]);
 
   const selectOption = (option: string) => {
     onChange(option);
@@ -167,7 +171,7 @@ export function ModelNameField({
 
   if (mode === 'manual') {
     return (
-      <div className="settings-model-name-field">
+      <div className="settings-model-name-field" data-testid="settings-model-name-field" data-variant="manual">
         <Input
           id={id}
           value={value}
@@ -176,9 +180,11 @@ export function ModelNameField({
           placeholder={t('settingsPanel.models.modelIdPlaceholder')}
           onChange={onChange}
           onBlur={onBlur}
+          data-testid="settings-model-name-field-input"
+          data-variant="manual"
         />
         {fetchStatus ? (
-          <p className="settings-model-name-field__status" data-tone={fetchStatusTone} role="status">
+          <p className="settings-model-name-field__status" data-tone={fetchStatusTone} role="status" data-testid="settings-model-name-field-status" data-variant="manual">
             {fetchStatus}
           </p>
         ) : null}
@@ -187,7 +193,7 @@ export function ModelNameField({
   }
 
   return (
-    <div className="settings-model-name-field" ref={rootRef}>
+    <div className="settings-model-name-field" ref={rootRef} data-testid="settings-model-name-field" data-variant="combo">
       <div className="settings-model-name-field__combo" data-has-refresh={showRefresh || undefined}>
         <input
           ref={inputRef}
@@ -200,7 +206,9 @@ export function ModelNameField({
           aria-autocomplete="list"
           aria-invalid={invalid || undefined}
           disabled={disabled}
-          placeholder={t('settingsPanel.models.searchModel')}
+          placeholder={t(allowCustomValue ? 'settingsPanel.models.modelIdPlaceholder' : 'settingsPanel.models.searchModel')}
+          data-testid="settings-model-name-field-input"
+          data-variant="combo"
           onFocus={openMenu}
           onChange={(event) => {
             setQuery(event.target.value);
@@ -230,6 +238,7 @@ export function ModelNameField({
           aria-label={t('settingsPanel.models.openModelList')}
           aria-expanded={open}
           disabled={disabled}
+          data-testid="settings-model-name-field-toggle-btn"
           onMouseDown={(event) => event.preventDefault()}
           onClick={toggleMenu}
         >
@@ -243,6 +252,7 @@ export function ModelNameField({
             title={t('settingsPanel.models.fetchLatestModels')}
             data-loading={fetching || undefined}
             disabled={fetchDisabled}
+            data-testid="settings-model-name-field-refresh-btn"
             onMouseDown={(event) => event.preventDefault()}
             onClick={onFetch}
           >
@@ -257,10 +267,11 @@ export function ModelNameField({
                 className="settings-model-name-field__menu"
                 role="listbox"
                 data-empty={filteredOptions.length === 0 || undefined}
+                data-testid="settings-model-name-field-listbox"
                 style={menuPosition}
               >
                 {filteredOptions.length === 0 ? (
-                  <p className="settings-model-name-field__empty" role="status">
+                  <p className="settings-model-name-field__empty" role="status" data-testid="settings-model-name-field-empty">
                     {options.length === 0 ? emptyText : t('settingsPanel.models.noModelResults')}
                   </p>
                 ) : (
@@ -271,6 +282,8 @@ export function ModelNameField({
                       aria-selected={option === value}
                       data-active={index === activeIndex || undefined}
                       key={option}
+                      data-testid="settings-model-name-field-option"
+                      data-variant={option}
                       onMouseDown={(event) => event.preventDefault()}
                       onMouseEnter={() => setActiveIndex(index)}
                       onClick={() => selectOption(option)}
@@ -286,7 +299,7 @@ export function ModelNameField({
           : null}
       </div>
       {fetchStatus ? (
-        <p className="settings-model-name-field__status" data-tone={fetchStatusTone} role="status">
+        <p className="settings-model-name-field__status" data-tone={fetchStatusTone} role="status" data-testid="settings-model-name-field-status" data-variant="combo">
           {fetchStatus}
         </p>
       ) : null}

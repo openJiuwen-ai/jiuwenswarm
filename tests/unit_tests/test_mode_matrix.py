@@ -16,6 +16,7 @@ from jiuwenswarm.common.mode_matrix import (
     base_mode_without_plan,
     deprecate_mode,
     is_plan_mode,
+    is_single_agent_mode,
     is_team_mode,
     resolve_request_mode,
 )
@@ -277,6 +278,11 @@ def test_new_canonical_ignores_supplemented_work_mode(mode, work_mode, expected)
         ("team.plan", ("team", "plan", "team.plan.normal")),
         ("team.plan.normal", ("team", "plan", "team.plan.normal")),
         ("team.plan.code", ("code", "team", "team.plan.code")),
+        # issue #4168: shorthand names resolve like their full names.
+        ("team.work", ("team", None, NEW_TEAM_WORK_NORMAL)),
+        ("team.normal", ("team", None, NEW_TEAM_WORK_NORMAL)),
+        ("agent.work", ("agent", None, NEW_AGENT_WORK_NORMAL)),
+        ("agent.code", ("code", "normal", NEW_AGENT_CODE_NORMAL)),
     ],
 )
 def test_legacy_modes_are_untouched_without_work_mode(raw_mode, expected):
@@ -370,13 +376,54 @@ def test_is_plan_mode(mode, expected):
         ("team.plan.normal", True),
         ("team.plan.code", True),
         ("code.team", True),
+        # Web 统一三段命名后 plan on/off 都发 team.*.{normal|plan}；session_history
+        # 与 session_adapter 的 team 判定依赖 is_team_mode 覆盖这些新串。
+        (NEW_TEAM_WORK_NORMAL, True),
+        (NEW_TEAM_WORK_PLAN, True),
+        (NEW_TEAM_CODE_NORMAL, True),
+        (NEW_TEAM_CODE_PLAN, True),
+        # issue #4168: shorthand names must count as team modes.
+        ("team.work", True),
+        ("team.normal", True),
+        ("team.code", True),
         ("agent", False),
         ("agent.plan", False),
         ("code.plan", False),
+        ("agent.work", False),
+        ("agent.code", False),
     ],
 )
 def test_is_team_mode(mode, expected):
     assert is_team_mode(mode) is expected
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        NEW_AGENT_WORK_NORMAL,
+        NEW_AGENT_WORK_PLAN,
+        NEW_AGENT_CODE_NORMAL,
+        NEW_AGENT_CODE_PLAN,
+    ],
+)
+def test_single_agent_modes_use_new_canonical_names(mode):
+    assert is_single_agent_mode(mode)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["agent", "agent.fast", "agent.plan", "code", "code.normal", "code.plan"],
+)
+def test_single_agent_mode_rejects_legacy_names(mode):
+    assert not is_single_agent_mode(mode)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [NEW_TEAM_WORK_NORMAL, NEW_TEAM_WORK_PLAN, NEW_TEAM_CODE_NORMAL, NEW_TEAM_CODE_PLAN],
+)
+def test_single_agent_mode_rejects_new_team_canonical_names(mode):
+    assert not is_single_agent_mode(mode)
 
 
 def test_base_mode_without_plan_is_identity_for_normal_modes():
@@ -414,8 +461,29 @@ def test_deprecate_mode_hits_legacy_canonicals():
     assert deprecate_mode(Mode.AGENT_FAST) == NEW_AGENT_WORK_NORMAL
 
 
+def test_user_facing_two_segment_aliases_resolve_to_canonical():
+    """issue #4168: every shorthand name must resolve to its full canonical mode."""
+    assert deprecate_mode("team.work") == NEW_TEAM_WORK_NORMAL
+    assert deprecate_mode("team.normal") == NEW_TEAM_WORK_NORMAL
+    assert deprecate_mode("agent.work") == NEW_AGENT_WORK_NORMAL
+    assert deprecate_mode("agent.code") == NEW_AGENT_CODE_NORMAL
+    # team.code keeps its existing alias chain
+    assert deprecate_mode("team.code") == NEW_TEAM_CODE_NORMAL
+
+
 @pytest.mark.parametrize(
-    "mode", ["team", "team.plan", "team.plan.normal", "team.plan.code", "code.team"]
+    "mode",
+    [
+        "team",
+        "team.plan",
+        "team.plan.normal",
+        "team.plan.code",
+        "code.team",
+        # issue #4168: shorthand names (incl. team.code) are valid team inputs
+        "team.work",
+        "team.normal",
+        "team.code",
+    ],
 )
 def test_team_modes_are_team_params(mode):
     from jiuwenswarm.server.utils.utils import is_team_params

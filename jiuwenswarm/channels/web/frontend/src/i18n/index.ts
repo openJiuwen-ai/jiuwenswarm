@@ -20,7 +20,9 @@ i18n
       escapeValue: false,
     },
     detection: {
-      order: ['localStorage', 'navigator'],
+      // 未手动选择过语言时默认中文（与后端 preferred_language 默认值一致），
+      // 不再跟随 navigator（桌面 WebView2 常为 en-US，导致启动初期显示英文）。
+      order: ['localStorage'],
       caches: ['localStorage'],
     },
   });

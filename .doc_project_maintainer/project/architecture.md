@@ -1,5 +1,5 @@
 ---
-last_updated: 2026-08-16
+last_updated: 2026-09-07
 status: partial
 confidence: inferred
 ---
@@ -9,6 +9,14 @@ confidence: inferred
 ## Runtime Shape
 
 Channels and frontends feed Gateway. Gateway uses an `AgentServerClient` implementation to connect to the AgentServer WebSocket endpoint. AgentServer decodes E2A or legacy request payloads into `AgentRequest`, dispatches special RPC methods locally, and delegates chat/runtime work to `AgentManager` and the selected agent adapter.
+
+The first Session-unification slice adds a second, deliberately narrow reference entry. `InProcessRuntimeClient` owns an `AgentRuntime`, which owns `RuntimeSessionCoordinator`, `SessionWorkScheduler`, and `SessionExecutionRegistry`. Process CLI Work/Code Normal use this managed path; AgentServer, Plan, Team, and background work remain on the legacy path until staged adaptation. Durable metadata/history are unchanged.
+
+```text
+Process CLI -> InProcessRuntimeClient -> AgentRuntime
+  -> RuntimeSessionCoordinator -> Scheduler/Registry
+  -> migration Executor -> existing facade/adapter -> RuntimeEvent
+```
 
 ```text
 Channel or frontend
@@ -33,6 +41,7 @@ When explicitly enabled per request, both Work and Code adapters mount the same 
 - Sends stream heartbeats while long agent streams are running.
 - Provides server push for agent-originated events, including ACP output and compression state updates.
 - Starts optional jiuwenbox sandbox runtime only when config explicitly requests internal sandbox startup.
+- Constructs `AgentRuntime` without a Session mode override and therefore remains legacy during the first unification slice.
 
 ## Coverage Note
 

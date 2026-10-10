@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
     get_registered_skill_names,
     get_skill_enabled,
@@ -12,6 +14,7 @@ from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
     remove_skill_config,
     set_skill_enabled,
 )
+from jiuwenswarm.server.runtime.skill import skill_manager as jiuwenswarm_skill_manager
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 
 
@@ -171,6 +174,35 @@ def test_manual_skill_auto_registered_as_local(monkeypatch, tmp_path):
     assert "manual-skill" in manager.list_execution_disabled_skills()
 
 
+@pytest.mark.asyncio
+async def test_local_skill_get_accepts_directory_id_and_frontmatter_name(
+    monkeypatch, tmp_path
+):
+    skills_dir = tmp_path / "skills"
+    builtin_dir = tmp_path / "builtin"
+    builtin_dir.mkdir(parents=True, exist_ok=True)
+    _make_skill_dir(
+        skills_dir,
+        "software-engineer",
+        "---\nname: 工程师\ndescription: test\n---\n",
+    )
+
+    manager = _init_manager_with_skills_dir(monkeypatch, skills_dir, builtin_dir)
+    manager.set_skill_enabled("software-engineer", False)
+
+    listed = manager._scan_local_skills()
+    skill = next(s for s in listed if s.get("name") == "software-engineer")
+    assert (skill["source"], skill["display_name"]) == ("local", "工程师")
+
+    by_id = await manager.handle_skills_get({"name": "software-engineer"})
+    by_display_name = await manager.handle_skills_get({"name": "工程师"})
+    for detail in (by_id, by_display_name):
+        assert detail["name"] == "software-engineer"
+        assert detail["source"] == "local"
+        assert detail["display_name"] == "工程师"
+        assert detail["enabled"] is False
+
+
 def test_builtin_skill_not_auto_registered_as_local(monkeypatch, tmp_path):
     """A skill that also exists under the builtin dir must NOT be auto-registered."""
     skills_dir = tmp_path / "skills"
@@ -207,6 +239,92 @@ def test_builtin_scan_uses_directory_name_without_frontmatter(monkeypatch, tmp_p
 
     listed = manager._scan_builtin_skills()
     assert [s.get("name") for s in listed] == ["builtin-no-frontmatter"]
+
+
+# ---------------------------------------------------------------------------
+# proprietary（自研/三方）标识
+# ---------------------------------------------------------------------------
+
+
+def test_builtin_proprietary_flag_follows_registry(monkeypatch, tmp_path):
+    """未安装内置技能：名单内标记 proprietary=true，名单外与无名单均为 false（默认三方）."""
+    skills_dir = tmp_path / "skills"
+    builtin_dir = tmp_path / "builtin"
+    _make_skill_dir(builtin_dir, "proprietary-skill")
+    _make_skill_dir(builtin_dir, "third-party-skill")
+    (builtin_dir / "_proprietary_skills.json").write_text(
+        json.dumps({"proprietary": ["proprietary-skill"]}), encoding="utf-8"
+    )
+
+    manager = _init_manager_with_skills_dir(monkeypatch, skills_dir, builtin_dir)
+    try:
+        # 前置测试可能已填充名单缓存，先重置确保读到本测试的名单文件
+        jiuwenswarm_skill_manager._PROPRIETARY_NAMES_CACHE = None
+        listed = {s["name"]: s for s in manager._scan_builtin_skills()}
+        assert listed["proprietary-skill"]["proprietary"] is True
+        assert listed["third-party-skill"]["proprietary"] is False
+
+        # 名单文件缺失 → 全部按默认三方
+        (builtin_dir / "_proprietary_skills.json").unlink()
+        jiuwenswarm_skill_manager._PROPRIETARY_NAMES_CACHE = None
+        listed = {s["name"]: s for s in manager._scan_builtin_skills()}
+        assert all(s["proprietary"] is False for s in listed.values())
+    finally:
+        jiuwenswarm_skill_manager._PROPRIETARY_NAMES_CACHE = None
+
+
+def test_installed_builtin_proprietary_copy_and_local_skill_default_third_party(
+    monkeypatch, tmp_path
+):
+    """已安装内置副本按名单标自研；本地导入/marketplace 技能一律三方."""
+    skills_dir = tmp_path / "skills"
+    builtin_dir = tmp_path / "builtin"
+    _make_skill_dir(skills_dir, "proprietary-installed")
+    _make_skill_dir(builtin_dir, "proprietary-installed")
+    _make_skill_dir(skills_dir, "imported-skill")
+    (builtin_dir / "_proprietary_skills.json").write_text(
+        json.dumps({"proprietary": ["proprietary-installed"]}), encoding="utf-8"
+    )
+
+    manager = _init_manager_with_skills_dir(monkeypatch, skills_dir, builtin_dir)
+    try:
+        # 前置测试可能已填充名单缓存，先重置确保读到本测试的名单文件
+        jiuwenswarm_skill_manager._PROPRIETARY_NAMES_CACHE = None
+        # 内置目录中已安装的会被跳过，因此该副本走 _scan_local_skills
+        listed = {s["name"]: s for s in manager._scan_local_skills()}
+        assert listed["proprietary-installed"]["proprietary"] is True
+        assert listed["proprietary-installed"]["is_builtin_source"] is True
+
+        # 本地导入技能：非内置来源 → 三方
+        assert listed["imported-skill"]["proprietary"] is False
+
+        # marketplace 安装（source=builtin 除外）也按三方兜底
+        assert all(
+            s["proprietary"] is False for s in listed.values() if s["name"] != "proprietary-installed"
+        )
+    finally:
+        jiuwenswarm_skill_manager._PROPRIETARY_NAMES_CACHE = None
+
+
+@pytest.mark.asyncio
+async def test_skills_get_returns_proprietary_flag(monkeypatch, tmp_path):
+    """skills.get 详情透传 proprietary 字段."""
+    skills_dir = tmp_path / "skills"
+    builtin_dir = tmp_path / "builtin"
+    _make_skill_dir(skills_dir, "proprietary-detail")
+    _make_skill_dir(builtin_dir, "proprietary-detail")
+    (builtin_dir / "_proprietary_skills.json").write_text(
+        json.dumps({"proprietary": ["proprietary-detail"]}), encoding="utf-8"
+    )
+
+    manager = _init_manager_with_skills_dir(monkeypatch, skills_dir, builtin_dir)
+    try:
+        # 前置测试可能已填充名单缓存，先重置确保读到本测试的名单文件
+        jiuwenswarm_skill_manager._PROPRIETARY_NAMES_CACHE = None
+        detail = await manager.handle_skills_get({"name": "proprietary-detail"})
+        assert detail["proprietary"] is True
+    finally:
+        jiuwenswarm_skill_manager._PROPRIETARY_NAMES_CACHE = None
 
 
 def test_already_registered_skill_not_duplicated(monkeypatch, tmp_path):

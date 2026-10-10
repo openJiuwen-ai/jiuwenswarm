@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from gateway_protocol.agent_client import AgentServerClient
+from gateway_protocol.sdk.agent_server_client import AgentServerClientExtension
+from gateway_protocol.sdk.third_agent import ThirdAgentExtension
+from gateway_protocol.third_agent import ThirdAgent
+
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentManager
 from jiuwenswarm.extensions.agentos.agentos_router.agentos_authenticator import AgentOSAuthenticator
@@ -14,15 +19,9 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import Regist
 from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
 from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import YuanrongSshRelay
 from jiuwenswarm.extensions.agentos.agentos_router.third_agent import AgentOSThirdAgent
-from jiuwenswarm.extensions.sdk.agent_server_client import (
-    AgentServerClientExtension,
-)
-from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
     YuanrongFrontendAgentClient,
 )
-from jiuwenswarm.gateway.routing.agent_client import AgentServerClient
-from jiuwenswarm.gateway.routing.third_agent import ThirdAgent
 
 
 class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):
@@ -37,6 +36,9 @@ class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):
             invoke_timeout_s=config.invoke_timeout_s,
             agent_timeout_s=config.agent_timeout_s,
             agent_namespace=config.agent_namespace,
+            probe_settings=config.probes,
+            wait_running_timeout_s=config.probes.wait_running_timeout_seconds,
+            wait_running_interval_s=config.probes.wait_running_interval_seconds,
         )
         self._registry_client = RegistryClient(config.registry)
         self._agent_manager = AgentManager(
@@ -61,6 +63,8 @@ class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):
             disconnect_cleanup_timeout_seconds=(
                 config.disconnect_cleanup_timeout_seconds
             ),
+            connect_warmup_enabled=config.connect_warmup_enabled,
+            probe_settings=config.probes,
             auth_client=AgentOSAuthenticator(config.auth_service_url, config.timeout) if config.auth_enabled else None
         )
         self._third_agent = AgentOSThirdAgent(self._router_client)

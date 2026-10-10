@@ -14,6 +14,9 @@
   font-size: var(--font-size-sm);
   font-weight: 600;
 }
+.form-item[data-disabled='true'] .form-item__heading {
+  color: var(--color-text-tertiary);
+}
 .form-item__heading-row {
   display: flex;
   align-items: center;
@@ -41,6 +44,12 @@
 }
 .form-item__control {
   min-width: 0;
+}
+.form-item__description {
+  margin-top: 5px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
 }
 
 .form-item__control > .ui-select {

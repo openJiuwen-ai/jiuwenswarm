@@ -14,17 +14,29 @@ import { UiLifecyclePortImpl } from "./core/supervision/ui-lifecycle.js";
 import { readSupervisionEnv } from "./core/supervision/supervised-env.js";
 import type { UiExitReason } from "./core/supervision/protocol.js";
 
-const { values } = parseArgs({
-  options: {
-    url: { type: "string", default: "ws://127.0.0.1:19001/tui" },
-    session: { type: "string" },
-    token: { type: "string", default: "" },
-    "persist-session": { type: "boolean", default: false },
-    "user-id": { type: "string", default: "" },
-    help: { type: "boolean", short: "h" },
-  },
-  strict: true,
-});
+function parseCliArgs() {
+  return parseArgs({
+    options: {
+      url: { type: "string", default: "ws://127.0.0.1:19001/tui" },
+      session: { type: "string" },
+      token: { type: "string", default: "" },
+      "persist-session": { type: "boolean", default: false },
+      "user-id": { type: "string", default: "" },
+      help: { type: "boolean", short: "h" },
+    },
+    strict: true,
+  }).values;
+}
+
+let values: ReturnType<typeof parseCliArgs>;
+try {
+  values = parseCliArgs();
+} catch (err: unknown) {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`jiuwenswarm-tui: ${message}`);
+  console.error("使用 -h 或 --help 查看可用选项。");
+  process.exit(2);
+}
 
 if (values.help) {
   console.log(`jiuwenswarm-tui - Terminal CLI for JiuwenSwarm

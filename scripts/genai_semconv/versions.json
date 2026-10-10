@@ -1,0 +1,5 @@
+{
+  "repository": "https://github.com/open-telemetry/semantic-conventions-genai.git",
+  "revision": "fee465db333bdd6a7d2faa320edab5cf3101a4f4",
+  "weaver_version": "v0.26.1"
+}

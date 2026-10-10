@@ -5,12 +5,11 @@ from collections.abc import Mapping
 from typing import Any
 
 from jiuwenswarm.common.reasoning_config import (
-    LEVEL_MAPPING,
-    ReasoningEffort,
     normalize_reasoning_level,
-    resolve_reasoning_target,
+    reasoning_config_for_level,
     resolve_sampling_override,
 )
+from jiuwenswarm.llm_provider_compat_patch import apply_provider_compat_patches
 
 
 def core_has_context_window_field() -> bool:
@@ -62,47 +61,11 @@ def _resolve_model_name(model_name: str, model_config_obj: Any) -> str:
     return ""
 
 
-def _copy_extra_body(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return dict(value)
-    return {}
-
-
 def _runtime_config_copy(model_config_dict: dict[str, Any]) -> dict[str, Any]:
     runtime_model_config = dict(model_config_dict)
     # Internal hint only; must not be sent as a raw OpenAI SDK parameter.
     runtime_model_config.pop("reasoning_level", None)
     return runtime_model_config
-
-
-def inject_deepseek_official_payload(
-    model_config_obj: dict[str, Any],
-    mapped_level: ReasoningEffort,
-) -> None:
-    model_config_obj.pop("reasoning_effort", None)
-
-    extra_body = _copy_extra_body(model_config_obj.get("extra_body"))
-    extra_body["thinking"] = {
-        "type": "disabled" if mapped_level == "off" else "enabled",
-    }
-    model_config_obj["extra_body"] = extra_body
-
-    if mapped_level == "high":
-        model_config_obj["reasoning_effort"] = mapped_level
-
-
-def inject_dashscope_bailian_payload(
-    model_config_obj: dict[str, Any],
-    mapped_level: ReasoningEffort,
-) -> None:
-    model_config_obj.pop("reasoning_effort", None)
-
-    extra_body = _copy_extra_body(model_config_obj.get("extra_body"))
-    extra_body["enable_thinking"] = mapped_level != "off"
-    model_config_obj["extra_body"] = extra_body
-
-    if mapped_level == "high":
-        model_config_obj["reasoning_effort"] = mapped_level
 
 
 def inject_reasoning_params(
@@ -113,39 +76,15 @@ def inject_reasoning_params(
     model_config_dict = _model_config_to_dict(model_config_obj)
     level = normalize_reasoning_level(model_config_dict.get("reasoning_level"))
     runtime_model_config = _runtime_config_copy(model_config_dict)
-    # 强制采样参数覆盖:某些厂商(如 Moonshot/api.moonshot.cn 的 kimi-k2.6)
-    # 对 temperature/top_p 有硬性约束,传 core 默认值(0.95)或用户填的任意其它值
-    # 都会 400。此处按 api_base 识别后强制写死,无视用户填值——因为传别的必死,
-    # 无协商余地。必须早于 reasoning 的 level early-return,否则无 reasoning_level
-    # 的普通调用(绝大多数)不会走到下面的 target 注入分支。
     override = resolve_sampling_override(
-        model_client_config.get("api_base") or model_client_config.get("base_url")
+        model_client_config.get("api_base") or model_client_config.get("base_url"),
+        model_client_config.get("model_name") or model_client_config.get("model"),
     )
     if override:
         runtime_model_config.update(override)
     if level is None:
         return runtime_model_config
-
-    target = resolve_reasoning_target(
-        client_provider=model_client_config.get("client_provider"),
-        endpoint_profile=model_client_config.get("endpoint_profile"),
-        api_base=(
-            model_client_config.get("api_base")
-            or model_client_config.get("base_url")
-        ),
-        model_name=model_client_config.get("model_name"),
-    )
-    if target is None:
-        return runtime_model_config
-
-    provider_kind, _model = target
-    mapped_level = LEVEL_MAPPING[level]
-
-    if provider_kind == "deepseek_official":
-        inject_deepseek_official_payload(runtime_model_config, mapped_level)
-    elif provider_kind == "dashscope_bailian":
-        inject_dashscope_bailian_payload(runtime_model_config, mapped_level)
-
+    runtime_model_config["reasoning"] = reasoning_config_for_level(level)
     return runtime_model_config
 
 
@@ -155,6 +94,15 @@ def _build_model_request_kwargs(
     model_config_obj: Any,
 ) -> dict[str, Any]:
     request_kwargs = _model_config_to_dict(model_config_obj)
+    is_agentos = request_kwargs.get("_source") == "agentos"
+    # 兼容老用户配置：旧版 AgentOS 使用 max_tokens 表示模型上下文窗口，
+    # 而 core 中同名字段表示最大输出 token 数。构建 ModelRequestConfig 前将
+    # 旧值迁移到 context_window，避免误限输出；新旧字段并存时以新字段为准。
+    # 两个字段都未配置时不注入任何值，由 JiuwenSwarm 使用固定默认上下文窗口。
+    if is_agentos:
+        legacy_context_window = request_kwargs.pop("max_tokens", None)
+        if "context_window" not in request_kwargs and legacy_context_window is not None:
+            request_kwargs["context_window"] = legacy_context_window
     request_kwargs.pop("model", None)
     request_kwargs.pop("model_name", None)
     request_kwargs.pop("reasoning_level", None)
@@ -200,6 +148,10 @@ def build_reasoning_model_request_kwargs(
     model_config_obj: Any,
     model_name: str,
 ) -> dict[str, Any]:
+    # This is the shared model-construction path used by AgentServer, Gateway
+    # validation, TUI validation, AgentOS, and team models. Installing here
+    # also covers processes that never import app_agentserver.
+    apply_provider_compat_patches()
     effective_model_name = _resolve_model_name(model_name, model_config_obj)
     reasoning_client_config = dict(model_client_config or {})
     if effective_model_name:
@@ -216,7 +168,5 @@ def build_reasoning_model_request_kwargs(
 
 __all__ = [
     "build_reasoning_model_request_kwargs",
-    "inject_dashscope_bailian_payload",
-    "inject_deepseek_official_payload",
     "inject_reasoning_params",
 ]

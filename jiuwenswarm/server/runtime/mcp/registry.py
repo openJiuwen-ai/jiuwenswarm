@@ -2,10 +2,8 @@
 
 """MCP marketplace registry.
 
-Reads the package cache under ``<workspace>/mcp/mcp_builtins/`` and
-exposes MCP records for the ``mcp.*`` RPC handlers. Each package's display
-metadata comes from the marketplace index ``index.json`` (same dir, keyed by
-``source`` == package name); connection/enabled state is derived from
+Reads validated package manifests under the built-in and Hub package roots
+and exposes MCP records for the ``mcp.*`` RPC handlers. Connection state is derived from
 ``<workspace>/mcp/state.json`` (merged with config.yaml's hand-written
 ``mcp.servers`` by ``get_mcp_servers``).
 """
@@ -22,18 +20,50 @@ from jiuwenswarm.server.runtime.mcp.paths import (
     has_skill_file as _has_skill_file,
     load_json,
 )
+from jiuwenswarm.server.runtime.mcp.package_manifest import (
+    McpPackageManifest,
+    iter_mcp_packages,
+    load_mcp_package,
+    resolve_mcp_package,
+)
 
 logger = logging.getLogger(__name__)
 
 # MCP 工作区根目录：所有 MCP 相关数据（内置包缓存/连接状态/凭证/
 # 已装 skill）统一收敛到 <workspace>/mcp/ 下（实现在 paths.py）。
-# marketplace 源索引：index.json 按 source(== 包名) 列出每个 MCP 的
-# name/name_en/description_zh/examples 等展示字段，与包目录同放 mcp_builtins/ 下。
-_INDEX_FILE = "index.json"
-
 # Fields masked out of the returned mcp_spec to avoid leaking secrets.
 _SENSITIVE_MCP_KEYS = frozenset({"headers", "env"})
 
+# Earlier built-in seeds shipped these marketplace package ids. They are kept
+# only to filter stale state.json records after the bundle dropped them.
+_LEGACY_BUILTIN_PACKAGE_IDS = frozenset({
+    "amap",
+    "baidu-map",
+    "canva",
+    "ctrip-wendao",
+    "dingtalk",
+    "feishu",
+    "gitcode",
+    "github",
+    "harmonyos-mcp",
+    "huaweiyun-mcp",
+    "netease-mail",
+    "qcc-company",
+    "ssh-mcp-server",
+    "tmeet",
+    "tyc-mcp",
+    "wecom",
+    "wind-finance",
+    "yingmi-mcp",
+})
+
+
+# Names whose in-flight connect/auth flow the user cancelled via
+# ``mcp.cancel_connect`` (e.g. a mis-clicked CLI OAuth, or giving up on the
+# 10-min hold-open wait). Cleared when a fresh connect starts; checked at step
+# boundaries in ``_connect_cli`` and by the wait_auth poller so the flow
+# unwinds promptly instead of waiting out the timeout.
+_CONNECT_CANCELLED: set[str] = set()
 
 # CLI connect error codes surfaced via mcp.connect's payload ``code`` field.
 # The frontend maps each to a friendly i18n string (connectorMarket.errors.*)
@@ -45,6 +75,10 @@ CODE_CLI_INCOMPLETE = "MCP_CLI_INCOMPLETE"     # version still unparseable/low
 # Custom MCP name conflicts with builtin marketplace package dir; 
 # builtin shadows custom on connect, so reject registration and prompt user to rename.
 CODE_NAME_CONFLICT = "MCP_NAME_CONFLICT"
+# Env-token CLI MCPs (auth: [] in cli.json, e.g. gitcode) authenticate via a
+# token-schema env var; the CLI's auth status rejected the stored token at
+# connect time. Frontend maps this to a "token invalid, re-enter" hint.
+CODE_CREDENTIALS_INVALID = "MCP_CREDENTIALS_INVALID"
 
 # Network-failure substrings matched (case-insensitively) against init command
 # stderr. Covers npm's common registry/connectivity errors; the token codes are
@@ -84,6 +118,7 @@ class McpRegistryError(ValueError):
 
 _MCP_ROOT = "mcp"
 _PACKAGES_SUBDIR = "mcp_builtins"
+_HUB_PACKAGES_SUBDIR = "mcp_hub"
 
 # Thin re-exports so existing call sites (and tests that patch
 # registry._load_json) keep working after load_json moved to paths.py.
@@ -96,60 +131,101 @@ def _mcp_root() -> Path:
 
 
 def _packages_dir() -> Path:
-    """<workspace>/mcp/mcp_builtins/ — marketplace 包目录 + index.json."""
+    """<workspace>/mcp/mcp_builtins/ — built-in package directory."""
     return _mcp_root() / _PACKAGES_SUBDIR
 
 
-def _detect_integration_type(pkg_dir: Path) -> str:
-    """Classify an MCP package by its integration shape.
+def _hub_packages_dir() -> Path:
+    return _mcp_root() / _HUB_PACKAGES_SUBDIR
 
-    Detection precedence (each checked in order — the first match wins):
 
-      1. cli.json present                       → ``cli``        (form C)
-         The CLI binary manages its own runtime + auth (feishu/dingtalk/...).
+def _package_roots() -> tuple[Path, Path]:
+    return _packages_dir(), _hub_packages_dir()
 
-      2. mcp.json with a usable mcpServers entry:
-         - command present                      → ``stdio-mcp``  (form B)
-         - url present                          → ``remote-mcp`` (form A)
 
-      3. No cli.json, no usable mcp.json, but a ``skills/`` directory exists
-         → ``skill-only``  (form D — ctrip-wendao, netease-mail).
-         No MCP server; the MCP IS its bundled skill scripts. Credential
-         acquisition is orthogonal (token-schema.json, no creds, or a future
-         scheme) so we don't key on any one file — a skills/ dir with no MCP
-         host is the defining trait.
+def resolve_package(name: str) -> McpPackageManifest | None:
+    """Resolve a local MCP package for callers outside the registry."""
+    return _resolve_package(name)
 
-      4. otherwise                             → ``remote-mcp`` (fallback)
+
+def _resolve_package(name: str) -> McpPackageManifest | None:
+    return resolve_mcp_package(str(name or "").strip(), *_package_roots())
+
+
+def is_stale_marketplace_record(
+    name: str, record: dict[str, Any] | None = None
+) -> bool:
+    """True when a state record points to a marketplace package that is gone.
+
+    Read-only filter; state.json is left untouched. A record is considered
+    stale when its package no longer resolves and it matches a known legacy
+    builtin, a Hub install, or a CLI/skill-only type (custom MCPs can only be
+    stdio/remote).
     """
-    if (pkg_dir / "cli.json").is_file():
-        return "cli"
-    mcp = _load_json(pkg_dir / "mcp.json")
-    if mcp and isinstance(mcp.get("mcpServers"), dict):
-        first = next(iter(mcp["mcpServers"].values()), {})
-        if isinstance(first, dict):
-            if first.get("command"):
-                return "stdio-mcp"
-            if first.get("url"):
-                return "remote-mcp"
-    # No cli.json and no usable mcp.json. If the package ships a skills/
-    # directory, it's a skill-only MCP — the skills ARE the MCP (no MCP
-    # server to spawn). token-schema.json is just one possible
-    # credential source; a pure-credentialless skill package also lands here.
-    if (pkg_dir / "skills").is_dir():
-        return "skill-only"
-    return "remote-mcp"
+    n = str(name or "").strip()
+    if not n:
+        return False
+    try:
+        if _resolve_package(n) is not None:
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    if n in _LEGACY_BUILTIN_PACKAGE_IDS:
+        return True
+    if record is None:
+        try:
+            from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
+            record = get_mcp_record(n)
+        except Exception:  # noqa: BLE001
+            record = None
+    if isinstance(record, dict) and str(
+        record.get("integration_type", "") or ""
+    ).strip() in {"cli", "skill-only"}:
+        return True
+    try:
+        from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
+            HubInstallStateStore,
+        )
+        return HubInstallStateStore(_mcp_root()).get_by_package_id(n) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _pkg_dir(name: str) -> Path:
+    package = _resolve_package(name)
+    return package.root if package is not None else _packages_dir() / str(name or "").strip()
+
+
+def _detect_integration_type(pkg_dir: Path) -> str:
+    """Return the integration type explicitly declared by the package."""
+    return load_mcp_package(pkg_dir).integration_type
 
 
 def _load_index_entry(name: str) -> dict[str, Any]:
-    """从索引 index.json 按 source==name 查一条 MCP 记录。"""
-    idx_path = _packages_dir() / _INDEX_FILE
-    data = _load_json(idx_path)
-    if not data or not isinstance(data.get("mcps"), list):
+    """Return display metadata from a package's own manifest."""
+    package = _resolve_package(name)
+    if package is None:
         return {}
-    for c in data["mcps"]:
-        if isinstance(c, dict) and str(c.get("source", "")).strip() == name:
-            return c
-    return {}
+    raw = package.raw
+    display_name = raw.get("display_name") if isinstance(raw.get("display_name"), dict) else {}
+    display_description = (
+        raw.get("display_description")
+        if isinstance(raw.get("display_description"), dict)
+        else {}
+    )
+    examples = raw.get("examples") if isinstance(raw.get("examples"), dict) else {}
+    return {
+        **raw,
+        "display_name": display_name.get("zh") or package.name,
+        "display_name_en": display_name.get("en") or package.name,
+        "name": display_name.get("zh") or package.name,
+        "name_en": display_name.get("en") or package.name,
+        "description_zh": display_description.get("zh") or package.description,
+        "description_en": display_description.get("en") or package.description,
+        "description": display_description.get("en") or package.description,
+        "examples_zh": examples.get("zh") or [],
+        "examples": examples.get("en") or [],
+    }
 
 
 def _connector_meta_by_name(name: str) -> dict[str, Any]:
@@ -199,17 +275,18 @@ def get_connector_catalog_display(name: str) -> tuple[dict[str, str], dict[str, 
 
 
 def _bundled_skill_names(pkg_dir: Path) -> list[str]:
-    """Bundled skill runtime names (handles nested + flat marketplace layouts)."""
-    skills_dir = pkg_dir / "skills"
-    if not skills_dir.is_dir():
+    """Bundled skill runtime names from manifest-declared directories."""
+    package = resolve_mcp_package(pkg_dir.name, pkg_dir.parent)
+    if package is None:
         return []
-    # flat layout: SKILL.md sits directly under skills/ -> one skill named after the package
-    if _has_skill_file(skills_dir):
-        return [pkg_dir.name]
     names: list[str] = []
-    for entry in sorted(skills_dir.iterdir()):
-        if entry.is_dir() and _has_skill_file(entry):
-            names.append(entry.name)
+    for skills_dir in package.skill_dirs:
+        if _has_skill_file(skills_dir):
+            names.append(package.package_id)
+            continue
+        for entry in sorted(skills_dir.iterdir()):
+            if entry.is_dir() and _has_skill_file(entry):
+                names.append(entry.name)
     return names
 
 
@@ -221,32 +298,24 @@ def _mask_mcp_spec(mcp_spec: dict[str, Any]) -> dict[str, Any]:
     return masked
 
 
-# Icon 文件名候选：marketplace 包目录下 icon.svg 或 icon.png（固定命名，
-# index.json 未声明 icon，靠探测磁盘确定）。
-_ICON_FILES = ("icon.svg", "icon.png")
-
-
 def _load_icon_data_url(pkg_dir: Path) -> str | None:
-    """Read a package's icon as a data URL (svg/png inlined), or None.
+    """Read a package's PNG icon as a data URL, or None.
 
     Frontend can't reach the workspace filesystem, so inline the icon bytes
     as a data URL the <img src> can render directly — no extra HTTP route
-    or fetch round-trip. SVG/PNG icons are tiny (a few KB), so the base64
+    or fetch round-trip. PNG icons are small, so the base64
     overhead in the summary payload is acceptable. Returns None when the
     package ships no icon file (frontend falls back to a default/initial).
     """
     import base64
-    for fname in _ICON_FILES:
-        p = pkg_dir / fname
-        if not p.is_file():
-            continue
+    package = resolve_mcp_package(pkg_dir.name, pkg_dir.parent)
+    p = package.icon_file if package is not None else None
+    if p is not None:
         try:
             raw = p.read_bytes()
         except OSError:
-            continue
-        ext = p.suffix.lower().lstrip(".")
-        mime = "image/svg+xml" if ext == "svg" else "image/png"
-        return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+            return None
+        return f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
     return None
 
 
@@ -271,9 +340,8 @@ def _build_summary(
         connection_state = "connecting"
     else:
         connection_state = "disconnected"
-    # Icon: source meta.icon is unreliable (mostly unset); probe disk for
-    # icon.svg/icon.png and inline as data URL so the frontend renders it
-    # without an extra HTTP route.
+    # Icon: source meta.icon is unreliable (mostly unset); read the manifest-
+    # declared PNG and inline it so the frontend needs no extra HTTP route.
     icon = _load_icon_data_url(pkg_dir)
     return {
         "name": name,
@@ -289,7 +357,9 @@ def _build_summary(
         # source: built_in (marketplace package on disk) vs customize
         # (user-registered, no package). Drives the frontend's "edit"
         # button visibility — only customize MCPs are editable.
-        "source": "built_in",
+        # Manifest 中的 source 只用于资产描述，不决定运行时来源。目录是
+        # 唯一可信来源，避免 Hub 包伪装成预置包或预置包被错误标成 Hub。
+        "source": "hub" if pkg_dir.parent.name == _HUB_PACKAGES_SUBDIR else "built_in",
         # 连接状态用 connection_state 单字段表达；会话级启用走 chat.send 的
         # ``mcp`` 字段（非持久 flag），不在此返回 enabled/connected 冗余字段。
     }
@@ -303,14 +373,9 @@ def _build_detail(
     connecting_names: set[str] | None = None,
 ) -> dict[str, Any] | None:
     summary = _build_summary(name, pkg_dir, meta, connected_names, connecting_names)
-    mcp_spec_raw = _load_json(pkg_dir / "mcp.json")
-    mcp_spec: dict[str, Any] = {}
-    if mcp_spec_raw and isinstance(mcp_spec_raw.get("mcpServers"), dict):
-        # Flatten the mcpServers dict to the first server entry (one pkg = one MCP).
-        first_name, first_cfg = next(iter(mcp_spec_raw["mcpServers"].items()), (None, {}))
-        if isinstance(first_cfg, dict):
-            mcp_spec = _mask_mcp_spec(first_cfg)
-    cli_present = (pkg_dir / "cli.json").exists()
+    package = resolve_mcp_package(pkg_dir.name, pkg_dir.parent)
+    mcp_spec = _mask_mcp_spec(package.server_config or {}) if package is not None else {}
+    cli_present = package is not None and package.integration_type == "cli"
     # skills: full {name, description} list (bundled_skills is just names).
     # tools: tools currently registered for a connected MCP. 
     skills = get_mcp_skills(name)
@@ -399,29 +464,27 @@ def list_marketplace_mcps(mcp_filter: str = "builtin") -> list[dict[str, Any]]:
         logger.debug("[mcp.registry] unknown mcp.list filter %r, fallback builtin", mcp_filter)
         f = "builtin"
 
-    root = _packages_dir()
+    package_roots = _package_roots()
     connected = _connected_server_names()
     connecting = _connecting_server_names()
     out: list[dict[str, Any]] = []
     seen_names: set[str] = set()
-    if root.is_dir():
+    if any(root.is_dir() for root in package_roots):
         # 华为系（华为云 / 鸿蒙）置顶，其余按包名字母序——让首屏突出自有生态。
         priority = {"huaweiyun-mcp": 0, "harmonyos-mcp": 0}
-        for pkg_dir in sorted(
-            root.iterdir(),
-            key=lambda p: (priority.get(p.name, 1), p.name),
+        for package in sorted(
+            iter_mcp_packages(*package_roots),
+            key=lambda item: (priority.get(item.package_id, 1), item.package_id),
         ):
-            if not pkg_dir.is_dir():
-                continue
-            name = pkg_dir.name
+            name = package.package_id
             # local: 只返回已连接的预置 MCP（会话页只需可启用集合）。
             if f == "local" and name not in connected:
                 continue
             meta = _load_index_entry(name)
-            out.append(_build_summary(name, pkg_dir, meta, connected, connecting))
+            out.append(_build_summary(name, package.root, meta, connected, connecting))
             seen_names.add(name)
     else:
-        logger.debug("[mcp.registry] marketplace packages dir not found: %s", root)
+        logger.debug("[mcp.registry] marketplace package roots not found: %s", package_roots)
     # 自定义 MCP（无 marketplace 包）只出现在 local——builtin 是纯预置目录。
     if f == "local":
         try:
@@ -430,7 +493,7 @@ def list_marketplace_mcps(mcp_filter: str = "builtin") -> list[dict[str, Any]]:
             )
             for rec in list_registered_mcps():
                 name = str(rec.get("name", "") or "").strip()
-                if not name or name in seen_names:
+                if not name or name in seen_names or is_stale_marketplace_record(name, rec):
                     continue
                 itype = str(rec.get("integration_type", "") or "remote-mcp").strip() or "remote-mcp"
                 state_val = str(rec.get("state", "") or "").strip()
@@ -467,12 +530,12 @@ def get_mcp(name: str) -> dict[str, Any] | None:
     target = str(name or "").strip()
     if not target:
         return None
-    pkg_dir = _packages_dir() / target
-    if pkg_dir.is_dir():
+    package = _resolve_package(target)
+    if package is not None:
         meta = _load_index_entry(target)
         connected = _connected_server_names()
         connecting = _connecting_server_names()
-        return _build_detail(target, pkg_dir, meta, connected, connecting)
+        return _build_detail(target, package.root, meta, connected, connecting)
     # Custom MCP: no marketplace package — synthesize a detail from state.json
     # so the frontend can show it and render its tools panel.
     try:
@@ -482,7 +545,7 @@ def get_mcp(name: str) -> dict[str, Any] | None:
         rec = get_mcp_record(target)
     except Exception:  # noqa: BLE001
         rec = None
-    if rec is None:
+    if rec is None or is_stale_marketplace_record(target, rec):
         return None
     itype = str(rec.get("integration_type", "") or "remote-mcp").strip() or "remote-mcp"
     state_val = str(rec.get("state", "") or "").strip()
@@ -546,19 +609,17 @@ def get_mcp_skills(name: str) -> list[dict[str, str]]:
     n = str(name or "").strip()
     if not n:
         return []
-    pkg_dir = _packages_dir() / n
-    skills_dir = pkg_dir / "skills"
-    if not skills_dir.is_dir():
+    package = _resolve_package(n)
+    if package is None:
         return []
     out: list[dict[str, str]] = []
-    # flat layout: SKILL.md directly under skills/ -> one skill named after the package
-    if _has_skill_file(skills_dir):
-        out.append({"name": n, "description": _skill_description(skills_dir)})
-        return out
-    # nested layout: each child dir with a skill file is one skill
-    for entry in sorted(skills_dir.iterdir()):
-        if entry.is_dir() and _has_skill_file(entry):
-            out.append({"name": entry.name, "description": _skill_description(entry)})
+    for skills_dir in package.skill_dirs:
+        if _has_skill_file(skills_dir):
+            out.append({"name": n, "description": _skill_description(skills_dir)})
+            continue
+        for entry in sorted(skills_dir.iterdir()):
+            if entry.is_dir() and _has_skill_file(entry):
+                out.append({"name": entry.name, "description": _skill_description(entry)})
     return out
 
 
@@ -605,13 +666,9 @@ def get_mcp_tools(name: str) -> list[dict[str, Any]]:
 
 # --- F-1: connect / disconnect / enable / disable / status ---
 def _marketplace_mcp_cfg(name: str) -> dict[str, Any] | None:
-    """Read marketplace mcp.json, return first server cfg (marketplace format)."""
-    pkg = _packages_dir() / str(name or "").strip()
-    raw = _load_json(pkg / "mcp.json")
-    if not raw or not isinstance(raw.get("mcpServers"), dict):
-        return None
-    first = next(iter(raw["mcpServers"].values()), {})
-    return first if isinstance(first, dict) else None
+    """Return the manifest-declared MCP server configuration."""
+    package = _resolve_package(name)
+    return dict(package.server_config) if package and package.server_config else None
 
 
 def _normalize_transport(raw: str, cfg: dict[str, Any]) -> str:
@@ -671,6 +728,49 @@ def build_config_entry(name: str) -> dict[str, Any] | None:
     return entry
 
 
+def cancel_connect(name: str) -> dict[str, Any]:
+    """User-initiated abort of an in-flight ``mcp.connect`` / ``mcp.wait_auth`` flow.
+
+    Marks the name cancelled (checked by ``_await_cli_auth`` /
+    ``_run_mcp_connect_flow``), kills any pending authWaitForExit CLI proc, and
+    rolls back a still-``connecting`` state.json record (marketplace → removed,
+    custom → registered) so the card doesn't stay stuck in "connecting".
+    Idempotent and safe when nothing is in flight.
+    """
+    n = str(name or "").strip()
+    if not n:
+        raise ValueError("mcp name is required")
+    _CONNECT_CANCELLED.add(n)
+    try:
+        from jiuwenswarm.server.runtime.mcp.cli_driver import (
+            cancel_pending_auth_proc,
+        )
+        cancel_pending_auth_proc(n)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[mcp.registry] cancel pending auth proc '%s' failed: %s", n, exc)
+    # Roll back only an in-flight connecting record. Never touch a record that
+    # already reached connected (e.g. the auth completed a split-second before
+    # the cancel landed) — that would silently unlink a working MCP.
+    try:
+        from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
+        rec = get_mcp_record(n)
+        if isinstance(rec, dict) and rec.get("state") == "connecting":
+            rollback_failed_connect(n)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[mcp.registry] cancel rollback '%s' failed: %s", n, exc)
+    return {"type": "cancelled", "name": n}
+
+
+def was_connect_cancelled(name: str) -> bool:
+    """True when the user cancelled the in-flight connect/auth flow for name."""
+    return str(name or "").strip() in _CONNECT_CANCELLED
+
+
+def clear_connect_cancel(name: str) -> None:
+    """Forget a prior cancel marker (called when a fresh connect starts)."""
+    _CONNECT_CANCELLED.discard(str(name or "").strip())
+
+
 def connect_mcp(name: str, *, install_only: bool = False) -> dict[str, Any]:
     """Install a marketplace MCP (dispatch by integration_type).
 
@@ -692,8 +792,11 @@ def connect_mcp(name: str, *, install_only: bool = False) -> dict[str, Any]:
     n = str(name or "").strip()
     if not n:
         raise ValueError("mcp name is required")
-    pkg_dir = _packages_dir() / n
-    if not pkg_dir.is_dir():
+    # A fresh connect supersedes any previous cancel marker (the user may have
+    # cancelled once, then decided to retry).
+    clear_connect_cancel(n)
+    package = _resolve_package(n)
+    if package is None:
         # No marketplace package — this is a custom MCP. Its definition lives
         # in state.json (register_custom_mcp wrote it with state=registered).
         # Connect means: mark it connected so it is selectable per session
@@ -734,7 +837,7 @@ def connect_mcp(name: str, *, install_only: bool = False) -> dict[str, Any]:
         mcp_entry["integration_type"] = itype
         mcp_entry["auth_required"] = False
         return mcp_entry
-    itype = _detect_integration_type(pkg_dir)
+    itype = package.integration_type
     if itype != "cli":
         entry = build_config_entry(n)
         from jiuwenswarm.server.runtime.mcp.credential import (
@@ -749,7 +852,7 @@ def connect_mcp(name: str, *, install_only: bool = False) -> dict[str, Any]:
         # schema.json (when present) declares required tokens the skill script
         # reads from env — surface a prompt if any are still missing.
         if entry is None:
-            if not (_packages_dir() / n / "skills").is_dir():
+            if not package.skill_dirs:
                 # Neither an mcp.json host nor bundled skills — nothing to connect.
                 raise ValueError(
                     f"mcp '{n}' has no usable mcp.json and no skills directory"
@@ -896,7 +999,7 @@ def rollback_failed_connect(name: str) -> None:
     if not n:
         return
     try:
-        if (_packages_dir() / n).is_dir():
+        if _resolve_package(n) is not None:
             from jiuwenswarm.server.runtime.mcp.skill_installer import (
                 uninstall_mcp_skills,
             )
@@ -926,6 +1029,23 @@ def _entry_missing_tokens(entry: dict[str, Any], store: Any) -> set[str]:
     return found - stored
 
 
+def _cli_cred_tokens_stored(name: str) -> bool:
+    """True when every token-schema required key is in the CredentialStore."""
+    try:
+        from jiuwenswarm.server.runtime.mcp.credential import (
+            CredentialStore,
+            required_tokens_from_schema,
+        )
+        keys = required_tokens_from_schema(name)
+        if not keys:
+            return False
+        store = CredentialStore()
+        stored = set(store.get_all(name).keys()) if name else set()
+        return all(k in stored for k in keys)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _classify_install_failure(n: str, inst: Any) -> CliConnectError:
     """Map a failed CliDriver.install() onto a CliConnectError by cause:
     binary_not_found → MCP_RUNTIME_MISSING, network stderr → MCP_INSTALL_NETWORK,
@@ -950,7 +1070,7 @@ def _classify_install_failure(n: str, inst: Any) -> CliConnectError:
     return CliConnectError(
         CODE_CLI_INCOMPLETE,
         f"mcp '{n}' CLI version check failed: got {inst.version!r}, "
-        f"min {inst.min_version!r}; {inst.error}",
+        f"expected {inst.min_version!r}; {inst.error}",
         runtime=runtime, install_cmd=install_cmd,
     )
 
@@ -963,8 +1083,15 @@ def _connect_cli(name: str, step_index: int, *, install_only: bool = False) -> d
     from jiuwenswarm.server.runtime.mcp.cli_driver import CliDriver
 
     n = str(name or "").strip()
+    if was_connect_cancelled(n):
+        # Cancelled while a previous step was still running — abort before
+        # doing any more work; the handler returns the cancelled payload.
+        return {"type": "cancelled", "name": n, "integration_type": "cli"}
     drv = CliDriver(n)
     inst = drv.install()
+    if was_connect_cancelled(n):
+        # Cancelled while the (possibly slow, network-bound) install ran.
+        return {"type": "cancelled", "name": n, "integration_type": "cli"}
     if not inst.version_ok:
         raise _classify_install_failure(n, inst)
     steps_total = drv.auth_steps_count()
@@ -975,8 +1102,29 @@ def _connect_cli(name: str, step_index: int, *, install_only: bool = False) -> d
     # ``dws auth login -y`` (pops a browser) even when the user is already
     # authenticated. Resume calls (idx > 0, from complete_cli_auth) already
     # checked status upstream and must not re-probe here.
-    if idx == 0 and drv.status().authenticated:
+    status = drv.status() if idx == 0 else None
+    if idx == 0 and status.authenticated:
         return _finalize_cli(n, inst, install_only=install_only)
+    # Zero-step env-token CLI MCPs (gitcode): the user provisioned the token
+    # but ``auth status`` still reports unauthenticated, so the token is
+    # invalid - wipe it and fail connect so the next attempt re-prompts.
+    # OAuth CLIs (steps_total > 0), resume calls (idx > 0) and install_only
+    # callers never reach this branch.
+    env_token_rejected = (
+        idx == 0
+        and not install_only
+        and steps_total == 0
+        and drv.manifest.status_cmd
+        and not status.authenticated
+        and _cli_cred_tokens_stored(n)
+    )
+    if env_token_rejected:
+        _wipe_stored_credentials(n)
+        raise CliConnectError(
+            CODE_CREDENTIALS_INVALID,
+            f"mcp '{n}' token rejected by CLI auth status: {status.output[:200]}",
+            runtime=inst.runtime or "",
+        )
     if idx < steps_total:
         step = drv.auth_step(idx)
         if step.needs_user_action:
@@ -1077,8 +1225,8 @@ def _finalize_cli(name: str, install_result: Any, *, install_only: bool = False)
         # would promote connecting → connected and a restart re-reads a stale
         # "connected" record with no skills on disk. Fail the connect instead.
         if not install_only and not skills_installed:
-            pkg_dir = _packages_dir() / n
-            if (pkg_dir / "skills").is_dir():
+            package = _resolve_package(n)
+            if package is not None and package.skill_dirs:
                 raise RuntimeError(
                     f"mcp '{n}' skill install produced no skills; "
                     f"refusing to connect"
@@ -1170,7 +1318,8 @@ def disconnect_mcp(name: str) -> dict[str, Any]:
     from jiuwenswarm.server.runtime.mcp.state_store import (
         remove_mcp_record,
     )
-    if not (_packages_dir() / n).is_dir():
+    package = _resolve_package(n)
+    if package is None:
         # Custom MCP: disconnect flips state connected -> registered (keeps the
         # definition so the user can re-connect without re-registering). The
         # handler calls apply_mcp_change(name, "remove") to tear down the MCP
@@ -1184,7 +1333,7 @@ def disconnect_mcp(name: str) -> dict[str, Any]:
         set_mcp_state(n, state="registered")
         _wipe_stored_credentials(n)
         return {"name": n, "removed": True, "state": "registered"}
-    itype = _detect_integration_type(_packages_dir() / n)
+    itype = package.integration_type
     if itype == "cli":
         try:
             from jiuwenswarm.server.runtime.mcp.cli_driver import CliDriver
@@ -1228,7 +1377,7 @@ def register_custom_mcp(name: str, config: dict[str, Any]) -> dict[str, Any]:
     # Reject names colliding with builtin marketplace dirs — 
     # connect_mcp dispatches by dir existence, so builtins shadow customs. 
     # Custom-vs-custom dupes are intentionally overwritten by upsert.
-    if (_packages_dir() / n).is_dir():
+    if _resolve_package(n) is not None:
         raise McpRegistryError(
             CODE_NAME_CONFLICT,
             f"MCP name '{n}' conflicts with a builtin marketplace package; "
@@ -1307,7 +1456,7 @@ def delete_custom_mcp(name: str) -> dict[str, Any]:
     n = str(name or "").strip()
     if not n:
         raise ValueError("mcp name is required")
-    if (_packages_dir() / n).is_dir():
+    if _resolve_package(n) is not None:
         raise ValueError(f"MCP '{n}' is a built-in marketplace package and cannot be deleted")
     from jiuwenswarm.server.runtime.mcp.state_store import (
         get_mcp_record,
@@ -1371,4 +1520,5 @@ __all__ = [
     "CODE_INSTALL_NETWORK",
     "CODE_CLI_INCOMPLETE",
     "CODE_NAME_CONFLICT",
+    "CODE_CREDENTIALS_INVALID",
 ]

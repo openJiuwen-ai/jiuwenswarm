@@ -261,7 +261,7 @@ export function TeamSkillsHubModal({
           {loadState === "success" && (
             <div className={`mt-4 flex-1 min-h-0 overflow-y-auto ${viewMode === "grid" ? "flex flex-wrap gap-4 content-start" : "space-y-3"}`} data-testid="team-skills-hub-modal-results">
                 {results.length === 0 ? (
-                  <div className="text-sm text-text-muted" data-testid="team-skills-hub-modal-empty">{t("skills.teamskillshub.noResults")}</div>
+<div className="text-sm text-text-muted" data-testid="team-skills-hub-modal-empty">{t("skills.teamskillshub.noResults")}</div>
                 ) : (
                   results.map((item) => {
                     const isInstalled =
@@ -279,7 +279,7 @@ export function TeamSkillsHubModal({
                         {viewMode === "list" ? (
                           <>
                             <div className="flex items-center gap-3 min-w-0 flex-1">
-                              <div className={`w-10 h-10 rounded-lg ${avatar.color} flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold`} data-testid="team-skills-hub-modal-skill-avatar">
+                              <div className="w-10 h-10 rounded-[10px] flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold" style={avatar.style} data-testid="team-skills-hub-modal-skill-avatar">
                                 {avatar.firstChar}
                               </div>
                               <div className="min-w-0 flex-1">
@@ -318,7 +318,7 @@ export function TeamSkillsHubModal({
                         ) : (
                           <>
                             <div className="flex items-start gap-3 flex-shrink-0">
-                              <div className={`w-10 h-10 rounded-lg ${avatar.color} flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold text-sm`} data-testid="team-skills-hub-modal-skill-avatar">
+                              <div className="w-10 h-10 rounded-[10px] flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold text-sm" style={avatar.style} data-testid="team-skills-hub-modal-skill-avatar">
                                 {avatar.firstChar}
                               </div>
                               <div className="min-w-0 flex-1">
@@ -464,7 +464,7 @@ export function TeamSkillsHubModal({
             <div className="mt-4 flex min-h-0 max-h-[50vh] flex-col gap-2" data-testid="team-skills-hub-modal-results">
               <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-0.5">
                 {results.length === 0 ? (
-                  <div className="text-xs text-text-muted" data-testid="team-skills-hub-modal-empty">{t("skills.teamskillshub.noResults")}</div>
+<div className="text-xs text-text-muted" data-testid="team-skills-hub-modal-empty">{t("skills.teamskillshub.noResults")}</div>
                 ) : (
                   results.map((item) => {
                     const isInstalled =
@@ -479,7 +479,7 @@ export function TeamSkillsHubModal({
                         data-variant={item.asset_id}
                       >
                         <div className="flex items-center gap-3 min-w-0 flex-1">
-                          <div className={`w-10 h-10 rounded-lg ${avatar.color} flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold`} data-testid="team-skills-hub-modal-skill-avatar">
+                          <div className="w-10 h-10 rounded-[10px] flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold" style={avatar.style} data-testid="team-skills-hub-modal-skill-avatar">
                             {avatar.firstChar}
                           </div>
                           <div className="min-w-0 flex-1">

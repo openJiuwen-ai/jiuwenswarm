@@ -1,10 +1,15 @@
+import logging
+
 import httpx
 
+from jiuwenswarm.extensions.agentos.agentos_router.logutil import log_agentos
 from jiuwenswarm.extensions.agentos.auth.credential_authenticator import (
     CredentialAuthenticator,
     AuthContext,
     AuthResult,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AgentOSAuthenticator(CredentialAuthenticator):
@@ -64,12 +69,25 @@ class AgentOSAuthenticator(CredentialAuthenticator):
 
         # 3. 异常处理
         except httpx.RequestError as e:
+            log_agentos(
+                logger,
+                logging.WARNING,
+                "auth.iam_error",
+                error=type(e).__name__,
+            )
             return AuthResult(success=False, user_id="", error=str(e))
 
         # 4. 解析业务响应
         try:
             body = resp.json()
         except ValueError:
+            log_agentos(
+                logger,
+                logging.WARNING,
+                "auth.iam_error",
+                error="INVALID_RESPONSE",
+                status=getattr(resp, "status_code", ""),
+            )
             return AuthResult(success=False, extensions={"error_code": "INVALID_RESPONSE"})
         data = body.get("data", {}) if isinstance(body, dict) else {}
 
@@ -87,6 +105,7 @@ class AgentOSAuthenticator(CredentialAuthenticator):
         return AuthResult(
             success=False,
             error=str(data.get("error") or "Token 无效或已过期"),
+            extensions={"error_code": "INVALID_TOKEN"},
         )
 
     async def authenticate(self, context: AuthContext) -> AuthResult:

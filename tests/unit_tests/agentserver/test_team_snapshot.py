@@ -94,8 +94,9 @@ async def _invoke(
             ".TeamMonitorHandler.get_team_snapshot_from_db",
             side_effect=_db,
         ),
-        mock.patch(
-            "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        mock.patch.object(
+            agent_ws_server,
+            "get_session_metadata",
             return_value=(
                 {"team_name": metadata_team_name} if metadata_team_name else {}
             ),

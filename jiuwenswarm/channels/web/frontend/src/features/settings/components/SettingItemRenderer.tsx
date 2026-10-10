@@ -50,7 +50,7 @@ function InlineSettingInput({
   };
 
   return (
-    <div className="settings-inline-input">
+    <div className="settings-inline-input" data-testid="settings-inline-input" data-variant={item.id}>
       <Input
         type={item.inputType ?? 'text'}
         aria-label={t(settingFieldKey(item.key, 'title'))}
@@ -59,10 +59,12 @@ function InlineSettingInput({
         readOnly={!editing}
         disabled={disabled || saving}
         onChange={setDraft}
+        data-testid="settings-inline-input-field"
+        data-variant={item.id}
       />
       {editing ? (
         <div className="settings-inline-input__actions">
-          <Button size="sm" disabled={saving} onClick={cancel}>
+          <Button size="sm" disabled={saving} onClick={cancel} data-testid="settings-inline-input-cancel-btn" data-variant={item.id}>
             {t('common.cancel')}
           </Button>
           <Button
@@ -70,12 +72,14 @@ function InlineSettingInput({
             variant="primary"
             disabled={disabled || saving || !hasChanges}
             onClick={() => void save().catch(() => undefined)}
+            data-testid="settings-inline-input-save-btn"
+            data-variant={item.id}
           >
             {t('common.save')}
           </Button>
         </div>
       ) : (
-        <Button size="sm" disabled={disabled || saving} onClick={() => setEditing(true)}>
+        <Button size="sm" disabled={disabled || saving} onClick={() => setEditing(true)} data-testid="settings-inline-input-modify-btn" data-variant={item.id}>
           {t('common.modify')}
         </Button>
       )}
@@ -126,6 +130,8 @@ function SimpleSettingItem({
         checked={checked}
         disabled={controlDisabled || editingSubItems.size > 0}
         onChange={(next) => void source.save({ [item.key]: next }, item.id).catch(() => undefined)}
+        data-testid="settings-switch"
+        data-variant={item.id}
       />
     );
     const showSubItems = item.subItems?.show === 'always' || checked;
@@ -165,6 +171,8 @@ function SimpleSettingItem({
           const option = item.options[Number(index)];
           if (option) void source.save({ [item.key]: option.value }, item.id).catch(() => undefined);
         }}
+        data-testid="settings-select"
+        data-variant={item.id}
       />
     );
   } else {

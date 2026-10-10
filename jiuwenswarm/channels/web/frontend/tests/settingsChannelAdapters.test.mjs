@@ -25,8 +25,16 @@ import {
   CHANNEL_FIELD_REQUIREMENTS,
   createChannelFormRules,
   isFeishuAppConfigured,
+  shouldConfirmXiaoyiEnable,
 } from '../node_modules/.cache/settings-refactor/modules/channels/channelRequirements.js';
 import { getSettingsChannelGuideUrl } from '../node_modules/.cache/settings-refactor/modules/channels/channelGuideUrls.js';
+
+test('Xiaoyi enable confirmation is required only when enabling without api_id', () => {
+  assert.equal(shouldConfirmXiaoyiEnable(true, ''), true);
+  assert.equal(shouldConfirmXiaoyiEnable(true, '   '), true);
+  assert.equal(shouldConfirmXiaoyiEnable(true, 'api-id'), false);
+  assert.equal(shouldConfirmXiaoyiEnable(false, ''), false);
+});
 
 test('channel configuration guides resolve to versioned localized documentation', () => {
   const baseUrl = 'https://gitcode.com/openJiuwen/jiuwenswarm/blob/0.2.5/docs';

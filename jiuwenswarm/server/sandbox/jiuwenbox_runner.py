@@ -30,11 +30,14 @@ from typing import Any, Optional
 
 import httpx
 
+from jiuwenswarm.common.config import JIUWENBOX_API_TOKEN_ENV
+
 logger = logging.getLogger(__name__)
 
 # Linux ``prctl`` PR_SET_PDEATHSIG 选项常量 (来自 ``<linux/prctl.h>``);
 # 模块级常量, 避免在 ``_try_set_pdeathsig`` 函数内出现 UPPER_CASE 局部变量。
 _PR_SET_PDEATHSIG = 1
+_LISTEN_ENV = "JIUWENBOX_LISTEN"
 
 
 def _resolve_jiuwenbox_src_dir() -> Optional[Path]:
@@ -93,6 +96,10 @@ class JiuwenBoxRunner:
         # 下次 ``ensure_running`` 若发现期望值与之不一致, 必须停掉旧实例重启,
         # 避免老进程继续用旧 policy (例如 default-policy.yaml) 服务新 sandbox。
         self._spawned_policy_path: Optional[Path] = None
+        # 同上: 已注入子进程的 Bearer token; 变化时必须重启。
+        # 也作为 health_check / fetch_health 的默认 Authorization。
+        self._spawned_api_token: Optional[str] = None
+        self._api_token: Optional[str] = None
 
     @classmethod
     def instance(cls) -> "JiuwenBoxRunner":
@@ -132,25 +139,43 @@ class JiuwenBoxRunner:
             return None
         return (self._host, self._port)
 
-    async def health_check(self, host: str | None = None, port: int | None = None) -> bool:
+    def _auth_headers(self, api_token: str | None = None) -> dict[str, str] | None:
+        token = self._api_token if api_token is None else api_token
+        if not token:
+            return None
+        return {"Authorization": f"Bearer {token}"}
+
+    async def health_check(
+        self,
+        host: str | None = None,
+        port: int | None = None,
+        *,
+        api_token: str | None = None,
+    ) -> bool:
         target_host = host or self._host
         target_port = port or self._port
         url = f"http://{target_host}:{target_port}/health"
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
-                resp = await client.get(url)
+                resp = await client.get(url, headers=self._auth_headers(api_token))
                 return resp.status_code == 200
         except Exception:
             return False
 
-    async def fetch_health(self, host: str | None = None, port: int | None = None) -> dict[str, Any] | None:
+    async def fetch_health(
+        self,
+        host: str | None = None,
+        port: int | None = None,
+        *,
+        api_token: str | None = None,
+    ) -> dict[str, Any] | None:
         """Return parsed jiuwenbox ``/health`` JSON, or ``None`` on failure."""
         target_host = host or self._host
         target_port = port or self._port
         url = f"http://{target_host}:{target_port}/health"
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
-                resp = await client.get(url)
+                resp = await client.get(url, headers=self._auth_headers(api_token))
                 if resp.status_code != 200:
                     return None
                 data = resp.json()
@@ -166,6 +191,7 @@ class JiuwenBoxRunner:
         timeout: float = 30.0,
         startup_mode: str = "internal",
         policy_path: Optional[Path] = None,
+        api_token: Optional[str] = None,
     ) -> bool:
         """确保 jiuwenbox 在 ``host:port`` 已就绪。
 
@@ -178,6 +204,8 @@ class JiuwenBoxRunner:
             policy_path: jiuwenbox 启动时使用的 policy 文件路径; 仅在
                 ``startup_mode='internal'`` 下生效, 通过 ``JIUWENBOX_POLICY_PATH``
                 环境变量传给子进程。
+            api_token: 可选 Bearer token。internal 模式经 ``JIUWENBOX_API_TOKEN``
+                注入子进程; 两种模式的健康检查都会带上 Authorization。
 
         Returns:
             True 表示启动 / 已运行并通过健康检查; False 表示超时未就绪。
@@ -187,13 +215,15 @@ class JiuwenBoxRunner:
             if normalized_mode not in ("internal", "external"):
                 normalized_mode = "internal"
             self._last_startup_mode = normalized_mode
+            normalized_token = (api_token or "").strip() or None
+            self._api_token = normalized_token
 
             # external 模式: 只做健康检查, 不 spawn / 不 kill 任何进程。
             # 用户负责保证 jiuwenbox-server 使用合适的 JIUWENBOX_POLICY_PATH 启动。
             if normalized_mode == "external":
                 self._host = host
                 self._port = port
-                if await self.health_check(host, port):
+                if await self.health_check(host, port, api_token=normalized_token):
                     logger.info(
                         "[JiuwenBoxRunner] external jiuwenbox alive at %s:%d "
                         "(policy_path env is user's responsibility, expected=%s)",
@@ -215,7 +245,7 @@ class JiuwenBoxRunner:
             # ``port`` 是 (a) 我们自己之前拉起的同 host:port 或 (b) 一个空闲端口。
             #
             # 决策矩阵:
-            # - 我们拥有的进程仍然 alive 且 host/port/policy_path 全部匹配 → 复用;
+            # - 我们拥有的进程仍然 alive 且 host/port/policy_path/api_token 全部匹配 → 复用;
             # - 否则: 停掉旧进程 (如有), 在新的 host:port 上 spawn 全新实例。
             owned_match = (
                 self._process is not None
@@ -224,9 +254,10 @@ class JiuwenBoxRunner:
                 and self._host == host
                 and self._port == port
                 and self._spawned_policy_path == policy_path
+                and self._spawned_api_token == normalized_token
             )
             if owned_match:
-                if await self.health_check(host, port):
+                if await self.health_check(host, port, api_token=normalized_token):
                     logger.info(
                         "[JiuwenBoxRunner] reuse owned jiuwenbox at %s:%d "
                         "(policy_path=%s)",
@@ -238,7 +269,7 @@ class JiuwenBoxRunner:
                 # 进程在跑但还没 ready, 继续等
                 return await self._wait_until_ready(host, port, timeout=timeout)
 
-            # 任何 mismatch (端口变了 / policy 变了 / 进程已退) 都先把旧的清掉。
+            # 任何 mismatch (端口变了 / policy 变了 / token 变了 / 进程已退) 都先把旧的清掉。
             if self._process is not None and self._owns_process:
                 logger.info(
                     "[JiuwenBoxRunner] stopping owned jiuwenbox before spawning new one "
@@ -290,6 +321,21 @@ class JiuwenBoxRunner:
             else:
                 env.pop("JIUWENBOX_POLICY_PATH", None)
 
+            # Bearer token: 有则注入, 无则清掉继承值, 避免父进程旧 token 误启用认证。
+            if normalized_token:
+                env[JIUWENBOX_API_TOKEN_ENV] = normalized_token
+                logger.info(
+                    "[JiuwenBoxRunner] injecting %s (Bearer auth enabled)",
+                    JIUWENBOX_API_TOKEN_ENV,
+                )
+            else:
+                env.pop(JIUWENBOX_API_TOKEN_ENV, None)
+
+            # Tell jiuwenbox which TCP port it actually bound so
+            # ``_derive_protect_ports_from_listen`` protects the real port
+            # (not the hard-coded 8321 fallback) against sandbox traffic.
+            env[_LISTEN_ENV] = f"http://{host}:{port}"
+
             logger.info("[JiuwenBoxRunner] spawning: %s", " ".join(cmd))
             try:
                 spawn_kwargs: dict = {
@@ -306,6 +352,7 @@ class JiuwenBoxRunner:
                 )
                 self._owns_process = True
                 self._spawned_policy_path = policy_path
+                self._spawned_api_token = normalized_token
                 # 同步退出兜底: 即便没走 stop() 也尽可能 terminate 子进程
                 self._register_atexit_once()
                 # 后台持续 drain stdout/stderr, 防止管道堆积阻塞子进程; 同时
@@ -322,6 +369,7 @@ class JiuwenBoxRunner:
                 self._process = None
                 self._owns_process = False
                 self._spawned_policy_path = None
+                self._spawned_api_token = None
                 return False
 
             ok = await self._wait_until_ready(host, port, timeout=timeout)
@@ -455,10 +503,12 @@ class JiuwenBoxRunner:
         if proc is None or proc.returncode is not None:
             self._process = None
             self._spawned_policy_path = None
+            self._spawned_api_token = None
             return
         if not self._owns_process:
             self._process = None
             self._spawned_policy_path = None
+            self._spawned_api_token = None
             return
         logger.info("[JiuwenBoxRunner] stopping subprocess pid=%s", proc.pid)
         try:
@@ -466,6 +516,7 @@ class JiuwenBoxRunner:
         except ProcessLookupError:
             self._process = None
             self._spawned_policy_path = None
+            self._spawned_api_token = None
             return
         # uvicorn 收到 SIGTERM 后会跑 FastAPI lifespan shutdown, 期间会调
         # ``SandboxManager.shutdown_all_sandboxes`` 给每个活的 sandbox 做
@@ -491,3 +542,4 @@ class JiuwenBoxRunner:
         self._process = None
         self._owns_process = False
         self._spawned_policy_path = None
+        self._spawned_api_token = None

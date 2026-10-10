@@ -7,6 +7,10 @@ from typing import Optional
 
 from openjiuwen.harness.prompts import PromptSection
 
+from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
+    SystemPromptPriority,
+)
+
 # Section name used by both the factory and the Rail to add/remove.
 # Using a string literal (not ``SectionName.*``) so we don't need to
 # modify agent-core's ``SectionName`` enum.
@@ -29,7 +33,7 @@ def build_project_memory_section(
     content: str,
     *,
     language: str = "cn",  # kept for backward compat; both languages are always populated
-    priority: int = 120,
+    priority: int = SystemPromptPriority.PROJECT_MEMORY,
 ) -> Optional[PromptSection]:
     """Build the ``project_memory`` :class:`PromptSection`, or ``None`` when content is empty.
 

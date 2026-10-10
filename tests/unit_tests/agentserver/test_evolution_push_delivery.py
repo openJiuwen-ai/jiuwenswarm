@@ -3,23 +3,36 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
 
+from jiuwenswarm.runtime.host_services import (
+    install_runtime_push_handler,
+    restore_runtime_push_handler,
+)
 from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
-from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
-from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter import (
+    interface_deep as interface_deep_module,
+)
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    JiuWenSwarmDeepAdapter,
+)
 
 
-class _FakeTransport:
+@pytest.fixture
+def runtime_pushes() -> Iterator[list[dict]]:
     pushes: list[dict] = []
 
-    def __init__(self):
-        self.pushes = self.__class__.pushes
+    async def _capture_runtime_push(payload: dict) -> None:
+        pushes.append(payload)
 
-    async def send_push(self, payload: dict) -> None:
-        self.pushes.append(payload)
+    previous = install_runtime_push_handler(_capture_runtime_push)
+    try:
+        yield pushes
+    finally:
+        restore_runtime_push_handler(_capture_runtime_push, previous)
 
 
 def _approval_event(request_id: str = "team_skill_evolve_req1") -> SimpleNamespace:
@@ -139,46 +152,40 @@ class _TestAdapter(JiuWenSwarmDeepAdapter):
 
 
 @pytest.mark.asyncio
-async def test_normal_evolution_watcher_skips_status_when_signal_trigger_disabled(monkeypatch):
-    _FakeTransport.pushes = []
+async def test_normal_evolution_watcher_skips_status_when_signal_trigger_disabled(
+    runtime_pushes,
+):
     rail = _FakeEvolutionRail()
     rail.signal_trigger = False
     adapter = _TestAdapter.build_with_rail(rail)
 
-    monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
-    )
-
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-disabled")
 
-    assert _FakeTransport.pushes == []
+    assert runtime_pushes == []
     assert rail.drain_waits == []
     assert rail.cleanup_calls == 0
 
 
 @pytest.mark.asyncio
-async def test_normal_evolution_watcher_skips_status_when_auto_save_enabled(monkeypatch):
-    _FakeTransport.pushes = []
+async def test_normal_evolution_watcher_skips_status_when_auto_save_enabled(
+    runtime_pushes,
+):
     rail = _FakeEvolutionRail()
     rail.auto_save = True
     adapter = _TestAdapter.build_with_rail(rail)
 
-    monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
-    )
-
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-auto-save")
 
-    assert _FakeTransport.pushes == []
+    assert runtime_pushes == []
     assert rail.drain_waits == []
     assert rail.cleanup_calls == 0
 
 
 @pytest.mark.asyncio
-async def test_normal_evolution_watcher_uses_delivery_context_metadata(monkeypatch):
-    _FakeTransport.pushes = []
+async def test_normal_evolution_watcher_uses_delivery_context_metadata(
+    monkeypatch,
+    runtime_pushes,
+):
     adapter = _TestAdapter.build_with_rail(_FakeEvolutionRail())
 
     recorded_calls: list[dict] = []
@@ -191,10 +198,6 @@ async def test_normal_evolution_watcher_uses_delivery_context_metadata(monkeypat
         return message
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
-    )
-    monkeypatch.setattr(
         interface_deep_module,
         "build_server_push_message",
         _fake_build_server_push_message,
@@ -205,51 +208,53 @@ async def test_normal_evolution_watcher_uses_delivery_context_metadata(monkeypat
     assert recorded_calls
     assert all(call["session_id"] == "sess-normal" for call in recorded_calls)
     assert all(call["fallback_channel_id"] == "web" for call in recorded_calls)
-    assert _FakeTransport.pushes
+    assert runtime_pushes
     assert all(
         push["metadata"] == {"route": "from-delivery-context"}
-        for push in _FakeTransport.pushes
+        for push in runtime_pushes
     )
 
 
 @pytest.mark.asyncio
-async def test_normal_evolution_watcher_does_not_push_status_without_sdk_events(monkeypatch):
-    _FakeTransport.pushes = []
+async def test_normal_evolution_watcher_does_not_push_status_without_sdk_events(
+    monkeypatch,
+    runtime_pushes,
+):
     rail = _FakeEvolutionRail([])
     adapter = _TestAdapter.build_with_rail(rail)
 
-    monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
-    )
     monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
     monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 0.01)
 
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-no-events")
 
-    assert _FakeTransport.pushes == []
+    assert runtime_pushes == []
     assert rail.drain_waits
     assert rail.cleanup_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_normal_evolution_watcher_uses_sdk_timeout_before_legacy_fallback(monkeypatch):
+async def test_normal_evolution_watcher_uses_sdk_timeout_before_legacy_fallback(
+    monkeypatch,
+    runtime_pushes,
+):
     class _SdkTimeoutRail(_FakeEvolutionRail):
         @property
         def evolution_total_timeout_secs(self) -> float:
             return 0.01
 
-    _FakeTransport.pushes = []
-    rail = _SdkTimeoutRail([[_progress_event("generating", stage="generating_updates")]])
+    rail = _SdkTimeoutRail(
+        [[_progress_event("generating", stage="generating_updates")]]
+    )
     adapter = _TestAdapter.build_with_rail(rail)
 
-    monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
-    )
     monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
-    monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 100.0)
-    monkeypatch.setattr(evolution_helpers, "TEAM_EVOLUTION_EVENT_TIMEOUT_GRACE_SEC", 0.001)
+    monkeypatch.setattr(
+        interface_deep_module, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 100.0
+    )
+    monkeypatch.setattr(
+        evolution_helpers, "TEAM_EVOLUTION_EVENT_TIMEOUT_GRACE_SEC", 0.001
+    )
 
     await asyncio.wait_for(
         adapter.watch_evolution_and_push("stream-rid", "web", "sess-sdk-timeout"),
@@ -257,7 +262,8 @@ async def test_normal_evolution_watcher_uses_sdk_timeout_before_legacy_fallback(
     )
 
     status_pushes = [
-        push for push in _FakeTransport.pushes
+        push
+        for push in runtime_pushes
         if push["payload"]["event_type"] == "chat.evolution_status"
     ]
     assert [push["payload"]["status"] for push in status_pushes] == ["start", "end"]
@@ -266,8 +272,7 @@ async def test_normal_evolution_watcher_uses_sdk_timeout_before_legacy_fallback(
 
 
 @pytest.mark.asyncio
-async def test_normal_evolution_watcher_maps_sdk_progress_stages(monkeypatch):
-    _FakeTransport.pushes = []
+async def test_normal_evolution_watcher_maps_sdk_progress_stages(runtime_pushes):
     rail = _FakeEvolutionRail(
         [
             [_progress_event("detecting", stage="detecting_signals")],
@@ -277,15 +282,11 @@ async def test_normal_evolution_watcher_maps_sdk_progress_stages(monkeypatch):
     )
     adapter = _TestAdapter.build_with_rail(rail)
 
-    monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
-    )
-
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-sdk-stages")
 
     status_pushes = [
-        push for push in _FakeTransport.pushes
+        push
+        for push in runtime_pushes
         if push["payload"]["event_type"] == "chat.evolution_status"
     ]
     assert [push["payload"]["status"] for push in status_pushes] == [
@@ -299,22 +300,23 @@ async def test_normal_evolution_watcher_maps_sdk_progress_stages(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_normal_evolution_watcher_ends_on_cancelled_progress(monkeypatch):
-    _FakeTransport.pushes = []
-    rail = _FakeEvolutionRail([[_progress_event("no skill usage detected", stage="cancelled")]])
+async def test_normal_evolution_watcher_ends_on_cancelled_progress(
+    monkeypatch,
+    runtime_pushes,
+):
+    rail = _FakeEvolutionRail(
+        [[_progress_event("no skill usage detected", stage="cancelled")]]
+    )
     adapter = _TestAdapter.build_with_rail(rail)
 
-    monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
-    )
     monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
     monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 0.01)
 
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-sdk-cancelled")
 
     status_pushes = [
-        push for push in _FakeTransport.pushes
+        push
+        for push in runtime_pushes
         if push["payload"]["event_type"] == "chat.evolution_status"
     ]
     assert status_pushes == []
@@ -322,11 +324,16 @@ async def test_normal_evolution_watcher_ends_on_cancelled_progress(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_normal_evolution_watcher_does_not_start_for_no_signal_scan(monkeypatch):
-    _FakeTransport.pushes = []
+async def test_normal_evolution_watcher_does_not_start_for_no_signal_scan(
+    runtime_pushes,
+):
     rail = _FakeEvolutionRail(
         [
-            [_progress_event("starting regular skill evolution review", stage="started")],
+            [
+                _progress_event(
+                    "starting regular skill evolution review", stage="started"
+                )
+            ],
             [
                 _progress_event(
                     "checking regular skill(s) for evolution signals",
@@ -343,15 +350,11 @@ async def test_normal_evolution_watcher_does_not_start_for_no_signal_scan(monkey
     )
     adapter = _TestAdapter.build_with_rail(rail)
 
-    monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
-    )
-
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-no-signal-scan")
 
     status_pushes = [
-        push for push in _FakeTransport.pushes
+        push
+        for push in runtime_pushes
         if push["payload"]["event_type"] == "chat.evolution_status"
     ]
     assert status_pushes == []
@@ -359,22 +362,21 @@ async def test_normal_evolution_watcher_does_not_start_for_no_signal_scan(monkey
 
 
 @pytest.mark.asyncio
-async def test_normal_evolution_watcher_ends_on_auto_approved_progress(monkeypatch):
-    _FakeTransport.pushes = []
+async def test_normal_evolution_watcher_ends_on_auto_approved_progress(
+    monkeypatch,
+    runtime_pushes,
+):
     rail = _FakeEvolutionRail([[_progress_event("auto saved", stage="auto_approved")]])
     adapter = _TestAdapter.build_with_rail(rail)
 
-    monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
-    )
     monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
     monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 0.01)
 
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-sdk-auto")
 
     status_pushes = [
-        push for push in _FakeTransport.pushes
+        push
+        for push in runtime_pushes
         if push["payload"]["event_type"] == "chat.evolution_status"
     ]
     assert [push["payload"]["status"] for push in status_pushes] == ["start", "end"]
@@ -386,41 +388,35 @@ async def test_normal_evolution_watcher_ends_on_auto_approved_progress(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_normal_evolution_watcher_reads_outcome_status_from_metadata(monkeypatch):
-    _FakeTransport.pushes = []
+async def test_normal_evolution_watcher_reads_outcome_status_from_metadata(
+    runtime_pushes,
+):
     adapter = _TestAdapter.build_with_rail(
         _FakeEvolutionRail([[_outcome_event("failed", "failed")]])
-    )
-
-    monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
     )
 
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-normal-failed")
 
     status_pushes = [
-        push for push in _FakeTransport.pushes
+        push
+        for push in runtime_pushes
         if push["payload"]["event_type"] == "chat.evolution_status"
     ]
     assert status_pushes == []
 
 
 @pytest.mark.asyncio
-async def test_normal_evolution_watcher_hides_sdk_noop_outcome_without_prior_generation(monkeypatch):
-    _FakeTransport.pushes = []
+async def test_normal_evolution_watcher_hides_sdk_noop_outcome_without_prior_generation(
+    runtime_pushes,
+):
     rail = _FakeEvolutionRail([[_sdk_noop_outcome_event()]])
     adapter = _TestAdapter.build_with_rail(rail)
-
-    monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
-    )
 
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-sdk-noop-only")
 
     status_pushes = [
-        push for push in _FakeTransport.pushes
+        push
+        for push in runtime_pushes
         if push["payload"]["event_type"] == "chat.evolution_status"
     ]
     assert status_pushes == []
@@ -428,8 +424,9 @@ async def test_normal_evolution_watcher_hides_sdk_noop_outcome_without_prior_gen
 
 
 @pytest.mark.asyncio
-async def test_normal_evolution_watcher_ends_sdk_noop_outcome_after_generation(monkeypatch):
-    _FakeTransport.pushes = []
+async def test_normal_evolution_watcher_ends_sdk_noop_outcome_after_generation(
+    runtime_pushes,
+):
     rail = _FakeEvolutionRail(
         [
             [_progress_event("generating", stage="generating_updates")],
@@ -438,15 +435,13 @@ async def test_normal_evolution_watcher_ends_sdk_noop_outcome_after_generation(m
     )
     adapter = _TestAdapter.build_with_rail(rail)
 
-    monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
+    await adapter.watch_evolution_and_push(
+        "stream-rid", "web", "sess-sdk-noop-after-generation"
     )
 
-    await adapter.watch_evolution_and_push("stream-rid", "web", "sess-sdk-noop-after-generation")
-
     status_pushes = [
-        push for push in _FakeTransport.pushes
+        push
+        for push in runtime_pushes
         if push["payload"]["event_type"] == "chat.evolution_status"
     ]
     assert [push["payload"]["status"] for push in status_pushes] == ["start", "end"]
@@ -458,8 +453,9 @@ async def test_normal_evolution_watcher_ends_sdk_noop_outcome_after_generation(m
 
 
 @pytest.mark.asyncio
-async def test_normal_evolution_watcher_pushes_passive_progress_before_approval(monkeypatch):
-    _FakeTransport.pushes = []
+async def test_normal_evolution_watcher_pushes_passive_progress_before_approval(
+    runtime_pushes,
+):
     rail = _FakeEvolutionRail(
         [
             [_progress_event("evolution progress")],
@@ -468,48 +464,42 @@ async def test_normal_evolution_watcher_pushes_passive_progress_before_approval(
     )
     adapter = _TestAdapter.build_with_rail(rail)
 
-    monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
-    )
-
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-progress")
 
-    event_types = [push["payload"]["event_type"] for push in _FakeTransport.pushes]
+    event_types = [push["payload"]["event_type"] for push in runtime_pushes]
     assert event_types == [
         "chat.reasoning",
         "chat.evolution_status",
         "chat.ask_user_question",
         "chat.evolution_status",
     ]
-    assert _FakeTransport.pushes[0]["payload"]["content"] == "evolution progress"
-    assert _FakeTransport.pushes[1]["payload"]["status"] == "start"
-    assert _FakeTransport.pushes[1]["payload"]["stage"] == "approval_required"
-    assert _FakeTransport.pushes[2]["payload"]["request_id"] == "skill_evolve_progress_req"
-    assert _FakeTransport.pushes[3]["payload"]["status"] == "end"
-    assert _FakeTransport.pushes[3]["payload"]["stage"] == "approval_required"
+    assert runtime_pushes[0]["payload"]["content"] == "evolution progress"
+    assert runtime_pushes[1]["payload"]["status"] == "start"
+    assert runtime_pushes[1]["payload"]["stage"] == "approval_required"
+    assert runtime_pushes[2]["payload"]["request_id"] == "skill_evolve_progress_req"
+    assert runtime_pushes[3]["payload"]["status"] == "end"
+    assert runtime_pushes[3]["payload"]["stage"] == "approval_required"
     assert rail.cleanup_calls == 1
     assert rail.drain_waits
     assert set(rail.drain_waits) == {False}
 
 
 @pytest.mark.asyncio
-async def test_normal_evolution_watcher_times_out_after_idle_progress(monkeypatch):
-    _FakeTransport.pushes = []
+async def test_normal_evolution_watcher_times_out_after_idle_progress(
+    monkeypatch,
+    runtime_pushes,
+):
     rail = _FakeEvolutionRail([[_progress_event("evolution progress")]])
     adapter = _TestAdapter.build_with_rail(rail)
 
-    monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
-    )
     monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
     monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 0.01)
 
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-timeout")
 
     status_pushes = [
-        push for push in _FakeTransport.pushes
+        push
+        for push in runtime_pushes
         if push["payload"]["event_type"] == "chat.evolution_status"
     ]
     assert status_pushes == []
@@ -517,28 +507,27 @@ async def test_normal_evolution_watcher_times_out_after_idle_progress(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_normal_evolution_watcher_hides_timed_out_terminal_progress(monkeypatch):
-    _FakeTransport.pushes = []
+async def test_normal_evolution_watcher_hides_timed_out_terminal_progress(
+    runtime_pushes,
+):
     adapter = _TestAdapter.build_with_rail(
         _FakeEvolutionRail([[_progress_event("timed out", stage="timed_out")]])
-    )
-
-    monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
     )
 
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-terminal-timeout")
 
     status_pushes = [
-        push for push in _FakeTransport.pushes
+        push
+        for push in runtime_pushes
         if push["payload"]["event_type"] == "chat.evolution_status"
     ]
     assert status_pushes == []
 
 
 @pytest.mark.asyncio
-async def test_team_skill_evolve_approval_keeps_legacy_whole_request_without_record_ids(monkeypatch):
+async def test_team_skill_evolve_approval_keeps_legacy_whole_request_without_record_ids(
+    monkeypatch,
+):
     rail = _FakeApprovalRail()
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     monkeypatch.setattr(
@@ -587,19 +576,16 @@ async def test_team_skill_evolve_approval_passes_selected_record_ids(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_team_skill_evolve_approval_pushes_terminal_status(monkeypatch):
-    _FakeTransport.pushes = []
+async def test_team_skill_evolve_approval_pushes_terminal_status(
+    monkeypatch,
+    runtime_pushes,
+):
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     monkeypatch.setattr(
         JiuWenSwarmDeepAdapter,
         "find_team_skill_rail",
         staticmethod(lambda request_id, channel_id=None: _FakeApprovalRail()),
     )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
-        _FakeTransport,
-    )
-
     handled = await adapter.handle_team_skill_evolve_approval(
         "team_skill_evolve_req1",
         [{"selected_options": ["接收"]}],
@@ -608,7 +594,7 @@ async def test_team_skill_evolve_approval_pushes_terminal_status(monkeypatch):
     )
 
     assert handled is True
-    assert _FakeTransport.pushes == [
+    assert runtime_pushes == [
         {
             "session_id": "sess-1",
             "request_id": "team_skill_evolve_req1",

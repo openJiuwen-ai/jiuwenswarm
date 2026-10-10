@@ -245,7 +245,6 @@ Working tree changes are obtained via `git diff HEAD` (tracked files only). The 
 | Boundary | Value | Behavior |
 |---|---|---|
 | Max files in detail | 50 | Only the first 50 tracked files get hunks; stats still cover all changed files |
-| Max lines per file | 400 | Hunks are truncated beyond 400 lines per file; `isTruncated` flag is set |
 | Max diff size per file | 1 MB | Files whose diff exceeds 1 MB are skipped in hunk parsing; `isLargeFile` flag is set, stats still counted |
 | Max files for details | 500 | If more than 500 files changed, only aggregate stats are returned (no per-file hunks) |
 | Git command timeout | 10s | Git commands that exceed 10 seconds return `None` |
@@ -327,16 +326,16 @@ Working tree changes are obtained via `git diff HEAD` (tracked files only). The 
 
 These commands are registered and parsed by the TUI, then forwarded as slash text through the normal chat channel. The actual evolution logic runs on the Agent / Team backend:
 
-- Agent mode: handled by `SkillEvolutionRail`; only `agent.plan` is supported.
-- Team mode: handled by `TeamSkillEvolutionRail` for team skill evolution.
+- Agent mode: uses the single-Agent evolution runtime; automatic suggestions target regular Skills.
+- Team mode: uses the team evolution runtime; automatic suggestions target Team/Swarm Skills.
 - Code mode and `agent.fast` do not support these commands.
 
 #### Subcommands
 
 | Command | Description |
 |---|---|
-| `/evolve <skill_name> [user_query]` | Trigger evolution for one skill. `agent.plan` scans the current conversation for tool failures and user corrections; Team mode requires `user_query`. |
-| `/evolve_list <skill_name> [--sort score]` | Show one skill's evolution records with count, average score, usage/feedback stats, section, and content preview. |
+| `/evolve <skill_name> [user_intent]` | Start an evolution review for the named Skill; trailing text is an optional review intent. The explicit command resolves the target's actual kind, so Team mode can manually evolve a regular Skill and normal mode can manually evolve a Team/Swarm Skill. |
+| `/evolve_list <skill_name>` | Show one skill's score-ordered evolution records with count, average score, usage/feedback stats, section, and content preview. |
 | `/evolve_simplify <skill_name> [user_intent]` | Generate an approval-gated cleanup plan to merge duplicates, split long records, or remove low-value records. Trailing text is passed to the backend as intent. |
 | `/evolve_rebuild <skill_name> [user_intent]` | Generate a rebuild follow-up prompt and continue as a normal Agent / Team task to rebuild `SKILL.md`. |
 
@@ -351,7 +350,7 @@ These commands are registered and parsed by the TUI, then forwarded as slash tex
 
 ```bash
 /evolve pptx improve export error handling
-/evolve_list pptx --sort score
+/evolve_list pptx
 /evolve_simplify pptx merge duplicate export-failure records
 /evolve_rebuild pptx strengthen Troubleshooting and Examples
 ```
@@ -828,6 +827,7 @@ Two hook types are supported:
 | `prompt` | Invokes LLM review. `$ARGUMENTS` in the template is replaced with JSON context, `$TOOL_NAME` with the tool name. LLM response JSON with `decision: "block"` blocks the operation. | `prompt`, `timeout` (default 15s), `model` |
 
 - **Blocking**: Exit code 2 (command) or `decision: "block"` (prompt) blocks the current operation (e.g., skip tool call) and feeds the reason back to the model.
+- **PreToolUse termination**: Blocking skips that tool and other tools in the batch that have not started executing, including after approval resumes, preserves the reason in their tool messages, and returns it as the final response. The current agent execution and task loop end without another model call to retry. A blocked Goal round, including a resumed approval, marks the original Goal as `blocked` and removes its queued continuations; resolve the hook restriction before explicitly resuming it. `PostToolUse` does not run for skipped tools; users can still submit a new request. Other parallel tools that have already started are not rolled back.
 - **Input Modification**: PreToolUse hooks can modify tool input parameters via `modifiedInput` in stdout JSON.
 - **Additional Context**: Extra information can be injected into tool results or model context via `additionalContext` in stdout JSON.
 - **Global Toggle**: `hooks.disable_all_hooks: true` in `config.yaml` disables all hooks.

@@ -735,6 +735,15 @@ def _validate_meta_shape(meta: dict[str, Any]) -> list[str]:
         if not isinstance(meta.get(field), str) or not meta.get(field, "").strip():
             issues.append(f"META.{field} must be a non-empty string literal")
 
+    if "workflow_token_limit" in meta:
+        workflow_token_limit = meta["workflow_token_limit"]
+        if (
+            not isinstance(workflow_token_limit, int)
+            or isinstance(workflow_token_limit, bool)
+            or workflow_token_limit <= 0
+        ):
+            issues.append("META.workflow_token_limit must be a positive integer")
+
     phases = meta.get("phases")
     if not isinstance(phases, list):
         issues.append("META.phases must be a list of literal phase objects")

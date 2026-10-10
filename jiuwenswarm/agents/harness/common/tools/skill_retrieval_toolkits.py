@@ -25,6 +25,7 @@ from openjiuwen.symphony.discovery import (
 )
 
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.context_window import resolve_context_window_tokens
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)
@@ -214,17 +215,9 @@ def is_skill_retrieval_enabled(
 def is_skill_retrieval_index_enabled(
     config_base: dict[str, Any] | None = None,
 ) -> bool:
-    """Return the explicit taxonomy build-and-use preference.
+    """Compatibility alias: taxonomy now follows the retrieval switch."""
 
-    The taxonomy preference is intentionally independent of the global
-    retrieval switch. Callers that build or consume an index must check both.
-    """
-
-    override = _env_switch("SYMPHONY_SKILL_RETRIEVAL_INDEX_ENABLED")
-    if override is not None:
-        return override
-    index = _retrieval_config(config_base).get("index")
-    return bool(index.get("enabled", False)) if isinstance(index, dict) else False
+    return is_skill_retrieval_enabled(config_base)
 
 
 def build_discovery_settings(
@@ -236,14 +229,13 @@ def build_discovery_settings(
     # only when it is strictly below one percent of the context window.
     # Ignore stale/user-authored ratio values so every entry point makes the
     # same session decision.
-    # One explicit preference controls both building and consuming taxonomy.
-    # Legacy ``mode`` / ``discovery.use_existing_index`` values are ignored so
-    # upgrades cannot unexpectedly incur model cost or consume old artifacts.
+    # The retrieval switch controls both building and consuming taxonomy.
+    # Legacy index/mode preferences no longer override this decision.
     config = _config(config_base)
     return replace(
         load_discovery_settings(config),
         candidate_budget_ratio=_CANDIDATE_BUDGET_RATIO,
-        use_existing_index=is_skill_retrieval_index_enabled(config),
+        use_existing_index=is_skill_retrieval_enabled(config),
     )
 
 
@@ -267,38 +259,12 @@ def build_model_discovery_settings(
     context_engine = react.get("context_engine_config")
     context_engine = context_engine if isinstance(context_engine, dict) else {}
 
-    def _positive_int(value: Any) -> int | None:
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            return None
-        return parsed if parsed > 0 else None
-
-    # AgentOS attaches the selected entry's input window to the built Model;
-    # otherwise use the normal context-engine fallback and model-specific map.
-    fallback = _positive_int(getattr(model, "_agentos_ctx_window", None))
-    if fallback is None:
-        fallback = _positive_int(context_engine.get("context_window_tokens"))
-    if not model_name and fallback is None:
-        return settings
-
-    model_windows = context_engine.get("model_context_window_tokens")
-    model_windows = model_windows if isinstance(model_windows, dict) else None
-    try:
-        from openjiuwen.core.context_engine.context.context_utils import ContextUtils
-
-        context_window_tokens = ContextUtils.resolve_context_max(
-            model_name=model_name or None,
-            fallback_context_window_tokens=fallback,
-            model_context_window_tokens=model_windows,
-        )
-    except Exception:
-        logger.warning(
-            "Unable to resolve Skill retrieval model context: %s",
-            model_name or "<unknown>",
-            exc_info=True,
-        )
-        context_window_tokens = fallback or settings.context_window_tokens
+    context_window_tokens = resolve_context_window_tokens(
+        model_name=model_name or None,
+        context_engine_config=react,
+        model_config_obj=getattr(model, "model_config", None),
+        model_context_window_override=getattr(model, "_agentos_ctx_window", None),
+    )
     return replace(
         settings,
         context_window_tokens=max(1, int(context_window_tokens)),
@@ -372,11 +338,9 @@ class SkillRetrievalToolkit:
             candidate_budget_ratio=_CANDIDATE_BUDGET_RATIO,
         )
         self._index_enabled = bool(
-            frozen_profile.get("index_enabled")
+            frozen_profile.get("enabled", is_skill_retrieval_enabled(self._config_base))
             if frozen_profile is not None
-            else configured_settings.use_existing_index
-            if settings is not None
-            else is_skill_retrieval_index_enabled(self._config_base)
+            else is_skill_retrieval_enabled(self._config_base)
         )
         explicit_artifact_root = str(artifact_root or "").strip()
         resolved_artifact_root = (

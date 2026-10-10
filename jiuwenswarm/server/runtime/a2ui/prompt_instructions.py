@@ -96,8 +96,8 @@ def build_a2ui_browser_workflow_instruction() -> str:
         "action.context MUST include original_query, task_type, next_action with "
         "the value 'run_browser_agent', must_confirm_before_payment with true, "
         "and all form values using path references. After this action is "
-        "submitted, combine the original request and submitted values, then use "
-        "spawn_sub_agent with subagent_type 'browser_agent'. Never buy, book, "
+        "submitted, combine the original request and submitted values, then call "
+        "the synchronous task_tool once with subagent_type 'browser_agent'. Never buy, book, "
         "pay, or place an order without a final explicit user confirmation."
     )
     mandatory_account_action_rule_en = (
@@ -113,7 +113,8 @@ def build_a2ui_browser_workflow_instruction() -> str:
         "candidate list before opening or replying to selected messages; after "
         "drafting, render a final A2UI send confirmation before sending. Never "
         "search multiple emails and send replies in the same uninterrupted run "
-        "without an A2UI user selection and final send confirmation."
+        "without an A2UI user selection and final send confirmation. task_tool is "
+        "the browser execution mechanism after the applicable A2UI gate, not a substitute for that gate."
     )
     hotel_booking_flow_rule_en = (
         " Hotel booking A2UI flow: after browser_agent returns candidate hotels, "

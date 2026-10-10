@@ -18,7 +18,7 @@ python --version
 
 ### Q: 启动时报错 "Node.js not found"
 
-JiuwenSwarm 前端依赖 Node.js，请安装 18.x 或更高版本。
+普通安装与启动不需要 Node.js。源码前端开发需要 Node.js 18 或更高版本；pip/wheel 或源码安装如需使用浏览器运行时，则需要 Node.js 20 或更高版本。桌面版已内置 Node 22.11.0。
 
 ```bash
 node --version
@@ -32,10 +32,10 @@ node --version
 
 ```bash
 # 清华源（推荐）
-pip install jiuwenswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install workswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 阿里云源
-pip install jiuwenswarm -i https://mirrors.aliyun.com/pypi/simple/
+pip install workswarm -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
 ### Q: 如何查看当前安装的版本？
@@ -47,13 +47,13 @@ jiuwenswarm --version
 或：
 
 ```bash
-pip show jiuwenswarm
+pip show workswarm
 ```
 
 ### Q: 如何卸载 JiuwenSwarm？
 
 ```bash
-pip uninstall jiuwenswarm
+pip uninstall workswarm
 ```
 
 ---
@@ -62,7 +62,7 @@ pip uninstall jiuwenswarm
 
 ### Q: 支持哪些模型提供商？
 
-JiuwenSwarm 支持多种模型平台：华为云 MaaS、OpenAI、DeepSeek、DashScope、SiliconFlow、InferenceAffinity、OpenRouter 等 OpenAI 兼容接口，也支持本地模型部署。
+JiuwenSwarm 支持多种模型平台：华为云 MaaS、OpenAI、DeepSeek、DashScope、SiliconFlow、AscendAffinity、OpenRouter 等 OpenAI 兼容接口，也支持本地模型部署。
 
 ### Q: 模型配置测试失败怎么办？
 
@@ -120,16 +120,7 @@ jiuwenswarm-app
 
 然后通过 `http://<服务器IP>:<端口>` 访问。
 
-### Q: TUI 模式如何启动？
 
-TUI 需要单独安装，在启动 JiuwenSwarm 后另开终端：
-
-```bash
-pip install jiuwenswarm-tui
-jiuwenswarm-tui
-```
-
----
 
 ## 版本升级
 
@@ -138,7 +129,7 @@ jiuwenswarm-tui
 **常规升级**（如 0.2.0 → 0.2.1）：
 
 ```bash
-pip install --upgrade jiuwenswarm
+pip install --upgrade workswarm
 ```
 
 **重大版本升级**（跨 0.1.7 版本）：
@@ -154,7 +145,7 @@ pip install --upgrade jiuwenswarm
 2. 升级并重新初始化：
 
 ```bash
-pip install --upgrade jiuwenswarm
+pip install --upgrade workswarm
 jiuwenswarm-init
 ```
 

@@ -1,0 +1,128 @@
+/* DropdownMenu：门户挂到 body 的浮层菜单。
+   只依赖全局主题 token，禁止引用 features/* 的私有变量。 */
+
+.ui-dropdown-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 154px;
+  padding: 8px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: var(--color-surface-popover);
+  box-shadow: var(--effect-shadow-lg);
+  /* 容器 tabIndex=-1 承接焦点以支持键盘导航，不显示焦点框 */
+  outline: none;
+  /* 缩放锚点跟随弹出方向，入场从 trigger 一侧展开（参考 antd dropdown 的 motion） */
+  animation: ui-dropdown-menu-in 0.15s ease-out;
+}
+
+.ui-dropdown-menu[data-side='bottom'] {
+  transform-origin: top center;
+}
+
+.ui-dropdown-menu[data-side='top'] {
+  transform-origin: bottom center;
+}
+
+.ui-dropdown-menu[data-side='left'] {
+  transform-origin: right center;
+}
+
+.ui-dropdown-menu[data-side='right'] {
+  transform-origin: left center;
+}
+
+/* 出场动画播完才卸载节点；期间禁止交互，点击穿透到下层 */
+.ui-dropdown-menu--closing {
+  pointer-events: none;
+  animation: ui-dropdown-menu-out 0.1s ease-in forwards;
+}
+
+@keyframes ui-dropdown-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes ui-dropdown-menu-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-dropdown-menu,
+  .ui-dropdown-menu--closing {
+    animation: none;
+  }
+  /* 禁用动画时出场立即隐藏，不保留 120ms 的可见残影 */
+  .ui-dropdown-menu--closing {
+    opacity: 0;
+  }
+}
+
+.ui-dropdown-menu__item {
+  display: flex;
+  width: 100%;
+  height: 32px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ui-dropdown-menu__item-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.ui-dropdown-menu__item-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.ui-dropdown-menu__item-label {
+  min-width: 0;
+}
+
+.ui-dropdown-menu__item:hover:not(:disabled),
+.ui-dropdown-menu__item:focus-visible:not(:disabled) {
+  background: var(--color-action-secondary);
+}
+
+/* 悬停底色兼作键盘导航焦点样式，去掉默认 outline 避免双重指示 */
+.ui-dropdown-menu__item:focus-visible {
+  outline: none;
+}
+
+.ui-dropdown-menu__item--danger {
+  color: var(--color-feedback-danger);
+}
+
+.ui-dropdown-menu__item--danger:hover:not(:disabled),
+.ui-dropdown-menu__item--danger:focus-visible:not(:disabled) {
+  background: var(--color-feedback-danger-subtle);
+}
+
+.ui-dropdown-menu__item:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}

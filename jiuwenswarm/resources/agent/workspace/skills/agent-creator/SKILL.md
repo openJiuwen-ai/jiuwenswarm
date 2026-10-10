@@ -82,7 +82,7 @@ description: |
 1. 确定 `<agent-name>`（kebab-case）
 2. 读取 `local/<agent-name>/` 下现有 `manifest.json`、`persona/`、已有 `skills/` / `tools/` / `rails/`
 3. 向用户确认要改什么（展示字段、persona 正文、增删 skill/tool/rail 等）
-4. 包不存在 → 提示在专家中心确认「我的专家」，或改走 `create`
+4. 包不存在 → 提示在智能体中心确认「我的专家」，或改走 `create`
 
 唯一标识、展示字段和 manifest 细则见「关键规则」与 `references/manifest-spec.md`。用户要求改名 → 告知需换新名字走 `create`，不支持原地改名。
 
@@ -116,7 +116,7 @@ python3 <skill_dir>/scripts/validate_template.py <agent-name>
 
 ### 第五步：注册
 
-`create` 与 `update` 均必须执行（register 对 marketplace 做 upsert；已安装专家会保留 `installed=true`）。命令按 mode 分派：
+`create` 与 `update` 均必须执行（register 对 marketplace 做 upsert，登记为已安装；已安装专家会保留 `installed=true`）。命令按 mode 分派：
 
 ```bash
 # create
@@ -139,9 +139,9 @@ python3 <skill_dir>/scripts/register_template.py <agent-name> --bump
 1. **模板概览**：模板包名、分类、核心能力（或本次变更摘要）、标签
 2. **产物位置**：包路径（`create` 用 init 脚本输出；`update` 用已定位的 `local/<agent-name>/`）
 3. **推荐提问**：给出 2–3 条贴合该专家能力的示例问句
-4. **如何安装**：
-  - `create`：打开专家中心 → 找到该专家 → 安装 → 新开对话并装备后使用
-  - `update`：若原本已安装，保持可对话，建议按本次改动重试；若未安装，同 `create` 先安装
+4. **如何使用**：
+  - `create`：打开智能体中心找到该专家，新开对话并装备后使用
+  - `update`：保持可对话；建议按本次改动重试，或重开对话以加载新版本
 
 ---
 
@@ -168,4 +168,3 @@ python3 <skill_dir>/scripts/register_template.py <agent-name> --bump
 - `references/tool-spec.md` — Tool结构模板
 - `references/rail-spec.md` — Rail结构模板
 - `references/code-quality.md` — tool/rail/scripts Python 代码质量
-

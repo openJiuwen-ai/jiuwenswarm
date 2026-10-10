@@ -4,50 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import inspect
 import logging
 import os
 import secrets
-import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-import yaml
-from ruamel.yaml.scalarstring import DoubleQuotedScalarString
-
-from openjiuwen.core.foundation.llm import Model, ProviderType
-from openjiuwen.core.foundation.llm.schema.config import (
-    ModelClientConfig,
-    ModelRequestConfig,
-)
-from openjiuwen.rsi.auto_harness.schema import load_auto_harness_config
 
 from jiuwenswarm.common.config import (
     get_config,
-    get_config_raw,
-    get_default_models,
-    resolve_env_vars,
-    update_auto_recap_enabled_in_config,
-    update_context_engine_enabled_in_config,
-    update_memory_forbidden_enabled_in_config,
-    update_permissions_enabled_in_config,
-    get_model_names,
-    update_preferred_language_in_config,
-    update_swarmflow_budget_in_config,
-    update_swarmflow_enabled_in_config,
-    update_skill_evolution_enabled_in_config,
-    update_config,
 )
-from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
-from jiuwenswarm.common.context_window import resolve_context_window_tokens
+from jiuwenswarm.common.config_panel import tui_models_handlers
 from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
-from jiuwenswarm.common.version import __version__
-from jiuwenswarm.common.utils import get_user_workspace_dir
 from jiuwenswarm.gateway.routing.agent_request_timeout import (
-    AGENT_SERVER_TIMEOUT_CODE,
-    AGENT_SERVER_TIMEOUT_ERROR,
-    AgentRequestTimeoutError,
     resolve_agent_request_timeout_seconds,
     send_agent_request_with_timeout,
 )
@@ -93,20 +63,6 @@ async def _cancel_harmonyos_dev_init_tasks(ws: Any) -> None:
     tracked.clear()
 
 
-class _ModelOpError(Exception):
-    """模型操作校验失败：在 update_config 事务内抛出，事务外转成 RPC 错误响应。"""
-
-# Auto-Harness config file path
-_DEFAULT_REPO_URL = "https://gitcode.com/openJiuwen/agent-core.git"
-_AUTO_HARNESS_CONFIG_DIR = get_user_workspace_dir() / "auto-harness"
-_AUTO_HARNESS_CONFIG_FILE = _AUTO_HARNESS_CONFIG_DIR / "config.yaml"
-_AUTO_HARNESS_LOCAL_REPO = _AUTO_HARNESS_CONFIG_DIR / "repo" / "openJiuwen--agent-core"
-
-# Default values for ci_gate config
-_DEFAULT_CI_GATE_PYTHON_EXECUTABLE = sys.executable
-_DEFAULT_CI_GATE_INSTALL_COMMAND = "uv sync --active --group dev --extra cli"
-
-
 def _resolve_agent_client(agent_client: Any) -> Any:
     if isinstance(agent_client, dict):
         return agent_client.get("value")
@@ -127,108 +83,14 @@ async def _send_tui_agent_request(real_client: Any, env: Any, *, label: str) -> 
     )
 
 
-def _get_auto_harness_config() -> dict[str, Any]:
-    """Load auto-harness config.yaml with auto-fill for ci_gate defaults."""
-    config: dict[str, Any] = {}
+async def _tui_config_send_request(client: Any, env: Any, *, label: str) -> Any:
+    """config 域下沉 handler 的请求发送器。
 
-    if not _AUTO_HARNESS_CONFIG_FILE.exists():
-        load_auto_harness_config(str(_AUTO_HARNESS_CONFIG_FILE))
-
-    try:
-        config = yaml.safe_load(_AUTO_HARNESS_CONFIG_FILE.read_text(encoding="utf-8")) or {}
-    except Exception as e:
-        logger.warning("[auto-harness config] Failed to load: %s", e)
-        config = {}
-
-    # Auto-fill ci_gate defaults if missing
-    ci_gate = config.get("ci_gate") or {}
-    git_config = config.get("git") or {}
-    needs_save = False
-
-    git_remote = git_config.get("remote")
-    if not git_remote:
-        git_config["remote"] = "autoharness"
-
-    # Ensure local_repo is a string (not Path object which causes YAML serialization issues)
-    local_repo = config.get("local_repo")
-    repo_url = config.get("repo_url")
-    if not local_repo:
-        config["local_repo"] = str(_AUTO_HARNESS_LOCAL_REPO)
-        needs_save = True
-
-    if not repo_url:
-        config["repo_url"] = str(_DEFAULT_REPO_URL)
-        needs_save = True
-
-    elif hasattr(local_repo, "__fspath__"):  # Path-like object
-        config["local_repo"] = str(local_repo)
-        needs_save = True
-
-    if not ci_gate.get("python_executable"):
-        ci_gate["python_executable"] = str(_DEFAULT_CI_GATE_PYTHON_EXECUTABLE)
-        needs_save = True
-
-    if not ci_gate.get("install_command"):
-        ci_gate["install_command"] = _DEFAULT_CI_GATE_INSTALL_COMMAND
-        needs_save = True
-
-    budget = config.get("budget", {})
-    max_tasks_per_session = budget.get("max_tasks_per_session", 5)
-    if max_tasks_per_session > 5:
-        budget["max_tasks_per_session"] = 5
-        needs_save = True
-
-    if needs_save:
-        config["ci_gate"] = ci_gate
-        _save_auto_harness_config(config)
-        logger.info("[auto-harness config] Auto-filled ci_gate defaults: python_executable=%s, install_command=%s",
-                    ci_gate.get("python_executable"), ci_gate.get("install_command"))
-
-    return config
-
-
-def _save_auto_harness_config(config: dict[str, Any]) -> None:
-    """Save auto-harness config.yaml."""
-    _AUTO_HARNESS_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    _AUTO_HARNESS_CONFIG_FILE.write_text(
-        yaml.dump(config, allow_unicode=True, sort_keys=False, default_flow_style=False),
-        encoding="utf-8"
-    )
-
-
-def _update_auto_harness_git_user_name(value: str) -> None:
-    """Update git.user_name, fork_owner, and gitcode.username in auto-harness config.
-    - git.user_name: 用于 git commit
-    - git.fork_owner: 用于创建 PR
-    - gitcode.username: GitCode 登录用户名
+    延迟解析 ``_send_tui_agent_request``（调用时查模块全局），保留单测对该
+    函数的 monkeypatch 语义；下沉模块未注入时退回 ``client.send_request`` 直发。
     """
-    config = _get_auto_harness_config()
-    if "git" not in config:
-        config["git"] = {}
-    config["git"]["user_name"] = value
-    config["git"]["fork_owner"] = value  # 合并：用户名同时作为 fork_owner
-    if "gitcode" not in config:
-        config["gitcode"] = {}
-    config["gitcode"]["username"] = value  # 合并：用户名同时作为 gitcode.username
-    _save_auto_harness_config(config)
+    return await _send_tui_agent_request(client, env, label=label)
 
-
-def _update_auto_harness_git_user_email(value: str) -> None:
-    """Update git.user_email in auto-harness config."""
-    config = _get_auto_harness_config()
-    if "git" not in config:
-        config["git"] = {}
-    config["git"]["user_email"] = value
-    _save_auto_harness_config(config)
-
-
-def _update_auto_harness_gitcode_access_token(value: str) -> None:
-    """Update gitcode.access_token in auto-harness config."""
-    config = _get_auto_harness_config()
-    if "gitcode" not in config:
-        config["gitcode"] = {}
-    config["gitcode"]["access_token"] = value
-    _save_auto_harness_config(config)
 
 # ── 需要转发到 Agent 的方法集合 ──────────────────────────────
 
@@ -248,6 +110,9 @@ CLI_FORWARD_REQ_METHODS = frozenset(
         "command.sandbox",
         "command.session",
         "command.workflows",
+        "swarmflow.pause",
+        "swarmflow.resume",
+        "swarmflow.stop",
         "command.status",
         "command.goal",
         "chat.send",
@@ -269,6 +134,8 @@ CLI_FORWARD_REQ_METHODS = frozenset(
         "skills.marketplace.remove",
         "skills.marketplace.toggle",
         "skills.uninstall",
+        "skills.online_search.search",
+        "skills.online_search.install",
         "skills.skillnet.search",
         "skills.skillnet.install",
         "skills.skillnet.install_status",
@@ -298,11 +165,19 @@ CLI_FORWARD_REQ_METHODS = frozenset(
         "plugins.reload",
         "agent_groups.list",
         "agent_groups.show",
+        "agent_groups.file.list",
+        "agent_groups.file.read",
+        "agent_groups.create",
+        "agent_groups.import_local",
+        "agent_groups.install",
+        "agent_groups.uninstall",
         "agent_templates.list",
         "agent_templates.show",
         "agent_templates.file.list",
         "agent_templates.file.read",
         "agent_templates.create",
+        "agent_templates.update",
+        "agent_templates.delete",
         "agent_templates.import_local",
         "agent_templates.install",
         "agent_templates.uninstall",
@@ -373,6 +248,9 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
         "command.sandbox",
         "command.session",
         "command.workflows",
+        "swarmflow.pause",
+        "swarmflow.resume",
+        "swarmflow.stop",
         "command.status",
         "command.goal",
         "skills.marketplace.list",
@@ -388,6 +266,8 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
         "skills.marketplace.remove",
         "skills.marketplace.toggle",
         "skills.uninstall",
+        "skills.online_search.search",
+        "skills.online_search.install",
         "skills.skillnet.search",
         "skills.skillnet.install",
         "skills.skillnet.install_status",
@@ -417,11 +297,19 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
         "plugins.reload",
         "agent_groups.list",
         "agent_groups.show",
+        "agent_groups.file.list",
+        "agent_groups.file.read",
+        "agent_groups.create",
+        "agent_groups.import_local",
+        "agent_groups.install",
+        "agent_groups.uninstall",
         "agent_templates.list",
         "agent_templates.show",
         "agent_templates.file.list",
         "agent_templates.file.read",
         "agent_templates.create",
+        "agent_templates.update",
+        "agent_templates.delete",
         "agent_templates.import_local",
         "agent_templates.install",
         "agent_templates.uninstall",
@@ -521,259 +409,6 @@ class ForwardRewindE2AParams:
     req_method: Any
     error_label: str
     user_id: str | None = None
-
-
-_CLI_CONFIG_SET_ENV_MAP = {
-    "model_provider": "MODEL_PROVIDER",
-    "model": "MODEL_NAME",
-    "api_base": "API_BASE",
-    "api_key": "API_KEY",
-    "video_api_base": "VIDEO_API_BASE",
-    "video_api_key": "VIDEO_API_KEY",
-    "video_model": "VIDEO_MODEL_NAME",
-    "video_provider": "VIDEO_PROVIDER",
-    "audio_api_base": "AUDIO_API_BASE",
-    "audio_api_key": "AUDIO_API_KEY",
-    "audio_model": "AUDIO_MODEL_NAME",
-    "audio_provider": "AUDIO_PROVIDER",
-    "vision_api_base": "VISION_API_BASE",
-    "vision_api_key": "VISION_API_KEY",
-    "vision_model": "VISION_MODEL_NAME",
-    "vision_provider": "VISION_PROVIDER",
-    "email_address": "EMAIL_ADDRESS",
-    "email_token": "EMAIL_TOKEN",
-    "embed_api_key": "EMBED_API_KEY",
-    "embed_api_base": "EMBED_API_BASE",
-    "embed_model": "EMBED_MODEL",
-    "jina_api_key": "JINA_API_KEY",
-    "serper_api_key": "SERPER_API_KEY",
-    "perplexity_api_key": "PERPLEXITY_API_KEY",
-    "github_token": "GITHUB_TOKEN",
-    "teamskills_market_url": "TEAM_SKILLS_HUB_BASE_URL",
-    "teamskills_user_token": "TEAM_SKILLS_HUB_USER_TOKEN",
-    "teamskills_system_token": "TEAM_SKILLS_HUB_SYSTEM_TOKEN",
-    "teamskills_allowed_download_hosts": "TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS",
-}
-
-_CLI_CONFIG_YAML_SETTERS: dict[str, Any] = {
-    "auto_recap_enabled": update_auto_recap_enabled_in_config,
-    "context_engine_enabled": update_context_engine_enabled_in_config,
-    "permissions_enabled": update_permissions_enabled_in_config,
-    "memory_forbidden_enabled": update_memory_forbidden_enabled_in_config,
-    "preferred_language": update_preferred_language_in_config,
-    "enable_swarmflow": update_swarmflow_enabled_in_config,
-    "swarmflow_budget": update_swarmflow_budget_in_config,
-    "skill_evolution": update_skill_evolution_enabled_in_config,
-    # Auto-Harness config items (stored in ~/.jiuwenswarm/auto-harness/config.yaml)
-    # 用户名同时设置 git.user_name, fork_owner, gitcode.username（三者合一）
-    "auto_harness_git_user_name": _update_auto_harness_git_user_name,
-    "auto_harness_git_user_email": _update_auto_harness_git_user_email,
-    "auto_harness_gitcode_access_token": _update_auto_harness_gitcode_access_token,
-}
-
-_CLI_CONFIG_YAML_KEYS = frozenset(_CLI_CONFIG_YAML_SETTERS.keys())
-
-
-_PREFERRED_LANGUAGE_OPTIONS = ("zh", "en")
-
-
-def _build_config_schema() -> list[dict]:
-    """构建配置项 Schema，供前端渲染交互界面。与 config.yaml 结构对齐。"""
-    available_providers = [p.value for p in ProviderType]
-    # 显式使用 ProviderType.OpenAI 作为默认供应商，避免依赖枚举声明顺序
-    default_provider = (
-        ProviderType.OpenAI.value
-        if hasattr(ProviderType, "OpenAI")
-        else (available_providers[0] if available_providers else "")
-    )
-    empty = ""
-    return [
-        # Model
-        {"key": "model", "label": "默认模型", "group": "Model", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "model_provider", "label": "模型供应商", "group": "Model", "type": "select",
-         "options": available_providers, "source": "env", "default": default_provider},
-        {"key": "api_base", "label": "API 地址", "group": "Model", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "api_key", "label": "API Key", "group": "Model", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        # Vision
-        {"key": "vision_model", "label": "视觉模型", "group": "Vision", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "vision_provider", "label": "视觉供应商", "group": "Vision", "type": "select",
-         "options": available_providers, "source": "env", "default": default_provider},
-        {"key": "vision_api_base", "label": "视觉API地址", "group": "Vision", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "vision_api_key", "label": "视觉API Key", "group": "Vision", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        # Video
-        {"key": "video_model", "label": "视频模型", "group": "Video", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "video_provider", "label": "视频供应商", "group": "Video", "type": "select",
-         "options": available_providers, "source": "env", "default": default_provider},
-        {"key": "video_api_base", "label": "视频API地址", "group": "Video", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "video_api_key", "label": "视频API Key", "group": "Video", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        # Audio
-        {"key": "audio_model", "label": "音频模型", "group": "Audio", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "audio_provider", "label": "音频供应商", "group": "Audio", "type": "select",
-         "options": available_providers, "source": "env", "default": default_provider},
-        {"key": "audio_api_base", "label": "音频API地址", "group": "Audio", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "audio_api_key", "label": "音频API Key", "group": "Audio", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        # Embedding
-        {"key": "embed_api_key", "label": "嵌入API Key", "group": "Embedding", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        {"key": "embed_api_base", "label": "嵌入API地址", "group": "Embedding", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "embed_model", "label": "嵌入模型", "group": "Embedding", "type": "string",
-         "source": "env", "default": empty},
-        # Search & External
-        {"key": "jina_api_key", "label": "Jina API Key", "group": "Search & External", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        {"key": "serper_api_key", "label": "Serper API Key", "group": "Search & External", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        {"key": "perplexity_api_key", "label": "Perplexity API Key", "group": "Search & External", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        {"key": "github_token", "label": "GitHub Token", "group": "Search & External", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        # TeamSkills
-        {"key": "teamskills_market_url", "label": "TeamSkills Hub 地址", "group": "TeamSkills", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "teamskills_user_token", "label": "TeamSkills 用户Token", "group": "TeamSkills", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        {"key": "teamskills_system_token", "label": "TeamSkills 系统Token", "group": "TeamSkills", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        {
-         "key": "teamskills_allowed_download_hosts",
-         "label": "TeamSkills 下载白名单Hosts(逗号分隔)",
-         "group": "TeamSkills",
-         "type": "string",
-         "source": "env", "default": empty},
-        # Email
-        {"key": "email_address", "label": "邮箱地址", "group": "Email", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "email_token", "label": "邮箱Token", "group": "Email", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        # Features
-        {"key": "context_engine_enabled", "label": "上下文压缩", "group": "Features",
-         "type": "toggle", "source": "yaml", "default": "false"},
-        {"key": "permissions_enabled", "label": "权限管控", "group": "Features",
-         "type": "toggle", "source": "yaml", "default": "false"},
-        {"key": "memory_forbidden_enabled", "label": "敏感信息过滤", "group": "Features",
-         "type": "toggle", "source": "yaml", "default": "false"},
-        {"key": "preferred_language", "label": "显示语言", "group": "Features", "type": "select",
-         "options": ["zh", "en"], "source": "yaml", "default": "zh"},
-        {"key": "auto_recap_enabled", "label": "自动回顾", "group": "Features",
-         "type": "toggle", "source": "yaml", "default": "true"},
-        {"key": "skill_evolution", "label": "技能演进与创建", "group": "Features",
-         "type": "toggle", "source": "yaml", "default": "false"},
-        # Auto-Harness (定时任务配置) - 合并为三项
-        {"key": "auto_harness_git_user_name", "label": "用户名", "group": "Auto-Harness",
-         "type": "string", "source": "yaml", "default": empty,
-         "description": "GitCode用户名，用于 git commit、创建 PR"},
-        {"key": "auto_harness_git_user_email", "label": "邮箱", "group": "Auto-Harness",
-         "type": "string", "source": "yaml", "default": empty,
-         "description": "GitCode用户邮箱，用于 git commit"},
-        {"key": "auto_harness_gitcode_access_token", "label": "GitCode Access Token", "group": "Auto-Harness",
-         "type": "password", "sensitive": True, "source": "yaml", "default": empty,
-         "description": "GitCode Access token，也可通过环境变量 GITCODE_ACCESS_TOKEN 配置"},
-    ]
-
-
-def _normalize_provider_value(value: str) -> str:
-    normalized = value.strip()
-    if not normalized:
-        return normalized
-
-    available_model_providers = [provider.value for provider in ProviderType]
-    lookup = {provider.lower(): provider for provider in available_model_providers}
-    return lookup.get(normalized.lower(), normalized)
-
-
-
-async def _clear_agent_config_cache(agent_client=None, user_id=None) -> None:
-    try:
-        if agent_client is not None:
-            from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-            from jiuwenswarm.common.schema.message import ReqMethod
-            import uuid
-
-            env = e2a_from_agent_fields(
-                request_id=f"cfg-reload-{uuid.uuid4().hex[:8]}",
-                channel_id="",
-                req_method=ReqMethod.AGENT_RELOAD_CONFIG,
-                user_id=user_id,
-            )
-            await _send_tui_agent_request(
-                _resolve_agent_client(agent_client),
-                env,
-                label="config.cache_clear",
-            )
-        else:
-            get_config()
-    except Exception as e:  # noqa: BLE001
-        logger.debug("[cli config.set] clear agent config cache skipped: %s", e)
-
-
-def _persist_env_updates(updates: dict[str, str]) -> None:
-    from jiuwenswarm.common.utils import get_env_file
-
-    env_path = get_env_file()
-    if not updates:
-        return
-    try:
-        lines: list[str] = []
-        if env_path.is_file():
-            with open(env_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        new_lines: list[str] = []
-        for line in lines:
-            stripped = line.strip()
-            found = False
-            for env_key, value in updates.items():
-                if stripped.startswith(env_key + "="):
-                    new_lines.append(
-                        f'{env_key}="{value}"\n' if value else f"{env_key}=\n"
-                    )
-                    found = True
-                    break
-            if not found:
-                new_lines.append(line)
-        for env_key, value in updates.items():
-            if not any(s.strip().startswith(env_key + "=") for s in new_lines):
-                new_lines.append(f'{env_key}="{value}"\n' if value else f"{env_key}=\n")
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
-    except OSError as e:
-        logger.warning("[cli config.set] 写回 .env 失败: %s", e)
-
-
-def _load_env_from_file() -> dict[str, str]:
-    """从 .env 文件读取环境变量值（不从当前 os.environ 读取）。"""
-    from jiuwenswarm.common.utils import get_env_file
-
-    env_path = get_env_file()
-    result = {}
-    if not env_path.is_file():
-        return result
-    try:
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
-                    continue
-                if "=" in stripped:
-                    key, _, val = stripped.partition("=")
-                    val = val.strip('"').strip("'")
-                    result[key] = val
-    except OSError:
-        pass
-    return result
 
 
 def resolve_tui_session_project_path(session: dict[str, Any] | None) -> str:
@@ -877,558 +512,24 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     harmonyos_dev_init_tasks: dict[tuple[int, str], asyncio.Task[Any]] = {}
 
     async def _config_get(ws, req_id, params, session_id):
-        payload = {
-            param_key: (os.getenv(env_key) or "")
-            for param_key, env_key in _CLI_CONFIG_SET_ENV_MAP.items()
-        }
-        payload["app_version"] = __version__
-        try:
-            raw = get_config_raw()
-            for key, val in payload.items():
-                from jiuwenswarm.extensions import ExtensionRegistry
-
-                crypto_provider = ExtensionRegistry.get_instance().get_crypto_provider()
-                if (
-                    "api_key" in key.lower() or "token" in key.lower()
-                ) and crypto_provider:
-                    payload[key] = crypto_provider.decrypt(val)
-            ctx_cfg = (raw.get("react") or {}).get("context_engine_config") or {}
-            payload["context_engine_enabled"] = (
-                "true" if ctx_cfg.get("enabled", False) else "false"
-            )
-            perm_cfg = raw.get("permissions") or {}
-            payload["permissions_enabled"] = (
-                "true" if perm_cfg.get("enabled", False) else "false"
-            )
-            mem_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
-            payload["memory_forbidden_enabled"] = (
-                "true" if mem_cfg.get("enabled", False) else "false"
-            )
-            payload["preferred_language"] = raw.get("preferred_language") or "zh"
-            auto_recap_cfg = raw.get("auto_recap") or {}
-            payload["auto_recap_enabled"] = (
-                "true" if auto_recap_cfg.get("enabled", True) else "false"
-            )
-            # swarmflow toggle lives at modes.team.jiuwen_team.enable_swarmflow
-            _team_cfg = (raw.get("modes") or {}).get("team") or {}
-            _jiuwen_team_cfg = _team_cfg.get("jiuwen_team") or {}
-            _swarmflow_enabled = bool(_jiuwen_team_cfg.get("enable_swarmflow", False))
-            payload["enable_swarmflow"] = "true" if _swarmflow_enabled else "false"
-            # swarmflow budget ceiling (integer token limit; absent/None → unbounded)
-            _swarmflow_budget = _jiuwen_team_cfg.get("swarmflow_budget")
-            if _swarmflow_budget is not None:
-                payload["swarmflow_budget"] = str(_swarmflow_budget)
-            evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
-            payload["skill_evolution"] = (
-                "true" if evolution_cfg.get("skill_evolution", False) else "false"
-            )
-
-            # Resolve model-related fields from config.yaml.
-            # When models.defaults list is in use, it is the canonical source
-            # for the current model. Environment variables may be stale if the
-            # model was switched via /model or Web UI without restarting gateway.
-            try:
-                _default_models = get_default_models()
-                if _default_models:
-                    _current = _default_models[0]
-                    _mcc = _current.get("model_client_config") or {}
-                    _model_overrides = {
-                        "model": _mcc.get("model_name"),
-                        "model_provider": _mcc.get("client_provider"),
-                        "api_base": _mcc.get("api_base"),
-                        "api_key": _mcc.get("api_key"),
-                    }
-                    for _k, _v in _model_overrides.items():
-                        if _v:
-                            payload[_k] = str(_v)
-            except Exception as e:
-                logger.warning("[config.get] Failed to resolve default model config: %s", e)
-
-            # Resolve multimodal model configs (vision, video, audio)
-            _multimodal_sections = {
-                "vision": {
-                    "vision_model": "model_name",
-                    "vision_provider": "client_provider",
-                    "vision_api_base": "api_base",
-                    "vision_api_key": "api_key",
-                },
-                "video": {
-                    "video_model": "model_name",
-                    "video_provider": "client_provider",
-                    "video_api_base": "api_base",
-                    "video_api_key": "api_key",
-                },
-                "audio": {
-                    "audio_model": "model_name",
-                    "audio_provider": "client_provider",
-                    "audio_api_base": "api_base",
-                    "audio_api_key": "api_key",
-                },
-            }
-            for _section_name, _key_map in _multimodal_sections.items():
-                try:
-                    _section = (raw.get("models") or {}).get(_section_name)
-                    if isinstance(_section, dict):
-                        _smcc = _section.get("model_client_config") or {}
-                        for _pk, _yk in _key_map.items():
-                            if not payload.get(_pk):
-                                _resolved = resolve_env_vars(str(_smcc.get(_yk, ""))) if _smcc.get(_yk) else ""
-                                if _resolved:
-                                    payload[_pk] = _resolved
-                except Exception as e:
-                    logger.warning("[config.get] Failed to resolve %s model config: %s", _section_name, e)
-        except Exception:
-            payload.setdefault("auto_recap_enabled", "true")
-            payload.setdefault("context_engine_enabled", "false")
-            payload.setdefault("permissions_enabled", "false")
-            payload.setdefault("memory_forbidden_enabled", "false")
-            payload.setdefault("preferred_language", "zh")
-            payload.setdefault("skill_evolution", "false")
-        
-        # Auto-Harness config values (from ~/.jiuwenswarm/auto-harness/config.yaml)
-        # 合并显示：用户名、邮箱、Access Token 三项
-        try:
-            ah_config = _get_auto_harness_config()
-            git_cfg = ah_config.get("git") or {}
-            gitcode_cfg = ah_config.get("gitcode") or {}
-            payload["auto_harness_git_user_name"] = git_cfg.get("user_name") or ""
-            payload["auto_harness_git_user_email"] = git_cfg.get("user_email") or ""
-            # Check env var first for access_token
-            ah_token = os.getenv("GITCODE_ACCESS_TOKEN") or gitcode_cfg.get("access_token") or ""
-            payload["auto_harness_gitcode_access_token"] = ah_token
-        except Exception:
-            payload.setdefault("auto_harness_git_user_name", "")
-            payload.setdefault("auto_harness_git_user_email", "")
-            payload.setdefault("auto_harness_gitcode_access_token", "")
-
-        payload["schema"] = _build_config_schema()
-        await channel.send_response(ws, req_id, ok=True, payload=payload)
+        """config.get 实现已下沉 ``common.config_panel.tui_models_handlers``。"""
+        await tui_models_handlers.config_get_handler(
+            channel, ws, req_id, params, session_id
+        )
 
     async def _config_set(ws, req_id, params, session_id):
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
-            )
-            return
-        for key, val in params.items():
-            from jiuwenswarm.extensions import ExtensionRegistry
-
-            crypto_provider = ExtensionRegistry.get_instance().get_crypto_provider()
-            if ("api_key" in key.lower() or "token" in key.lower()) and crypto_provider:
-                params[key] = crypto_provider.encrypt(val)
-
-        env_updates: dict[str, str] = {}
-        yaml_updated: list[str] = []
-        available_model_providers = [provider.value for provider in ProviderType]
-
-        for param_key, env_key in _CLI_CONFIG_SET_ENV_MAP.items():
-            if param_key not in params:
-                continue
-            val = params[param_key]
-            if param_key.endswith("_provider") and val:
-                val = _normalize_provider_value(str(val))
-                params[param_key] = val
-            if (
-                param_key.endswith("_provider")
-                and val
-                and val not in available_model_providers
-            ):
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error=f"Model provider must in: {available_model_providers} ",
-                    code="BAD_REQUEST",
-                )
-                return
-            env_updates[env_key] = "" if val is None else str(val).strip()
-
-        for param_key, setter in _CLI_CONFIG_YAML_SETTERS.items():
-            if param_key not in params:
-                continue
-            raw_value = str(params[param_key]).strip()
-            if param_key == "preferred_language":
-                normalized_lang = raw_value.lower()
-                if normalized_lang not in _PREFERRED_LANGUAGE_OPTIONS:
-                    await channel.send_response(
-                        ws,
-                        req_id,
-                        ok=False,
-                        error=(
-                            f"preferred_language must be one of "
-                            f"{list(_PREFERRED_LANGUAGE_OPTIONS)}"
-                        ),
-                        code="BAD_REQUEST",
-                    )
-                    return
-            try:
-                if param_key == "preferred_language":
-                    setter(raw_value)
-                elif param_key.startswith("auto_harness_"):
-                    # Auto-harness config items are strings, not toggles
-                    setter(raw_value)
-                elif param_key == "swarmflow_budget":
-                    # Budget is an integer, not a boolean toggle
-                    setter(raw_value)
-                else:
-                    parsed = raw_value.lower() in ("true", "1", "yes")
-                    setter(parsed)
-                yaml_updated.append(param_key)
-            except Exception as e:
-                logger.warning(
-                    "[cli config.set] 写回 config.yaml 失败 %s: %s", param_key, e
-                )
-
-        for env_key, value in env_updates.items():
-            os.environ[env_key] = value
-        # env 变量直接写 os.environ 立即生效；YAML 改动需要 agent 重启/热重载才生效
-        applied_without_restart = not yaml_updated
-
-        # ── 同步 env-only 模型/多模态/嵌入配置到 config.yaml ──
-        # config.set 对 source:"env" 的配置项只更新 os.environ 和 .env，
-        # 不更新 config.yaml 本体。但 command.status / command.model 等读取配置时
-        # 优先从 config.yaml 对应 section 的 model_client_config 获取值。
-        # 若值是硬编码（非 ${MODEL_NAME} 语法），env 变量更新无法传播。
-        # 因此需将修改后的值同步写入 config.yaml 的对应 section。
-        #
-        # 映射关系：param_key → (yaml_path, mcc_key)
-        #   models.defaults[0].model_client_config → 主模型 (model/model_provider/api_base/api_key)
-        #   models.vision.model_client_config → 视觉 (vision_*)
-        #   models.video.model_client_config → 视频 (video_*)
-        #   models.audio.model_client_config → 音频 (audio_*)
-        #   embed → 嵌入 (embed_*)
-
-        _mcc_param_key_map = {
-            "model_name": "model",
-            "client_provider": "model_provider",
-            "api_base": "api_base",
-            "api_key": "api_key",
-        }
-        _multimodal_mcc_prefix_map = {
-            "vision": "vision_",
-            "video": "video_",
-            "audio": "audio_",
-        }
-        _embed_param_key_map = {
-            "embed_api_key": "embed_api_key",
-            "embed_api_base": "embed_api_base",
-            "embed_model": "embed_model",
-        }
-
-        _yaml_sections_updated: list[str] = []
-
-        # ── 收集本次要改的 models / embed 字段 ──
-        _changed_main_params = {
-            pk: params[pk] for mk, pk in _mcc_param_key_map.items()
-            if pk in params
-        }
-        _changed_mm_by_section: dict[str, dict[str, str]] = {}
-        for _section_name, _prefix in _multimodal_mcc_prefix_map.items():
-            _mm = {}
-            for _mcc_key, _base_pk in _mcc_param_key_map.items():
-                _mm_pk = _prefix + _base_pk
-                if _mm_pk in params:
-                    _mm[_mcc_key] = params[_mm_pk]
-            if _mm:
-                _changed_mm_by_section[_section_name] = _mm
-        _changed_embed_params = {
-            pk: params[pk] for pk, _ in _embed_param_key_map.items()
-            if pk in params
-        }
-
-        # ── 单事务改 models.defaults[0] / 多模态 / embed，避免并发丢失更新 ──
-        if _changed_main_params or _changed_mm_by_section or _changed_embed_params:
-            def _sync_models_embed(data):
-                if _changed_main_params:
-                    _models = data.get("models")
-                    if not isinstance(_models, dict):
-                        _models = {}
-                        data["models"] = _models
-                    _defs = _models.get("defaults")
-                    if not (isinstance(_defs, list) and _defs):
-                        _defs = [{
-                            "model_client_config": {
-                                "api_base": "${API_BASE}",
-                                "api_key": "${API_KEY}",
-                                "model_name": "${MODEL_NAME}",
-                                "client_provider": "${MODEL_PROVIDER}",
-                            },
-                            "model_config_obj": {"temperature": 0.95},
-                            "is_default": True,
-                        }]
-                        _models["defaults"] = _defs
-                        # 旧格式迁移：建 defaults 后清理冗余的 models.default 单对象键
-                        _models.pop("default", None)
-                    _first = _defs[0]
-                    if isinstance(_first, dict):
-                        _mcc = _first.get("model_client_config")
-                        if not isinstance(_mcc, dict):
-                            _mcc = {}
-                            _first["model_client_config"] = _mcc
-                        for _mcc_key, _param_key in _mcc_param_key_map.items():
-                            if _param_key in _changed_main_params:
-                                _val = str(_changed_main_params[_param_key]).strip()
-                                if _param_key == "model_provider":
-                                    _val = _normalize_provider_value(_val)
-                                _mcc[_mcc_key] = _val
-                        logger.info(
-                            "[cli config.set] synced models.defaults[0].model_client_config: %s",
-                            list(_changed_main_params.keys()),
-                        )
-                for _section_name, _mm in _changed_mm_by_section.items():
-                    _models = data.get("models")
-                    if not isinstance(_models, dict):
-                        _models = {}
-                        data["models"] = _models
-                    _section = _models.get(_section_name)
-                    if not isinstance(_section, dict):
-                        _section = {}
-                        _models[_section_name] = _section
-                    _mcc = _section.get("model_client_config")
-                    if not isinstance(_mcc, dict):
-                        _mcc = {}
-                        _section["model_client_config"] = _mcc
-                    for _mcc_key, _val in _mm.items():
-                        _val = str(_val).strip()
-                        if _mcc_key == "client_provider":
-                            _val = _normalize_provider_value(_val)
-                        _mcc[_mcc_key] = _val
-                    logger.info(
-                        "[cli config.set] synced models.%s.model_client_config: %s",
-                        _section_name, list(_mm.keys()),
-                    )
-                if _changed_embed_params:
-                    _embed = data.get("embed")
-                    if not isinstance(_embed, dict):
-                        _embed = {}
-                        data["embed"] = _embed
-                    for _pk, _yaml_key in _embed_param_key_map.items():
-                        if _pk in _changed_embed_params:
-                            _embed[_yaml_key] = str(_changed_embed_params[_pk]).strip()
-                    logger.info(
-                        "[cli config.set] synced embed section: %s",
-                        list(_changed_embed_params.keys()),
-                    )
-                return data
-            try:
-                update_config(_sync_models_embed)
-                # 仅在写盘成功后登记改动段，避免失败时误报"需要重启"与误清缓存
-                if _changed_main_params:
-                    _yaml_sections_updated.append("models.defaults[0]")
-                for _section_name in _changed_mm_by_section:
-                    _yaml_sections_updated.append(f"models.{_section_name}")
-                if _changed_embed_params:
-                    _yaml_sections_updated.append("embed")
-            except Exception as e:
-                logger.warning("[cli config.set] failed to sync models/embed: %s", e)
-                # env 变更先落盘，避免随 models/embed 失败一起丢失
-                if env_updates:
-                    _persist_env_updates(env_updates)
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error=f"Failed to sync models/embed to config.yaml: {e}",
-                    code="CONFIG_SYNC_FAILED",
-                )
-                return
-
-        if _yaml_sections_updated:
-            applied_without_restart = False  # YAML 改动需要热重载才生效
-
-        if env_updates:
-            _persist_env_updates(env_updates)
-
-        # 当 models / embed / yaml 配置改动时，后台通知 AgentServer 清缓存并热重载。
-        # 必须在 send_response 之前 fire-and-forget：reload 在 AgentServer 端要重建
-        # 全部 agent + session adapter（单次可达 25~44s），若同步 await 会阻塞当前
-        # WebSocket 消息循环（同连接 `async for raw in ws` 串行），导致后续 config.get
-        # 等本地帧排队等满 reload 超时（25s），前端 30s 超时报 request timeout: config.get。
-        # 写盘（上面 setter + _persist_env_updates）已同步完成，config.get 直接读
-        # config.yaml 即可立即验证；reload 仅用于 AgentServer 内存热更新，本就尽力而为，
-        # 故丢后台不阻塞回包。与 _command_model._model_switch_background 对齐。
-        if yaml_updated or _yaml_sections_updated:
-            real_client = (
-                agent_client.get("value")
-                if isinstance(agent_client, dict)
-                else agent_client
-            )
-
-            async def _config_set_reload_background() -> None:
-                try:
-                    await _clear_agent_config_cache(
-                        real_client,
-                        user_id=getattr(ws, "_gateway_user_id", None),
-                    )
-                except Exception as _e_reload:
-                    logger.warning(
-                        "[cli config.set] AGENT_RELOAD_CONFIG failed: %s", _e_reload
-                    )
-
-            asyncio.create_task(_config_set_reload_background())
-
-        updated_param_keys = [
-            k for k, e in _CLI_CONFIG_SET_ENV_MAP.items() if e in env_updates
-        ] + yaml_updated
-
-        # 先回包再执行 on_config_saved（含 Agent 热重载），
-        # 避免 WebSocket 长时间无响应、CLI 误以为无反馈。
-        await channel.send_response(
-            ws,
-            req_id,
-            ok=True,
-            payload={
-                "updated": updated_param_keys,
-                "applied_without_restart": applied_without_restart,
-            },
+        """config.set 实现已下沉 ``common.config_panel.tui_models_handlers``。"""
+        await tui_models_handlers.config_set_handler(
+            channel, ws, req_id, params, session_id,
+            on_config_saved=on_config_saved,
+            agent_client=agent_client,
+            send_request=_tui_config_send_request,
         )
-
-        if env_updates or yaml_updated:
-            if on_config_saved:
-                # on_config_saved 内部会 await agent.reload_config（app_gateway._on_config_saved），
-                # reload 在 AgentServer 端要重建全部 agent + session adapter（全量并发下可达 25~34s）。
-                # 若同步 await 会阻塞当前 WebSocket 连接的 `async for raw in ws` 串行循环，
-                # 导致后续 config.get 等本地帧排队等满，前端 30s 超时报 request timeout: config.get。
-                # 故丢后台 fire-and-forget，与上面 _config_set_reload_background 对齐。
-                # 写盘已完成且已回包，reload 仅用于 AgentServer 内存热更新，本就尽力而为。
-                async def _config_set_on_saved_background() -> None:
-                    try:
-                        config_payload = get_config()
-                        callback_result = on_config_saved(
-                            set(env_updates.keys()) | set(yaml_updated),
-                            env_updates=dict(env_updates),
-                            config_payload=config_payload,
-                        )
-                        if inspect.isawaitable(callback_result):
-                            await callback_result
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("[cli config.set] on_config_saved failed: %s", e)
-
-                asyncio.create_task(_config_set_on_saved_background())
 
     async def _config_validate_model(ws, req_id, params, session_id):
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
-            )
-            return
-
-        api_base = str(params.get("api_base") or "").strip()
-        api_key = str(params.get("api_key") or "").strip()
-        model = str(params.get("model") or "").strip()
-        model_provider = _normalize_provider_value(str(params.get("model_provider") or ""))
-        verify_ssl = bool(params.get("verify_ssl", False))
-
-        if not all([api_base, api_key, model, model_provider]):
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="api_base, api_key, model, and model_provider are required",
-                code="BAD_REQUEST",
-            )
-            return
-
-        available_model_providers = [provider.value for provider in ProviderType]
-        if model_provider not in available_model_providers:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error=f"Model provider must be one of: {available_model_providers}",
-                code="BAD_REQUEST",
-            )
-            return
-
-        if api_base.endswith("/chat/completions"):
-            api_base = api_base.rsplit("/chat/completions", 1)[0]
-        api_base = api_base.rstrip("/")
-
-        model_config_obj = {"temperature": 0}
-        if "reasoning_level" in params:
-            model_config_obj["reasoning_level"] = params.get("reasoning_level")
-        reasoning_mcc = {
-            "client_provider": model_provider,
-            "api_base": api_base,
-        }
-        model_request_config = ModelRequestConfig(
-            **build_reasoning_model_request_kwargs(
-                model_client_config=reasoning_mcc,
-                model_config_obj=model_config_obj,
-                model_name=model,
-            )
-        )
-        model_client_config = ModelClientConfig(
-            client_id="config-validate",
-            client_provider=model_provider,
-            api_key=api_key,
-            api_base=api_base,
-            timeout=25.0,
-            max_retries=0,
-            verify_ssl=verify_ssl,
-        )
-        llm = Model(
-            model_config=model_request_config,
-            model_client_config=model_client_config,
-        )
-
-        async def _probe(max_tokens: int):
-            return await llm.invoke(
-                [{"role": "user", "content": "Hi"}],
-                max_tokens=max_tokens,
-                temperature=0,
-            )
-
-        try:
-            try:
-                response = await _probe(3)
-            except Exception as first_exc:  # noqa: BLE001
-                logger.info(
-                    "[cli config.validate_model] max_tokens=3 failed, retrying with 16: %s",
-                    first_exc,
-                )
-                response = await _probe(16)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[cli config.validate_model] LLM probe failed: %s", exc)
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error=str(exc).strip() or "LLM request failed",
-                code="LLM_ERROR",
-            )
-            return
-
-        if hasattr(response, "content"):
-            content = response.content
-        elif isinstance(response, dict):
-            content = response.get("content", "")
-        else:
-            content = str(response)
-        reasoning_content = getattr(response, "reasoning_content", None) if hasattr(response,
-                                                                                    "reasoning_content") else None
-        has_valid_response = (isinstance(content, str) and content) or (
-                isinstance(reasoning_content, str) and reasoning_content
-        )
-        if not has_valid_response:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="Empty response from model",
-                code="LLM_ERROR",
-            )
-            return
-
-        await channel.send_response(
-            ws,
-            req_id,
-            ok=True,
-            payload={
-                "provider": model_provider,
-                "model": model,
-                "response": content.strip(),
-            },
+        """config.validate_model 实现已下沉（TUI 契约与 Web 侧分模块保留）。"""
+        await tui_models_handlers.config_validate_model_handler(
+            channel, ws, req_id, params
         )
 
     async def _session_list(ws, req_id, params, session_id, user_id=None):
@@ -1751,12 +852,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
 
     async def _session_delete(ws, req_id, params, session_id, user_id=None):
-        """删除一个 session（统一薄代理 E2A 转发 + 单用户共享目录适配器 fallback）。
+        """删除一个 session（统一薄代理 E2A 转发）。
 
-        Phase 4 整合：手写 E2A 与本地删除收敛到 ``proxy_unary_request``——
-        AgentOS 下 AgentServer 不可达返回可重试错误；单用户 WebSocket 客户端
-        不可达时由薄代理跑 SessionAdapter 的文件级删除（共享目录等价，保持
-        迁移前离线可用性）；client 未构造（ac=None）返回 SERVICE_UNAVAILABLE。
+        AgentServer 不可达时返回 SERVICE_UNAVAILABLE；Gateway 不再跑本地
+        SessionAdapter 删除路径。
         """
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
@@ -2311,6 +1410,14 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         if callable(is_bound_to_client):
             owns_session = bool(is_bound_to_client("tui", sid, ws))
         cleanup_handed_off = not (mh is not None and sid and owns_session)
+        # The disconnect cancel must carry the client's live mode, or the
+        # AgentServer routes it through the non-team terminate path and
+        # hard-stops running swarmflow runs instead of pausing them. The
+        # channel-state table cannot supply it for TUI (TUI is not a control
+        # channel), so the tui.disconnect request params are the only source.
+        disconnect_mode = ""
+        if isinstance(params, dict):
+            disconnect_mode = str(params.get("mode") or "").strip()
         if mh is not None and sid and owns_session:
             schedule_cleanup = getattr(
                 mh, "schedule_cancel_agent_sessions_on_disconnect", None
@@ -2321,6 +1428,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                         [("tui", sid)],
                         delay_seconds=_TUI_EXPLICIT_EXIT_CANCEL_GRACE_SECONDS,
                         user_id=getattr(ws, "_gateway_user_id", None),
+                        mode=disconnect_mode or None,
                     )
                     cleanup_handed_off = True
                 else:
@@ -2599,11 +1707,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         )
 
     async def _command_model(ws, req_id, params, session_id, user_id=None):
-        from jiuwenswarm.common.schema.message import ReqMethod
-        # The legacy implementation below reads/writes config.yaml directly.
+        # The legacy implementation reads/writes config.yaml directly.
         # Any remote AgentServer has its own user directory.  Only the default
         # local WebSocket client shares Gateway's directory and can use the
-        # legacy implementation below.
+        # legacy implementation (sunk to common.config_panel.tui_models_handlers).
         from jiuwenswarm.gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -2615,6 +1722,8 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             and resolved_client is not None
             and not is_legacy_shared_directory_client(resolved_client)
         ):
+            from jiuwenswarm.common.schema.message import ReqMethod
+
             await proxy_unary_request(
                 channel=channel, agent_client=resolved_client, ws=ws,
                 req_id=req_id, params=params if isinstance(params, dict) else {},
@@ -2624,660 +1733,19 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
             return
 
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        if not isinstance(params, dict):
-            params = {}
-        action = params.get("action")
-        model_name = params.get("model")
-        model_index = params.get("index")
-
-        real_client = (
-            agent_client.get("value")
-            if isinstance(agent_client, dict)
-            else agent_client
+        await tui_models_handlers.command_model_handler(
+            channel, ws, req_id, params, session_id,
+            agent_client=agent_client,
+            on_config_saved=on_config_saved,
+            send_request=_tui_config_send_request,
+            user_id=user_id,
         )
-        if real_client is None:
-            await channel.send_response(
-                ws, req_id, ok=False, error="agent client not available"
-            )
-            return
-
-        async def _reload_model_config_background(config_payload: dict[str, Any], label: str) -> None:
-            _reload_env = e2a_from_agent_fields(
-                request_id=req_id,
-                channel_id="cli",
-                session_id=session_id,
-                req_method=ReqMethod.AGENT_RELOAD_CONFIG,
-                params={"config": config_payload, "env": {}},
-                is_stream=False,
-                timestamp=time.time(),
-                user_id=user_id,
-            )
-            try:
-                await _send_tui_agent_request(
-                    real_client, _reload_env, label=f"command.model.{label}",
-                )
-            except Exception as _e_reload:
-                logger.warning("[cli command.model] %s AGENT_RELOAD_CONFIG failed: %s", label, _e_reload)
-            if on_config_saved:
-                try:
-                    _cb = on_config_saved(set(), env_updates={}, config_payload=config_payload)
-                    if inspect.isawaitable(_cb):
-                        await _cb
-                except Exception as _e_saved:
-                    logger.warning("[cli command.model] %s on_config_saved failed: %s", label, _e_saved)
-
-        if action == "add_model":
-            target = str(params.get("target", "")).strip()
-            configs = params.get("config", {})
-            if not target:
-                await channel.send_response(
-                    ws, req_id, ok=False, error="Target model name (target) is required"
-                )
-                return
-            client_cfg = {}
-            model_config_obj = configs.get("model_config_obj", {})
-            if not isinstance(model_config_obj, dict):
-                model_config_obj = {}
-            key_map = {
-                "model": "model_name",
-                "model_name": "model_name",
-                "provider": "client_provider",
-                "model_provider": "client_provider",
-                "client_provider": "client_provider",
-                "reasoning_level": "reasoning_level",
-                "api_key": "api_key",
-                "key": "api_key",
-                "api_base": "api_base",
-                "url": "api_base",
-                "base_url": "api_base",
-                "timeout": "timeout",
-                "verify_ssl": "verify_ssl",
-                "ssl_cert": "ssl_cert",
-                "alias": "alias",
-            }
-            # target 可能是 "model=gpt-5" 形式（前端把第一个 key=value 当作 name 参数解析）
-            if "=" in target:
-                _eq = target.index("=")
-                _k, _v = target[:_eq].strip().lower(), target[_eq + 1:].strip()
-                _mapped_target_key = key_map.get(_k, _k)
-                if _mapped_target_key == "reasoning_level":
-                    if _v:
-                        model_config_obj["reasoning_level"] = _v
-                else:
-                    client_cfg[_mapped_target_key] = _v
-                if _k in ("model", "model_name"):
-                    target = _v
-            for k, v in configs.items():
-                mapped_k = key_map.get(str(k).lower(), str(k))
-                if mapped_k == "model_config_obj":
-                    continue
-                if mapped_k == "reasoning_level":
-                    if str(v).strip():
-                        model_config_obj["reasoning_level"] = str(v).strip()
-                    else:
-                        model_config_obj.pop("reasoning_level", None)
-                    continue
-                client_cfg[mapped_k] = v
-            if "verify_ssl" not in client_cfg:
-                client_cfg["verify_ssl"] = False
-            if "timeout" not in client_cfg:
-                client_cfg["timeout"] = 1800
-            if "temperature" not in model_config_obj:
-                model_config_obj["temperature"] = 0.95
-            _reasoning_level = str(model_config_obj.get("reasoning_level", "")).strip()
-            if _reasoning_level and _reasoning_level not in {"off", "low", "medium", "high"}:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="reasoning_level must be one of: off, low, medium, high",
-                )
-                return
-            # target 作为 model_name 的回退：若未通过 model= 参数指定，则以 target 为准
-            if not client_cfg.get("model_name"):
-                client_cfg["model_name"] = target
-            effective_name = client_cfg["model_name"]
-
-            # alias 为顶层字段，从 client_cfg 提取；提前算最终值，
-            # 确保唯一性校验基于实际存储值
-            entry_alias = client_cfg.pop("alias", None)
-            effective_alias = str(entry_alias).strip() if entry_alias else ""
-
-            new_entry = {
-                "model_client_config": client_cfg,
-                "model_config_obj": model_config_obj,
-            }
-            # alias 带双引号写出，避免 yes/no/on/off 被 YAML 1.1 解析为布尔
-            new_entry["alias"] = DoubleQuotedScalarString(effective_alias) if effective_alias else ""
-            try:
-                # 单事务读-校验-改：避免 ensure+update 两步间的 TOCTOU 窗口
-                def _add_mutate(data):
-                    models = data.get("models")
-                    if not isinstance(models, dict):
-                        models = {}
-                        data["models"] = models
-                    _raw_defs = models.get("defaults")
-                    if not (isinstance(_raw_defs, list) and _raw_defs):
-                        _raw_defs = [{
-                            "model_client_config": {
-                                "api_base": "${API_BASE}",
-                                "api_key": "${API_KEY}",
-                                "model_name": "${MODEL_NAME}",
-                                "client_provider": "${MODEL_PROVIDER}",
-                            },
-                            "model_config_obj": {"temperature": 0.95},
-                            "is_default": True,
-                        }]
-                        models["defaults"] = _raw_defs
-                        models.pop("default", None)
-                    _effective_api_base = resolve_env_vars(str(client_cfg.get("api_base", "")))
-                    _effective_api_key = resolve_env_vars(str(client_cfg.get("api_key", "")))
-                    for _e in _raw_defs:
-                        if not isinstance(_e, dict):
-                            continue
-                        _emn = resolve_env_vars(str((_e.get("model_client_config") or {}).get("model_name", "")))
-                        _eab = resolve_env_vars(str((_e.get("model_client_config") or {}).get("api_base", "")))
-                        _eak = resolve_env_vars(str((_e.get("model_client_config") or {}).get("api_key", "")))
-                        if _emn == effective_name and _eab == _effective_api_base and _eak == _effective_api_key:
-                            raise _ModelOpError(
-                                f"Model '{effective_name}' with the same api_base and api_key already exists"
-                            )
-                    _missing = []
-                    for field, display in {
-                        "api_key": "api_key",
-                        "api_base": "api_base",
-                        "model_name": "model_name",
-                        "client_provider": "model_provider",
-                    }.items():
-                        if not resolve_env_vars(str(client_cfg.get(field, ""))):
-                            _missing.append(display)
-                    if _missing:
-                        raise _ModelOpError(
-                            f"Failed to add model '{effective_name}'. "
-                            f"Required fields missing: {', '.join(_missing)}. "
-                            f"Usage: /model add <name> "
-                            f"api_base=xxx api_key=xxx "
-                            f"model=<name> model_provider=<provider>"
-                        )
-                    if effective_alias:
-                        for _e in _raw_defs:
-                            if not isinstance(_e, dict):
-                                continue
-                            _emn = resolve_env_vars(str((_e.get("model_client_config") or {}).get("model_name", "")))
-                            _ea = resolve_env_vars(str(_e.get("alias", "")))
-                            if _ea == effective_alias:
-                                raise _ModelOpError(f"Alias '{effective_alias}' is already used by model '{_emn}'")
-                            if _emn == effective_alias:
-                                raise _ModelOpError(f"Alias '{effective_alias}' conflicts with model name '{_emn}'")
-                    _raw_defs.append(new_entry)
-                    return data
-                update_config(_add_mutate)
-                logger.info(
-                    "[cli command.model] 新增模型: name=%s, "
-                    "client_cfg=%s, model_config_obj=%s",
-                    effective_name, client_cfg, model_config_obj,
-                )
-            except _ModelOpError as _op_err:
-                await channel.send_response(ws, req_id, ok=False, error=str(_op_err))
-                return
-            except Exception as e:
-                await channel.send_response(ws, req_id, ok=False, error=str(e))
-                return
-            _config_payload = get_config()
-            await _reload_model_config_background(_config_payload, "model.add")
-            await channel.send_response(
-                ws, req_id, ok=True,
-                payload={"type": "model_added", "name": target},
-            )
-            return
-
-        if action == "update_model":
-            configs = params.get("config", {})
-            if not isinstance(configs, dict):
-                await channel.send_response(ws, req_id, ok=False, error="config must be object")
-                return
-            try:
-                _idx = int(model_index)
-            except (ValueError, TypeError):
-                await channel.send_response(ws, req_id, ok=False, error="index is required")
-                return
-            try:
-                _update_result: dict = {}
-
-                def _update_mutate(data):
-                    models = data.get("models")
-                    if not isinstance(models, dict):
-                        models = {}
-                        data["models"] = models
-                    _raw_defs = models.get("defaults")
-                    if not (isinstance(_raw_defs, list) and _raw_defs):
-                        raise _ModelOpError("model index not found")
-                    if _idx < 0 or _idx >= len(_raw_defs) or not isinstance(_raw_defs[_idx], dict):
-                        raise _ModelOpError("model index not found")
-                    _entry = _raw_defs[_idx]
-                    _client_cfg = _entry.get("model_client_config")
-                    if not isinstance(_client_cfg, dict):
-                        _client_cfg = {}
-                        _entry["model_client_config"] = _client_cfg
-                    key_map = {
-                        "model": "model_name", "model_name": "model_name",
-                        "provider": "client_provider", "model_provider": "client_provider",
-                        "client_provider": "client_provider", "reasoning_level": "reasoning_level",
-                        "api_key": "api_key", "key": "api_key", "api_base": "api_base",
-                        "url": "api_base", "base_url": "api_base", "timeout": "timeout",
-                        "verify_ssl": "verify_ssl", "ssl_cert": "ssl_cert", "alias": "alias",
-                    }
-                    _model_cfg_obj = _entry.get("model_config_obj")
-                    if not isinstance(_model_cfg_obj, dict):
-                        _model_cfg_obj = {}
-                        _entry["model_config_obj"] = _model_cfg_obj
-                    for k, v in configs.items():
-                        mapped_k = key_map.get(str(k).lower(), str(k))
-                        if mapped_k == "alias":
-                            _alias_val = str(v).strip()
-                            _entry["alias"] = (
-                                DoubleQuotedScalarString(_alias_val) if _alias_val else ""
-                            )
-                        elif mapped_k == "reasoning_level":
-                            _rl = str(v).strip()
-                            if _rl:
-                                _model_cfg_obj["reasoning_level"] = _rl
-                            else:
-                                _model_cfg_obj.pop("reasoning_level", None)
-                        elif mapped_k == "model_config_obj":
-                            continue
-                        else:
-                            _client_cfg[mapped_k] = v
-                    _reasoning_level = str(_model_cfg_obj.get("reasoning_level", "")).strip()
-                    if _reasoning_level and _reasoning_level not in {"off", "low", "medium", "high"}:
-                        raise _ModelOpError("reasoning_level must be one of: off, low, medium, high")
-                    if "verify_ssl" not in _client_cfg:
-                        _client_cfg["verify_ssl"] = False
-                    if "timeout" not in _client_cfg:
-                        _client_cfg["timeout"] = 1800
-                    _missing_fields = []
-                    for _req_field, _display in [
-                        ("api_key", "api_key"), ("api_base", "api_base"),
-                        ("model_name", "model_name"), ("client_provider", "model_provider"),
-                    ]:
-                        if not resolve_env_vars(str(_client_cfg.get(_req_field, ""))):
-                            _missing_fields.append(_display)
-                    if _missing_fields:
-                        raise _ModelOpError(f"Model missing required config: {', '.join(_missing_fields)}")
-                    _effective_alias = resolve_env_vars(str(_entry.get("alias", ""))) if _entry.get("alias") else ""
-                    if _effective_alias:
-                        for _other_idx, _other in enumerate(_raw_defs):
-                            if _other_idx == _idx or not isinstance(_other, dict):
-                                continue
-                            _other_mcc = _other.get("model_client_config") or {}
-                            _other_mn = resolve_env_vars(str(_other_mcc.get("model_name", "")))
-                            _other_alias = resolve_env_vars(str(_other.get("alias", ""))) if _other.get("alias") else ""
-                            if _other_alias == _effective_alias:
-                                raise _ModelOpError(
-                                    f"Alias '{_effective_alias}' is already used by model '{_other_mn}'"
-                                )
-                            if _other_mn == _effective_alias:
-                                raise _ModelOpError(
-                                    f"Alias '{_effective_alias}' conflicts with model name '{_other_mn}'"
-                                )
-                    # 展示字段从锁内 data 直接取，避免事务后再开锁读取
-                    _upd_mcc = _entry.get("model_client_config") or {}
-                    _update_result["updated_name"] = resolve_env_vars(str(_upd_mcc.get("model_name", "")))
-                    _cur_mcc = (_raw_defs[0].get("model_client_config") or {}) if _raw_defs else {}
-                    _update_result["current_name"] = resolve_env_vars(str(_cur_mcc.get("model_name", "")))
-                    return data
-                update_config(_update_mutate)
-            except _ModelOpError as _op_err:
-                await channel.send_response(ws, req_id, ok=False, error=str(_op_err))
-                return
-            except Exception as e:
-                await channel.send_response(ws, req_id, ok=False, error=str(e))
-                return
-            _updated_name = _update_result.get("updated_name", "")
-            _current_name = _update_result.get("current_name", "")
-            _config_payload = get_config()
-            await _reload_model_config_background(_config_payload, "model.update")
-            await channel.send_response(ws, req_id, ok=True, payload={
-                "type": "model_updated",
-                "name": _updated_name,
-                "index": _idx,
-                "current": _current_name,
-            })
-            return
-
-        if action == "delete_model":
-            try:
-                _idx = int(model_index)
-            except (ValueError, TypeError):
-                await channel.send_response(ws, req_id, ok=False, error="index is required")
-                return
-            _removed_holder: dict = {}
-            try:
-                def _delete_mutate(data):
-                    models = data.get("models")
-                    if not isinstance(models, dict):
-                        models = {}
-                        data["models"] = models
-                    _raw_defs = models.get("defaults")
-                    if not (isinstance(_raw_defs, list) and _raw_defs):
-                        raise _ModelOpError("model index not found")
-                    if len(_raw_defs) <= 1:
-                        raise _ModelOpError("Cannot delete the last model")
-                    if _idx < 0 or _idx >= len(_raw_defs) or not isinstance(_raw_defs[_idx], dict):
-                        raise _ModelOpError("model index not found")
-                    _removed_holder["entry"] = _raw_defs.pop(_idx)
-                    # 展示字段从锁内 data 直接取，避免事务后再开锁读取
-                    _cur_mcc = (_raw_defs[0].get("model_client_config") or {}) if _raw_defs else {}
-                    _removed_holder["current_name"] = resolve_env_vars(str(_cur_mcc.get("model_name", "")))
-                    return data
-                update_config(_delete_mutate)
-            except _ModelOpError as _op_err:
-                await channel.send_response(ws, req_id, ok=False, error=str(_op_err))
-                return
-            except Exception as e:
-                await channel.send_response(ws, req_id, ok=False, error=str(e))
-                return
-            _removed = _removed_holder.get("entry") or {}
-            _removed_name = resolve_env_vars(str((_removed.get("model_client_config") or {}).get("model_name", "")))
-            _current_name = _removed_holder.get("current_name", "")
-            _config_payload = get_config()
-            await _reload_model_config_background(_config_payload, "model.delete")
-            await channel.send_response(ws, req_id, ok=True, payload={
-                "type": "model_deleted",
-                "name": _removed_name,
-                "current": _current_name,
-            })
-            return
-
-        if not model_name or not str(model_name).strip():
-            names = get_model_names()
-            logger.info(
-                "[cli command.model] 列出模型: names=%s, current=%s",
-                names,
-                os.getenv("MODEL_NAME", "unknown"),
-            )
-            # 列出模型全部数据均可从本地 config.yaml 获取，
-            # 无需等待 AgentServer 响应（其返回的 current/available 会被本地值覆盖）。
-            # 若 await send_request() 阻塞 >30s，会导致 TUI WS 超时且后续请求排队，
-            # 故直接以本地数据构建 payload 立即回包。
-            payload: dict = {}
-            payload["available_models"] = names
-            _raw = get_config_raw()
-            _defs = (_raw.get("models") or {}).get("defaults")
-            if isinstance(_defs, list) and _defs:
-                _first_name = resolve_env_vars(str((_defs[0].get("model_client_config") or {}).get("model_name", "")))
-                _first_alias = resolve_env_vars(str(_defs[0].get("alias", ""))) if _defs[0].get("alias") else ""
-                payload["current"] = _first_alias or _first_name or os.getenv("MODEL_NAME", "unknown")
-                payload["current_model_name"] = _first_name or os.getenv("MODEL_NAME", "unknown")
-
-                def _model_meta(i: int, e: dict, *, is_agentos: bool = False) -> dict:
-                    mcc = e.get("model_client_config") or {}
-                    mco = e.get("model_config_obj") or {}
-                    _alias = e.get("alias", "")
-                    _resolved_alias = resolve_env_vars(str(_alias)) if _alias else ""
-                    _model_name = resolve_env_vars(str(mcc.get("model_name", "")))
-                    _api_key = resolve_env_vars(str(mcc.get("api_key", "")))
-                    # agentos 条目 index 用 "a" 前缀编码，与 defaults 的纯数字 index 区分，
-                    # 避免切换时按 index 命中错位。is_current 仅 defaults 首位为 true
-                    # （agentos 永不抢默认，不会是 current）。
-                    return {
-                        "index": f"a{i}" if is_agentos else i,
-                        "name": _resolved_alias or _model_name,
-                        "alias": _resolved_alias,
-                        "model_name": _model_name,
-                        "model_provider": resolve_env_vars(str(mcc.get("client_provider", ""))),
-                        "api_base": resolve_env_vars(str(mcc.get("api_base", ""))),
-                        "reasoning_level": resolve_env_vars(str(mco.get("reasoning_level", ""))),
-                        # 同名模型冲突时用于区分：仅展示末4位，避免泄露过多 key 信息
-                        "api_key_suffix": _api_key[-4:] if _api_key else "",
-                        "is_current": (i == 0 and not is_agentos),
-                        "is_agentos": is_agentos,
-                    }
-
-                _models_list = [
-                    _model_meta(i, e)
-                    for i, e in enumerate(_defs) if isinstance(e, dict)
-                ]
-                # 追加 agentos 备份模型：与 defaults 并列展示、同等可选可切换，
-                # 但 is_current 恒 False、is_agentos True 供前端区分渲染与切换路径
-                _agentos_raw = (_raw.get("models") or {}).get("agentos")
-                _agentos_list = _agentos_raw if isinstance(_agentos_raw, list) else []
-                for _ai, _ab in enumerate(_agentos_list):
-                    if not isinstance(_ab, dict):
-                        continue
-                    _ab_mcc = _ab.get("model_client_config")
-                    if not (isinstance(_ab_mcc, dict) and _ab_mcc.get("model_name")):
-                        continue
-                    _models_list.append(_model_meta(_ai, _ab, is_agentos=True))
-                payload["models"] = _models_list
-            else:
-                payload["current"] = os.getenv("MODEL_NAME", "unknown")
-            await channel.send_response(ws, req_id, ok=True, payload=payload)
-            return
-
-        target = str(model_name).strip()
-        logger.info(
-            "[cli command.model] 切换模型: target=%s, model_index=%s, params=%s",
-            target, model_index, params,
-        )
-        _switch_result: dict = {}
-        # ── agentos 备份模型切换：不改 config、不重排 defaults、不 reload ──
-        # agentos 走"请求级 model_name 注入"机制（与 Web 的 ModelSelector 一致），
-        # 仅全局回显选中名，后续 chat.send 由前端注入 model_name，AgentServer
-        # _resolve_model_for_request 命中 agentos 缓存条目。故此处立即回包，
-        # 不触发 AGENT_RELOAD_CONFIG。仅当 target 命中 models.agentos 条目时走此路径。
-        _raw_cfg = get_config_raw()
-        _agentos_blocks = (_raw_cfg.get("models") or {}).get("agentos")
-        _agentos_blocks = _agentos_blocks if isinstance(_agentos_blocks, list) else []
-        _agentos_matched_name = ""
-        for _ab in _agentos_blocks:
-            if not isinstance(_ab, dict):
-                continue
-            _ab_mcc = _ab.get("model_client_config") or {}
-            if not (isinstance(_ab_mcc, dict) and _ab_mcc.get("model_name")):
-                continue
-            _ab_name = resolve_env_vars(str(_ab_mcc.get("model_name", "")))
-            _ab_alias = resolve_env_vars(str(_ab.get("alias", ""))) if _ab.get("alias") else ""
-            if _ab_name == target or (_ab_alias and _ab_alias == target):
-                _agentos_matched_name = _ab_name
-                break
-        if _agentos_matched_name:
-            logger.info(
-                "[cli command.model] 切换 agentos 备份模型（请求级注入，不 reload）: %s",
-                _agentos_matched_name,
-            )
-            await channel.send_response(ws, req_id, ok=True, payload={
-                "current": _agentos_matched_name,
-                "requested": target,
-                "type": "switched_agentos",
-                "applied": True,
-                "is_agentos": True,
-            })
-            return
-        # ── defaults 模型切换：原逻辑（重排 defaults 首位 + is_default + reload） ──
-        try:
-            def _switch_mutate(data):
-                models = data.get("models")
-                if not isinstance(models, dict):
-                    models = {}
-                    data["models"] = models
-                _raw_defaults = models.get("defaults")
-                if not (isinstance(_raw_defaults, list) and _raw_defaults):
-                    _raw_defaults = [{
-                        "model_client_config": {
-                            "api_base": "${API_BASE}", "api_key": "${API_KEY}",
-                            "model_name": "${MODEL_NAME}", "client_provider": "${MODEL_PROVIDER}",
-                        },
-                        "model_config_obj": {"temperature": 0.95}, "is_default": True,
-                    }]
-                    models["defaults"] = _raw_defaults
-                    models.pop("default", None)
-                _valid_names: set[str] = set()
-                _avail_parts: list[str] = []
-                for _e in _raw_defaults:
-                    if not isinstance(_e, dict):
-                        continue
-                    _mn = resolve_env_vars(str((_e.get("model_client_config") or {}).get("model_name", "")))
-                    _al = resolve_env_vars(str(_e.get("alias", ""))) if _e.get("alias") else ""
-                    if _mn:
-                        _valid_names.add(_mn)
-                    if _al:
-                        _valid_names.add(_al)
-                    if _al and _mn and _al != _mn:
-                        _avail_parts.append(f"{_al} ({_mn})")
-                    elif _mn:
-                        _avail_parts.append(_mn)
-                _skip_name_check = model_index is not None
-                if not _skip_name_check and target not in _valid_names:
-                    logger.warning(
-                        "[cli command.model] 模型不存在: %s, 可用: %s",
-                        target, _avail_parts,
-                    )
-                    raise _ModelOpError(
-                        f"Model '{target}' not found. "
-                        f"Available: {', '.join(_avail_parts) or ''}"
-                    )
-                _target_entry = None
-                _target_idx = None
-                if model_index is not None:
-                    try:
-                        _idx = int(model_index)
-                        if 0 <= _idx < len(_raw_defaults) and isinstance(_raw_defaults[_idx], dict):
-                            _target_entry = _raw_defaults[_idx]
-                            _target_idx = _idx
-                    except (ValueError, TypeError):
-                        pass
-                if _target_entry is None:
-                    for _i, _e in enumerate(_raw_defaults):
-                        if not isinstance(_e, dict):
-                            continue
-                        _ename = resolve_env_vars(str((_e.get("model_client_config") or {}).get("model_name", "")))
-                        _ealias = resolve_env_vars(str(_e.get("alias", ""))) if _e.get("alias") else ""
-                        if _ename == target or _ealias == target:
-                            _target_entry = _e
-                            _target_idx = _i
-                            break
-                if _target_entry is None:
-                    raise _ModelOpError(f"Model '{target}' config not found")
-                _target_mcc = _target_entry.get("model_client_config") or {}
-                _missing_fields = []
-                for _req_field, _display in [
-                    ("api_key", "api_key"), ("api_base", "api_base"),
-                    ("model_name", "model_name"), ("client_provider", "client_provider"),
-                ]:
-                    if not resolve_env_vars(str(_target_mcc.get(_req_field, ""))):
-                        _missing_fields.append(_display)
-                if _missing_fields:
-                    raise _ModelOpError(f"Model '{target}' missing required config: {', '.join(_missing_fields)}")
-                _target_model_name_resolved = resolve_env_vars(str(_target_mcc.get("model_name", "")))
-                _target_entry["is_default"] = True
-                for _i, _e in enumerate(_raw_defaults):
-                    if _i == _target_idx or not isinstance(_e, dict):
-                        continue
-                    _other_mcc = _e.get("model_client_config") or {}
-                    _other_name = resolve_env_vars(str(_other_mcc.get("model_name", "")))
-                    if _other_name == _target_model_name_resolved and _e.get("is_default") is True:
-                        _e["is_default"] = False
-                _others = [_e for _i, _e in enumerate(_raw_defaults) if _i != _target_idx]
-                models["defaults"] = [_target_entry] + _others
-                _switch_result["name"] = resolve_env_vars(
-                    str((_target_entry.get("model_client_config") or {}).get("model_name", target)))
-                return data
-            update_config(_switch_mutate)
-        except _ModelOpError as _op_err:
-            await channel.send_response(ws, req_id, ok=False, error=str(_op_err))
-            return
-        except Exception as e:
-            await channel.send_response(ws, req_id, ok=False, error=str(e))
-            return
-        logger.info("[cli command.model] 切换，已更新 models.defaults 首位: %s", target)
-        _target_model_name = _switch_result.get("name", target)
-
-        # 先回包再执行 Agent 热重载（与 config.set 保持一致），
-        # 避免 WebSocket 长时间无响应、CLI 误以为无反馈 / 超时。
-        await channel.send_response(ws, req_id, ok=True, payload={
-            "current": _target_model_name,
-            "requested": target,
-            "type": "switched",
-            "applied": True,
-        })
-
-        # 后台触发 AgentServer reload + on_config_saved（不阻塞 WS 消息循环）
-        _config_payload = get_config()
-
-        async def _model_switch_background():
-            _reload_env = e2a_from_agent_fields(
-                request_id=req_id,
-                channel_id="cli",
-                session_id=session_id,
-                req_method=ReqMethod.AGENT_RELOAD_CONFIG,
-                params={
-                    "config": _config_payload,
-                    "env": {},
-                    "target_channel_id": "tui",
-                    "target_session_id": session_id,
-                    "reason": "model_switch",
-                },
-                is_stream=False,
-                timestamp=time.time(),
-                user_id=user_id,
-            )
-            try:
-                await _send_tui_agent_request(
-                    real_client, _reload_env, label="command.model.switch",
-                )
-            except Exception as _e_reload:
-                logger.warning("[cli model.switch] AGENT_RELOAD_CONFIG failed: %s", _e_reload)
-            if on_config_saved:
-                try:
-                    _cb = on_config_saved(set(), env_updates={}, config_payload=_config_payload)
-                    if inspect.isawaitable(_cb):
-                        await _cb
-                except Exception as _e2:
-                    logger.warning("[cli model.switch] on_config_saved failed: %s", _e2)
-            logger.info("[cli command.model] 切换完成: current=%s", _target_model_name)
-
-        asyncio.create_task(_model_switch_background())
-        return
 
     async def _models_list(ws, req_id, params, session_id):
-        try:
-            config = get_config()
-            models = get_default_models(config)
-            result = []
-            for entry in models:
-                mcc = entry.get("model_client_config", {})
-                mco = entry.get("model_config_obj", {})
-                model_name = mcc.get("model_name", "")
-                # 解析模型的上下文窗口大小
-                try:
-                    context_window_tokens = resolve_context_window_tokens(
-                        model_name=model_name,
-                        context_engine_config=(config.get("react", {}) or {}),
-                        model_config_obj=mco,
-                    )
-                except Exception:
-                    context_window_tokens = 0
-                    logger.debug("Failed to resolve context_window_tokens for model %s", model_name, exc_info=True)
-                result.append({
-                    "model_name": model_name,
-                    "api_base": mcc.get("api_base", ""),
-                    "api_key": mcc.get("api_key", ""),
-                    "model_provider": mcc.get("client_provider", ""),
-                    "temperature": mco.get("temperature", 0.95),
-                    "reasoning_level": "off" if mco.get("reasoning_level") is False else mco.get("reasoning_level", ""),
-                    "alias": entry.get("alias", ""),
-                    "context_window_tokens": context_window_tokens,
-                })
-            active_model = result[0]["model_name"] if result else ""
-            await channel.send_response(ws, req_id, ok=True, payload={
-                "models": result,
-                "active_model": active_model,
-            })
-        except Exception as exc:
-            logger.warning("[models.list] %s", exc)
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
+        """models.list 实现已下沉（TUI 契约与 Web 侧分模块保留）。"""
+        await tui_models_handlers.models_list_handler(
+            channel, ws, req_id, params, session_id
+        )
 
     async def _3rdagent_list(ws, req_id, params, session_id, user_id=None):
         params = params if isinstance(params, dict) else {}
@@ -3291,6 +1759,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             result = await third_agent.thirdagent_list(
                 user_id=uid,
                 current_agent_type=current,
+                access_mode="tui",
             )
         except Exception as exc:
             logger.warning("[3rdagent.list] %s", exc)
@@ -3500,6 +1969,20 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             return cron_controller_ref.get("value")
         return cron_controller_ref
 
+    def _cron_job_field(job, name, default=""):
+        """Read a field from ``CronController.get_job`` output (dict or object).
+
+        Real ``get_job`` returns ``CronJob.to_dict()``.  ``getattr`` on a dict
+        always yields the default and would reject every authenticated update
+        with "job not found".  Keep the object fallback for tests and callers
+        that return ``CronJob``-like objects.
+        """
+        if job is None:
+            return default
+        if isinstance(job, dict):
+            return job.get(name, default)
+        return getattr(job, name, default)
+
     async def _cron_job_list(ws, req_id, params, session_id):
         cc = _get_cron()
         if cc is None:
@@ -3649,10 +2132,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             existing = None
             if uid:
                 existing = await cc.get_job(job_id)
-                if (
-                    existing is None
-                    or str(getattr(existing, "user_id", "") or "").strip() != uid
-                ):
+                # 与 Web _get_owned_cron_job 相同的 dict/object 双态读取：
+                # 真实 CronController.get_job 返回 to_dict() 的 dict。
+                owner_field = _cron_job_field(existing, "user_id", "")
+                if existing is None or str(owner_field or "").strip() != uid:
                     await channel.send_response(
                         ws, req_id, ok=False, error="job not found", code="NOT_FOUND"
                     )
@@ -3672,12 +2155,12 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                     existing = await cc.get_job(job_id)
                 binding_params = dict(patch)
                 binding_params.setdefault(
-                    "work_mode", getattr(existing, "work_mode", "") or "code"
+                    "work_mode", _cron_job_field(existing, "work_mode", "") or "code"
                 )
                 bound, binding = await resolve_agent_cron_project_binding(
                     agent_client=_resolve_agent_client(agent_client), params=binding_params,
                     user_id=uid or None, channel_id="tui",
-                    session_id=getattr(existing, "session_id", None),
+                    session_id=_cron_job_field(existing, "session_id", None),
                 )
                 if not bound:
                     await channel.send_response(
@@ -3739,8 +2222,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 return
             await channel.send_response(ws, req_id, ok=True, payload={"deleted": True})
         except Exception as exc:
+            from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+            code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "INTERNAL_ERROR")
             logger.warning("[cron.job.delete] %s", exc)
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=code)
 
     async def _cron_job_toggle(ws, req_id, params, session_id):
         cc = _get_cron()

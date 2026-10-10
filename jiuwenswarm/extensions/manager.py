@@ -4,11 +4,12 @@ from typing import Any
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.extensions.loader import ExtensionLoader
 from jiuwenswarm.extensions.registry import ExtensionRegistry
-from jiuwenswarm.common.utils import logger
+from jiuwenswarm.common.utils import get_root_dir, logger
 
 
 _DEFAULT_PACKAGE_EXTENSION_DIR = ("jiuwenswarm", "extensions")
 _DEFAULT_EXTENSION_DIR = "/".join(_DEFAULT_PACKAGE_EXTENSION_DIR)
+_USER_APPLICATION_PLUGIN_DIR = "application_plugins"
 
 
 def _is_default_package_extension_dir(path: Path) -> bool:
@@ -65,8 +66,10 @@ class ExtensionManager:
 
     def _setup_search_paths(self) -> None:
         seen: set[str] = set()
+        user_plugin_dir = get_root_dir() / _USER_APPLICATION_PLUGIN_DIR
+        user_plugin_dir.mkdir(parents=True, exist_ok=True)
         extension_dirs = _extension_dir_paths_from_config(get_config())
-        for path in extension_dirs:
+        for path in [str(user_plugin_dir), *extension_dirs]:
             for p in _extension_search_path_candidates(path):
                 if not p.exists():
                     continue
@@ -76,12 +79,26 @@ class ExtensionManager:
                 seen.add(key)
                 self.loader.add_search_path(p)
 
-    async def load_all_extensions(self) -> None:
+    async def load_all_extensions(
+        self,
+        *,
+        include_transport_extensions: bool = True,
+    ) -> None:
         roots = self.loader.discover_extension_roots()
         logger.info("[ExtensionManager] 发现扩展路径: %s", roots)
         for path in roots:
             try:
-                loaded = await self.loader.load_extension(path)
+                manifest = self.loader.load_manifest(path)
+                if (
+                    not include_transport_extensions
+                    and manifest.get("requires_transport") is True
+                ):
+                    logger.info(
+                        "[ExtensionManager] Runtime 直连跳过 transport 扩展: %s",
+                        path,
+                    )
+                    continue
+                loaded = await self.loader.load_extension(path, manifest=manifest)
                 if loaded:
                     logger.info("[ExtensionManager] 加载 %s", loaded)
                     if isinstance(loaded, list):

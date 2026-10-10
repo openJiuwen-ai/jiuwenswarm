@@ -81,6 +81,11 @@ export interface CommandContext {
   setMode: (mode: ClientMode) => void;
   markPlanEntryFromSlashCommand?: () => void;
   setModel: (name: string) => void;
+  /** 全局选中 agentos 备份模型（请求级注入）；传 null 清空，恢复启动默认。
+   *  provider 可选，仅用于头部 Provider 行展示。
+   *  key 可选，为后端 model_key（model_name#global_idx），供 chat.send 精确
+   *  注入同名 agentos 条目；缺省时回退到 name。 */
+  setSelectedAgentosModel?: (name: string | null, provider?: string, key?: string | null) => void;
   setPreferredLanguage: (language: PreferredLanguage) => void;
   setThemeName: (theme: ThemeName) => void;
   setAccentColor: (color: AccentColorName) => void;
@@ -140,7 +145,7 @@ export interface CommandContext {
   /** HandoffPort 预检：校验托管标记、动作退出码和目标能力。 */
   checkHandoff?: (target: HandoffTarget) => HandoffCheckResult;
   /** HandoffPort 请求：二次校验后调用统一顶层关闭路径，输出 handoff JSON 到 stdout。 */
-  requestHandoff?: (target: HandoffTarget, switchContent: string) => Promise<void>;
+  requestHandoff?: (target: HandoffTarget, switchContent: string, cmd?: string) => Promise<void>;
   /** TaskLifecyclePort：统一任务快照；/switch 用于判断是否需要询问中断。 */
   hasServerTask?: () => boolean;
   /** TaskLifecyclePort：等待型取消；只供 /switch 等生命周期动作使用。 */

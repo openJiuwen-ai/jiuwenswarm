@@ -562,6 +562,25 @@ def _build_commands(mode: str, dotenv_path: Path | None = None) -> list[tuple[st
     return commands
 
 
+def _inherit_system_proxy(env: dict[str, str]) -> None:
+    """Keep macOS system proxies when NO_PROXY alone masks urllib discovery."""
+    if sys.platform != "darwin":
+        return
+    if any(key.lower() in {"http_proxy", "https_proxy", "all_proxy"} for key in env):
+        return  # Explicit proxy settings, including empty values, take precedence.
+    import urllib.request
+    discover = getattr(urllib.request, "getproxies_macosx_sysconf", None)
+    if discover is None:
+        return
+    try:
+        proxies = discover()
+    except OSError:
+        return
+    for scheme in ("http", "https"):
+        if proxies.get(scheme):
+            env[f"{scheme.upper()}_PROXY"] = proxies[scheme]
+
+
 def _start_process(
     name: str,
     cmd: list[str],
@@ -575,6 +594,7 @@ def _start_process(
 
     logging.info(f"[start_services] starting {name}: {' '.join(cmd)} (cwd={cwd})")
     env = os.environ.copy()
+    _inherit_system_proxy(env)
     env["JIUWENSWARM_START_CMD"] = json.dumps(sys.argv[:])
     if ports:
         # Inject the resolved port group and mark the child so

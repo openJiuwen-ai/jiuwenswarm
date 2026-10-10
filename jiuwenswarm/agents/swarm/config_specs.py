@@ -33,7 +33,7 @@ from openjiuwen.agent_teams.schema.deep_agent_spec import (
 )
 from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
 from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
-from openjiuwen.core.foundation.kv_cache import KVCacheAffinityConfig
+from openjiuwen.core.kv_cache import KVCacheAffinityConfig
 from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness.prompts import resolve_language
@@ -46,9 +46,12 @@ from jiuwenswarm.common.config import (
     get_default_model_provider,
     get_evolution_auto_save_enabled,
     get_skill_evolution_enabled,
+    get_symphony_evolution_enabled,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
+    KVCacheAffinityConfig,
     build_kv_cache_affinity_config,
+    get_default_model_client_config,
 )
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     get_context_engine_enabled,
@@ -75,11 +78,10 @@ _CODE_MODES: frozenset[str] = frozenset(
 
 
 def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
-    react = config.get("react")
-    react = react if isinstance(react, dict) else {}
     return build_kv_cache_affinity_config(
-        react,
+        config,
         provider=get_default_model_provider(config),
+        model_client_config=get_default_model_client_config(config),
     )
 
 
@@ -102,6 +104,7 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.MULTIMODAL_IMAGE,
     registry.TEAM_WORKSPACE_REPORT_PATH,
     registry.CONTEXT_PROCESSOR,
+    registry.PERSONAL_CONTEXT,
     registry.PLUGIN_RAILS,
     registry.SKILL_RETRIEVAL_PROMPT,
     registry.SYMPHONY_ORCHESTRATION_PROMPT,
@@ -126,6 +129,8 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
     registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
+    registry.VIDEO_GEN,
+    registry.VISUAL_GEN,
     registry.XIAOYI_PHONE,
     registry.CRON_TOOLS,
     registry.SEND_FILE,
@@ -151,6 +156,7 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_AGENT_MODE,
     registry.STRUCTURED_ASK_USER,
     registry.CONTEXT_PROCESSOR,
+    registry.PERSONAL_CONTEXT,
     registry.CODE_TASK_PLANNING,
     registry.CODE_AGENT_RAIL,
     registry.USER_HOOKS,
@@ -180,6 +186,8 @@ _CODE_TOOL_NAMES: tuple[str, ...] = (
     registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
+    registry.VIDEO_GEN,
+    registry.VISUAL_GEN,
     registry.XIAOYI_PHONE,
     registry.CODE_EXTRA_TOOLS,
     registry.CRON_TOOLS,
@@ -187,7 +195,6 @@ _CODE_TOOL_NAMES: tuple[str, ...] = (
 )
 
 # code_agent sub-agents are always-on (explore / plan) or config-gated.
-_DEFAULT_SUBAGENT_MAX_ITERATIONS = 15
 
 
 def _is_code_mode(mode: str) -> bool:
@@ -508,10 +515,14 @@ def _code_base_rail_names(role: str) -> tuple[str, ...]:
 
 def _role_evolution_rails(config: dict[str, Any], role: str) -> list[RailSpec]:
     """Return the role-specific skill-evolution rails (shared by both profiles)."""
+    rails: list[RailSpec] = []
+    if role == "leader" and get_symphony_evolution_enabled(config):
+        rails.append(RailSpec(type=registry.SYMPHONY_GRAPH_EVOLUTION, params={}))
     if not get_skill_evolution_enabled(config):
-        return []
+        return rails
     if role == "leader":
         return [
+            *rails,
             RailSpec(
                 type=registry.TEAM_SKILL_EVOLUTION,
                 params=_team_evolution_rail_params(config),
@@ -726,12 +737,11 @@ def _code_subagent_spec(
     elif name == "statusline-setup":
         max_iterations = registry.DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS
     else:
-        max_iterations = react_cfg.get(
-            "max_iterations",
-            _DEFAULT_SUBAGENT_MAX_ITERATIONS,
-        )
-    if isinstance(sub_cfg, dict) and sub_cfg.get("max_iterations"):
+        max_iterations = react_cfg.get("max_iterations", 100)
+    if isinstance(sub_cfg, dict) and sub_cfg.get("max_iterations") is not None:
         max_iterations = sub_cfg["max_iterations"]
+    if max_iterations is not None:
+        max_iterations = int(max_iterations)
     card_kwargs: dict[str, Any] = {"name": name}
     if name == "statusline-setup":
         card_kwargs["id"] = "jiuwenswarm.statusline-setup"
@@ -740,7 +750,7 @@ def _code_subagent_spec(
         system_prompt="",
         factory_name=factory_name,
         factory_kwargs={
-            "max_iterations": int(max_iterations),
+            "max_iterations": max_iterations,
             "language": language,
         },
     )
@@ -775,8 +785,10 @@ def build_member_subagent_specs(
     """Build declarative member subagent specs.
 
     The status-line setup agent is available in every mode when enabled.
-    Code modes additionally include explore / plan, while code / browser are
-    config-gated via ``react.subagents.<name>.enabled``.
+    Code modes additionally include explore / plan. Every sub-agent is gated by
+    ``react.subagents.<name>.enabled``; status-line setup, explore and plan
+    default to on (only an explicit ``false`` drops them), while code / browser
+    require an explicit ``true``.
 
     Args:
         config: The resolved ``config.yaml`` mapping.
@@ -810,14 +822,16 @@ def build_member_subagent_specs(
     if not _is_code_mode(mode):
         return specs
 
-    specs.extend(
-        [
-            _code_subagent_spec(
-                "explore_agent", registry.EXPLORE_AGENT, react, language
-            ),
-            _code_subagent_spec("plan_agent", registry.PLAN_AGENT, react, language),
-        ]
-    )
+# Explore / plan are the code profile's core sub-agents and stay mounted
+    # unless a config entry turns them off explicitly, so an absent entry keeps
+    # the long-standing behaviour.
+    for name, factory_name in (
+        ("explore_agent", registry.EXPLORE_AGENT),
+        ("plan_agent", registry.PLAN_AGENT),
+    ):
+        sub_cfg = subagents_cfg.get(name) if isinstance(subagents_cfg, dict) else None
+        if _is_subagent_default_enabled(sub_cfg):
+            specs.append(_code_subagent_spec(name, factory_name, react, language))
     if isinstance(subagents_cfg, dict):
         if _is_subagent_enabled(subagents_cfg.get("code_agent")):
             specs.append(

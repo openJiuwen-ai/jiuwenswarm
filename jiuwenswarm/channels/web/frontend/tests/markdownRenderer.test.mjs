@@ -144,6 +144,14 @@ test('lets automatic fit scale below the manual zoom minimum when the canvas is 
   });
 });
 
+test('supports an inline tool-result Mermaid canvas matching the result content height', () => {
+  assert.deepEqual(calculateMermaidCanvasLayout({ naturalWidth: 800, naturalHeight: 80, containerWidth: 800, minCanvasHeight: 168 }), {
+    fitScale: 1,
+    canvasHeight: 168,
+    alignTop: false,
+  });
+});
+
 test('lets normal Mermaid diagrams size naturally and caps very tall diagrams', () => {
   assert.deepEqual(calculateMermaidCanvasLayout({ naturalWidth: 800, naturalHeight: 400, containerWidth: 800 }), {
     fitScale: 1,

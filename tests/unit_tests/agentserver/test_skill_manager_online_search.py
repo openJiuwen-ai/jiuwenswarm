@@ -218,7 +218,7 @@ def test_online_search_classifies_team_skills_hub_items():
     assert team_item["display_name"] == "research-team display"
 
 
-def test_online_search_keeps_ambiguous_clawhub_slugs_distinct():
+def test_online_search_collapses_ambiguous_clawhub_slugs():
     items = SkillManager._aggregate_online_search_results(
         "weather",
         {
@@ -231,11 +231,120 @@ def test_online_search_keeps_ambiguous_clawhub_slugs_distinct():
         10,
     )
 
-    assert len(items) == 2
-    assert {(item["identifier"], item["owner_handle"]) for item in items} == {
-        ("weather", "owner-a"),
-        ("weather", "owner-b"),
+    assert len(items) == 1
+    item = items[0]
+    assert item["identifier"] == "weather"
+    assert item["owner_handle"] == "owner-a"
+    assert item["description"] == "ClawHub first"
+    assert len(item["matched_sources"]) == 2
+    assert {entry.get("owner_handle") for entry in item["matched_sources"]} == {
+        "owner-a",
+        "owner-b",
     }
+
+
+def test_online_search_collapses_clawhub_slug_prefers_better_rank():
+    items = SkillManager._aggregate_online_search_results(
+        "weather",
+        {
+            "skillnet": [],
+            "clawhub": [
+                {**_clawhub_item("weather", "worse", owner_handle="owner-b"), "score": 1},
+                {**_clawhub_item("weather", "better", owner_handle="owner-a"), "score": 99},
+            ],
+        },
+        10,
+    )
+
+    # Enumerate assigns source_rank 1 then 2; lower rank wins regardless of native_score.
+    assert len(items) == 1
+    assert items[0]["owner_handle"] == "owner-b"
+    assert items[0]["description"] == "ClawHub worse"
+
+
+def test_online_search_collapses_clawhub_slug_prefers_higher_native_score_on_rank_tie():
+    first = SkillManager._normalize_online_search_item(
+        "clawhub",
+        {**_clawhub_item("weather", "low", owner_handle="owner-low"), "score": 1},
+        1,
+    )
+    second = SkillManager._normalize_online_search_item(
+        "clawhub",
+        {**_clawhub_item("weather", "high", owner_handle="owner-high"), "score": 50},
+        1,
+    )
+    assert SkillManager._online_search_item_preferred(second, first) is True
+    assert SkillManager._online_search_item_preferred(first, second) is False
+
+
+def test_online_search_collapses_same_presentation_across_slugs():
+    shared_summary = "Get current weather and forecasts (no API key required)."
+    items = SkillManager._aggregate_online_search_results(
+        "weather",
+        {
+            "skillnet": [],
+            "clawhub": [
+                {
+                    "slug": "weather",
+                    "display_name": "Weather",
+                    "summary": shared_summary,
+                    "version": "1.0.0",
+                    "updated_at": 1,
+                    "owner_handle": "steipete",
+                },
+                {
+                    "slug": "weather-fork",
+                    "display_name": "Weather",
+                    "summary": shared_summary,
+                    "version": "1.0.0",
+                    "updated_at": 1,
+                    "owner_handle": "other-owner",
+                },
+            ],
+        },
+        10,
+    )
+
+    assert len(items) == 1
+    assert items[0]["identifier"] == "weather"
+    assert items[0]["owner_handle"] == "steipete"
+    assert items[0]["display_name"] == "Weather"
+    assert items[0]["description"] == shared_summary
+    assert {entry.get("identifier") for entry in items[0]["matched_sources"]} == {
+        "weather",
+        "weather-fork",
+    }
+
+
+def test_online_search_keeps_same_title_when_descriptions_differ():
+    items = SkillManager._aggregate_online_search_results(
+        "weather",
+        {
+            "skillnet": [],
+            "clawhub": [
+                {
+                    "slug": "weather",
+                    "display_name": "Weather",
+                    "summary": "Get current weather and forecasts (no API key required).",
+                    "version": "1.0.0",
+                    "updated_at": 1,
+                    "owner_handle": "steipete",
+                },
+                {
+                    "slug": "weather-pro",
+                    "display_name": "Weather",
+                    "summary": "Premium weather alerts with radar.",
+                    "version": "1.0.0",
+                    "updated_at": 1,
+                    "owner_handle": "other-owner",
+                },
+            ],
+        },
+        10,
+    )
+
+    assert len(items) == 2
+    assert {item["identifier"] for item in items} == {"weather", "weather-pro"}
 
 
 def test_online_search_merges_identical_normalized_urls():
@@ -274,3 +383,101 @@ async def test_online_search_rejects_invalid_input(tmp_path):
     assert missing_query["detail"] == "缺少参数: query"
     assert invalid_limit["success"] is False
     assert invalid_limit["detail"] == "参数 limit 必须是整数"
+
+
+@pytest.mark.asyncio
+async def test_online_search_install_dispatches_teamskillshub(tmp_path, monkeypatch):
+    manager = SkillManager(workspace_dir=str(tmp_path))
+    seen: dict[str, object] = {}
+
+    async def _install(params: dict) -> dict:
+        seen.update(params)
+        return {"success": True, "skill": {"name": "demo"}}
+
+    monkeypatch.setattr(manager, "handle_skills_team_skills_hub_install", _install)
+
+    payload = await manager.handle_skills_online_search_install(
+        {
+            "identifier": "asset-demo",
+            "force": True,
+            "display_name": "演示技能",
+        }
+    )
+
+    assert payload["success"] is True
+    assert seen == {
+        "asset_id": "asset-demo",
+        "force": True,
+        "display_name": "演示技能",
+    }
+
+
+@pytest.mark.asyncio
+async def test_online_search_install_dispatches_clawhub(tmp_path, monkeypatch):
+    manager = SkillManager(workspace_dir=str(tmp_path))
+    seen: dict[str, object] = {}
+
+    async def _download(params: dict) -> dict:
+        seen.update(params)
+        return {"success": True, "skill": {"name": "ppt-generator"}}
+
+    monkeypatch.setattr(manager, "handle_skills_clawhub_download", _download)
+
+    payload = await manager.handle_skills_online_search_install(
+        {
+            "source": "clawhub",
+            "identifier": "ppt-generator",
+            "owner_handle": "alice",
+            "display_name": "PPT Generator",
+            "force": False,
+        }
+    )
+
+    assert payload["success"] is True
+    assert seen == {
+        "slug": "ppt-generator",
+        "force": False,
+        "owner_handle": "alice",
+        "display_name": "PPT Generator",
+    }
+
+
+@pytest.mark.asyncio
+async def test_online_search_install_dispatches_skillnet(tmp_path, monkeypatch):
+    manager = SkillManager(workspace_dir=str(tmp_path))
+    seen: dict[str, object] = {}
+
+    async def _install(params: dict) -> dict:
+        seen.update(params)
+        return {"success": True, "pending": True, "install_id": "abc"}
+
+    monkeypatch.setattr(manager, "handle_skills_skillnet_install", _install)
+
+    payload = await manager.handle_skills_online_search_install(
+        {"source": "skillnet", "identifier": "https://github.com/example/skill"}
+    )
+
+    assert payload["pending"] is True
+    assert seen == {"url": "https://github.com/example/skill", "force": False}
+
+
+@pytest.mark.asyncio
+async def test_online_search_install_rejects_missing_identifier_and_unknown_source(tmp_path):
+    manager = SkillManager(workspace_dir=str(tmp_path))
+
+    missing = await manager.handle_skills_online_search_install({"source": "clawhub"})
+    unknown = await manager.handle_skills_online_search_install(
+        {"source": "otherhub", "identifier": "x"}
+    )
+
+    assert missing["success"] is False
+    assert missing["detail"] == "缺少参数: identifier"
+    assert unknown["success"] is False
+    assert "不支持的 source" in unknown["detail"]
+    assert unknown["detail_key"] == "skills.onlineSearch.unsupportedSource"
+
+
+def test_req_method_online_search_install_registered() -> None:
+    from jiuwenswarm.common.schema.message import ReqMethod
+
+    assert ReqMethod.SKILLS_ONLINE_SEARCH_INSTALL.value == "skills.online_search.install"

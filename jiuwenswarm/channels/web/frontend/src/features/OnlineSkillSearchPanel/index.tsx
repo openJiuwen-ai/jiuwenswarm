@@ -155,7 +155,7 @@ export function OnlineSkillSearchPanel({
     setExpandedKey(null);
     void (async () => {
       try {
-        const data = await webRequest<OnlineSearchResponse>('skills.online_search.search', withSession({ query, limit: 20 }), { timeoutMs: 45_000 });
+        const data = await webRequest<OnlineSearchResponse>('skills.online_search.search', withSession({ q: query, limit: 20 }), { timeoutMs: 45_000 });
         if (requestSequence !== requestSequenceRef.current) return;
         setItems(data.items || []);
         setPartial(Boolean(data.partial));
@@ -253,7 +253,13 @@ export function OnlineSkillSearchPanel({
           } else if (item.source === 'teamskillshub') {
             const data = await webRequest<InstallResponse>(
               'skills.teamskillshub.install',
-              withSession({ asset_id: item.identifier, force })
+              withSession({
+                asset_id: item.identifier,
+                force,
+                ...((item.display_name || item.name)
+                  ? { display_name: item.display_name || item.name }
+                  : {}),
+              })
             );
             throwIfAborted(abortController.signal);
             if (!data.success) {
@@ -443,7 +449,7 @@ export function OnlineSkillSearchPanel({
                   {viewMode === 'list' ? (
                     <>
                       <div className='flex min-w-0 flex-1 items-center gap-3'>
-                        <div data-testid='online-skill-search-panel-item-avatar' className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg ${avatar.color} font-semibold text-text-inverse`}>
+                        <div data-testid='online-skill-search-panel-item-avatar' className='flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-[10px] font-semibold text-text-inverse' style={avatar.style}>
                           {avatar.firstChar}
                         </div>
                         <div className='min-w-0 flex-1'>
@@ -496,7 +502,8 @@ export function OnlineSkillSearchPanel({
                       <div className='flex flex-shrink-0 items-start gap-3'>
                         <div
                           data-testid='online-skill-search-panel-item-avatar'
-                          className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg ${avatar.color} text-sm font-semibold text-text-inverse`}
+                          className='flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-[10px] text-sm font-semibold text-text-inverse'
+                          style={avatar.style}
                         >
                           {avatar.firstChar}
                         </div>

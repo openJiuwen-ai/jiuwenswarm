@@ -11,7 +11,7 @@ from jiuwenswarm.common.e2a.gateway_normalize import (
     e2a_from_agent_fields,
 )
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
-from jiuwenswarm.common.schema.agent import AgentResponse
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.agent_ws_server import AdapterRegistry, AgentWebSocketServer
@@ -230,6 +230,79 @@ async def test_handle_message_dispatches_registered_gateway_adapter() -> None:
     response = parse_agent_server_wire_unary(ws.sent[0])
     assert response.ok is True
     assert response.payload == {"projects": [{"project_id": "historical-project"}]}
+
+
+@pytest.mark.asyncio
+async def test_handle_message_allows_health_check_without_req_method() -> None:
+    """Health checks omit method and must not hit the RSI prefix guard."""
+    handled = []
+
+    class HealthCheckServer(_AgentWsTestHarness):
+        async def _handle_unary(self, ws, request, send_lock) -> None:
+            del ws, send_lock
+            handled.append(request)
+
+    server = HealthCheckServer.__new__(HealthCheckServer)
+    env = e2a_from_agent_fields(
+        request_id="healthcheck-regression",
+        channel_id="__health_check__",
+        session_id="health_check_regression",
+        params={"health_check": "HEALTH_CHECK"},
+        is_stream=False,
+        timestamp=0.0,
+    )
+
+    await server.handle_message_for_test(
+        FakeWebSocket(), json.dumps(env.to_dict(), ensure_ascii=False), asyncio.Lock()
+    )
+
+    assert len(handled) == 1
+    assert handled[0].req_method is None
+    assert handled[0].session_id == "health_check_regression"
+
+
+@pytest.mark.asyncio
+async def test_handle_message_requires_req_method_enum_for_rsi_dispatch(monkeypatch) -> None:
+    """An object with a string ``value`` is not a valid ReqMethod."""
+    rsi_handled = []
+    unary_handled = []
+
+    class FakeMethod:
+        value = "rsi.task.list"
+
+    class StrictMethodServer(_AgentWsTestHarness):
+        async def _handle_rsi_request(self, ws, request, send_lock) -> None:
+            del ws, request, send_lock
+            rsi_handled.append(True)
+
+        async def _handle_unary(self, ws, request, send_lock) -> None:
+            del ws, send_lock
+            unary_handled.append(request)
+
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "e2a_to_agent_request",
+        lambda _env: AgentRequest(
+            request_id="invalid-method-type",
+            channel_id="web",
+            req_method=FakeMethod(),
+        ),
+    )
+    server = StrictMethodServer.__new__(StrictMethodServer)
+    env = e2a_from_agent_fields(
+        request_id="invalid-method-type",
+        channel_id="web",
+        req_method=None,
+        is_stream=False,
+        timestamp=0.0,
+    )
+
+    await server.handle_message_for_test(
+        FakeWebSocket(), json.dumps(env.to_dict(), ensure_ascii=False), asyncio.Lock()
+    )
+
+    assert rsi_handled == []
+    assert len(unary_handled) == 1
 
 
 @pytest.mark.asyncio
@@ -564,3 +637,41 @@ async def test_manual_cancel_keeps_session_runtime() -> None:
     )
 
     assert await _handle_cancel_cleanup_case(env) == []
+
+
+@pytest.mark.asyncio
+async def test_before_chat_hook_runs_before_auto_team_binding_and_only_once() -> None:
+    server = _AgentWsTestHarness()
+    order: list[str] = []
+
+    async def hook(request) -> None:
+        order.append("hook")
+        request.params["hook_marker"] = "ready"
+
+    async def bind(request) -> None:
+        assert request.params["hook_marker"] == "ready"
+        order.append("binding")
+
+    async def unary(ws, request, send_lock) -> None:
+        order.append("unary")
+
+    server._trigger_before_chat_request_hook = hook
+    server._ensure_auto_team_binding_for_chat = bind
+    server._handle_unary = unary
+    env = e2a_from_agent_fields(
+        request_id="hook-order",
+        channel_id="tui",
+        session_id="session-1",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "hello", "mode": "agent"},
+        is_stream=False,
+        timestamp=0.0,
+    )
+
+    await server.handle_message_for_test(
+        FakeWebSocket(),
+        json.dumps(env.to_dict(), ensure_ascii=False),
+        asyncio.Lock(),
+    )
+
+    assert order == ["hook", "binding", "unary"]

@@ -78,6 +78,22 @@ DESKTOP_PRESERVED_ENV_KEYS = (
     "FRONTEND_PORT",
 )
 
+# Electron owns these values for the lifetime of a desktop launch.  Its CDP
+# endpoint exposes both the trusted renderer and the browser sideview, so a
+# value copied from config/.env must never replace the exact-target wrapper or
+# its target identity in descendant Python processes.
+DESKTOP_BROWSER_PRESERVED_ENV_KEYS = (
+    "BROWSER_DRIVER",
+    "BROWSER_SHARED_CONTROL",
+    "PLAYWRIGHT_MCP_COMMAND",
+    "PLAYWRIGHT_MCP_ARGS",
+    "PLAYWRIGHT_MCP_CDP_ENDPOINT",
+    "PLAYWRIGHT_MCP_TARGET_ID",
+    "PLAYWRIGHT_MCP_TARGET_RESOLVER",
+    "PLAYWRIGHT_MCP_ENV_JSON",
+)
+ELECTRON_ENV_FLAG = "JIUWENSWARM_ELECTRON"
+
 # Flag set by jiuwenswarm-start when it injects the resolved port group into
 # child env. Mirrors JIUWENSWARM_DESKTOP=1 for the CLI launcher path (issue #2749).
 CLI_PORTS_ENV_FLAG = "JIUWENSWARM_CLI_PORTS"
@@ -99,6 +115,8 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
     ``DESKTOP_PRESERVED_ENV_KEYS`` already present in ``os.environ`` are
     restored after loading so the launcher's resolved port group survives
     ``override=True`` (avoids banner vs Gateway bind mismatch, issue #2749).
+    Electron launches additionally restore ``DESKTOP_BROWSER_PRESERVED_ENV_KEYS``
+    so dotenv cannot replace the exact sideview target binding.
 
     Also drops ``AGENT_SERVER_URL`` in those modes: Gateway prefers that URL
     over ``AGENT_SERVER_PORT``, so a stale value from .env/shell would bypass
@@ -108,8 +126,11 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
     from dotenv import load_dotenv
 
     preserve = _should_preserve_session_ports()
+    preserved_keys = DESKTOP_PRESERVED_ENV_KEYS
+    if os.environ.get(ELECTRON_ENV_FLAG) == "1":
+        preserved_keys += DESKTOP_BROWSER_PRESERVED_ENV_KEYS
     saved = (
-        {k: os.environ[k] for k in DESKTOP_PRESERVED_ENV_KEYS if k in os.environ}
+        {k: os.environ[k] for k in preserved_keys if k in os.environ}
         if preserve
         else {}
     )
@@ -306,7 +327,9 @@ def load_instance_bootstrap_by_name(name: str) -> Path | None:
 
 __all__ = [
     "CLI_PORTS_ENV_FLAG",
+    "DESKTOP_BROWSER_PRESERVED_ENV_KEYS",
     "DESKTOP_PRESERVED_ENV_KEYS",
+    "ELECTRON_ENV_FLAG",
     "parse_dotenv_early",
     "load_dotenv_runtime",
     "get_parsed_dotenv",

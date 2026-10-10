@@ -89,7 +89,7 @@ else:
 
 
 @contextmanager
-def _file_lock(data_path: Path) -> Iterator[None]:
+def file_lock(data_path: Path) -> Iterator[None]:
     """跨进程文件锁。锁文件为 ``<data_path>.lock``,与数据文件分离,
     因此数据文件的原子替换不会破坏锁。
     """
@@ -229,17 +229,19 @@ def _write_disk_locked(path: Path, projects: list[dict[str, Any]]) -> None:
 _T = TypeVar("_T")
 
 
-def _mutate(fn: Callable[[list[dict[str, Any]]], _T]) -> _T:
+def _mutate(fn: Callable[[list[dict[str, Any]]], _T], *, skip_unchanged: bool = False) -> _T:
     """在文件锁保护下: 重读磁盘 → 应用变更 → 原子写回 → 刷新缓存。
 
     重读磁盘确保拿到其他进程的最新写入,避免基于陈旧缓存做变更而丢失更新。
     """
     global _CACHE
     path = _projects_file()
-    with _file_lock(path):
+    with file_lock(path):
         projects = _read_disk_locked(path)
+        before = json.dumps(projects, sort_keys=True) if skip_unchanged else None
         result = fn(projects)
-        _write_disk_locked(path, projects)
+        if not skip_unchanged or json.dumps(projects, sort_keys=True) != before:
+            _write_disk_locked(path, projects)
         with _CACHE_LOCK:
             _CACHE = [dict(p) for p in projects]
         return result
@@ -253,7 +255,7 @@ def _load_cache(cache_bust: bool = False) -> list[dict[str, Any]]:
             if _CACHE is not None:
                 return [dict(p) for p in _CACHE]
     path = _projects_file()
-    with _file_lock(path):
+    with file_lock(path):
         raw = _read_disk_locked(path)
         # 惰性迁移:为缺 work_mode 的老项目推断并写回磁盘。
         # from_dict 已能在读取时兜底,但持久化可避免后续每次读都重复推断,
@@ -298,9 +300,7 @@ def get_project_by_id(
 def get_project_by_dir(
     project_dir: str, *, cache_bust: bool = False
 ) -> Project | None:
-    """按 project_dir 查找项目(不限 hidden 状态,由调用方判断)。
-
-    用于 project.create 的冲突检测与隐藏项目自动恢复。
+    """按 project_dir 查找项目。
 
     .. deprecated::
         本函数按全局路径匹配,不区分 ``work_mode``,在跨模式项目隔离场景下
@@ -346,7 +346,7 @@ def get_project_by_dir_and_mode(
     *,
     cache_bust: bool = False,
 ) -> Project | None:
-    """按 ``(work_mode, normalized project_dir)`` 查找项目(不限 hidden 状态)。
+    """按 ``(work_mode, normalized project_dir)`` 查找项目。
 
     用于跨模式隔离场景下的归属判断与冲突检测。同一 ``project_dir`` 在
     ``code`` / ``work`` 两个模式下可分别对应不同 ``project_id``。
@@ -381,7 +381,7 @@ def get_project_by_name_and_mode(
     *,
     cache_bust: bool = False,
 ) -> Project | None:
-    """按 ``(work_mode, name)`` 查找项目(不限 hidden 状态)。
+    """按 ``(work_mode, name)`` 查找项目。
 
     用于跨模式隔离场景下的名称冲突检测。同一 ``name`` 在 ``code`` / ``work``
     两个模式下可分别对应不同 ``project_id``。
@@ -697,12 +697,12 @@ def get_project_dir_by_id(project_id: str) -> str:
 
 
 class ProjectDirConflict(Exception):
-    """``project_dir`` 与已有可见项目重复(由 ``create_or_restore_project`` 在锁内抛出)。"""
+    """``project_dir`` 与已有可见项目重复(由 ``create_project_checked`` 在锁内抛出)。"""
 
 
 class ProjectNameConflict(Exception):
-    """``name`` 与已有项目(含隐藏)重复(由 ``create_or_restore_project`` /
-    ``rename_project`` / ``restore_project`` 在锁内抛出)。
+    """``name`` 与已有项目重复(由 ``create_project_checked`` /
+    ``rename_project`` 在锁内抛出)。
     """
 
 
@@ -793,7 +793,7 @@ def create_project(
 
     本函数不检测 ``project_dir`` 是否与已有项目重复,调用方需自行保证;
     ``project_id`` 在锁内查重+重生成,避免碰撞。生产路径请用
-    :func:`create_or_restore_project`(原子完成查重/恢复/新建,无 TOCTOU 窗口)。
+    :func:`create_project_checked`(原子完成查重/恢复/新建,无 TOCTOU 窗口)。
 
     Args:
         name: 项目展示名(已 strip)。
@@ -819,12 +819,12 @@ def create_project(
     return _mutate(_do)
 
 
-def create_or_restore_project(
+def create_project_checked(
     name: str,
     project_dir: str,
     work_mode: str = DEFAULT_WEB_WORK_MODE,
 ) -> tuple[Project, bool]:
-    """原子地新建或恢复项目(在文件锁内完成查重/恢复/新建,关闭 TOCTOU 窗口)。
+    """原子创建或恢复项目，同一 work_mode 内检查目录和名称冲突。
 
     冲突检测按 ``work_mode`` 隔离:同一 ``(work_mode, project_dir)`` /
     ``(work_mode, name)`` 在同模式内才视为冲突;不同 ``work_mode`` 的同目录/同名
@@ -832,10 +832,9 @@ def create_or_restore_project(
 
     - ``project_dir`` 为空时:跳过路径匹配/恢复/冲突,直接新建(允许多个空路径
       项目,靠 ``project_id`` + ``name`` + ``work_mode`` 区分,会话按 ``project_id`` 归属);
-    - ``project_dir`` 非空且命中**同 work_mode 的已隐藏项目** → 恢复(置 ``hidden=False``,
-      更新 ``name``),返回 ``(proj, True)``;
+    - ``project_dir`` 非空且命中同 work_mode 的隐藏项目 → 恢复原项目;
     - ``project_dir`` 非空且命中**同 work_mode 的可见项目** → 抛 :class:`ProjectDirConflict`;
-    - ``name`` 与**同 work_mode 的其他项目**(含隐藏项目、非命中的待恢复项)重复 →
+    - ``name`` 与**同 work_mode 的其他项目**重复 →
       抛 :class:`ProjectNameConflict`;
     - ``name`` 含文件系统非法字符 / 为保留设备名 → 抛 ``ValueError``;
     - 无匹配 → 新建(``project_id`` 锁内查重+重生成),返回 ``(proj, False)``。
@@ -882,7 +881,6 @@ def create_or_restore_project(
 
         if path_match is not None:
             if path_match.get("hidden"):
-                # 命中同 work_mode 的隐藏项目 → 自动恢复
                 path_match["hidden"] = False
                 path_match["name"] = name
                 path_match["updated_at"] = _now()
@@ -993,7 +991,7 @@ def restore_project(project_id: str) -> Project | None:
         target["updated_at"] = _now()
         return Project.from_dict(target)
 
-    return _mutate(_do)
+    return _mutate(_do, skip_unchanged=True)
 
 
 def hide_project(project_id: str) -> Project | None:
@@ -1078,18 +1076,18 @@ def find_or_create_code_project_for_dir(project_dir: str) -> Project | None:
     proj = get_project_by_dir_and_mode(
         pd, DEFAULT_TUI_WORK_MODE, cache_bust=True,
     )
-    if proj is not None and not proj.hidden:
+    if proj is not None:
         return proj
 
     name = os.path.basename(pd.rstrip("/\\")) or "untitled"
     restored = False
     try:
-        proj, restored = create_or_restore_project(
+        proj, restored = create_project_checked(
             name=name, project_dir=pd, work_mode=DEFAULT_TUI_WORK_MODE,
         )
     except ProjectNameConflict:
         suffix = hashlib.sha1(pd.encode("utf-8", errors="replace")).hexdigest()[:6]
-        proj, restored = create_or_restore_project(
+        proj, restored = create_project_checked(
             name=f"{name}-{suffix}", project_dir=pd, work_mode=DEFAULT_TUI_WORK_MODE,
         )
     # TUI 会为当前工作目录隐式登记 code 项目。这不是用户显式创建项目的操作，

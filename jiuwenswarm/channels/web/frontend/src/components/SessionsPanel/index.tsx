@@ -5,6 +5,7 @@ import { FileViewer } from '../AgentPanel/FileViewer';
 import { containsIgnoredDirectory } from '../../features/fileTreeFilters';
 import { isHistoryPreviewFile } from '../../features/historyFilePreview';
 import { webRequest } from '../../services/webClient';
+import { getArchiveErrorCode, getArchiveErrorFinishingCause } from '../../features/workspace/archivedTaskClient';
 import { useChatStore } from '../../stores/chatStore';
 import { toDisplaySessionTitle } from '../../utils/documentMessage';
 
@@ -457,7 +458,13 @@ export function SessionsPanel({
       }
     } catch (error) {
       console.error('Failed to delete session:', error);
-      setSessionsError(t('sessions.errors.deleteSession', { sessionId }));
+      setSessionsError(getArchiveErrorCode(error) === 'SESSION_BUSY'
+        ? t(getArchiveErrorFinishingCause(error) === 'subagent'
+          ? 'multiSession.project.errors.deleteSessionSubagentFinishing'
+          : getArchiveErrorFinishingCause(error) === 'team'
+            ? 'multiSession.project.errors.deleteSessionFinishing'
+            : 'multiSession.project.errors.deleteSessionBusy')
+        : t('sessions.errors.deleteSession', { sessionId }));
     } finally {
       setDeletingSessionId(null);
     }

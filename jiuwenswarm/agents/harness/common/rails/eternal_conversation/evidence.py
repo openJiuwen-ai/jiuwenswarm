@@ -14,6 +14,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import portalocker
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -79,6 +81,22 @@ def append_jsonl(path: Path, value: Any) -> None:
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def _append_auxiliary_jsonl(root: Path, relative_path: Path, value: Any) -> None:
+    """Serialize non-cursor JSONL across tasks, adapters, and processes.
+
+    Audit and background-Agent histories do not participate in the Raw History
+    cursor chain, but each line must still be atomic and independently parseable.
+    Large UTF-8 records can span multiple OS writes, so append mode alone is not
+    a sufficient concurrency boundary.
+    """
+    lock_name = hashlib.sha256(relative_path.as_posix().encode("utf-8")).hexdigest()
+    with _path_lock(root):
+        lock_path = root / "state" / "auxiliary-locks" / f"{lock_name}.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with portalocker.Lock(str(lock_path), timeout=60):
+            append_jsonl(root / relative_path, value)
 
 
 _AGENT_HISTORY_INLINE_LIMIT = 256 * 1024
@@ -341,15 +359,18 @@ class EvidenceWriter:
         mirror_role: str | None,
     ) -> dict[str, Any]:
         with _path_lock(self.root):
-            state = read_json(self.state_path, {}) or {}
-            state_cursor = int(state.get("cursor") or 0)
-            state_hash = str(state.get("last_hash") or "")
-            if state_cursor < self._cursor:
-                raise RuntimeError("evidence cursor state moved backwards")
-            if state_cursor > self._cursor:
-                self._cursor = state_cursor
-                self._last_hash = state_hash
-            return self._append_sync_locked(event_type, payload, task_id, mirror_role)
+            lock_path = self.root / "state" / "evidence.lock"
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with portalocker.Lock(str(lock_path), timeout=60):
+                state = read_json(self.state_path, {}) or {}
+                state_cursor = int(state.get("cursor") or 0)
+                state_hash = str(state.get("last_hash") or "")
+                if state_cursor < self._cursor:
+                    raise RuntimeError("evidence cursor state moved backwards")
+                if state_cursor > self._cursor:
+                    self._cursor = state_cursor
+                    self._last_hash = state_hash
+                return self._append_sync_locked(event_type, payload, task_id, mirror_role)
 
     def _append_sync_locked(
         self,
@@ -417,17 +438,46 @@ class EvidenceWriter:
 
     async def append_agent_history(self, role: str, payload: Any) -> None:
         await asyncio.to_thread(
-            _append_agent_history,
-            self.root,
+            self._append_agent_history_sync,
             role,
             payload,
         )
 
+    def _append_agent_history_sync(self, role: str, payload: Any) -> None:
+        relative = Path("agent-history") / role / "conversation.jsonl"
+        compact = jsonable(payload)
+        if isinstance(compact, dict):
+            compact = {
+                key: _blob_reference(
+                    self.root / "agent-history" / role,
+                    value,
+                    inline_limit=_AGENT_HISTORY_INLINE_LIMIT,
+                )
+                for key, value in compact.items()
+            }
+        else:
+            compact = {
+                "value": _blob_reference(
+                    self.root / "agent-history" / role,
+                    compact,
+                    inline_limit=_AGENT_HISTORY_INLINE_LIMIT,
+                )
+            }
+        _append_auxiliary_jsonl(
+            self.root,
+            relative,
+            {"created_at": utc_now(), **compact},
+        )
+
     async def append_audit(self, name: str, payload: Any) -> None:
+        record = jsonable(payload)
+        if not isinstance(record, dict):
+            record = {"value": record}
         await asyncio.to_thread(
-            append_jsonl,
-            self.root / "audit" / f"{name}.jsonl",
-            {"created_at": utc_now(), **jsonable(payload)},
+            _append_auxiliary_jsonl,
+            self.root,
+            Path("audit") / f"{name}.jsonl",
+            {"created_at": utc_now(), **record},
         )
 
 

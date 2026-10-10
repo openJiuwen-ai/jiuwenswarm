@@ -1,6 +1,13 @@
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
-import { A2UISetting, ExternalCliSettingsItem, ProactiveLimitsSetting } from './ExperimentalSettings';
+import {
+  A2UISetting,
+  ExternalCliSettingsItem,
+  ProactiveLimitsSetting,
+  TaskAsrSetting,
+  TaskFullDuplexSetting,
+  TrajectoryUiSetting,
+} from './ExperimentalSettings';
 
 export const experimentalModule: SettingsModuleDefinition = {
   id: 'experimental',
@@ -8,6 +15,16 @@ export const experimentalModule: SettingsModuleDefinition = {
   icon: settingsNavigationIcons.experimental,
   source: 'config',
   sections: [
+    {
+      id: 'asr',
+      titleKey: 'settingsPanel.experimental.taskAsr',
+      items: [{ id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting }],
+    },
+    {
+      id: 'task-full-duplex',
+      titleKey: 'settingsPanel.experimental.taskFullDuplex',
+      items: [{ id: 'task-full-duplex-enabled', component: 'custom', render: TaskFullDuplexSetting }],
+    },
     {
       id: 'external-cli-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',
@@ -17,6 +34,33 @@ export const experimentalModule: SettingsModuleDefinition = {
       id: 'a2ui',
       titleKey: 'settingsPanel.experimental.a2ui',
       items: [{ id: 'a2ui', component: 'custom', render: A2UISetting }],
+    },
+    {
+      id: 'trajectory-ui',
+      titleKey: 'settingsPanel.experimental.trajectoryUi',
+      items: [{ id: 'trajectory-ui-enabled', component: 'custom', render: TrajectoryUiSetting }],
+    },
+    {
+      id: 'skill-pack',
+      titleKey: 'settingsPanel.experimental.skillPack',
+      items: [
+        {
+          id: 'discover-skill-pack-enabled',
+          component: 'switch',
+          key: 'symphony_evolution_enabled',
+        },
+      ],
+    },
+    {
+      id: 'kv-cache-affinity',
+      titleKey: 'settingsPanel.experimental.kvCacheAffinity',
+      items: [
+        {
+          id: 'kv-cache-affinity-enabled',
+          component: 'switch',
+          key: 'kv_cache_affinity_enabled',
+        },
+      ],
     },
     {
       id: 'proactive-recommendation',

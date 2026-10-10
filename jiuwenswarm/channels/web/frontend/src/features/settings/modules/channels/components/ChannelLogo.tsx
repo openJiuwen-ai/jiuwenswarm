@@ -15,6 +15,8 @@ export function ChannelLogo({
       src={getSettingsChannelLogo(channelId)}
       alt={`${label} logo`}
       className={`settings-channels-panel__${variant}-logo`}
+      data-testid="settings-channels-panel-logo"
+      data-variant={channelId}
     />
   );
 }

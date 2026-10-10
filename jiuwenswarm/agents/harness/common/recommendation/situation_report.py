@@ -97,7 +97,7 @@ class SituationReport:
             parts.append(current.compressed_history)
             parts.append("")
 
-        parts.append("## 历史推荐记录（系统生成，非用户表达，禁止提取进画像）")
+        parts.append("## 历史推荐记录（系统已推过，按推荐类型区分去重，见决策约束）")
         parts.append(self.recommendation_history_summary or "（无推荐历史）")
 
         if self.calendar_events:
@@ -337,9 +337,15 @@ def _format_skills_for_llm(skills: list[dict[str, Any]]) -> str:
 def _format_recommendation_history(history: list[dict[str, Any]]) -> str:
     """Render recommendation history for LLM context.
 
-    只保留 type/target——LLM 用它避免重复推荐同类内容。
-    reason 不展示（LLM 不需要知道之前推过的理由）。
-    用户对推荐的反馈在对话历史里，LLM 自己能看到，不需要在这里重复。
+    去重锚点按类型不同：
+    - skill_recommend：target 是 skill 名（会跨场景复用），光看 skill 名看不出"同 skill
+      换皮推"（如旅游助手-CN 三次都催定酒店机票，措辞略变）。带 content 摘要（具体
+      话术）让决策 LLM 看实际说了啥，判断是不是换皮重复。
+    - need_exploration：target 是 LLM 自由生成的方向名，字面几乎不重复但会"同主题换皮"
+      （世界杯冠军→世界杯赛制）。带 content 摘要看具体方向，判断换皮。
+    - task_reminder：target 是待办/事件名，未闭环时再提醒合理（不算重复），靠 target +
+      是否闭环判断，不需要 content。
+    取 content 前 60 字摘要避免 prompt 膨胀（完整话术几十~上百字 × 10 条会超长）。
     """
     if not history:
         return "（无推荐历史）"
@@ -347,7 +353,14 @@ def _format_recommendation_history(history: list[dict[str, Any]]) -> str:
     for r in history[-10:]:
         rtype = r.get("type", "?")
         target = r.get("target", "?")
-        lines.append(f"- [{rtype}] {target}")
+        if rtype in ("skill_recommend", "need_exploration"):
+            content = (r.get("content", "") or "").strip()
+            if content:
+                lines.append(f"- [{rtype}] {target}（话术：{content[:60]}）")
+            else:
+                lines.append(f"- [{rtype}] {target}")
+        else:
+            lines.append(f"- [{rtype}] {target}")
     return "\n".join(lines)
 
 

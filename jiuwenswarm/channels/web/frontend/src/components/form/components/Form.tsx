@@ -63,6 +63,10 @@ function FormItemRenderer<TValues extends FormValues>({
         invalid={Boolean(field.error)}
         data-testid={testIdPrefix ? `${testIdPrefix}-field-input` : undefined}
         data-variant={testIdPrefix ? String(item.name) : undefined}
+        min={item.min}
+        max={item.max}
+        step={item.step}
+        changeOnBlur={item.type === 'number' ? item.changeOnBlur : undefined}
         onBlur={onBlur}
         onChange={(value) => onChange(value as TValues[keyof TValues])}
       />
@@ -131,6 +135,7 @@ function FormItemRenderer<TValues extends FormValues>({
   return (
     <div
       className="form-item"
+      data-disabled={finalDisabled ? 'true' : undefined}
       data-testid={testIdPrefix ? `${testIdPrefix}-field` : undefined}
       data-variant={testIdPrefix ? String(item.name) : undefined}
     >
@@ -143,6 +148,7 @@ function FormItemRenderer<TValues extends FormValues>({
         label
       )}
       <div className="form-item__control">{control}</div>
+      {item.description ? <div className="form-item__description">{item.description}</div> : null}
       {field.error ? (
         <div className="form-item__error" role="alert">
           {field.error}

@@ -537,20 +537,20 @@ export function OpenAIAccountSettings({
       data-testid="settings-openai-account"
     >
       <div className="settings-oauth__header">
-        <div className="settings-oauth__identity">
+        <div className="settings-oauth__identity" data-testid="settings-openai-account-identity">
           <div className="settings-oauth__title-row">
-            <span className="settings-oauth__status" data-tone={statusTone}>
+            <span className="settings-oauth__status" data-tone={statusTone} data-testid="settings-openai-account-status" data-variant={statusTone}>
               <i aria-hidden />
               {statusLabel}
             </span>
           </div>
           {status?.auth_path ? (
-            <span className="settings-oauth__auth-path" title={status.auth_path}>
+            <span className="settings-oauth__auth-path" title={status.auth_path} data-testid="settings-openai-account-auth-path">
               {t('config.openaiAccount.statusAuthPath', { path: status.auth_path })}
             </span>
           ) : null}
         </div>
-        <div className="settings-oauth__actions">
+        <div className="settings-oauth__actions" data-testid="settings-openai-account-actions">
           {controller.authenticated ? (
             <Button
               variant="quiet"
@@ -558,6 +558,7 @@ export function OpenAIAccountSettings({
               icon={<LogOut aria-hidden />}
               disabled={disabled || !connected || controller.loggingOut}
               onClick={onRequestLogout}
+              data-testid="settings-openai-account-logout-btn"
             >
               {t('config.openaiAccount.logout')}
             </Button>
@@ -569,6 +570,8 @@ export function OpenAIAccountSettings({
               loading={controller.startingLogin}
               disabled={disabled || !connected || Boolean(login) || controller.loadingStatus}
               onClick={() => void controller.startLogin()}
+              data-testid="settings-openai-account-connect-btn"
+              data-variant={login ? 'waiting' : 'connect'}
             >
               {login ? t('config.openaiAccount.waitingAuth') : t('config.openaiAccount.connect')}
             </Button>
@@ -578,7 +581,7 @@ export function OpenAIAccountSettings({
 
       {login ? (
         <div className="settings-oauth__login" data-testid="settings-openai-account-login-code">
-          <div className="settings-oauth__code">
+          <div className="settings-oauth__code" data-testid="settings-openai-account-login-code-value">
             <span>{t('config.openaiAccount.authCodeLabel')}</span>
             <strong>{login.user_code}</strong>
           </div>
@@ -591,10 +594,11 @@ export function OpenAIAccountSettings({
               size="sm"
               icon={<ExternalLink aria-hidden />}
               onClick={() => window.open(login.verification_uri, '_blank', 'noopener,noreferrer')}
+              data-testid="settings-openai-account-open-auth-page-btn"
             >
               {t('config.openaiAccount.openAuthPage')}
             </Button>
-            <Button size="sm" icon={<Copy aria-hidden />} onClick={() => void controller.copyCode()}>
+            <Button size="sm" icon={<Copy aria-hidden />} onClick={() => void controller.copyCode()} data-testid="settings-openai-account-copy-code-btn">
               {controller.copied ? t('config.openaiAccount.copied') : t('config.openaiAccount.copyCode')}
             </Button>
           </div>
@@ -602,7 +606,7 @@ export function OpenAIAccountSettings({
       ) : null}
 
       {controller.authError ? (
-        <div className="settings-oauth__error-row">
+        <div className="settings-oauth__error-row" data-testid="settings-openai-account-error">
           <div className="settings-oauth__error" role="alert">
             {controller.authError}
           </div>
@@ -613,6 +617,7 @@ export function OpenAIAccountSettings({
               loading={controller.loadingStatus}
               disabled={disabled || !connected || controller.loadingStatus}
               onClick={() => void controller.retryStatus()}
+              data-testid="settings-openai-account-retry-btn"
             >
               {t('settingsPanel.feedback.retry')}
             </Button>

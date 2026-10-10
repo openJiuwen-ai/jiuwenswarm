@@ -131,4 +131,43 @@ class MockUiLifecycle {
   assert.equal(lifecycle.calls.length, 0);  // closeUi 未被调用
 }
 
+// 9. requestHandoff 携带 cmd：handoff JSON 含独立 cmd 字段，content/parsed 不受影响
+{
+  const env = readSupervisionEnv({
+    AGENTOS_TUI_SUPERVISED: "1",
+    AGENTOS_TUI_SWITCH_CC_EXIT_CODE: "88",
+    AGENTOS_CC_TUI_EXECUTABLE: "/usr/local/bin/cc-tui",
+  });
+  const lifecycle = new MockUiLifecycle();
+  const handoff = new HandoffPortImpl(env, lifecycle);
+  await handoff.requestHandoff(
+    HANDOFF_TARGET_CC_TUI,
+    "switch agent-a",
+    "agent-a --verbose",
+  );
+  assert.equal(lifecycle.lastCall.reason, "switch");
+  const msg = JSON.parse(lifecycle.lastCall.handoffMessage);
+  assert.equal(msg.action, "switch");
+  assert.equal(msg.content, "switch agent-a");
+  assert.equal(msg.parsed, "agent-a");
+  // cmd 作为独立字段原样输出，不拼接进 content/parsed
+  assert.equal(msg.cmd, "agent-a --verbose");
+}
+
+// 10. requestHandoff 不带 cmd：handoff JSON 不含 cmd 字段（保持旧协议格式）
+{
+  const env = readSupervisionEnv({
+    AGENTOS_TUI_SUPERVISED: "1",
+    AGENTOS_TUI_SWITCH_CC_EXIT_CODE: "88",
+    AGENTOS_CC_TUI_EXECUTABLE: "/usr/local/bin/cc-tui",
+  });
+  const lifecycle = new MockUiLifecycle();
+  const handoff = new HandoffPortImpl(env, lifecycle);
+  await handoff.requestHandoff(HANDOFF_TARGET_CC_TUI, "switch agent-a");
+  const msg = JSON.parse(lifecycle.lastCall.handoffMessage);
+  assert.equal(msg.action, "switch");
+  assert.equal(msg.parsed, "agent-a");
+  assert.equal("cmd" in msg, false);
+}
+
 console.log("handoff-port tests passed");

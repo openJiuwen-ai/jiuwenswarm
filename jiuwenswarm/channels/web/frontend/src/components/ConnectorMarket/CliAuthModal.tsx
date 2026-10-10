@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { X, ExternalLink, Loader2, CheckCircle2, RotateCw } from 'lucide-react';
 import { useConnectorStore } from '../../stores/connectorStore';
@@ -85,6 +86,12 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
     setRetrySeq((v) => v + 1);
   }
 
+  // 用户中途放弃连接/授权
+  function handleCancel() {
+    void useConnectorStore.getState().cancelConnectAction(name);
+    onCancel();
+  }
+
   const stepsTotal = step.stepsTotal ?? 1;
   const stepIndex = (step.stepIndex ?? 0) + 1;
   const hasUrl = !!step.authUrl;
@@ -93,10 +100,13 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
   // "+"扩展面板（zIndex:9999）里弹出，必须盖在它上面；data 属性供 InputArea.tsx/
   // ExtensionPickerPanel.tsx 的外部点击关闭监听识别"点的是弹窗内部"从而跳过关闭（2026-08-25
   // 用户反馈）。
-  return (
-    <div data-connector-auth-modal="true" className="fixed inset-0 z-[10100] flex items-center justify-center bg-overlay-cron-dialog">
+  // createPortal 到 document.body：同 ConnectTokenModal——脱离 "+"扩展面板 / 详情页 `.detail-body`
+  // 的容器，既保证 z 层级盖住浮层，又不被 index.css 的 `.detail-body > *` 限宽规则压窄遮罩
+  // （bug 2026091001-001）。
+  return createPortal(
+    <div data-connector-auth-modal="true" data-testid="connector-market-cli-auth-modal" className="fixed inset-0 z-[10100] flex items-center justify-center bg-overlay-cron-dialog">
       <div className="relative w-[420px] rounded-2xl bg-card p-6 shadow-xl">
-        <button type="button" onClick={onCancel} className="absolute right-5 top-5 text-text-muted hover:text-text">
+        <button type="button" onClick={handleCancel} className="absolute right-5 top-5 text-text-muted hover:text-text" data-testid="connector-market-cli-auth-modal-close">
           <X size={18} />
         </button>
 
@@ -111,7 +121,7 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
         </p>
 
         {justAdvanced && status === 'waiting' && (
-          <div className="mb-3 flex items-center justify-center gap-1.5 text-[12px] text-[color:var(--color-feedback-success)]">
+          <div className="mb-3 flex items-center justify-center gap-1.5 text-[12px] text-[color:var(--color-feedback-success)]" data-testid="connector-market-cli-auth-modal-step-done">
             <CheckCircle2 size={13} />
             {t('connectorMarket.cliAuth.stepDone')}
           </div>
@@ -122,6 +132,7 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
             type="button"
             onClick={handleManualOpen}
             className="mb-3 flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-text text-[13px] text-text-inverse"
+            data-testid="connector-market-cli-auth-modal-open-link"
           >
             <ExternalLink size={14} />
             {t('connectorMarket.cliAuth.openLink')}
@@ -129,25 +140,37 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
         )}
 
         {status === 'waiting' && (
-          <div className="flex items-center justify-center gap-1.5 text-[12px] text-text-muted">
+          <div className="flex items-center justify-center gap-1.5 text-[12px] text-text-muted" data-testid="connector-market-cli-auth-modal-waiting">
             <Loader2 size={13} className="animate-spin" />
             {t('connectorMarket.cliAuth.waiting')}
           </div>
         )}
         {status === 'error' && (
           <div className="flex flex-col items-center gap-2">
-            <div className="text-center text-[12px] text-danger">{errorMessage}</div>
+            <div className="text-center text-[12px] text-danger" data-testid="connector-market-cli-auth-modal-error">{errorMessage}</div>
             <button
               type="button"
               onClick={handleRetry}
               className="flex items-center gap-1 text-[12px] text-text-muted hover:text-text"
+              data-testid="connector-market-cli-auth-modal-retry"
             >
               <RotateCw size={12} />
               {t('connectorMarket.cliAuth.retry')}
             </button>
           </div>
         )}
+
+        <button
+          type="button"
+          onClick={handleCancel}
+          className="mt-4 flex h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-border text-[13px] text-text hover:border-border-hover"
+          data-testid="connector-market-cli-auth-modal-cancel"
+        >
+          <X size={14} />
+          {t('connectorMarket.cliAuth.cancelConnect')}
+        </button>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -75,6 +75,44 @@ def test_a2ui_validator_accepts_single_level_template():
     assert get_protocol_spec().validate_response(response).valid is True
 
 
+def test_a2ui_validator_accepts_verified_wikimedia_thumbnail_url():
+    """Reachable image URLs must not invalidate the entire A2UI surface."""
+    from jiuwenswarm.server.runtime.a2ui.protocol import get_protocol_spec
+
+    response = """<a2ui-json>
+[
+  {
+    "beginRendering": {
+      "surfaceId": "forbidden-city",
+      "root": "hero"
+    }
+  },
+  {
+    "surfaceUpdate": {
+      "surfaceId": "forbidden-city",
+      "components": [
+        {
+          "id": "hero",
+          "component": {
+            "Image": {
+              "url": {
+                "literalString": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/76/Hall_of_Supreme_Harmony_%28Forbidden_City%29_1.jpg/960px-Hall_of_Supreme_Harmony_%28Forbidden_City%29_1.jpg"
+              },
+              "altText": {
+                "literalString": "Hall of Supreme Harmony"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+]
+</a2ui-json>"""
+
+    assert get_protocol_spec().validate_response(response).valid is True
+
+
 def test_a2ui_validator_rejects_nested_templates():
     from jiuwenswarm.server.runtime.a2ui.protocol import get_protocol_spec
 

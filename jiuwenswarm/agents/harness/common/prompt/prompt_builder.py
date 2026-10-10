@@ -13,21 +13,24 @@ from openjiuwen.harness.prompts import (
     resolve_language,
 )
 
+from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
+    SystemPromptPriority,
+)
 from jiuwenswarm.common.utils import logger
 
 
 class PromptPriority(IntEnum):
     """Named prompt section priorities for general agent builder."""
 
-    IDENTITY = 10
-    TASK_EXECUTION = 21
-    SKILLS = 40
-    MEMORY = 55
-    INPUT = 60
-    A2UI = 61
-    OUTPUT = 65
-    WORKSPACE = 70
-    TODO = 85
+    IDENTITY = SystemPromptPriority.IDENTITY
+    TASK_EXECUTION = SystemPromptPriority.TASK_EXECUTION
+    SKILLS = SystemPromptPriority.SKILLS
+    MEMORY = SystemPromptPriority.MEMORY
+    INPUT = SystemPromptPriority.INPUT
+    A2UI = SystemPromptPriority.A2UI
+    OUTPUT = SystemPromptPriority.OUTPUT
+    WORKSPACE = SystemPromptPriority.WORKSPACE
+    TODO = SystemPromptPriority.TODO
 
 
 class LocalSectionName:

@@ -47,7 +47,13 @@ export interface ToolCallDisplay {
   description?: string;
   formattedArgs?: string;
   status: "running" | "completed" | "error" | "timeout";
+  /**
+   * Compatibility str() of the structured tool result. Renderers still parse it
+   * for structured fields; it is removed once they read structured data.
+   */
   result?: string;
+  /** The text the model read for the call; shown instead of `result` when present. */
+  renderedResult?: string;
   summary?: string;
   isError?: boolean;
 }
@@ -88,7 +94,7 @@ export interface ContextCompressionStats {
   trigger?: "manual" | "auto";
 }
 
-export type TodoStatus = "pending" | "in_progress" | "completed" | "error";
+export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled" | "error";
 
 export interface TodoItem {
   id: string;

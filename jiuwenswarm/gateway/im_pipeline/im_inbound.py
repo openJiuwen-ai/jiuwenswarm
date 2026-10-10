@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -17,6 +18,7 @@ from jiuwenswarm.common.config import _parse_custom_headers
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.gateway.routing.interaction_context import PendingInteraction
 from jiuwenswarm.common.schema.message import Message, ReqMethod
+from jiuwenswarm.gateway.im_pipeline.im_session_input import prepare_im_session_input
 from jiuwenswarm.gateway.message_handler.command_parser.slash_command import CONTROL_MESSAGE_TEXTS
 from jiuwenswarm.common.utils import get_deepagent_user_md_path, logger
 SYSTEM_PROMPT_TEMPLATE = """
@@ -483,7 +485,88 @@ class IMInboundPipeline:
     def unregister_adapter(self, channel_id: str) -> None:
         self._adapters.pop(channel_id, None)
 
+    @staticmethod
+    def _inject_agent_visible_sender_identity(
+        msg: Message,
+        adapter: IMPlatformAdapter,
+    ) -> None:
+        """Stamp a group sender on the exact text that the Work Agent receives.
+
+        Channel metadata remains the routing/audit source of truth.  This compact
+        envelope makes the same identity visible to the model and therefore keeps
+        different humans distinguishable when a group shares one Agent session.
+        It deliberately runs after conversation rewriting so the rewriter cannot
+        accidentally remove the sender identity.
+        """
+        metadata = dict(msg.metadata or {})
+        chat_type = str(
+            metadata.get("im_chat_type") or metadata.get("chat_type") or ""
+        ).strip().lower()
+        if (
+            chat_type != "group"
+            or metadata.get("agent_sender_identity_injected") is True
+        ):
+            return
+
+        sender_user_id = str(
+            metadata.get("im_sender_user_id")
+            or metadata.get("open_id")
+            or metadata.get("sender_id")
+            or msg.user_id
+            or ""
+        ).strip()
+        if not sender_user_id:
+            return
+
+        params = dict(msg.params or {})
+        query = params.get("query")
+        content = params.get("content")
+        visible_text = query if isinstance(query, str) and query.strip() else content
+        if not isinstance(visible_text, str) or not visible_text.strip():
+            return
+        if visible_text.strip() in CONTROL_MESSAGE_TEXTS:
+            return
+
+        display_name = adapter.resolve_user_display_name(sender_user_id).strip() or "未知用户"
+        identity = json.dumps(
+            {
+                "channel": str(getattr(adapter, "platform_name", "") or msg.channel_id),
+                "display_name": display_name,
+                "user_id": sender_user_id,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        agent_visible_text = (
+            f"<im_sender_identity>{identity}</im_sender_identity>\n"
+            f"<im_message>\n{visible_text}\n</im_message>"
+        )
+        params["query"] = agent_visible_text
+        if "content" in params:
+            params["content"] = agent_visible_text
+        msg.params = params
+
+        metadata["im_sender_display_name"] = display_name
+        metadata["agent_sender_identity_injected"] = True
+        msg.metadata = metadata
+
+    def _keep_explicit_input_sender(self, msg: Message) -> None:
+        if not msg.group_digital_avatar:
+            return
+        adapter = self._adapters.get(msg.channel_id)
+        if adapter is None:
+            return
+        self._inject_agent_visible_sender_identity(msg, adapter)
+
     async def apply(self, msg: Message) -> bool:
+        if prepare_im_session_input(msg):
+            # Identified steer/follow_up uses the public Session input path.
+            # Keep the connector's sender visible, and do not rewrite the text
+            # or consume a pending question as this message's answer.
+            self._keep_explicit_input_sender(msg)
+            return True
+
         if not msg.group_digital_avatar:
             return True
 
@@ -492,6 +575,11 @@ class IMInboundPipeline:
             return True
 
         metadata = dict(msg.metadata or {})
+        if metadata.get("persist_session_first_task") is True:
+            # Gateway 已经完成 /persist 的建会话与前缀剥离。首条任务是明确发给
+            # Agent 的控制消息正文，不再做相关性判断或语义改写，但仍注入群成员身份。
+            self._inject_agent_visible_sender_identity(msg, adapter)
+            return True
         if bool(metadata.get("is_resume_message")):
             dm_pending_id = str(metadata.get("dm_pending_interaction_id") or "").strip()
             if dm_pending_id:
@@ -527,6 +615,7 @@ class IMInboundPipeline:
                 "[IMInboundPipeline] resume 消息直接放行: channel=%s id=%s",
                 msg.channel_id, msg.id,
             )
+            self._inject_agent_visible_sender_identity(msg, adapter)
             return True
 
         original_query = ""
@@ -629,6 +718,8 @@ class IMInboundPipeline:
             metadata_keys,
             bool(pending_context),
         )
+        if result.should_forward:
+            self._inject_agent_visible_sender_identity(msg, adapter)
         return result.should_forward
 
     @staticmethod

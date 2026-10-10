@@ -11,14 +11,11 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any
+from typing import Any, Callable
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.work_mode import (
-    DEFAULT_PROJECT_ID_CODE,
-    DEFAULT_PROJECT_ID_WORK,
-    DEFAULT_TUI_WORK_MODE,
     DEFAULT_WEB_WORK_MODE,
     is_default_project_id,
 )
@@ -27,336 +24,20 @@ from jiuwenswarm.server.runtime.gateway_adapter.base import (
     build_error_response,
 )
 from jiuwenswarm.server.runtime.session import project_store
-from jiuwenswarm.server.runtime.session.session_metadata import (
-    collect_all_sessions_metadata,
+from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+from jiuwenswarm.server.control.store.project_queries import (
+    load_pinned_sessions as _load_pinned_sessions,
+    load_project_cron_sessions as _load_project_cron_sessions,
+    load_project_info as _load_project_info,
+    load_project_list as _load_project_list,
+    load_project_sessions as _load_project_sessions,
+    project_info_payload as _project_info_payload,
+    resolve_cron_binding as _resolve_cron_binding,
 )
-from jiuwenswarm.server.runtime.session.session_info import to_session_info
+from jiuwenswarm.server.runtime.session.session_metadata import collect_all_sessions_metadata
 from jiuwenswarm.server.runtime.session.work_mode import resolve_request_work_mode
 
 logger = logging.getLogger(__name__)
-
-
-def _attribute_session_project(
-    metadata: dict[str, Any], visible_project_ids: set[str]
-) -> str:
-    """Return the visible project ID, or the matching virtual default project."""
-    project_id = str(metadata.get("project_id") or "")
-    if project_id and project_id in visible_project_ids:
-        return project_id
-    return (
-        DEFAULT_PROJECT_ID_CODE
-        if str(metadata.get("work_mode") or "") == DEFAULT_TUI_WORK_MODE
-        else DEFAULT_PROJECT_ID_WORK
-    )
-
-
-def _project_info_payload(
-    project: Any | None,
-    *,
-    default_id: str | None = None,
-    stats: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Serialize project.info exactly like the existing Web contract."""
-    statistics = stats or {
-        "session_count": 0,
-        "last_message_at": None,
-        "last_user_message_at": None,
-    }
-    git_defaults = {
-        "enabled": False,
-        "repo_root": "",
-        "initialized_by_jiuwenswarm": False,
-        "detected_at": 0,
-        "status": "disabled",
-        "branch": "",
-        "error": "",
-        "error_code": "",
-        "hint": "",
-        "is_dirty": False,
-    }
-    raw_git = getattr(project, "git", {}) if project is not None else {}
-    git = {**git_defaults, **dict(raw_git)} if isinstance(raw_git, dict) and raw_git else git_defaults
-    if default_id is not None:
-        return {
-            "project_id": default_id,
-            "name": "默认项目",
-            "project_dir": "",
-            "pinned": False,
-            "pin_order": 0,
-            "is_default": True,
-            "hidden": False,
-            "work_mode": (
-                DEFAULT_TUI_WORK_MODE
-                if default_id == DEFAULT_PROJECT_ID_CODE
-                else DEFAULT_WEB_WORK_MODE
-            ),
-            "git": git,
-            "session_count": statistics["session_count"],
-            "last_message_at": statistics["last_message_at"],
-            "last_user_message_at": statistics["last_user_message_at"],
-            "created_at": 0,
-            "updated_at": 0,
-        }
-    return {
-        "project_id": project.project_id,
-        "name": project.name,
-        "project_dir": project.project_dir,
-        "pinned": project.pinned,
-        "pin_order": project.pin_order,
-        "is_default": False,
-        "hidden": project.hidden,
-        "work_mode": getattr(project, "work_mode", "") or DEFAULT_WEB_WORK_MODE,
-        "git": git,
-        "session_count": statistics["session_count"],
-        "last_message_at": statistics["last_message_at"],
-        "last_user_message_at": statistics["last_user_message_at"],
-        "created_at": project.created_at,
-        "updated_at": getattr(project, "updated_at", 0),
-    }
-
-
-def _load_project_info(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    project_id = str(params.get("project_id") or "").strip()
-    if not project_id:
-        return None, "project_id is required", "BAD_REQUEST"
-
-    all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_project_ids = {project.project_id for project in all_projects if not project.hidden}
-    stats: dict[str, Any] = {
-        "session_count": 0,
-        "last_message_at": None,
-        "last_user_message_at": None,
-    }
-    for session in collect_all_sessions_metadata():
-        if session.get("channel_id") != "web" or session.get("pinned") or session.get("cron_id"):
-            continue
-        if _attribute_session_project(session, visible_project_ids) != project_id:
-            continue
-        stats["session_count"] += 1
-        for key in ("last_message_at", "last_user_message_at"):
-            value = session.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                if stats[key] is None or value > stats[key]:
-                    stats[key] = value
-
-    if is_default_project_id(project_id):
-        info = _project_info_payload(None, default_id=project_id, stats=stats)
-        return {"project": info, **info}, None, None
-
-    include_hidden = bool(params.get("include_hidden"))
-    project = project_store.get_project_by_id(project_id, cache_bust=True)
-    if project is None or (project.hidden and not include_hidden):
-        return None, "project not found", "NOT_FOUND"
-    info = _project_info_payload(project, stats=stats)
-    return {"project": info, **info}, None, None
-
-
-def _load_pinned_sessions() -> dict[str, Any]:
-    """Return the Web projection of pinned sessions from this user's directory."""
-    sessions = collect_all_sessions_metadata()
-    pinned = [
-        session
-        for session in sessions
-        if session.get("pinned") and session.get("channel_id") == "web"
-    ]
-    pinned.sort(key=lambda session: int(session.get("pin_order", 0) or 0))
-    return {"sessions": [to_session_info(session) for session in pinned]}
-
-
-def _resolve_cron_binding(
-    params: dict[str, Any], channel_id: str
-) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    """Resolve a cron project against this AgentServer's injected directory."""
-    work_mode, error = resolve_request_work_mode(params, channel_id=channel_id or "web")
-    if error is not None:
-        return None, f"invalid work_mode: {params.get('work_mode')!r}", "BAD_REQUEST"
-    binding = project_store.resolve_cron_project_binding(
-        params.get("project_id"), params.get("project_dir"), work_mode,
-    )
-    if binding.error is not None:
-        return None, binding.error, binding.code or "BAD_REQUEST"
-    return {
-        "project_id": binding.project_id,
-        "work_mode": binding.work_mode,
-    }, None, None
-
-
-def _parse_page(params: dict[str, Any]) -> tuple[int | None, int]:
-    """Preserve the Web handler's permissive pagination parsing."""
-    raw_limit = params.get("limit")
-    limit: int | None = None
-    if isinstance(raw_limit, int) and not isinstance(raw_limit, bool):
-        limit = raw_limit
-    elif isinstance(raw_limit, float) and raw_limit.is_integer():
-        limit = int(raw_limit)
-    elif isinstance(raw_limit, str) and raw_limit.strip().isdigit():
-        limit = int(raw_limit.strip())
-    raw_offset = params.get("offset")
-    offset = 0
-    if isinstance(raw_offset, int) and not isinstance(raw_offset, bool):
-        offset = raw_offset
-    elif isinstance(raw_offset, float) and raw_offset.is_integer():
-        offset = int(raw_offset)
-    elif isinstance(raw_offset, str) and raw_offset.strip().isdigit():
-        offset = int(raw_offset.strip())
-    return (max(1, limit) if limit is not None else None), max(0, offset)
-
-
-def _load_project_sessions(
-    params: dict[str, Any], _user_id: str
-) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    project_id = str(params.get("project_id") or "").strip()
-    if not project_id:
-        return None, "project_id is required", "BAD_REQUEST"
-    limit, offset = _parse_page(params)
-    all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_project_ids = {project.project_id for project in all_projects if not project.hidden}
-    if not is_default_project_id(project_id):
-        project = project_store.get_project_by_id(project_id, cache_bust=True)
-        if project is None or project.hidden:
-            return None, "project not found", "NOT_FOUND"
-
-    matched: list[dict[str, Any]] = []
-    for session in collect_all_sessions_metadata():
-        if session.get("pinned") or session.get("cron_id") or session.get("channel_id") != "web":
-            continue
-        if _attribute_session_project(session, visible_project_ids) != project_id:
-            continue
-        matched.append(session)
-    matched.sort(
-        key=lambda session: (
-            float(session["last_user_message_at"])
-            if isinstance(session.get("last_user_message_at"), (int, float))
-            and not isinstance(session.get("last_user_message_at"), bool)
-            else 0.0
-        ),
-        reverse=True,
-    )
-    total = len(matched)
-    page = matched[offset:offset + limit] if limit is not None else matched[offset:]
-    return {
-        "sessions": [to_session_info(session) for session in page],
-        "total": total,
-    }, None, None
-
-
-def _load_project_cron_sessions(
-    params: dict[str, Any], _user_id: str
-) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    """Return cron execution sessions from this AgentServer's user directory."""
-    project_id = str(params.get("project_id") or "").strip()
-    if not project_id:
-        return None, "project_id is required", "BAD_REQUEST"
-    cron_id = str(params.get("cron_id") or "").strip()
-    limit, offset = _parse_page(params)
-    all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_project_ids = {project.project_id for project in all_projects if not project.hidden}
-    if not is_default_project_id(project_id):
-        project = project_store.get_project_by_id(project_id, cache_bust=True)
-        if project is None or project.hidden:
-            return None, "project not found", "NOT_FOUND"
-    matched: list[dict[str, Any]] = []
-    for session in collect_all_sessions_metadata():
-        if session.get("pinned") or not session.get("cron_id"):
-            continue
-        if _attribute_session_project(session, visible_project_ids) != project_id:
-            continue
-        if cron_id and session.get("cron_id") != cron_id:
-            continue
-        matched.append(session)
-    matched.sort(
-        key=lambda session: (
-            float(session["last_user_message_at"])
-            if isinstance(session.get("last_user_message_at"), (int, float))
-            and not isinstance(session.get("last_user_message_at"), bool)
-            else 0.0
-        ),
-        reverse=True,
-    )
-    total = len(matched)
-    page = matched[offset:offset + limit] if limit is not None else matched[offset:]
-    return {
-        "sessions": [to_session_info(session) for session in page],
-        "total": total,
-    }, None, None
-
-
-def _load_project_list(
-    params: dict[str, Any]
-) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    """Build the existing Web project-list view in the injected directory."""
-    filter_value = str(params.get("filter") or "all").strip() or "all"
-    if filter_value not in {"all", "pinned", "unpinned"}:
-        filter_value = "all"
-    include_hidden = bool(params.get("include_hidden", False))
-    raw_work_mode = params.get("work_mode")
-    work_mode: str | None = None
-    if isinstance(raw_work_mode, str) and raw_work_mode.strip():
-        candidate = raw_work_mode.strip().lower()
-        if candidate not in {DEFAULT_WEB_WORK_MODE, DEFAULT_TUI_WORK_MODE}:
-            return None, f"invalid work_mode: {candidate!r}, must be 'code' or 'work'", "BAD_REQUEST"
-        work_mode = candidate
-
-    all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    projects = [p for p in all_projects if work_mode is None or (p.work_mode or DEFAULT_WEB_WORK_MODE) == work_mode]
-    visible_project_ids = {project.project_id for project in all_projects if not project.hidden}
-    stats: dict[str, dict[str, Any]] = {}
-
-    def stats_for(project_id: str) -> dict[str, Any]:
-        return stats.setdefault(
-            project_id,
-            {"session_count": 0, "last_message_at": None, "last_user_message_at": None},
-        )
-
-    for session in collect_all_sessions_metadata():
-        if session.get("channel_id") != "web" or session.get("pinned") or session.get("cron_id"):
-            continue
-        entry = stats_for(_attribute_session_project(session, visible_project_ids))
-        entry["session_count"] += 1
-        for key in ("last_message_at", "last_user_message_at"):
-            value = session.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                if entry[key] is None or value > entry[key]:
-                    entry[key] = value
-
-    zero = {"session_count": 0, "last_message_at": None, "last_user_message_at": None}
-
-    def item(project: Any | None, default_id: str | None = None) -> dict[str, Any]:
-        if default_id is not None:
-            return _project_info_payload(None, default_id=default_id, stats=stats.get(default_id, zero))
-        return _project_info_payload(
-            project,
-            stats=zero if project.hidden else stats.get(project.project_id, zero),
-        )
-
-    default_ids: list[str] = []
-    if work_mode in (None, DEFAULT_WEB_WORK_MODE):
-        default_ids.append(DEFAULT_PROJECT_ID_WORK)
-    if work_mode in (None, DEFAULT_TUI_WORK_MODE):
-        default_ids.append(DEFAULT_PROJECT_ID_CODE)
-    default_items = [item(None, default_id) for default_id in default_ids]
-
-    def user_sort(info: dict[str, Any]) -> float:
-        value = info["last_user_message_at"]
-        return (
-            float(value)
-            if isinstance(value, (int, float)) and not isinstance(value, bool)
-            else 0.0
-        )
-    if filter_value == "pinned":
-        result = [item(project) for project in projects if project.pinned]
-        result.sort(key=lambda info: info["pin_order"])
-    elif filter_value == "unpinned":
-        result = [item(p) for p in projects if not p.pinned and (include_hidden or not p.hidden)]
-        result.sort(key=user_sort, reverse=True)
-        result.extend(default_items)
-    else:
-        pinned = [item(project) for project in projects if project.pinned]
-        pinned.sort(key=lambda info: info["pin_order"])
-        unpinned = [item(p) for p in projects if not p.pinned and (include_hidden or not p.hidden)]
-        unpinned.sort(key=user_sort, reverse=True)
-        result = pinned + unpinned + default_items
-    return {"projects": result}, None, None
 
 
 def _rename_project(
@@ -438,7 +119,7 @@ def _create_project(
             return None, f"failed to create project directory: {exc}", "INTERNAL_ERROR"
 
     try:
-        project, restored = project_store.create_or_restore_project(
+        project, restored = project_store.create_project_checked(
             name, project_dir, work_mode
         )
     except project_store.ProjectDirConflict:
@@ -476,10 +157,120 @@ def _create_project(
     }, None, None
 
 
+def _count_project_conversations(project_id: str) -> int:
+    """Count the active Web conversations a project remove/restore moves.
+
+    ``collect_all_sessions_metadata`` already excludes archived sessions, so
+    this is exactly the set that disappears from the workspace when the project
+    is removed and comes back when it is restored; archived sessions stay in
+    the archive page either way.  Pinned conversations are counted because
+    removal hides those too, keeping their ``pinned`` flag for the restore.
+    Cron execution sessions are excluded, as in every other conversation count
+    in this module.
+    """
+    return _project_conversation_state(project_id)[0]
+
+
+def _project_conversation_state(
+    project_id: str, runtime: Any = None, *, ignore_heartbeats: bool = False,
+) -> tuple[int, list[str]]:
+    """Count Web conversations and check all channels for running sessions.
+
+    与会话删除/归档共用 Runtime 的执行判定：空闲团队和常驻响应流不算 busy。
+
+    ``ignore_heartbeats`` 把后台 Heartbeat 执行排除在读之外,回答"停掉心跳后
+    本会话是否仍在跑"。预检用它,避免把即将被停掉的心跳读成阻塞项。
+    """
+    count = 0
+    busy: list[str] = []
+    for session in collect_all_sessions_metadata():
+        session_id = str(session.get("session_id") or "")
+        if session.get("cron_id") or session_id.startswith("cron_"):
+            continue
+        if str(session.get("project_id") or "") != project_id:
+            continue
+        if session.get("channel_id") == "web":
+            count += 1
+        if runtime is None:
+            continue
+        if not session_id or not runtime.is_session_running(
+            session_id, ignore_heartbeats=ignore_heartbeats
+        ):
+            continue
+        busy.append(session_id)
+    return count, busy
+
+
+def _project_heartbeat_blocked(project_id: str, runtime: Any) -> bool:
+    """Whether live Heartbeats are the only thing keeping a removal blocked.
+
+    移除会先停掉这些心跳再重扫,所以真实工作仍在跑时必须返回 False:那份工作
+    无论如何都会把移除挡下,为一次注定被拒的移除去取消心跳是对会话的无谓副作用。
+    """
+    if runtime is None:
+        return False
+    controller = getattr(runtime, "_admission_controller", None)
+    active = getattr(controller, "active_heartbeat_sessions", None)
+    if not callable(active) or not active():
+        # No Heartbeat runs anywhere: nothing to stop, and no second scan.
+        return False
+    busy = _project_conversation_state(project_id, runtime)[1]
+    if not busy:
+        return False
+    running = getattr(runtime, "is_session_running", None)
+    if not callable(running):
+        return False
+    # Re-read only the blockers: real work among them keeps the removal busy
+    # either way, so those Heartbeats must not be cancelled for it.
+    return not any(running(sid, ignore_heartbeats=True) for sid in busy)
+
+
+async def _stop_project_heartbeats(project_id: str, runtime: Any) -> None:
+    """Stop the project's Heartbeat runs before removal rescans them.
+
+    移除只是软隐藏:心跳继续在会话上跑的话,结果会写进一个已从工作区消失的
+    会话里,无处呈现。移除先停掉这些心跳(与 archive/delete 一致),随后的
+    busy 扫描读到的就是已落定的会话。停不掉只记日志,扫描仍把会话判为 busy,
+    移除照常报 SESSION_BUSY,不会隐藏仍在跑的工作。
+    """
+    if runtime is None or not project_id:
+        return
+    stopper = getattr(runtime, "stop_heartbeat_runs", None)
+    if not callable(stopper):
+        return
+    for session in collect_all_sessions_metadata():
+        session_id = str(session.get("session_id") or "")
+        if not session_id or str(session.get("project_id") or "") != project_id:
+            continue
+        try:
+            await stopper(session_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[ProjectAdapter] could not stop heartbeat runs: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+
+
+def _project_busy_sessions(project_id: str, runtime: Any) -> list[str]:
+    """project.remove 预检专用的阻塞会话列表。
+
+    预检只回答"移除会不会被挡",不执行移除,因此不负责停心跳——它按"心跳已被
+    停掉"来读,与真正的移除(停心跳后再严格扫描)保持同向:预检放行、移除停掉
+    心跳后成功;心跳真的停不掉时,由移除那一次扫描报 SESSION_BUSY。
+    """
+    return _project_conversation_state(project_id, runtime, ignore_heartbeats=True)[1]
+
+
 def _remove_project(
-    params: dict[str, Any]
+    params: dict[str, Any],
+    runtime: Any = None,
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    """Soft-delete a project and count its affected Web sessions."""
+    """Hide a project, reporting how many active conversations it takes with it.
+
+    有会话仍在执行时拒绝移除(SESSION_BUSY):移除只是软隐藏,执行中的
+    会话不会随之停止,只会连同项目一起从前端列表消失,结果无处呈现。
+    """
     project_id = str(params.get("project_id") or "").strip()
     if not project_id:
         return None, "project_id is required", "BAD_REQUEST"
@@ -491,16 +282,14 @@ def _remove_project(
     if project.hidden:
         return {"project_id": project_id, "hidden": True, "affected_sessions": 0}, None, None
 
-    projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_ids = {item.project_id for item in projects if not item.hidden}
-    affected = 0
-    for session in collect_all_sessions_metadata():
-        if (
-            session.get("channel_id") == "web"
-            and not session.get("pinned")
-            and _attribute_session_project(session, visible_ids) == project_id
-        ):
-            affected += 1
+    affected, busy = _project_conversation_state(project_id, runtime)
+    if busy:
+        return (
+            None,
+            "project has running sessions; stop them before removing",
+            "SESSION_BUSY",
+        )
+
     hidden = project_store.hide_project(project_id)
     if hidden is None:
         return {"project_id": project_id, "hidden": True, "affected_sessions": 0}, None, None
@@ -515,7 +304,7 @@ def _remove_project(
 def _restore_project(
     params: dict[str, Any]
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    """Restore a hidden project and count its returning Web sessions."""
+    """Restore a hidden project, reporting how many conversations come back."""
     project_id = str(params.get("project_id") or "").strip()
     if not project_id:
         return None, "project_id is required", "BAD_REQUEST"
@@ -527,23 +316,17 @@ def _restore_project(
     if not project.hidden:
         return None, "project is not hidden", "CONFLICT"
 
-    projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_ids = set()
-    for item in projects:
-        if not item.hidden or item.project_id == project_id:
-            visible_ids.add(item.project_id)
-    affected = 0
-    for session in collect_all_sessions_metadata():
-        if (
-            session.get("channel_id") == "web"
-            and not session.get("pinned")
-            and _attribute_session_project(session, visible_ids) == project_id
-        ):
-            affected += 1
+    affected = _count_project_conversations(project_id)
     try:
         restored = project_store.restore_project(project_id)
     except project_store.ProjectNameConflict:
-        return None, "project name already exists", "CONFLICT"
+        # 与撤销归档的连带恢复(session_archive._restore_hidden_project)同码,
+        # 前端用同一套 i18n 文案提示"先重命名占用方再重试"。
+        return (
+            None,
+            "a project with this name exists; rename it before restoring",
+            "PROJECT_NAME_CONFLICT",
+        )
     if restored is None:
         return None, "project is not hidden", "CONFLICT"
     return {
@@ -1049,146 +832,251 @@ def _resolve_turn_operation(
 def _run_discard_turn_changes(
     params: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Restore the latest turn and update its diff history in AgentServer."""
+    """Restore the last modified turn and update its diff history in AgentServer."""
     from jiuwenswarm.agents.harness.common.session_ops_service import (
-        get_last_turn_info,
+        get_last_modified_turn_info,
         restore_session_files,
+        turn_mutation_lock,
     )
     from jiuwenswarm.server.runtime.session.git_diff_status import (
         get_session_extra_history_roots,
     )
-    from jiuwenswarm.server.utils.diff_service import get_diff_service
+    from jiuwenswarm.server.utils.diff_service import (
+        DiffHistoryExpiredError,
+        get_diff_service,
+    )
 
     project, session_id, failure = _resolve_turn_operation(params)
     if failure is not None:
         return {}, failure
-    last_turn = get_last_turn_info(session_id=session_id)
-    turn_index = last_turn["turn_index"]
-    cut_timestamp = last_turn["timestamp"]
-    if turn_index <= 0:
-        return {}, {"error": "no turn to discard: session has no user messages", "code": "NO_TURN_TO_DISCARD"}
-    roots = get_session_extra_history_roots(session_id)
-    try:
-        restored = restore_session_files(
-            session_id=session_id,
-            turn_index=turn_index,
-            project_dir=project.project_dir,
-            extra_history_roots=roots,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[ProjectAdapter] discard_turn_changes restore failed: %s", exc)
-        return {}, {"error": f"failed to restore session files: {exc}", "code": "INTERNAL_ERROR"}
-    errors = restored.get("errors", []) or []
-    change_set_id: str | None = None
-    truncated = False
-    if cut_timestamp > 0 and not errors:
+    # 状态校验与 restore/mark/truncate 必须按 session 串行:并发 discard 会
+    # 双双通过 status 检查返回成功(违反 NOTHING_TO_DISCARD 契约),还会与
+    # 并发 redo 交叉互踩。
+    with turn_mutation_lock(session_id):
+        roots = get_session_extra_history_roots(session_id)
+        try:
+            last_turn = get_last_modified_turn_info(
+                session_id=session_id,
+                project_dir=project.project_dir,
+                extra_history_roots=roots,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # 定位失败(如持久化数据畸形)是错误态:映射为 INTERNAL_ERROR,
+            # 不能降级成 turn_index=0 的 NO_TURN_TO_DISCARD"没有可撤销修改"
+            # 空态误导用户。
+            logger.warning("[ProjectAdapter] discard_turn_changes failed to locate target: %s", exc)
+            return {}, {"error": f"failed to locate last modified turn: {exc}", "code": "INTERNAL_ERROR"}
+        turn_index = last_turn["turn_index"]
+        cut_timestamp = last_turn["timestamp"]
+        if turn_index <= 0:
+            return {}, {"error": "no turn to discard: session has no modified turns", "code": "NO_TURN_TO_DISCARD"}
+        if cut_timestamp <= 0:
+            # A restore without its cutoff cannot be made redoable: file_ops would
+            # remain visible and the turn status would remain completed.  Refuse
+            # before touching the workspace instead of returning a false success.
+            return {}, {
+                "error": f"diff history for last modified turn (index={turn_index}) has no usable timestamp",
+                "code": "DIFF_HISTORY_EXPIRED",
+            }
         service = get_diff_service()
-        change_set_id = service.mark_turn_discarded(
-            session_id, turn_index, project_dir=project.project_dir, extra_history_roots=roots
+        try:
+            target = service.get_turn_diff(
+                session_id, turn_index=turn_index, project_dir=project.project_dir,
+                extra_history_roots=roots,
+            )
+        except DiffHistoryExpiredError as exc:
+            return {}, {
+                "error": str(exc) or f"diff history for last modified turn (index={turn_index}) expired",
+                "code": "DIFF_HISTORY_EXPIRED",
+            }
+        # Compare inside the mutation lock, before any workspace/history write.
+        expected_id = params.get("change_set_id")
+        target_changed = (
+            expected_id is not None
+            and (
+                not isinstance(expected_id, str)
+                or not expected_id
+                or expected_id != (target or {}).get("change_set_id")
+            )
         )
-        service.truncate_file_ops_by_timestamp(
-            session_id, cut_timestamp, soft=True, discarded=True,
-            project_dir=project.project_dir, extra_history_roots=roots,
+        if target_changed:
+            return {}, {
+                "error": "the requested change set is no longer the last modified turn; refresh history",
+                "code": "TURN_TARGET_CHANGED",
+            }
+        status = str((target or {}).get("status") or "")
+        if status == "discarded":
+            return {}, {
+                "error": f"last modified turn (index={turn_index}) is already discarded; nothing to discard",
+                "code": "NOTHING_TO_DISCARD",
+            }
+        try:
+            restored = restore_session_files(
+                session_id=session_id,
+                turn_index=turn_index,
+                project_dir=project.project_dir,
+                extra_history_roots=roots,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[ProjectAdapter] discard_turn_changes restore failed: %s", exc)
+            return {}, {"error": f"failed to restore session files: {exc}", "code": "INTERNAL_ERROR"}
+        errors = restored.get("errors", []) or []
+        change_set_id: str | None = None
+        truncated = False
+        if not errors:
+            change_set_id = service.mark_turn_discarded(
+                session_id, turn_index, project_dir=project.project_dir,
+                extra_history_roots=roots, target=target,
+            )
+            service.truncate_file_ops_by_timestamp(
+                session_id, cut_timestamp, soft=True, discarded=True,
+                project_dir=project.project_dir, extra_history_roots=roots,
+            )
+            truncated = True
+        partial = bool(errors)
+        return {
+            "session_id": session_id,
+            "turn_index": turn_index,
+            "change_set_id": change_set_id,
+            "restored_files": restored.get("restored_files", []),
+            "deleted_files": restored.get("deleted_files", []),
+            "errors": errors,
+            "file_ops_truncated": truncated,
+            "global_file_ops_truncated": False,
+            "partial": partial,
+        }, (
+            {
+                "error": f"partial failure: {len(errors)} file(s) failed to restore; file_ops not truncated, retryable",
+                "code": "PARTIAL_RESTORE_FAILED",
+                "result": "partial",
+            }
+            if partial else None
         )
-        truncated = True
-    partial = bool(errors)
-    return {
-        "session_id": session_id,
-        "turn_index": turn_index,
-        "change_set_id": change_set_id,
-        "restored_files": restored.get("restored_files", []),
-        "deleted_files": restored.get("deleted_files", []),
-        "errors": errors,
-        "file_ops_truncated": truncated,
-        "global_file_ops_truncated": False,
-        "partial": partial,
-    }, (
-        {
-            "error": f"partial failure: {len(errors)} file(s) failed to restore; file_ops not truncated, retryable",
-            "code": "PARTIAL_RESTORE_FAILED",
-            "result": "partial",
-        }
-        if partial else None
-    )
 
 
 def _run_redo_turn_changes(
     params: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Reapply the latest discarded turn in this AgentServer's worktree."""
+    """Reapply the last modified discarded turn in this AgentServer's worktree."""
     from jiuwenswarm.agents.harness.common.session_ops_service import (
-        get_last_turn_info,
+        get_last_modified_turn_info,
         redo_session_files,
+        turn_mutation_lock,
     )
     from jiuwenswarm.server.runtime.session.git_diff_status import (
         get_session_extra_history_roots,
     )
-    from jiuwenswarm.server.utils.diff_service import get_diff_service
+    from jiuwenswarm.server.utils.diff_service import (
+        DiffHistoryExpiredError,
+        get_diff_service,
+    )
 
     project, session_id, failure = _resolve_turn_operation(params)
     if failure is not None:
         return {}, failure
-    turn_index = get_last_turn_info(session_id=session_id)["turn_index"]
-    if turn_index <= 0:
-        return {}, {"error": "no turn to redo: session has no user messages", "code": "NO_TURN_TO_REDO"}
-    roots = get_session_extra_history_roots(session_id)
-    service = get_diff_service()
-    target = service.get_turn_diff(
-        session_id, turn_index=turn_index, project_dir=project.project_dir,
-        extra_history_roots=roots,
-    )
-    status = str((target or {}).get("status") or "")
-    if status != "discarded":
-        return {}, {
-            "error": f"last turn (index={turn_index}) is not discarded (status={status or 'unknown'}); nothing to redo",
-            "code": "NOTHING_TO_REDO",
-        }
-    try:
-        redone = redo_session_files(
-            session_id=session_id,
-            turn_index=turn_index,
-            project_dir=project.project_dir,
-            extra_history_roots=roots,
+    # 与 discard 同一把 per-session 锁:并发 redo 会双双通过 discarded 检查,
+    # 后者读不到已被前者 unmark 的 discarded_out 条目而误报
+    # REDO_HISTORY_MISSING;redo 与 discard 交叉亦然。
+    with turn_mutation_lock(session_id):
+        roots = get_session_extra_history_roots(session_id)
+        try:
+            turn_index = get_last_modified_turn_info(
+                session_id=session_id,
+                project_dir=project.project_dir,
+                extra_history_roots=roots,
+            )["turn_index"]
+        except Exception as exc:  # noqa: BLE001
+            # 与 discard 同口径:定位失败映射为 INTERNAL_ERROR,而非
+            # NO_TURN_TO_REDO 的"没有可重新应用的修改"空态。
+            logger.warning("[ProjectAdapter] redo_turn_changes failed to locate target: %s", exc)
+            return {}, {"error": f"failed to locate last modified turn: {exc}", "code": "INTERNAL_ERROR"}
+        if turn_index <= 0:
+            return {}, {"error": "no turn to redo: session has no modified turns", "code": "NO_TURN_TO_REDO"}
+        service = get_diff_service()
+        try:
+            target = service.get_turn_diff(
+                session_id, turn_index=turn_index, project_dir=project.project_dir,
+                extra_history_roots=roots,
+            )
+        except DiffHistoryExpiredError as exc:
+            return {}, {
+                "error": str(exc) or f"diff history for last modified turn (index={turn_index}) expired",
+                "code": "DIFF_HISTORY_EXPIRED",
+            }
+        # Compare inside the mutation lock, before any workspace/history write.
+        expected_id = params.get("change_set_id")
+        target_changed = (
+            expected_id is not None
+            and (
+                not isinstance(expected_id, str)
+                or not expected_id
+                or expected_id != (target or {}).get("change_set_id")
+            )
         )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[ProjectAdapter] redo_turn_changes failed: %s", exc)
-        return {}, {"error": f"failed to redo session files: {exc}", "code": "INTERNAL_ERROR"}
-    errors = redone.get("errors", []) or []
-    redone_files = redone.get("redone_files", []) or []
-    deleted_files = redone.get("deleted_files", []) or []
-    base = {
-        "session_id": session_id,
-        "turn_index": turn_index,
-        "redone_files": redone_files,
-        "deleted_files": deleted_files,
-        "errors": errors,
-    }
-    if not errors and not redone_files and not deleted_files:
-        return base, {
-            "error": (
-                "no redoable files found: file_ops for this discarded turn is "
-                "missing or has no discarded_out entries; discarded status preserved"
-            ),
-            "code": "REDO_HISTORY_MISSING",
+        if target_changed:
+            return {}, {
+                "error": "the requested change set is no longer the last modified turn; refresh history",
+                "code": "TURN_TARGET_CHANGED",
+            }
+        status = str((target or {}).get("status") or "")
+        if status != "discarded":
+            return {}, {
+                "error": (
+                    f"last turn (index={turn_index}) is not discarded "
+                    f"(status={status or 'unknown'}); nothing to redo"
+                ),
+                "code": "NOTHING_TO_REDO",
+            }
+        try:
+            redone = redo_session_files(
+                session_id=session_id,
+                turn_index=turn_index,
+                project_dir=project.project_dir,
+                extra_history_roots=roots,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[ProjectAdapter] redo_turn_changes failed: %s", exc)
+            return {}, {"error": f"failed to redo session files: {exc}", "code": "INTERNAL_ERROR"}
+        errors = redone.get("errors", []) or []
+        redone_files = redone.get("redone_files", []) or []
+        deleted_files = redone.get("deleted_files", []) or []
+        base = {
+            "session_id": session_id,
+            "turn_index": turn_index,
+            "redone_files": redone_files,
+            "deleted_files": deleted_files,
+            "errors": errors,
         }
-    change_set_id = None
-    if not errors:
-        change_set_id = service.unmark_turn_discarded(
-            session_id, turn_index, project_dir=project.project_dir, extra_history_roots=roots
+        if not errors and not redone_files and not deleted_files:
+            return base, {
+                "error": (
+                    "no redoable files found: file_ops for this discarded turn is "
+                    "missing or has no discarded_out entries; discarded status preserved"
+                ),
+                "code": "REDO_HISTORY_MISSING",
+            }
+        change_set_id = None
+        if not errors:
+            change_set_id = service.unmark_turn_discarded(
+                session_id, turn_index, project_dir=project.project_dir,
+                extra_history_roots=roots, target=target,
+            )
+        partial = bool(errors)
+        return {
+            **base,
+            "change_set_id": change_set_id,
+            "partial": partial,
+        }, (
+            {
+                "error": (
+                    f"partial failure: {len(errors)} file(s) failed to redo; "
+                    "discarded status not cleared, retryable"
+                ),
+                "code": "PARTIAL_REDO_FAILED",
+                "result": "partial",
+            }
+            if partial else None
         )
-    partial = bool(errors)
-    return {
-        **base,
-        "change_set_id": change_set_id,
-        "partial": partial,
-    }, (
-        {
-            "error": f"partial failure: {len(errors)} file(s) failed to redo; discarded status not cleared, retryable",
-            "code": "PARTIAL_REDO_FAILED",
-            "result": "partial",
-        }
-        if partial else None
-    )
 
 
 def _ok_response(request: AgentRequest, payload: Any) -> AgentResponse:
@@ -1228,6 +1116,10 @@ async def _run_threaded(
     """
     try:
         result = await asyncio.to_thread(fn, *args, **fn_kwargs)
+    except LifecycleError as exc:
+        return build_error_response(
+            request, str(exc), code=exc.code, extra=exc.details
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[ProjectAdapter] %s failed: %s", label, exc)
         return build_error_response(request, str(exc), code="INTERNAL_ERROR")
@@ -1268,6 +1160,12 @@ async def _run_threaded(
 class ProjectAdapter(GatewayAdapter):
     """Project-domain adapter: project/git CRUD, diff status, session queries."""
 
+    def __init__(self, runtime_probe: Callable[[], Any] | None = None) -> None:
+        # project.remove 的 busy 扫描要读 AgentRuntime 的会话执行状态。
+        # 传探针而非实例:agent_manager 重建后 _execution_runtime 会换新实例,
+        # 每次移除时探针总能取到当前 runtime。
+        self._runtime_probe = runtime_probe
+
     methods: frozenset[str] = frozenset(
         {
             ReqMethod.PROJECT_INFO.value,
@@ -1299,6 +1197,13 @@ class ProjectAdapter(GatewayAdapter):
     async def handle(self, request: AgentRequest) -> AgentResponse:
         method = request.req_method
         params = _request_params(request)
+        if method not in {ReqMethod.PROJECT_LIST, ReqMethod.PROJECT_INFO, ReqMethod.PROJECT_PINNED_SESSIONS,
+                          ReqMethod.PROJECT_GET_SESSIONS, ReqMethod.PROJECT_GET_CRON_SESSIONS}:
+            from jiuwenswarm.server.runtime.session.lifecycle import guard
+            try:
+                guard(project_id=str(params.get("project_id") or ""))
+            except LifecycleError as exc:
+                return build_error_response(request, str(exc), code=exc.code)
 
         if method == ReqMethod.PROJECT_GIT_DISCARD_TURN_CHANGES:
             return await _run_threaded(
@@ -1358,7 +1263,16 @@ class ProjectAdapter(GatewayAdapter):
                 request, "project.create", _create_project, params, request.channel_id,
             )
         if method == ReqMethod.PROJECT_REMOVE:
-            return await _run_threaded(request, "project.remove", _remove_project, params)
+            runtime = self._runtime_probe() if self._runtime_probe is not None else None
+            project_id = str(params.get("project_id") or "").strip()
+            if _project_heartbeat_blocked(project_id, runtime):
+                # Heartbeats are the only blocker: stop them, and let the
+                # removal's own scan read a settled session.
+                await _stop_project_heartbeats(project_id, runtime)
+            return await _run_threaded(
+                request, "project.remove", _remove_project, params,
+                runtime=runtime,
+            )
         if method == ReqMethod.PROJECT_RESTORE:
             return await _run_threaded(request, "project.restore", _restore_project, params)
         if method == ReqMethod.PROJECT_PINNED_SESSIONS:

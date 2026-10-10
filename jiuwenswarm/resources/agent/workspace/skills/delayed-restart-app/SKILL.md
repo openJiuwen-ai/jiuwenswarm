@@ -18,7 +18,7 @@ description: 安排延迟重启本 Agent 所在的服务（JiuwenSwarm app）。
 使用 `bash` 工具执行（必须使用 launcher，否则重启时会连同脚本一起被终止）：
 
 ```bash
-python %USERPROFILE%\.jiuwenswarm\agent\skills\delayed-restart-app\launch_delayed_restart.py --pid <当前 app 的 PID> --delay 5
+python %USERPROFILE%\.jiuwenswarm\agent\workspace\skills\delayed-restart-app\launch_delayed_restart.py --pid <当前 app 的 PID> --delay 5
 ```
 
 （Unix/macOS 使用：`python ~/.jiuwenswarm/agent/workspace/skills/delayed-restart-app/launch_delayed_restart.py --pid <PID> --delay 5`）

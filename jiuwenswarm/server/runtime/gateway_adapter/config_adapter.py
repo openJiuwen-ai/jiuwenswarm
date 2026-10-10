@@ -9,6 +9,7 @@ its response into an E2A response.
 
 from __future__ import annotations
 
+import logging
 import sys
 from typing import Any
 
@@ -16,6 +17,34 @@ from jiuwenswarm.common.config import resolve_env_vars
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
+
+logger = logging.getLogger(__name__)
+
+
+def _append_zen_free_models(payload: dict[str, Any]) -> None:
+    """Add AgentServer's Zen cache to a models.list payload."""
+    models = payload.get("models")
+    if not isinstance(models, list):
+        return
+    try:
+        from jiuwenswarm.server.runtime.opencode_zen import append_zen_free_models
+
+        append_zen_free_models(models)
+    except Exception:  # noqa: BLE001
+        logger.warning("[ConfigAdapter] append Zen free models failed", exc_info=True)
+
+
+async def _warm_zen_after_free_model_toggle(payload: dict[str, Any]) -> None:
+    """Warm this process when a config write toggled free models."""
+    updated = payload.get("updated")
+    if not isinstance(updated, list) or "enable_free_models" not in updated:
+        return
+    try:
+        from jiuwenswarm.server.runtime.opencode_zen import warm_zen_free_models
+
+        await warm_zen_free_models(reason="config-toggle")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[ConfigAdapter] warm_zen_free_models failed: %s", exc)
 
 
 def _resolve_browser_path(browser: dict[str, Any]) -> str:
@@ -82,8 +111,18 @@ class ConfigAdapter(GatewayAdapter):
         ReqMethod.CONFIG_SAVE_ALL.value,
         ReqMethod.CONFIG_VALIDATE_MODEL.value,
         ReqMethod.MODELS_LIST.value,
+        ReqMethod.MODELS_ZEN_ENTRIES.value,
+        ReqMethod.MODELS_ZEN_WARM.value,
+        ReqMethod.MODELS_GET.value,
         ReqMethod.MODELS_REPLACE_ALL.value,
         ReqMethod.MODELS_VALIDATE.value,
+        ReqMethod.MODELS_UPSERT.value,
+        ReqMethod.MODELS_DELETE.value,
+        ReqMethod.MODELS_REFERENCES.value,
+        ReqMethod.MODEL_GROUPS_LIST.value,
+        ReqMethod.MODEL_GROUPS_UPSERT.value,
+        ReqMethod.MODEL_GROUPS_DELETE.value,
+        ReqMethod.SESSION_SELECTION_SET.value,
         ReqMethod.LOCALE_GET_CONF.value,
         ReqMethod.LOCALE_SET_CONF.value,
         ReqMethod.COMMAND_MODEL.value,
@@ -96,6 +135,28 @@ class ConfigAdapter(GatewayAdapter):
     })
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
+        if request.req_method == ReqMethod.MODELS_ZEN_ENTRIES:
+            from jiuwenswarm.server.runtime.opencode_zen import public_zen_free_model_rows
+
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={"models": public_zen_free_model_rows()},
+                metadata=request.metadata,
+            )
+        if request.req_method == ReqMethod.MODELS_ZEN_WARM:
+            from jiuwenswarm.server.runtime.opencode_zen import warm_zen_free_models
+
+            await warm_zen_free_models(reason="config-toggle")
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={"ok": True},
+                metadata=request.metadata,
+            )
+
         if request.req_method in {ReqMethod.LOCALE_GET_CONF, ReqMethod.LOCALE_SET_CONF}:
             from jiuwenswarm.common.config import (
                 get_config,
@@ -139,25 +200,27 @@ class ConfigAdapter(GatewayAdapter):
 
         # Keep the mature panel serialization/validation implementation shared
         # while making its execution context (and therefore config directory)
-        # unambiguously AgentServer-owned.
+        # unambiguously AgentServer-owned. The implementation lives in
+        # common.config_panel (channel-specific modules; the TUI contract
+        # differs from the Web one, so each side registers its own handlers).
         channel = _ConfigRpcChannel(request.channel_id)
         if request.channel_id == "tui":
             # TUI has a distinct config schema (notably Auto-Harness fields).
-            # Reuse its mature local handler in the AgentServer process instead
-            # of silently treating a TUI request as a Web config request.
-            from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
-                CliHandlersBindParams,
-                register_cli_handlers,
+            from jiuwenswarm.common.config_panel.tui_models_handlers import (
+                register_tui_config_handlers,
             )
 
-            register_cli_handlers(CliHandlersBindParams(channel=channel, force_local_config=True))
+            register_tui_config_handlers(channel)
         else:
-            from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
-                WebHandlersBindParams,
-                _register_web_handlers,
+            from jiuwenswarm.common.config_panel.config_set_handlers import (
+                register_config_set_handlers,
+            )
+            from jiuwenswarm.common.config_panel.models_handlers import (
+                register_models_handlers,
             )
 
-            _register_web_handlers(WebHandlersBindParams(channel=channel))
+            register_config_set_handlers(channel)
+            register_models_handlers(channel)
         handler = channel.methods.get(request.req_method.value)
         if handler is None:
             return build_error_response(request, "unsupported config method", code="BAD_REQUEST")
@@ -170,9 +233,20 @@ class ConfigAdapter(GatewayAdapter):
             ReqMethod.CONFIG_SET,
             ReqMethod.CONFIG_SAVE_ALL,
             ReqMethod.MODELS_REPLACE_ALL,
+            ReqMethod.MODELS_UPSERT,
+            ReqMethod.MODELS_DELETE,
+            ReqMethod.MODEL_GROUPS_UPSERT,
+            ReqMethod.MODEL_GROUPS_DELETE,
         }:
             metadata["config_changed"] = True
         payload = dict(response["payload"])
+        if response["ok"] and request.req_method == ReqMethod.MODELS_LIST:
+            _append_zen_free_models(payload)
+        if response["ok"] and request.req_method in {
+            ReqMethod.CONFIG_SET,
+            ReqMethod.CONFIG_SAVE_ALL,
+        }:
+            await _warm_zen_after_free_model_toggle(payload)
         if not response["ok"]:
             payload.setdefault("error", response["error"] or "config request failed")
             payload.setdefault("code", response["code"] or "INTERNAL_ERROR")
@@ -189,22 +263,12 @@ class ConfigAdapter(GatewayAdapter):
 
         if request.req_method == ReqMethod.PATH_GET:
             browser = (get_config() or {}).get("browser") or {}
-            browser_type = "auto"
-            if isinstance(browser, dict):
-                raw_type = browser.get("browser_type", "auto")
-                if isinstance(raw_type, str) and raw_type.strip():
-                    normalized = raw_type.strip().lower()
-                    if normalized in {"chrome", "google-chrome", "google_chrome"}:
-                        browser_type = "chrome"
-                    elif normalized in {"msedge", "edge", "microsoft-edge", "microsoft_edge"}:
-                        browser_type = "msedge"
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=True,
                 payload={
                     "chrome_path": _resolve_browser_path(browser) if isinstance(browser, dict) else "",
-                    "browser_type": browser_type,
                     "headless": browser.get("headless") if isinstance(browser.get("headless"), bool) else True,
                 },
                 metadata=request.metadata,
@@ -215,25 +279,10 @@ class ConfigAdapter(GatewayAdapter):
             return build_error_response(request, "chrome_path must be string", code="BAD_REQUEST")
         chrome_path = chrome_path.strip()
 
-        raw_browser_type = params.get("browser_type", "auto")
-        if not isinstance(raw_browser_type, str):
-            return build_error_response(request, "browser_type must be string", code="BAD_REQUEST")
-        normalized_type = raw_browser_type.strip().lower()
-        if normalized_type in {"chrome", "google-chrome", "google_chrome"}:
-            browser_type = "chrome"
-        elif normalized_type in {"msedge", "edge", "microsoft-edge", "microsoft_edge"}:
-            browser_type = "msedge"
-        elif normalized_type in {"", "auto"}:
-            browser_type = "auto"
-        else:
-            return build_error_response(
-                request, "browser_type must be one of: auto, chrome, msedge", code="BAD_REQUEST"
-            )
-
         headless = params.get("headless", True)
         if not isinstance(headless, bool):
             headless = True
-        update_browser_in_config({"chrome_path": chrome_path, "browser_type": browser_type, "headless": headless})
+        update_browser_in_config({"chrome_path": chrome_path, "headless": headless})
         metadata = dict(request.metadata or {})
         metadata["config_changed"] = True
         metadata["browser_runtime_restart"] = True
@@ -241,7 +290,7 @@ class ConfigAdapter(GatewayAdapter):
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload={"chrome_path": chrome_path, "browser_type": browser_type, "headless": headless},
+            payload={"chrome_path": chrome_path, "headless": headless},
             metadata=metadata,
         )
 
@@ -286,9 +335,8 @@ class ConfigAdapter(GatewayAdapter):
 
     async def _handle_tui_command_model(self, request: AgentRequest) -> AgentResponse:
         """Run the complete legacy TUI model command in this user directory."""
-        from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
-            CliHandlersBindParams,
-            register_cli_handlers,
+        from jiuwenswarm.common.config_panel.tui_models_handlers import (
+            command_model_handler,
         )
 
         class _ReloadNoopClient:
@@ -300,17 +348,15 @@ class ConfigAdapter(GatewayAdapter):
                 return type("Response", (), {"ok": True, "payload": {}})()
 
         channel = _ConfigRpcChannel(request.channel_id or "tui")
-        register_cli_handlers(
-            CliHandlersBindParams(
-                channel=channel,
-                agent_client=_ReloadNoopClient(),
-                force_local_config=True,
-            )
+        await command_model_handler(
+            channel,
+            object(),
+            request.request_id,
+            request.params or {},
+            request.session_id,
+            agent_client=_ReloadNoopClient(),
+            user_id=request.user_id,
         )
-        handler = channel.methods.get(ReqMethod.COMMAND_MODEL.value)
-        if handler is None:
-            return build_error_response(request, "command.model handler unavailable")
-        await handler(object(), request.request_id, request.params or {}, request.session_id)
         response = channel.response
         if response is None:
             return build_error_response(request, "command.model produced no response")

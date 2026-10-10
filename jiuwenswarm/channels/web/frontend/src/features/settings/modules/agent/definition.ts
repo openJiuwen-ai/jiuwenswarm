@@ -1,6 +1,6 @@
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
-import { AgentMediaSettings, AgentSearchSettings } from './AgentSettings';
+import { AgentMediaSettings, AgentSearchSettings, VideoGenSettings, VisualGenSettings } from './AgentSettings';
 
 export const agentModule: SettingsModuleDefinition = {
   id: 'agent',
@@ -13,7 +13,12 @@ export const agentModule: SettingsModuleDefinition = {
       titleKey: 'settingsPanel.agent.skills',
       items: [
         { id: 'skill-evolution', component: 'switch', key: 'skill_evolution' },
-        { id: 'skill-retrieval', component: 'switch', key: 'skill_retrieval_enabled' },
+        { id: 'ttse-enabled', component: 'switch', key: 'ttse_enabled' },
+        {
+          id: 'skill-retrieval',
+          component: 'switch',
+          key: 'skill_retrieval_enabled',
+        },
       ],
     },
     {
@@ -28,12 +33,11 @@ export const agentModule: SettingsModuleDefinition = {
     {
       id: 'media-tools',
       titleKey: 'settingsPanel.agent.mediaTools',
-      items: [{ id: 'media-tools-settings', component: 'custom', render: AgentMediaSettings }],
-    },
-    {
-      id: 'team',
-      titleKey: 'settingsPanel.agent.team',
-      items: [{ id: 'swarmflow', component: 'switch', key: 'swarmflow_enabled' }],
+      items: [
+        { id: 'media-tools-settings', component: 'custom', render: AgentMediaSettings },
+        { id: 'video-gen-settings', component: 'custom', render: VideoGenSettings },
+        { id: 'visual-gen-settings', component: 'custom', render: VisualGenSettings },
+      ],
     },
   ],
 };

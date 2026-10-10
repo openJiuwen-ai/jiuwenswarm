@@ -147,13 +147,29 @@ def list_execution_disabled_skills(state: dict[str, Any]) -> list[str]:
 def load_execution_disabled_skills() -> list[str]:
     """Read skills_state.json and return disabled skill names that are installed."""
     try:
+        state: dict[str, Any] = {}
         state_file = get_state_file()
         if state_file.exists():
             state = json.loads(state_file.read_text(encoding="utf-8"))
-            return list_execution_disabled_skills(state)
     except Exception as exc:
         logger.warning("[SkillState] Failed to load disabled skills: %s", exc)
-    return []
+        return []
+
+    disabled = set(list_execution_disabled_skills(state))
+    try:
+        from jiuwenswarm.server.runtime.skill.skillpack import (
+            unavailable_skillpacks,
+        )
+
+        disabled.update(
+            unavailable_skillpacks(
+                get_agent_skills_dir(),
+                enabled_for=lambda name: get_skill_enabled(state, name),
+            )
+        )
+    except Exception as exc:
+        logger.warning("[SkillState] Failed to load unavailable SkillPacks: %s", exc)
+    return sorted(disabled)
 
 
 def filter_visible_skill_names(names: list[str]) -> list[str]:

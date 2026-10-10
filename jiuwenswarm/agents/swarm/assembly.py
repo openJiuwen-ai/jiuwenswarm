@@ -35,9 +35,15 @@ from openjiuwen.agent_teams.paths import (
     configure_global_skills_dir,
     team_home,
 )
+from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
 from openjiuwen.agent_teams.schema.blueprint import TransportSpec
-from openjiuwen.agent_teams.schema.team import TeamMemberSpec, TeamRole
+from openjiuwen.agent_teams.schema.team import (
+    ExternalCliMemberSpec,
+    TeamMemberSpec,
+    TeamRole,
+)
 from openjiuwen.core.foundation.tool import McpServerConfig
+from openjiuwen.extensions.observability.demand import get_trajectory_span_processor
 from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec
 
 from jiuwenswarm.agents.swarm.config_specs import build_member_deep_agent_spec
@@ -46,12 +52,12 @@ from jiuwenswarm.agents.swarm.context import (
     get_heartbeat_job_service,
 )
 from jiuwenswarm.agents.swarm.registry import register_swarm_providers
-from jiuwenswarm.agents.harness.observability_runtime import get_trajectory_span_processor
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.mcp_config import (
     build_enabled_mcp_server_configs,
     preflight_mcp_server_reachable,
 )
+from jiuwenswarm.common.mode_matrix import is_code_profile_mode, is_team_mode
 from jiuwenswarm.common.utils import get_agent_skills_dir
 
 logger = logging.getLogger(__name__)
@@ -105,9 +111,9 @@ def _with_project_cwd(member_spec: Any, project_dir: str | None) -> Any:
     """Point a member's cwd / project root at the request project directory.
 
     Only the working directory moves: the member keeps its own workspace for
-    artifacts (memory, Skill visibility metadata, ``.team`` mount). When
-    worktree isolation is on, ``AgentConfigurator`` overrides cwd again with
-    the member worktree, which is why this is unconditional here.
+    artifacts (memory, Skill visibility metadata). When worktree isolation is
+    on, ``AgentConfigurator`` overrides cwd again with the member worktree,
+    which is why this is unconditional here.
     """
     project_root = str(project_dir or "").strip()
     if not project_root:
@@ -205,6 +211,7 @@ def _apply_agent_group(spec: Any, agent_group_name: str) -> None:
     from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
     from jiuwenswarm.server.runtime.extension_package_manager import (
         resolve_agent_group_dir,
+        resolve_agent_group_member_display_name,
     )
 
     package_dir = resolve_agent_group_dir(agent_group_name)
@@ -233,19 +240,37 @@ def _apply_agent_group(spec: Any, agent_group_name: str) -> None:
         if agent_name == "leader":
             continue
         member_prompt = _template_team_prompt(template, teammate_base)
-        spec.agents[agent_name] = _with_agent_template(
-            teammate_base.model_copy(deep=True),
-            template,
-        )
-        predefined_members.append(
-            TeamMemberSpec(
+        external_config = external_cli_agent_spec_from_template(template)
+        if external_config is None:
+            spec.agents[agent_name] = _with_agent_template(
+                teammate_base.model_copy(deep=True),
+                template,
+            )
+            member = TeamMemberSpec(
                 member_name=agent_name,
-                display_name=template.agent_card.name or agent_name,
+                display_name=resolve_agent_group_member_display_name(
+                    package_dir,
+                    agent_name,
+                    fallback=template.agent_card.name or agent_name,
+                ),
                 desc=template.agent_card.description or "",
                 prompt=member_prompt,
                 role_type=TeamRole.TEAMMATE,
             )
-        )
+        else:
+            spec.agents[agent_name] = teammate_base.model_copy(deep=True)
+            member = ExternalCliMemberSpec(
+                member_name=agent_name,
+                display_name=resolve_agent_group_member_display_name(
+                    package_dir,
+                    agent_name,
+                    fallback=template.agent_card.name or agent_name,
+                ),
+                desc=template.agent_card.description or "",
+                prompt=member_prompt,
+                external_cli=external_config,
+            )
+        predefined_members.append(member)
 
     spec.predefined_members = predefined_members
     spec.team_mode = "hybrid"
@@ -299,6 +324,38 @@ def enrich_team_spec_for_swarm(
         if workspace and workspace.root_path
         else str(team_home(spec.team_name) / "team-workspace")
     )
+    # A projectless team member (no project_dir) still needs a shared, stable
+    # place for final deliverables. It lives under the team workspace's own
+    # ``artifacts/`` tree so it is inside the team-workspace git repository
+    # (auto-commit / history work) and so all members of one team share one
+    # dated ``chat-<n>`` directory, distinguished by filename. Members bound to a
+    # project keep deliverables in the project, so no task workspace is
+    # allocated and the runtime prompt rail stays on its else branch (matching
+    # single-agent behaviour). The per-member ``task_work_dir`` (the member's
+    # own workspace) is resolved in the rail per member, not here.
+    task_workspace_root: str | None = None
+    team_outputs_dir: str | None = None
+    if not str(project_dir or "").strip():
+        try:
+            from jiuwenswarm.common.team_artifacts import (
+                get_team_artifact_workspace,
+            )
+
+            artifact_ws = get_team_artifact_workspace(
+                team_ws_root,
+                session_id=session_id,
+            )
+            task_workspace_root = str(artifact_ws.root_dir)
+            team_outputs_dir = str(artifact_ws.outputs_dir)
+        except OSError as exc:
+            logger.warning(
+                "[swarm.assembly] team artifact workspace allocation "
+                "failed (team=%s, session=%s): %s — members will keep "
+                "deliverables in their own workspace",
+                spec.team_name,
+                session_id,
+                exc,
+            )
     # Derived from the actual team workspace root rather than from
     # ``paths.team_skill_visibility_path`` so a relocated team workspace keeps
     # its metadata next to the workspace it really uses. For the default layout
@@ -321,9 +378,14 @@ def enrich_team_spec_for_swarm(
         mode=mode,
         project_dir=project_dir,
         trusted_dirs=trusted_dirs,
-        disable_teammate_worktree=str(channel_id or "").strip().lower() == "web",
+        disable_teammate_worktree=(
+            str(channel_id or "").strip().lower() == "web"
+            and not (is_team_mode(mode) and is_code_profile_mode(mode))
+        ),
         team_id=spec.team_name,
         team_ws_root=team_ws_root,
+        task_workspace_root=task_workspace_root,
+        team_outputs_dir=team_outputs_dir,
         team_skill_visibility_path=team_visibility_path,
         global_skills_dir=global_skills_dir,
         trajectory_span_processor=get_trajectory_span_processor(),

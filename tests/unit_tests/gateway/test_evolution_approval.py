@@ -52,6 +52,12 @@ def test_approval_payload_recognizes_request_id_and_metadata() -> None:
     }) is True
 
 
+def test_approval_payload_rejects_unhashable_source_without_raising() -> None:
+    assert is_evolution_approval_payload({"source": []}) is False
+    assert is_evolution_approval_payload({"source": {"unexpected": True}}) is False
+    assert is_interrupt_evolution_approval_answer_payload({"source": []}) is False
+
+
 def test_regular_metadata_enrichment_preserves_existing_transport() -> None:
     enriched = ensure_regular_evolution_approval_metadata({
         "request_id": "call_123",

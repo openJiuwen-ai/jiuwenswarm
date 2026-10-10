@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useConnectorStore } from '../../stores/connectorStore';
-import type { ConnectorConnectResponse } from '../../types/connector';
+import type { ConnectorConnectResponse, ConnectorSummary } from '../../types/connector';
 import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
 
@@ -10,13 +10,21 @@ import { CliAuthModal } from './CliAuthModal';
  * 继续下一个，全部连完调用方传入的 onAllConnected（装备侧对应 §1.6.3 幂等重试 install /
  * §1.6.4 只刷新 list/show，两种收尾都由调用方决定，这个 hook 只管连接本身）。
  *
- * `PluginDetailPage.tsx`（详情页安装/重连）和 `ExtensionPickerPanel.tsx`（扩展面板行内重连）
- * 都要跑同一套串行连接逻辑，抽成共用 hook + 共用弹窗渲染（见下面 `PendingConnectorModals`）
- * 避免两处各写一遍状态机和弹窗接线；MCP 自己的连接弹窗（ConnectTokenModal/CliAuthModal）保持
- * 不变，直接复用——它们的 onConnected 语义已经是"连接确认成功才回调"（见各自文件内
- * saveCredentialsAndConnect/waitAuth 的 type==='connected' 判断），这里不需要在 onConnected 后
- * 再二次校验。
+ * `PluginDetailPage.tsx`（详情页安装/重连）、`ExtensionPickerPanel.tsx`（扩展面板行内重连）
+ * 和专家安装的 pending 续跑都走这套逻辑。Hub 依赖未安装时不能直接 mcp.connect（本地没有包），
+ * 先 mcp.install，已装的仍只 connect。
+ *
+ * 2026-08-31 修死循环：某个 pending connector 硬失败（connect() 返回 null，比如依赖的 MCP 根本
+ * 连不上）或用户中途关掉授权弹窗时，这个 hook 以前只是静默 setQueue(null) 收摊，既不通知调用方、
+ * 也不碰驱动它的 installPendingMap。而插件侧三处调用点都是「effect 侦测到 installPendingMap[id]
+ * 非空就 start()」的写法——名单没被清掉，effect 就会反复重启连接续跑（MarketplacePage 那处
+ * effect 依赖里还有 flow.active，active 一变 false 直接又触发 → 死循环狂打 mcp.connect）。
+ * 加一个 onAborted 回调，硬失败/用户取消时触发，调用方在里面 clearInstallPending(id) 让 effect
+ * 条件转 false，安装到此终止，用户处理好依赖后再手动重来。
  */
+/** onAborted 的中止原因：连接硬失败，还是用户主动关掉授权弹窗。 */
+export type PendingConnectorAbortReason = 'failed' | 'cancelled';
+
 export interface PendingConnectorFlow {
   /** 是否正处于连接续跑中（用于按钮 disabled/loading 态）。 */
   active: boolean;
@@ -32,7 +40,46 @@ export interface PendingConnectorFlow {
   handleAuthConnected: () => void;
 }
 
-export function usePendingConnectorFlow(onAllConnected: () => void): PendingConnectorFlow {
+function findStoredConnector(name: string): ConnectorSummary | undefined {
+  const state = useConnectorStore.getState();
+  return [...state.connectors, ...state.builtinConnectors, ...state.myConnectors].find(
+    (item) =>
+      item.name === name || item.runtimePackageName === name || item.id === name || item.hubAssetId === name,
+  );
+}
+
+async function ensurePendingConnector(name: string): Promise<ConnectorConnectResponse | null> {
+  const store = useConnectorStore.getState();
+  let connector = findStoredConnector(name);
+  if (!connector) {
+    await store.loadList('builtin', { silent: true });
+    connector = findStoredConnector(name);
+  }
+  const assetId =
+    connector && !connector.installed && (connector.source === 'hub' || connector.hubAssetId)
+      ? (connector.hubAssetId || connector.id).trim()
+      : '';
+  if (assetId) {
+    const installed = await store.installPackage(assetId);
+    if (!installed) return null;
+    const fromInstall = installed.connect;
+    if (
+      fromInstall &&
+      (fromInstall.type === 'connected' ||
+        fromInstall.type === 'auth_required' ||
+        fromInstall.type === 'credentials_required' ||
+        fromInstall.credentialsRequired)
+    ) {
+      return fromInstall;
+    }
+  }
+  return store.connect(name);
+}
+
+export function usePendingConnectorFlow(
+  onAllConnected: () => void,
+  onAborted?: (reason: PendingConnectorAbortReason) => void,
+): PendingConnectorFlow {
   const [queue, setQueue] = useState<string[] | null>(null);
   const [tokenTarget, setTokenTarget] = useState<{ name: string; response: ConnectorConnectResponse } | null>(null);
   const [authTarget, setAuthTarget] = useState<{ name: string; response: ConnectorConnectResponse } | null>(null);
@@ -45,11 +92,14 @@ export function usePendingConnectorFlow(onAllConnected: () => void): PendingConn
     }
     const [name, ...rest] = remaining;
     setQueue(remaining);
-    const response = await useConnectorStore.getState().connect(name);
+    const response = await ensurePendingConnector(name);
     if (!response) {
       // 硬失败：store 已经把 error 写进 connectorStore.error，顶层会弹红色 Toast，这里只需
       // 中止续跑，不重复展示错误（同款处理见 McpDetailPage.tsx handleInstall 的既有逻辑）。
+      // onAborted 让调用方清掉驱动 effect 的 pending 名单，否则 effect 会反复重启这个流程
+      // （2026-08-31 修死循环，见文件头注释）。
       setQueue(null);
+      onAborted?.('failed');
       return;
     }
     if (response.credentialsRequired) {
@@ -71,9 +121,13 @@ export function usePendingConnectorFlow(onAllConnected: () => void): PendingConn
   }
 
   function cancel() {
+    const wasActive = queue !== null || tokenTarget !== null || authTarget !== null;
     setQueue(null);
     setTokenTarget(null);
     setAuthTarget(null);
+    // 用户中途关掉授权弹窗也要通知调用方清 pending 名单，否则 effect 会立刻把同一个流程再拉起来、
+    // 弹窗又冒出来，用户根本关不掉（2026-08-31 修死循环）。
+    if (wasActive) onAborted?.('cancelled');
   }
 
   function handleTokenCancel() {

@@ -43,7 +43,7 @@ _TEST_LOOPBACK_TARGET = os.getenv("JIUWENBOX_TEST_LOOPBACK_TARGET", "http://127.
 # Test-only loopback host for dynamic port endpoints; not a hardcoded production IP.
 _TEST_LOOPBACK_HOST = os.getenv("JIUWENBOX_TEST_LOOPBACK_HOST", "127.0.0.1")
 # Test-only Docker gateway IP; not a hardcoded production IP.
-_TEST_DOCKER_GATEWAY_IP = "172.17.0.1"
+_TEST_DOCKER_GATEWAY_IP = os.getenv("JIUWENBOX_TEST_DOCKER_GATEWAY_IP", "172.17.0.1")
 # Test-only path prefix; not a production route.
 _TEST_PATH_PREFIX_NEO4J = "/neo4j"
 
@@ -1998,7 +1998,7 @@ class TestModelValidation:
             ProxyRouteEntry(
                 path_prefix="/test",
                 target_endpoint="https://api.openai.com",
-                api_key="key\r\nInjected: bad"
+                api_key=f"{_TEST_API_KEY}\r\nInjected: bad"
             )
 
     @staticmethod
@@ -2007,7 +2007,7 @@ class TestModelValidation:
             ProxyRouteEntry(
                 path_prefix="/test",
                 target_endpoint="https://api.openai.com",
-                api_key="key\x01hidden"
+                api_key=f"{_TEST_API_KEY}\x01hidden"
             )
 
     @staticmethod
@@ -2569,12 +2569,12 @@ class TestBasicAuthResolution:
         with pytest.raises(ValueError, match="requires one of password or password_file"):
             build(entry)
 
-    def test_password_and_password_file_mutually_exclusive(self):
+    def test_password_and_password_file_mutually_exclusive(self, tmp_path):
         build, entry = self._entry(
             basic_auth={
                 "username": "u",
                 "password": _TEST_BASIC_PASSWORD,
-                "password_file": "/tmp/x",
+                "password_file": str(tmp_path / "x"),
             },
         )
         with pytest.raises(ValueError, match="mutually exclusive"):
@@ -2612,7 +2612,7 @@ class TestBasicAuthResolution:
             build(entry)
 
     def test_password_crlf_rejected(self):
-        build, entry = self._entry(basic_auth={"username": "u", "password": "pw\r\nX-Inject: bad"})
+        build, entry = self._entry(basic_auth={"username": "u", "password": f"{_TEST_BASIC_PASSWORD}\r\nX-Inject: bad"})
         with pytest.raises(ValueError, match="invalid characters"):
             build(entry)
 
@@ -2672,7 +2672,7 @@ class TestBasicAuthYamlLoad:
                 ProxyRouteEntry(
                     path_prefix=_TEST_PATH_PREFIX_NEO4J,
                     target_endpoint=_TEST_UPSTREAM_TARGET,
-                    basic_auth=ProxyBasicAuth(username=_TEST_BASIC_USER, password="yaml-pw"),
+                    basic_auth=ProxyBasicAuth(username=_TEST_BASIC_USER, password=_TEST_BASIC_PASSWORD),
                 )
             ],
         )
@@ -2745,7 +2745,7 @@ class TestBasicAuthYamlLoad:
                 ProxyRouteEntry(
                     path_prefix="/bearer",
                     target_endpoint=_TEST_UPSTREAM_TARGET,
-                    api_key="sk-bearer",
+                    api_key=_TEST_API_KEY,
                 ),
                 ProxyRouteEntry(
                     path_prefix="/bad",
@@ -2761,7 +2761,7 @@ class TestBasicAuthYamlLoad:
                 ProxyRouteEntry(
                     path_prefix="/goodbasic",
                     target_endpoint=_TEST_UPSTREAM_TARGET,
-                    basic_auth=ProxyBasicAuth(username=_TEST_BASIC_USER, password="inline-pw"),
+                    basic_auth=ProxyBasicAuth(username=_TEST_BASIC_USER, password=_TEST_BASIC_PASSWORD),
                 ),
             ],
         )
@@ -2820,7 +2820,7 @@ class TestUpdateContractBasicAuth:
                 self._route(
                     "/uc-basic",
                     basic_username=_TEST_BASIC_USER,
-                    basic_password="orig-pw",
+                    basic_password=_TEST_BASIC_PASSWORD,
                 )
             ],
         )
@@ -2828,16 +2828,16 @@ class TestUpdateContractBasicAuth:
 
         # Full update: provide api_key, omit basic_auth -> Basic cleared.
         new_config = InferencePrivacyProxyConfig(
-            routes=[self._route("/uc-basic", api_key="sk-only")]
+            routes=[self._route("/uc-basic", api_key=_TEST_API_KEY)]
         )
         await manager.update_proxy("uc-basic", new_config)
 
         detail = await manager.get_proxy("uc-basic")
         assert detail["route"]["auth_type"] == "api_key"
-        assert detail["route"]["api_key"] == "sk-only"
+        assert detail["route"]["api_key"] == _TEST_API_KEY
         # Basic fields fully cleared (no implicit preserve of old password).
         assert detail["route"]["basic_auth"] is None
-        assert "orig-pw" not in json.dumps(detail)
+        assert _TEST_BASIC_PASSWORD not in json.dumps(detail)
 
     @pytest.mark.asyncio
     async def test_update_omit_api_key_clears_api_key(self, manager, proxy_listen_port):
@@ -2849,7 +2849,7 @@ class TestUpdateContractBasicAuth:
         """
         config = InferencePrivacyProxyConfig(
             listen_port=proxy_listen_port,
-            routes=[self._route("/uc-key", api_key="sk-orig")],
+            routes=[self._route("/uc-key", api_key=_TEST_API_KEY)],
         )
         await manager.create_proxy("uc-key", config)
 

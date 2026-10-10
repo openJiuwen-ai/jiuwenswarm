@@ -61,7 +61,6 @@ export interface HeartbeatJobDTO {
   concurrency_policy: HeartbeatConcurrencyPolicy;
   session_deleted_policy: HeartbeatSessionDeletedPolicy;
   max_runs: number | null;
-  delete_after_run: boolean;
   created_at: number | null;
   updated_at: number | null;
   next_run_at: number | null;
@@ -122,7 +121,7 @@ export interface HeartbeatRunNowResult {
     | 'replacement_pending'
     | 'replacement_cancel_failed'
     | 'job_disabled_during_replace'
-    | 'job_completed'; // §6：Once/delete_after_run/max_runs 已满足停止条件，前端需禁用并提示先恢复任务
+    | 'job_completed'; // §6：Once/max_runs 已满足停止条件，前端需禁用并提示先恢复任务
 }
 
 export type HeartbeatCancelStatus = 'idle' | 'cancelled' | 'not_found' | 'failed';

@@ -182,6 +182,8 @@ def test_code_spec_forces_task_loop_for_skill_evolution(tmp_path):
     assert spec.enable_task_loop is True
     assert spec.progressive_tool is not None
     assert spec.progressive_tool.enabled is False
+    assert spec.max_iterations == DeepAgentSpec.model_fields["max_iterations"].default
+    assert "max_iterations" not in spec.subagents[0].factory_kwargs
 
 
 def test_code_spec_materializes_through_registered_providers(tmp_path):
@@ -313,6 +315,7 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
     config_base = {
         "react": {"agent_name": "config-agent"},
         "modes": {"code": {"rails": [], "tools": []}},
+        "symphony": {"enabled": True},
     }
     custom_model = _model()
     custom_spec = DeepAgentSpec(
@@ -331,10 +334,15 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
         return None
 
     captured: dict = {}
+    caller_vision_tool = SimpleNamespace(
+        card=SimpleNamespace(name="visual_question_answering"),
+    )
 
     def build(spec, context):
         captured["spec"] = spec
         captured["context"] = context
+        # A caller Spec may still materialize tools through the Code bundle.
+        context.artifacts.tools = [caller_vision_tool]
         return SimpleNamespace(
             ensure_initialized=ensure_initialized,
             _registered_rails=[],
@@ -372,6 +380,12 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
     monkeypatch.setattr(adapter, "_create_sys_operation", create_sys_operation)
     monkeypatch.setattr(adapter, "_seed_runtime_cwd", MagicMock())
     monkeypatch.setattr(adapter, "_ensure_cron_tools_registered", MagicMock())
+    sync_symphony = MagicMock()
+    monkeypatch.setattr(
+        adapter,
+        "_sync_symphony_tools_for_runtime",
+        sync_symphony,
+    )
     monkeypatch.setattr(adapter, "_register_mcp_servers_from_config", AsyncMock())
     monkeypatch.setattr(adapter, "_load_active_packages", AsyncMock())
     monkeypatch.setattr(adapter, "load_user_rails", AsyncMock())
@@ -403,8 +417,12 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
     assert adapter._agent_name == "caller-spec-agent"
     assert owner_ids == [adapter._tool_owner_id()]
     assert adapter._default_model_name == "test-model"
+    # Reloads keep the caller Spec's tools untouched, including their configs.
+    assert adapter._vision_tools == []
+    assert adapter._vision_tools_registered is False
     create_model.assert_not_called()
     convert_config.assert_not_called()
+    sync_symphony.assert_not_called()
 
 
 def test_custom_code_build_context_is_cloned_and_rebound(tmp_path):
@@ -453,6 +471,76 @@ def test_custom_spec_is_propagated_to_deferred_and_session_builds():
         "spec": custom_spec,
         "build_context": custom_context,
     }
+
+
+def test_runtime_agent_definition_overlays_complete_product_spec():
+    base = DeepAgentSpec(
+        card=AgentCard(id="product-agent", name="product-agent"),
+        system_prompt="product prompt",
+        tools=[],
+        rails=[],
+        skills=["product-skill"],
+        enable_security_rail=True,
+        enable_tool_resilience_rail=True,
+        max_iterations=15,
+    )
+
+    effective = interface_code.JiuwenSwarmCodeAdapter._apply_runtime_agent_definition(
+        base,
+        {
+            "name": "sdk_agent",
+            "description": "SDK-defined root Agent",
+            "instructions": "Follow the SDK task.",
+            "tools": "*",
+            "skills": ["sdk-skill"],
+            "max_iterations": 7,
+        },
+    )
+
+    assert effective is not base
+    assert base.card.name == "product-agent"
+    assert base.system_prompt == "product prompt"
+    assert effective.card.id == "product-agent"
+    assert effective.card.name == "sdk_agent"
+    assert effective.card.description == "SDK-defined root Agent"
+    assert effective.system_prompt == (
+        "product prompt\n\n# Agent Instructions\nFollow the SDK task."
+    )
+    assert effective.tools == base.tools
+    assert effective.rails == base.rails
+    assert effective.skills == ["sdk-skill"]
+    assert effective.max_iterations == 7
+    assert effective.enable_security_rail is True
+    assert effective.enable_tool_resilience_rail is True
+
+
+def test_runtime_agent_definition_with_tool_list_disables_broader_subagents():
+    base = DeepAgentSpec(system_prompt="product prompt")
+    effective = interface_code.JiuwenSwarmCodeAdapter._apply_runtime_agent_definition(
+        base,
+        {
+            "name": "sdk_agent",
+            "instructions": "Follow the SDK task.",
+            "tools": ["shell"],
+        },
+    )
+    assert effective.subagents == []
+    assert effective.tools == base.tools
+
+
+def test_runtime_agent_definition_is_propagated_to_session_builds():
+    adapter = interface_code.JiuwenSwarmCodeAdapter()
+    definition = {
+        "name": "sdk_agent",
+        "instructions": "Follow the SDK task.",
+        "tools": "*",
+    }
+    adapter._session_instance_agent_definition = definition
+
+    propagated = adapter._session_instance_extra_create_kwargs()
+
+    assert propagated == {"agent_definition": definition}
+    assert propagated["agent_definition"] is not definition
 
 
 @pytest.mark.asyncio

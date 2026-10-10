@@ -1,4 +1,16 @@
 import type { ModelEntry, ModelPlan, VendorPreset, VendorPresetMap } from '../../../../types';
+import {
+  DEFAULT_CONTEXT_WINDOW_TOKENS,
+  normalizeContextWindowTokens,
+  resolveDraftContextWindowTokens,
+} from './contextWindow';
+import {
+  isReasoningLevelSupported,
+  parseReasoningCapabilities,
+  parseReasoningCatalog,
+  parseReasoningRules,
+  resolveModelReasoning,
+} from './modelReasoning';
 
 export type ModelProtocol = 'openai' | 'anthropic';
 export type ModelInputMode = 'options' | 'manual';
@@ -16,6 +28,7 @@ export type ModelDraft = {
   api_key: string;
   api_base: string;
   reasoning_level: string;
+  context_window_tokens: string;
   is_default: boolean;
 };
 
@@ -28,6 +41,7 @@ const MODEL_DRAFT_FIELDS: readonly (keyof ModelDraft)[] = [
   'api_key',
   'api_base',
   'reasoning_level',
+  'context_window_tokens',
   'is_default',
 ];
 
@@ -60,6 +74,11 @@ export function parseVendorCatalog(value: unknown): VendorPresetMap {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_VENDOR_CATALOG');
   const payload = value as Record<string, unknown>;
   const result = {} as VendorPresetMap;
+  try {
+    result.reasoning = parseReasoningCatalog(payload.reasoning);
+  } catch {
+    throw new Error('INVALID_VENDOR_CATALOG');
+  }
   for (const plan of ['token_plan', 'coding_plan', 'custom_api'] as const) {
     const presets = payload[plan];
     if (!Array.isArray(presets)) throw new Error('INVALID_VENDOR_CATALOG');
@@ -85,7 +104,15 @@ export function parseVendorCatalog(value: unknown): VendorPresetMap {
       ) {
         throw new Error('INVALID_VENDOR_CATALOG');
       }
-      return preset as unknown as VendorPreset;
+      try {
+        return {
+          ...preset,
+          reasoning_capabilities: parseReasoningCapabilities(preset.reasoning_capabilities),
+          reasoning_rules: parseReasoningRules(preset.reasoning_rules),
+        } as unknown as VendorPreset;
+      } catch {
+        throw new Error('INVALID_VENDOR_CATALOG');
+      }
     });
   }
   return result;
@@ -95,6 +122,19 @@ export function findVendorPreset(catalog: VendorPresetMap, selection: string): V
   return flattenVendorCatalog(catalog).find(
     (preset) => vendorSelectionKey(preset.plan, preset.vendor_key) === selection,
   );
+}
+
+/** Normalize the draft after capabilities load or the model changes; never persist it here. */
+export function reconcileModelReasoning(draft: ModelDraft, catalog: VendorPresetMap): ModelDraft {
+  const capability = resolveModelReasoning(
+    catalog,
+    findVendorPreset(catalog, draft.vendor_selection),
+    draft.model_name,
+    draft.protocol,
+  );
+  return capability && !isReasoningLevelSupported(draft.reasoning_level, capability)
+    ? { ...draft, reasoning_level: '' }
+    : draft;
 }
 
 export function normalizeModelOptions(options: readonly string[]): string[] {
@@ -127,11 +167,13 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
       api_key: '',
       api_base: '',
       reasoning_level: '',
+      context_window_tokens: normalizeContextWindowTokens(DEFAULT_CONTEXT_WINDOW_TOKENS),
       is_default: false,
     };
   }
 
   const alias = model.alias ?? '';
+  const contextWindowTokens = normalizeContextWindowTokens(model.context_window_tokens);
 
   if (model.model_provider === 'OpenAIAccount') {
     return {
@@ -143,6 +185,7 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
       api_key: '',
       api_base: model.api_base,
       reasoning_level: model.reasoning_level ?? '',
+      context_window_tokens: contextWindowTokens,
       is_default: model.is_default ?? false,
     };
   }
@@ -163,6 +206,7 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
     api_key: model.api_key,
     api_base: model.api_base,
     reasoning_level: model.reasoning_level ?? '',
+    context_window_tokens: contextWindowTokens,
     is_default: model.is_default ?? false,
   };
 }
@@ -198,7 +242,7 @@ export function applyVendorSelection(draft: ModelDraft, selection: string, catal
     ...draft,
     protocol: anthropic ? 'anthropic' : 'openai',
     vendor_selection: selection,
-    model_name: preset.default_model,
+    model_name: '',
     model_input_mode: 'options',
     api_key: '',
     api_base: anthropic ? (preset.anthropic_base ?? '') : preset.api_base,
@@ -228,6 +272,7 @@ export function modelDraftToEntry(
     api_base: draft.api_base.trim(),
     model_provider: existing?.model_provider ?? '',
     reasoning_level: draft.reasoning_level,
+    context_window_tokens: resolveDraftContextWindowTokens(draft.context_window_tokens),
     is_default: draft.is_default,
   };
 

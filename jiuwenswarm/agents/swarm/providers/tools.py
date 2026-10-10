@@ -11,6 +11,8 @@ elements, each self-gated by the config source and filtered against the swarm
 * ``swarm.user_todos`` — the personal todo tool.
 * ``swarm.video`` — the video-understanding tool (``models.video`` gated).
 * ``swarm.image_gen`` — the image-generation tool (``IMAGE_GEN_API_KEY`` gated).
+* ``swarm.video_gen`` — the video-generation tools (``models.video`` gated).
+* ``swarm.visual_gen`` — the image-generation tool (Visual processing config gated).
 * ``swarm.xiaoyi_phone`` — the xiaoyi phone tools (channel-switch gated).
 * ``swarm.code_extra_tools`` — code-mode-exclusive ``acp_chat``.
 
@@ -42,8 +44,8 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     apply_image_gen_model_config_from_yaml,
     apply_video_model_config_from_yaml,
     apply_vision_model_config_from_yaml,
-    dedicated_multimodal_model_configured,
     complete_multimodal_model_configured,
+    multimodal_model_enabled,
 )
 from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
     SkillRetrievalToolkit,
@@ -55,6 +57,17 @@ from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
 from jiuwenswarm.agents.harness.common.tools.user_todo_tool import get_decorated_tools
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
+from jiuwenswarm.agents.harness.common.tools.video_gen_tools import (
+    generate_video,
+    check_video_status,
+    video_gen_configured,
+    video_gen_enabled,
+)
+from jiuwenswarm.agents.harness.common.tools.visual_gen_tools import (
+    generate_visual,
+    visual_gen_configured,
+    visual_gen_enabled,
+)
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
     add_collection,
     call_phone,
@@ -99,6 +112,8 @@ SKILL_RETRIEVAL = "swarm.skill_retrieval"
 USER_TODOS = "swarm.user_todos"
 VIDEO = "swarm.video"
 IMAGE_GEN = "swarm.image_gen"
+VIDEO_GEN = "swarm.video_gen"
+VISUAL_GEN = "swarm.visual_gen"
 XIAOYI_PHONE = "swarm.xiaoyi_phone"
 SYMPHONY_TOOLKIT = "swarm.symphony_toolkit"
 CODE_EXTRA_TOOLS = "swarm.code_extra_tools"
@@ -257,7 +272,10 @@ def vision_model_config_params(config: dict[str, Any]) -> dict[str, Any]:
     Requires a dedicated ``models.vision`` key and a complete ``VISION_*`` env
     mapping after applying the yaml config (mirrors the single-agent build).
     """
-    if not dedicated_multimodal_model_configured(config, "vision"):
+    if not (
+        multimodal_model_enabled(config, "vision")
+        and complete_multimodal_model_configured(config, "vision")
+    ):
         return {}
     apply_vision_model_config_from_yaml(config)
     api_key = str(os.getenv("VISION_API_KEY", "")).strip()
@@ -279,12 +297,14 @@ def vision_model_config_params(config: dict[str, Any]) -> dict[str, Any]:
 
 def audio_dedicated_configured(config: dict[str, Any]) -> bool:
     """Return whether a complete dedicated audio model is configured."""
-    return complete_multimodal_model_configured(config, "audio")
+    return multimodal_model_enabled(config, "audio") and complete_multimodal_model_configured(
+        config, "audio"
+    )
 
 
 def audio_model_config_params(config: dict[str, Any]) -> dict[str, Any]:
     """Return ``AudioModelConfig`` constructor kwargs, or {} when incomplete."""
-    if not complete_multimodal_model_configured(config, "audio"):
+    if not audio_dedicated_configured(config):
         return {}
     apply_audio_model_config_from_yaml(config)
     api_key = str(os.getenv("AUDIO_API_KEY", "")).strip()
@@ -396,9 +416,12 @@ def _build_user_todo_tools() -> list[Any]:
 def _build_video_tools(ctx: SwarmBuildContext) -> list[Any]:
     """Build the video understanding tool when ``models.video`` is complete."""
     config = ctx.config or {}
-    apply_video_model_config_from_yaml(config)
-    if not complete_multimodal_model_configured(config, "video"):
+    if not (
+        multimodal_model_enabled(config, "video")
+        and complete_multimodal_model_configured(config, "video")
+    ):
         return []
+    apply_video_model_config_from_yaml(config)
     video_api_key = str(os.getenv("VIDEO_API_KEY", "")).strip()
     video_api_base = str(os.getenv("VIDEO_API_BASE", "")).strip()
     video_model_name = str(os.getenv("VIDEO_MODEL_NAME", "")).strip()
@@ -413,6 +436,26 @@ def _build_image_gen_tools(ctx: SwarmBuildContext) -> list[Any]:
     if not os.getenv("IMAGE_GEN_API_KEY"):
         return []
     return _mark_stateless([generate_image])
+
+
+def _build_video_gen_tools(ctx: SwarmBuildContext) -> list[Any]:
+    """Build the video-generation tools when enabled and the Video Model config is complete."""
+    _ = ctx
+    if not video_gen_enabled():
+        return []
+    if not video_gen_configured():
+        return []
+    return _mark_stateless([generate_video, check_video_status])
+
+
+def _build_visual_gen_tools(ctx: SwarmBuildContext) -> list[Any]:
+    """Build the image-generation tool when enabled and the Visual processing config is complete."""
+    _ = ctx
+    if not visual_gen_enabled():
+        return []
+    if not visual_gen_configured():
+        return []
+    return _mark_stateless([generate_visual])
 
 
 def _build_xiaoyi_phone_tools(ctx: SwarmBuildContext) -> list[Any]:
@@ -520,6 +563,26 @@ def build_video_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[An
 def build_image_gen_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
     """Build the whitelist-filtered image-generation tools."""
     return _filter_whitelist(_build_image_gen_tools(ctx))
+
+
+@harness_element(
+    kind=ElementKind.TOOL,
+    name=VIDEO_GEN,
+    description="Video-generation tools (built only when the Video Model config is complete).",
+)
+def build_video_gen_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
+    """Build the whitelist-filtered video-generation tools."""
+    return _filter_whitelist(_build_video_gen_tools(ctx))
+
+
+@harness_element(
+    kind=ElementKind.TOOL,
+    name=VISUAL_GEN,
+    description="Image-generation tool (built only when the Visual processing config is complete).",
+)
+def build_visual_gen_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
+    """Build the whitelist-filtered image-generation tool."""
+    return _filter_whitelist(_build_visual_gen_tools(ctx))
 
 
 @harness_element(

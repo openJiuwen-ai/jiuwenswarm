@@ -1,0 +1,1 @@
+export { archivedTasksModule } from './definition';

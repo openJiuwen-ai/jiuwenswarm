@@ -338,6 +338,9 @@ export function useCodeGitDiffWatch({ projectId, sessionId, enabled }: UseCodeGi
     const requestSequence = detailRequestSequenceRef.current + 1;
     detailRequestSequenceRef.current = requestSequence;
     if (!projectId || !filesEnabled || detailPaths.length === 0) {
+      // 取消详情订阅时不能只停止服务端推送：大 diff 仍会被此状态引用。
+      setDetailFiles({});
+      detailRevisionRef.current = null;
       setDetailLoading(false);
       setDetailError(null);
       if (watchId) {
@@ -351,6 +354,9 @@ export function useCodeGitDiffWatch({ projectId, sessionId, enabled }: UseCodeGi
       return;
     }
 
+    // 切换文件时立即解除对上一份预览内容的引用，避免等待网络响应期间累积。
+    setDetailFiles({});
+    detailRevisionRef.current = null;
     setDetailLoading(true);
     setDetailError(null);
     void gitWatchClient

@@ -4,7 +4,7 @@ import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
-from openjiuwen.core.foundation.kv_cache import resolve_session_lineage
+from openjiuwen.core.kv_cache import resolve_session_lineage
 from openjiuwen.core.session.agent import Session
 
 from jiuwenswarm.agents.harness.common.tools import wiki_tools
@@ -13,6 +13,17 @@ from jiuwenswarm.agents.harness.common.tools import wiki_tools
 def _ascend_model():
     return SimpleNamespace(
         model_client_config=SimpleNamespace(client_provider="AscendAffinity")
+    )
+
+
+def _openai_affinity_model():
+    return SimpleNamespace(
+        model_client_config=SimpleNamespace(
+            client_provider="OpenAI",
+            extensions=SimpleNamespace(
+                kv_cache=SimpleNamespace(mode="affinity"),
+            ),
+        )
     )
 
 
@@ -29,12 +40,11 @@ def test_create_llm_wiki_propagates_runtime_policy_and_parent_lineage(
         wiki_tools,
         "get_config",
         lambda: {
+            "kv_cache_affinity_config": {
+                "enable_kv_cache_affinity": True,
+            },
             "react": {
                 "enable_read_image_multimodal": False,
-                "kv_cache_affinity_config": {
-                    "enable_kv_cache_affinity": True,
-                    "enable_kv_cache_release": False,
-                },
             }
         },
     )
@@ -62,7 +72,6 @@ def test_create_llm_wiki_propagates_runtime_policy_and_parent_lineage(
     assert captured["parent_session_id"] == "product-session"
     kv_config = captured["kv_cache_affinity_config"]
     assert kv_config.enable_kv_cache_affinity is True
-    assert kv_config.enable_kv_cache_release is False
 
 
 def test_llm_wiki_session_exposes_provider_cache_lineage(monkeypatch, tmp_path):
@@ -82,4 +91,35 @@ def test_llm_wiki_session_exposes_provider_cache_lineage(monkeypatch, tmp_path):
     assert resolve_session_lineage(wiki._session) == (
         "product-session:subagent:wiki",
         "product-session",
+    )
+
+
+def test_create_llm_wiki_accepts_openai_affinity_capability(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        wiki_tools,
+        "get_config",
+        lambda: {
+            "kv_cache_affinity_config": {
+                "enable_kv_cache_affinity": True,
+            },
+        },
+    )
+    monkeypatch.setattr(wiki_tools, "get_current_session", lambda: None)
+    monkeypatch.setattr(
+        wiki_tools,
+        "LLMWiki",
+        lambda **kwargs: captured.update(kwargs) or SimpleNamespace(),
+    )
+
+    wiki_tools._create_llm_wiki(
+        workspace="workspace",
+        model=_openai_affinity_model(),
+        sys_operation=None,
+    )
+
+    assert (
+        captured["kv_cache_affinity_config"].enable_kv_cache_affinity
+        is True
     )

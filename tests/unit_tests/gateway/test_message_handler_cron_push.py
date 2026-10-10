@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
@@ -71,6 +74,7 @@ def _bare_handler(agent_client: object, controller: _CapturingCronController) ->
     handler._stream_user_ids = {}
     handler._stream_sessions = {}
     handler._stream_metadata = {}
+    handler._non_stream_chat_messages = {}
 
     async def _publish(_message) -> None:
         return None
@@ -112,6 +116,111 @@ async def test_agentos_cron_push_marks_remote_project_binding_verified() -> None
     )
 
     assert controller.update_patch == {"_agentos_project_binding_verified": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["create", "update"])
+@pytest.mark.parametrize("is_stream", [True, False])
+async def test_cron_push_uses_original_request_login_session(action, is_stream) -> None:
+    controller = _CapturingCronController()
+    controller.user_id = "route-user"
+    handler = _bare_handler(object(), controller)
+    metadata = {"auth_session": "huawei-login-session"}
+    if is_stream:
+        handler._stream_metadata["req-1"] = metadata
+    else:
+        handler._non_stream_chat_messages["req-1"] = SimpleNamespace(metadata=metadata)
+    data = {"_auth_session": "forged-tool-session"}
+    if action == "update":
+        data = {"job_id": "job-1", "patch": data}
+
+    await handler._handle_cron_push_payload(
+        payload={"action": action, "data": data},
+        request_id="req-1", channel_id="web", session_id="chat-session",
+        metadata={"auth_session": "forged-response-session"}, user_id="route-user",
+    )
+
+    forwarded = controller.create_params if action == "create" else controller.update_patch
+    assert forwarded["_auth_session"] == "huawei-login-session"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["create", "update"])
+async def test_cron_push_without_request_login_rejects_supplied_session(action) -> None:
+    controller = _CapturingCronController()
+    handler = _bare_handler(object(), controller)
+    data = {"_auth_session": "forged-tool-session"}
+    if action == "update":
+        data = {"job_id": "job-1", "patch": data}
+
+    await handler._handle_cron_push_payload(
+        payload={"action": action, "data": data},
+        request_id="req-1", channel_id="web", session_id="chat-session",
+        metadata={"auth_session": "forged-response-session"},
+    )
+
+    forwarded = controller.create_params if action == "create" else controller.update_patch
+    assert "_auth_session" not in forwarded
+
+
+@pytest.mark.asyncio
+async def test_dialogue_cron_push_persists_free_model_account_binding(tmp_path, monkeypatch) -> None:
+    from jiuwenswarm.common.auth.model_catalog import LoginModel
+    from jiuwenswarm.gateway.cron.controller import CronController
+    from jiuwenswarm.gateway.cron.store import CronJobStore
+
+    monkeypatch.setattr("jiuwenswarm.common.config.get_model_config", lambda *a, **k: None)
+    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.opencode_zen.get_zen_free_model_entries", lambda: []
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.auth.model_catalog.get_models",
+        lambda *a, **k: [LoginModel(model_name="GLM-5.2", display_name="GLM-5.2")],
+    )
+
+    def live_session(session_id, allow_refresh=True):
+        assert session_id == "huawei-login-session"
+        return SimpleNamespace(user_id="huawei-openid")
+
+    credential_ref = "0123456789abcdef0123456789abcdef"
+
+    def credential_ref_for_user(user_id):
+        assert user_id == "huawei-openid"
+        return credential_ref
+
+    monkeypatch.setattr("jiuwenswarm.common.auth.service.live_session", live_session)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.auth.login_credentials.credential_ref_for_user",
+        credential_ref_for_user,
+    )
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    controller = CronController(
+        store=store,
+        scheduler=SimpleNamespace(
+            reload=AsyncMock(), project_execution_allowed=AsyncMock(return_value=True)
+        ),
+    )
+    client_type = type("AgentOSRouterClient", (), {})
+    client_type.__module__ = "jiuwenswarm.extensions.agentos.routing"
+    handler = _bare_handler(client_type(), controller)
+    handler._stream_metadata["req-1"] = {"auth_session": "huawei-login-session"}
+
+    await handler._handle_cron_push_payload(
+        payload={"action": "create", "data": {
+            "name": "reminder", "cron_expr": "0 0 12 * * ? *",
+            "timezone": "Asia/Shanghai", "description": "rest",
+            "targets": "web", "model_name": "GLM-5.2",
+        }},
+        request_id="req-1", channel_id="web", session_id="chat-session",
+        metadata=None, user_id="route-user",
+    )
+
+    jobs = await store.list_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].model_name == "GLM-5.2"
+    assert jobs[0].user_id == "route-user"
+    assert jobs[0].credential_ref == credential_ref
 
 
 @pytest.mark.asyncio

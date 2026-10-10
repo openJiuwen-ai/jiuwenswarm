@@ -1,10 +1,13 @@
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from jiuwenswarm.agents.harness.common.tools import send_file_to_user as sfu
-from jiuwenswarm.agents.harness.common.tools.web_file_download import build_file_download_info
+from jiuwenswarm.agents.harness.common.tools.web_file_download import (
+    build_file_download_info,
+    validate_file_download_token,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +42,9 @@ def test_download_info_includes_agentos_user_id_in_url(tmp_path):
     )
 
     assert "user_id=user-1" in info["download_url"]
+    payload = validate_file_download_token(info["download_token"])
+    assert payload is not None
+    assert "exp" not in payload
 
 
 def test_send_file_skips_duplicate_after_success(tmp_path):
@@ -50,13 +56,13 @@ def test_send_file_skips_duplicate_after_success(tmp_path):
         session_id="sess-1",
         channel_id="web",
     )
-    mock_server = MagicMock()
-    mock_server.send_push = AsyncMock()
+    pushed: list[dict] = []
 
-    with patch(
-        "jiuwenswarm.server.agent_ws_server.AgentWebSocketServer.get_instance",
-        return_value=mock_server,
-    ), patch(
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    with patch.object(sfu, "send_runtime_push", _push), patch(
         "jiuwenswarm.server.runtime.session.session_history.append_history_record",
     ):
         first = asyncio.run(toolkit.send_file(str(file_path)))
@@ -65,7 +71,33 @@ def test_send_file_skips_duplicate_after_success(tmp_path):
     assert "成功发送" in first
     assert "最终交付文件已位于当前项目目录" not in first
     assert "跳过重复投递" in second
-    assert mock_server.send_push.await_count == 1
+    assert len(pushed) == 1
+
+
+def test_history_failure_after_push_does_not_duplicate_delivery(tmp_path):
+    file_path = tmp_path / "delivered.md"
+    file_path.write_text("hello", encoding="utf-8")
+    toolkit = sfu.SendFileToolkit(
+        request_id="r-history",
+        session_id="sess-history",
+        channel_id="web",
+    )
+    pushed: list[dict] = []
+
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    with patch.object(sfu, "send_runtime_push", _push), patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+        side_effect=OSError("history unavailable"),
+    ):
+        first = asyncio.run(toolkit.send_file(str(file_path)))
+        second = asyncio.run(toolkit.send_file(str(file_path)))
+
+    assert "成功发送" in first
+    assert "跳过重复投递" in second
+    assert len(pushed) == 1
 
 
 def test_send_file_materializes_team_workspace_files_in_project(tmp_path):
@@ -82,13 +114,13 @@ def test_send_file_materializes_team_workspace_files_in_project(tmp_path):
         project_dir=str(project_root),
         team_workspace_root=str(team_root),
     )
-    mock_server = MagicMock()
-    mock_server.send_push = AsyncMock()
+    pushed: list[dict] = []
 
-    with patch(
-        "jiuwenswarm.server.agent_ws_server.AgentWebSocketServer.get_instance",
-        return_value=mock_server,
-    ), patch(
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    with patch.object(sfu, "send_runtime_push", _push), patch(
         "jiuwenswarm.server.runtime.session.session_history.append_history_record",
     ) as append_history:
         result = asyncio.run(toolkit.send_file(str(source)))
@@ -96,7 +128,7 @@ def test_send_file_materializes_team_workspace_files_in_project(tmp_path):
     delivered = project_root / "reports" / "poem-gu.txt"
     assert "成功发送" in result
     assert delivered.read_text(encoding="utf-8") == "古诗"
-    payload = mock_server.send_push.await_args.args[0]["payload"]["files"]
+    payload = pushed[0]["payload"]["files"]
     assert payload[0]["path"] == str(delivered)
     history_extra = append_history.call_args.kwargs["extra"]
     assert history_extra["files"][0]["path"] == str(delivered)

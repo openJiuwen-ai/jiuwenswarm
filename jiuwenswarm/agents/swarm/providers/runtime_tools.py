@@ -34,7 +34,9 @@ from openjiuwen.agent_teams.harness.manifest import (
 
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import CronRuntimeBridge
 from jiuwenswarm.agents.harness.common.tools.send_file_to_user import SendFileToolkit
+from jiuwenswarm.agents.harness.common.tools.file_delivery_policy import is_send_file_enabled
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+from jiuwenswarm.common.cron_session import is_cron_execution_session
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +131,26 @@ def build_cron_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any
         # the same runtime mode as the originating team conversation.
         mode=str(getattr(ctx, "mode", "") or "team"),
     )
+    # cron 执行会话全面禁止操作 cron：成员工具集整体不下发（连 list/get
+    # 等只读管理也不暴露，与单 Agent 链路 _ensure_cron_tools_registered 的
+    # 全面下架对齐），心跳工具同样不挂（见 member_rails 的 swarm.heartbeat）。
+    # 判定信号与 code_rails 的 permission rail 对齐：调度器给每个 cron 请求
+    # 打 request_metadata["cron"]（见 CronScheduler._run_team_stream_job），
+    # channel_id == "__cron__" 兜底覆盖 SDK 未透传 metadata 的场景，会话 ID
+    # 前缀（cron_*）覆盖 team 流式执行会话（_resolve_cron_execution_context）。
+    # 普通会话三个信号都不命中，cron 工具集保持完整。
+    cron_execution_session = bool(
+        (inp.request_metadata or {}).get("cron")
+        or str(inp.channel_id or "").strip() == "__cron__"
+        or is_cron_execution_session(inp.session_id)
+    )
+    if cron_execution_session:
+        logger.info(
+            "[swarm.cron_tools] skip cron tools for cron execution session "
+            "agent_id=%s",
+            agent_id,
+        )
+        return []
     try:
         cron_tools = CronRuntimeBridge().build_tools(
             context=cron_context,
@@ -153,8 +175,8 @@ def build_cron_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any
 def _is_send_file_enabled(config: dict[str, Any] | None, channel_id: str) -> bool:
     """Resolve whether file sending is allowed for *channel_id*.
 
-    Reads ``channels.<channel_id>.send_file_allowed``; when unset, the ``web``
-    channel defaults to enabled and all other channels default to disabled.
+    Reads ``channels.<channel_id>.send_file_allowed``. The internal full-duplex
+    delegate inherits Web policy when no channel-specific switch is configured.
 
     Args:
         config: The resolved ``config.yaml`` mapping.
@@ -163,14 +185,7 @@ def _is_send_file_enabled(config: dict[str, Any] | None, channel_id: str) -> boo
     Returns:
         ``True`` when file sending is allowed for the channel.
     """
-    send_file_allowed = None
-    if isinstance(config, dict):
-        send_file_allowed = (
-            config.get("channels", {}).get(str(channel_id), {}).get("send_file_allowed")
-        )
-    if send_file_allowed is None:
-        return channel_id == "web"
-    return bool(send_file_allowed)
+    return is_send_file_enabled(config, channel_id)
 
 
 class SendFileInput(ConstructionInput):

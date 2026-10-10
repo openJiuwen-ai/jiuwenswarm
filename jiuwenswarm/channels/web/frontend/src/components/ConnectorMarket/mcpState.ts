@@ -64,6 +64,10 @@ export function deriveCardState(input: McpCardInput): McpCardState {
 // 恢复后补回专属文案，不跟着 disconnect/connect 混用（"删除中"跟"解绑中"是不同的操作反馈）。
 export function busyLabelKey(kind: McpBusyKind | undefined): string {
   switch (kind) {
+    case 'install':
+      return 'connectorMarket.card.installing';
+    case 'uninstall':
+      return 'connectorMarket.card.uninstalling';
     case 'disconnect':
       return 'connectorMarket.card.disconnecting';
     case 'delete':
@@ -83,10 +87,16 @@ export function busyLabelKey(kind: McpBusyKind | undefined): string {
 // "未安装"，这是当前数据模型下的合理简化，具体是否需要后端补一个独立标记见
 // state-model-rectification-v2-remove-global-toggle.md 第5节待确认问题。
 export function deriveMcpAvailability(
-  source: ConnectorSummary['source'],
+  installed: boolean,
   state: McpCardState,
 ): { installed: boolean; linked: boolean } {
-  return { installed: source === 'customize' || state !== 'idle', linked: state === 'connected' };
+  return { installed, linked: state === 'connected' };
+}
+
+export function nextMcpQuickAction(installed: boolean, state: McpCardState): 'install' | 'connect' | 'use' | 'busy' {
+  if (state === 'connecting') return 'busy';
+  if (!installed) return 'install';
+  return state === 'connected' ? 'use' : 'connect';
 }
 
 // 插件侧的卡片态派生。插件没有 connectionState 多值模型（plugin_packages.* 只有 installed boolean，

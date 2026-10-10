@@ -13,6 +13,9 @@ Tests for:
 """
 
 import json
+import multiprocessing
+import multiprocessing.queues
+import multiprocessing.synchronize
 import os
 import tempfile
 import time
@@ -107,16 +110,29 @@ def _try_acquire_gateway_lock(workspace_str: str, result_queue) -> None:
 
 
 def _hold_gateway_lock(
-    workspace_str: str, result_queue, hold_seconds: float = 5.0
+    workspace_str: str,
+    result_queue: multiprocessing.queues.Queue,
+    release_event: multiprocessing.synchronize.Event,
+    hold_seconds: float = 5.0,
 ) -> None:
-    """Acquire a GatewayLock and hold it (module-level for Windows spawn)."""
+    """Acquire a GatewayLock and hold it (module-level for Windows spawn).
+
+    Args:
+        workspace_str: Workspace directory that owns the lock file.
+        result_queue: Receives whether the lock was acquired.
+        release_event: Set by the parent once it has finished asserting, so
+            the holder exits right away instead of sleeping out its budget.
+        hold_seconds: Upper bound on how long the lock is held when the
+            parent never sets ``release_event``; tests that wait for a timed
+            release rely on it.
+    """
     from jiuwenswarm.instance_manager.lock import GatewayLock
 
     lock = GatewayLock(Path(workspace_str))
     ok = lock.acquire(timeout=5.0)
     result_queue.put(ok)
     if ok:
-        time.sleep(hold_seconds)
+        release_event.wait(timeout=hold_seconds)
         lock.release()
 
 
@@ -1574,15 +1590,14 @@ class TestGatewayLock:
     @staticmethod
     def test_second_acquire_fails_while_live(tmp_path):
         """A lock held by a LIVE foreign process refuses a second acquire."""
-        import multiprocessing
-
         from jiuwenswarm.instance_manager.lock import GatewayLock
 
         ctx = multiprocessing.get_context("spawn")
         result_queue = ctx.Queue()
+        release_event = ctx.Event()
         holder = ctx.Process(
             target=_hold_gateway_lock,
-            args=(str(tmp_path), result_queue, 3.0),
+            args=(str(tmp_path), result_queue, release_event, 3.0),
         )
         holder.start()
         try:
@@ -1596,6 +1611,7 @@ class TestGatewayLock:
             data = json.loads(lock.lock_path.read_text(encoding="utf-8"))
             assert data["pid"] != os.getpid()
         finally:
+            release_event.set()
             holder.join(timeout=10.0)
             if holder.is_alive():
                 holder.terminate()
@@ -1704,15 +1720,15 @@ class TestGatewayLock:
     @staticmethod
     def test_acquire_waits_for_release(tmp_path):
         """Acquire waits (up to timeout) for a foreign live holder to exit."""
-        import multiprocessing
-
         from jiuwenswarm.instance_manager.lock import GatewayLock
 
         ctx = multiprocessing.get_context("spawn")
         result_queue = ctx.Queue()
+        # Never set: the holder must release on its own timer for this test.
+        release_event = ctx.Event()
         holder = ctx.Process(
             target=_hold_gateway_lock,
-            args=(str(tmp_path), result_queue, 1.2),
+            args=(str(tmp_path), result_queue, release_event, 1.2),
         )
         holder.start()
         try:
@@ -1770,15 +1786,14 @@ class TestGatewayLock:
         A subprocess acquires the GatewayLock (writes its PID + holds the OS
         lock); the main process then calls find_holder and must see the holder.
         """
-        import multiprocessing
-
         from jiuwenswarm.instance_manager.lock import GatewayLock
 
         ctx = multiprocessing.get_context("spawn")
         result_queue = ctx.Queue()
+        release_event = ctx.Event()
         holder = ctx.Process(
             target=_hold_gateway_lock,
-            args=(str(tmp_path), result_queue, 5.0),
+            args=(str(tmp_path), result_queue, release_event, 5.0),
         )
         holder.start()
         try:
@@ -1788,6 +1803,7 @@ class TestGatewayLock:
             assert found is not None
             assert found["pid"] == holder.pid
         finally:
+            release_event.set()
             holder.join(timeout=10.0)
             if holder.is_alive():
                 holder.terminate()

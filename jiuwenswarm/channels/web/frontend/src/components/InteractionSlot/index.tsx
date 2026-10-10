@@ -4,6 +4,7 @@
  * 读取当前会话 pendingQuestion，按 source 分流：
  *  - authorization → AuthorizationPrompt（授权条）
  *  - interaction   → InteractionPrompt（交互卡）
+ *  - experience    → InteractionPrompt（复用交互卡外观，使用技能包直接操作）
  *  - legacy/none   → 不渲染（演进/计划审批仍由消息流内的 InlineQuestionCard 处理）
  *
  * 不参与消息滚动，紧贴输入框顶部。
@@ -17,13 +18,13 @@ import { classifyPrompt } from './promptRouting';
 import './InteractionSlot.css';
 
 interface InteractionSlotProps {
-  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => void;
+  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => Promise<boolean>;
 }
 
 export function InteractionSlot({ onSubmit }: InteractionSlotProps) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const pending = useChatStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.pendingQuestion ?? null,
+    (s) => s.runtimes[activeSessionId ?? '']?.pendingQuestions[0] ?? null,
   );
 
   const kind = classifyPrompt(pending);
@@ -33,11 +34,12 @@ export function InteractionSlot({ onSubmit }: InteractionSlotProps) {
 
   // 授权条：页签式吸附输入框顶部；交互卡：独立浮卡。
   const isAuth = kind === 'authorization';
+  const variant = isAuth ? 'auth' : kind;
   return (
     <div
       className={`interaction-slot${isAuth ? ' interaction-slot--attached' : ''}`}
       data-testid="interaction-slot-root"
-      data-variant={isAuth ? 'auth' : 'interaction'}
+      data-variant={variant}
     >
       {isAuth ? (
         <AuthorizationPrompt pending={pending} onSubmit={onSubmit} />

@@ -2,6 +2,7 @@
 
 """Unit tests for team config loading."""
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ import yaml
 from jiuwenswarm.common.config import resolve_env_vars
 from jiuwenswarm.agents.harness.team.config_loader import (
     TeamTemplateNotFoundError,
+    get_effective_team_model_entries,
     get_team_template_snapshot,
     list_team_template_summaries,
     load_team_spec_dict,
@@ -19,6 +21,313 @@ from jiuwenswarm.agents.harness.team.config_loader import (
 
 def _wrap_modes_team(team_mapping: dict[str, dict]) -> dict:
     return {"modes": {"team": team_mapping}}
+
+
+def test_effective_team_models_include_selected_zen_without_configured_defaults(monkeypatch):
+    """A page-selected in-memory Zen model becomes the only effective candidate."""
+    zen_entry = {
+        "model_client_config": {
+            "api_base": "https://opencode.ai/zen/v1",
+            "api_key": "public",
+            "model_name": "zen-free",
+            "client_provider": "OpenAI",
+        },
+        "model_config_obj": {},
+    }
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.config_loader.get_zen_free_model_entries",
+        lambda: [zen_entry],
+    )
+    for variable_name in ("API_BASE", "API_KEY", "MODEL_NAME", "MODEL_PROVIDER"):
+        monkeypatch.delenv(variable_name, raising=False)
+
+    entries = get_effective_team_model_entries(
+        {"models": {"defaults": []}},
+        requested_model_name="zen-free",
+    )
+
+    assert entries == [zen_entry]
+
+
+def test_effective_team_models_include_selected_login_without_configured_defaults(monkeypatch):
+    """A page-selected login model becomes the only effective candidate."""
+    for variable_name in ("API_BASE", "API_KEY", "MODEL_NAME", "MODEL_PROVIDER"):
+        monkeypatch.delenv(variable_name, raising=False)
+
+    entries = get_effective_team_model_entries(
+        {"models": {"defaults": []}},
+        requested_model_name="glm-5",
+        login_model_entry=_login_model_entry(),
+    )
+
+    assert len(entries) == 1
+    assert entries[0]["model_client_config"]["model_name"] == "glm-5"
+    assert entries[0]["model_client_config"]["api_base"] == "https://apig.example.com/v1"
+
+
+def test_effective_team_models_preserve_distinct_credentials():
+    """Pool assembly deduplicates exact entries without merging credentials."""
+    first = {
+        "model_client_config": {
+            "model_name": "shared-model",
+            "client_provider": "OpenAI",
+            "api_base": "https://models.example/v1",
+            "api_key": "key-one",
+        },
+        "model_config_obj": {"temperature": 0.2},
+    }
+    duplicate = deepcopy(first)
+    duplicate["model_client_config"]["client_provider"] = "openai"
+    duplicate["model_client_config"]["api_base"] = "https://models.example/v1/"
+    second = deepcopy(first)
+    second["model_client_config"]["api_key"] = "key-two"
+    config = {"models": {"defaults": [first, duplicate, second]}}
+
+    entries = get_effective_team_model_entries(config)
+
+    assert len(entries) == 2
+    assert [entry["model_client_config"]["api_key"] for entry in entries] == ["key-one", "key-two"]
+
+
+def test_effective_team_models_select_from_normalized_entries(monkeypatch):
+    """Configured selection reuses decrypted and parsed model entries."""
+    raw_entry = {
+        "model_client_config": {
+            "model_name": "configured-model",
+            "client_provider": "OpenAI",
+            "api_base": "https://models.example/v1",
+            "api_key": "encrypted-key",
+            "custom_headers": '{"X-Trace-Id": "trace-one"}',
+        },
+        "model_config_obj": {},
+    }
+    normalized_entry = deepcopy(raw_entry)
+    normalized_entry["model_client_config"]["api_key"] = "decrypted-key"
+    normalized_entry["model_client_config"]["custom_headers"] = {"X-Trace-Id": "trace-one"}
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.config_loader.get_default_models",
+        lambda _config: [deepcopy(normalized_entry)],
+    )
+
+    entries = get_effective_team_model_entries(
+        {"models": {"defaults": [raw_entry]}},
+        requested_model_name="configured-model",
+    )
+
+    assert entries == [normalized_entry]
+    assert entries[0]["model_client_config"]["api_key"] == "decrypted-key"
+    assert entries[0]["model_client_config"]["custom_headers"] == {"X-Trace-Id": "trace-one"}
+
+
+def test_team_manager_builds_pool_for_single_configured_model(monkeypatch):
+    """A single configured model remains available to external fallback."""
+    from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    model_entry = {
+        "model_client_config": {
+            "api_base": "https://models.example/v1",
+            "api_key": "model-key",
+            "model_name": "configured-model",
+            "client_provider": "OpenAI",
+        },
+        "model_config_obj": {},
+    }
+    config = {
+        "models": {"defaults": [model_entry]},
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {"leader": {}, "teammate": {}},
+                }
+            }
+        ),
+    }
+    monkeypatch.setattr(team_manager_module, "get_config", lambda: config)
+
+    spec = TeamManager._load_team_spec("session-one")
+
+    assert spec.model_pool_strategy == "by_model_name"
+    assert len(spec.model_pool) == 1
+    assert spec.model_pool[0].model_name == "configured-model"
+    assert spec.model_pool[0].api_key == "model-key"
+
+
+def test_team_manager_builds_pool_for_single_selected_zen_model(monkeypatch):
+    """A selected Zen model creates a one-entry pool even with zero defaults."""
+    from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    zen_entry = {
+        "model_client_config": {
+            "api_base": "https://opencode.ai/zen/v1",
+            "api_key": "public",
+            "model_name": "zen-free",
+            "client_provider": "OpenAI",
+        },
+        "model_config_obj": {},
+    }
+    config = {
+        "models": {"defaults": []},
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {"leader": {}, "teammate": {}},
+                }
+            }
+        ),
+    }
+    monkeypatch.setattr(team_manager_module, "get_config", lambda: config)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.config_loader.get_zen_free_model_entries",
+        lambda: [zen_entry],
+    )
+    for variable_name in ("API_BASE", "API_KEY", "MODEL_NAME", "MODEL_PROVIDER"):
+        monkeypatch.delenv(variable_name, raising=False)
+
+    spec = TeamManager._load_team_spec("session-one", requested_model_name="zen-free")
+
+    assert spec.model_pool_strategy == "by_model_name"
+    assert len(spec.model_pool) == 1
+    assert spec.model_pool[0].model_name == "zen-free"
+    assert spec.model_pool[0].api_provider == "OpenAI"
+
+
+def test_team_manager_builds_pool_for_single_selected_login_model(monkeypatch):
+    """A selected login model creates a one-entry pool even with zero defaults."""
+    from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    config = {
+        "models": {"defaults": []},
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {"leader": {}, "teammate": {}},
+                }
+            }
+        ),
+    }
+    monkeypatch.setattr(team_manager_module, "get_config", lambda: config)
+    for variable_name in ("API_BASE", "API_KEY", "MODEL_NAME", "MODEL_PROVIDER"):
+        monkeypatch.delenv(variable_name, raising=False)
+
+    spec = TeamManager._load_team_spec(
+        "session-one",
+        requested_model_name="glm-5",
+        login_model_entry=_login_model_entry(),
+    )
+
+    assert spec.model_pool_strategy == "by_model_name"
+    assert len(spec.model_pool) == 1
+    assert spec.model_pool[0].model_name == "glm-5"
+    assert spec.model_pool[0].api_provider == "OpenAI"
+
+
+_CONFIGURED_ENTRY = {
+    "model_client_config": {
+        "api_base": "https://models.example/v1",
+        "api_key": "model-key",
+        "model_name": "configured-model",
+        "client_provider": "OpenAI",
+    },
+    "model_config_obj": {},
+}
+
+
+def _login_model_entry():
+    from jiuwenswarm.common.auth import login_credentials
+    from jiuwenswarm.common.auth.login_credentials import build_login_model_entry
+    from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+
+    login_credentials.reset_for_test()
+    params = {
+        E2A_MODEL_AUTH_PARAM_KEY: {
+            "api_base": "https://apig.example.com/v1",
+            "api_key": "real-id-token",
+            "credential_ref": "abe633f3a47a2758174eabe9160daf36",
+        }
+    }
+    return build_login_model_entry(params, "glm-5")
+
+
+def _config_with_team(agents: dict) -> dict:
+    return {
+        "models": {"defaults": [deepcopy(_CONFIGURED_ENTRY)]},
+        **_wrap_modes_team({"demo_team": {"team_name": "demo_team", "agents": agents}}),
+    }
+
+
+def test_selected_login_model_drives_members_instead_of_the_first_configured_model():
+    entry = _login_model_entry()
+    spec = load_team_spec_dict(
+        config_base=_config_with_team({"leader": {}, "teammate": {}}),
+        requested_model_name="glm-5",
+        login_model_entry=entry,
+    )
+    for member in ("leader", "teammate"):
+        mcc = spec["agents"][member]["model"]["model_client_config"]
+        assert mcc["model_name"] == "glm-5"
+        assert mcc["api_base"] == "https://apig.example.com/v1"
+        assert mcc["api_key"].startswith("jiuwen-login:")
+
+
+def test_login_model_does_not_override_an_explicit_member_model():
+    explicit = {
+        "model_client_config": {
+            "api_base": "https://member.example/v1",
+            "api_key": "member-key",
+            "model_name": "member-model",
+            "client_provider": "OpenAI",
+        },
+        "model_config_obj": {},
+    }
+    spec = load_team_spec_dict(
+        config_base=_config_with_team({"leader": {}, "teammate": {"model": explicit}}),
+        requested_model_name="glm-5",
+        login_model_entry=_login_model_entry(),
+    )
+    assert spec["agents"]["leader"]["model"]["model_client_config"]["model_name"] == "glm-5"
+    assert spec["agents"]["teammate"]["model"]["model_client_config"]["model_name"] == "member-model"
+
+
+def test_configured_model_wins_over_login_entry_with_the_same_name():
+    login_entry = deepcopy(_CONFIGURED_ENTRY)
+    login_entry["model_client_config"] = {
+        **login_entry["model_client_config"],
+        "api_base": "https://apig.example.com/v1",
+        "api_key": "jiuwen-login:placeholder",
+    }
+    spec = load_team_spec_dict(
+        config_base=_config_with_team({"leader": {}, "teammate": {}}),
+        requested_model_name="configured-model",
+        login_model_entry=login_entry,
+    )
+    mcc = spec["agents"]["leader"]["model"]["model_client_config"]
+    assert mcc["model_name"] == "configured-model"
+    assert mcc["api_base"] == "https://models.example/v1"
+    assert mcc["api_key"] == "model-key"
+
+
+def test_team_pool_carries_the_login_model_without_the_real_token(monkeypatch):
+    from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    config = _config_with_team({"leader": {}, "teammate": {}})
+    monkeypatch.setattr(team_manager_module, "get_config", lambda: config)
+
+    spec = TeamManager._load_team_spec(
+        "session-one", requested_model_name="glm-5", login_model_entry=_login_model_entry()
+    )
+
+    pool = {entry.model_name: entry for entry in spec.model_pool}
+    assert set(pool) == {"configured-model", "glm-5"}
+    assert pool["glm-5"].api_base_url == "https://apig.example.com/v1"
+    assert pool["glm-5"].api_key.startswith("jiuwen-login:")
+    assert "real-id-token" not in spec.model_dump_json()
 
 
 @pytest.mark.parametrize(
@@ -131,6 +440,188 @@ def test_load_team_spec_dict_uses_first_models_defaults_entry_for_team(monkeypat
     assert model["model_client_config"]["model_name"] == "first-model"
     assert model["model_request_config"]["model"] == "first-model"
     assert model["model_request_config"]["temperature"] == 0.1
+
+
+def test_load_team_spec_dict_maps_reasoning_level_off_and_drops_internal_hint():
+    """Cluster members must not forward UI ``reasoning_level`` to the OpenAI SDK."""
+    config = {
+        "models": {
+            "defaults": [
+                {
+                    "model_client_config": {
+                        "api_base": "https://example.test/v1",
+                        "api_key": "sk-test",
+                        "model_name": "Deepseek-V4-Flash-0731",
+                        "client_provider": "OpenAI",
+                    },
+                    "model_config_obj": {
+                        "temperature": 0.95,
+                        "reasoning_level": "off",
+                    },
+                    "is_default": True,
+                }
+            ]
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {
+                        "leader": {},
+                        "teammate": {},
+                    },
+                }
+            }
+        ),
+    }
+
+    spec = load_team_spec_dict(config_base=config)
+
+    for role in ("leader", "teammate"):
+        request_config = spec["agents"][role]["model"]["model_request_config"]
+        assert "reasoning_level" not in request_config
+        assert request_config["reasoning"] == {"mode": "disabled"}
+        assert request_config["model"] == "Deepseek-V4-Flash-0731"
+        assert request_config["temperature"] == 0.95
+
+
+def test_load_team_spec_dict_sanitizes_explicit_member_model_reasoning_level():
+    """A member that already has its own model dict still needs the UI hint stripped."""
+    config = {
+        "models": {
+            "default": {
+                "model_client_config": {
+                    "model_name": "fallback-model",
+                    "client_provider": "OpenAI",
+                },
+                "model_config_obj": {},
+            }
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {
+                        "leader": {
+                            "model": {
+                                "model_client_config": {
+                                    "api_base": "https://example.test/v1",
+                                    "api_key": "sk-test",
+                                    "model_name": "Deepseek-V4-Flash-0731",
+                                    "client_provider": "OpenAI",
+                                },
+                                "model_request_config": {
+                                    "model": "Deepseek-V4-Flash-0731",
+                                    "temperature": 0.2,
+                                    "reasoning_level": "off",
+                                },
+                            }
+                        },
+                    },
+                }
+            }
+        ),
+    }
+
+    spec = load_team_spec_dict(config_base=config)
+
+    request_config = spec["agents"]["leader"]["model"]["model_request_config"]
+    assert "reasoning_level" not in request_config
+    assert request_config["reasoning"] == {"mode": "disabled"}
+    assert request_config["temperature"] == 0.2
+
+
+def test_load_team_spec_dict_keeps_declared_request_model_over_client_model_name():
+    """An explicit member request ``model`` must not be overwritten by client model_name."""
+    config = {
+        "models": {
+            "default": {
+                "model_client_config": {
+                    "model_name": "fallback-model",
+                    "client_provider": "OpenAI",
+                },
+                "model_config_obj": {},
+            }
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {
+                        "leader": {
+                            "model": {
+                                "model_client_config": {
+                                    "api_base": "https://example.test/v1",
+                                    "api_key": "sk-test",
+                                    "model_name": "client-listed-name",
+                                    "client_provider": "OpenAI",
+                                },
+                                "model_request_config": {
+                                    "model": "request-declared-name",
+                                    "temperature": 0.2,
+                                    "reasoning_level": "off",
+                                },
+                            }
+                        },
+                    },
+                }
+            }
+        ),
+    }
+
+    spec = load_team_spec_dict(config_base=config)
+
+    request_config = spec["agents"]["leader"]["model"]["model_request_config"]
+    assert request_config["model"] == "request-declared-name"
+    assert "reasoning_level" not in request_config
+    assert request_config["reasoning"] == {"mode": "disabled"}
+
+
+def test_load_team_spec_dict_keeps_ui_hint_from_model_config_obj_when_request_config_exists():
+    """A leftover ``model_config_obj.reasoning_level`` must still be mapped."""
+    config = {
+        "models": {
+            "default": {
+                "model_client_config": {
+                    "model_name": "fallback-model",
+                    "client_provider": "OpenAI",
+                },
+                "model_config_obj": {},
+            }
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {
+                        "leader": {
+                            "model": {
+                                "model_client_config": {
+                                    "api_base": "https://example.test/v1",
+                                    "api_key": "sk-test",
+                                    "model_name": "Deepseek-V4-Flash-0731",
+                                    "client_provider": "OpenAI",
+                                },
+                                "model_config_obj": {"reasoning_level": "off"},
+                                "model_request_config": {
+                                    "model": "Deepseek-V4-Flash-0731",
+                                    "temperature": 0.3,
+                                },
+                            }
+                        },
+                    },
+                }
+            }
+        ),
+    }
+
+    spec = load_team_spec_dict(config_base=config)
+
+    request_config = spec["agents"]["leader"]["model"]["model_request_config"]
+    assert "reasoning_level" not in request_config
+    assert "model_config_obj" not in spec["agents"]["leader"]["model"]
+    assert request_config["reasoning"] == {"mode": "disabled"}
+    assert request_config["temperature"] == 0.3
 
 
 def test_load_team_spec_dict_supports_member_specific_agents(monkeypatch, tmp_path):

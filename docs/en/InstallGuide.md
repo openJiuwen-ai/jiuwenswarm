@@ -71,6 +71,7 @@ The desktop installers already include the Python runtime and front-end static a
 |------------|---------|------------|-------|
 | Python | ≥3.11, <3.14 | pip and source installs | Python 3.11 recommended |
 | Node.js | 18.x or newer | Source install only | Builds the Web front end; the pip package already includes the static assets |
+| Node.js | 20.x or newer | Browser runtime in pip/wheel and source installs | Runs the bundled Playwright MCP CLI; normal application use does not need Node |
 | Git | Latest | Source install only | Clones and updates the source tree |
 
 Run the checks that apply to your installation method:
@@ -83,6 +84,10 @@ python --version
 # Source install only: check Node.js
 node --version
 # Expect: v18.x.x or newer
+
+# pip/wheel or source browser runtime: check Node.js
+node --version
+# Expect: v20.x.x or newer
 
 # Source install only: check Git
 git --version
@@ -103,25 +108,27 @@ source jiuwenswarm-env/bin/activate
 
 # Install JiuwenSwarm
 ## Option 1: default install (stable release)
-pip install jiuwenswarm
+pip install workswarm
 
 ## Option 2: use a China mirror (recommended)
 # Tsinghua mirror
-pip install jiuwenswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install workswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # Aliyun mirror
-pip install jiuwenswarm -i https://mirrors.aliyun.com/pypi/simple/
+pip install workswarm -i https://mirrors.aliyun.com/pypi/simple/
 
 ## Option 3: install a pre-release (beta)
 # pip installs only stable releases by default; add --pre to consider pre-releases (beta)
-pip install --pre jiuwenswarm
+pip install --pre workswarm
 
 # China mirror + pre-release
-pip install --pre jiuwenswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install --pre workswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # You can also pin a specific beta version (version per actual PyPI release)
-pip install jiuwenswarm==0.2.4b3
+pip install workswarm==0.2.5.beta1
 ```
+
+> 📦 **Package rename**: the PyPI package is now `workswarm` (renamed from `jiuwenswarm`). Install with `pip install workswarm` and upgrade with `pip install --upgrade workswarm`. The old `jiuwenswarm` package stays at 0.2.3 and is no longer released from this repository; CLI entry points (`jiuwenswarm-init`, `jiuwenswarm-start`, …) and the `~/.jiuwenswarm` config directory are unchanged.
 
 #### 2. First launch
 
@@ -344,7 +351,7 @@ jiuwenswarm-start
 ```bash
 # Activate your virtual environment
 # Then upgrade
-pip install --upgrade jiuwenswarm
+pip install --upgrade workswarm
 ```
 
 #### Source install upgrade
@@ -409,7 +416,7 @@ rsync -av ~/.jiuwenswarm ~/.jiuwenswarm_backup
 | `agent/workspace/skills/` | Skills library (custom skills and config) |
 | `agent/home/` | Scheduled task data (`cron_jobs.json`) |
 
-> `agent/jiuwenclaw_workspace/`, `agent/memory/`, and `agent/skills/` are legacy locations. Current versions migrate their contents into `agent/workspace/`.
+> `agent/jiuwenclaw_workspace/` is a legacy location. Current versions no longer automatically migrate its contents into `agent/workspace/`. If you still have important data there, please manually copy or merge it into `agent/workspace/`.
 
 #### 2. Perform the upgrade
 
@@ -417,7 +424,7 @@ Pick the steps that match how you installed JiuwenSwarm:
 
 ##### pip install upgrade
 
-Follow the same steps as [Routine version upgrade – pip install upgrade](#pip-install-upgrade) (activate your virtual environment, then run `pip install --upgrade jiuwenswarm`).
+Follow the same steps as [Routine version upgrade – pip install upgrade](#pip-install-upgrade) (activate your virtual environment, then run `pip install --upgrade workswarm`).
 
 ##### Source install upgrade
 
@@ -515,38 +522,38 @@ See [macOS: download the dmg with curl (recommended)](#1-macos-download-the-dmg-
 
 ### Q: During a source install I see "Node.js not found" or `npm` is unavailable
 
-Install Node.js 18.x or newer, then rebuild the front end. The desktop installers and pip package already include the front-end static assets, so normal installation and startup do not require Node.js. See [Environment check](#environment-check) for details.
+Install Node.js 18.x or newer to rebuild the front end. Browser runtime use in a pip/wheel or source installation requires Node.js 20 or newer for the bundled Playwright MCP CLI. Desktop installers bundle Node 22.11.0. Normal installation, startup, and non-browser agents do not require Node.js. See [Environment check](#environment-check) for details.
 
 ### Q: How do I install a beta pre-release?
 
-JiuwenSwarm pre-releases follow the PEP 440 pre-release format, e.g. `0.2.4b3` (`b3` means the 3rd beta — note it is `0.2.4b3`, not `0.2.4.beta3`). pip installs only stable releases by default; install a beta in one of two ways:
+JiuwenSwarm pre-releases follow the PEP 440 pre-release format, e.g. `0.2.5.beta1` (`beta1` means the 1st beta). pip installs only stable releases by default; install a beta in one of two ways:
 
 Add the `--pre` flag and let pip pick the latest pre-release:
 
 ```bash
-pip install --pre jiuwenswarm
+pip install --pre workswarm
 ```
 
 Or pin a specific beta version (per actual PyPI release):
 
 ```bash
-pip install jiuwenswarm==0.2.4b3
+pip install workswarm==0.2.5.beta1
 ```
 
-Users in China can add a mirror to speed things up: `pip install --pre jiuwenswarm -i https://pypi.tuna.tsinghua.edu.cn/simple`.
+Users in China can add a mirror to speed things up: `pip install --pre workswarm -i https://pypi.tuna.tsinghua.edu.cn/simple`.
 
-> ℹ️ `pip index versions jiuwenswarm` lists only stable releases and does not show beta versions. To see available betas, check the Release history on the [PyPI project page](https://pypi.org/project/jiuwenswarm/#history) or the Release page.
+> ℹ️ `pip index versions workswarm` lists only stable releases and does not show beta versions. To see available betas, check the Release history on the [PyPI project page](https://pypi.org/project/workswarm/#history) or the Release page.
 
 ### Q: How do I check the installed version?
 
 ```bash
-pip show jiuwenswarm
+pip show workswarm
 ```
 
 ### Q: How do I uninstall?
 
 ```bash
-pip uninstall jiuwenswarm
+pip uninstall workswarm
 ```
 
 ---

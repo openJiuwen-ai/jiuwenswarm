@@ -26,7 +26,15 @@ endif
 # Target that is not a file -> always considered out of date.
 .PHONY: help install sync lock update-deps update-openjiuwen test test-unit test-integration \
 		test-cov lint lint-fix format typecheck clean build \
-		init start-debug start-debug-rebuild
+		init start-debug start-debug-rebuild restart-debug stop \
+		genai-semconv check-genai-semconv openjiuwen-semconv check-openjiuwen-semconv
+
+# The generator updates this repository's TypeScript constants and the sibling
+# agent-core checkout's Python constants in one pass. Override either variable
+# when the repositories are checked out in a different layout or when bumping
+# the pinned upstream revision.
+AGENT_CORE_DIR ?= ../agent-core
+GENAI_SEMCONV_REVISION ?=
 
 # ----------------------------------------------------------------------
 # Setup
@@ -62,6 +70,30 @@ update-openjiuwen: ## Pin openjiuwen to the latest commit on the develop branch
 	@awk '/^name = "openjiuwen"/{f=1} f && /^source = /{sub(/.*#/,""); sub(/".*/,""); print "  commit " $$0; f=0}' uv.lock
 
 # ----------------------------------------------------------------------
+# OpenTelemetry GenAI semantic conventions
+# ----------------------------------------------------------------------
+
+genai-semconv: ## Regenerate Python and TypeScript GenAI semantic constants
+	$(PY) scripts/genai_semconv/generate.py \
+		--agent-core-dir "$(AGENT_CORE_DIR)" \
+		--revision "$(GENAI_SEMCONV_REVISION)"
+
+check-genai-semconv: ## Check generated GenAI constants without modifying files
+	$(PY) scripts/genai_semconv/generate.py \
+		--agent-core-dir "$(AGENT_CORE_DIR)" \
+		--revision "$(GENAI_SEMCONV_REVISION)" \
+		--check
+
+openjiuwen-semconv: ## Regenerate TypeScript OpenJiuwen trajectory constants from agent-core
+	$(PY) scripts/genai_semconv/generate_openjiuwen.py \
+		--agent-core-dir "$(AGENT_CORE_DIR)"
+
+check-openjiuwen-semconv: ## Check generated OpenJiuwen trajectory constants without modifying files
+	$(PY) scripts/genai_semconv/generate_openjiuwen.py \
+		--agent-core-dir "$(AGENT_CORE_DIR)" \
+		--check
+
+# ----------------------------------------------------------------------
 # Run — workspace init & launching services
 # ----------------------------------------------------------------------
 
@@ -76,6 +108,15 @@ start-debug: ## Start services in debug mode, reusing the existing frontend buil
 start-debug-rebuild: ## Start services in debug mode, rebuilding the frontend first
 	@printf "$(C_INFO)Starting services in debug mode (full build)...$(C_RESET)\n"
 	$(UV) run jiuwenswarm-start debug
+
+restart-debug: ## Stop the debug service, then start it again with a frontend rebuild
+	@printf "$(C_INFO)Restarting debug service (stop + full build)...$(C_RESET)\n"
+	$(UV) run jiuwenswarm-stop
+	$(UV) run jiuwenswarm-start debug
+
+stop: ## Stop the background debug service started by start-debug
+	@printf "$(C_INFO)Stopping debug service...$(C_RESET)\n"
+	$(UV) run jiuwenswarm-stop
 
 # ----------------------------------------------------------------------
 # Testing — wraps the run_tests.sh helper for richer flags

@@ -15,6 +15,7 @@ type SettingsConfirmDialogProps = {
   confirmVariant?: ButtonProps['variant'];
   onConfirm: () => void;
   onCancel: () => void;
+  onDismiss?: () => void;
 };
 
 export function SettingsConfirmDialog({
@@ -28,12 +29,13 @@ export function SettingsConfirmDialog({
   confirmVariant = 'primary',
   onConfirm,
   onCancel,
+  onDismiss = onCancel,
 }: SettingsConfirmDialogProps) {
   const { t } = useTranslation();
   const titleId = useId();
 
   return (
-    <Dialog open={open} titleId={titleId} closeDisabled={confirming} onCancel={onCancel}>
+    <Dialog open={open} titleId={titleId} closeDisabled={confirming} onCancel={onDismiss}>
       <div className="settings-confirm-dialog">
         <header className="settings-confirm-dialog__header">
           <h2 id={titleId}>{title}</h2>
@@ -43,7 +45,7 @@ export function SettingsConfirmDialog({
             aria-label={t('common.close')}
             title={t('common.close')}
             disabled={confirming}
-            onClick={onCancel}
+            onClick={onDismiss}
           >
             <X aria-hidden />
           </button>

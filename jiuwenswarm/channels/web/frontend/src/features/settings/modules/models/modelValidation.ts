@@ -1,14 +1,10 @@
 import type { ModelEntry, VendorPresetMap } from '../../../../types';
-import {
-  CUSTOM_VENDOR_SELECTION,
-  OPENAI_ACCOUNT_SELECTION,
-  findVendorPreset,
-  type ModelDraft,
-} from './modelAdapters';
+import { parseContextWindowTokens } from './contextWindow';
+import { CUSTOM_VENDOR_SELECTION, OPENAI_ACCOUNT_SELECTION, findVendorPreset, type ModelDraft } from './modelAdapters';
+import { isReasoningLevelSupported, resolveModelReasoning } from './modelReasoning';
 
 export type ModelDraftErrors = Partial<Record<keyof ModelDraft, string>>;
 
-export const SUPPORTED_REASONING_LEVELS = ['', 'off', 'low', 'medium', 'high'] as const;
 const MAX_API_KEY_LENGTH = 2048;
 
 export function validateModelDraft(
@@ -23,6 +19,9 @@ export function validateModelDraft(
   const modelName = value.model_name.trim();
   const apiBase = value.api_base.trim();
   const apiKey = value.api_key.trim();
+  if (parseContextWindowTokens(value.context_window_tokens) === null) {
+    errors.context_window_tokens = t('settingsPanel.models.validation.contextWindowInvalid');
+  }
   const account = value.vendor_selection === OPENAI_ACCOUNT_SELECTION;
   const preset = findVendorPreset(catalog, value.vendor_selection);
 
@@ -53,7 +52,10 @@ export function validateModelDraft(
     else if (!apiKey) errors.api_key = t('config.modelList.apiKeyRequired');
   }
 
-  if (!(SUPPORTED_REASONING_LEVELS as readonly string[]).includes(value.reasoning_level)) {
+  const reasoning = resolveModelReasoning(catalog, preset, modelName, value.protocol);
+  if (!catalog.reasoning) {
+    errors.reasoning_level = t('settingsPanel.models.validation.reasoningUnavailable');
+  } else if (reasoning && !isReasoningLevelSupported(value.reasoning_level, reasoning)) {
     errors.reasoning_level = t('settingsPanel.models.validation.reasoningUnsupported', {
       value: value.reasoning_level,
     });
@@ -61,7 +63,6 @@ export function validateModelDraft(
 
   const others = models.filter(
     (model) =>
-      model.is_free !== true &&
       model.is_agentos !== true &&
       (editingOriginIndex === undefined || model.origin_index !== editingOriginIndex),
   );

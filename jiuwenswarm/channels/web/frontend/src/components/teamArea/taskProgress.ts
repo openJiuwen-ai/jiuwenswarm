@@ -23,7 +23,11 @@ export function getTaskVisualProgressPercent(task: TeamTask, now = Date.now()): 
     case 'planning':
     case 'in_progress':
     case 'in_review': {
-      const elapsedMs = Math.max(0, now - getTaskStartTime(task, now));
+      // A paused run holds its last eased value: the clock stops at freeze time.
+      const clock = task.progress_frozen && task.progress_frozen_at != null
+        ? task.progress_frozen_at
+        : now;
+      const elapsedMs = Math.max(0, clock - getTaskStartTime(task, now));
       const eased = 1 - Math.exp(-elapsedMs / RUNNING_PROGRESS_EASING_MS);
       const progress = RUNNING_PROGRESS_INITIAL
         + (RUNNING_PROGRESS_CAP - RUNNING_PROGRESS_INITIAL) * eased;

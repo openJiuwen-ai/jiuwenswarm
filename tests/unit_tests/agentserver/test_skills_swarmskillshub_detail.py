@@ -133,13 +133,60 @@ async def test_swarmskillshub_detail_empty_public_latest_not_found(tmp_path):
 
     async def _fake_get_data(path, **kwargs):  # noqa: ANN001
         assert path == "/api/v1/plugins"
-        return _plugin_list_payload(public_latest_version="")
+        return {
+            "items": [
+                {
+                    "asset_id": "demo-skill",
+                    "public_latest_version": "",
+                    "latest_version": "",
+                    "like_count": 0,
+                    "star_count": 0,
+                    "review_count": 0,
+                    "average_rating": None,
+                    "create_time": None,
+                }
+            ]
+        }
 
     manager.set_mock_get_data(_fake_get_data)
     payload = await manager.handle_skills_swarm_skills_hub_detail({"asset_id": "demo-skill"})
     assert payload["success"] is False
     assert payload["code"] == ERROR_SKILLHUB_DETAIL_NOT_FOUND
     assert payload["detail_key"] == "skills.swarmskillshub.errors.detailNotFound"
+
+
+@pytest.mark.asyncio
+async def test_swarmskillshub_detail_falls_back_to_latest_version_when_public_missing(tmp_path):
+    """搜索命中无 public_latest_version 的资产时，回退 latest_version（对齐官网）。"""
+    manager = SwarmSkillsHubDetailHarness(workspace_dir=str(tmp_path))
+    seen_versions: list[str] = []
+
+    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
+        if path == "/api/v1/plugins":
+            return {
+                "items": [
+                    {
+                        "asset_id": "demo-skill",
+                        "public_latest_version": None,
+                        "latest_version": "1.0.0",
+                        "like_count": 1,
+                        "star_count": 0,
+                        "review_count": 0,
+                        "average_rating": None,
+                        "create_time": None,
+                    }
+                ]
+            }
+        assert path == "/api/v1/plugins/demo-skill/versions/1.0.0"
+        seen_versions.append("1.0.0")
+        return _version_detail_payload(version="1.0.0")
+
+    manager.set_mock_get_data(_fake_get_data)
+    payload = await manager.handle_skills_swarm_skills_hub_detail({"asset_id": "demo-skill"})
+    assert payload["success"] is True
+    assert payload["version"] == "1.0.0"
+    assert seen_versions == ["1.0.0"]
+    assert payload["data"]["detail_desc"].startswith("# Document Review")
 
 
 @pytest.mark.asyncio
@@ -213,3 +260,158 @@ async def test_swarmskillshub_detail_upstream_failure_mapped(tmp_path):
 
 def test_req_method_swarmskillshub_detail_registered() -> None:
     assert ReqMethod.SKILLS_SWARMSKILLS_HUB_DETAIL.value == "skills.swarmskillshub.detail"
+
+
+def _make_skill_zip_bytes(*, with_readme: bool = True, with_skill_md: bool = True) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        if with_skill_md:
+            zf.writestr(
+                "demo-skill/SKILL.md",
+                "---\nname: document-review\ndescription: demo\n---\n\n# From SKILL body\n",
+            )
+        if with_readme:
+            zf.writestr("demo-skill/README.md", "# From README\n\nOfficial long description.\n")
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_swarmskillshub_detail_skips_artifact_when_detail_desc_present(tmp_path, monkeypatch):
+    manager = SwarmSkillsHubDetailHarness(workspace_dir=str(tmp_path))
+    artifact_called = False
+
+    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
+        nonlocal artifact_called
+        if path.startswith("/api/v1/artifacts/"):
+            artifact_called = True
+            raise AssertionError("should not download artifact when detail_desc present")
+        if path == "/api/v1/plugins":
+            return _plugin_list_payload()
+        return _version_detail_payload()
+
+    async def _unexpected_download(*args, **kwargs):  # noqa: ANN001
+        raise AssertionError("should not download zip")
+
+    manager.set_mock_get_data(_fake_get_data)
+    monkeypatch.setattr(manager, "_download_zip_and_verify", _unexpected_download)
+    payload = await manager.handle_skills_swarm_skills_hub_detail({"asset_id": "demo-skill"})
+    assert payload["success"] is True
+    assert payload["data"]["detail_desc"].startswith("# Document Review")
+    assert artifact_called is False
+
+
+@pytest.mark.asyncio
+async def test_swarmskillshub_detail_hydrates_from_readme_when_detail_desc_empty(tmp_path, monkeypatch):
+    manager = SwarmSkillsHubDetailHarness(workspace_dir=str(tmp_path))
+
+    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
+        if path == "/api/v1/plugins":
+            return _plugin_list_payload()
+        if path == "/api/v1/plugins/demo-skill/versions/2.0.0":
+            payload = _version_detail_payload()
+            payload["detail_desc"] = ""
+            return payload
+        assert path == "/api/v1/artifacts/demo-skill"
+        assert kwargs.get("params") == {"version": "2.0.0"}
+        return {
+            "download_url": "https://cdn.example/demo.zip",
+            "checksum_sha256": "",
+            "version": "2.0.0",
+        }
+
+    async def _fake_download(url, **kwargs):  # noqa: ANN001
+        assert url == "https://cdn.example/demo.zip"
+        return _make_skill_zip_bytes(with_readme=True, with_skill_md=True)
+
+    manager.set_mock_get_data(_fake_get_data)
+    monkeypatch.setattr(manager, "_assert_team_skills_hub_download_url_allowed", lambda url: None)
+    monkeypatch.setattr(manager, "_download_zip_and_verify", _fake_download)
+    payload = await manager.handle_skills_swarm_skills_hub_detail({"asset_id": "demo-skill"})
+    assert payload["success"] is True
+    assert payload["data"]["detail_desc"].startswith("# From README")
+
+
+@pytest.mark.asyncio
+async def test_swarmskillshub_detail_hydrates_from_skill_md_body_without_readme(tmp_path, monkeypatch):
+    manager = SwarmSkillsHubDetailHarness(workspace_dir=str(tmp_path))
+
+    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
+        if path == "/api/v1/plugins":
+            return _plugin_list_payload()
+        if "/versions/" in path:
+            payload = _version_detail_payload()
+            payload["detail_desc"] = "   "
+            return payload
+        return {"download_url": "https://cdn.example/demo.zip", "checksum_sha256": ""}
+
+    async def _fake_download(url, **kwargs):  # noqa: ANN001
+        return _make_skill_zip_bytes(with_readme=False, with_skill_md=True)
+
+    manager.set_mock_get_data(_fake_get_data)
+    monkeypatch.setattr(manager, "_assert_team_skills_hub_download_url_allowed", lambda url: None)
+    monkeypatch.setattr(manager, "_download_zip_and_verify", _fake_download)
+    payload = await manager.handle_skills_swarm_skills_hub_detail({"asset_id": "demo-skill"})
+    assert payload["success"] is True
+    assert "# From SKILL body" in payload["data"]["detail_desc"]
+
+
+@pytest.mark.asyncio
+async def test_swarmskillshub_detail_hydrates_readme_at_package_root(tmp_path, monkeypatch):
+    """README 在包根、SKILL.md 在子目录时仍应回填 README（对齐官网）."""
+    manager = SwarmSkillsHubDetailHarness(workspace_dir=str(tmp_path))
+
+    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
+        if path == "/api/v1/plugins":
+            return _plugin_list_payload()
+        if "/versions/" in path:
+            payload = _version_detail_payload()
+            payload["detail_desc"] = ""
+            return payload
+        return {"download_url": "https://cdn.example/demo.zip", "checksum_sha256": ""}
+
+    def _zip_readme_at_root() -> bytes:
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("pkg/readme.md", "# Root README\n\nLong official docs.\n")
+            zf.writestr(
+                "pkg/nested/SKILL.md",
+                "---\nname: document-review\ndescription: short\n---\n\nshort body\n",
+            )
+        return buf.getvalue()
+
+    async def _fake_download(url, **kwargs):  # noqa: ANN001
+        return _zip_readme_at_root()
+
+    manager.set_mock_get_data(_fake_get_data)
+    monkeypatch.setattr(manager, "_assert_team_skills_hub_download_url_allowed", lambda url: None)
+    monkeypatch.setattr(manager, "_download_zip_and_verify", _fake_download)
+    payload = await manager.handle_skills_swarm_skills_hub_detail({"asset_id": "demo-skill"})
+    assert payload["success"] is True
+    assert payload["data"]["detail_desc"].startswith("# Root README")
+    assert "Long official docs" in payload["data"]["detail_desc"]
+
+
+@pytest.mark.asyncio
+async def test_swarmskillshub_detail_artifact_failure_soft_fallback(tmp_path, monkeypatch):
+    manager = SwarmSkillsHubDetailHarness(workspace_dir=str(tmp_path))
+
+    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
+        if path == "/api/v1/plugins":
+            return _plugin_list_payload()
+        if "/versions/" in path:
+            payload = _version_detail_payload()
+            payload["detail_desc"] = ""
+            return payload
+        raise RuntimeError("artifact unavailable")
+
+    manager.set_mock_get_data(_fake_get_data)
+    payload = await manager.handle_skills_swarm_skills_hub_detail({"asset_id": "demo-skill"})
+    assert payload["success"] is True
+    assert payload["data"]["detail_desc"] == ""
+    assert payload["data"]["short_desc"]
