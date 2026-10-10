@@ -2249,6 +2249,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """Reconcile project-derived warm keys without delaying the Web RPC."""
         if is_enterprise():
             return
+        from jiuwenswarm.server.runtime.agent_warm_pool import prewarm_enabled_by_env
+
+        if not prewarm_enabled_by_env():
+            return
 
         async def _sync() -> None:
             try:

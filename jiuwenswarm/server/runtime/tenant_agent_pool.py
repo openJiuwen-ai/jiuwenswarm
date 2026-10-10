@@ -1059,7 +1059,7 @@ class TenantAgentPool:
         """[PERF 优化③] session.create 成功后后台预热该会话(租户池路径)。
 
         企业版 warm pool 因预热路径缺请求身份而被强制关闭(见
-        agent_warm_pool._prewarm_enabled_by_env),每个新会话首条 chat 仍全额
+        agent_warm_pool.prewarm_enabled_by_env),每个新会话首条 chat 仍全额
         支付 agent 构建 + prepare_session(实测 ~10s)。本方法在 create 上下文
         (身份齐全)中按 process_message_stream 同款租户推导,后台完成同一套
         构建:**不含 LLM 轮次、不写对话历史**。get_agent 按 key 双检锁,与首条
