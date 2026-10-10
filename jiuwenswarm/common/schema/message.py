@@ -505,6 +505,7 @@ class EventType(Enum):
     # _missing_ so every downstream channel sees HEALTH_CHECK_RELAY.
     HEARTBEAT_RELAY = "health_check.relay"
     HISTORY_GET = "history.message"
+    PROACTIVE_RECOMMENDATION = "proactive_recommendation"
 
     @classmethod
     def _missing_(cls, value):

@@ -267,6 +267,9 @@ class JiuwenBoxRunner:
             ]
             # 若 jiuwenbox 未安装到 site-packages, 尝试用仓库内源码目录注入 PYTHONPATH
             env = dict(os.environ)
+            from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+            if is_agentos_runtime():
+                env["JIUWENBOX_RUNTIME_PROFILE"] = "agentos"
             local_src = _resolve_jiuwenbox_src_dir()
             if local_src is not None:
                 existing = env.get("PYTHONPATH", "")

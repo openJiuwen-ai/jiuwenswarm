@@ -387,6 +387,7 @@ from jiuwenswarm.symphony.llm import (
 )
 
 from jiuwenswarm.common.hooks_config import load_hooks_config
+from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.stage_timer import StageTimer
 from jiuwenswarm.common.tool_ownership import mark_stateless, register_tool, unregister_tool
@@ -6650,6 +6651,17 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] model resolve: global index %d "
                     "for %r not in cache map (mapped_key=%s), falling back to "
                     "default model", global_idx, requested, cache_key,
+                )
+                return self._model
+            # Match agent_os's team selector name check while preserving
+            # develop's global-to-per-name map (never look up requested as a
+            # per-name cache key). A reordered catalog must not pick a different
+            # named model merely because its global position still exists.
+            if is_agentos_runtime() and cache_key.rpartition("#")[0] != bare_name:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] model resolve: requested %r does "
+                    "not match global index %d, falling back to default model",
+                    requested, global_idx,
                 )
                 return self._model
             return self._model_cache[cache_key]

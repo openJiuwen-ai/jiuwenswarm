@@ -1892,6 +1892,22 @@ async def _run(
         env={env_key: (os.getenv(env_key) or "") for env_key in _CONFIG_SET_ENV_MAP.values()},
     )
 
+    # Data-plane settings are AgentOS-only. A personal Gateway using etcd for
+    # cron must not start this service. Supported fields are router-local idle
+    # settings and future sandbox resources, so no user reload/fanout is needed.
+    config_updater = None
+    from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
+    if is_agentos_routing_client(client):
+        from jiuwenswarm.extensions.agentos.config_updater.service import ConfigUpdaterService
+        from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
+
+        config_updater = ConfigUpdaterService(
+            etcd_endpoints=list(load_cron_store_settings(full_cfg).endpoints),
+            config=full_cfg,
+            config_provider=get_config,
+            overrides_handler=client.apply_remote_overrides,
+        )
+
     if isinstance(health_check_cfg, dict):
         cfg_every = health_check_cfg.get("every")
         cfg_target = health_check_cfg.get("target")
@@ -2246,6 +2262,8 @@ async def _run(
     await channel_manager.start_dispatch()
     log_startup_stage("message_dispatch_started")
     await cron_scheduler.start()
+    if config_updater is not None:
+        await config_updater.start()
     log_startup_stage("cron_scheduler_started")
 
     # Give the browser event loop a chance to complete its pending WebSocket
@@ -3308,6 +3326,8 @@ async def _run(
     except asyncio.CancelledError:
         pass
     finally:
+        if config_updater is not None:
+            await config_updater.stop()
         if not channel_config_task.done():
             channel_config_task.cancel()
             try:

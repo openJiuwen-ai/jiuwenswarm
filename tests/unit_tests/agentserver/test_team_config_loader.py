@@ -23,6 +23,86 @@ def _wrap_modes_team(team_mapping: dict[str, dict]) -> dict:
     return {"modes": {"team": team_mapping}}
 
 
+def _agentos_test_config() -> dict:
+    """Adapt agent_os b8273f093's fixture, with a global/per-name index gap."""
+    def entry(name, endpoint, key):
+        return {"model_client_config": {"model_name": name, "client_provider": "OpenAI",
+                                        "api_base": endpoint, "api_key": key},
+                "model_config_obj": {"temperature": 0.7}, "is_default": True}
+
+    return {"models": {
+        "defaults": [entry("other", "https://other.example/v1", "other-key"),
+                     entry("shared", "https://default.example/v1", "default-key")],
+        "agentos": [entry("shared", "https://backup.example/v1", "backup-key")],
+    }, **_wrap_modes_team({"demo_team": {"agents": {"leader": {}, "teammate": {}}}})}
+
+
+@pytest.mark.parametrize("selector", ["shared#2", "backup-alias", "unique-backup"])
+def test_agentos_team_selected_backup_preserves_endpoint_and_credentials(monkeypatch, selector):
+    """Port origin_index, alias and bare-name scenarios from agent_os."""
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
+    config = _agentos_test_config()
+    backup = config["models"]["agentos"][0]
+    backup["alias"] = "backup-alias"
+    if selector == "unique-backup":
+        backup["model_client_config"]["model_name"] = selector
+    original = deepcopy(config)
+    spec = load_team_spec_dict(config_base=config, requested_model_name=selector)
+    for member in ("leader", "teammate"):
+        model = spec["agents"][member]["model"]
+        assert model["model_client_config"]["api_base"] == "https://backup.example/v1"
+        assert model["model_client_config"]["api_key"] == "backup-key"
+        assert model["model_request_config"]["model"] == backup["model_client_config"]["model_name"]
+    assert config == original
+
+
+@pytest.mark.parametrize("selector", [None, "shared", "missing#2", "shared#99"])
+def test_agentos_team_default_priority_and_invalid_selection(monkeypatch, selector):
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
+    spec = load_team_spec_dict(config_base=_agentos_test_config(), requested_model_name=selector)
+    expected = "default-key" if selector == "shared" else "other-key"
+    assert spec["agents"]["leader"]["model"]["model_client_config"]["api_key"] == expected
+
+
+def test_agentos_team_placeholder_fallback_keeps_global_index(monkeypatch):
+    """Port agent_os 5cc86e59b without renumbering develop's model list."""
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
+    config = _agentos_test_config()
+    config["models"]["defaults"] = [{"model_client_config": {"model_name": ""}}]
+    for selector in (None, "shared#1"):
+        spec = load_team_spec_dict(config_base=config, requested_model_name=selector)
+        assert spec["agents"]["leader"]["model"]["model_client_config"]["api_key"] == "backup-key"
+
+
+def test_agentos_team_wire_projection_and_explicit_member_model(monkeypatch):
+    from jiuwenswarm.gateway.channel_manager.web.agentos_compat import project_agentos_web_frame
+
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
+    config = _agentos_test_config()
+    explicit = deepcopy(config["models"]["defaults"][1])
+    config["modes"]["team"]["demo_team"]["agents"]["teammate"]["model"] = explicit
+    frame = project_agentos_web_frame({"type": "res", "payload": {"models": [
+        {"model_name": "other", "origin_index": 0},
+        {"model_name": "shared", "origin_index": 1},
+        {"model_name": "shared", "origin_index": 2, "is_agentos": True},
+    ]}})
+    backup = frame["payload"]["models"][2]
+    # Frozen client's modelWireName sends alias || model_name for a resolved row.
+    wire_name = backup.get("alias") or backup["model_name"]
+    spec = load_team_spec_dict(config_base=config, requested_model_name=wire_name)
+    assert spec["agents"]["leader"]["model"]["model_client_config"]["api_key"] == "backup-key"
+    assert spec["agents"]["teammate"]["model"]["model_client_config"]["api_key"] == "default-key"
+
+
+def test_agentos_team_selector_does_not_change_personal_profile(monkeypatch):
+    monkeypatch.delenv("JIUWENSWARM_RUNTIME_PROFILE", raising=False)
+    config = _agentos_test_config()
+    config["models"]["agentos"][0]["alias"] = "backup-alias"
+    for selector in ("shared#2", "backup-alias"):
+        spec = load_team_spec_dict(config_base=config, requested_model_name=selector)
+        assert spec["agents"]["leader"]["model"]["model_client_config"]["api_key"] == "other-key"
+
+
 def test_effective_team_models_include_selected_zen_without_configured_defaults(monkeypatch):
     """A page-selected in-memory Zen model becomes the only effective candidate."""
     zen_entry = {

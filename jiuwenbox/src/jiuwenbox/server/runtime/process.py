@@ -10,6 +10,7 @@ without spawning bwrap per call.
 from __future__ import annotations
 
 import asyncio
+from jiuwenbox.server.runtime.errors import BackgroundJobNotFoundError
 import base64
 import dataclasses
 import errno
@@ -456,8 +457,6 @@ class BackgroundJob:
     stderr: str = ""
 
 
-class BackgroundJobNotFoundError(Exception):
-    """Raised when a background job id is unknown for a sandbox."""
 
 
 def _resolve_zombie_reaper_interval() -> float:
