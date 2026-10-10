@@ -2748,7 +2748,7 @@ def test_agent_manager_creates_code_adapter_with_tenant_config_for_code_team(mon
     assert {
         "create_instance_mode": "code",
         "sub_mode": "team",
-        "config": {},
+        "config": {"channel_id": "tui"},
         "config_base": {"models": {"defaults": [{"model": "tenant-model"}]}},
     } in calls
 
@@ -2803,7 +2803,7 @@ def test_agent_manager_creates_code_adapter_for_team_plan(monkeypatch):
     assert {
         "create_instance_mode": "code",
         "sub_mode": "team",
-        "config": {},
+        "config": {"channel_id": "tui"},
     } in calls
 
 
