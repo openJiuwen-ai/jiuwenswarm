@@ -863,6 +863,125 @@ async def test_handle_command_mcp_add_http_auth_rejected(server, fake_ws, monkey
 
 
 @pytest.mark.asyncio
+async def test_handle_command_mcp_add_http_timeout(server, fake_ws, monkeypatch):
+    """HTTP add against a non-responding server must not persist config.yaml."""
+    upsert_calls = []
+    patch_handler_name(
+        monkeypatch,
+        "upsert_mcp_server_in_config",
+        lambda payload: (upsert_calls.append(payload), (payload, True))[1],
+    )
+    patch_handler_name(monkeypatch, "get_config", lambda: {"mcp": {"servers": []}})
+
+    async def _pre_check_timeout(_payload):
+        return False, "stuck (streamable-http) pre-check failed: timed out after 10s (server not responding): TimeoutException"
+
+    monkeypatch.setattr(mcp_handlers, "_pre_check_mcp_http_auth", _pre_check_timeout)
+
+    monkeypatch.setattr(
+        server.get_agent_manager(), "reload_agents_config", lambda _c, _e: None
+    )
+    request = AgentRequest(
+        request_id="req-mcp-add-http-timeout",
+        channel_id="web",
+        req_method=ReqMethod.COMMAND_MCP,
+        params={
+            "action": "add",
+            "name": "stuck",
+            "transport": "http",
+            "url": "http://10.255.255.1/mcp",
+        },
+    )
+
+    await server.handle_command_mcp_for_test(fake_ws, request, asyncio.Lock())
+    assert upsert_calls == []
+    assert fake_ws.sent[0]["ok"] is False
+    assert "timed out" in fake_ws.sent[0]["payload"]["error"]
+
+
+@pytest.mark.asyncio
+async def test_handle_command_mcp_add_http_passed(server, fake_ws, monkeypatch):
+    """HTTP add that passes pre-check persists config and triggers reload."""
+    upsert_calls = []
+    patch_handler_name(
+        monkeypatch,
+        "upsert_mcp_server_in_config",
+        lambda payload: (upsert_calls.append(payload), (payload, True))[1],
+    )
+    patch_handler_name(monkeypatch, "get_config", lambda: {"mcp": {"servers": []}})
+
+    async def _pre_check_ok(_payload):
+        return True, "github (streamable-http) pre-check passed (http 200)"
+
+    monkeypatch.setattr(mcp_handlers, "_pre_check_mcp_http_auth", _pre_check_ok)
+
+    called = {"reload": 0}
+
+    async def _reload(_config, _env):
+        called["reload"] += 1
+
+    monkeypatch.setattr(server.get_agent_manager(), "reload_agents_config", _reload)
+    request = AgentRequest(
+        request_id="req-mcp-add-http-ok",
+        channel_id="web",
+        req_method=ReqMethod.COMMAND_MCP,
+        params={
+            "action": "add",
+            "name": "github",
+            "transport": "streamable-http",
+            "url": "https://api.githubcopilot.com/mcp",
+            "headers": {"Authorization": "Bearer good_token"},
+        },
+    )
+
+    await server.handle_command_mcp_for_test(fake_ws, request, asyncio.Lock())
+    assert len(upsert_calls) == 1, "config.yaml must be written when pre-check passes"
+    assert called["reload"] == 1
+    assert fake_ws.sent == [
+        {
+            "response_id": "req-mcp-add-http-ok",
+            "payload": {"type": "added", "name": "github", "applied": True},
+            "ok": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_command_mcp_add_stdio_command_not_found(server, fake_ws, monkeypatch):
+    """stdio add with a non-existent command must be rejected at config time."""
+    upsert_calls = []
+    patch_handler_name(
+        monkeypatch,
+        "upsert_mcp_server_in_config",
+        lambda payload: (upsert_calls.append(payload), (payload, True))[1],
+    )
+    patch_handler_name(monkeypatch, "get_config", lambda: {"mcp": {"servers": []}})
+
+    # Do NOT mock _pre_check_mcp_server — exercise the real static check
+    # (shutil.which returns None for a clearly-bogus command).
+    monkeypatch.setattr(
+        server.get_agent_manager(), "reload_agents_config", lambda _c, _e: None
+    )
+    request = AgentRequest(
+        request_id="req-mcp-add-stdio-badcmd",
+        channel_id="tui",
+        req_method=ReqMethod.COMMAND_MCP,
+        params={
+            "action": "add",
+            "name": "broken",
+            "transport": "stdio",
+            "command": "nonexistent_cmd_xyz_jws",
+            "args": [],
+        },
+    )
+
+    await server.handle_command_mcp_for_test(fake_ws, request, asyncio.Lock())
+    assert upsert_calls == [], "config.yaml must not be written when command is missing"
+    assert fake_ws.sent[0]["ok"] is False
+    assert fake_ws.sent[0]["payload"]["type"] == "add_failed"
+
+
+@pytest.mark.asyncio
 async def test_handle_command_mcp_update_http_auth_rejected(server, fake_ws, monkeypatch):
     monkeypatch.setattr(
         mcp_handlers,

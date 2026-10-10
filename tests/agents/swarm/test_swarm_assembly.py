@@ -1178,6 +1178,14 @@ def test_enrich_team_spec_for_swarm_injects_config_mcp_servers(
         },
     }
     monkeypatch.setattr("jiuwenswarm.agents.swarm.assembly.get_config", lambda: config)
+    # extract_enabled_mcp_server_entries reads get_mcp_servers() (which merges
+    # config.yaml + state.json from disk) rather than the passed config_base,
+    # so mock it at the source to inject the test's servers.
+    test_servers = [s for s in config["mcp"]["servers"] if isinstance(s, dict)]
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_mcp_servers",
+        lambda: test_servers,
+    )
     monkeypatch.setattr(
         "jiuwenswarm.agents.swarm.assembly.get_agent_skills_dir",
         lambda: tmp_path / "global-skills",
