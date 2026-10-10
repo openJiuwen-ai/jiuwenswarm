@@ -423,6 +423,12 @@ class CronTools:
             return CronTargetChannel.WECHAT.value
         if channel.startswith("dingtalk"):
             return CronTargetChannel.DINGTALK.value
+        if channel.startswith("telegram"):
+            return CronTargetChannel.TELEGRAM.value
+        if channel.startswith("discord"):
+            return CronTargetChannel.DISCORD.value
+        if channel.startswith("slack"):
+            return CronTargetChannel.SLACK.value
         if channel.startswith("tui"):
             return CronTargetChannel.TUI.value
 
