@@ -7201,7 +7201,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
             return
-        await channel.send_response(ws, req_id, ok=True, payload=cc.job_metadata())
+        payload = dict(cc.job_metadata())
+        from jiuwenswarm.gateway.cron.policy import resolve_max_jobs_per_user
+
+        payload["max_jobs_per_user"] = await resolve_max_jobs_per_user()
+        await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def _cron_job_get(ws, req_id, params, session_id):
         reg, cc, sid, aid = await _cron_context(params)

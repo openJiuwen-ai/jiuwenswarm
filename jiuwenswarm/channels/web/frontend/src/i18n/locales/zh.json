@@ -1662,8 +1662,8 @@
       "every": "每",
       "everyHoursPlaceholder": "小时数",
       "everyMinutesPlaceholder": "分钟数",
-      "integerOnlyHint": "间隔须为 1–{{max}} 的整数",
-      "intervalRangeHint": "间隔须为 1–{{max}} 的整数",
+      "integerOnlyHint": "间隔须为 {{min}}–{{max}} 的整数",
+      "intervalRangeHint": "间隔须为 {{min}}–{{max}} 的整数",
       "hoursUnit": "小时",
       "minutesUnit": "分钟",
       "intervalUnit": {
@@ -1810,6 +1810,7 @@
       "expiredCannotRunNow": "任务过期，无法执行",
       "disabledCannotRunNow": "任务已停止，无法执行",
       "expiredCannotEnable": "任务过期，无法启动",
+      "enabledQuotaReached": "运行中的定时任务已达上限（{{max}}），请先停止部分任务",
       "loadDetailFailed": "获取任务详情失败",
       "nameRequired": "任务名称不能为空",
       "cronRequired": "Cron 表达式不能为空",
