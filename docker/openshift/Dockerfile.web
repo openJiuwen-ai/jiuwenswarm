@@ -1,0 +1,35 @@
+ARG NODE_IMAGE=node:20-alpine
+ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.27-alpine
+
+# ---------- 阶段1:前端构建 ----------
+FROM ${NODE_IMAGE} AS web-builder
+
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
+
+WORKDIR /build/jiuwenswarm/channels/web/frontend
+COPY jiuwenswarm/channels/web/frontend/package.json \
+     jiuwenswarm/channels/web/frontend/package-lock.json ./
+RUN npm install
+
+COPY jiuwenswarm/channels/web/frontend/ ./
+COPY jiuwenswarm/scripts/ /build/jiuwenswarm/scripts/
+COPY jiuwenswarm/resources/ /build/jiuwenswarm/resources/
+RUN npm run build
+
+# ---------- 阶段2:nginx 运行 ----------
+FROM ${NGINX_IMAGE}
+
+USER root
+
+COPY docker/web.nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY docker/web-optional-upstreams.sh /docker-entrypoint.d/40-optional-upstreams.sh
+RUN chmod +x /docker-entrypoint.d/40-optional-upstreams.sh \
+    && mkdir -p /etc/nginx/optional-upstreams \
+    && chown -R 101:0 /etc/nginx/optional-upstreams /docker-entrypoint.d \
+    && chmod -R g+rwX /etc/nginx/optional-upstreams /docker-entrypoint.d
+COPY --from=web-builder /build/jiuwenswarm/channels/web/frontend/dist \
+     /app/jiuwenswarm/jiuwenswarm/channels/web/frontend/dist
+
+USER 101
+EXPOSE 5173
