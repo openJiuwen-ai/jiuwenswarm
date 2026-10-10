@@ -79,6 +79,29 @@ PLUGIN_RAILS = "swarm.plugin_rails"
 SKILL_RETRIEVAL_PROMPT = "swarm.skill_retrieval_prompt"
 SYMPHONY_ORCHESTRATION_PROMPT = "swarm.symphony_orchestration_prompt"
 HEARTBEAT = "swarm.heartbeat"
+MISSING_FILE_PATH = "swarm.missing_file_path"
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=MISSING_FILE_PATH,
+    description="Request a verified file path from the leader after a teammate read_file failure.",
+)
+def _build_missing_file_path_rail(params: dict[str, Any], context: SwarmBuildContext) -> Any | None:
+    if params.get("enabled") is not True or context.role != "teammate":
+        return None
+    backend = get_team_backend(context)
+    messager = get_messager(context)
+    if backend is None or messager is None or backend.is_leader:
+        return None
+    from openjiuwen.agent_teams.tools.message_manager import TeamMessageManager
+    from jiuwenswarm.agents.harness.team.rails.missing_file_path_rail import MissingFilePathRail
+
+    return MissingFilePathRail(
+        backend=backend,
+        message_manager=TeamMessageManager(backend.team_name, backend.member_name, backend.db, messager),
+        language=context.language,
+    )
 
 
 @harness_element(

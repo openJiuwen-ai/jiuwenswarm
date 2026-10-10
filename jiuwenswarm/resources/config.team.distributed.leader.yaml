@@ -294,6 +294,10 @@ gateway:
   # 取值：per_chat_bot（默认，同 chat+bot 共享会话）, per_chat_bot_user（按 user 分会话）
   session_map_scope: per_chat_bot
 
+# Opt-in: teammates request an accessible absolute path after read_file reports a missing file.
+file_path_recovery:
+  enabled: false
+
 heartbeat:
   jobs:
     min_interval_seconds: 60
