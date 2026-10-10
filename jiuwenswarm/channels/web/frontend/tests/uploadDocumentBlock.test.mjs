@@ -12,7 +12,7 @@ test('withUploadDocumentBlock appends filename and path lines', () => {
     { filename: 'spec.txt', path: '/uploads/spec.txt' },
   ]);
 
-  assert.equal(result, '总结这份文档\n【上传文档】\n- spec.txt: /uploads/spec.txt');
+  assert.equal(result, '总结这份文档\n【上传文档】\n@/uploads/spec.txt');
 });
 
 test('withUploadDocumentBlock exposes the original file beside a sidecar path', () => {
@@ -22,7 +22,7 @@ test('withUploadDocumentBlock exposes the original file beside a sidecar path', 
 
   assert.equal(
     result,
-    '总结这份 PDF\n【上传文档】\n- 需求.pdf: /uploads/需求.txt (original file: /uploads/需求.pdf)',
+    '总结这份 PDF\n【上传文档】\n@/uploads/需求.pdf',
   );
 });
 
@@ -31,7 +31,7 @@ test('withUploadDocumentBlock omits originalPath when it equals path', () => {
     { filename: 'spec.md', path: '/uploads/spec.md', originalPath: '/uploads/spec.md' },
   ]);
 
-  assert.equal(result, '看看\n【上传文档】\n- spec.md: /uploads/spec.md');
+  assert.equal(result, '看看\n【上传文档】\n@/uploads/spec.md');
 });
 
 test('stripUploadDocumentBlocks removes lines carrying an original file', () => {
@@ -45,7 +45,7 @@ test('stripUploadDocumentBlocks removes lines carrying an original file', () => 
 test('withUploadDocumentBlock lists documents without a path', () => {
   const result = withUploadDocumentBlock('看看', [{ filename: 'spec.txt' }]);
 
-  assert.equal(result, '看看\n【上传文档】\n- spec.txt');
+  assert.equal(result, '看看');
 });
 
 test('withUploadDocumentBlock replaces an existing block instead of stacking', () => {
@@ -54,7 +54,7 @@ test('withUploadDocumentBlock replaces an existing block instead of stacking', (
     { filename: 'spec.txt', path: '/uploads/spec.txt' },
   ]);
 
-  assert.equal(second, '看看\n【上传文档】\n- spec.txt: /uploads/spec.txt');
+  assert.equal(second, '看看\n【上传文档】\n@/uploads/spec.txt');
   assert.equal(second.match(/【上传文档】/g).length, 1);
 });
 
@@ -70,6 +70,18 @@ test('stripUploadDocumentBlocks removes the compact block', () => {
   assert.equal(stripUploadDocumentBlocks(content), '总结这份文档');
 });
 
+test('stripUploadDocumentBlocks preserves an inline upload marker in the query', () => {
+  const content = '请解释“【上传文档】”这个词在普通文本中的含义';
+
+  assert.equal(stripUploadDocumentBlocks(content), content);
+});
+
+test('stripUploadDocumentBlocks removes a legacy block with a named marker', () => {
+  const content = '总结这份文档\n【上传文档：需求.pdf】\n/uploads/需求.pdf';
+
+  assert.equal(stripUploadDocumentBlocks(content), '总结这份文档');
+});
+
 test('toUploadDocumentHints keeps only document records with a filename', () => {
   const hints = toUploadDocumentHints([
     { type: 'document', filename: 'spec.txt', path: '/uploads/spec.txt' },
@@ -80,8 +92,8 @@ test('toUploadDocumentHints keeps only document records with a filename', () => 
   ]);
 
   assert.deepEqual(hints, [
-    { filename: 'spec.txt', path: '/uploads/spec.txt', originalPath: undefined },
-    { filename: 'report.pdf', path: '/uploads/report.pdf', originalPath: undefined },
+    { filename: 'spec.txt', path: '/uploads/spec.txt', originalPath: '/uploads/spec.txt' },
+    { filename: 'report.pdf', path: '/uploads/report.pdf', originalPath: '/uploads/report.pdf' },
   ]);
 });
 
