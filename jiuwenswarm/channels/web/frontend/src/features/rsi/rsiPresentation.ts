@@ -7,9 +7,38 @@ import type {
   RsiNodeType,
   RsiScenario,
   RsiTaskStatus,
+  RsiTaskGetResult,
+  RsiReportGetResult,
   RsiTreeNode,
   RsiTreeGetResult,
 } from './types';
+
+export function resolveRsiSummaryMetrics(
+  task: Pick<RsiTaskGetResult, 'status' | 'progress'>,
+  report: Pick<RsiReportGetResult, 'best_score' | 'baseline' | 'metrics'> | null,
+  liveProgress: Pick<NonNullable<RsiTaskGetResult['progress']>, 'score' | 'baseline' | 'iteration'> | null,
+) {
+  const snapshot = {
+    score: report?.best_score ?? task.progress?.score ?? null,
+    baseline: report?.baseline ?? task.progress?.baseline ?? null,
+    iteration: report?.metrics.iterations ?? task.progress?.iteration ?? null,
+  };
+  const running = task.status === 'RUNNING';
+  const queued = task.status === 'CREATED' || task.status === 'QUEUED';
+  return {
+    score: running
+      ? liveProgress?.score ?? task.progress?.score ?? report?.best_score ?? null
+      : snapshot.score ?? liveProgress?.score ?? null,
+    baseline: running
+      ? liveProgress?.baseline ?? task.progress?.baseline ?? report?.baseline ?? null
+      : snapshot.baseline ?? liveProgress?.baseline ?? null,
+    iteration: queued
+      ? null
+      : running
+        ? liveProgress?.iteration ?? task.progress?.iteration ?? report?.metrics.iterations ?? null
+        : snapshot.iteration ?? liveProgress?.iteration ?? null,
+  };
+}
 
 // 节点类型 → 展示用状态色类名（对应 rsi.css 的 bar--* 与图例 dot）
 export type NodeStatusKind = 'best-path' | 'evaluated' | 'pending' | 'failed' | 'pruned';
