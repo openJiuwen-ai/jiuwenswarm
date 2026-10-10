@@ -17,7 +17,6 @@ from weakref import WeakValueDictionary
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
-from jiuwenswarm.common.mode_matrix import canonicalize_mode_text
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import (
@@ -37,6 +36,10 @@ _background_session_kvc_tasks: set[asyncio.Task] = set()
 # Set by _check_post_process_plan_exit, consumed by _ensure_code_mode_state
 # to prevent TUI-race re-entrance to plan mode.
 _plan_exited_sessions: set[str] = set()
+
+# Sessions currently restored into plan mode (develop-lineage plan tracking;
+# consumed by session deletion cleanup alongside _plan_exited_sessions).
+_plan_active_sessions: set[str] = set()
 
 
 # Serialize plan-mode restore per session to avoid checkpoint races.
@@ -216,10 +219,6 @@ def _apply_resolved_mode_to_request(
     *,
     work_mode: Any = None,
 ) -> tuple[str, str | None]:
-    if not hasattr(request, "_original_mode") and isinstance(request.params, dict):
-        raw_mode = request.params.get("mode")
-        if isinstance(raw_mode, str) and raw_mode.strip():
-            setattr(request, "_original_mode", canonicalize_mode_text(raw_mode))
     mode, sub_mode, canonical_mode = resolve_agent_request_mode(
         request.params.get("mode", "agent"),
         work_mode=work_mode,

@@ -115,6 +115,16 @@ class ReqMethod(Enum):
     AGENT_SWITCH = "3rdagent.switch"
     AGENT_LIST = "3rdagent.list"
 
+    # mcp management.
+    MCP_LIST = "mcp.list"
+    MCP_SHOW = "mcp.show"
+    MCP_CONNECT = "mcp.connect"
+    MCP_WAIT_AUTH = "mcp.wait_auth"
+    MCP_DISCONNECT = "mcp.disconnect"
+    MCP_REGISTER_CUSTOM = "mcp.register_custom"
+    MCP_DELETE_CUSTOM = "mcp.delete_custom"
+    MCP_SAVE_CREDENTIALS = "mcp.save_credentials"
+
     SKILLS_MARKETPLACE_LIST = "skills.marketplace.list"
     SKILLS_LIST = "skills.list"
     SKILLS_INSTALLED = "skills.installed"
@@ -210,14 +220,6 @@ class ReqMethod(Enum):
         "personal_context.im_learning.get_status"
     )
     PERSONAL_CONTEXT_IM_LEARNING_RUN_NOW = "personal_context.im_learning.run_now"
-    PERSONAL_CONTEXT_DISTILL_GET_CONFIG = "personal_context.distill.get_config"
-    PERSONAL_CONTEXT_DISTILL_PATCH_CONFIG = "personal_context.distill.patch_config"
-    PERSONAL_CONTEXT_DISTILL_GET_STATUS = "personal_context.distill.get_status"
-    PERSONAL_CONTEXT_DISTILL_RUN_NOW = "personal_context.distill.run_now"
-    PERSONAL_CONTEXT_PROFILES_LIST = "personal_context.profiles.list"
-    PERSONAL_CONTEXT_PROFILES_GET_CURRENT = "personal_context.profiles.get_current"
-    PERSONAL_CONTEXT_PROFILES_GET_VERSION = "personal_context.profiles.get_version"
-    PERSONAL_CONTEXT_PROFILES_ACTIVATE = "personal_context.profiles.activate"
 
     # Plugin management (reuses skills marketplace infrastructure)
     PLUGINS_LIST = "plugins.list"
@@ -231,6 +233,20 @@ class ReqMethod(Enum):
     EXTENSIONS_IMPORT = "extensions.import"
     EXTENSIONS_DELETE = "extensions.delete"
     EXTENSIONS_TOGGLE = "extensions.toggle"
+
+    # agent_template / plugin package catalog + lifecycle RPCs.
+    AGENT_TEMPLATES_LIST = "agent_templates.list"
+    AGENT_TEMPLATES_SHOW = "agent_templates.show"
+    AGENT_TEMPLATES_FILE_LIST = "agent_templates.file.list"
+    AGENT_TEMPLATES_FILE_READ = "agent_templates.file.read"
+    AGENT_TEMPLATES_CREATE = "agent_templates.create"
+    AGENT_TEMPLATES_INSTALL = "agent_templates.install"
+    AGENT_TEMPLATES_UNINSTALL = "agent_templates.uninstall"
+    PLUGIN_PACKAGES_LIST = "plugin_packages.list"
+    PLUGIN_PACKAGES_SHOW = "plugin_packages.show"
+    PLUGIN_PACKAGES_CREATE = "plugin_packages.create"
+    PLUGIN_PACKAGES_INSTALL = "plugin_packages.install"
+    PLUGIN_PACKAGES_UNINSTALL = "plugin_packages.uninstall"
 
     HOOKS_LIST = "hooks.list"
 
