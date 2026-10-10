@@ -544,6 +544,10 @@ def _atomic_replace(src: Path, dst: Path, max_attempts: int = 10) -> None:
 # （如 ensure_defaults_list_in_config / update_default_models_in_config），
 # 否则同进程二次获取锁会死锁。展示用数据请在事务外、另起独立事务读取。
 _CONFIG_WRITE_LOCK = threading.Lock()
+# 同线程重入检测：config_write_lock 持有者的 thread ident（未持有时为 None）。
+# 双层锁均不可重入，同线程重入原本会阻塞 lock_timeout 后才抛 TimeoutError；
+# 依据该标记可立即抛 RuntimeError，避免锁收敛改造期间的嵌套调用长时间挂起。
+_config_write_lock_holder: int | None = None
 
 
 def _config_lock_path(config_path: Path) -> Path:
@@ -554,12 +558,20 @@ def _config_lock_path(config_path: Path) -> Path:
 @contextmanager
 def config_write_lock(*, lock_timeout: float = 10.0):
     """Share the Global write boundary with layered permission transactions."""
+    global _config_write_lock_holder
+    if _config_write_lock_holder == threading.get_ident():
+        raise RuntimeError(
+            "config write lock re-entered from the same thread; "
+            "mutators must not call other update_config-based helpers"
+        )
     if not _CONFIG_WRITE_LOCK.acquire(timeout=lock_timeout):
         raise TimeoutError("config write lock timed out")
     try:
+        _config_write_lock_holder = threading.get_ident()
         with portalocker.Lock(str(_config_lock_path(CONFIG_YAML_PATH)), timeout=lock_timeout):
             yield
     finally:
+        _config_write_lock_holder = None
         _CONFIG_WRITE_LOCK.release()
 
 
@@ -1019,30 +1031,6 @@ def update_updater_in_config(updates: dict[str, Any]) -> None:
     section = data["updater"]
     for key, value in updates.items():
         section[key] = value
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_memory_enabled_in_config(mode: str, value: bool) -> None:
-    """更新 memory.enabled（记忆系统开关）并写回。"""
-    _update_memory_in_modes_config(mode, "enabled", value)
-
-
-def update_proactive_memory_in_config(mode: str, value: bool) -> None:
-    """更新 memory.proactive_memory（主动记忆开关）并写回。"""
-    _update_memory_in_modes_config(mode, "is_proactive", value)
-
-
-def _update_memory_in_modes_config(mode: str, item: str, value: bool) -> None:
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "modes" not in data:
-        data["modes"] = {}
-    if "claw" not in data["modes"]:
-        data["modes"]["claw"] = {}
-    if mode not in data["modes"]["claw"]:
-        data["modes"]["claw"][mode] = {}
-    if "memory" not in data["modes"]["claw"][mode]:
-        data["modes"]["claw"][mode]["memory"] = {}
-    data["modes"]["claw"][mode]["memory"][item] = value
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
@@ -3135,23 +3123,6 @@ def get_model_names() -> list[str]:
     return [k for k, v in models.items() if isinstance(v, dict) and k not in skip]
 
 
-def add_or_update_model_in_config(name: str, model_config: dict[str, Any]) -> None:
-    """新增或更新一个模型配置，写入 config.yaml 的 models.<name> 节点。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "models" not in data:
-        data["models"] = {}
-    if name not in data["models"]:
-        data["models"][name] = model_config
-    else:
-        existing = data["models"][name]
-        for k, v in model_config.items():
-            if v is None and k in existing:
-                del existing[k]
-            else:
-                existing[k] = v
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
 def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | None:
     """获取指定模型的原始配置（不解析环境变量）。
 
@@ -3532,21 +3503,6 @@ def sync_sandbox_api_token_environ(token: str | None) -> None:
         os.environ.pop(JIUWENBOX_API_TOKEN_ENV, None)
 
 
-def update_sandbox_startup_mode(mode: str) -> str:
-    """写入 ``sandbox.startup_mode`` 到 config.yaml; 返回归一化后的值。"""
-    normalized = _normalize_sandbox_startup_mode(mode)
-    if str(mode or "").strip().lower() not in _VALID_SANDBOX_STARTUP_MODES:
-        raise ValueError(
-            f"startup_mode must be one of {_VALID_SANDBOX_STARTUP_MODES}, got {mode!r}",
-        )
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
-    if "sandbox" not in data or not isinstance(data.get("sandbox"), dict):
-        data["sandbox"] = {}
-    data["sandbox"]["startup_mode"] = normalized
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
-    return normalized
-
-
 def _looks_like_bare_filename(value: str) -> bool:
     """``True`` 表示参数应该被解释为 ``jiuwenbox/configs/`` 下的文件名。
 
@@ -3633,19 +3589,6 @@ def get_sandbox_policy_path() -> Path | None:
     """
     raw = get_sandbox_policy_file() or _DEFAULT_SANDBOX_POLICY_FILE
     return resolve_sandbox_policy_path(raw)
-
-
-def update_sandbox_policy_file(value: str) -> str:
-    """写入 ``sandbox.policy_file`` (仅文件名或绝对路径) 到 config.yaml; 返回归一化后的字符串。"""
-    text = str(value or "").strip()
-    if not text:
-        raise ValueError("policy_file must be non-empty")
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
-    if "sandbox" not in data or not isinstance(data.get("sandbox"), dict):
-        data["sandbox"] = {}
-    data["sandbox"]["policy_file"] = text
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
-    return text
 
 
 def get_sandbox_endpoint() -> dict[str, Any]:
@@ -3811,25 +3754,6 @@ def resolve_preserve_file_sharing_mode_default() -> str:
     """
     configured = get_sandbox_preserve_file_sharing_mode()
     return configured or _DEFAULT_PRESERVE_FILE_SHARING_MODE
-
-
-def update_sandbox_preserve_file_sharing_mode(mode: str) -> str:
-    """写入 ``sandbox.preserve_file_sharing_mode``; 返回归一化后的值.
-
-    空值与非法值都会抛 ``ValueError``——写入路径不允许 "保留旧值" 语义, 必须
-    给出明确的合法 mode (当前仅 ``"mount"``)。
-    """
-    normalized = _normalize_preserve_file_sharing_mode(mode)
-    if normalized is None:
-        raise ValueError(
-            f"preserve_file_sharing_mode must be one of {_VALID_PRESERVE_FILE_SHARING_MODES}"
-        )
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
-    if "sandbox" not in data or not isinstance(data.get("sandbox"), dict):
-        data["sandbox"] = {}
-    data["sandbox"]["preserve_file_sharing_mode"] = normalized
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
-    return normalized
 
 
 def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
