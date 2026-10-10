@@ -313,10 +313,9 @@ def dispatch_permissions_config_request(
                 return _err(request, "enabled must be boolean")
             if not _write_agent_permissions(request, lambda perms: perms.__setitem__("enabled", value)):
                 run_awaitable(update_permissions_enabled_in_config(value))
-            try:
-                _hot_reload_permissions_config_cache()
-            except Exception as e:
-                logger.warning("[%s] Failed to hot reload permission engine: %s", tag, e)
+            # 不做 hot reload：persist_permissions_mutate 已同步更新缓存
+            # （企业版仅内存 base，标准版写 yaml 后缓存同步）；clear 会
+            # 令企业版内存变更丢失、回落 yaml 旧值（CR-4 回归）。
             return _ok(request, {"enabled": value})
 
         if m == ReqMethod.PERMISSIONS_WORKSPACE_ENABLE_GET:
