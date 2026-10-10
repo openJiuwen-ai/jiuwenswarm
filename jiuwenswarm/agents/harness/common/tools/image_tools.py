@@ -185,7 +185,12 @@ async def _invoke_gemini_vision(src: str, q: str) -> str:
             data = None
             for attempt in range(4):
                 try:
-                    r = requests.get(src, headers={"User-Agent": ua}, verify=get_requests_verify())
+                    r = requests.get(
+                        src,
+                        headers={"User-Agent": ua},
+                        verify=get_requests_verify(),
+                        timeout=(10, 60),
+                    )
                     r.raise_for_status()
                     data = r.content
                     break
@@ -421,7 +426,12 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             )
-            response = requests.get(image_url, headers={"User-Agent": ua})
+            response = requests.get(
+                image_url,
+                headers={"User-Agent": ua},
+                verify=get_requests_verify(),
+                timeout=(10, 60),
+            )
             response.raise_for_status()
 
             with open(output_path, "wb") as f:
