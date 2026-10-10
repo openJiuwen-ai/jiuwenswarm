@@ -168,6 +168,25 @@ from jiuwenswarm.server.personal_context.ws_handler import (
 
 logger = logging.getLogger(__name__)
 
+
+def _uses_projectless_task_workspace(params: dict[str, Any], channel_id: str) -> bool:
+    """Return whether Agent/Code should allocate a dated task workspace."""
+    raw_work_mode = params.get("work_mode")
+    if not isinstance(raw_work_mode, str) or raw_work_mode.strip().lower() not in {
+        "code",
+        "work",
+    }:
+        from jiuwenswarm.server.runtime.session.work_mode import (
+            default_work_mode_for_channel,
+        )
+
+        raw_work_mode = default_work_mode_for_channel(channel_id)
+    manager_mode, _, _ = resolve_agent_request_mode(
+        params.get("mode", "agent"),
+        work_mode=raw_work_mode,
+    )
+    return manager_mode in {"agent", "code"}
+
 _INTERFACE_DEEP_MODULE = "jiuwenswarm.server.runtime.agent_adapter.interface_deep"
 _startup_warmup_task: asyncio.Task[None] | None = None
 

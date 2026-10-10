@@ -424,7 +424,10 @@ async def _prepare_code_mode_chat_turn(
         work_mode=mode_work_mode,
     )
     agent_mode = "agent" if mode == "auto_harness" else mode
-    requested_project_dir = resolve_request_project_dir(request)
+    requested_project_dir = resolve_request_project_dir(
+        request,
+        include_legacy_fallbacks=mode not in {"agent", "code"},
+    )
     # [改动] 写盘用 canonical mode（request.params["mode"]，已被规范化为
     # "agent.plan"/"team" 等），而非一级 mode（"agent"），使磁盘出现你期望的两类值。
     canonical_mode = (
