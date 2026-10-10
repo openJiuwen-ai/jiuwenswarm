@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXECUTION_TIMEOUT_SECONDS = 300.0
 DEFAULT_USER_PREEMPTION_TIMEOUT_SECONDS = 10.0
 _FINALIZATION_RETRY_SECONDS = 0.1
+_MAX_FINALIZATION_ATTEMPTS = 20
 
 
 def _consume_background_task_result(task: asyncio.Task[Any]) -> None:
@@ -629,7 +630,7 @@ class HeartbeatExecutionService:
             await self._admission.end_heartbeat(job.session_id, run_id)
             admission_ended = True
 
-        while True:
+        for attempt in range(_MAX_FINALIZATION_ATTEMPTS):
             try:
                 if self._scheduler is not None:
                     await self._scheduler.on_run_finished(
@@ -644,29 +645,50 @@ class HeartbeatExecutionService:
                     await end_admission()
                 break
             except asyncio.CancelledError:
-                continue
+                # 不能吞掉：否则关停取消后会立刻重试，变成永远结束不了的任务。
+                raise
             except Exception:  # noqa: BLE001
                 logger.exception(
                     "[HeartbeatExecution] durable finalization failed; retrying: "
-                    "job=%s run=%s",
+                    "job=%s run=%s attempt=%d",
                     job.id,
                     run_id,
+                    attempt + 1,
                 )
-                await asyncio.sleep(_FINALIZATION_RETRY_SECONDS)
+                await asyncio.sleep(
+                    min(30.0, _FINALIZATION_RETRY_SECONDS * (2 ** attempt))
+                )
+        else:
+            # 持久化一直失败就放弃；重启后 scheduler 的孤儿恢复会把这次
+            # 未收尾的运行标记为失败，不会留下无法终止的任务。
+            raise RuntimeError(
+                f"heartbeat finalization gave up after "
+                f"{_MAX_FINALIZATION_ATTEMPTS} attempts: {run_id}"
+            )
         if self._completion_hook is not None:
-            while True:
+            for hook_attempt in range(_MAX_FINALIZATION_ATTEMPTS):
                 try:
                     await self._completion_hook(job.session_id)
                     break
                 except asyncio.CancelledError:
-                    continue
+                    raise
                 except Exception:  # noqa: BLE001
                     logger.exception(
                         "[HeartbeatExecution] completion hook failed; retrying: "
-                        "session=%s",
+                        "session=%s attempt=%d",
                         job.session_id,
+                        hook_attempt + 1,
                     )
-                    await asyncio.sleep(_FINALIZATION_RETRY_SECONDS)
+                    await asyncio.sleep(
+                        min(30.0, _FINALIZATION_RETRY_SECONDS * (2 ** hook_attempt))
+                    )
+            else:
+                logger.error(
+                    "[HeartbeatExecution] completion hook gave up after %d "
+                    "attempts: session=%s",
+                    _MAX_FINALIZATION_ATTEMPTS,
+                    job.session_id,
+                )
         self._tasks.pop(run_id, None)
         self._jobs.pop(run_id, None)
         self._finalizers.pop(run_id, None)
