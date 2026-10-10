@@ -8,8 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from jiuwenswarm.agents.harness.common.rsi import build_rsi_service_context
 from jiuwenswarm.agents.harness.common.rsi.models import RsiTask, TaskStatus, utcnow_iso
+from jiuwenswarm.agents.harness.common.rsi.recovery import RsiWorkspaceRecovery
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.rsi import RsiAgentServerHandlers
 
@@ -276,3 +279,70 @@ def test_queued_task_becomes_paused_once_without_being_requeued(tmp_path: Path) 
     assert recovered.status_history == history_after_first_recovery
     assert recovered.status_history[-1]["cause"] == "agentserver_restart.queue_lost"
     assert restarted.worker._queue.qsize() == 0  # noqa: SLF001 - explicit resume is required
+
+
+@pytest.mark.parametrize("competing_status", ["TERMINATED", "PAUSED", "QUEUED", "COMPLETED"])
+def test_recovery_preserves_concurrent_state_without_failed_fallback(
+    tmp_path: Path, monkeypatch, competing_status: str
+) -> None:
+    context, task_id = _create_task(tmp_path / "tasks", TaskStatus.RUNNING)
+    store = context.store
+    original_write = store.update_status_with_results
+    original_transition = store.update_status
+    adapter = SnapshotAdapter(status="completed")
+    adapter.finalize_terminal = lambda *args: SimpleNamespace(
+        status="COMPLETED", best_artifact_path="paper.pdf"
+    )
+
+    def competing_write(task_id, from_states, to_state, results, cause=""):
+        if competing_status == "COMPLETED":
+            original_write(task_id, from_states, to_state, results, cause)
+            raise RuntimeError("callback failed after durable commit")
+        if competing_status == "QUEUED":
+            original_transition(task_id, ["RUNNING"], "PAUSED", "concurrent pause")
+            original_transition(task_id, ["PAUSED"], "QUEUED", "explicit resume")
+        else:
+            original_transition(task_id, ["RUNNING"], competing_status, "concurrent change")
+        return original_write(task_id, from_states, to_state, results, cause)
+
+    monkeypatch.setattr(store, "update_status_with_results", competing_write)
+    fallback_attempts = []
+
+    def track_fallback(*args, **kwargs):
+        fallback_attempts.append((args, kwargs))
+        return original_transition(*args, **kwargs)
+
+    monkeypatch.setattr(store, "update_status", track_fallback)
+    summary = RsiWorkspaceRecovery(store, context.projector, lambda *args: adapter).recover()
+
+    task = store.get(task_id)
+    assert task.status == competing_status
+    assert not fallback_attempts
+    assert summary["errors"] == []
+    assert summary["recovered"] == 0
+    if competing_status == "COMPLETED":
+        assert task.config["results"]["best_artifact_path"] == "paper.pdf"
+
+
+def test_recovery_preserves_state_changed_during_failed_fallback(tmp_path: Path, monkeypatch) -> None:
+    context, task_id = _create_task(tmp_path / "tasks", TaskStatus.RUNNING)
+    store = context.store
+    adapter = SnapshotAdapter(status="completed")
+    adapter.finalize_terminal = lambda *args: SimpleNamespace(status="COMPLETED")
+
+    def fail_write(*args, **kwargs):
+        raise OSError("evidence write failed")
+
+    monkeypatch.setattr(store, "update_status_with_results", fail_write)
+    original_transition = store.update_status
+
+    def competing_fallback(*args, **kwargs):
+        original_transition(task_id, ["RUNNING"], "TERMINATED", "concurrent termination")
+        return original_transition(*args, **kwargs)
+
+    monkeypatch.setattr(store, "update_status", competing_fallback)
+    summary = RsiWorkspaceRecovery(store, context.projector, lambda *args: adapter).recover()
+
+    assert store.get(task_id).status == "TERMINATED"
+    assert summary["errors"] == []
+    assert summary["recovered"] == 0
