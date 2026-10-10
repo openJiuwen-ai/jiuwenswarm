@@ -3340,6 +3340,28 @@ test('content the store no longer holds is told apart from a silent model', () =
   );
 });
 
+test('an inference rebuilt without its request is told apart from a silent model', () => {
+  const record = legacyInferenceRecord({
+    output: 'never rebuilt',
+    requestNumber: 1,
+    spanId: 'e'.repeat(16),
+    startTimeUnixNano: 1_000_000,
+    stepId: 'step-1',
+    stepNumber: 1,
+  });
+  // A harness whose request logs never arrived reports the reply alone; here
+  // it had not yet seen any of the reply's content.
+  const attributes = record.resourceSpans[0].scopeSpans[0].spans[0].attributes;
+  const output = attributes.find(entry => entry.key === 'gen_ai.output.messages');
+  output.value = { stringValue: JSON.stringify([{ role: 'assistant', parts: [] }]) };
+  attributes.push({ key: 'openjiuwen.inference.input_observed', value: { boolValue: false } });
+
+  const assistant = cellsOf(projectOtelTrajectory([record])).find(cell => cell.kind === 'message');
+
+  assert.equal(assistant.text, 'Output not observed (request logs did not arrive)');
+  assert.equal(assistant.assistantMetrics.inputObserved, false);
+});
+
 test('a resumed run does not present the messages it resumed with as newly said', () => {
   // A restart commits a baseline: the whole window, not the change. Every
   // message the run resumed with is in it, so without comparing against the

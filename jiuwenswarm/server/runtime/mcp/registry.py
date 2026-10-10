@@ -79,6 +79,10 @@ CODE_NAME_CONFLICT = "MCP_NAME_CONFLICT"
 # token-schema env var; the CLI's auth status rejected the stored token at
 # connect time. Frontend maps this to a "token invalid, re-enter" hint.
 CODE_CREDENTIALS_INVALID = "MCP_CREDENTIALS_INVALID"
+# CLI install script could not find PowerShell (npm postinstall spawn
+# powershell.exe ENOENT); frontend shows a friendly hint instead of the
+# misleading "version too low".
+CODE_INSTALL_SCRIPT_DEP = "MCP_INSTALL_SCRIPT_DEP"
 
 # Network-failure substrings matched (case-insensitively) against init command
 # stderr. Covers npm's common registry/connectivity errors; the token codes are
@@ -1048,8 +1052,9 @@ def _cli_cred_tokens_stored(name: str) -> bool:
 
 def _classify_install_failure(n: str, inst: Any) -> CliConnectError:
     """Map a failed CliDriver.install() onto a CliConnectError by cause:
-    binary_not_found → MCP_RUNTIME_MISSING, network stderr → MCP_INSTALL_NETWORK,
-    else → MCP_CLI_INCOMPLETE. ``runtime``/``install_cmd`` are surfaced so the
+    binary_not_found → MCP_RUNTIME_MISSING, install_script_dep →
+    MCP_INSTALL_SCRIPT_DEP, network stderr → MCP_INSTALL_NETWORK, else →
+    MCP_CLI_INCOMPLETE. ``runtime``/``install_cmd`` are surfaced so the
     frontend hint can name the dependency / show the upgrade command.
     """
     runtime = inst.runtime or ""
@@ -1058,6 +1063,13 @@ def _classify_install_failure(n: str, inst: Any) -> CliConnectError:
         return CliConnectError(
             CODE_RUNTIME_MISSING,
             f"mcp '{n}' CLI runtime '{runtime or 'unknown'}' not found on PATH; {inst.error}",
+            runtime=runtime, install_cmd=install_cmd,
+        )
+    if inst.error_kind == "install_script_dep":
+        # Structured CliDriver signal; outranks the network-text heuristic.
+        return CliConnectError(
+            CODE_INSTALL_SCRIPT_DEP,
+            f"mcp '{n}' CLI install script requires PowerShell but none was found; {inst.error}",
             runtime=runtime, install_cmd=install_cmd,
         )
     err_lower = (inst.error or "").lower()
@@ -1521,4 +1533,5 @@ __all__ = [
     "CODE_CLI_INCOMPLETE",
     "CODE_NAME_CONFLICT",
     "CODE_CREDENTIALS_INVALID",
+    "CODE_INSTALL_SCRIPT_DEP",
 ]
