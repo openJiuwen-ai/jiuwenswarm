@@ -152,6 +152,7 @@ class BaseChannel(ABC):
         """停止Channel并清理资源"""
         pass
 
+    @abstractmethod
     async def send(
         self,
         msg: Message,
@@ -163,12 +164,11 @@ class BaseChannel(ABC):
         V2 签名（2 参数）：
           msg            — 消息内容
           routing_target — RoutingTarget（自包含：intent + routing_keys + at_user_ids + delivery）
+
+        没有出站方向的 Channel 也必须显式实现本方法（可以是空实现），
+        以表明丢弃出站消息是有意的，而不是漏实现。
         """
-        logger.warning(
-            "[%s] send() not implemented, message dropped: id=%s",
-            getattr(self, "channel_id", "unknown"),
-            getattr(msg, "id", ""),
-        )
+        pass
 
     def is_allowed(self, sender_id: str) -> bool:
         """
