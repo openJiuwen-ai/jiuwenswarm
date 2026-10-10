@@ -315,7 +315,14 @@ def _reloc_jiuwenbox_yaml(entries):
     relocated = []
     for src, dest in entries:
         dest_n = str(dest).replace("\\", "/")
-        if dest_n == "jiuwenbox" or dest_n.startswith("jiuwenbox/"):
+        # `collect_data_files("jiuwenbox")` also returns native payloads such
+        # as `native/jiuwen_softdelete.dll`.  Only configuration YAML belongs
+        # in jiuwenbox_configs; the DLL is resolved from jiuwenbox/native at
+        # runtime by jiuwenbox.supervisor.win_softdelete.
+        if (
+            os.path.splitext(src)[1].lower() in {".yaml", ".yml"}
+            and (dest_n == "jiuwenbox" or dest_n.startswith("jiuwenbox/"))
+        ):
             dest = "jiuwenbox_configs" + dest_n[len("jiuwenbox"):]
         relocated.append((src, dest))
     return relocated
