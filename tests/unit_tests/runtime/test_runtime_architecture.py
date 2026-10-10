@@ -172,7 +172,7 @@ def test_runtime_does_not_reintroduce_alternate_agent_implementations() -> None:
 
 def test_agentserver_injects_runtime_manager_into_teammate_daemon() -> None:
     """The control-plane daemon runs outside a request ContextVar."""
-    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "app_agentserver.py"
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "worker" / "lifecycle.py"
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     daemon_calls = [
         node
