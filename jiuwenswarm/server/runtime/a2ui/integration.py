@@ -55,11 +55,18 @@ def _get_runtime_a2ui_config():
         return get_a2ui_config({})
 
 
-def _build_a2ui_client_event_prompt(content: dict[str, Any], channel: str, language: str) -> str:
+def _build_a2ui_client_event_prompt(
+    content: dict[str, Any],
+    channel: str,
+    language: str,
+    clock: dict[str, str] | None = None,
+) -> str:
     """Delegate client-event prompt construction to the A2UI runtime package."""
     from jiuwenswarm.server.runtime.a2ui.runtime.prompt import build_a2ui_client_event_prompt
 
-    return build_a2ui_client_event_prompt(content, channel=channel, language=language)
+    return build_a2ui_client_event_prompt(
+        content, channel=channel, language=language, clock=clock
+    )
 
 
 def build_user_prompt_if_a2ui_event(
@@ -67,8 +74,13 @@ def build_user_prompt_if_a2ui_event(
     *,
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> str | None:
     """Build a model prompt for A2UI client events when the feature is enabled.
+
+    ``clock`` holds the ``timestamp`` field the caller's own message envelope
+    states, so a client event and an ordinary message from the same turn give
+    the model one date resolved one way.
 
     Returns ``None`` when the payload is not an A2UI client event or when A2UI is
     disabled, allowing the normal user prompt builder to continue unchanged.
@@ -83,7 +95,7 @@ def build_user_prompt_if_a2ui_event(
     if not isinstance(content, dict) or content.get("type") != "a2ui.client_event":
         return None
 
-    return _build_a2ui_client_event_prompt(content, channel, language)
+    return _build_a2ui_client_event_prompt(content, channel, language, clock)
 
 
 async def finalize_assistant_response_if_a2ui(
