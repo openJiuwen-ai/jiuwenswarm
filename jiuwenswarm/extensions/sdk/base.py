@@ -39,7 +39,7 @@ class BaseExtension(ABC):
     def metadata(self) -> ExtensionMetadata:
         """扩展元数据
 
-        默认从扩展目录下的 extension.yaml 加载，如果文件不存在或解析失败，
+        默认从扩展目录下的 extension.yaml 加载；文件不存在时按空清单处理。
         子类可以覆盖此属性提供自定义实现。
 
         Returns:
@@ -52,23 +52,30 @@ class BaseExtension(ABC):
         return self._metadata_cache
 
     def _load_metadata_from_yaml(self) -> ExtensionMetadata:
-        """从扩展目录的清单 YAML 加载元数据"""
+        """从扩展目录的清单 YAML 加载元数据
+
+        清单缺失时按空清单处理，名称回落到扩展目录名（无目录时为类名），
+        与清单存在但为空时的结果一致。加载器已接受只带入口脚本的扩展包，
+        元数据读取不能因此终止读取方的进程。
+        """
         import yaml
 
+        from jiuwenswarm.common.utils import logger
+
         root = self._get_extension_dir()
-        if root is None:
-            raise ValueError(
-                "无法确定扩展目录，请在子类中设置目录或调用 set_extension_dir，或覆盖 metadata 属性"
-            )
+        fallback_name = root.name if root is not None else type(self).__name__
+        yaml_path = _manifest_path(root) if root is not None else None
 
-        yaml_path = _manifest_path(root)
         if yaml_path is None:
-            raise FileNotFoundError(
-                f"扩展元数据文件不存在（期望 {MANIFEST_FILENAME}）: {root}"
+            logger.warning(
+                "[BaseExtension] 扩展 %s 未提供 %s，按空清单处理",
+                fallback_name,
+                MANIFEST_FILENAME,
             )
-
-        with open(yaml_path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+            data: dict = {"name": fallback_name}
+        else:
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
 
         return ExtensionMetadata(
             id=data.get("id", ""),
