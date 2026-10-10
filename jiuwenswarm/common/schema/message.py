@@ -190,6 +190,7 @@ class ReqMethod(Enum):
     TTS_SYNTHESIZE = "tts.synthesize"
 
     AGENTS_LIST = "agents.list"
+    SUBAGENTS_LIST = "subagents.list"
     AGENTS_GET = "agents.get"
     AGENTS_CREATE = "agents.create"
     AGENTS_UPDATE = "agents.update"

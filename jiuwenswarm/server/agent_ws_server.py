@@ -2721,6 +2721,9 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.AGENTS_LIST:
                 await self._handle_agents_list(ws, request, send_lock)
                 return
+            if request.req_method == ReqMethod.SUBAGENTS_LIST:
+                await self._handle_subagents_list(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.AGENTS_GET:
                 await self._handle_agents_get(ws, request, send_lock)
                 return
@@ -10214,6 +10217,39 @@ class AgentWebSocketServer:
             )
         except Exception as e:  # noqa: BLE001
             logger.exception("[AgentWebSocketServer] browser.runtime_restart failed: %s", e)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(e)},
+            )
+
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _handle_subagents_list(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """List the subagents mounted on the main agent for this channel."""
+        from jiuwenswarm.server.runtime.agent_adapter.required_subagent import (
+            mounted_subagent_names,
+        )
+
+        try:
+            agent = await self._agent_manager.get_agent(
+                channel_id=request.channel_id or "default", mode="agent"
+            )
+            instance = await agent.ensure_instance() if agent is not None else None
+            config = getattr(instance, "deep_config", None)
+            if config is None:
+                raise RuntimeError("main agent is unavailable")
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={"subagents": mounted_subagent_names(config)},
+            )
+        except Exception as e:
+            logger.exception("[AgentWebSocketServer] subagents.list failed: %s", e)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
