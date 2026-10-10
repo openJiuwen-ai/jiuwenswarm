@@ -551,12 +551,16 @@ class WebSocketAgentServerClient(AgentServerClient):
             _to_json(envelope.to_dict()),
         )
 
-        if rid in self._message_queues:
-            raise DuplicateRequestIdError(rid)
-
-        # 创建该请求的消息队列
-        queue = asyncio.Queue()
-        self._message_queues[rid] = queue
+        async with self._queue_lock:
+            if rid in self._message_queues:
+                raise DuplicateRequestIdError(rid)
+            # 清除可能残留的已取消标记：前一次同 rid 请求已完成并标记为
+            # cancelled（2s 延迟清理窗口），若不清除，receiver 会把本次
+            # 请求的响应当作残余消息丢弃（issue #4940）。
+            self._cancelled_request_ids.discard(rid)
+            # 创建该请求的消息队列
+            queue = asyncio.Queue()
+            self._message_queues[rid] = queue
 
         try:
             # 发送请求
@@ -603,12 +607,13 @@ class WebSocketAgentServerClient(AgentServerClient):
             _to_json(envelope.to_dict()),
         )
 
-        if rid in self._message_queues:
-            raise DuplicateRequestIdError(rid)
-
-        # 创建该请求的消息队列
-        queue = asyncio.Queue()
-        self._message_queues[rid] = queue
+        async with self._queue_lock:
+            if rid in self._message_queues:
+                raise DuplicateRequestIdError(rid)
+            self._cancelled_request_ids.discard(rid)
+            # 创建该请求的消息队列
+            queue = asyncio.Queue()
+            self._message_queues[rid] = queue
 
         try:
             # 发送请求
