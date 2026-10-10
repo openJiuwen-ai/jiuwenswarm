@@ -77,6 +77,7 @@ class CronController:
             scheduler._lifecycle_mutation_lock = asyncio.Lock()
         self.mutation_lock = scheduler._lifecycle_mutation_lock
         self._target_channel: CronTargetChannel | None = None
+        self._agent_client: Any = None
         # 准入闸门是跨进程 RPC,列表时按项目去重后并发查询,这里限制并发上限,
         # 避免任务/项目很多时一次性打出上百个请求。
         self._gate_concurrency = asyncio.Semaphore(_GATE_QUERY_CONCURRENCY)
@@ -97,6 +98,18 @@ class CronController:
 
     def set_target_channel(self, channel: CronTargetChannel) -> None:
         self._target_channel = channel
+
+    def bind_agent_client(self, agent_client: Any) -> None:
+        """Keep the Gateway client used to read AgentServer's Zen cache."""
+        self._agent_client = agent_client
+
+    async def _zen_entries(self) -> list[dict[str, Any]]:
+        client = self._agent_client
+        if client is None:
+            return []
+        from jiuwenswarm.gateway.zen_query import fetch_zen_free_model_rows
+
+        return await fetch_zen_free_model_rows(client)
 
     @classmethod
     def get_instance(
@@ -296,7 +309,10 @@ class CronController:
             mode = normalize_cron_job_mode(mode)
         else:
             mode = None
-        model_name, model_source = resolve_cron_model(params.get("model_name"))
+        model_name, model_source = resolve_cron_model(
+            params.get("model_name"),
+            zen_entries=await self._zen_entries(),
+        )
         model_selection = params.get("model_selection")
         if model_selection is not None:
             from jiuwenswarm.common.model_selection import ModelSelection
@@ -422,7 +438,10 @@ class CronController:
         if "mode" in patch:
             patch["mode"] = normalize_cron_job_mode(patch.get("mode"))
         if "model_name" in patch:
-            canonical, model_source = resolve_cron_model(patch.get("model_name"))
+            canonical, model_source = resolve_cron_model(
+                patch.get("model_name"),
+                zen_entries=await self._zen_entries(),
+            )
             patch["model_name"] = canonical
             # 模型来源变化时同步重算绑定：改选登录模型 → 绑定当前连接的华为
             # 账号；换回自配模型/清除模型 → 解绑，否则执行侧仍会注入登录凭据，
@@ -599,7 +618,10 @@ class CronController:
         if timeout_seconds is not None:
             params["timeout_seconds"] = timeout_seconds
         if model_name is not None and str(model_name).strip():
-            params["model_name"] = validate_cron_model(model_name)
+            params["model_name"] = validate_cron_model(
+                model_name,
+                zen_entries=await self._zen_entries(),
+            )
         if mcp is not None:
             params["mcp"] = mcp
         if project_dir is not None:

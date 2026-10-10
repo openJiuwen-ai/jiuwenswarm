@@ -1544,6 +1544,7 @@ async def config_set_handler(
     agent_client: Any = None,
     ensure_codex_dependency: Any = None,
     ensure_claude_dependency: Any = None,
+    on_free_models_toggled: Any = None,
 ) -> None:
     """根据前端消息内容更新配置（支持 .env 与 config.yaml 中的键），并写回对应文件。"""
     if not isinstance(params, dict):
@@ -1575,12 +1576,11 @@ async def config_set_handler(
         logger.warning("[config.set] on_config_saved failed: %s", exc)
         applied_without_restart = False
 
-    if "enable_free_models" in apply_result.yaml_updated:
+    if "enable_free_models" in apply_result.yaml_updated and on_free_models_toggled is not None:
         try:
-            from jiuwenswarm.server.runtime.opencode_zen import warm_zen_free_models
-            await warm_zen_free_models(reason="config-toggle")
+            await on_free_models_toggled()
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[config.set] warm_zen_free_models failed: %s", exc)
+            logger.warning("[config.set] zen free-model warmup failed: %s", exc)
 
     updated_param_keys = [k for k, e in CONFIG_SET_ENV_MAP.items() if e in env_updates] + yaml_updated
     payload = {"updated": updated_param_keys, "applied_without_restart": applied_without_restart}
@@ -1626,6 +1626,7 @@ async def config_save_all_handler(
     agent_client: Any = None,
     ensure_codex_dependency: Any = None,
     ensure_claude_dependency: Any = None,
+    on_free_models_toggled: Any = None,
 ) -> None:
     """Batch-save config panel changes and trigger a single hot reload.
 
@@ -1724,12 +1725,11 @@ async def config_save_all_handler(
             agent_client=agent_client,
         )
 
-        if "enable_free_models" in yaml_updated:
+        if "enable_free_models" in yaml_updated and on_free_models_toggled is not None:
             try:
-                from jiuwenswarm.server.runtime.opencode_zen import warm_zen_free_models
-                await warm_zen_free_models(reason="config-toggle")
+                await on_free_models_toggled()
             except Exception as exc:  # noqa: BLE001
-                logger.warning("[config.save_all] warm_zen_free_models failed: %s", exc)
+                logger.warning("[config.save_all] zen free-model warmup failed: %s", exc)
 
         payload = {
             "updated": [k for k, e in CONFIG_SET_ENV_MAP.items() if e in env_updates] + yaml_updated,
