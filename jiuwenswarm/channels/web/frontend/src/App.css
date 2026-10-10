@@ -300,6 +300,7 @@
   padding: 1.5rem;
 }
 
+/**/
 input[type="password"]::-ms-reveal {
   display: none;
 }
