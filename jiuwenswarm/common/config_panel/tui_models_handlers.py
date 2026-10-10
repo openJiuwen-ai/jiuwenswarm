@@ -1016,8 +1016,10 @@ async def models_list_handler(
         models = await asyncio.to_thread(get_available_models, config)
         result = []
         for entry in models:
-            mcc = entry.get("model_client_config", {})
-            mco = entry.get("model_config_obj", {})
+            if not isinstance(entry, dict):
+                continue
+            mcc = entry.get("model_client_config") or {}
+            mco = entry.get("model_config_obj") or {}
             model_name = str(mcc.get("model_name", "") or "").strip()
             result_entry = {
                 "model_name": model_name,
