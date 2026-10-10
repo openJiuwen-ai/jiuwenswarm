@@ -128,25 +128,79 @@ function Test-PortableExecutable {
     }
 }
 
-function Assert-ValidAuthenticodeSignature {
+function Test-EmbeddedAuthenticodeSignature {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $Stream = [System.IO.File]::Open(
+        $Path,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::Read
+    )
+    try {
+        $Reader = [System.IO.BinaryReader]::new($Stream)
+        $Stream.Position = 0x3C
+        $PeOffset = $Reader.ReadInt32()
+        $OptionalHeaderOffset = $PeOffset + 24
+        $Stream.Position = $OptionalHeaderOffset
+        $Magic = $Reader.ReadUInt16()
+        if ($Magic -eq 0x10B) {
+            $NumberOfDirectoriesOffset = $OptionalHeaderOffset + 92
+            $DataDirectoriesOffset = $OptionalHeaderOffset + 96
+        } elseif ($Magic -eq 0x20B) {
+            $NumberOfDirectoriesOffset = $OptionalHeaderOffset + 108
+            $DataDirectoriesOffset = $OptionalHeaderOffset + 112
+        } else {
+            throw "Unsupported PE optional header in '$Path'."
+        }
+
+        $Stream.Position = $NumberOfDirectoriesOffset
+        if ($Reader.ReadUInt32() -le 4) { return $false }
+
+        # IMAGE_DIRECTORY_ENTRY_SECURITY (index 4) stores a file offset, not an RVA.
+        $Stream.Position = $DataDirectoriesOffset + (4 * 8)
+        $CertificateOffset = $Reader.ReadUInt32()
+        $CertificateSize = $Reader.ReadUInt32()
+        if (($CertificateOffset -eq 0) -or ($CertificateSize -eq 0)) { return $false }
+        if ([uint64]$CertificateOffset + [uint64]$CertificateSize -gt [uint64]$Stream.Length) {
+            throw "Invalid PE certificate table bounds in '$Path'."
+        }
+        return $true
+    } finally {
+        $Stream.Dispose()
+    }
+}
+
+function Assert-ValidEmbeddedSignature {
     param(
         [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$ResolvedSignTool,
         [string]$ExpectedThumbprint = "",
         [switch]$RequireTimestamp
     )
 
-    $Signature = Get-AuthenticodeSignature -LiteralPath $Path
-    if ($Signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-        throw "Authenticode verification failed for '$Path': $($Signature.Status) $($Signature.StatusMessage)"
+    if (-not (Test-EmbeddedAuthenticodeSignature -Path $Path)) {
+        throw "No embedded Authenticode signature was found in '$Path'."
     }
+
+    # Get-AuthenticodeSignature prefers a local catalog signature even when an
+    # embedded signature exists. SignTool without /a verifies the embedded one.
+    $VerifyArguments = @('verify', '/pa', '/all')
+    if ($RequireTimestamp) {
+        $VerifyArguments += '/tw'
+    }
+    $VerifyArguments += $Path
+    & $ResolvedSignTool @VerifyArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Embedded Authenticode verification failed for '$Path' (SignTool exit code $LASTEXITCODE)."
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($ExpectedThumbprint)) {
-        $ActualThumbprint = [string]$Signature.SignerCertificate.Thumbprint
+        $EmbeddedCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate]::CreateFromSignedFile($Path)
+        $ActualThumbprint = $EmbeddedCertificate.GetCertHashString()
         if ($ActualThumbprint -ne $ExpectedThumbprint) {
-            throw "Unexpected signing certificate for '$Path': $ActualThumbprint"
+            throw "Unexpected embedded signing certificate for '$Path': $ActualThumbprint"
         }
-    }
-    if ($RequireTimestamp -and -not $Signature.TimeStamperCertificate) {
-        throw "The Authenticode signature for '$Path' does not contain a timestamp."
     }
 }
 
@@ -170,13 +224,11 @@ function Invoke-CodeSigning {
     $UnsignedFiles = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
     $AlreadySignedCount = 0
     foreach ($File in $PortableExecutables) {
-        $Signature = Get-AuthenticodeSignature -LiteralPath $File.FullName
-        if ($Signature.Status -eq [System.Management.Automation.SignatureStatus]::Valid) {
-            $AlreadySignedCount++
-        } elseif ($Signature.Status -eq [System.Management.Automation.SignatureStatus]::NotSigned) {
+        if (-not (Test-EmbeddedAuthenticodeSignature -Path $File.FullName)) {
             $UnsignedFiles.Add($File)
         } else {
-            throw "Refusing to replace the invalid signature on '$($File.FullName)': $($Signature.Status)"
+            Assert-ValidEmbeddedSignature -Path $File.FullName -ResolvedSignTool $ResolvedSignTool
+            $AlreadySignedCount++
         }
     }
 
@@ -196,12 +248,10 @@ function Invoke-CodeSigning {
         }
     }
 
-    foreach ($File in $PortableExecutables) {
-        Assert-ValidAuthenticodeSignature -Path $File.FullName
-    }
     foreach ($File in $UnsignedFiles) {
-        Assert-ValidAuthenticodeSignature `
+        Assert-ValidEmbeddedSignature `
             -Path $File.FullName `
+            -ResolvedSignTool $ResolvedSignTool `
             -ExpectedThumbprint $CertificateThumbprint `
             -RequireTimestamp
     }
@@ -445,14 +495,11 @@ if (-not (Test-Path -LiteralPath $InstallerPath)) {
 }
 
 if ($DoSign) {
-    Assert-ValidAuthenticodeSignature `
+    Assert-ValidEmbeddedSignature `
         -Path $InstallerPath `
+        -ResolvedSignTool $ResolvedSignToolPath `
         -ExpectedThumbprint $SigningCertificateThumbprint `
         -RequireTimestamp
-    & $ResolvedSignToolPath verify /pa /all /v $InstallerPath
-    if ($LASTEXITCODE -ne 0) {
-        throw "SignTool verification failed for installer '$InstallerPath'."
-    }
 }
 
 Write-Host "`n=== Build complete ===" -ForegroundColor Green
