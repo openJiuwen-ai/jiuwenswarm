@@ -72,6 +72,9 @@ class ChannelManager(ABC):
         # 下一次 on_config_updated 时强制重启的 channel_id（例如微信解绑：YAML 中 bot_token 本就为空时配置 dict 对比不会变，但内存里仍有旧凭据）
         self._pending_channel_restart: set[str] = set()
         self._dispatch_diag_count: int = 0
+        # channel_id values whose "cannot say which instance" drop was already
+        # reported.  See ``_resolve_outbound_channel``.
+        self._unroutable_reported: set[str] = set()
         # Channel 连接事件订阅回调列表
         self._channel_event_callbacks: list[Callable[[ChannelEvent], Awaitable[None]]] = []
 
@@ -91,6 +94,111 @@ class ChannelManager(ABC):
             if key.channel_id == channel_id:
                 return ch
         return None
+
+    @staticmethod
+    def _claims_message(channel: Any, msg: "Message") -> bool:
+        """Ask one instance whether an outbound message is its own.
+
+        Duck-typed on ``claims_message`` so the manager needs no notion of any
+        platform's accounts.  A platform whose instances cannot tell their own
+        messages apart does not implement it, and is never asked.  A hook that
+        raises answers "not mine": it runs inside the dispatch loop, where one
+        instance's bad answer must not stop the queue.
+        """
+        claims = getattr(channel, "claims_message", None)
+        if not callable(claims):
+            return False
+        try:
+            return bool(claims(msg))
+        except Exception:
+            logger.exception(
+                "[ChannelManager] claims_message 执行失败，按不认领处理:"
+                " channel_id=%s app_id=%s id=%s",
+                getattr(channel, "channel_id", "?"),
+                getattr(channel, "app_id", "?"),
+                getattr(msg, "id", ""),
+            )
+            return False
+
+    def _resolve_outbound_channel(self, msg: "Message") -> "BaseChannel | None":
+        """Which registered instance delivers one outbound message.
+
+        Three rungs, narrowest first.
+
+        1. The exact ``ChannelKey``.  ``app_id`` travels out on the request and
+           back on the reply, so this settles almost every message.
+        2. The only instance of that ``channel_id``, when there is one.
+        3. Otherwise the instances are asked which of them the message belongs
+           to.  See ``_claims_message``.
+
+        Rung 3 refuses rather than guesses: delivering an unattributable message
+        to the first instance posts one account's reply into another account's
+        conversation.  Platforms whose instances implement no ``claims_message``
+        cannot be asked, so for them the first instance still stands.
+
+        The refusal is warned once per ``channel_id`` and recorded at DEBUG
+        after that: it states a standing property of the configuration, and the
+        periodic producers that reach rung 3 would otherwise repeat it forever.
+        """
+        channel_id = getattr(msg, "channel_id", "") or ""
+        app_id = self._message_handler.resolve_app_id(msg)
+        if app_id:
+            channel = self.get_by_key(ChannelKey(channel_id, app_id))
+            if channel is not None:
+                return channel
+
+        candidates = self.get_channels_by_id(channel_id)
+        if len(candidates) == 1:
+            return candidates[0]
+        if not candidates:
+            logger.warning(
+                "[ChannelManager] 未找到 Channel，丢弃 robot_messages: channel_id=%s id=%s",
+                channel_id, getattr(msg, "id", ""),
+            )
+            return None
+
+        claimed = [ch for ch in candidates if self._claims_message(ch, msg)]
+        if claimed:
+            # Several claimants mean one account configured twice.  Delivering
+            # to every one of them would post the reply twice.
+            return claimed[0]
+        if not any(callable(getattr(ch, "claims_message", None)) for ch in candidates):
+            return candidates[0]
+
+        first_report = channel_id not in self._unroutable_reported
+        self._unroutable_reported.add(channel_id)
+        logger.log(
+            logging.WARNING if first_report else logging.DEBUG,
+            "[ChannelManager] 无法判定出站消息归属于 %d 个 %s 实例中的哪一个，丢弃"
+            "（投给第一个会把一个账号的回复发到另一个账号）；同一 channel_id 只告警一次，"
+            "后续同类丢弃记为 DEBUG: id=%s session_id=%s app_id=%s",
+            len(candidates), channel_id, getattr(msg, "id", ""),
+            getattr(msg, "session_id", ""), app_id or "-",
+        )
+        return None
+
+    def _report_key_collision(self, key: ChannelKey, channel: Any) -> None:
+        """Say so when a registration displaces a different channel under one key.
+
+        ``_channels`` is a plain dict, so a second registration under the same
+        ``ChannelKey`` replaces the first, and the replaced instance is never
+        reached again: its connection stays open and its inbound messages keep
+        arriving, while every outbound message for it goes to its replacement.
+
+        The registration still goes through.  Refusing it would strand a dead
+        channel in the map whenever a stop path failed to unregister, and the
+        live one would never take its place.  ERROR because no reading of it is
+        fine: either two instances share an identity they should not, or a
+        channel that was supposed to be gone is still registered.
+        """
+        existing = self._channels.get(key)
+        if existing is None or existing is channel:
+            return
+        logger.error(
+            "[ChannelManager] ChannelKey 冲突: key=%s 已被 %s 占用，将被 %s 覆盖；"
+            "被覆盖的实例不会再收到任何出站消息（平台需为每个实例提供不同的 app_id）",
+            key, type(existing).__name__, type(channel).__name__,
+        )
 
     def mark_channel_restart_pending(self, channel_id: str) -> None:
         """请求在下次 set_conf / set_config 触发配置应用时，无论配置快照是否变化都重启该 channel。"""
@@ -128,6 +236,7 @@ class ChannelManager(ABC):
         """注册 Channel，并为其注册「收到消息时转发给 MessageHandler」的回调."""
         cid = channel.channel_id
         key = ChannelKey(cid, self._resolve_app_id(channel))
+        self._report_key_collision(key, channel)
         self._channels[key] = channel
         channel.on_message(self._on_channel_message)
         self._try_set_event_reporter(channel)
@@ -141,6 +250,7 @@ class ChannelManager(ABC):
     ) -> None:
         """登记 Channel 并使用自定义入站回调（不替换为默认 _on_channel_message）。"""
         key = ChannelKey(channel.channel_id, self._resolve_app_id(channel))
+        self._report_key_collision(key, channel)
         self._channels[key] = channel
         channel.on_message(on_message)
         self._try_set_event_reporter(channel)
@@ -269,6 +379,7 @@ class ChannelManager(ABC):
             key = channel_id
         else:
             key = ChannelKey(channel_id, self._resolve_app_id(channel))
+        self._report_key_collision(key, channel)
         self._channels[key] = channel
 
     async def deliver_to_message_handler(self, msg: "Message") -> None:
@@ -533,25 +644,17 @@ class ChannelManager(ABC):
                     continue
 
                 # ── 兜底：旧单 channel 投递（非 team 模式）──
-                # V2: 优先按 ChannelKey 精确路由（多应用场景下同一 channel_id 对应多个 app）
-                channel = None
-                app_id = self._message_handler.resolve_app_id(msg)
-                if app_id:
-                    channel = self.get_by_key(ChannelKey(msg.channel_id, app_id))
-                    if channel is not None:
-                        logger.debug(
-                            "[ChannelManager] 精确路由 ChannelKey(%s, %s) -> %s",
-                            msg.channel_id, app_id, getattr(channel, "channel_id", type(channel).__name__),
-                        )
-                if channel is None:
-                    channel = self._get_channel_by_id(msg.channel_id)
+                # 精确 ChannelKey 优先，其次唯一实例，最后由各实例自行认领；
+                # 多实例且无人认领时丢弃而不是猜第一个。见 _resolve_outbound_channel。
+                channel = self._resolve_outbound_channel(msg)
                 # 出站派发节点：定位"队列堆积/前端无输出"时，开启 DEBUG 可确认 chunk 是否
                 # 被消费、命中哪个 channel 实例（tui 走 GatewayServer、web 走 WebChannel）。
                 logger.debug(
                     "[ChannelManager] dispatch robot_messages: channel_id=%s id=%s"
                     " event_type=%s session_id=%s app_id=%s channel=%s channel_type=%s",
                     msg.channel_id, msg.id, _et, getattr(msg, "session_id", None),
-                    app_id, bool(channel), type(channel).__name__ if channel else None,
+                    self._message_handler.resolve_app_id(msg), bool(channel),
+                    type(channel).__name__ if channel else None,
                 )
                 if channel:
                     try:
@@ -560,11 +663,6 @@ class ChannelManager(ABC):
                         logger.error("send to channel %s: %s", msg.channel_id, e, exc_info=True)
                         if msg.id and msg.id.startswith("cron-push-"):
                             await self._notify_cron_delivery_error(msg, e)
-                else:
-                    logger.warning(
-                        "[ChannelManager] 未找到 Channel，丢弃 robot_messages: channel_id=%s id=%s",
-                        msg.channel_id, msg.id,
-                    )
             except asyncio.CancelledError:
                 break
             except Exception:
