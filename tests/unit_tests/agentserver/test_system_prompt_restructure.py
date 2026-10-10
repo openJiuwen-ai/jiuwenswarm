@@ -1047,6 +1047,67 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
 
 
 @pytest.mark.asyncio
+async def test_child_runtime_rail_keeps_its_own_model_after_a_parent_switch(tmp_path, monkeypatch):
+    monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)
+    parent = _FakeAgent(SystemPromptBuilder(language="en"))
+    child = _FakeAgent(SystemPromptBuilder(language="en"))
+    parent_rail = RuntimePromptRail(language="en", channel="web")
+    parent_rail.init(parent)
+    parent_rail.set_model_name("model-a")
+
+    child_rail = parent_rail.fork_for_agent()
+    assert child_rail is not parent_rail
+    child_rail.init(child)
+    assert child_rail.attachment_manager is child.prompt_attachment_manager
+    assert parent_rail.attachment_manager is parent.prompt_attachment_manager
+
+    child_ctx = AgentCallbackContext(agent=child, inputs=None, session=_FakeSession(), extra={})
+    await child_rail.before_model_call(child_ctx)
+
+    parent_rail.set_model_name("model-b")
+    parent_ctx = AgentCallbackContext(agent=parent, inputs=None, session=_FakeSession(), extra={})
+    await parent_rail.before_model_call(parent_ctx)
+
+    parent_items = await parent.prompt_attachment_manager.collect_for_session("sess1")
+    child_items = await child.prompt_attachment_manager.collect_for_session("sess1")
+    assert "Current model: model-b" in parent.prompt_attachment_manager.render(parent_items)
+    assert "Current model: model-a" in child.prompt_attachment_manager.render(child_items)
+
+    child_rail.set_model_name("model-c")
+    await child_rail.before_model_call(child_ctx)
+    await parent_rail.before_model_call(parent_ctx)
+    parent_items = await parent.prompt_attachment_manager.collect_for_session("sess1")
+    child_items = await child.prompt_attachment_manager.collect_for_session("sess1")
+    assert "Current model: model-b" in parent.prompt_attachment_manager.render(parent_items)
+    assert "Current model: model-c" in child.prompt_attachment_manager.render(child_items)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("selected_model", "expected_model"),
+    [("model-selected", "model-selected"), ("", "model-stored")],
+)
+async def test_runtime_attachment_prefers_the_selected_model_over_the_state_file(
+    tmp_path, monkeypatch, selected_model, expected_model,
+):
+    monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)
+    state_path = _utils_mod.get_runtime_state_path(None)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text("model: model-stored\n", encoding="utf-8")
+    agent = _FakeAgent(SystemPromptBuilder(language="en"))
+    rail = RuntimePromptRail(language="en", channel="web")
+    rail.init(agent)
+    rail.set_model_name(selected_model)
+    ctx = AgentCallbackContext(agent=agent, inputs=None, session=_FakeSession(), extra={})
+
+    await rail.before_model_call(ctx)
+
+    items = await agent.prompt_attachment_manager.collect_for_session("sess1")
+    rendered = agent.prompt_attachment_manager.render(items)
+    assert f"Current model: {expected_model}" in rendered
+
+
+@pytest.mark.asyncio
 async def test_runtime_attachment_request_mode_wins_over_localized_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)
     builder = SystemPromptBuilder(language="cn")

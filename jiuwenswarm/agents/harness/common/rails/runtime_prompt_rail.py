@@ -80,6 +80,38 @@ class RuntimePromptRail(DeepAgentRail):
         self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
         self.attachment_manager = getattr(agent, "prompt_attachment_manager", None)
 
+    def fork_for_agent(self) -> RuntimePromptRail:
+        """Give a child agent its own prompt and attachment bindings.
+
+        A sub-agent spec is a reusable template. A child that reuses this rail
+        object also reuses the parent's attachment manager, so a model switch
+        on either side rewrites the other's rendered runtime prompt. Copy the
+        request state and leave the agent bindings for the child's own init.
+        """
+        rail = type(self)(language=self._language, channel=self._channel)
+        rail.set_model_name(self._model_name)
+        rail.set_mode(self._mode)
+        rail.set_session_id(self._session_id)
+        rail.set_force_english(self._force_english)
+        rail.set_trusted_dirs(
+            list(self._trusted_dirs) if self._trusted_dirs is not None else None
+        )
+        rail.set_runtime_paths(
+            cwd=self._cwd,
+            project_dir=self._project_dir,
+            workspace_dir=self._workspace_dir,
+            task_workspace_root=self._task_workspace_root,
+            task_work_dir=self._task_work_dir,
+            task_outputs_dir=self._task_outputs_dir,
+        )
+        if all((self._execution_cwd, self._execution_project_root, self._execution_workspace)):
+            rail.set_execution_paths(
+                cwd=self._execution_cwd,
+                project_root=self._execution_project_root,
+                workspace=self._execution_workspace,
+            )
+        return rail
+
     def uninit(self, agent) -> None:
         """清理注入的 section 并释放引用。"""
         if self.system_prompt_builder is not None:
@@ -164,7 +196,7 @@ class RuntimePromptRail(DeepAgentRail):
         )
 
     def set_model_name(self, model_name: str) -> None:
-        """per-request 更新模型名称，作为文件读取失败时的兜底。"""
+        """Set the model selected for this request."""
         self._model_name = model_name or ""
 
     def set_execution_paths(
@@ -668,8 +700,8 @@ class RuntimePromptRail(DeepAgentRail):
             available_models = configured_models
         fallback_model = configured_models[0] if configured_models else ""
         model = str(
-            runtime_state.get("model")
-            or self._model_name
+            self._model_name
+            or runtime_state.get("model")
             or fallback_model
             or "unknown"
         ).strip()

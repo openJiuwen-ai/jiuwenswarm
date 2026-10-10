@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 from openjiuwen.core.single_agent import AgentCard
+from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness import DeepAgent
 from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
 from openjiuwen.harness.schema.config import SubAgentConfig
@@ -17,6 +19,7 @@ from openjiuwen.harness.schema.config import SubAgentConfig
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
 from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_permission_rail import AutoPermissionInterruptRail
+from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from tests.unit_tests.agentserver.permissions.test_permission_cold_build import cold  # noqa: F401
@@ -108,6 +111,49 @@ async def test_cold_gp_has_correct_permission_and_actual_parent_workspace(gp, mo
     else:
         assert not child.find_rails_by_type(PermissionInterruptRail)
     assert h.callbacks(child), "SDK callbacks must exist, not just configured rail objects"
+
+
+@pytest.mark.asyncio
+async def test_gp_child_gets_its_own_runtime_prompt_rail(gp, monkeypatch, tmp_path):
+    import jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail as runtime_module
+    h = gp
+    monkeypatch.setattr(
+        h.adapter,
+        "_build_runtime_prompt_rail",
+        interface_deep.JiuWenSwarmDeepAdapter._build_runtime_prompt_rail.__get__(h.adapter),
+    )
+    monkeypatch.setattr(runtime_module, "get_runtime_state_path", lambda _sid: tmp_path / "absent.yaml")
+    await h.create()
+    parent = h.adapter._instance
+    parent_rail = h.adapter._runtime_prompt_rail
+    parent_rail.set_model_name("model-a")
+
+    child = h.child("forked-runtime")
+    await child.ensure_initialized()
+    child_rails = child.find_rails_by_type(RuntimePromptRail)
+    assert len(child_rails) == 1
+    child_rail = child_rails[0]
+    assert child_rail is not parent_rail
+    assert child_rail.attachment_manager is child.prompt_attachment_manager
+    assert parent_rail.attachment_manager is parent.prompt_attachment_manager
+
+    child_ctx = AgentCallbackContext(
+        agent=child, inputs=None,
+        session=SimpleNamespace(get_session_id=lambda: "child-runtime"), extra={},
+    )
+    await child_rail.before_model_call(child_ctx)
+
+    parent_rail.set_model_name("model-b")
+    parent_ctx = AgentCallbackContext(
+        agent=parent, inputs=None,
+        session=SimpleNamespace(get_session_id=lambda: "parent-runtime"), extra={},
+    )
+    await parent_rail.before_model_call(parent_ctx)
+
+    child_items = await child.prompt_attachment_manager.collect_for_session("child-runtime")
+    parent_items = await parent.prompt_attachment_manager.collect_for_session("parent-runtime")
+    assert "Current model: model-a" in child.prompt_attachment_manager.render(child_items)
+    assert "Current model: model-b" in parent.prompt_attachment_manager.render(parent_items)
 
 
 @pytest.mark.asyncio
