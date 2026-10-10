@@ -71,7 +71,10 @@ class TeamSkillLibraryReloadRail(DeepAgentRail):
     write-like tool touches the library root.
     """
 
-    WRITE_TOOLS = frozenset({"write_file", "edit_file"})
+    WRITE_TOOLS = frozenset(
+        {"write", "write_file", "write_text_file", "edit", "edit_file", "delete", "move", "rename"}
+    )
+    MOVE_TOOLS = frozenset({"move", "rename"})
 
     def __init__(
         self,
@@ -101,8 +104,10 @@ class TeamSkillLibraryReloadRail(DeepAgentRail):
         tool_name = str(inputs.tool_name or "").strip()
         if tool_name not in self.WRITE_TOOLS:
             return
-        file_path = self._extract_file_path(inputs)
-        if not file_path or not self._is_under_global_skills_dir(file_path):
+        if ctx.exception is not None or self._result_explicitly_failed(inputs.tool_result):
+            return
+        file_paths = self._extract_file_paths(inputs, tool_name)
+        if not any(self._is_under_global_skills_dir(path) for path in file_paths):
             return
         await self._reload(ctx.agent)
 
@@ -119,7 +124,7 @@ class TeamSkillLibraryReloadRail(DeepAgentRail):
             logger.warning("[TeamSkillLibraryReload] reload hook failed: %s", exc)
 
     @staticmethod
-    def _extract_file_path(inputs: ToolCallInputs) -> str:
+    def _extract_file_paths(inputs: ToolCallInputs, tool_name: str) -> tuple[str, ...]:
         args = inputs.tool_args
         if args is None:
             args = {}
@@ -127,10 +132,38 @@ class TeamSkillLibraryReloadRail(DeepAgentRail):
             try:
                 args = json.loads(args)
             except (TypeError, ValueError):
-                return ""
+                return ()
         if not isinstance(args, dict):
-            return ""
-        return str(args.get("file_path", "") or args.get("path", "")).strip()
+            return ()
+        if tool_name not in TeamSkillLibraryReloadRail.MOVE_TOOLS:
+            path = str(args.get("file_path", "") or args.get("path", "")).strip()
+            return (path,) if path else ()
+
+        source = str(
+            args.get("source_path", "")
+            or args.get("src_path", "")
+            or args.get("old_path", "")
+            or args.get("file_path", "")
+            or args.get("path", "")
+        ).strip()
+        target = str(
+            args.get("destination_path", "")
+            or args.get("dest_path", "")
+            or args.get("target_path", "")
+            or args.get("new_path", "")
+        ).strip()
+        return tuple(path for path in (source, target) if path)
+
+    @staticmethod
+    def _result_explicitly_failed(result: object) -> bool:
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except (TypeError, ValueError):
+                return False
+        if isinstance(result, dict):
+            return result.get("success") is False
+        return getattr(result, "success", None) is False
 
     def _is_under_global_skills_dir(self, file_path: str) -> bool:
         try:
