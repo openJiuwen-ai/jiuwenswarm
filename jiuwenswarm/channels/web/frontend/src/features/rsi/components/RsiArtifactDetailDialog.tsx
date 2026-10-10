@@ -3,6 +3,7 @@ import { ChevronRight, Copy, Download, File as FileIcon, Folder, LoaderCircle, X
 import { useTranslation } from 'react-i18next';
 import { FilePreview } from '../../../components/ArtifactsPanel/FilePreview';
 import { previewKind } from '../../../components/ArtifactsPanel/filePreviewModel';
+import { executeDesktopSave } from '../../../utils/desktopSave';
 import { RsiLatexPreview } from './RsiLatexPreview';
 import {
   artifactMimeType,
@@ -108,7 +109,7 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
   const [entries, setEntries] = useState<RsiArtifactFileEntry[]>([]);
   const [selectedPath, setSelectedPath] = useState('');
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
-  const [preview, setPreview] = useState<{ path: string; url: string } | null>(null);
+  const [preview, setPreview] = useState<{ path: string; url: string; downloadUrl?: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [fileContent, setFileContent] = useState('');
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
@@ -194,7 +195,7 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
           ? new Blob([file.content], { type: file.type })
           : new Blob([decodeBase64(file.content)], { type: file.type });
         objectUrl = URL.createObjectURL(blob);
-        setPreview({ path: selectedEntry.path, url: objectUrl });
+        setPreview({ path: selectedEntry.path, url: objectUrl, downloadUrl: file.download_url });
         setPreviewLoading(false);
         setFileContent(file.encoding === 'text' ? file.content : selectedEntry.path);
       })
@@ -250,16 +251,24 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
     }
   }, [fileContent, selectedEntry]);
 
-  const handleDownload = useCallback(() => {
+  const handleDownload = useCallback(async () => {
     if (!selectedEntry || !preview || preview.path !== selectedEntry.path) return;
+    const downloadUrl = preview.downloadUrl || preview.url;
+    const desktopDownload = window.pywebview?.api?.download_file;
+    if (preview.downloadUrl && desktopDownload) {
+      const outcome = await executeDesktopSave(() => desktopDownload(downloadUrl, selectedEntry.name));
+      if (outcome === 'failed') {
+        window.alert(t('artifacts.downloadFailed', { name: selectedEntry.name }));
+      }
+      return;
+    }
     const anchor = document.createElement('a');
-    anchor.href = preview.url;
+    anchor.href = downloadUrl;
     anchor.download = selectedEntry.name;
-    // 挂载到 DOM 再点击，确保 WebView2/Electron 中按下载处理而非导航
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
-  }, [preview, selectedEntry]);
+  }, [preview, selectedEntry, t]);
 
   const renderTreeNode = useCallback(
     (treeNode: FileTreeNode, depth: number): JSX.Element => {
