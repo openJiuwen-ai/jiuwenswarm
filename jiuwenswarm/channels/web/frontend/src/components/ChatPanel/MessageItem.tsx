@@ -4,6 +4,7 @@
  * 单条消息显示，支持 TTS 朗读
  */
 
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { useState, useCallback, useContext, useEffect, useRef, useMemo, memo } from 'react';
 import type { ReactNode } from 'react';
 import {
@@ -41,6 +42,7 @@ import { useSpeechSynthesis } from '../../hooks';
 import clsx from 'clsx';
 import { MarkdownRenderer } from '../../components/MarkdownRenderer';
 import { isTeamP2PMessageToUser, parseTeamEventMessage } from './teamEventUtils';
+import { memberNameFromMessageId } from '../../features/teamLeaderMessages';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { isTeamLeaderMember } from '../../utils/teamMemberAvatar';
 import { AgentAvatar } from '../AgentAvatar';
@@ -132,7 +134,7 @@ export function TeamMemberMessageFrame({
   teamGroupIdentity?: AgentGroupIdentity | null;
 }) {
   const { i18n } = useTranslation();
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
   const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers);
   // 头像旁的成员名：leader 使用显式 session identity，否则固定 Jiuwen；其他成员
   // 使用名册 display name，查不到退回 member_id。
@@ -330,6 +332,12 @@ export function getMessageActor(message: Message): string | null {
   // team-leader 气泡偶发会落成 assistant；按 id 识别，避免 team 聚类把头像判丢。
   if (message.id?.startsWith('team-leader-')) {
     return 'team_leader';
+  }
+
+  // 队友气泡同理：id 里带着成员名，头像与身份标注都用它。
+  const memberName = memberNameFromMessageId(message.id);
+  if (memberName) {
+    return memberName;
   }
 
   if (message.role !== 'system') {
@@ -760,6 +768,25 @@ export const MessageItem = memo(function MessageItem({
 	       );
 	     }
 	     
+	     // 队友气泡：内容本身就是纯文字（没有 team.leader 那样的 JSON 包装），
+	     // 成员名从 id 里取，用来渲染身份与头像。
+	     const teamMemberName = memberNameFromMessageId(id);
+
+	     if (teamMemberName) {
+	       return (
+	         <TeamLeaderPlainTextMessage
+	           member={teamMemberName}
+              timestamp={timestamp}
+	           content={content || (isStreaming ? '正在接收中...' : '')}
+	           messageId={id}
+	           isStreaming={isStreaming}
+	           showAvatar={showAvatar}
+	           fileItems={fileItems}
+	           disableA2UIInteraction={disableA2UIInteraction}
+	         />
+	       );
+	     }
+
     return (
       <div className="flex justify-center my-4 animate-fade-in" data-testid="chat-panel-system-message-bubble">
         <div className="px-4 py-2 rounded-full bg-secondary border border-border text-text-muted text-sm">

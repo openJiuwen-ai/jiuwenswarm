@@ -134,6 +134,8 @@ function PersonalContextIcon(props: SVGProps<SVGSVGElement>) {
     </svg>
   );
 }
+import { TeamSelector } from './TeamSelector';
+import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 
 const MENU_GAP = 10;
 /** 智能体选择列表单行高度（与 ChatPanel.css 的 .chat-agent-picker__item min-height 一致） */
@@ -989,6 +991,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isInterruptible = isProcessing || isPaused || isGoalActive;
   const isAgentMode = mode === 'agent';
   const isTeamMode = mode === 'team';
+  const organizationUiEnabled = useTeamOrganizationUiEnabled();
   const isAutoHarnessMode = mode === 'auto_harness';
   const existingTeamGroupSelectionDisabled = Boolean(
     isTeamMode && activeSessionId !== NEW_CONVERSATION_ID && !agentGroupBinding && !agentGroupBindingPending,
@@ -3497,6 +3500,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
             <div className="chat-input-toolbar" data-testid="chat-panel-input-toolbar">
               <div className="chat-input-toolbar-left" data-testid="chat-panel-input-toolbar-left">
+                {isTeamMode && organizationUiEnabled && (
+                  <TeamSelector sessionId={activeSessionId} isProcessing={isProcessing} />
+                )}
                 <input
                   ref={fileInputRef}
                   type="file"

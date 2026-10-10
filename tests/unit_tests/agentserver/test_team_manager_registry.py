@@ -22,6 +22,19 @@ from jiuwenswarm.agents.harness.team.team_manager import (
 )
 
 
+def test_default_team_spec_accessor_preserves_loader_result(monkeypatch):
+    spec = object()
+    sessions = []
+
+    def load(session_id):
+        sessions.append(session_id)
+        return spec
+
+    monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(load))
+    assert TeamManager.load_default_team_spec("session") is spec
+    assert sessions == ["session"]
+
+
 class _TeamManagerHarness(TeamManager):
     def set_active_runtime_for_test(self, session_id: str, team_name: str) -> None:
         self.commit_runtime_ready(session_id, team_name)

@@ -559,6 +559,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # Code 模式专属 rails — 父类不定义这些属性
         self._lsp_rail: LspRail | None = None
         self._project_memory_rail: ProjectMemoryRail | None = None
+        self._agent_md_prompt_rail: Any | None = None
         self._coding_memory_rail: CodingMemoryRail | None = None
         self._worktree_rail: WorktreeRail | None = None
         # 单点 source-of-truth, 让 sysop_builder 的"主写入根"分支
@@ -1704,6 +1705,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_project_memory_rail", self._build_project_memory_rail),
             *self._permission_interrupt_rail_infos(config_base),
             _RailBuildInfo("_code_filesystem_rail", self._build_filesystem_rail),
+            _RailBuildInfo("_agent_md_prompt_rail", self._build_agent_md_prompt_rail),
             _RailBuildInfo("_coding_memory_rail", self._build_coding_memory_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
             _RailBuildInfo(
@@ -1970,6 +1972,26 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[JiuwenSwarmCodeAdapter] ProjectMemoryRail create failed: %s", exc,
+            )
+            return None
+
+    def _build_agent_md_prompt_rail(self) -> Any | None:
+        """Build AgentMdPromptRail（agent.md/claude.md → prompt attachment）.
+
+        会话工作目录向上最多三层查找，就近命中；内容经 PromptAttachmentManager
+        快照/增量管线注入（首次全量、未变不重发、压缩丢失自动重补）。
+        """
+        try:
+            from jiuwenswarm.agents.harness.code.rails.agent_md_prompt_rail import (
+                AgentMdPromptRail,
+            )
+
+            rail = AgentMdPromptRail()
+            logger.info("[JiuwenSwarmCodeAdapter] AgentMdPromptRail create success")
+            return rail
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[JiuwenSwarmCodeAdapter] AgentMdPromptRail create failed: %s", exc,
             )
             return None
 
@@ -2433,6 +2455,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
             # BrowserTaskPromptRail 已改为 load-aware（按 deep_config.subagents 里是否挂载
             # browser_agent 决定是否追加浏览器策略），不再需要按请求注入 channel。
+        agent_md_prompt_rail = getattr(self, "_agent_md_prompt_rail", None)
+        if agent_md_prompt_rail is not None:
+            agent_md_prompt_rail.set_runtime_paths(cwd=task_cwd)
         eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
         if eternal_conversation_rail is not None:
             self._eternal_conversation_enabled = runtime_config.eternal_conversation_enabled

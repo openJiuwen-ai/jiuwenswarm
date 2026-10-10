@@ -116,6 +116,8 @@ import {
   withUploadDocumentBlock,
 } from '../utils/documentMessage';
 import { useSubagentStore } from '../stores/subagentStore';
+import { expertTeamId, selectedExpertTeamId, sendExpertMessage } from '../features/teamOrganization/conversation';
+import { useOrganizationEvents } from '../features/teamOrganization/useOrganizationEvents';
 import {
   normalizeSubagentActivityEvent,
   normalizeSubagentToolStatusUpdates,
@@ -971,6 +973,7 @@ type ArchiveResourceEventPayload = {
 const ARCHIVE_EVENT_REFRESH_DEBOUNCE_MS = 300;
 
 export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
+  useOrganizationEvents();
   const { t } = useTranslation();
   const {
     activeSessionId,
@@ -1140,7 +1143,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const resolveEventSessionId = useCallback(
     (payload: Record<string, unknown>): string | null => {
       const payloadSessionId = getPayloadSessionId(payload);
-      if (!payloadSessionId) return null;
+        if (!payloadSessionId) return null;
+        if (expertTeamId(payload, payloadSessionId)) return null;
       ensureSessionRuntimes(payloadSessionId);
       if (typeof payload.execution_id === 'string' && payload.execution_id) {
         useChatStore.getState().setActiveExecutionId(payloadSessionId, payload.execution_id);
@@ -1864,6 +1868,27 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   // 发送聊天消息
   const sendMessage = useCallback(
     async (content: string, sessionId: string, mediaItems: MediaItem[] = [], options?: ChatSendOptions): Promise<boolean> => {
+      if (!options?.queuedTaskId && selectedExpertTeamId(sessionId)) {
+        if (!content.trim() && !mediaItems.length) return false;
+        try {
+          const attachments: Record<string, unknown> = {};
+          let query = content;
+          if (mediaItems.length) {
+            const imageItems = mediaItems.filter((item) => item.type !== 'document');
+            const documentItems = mediaItems.filter((item) => item.type === 'document');
+            const persisted: PersistMediaResponse = imageItems.length ? await persistMedia(content, sessionId, imageItems) : {};
+            const documents: PersistMediaResponse = documentItems.length ? await persistDocuments(content, sessionId, documentItems) : {};
+            const items = [...(persisted.media_items ?? []), ...(documents.media_items ?? [])];
+            attachments.media_items = items;
+            attachments.files = { ...persisted.files, ...documents.files };
+            query = withUploadDocumentBlock(persisted.content ?? persisted.query ?? content, toUploadDocumentHints(documents.media_items));
+          }
+          return (await sendExpertMessage(query, sessionId, mediaItems, attachments)) ?? false;
+        } catch (error) {
+          onErrorRef.current?.((error as WebError).message || t('network.sendMessageFailed'));
+          return false;
+        }
+      }
       const taskId = options?.queuedTaskId;
       if (taskId) {
         const store = useChatStore.getState();
@@ -2218,6 +2243,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       options?: { newInput?: string }
     ) => {
       const newInput = options?.newInput;
+      const expertId = selectedExpertTeamId(sessionId);
+      if (expertId) {
+        if (intent === 'supplement' && newInput) {
+          return (await sendExpertMessage(newInput, sessionId)) ?? false;
+        }
+        const result = await request<{ success?: boolean }>('chat.interrupt', {
+          session_id: sessionId, target_team_id: expertId, mode: 'team', intent,
+        });
+        if (result?.success) {
+          useChatStore.getState().setProcessing(`${sessionId}::${expertId}`, false);
+        }
+        return result?.success === true;
+      }
       if (intent === 'supplement' && newInput) {
         resetContextCompressionTurn(sessionId);
         userInputVersionRef.current += 1;

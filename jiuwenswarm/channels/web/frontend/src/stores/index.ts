@@ -2,7 +2,7 @@
  * 状态管理导出
  */
 
-export { useChatStore } from './chatStore';
+export { useChatStore, conversationKey, parseConversationKey, isConversationKeyOfSession } from './chatStore';
 export { useTodoStore } from './todoStore';
 export { useGoalStore } from './goalStore';
 export { usePlanStore } from './planStore';
@@ -18,6 +18,15 @@ export { ensureSessionRuntimes } from './ensureSessionRuntimes';
 export { useCronStore, filterJobsForProject, isDefaultProjectId, isWebChannelJob } from './cronStore';
 export { useSubagentStore } from './subagentStore';
 export type { SubagentRuntime } from './subagentStore';
+export { useTeamSelectorStore, createEmptyTeamSelectorRuntime } from './teamSelectorStore';
+export type {
+  RuntimeTeamInfo,
+  RuntimeTeamState,
+  TeamSnapshotMember,
+  TeamSnapshotPayload,
+  TeamSnapshotTask,
+} from './teamSelectorStore';
+export { applyTeamSnapshotToSession } from './teamSliceApply';
 export type { SidebarCronJob } from './cronStore';
 export { usePersonalContextStore } from './personalContextStore';
 export type { HarnessStageInfo, HarnessStageStatus } from './harnessStore';

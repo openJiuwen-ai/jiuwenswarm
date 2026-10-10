@@ -1,3 +1,4 @@
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
@@ -122,7 +123,7 @@ export function TeamMembersPanel({
   onDetailTabChange,
 }: TeamMembersPanelProps) {
   const { t } = useTranslation();
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
   const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
   const teamLeaderMemberIds = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamLeaderMemberIds ?? []);
   const groupMessages = useMemo(() => buildGroupMessageItems(historyMessages, messages), [historyMessages, messages]);
@@ -459,7 +460,7 @@ const TeamMemberOverviewCard = memo(function TeamMemberOverviewCard({
   onClick?: () => void;
 }) {
   const { t } = useTranslation();
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
   const todos = useTodoStore((s) => s.runtimes[activeSessionId ?? '']?.todos ?? []);
   const teamTaskEvents = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
   const teamMemberExecutionEvents = useSessionStore(
@@ -530,7 +531,7 @@ function MemberTaskDetail({
       document.removeEventListener('mousedown', handlePointerDown);
     };
   }, [taskListExpanded]);
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
   const todos = useTodoStore((s) => s.runtimes[activeSessionId ?? '']?.todos ?? []);
   const teamTaskEvents = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
   const teamMemberExecutionEvents = useSessionStore(

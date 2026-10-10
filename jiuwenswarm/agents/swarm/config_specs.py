@@ -150,6 +150,7 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.HEARTBEAT,
     registry.CODE_LSP,
     registry.CODE_PROJECT_MEMORY,
+    registry.CODE_AGENT_MD,
     registry.PERMISSION_INTERRUPT,
     registry.SYS_OPERATION,
     registry.CODE_CODING_MEMORY,

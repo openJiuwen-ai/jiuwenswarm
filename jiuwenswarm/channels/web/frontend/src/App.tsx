@@ -179,6 +179,7 @@ import {
   useTrajectoryUiEnabled,
 } from './features/trajectory/featureConfig';
 import './App.css';
+import { setTeamOrganizationUiEnabled } from './features/teamOrganization/featureConfig';
 
 const LazyTrajectoryPanel = lazy(async () => {
   const module = await import('./features/trajectory/TrajectoryPanel');
@@ -1720,6 +1721,7 @@ function AppContent({
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
+      setTeamOrganizationUiEnabled(config.team_organization_ui_enabled);
       setServerConfig(config);
       setConfigError(null);
       if (!modelSetupGuideEvaluatedRef.current) {

@@ -4849,3 +4849,18 @@
   border-color: var(--color-border-default);
   box-shadow: none;
 }
+.chat-team-select__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.chat-team-select__dot--running {
+  background: var(--color-feedback-success);
+}
+
+.chat-team-select__dot--idle {
+  background: var(--color-feedback-warning);
+}
