@@ -1,4 +1,5 @@
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -96,6 +97,39 @@ def test_pip_executor_installs_canonical_package_name(monkeypatch):
 
     assert checked_packages == ["workswarm"]
     assert statuses[-1]["error"] == "pip install failed: editable test stop"
+
+
+def test_pip_executor_detects_uv_editable_install(monkeypatch):
+    statuses = []
+    executor = PipExecutor(
+        {
+            "package_name": "workswarm",
+            "repo_name": "jiuwenswarm",
+            "timeout_seconds": 20,
+        },
+        statuses.append,
+    )
+    commands = []
+    monkeypatch.setattr(executor, "_resolve_uv_command", lambda: "uv")
+    monkeypatch.setattr(
+        upgrade_executor.subprocess,
+        "run",
+        lambda command, **kwargs: (
+            commands.append(command)
+            or SimpleNamespace(
+                returncode=0,
+                stdout="Name: workswarm\nEditable project location: C:\\src\\workswarm\n",
+            )
+        ),
+    )
+
+    executor.install()
+
+    assert commands == [["uv", "pip", "show", "workswarm"]]
+    assert statuses[-1]["error"] == (
+        "pip install failed: 'workswarm' is installed as an editable package. "
+        "Use 'git pull && uv sync' to update instead."
+    )
 
 
 def test_desktop_executor_rejects_truncated_download(monkeypatch, tmp_path):

@@ -247,13 +247,15 @@ class PipExecutor(UpgradeExecutor):
         try:
             if uv_cmd:
                 result = subprocess.run(
-                    [uv_cmd, "pip", "show", "--format", "json", package],
+                    [uv_cmd, "pip", "show", package],
                     capture_output=True, text=True, timeout=10,
                 )
                 if result.returncode == 0:
-                    import json as _json
-                    data = _json.loads(result.stdout)
-                    if isinstance(data, dict) and data.get("editable"):
+                    if any(
+                        line.startswith("Editable project location:")
+                        and line.partition(":")[2].strip()
+                        for line in result.stdout.splitlines()
+                    ):
                         return (
                             f"'{package}' is installed as an editable package. "
                             "Use 'git pull && uv sync' to update instead."
