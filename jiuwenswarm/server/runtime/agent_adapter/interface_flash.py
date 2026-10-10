@@ -742,14 +742,17 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
 
     def _get_current_agent_rails(self, config, config_base):
         rails, removed = super()._get_current_agent_rails(config, config_base)
+        old = getattr(self, "_flash_skill_selection_rail", None)
         selection = self._build_flash_skill_selection_rail(config_base)
         if selection is not None:
-            rails.extend((selection.load_rail, selection))
-        else:
-            old = getattr(self, "_flash_skill_selection_rail", None)
-            if old is not None:
-                removed.extend((old.load_rail, old))
-                self._flash_skill_selection_rail = None
+            # Existing rails read the latest config/native rail through providers.
+            # Passing the same instances to configure() registers their callbacks
+            # again in the SDK, so only newly created rails belong in this list.
+            if selection is not old:
+                rails.extend((selection.load_rail, selection))
+        elif old is not None:
+            removed.extend((old.load_rail, old))
+            self._flash_skill_selection_rail = None
         return rails, removed
 
     async def _update_rails_for_mode(self, mode: str) -> None:
