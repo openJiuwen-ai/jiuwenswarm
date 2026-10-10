@@ -1,5 +1,7 @@
 # Trajectory source provenance
 
+Assistant ledger previews prefer visible output. Reasoning-only previews keep the ASSISTANT label, badge, record identity, and inspector content, while using muted italic text to distinguish reasoning from visible output.
+
 English | [中文](PROVENANCE.zh.md)
 
 JiuwenSwarm copies selected DSH Trajectory sources under the MIT license and adapts only the copies in this feature directory. The original `packages/client` files remain unchanged and continue to own the DSH Web feature.
