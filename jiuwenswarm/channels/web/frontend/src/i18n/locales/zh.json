@@ -504,10 +504,14 @@
         "singleAgent": "单Agent模式"
       },
       "permission": {
+        "auto": "默认权限",
+        "autoDesc": "编辑工作目录外的文件、执行高风险命令时请求您的审批",
         "default": "默认权限",
-        "defaultDesc": "编辑外部文件和使用互联网时始终询问",
+        "defaultDesc": "编辑工作目录外的文件、执行高风险命令时请求您的审批",
         "fullAccess": "完全访问权限",
         "fullAccessDesc": "可不受限制地访问互联网和您电脑上的任何文件",
+        "strict": "严格审批",
+        "strictDesc": "编辑任意文件、读取工作目录外的文件、执行命令时始终请求您的审批",
         "fullAccessWarning": {
           "title": "告警",
           "body1": "在完全访问模式下，Jiuwen无需你的批准即可编辑你电脑上的任何文件，并执行可联网的命令。",

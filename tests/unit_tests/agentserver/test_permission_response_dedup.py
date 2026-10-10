@@ -14,6 +14,7 @@ from jiuwenswarm.common.schema.agent import (
     AgentResponse,
     AgentResponseChunk,
 )
+from jiuwenswarm.server.runtime.agent_adapter.user_turn import UserTurn
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 from jiuwenswarm.server.runtime.session.permission_response_ledger import (
@@ -215,6 +216,7 @@ def _build_swarm(monkeypatch: pytest.MonkeyPatch, adapter: _PermissionAdapter):
     swarm._sdk_name = "harness"
 
     def _build_inputs(request: AgentRequest):
+        # 2ad172a7e 后 _build_inputs 第三元素返回 UserTurn。
         if request.params.get("mode") == "team":
             return (
                 {
@@ -225,9 +227,9 @@ def _build_swarm(monkeypatch: pytest.MonkeyPatch, adapter: _PermissionAdapter):
                     )
                 },
                 "local",
-                "",
+                UserTurn(text="", channel="web", language="zh", files={}),
             )
-        return {}, "local", ""
+        return {}, "local", UserTurn(text="", channel="web", language="zh", files={})
 
     monkeypatch.setattr(swarm, "_build_inputs", _build_inputs)
     monkeypatch.setattr(interface_module, "append_history_record", lambda **_kwargs: None)

@@ -7,10 +7,11 @@ and building permission rails.
 """
 from __future__ import annotations
 
-import copy
+import inspect
 import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.agents.harness.code.rails.code_plan_approval_interrupt_rail import (
@@ -72,6 +73,17 @@ def is_interrupt_resume_source(source: Any) -> bool:
         "confirm_interrupt",
         "ask_user_interrupt",
     }
+
+
+def _filter_init_kwargs(cls: type, **kwargs: Any) -> dict[str, Any]:
+    """Drop kwargs the installed openjiuwen constructor does not accept."""
+    try:
+        params = inspect.signature(cls).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()):
+        return kwargs
+    return {key: value for key, value in kwargs.items() if key in params}
 
 
 def has_interrupt_resume_payload(params: Any) -> bool:
@@ -444,25 +456,52 @@ class PermissionRailBuildOptions:
     persist_target_agent_id_provider: Any | None = None
 
 
+def resolve_permission_workspace_dir() -> Path:
+    """file_guard 的当前任务 workspace，而不是 agent 数据根。
+
+    ``get_workspace_dir()`` 指向 ``~/.jiuwenswarm/agent/workspace``（skills/memory
+    等所在目录）。Web 默认任务目录是其下 ``projects/<session>``；写父目录应走区外
+    审批，因此优先用 ``get_workspace()``（``_seed_runtime_cwd`` 写入的任务根）。
+    """
+    from jiuwenswarm.common.utils import get_workspace_dir
+
+    try:
+        from openjiuwen.core.sys_operation.cwd import get_workspace
+
+        current = get_workspace()
+    except Exception:
+        current = None
+    if current:
+        try:
+            return Path(current).expanduser().resolve()
+        except (OSError, RuntimeError):
+            return Path(current)
+    return get_workspace_dir()
+
+
 def build_permission_rail(
     config: dict[str, Any],
+    llm: Any = None,
+    model_name: str | None = None,
     options: PermissionRailBuildOptions | None = None,
 ) -> Any | None:
     """Build openjiuwen PermissionInterruptRail for tool permission checks.
+
+    产品三模式（full_access/auto/strict）下权限轨始终可挂载：旧 ``enabled:false``
+    （Web 完全访问）经 compose 迁移为 ``mode=full_access`` 且 ``enabled=true``。
 
     Args:
         config: Agent config dict containing permissions section
         options: Optional LLM / permission-body / workspace persist inputs.
 
     Returns:
-        PermissionInterruptRail instance or None if disabled
+        PermissionInterruptRail instance or None if effective permissions disabled
     """
-    opts = options or PermissionRailBuildOptions()
+    opts = options or PermissionRailBuildOptions(llm=llm, model_name=model_name)
     llm = opts.llm
     model_name = opts.model_name
     permission_config = opts.permission_config
     resolve_workspace_dir = opts.resolve_workspace_dir
-    persist_target_agent_id_provider = opts.persist_target_agent_id_provider
     from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
     from openjiuwen.harness.security.host import (
         PermissionConfirmationRequest,
@@ -471,31 +510,44 @@ def build_permission_rail(
     )
     from openjiuwen.harness.security.models import PermissionConfirmResponse
 
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        compose_host_effective_permissions,
+        persist_session_overlay_from_effective,
+        persist_user_overlay_from_effective,
+    )
     from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
         TOOL_PERMISSION_CHANNEL_ID,
+        TOOL_PERMISSION_SESSION_ID,
     )
     from jiuwenswarm.common.e2a.acp.acp_tool_updates import build_acp_tool_descriptor
-    from jiuwenswarm.common.utils import get_config_file, get_workspace_dir
-    from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
-        get_effective_permissions_config,
-        merge_session_permissions_overlay,
-    )
+    from jiuwenswarm.common.utils import get_config_file
 
-    if isinstance(permission_config, dict):
-        # Agent 模板 body：企业版仍叠加当前会话 overlay（若有）。
-        permission_config = (
-            merge_session_permissions_overlay(permission_config)
-            if is_enterprise()
-            else copy.deepcopy(permission_config)
+    raw_permission_config = (
+        permission_config
+        if isinstance(permission_config, dict)
+        else (config.get("permissions", {}) if isinstance(config, dict) else {})
+    )
+    if not isinstance(raw_permission_config, dict):
+        raw_permission_config = {}
+
+    session_id = TOOL_PERMISSION_SESSION_ID.get() or None
+    try:
+        permission_config = compose_host_effective_permissions(
+            session_id=session_id,
+            global_permissions=raw_permission_config,
         )
-        config_source = "agent_template"
-    else:
-        permission_config = get_effective_permissions_config()
-        config_source = "effective"
+    except Exception as exc:
+        logger.warning(
+            "[InterruptHelpers] compose_permissions_failed fallback=raw error=%s",
+            exc,
+        )
+        permission_config = dict(raw_permission_config)
+
     logger.info(
-        "[InterruptHelpers] build_permission_rail called: enabled=%s source=%s",
+        "[InterruptHelpers] build_permission_rail called: enabled=%s mode=%s sandbox_intent=%s",
         permission_config.get("enabled", False),
-        config_source,
+        permission_config.get("mode"),
+        permission_config.get("sandbox_intent"),
     )
 
     if not permission_config.get("enabled", False):
@@ -512,6 +564,12 @@ def build_permission_rail(
                 label = str(k).strip()
                 if label:
                     names.add(label)
+        for key in ("ask_tools", "deny_tools"):
+            raw_list = cfg.get(key) or []
+            if isinstance(raw_list, list):
+                for item in raw_list:
+                    if isinstance(item, str) and item.strip():
+                        names.add(item.strip())
         rules = cfg.get("rules") or []
         if isinstance(rules, list):
             for entry in rules:
@@ -540,45 +598,19 @@ def build_permission_rail(
     )
     try:
         def _persist_allow_rule(permissions: dict[str, Any]) -> bool:
-            """Persist merged `permissions` config back to config.yaml.
+            """永久允许：写入 user_permissions.yaml（pattern / file_guard / allow_tools）。"""
+            return persist_user_overlay_from_effective(permissions)
 
-            openjiuwen PermissionInterruptRail calls this when user selects "always allow".
-
-            Mutate only approval_overrides / file_guard / external_directory on the
-            persist target body (yaml ``agents[id]`` when hit, else global). Do not
-            replace the entire on-disk section — that would recreate deleted tools
-            or drop the ``agents`` table.
-            """
-            try:
-                from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
-                    persist_permissions_mutate,
-                )
-
-                persist_target = None
-                if callable(persist_target_agent_id_provider):
-                    persist_target = persist_target_agent_id_provider()
-
-                def mutate(perms: dict[str, Any]) -> None:
-                    overrides_new = permissions.get("approval_overrides")
-                    if overrides_new is not None:
-                        perms["approval_overrides"] = copy.deepcopy(overrides_new)
-                    fg_new = permissions.get("file_guard")
-                    if fg_new is not None:
-                        perms["file_guard"] = copy.deepcopy(fg_new)
-                    ext_dir_new = permissions.get("external_directory")
-                    if ext_dir_new is not None:
-                        perms["external_directory"] = copy.deepcopy(ext_dir_new)
-
-                persist_permissions_mutate(
-                    mutate,
-                    persist_scope="session" if is_enterprise() else "base",
-                    persist_target_agent_id=persist_target,
-                    source="persist_allow_rule",
-                )
-                return True
-            except Exception as exc:
-                logger.warning("[InterruptHelpers] persist_allow_rule failed: %s", exc)
-                return False
+        def _persist_session_allow_rule(permissions: dict[str, Any]) -> bool:
+            """会话内记住：写入 session_permissions.yaml。"""
+            sid = (
+                (TOOL_PERMISSION_SESSION_ID.get() or "").strip()
+                or str(permissions.get("_persist_session_id") or "").strip()
+            )
+            return persist_session_overlay_from_effective(
+                permissions,
+                session_id=sid or None,
+            )
 
         def _resolve_session_id(ctx: Any) -> str | None:
             session = getattr(ctx, "session", None)
@@ -764,6 +796,10 @@ def build_permission_rail(
             if not principal_user_id or not channel_id:
                 return None
 
+            from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+                get_effective_permissions_config,
+            )
+
             perm_cfg = get_effective_permissions_config()
             owner_scopes = perm_cfg.get("owner_scopes") if isinstance(perm_cfg, dict) else None
             if not isinstance(owner_scopes, dict) or not owner_scopes:
@@ -782,24 +818,34 @@ def build_permission_rail(
                 return ("approve",)
             return ("reject", f"[PERMISSION_DENIED] 该工具未被授权 (owner_scopes: {owner_level})")
 
-        def _get_permissions_snapshot():
-            # 企业版 Agent 模板 rail：工具校验跑在 DeepAgent supervisor Task
-            # （start_interaction 时 create_task），不会继承请求 Task 上的
-            # PERMISSIONS_AGENT_BASE；若这里再走 get_effective_permissions_config()
-            # 会回落 yaml（常为 enabled:false）并覆盖模板配置。
-            # 返回 None → 使用 _static_config（请求开头 _update_permission_rail
-            # 与 persist 的 update_config 会刷新它）。
-            if config_source == "agent_template":
-                return None
-            return get_effective_permissions_config()
+        def _get_permissions_snapshot(session_id: str | None = None) -> dict[str, Any]:
+            sid = (
+                (session_id or "").strip()
+                or (TOOL_PERMISSION_SESSION_ID.get() or "").strip()
+                or None
+            )
+            try:
+                return compose_host_effective_permissions(session_id=sid)
+            except Exception:
+                logger.warning(
+                    "[InterruptHelpers] permissions_snapshot_compose_failed",
+                    exc_info=True,
+                )
+                return {}
 
         host = ToolPermissionHost(
-            get_permissions_snapshot=_get_permissions_snapshot,
-            persist_allow_rule=_persist_allow_rule,
-            resolve_workspace_dir=resolve_workspace_dir or get_workspace_dir,
-            permission_yaml_path=get_config_file(),
-            request_permission_confirmation=_request_permission_confirmation,
-            permission_scene_hook=_permission_scene_hook,
+            **_filter_init_kwargs(
+                ToolPermissionHost,
+                get_permissions_snapshot=_get_permissions_snapshot,
+                persist_allow_rule=_persist_allow_rule,
+                persist_session_allow_rule=_persist_session_allow_rule,
+                resolve_workspace_dir=(
+                    resolve_workspace_dir or resolve_permission_workspace_dir
+                ),
+                permission_yaml_path=get_config_file(),
+                request_permission_confirmation=_request_permission_confirmation,
+                permission_scene_hook=_permission_scene_hook,
+            )
         )
 
         # Skill 动态授权协调：默认权限 Rail 叠加 gate-handled 短路
@@ -839,15 +885,25 @@ def build_permission_rail(
             )
 
         permission_rail = rail_cls(
-            config=permission_config,
-            tool_names=tool_names,
-            llm=llm,
-            model_name=model_name,
-            host=host,
+            **_filter_init_kwargs(
+                rail_cls,
+                config=permission_config,
+                tool_names=tool_names,
+                llm=llm,
+                model_name=model_name,
+                host=host,
+                sandbox_intent=permission_config.get("sandbox_intent"),
+                permission_mode=permission_config.get("mode"),
+            )
         )
+        if getattr(permission_rail, "permission_mode", None) in (None, ""):
+            permission_rail.permission_mode = permission_config.get("mode")
+        if getattr(permission_rail, "sandbox_intent", None) in (None, ""):
+            permission_rail.sandbox_intent = permission_config.get("sandbox_intent")
         logger.info(
-            "[InterruptHelpers] PermissionInterruptRail created successfully with tool_names=%s",
-            tool_names
+            "[InterruptHelpers] PermissionInterruptRail created successfully with tool_names=%s mode=%s",
+            tool_names,
+            permission_config.get("mode"),
         )
     except Exception as exc:
         logger.warning("[InterruptHelpers] PermissionInterruptRail create failed: %s", exc)
@@ -917,6 +973,12 @@ def _build_plain_ask_user_question(value_obj: Any) -> dict | None:
 
 _PERMISSION_INTERRUPT_MARKERS = (
     "需要授权才能执行",
+    "需要授权后才能使用",
+    "检测到受保护的文件路径访问",
+    "检测到需确认的网络访问",
+    "检测到需确认的命令执行",
+    "检测到风险命令结构",
+    "操作需要授权",
     "requires permission",
     "Permission denied",
     "安全风险评估",
@@ -956,6 +1018,15 @@ def _is_permission_interrupt_message(message: str, tool_name: str) -> bool:
     if any(marker in normalized for marker in _PERMISSION_INTERRUPT_MARKERS):
         return True
     if normalized.startswith("**工具 `") or normalized.startswith("**Tool `"):
+        return True
+    # Confirm 白名单必须先于 ask_prefixes：ASK 文案前缀是宽松的通用词
+    # （write/read/edit/list），confirm rail 文案一旦踩中即被误判为
+    # permission_interrupt，下游 OfficeAce relay 会据此自动放行（CR-6）。
+    if tool_name in _CONFIRM_INTERRUPT_TOOLS:
+        return False
+    # New ASK copy: summary lines like ``write C:\...`` or ``powershell: ...``
+    ask_prefixes = (f"{tool_name}:", "write ", "read ", "edit ", "list ")
+    if tool_name and any(normalized.startswith(prefix) for prefix in ask_prefixes):
         return True
     if tool_name and tool_name not in _CONFIRM_INTERRUPT_TOOLS:
         return True
@@ -1391,7 +1462,9 @@ def extract_question_from_interaction(payload: Any) -> dict | None:
         header = f"操作确认: {tool_name}" if tool_name else "操作确认"
         question = message
     else:
-        header = f"权限审批: {tool_name}" if tool_name else "权限审批"
+        metadata = _extract_interrupt_metadata(value_obj)
+        ask_title = str(metadata.get("ask_title") or "").strip()
+        header = ask_title or (f"权限审批: {tool_name}" if tool_name else "权限审批")
         question = message
         if is_enterprise() and source == "permission_interrupt":
             question = _strip_permanent_remember_hint(question)

@@ -1139,11 +1139,24 @@ def update_skill_retrieval_in_config(updates: dict[str, Any]) -> None:
 
 
 def update_permissions_enabled_in_config(value: bool) -> None:
-    """更新 permissions.enabled（工具安全护栏开关）并写回。"""
-    def mutate(perms: dict[str, Any]) -> None:
-        perms["enabled"] = value
+    """兼容旧开关：False→mode=full_access；True→若当前为 full_access 则切回 auto。
 
-    _persist_permissions(mutate)
+    权限轨始终 ``enabled: true``（完全访问不再用关闭权限系统表示）。
+    """
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        get_permissions_mode,
+        update_permissions_mode,
+    )
+
+    if not value:
+        update_permissions_mode("full_access")
+        return
+    current = get_permissions_mode()
+    if current == "full_access":
+        update_permissions_mode("auto")
+    else:
+        # 保持现有 mode，仅确保 enabled
+        update_permissions_mode(current)
 
 
 def _effective_permissions() -> dict[str, Any]:
@@ -1255,6 +1268,23 @@ def update_permissions_file_guard_workspace_access_in_config(axis: dict[str, Any
 
     _persist_permissions(mutate)
     return get_permissions_file_guard_workspace_access()
+
+
+def update_permissions_mode_in_config(mode: str) -> str:
+    """更新产品权限模式 ``full_access|auto|strict``。"""
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        update_permissions_mode,
+    )
+
+    return update_permissions_mode(mode)
+
+
+def get_permissions_mode_from_config() -> str:
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        get_permissions_mode,
+    )
+
+    return get_permissions_mode()
 
 
 def update_auto_recap_enabled_in_config(value: bool) -> None:
