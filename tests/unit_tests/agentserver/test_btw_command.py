@@ -131,6 +131,60 @@ def _make_adapter(**overrides: Any) -> Any:
     return adapter
 
 
+class TestGenerateRecapSessionRouting:
+    """Root adapters must route recap requests through a session adapter."""
+
+    @pytest.mark.asyncio
+    async def test_creates_session_adapter_when_cache_is_cold(self):
+        adapter = _make_adapter()
+        adapter._is_session_scoped_adapter = False
+        request = MagicMock(spec=AgentRequest)
+        session_adapter = MagicMock()
+        session_adapter.generate_recap = AsyncMock(return_value={"status": "ok"})
+        adapter._get_or_create_session_adapter = AsyncMock(
+            return_value=session_adapter
+        )
+        adapter._evict_idle_session_adapters = AsyncMock()
+
+        result = await adapter.generate_recap(
+            session_id="session-cold",
+            request=request,
+        )
+
+        assert result == {"status": "ok"}
+        adapter._get_or_create_session_adapter.assert_awaited_once_with(
+            "session-cold",
+            request=request,
+        )
+        session_adapter.generate_recap.assert_awaited_once_with(
+            session_id="session-cold",
+            request=request,
+        )
+        adapter._evict_idle_session_adapters.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_command_recap_forwards_request_to_agent(self):
+        request = MagicMock(spec=AgentRequest)
+        request.session_id = "session-cold"
+        request.params = {"mode": "agent"}
+        request.channel_id = "channel"
+        request.request_id = "request"
+
+        agent = MagicMock()
+        agent.generate_recap = AsyncMock(return_value={"status": "ok"})
+        ctx = MagicMock()
+        ctx.request = request
+        ctx.services.agent_manager.get_agent = AsyncMock(return_value=agent)
+        ctx.sink.send_wire = AsyncMock()
+
+        await commands_handlers.handle_command_recap(ctx)
+
+        agent.generate_recap.assert_awaited_once_with(
+            session_id="session-cold",
+            request=request,
+        )
+
+
 # =============================================================================
 # Section A: _build_btw_prompt
 # =============================================================================

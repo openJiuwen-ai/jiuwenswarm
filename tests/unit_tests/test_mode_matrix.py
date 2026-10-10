@@ -38,6 +38,11 @@ def test_request_uses_current_merged_agent_mode_semantics():
 
     assert _apply_resolved_mode_to_request(request, work_mode="code") == ("code", "normal")
     assert request.params["mode"] == "code.normal"
+    assert request._original_mode == "agent.plan"
+
+    # Re-resolving an already canonicalized request must not lose the wire mode.
+    assert _apply_resolved_mode_to_request(request, work_mode="code") == ("code", "normal")
+    assert request._original_mode == "agent.plan"
 
 
 # ── Web 组合：work_mode 决定 profile，mode 决定是否 plan / team ─────────────
