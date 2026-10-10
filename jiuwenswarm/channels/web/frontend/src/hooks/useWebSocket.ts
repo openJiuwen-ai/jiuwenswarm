@@ -780,7 +780,7 @@ function slimPersistedMediaRecords(items: Record<string, unknown>[]): Record<str
   }));
 }
 
-function buildPersistedMediaFiles(mediaItems: MediaItem[]): Record<string, unknown> {
+function buildPersistedMediaFiles(mediaItems: Record<string, unknown>[]): Record<string, unknown> {
   const files: Record<string, unknown> = {};
   const images = mediaItems.filter((item) => item.type === 'image');
   const documents = mediaItems.filter((item) => item.type === 'document');
@@ -788,7 +788,7 @@ function buildPersistedMediaFiles(mediaItems: MediaItem[]): Record<string, unkno
     files.uploaded_images = images.map((item) => ({
       filename: item.filename,
       path: item.path,
-      mime_type: getMediaMimeType(item),
+      mime_type: item.mime_type ?? item.mimeType,
       size_bytes: item.size_bytes ?? item.sizeBytes,
     }));
   }
@@ -796,7 +796,7 @@ function buildPersistedMediaFiles(mediaItems: MediaItem[]): Record<string, unkno
     files.uploaded_documents = documents.map((item) => ({
       filename: item.filename,
       path: item.path,
-      mime_type: getMediaMimeType(item),
+      mime_type: item.mime_type ?? item.mimeType,
       size_bytes: item.size_bytes ?? item.sizeBytes,
     }));
   }
@@ -1984,44 +1984,28 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         let outgoingMediaItems: Record<string, unknown>[] | undefined;
         let outgoingFiles: Record<string, unknown> | undefined;
         if (hasMedia) {
-          if (mediaItems.every(isPersistedMediaItem)) {
-            outgoingMediaItems = mediaItems.map(toPersistedMediaRecord);
-            outgoingFiles = buildPersistedMediaFiles(mediaItems);
-          } else {
-            const imageItems = mediaItems.filter((item) => item.type !== 'document');
-            const documentItems = mediaItems.filter((item) => item.type === 'document');
-            const mergedItems: Record<string, unknown>[] = [];
-            const mergedFiles: Record<string, unknown> = {};
-            if (imageItems.length) {
-              const persisted = await persistMedia(content, sessionId, imageItems);
-              outgoingContent = persisted.content ?? persisted.query ?? content;
-              if (Array.isArray(persisted.media_items)) {
-                mergedItems.push(...persisted.media_items);
-              }
-              if (persisted.files && typeof persisted.files === 'object') {
-                Object.assign(mergedFiles, persisted.files);
-              }
+          const mergedItems: Record<string, unknown>[] = [];
+          // 新会话的附件尚未落盘。每次只上传一项，既不触发批量数量限制，
+          // 也不把多份大文件的 base64 拼进同一条 WebSocket 消息。
+          for (const item of mediaItems) {
+            if (isPersistedMediaItem(item)) {
+              mergedItems.push(toPersistedMediaRecord(item));
+              continue;
             }
-            if (documentItems.length) {
-              const persistedDocs = await persistDocuments(content, sessionId, documentItems);
-              if (Array.isArray(persistedDocs.media_items)) {
-                mergedItems.push(...persistedDocs.media_items);
-              }
-              if (persistedDocs.files && typeof persistedDocs.files === 'object') {
-                Object.assign(mergedFiles, persistedDocs.files);
-              }
-              // The composer could not persist these documents before send (a
-              // brand-new session has no id yet), so its hint block carries
-              // filenames without paths. Rewrite it now that paths exist —
-              // team mode reads paths from the message text only.
-              const documentHints = toUploadDocumentHints(persistedDocs.media_items);
-              if (documentHints.length) {
-                outgoingContent = withUploadDocumentBlock(outgoingContent, documentHints);
-              }
+            const persist = item.type === 'document' ? persistDocuments : persistMedia;
+            const persisted = await persist('', sessionId, [item]);
+            const stored = persisted.media_items?.[0];
+            if (persisted.media_items?.length !== 1 || typeof stored?.path !== 'string' || !stored.path.trim()) {
+              throw new Error(`${item.filename}: ${t('chat.inputAttachment.uploadFailed')}`);
             }
-            outgoingMediaItems = mergedItems.length ? slimPersistedMediaRecords(mergedItems) : undefined;
-            outgoingFiles = Object.keys(mergedFiles).length ? mergedFiles : undefined;
+            mergedItems.push(stored);
           }
+          const documentHints = toUploadDocumentHints(mergedItems);
+          if (documentHints.length) {
+            outgoingContent = withUploadDocumentBlock(outgoingContent, documentHints);
+          }
+          outgoingMediaItems = slimPersistedMediaRecords(mergedItems);
+          outgoingFiles = buildPersistedMediaFiles(mergedItems);
         }
         // Goal 处于 active 时，普通输入按文档 §5.1 作为补充约束插入当前 Goal，而不是覆盖它
         const activeGoal = useGoalStore.getState().getRuntime(sessionId)?.goal;

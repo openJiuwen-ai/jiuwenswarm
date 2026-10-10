@@ -608,10 +608,10 @@ function getImageValidationError(file: File, t: TFunction): string | null {
   if (!isImageFile(file)) {
     return t('chat.inputAttachment.unsupportedFileType', { name: file.name || t('chat.inputAttachment.unnamedFile') });
   }
-  if (file.size > MAX_FILE_BYTES) {
+  if (file.size > MAX_IMAGE_BYTES) {
     return t('chat.inputAttachment.fileSizeExceeded', {
       name: file.name || t('chat.inputAttachment.unnamedFile'),
-      limit: formatAttachmentSize(MAX_FILE_BYTES),
+      limit: formatAttachmentSize(MAX_IMAGE_BYTES),
     });
   }
   return null;
@@ -628,7 +628,7 @@ function getDocumentValidationError(
   options?: { filename?: string; localPath?: string },
 ): string | null {
   const filename = options?.filename || file?.name || t('chat.inputAttachment.unnamedFile');
-  if (file && file.size > MAX_FILE_BYTES) {
+  if (file && !getLocalFilePath(file, options?.localPath) && file.size > MAX_FILE_BYTES) {
     return t('chat.inputAttachment.fileSizeExceeded', { name: filename, limit: formatAttachmentSize(MAX_FILE_BYTES) });
   }
   if (file && isForbiddenDocumentFile(file)) {
@@ -742,6 +742,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [pickerTab, setPickerTab] = useState<'agent' | 'group'>('agent');
   const { tooltip: agentTooltipNode, handlers: agentTooltipHandlers } = useAdaptiveTooltip({ offsetX: -50 });
   const { tooltip: attachTooltipNode, handlers: attachTooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
+  const { tooltip: uploadLimitsTooltipNode, handlers: uploadLimitsTooltipHandlers } = useAdaptiveTooltip({
+    placement: 'right',
+    multiline: true,
+  });
   const { tooltip: micTooltipNode, handlers: micTooltipHandlers } = useAdaptiveTooltip();
   const { tooltip: sendTooltipNode, handlers: sendTooltipHandlers } = useAdaptiveTooltip();
   const { tooltip: workClearTooltipNode, handlers: workClearTooltipHandlers } = useAdaptiveTooltip({
@@ -1251,6 +1255,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     isAgentMode,
   });
   const isDesktopBridgeReady = useDesktopLocalFilePickerReady();
+  const uploadLimitsTooltip = [
+    t('chat.inputAttachment.imageLimitTooltip', { limit: MAX_IMAGE_BYTES / (1024 * 1024) }),
+    ...(!isDesktopBridgeReady
+      ? [t('chat.inputAttachment.fileLimitTooltip', { limit: MAX_FILE_BYTES / (1024 * 1024) })]
+      : []),
+    t('chat.inputAttachment.countLimitTooltip', { limit: MAX_ATTACHMENT_COUNT }),
+  ].join('\n');
   // "+" 触发按钮本身不跟图片/目标的可用性挂钩：菜单以后可能挂其他跟图片/目标无关的功能，
   // 触发按钮只要不在录音就该能点开；具体某一项能不能选，交给菜单里每一项各自的禁用态处理。
   const attachTriggerDisabled = isListening || isTranscribing || composerDisabled;
@@ -1733,11 +1744,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           pushAttachmentAlert(t('chat.inputAttachment.readImageFailed', { name: pick.filename }));
           return items;
         }
-        if (pick.size > MAX_FILE_BYTES) {
+        if (pick.kind === 'image' && pick.size > MAX_IMAGE_BYTES) {
           pushAttachmentAlert(
-            t('chat.inputAttachment.fileSizeExceeded', {
+            t('chat.inputAttachment.imageSizeExceeded', {
               name: pick.filename,
-              limit: formatAttachmentSize(MAX_FILE_BYTES),
+              limit: formatAttachmentSize(MAX_IMAGE_BYTES),
             }),
           );
           return items;
@@ -1778,11 +1789,19 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const openAttachmentPicker = useCallback(async () => {
     if (imageInputDisabled) return;
     setAttachMenuOpen(false);
-    // 文档上传优先走本机绝对路径：桌面 pywebview 或浏览器后端 path.select_files。
-    // 在无 GUI 的 Docker / 远程服务器部署下，后端原生文件对话框不可用（返回
-    // unsupported/failed），此时回退到浏览器 HTML <input type="file">，由浏览器
-    // 在本机弹选择框，文件内容以 base64 上传到服务器（图片走 media.persist，
-    // 文档走 document.persist 的 base64 分支）。
+    // Web 直接选择访问者电脑上的文件；桌面端通过原生桥接保留本机路径引用。
+    if (!isDesktopBridgeReady && !isDesktopLocalFilePicker()) {
+      if (fileInputRef.current) {
+        fileInputRef.current.click();
+      } else {
+        pushAttachmentAlert(t('chat.inputAttachment.filePickerFailed'));
+      }
+      return;
+    }
+    if (!isDesktopLocalFilePicker()) {
+      pushAttachmentAlert(t('chat.inputAttachment.filePickerFailed'));
+      return;
+    }
     const result = await selectLocalFiles(true);
     if (result.ok) {
       appendLocalFilePicks(result.files);
@@ -1791,14 +1810,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (result.reason === 'cancelled') {
       return;
     }
-    // 原生选择器不可用（Docker/远程/无 GUI）：回退浏览器文件选择器。
-    if (fileInputRef.current) {
-      fileInputRef.current.click();
-    } else {
-      // input 元素尚未挂载或被条件渲染隐藏时，给用户可见提示而非静默失败。
-      pushAttachmentAlert(t('chat.inputAttachment.filePickerUnsupported'));
-    }
-  }, [appendLocalFilePicks, imageInputDisabled, pushAttachmentAlert, t]);
+    pushAttachmentAlert(t('chat.inputAttachment.filePickerFailed'));
+  }, [appendLocalFilePicks, imageInputDisabled, isDesktopBridgeReady, pushAttachmentAlert, t]);
 
   const acceptExternalLocalFilePicks = useCallback(
     (picks: LocalFilePick[]) => {
@@ -3531,7 +3544,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       attachTriggerDisabled && 'chat-input-btn--disabled',
                       attachMenuOpen && 'chat-input-btn--menu-open',
                     )}
-                    title={attachTriggerDisabled ? t('chat.addFileDisabled') : undefined}
                     aria-label={attachTriggerDisabled ? t('chat.addFileDisabled') : t('chat.addFile')}
                     aria-haspopup="menu"
                     aria-expanded={attachMenuOpen}
@@ -3541,6 +3553,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     <Plus className="chat-input-btn-icon" strokeWidth={1.8} />
                   </button>
                   {attachTooltipNode}
+                  {uploadLimitsTooltipNode}
                   {attachMenuOpen &&
                     attachMenuAnchor &&
                     createPortal(
@@ -3571,7 +3584,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           role="menuitem"
                           data-testid="chat-panel-input-attach-menu-file"
                           disabled={imageInputDisabled}
-                          title={imageInputDisabled ? t('chat.addFileDisabled') : undefined}
+                          data-tooltip={imageInputDisabled ? t('chat.addFileDisabled') : uploadLimitsTooltip}
+                          {...uploadLimitsTooltipHandlers}
                           onClick={() => {
                             void openAttachmentPicker();
                           }}

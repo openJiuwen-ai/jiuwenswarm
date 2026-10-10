@@ -6,7 +6,7 @@ import { I18nextProvider } from 'react-i18next';
 import { JSDOM } from 'jsdom';
 
 // Reserved, non-resolving DOM origin only; fetch rejects network access and the WebSocket fixture returns picker data.
-const dom = new JSDOM('<!doctype html><div id="root" class="chat-panel-shell"></div>', {
+const dom = new JSDOM('<!doctype html><div class="chat-panel-shell"><div id="root"></div></div>', {
   url: 'https://input-area.invalid',
   pretendToBeVisual: true,
 });
@@ -173,8 +173,138 @@ const flushMicrotasks = async () =>
     for (let index = 0; index < 4; index += 1) await Promise.resolve();
   });
 
+for (const language of ['zh', 'en']) {
+  for (const desktop of [false, true]) {
+    test(`${language}: upload tooltip shows limits for ${desktop ? 'desktop' : 'web'} without title`, async () => {
+      if (desktop) window.pywebview = { api: { select_local_files: async () => [] } };
+      try {
+        await mount({ language }, async () => {
+          await click(byId('chat-panel-input-attach-trigger'));
+          const option = byId('chat-panel-input-attach-menu-file');
+          option.getBoundingClientRect = () => new dom.window.DOMRect(200, 300, 160, 32);
+          assert.equal(option.hasAttribute('title'), false);
+          await act(async () => option.dispatchEvent(new dom.window.MouseEvent('mouseover', { bubbles: true })));
+          const tooltip = document.querySelector('[role="tooltip"]');
+          const lines = language === 'zh'
+            ? ['图片：单张最大 10M', ...(!desktop ? ['文件：单个最大 100M'] : []), '每条消息最多 20 个附件']
+            : ['Images: up to 10M each', ...(!desktop ? ['Files: up to 100M each'] : []), 'Up to 20 attachments per message'];
+          assert.equal(tooltip.textContent, lines.join('\n'));
+          assert.equal(tooltip.style.whiteSpace, 'pre-line');
+          assert.equal(tooltip.style.left, '366px');
+          await act(async () => option.dispatchEvent(new dom.window.MouseEvent('mouseout', { bubbles: true })));
+          assert.equal(document.querySelector('[role="tooltip"]'), null);
+          await act(async () => option.dispatchEvent(new dom.window.MouseEvent('mouseover', { bubbles: true })));
+          assert.ok(document.querySelector('[role="tooltip"]'));
+          // Keyboard/AX activation does not dispatch pointerdown; closing the menu must still hide its tooltip.
+          await click(option);
+          await flushMicrotasks();
+          assert.equal(document.querySelector('[role="tooltip"]'), null);
+          await click(byId('chat-panel-input-attach-trigger'));
+          const reopenedOption = byId('chat-panel-input-attach-menu-file');
+          await act(async () => {
+            reopenedOption.dispatchEvent(new dom.window.MouseEvent('mouseover', { bubbles: true }));
+            reopenedOption.click();
+          });
+          await flushMicrotasks();
+          assert.equal(document.querySelector('[role="tooltip"]'), null);
+        });
+      } finally {
+        delete window.pywebview;
+        delete window.__JIUWEN_DESKTOP__;
+        delete window.__JIUWEN_DESKTOP_DND__;
+      }
+    });
+  }
+}
+
+test('web plus opens browser picker directly without a server file dialog', async () => {
+  await mount({}, async () => {
+    let opened = 0;
+    byId('chat-panel-input-file-input').click = () => { opened += 1; };
+    await click(byId('chat-panel-input-attach-trigger'));
+    await click(byId('chat-panel-input-attach-menu-file'));
+    assert.equal(opened, 1);
+  });
+});
+
+test('desktop plus accepts a document above 100 MiB as a path without reading its content', async () => {
+  const pick = { kind: 'document', path: '/fixtures/large.txt', filename: 'large.txt', size: 101 * 1024 * 1024 };
+  window.pywebview = { api: { select_local_files: async () => [pick] } };
+  try {
+    await mount({}, async ({ props, render }) => {
+      const received = [];
+      props.onPersistDocuments = async (_text, items) => {
+        received.push(...items);
+        return { media_items: items };
+      };
+      await render();
+      await click(byId('chat-panel-input-attach-trigger'));
+      await click(byId('chat-panel-input-attach-menu-file'));
+      assert.equal(received.length, 1);
+      assert.equal(received[0].path, pick.path);
+      assert.equal(received[0].size_bytes, pick.size);
+      assert.equal(received[0].base64Data, undefined);
+      assert.equal(document.querySelectorAll('[data-testid="chat-panel-input-attachment-card"]').length, 1);
+    });
+  } finally {
+    delete window.pywebview;
+    delete window.__JIUWEN_DESKTOP__;
+    delete window.__JIUWEN_DESKTOP_DND__;
+  }
+});
+
+for (const [filename, mime, limit] of [['image.png', 'image/png', 10], ['document.txt', 'text/plain', 100]]) {
+  for (const extraByte of [0, 1]) {
+    test(`browser ${filename} ${extraByte ? 'rejects above' : 'accepts at'} ${limit} MiB`, async () => {
+      await mount({}, async ({ props, render }) => {
+        const received = [];
+        const persist = async (_text, items) => {
+          received.push(...items);
+          return { media_items: items.map((item) => ({ ...item, path: `/uploads/${item.filename}` })) };
+        };
+        props.onPersistMedia = persist;
+        props.onPersistDocuments = persist;
+        await render();
+        const file = new dom.window.File(['fixture'], filename, { type: mime });
+        // Exercise File.size validation without allocating 100 MiB in each DOM test.
+        // The backend transport check uses the full payload and compares stored bytes.
+        Object.defineProperty(file, 'size', { value: limit * 1024 * 1024 + extraByte });
+        const input = byId('chat-panel-input-file-input');
+        Object.defineProperty(input, 'files', { value: [file] });
+        await act(async () => {
+          input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+          if (!extraByte) {
+            for (let attempts = 0; received.length === 0 && attempts < 100; attempts += 1) {
+              await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+          }
+        });
+        assert.equal(received.length, extraByte ? 0 : 1);
+        assert.equal(document.querySelectorAll('[data-testid="chat-panel-input-attachment-card"]').length, 1);
+        if (extraByte) {
+          assert.ok(document.body.textContent.includes(`${limit}.0 MB`));
+          assert.ok(byId('chat-panel-input-attachment-card').textContent.includes(i18n.t('chat.uploadFailed')));
+        }
+      });
+    });
+  }
+}
+
+test('native image picks above 10 MiB are rejected before persist', async () => {
+  await mount({}, async ({ props, render, inputAreaRef }) => {
+    props.onPersistMedia = async () => assert.fail('oversized image must not upload');
+    await render();
+    await act(async () => inputAreaRef.current.appendLocalFilePicks([
+      { kind: 'image', filename: 'large.png', size: 10 * 1024 * 1024 + 1, base64: 'dGVzdA==' },
+    ]));
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-input-attachment-card"]').length, 0);
+    assert.ok(document.body.textContent.includes('10.0 MB'));
+  });
+});
+
+let mountSequence = 0;
 async function mount(
-  { mode = 'agent', profile = 'default', language = 'en', sessionId = 'input-permission-merge' } = {},
+  { mode = 'agent', profile = 'default', language = 'en', sessionId = `input-permission-merge-${++mountSequence}` } = {},
   run,
 ) {
   useChatStore.getState().ensureRuntime(sessionId);

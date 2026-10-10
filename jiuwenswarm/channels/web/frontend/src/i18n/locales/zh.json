@@ -1000,6 +1000,9 @@
       }
     },
     "inputAttachment": {
+      "imageLimitTooltip": "图片：单张最大 {{limit}}M",
+      "fileLimitTooltip": "文件：单个最大 {{limit}}M",
+      "countLimitTooltip": "每条消息最多 {{limit}} 个附件",
       "unnamedFile": "未命名文件",
       "unsupportedFileType": "文件类型不支持：{{name}}",
       "fileSizeExceeded": "文件大小超出限制：{{name}}（最大{{limit}}）",
