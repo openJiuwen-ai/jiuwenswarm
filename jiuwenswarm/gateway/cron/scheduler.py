@@ -8,7 +8,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from typing import Any, Callable
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -59,12 +59,13 @@ def _cron_billing_enabled() -> bool:
     return os.getenv("JIUWEN_CRON_BILLING", "").strip().lower() != "off"
 
 
-def with_workspace_dir(text: str, workspace_dir: str | None) -> str:
+def with_workspace_dir(text: str, workspace_dir: str | None, tz: tzinfo | None = None) -> str:
     """Append the desktop-equivalent project-directory constraint after *text*.
 
     Matches claw_desktop ``withWorkspaceDir`` so the UI strip regex can hide it.
     Skip when *text* already contains a workspace tag, or when *workspace_dir*
-    is empty.
+    is empty. *tz* 为打点时区（cron 调用方传 ``ZoneInfo(job.timezone)``，
+    与 ``cron_meta["current_time"]`` 同源）；None 时退回服务器本地时间。
     """
     path = (workspace_dir or "").strip()
     if not path:
@@ -72,10 +73,11 @@ def with_workspace_dir(text: str, workspace_dir: str | None) -> str:
     if _WORKSPACE_OPEN in text:
         return text
     # timestamp 为本次触发时刻（每次执行重新生成），供模型感知当前时间
+    now = datetime.now(tz) if tz is not None else datetime.now()
     payload = json.dumps(
         {
             "path": path,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -1098,7 +1100,8 @@ class CronSchedulerService:
                 }
                 task_text = job.description or ""
                 if exec_project_dir:
-                    task_text = with_workspace_dir(task_text, exec_project_dir)
+                    # 与 cron_meta["current_time"] 同源（ZoneInfo(job.timezone)），保证同一请求时区一致
+                    task_text = with_workspace_dir(task_text, exec_project_dir, tz=ZoneInfo(job.timezone))
                 params: dict[str, Any] = {
                     "content": task_text,
                     "query": task_text,

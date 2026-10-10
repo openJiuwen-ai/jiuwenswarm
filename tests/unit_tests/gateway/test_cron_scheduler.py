@@ -5,6 +5,7 @@ import asyncio
 import json
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -412,6 +413,22 @@ class TestWithWorkspaceDir:
     def test_skips_empty_path(self):
         assert with_workspace_dir("task", "") == "task"
         assert with_workspace_dir("task", None) == "task"
+
+    def test_timestamp_honors_tz(self, monkeypatch):
+        """tz 参数传入时打点使用该时区（与 cron_meta["current_time"] 同源口径）。"""
+        calls: list = []
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                calls.append(tz)
+                return datetime(2026, 10, 10, 12, 0, 0, tzinfo=tz)
+
+        monkeypatch.setattr(cron_scheduler_module, "datetime", _FixedDatetime)
+        tz = timezone(timedelta(hours=8))
+        result = with_workspace_dir("生成图片", "D:/ws/proj", tz=tz)
+        assert '"timestamp":"2026-10-10 12:00:00"' in result
+        assert calls[-1] is tz
 
 
 class TestCronExecutionCwd:
