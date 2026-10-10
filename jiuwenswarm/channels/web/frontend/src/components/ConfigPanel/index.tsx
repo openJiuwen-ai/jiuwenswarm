@@ -2295,10 +2295,14 @@ function MultiModelSection({
                         <select
                           value={models[idx]?.[field] ?? ""}
                           onChange={(e) => updateModel(idx, field, e.target.value)}
-                          className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
+                          disabled={modelIsOpenAIAccount}
+                          className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs disabled:cursor-not-allowed disabled:bg-secondary/30 disabled:text-text-muted"
                         >
                           <option value="" disabled>{t("config.selectModelProvider")}</option>
                           {MODEL_PROVIDER_OPTIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+                          {/* OAuth 托管模型不在可选 provider 列表中：兜底渲染当前值，
+                              避免受控 select 空白；同时禁用切换，防止误改后无法改回。 */}
+                          {modelIsOpenAIAccount && <option value={OPENAI_ACCOUNT_PROVIDER}>{OPENAI_ACCOUNT_PROVIDER}</option>}
                         </select>
                       ) : field === "reasoning_level" ? (
                         <select
@@ -2381,10 +2385,15 @@ function MultiModelSection({
                   <select
                     value={newModel[field]}
                     onChange={(e) => handleNewModelChange(field, e.target.value)}
-                    className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
+                    disabled={newModelIsOpenAIAccount}
+                    className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs disabled:cursor-not-allowed disabled:bg-secondary/30 disabled:text-text-muted"
                   >
                     <option value="" disabled>{t("config.selectModelProvider")}</option>
                     {MODEL_PROVIDER_OPTIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+                    {/* OAuth 托管流程经 onModelPatch 将 provider 置为 OpenAIAccount：
+                        兜底渲染当前值并禁用切换，与 api_key/api_base/model_name 的
+                        禁用策略一致。 */}
+                    {newModelIsOpenAIAccount && <option value={OPENAI_ACCOUNT_PROVIDER}>{OPENAI_ACCOUNT_PROVIDER}</option>}
                   </select>
                 ) : field === "reasoning_level" ? (
                   <select
