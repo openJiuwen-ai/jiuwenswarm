@@ -737,6 +737,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_code_task_planning_rail", self._build_code_task_planning_rail),
             _RailBuildInfo("_code_agent_rail", self._build_code_agent_rail),
             _RailBuildInfo("_code_plan_approval_rail", self._build_plan_approval_rail),
+            # 与上游 02957a531 对齐：挂到链路末端（context_processor 之后），
+            # 保证 ON_USER_MESSAGE 投影替换发生在上下文初始化链路之后。
+            _RailBuildInfo(
+                "_eternal_conversation_rail", self._build_eternal_conversation_rail
+            ),
         ]
 
         normalized_sub_mode = str(sub_mode or "normal").strip().lower() or "normal"
@@ -1443,6 +1448,21 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             self._runtime_prompt_rail.set_request_system_prompt(
                 runtime_config.request_system_prompt
             )
+        eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
+        if eternal_conversation_rail is not None:
+            self._eternal_conversation_enabled = runtime_config.eternal_conversation_enabled
+            eternal_conversation_rail.configure_runtime(
+                enabled=runtime_config.eternal_conversation_enabled,
+                session_id=runtime_config.session_id,
+                request_id=runtime_config.request_id,
+                mode=runtime_config.mode,
+                channel=resolved_channel,
+                project_dir=runtime_config.project_dir or self._project_dir,
+                model=getattr(self, "_active_request_model", None) or self._model,
+                interaction_resume=runtime_config.interaction_resume,
+            )
+            if self._eternal_conversation_enabled and self._context_processor_rail is not None:
+                self.shutdown_context_session_memory(self._context_processor_rail)
         # PermissionInterruptRail: per-request trusted_dirs 注入，使 external_directory
         # 检查将这些子树视为 internal 而跳过 ask/deny（与 RuntimePromptRail 对齐）。
         # 用 getattr 兼容绕过 __init__ 的测试构造（_permission_rail 仅在 rail 构建流程赋值）。

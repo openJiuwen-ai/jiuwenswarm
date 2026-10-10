@@ -1,30 +1,26 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Regression guard for ``ProgressiveToolRail.inherit_to_subagents = False``.
+"""Regression guard for ``EternalConversationRail.inherit_to_subagents = False``.
 
-ProgressiveToolRail binds ``_deep_agent`` / ``_runtime_agent`` in ``init`` and
-refreshes the deferred-tool cache from that agent's ability_manager. A
-general-purpose subagent inherits parent rails by reference
-(``factory._inject_general_purpose_subagent``). The child's ``init`` then
-rebinds the shared instance and overwrites the cache with the child's
-smaller tool set (no ``subagent_wait``). Parent ``tools_search`` /
-``invoke_tool`` for deferred subagent tools then miss while the child is
-still running.
+EternalConversationRail is a stateful session-level Rail: ``init`` binds
+``_agent`` / ``system_prompt_builder`` and ``configure_runtime`` binds
+``_session_id`` / ``_coordinator``. A general-purpose subagent inherits parent
+rails by reference (``factory._inject_general_purpose_subagent``); the child's
+``init_rail`` would then rebind the shared instance, pollute the session
+evidence chain with subagent tasks and silently break the parent's memory
+section injection. ``inherit_to_subagents = False`` opts the rail out at
+factory injection, matching TaskExecutionRail / ProgressiveToolRail /
+CodingArtifactPostProcessRail.
 
-``inherit_to_subagents = False`` opts the rail out at factory injection.
 This test locks the swarm-side half: the flag value as declared in source.
 It reads the module via ``ast`` — NOT importing it — so it runs in CI
 gates where the openjiuwen dependency may be unavailable.
 
-Removing the flag (or flipping to True) silently re-exposes the rebind bug.
-
 The ``ast`` work runs in a throwaway interpreter. On the CI runners
-(Python 3.11.5, pytest-xdist) an in-process ``ast.parse`` of this rail
-file intermittently dies with ``SystemError: AST constructor recursion
-depth mismatch (before=141, after=157/158)`` even though the file's
-brace nesting depth is 3 — the AST constructor's recursion counter is
-process-wide and can be left corrupted by earlier parses in the same
-worker, so the failure depends on test order, not on this file. A fresh
+(Python 3.11.5, pytest-xdist) an in-process ``ast.parse`` of rail files
+intermittently dies with ``SystemError: AST constructor recursion depth
+mismatch`` — the AST constructor's recursion counter is process-wide and
+can be left corrupted by earlier parses in the same worker. A fresh
 interpreter starts with clean state and cannot inherit that corruption.
 """
 
@@ -43,7 +39,8 @@ RAIL_PATH = (
     / "harness"
     / "common"
     / "rails"
-    / "progressive_tool_rail.py"
+    / "eternal_conversation"
+    / "rail.py"
 )
 
 # Child interpreter script: read and parse the rail file, dump the top-level
@@ -72,13 +69,7 @@ print(json.dumps({"assigns": assigns, "false_dump": false_dump}))
 
 
 def _find_class_assignments(class_name: str) -> tuple[dict[str, str], str]:
-    """Parse in a child interpreter; return ({attr_name: dump}, literal-False dump).
-
-    See the module docstring: an in-process ``ast.parse`` is unreliable on
-    CPython 3.11 CI workers once earlier tests corrupted its AST recursion
-    counter. The child only needs stdlib, so this stays valid in CI gates
-    without the openjiuwen dependency.
-    """
+    """Parse in a child interpreter; return ({attr_name: dump}, literal-False dump)."""
     proc = subprocess.run(
         [sys.executable, "-I", "-B", "-c", _CHILD_SCRIPT, str(RAIL_PATH), class_name],
         capture_output=True,
@@ -99,14 +90,15 @@ def _find_class_assignments(class_name: str) -> tuple[dict[str, str], str]:
 def test_inherit_to_subagents_is_false():
     """Flag must stay False — guards against accidental deletion/flipping."""
     assert RAIL_PATH.is_file(), f"rail source not found: {RAIL_PATH}"
-    assigns, false_dump = _find_class_assignments("ProgressiveToolRail")
+    assigns, false_dump = _find_class_assignments("EternalConversationRail")
 
     assert "inherit_to_subagents" in assigns, (
-        "ProgressiveToolRail must declare inherit_to_subagents = False; "
-        "removing the flag silently re-exposes the subagent-rebind bug "
-        "(child init rebinds _deep_agent → deferred cache loses "
-        "subagent_wait → parent invoke_tool reports 未注册)"
+        "EternalConversationRail must declare inherit_to_subagents = False; "
+        "removing the flag lets factory._inject_general_purpose_subagent copy "
+        "the rail by reference into general-purpose subagents, whose "
+        "init_rail rebinds _agent/_builder and pollutes the session "
+        "evidence chain (rail/base.py inheritance trap)"
     )
     assert assigns["inherit_to_subagents"] == false_dump, (
-        "ProgressiveToolRail.inherit_to_subagents must be the literal False"
+        "EternalConversationRail.inherit_to_subagents must be the literal False"
     )
