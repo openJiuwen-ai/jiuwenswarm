@@ -940,12 +940,10 @@ async def test_full_output_queue_does_not_block_runtime_cancel_draining_producer
             drained.set()
 
     monkeypatch.setattr(asyncio, "Queue", ObservedQueue)
-    monkeypatch.setattr(machine, "SHUTDOWN_TIMEOUT_SECONDS", 0.05)
-
-    async def flush_session_writes() -> None:
-        pass
-
-    monkeypatch.setattr(machine, "_flush_session_writes", flush_session_writes)
+    # Exercise queue liveness, not a 50 ms throughput requirement for building
+    # and draining 1,000 RuntimeEvents on a busy CI worker. Keep the production
+    # cleanup deadline; run.finish() still bounds a deadlock to one second.
+    # Cleanup deadline enforcement is covered separately in test_machine.py.
     client = DrainingCancelClient()
     run = run_factory(client=client)
     client.original.emit(
