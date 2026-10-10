@@ -154,6 +154,12 @@ def module_processes(proc, module):
 def stop_front(proc, module="jiuwenswarm.server.app_agentserver"):
     # Windows venv python.exe is a launcher; killing just Popen.pid leaves the
     # actual Front alive. Retain Worker descendants but stop both Front PIDs.
+    if module == "jiuwenswarm.server.app_agentserver":
+        from jiuwenswarm.server.supervisor.shutdown import detach_front_process
+        detach_front_process(proc.pid)
+        if proc.poll() is None:
+            proc.wait(timeout=5)
+        return
     children = module_processes(proc, module)
     for child in reversed(children):
         try:
@@ -363,23 +369,19 @@ async def run(args):
             workers = module_processes(proc, "jiuwenswarm.server.worker.main")
             worker_processes += [(child.pid, child.create_time()) for child in workers]
             active_worker = workers[-1] if workers else psutil.Process(worker[0])
-            argv = active_worker.cmdline()
-            socket_path = argv[argv.index("--socket") + 1]
             await ws.close()
             ws = None
             if gateway_proc is not None:
                 stop_front(gateway_proc, "jiuwenswarm.gateway.app_gateway")
             stop_front(proc)
-            from jiuwenswarm.server.ipc.client import connect as ipc_connect
             shutdown_started = time.perf_counter_ns()
-            ipc = await asyncio.wait_for(ipc_connect(socket_path), 5)
-            await asyncio.wait_for(ipc.recv(), 5)
-            await ipc.send({"kind": "shutdown"})
-            while True:
-                done = await asyncio.wait_for(ipc.recv(), 31)
-                if done.get("kind") == "shutdown.done":
-                    break
-            await ipc.close()
+            helper = await asyncio.create_subprocess_exec(sys.executable, "-m", "jiuwenswarm.server.supervisor.shutdown",
+                "--shutdown-worker", "--timeout", "30", cwd=code, env=env,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await asyncio.wait_for(helper.communicate(), 33)
+            if helper.returncode:
+                raise AssertionError(f"Application shutdown helper failed: {stderr.decode(errors='replace')[-1200:]}")
+            done = json.loads(stdout.splitlines()[-1])
             result["shutdown"] = done
             result["shutdown_ms"] = (time.perf_counter_ns() - shutdown_started) / 1e6
             if done.get("ok") is not True:
