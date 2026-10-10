@@ -3,6 +3,7 @@ import type { ClientMode } from "../../modes.js";
 import { CommandKind, type SlashCommand } from "../types.js";
 
 const PLAN_TO_NORMAL: Record<ClientMode, ClientMode> = {
+  auto: "auto",
   "agent.work.normal": "agent.work.plan",
   "agent.work.plan": "agent.work.normal",
   "agent.code.normal": "agent.code.plan",
@@ -15,6 +16,7 @@ const PLAN_TO_NORMAL: Record<ClientMode, ClientMode> = {
 
 /** Toggle between plan and normal variants while preserving role+environment. */
 export function resolvePlanTarget(mode: ClientMode): ClientMode {
+  if (mode === "auto") return "auto";
   // Non-plan mode → flip to the corresponding plan variant.
   if (!mode.endsWith(".plan")) return PLAN_TO_NORMAL[mode] ?? "agent.work.plan";
   // Already plan → stay plan (no-op when called from /plan <desc>).
@@ -37,6 +39,16 @@ export function createPlanCommand(): SlashCommand {
     takesArgs: true,
     action: (ctx, args) => {
       const value = args.trim();
+      if (ctx.mode === "auto") {
+        ctx.addItem(
+          addInfo(
+            ctx.sessionId,
+            "Plan is unavailable in Auto. MACRO will route each query to Agent or Cluster.",
+            "i",
+          ),
+        );
+        return;
+      }
       const isPlan = ctx.mode.endsWith(".plan");
       // 仅无参时才对称退出（plan -> normal）。带参数（/plan <desc>）停留在当前
       // plan 态发送规划请求，与旧行为一致；否则 plan 态下会误退出并以 normal 发送。

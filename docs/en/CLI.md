@@ -52,6 +52,7 @@ Sets the working mode for the current channel. The Agent uses this when construc
 | Command | Maps to | Description |
 |---------|---------|-------------|
 | `/mode agent` | `agent.plan` | Agent mode, planning/explanation/decomposition |
+| `/mode auto` | `auto` | MACRO Auto: classify Agent vs Cluster on each message |
 | `/mode code` | `code.normal` | Code mode, Agent interacts via code execution tools |
 | `/mode team` | `team` | Team mode |
 
@@ -294,11 +295,13 @@ Supported mode values match those in [Modes](Modes.md) and TUI `/mode` command:
 | `code.team` | — | Code team mode |
 | `agent.plan` | `agent` | Agent planning mode |
 | `agent.fast` | — | Agent fast mode |
+| `auto` | `agent.auto`, `macro.auto` | MACRO Auto: Agent vs Cluster per query |
 | `team` | — | Team mode |
 
 ```bash
 # Using aliases
 jiuwenswarm chat --mode agent "help me plan"
+jiuwenswarm chat --mode auto "Spawn a team of 6 agents to summarize this repo"
 jiuwenswarm chat --mode code "help me analyze the code"
 
 # Using canonical values
