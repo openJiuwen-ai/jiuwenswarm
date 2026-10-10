@@ -1150,6 +1150,60 @@ def test_deep_adapter_apply_model_updates_deep_config_for_goal_assessor():
     assert adapter._active_request_model is session_model
 
 
+def test_deep_adapter_rebinds_only_selected_session_context_with_core_engine():
+    from openjiuwen.core.context_engine.context.context import SessionModelContext
+    from openjiuwen.core.context_engine.context_engine import ContextEngine
+    from openjiuwen.core.context_engine.schema.config import ContextEngineConfig
+    from openjiuwen.core.foundation.llm import UserMessage
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    default_model = _real_deep_reload_model("https://api.example.invalid/v1", "default-model")
+    selected_model = _real_deep_reload_model("https://real.provider.test/v1", "selected-model")
+    selected_model.model_config.context_window = 8192
+    old_config = ContextEngineConfig(
+        model_name="default-model",
+        model_context_window_tokens={"default-model": 4096},
+    )
+    engine = ContextEngine(old_config)
+    active_history = [UserMessage(content="Keep this message")]
+    other_history = [UserMessage(content="Keep the other session")]
+    active_context = SessionModelContext(
+        "main", "active-session", old_config, history_messages=active_history
+    )
+    other_context = SessionModelContext(
+        "main", "other-session", old_config, history_messages=other_history
+    )
+    engine._context_pool = {
+        "active-session_main": active_context,
+        "other-session_main": other_context,
+    }
+    react_config = SimpleNamespace(
+        model_name="default-model",
+        model_client_config=default_model.model_client_config,
+        model_config_obj=default_model.model_config,
+    )
+    react_agent = SimpleNamespace(
+        set_llm=MagicMock(), _config=react_config, context_engine=engine
+    )
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = SimpleNamespace(
+        _react_agent=react_agent,
+        _deep_config=SimpleNamespace(model=default_model),
+    )
+
+    adapter._apply_model_to_react_agent(selected_model, session_id="active-session")
+
+    assert engine._config.model_name == "selected-model"
+    assert active_context._model_name == "selected-model"
+    assert active_context.context_window_tokens() == 8192
+    assert active_context.get_messages() == active_history
+    assert other_context._model_name == "default-model"
+    assert other_context.context_window_tokens() == 4096
+    assert other_context.get_messages() == other_history
+
+
 def test_deep_adapter_model_config_fingerprint_includes_legacy_react_model_fields():
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         JiuWenSwarmDeepAdapter,
