@@ -72,10 +72,38 @@ def resource_path(kind: str, resource_id: str) -> Path:
     )
 
 
+_READ_RETRY_ATTEMPTS = 3
+_READ_RETRY_DELAY_SECONDS = 0.02
+
+
+def _read_text_with_retry(path: Path) -> str:
+    """Read ``path`` as text, retrying transient ``PermissionError``.
+
+    Atomic writers in this module replace the destination via ``os.replace``.
+    On Windows that swap briefly holds the file with an exclusive handle, so a
+    concurrent reader (e.g. request admission parsing ``metadata.json`` while a
+    pause is finalizing) can hit a sharing violation surfaced as
+    ``PermissionError``. The retry budget only needs to cover that sub-second
+    rename window, so it is deliberately small: this helper also runs on the
+    event loop inside synchronous request admission, and long blocking retries
+    (e.g. the multi-second antivirus holds handled by the archive workers in
+    ``session_archive``) are out of scope here. Genuinely denied files keep
+    raising once the attempts are exhausted.
+    """
+    for attempt in range(_READ_RETRY_ATTEMPTS):
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            if attempt == _READ_RETRY_ATTEMPTS - 1:
+                raise
+            time.sleep(_READ_RETRY_DELAY_SECONDS)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 def read_json(path: Path) -> dict:
     if not path.exists():
         return {}
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = json.loads(_read_text_with_retry(path))
     if not isinstance(value, dict):
         raise LifecycleError("CONFLICT", f"invalid lifecycle data: {path.name}")
     return value
