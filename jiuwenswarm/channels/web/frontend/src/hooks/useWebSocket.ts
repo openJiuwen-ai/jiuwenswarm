@@ -4432,6 +4432,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useWorkspaceStore.getState().patchSession(sessionId, sessionPatch);
         if (!isProcessingNow) {
           useChatStore.getState().setThinking(sessionId, false);
+          // 轮次终态兜底：思考段若因「思考后无文本增量/无工具调用」而未关闭，
+          // 会一直挂着「思考中…」；此处统一收口（已关闭时为幂等空操作）。
+          useChatStore.getState().closeReasoning(sessionId, {
+            atMs: eventTimestampMs(payload),
+          });
           useChatStore.getState().stopStreaming(sessionId);
           useChatStore.getState().settleHistoricalToolExecutions(sessionId);
 
