@@ -5,6 +5,7 @@ import { Button } from '../../../../components/ui';
 import { Form, FormDialog, useForm, useFormState, type FormItem } from '../../../../components/form';
 import { buildModelValidationPayload } from '../../services/settingsContract';
 import { SettingsConfirmDialog } from '../../components';
+import { SettingRow } from '../../components/SettingRow';
 import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialogClose';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { OpenAIAccountSettings, useOpenAIAccountController } from './OpenAIAccountField';
@@ -88,6 +89,7 @@ export function ModelDialog({
   useFormState(form);
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [testOnSave, setTestOnSave] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [fetchStatus, setFetchStatus] = useState(() => {
@@ -241,6 +243,10 @@ export function ModelDialog({
     }
     const currentRequestId = ++validationRequestId.current;
     const snapshot = buildEntry();
+    if (!testOnSave) {
+      await persist(snapshot);
+      return;
+    }
     setTesting(true);
     setSaveError('');
     setValidationFailure(null);
@@ -533,7 +539,7 @@ export function ModelDialog({
             ? 'settingsPanel.models.testingConnection'
             : submitting || saving
               ? 'settingsPanel.models.savingModel'
-              : 'common.confirm',
+              : 'settingsPanel.models.saveWithoutAutoTest',
         )}
         cancelLabel={t('common.cancel')}
         dialogClassName="settings-model-dialog"
@@ -590,6 +596,19 @@ export function ModelDialog({
           }}
           items={formItems}
         />
+        <SettingRow
+          title={t('settingsPanel.models.testOnSave')}
+          description={t('settingsPanel.models.testOnSaveDescription')}
+        >
+          <input
+            type="checkbox"
+            aria-label={t('settingsPanel.models.testOnSave')}
+            data-testid="settings-model-dialog-test-on-save"
+            checked={testOnSave}
+            disabled={testing || submitting || saving}
+            onChange={(event) => setTestOnSave(event.target.checked)}
+          />
+        </SettingRow>
         {saveError ? (
           <div className="settings-page__error" role="alert" data-testid="settings-model-dialog-error">
             {saveError}
