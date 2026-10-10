@@ -138,6 +138,29 @@ def test_bounded_deny_failure_cleans_partial_permissions(tmp_path, native, monke
     assert all(ace[2] == "host" for sd in native[0].values() for ace in sd.acl.aces)
 
 
+def test_unlistable_child_does_not_abort_bounded_acl(tmp_path, native, monkeypatch, caplog):
+    root = tmp_path / "workspace"
+    hidden = root / "sandbox-owned"
+    visible = root / "visible.txt"
+    hidden.mkdir(parents=True)
+    (hidden / "secret.txt").write_text("hidden", encoding="utf-8")
+    visible.write_text("ok", encoding="utf-8")
+    real_scandir = win_acl.os.scandir
+
+    def scandir(path):
+        if win_acl.os.path.normcase(str(path)) == win_acl.os.path.normcase(str(hidden)):
+            raise PermissionError(13, "Access is denied", str(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(win_acl.os, "scandir", scandir)
+    with caplog.at_level("WARNING"):
+        applied = win_acl.apply_sandbox_acl(str(root), [str(root)], [], bounded_roots=[str(root)])
+    assert applied == [str(root)]
+    assert str(visible) in native[1]
+    assert str(hidden / "secret.txt") not in native[1]
+    assert any("skip unlistable" in record.message and str(hidden) in record.message for record in caplog.records)
+
+
 def test_bounded_allow_failure_degrades_without_failing_create(tmp_path, native, monkeypatch):
     root = tmp_path / "workspace"
     root.mkdir()

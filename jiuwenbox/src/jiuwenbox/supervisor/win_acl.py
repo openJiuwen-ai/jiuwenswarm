@@ -1265,6 +1265,11 @@ def _walk_acl_objects(root: str):
         except FileNotFoundError:
             # node_modules / caches may delete entries while we walk them.
             continue
+        except OSError as exc:
+            # A sandbox-owned child can deny FILE_LIST_DIRECTORY. Skipping it
+            # keeps sibling ACL work; aborting would roll back the whole root.
+            logger.warning("[ACL] skip unlistable path=%s reason=%s", path, exc)
+            continue
 
 
 def _compile_acl_rules(paths: list[str] | None) -> list[str]:
