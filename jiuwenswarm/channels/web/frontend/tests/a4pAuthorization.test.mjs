@@ -90,7 +90,7 @@ async function mount(run, options = {}) {
   fixture.request = async (method, params) => {
     fixture.calls.push({ method, params });
     if (method === 'a4p.authorization.reprepare')
-      return { pending: pending('ab', params.selectedActionIndexes, params.requestId) };
+      return { pending: pending(`${params.requestId}-updated`, params.selectedActionIndexes, params.requestId) };
     return {};
   };
   if (options.request) fixture.request = options.request;
@@ -112,36 +112,25 @@ async function mount(run, options = {}) {
   }
 }
 
-test('selection gates modification and signing; C survives and can be restored', async () => {
+test('selection automatically regenerates without signing; removed permissions can be restored', async () => {
   await mount(async ({ fixture, get, boxes, click }) => {
-    assert.equal(get('modify-range').disabled, true);
+    assert.equal(get('modify-range'), null);
     await click(boxes()[2]);
-    assert.equal(get('modify-range').disabled, false);
-    assert.equal(get('approve').disabled, true);
-    await click(boxes()[2]);
-    assert.equal(get('modify-range').disabled, true);
-    assert.equal(get('approve').disabled, false);
-    await click(boxes()[2]);
-    await click(get('modify-range'));
     assert.equal(fixture.signatures, 0);
     assert.equal(boxes().length, 3);
     assert.deepEqual(
-      boxes().map((b) => b.checked),
+      boxes().map((box) => box.checked),
       [true, true, false],
     );
-    assert.equal(get('modify-range').disabled, true);
+    assert.deepEqual(fixture.calls[0].params.selectedActionIndexes, [0, 1]);
     assert.equal(get('approve').disabled, false);
     await click(boxes()[2]);
-    fixture.request = async (method, params) => {
-      fixture.calls.push({ method, params });
-      return method.endsWith('reprepare') ? { pending: pending('abc2', params.selectedActionIndexes, 'ab') } : {};
-    };
-    await click(get('modify-range'));
     assert.deepEqual(fixture.calls[1].params.selectedActionIndexes, [0, 1, 2]);
+    assert.equal(fixture.calls[1].params.requestId, 'abc-updated');
     assert.equal(fixture.signatures, 0);
     await click(get('approve'));
     assert.equal(fixture.signatures, 1);
-    assert.equal(fixture.calls[2].params.requestId, 'abc2');
+    assert.equal(fixture.calls[2].params.requestId, 'abc-updated-updated');
     assert.equal(get('card'), null);
   });
 });
@@ -149,11 +138,12 @@ test('selection gates modification and signing; C survives and can be restored',
 test('empty selection allows rejection only', async () => {
   await mount(async ({ get, boxes, click, fixture }) => {
     for (const box of boxes()) await click(box);
-    assert.equal(get('modify-range').disabled, true);
+    assert.equal(get('modify-range'), null);
     assert.equal(get('approve').disabled, true);
     assert.equal(get('reject').disabled, false);
     await click(get('reject'));
-    assert.equal(fixture.calls[0].method, 'a4p.authorization.reject');
+    assert.equal(fixture.calls.length, 3);
+    assert.equal(fixture.calls[2].method, 'a4p.authorization.reject');
     assert.equal(fixture.signatures, 0);
   });
 });
@@ -166,8 +156,10 @@ test('in-flight modification locks controls; late response cannot overwrite newe
         resolve = r;
       });
     await click(boxes()[2]);
-    await click(get('modify-range'));
+    assert.equal(get('scope-status').textContent, '正在自动更新意图授权对象…');
     assert.equal(get('candidates').disabled, true);
+    await click(boxes()[0]);
+    assert.equal(boxes()[0].checked, true);
     assert.equal(get('approve').disabled, true);
     await act(async () => update(pending('ac', [0, 2], 'ab')));
     await act(async () => resolve({ pending: pending('ab', [0, 1], 'abc') }));
@@ -176,6 +168,25 @@ test('in-flight modification locks controls; late response cannot overwrite newe
       [true, false, true],
     );
     assert.equal(fixture.state.runtimes.s.pendingA4PAuthorization.requestId, 'ac');
+  });
+});
+
+test('failed automatic regeneration blocks signing and permits selection retry', async () => {
+  await mount(async ({ fixture, get, boxes, click }) => {
+    const request = fixture.request;
+    fixture.request = async () => {
+      throw new Error('connection lost');
+    };
+    await click(boxes()[2]);
+    assert.equal(get('approve').disabled, true);
+    assert.equal(get('candidates').disabled, false);
+    assert.equal(get('scope-status').textContent, '权限更新失败，请重新选择权限后重试');
+    await click(get('approve'));
+    assert.equal(fixture.signatures, 0);
+    fixture.request = request;
+    await click(boxes()[1]);
+    assert.deepEqual(fixture.calls[0].params.selectedActionIndexes, [0]);
+    assert.equal(get('approve').disabled, false);
   });
 });
 
@@ -199,7 +210,7 @@ test('reconnection restores original candidates and prepared selection', async (
         boxes().map((b) => b.checked),
         [true, true, false],
       );
-      assert.equal(get('modify-range').disabled, true);
+      assert.equal(get('modify-range'), null);
     },
     { connected: true, request: async () => ({ pending: pending('ab', [0, 1], 'abc') }) },
   );
@@ -244,8 +255,6 @@ test('one permission scope, selected count and draft/ready/empty status', async 
     assert.equal(get('scope-status').textContent, '将按所选权限授权');
     await click(boxes()[2]);
     assert.equal(get('selected-count').textContent, '已选 2 / 3 项');
-    assert.match(get('scope-status').textContent, /范围已修改/);
-    await click(get('modify-range'));
     assert.equal(get('scope-status').textContent, '将按所选权限授权');
     await click(boxes()[0]);
     await click(boxes()[1]);
@@ -317,6 +326,6 @@ test('A4P height budget responds to viewport resizing without losing selection',
     });
     assert.ok(parseFloat(get('card').style.getPropertyValue('--a4p-card-max-height')) < before);
     assert.equal(boxes()[2].checked, false);
-    assert.equal(get('modify-range').disabled, false);
+    assert.equal(get('modify-range'), null);
   });
 });

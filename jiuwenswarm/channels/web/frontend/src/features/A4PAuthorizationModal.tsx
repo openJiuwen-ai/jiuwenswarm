@@ -209,14 +209,18 @@ export function A4PAuthorizationCard() {
     selectedIndexes.length !== preparedIndexes.length ||
     selectedIndexes.some((index) => !preparedIndexes.includes(index));
   const working = busy || pending.repreparing === true;
-  const modifyRange = async () => {
-    if (!changed || !selectedIndexes.length || working) return;
-    setBusy(true);
+  const modifyRange = async (indexes: number[]) => {
+    if (working) return;
+    setSelection({ requestId: pending.requestId, indexes });
     setError(null);
+    const rangeChanged =
+      indexes.length !== preparedIndexes.length || indexes.some((index) => !preparedIndexes.includes(index));
+    if (!rangeChanged || !indexes.length) return;
+    setBusy(true);
     try {
       const result = await webClient.request<{ pending: A4PAuthorizationRequest }>(
         'a4p.authorization.reprepare',
-        { requestId: pending.requestId, session_id: activeSessionId, selectedActionIndexes: selectedIndexes },
+        { requestId: pending.requestId, session_id: activeSessionId, selectedActionIndexes: indexes },
         { timeoutMs: 300000 },
       );
       setPending(result.pending);
@@ -426,12 +430,11 @@ export function A4PAuthorizationCard() {
                       aria-describedby={detailsId}
                       checked={selected}
                       onChange={(event) =>
-                        setSelection({
-                          requestId: pending.requestId,
-                          indexes: event.target.checked
+                        void modifyRange(
+                          event.target.checked
                             ? [...selectedIndexes, index].sort((a, b) => a - b)
                             : selectedIndexes.filter((item) => item !== index),
-                        })
+                        )
                       }
                     />
                     <span className="a4p-permission-content">
@@ -476,7 +479,9 @@ export function A4PAuthorizationCard() {
                 selectedIndexes.length === 0
                   ? 'a4pAuthorization.emptySelection'
                   : changed
-                    ? 'a4pAuthorization.unsavedRange'
+                    ? error
+                      ? 'a4pAuthorization.rangeUpdateFailed'
+                      : 'a4pAuthorization.updatingRange'
                     : 'a4pAuthorization.readyRange',
               )}
             </p>
@@ -564,15 +569,6 @@ export function A4PAuthorizationCard() {
             disabled={working}
           >
             {t('a4pAuthorization.reject')}
-          </button>
-          <button
-            type="button"
-            className="btn"
-            data-testid="a4p-authorization-modify-range"
-            onClick={modifyRange}
-            disabled={working || !changed || selectedIndexes.length === 0}
-          >
-            {t('a4pAuthorization.modifyRange')}
           </button>
           <button
             type="button"

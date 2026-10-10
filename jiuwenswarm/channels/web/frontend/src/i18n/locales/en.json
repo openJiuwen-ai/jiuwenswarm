@@ -4416,10 +4416,10 @@
   "a4pAuthorization": {
     "permissionScope": "Permission scope",
     "selectedCount": "{{selected}} / {{total}} selected",
-    "unsavedRange": "Your selection has changed. Click “Modify authorization scope” first.",
+    "updatingRange": "Automatically updating the authorization object…",
+    "rangeUpdateFailed": "Could not update permissions. Change your selection to retry.",
     "readyRange": "Authorization will cover the selected permissions.",
     "emptySelection": "Select at least one permission, or reject this request.",
-    "modifyRange": "Modify authorization scope",
     "partialCronExplanation": "Actions outside the authorized scope will be blocked during scheduled execution.",
     "title": "A4P Pre-authorization Confirmation",
     "requestLead": "JiuwenSwarm requests A4P pre-authorization.",

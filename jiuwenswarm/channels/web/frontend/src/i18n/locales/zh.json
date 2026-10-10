@@ -4399,10 +4399,10 @@
   "a4pAuthorization": {
     "permissionScope": "权限范围",
     "selectedCount": "已选 {{selected}} / {{total}} 项",
-    "unsavedRange": "范围已修改，请先点击“修改授权范围”",
+    "updatingRange": "正在自动更新意图授权对象…",
+    "rangeUpdateFailed": "权限更新失败，请重新选择权限后重试",
     "readyRange": "将按所选权限授权",
     "emptySelection": "请至少选择一项权限，或拒绝本次授权",
-    "modifyRange": "修改授权范围",
     "partialCronExplanation": "未授权动作在定时任务自动执行时会被拦截。",
     "title": "A4P 预授权确认",
     "requestLead": "JiuwenSwarm 请求 A4P 预授权。",
