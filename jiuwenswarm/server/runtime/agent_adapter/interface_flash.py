@@ -823,12 +823,17 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         )
         return isinstance(general_cfg, dict) and bool(general_cfg.get("enabled", False))
 
-    def _build_subagent_rail(self) -> FlashSubagentRail | None:
+    def _build_subagent_rail(
+        self, config_base: dict[str, Any] | None = None
+    ) -> FlashSubagentRail | None:
         """flash 用调优版 subagent rail 替换 stock SubagentRail.
 
         spec 自注入 + 提示段/工具卡描述替换（见 FlashSubagentRail docstring）；
         注册机制（task_tool / available_agents / 授权绑定）全部复用 stock。
+        兼容两处调用：冷启动 rail 表传 ``config_base`` 关键字参数（与
+        ``_build_task_planning_rail`` 同理），当前实现未用到，接收并忽略。
         """
+        _ = config_base
         try:
             rail = FlashSubagentRail(
                 inject_general_purpose=self._flash_general_agent_enabled(),

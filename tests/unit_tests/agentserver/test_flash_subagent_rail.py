@@ -2,7 +2,7 @@
 
 """FlashSubagentRail 单元测试：spec 自注入 + flash 调优文案 + 机制复用。
 
-锁定四点：
+锁定五点：
 1. spec 自注入：开关开 → 注入 general-purpose spec 并注册 task_tool
    （flash 专属路径，绕过 interface_deep 的 mode 门控）；已有非 gp spec
    （research/browser/自定义 agent）时共存注入、原 spec 保留——修复
@@ -10,7 +10,10 @@
 2. 开关关（react.subagents.general_agent.enabled 非 true）→ 跳过注册；
 3. 工具卡描述与系统提示段为 flash 调优版（并行规则无条件、无强制委派条款），
    refresh_available_agents 刷新后不回退；
-4. 已含 general-purpose spec（热重载路径）→ helper 按名去重，不重复注入。
+4. 已含 general-purpose spec（热重载路径）→ helper 按名去重，不重复注入；
+5. CR-1 回归：flash 适配器 ``_build_subagent_rail`` 必须接受 rail 表注册时
+   传入的 ``config_base`` 关键字参数（与 ``_build_task_planning_rail`` 同理），
+   否则冷启动经 ``_instantiate_rails`` 构建时抛 TypeError。
 """
 
 from __future__ import annotations
@@ -158,6 +161,8 @@ class TestFlashDescriptions:
 
         stock 构建只列 spec.tools（卡片），漏掉 rail 注册的文件工具，导致
         模型误判「子代理没有 read_file/bash」而放弃委派、全单干。
+        CR-2 后文案与实际注册严格一致：不再宣称 todo/memory（对应 rail
+        不在 spec 注入范围内），文件/bash 工具保留。
         """
         agent = _FakeAgent([_gp_spec()])
         _make_rail(agent)
@@ -169,6 +174,38 @@ class TestFlashDescriptions:
             )
         # 语义化能力声明（CLI/文件/调研）
         assert "执行 CLI 命令" in card.description
+        # CR-2：不再虚报 todo / memory（对应 rail 不在 gp spec 注入范围）
+        assert "todo" not in card.description
+        assert "memory" not in card.description
+
+    def test_subagent_spec_gets_flash_filesystem_rail(self) -> None:
+        """CR-2 回归：gp spec 的 rails 字段必须包含 SlimSysOperationRail。
+
+        冷启动时 cfg.rails 恒 None（rails 进 _pending_rails 不写
+        deep_config），直接依赖会走 stock SysOperationRail fallback——
+        gp 子代理获得 list_files/powershell 等主代理没有的工具。
+        修复后 _inject_general_purpose_spec 主动构造 flash 变体传入。
+        """
+        from openjiuwen.harness.rails.sys_operation_rail import SysOperationRail
+        from jiuwenswarm.agents.harness.flash import SlimSysOperationRail
+
+        agent = _FakeAgent([])
+        rail = _make_rail(agent, inject=True)
+
+        specs = agent.deep_config.subagents
+        assert len(specs) == 1
+        gp_spec = specs[0]
+        # spec 的 rails 字段包含 SlimSysOperationRail（flash 变体）
+        spec_rails = getattr(gp_spec, "rails", None) or []
+        assert any(isinstance(r, SlimSysOperationRail) for r in spec_rails), (
+            "gp spec rails must include SlimSysOperationRail (flash variant), "
+            f"got {[type(r).__name__ for r in spec_rails]}"
+        )
+        # 不含 stock SysOperationRail（flash 变体已满足 isinstance 检查，
+        # 工厂不会再 fallback）
+        assert not any(
+            type(r) is SysOperationRail for r in spec_rails
+        ), "gp spec rails should not contain stock SysOperationRail"
 
     def test_refresh_keeps_flash_description(self) -> None:
         agent = _FakeAgent([_gp_spec()])
@@ -222,3 +259,26 @@ class TestFlashCopyConstants:
             assert "task_tool" in text
         for text in FLASH_TASK_TOOL_DESCRIPTION.values():
             assert "{available_agents}" in text
+
+
+class TestRailTableConstruction:
+    def test_build_subagent_rail_accepts_config_base_kwarg(self) -> None:
+        """CR-1 回归：flash ``_build_subagent_rail`` 必须接受 ``config_base``。
+
+        冷启动 rail 表注册带 ``{"config_base": config_base}`` params，经
+        ``_instantiate_rails`` 以 ``build_func(**info.params)`` 关键字调用；
+        签名不匹配会抛 ``TypeError: unexpected keyword argument``，导致
+        flash 会话冷启动 100% 失败（参考 review CR-1）。
+        """
+        from jiuwenswarm.server.runtime.agent_adapter.interface_flash import (
+            JiuwenSwarmFlashAdapter,
+        )
+
+        adapter = JiuwenSwarmFlashAdapter()
+        # 直接以关键字参数调用，模拟 _instantiate_rails 的调用方式
+        rail = adapter._build_subagent_rail(config_base={"react": {}})
+        assert isinstance(rail, FlashSubagentRail)
+
+        # 无参调用也应兼容（旧路径 / 测试直接构建）
+        rail_no_args = adapter._build_subagent_rail()
+        assert isinstance(rail_no_args, FlashSubagentRail)

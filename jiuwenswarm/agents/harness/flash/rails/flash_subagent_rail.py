@@ -142,21 +142,27 @@ FLASH_TASK_TOOL_DESCRIPTION: Dict[str, str] = {
 #
 # stock `_build_available_agents_description` 只列 spec.tools（_get_tool_cards
 # 注册的卡片：web_flash、deepresearch 系列等），漏掉 rail 继承在子代理构建时
-# 注册的文件/todo/memory 工具——描述会写成「继承文件读写、bash」却在 Tools
+# 注册的文件/bash 工具——描述会写成「继承文件读写、bash」却在 Tools
 # 括号里只列 deepresearch/web_flash，自相矛盾，模型据此误判「子代理干不了
 # 文件活」而放弃委派、退回全单干，废掉上下文隔离。flash 工具面为类常量固定，
 # 语义化描述不漂移；非 general-purpose 的 spec 回退 stock 构建。
+#
+# 工具面与实际注册严格一致（CR-2）：gp 子代理通过 spec 的 rails 字段获得
+# SlimSysOperationRail（flash 文件变体），通过 spec 的 tools 字段获得
+# web_flash / deepresearch / skill 等工具卡。todo / memory 的 flash rails
+# （FlashTodoRail / FlashMemoryRail）需要各自的引擎初始化（todo 引擎、
+# embedding 配置），不适合在 spec 注入时简单传入，故不在此宣称。
 FLASH_AVAILABLE_AGENTS_CN = (
     "- general-purpose: 通用型子代理，在隔离上下文中执行任务，仅最终摘要返回主上下文。"
-    "继承主代理的完整工具面（Tools: read_file、write_file、edit_file、glob、grep、"
-    "bash、todo、memory、web_flash、deepresearch 系列等）——"
+    "可用工具（Tools: read_file、write_file、edit_file、glob、grep、"
+    "bash、web_flash、deepresearch 系列等）——"
     "可读写文件、执行 CLI 命令、联网搜索与深度调研，适合逐页研究、页面生成/修复等重活。"
 )
 
 FLASH_AVAILABLE_AGENTS_EN = (
     "- general-purpose: general-purpose subagent executing tasks in an isolated context; "
-    "only the final summary returns to the main context. Inherits the parent's full tool "
-    "face (Tools: read_file, write_file, edit_file, glob, grep, bash, todo, memory, "
+    "only the final summary returns to the main context. Available tools "
+    "(Tools: read_file, write_file, edit_file, glob, grep, bash, "
     "web_flash, deepresearch series, etc.) — it can read/write files, run CLI commands, "
     "and do web/deep research; suited for heavy work like per-page research and page "
     "generation/fixing."
@@ -192,25 +198,59 @@ class FlashSubagentRail(SubagentRail):
         language = getattr(self.system_prompt_builder, "language", None)
         return language if isinstance(language, str) and language else "cn"
 
+    def _build_subagent_rails(self):
+        """为 gp 子代理构造 flash 变体 rail 集合（CR-2）。
+
+        冷启动时 ``deep_config.rails`` 恒为 None（rails 进 DeepAgent 的
+        ``_pending_rails``，不写 deep_config），直接依赖会走 agent-core
+        工厂的 stock ``SysOperationRail()`` fallback——gp 子代理获得
+        stock 文件工具（含 list_files/powershell），与主代理的 flash
+        变体（SlimSysOperationRail，不含这两个）行为不一致。
+
+        这里主动构造 ``SlimSysOperationRail()`` 传入，确保 gp 的文件面
+        与主代理一致（FlashReadFileTool/FlashWriteFileTool 等）。构造
+        失败时返回 None，工厂 fallback 到 stock（降级可用）。
+        """
+        try:
+            from jiuwenswarm.agents.harness.flash import SlimSysOperationRail
+
+            return [SlimSysOperationRail()]
+        except Exception:
+            logger.warning(
+                "[FlashSubagentRail] SlimSysOperationRail construction failed; "
+                "gp subagent will fall back to stock SysOperationRail",
+                exc_info=True,
+            )
+            return None
+
     def _inject_general_purpose_spec(self, cfg) -> bool:
         """向 deep_config.subagents 注入 general-purpose spec（flash 专属路径）。
 
-        复用 agent-core 的注入助手：rails 继承父代理的非 SubagentRail rails
-        （本 rail 因 isinstance 检查被排除，防递归）、tools/model/workspace/
-        sys_operation 均取父配置。传入现有 specs（research/browser/自定义
-        agent 等冷启动产物）而非空列表，由助手按名去重——已含
-        general-purpose（如热重载路径注入过）原样返回，未含则插入头部、
-        现有 specs 全部保留。
+        复用 agent-core 的注入助手：rails 用 flash 变体（冷启动时
+        ``cfg.rails`` 恒 None，不能依赖——改为主动构造 SlimSysOperationRail，
+        确保 gp 子代理文件面与主代理一致，见 ``_build_subagent_rails``）；
+        tools/model/workspace/sys_operation 均取父配置。传入现有 specs
+        （research/browser/自定义 agent 等冷启动产物）而非空列表，由助手
+        按名去重——已含 general-purpose（如热重载路径注入过）原样保留，
+        未含则插入头部、现有 specs 全部保留。
         """
         from openjiuwen.harness.factory import _inject_general_purpose_subagent
 
         existing = list(getattr(cfg, "subagents", None) or [])
+        # CR-2: cfg.rails 冷启动恒 None（rails 进 _pending_rails 不写
+        # deep_config），不能直接依赖——改为主动构造 flash 变体 rail。
+        # 热重载路径 cfg.rails 可能有值（_make_deep_agent_config 传入），
+        # 优先使用；为空时走 _build_subagent_rails 的 flash fallback。
+        cfg_rails = getattr(cfg, "rails", None)
+        if not cfg_rails:
+            cfg_rails = self._build_subagent_rails()
+
         try:
             specs = _inject_general_purpose_subagent(
                 existing,
                 add_general_purpose_agent=True,
                 resolved_language=self._resolve_language(),
-                rails=getattr(cfg, "rails", None),
+                rails=cfg_rails,
                 system_prompt=getattr(cfg, "system_prompt", None),
                 tools=getattr(cfg, "tools", None),
                 mcps=None,
@@ -253,6 +293,24 @@ class FlashSubagentRail(SubagentRail):
             else:
                 tools_str = self._extract_agent_tools(spec, agent_name)
                 lines.append(f"- {agent_name}: {agent_desc} (Tools: {tools_str})")
+                # CR-3: browser_agent 追加 Playwright capabilities 明细，
+                # 与 stock SubagentRail._build_available_agents_description 对齐。
+                if agent_name == "browser_agent":
+                    try:
+                        from openjiuwen.harness.tools.browser_move.playwright_runtime.browser_capabilities import (
+                            DEFAULT_BROWSER_CAPABILITIES,
+                        )
+
+                        lines.append("  Available Playwright capabilities:")
+                        for capability in DEFAULT_BROWSER_CAPABILITIES:
+                            tool_names = ", ".join(capability.tool_names)
+                            lines.append(
+                                f"    - {capability.name}: {capability.description} (Tools: {tool_names})"
+                            )
+                    except ImportError:
+                        logger.debug(
+                            "[FlashSubagentRail] browser capabilities not available; skipping"
+                        )
         return "\n".join(lines)
 
     def _apply_flash_descriptions(self, agent) -> None:
