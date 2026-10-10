@@ -29,7 +29,7 @@ async def test_only_summary_errors_notify_organization_runtime(monkeypatch, sour
     })
     org_runtime = SimpleNamespace(notify_summary_member_failure=AsyncMock())
     launcher = JiuwenExpertTeamLauncher(runtime_manager=SimpleNamespace(), organization_runtime=org_runtime)
-    launcher._push_expert_payload = AsyncMock(return_value=True)
+    launcher.push_expert_payload = AsyncMock(return_value=True)
     await launcher._relay_expert_chunk(
         object(), team_id="summary", session_id="session", channel_id="web",
         round_id="org-turn", frame_sequence=12, source=source,
@@ -37,7 +37,7 @@ async def test_only_summary_errors_notify_organization_runtime(monkeypatch, sour
     assert org_runtime.notify_summary_member_failure.await_count == (1 if source == "org_summary_background" else 0)
     if source == "org_summary_background":
         assert org_runtime.notify_summary_member_failure.call_args.kwargs["turn_id"] == "org-turn:12"
-    launcher._push_expert_payload.assert_awaited_once()
+    launcher.push_expert_payload.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -62,7 +62,7 @@ async def test_organization_stream_keeps_round_id_through_web_gateway(source: st
         ("chat.final", "**处理结论**：完成。"),
     ]
     for sequence, (event, content) in enumerate(chunks):
-        assert await launcher._push_expert_payload(
+        assert await launcher.push_expert_payload(
             {"event_type": event, "content": content, "role": role, "member_name": "analyst"},
             team_id="expert", session_id="session", channel_id="web",
             round_id="org-round", frame_sequence=sequence, source=source,
@@ -79,6 +79,26 @@ async def test_organization_stream_keeps_round_id_through_web_gateway(source: st
     assert {event["request_id"] for event in events} == {"org-round"}
     assert "".join(event["content"] for event in events[:-1]) == events[-1]["content"]
     assert all(event["role"] == role and event["member_name"] == "analyst" for event in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["org_expert_direct", "org_expert_background"])
+async def test_push_failure_preserves_direct_cause_and_background_result(source):
+    failure = OSError("transport disconnected")
+    transport = SimpleNamespace(send_push=AsyncMock(side_effect=failure))
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=SimpleNamespace())
+    launcher._get_push_transport = lambda: transport
+    operation = launcher.push_expert_payload(
+        {"event_type": "chat.final", "content": "result"},
+        team_id="expert", session_id="session", channel_id="web",
+        round_id="org-round", frame_sequence=0, source=source,
+    )
+    if source == "org_expert_direct":
+        with pytest.raises(RuntimeError, match="failed to deliver direct expert output") as error:
+            await operation
+        assert error.value.__cause__ is failure
+    else:
+        assert await operation is False
 
 
 class _FakeSpec:

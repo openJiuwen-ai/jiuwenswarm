@@ -58,7 +58,7 @@ def build_summary_team_spec(
     from openjiuwen.agent_teams.team_workspace.models import TeamWorkspaceConfig
     from jiuwenswarm.agents.harness.team.team_manager import TeamManager
 
-    configured = TeamManager._load_team_spec(session_id)
+    configured = TeamManager.load_default_team_spec(session_id)
     leader_source = configured.agents.get("leader")
     teammate_source = configured.agents.get("teammate", leader_source)
     if leader_source is None or teammate_source is None:

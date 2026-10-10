@@ -4980,10 +4980,13 @@ class MessageHandler(ABC):
                 if self._is_terminal_stream_chunk(chunk):
                     continue
                 payload = chunk.payload or {}
-                if (
+                is_processing_false = (
                     isinstance(payload, dict)
                     and payload.get("event_type") == "chat.processing_status"
                     and payload.get("is_processing") is False
+                )
+                if (
+                    is_processing_false
                     and self._session_has_streams_blocking_processing_false(
                         session_id, exclude_rid=rid
                     )
