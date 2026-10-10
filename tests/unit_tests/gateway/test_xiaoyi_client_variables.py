@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 
 import pytest
@@ -202,10 +203,13 @@ def test_with_workspace_directive(workspace):
     assert text.startswith("你好\n\n")
     assert "<claw_workspace>" in text and "【工作空间】当前项目目录是" in text
     assert "必须落在该目录" in text
+    # payload 携带本条消息的动态时间戳（本地时间，YYYY-MM-DD HH:MM:SS）
+    assert re.search(r'"timestamp": "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"', text)
     # full_access：也注入（位置提示，不含约束措辞）——否则该档下模型对工作空间零感知
     full = with_workspace_directive("你好", str(workspace), "full_access")
     assert full.startswith("你好\n\n") and "<claw_workspace>" in full
     assert "必须落在该目录" not in full
+    assert re.search(r'"timestamp": "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"', full)
     assert with_workspace_directive("你好", "", "default") == "你好"
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -395,9 +396,10 @@ class TestWithWorkspaceDir:
     def test_appends_constraint_after_task_text(self, tmp_path):
         workspace = tmp_path / "定时任务-ws"
         result = with_workspace_dir("生成图片", str(workspace))
-        payload = json.dumps({"path": str(workspace)}, ensure_ascii=False, separators=(",", ":"))
         assert result.startswith("生成图片\n\n<claw_workspace>")
-        assert payload in result
+        assert f'"path":{json.dumps(str(workspace), ensure_ascii=False)}' in result
+        # payload 携带本次触发的动态时间戳（本地时间，YYYY-MM-DD HH:MM:SS）
+        assert re.search(r'"timestamp":"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"', result)
         assert f"【工作空间】当前项目目录是 `{workspace}`" in result
         assert result.count("<claw_workspace>") == 1
 
