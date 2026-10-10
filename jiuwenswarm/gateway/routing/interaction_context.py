@@ -12,6 +12,7 @@ from __future__ import annotations
 import glob
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,7 +22,39 @@ from jiuwenswarm.common.utils import get_interactions_dir
 
 logger = logging.getLogger(__name__)
 
-_SENSITIVE_KEYS = frozenset({"api_key", "token", "authorization"})
+# 凭证类"中心词"：只有当它是键名的**最后一个词段**时才判定为敏感。
+# 英文复合词把中心词放在词尾：``access_token`` 是一个令牌，``token_count``
+# 是一个计数。按最后一个词段判定即可区分二者。
+_SENSITIVE_HEAD_TERMS = frozenset({
+    "authorization",
+    "bearer",
+    "credential",
+    "credentials",
+    "passphrase",
+    "passwd",
+    "password",
+    "pwd",
+    "secret",
+    "signature",
+    "token",
+})
+# 末尾两个词段合并后命中，也判定为敏感。``key`` 单独作为中心词过宽
+# （``cache_key`` / ``route_key`` 不是凭证），因此必须带一个限定词。
+_SENSITIVE_TAIL_PAIRS = frozenset({
+    "access_key",
+    "api_key",
+    "app_key",
+    "client_key",
+    "encryption_key",
+    "private_key",
+    "secret_key",
+    "session_key",
+    "signing_key",
+})
+# camelCase 边界：``accessToken`` -> ``access Token``。snake_case 与
+# kebab-case 由 ``_KEY_SEPARATORS`` 切分。
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_KEY_SEPARATORS = re.compile(r"[^A-Za-z0-9]+")
 _DEFAULT_TTL = 86400
 
 
@@ -31,8 +64,35 @@ def _get_interactions_dir() -> Path:
     return interactions_dir
 
 
+def _key_segments(key: str) -> list[str]:
+    """把键名切成小写词段：``tenant_access_token`` -> ``["tenant", "access", "token"]``。
+
+    分隔符为任意非字母数字字符（``_`` / ``-`` / ``.`` / 空格）。camelCase 边界
+    也切分，使 ``accessToken`` 与 ``access_token`` 得到同一结果。
+    """
+    spaced = _CAMEL_BOUNDARY.sub(" ", key)
+    return [seg for seg in _KEY_SEPARATORS.split(spaced.lower()) if seg]
+
+
+def _is_sensitive_key(key: str) -> bool:
+    """键名的**最后一个词段**指向一个凭证时返回 True。
+
+    命中: ``token`` / ``bot_token`` / ``tenant_access_token`` / ``accessToken``
+          / ``client_secret`` / ``authorization`` / ``api_key`` / ``x-api-key``
+    不命中: ``tokenizer_cache_dir`` / ``enable_tiktoken_counter``
+            / ``token_count`` / ``token_usage`` / ``cache_key``
+    这些不命中的键是正常元数据。把它们也滤掉，就是用一个新缺陷换掉旧缺陷。
+    """
+    segments = _key_segments(key)
+    if not segments:
+        return False
+    if segments[-1] in _SENSITIVE_HEAD_TERMS:
+        return True
+    return len(segments) >= 2 and "_".join(segments[-2:]) in _SENSITIVE_TAIL_PAIRS
+
+
 def _filter_sensitive(metadata: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in metadata.items() if k.lower() not in _SENSITIVE_KEYS}
+    return {k: v for k, v in metadata.items() if not _is_sensitive_key(str(k))}
 
 
 @dataclass
