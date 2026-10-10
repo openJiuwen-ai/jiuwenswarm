@@ -54,7 +54,8 @@ def test_projection_skips_ask_and_urls_instead_of_widening_them():
 @pytest.mark.parametrize("windows", [True, False])
 def test_sync_roundtrip_and_removal(config_file, monkeypatch, windows):
     monkeypatch.setattr(render, "_is_windows", lambda: windows)
-    previous = render.set_sandbox_network_config(windows, [], ["old.example.com"])
+    render.set_sandbox_network_config(windows, [], ["old.example.com"])
+    previous = render.get_sandbox_network_config()
     policy_path = render._runtime_copy_path() if windows else render._linux_runtime_copy_path()
     result = sync_net_guard_to_sandbox()
     assert result["urls"] == {"allow.example.com": "allow", "deny.example.com": "deny"}
@@ -70,13 +71,14 @@ def test_sync_roundtrip_and_removal(config_file, monkeypatch, windows):
     applied = render.get_sandbox_network_config()
     assert applied == {
         "disable_all": windows,
-        "allow_domains": ["allow.example.com"],
-        "deny_domains": ["deny.example.com"],
+        "allow_domains": ["allow.example.com", "*.allow.example.com"],
+        "deny_domains": ["old.example.com", "*.old.example.com", "deny.example.com", "*.deny.example.com"],
     }
     assert sync_net_guard_to_sandbox()["urls"] == {}
     assert render.get_sandbox_network_config() == applied
     render_saved_sandbox_urls(policy_path)
-    assert render.get_sandbox_network_config()["deny_domains"] == []
+    # Empty sync clears its own snapshot, never the independent panel source.
+    assert render.get_sandbox_network_config()["deny_domains"] == ["old.example.com", "*.old.example.com"]
     assert render.get_sandbox_network_config()["allow_domains"] == []
 
 
@@ -114,7 +116,7 @@ def test_failed_runtime_write_does_not_report_success(config_file, monkeypatch):
 
 
 @pytest.mark.parametrize("explicit_empty", [False, True])
-def test_empty_urls_applies_empty_domain_lists(config_file, monkeypatch, explicit_empty):
+def test_empty_or_missing_urls_preserves_independent_panel_rules(config_file, monkeypatch, explicit_empty):
     monkeypatch.setattr(render, "_is_windows", lambda: True)
     render.set_sandbox_network_config(False, ["allowed.example.com"], ["blocked.example.com"])
     if explicit_empty:
@@ -123,13 +125,15 @@ def test_empty_urls_applies_empty_domain_lists(config_file, monkeypatch, explici
         config.dump_yaml_round_trip(config_file, data)
     render_saved_sandbox_urls(render._runtime_copy_path())
     assert render.get_sandbox_network_config() == {
-        "disable_all": False, "allow_domains": [], "deny_domains": [],
+        "disable_all": False, "allow_domains": ["allowed.example.com", "*.allowed.example.com"],
+        "deny_domains": ["blocked.example.com", "*.blocked.example.com"],
     }
 
 
-def test_explicit_empty_sync_clears_legacy_rules_only_when_applied(config_file, monkeypatch):
+def test_explicit_empty_sync_preserves_rules_owned_by_panel(config_file, monkeypatch):
     monkeypatch.setattr(render, "_is_windows", lambda: True)
-    previous = render.set_sandbox_network_config(False, [], ["old.example.com"])
+    render.set_sandbox_network_config(False, [], ["old.example.com"])
+    previous = render.get_sandbox_network_config()
     data = config.load_yaml_round_trip(config_file)
     data["permissions"]["net_guard"]["urls"] = {}
     config.dump_yaml_round_trip(config_file, data)
@@ -137,7 +141,7 @@ def test_explicit_empty_sync_clears_legacy_rules_only_when_applied(config_file, 
     assert config.load_yaml_round_trip(config_file)["sandbox"]["urls"] == {}
     assert render.get_sandbox_network_config() == previous
     render_saved_sandbox_urls(render._runtime_copy_path())
-    assert render.get_sandbox_network_config()["deny_domains"] == []
+    assert render.get_sandbox_network_config()["deny_domains"] == ["old.example.com", "*.old.example.com"]
 
 
 def test_runtime_updates_preserve_synced_urls(config_file):

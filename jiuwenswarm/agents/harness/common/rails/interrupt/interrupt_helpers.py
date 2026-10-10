@@ -295,7 +295,13 @@ def build_permission_rail(
     )
     behavior_enabled = desktop_security_active()
     defer_unmatched = cloud_authorization_enabled(config)
-    permission_config = dict(config.get("permissions", {}))
+    # 经 permissions_for_enforcement 回流名单 domain 规则：Pipeline C / P1 的引擎与
+    # 宿主出口（P3）必须看到同一份 urls，否则名单里的域名 deny 只在 rail 生效
+    from jiuwenswarm.agents.harness.common.rails.security_lists.bridge import (
+        permissions_for_enforcement,
+    )
+
+    permission_config = permissions_for_enforcement(config)
     if behavior_enabled:
         permission_config["defer_unmatched"] = defer_unmatched
     tools_config = permission_config.setdefault("tools", {})
@@ -488,6 +494,41 @@ def build_permission_rail(
                 check_avatar_permission,
                 _resolve_owner_scope_level,
             )
+            from jiuwenswarm.agents.harness.common.rails.security_lists.rail import (
+                SECURITY_LIST_APPROVED_KEY,
+                SECURITY_LIST_DENY_KEY,
+            )
+
+            # 统一名单 Rail（priority=95）已 deny 的调用：权限引擎层直接 reject，
+            # 避免 _skip_tool 不中断 rail 链导致的二次弹窗。
+            extra = getattr(inp.ctx, "extra", None)
+            if isinstance(extra, dict):
+                denied = extra.get(SECURITY_LIST_DENY_KEY)
+                if denied:
+                    return ("reject", str(denied))
+
+                # 名单 Rail 的 ask 已获用户批准（归一化）：本调用免二次弹窗。
+                # 但必须先查一次引擎裁决——引擎 deny 绝不放行（取严语义不可破坏），
+                # 查询失败时同样不放行，退回引擎自身判定流程。
+                approved_id = extra.get(SECURITY_LIST_APPROVED_KEY)
+                if approved_id is not None:
+                    current_id = (
+                        getattr(inp.tool_call, "id", "")
+                        if inp.tool_call is not None
+                        else ""
+                    )
+                    if approved_id == current_id:
+                        level = None
+                        try:
+                            level, _rule = inp.engine.check_tool_permission_directly(
+                                inp.normalized_tool_name, inp.tool_args
+                            )
+                        except Exception:
+                            level = "unknown"
+                        level_name = str(getattr(level, "value", level) or "").lower()
+                        # ""=引擎无匹配规则；allow/ask=引擎不拒绝 → 复用用户批准
+                        if level_name in ("", "allow", "ask"):
+                            return ("approve",)
 
             perm_ctx = TOOL_PERMISSION_CONTEXT.get()
 

@@ -220,7 +220,14 @@ def test_mcp_endpoint_check_error_skips_only_that_server():
 @pytest.fixture
 def linux_render(tmp_path, monkeypatch):
     from jiuwenswarm.server import sandbox_policy_render as render
+    from jiuwenswarm.common import config
+    from jiuwenswarm.server import security_lists_rpc
 
+    path = tmp_path / "config.yaml"
+    path.write_text("sandbox:\n  type: jiuwenbox\n", encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_YAML_PATH", path)
+    monkeypatch.setattr(config, "get_config_file", lambda: path)
+    monkeypatch.setattr(security_lists_rpc, "_publish_enforcement", lambda: "published")
     monkeypatch.setattr(render, "_config_dir", lambda: tmp_path)
     monkeypatch.setattr(render, "_is_windows", lambda: False)
     return render
@@ -230,11 +237,15 @@ def test_linux_network_copy_roundtrip(linux_render, tmp_path):
     render = linux_render
     view = render.set_sandbox_network_config(False, ["example.com"], ["evil.example"])
     assert view == {"disable_all": False, "allow_domains": ["example.com"], "deny_domains": ["evil.example"]}
-    assert render.get_sandbox_network_config() == view
+    assert render.get_sandbox_network_config() == {
+        "disable_all": False, "allow_domains": ["example.com", "*.example.com"],
+        "deny_domains": ["evil.example", "*.evil.example"],
+    }
 
     stored = yaml.safe_load((tmp_path / "default-policy.runtime.yaml").read_text(encoding="utf-8"))
     assert stored == {
-        "network": {"egress": {"allowed_domains": ["example.com"], "blocked_domains": ["evil.example"]}}
+        "network": {"egress": {"allowed_domains": ["example.com", "*.example.com"],
+                                "blocked_domains": ["evil.example", "*.evil.example"]}}
     }
 
 

@@ -79,20 +79,24 @@ class EgressFilter:
 
     @staticmethod
     def _domain_matches(pattern: str, host: str) -> bool:
-        """通配符域名匹配: '*.example.com' 匹配 'a.example.com' / 'example.com'?.
-
-        约定 (与 network.py resolve_domains 一致): 通配符前缀 '*' 匹配任意
-        子域; 无通配符则精确匹配.
+        """通配符只匹配子域；无通配符精确匹配。尾随根域点不影响匹配。
         """
         if not pattern or not host:
             return False
         pat = pattern.lower().strip()
         host = host.lower().strip()
+        try:
+            host = host.rstrip(".").encode("idna").decode("ascii")
+            base = (pat[2:] if pat.startswith("*.") else pat).rstrip(".")
+            base = base.encode("idna").decode("ascii")
+            pat = f"*.{base}" if pat.startswith("*.") else base
+        except UnicodeError:
+            return False
         if pat.startswith("*."):
             base = pat[2:]
-            # *.example.com 匹配 sub.example.com, 也匹配 example.com (兼容写法).
-            return host == base or host.endswith("." + base)
-        return pat == host
+            # 与统一名单一致：通配条目只匹配子域；裸域需显式条目。
+            return host.rstrip(".").endswith("." + base.rstrip("."))
+        return pat.rstrip(".") == host.rstrip(".")
 
     @staticmethod
     def _ip_in_networks(ip_str: str, nets: list) -> bool:

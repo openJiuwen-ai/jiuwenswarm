@@ -58,17 +58,24 @@ def get_permissions_read_only_req_methods() -> frozenset[ReqMethod]:
 def publish_host_exit_policy_from_config(config: dict[str, Any] | None = None) -> None:
     """把 ``permissions.net_guard`` 发布给宿主出口（P3）。
 
-    P3 是进程级状态，只在配置加载（AgentServer 启动、配置热更新）和
-    ``permissions.net_guard.set`` 写入后发布；``config`` 缺省时读当前 config.yaml。
+    P3 是进程级状态，只在配置加载（AgentServer 启动、配置热更新）、
+    ``permissions.net_guard.set`` 与**名单写后**发布；``config`` 缺省时读当前 config.yaml。
+
+    发布前经 :func:`permissions_for_enforcement` 回流名单 domain 规则——P3 是名单
+    域名规则唯一够得到"脚本内出站"的强制点（设计 §4.4）。
     """
     from openjiuwen.harness.security.outbound import publish_host_exit_policy
     from openjiuwen.harness.security.permission_engine.core import prepare_permissions_for_engine
 
+    from jiuwenswarm.agents.harness.common.rails.security_lists.bridge import (
+        permissions_for_enforcement,
+    )
     from jiuwenswarm.common.config import get_config
 
     cfg = config if isinstance(config, dict) else (get_config() or {})
-    perms = cfg.get("permissions") if isinstance(cfg.get("permissions"), dict) else {}
-    publish_host_exit_policy(prepare_permissions_for_engine(perms))
+    publish_host_exit_policy(
+        prepare_permissions_for_engine(permissions_for_enforcement(cfg))
+    )
 
 
 def _net_guard_payload() -> dict[str, Any]:

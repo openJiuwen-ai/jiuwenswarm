@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 PERMISSION_PROFILE_DEFAULT = "default"
 PERMISSION_PROFILE_AUTO_APPROVE = "auto_approve"
@@ -82,6 +82,31 @@ def permission_profile_config_patch(profile: str) -> Optional[dict[str, Any]]:
         "tools": {"bash": "ask", **{t: "ask" for t in _NETWORK_TOOLS}},
         "file_guard_rw": "ask",
     }
+
+
+def current_permission_profile(permissions: Optional[Mapping[str, Any]] = None) -> str:
+    """当前 permissions 段 → 档位 id（permission_profile_config_patch 的逆映射）。
+
+    - ``enabled=False`` → full_access；
+    - ``permission_mode=strict`` → default；
+    - 其余 → auto_approve。
+
+    段缺失/不可读时回退 default（受限档，fail-safe）。名单格子求值与审批记住
+    的模式字段都以本函数为准。
+    """
+    perms: Any = permissions
+    if perms is None:
+        from jiuwenswarm.common.config import get_config
+
+        cfg = get_config()
+        perms = cfg.get("permissions") if isinstance(cfg, dict) else {}
+    if not isinstance(perms, Mapping):
+        return PERMISSION_PROFILE_DEFAULT
+    if perms.get("enabled", True) is False:
+        return PERMISSION_PROFILE_FULL_ACCESS
+    if str(perms.get("permission_mode", "normal")).strip().lower() == "strict":
+        return PERMISSION_PROFILE_DEFAULT
+    return PERMISSION_PROFILE_AUTO_APPROVE
 
 
 def resolve_client_workspace(raw: Any) -> str:

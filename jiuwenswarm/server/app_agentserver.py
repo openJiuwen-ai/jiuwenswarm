@@ -58,6 +58,41 @@ _old_workspace = _workspace_dir / "agent" / "jiuwenclaw_workspace"
 from jiuwenswarm.common.config_split import maybe_fold_legacy_overlay
 
 maybe_fold_legacy_overlay()
+
+# 一次性迁移：windows-policy 用户副本 → security_lists user 区聚合记录（幂等）。
+# 失败不阻断启动：副本投影仍可读取旧数据，下次启动重试；迁移结果落审计。
+try:
+    from jiuwenswarm.agents.harness.common.rails.security_lists import audit as _sl_audit
+    from jiuwenswarm.agents.harness.common.rails.security_lists.store import (
+        migrate_sandbox_copy_once as _migrate_sandbox_copy_once,
+    )
+
+    _sl_migrated = _migrate_sandbox_copy_once()
+    if _sl_migrated:
+        logging.getLogger(__name__).info(
+            "security_lists 迁移沙箱副本 %d 条聚合记录", _sl_migrated
+        )
+        _sl_audit.log_event(
+            _sl_audit.AUDIT_CHANGE, scope="migration", migrated=_sl_migrated
+        )
+    # 审计启动自检（设计 5.7）：写 audit_start 验证可写，失败立即降级告警
+    _sl_audit.self_check()
+    # 桥接 agent-core 沙箱 fallback 审计（设计 5.6）：回落/拒绝事件落入统一审计
+    try:
+        from openjiuwen.extensions.sys_operation.sandbox.providers.jiuwenbox import (
+            set_fallback_audit_hook,
+        )
+
+        set_fallback_audit_hook(
+            lambda **fields: _sl_audit.log_event(_sl_audit.AUDIT_FALLBACK, **fields)
+        )
+    except Exception:
+        logging.getLogger(__name__).debug("core 沙箱 fallback 审计 hook 注册失败")
+except Exception:
+    logging.getLogger(__name__).warning(
+        "security_lists 沙箱副本迁移失败（下次启动重试）", exc_info=True
+    )
+
 if should_prepare_workspace(_config_file, _new_workspace, _old_workspace):
     prepare_workspace(overwrite=False)
 

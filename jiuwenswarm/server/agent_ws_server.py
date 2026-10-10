@@ -106,6 +106,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc 
 from jiuwenswarm.server.sandbox_config_rpc import (
     get_sandbox_config_req_methods,
 )
+from jiuwenswarm.server.security_lists_rpc import (
+    get_security_lists_req_methods,
+)
 from jiuwenswarm.common.config import (
     DEFAULT_SANDBOX_STARTUP_MODE,
     default_sandbox_policy_file,
@@ -2088,6 +2091,9 @@ class AgentWebSocketServer:
                     extra={"user_visible": "progress"},
                 )
                 await self._handle_sandbox_config(ws, request, send_lock)
+                return
+            if request.req_method in get_security_lists_req_methods():
+                await self._handle_security_lists(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.HISTORY_GET:
                 if request.is_stream:
@@ -5425,6 +5431,19 @@ class AgentWebSocketServer:
                 "status": "applied" if restarted or service_reloaded else "no_active_sandboxes",
                 **({"network_status": "externally_managed"}
                    if get_sandbox_startup_mode() != "internal" else {})}
+
+    async def _handle_security_lists(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """处理 security_lists.* E2A 请求（统一安全名单卡片视图/CRUD/云同步/审计）。
+
+        写方法的沙箱双端同步（渲染副本+触发重载）在 dispatch 内完成；
+        rail 热读走 get_config stamp 失效链路，无需 reload_agents_config。
+        """
+        from jiuwenswarm.server.security_lists_rpc import dispatch_security_lists_request
+
+        resp = dispatch_security_lists_request(request)
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
 
     async def _handle_history_get(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         params = request.params if isinstance(request.params, dict) else {}

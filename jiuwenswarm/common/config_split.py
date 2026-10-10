@@ -51,6 +51,10 @@ _EXTRACT_LOCK = threading.Lock()
 _SCALAR_PATHS: tuple[tuple[str, ...], ...] = (
     ("sandbox", "enabled"),
     ("permissions", "shell_guard", "builtin_rules_enabled"),
+    # 沙箱本地回落三态（never|inline_only|always，设计 5.6）；Web 安全页与
+    # 手改 config.yaml 都可能设它，模板缺失 → 不登记会被模板重同步整键抹掉。
+    ("sandbox", "fallback_policy"),
+    ("sandbox", "urls_revision"),
     ("permissions", "soft_delete", "enabled"),
 )
 
@@ -59,12 +63,23 @@ _SCALAR_PATHS: tuple[tuple[str, ...], ...] = (
 LIST_PATHS: tuple[tuple[str, ...], ...] = (
     ("permissions", "approval_overrides"),
     ("permissions", "file_guard", "paths"),
+    # 统一安全名单的用户记录（按记录 id upsert）；含 M1 从沙箱副本迁移来的条目。
+    ("security_lists", "user"),
+    ("sandbox", "files"),
 )
 
 # 与 LIST_PATHS 同语义，但值是映射：按键 upsert，仅写回与模板不同的键。
 # 前端安全页「URL / 域名规则」写 net_guard.urls（pattern → allow|deny）。
 MAP_PATHS: tuple[tuple[str, ...], ...] = (
     ("permissions", "net_guard", "urls"),
+    # 云侧下发名单整段（sync_version / synced_at / records）；模板不含该段。
+    ("security_lists", "cloud"),
+    # 兜底档（v3）：白名单模式（"未列出即拒"）就写在这里，丢了等于白名单静默失效。
+    ("security_lists", "defaults"),
+    # 一次性迁移幂等标记（如 sandbox_copy）。丢失会让迁移在每次升级后重跑，
+    # 把用户已删掉的迁移条目再挂回来。
+    ("security_lists", "migrations"),
+    ("sandbox", "urls"),
 )
 
 # 用户 config 目录；比的是包内模板哈希，不是用户 yaml 是否等于模板。
@@ -81,14 +96,20 @@ _XIAOYI_RUNTIME_KEEP_KEYS: tuple[str, ...] = (
 def _plain(value: Any) -> Any:
     """ruamel / 自定义类型 → 可比较的纯 Python 对象。
 
-    ``sort_keys=False``：保留用户 yaml 里的键顺序（PyYAML dump 默认会按字母序排，
+    ``sort_keys=False``：保留用户 yaml 里的键顺序（dump 默认会按字母序排，
     导致 Celia server 变成 ``command`` 在前，桌面补丁认不出 ``- name:``）。
+
+    dump 必须走 ruamel：PyYAML ``safe_dump`` 只按精确类型查注册器（不走 MRO），
+    ruamel ``CommentedMap``/``CommentedSeq`` 会直接 ``RepresenterError``——
+    磁盘 config 经 ruamel 加载后其条目正是这类对象（HITL 二次落盘、升级
+    keep-set 恢复都会踩到）。ruamel rt dump 天然保序、不排序。
     """
     if value is None:
         return None
-    return yaml.safe_load(
-        yaml.safe_dump(value, allow_unicode=True, sort_keys=False)
-    )
+    rt = YAML()
+    buf = StringIO()
+    rt.dump(value, buf)
+    return yaml.safe_load(buf.getvalue())
 
 
 def _eq(left: Any, right: Any) -> bool:

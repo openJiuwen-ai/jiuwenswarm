@@ -414,6 +414,86 @@ def test_upgrade_copies_and_restores_keep_set(tmp_path: Path) -> None:
     assert stamp.read_text(encoding="utf-8") == compute_template_stamp(pkg, None)
 
 
+def test_upgrade_keeps_security_lists_and_fallback_policy(tmp_path: Path) -> None:
+    """security_lists（user/cloud）与 sandbox.fallback_policy 熬过模板重同步。"""
+    from jiuwenswarm.common.config_split import (
+        compute_template_stamp,
+        sync_system_files_from_package,
+        template_stamp_path,
+    )
+
+    pkg = tmp_path / "pkg.yaml"
+    user = tmp_path / "config.yaml"
+    overlay = tmp_path / "config.user.yaml"
+    pkg.write_text("sandbox:\n  enabled: false\n", encoding="utf-8")
+    user.write_text(
+        "\n".join(
+            [
+                "sandbox:",
+                "  enabled: false",
+                "  fallback_policy: never",
+                "security_lists:",
+                "  user:",
+                "    - id: ul_abc123",
+                "      type: file_path",
+                "      pattern: '**/.ssh/**'",
+                "      match: glob",
+                "      enabled: true",
+                "      cells:",
+                "        default:",
+                "          read: deny",
+                "      source: user",
+                "  cloud:",
+                "    sync_version: v1",
+                "    synced_at: '2026-09-29T00:00:00+00:00'",
+                "    records:",
+                "      - id: cl_1",
+                "        type: domain",
+                "        pattern: '*.evil.com'",
+                "        match: wildcard",
+                "        enabled: true",
+                "        cells:",
+                "          '*':",
+                "            '*': deny",
+                "        source: cloud",
+                "  migrations:",
+                "    sandbox_copy: '2026-09-29T00:00:00+00:00'",
+                "  defaults:",
+                "    '*':",
+                "      domain: deny",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    overlay.write_text("sandbox:\n  enabled: true\n", encoding="utf-8")
+    stamp = template_stamp_path(user)
+    stamp.write_text(compute_template_stamp(pkg, None), encoding="utf-8")
+    # 模板前进（含同事新增的 sandbox.files）→ 触发 copy2 + 白名单回写
+    pkg.write_text("sandbox:\n  enabled: false\n  files: []\n", encoding="utf-8")
+
+    assert sync_system_files_from_package(
+        user_yaml=user, overlay_yaml=overlay, package_yaml=pkg
+    ) is True
+
+    restored = yaml.safe_load(user.read_text(encoding="utf-8"))
+    assert restored["sandbox"]["fallback_policy"] == "never"
+    assert restored["sandbox"]["enabled"] is True
+    assert [r["id"] for r in restored["security_lists"]["user"]] == ["ul_abc123"]
+    assert restored["security_lists"]["user"][0]["cells"] == {
+        "default": {"read": "deny"}
+    }
+    assert restored["security_lists"]["cloud"]["sync_version"] == "v1"
+    assert restored["security_lists"]["cloud"]["synced_at"] == "2026-09-29T00:00:00+00:00"
+    assert [r["id"] for r in restored["security_lists"]["cloud"]["records"]] == ["cl_1"]
+    # 迁移幂等标记必须一起活下来：丢了会让 migrate_sandbox_copy_once 重跑并再次清空副本
+    assert restored["security_lists"]["migrations"]["sandbox_copy"] == (
+        "2026-09-29T00:00:00+00:00"
+    )
+    # 兜底档（白名单模式所在）同样不能丢
+    assert restored["security_lists"]["defaults"] == {"*": {"domain": "deny"}}
+
+
 def test_missing_stamp_with_existing_yaml_is_upgrade(tmp_path: Path) -> None:
     from jiuwenswarm.common.config_split import (
         compute_template_stamp,

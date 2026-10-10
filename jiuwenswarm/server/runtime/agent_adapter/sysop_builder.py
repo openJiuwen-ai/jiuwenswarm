@@ -585,6 +585,7 @@ def create_sandbox_sysop_card(
     idle_ttl_seconds: int | None = None,
     idle_check_interval: int | None = None,
     fallback_on_failure: bool = False,
+    fallback_policy: str | None = None,
     project_dir: str | Path | None = None,
     is_code_agent: bool = False,
     startup_mode: str | None = None,
@@ -646,6 +647,10 @@ def create_sandbox_sysop_card(
             "preserve_file_sharing_mode": _PRESERVE_FILE_SHARING_MODE,
             "preserve_files_upload": upload_list,
         }
+        # 新键优先于 fallback_on_failure（agent-core 侧兼容映射）；None 时不写，
+        # 由 core 走旧键兼容路径
+        if fallback_policy is not None:
+            extra_params["fallback_policy"] = str(fallback_policy)
 
         if idle_check_interval is not None:
             extra_params["idle_check_interval"] = idle_check_interval
