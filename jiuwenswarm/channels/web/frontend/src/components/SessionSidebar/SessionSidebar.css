@@ -126,3 +126,8 @@
   flex: 1 1;
   min-height: 8px;
 }
+
+.icon-rail-nav-item--mode-switch {
+  margin-top: 8px;
+  margin-bottom: 16px;
+}

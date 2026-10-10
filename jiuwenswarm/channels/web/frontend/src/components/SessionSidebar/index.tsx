@@ -17,6 +17,7 @@ import AgentDesignIcon from '../../assets/智能体.svg?react';
 import PluginIcon from '../../assets/agent-management/extension.svg?react';
 import type { SidebarNavKey } from '../../utils/frontendPlatform';
 import type { ApplicationPluginContribution, ApplicationPluginNavKey } from '../../applicationPlugins/types';
+import { JiuwenMateModeSwitch } from '../../features/jiuwenmate/components/JiuwenMateModeSwitch';
 
 type MainNavKey = SidebarNavKey | 'connectorMarket' | ApplicationPluginNavKey;
 
@@ -30,6 +31,7 @@ interface SessionSidebarProps {
   /** 导航图标 hover 变化：进入传 key、移出传 null（multi-session 侧栏收起态的 hover 预览用） */
   onNavItemHover?: (key: MainNavKey | null) => void;
   onNavItemPointerDownCapture?: (key: MainNavKey) => void;
+  onToggleJiuwenMate?: () => void;
 }
 
 interface NavItem {
@@ -103,6 +105,7 @@ export function SessionSidebar({
   applicationPlugins = [],
   onNavItemHover,
   onNavItemPointerDownCapture,
+  onToggleJiuwenMate,
 }: SessionSidebarProps) {
   const { t } = useTranslation();
 
@@ -174,6 +177,13 @@ export function SessionSidebar({
       ))}
 
       <div className="icon-rail-spacer" />
+      {onToggleJiuwenMate ? (
+        <JiuwenMateModeSwitch
+          active={false}
+          label={t('jiuwenmate.mode.enter')}
+          onToggle={onToggleJiuwenMate}
+        />
+      ) : null}
     </aside>
   );
 }

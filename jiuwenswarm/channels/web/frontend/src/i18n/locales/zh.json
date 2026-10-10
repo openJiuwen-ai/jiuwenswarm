@@ -58,6 +58,367 @@
     "update": "更新",
     "personalContext": "知识"
   },
+  "jiuwenmate": {
+    "title": "九问同事",
+    "mode": {
+      "enter": "九问同事",
+      "exit": "切换为个人版"
+    },
+    "nav": {
+      "messages": "同事",
+      "office": "办公室",
+      "plaza": "广场",
+      "assets": "资产",
+      "skills": "技能",
+      "extensions": "扩展",
+      "knowledge": "知识",
+      "settings": "设置"
+    },
+    "common": {
+      "confirm": "确定",
+      "cancel": "取消",
+      "create": "创建",
+      "skip": "跳过",
+      "noData": "暂无数据",
+      "searchPlaceholder": "请输入搜索内容"
+    },
+    "intro": {
+      "title": "办公室",
+      "subtitle": "创建和管理 AI 同事，派送至 IM 群内自主履职",
+      "create": "创建同事",
+      "goCreate": "前往创建",
+      "heroTitle": "您还没有AI同事，让我们开始创建吧！",
+      "steps": {
+        "create": {
+          "title": "第一步：创建 AI 同事",
+          "description": "从模版快速构建智能体同事，自定义员工能力与多项配置。"
+        },
+        "connect": {
+          "title": "第二步：完善同事配置",
+          "description": "为智能体同事配置技能和知识等能力，帮助它高质量完成任务。"
+        },
+        "collaborate": {
+          "title": "第三步：授权 IM 渠道",
+          "description": "将同事发往工作渠道，让它们加入群聊，执行任务。"
+        }
+      }
+    },
+    "colleagueEmpty": {
+      "title": "AI 同事",
+      "subtitle": "对话调试 AI 同事能力，监控多渠道运行状态，配置自动化定时任务。",
+      "create": "创建同事",
+      "emptyTitle": "您还没有AI同事，让我们开始创建吧！",
+      "goCreate": "前往创建"
+    },
+    "create": {
+      "crumb": "创建",
+      "crumbLabel": "页面路径",
+      "title": "选择同事",
+      "customEntry": "自定义创建",
+      "customTitle": "自定义创建",
+      "refineCrumb": "完善信息",
+      "viewDetail": "查看详情",
+      "choose": "选择",
+      "basicInfo": "基本信息",
+      "changeAvatar": "上传头像",
+      "resetAvatar": "使用默认头像",
+      "avatarHint": "支持上传png、jpeg、gif、jpg格式图片，限200Kb内",
+      "avatarInvalid": "仅支持png、jpeg、gif、jpg格式，且不超过200Kb",
+      "name": "AI 同事名称",
+      "namePlaceholder": "例如：售后服务助手",
+      "description": "能力介绍",
+      "descriptionPlaceholder": "描述这位同事擅长什么、负责什么，以及期望的工作方式",
+      "role": "工作领域",
+      "preview": "同事名片预览",
+      "previewName": "新同事",
+      "previewDescription": "填写能力介绍后，将在这里展示同事介绍。",
+      "capabilities": "能力配置",
+      "capabilitiesHint": "根据名称和能力介绍自动生成能力配置",
+      "generate": "智能生成",
+      "switchModel": "切换模型",
+      "remove": "移除",
+      "sections": {
+        "model": "模型配置",
+        "skills": "技能配置（可选）",
+        "connectors": "连接器配置（可选）",
+        "plugins": "插件配置（可选）",
+        "knowledge": "知识配置（可选）",
+        "starterPrompts": "这样问我试试看（可选）"
+      },
+      "add": {
+        "skills": "添加技能",
+        "connectors": "添加连接器",
+        "plugins": "添加插件",
+        "knowledge": "添加知识",
+        "starterPrompts": "添加快捷问"
+      },
+      "empty": {
+        "skills": "暂无技能",
+        "connectors": "暂无连接器",
+        "plugins": "暂无插件",
+        "knowledge": "暂无知识"
+      },
+      "detail": {
+        "coreAbilities": "核心能力",
+        "skills": "技能（{{count}}）",
+        "connectors": "连接器（{{count}}）",
+        "plugins": "插件（{{count}}）"
+      },
+      "dialogName": "名称",
+      "dialogNamePlaceholder": "例如：客服小助手、售后群助理",
+      "dialogDuty": "职责",
+      "dialogDutyPlaceholder": "希望它负责什么？例如：\n你是群内专属客服小助，负责解答业务咨询、查询信息、接收问题反馈，简洁高效回复群成员问题，不闲聊无关内容。",
+      "goPlaza": "没有灵感，去广场看看"
+    },
+    "im": {
+      "success": "AI 同事创建成功，派它去 IM 渠道工作吧！",
+      "title": "配置 IM 渠道",
+      "hint": "将同事接入渠道，通过 @ 分派任务",
+      "feishu": "飞书",
+      "appId": "API ID",
+      "appIdPlaceholder": "请输入API ID",
+      "secret": "API Secret",
+      "secretPlaceholder": "请输入API Secret",
+      "showSecret": "显示 API Secret",
+      "hideSecret": "隐藏 API Secret"
+    },
+    "profile": {
+      "sectionsLabel": "同事配置",
+      "sections": {
+        "overview": "概览",
+        "persona": "人设",
+        "model": "模型",
+        "skills": "技能",
+        "connectors": "连接器",
+        "plugins": "插件",
+        "knowledge": "知识",
+        "channels": "渠道",
+        "schedules": "定时任务"
+      },
+      "edit": "编辑人设",
+      "joinedAt": "入职时间：{{time}}",
+      "quickIm": "快速配置 IM 渠道",
+      "goConfigure": "去配置",
+      "feishuHint": "授权使用智能体，并监控活动。",
+      "authorize": "授权",
+      "authorized": "已授权",
+      "workLog": "工作日志",
+      "periods": {
+        "7d": "最近7天",
+        "1m": "最近一个月",
+        "3m": "最近三个月",
+        "all": "全部"
+      },
+      "metrics": {
+        "weeklyUsage": "消耗量较上周",
+        "resources": "消耗资源",
+        "joinedDays": "入职天数",
+        "channels": "输送渠道",
+        "groupChats": "参与群聊"
+      },
+      "periodRecord": "时段记录",
+      "firstHalf": "{{year}}年上半年",
+      "secondHalf": "{{year}}年下半年",
+      "taskCount": "任务数",
+      "taskTypes": "任务类型",
+      "taskKinds": {
+        "conversation": "会话任务",
+        "channel": "渠道任务",
+        "schedule": "定时任务"
+      },
+      "history": "执行历史",
+      "allChannels": "全部渠道",
+      "allStatus": "全部状态",
+      "historyColumns": {
+        "task": "任务",
+        "channel": "频道",
+        "status": "状态",
+        "tokens": "花费 Token",
+        "lastResponse": "最近响应",
+        "actions": "操作"
+      },
+      "historyEmpty": "暂无执行记录"
+    },
+    "workspace": {
+      "colleagues": "同事",
+      "colleagueList": "同事列表",
+      "noColleagues": "暂无同事",
+      "newColleague": "新建同事",
+      "newFromPlaza": "从广场添加",
+      "newCustom": "自定义创建",
+      "newFromLocal": "从本地接入",
+      "more": "更多",
+      "records": "工作记录",
+      "searchKeyword": "请输入关键字搜索",
+      "tabs": {
+        "conversations": "会话",
+        "channels": "频道消息",
+        "schedules": "定时任务"
+      },
+      "collapseRecords": "收起记录栏",
+      "expandRecords": "展开记录栏",
+      "sessionsCount": "会话（{{count}}）",
+      "channelsCount": "频道（{{count}}）",
+      "noSessions": "暂无会话",
+      "noChannels": "暂无频道",
+      "noChannelsHint": "配置 IM 渠道后，可在这里查看同事在群聊中的工作记录",
+      "noSchedules": "暂无定时任务记录",
+      "newSchedule": "新建定时任务",
+      "newSession": "新会话",
+      "rename": "重命名",
+      "viewTrace": "查看轨迹",
+      "composerPlaceholder": "需要帮你做些什么？输入“/”快速引用技能及指令",
+      "defaultPermission": "默认权限",
+      "autoMode": "Auto",
+      "attach": "添加附件",
+      "send": "发送",
+      "aiDisclaimer": "内容由AI生成，仅供参考",
+      "defaultPrompts": [
+        "统计今日咨询热点",
+        "复盘群内回复质量",
+        "导出今日对话摘要"
+      ],
+      "featuresTitle": "功能特点",
+      "features": {
+        "chat": {
+          "title": "在线会话",
+          "description": "实时与 AI 同事对话调试效果，随时检查智能体业务。"
+        },
+        "channel": {
+          "title": "渠道监控",
+          "description": "查看 AI 同事在渠道的群聊详情，工作路径可追溯。"
+        },
+        "schedule": {
+          "title": "自动化任务",
+          "description": "配置定时任务，让 AI 同事自动执行日常工作，持续提效。"
+        }
+      }
+    },
+    "trace": {
+      "title": "轨迹",
+      "traceCount": "{{count}} 条轨迹",
+      "spanCount": "{{count}} 个 OTel Span",
+      "export": "导出",
+      "metric": "轨迹度量",
+      "duration": "时长",
+      "tokens": "Token",
+      "filters": {
+        "turn": "只看轮次",
+        "tool": "工具调用"
+      },
+      "startedAt": "开始时间",
+      "consumed": "消耗",
+      "step": "{{count}} step",
+      "steps": "{{count}} steps",
+      "toolCall": "{{count}} tool call",
+      "toolCalls": "{{count}} tool calls",
+      "rawRecord": "原始 OTel 记录（{{count}}）",
+      "rawSpan": "选择 OTel Span"
+    },
+    "office": {
+      "title": "办公室",
+      "tabs": {
+        "members": "办公室成员",
+        "activity": "活跃数据",
+        "tasks": "任务中心"
+      },
+      "createTile": "新建 AI 同事",
+      "imMissing": "未配置IM",
+      "disabledBadge": "已停用",
+      "chat": "去对话",
+      "manage": "管理",
+      "disable": "停用",
+      "enable": "启用",
+      "delete": "删除",
+      "deleteWarning": "删除 AI 同事后，其相关记忆和任务也将被删除。",
+      "deleteConfirm": "确定删除 AI 同事：",
+      "disableWarning": "停用后仍然支持会话，但 AI 同事将无法在 IM 渠道中做出响应。",
+      "disableConfirm": "确定停用 AI 同事：",
+      "scope": "统计范围",
+      "scopeAll": "全员",
+      "scopeIndividual": "个体",
+      "currentColleague": "当前同事",
+      "dataOverview": "数据概览",
+      "range": "时间范围",
+      "rangeYear": "年度",
+      "rangePeriod": "时段",
+      "year": "年份",
+      "periodStart": "开始日期",
+      "periodEnd": "结束日期",
+      "periodTo": "至",
+      "metrics": {
+        "members": "员工数量",
+        "activeDays": "活跃天数",
+        "tasks": "处理任务",
+        "tokens": "用量"
+      },
+      "yearRecord": "{{year}}年度记录",
+      "periodRecord": "时段记录",
+      "legendLow": "少",
+      "legendHigh": "多",
+      "monthLabel": "{{month}}月",
+      "weekdays": {
+        "mon": "周一",
+        "wed": "周三",
+        "fri": "周五"
+      },
+      "tooltipTasks": "任务数：{{count}}",
+      "tooltipHours": "工作时长：{{hours}}h",
+      "today": "今天",
+      "yesterday": "昨天",
+      "periodEntries": "{{count}}条 · {{hours}}h",
+      "leaderboard": "排行榜 {{count}}",
+      "columns": {
+        "member": "员工",
+        "tokens": "用量 Token",
+        "companionDays": "陪伴天数",
+        "chats": "参与聊天",
+        "lastResponse": "最近响应",
+        "actions": "操作"
+      },
+      "minutesAgo": "{{count}} 分钟前",
+      "next": "下一组",
+      "workRecord": "工作记录",
+      "groupChats": "群聊 {{count}}",
+      "channelColumns": {
+        "group": "群聊",
+        "channel": "频道",
+        "artifacts": "产物",
+        "tokens": "花费 Token",
+        "lastResponse": "最近响应",
+        "actions": "操作"
+      },
+      "taskOverview": "任务概览",
+      "taskFilters": {
+        "group": "群组选择",
+        "colleague": "当前同事",
+        "period": "数据周期",
+        "all": "全部"
+      },
+      "taskMetrics": {
+        "total": "总任务数 / 今日新增",
+        "running": "进行中任务 / 即将超时",
+        "duration": "平均处理时长",
+        "failure": "异常率"
+      },
+      "taskList": "任务列表",
+      "taskStatus": {
+        "waiting": "等待中",
+        "running": "进行中",
+        "done": "已完成",
+        "failed": "异常"
+      },
+      "taskEmpty": {
+        "waiting": "暂无等待任务",
+        "running": "暂无进行中任务",
+        "done": "暂无已完成任务",
+        "failed": "暂无异常任务"
+      },
+      "moduleProgress": "模块进度",
+      "taskUsage": "用时{{duration}}  消耗{{tokens}} tokens",
+      "locate": "定位到原文"
+    }
+  },
   "applicationPlugins": {
     "title": "应用插件",
     "description": "管理提供独立页面和运行时能力的应用插件。",

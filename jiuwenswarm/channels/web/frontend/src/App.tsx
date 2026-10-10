@@ -19,6 +19,9 @@ import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo
 import { ChatPanel } from './components/ChatPanel';
 import { DesktopTextEditContextMenu } from './components/DesktopTextEditContextMenu';
 import { SessionSidebar } from './components/SessionSidebar';
+import { JiuwenMateApp } from './features/jiuwenmate/JiuwenMateApp';
+import { reenterJiuwenMate } from './features/jiuwenmate/publicNav';
+import type { JiuwenMateExistingPage } from './features/jiuwenmate/types';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
 import { RsiPage } from './features/rsi/RsiPage';
@@ -483,8 +486,11 @@ function AppContent({
   const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
+  // 再次点击已激活的“实验”图标时递增，作为展开 RSI 实验栏的信号（对齐 chat 图标展开会话栏的行为）
+  const [rsiRailExpandNonce, setRsiRailExpandNonce] = useState(0);
   // peek 内点击“新建实验”时递增：跳转实验页后自动打开创建对话框；handleNavigate 统一归零防重挂载误触发
   const [rsiOpenCreateNonce, setRsiOpenCreateNonce] = useState(0);
+  const [isJiuwenMate, setIsJiuwenMate] = useState(false);
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,
   );
@@ -4327,6 +4333,129 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
     };
   }, [clearChatPanelResize, showWorkspaceDivider]);
 
+  const renderJiuwenMateExistingPage = (nav: JiuwenMateExistingPage) => {
+    if (nav === 'agents') {
+      return (
+        <div className="app-section min-h-0">
+          <AgentManagementPanel
+            isActive
+            onUseAgent={handleUseAgent}
+            onUsePrompt={handleUseAgentPrompt}
+            onUseAgentGroup={handleUseAgentGroup}
+            onUseGroupPrompt={handleUseGroupPrompt}
+            onCreateViaChat={() => requestSessionNavigation('new', {
+              initialInputValue: t('agentManagement.actions.createViaChatPrompt'),
+              initialSelectedSkills: ['agent-creator'],
+            })}
+            onCreateGroupViaChat={() => requestSessionNavigation('new', {
+              initialInputValue: t('agentManagement.group.actions.createViaChatPrompt'),
+              initialSelectedSkills: ['agent-group-creator'],
+              forceMode: 'agent',
+            })}
+            navigationRequest={agentManagementNavigationRequest}
+          />
+        </div>
+      );
+    }
+    if (nav === 'personalContext') {
+      if (!FEATURE_PERSONAL_CONTEXT_UI) return null;
+      return (
+        <div className="app-section">
+          <PersonalContextPanel isConnected={isConnected} isActive />
+        </div>
+      );
+    }
+    if (nav === 'skills') {
+      return (
+        <div className="app-section">
+          <SkillPanel
+            sessionId={sessionId}
+            isConnected={isConnected}
+            isActive
+            symphonyEnabled={normalizeConfigBoolean(serverConfig?.symphony_enabled)}
+            onSymphonyEnabledChange={saveSymphonyEnabled}
+            onNavigateToSettings={() => requestSettingsModule('agent')}
+          />
+        </div>
+      );
+    }
+    if (nav === 'connectorMarket') {
+      return (
+        <div className="app-page-body">
+          <div className="page-content">
+            <ConnectorMarketPanel
+              onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
+                detail: {
+                  skillName: 'plugin-creator',
+                  suffixText: t('connectorMarket.chatPrompts.createPlugin'),
+                  metadata: { scene: 'create_plugin' },
+                },
+              }))}
+              onUseExample={(initialInputValue, mcpName, displayName) =>
+                requestSessionNavigation('new', {
+                  initialInputValue,
+                  initialEnabledMcps: [mcpName],
+                  forceMode: 'agent',
+                  metadata: { prefer_mcp: { id: mcpName, display_name: displayName ?? mcpName } },
+                })
+              }
+              onUsePluginExample={(initialInputValue, pluginId) =>
+                requestSessionNavigation('new', { initialInputValue, initialEnabledPlugins: [pluginId], forceMode: 'agent' })
+              }
+              onUseExtension={({ kind, id }) =>
+                requestSessionNavigation(
+                  'new',
+                  kind === 'plugin'
+                    ? { initialEnabledPlugins: [id], forceMode: 'agent' }
+                    : { initialEnabledMcps: [id], forceMode: 'agent' },
+                )
+              }
+            />
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="app-section">
+        <SettingsPage
+          definition={settingsPageDefinition}
+          isConnected={isConnected}
+          connectionState={connectionState}
+          request={settingsRequest}
+          onHasChangesChange={handleSettingsHasChangesChange}
+          onDetectExternalCli={detectExternalCli}
+          onSelectExternalCliPath={selectExternalCliPath}
+          onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
+          externalCliInstallStatuses={externalCliInstallStatuses}
+          externalCliInstallBusy={Object.values(externalCliInstallStatuses).some(
+            (status) => status?.status === 'running',
+          )}
+          onOpenExternalCliInstallDialog={() => setExternalCliInstallDialogOpen(true)}
+          externalCliPendingChoices={externalCliPendingChoices}
+          onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
+          externalCliDetectResults={externalCliDetectResults}
+          onExternalCliDetectResultsChange={setExternalCliDetectResults}
+          initialModuleId={requestedSettingsModuleId ?? undefined}
+        />
+      </div>
+    );
+  };
+
+  if (isJiuwenMate) {
+    return (
+      <JiuwenMateApp
+        onExit={() => setIsJiuwenMate(false)}
+        renderExistingPage={renderJiuwenMateExistingPage}
+        confirmDiscardSettings={() => {
+          if (!settingsHasChangesRef.current) return true;
+          if (!window.confirm(t('settingsPanel.dialog.discardConfirm'))) return false;
+          setRequestedSettingsModuleId(null);
+          return true;
+        }}
+      />
+    );
+  }
+
   return (
     <div
       className={`shell shell--icon-rail ${activeNav === 'agents' ? 'shell--agent-management' : ''}`}
@@ -4352,6 +4481,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         }}
         onNavItemPointerDownCapture={(key) => {
           if (key === sidebarPeek) peekSurfaceProps.onPointerDownCapture();
+        }}
+        onToggleJiuwenMate={() => {
+          setIsJiuwenMate(reenterJiuwenMate({ isJiuwenMate, activeNav }).isJiuwenMate);
         }}
       />
 

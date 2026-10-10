@@ -58,6 +58,367 @@
     "update": "Updates",
     "personalContext": "Knowledge"
   },
+  "jiuwenmate": {
+    "title": "JiuwenMate",
+    "mode": {
+      "enter": "JiuwenMate",
+      "exit": "Switch to personal edition"
+    },
+    "nav": {
+      "messages": "Colleagues",
+      "office": "Office",
+      "plaza": "Plaza",
+      "assets": "Assets",
+      "skills": "Skills",
+      "extensions": "Extensions",
+      "knowledge": "Knowledge",
+      "settings": "Settings"
+    },
+    "common": {
+      "confirm": "OK",
+      "cancel": "Cancel",
+      "create": "Create",
+      "skip": "Skip",
+      "noData": "No data",
+      "searchPlaceholder": "Search"
+    },
+    "intro": {
+      "title": "Office",
+      "subtitle": "Create and manage AI colleagues, then send them to IM groups to work on their own",
+      "create": "Create colleague",
+      "goCreate": "Start creating",
+      "heroTitle": "You have no AI colleagues yet. Let's create one!",
+      "steps": {
+        "create": {
+          "title": "Step 1: Create an AI colleague",
+          "description": "Build an agent colleague from a template and customize its abilities and settings."
+        },
+        "connect": {
+          "title": "Step 2: Complete the configuration",
+          "description": "Configure skills, knowledge and other abilities so it can complete tasks well."
+        },
+        "collaborate": {
+          "title": "Step 3: Authorize IM channels",
+          "description": "Send the colleague to work channels so it can join group chats and run tasks."
+        }
+      }
+    },
+    "colleagueEmpty": {
+      "title": "AI colleagues",
+      "subtitle": "Debug colleague abilities in conversations, monitor channel activity and configure scheduled tasks.",
+      "create": "Create colleague",
+      "emptyTitle": "You have no AI colleagues yet. Let's create one!",
+      "goCreate": "Start creating"
+    },
+    "create": {
+      "crumb": "Create",
+      "crumbLabel": "Page path",
+      "title": "Choose a colleague",
+      "customEntry": "Custom create",
+      "customTitle": "Custom create",
+      "refineCrumb": "Complete details",
+      "viewDetail": "View details",
+      "choose": "Choose",
+      "basicInfo": "Basic information",
+      "changeAvatar": "Upload avatar",
+      "resetAvatar": "Use default avatar",
+      "avatarHint": "PNG, JPEG, GIF or JPG, up to 200 KB",
+      "avatarInvalid": "Only PNG, JPEG, GIF or JPG files up to 200 KB are supported",
+      "name": "Colleague name",
+      "namePlaceholder": "For example: After-sales assistant",
+      "description": "Abilities",
+      "descriptionPlaceholder": "Describe what this colleague is good at, what it owns and how it should work",
+      "role": "Work domains",
+      "preview": "Card preview",
+      "previewName": "New colleague",
+      "previewDescription": "The colleague introduction appears here after you fill in its abilities.",
+      "capabilities": "Capability configuration",
+      "capabilitiesHint": "Generate the capability configuration from the name and abilities",
+      "generate": "Smart generate",
+      "switchModel": "Switch model",
+      "remove": "Remove",
+      "sections": {
+        "model": "Model",
+        "skills": "Skills (optional)",
+        "connectors": "Connectors (optional)",
+        "plugins": "Plugins (optional)",
+        "knowledge": "Knowledge (optional)",
+        "starterPrompts": "Try asking me (optional)"
+      },
+      "add": {
+        "skills": "Add skill",
+        "connectors": "Add connector",
+        "plugins": "Add plugin",
+        "knowledge": "Add knowledge",
+        "starterPrompts": "Add quick prompt"
+      },
+      "empty": {
+        "skills": "No skills",
+        "connectors": "No connectors",
+        "plugins": "No plugins",
+        "knowledge": "No knowledge"
+      },
+      "detail": {
+        "coreAbilities": "Core abilities",
+        "skills": "Skills ({{count}})",
+        "connectors": "Connectors ({{count}})",
+        "plugins": "Plugins ({{count}})"
+      },
+      "dialogName": "Name",
+      "dialogNamePlaceholder": "For example: Support assistant, After-sales group assistant",
+      "dialogDuty": "Responsibilities",
+      "dialogDutyPlaceholder": "What should it handle? For example:\nYou are the group's support assistant. Answer business questions, look up information, collect feedback and reply concisely without off-topic chat.",
+      "goPlaza": "Need ideas? Visit the plaza"
+    },
+    "im": {
+      "success": "Your AI colleague is ready. Send it to work in an IM channel!",
+      "title": "Configure IM channel",
+      "hint": "Connect the colleague to a channel and assign tasks with @",
+      "feishu": "Feishu",
+      "appId": "API ID",
+      "appIdPlaceholder": "Enter API ID",
+      "secret": "API Secret",
+      "secretPlaceholder": "Enter API Secret",
+      "showSecret": "Show API Secret",
+      "hideSecret": "Hide API Secret"
+    },
+    "profile": {
+      "sectionsLabel": "Colleague configuration",
+      "sections": {
+        "overview": "Overview",
+        "persona": "Persona",
+        "model": "Model",
+        "skills": "Skills",
+        "connectors": "Connectors",
+        "plugins": "Plugins",
+        "knowledge": "Knowledge",
+        "channels": "Channels",
+        "schedules": "Scheduled tasks"
+      },
+      "edit": "Edit persona",
+      "joinedAt": "Joined: {{time}}",
+      "quickIm": "Quick IM channel setup",
+      "goConfigure": "Configure",
+      "feishuHint": "Authorize the agent and monitor its activity.",
+      "authorize": "Authorize",
+      "authorized": "Authorized",
+      "workLog": "Work log",
+      "periods": {
+        "7d": "Last 7 days",
+        "1m": "Last month",
+        "3m": "Last 3 months",
+        "all": "All"
+      },
+      "metrics": {
+        "weeklyUsage": "Usage vs last week",
+        "resources": "Resources used",
+        "joinedDays": "Days since joining",
+        "channels": "Channels",
+        "groupChats": "Group chats"
+      },
+      "periodRecord": "Activity record",
+      "firstHalf": "First half of {{year}}",
+      "secondHalf": "Second half of {{year}}",
+      "taskCount": "Tasks",
+      "taskTypes": "Task types",
+      "taskKinds": {
+        "conversation": "Conversation tasks",
+        "channel": "Channel tasks",
+        "schedule": "Scheduled tasks"
+      },
+      "history": "Execution history",
+      "allChannels": "All channels",
+      "allStatus": "All statuses",
+      "historyColumns": {
+        "task": "Task",
+        "channel": "Channel",
+        "status": "Status",
+        "tokens": "Tokens spent",
+        "lastResponse": "Last response",
+        "actions": "Actions"
+      },
+      "historyEmpty": "No execution records"
+    },
+    "workspace": {
+      "colleagues": "Colleagues",
+      "colleagueList": "Colleague list",
+      "noColleagues": "No colleagues",
+      "newColleague": "New colleague",
+      "newFromPlaza": "Add from plaza",
+      "newCustom": "Custom create",
+      "newFromLocal": "Connect from local",
+      "more": "More",
+      "records": "Work records",
+      "searchKeyword": "Search by keyword",
+      "tabs": {
+        "conversations": "Conversations",
+        "channels": "Channel messages",
+        "schedules": "Scheduled tasks"
+      },
+      "collapseRecords": "Collapse records",
+      "expandRecords": "Expand records",
+      "sessionsCount": "Conversations ({{count}})",
+      "channelsCount": "Channels ({{count}})",
+      "noSessions": "No conversations",
+      "noChannels": "No channels",
+      "noChannelsHint": "After an IM channel is configured, the colleague's group chat records appear here",
+      "noSchedules": "No scheduled tasks",
+      "newSchedule": "New scheduled task",
+      "newSession": "New conversation",
+      "rename": "Rename",
+      "viewTrace": "View trace",
+      "composerPlaceholder": "What can I help with? Type \"/\" to reference skills and commands",
+      "defaultPermission": "Default permission",
+      "autoMode": "Auto",
+      "attach": "Add attachment",
+      "send": "Send",
+      "aiDisclaimer": "AI-generated content is for reference only",
+      "defaultPrompts": [
+        "Summarize today's hot questions",
+        "Review group reply quality",
+        "Export today's conversation summary"
+      ],
+      "featuresTitle": "Features",
+      "features": {
+        "chat": {
+          "title": "Online conversation",
+          "description": "Talk to the colleague in real time to debug its behavior and check its work."
+        },
+        "channel": {
+          "title": "Channel monitoring",
+          "description": "Review the colleague's group chats in each channel with a traceable work path."
+        },
+        "schedule": {
+          "title": "Automated tasks",
+          "description": "Configure scheduled tasks so the colleague runs daily work automatically."
+        }
+      }
+    },
+    "trace": {
+      "title": "Trace",
+      "traceCount": "{{count}} traces",
+      "spanCount": "{{count}} OTel spans",
+      "export": "Export",
+      "metric": "Trace metric",
+      "duration": "Duration",
+      "tokens": "Token",
+      "filters": {
+        "turn": "Turns only",
+        "tool": "Tool calls"
+      },
+      "startedAt": "Started",
+      "consumed": "Used",
+      "step": "{{count}} step",
+      "steps": "{{count}} steps",
+      "toolCall": "{{count}} tool call",
+      "toolCalls": "{{count}} tool calls",
+      "rawRecord": "Raw OTel records ({{count}})",
+      "rawSpan": "Select OTel span"
+    },
+    "office": {
+      "title": "Office",
+      "tabs": {
+        "members": "Office members",
+        "activity": "Activity",
+        "tasks": "Task center"
+      },
+      "createTile": "New AI colleague",
+      "imMissing": "IM not configured",
+      "disabledBadge": "Disabled",
+      "chat": "Chat",
+      "manage": "Manage",
+      "disable": "Disable",
+      "enable": "Enable",
+      "delete": "Delete",
+      "deleteWarning": "Deleting an AI colleague also deletes its memories and tasks.",
+      "deleteConfirm": "Delete AI colleague: ",
+      "disableWarning": "A disabled colleague still supports conversations but no longer responds in IM channels.",
+      "disableConfirm": "Disable AI colleague: ",
+      "scope": "Scope",
+      "scopeAll": "All",
+      "scopeIndividual": "Individual",
+      "currentColleague": "Colleague",
+      "dataOverview": "Overview",
+      "range": "Range",
+      "rangeYear": "Year",
+      "rangePeriod": "Period",
+      "year": "Year",
+      "periodStart": "Start date",
+      "periodEnd": "End date",
+      "periodTo": "to",
+      "metrics": {
+        "members": "Members",
+        "activeDays": "Active days",
+        "tasks": "Tasks handled",
+        "tokens": "Usage"
+      },
+      "yearRecord": "{{year}} activity",
+      "periodRecord": "Period activity",
+      "legendLow": "Less",
+      "legendHigh": "More",
+      "monthLabel": "{{month}}",
+      "weekdays": {
+        "mon": "Mon",
+        "wed": "Wed",
+        "fri": "Fri"
+      },
+      "tooltipTasks": "Tasks: {{count}}",
+      "tooltipHours": "Work time: {{hours}}h",
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "periodEntries": "{{count}} · {{hours}}h",
+      "leaderboard": "Leaderboard {{count}}",
+      "columns": {
+        "member": "Member",
+        "tokens": "Token usage",
+        "companionDays": "Days together",
+        "chats": "Chats",
+        "lastResponse": "Last response",
+        "actions": "Actions"
+      },
+      "minutesAgo": "{{count}} min ago",
+      "next": "Next",
+      "workRecord": "Work record",
+      "groupChats": "Group chats {{count}}",
+      "channelColumns": {
+        "group": "Group chat",
+        "channel": "Channel",
+        "artifacts": "Artifacts",
+        "tokens": "Tokens spent",
+        "lastResponse": "Last response",
+        "actions": "Actions"
+      },
+      "taskOverview": "Task overview",
+      "taskFilters": {
+        "group": "Group",
+        "colleague": "Colleague",
+        "period": "Period",
+        "all": "All"
+      },
+      "taskMetrics": {
+        "total": "Total tasks / New today",
+        "running": "Running / Near timeout",
+        "duration": "Average handling time",
+        "failure": "Failure rate"
+      },
+      "taskList": "Task list",
+      "taskStatus": {
+        "waiting": "Waiting",
+        "running": "Running",
+        "done": "Done",
+        "failed": "Failed"
+      },
+      "taskEmpty": {
+        "waiting": "No waiting tasks",
+        "running": "No running tasks",
+        "done": "No completed tasks",
+        "failed": "No failed tasks"
+      },
+      "moduleProgress": "Module progress",
+      "taskUsage": "Time {{duration}}  Used {{tokens}} tokens",
+      "locate": "Locate source"
+    }
+  },
   "applicationPlugins": {
     "title": "Application plugins",
     "description": "Manage application plugins with dedicated pages and runtime capabilities.",
