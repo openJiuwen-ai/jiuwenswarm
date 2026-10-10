@@ -1,0 +1,34 @@
+# AgentSSASSecurityRail 决策策略表
+# 定义多种策略模式, 每种模式定义风险等级到 SecurityDecision 的映射
+# jiuwenswarm 通过 config.yaml 的 ssas.decision_policy 选择策略模式名称
+#
+# 策略模式:
+#   observe_only: 仅观察, 全部放行 (仅态势感知)
+#   active_protection: 按风险等级处理 (critical->阻断, high/medium->告警, low->提示, safe->放行)
+
+policies:
+  observe_only:
+    critical: allow
+    high: allow
+    medium: allow
+    low: allow
+    safe: allow
+
+  active_protection:
+    critical: reject
+    high: alert
+    medium: alert
+    low: alert
+    safe: allow
+
+# AlertLevel 映射 (action=alert 时, 由 risk_level 决定 SecurityAlertLevel)
+# error -> SecurityAlertLevel.ERROR
+# warning -> SecurityAlertLevel.WARNING
+# info -> SecurityAlertLevel.INFO
+alert_levels:
+  critical: error
+  high: error
+  medium: warning
+  low: info
+
+default_policy: observe_only
