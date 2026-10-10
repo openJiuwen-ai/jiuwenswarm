@@ -73,6 +73,7 @@ from jiuwenswarm.server.runtime.a2ui.integration import (
     is_a2ui_channel,
 )
 from jiuwenswarm.server.runtime.a2ui.runtime.finalizer import should_finalize_a2ui_content
+from jiuwenswarm.server.runtime import extension_package_manager as package_manager
 from jiuwenswarm.agents.harness.common.auto_memory import (
     _execute_auto_memory_extraction,
 )
@@ -217,6 +218,33 @@ def _schedule_symphony_session_feedback(session_id: str, request_id: str) -> Non
         )
 
 
+def compute_chat_send_mcp_needed(params: dict[str, Any] | None) -> list[str]:
+    """``params.mcp`` ∪ connectors from ``agent_template_name`` / ``plugin_names``.
+
+    Always returns a list (never ``None``). ``reconcile_session_mcp`` still
+    filters/strips names. Absent/``[]`` ``mcp`` no longer drops connectors
+    declared by this turn's equipment params.
+    """
+    p = params if isinstance(params, dict) else {}
+    mcp = p.get("mcp")
+    connectors = package_manager.collect_connectors_for_packages(
+        agent_template_id=p.get("agent_template_name"),
+        plugin_ids=p.get("plugin_names") if isinstance(p.get("plugin_names"), list) else None,
+        skip_missing=True,
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in (mcp if isinstance(mcp, list) else []) + connectors:
+        if not isinstance(item, str):
+            continue
+        name = item.strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
 def _history_user_content(params: Any, query: Any) -> Any:
     """返回写入历史记录的用户消息内容.
 
@@ -260,6 +288,23 @@ def _should_record_user_history(params: Any) -> bool:
     if is_interrupt_resume_payload(params):
         return False
     return str(params.get("source") or "") != "proactive_recommendation"
+
+
+def _resolve_final_record_timestamp(
+    *,
+    event_type: str,
+    segment_started_at: float | None,
+    extra_fields: dict[str, Any] | None,
+) -> float:
+    """chat.final 落盘用「气泡出现的时刻」，收尾时刻另存 completed_at。"""
+    completed_at = time.time()
+    if event_type != "chat.final" or not segment_started_at:
+        return completed_at
+    if segment_started_at >= completed_at:
+        return completed_at
+    if isinstance(extra_fields, dict):
+        extra_fields.setdefault("completed_at", completed_at)
+    return segment_started_at
 
 
 def _ask_user_answer_request_id(params: dict[str, Any], fallback: str) -> str:
@@ -770,6 +815,22 @@ _SYMPHONY_METHODS: frozenset[ReqMethod] = frozenset(
         ReqMethod.SYMPHONY_PLAN,
     }
 )
+
+# Catalog + lifecycle: method → package_manager callable.
+_PACKAGE_ROUTES: dict[ReqMethod, str] = {
+    ReqMethod.AGENT_TEMPLATES_LIST: "list_agent_templates",
+    ReqMethod.AGENT_TEMPLATES_SHOW: "show_agent_template",
+    ReqMethod.AGENT_TEMPLATES_FILE_LIST: "list_agent_template_files",
+    ReqMethod.AGENT_TEMPLATES_FILE_READ: "read_agent_template_file",
+    ReqMethod.AGENT_TEMPLATES_CREATE: "create_agent_template",
+    ReqMethod.AGENT_TEMPLATES_INSTALL: "install_agent_template",
+    ReqMethod.AGENT_TEMPLATES_UNINSTALL: "uninstall_agent_template",
+    ReqMethod.PLUGIN_PACKAGES_LIST: "list_plugin_packages",
+    ReqMethod.PLUGIN_PACKAGES_SHOW: "show_plugin_package",
+    ReqMethod.PLUGIN_PACKAGES_CREATE: "create_plugin_package",
+    ReqMethod.PLUGIN_PACKAGES_INSTALL: "install_plugin_package",
+    ReqMethod.PLUGIN_PACKAGES_UNINSTALL: "uninstall_plugin_package",
+}
 
 _SKILL_COMMAND_REGEX = re.compile(
     r"^/skills use\s+(?P<skill_names>[^,]+)\s*,\s*(?P<query>.*)$"
@@ -2414,6 +2475,98 @@ class JiuWenSwarm:
             metadata=request.metadata,
         )
 
+    async def _handle_package_catalog_request(self, request: AgentRequest) -> AgentResponse | None:
+        """Route catalog / lifecycle ReqMethods to package_manager and wrap AgentResponse."""
+        method = request.req_method
+        if method not in _PACKAGE_ROUTES:
+            return None
+        params = request.params if isinstance(request.params, dict) else {}
+        # Frontend contract uses `id`; accept legacy `name` as alias.
+        name = params.get("id") if params.get("id") not in (None, "") else params.get("name")
+        try:
+            if method == ReqMethod.AGENT_TEMPLATES_LIST:
+                payload: dict[str, Any] = {
+                    "templates": package_manager.list_agent_templates(params)
+                }
+            elif method == ReqMethod.AGENT_TEMPLATES_SHOW:
+                card = package_manager.show_agent_template(str(name or ""))
+                if card is None:
+                    raise ValueError(f"agent_template not found: {name!r}")
+                payload = {"template": card}
+            elif method == ReqMethod.AGENT_TEMPLATES_FILE_LIST:
+                payload = {
+                    "tree": package_manager.list_agent_template_files(str(name or ""))
+                }
+            elif method == ReqMethod.AGENT_TEMPLATES_FILE_READ:
+                payload = package_manager.read_agent_template_file(
+                    str(name or ""), str(params.get("path", ""))
+                )
+            elif method == ReqMethod.PLUGIN_PACKAGES_LIST:
+                payload = {"packages": package_manager.list_plugin_packages(params)}
+            elif method == ReqMethod.PLUGIN_PACKAGES_SHOW:
+                card = package_manager.show_plugin_package(str(name or ""))
+                if card is None:
+                    raise ValueError(f"plugin not found: {name!r}")
+                payload = {"package": card}
+            elif method == ReqMethod.AGENT_TEMPLATES_INSTALL:
+                ok, payload = package_manager.install_equipment_gated(
+                    "agent_templates", params
+                )
+                if not ok:
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=False,
+                        payload=payload,
+                        metadata=request.metadata,
+                    )
+            elif method == ReqMethod.PLUGIN_PACKAGES_INSTALL:
+                ok, payload = package_manager.install_equipment_gated(
+                    "plugin_packages", params
+                )
+                if not ok:
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=False,
+                        payload=payload,
+                        metadata=request.metadata,
+                    )
+            elif method == ReqMethod.AGENT_TEMPLATES_UNINSTALL:
+                unload_live = getattr(self, "_unload_live_equipment", None)
+                if unload_live is not None:
+                    await unload_live("agent_templates", str(name or ""))
+                payload = package_manager.uninstall_equipment_with_notice(
+                    "agent_templates", params
+                )
+            elif method == ReqMethod.PLUGIN_PACKAGES_UNINSTALL:
+                unload_live = getattr(self, "_unload_live_equipment", None)
+                if unload_live is not None:
+                    await unload_live("plugin_packages", str(name or ""))
+                payload = package_manager.uninstall_equipment_with_notice(
+                    "plugin_packages", params
+                )
+            else:
+                # lifecycle: create → ok + {}
+                getattr(package_manager, _PACKAGE_ROUTES[method])(params)
+                payload = {}
+        except Exception as exc:
+            logger.warning("[extension_package_manager] request %s failed: %s", method, exc)
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc)},
+                metadata=request.metadata,
+            )
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload=payload,
+            metadata=request.metadata,
+        )
+
     async def _handle_symphony_request_stream(
         self,
         request: AgentRequest,
@@ -2798,6 +2951,10 @@ class JiuWenSwarm:
         if symphony_response is not None:
             return symphony_response
 
+        package_catalog_response = await self._handle_package_catalog_request(request)
+        if package_catalog_response is not None:
+            return package_catalog_response
+
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
 
         heartbeat_response = await adapter.handle_heartbeat(request)
@@ -2822,6 +2979,15 @@ class JiuWenSwarm:
             # proactive_recommendation 是系统触发的推荐指令（不是用户说的话），不写 user
             # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
             # 写 history 前已 bind 配额身份；满额拒绝本轮对话（§2.3）。
+
+            # Session-level MCP enable: reconcile to explicit mcp ∪ equipment
+            # connectors before the agent runs. Always pass a list (never None):
+            # empty clears selection when neither side contributes names.
+            params = request.params if isinstance(request.params, dict) else {}
+            await self.reconcile_session_mcp(
+                request.session_id,
+                compute_chat_send_mcp_needed(params),
+            )
             try:
                 if _should_record_user_history(request.params):
                     self._append_history_record(
@@ -3221,6 +3387,7 @@ class JiuWenSwarm:
             self._handle_skills_request,
             self._handle_plugins_request,
             self._handle_symphony_request,
+            self._handle_package_catalog_request,
         ):
             stateless_response = await stateless_handler(request)
             if stateless_response is not None:
@@ -3397,6 +3564,15 @@ class JiuWenSwarm:
             )
             return
 
+        # Session-level MCP enable: reconcile to explicit mcp ∪ equipment
+        # connectors before the agent runs. Always pass a list (never None):
+        # empty clears selection when neither side contributes names.
+        params = request.params if isinstance(request.params, dict) else {}
+        await self.reconcile_session_mcp(
+            request.session_id,
+            compute_chat_send_mcp_needed(params),
+        )
+
         # Team 模式：使用原始 query，而不是 build_user_prompt 包装后的内容
         team_query_is_interactive_input = False
         if is_team_mode:
@@ -3512,8 +3688,10 @@ class JiuWenSwarm:
         final_answer_chunks: list[str] = []
         facade_emitted_terminal_chunk = False
         durable_pending_final_chunks: list[str] = []
+        durable_pending_final_started_at: float | None = None
         durable_pending_reasoning_chunks: list[str] = []
         durable_final_content = ""
+        saw_goal_stream_output = False
 
         def _consume_durable_reasoning_content() -> str:
             nonlocal durable_pending_reasoning_chunks
@@ -3529,12 +3707,42 @@ class JiuWenSwarm:
             merged["reasoning_content"] = reasoning_text
             return merged
 
-        def _persist_pending_final_text() -> None:
-            nonlocal durable_pending_final_chunks, durable_final_content
-            pending_text = "".join(durable_pending_final_chunks)
+        def _reset_durable_pending_final() -> None:
+            nonlocal durable_pending_final_chunks, durable_pending_final_started_at
             durable_pending_final_chunks = []
+            durable_pending_final_started_at = None
+
+        def _note_durable_pending_final_delta(content: str) -> None:
+            nonlocal durable_pending_final_started_at
+            if durable_pending_final_started_at is None:
+                durable_pending_final_started_at = time.time()
+            durable_pending_final_chunks.append(content)
+
+        def _note_goal_stream_payload(event_type: str, payload: dict[str, Any]) -> None:
+            nonlocal saw_goal_stream_output
+            if saw_goal_stream_output:
+                return
+            if event_type.startswith("goal.") or payload.get("goal_intermediate"):
+                saw_goal_stream_output = True
+
+        def _persist_pending_final_text() -> None:
+            nonlocal durable_final_content
+            pending_text = "".join(durable_pending_final_chunks)
+            segment_started_at = durable_pending_final_started_at
+            _reset_durable_pending_final()
             if not pending_text or pending_text == durable_final_content:
                 return
+            extra_fields = _attach_reasoning_content({
+                k: v for k, v in request.params.items()
+                if k in ("source", "proactive_type", "proactive_target")
+            })
+            if not isinstance(extra_fields, dict):
+                extra_fields = {}
+            record_timestamp = _resolve_final_record_timestamp(
+                event_type="chat.final",
+                segment_started_at=segment_started_at,
+                extra_fields=extra_fields,
+            )
             self._append_history_record(
                 request=request,
                 session_id=session_id,
@@ -3543,13 +3751,10 @@ class JiuWenSwarm:
                 role="assistant",
                 event_type="chat.final",
                 content=pending_text,
-                timestamp=time.time(),
+                timestamp=record_timestamp,
                 # 透传 proactive 标记到 history——刷新页面时前端靠 payload.source===
                 # 'proactive_recommendation' 渲染推荐卡片，不带则退化白色气泡。
-                extra=_attach_reasoning_content({
-                    k: v for k, v in request.params.items()
-                    if k in ("source", "proactive_type", "proactive_target")
-                }),
+                extra=extra_fields if extra_fields else None,
                 mode=request.params.get("mode", "unknown"),
             )
             durable_final_content = pending_text
@@ -3720,7 +3925,9 @@ class JiuWenSwarm:
                                 continue
                         if isinstance(data.payload, dict) and isinstance(data.payload.get("event_type"), str):
                             et = str(data.payload.get("event_type"))
+                            _note_goal_stream_payload(et, data.payload)
                             should_record = et.startswith("chat.") or et.startswith("task.")
+                            final_segment_started_at: float | None = None
                             if not should_record and et == EventType.TEAM_MESSAGE.value:
                                 should_record = True
                             if et == "context_compression_state":
@@ -3785,7 +3992,7 @@ class JiuWenSwarm:
                                     )
                                     should_record = False
                                     continue
-                                durable_pending_final_chunks.append(payload_content)
+                                _note_durable_pending_final_delta(payload_content)
                                 should_record = False
                             elif et == "chat.reasoning":
                                 # Reasoning mirrored from a nested stream stays
@@ -3804,6 +4011,7 @@ class JiuWenSwarm:
                                     # follow-ups skip the empty-final rescue.
                                     final_answer_chunks = []
                             elif et == "chat.final":
+                                final_segment_started_at = durable_pending_final_started_at
                                 if isinstance(data.payload, dict):
                                     ensure_final_mode_inplace(data.payload)
                                 if suppress_a2ui_stream or a2ui_split is not None:
@@ -3819,7 +4027,7 @@ class JiuWenSwarm:
                                         yield _make_a2ui_pending_render_chunk(request_id=rid, channel_id=cid)
                                         a2ui_pending_render_sent = True
                                     final_answer_content = payload_content
-                                    durable_pending_final_chunks = []
+                                    _reset_durable_pending_final()
                                     continue
                                 # Facade-level rescue: reasoning-only models may emit an
                                 # empty chat.final after chat.reasoning. Fill a short
@@ -3884,7 +4092,7 @@ class JiuWenSwarm:
                                             has_reasoning,
                                             has_visible_streamed_text,
                                         )
-                                durable_pending_final_chunks = []
+                                _reset_durable_pending_final()
 
                             if should_record and not _is_foreign_stream_source(data.payload):
                                 payload_dict = dict(data.payload)
@@ -3910,7 +4118,13 @@ class JiuWenSwarm:
                                     role="assistant",
                                     event_type=et,
                                     content=data.payload.get("content") or data.payload.get("error") or "",
-                                    timestamp=time.time(),
+                                    timestamp=_resolve_final_record_timestamp(
+                                        event_type=et,
+                                        segment_started_at=(
+                                            final_segment_started_at if et == "chat.final" else None
+                                        ),
+                                        extra_fields=extra_fields,
+                                    ),
                                     extra=extra_fields if extra_fields else None,
                                     mode=request.params.get("mode", "unknown"),
                                     task_id=payload_dict.get("task_id"),
@@ -3929,8 +4143,10 @@ class JiuWenSwarm:
                         yield data
                     elif isinstance(data, dict) and isinstance(data.get("event_type"), str):
                         et = str(data.get("event_type"))
+                        _note_goal_stream_payload(et, data)
                         merged_from_deltas = False
                         should_record = et.startswith("chat.") or et.startswith("task.")
+                        final_segment_started_at = None
                         if not should_record and et == EventType.TEAM_MESSAGE.value:
                             should_record = True
                         if et == "context_compression_state":
@@ -3995,7 +4211,7 @@ class JiuWenSwarm:
                                 )
                                 should_record = False
                                 continue
-                            durable_pending_final_chunks.append(payload_content)
+                            _note_durable_pending_final_delta(payload_content)
                             should_record = False
                         elif et == "chat.reasoning":
                             if not _is_foreign_stream_source(data):
@@ -4006,6 +4222,7 @@ class JiuWenSwarm:
                                 _persist_pending_final_text()
                                 final_answer_chunks = []
                         elif et == "chat.final":
+                            final_segment_started_at = durable_pending_final_started_at
                             if suppress_a2ui_stream or a2ui_split is not None:
                                 first_a2ui_suppression = not suppress_a2ui_stream
                                 if first_a2ui_suppression:
@@ -4019,7 +4236,7 @@ class JiuWenSwarm:
                                     yield _make_a2ui_pending_render_chunk(request_id=rid, channel_id=cid)
                                     a2ui_pending_render_sent = True
                                 final_answer_content = payload_content
-                                durable_pending_final_chunks = []
+                                _reset_durable_pending_final()
                                 continue
                             has_visible_streamed_text = bool(
                                 "".join(final_answer_chunks).strip()
@@ -4066,7 +4283,7 @@ class JiuWenSwarm:
                                     has_reasoning,
                                     has_visible_streamed_text,
                                 )
-                            durable_pending_final_chunks = []
+                            _reset_durable_pending_final()
 
                         if should_record and not _is_foreign_stream_source(data):
                             extra_fields = {
@@ -4094,7 +4311,13 @@ class JiuWenSwarm:
                                 role="assistant",
                                 event_type=et,
                                 content=data.get("content") or data.get("error") or "",
-                                timestamp=time.time(),
+                                timestamp=_resolve_final_record_timestamp(
+                                    event_type=et,
+                                    segment_started_at=(
+                                        final_segment_started_at if et == "chat.final" else None
+                                    ),
+                                    extra_fields=extra_fields,
+                                ),
                                 extra=extra_fields if extra_fields else None,
                                 mode=request.params.get("mode", "unknown"),
                                 task_id=data.get("task_id"),
@@ -4116,6 +4339,11 @@ class JiuWenSwarm:
             logger.info("[JiuWenSwarm] 流式处理被中断: request_id=%s", rid)
             raise
         finally:
+            # Goal 还在跑时这条流不会收到收尾的 chat.final，气泡里已经展示的正文
+            # 也就没有任何一处落盘。补一次，否则重新打开历史记录时这段回答凭空
+            # 消失，和实时看到的不是一回事。非 Goal 流不进这里。
+            if saw_goal_stream_output:
+                _persist_pending_final_text()
             # The adapter producer owns RuntimeOutputStream.  Cancelling and
             # awaiting it releases the runtime output lease and aborts the
             # in-flight round when the outer WebSocket consumer disappears.
@@ -4242,6 +4470,111 @@ class JiuWenSwarm:
             return None
         return await self._adapter.ensure_instance()
 
+    def get_live_session_instance(self, session_id: str | None):
+        """Return the DeepAgent already running ``session_id``, if any.
+
+        Returns None when no adapter exists, when the adapter predates this
+        accessor, or when the session has not started a child adapter yet.
+        """
+        adapter = self._adapter
+        if adapter is None:
+            return None
+        getter = getattr(adapter, "get_live_session_instance", None)
+        if getter is None:
+            return None
+        return getter(session_id)
+
+    # --- Phase-2: targeted single-MCP control (forwarded to the deep adapter) ---
+    async def apply_mcp_change(self, name: str, action: str, *, enabled: bool = True) -> bool:
+        """Apply a single-MCP change without a full config reload.
+
+        action ∈ {"add", "remove", "toggle"}.
+        - add: register the MCP (spawn stdio / connect SSE-HTTP)
+        - remove: unregister (disconnect)
+        - toggle: enable=register / disable=unregister
+
+        Returns True if the adapter applied it. The adapter reads the merged
+        get_mcp_servers() list (config.yaml + state.json), so a state.json
+        write done just before this call is visible.
+        """
+        adapter = self._adapter
+        if adapter is None:
+            return False
+        if action == "add" or (action == "toggle" and enabled):
+            return bool(await adapter.register_mcp_by_name(name))
+        if action == "remove" or (action == "toggle" and not enabled):
+            return bool(await adapter.unregister_mcp_by_name(name))
+        return False
+
+    async def reconcile_session_mcp(
+        self, session_id: str | None, needed: list[str] | None
+    ) -> None:
+        """Reconcile this session's MCP set to ``needed`` (idempotent diff).
+
+        Session-level enable driven by chat.send: callers should pass the union
+        of ``params.mcp`` and connectors from ``agent_template_name`` /
+        ``plugin_names`` (see ``compute_chat_send_mcp_needed``). ``None`` /
+        ``[]`` both clear the session's selection. See
+        ``JiuWenSwarmDeepAdapter.reconcile_session_mcp`` for the diff logic.
+        """
+        adapter = self._adapter
+        if adapter is None:
+            return
+        reconcile = getattr(adapter, "reconcile_session_mcp", None)
+        if reconcile is None:
+            # Adapter doesn't support session-level MCP (e.g. a stub/mock
+            # adapter) — session-level enable is a no-op for it.
+            return
+        await reconcile(session_id, needed)
+
+    def sync_mcp_credentials(self) -> bool:
+        """Sync connected MCPs' tokens into os.environ (skill scripts).
+
+        Forwarded to the deep adapter. os.environ is process-global, so a
+        single live agent's sync covers the whole process; called from the
+        connect/disconnect handlers after a state.json write. Returns False
+        when no adapter is live yet (cold-start race) so the caller can fall
+        through to another live agent.
+        """
+        adapter = self._adapter
+        if adapter is None:
+            return False
+        sync = getattr(adapter, "_sync_mcp_credentials_environment", None)
+        if sync is None:
+            return False
+        return bool(sync())
+
+    def clear_mcp_credentials(self, name: str) -> bool:
+        """Clear a disconnected MCP's token env vars.
+
+        Returns False when no adapter is live yet so the caller can fall
+        through to another live agent.
+        """
+        adapter = self._adapter
+        if adapter is None:
+            return False
+        clear = getattr(adapter, "_clear_mcp_credentials_environment", None)
+        if clear is None:
+            return False
+        clear(name)
+        return True
+
+    async def refresh_skill_rails(self) -> None:
+        """Reload SkillUseRail so newly installed/uninstalled MCP bundled
+        skills surface to the agent without a full reload.
+
+        Called from the connect/disconnect handlers after skill_installer
+        copies/removes skill dirs. Without this the agent's SkillUseRail keeps
+        its cached skill set and the MCP's skills stay invisible even though
+        the files are on disk.
+        """
+        adapter = self._adapter
+        if adapter is None:
+            return
+        refresh = getattr(adapter, "refresh_skill_rails", None)
+        if refresh is not None:
+            await refresh()
+
     async def apply_package_change_to_session_adapters(
         self,
         operation: str,
@@ -4256,6 +4589,18 @@ class JiuWenSwarm:
         if method is None:
             return
         await method(operation, config_path)
+
+    async def _unload_live_equipment(self, kind: str, package_id: str) -> None:
+        """Unload a catalog package from live session adapters before delete.
+
+        Missing adapter is a no-op (nothing loaded). Unload errors propagate
+        so uninstall does not delete the package.
+        """
+        adapter = getattr(self, "_adapter", None)
+        unload = getattr(adapter, "unload_equipment_if_loaded", None)
+        if unload is None:
+            return
+        await unload(kind, package_id)
 
     async def compress_context(
             self,
@@ -4302,11 +4647,7 @@ class JiuWenSwarm:
             raise ValueError("Agent adapter not available")
         return await adapter.get_context_usage(session_id=session_id)
 
-    async def generate_recap(
-        self,
-        session_id: str,
-        request: AgentRequest | None = None,
-    ) -> dict[str, Any]:
+    async def generate_recap(self, session_id: str) -> dict[str, Any]:
         """生成会话快速回顾（read-only，不修改对话历史）。
 
         取最近30条消息 → fast model → 1-2句摘要。
@@ -4323,10 +4664,7 @@ class JiuWenSwarm:
         adapter = self._adapter
         if adapter is None:
             raise ValueError("Agent adapter not available")
-        return await adapter.generate_recap(
-            session_id=session_id,
-            request=request,
-        )
+        return await adapter.generate_recap(session_id=session_id)
 
     async def compact_partial(
         self,

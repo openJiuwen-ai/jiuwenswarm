@@ -115,6 +115,7 @@ from jiuwenswarm.server.runtime.enterprise_config.loader import (
 from jiuwenswarm.server.runtime.enterprise_config.schemas import TemplateRefSlot
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import (
     get_agent_sessions_dir,
     get_env_file,
@@ -729,20 +730,24 @@ _FORWARD_REQ_METHODS = frozenset({
     "personal_context.context.get_source",
     "personal_context.im_learning.get_status",
     "personal_context.im_learning.run_now",
-    "personal_context.distill.get_config",
-    "personal_context.distill.patch_config",
-    "personal_context.distill.get_status",
-    "personal_context.distill.run_now",
-    "personal_context.profiles.list",
-    "personal_context.profiles.get_current",
-    "personal_context.profiles.get_version",
-    "personal_context.profiles.activate",
     "plugins.list",
     "plugins.install",
     "plugins.uninstall",
     "plugins.enable",
     "plugins.disable",
     "plugins.reload",
+    "agent_templates.list",
+    "agent_templates.show",
+    "agent_templates.file.list",
+    "agent_templates.file.read",
+    "agent_templates.create",
+    "agent_templates.install",
+    "agent_templates.uninstall",
+    "plugin_packages.list",
+    "plugin_packages.show",
+    "plugin_packages.create",
+    "plugin_packages.install",
+    "plugin_packages.uninstall",
     "extensions.list",
     "extensions.import",
     "extensions.delete",
@@ -895,20 +900,24 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "personal_context.context.get_source",
     "personal_context.im_learning.get_status",
     "personal_context.im_learning.run_now",
-    "personal_context.distill.get_config",
-    "personal_context.distill.patch_config",
-    "personal_context.distill.get_status",
-    "personal_context.distill.run_now",
-    "personal_context.profiles.list",
-    "personal_context.profiles.get_current",
-    "personal_context.profiles.get_version",
-    "personal_context.profiles.activate",
     "plugins.list",
     "plugins.install",
     "plugins.uninstall",
     "plugins.enable",
     "plugins.disable",
     "plugins.reload",
+    "agent_templates.list",
+    "agent_templates.show",
+    "agent_templates.file.list",
+    "agent_templates.file.read",
+    "agent_templates.create",
+    "agent_templates.install",
+    "agent_templates.uninstall",
+    "plugin_packages.list",
+    "plugin_packages.show",
+    "plugin_packages.create",
+    "plugin_packages.install",
+    "plugin_packages.uninstall",
     "extensions.list",
     "extensions.import",
     "extensions.delete",
@@ -1318,7 +1327,6 @@ async def _clear_agent_config_cache(agent_client=None) -> None:
     try:
         if agent_client is not None:
             from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-            from jiuwenswarm.common.schema.message import ReqMethod
 
             env = e2a_from_agent_fields(
                 request_id=f"cfg-reload-{uuid.uuid4().hex[:8]}",
@@ -1338,7 +1346,6 @@ async def _restart_agent_browser_runtime(agent_client=None) -> None:
         return
 
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-    from jiuwenswarm.common.schema.message import ReqMethod
 
     env = e2a_from_agent_fields(
         request_id=f"browser-restart-{uuid.uuid4().hex[:8]}",
@@ -2255,7 +2262,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 from jiuwenswarm.common.e2a.gateway_normalize import (
                     e2a_from_agent_fields,
                 )
-                from jiuwenswarm.common.schema.message import ReqMethod
 
                 real_client = _resolve(agent_client)
                 if real_client is None:
@@ -3829,7 +3835,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        from jiuwenswarm.common.schema.message import ReqMethod
 
         create_params = dict(params)
         create_params.pop("session_id", None)
@@ -4178,7 +4183,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        from jiuwenswarm.common.schema.message import ReqMethod
 
         ac = _resolve(agent_client)
         if ac is not None and getattr(ac, "server_ready", False):
@@ -5432,8 +5436,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _project_git_switch_branch(ws, req_id, params, session_id):
         """切换 Git 分支(设计文档 §4.1.14)。
 
-        ``require_clean=true`` 时已跟踪文件存在未提交修改返回
-        ``WORKTREE_DIRTY``；未跟踪文件不阻止切换。成功后
+        ``require_clean=true`` 时工作区不干净返回 ``WORKTREE_DIRTY``。成功后
         调 ``mark_dirty`` 触发 /ws/git 立即重算。中间状态返回
         ``GIT_TRANSIENT_STATE``。
         """
@@ -7639,7 +7642,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """permissions.*：优先经 E2A 转发到 AgentServer；Agent 未就绪时本地执行（与 config_rpc 同源）。"""
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.agent import AgentRequest
-        from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(req_method, ReqMethod):
             await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
@@ -7714,6 +7716,72 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         out = resp.payload if isinstance(resp.payload, dict) else {}
         await channel.send_response(ws, req_id, ok=True, payload=out)
 
+    async def _forward_mcp_to_agent(ws, req_id, params, session_id, *, req_method):
+        """mcp.* : 经 E2A 转发到 AgentServer。"""
+        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+
+        if not isinstance(req_method, ReqMethod):
+            await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
+            return
+
+        ac = _resolve(agent_client)
+        if ac is None or not getattr(ac, "server_ready", False):
+            await channel.send_response(ws, req_id, ok=False, error="AgentServer not ready", code="AGENT_NOT_READY")
+            return
+
+        env = e2a_from_agent_fields(
+            request_id=str(req_id) if req_id else "",
+            channel_id="",
+            session_id=session_id,
+            req_method=req_method,
+            params=dict(params) if isinstance(params, dict) else {},
+        )
+        try:
+            resp = await ac.send_request(env)
+        except Exception as e:
+            logger.exception("[mcp] forward to agent failed: %s", e)
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+            return
+        if not resp.ok:
+            pl = resp.payload if isinstance(resp.payload, dict) else {}
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error=str(pl.get("error") or "request failed"),
+                code=str(pl.get("code") or "BAD_REQUEST"),
+            )
+            return
+        out = resp.payload if isinstance(resp.payload, dict) else {}
+        await channel.send_response(ws, req_id, ok=True, payload=out)
+
+    async def _mcp_list_local(ws, req_id, params, session_id):
+        # 本地处理(不转发 AgentServer)，避免被长连接 connect 阻塞。直接读 marketplace。
+        # filter: builtin(预置目录) | local(已连接预置 + 全部自定义)。兜底 builtin。
+        try:
+            from jiuwenswarm.server.runtime.mcp.registry import list_marketplace_mcps
+            filter_val = str((params or {}).get("filter") or "builtin").strip().lower() or "builtin"
+            if filter_val not in ("builtin", "local"):
+                filter_val = "builtin"
+            items = await asyncio.to_thread(list_marketplace_mcps, filter_val)
+            await channel.send_response(ws, req_id, ok=True, payload={"type": "list", "items": items})
+        except Exception as exc:
+            logger.exception("[mcp] mcp.list failed: %s", exc)
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="MCP_INTERNAL")
+
+    def _register_mcp_agent(method_name: str, rm: Any) -> None:
+        async def _handler(ws, req_id, params, session_id):
+            await _forward_mcp_to_agent(ws, req_id, params, session_id, req_method=rm)
+        channel.register_method(method_name, _handler)
+
+    channel.register_method("mcp.list", _mcp_list_local)
+    _register_mcp_agent("mcp.show", ReqMethod.MCP_SHOW)
+    _register_mcp_agent("mcp.connect", ReqMethod.MCP_CONNECT)
+    _register_mcp_agent("mcp.wait_auth", ReqMethod.MCP_WAIT_AUTH)
+    _register_mcp_agent("mcp.disconnect", ReqMethod.MCP_DISCONNECT)
+    _register_mcp_agent("mcp.register_custom", ReqMethod.MCP_REGISTER_CUSTOM)
+    _register_mcp_agent("mcp.delete_custom", ReqMethod.MCP_DELETE_CUSTOM)
+    _register_mcp_agent("mcp.save_credentials", ReqMethod.MCP_SAVE_CREDENTIALS)
     from jiuwenswarm.common.schema.message import ReqMethod as _PermReq
 
     def _register_perm(method_name: str, rm: Any) -> None:
@@ -7763,7 +7831,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     ):
         """harness.*：优先经 E2A 转发到 AgentServer；Agent 未就绪时本地执行（无 agent 实例）。"""
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(req_method, ReqMethod):
             await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
