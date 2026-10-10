@@ -20,6 +20,17 @@ VERSIONS_DIRNAME = "versions"
 INDEX_FILENAME = "index.json"
 CONTENT_DIRNAME = "content"
 SCHEMA_VERSION = 2
+# 内容身份排除项：派生产物不参与 checksum，且排除口径必须与技能同步打包一致
+# （Server-Client 同步两端跑同一算法，见 skill_sync 设计决策 6）。
+CHECKSUM_EXCLUDED_DIRNAMES = frozenset({ARCHIVE_DIRNAME, "__pycache__"})
+CHECKSUM_EXCLUDED_FILE_SUFFIXES = frozenset({".pyc"})
+
+# checksum 算法版本：排除规则或累积方式任何变更都必须递增，并在 diff 请求中
+# 显式声明（skill_sync 协议）。两端版本不一致时 server 拒绝比对（400），把
+# "算法失配导致的全量 content_mismatch 误报"变成显式的升级提示。
+# v1: 仅排除 .archive / 符号链接（设计 v1.0）
+# v2: 追加排除 __pycache__/ 与 *.pyc（设计 v1.1 决策 6，与打包口径对齐）
+CHECKSUM_ALGO_VERSION = 2
 
 ERROR_VERSION_NOT_FOUND = "SKILL_VERSION_NOT_FOUND"
 ERROR_VERSION_CONTENT_INVALID = "SKILL_VERSION_CONTENT_INVALID"
@@ -218,7 +229,12 @@ def build_versions_list_payload(skill_name: str, skill_dir: Path) -> dict[str, A
 
 
 def compute_content_checksum(content_root: Path) -> str:
-    """对版本副本业务内容计算 sha256（排除嵌套 ``.archive``）."""
+    """对版本副本业务内容计算 sha256（排除 ``.archive`` / ``__pycache__`` / ``*.pyc``）.
+
+    ``__pycache__`` 与 ``*.pyc`` 为派生产物，不参与内容身份；否则 server 端
+    真实存在的 ``__pycache__`` 会参与其上报 checksum，而拉包解压端无此文件，
+    导致内容比对误报分叉。算法版本需与 client SDK 保持一致。
+    """
     import hashlib
 
     h = hashlib.sha256()
@@ -230,10 +246,12 @@ def compute_content_checksum(content_root: Path) -> str:
         if not path.is_file() or path.is_symlink():
             continue
         try:
-            path.resolve().relative_to(root)
+            rel = path.resolve().relative_to(root)
         except ValueError:
             continue
-        if ARCHIVE_DIRNAME in path.resolve().relative_to(root).parts:
+        if any(part in CHECKSUM_EXCLUDED_DIRNAMES for part in rel.parts):
+            continue
+        if path.suffix.lower() in CHECKSUM_EXCLUDED_FILE_SUFFIXES:
             continue
         files.append(path)
     for path in sorted(files, key=lambda p: PurePosixPath(*p.resolve().relative_to(root).parts).as_posix()):
