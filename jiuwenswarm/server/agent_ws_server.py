@@ -15,7 +15,7 @@ import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, NamedTuple, Optional
+from typing import Any, Callable, ClassVar, NamedTuple, Optional
 from weakref import WeakValueDictionary
 
 from openjiuwen.core.common.logging import server_logger
@@ -595,6 +595,7 @@ class _StreamKeepalive:
         ws: Any,
         request: AgentRequest,
         send_lock: asyncio.Lock,
+        on_idle_timeout: Callable[[], None] | None = None,
     ) -> None:
         self._ws = ws
         self._request = request
@@ -603,6 +604,11 @@ class _StreamKeepalive:
         self._stop_event = asyncio.Event()
         self._activity_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        # Called once when the stream has been idle past the configured ceiling.
+        # What to do about it is the caller's: this object counts the idle time
+        # because it is already awake for it, and knows nothing about host tasks.
+        self._on_idle_timeout = on_idle_timeout
+        self._idle_seconds = 0.0
 
     def start(self) -> None:
         """Start sending keepalives while the stream is idle."""
@@ -614,6 +620,7 @@ class _StreamKeepalive:
     def notify_activity(self, *, terminal: bool = False) -> None:
         """Restart the idle timer and optionally prevent future keepalives."""
         self._activity_event.set()
+        self._idle_seconds = 0.0
         if terminal:
             self._stop_event.set()
 
@@ -635,6 +642,12 @@ class _StreamKeepalive:
         )
 
     async def _run(self) -> None:
+        # Imported here rather than at module scope: the adapter imports this
+        # module, so a top-level import would close the cycle.
+        from jiuwenswarm.server.runtime.agent_adapter.interface import (
+            _stream_turn_ceiling,
+        )
+
         try:
             while not self._stop_event.is_set():
                 try:
@@ -643,11 +656,27 @@ class _StreamKeepalive:
                         timeout=_STREAM_KEEPALIVE_INTERVAL_SECONDS,
                     )
                     self._activity_event.clear()
+                    self._idle_seconds = 0.0
                 except asyncio.TimeoutError:
                     if self._stop_event.is_set():
                         break
                     if self._activity_event.is_set():
                         continue
+                    # The keepalive is also the idle watchdog: it is the only thing
+                    # awake while a stream produces nothing, so it is where the cap
+                    # on producing nothing belongs.
+                    self._idle_seconds += _STREAM_KEEPALIVE_INTERVAL_SECONDS
+                    ceiling = _stream_turn_ceiling()
+                    if self._idle_seconds >= ceiling:
+                        logger.error(
+                            "[AgentWebSocketServer] 流式请求空闲超过上限 %.0fs，"
+                            "终止宿主任务: request_id=%s",
+                            ceiling,
+                            self._request.request_id,
+                        )
+                        if self._on_idle_timeout is not None:
+                            self._on_idle_timeout()
+                        return
                     keepalive_chunk = AgentResponseChunk(
                         request_id=self._request.request_id,
                         channel_id=self._channel_id,
@@ -4056,10 +4085,30 @@ class AgentWebSocketServer:
 
         chunk_count = 0
         outcome_tracker = _TurnOutcomeTracker()
+        def _abandon_idle_stream() -> None:
+            """Give up on a stream that has produced nothing for too long.
+
+            The adapter-side wall-clock ceiling only bounds a stream already
+            yielding chunks; one stuck *before* its first chunk never reaches that
+            loop, the ``async for`` below never exits, and the keepalive would carry
+            a dead request forever -- the longest measured instance kept a gateway
+            warning firing every ten seconds for nine hours. Cancelling the host
+            task runs the ``finally`` that a user cancel already exercises, so the
+            cleanup path is the ordinary one rather than a second implementation.
+
+            The policy lives here rather than in the keepalive because the task and
+            the stop event are the caller's; the keepalive only knows how long it
+            has been idle.
+            """
+            stream_stop_event.set()
+            if current_task is not None and not current_task.done():
+                current_task.cancel()
+
         keepalive = _StreamKeepalive(
             ws,
             request,
             send_lock,
+            on_idle_timeout=_abandon_idle_stream,
         )
         runtime_stream: Any | None = None
 
