@@ -307,3 +307,8 @@
 .editable-combobox__option:hover {
   background: var(--color-surface-hover);
 }
+
+.icon-rail-nav-item--mode-switch {
+  margin-top: 8px;
+  margin-bottom: 16px;
+}
