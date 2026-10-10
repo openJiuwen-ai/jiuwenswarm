@@ -45,6 +45,8 @@ from jiuwenswarm.agents.harness.common.browser_defaults import (
 from jiuwenswarm.common.config import (
     get_default_model_provider,
     get_evolution_auto_save_enabled,
+    get_research_gates_enabled,
+    get_research_gates_strictness,
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
 )
@@ -544,6 +546,18 @@ def _role_evolution_rails(config: dict[str, Any], role: str) -> list[RailSpec]:
     ]
 
 
+def _research_gate_rail_specs(config: dict[str, Any]) -> list[RailSpec]:
+    """Return the opt-in scientific verification rail."""
+    if not get_research_gates_enabled(config):
+        return []
+    return [
+        RailSpec(
+            type=registry.RESEARCH_GATE,
+            params={"strictness": get_research_gates_strictness(config)},
+        )
+    ]
+
+
 def _build_team_capability_specs(
     config: dict[str, Any],
     mode: str,
@@ -586,6 +600,7 @@ def _build_team_capability_specs(
         )
 
     rails_specs.extend(_role_evolution_rails(config, role))
+    rails_specs.extend(_research_gate_rail_specs(config))
 
     tool_specs: list[BuiltinToolSpec] = [
         BuiltinToolSpec(type=name, params=_tool_params(name, config))
@@ -654,6 +669,7 @@ def _build_code_capability_specs(
         for name in _CODE_SHARED_RAIL_NAMES
     )
     rails_specs.extend(_role_evolution_rails(config, role))
+    rails_specs.extend(_research_gate_rail_specs(config))
 
     tool_specs: list[BuiltinToolSpec] = [
         BuiltinToolSpec(type=name, params=_tool_params(name, config))
