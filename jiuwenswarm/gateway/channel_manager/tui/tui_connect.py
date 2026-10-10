@@ -744,10 +744,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         async def _rebind_from_shared_dir() -> None:
             """Pre-AgentOS behavior, valid only when both processes share one dir."""
-            from jiuwenswarm.server.runtime.session.project_store import (
+            from jiuwenswarm.gateway.embedded.runtime.session.project_store import (
                 find_or_create_code_project_for_tui_params,
             )
-            from jiuwenswarm.server.runtime.session.session_metadata import (
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import (
                 get_session_metadata,
                 rebind_session_project,
             )
@@ -1579,7 +1579,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                         "execution: %s",
                         exc,
                     )
-                    from jiuwenswarm.server.runtime.harmonyos.harmonyos_dev import (
+                    from jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev import (
                         run_harmonyos_dev_init,
                     )
 
@@ -2057,7 +2057,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 and session_id
             ):
                 try:
-                    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+                    from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
                     meta = get_session_metadata(session_id, cache_bust=True)
                     if isinstance(meta, dict):
                         pd = meta.get("project_dir")
@@ -2222,7 +2222,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 return
             await channel.send_response(ws, req_id, ok=True, payload={"deleted": True})
         except Exception as exc:
-            from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+            from jiuwenswarm.gateway.embedded.runtime.session.lifecycle import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "INTERNAL_ERROR")
             logger.warning("[cron.job.delete] %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=code)

@@ -2188,8 +2188,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _session_selection_set(ws, req_id, params, session_id):
         from jiuwenswarm.common.model_selection import ModelSelection
-        from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
-        from jiuwenswarm.server.runtime.session.model_selection_store import set_session_model_selection
+        from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver
+        from jiuwenswarm.gateway.embedded.runtime.session.model_selection_store import set_session_model_selection
         try:
             target = str((params or {}).get("session_id") or session_id or "")
             selection = ModelSelection.model_validate((params or {}).get("model_selection"))
@@ -2638,8 +2638,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             and not getattr(real_client, "server_ready", True)
         ):
             from jiuwenswarm.server.runtime.gateway_adapter.base import parse_int_param
-            from jiuwenswarm.server.runtime.session.session_info import to_session_info
-            from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata
+            from jiuwenswarm.gateway.embedded.runtime.session.session_info import to_session_info
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_all_sessions_metadata
 
             raw_params = params if isinstance(params, dict) else {}
             limit = parse_int_param(raw_params, "limit", 20, minimum=1, maximum=200)
@@ -2798,7 +2798,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             is_legacy_shared_directory_client(real_client)
             and not getattr(real_client, "server_ready", True)
         ):
-            from jiuwenswarm.server.runtime.session.session_rename import apply_session_rename
+            from jiuwenswarm.gateway.embedded.runtime.session.session_rename import apply_session_rename
 
             ok, payload, error, code = apply_session_rename(
                 params if isinstance(params, dict) else {},
@@ -2850,7 +2850,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             if not isinstance(pinned, bool):
                 await channel.send_response(ws, req_id, ok=False, error="pinned must be boolean", code="BAD_REQUEST")
                 return
-            from jiuwenswarm.server.runtime.session.session_metadata import set_session_pinned
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import set_session_pinned
 
             result = await asyncio.to_thread(set_session_pinned, sid.strip(), pinned)
             if result is None:
@@ -4715,7 +4715,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 and session_id
             ):
                 try:
-                    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+                    from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
                     meta = get_session_metadata(session_id, cache_bust=True)
                     if isinstance(meta, dict):
                         pd = meta.get("project_dir")
@@ -4879,7 +4879,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             deleted = await cc.delete_job(job_id)
         except Exception as exc:
-            from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+            from jiuwenswarm.gateway.embedded.runtime.session.lifecycle import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "DELETE_FAILED")
             await channel.send_response(
                 ws, req_id, ok=False, error=str(exc), code=code

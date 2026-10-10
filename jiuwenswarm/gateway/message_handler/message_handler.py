@@ -4191,10 +4191,10 @@ class MessageHandler(ABC):
         if not is_legacy_shared_directory_client(self.agent_client):
             return ""
         try:
-            from jiuwenswarm.server.runtime.session.model_selection_store import (
+            from jiuwenswarm.gateway.embedded.runtime.session.model_selection_store import (
                 get_session_model_selection,
             )
-            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
 
             if get_session_model_selection(session_id) is not None:
                 return ""
