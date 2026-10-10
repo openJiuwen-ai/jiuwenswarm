@@ -317,6 +317,45 @@ health_check:
 
 # 执行护栏：工具循环检测与主动中断（分布式模板为完整配置，不合并基础 config.yaml）
 execution_guard:
+  # cron 失控防御（issue #5018）：仅对调度 run（带调度器签发 run_token 的请求）
+  # 生效；交互请求零影响。所有守卫自身故障 fail-open（放行+warn）。
+  # 三级回滚：关 cron_guard.enabled → 关 deadline.enabled → git revert。
+  cron_guard:
+    enabled: true                      # 总开关，每次调用读取，热生效
+    max_iterations: 30                 # 被 job.max_iterations 覆盖；null=不限制
+    default_timeout_seconds: 3600      # 默认保持 3600 以兼容
+    trust:
+      run_token_secret_env: JIUWENSWARM_CRON_RUN_SECRET   # 未设置时只收紧不变更状态
+    deadline:
+      enabled: true                    # 不可降级为 warn；灰度靠 canary 限范围
+      soft_ratio: 0.85
+      hard_ratio: 0.95
+      gateway_margin_seconds: 10
+      reserve_seconds: 5
+      kill_grace_seconds: 3
+    tools:
+      code_tool: clamp                 # clamp | deny
+      background_commands: register_and_reap
+      script_scan: off                 # off | head
+    sleep:
+      mode: enforce                    # enforce | warn | off
+      max_single_seconds: 10
+      max_total_seconds: 30
+      max_sleep_calls: 3
+      unknown_duration: block          # block | assume
+      unknown_assumed_seconds: 10
+      max_nesting_depth: 3
+    wall_clock:
+      tool_wait_budget_seconds: 300
+    checkpoint:
+      enabled: true
+      on_trip: quarantine_and_fail     # quarantine_and_fail | quarantine_and_fresh | warn
+      interactive_policy: allow
+      quarantine_retention_days: 30
+    budget_ledger:
+      path: null                       # 默认放 checkpoint 目录旁
+    concurrency:
+      max_concurrent_cron_runs: null
   # 模型异常检测护栏：重复输出/流式帧超时重试，以及连续相同工具调用压缩
   model_anomaly_detection_rail:
     enabled: true

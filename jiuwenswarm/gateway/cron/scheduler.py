@@ -1539,6 +1539,19 @@ class CronSchedulerService:
                 # 未配置（None）时保持既有行为（仅 init 全局默认集）。
                 if job.mcp:
                     params["mcp"] = list(job.mcp)
+                # cron_guard L0 (issue #5018): sign a per-run token so the
+                # AgentServer can trust the scheduled_run identity.  No secret
+                # configured -> no token -> tightening-only degraded mode.
+                try:
+                    from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+                        maybe_sign_run_token,
+                    )
+
+                    _cron_run_token = maybe_sign_run_token(
+                        run_id, job.id, exec_session_id
+                    )
+                except Exception:  # noqa: BLE001 — token mint failure never blocks the run
+                    _cron_run_token = None
                 envelope = e2a_from_agent_fields(
                     request_id=f"cron-{run_id}",
                     channel_id=channel_id,
@@ -1554,6 +1567,10 @@ class CronSchedulerService:
                             # 传给 UserTurn 信封：让「打印当前时间」类任务按任务
                             # 时区渲染 timezone/timestamp，而非固定 Asia/Shanghai。
                             "timezone": job.timezone,
+                            # cron_guard (issue #5018): trusted identity token +
+                            # resolved per-job timeout for the L-WD deadline.
+                            "run_token": _cron_run_token,
+                            "timeout_seconds": resolve_cron_job_timeout_seconds(job),
                         },
                         # 真实推送渠道（普通模式 channel 是内部 "__cron__"）。
                         # AgentServer 用它注册 send_file 等按渠道开关的工具，并作为

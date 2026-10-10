@@ -1121,6 +1121,21 @@ async def mcp_exec_command(
     if spawn_block:
         return f"[ERROR]: {spawn_block}"
 
+    # cron_guard L1 (issue #5018): sleep/poll interception for cron scheduled
+    # runs only.  Fail-open on guard errors; interactive requests unaffected.
+    try:
+        from jiuwenswarm.agents.harness.common.cron_guard.sleep_guard import (
+            guard_shell_command,
+        )
+
+        cron_block = guard_shell_command(
+            command, background=background, session_id=resolve_shell_session_id() or ""
+        )
+        if cron_block:
+            return cron_block
+    except Exception:  # noqa: BLE001 — guard failure must not break the command tool
+        pass
+
     try:
         resolved_workdir = _resolve_command_workdir(workdir)
     except Exception:
@@ -1146,16 +1161,26 @@ async def mcp_exec_command(
     normalized_shell_type = _normalize_shell_type(shell_type)
     execution_binding = current_command_execution()
 
+    # cron_guard L3/L4 (issue #5018): accumulate foreground shell wait into
+    # the cron run budget (no-op for interactive requests; never raises).
+    from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+        record_shell_wait,
+    )
+
     if execution_binding is not None and execution_binding.sandboxed:
-        return await _run_command_in_bound_sandbox(
-            sys_operation=execution_binding.sys_operation,
-            command=command,
-            timeout_seconds=timeout_seconds,
-            workdir=resolved_workdir,
-            max_output_chars=max_output_chars,
-            shell_type=normalized_shell_type,
-            background=background,
-        )
+        _shell_started = time.monotonic()
+        try:
+            return await _run_command_in_bound_sandbox(
+                sys_operation=execution_binding.sys_operation,
+                command=command,
+                timeout_seconds=timeout_seconds,
+                workdir=resolved_workdir,
+                max_output_chars=max_output_chars,
+                shell_type=normalized_shell_type,
+                background=background,
+            )
+        finally:
+            record_shell_wait(_shell_started)
 
     if background:
         try:
@@ -1169,6 +1194,19 @@ async def mcp_exec_command(
             return f"[ERROR]: command failed to start: {exc}"
         if err:
             return f"[ERROR]: background command failed: {err}"
+        # cron_guard (issue #5018): register background pids under the active
+        # cron run so the request-entry reaper terminates them on run end.
+        try:
+            from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+                get_current_or_registered_run,
+                get_run_registry,
+            )
+
+            _cron_ctx = get_current_or_registered_run(resolve_shell_session_id() or "")
+            if _cron_ctx is not None and pid:
+                get_run_registry().register_proc(_cron_ctx.run_id, int(pid))
+        except Exception:  # noqa: BLE001 — registration failure never blocks start
+            pass
         payload = {
             "command": command,
             "cwd": str(resolved_workdir),
@@ -1180,15 +1218,20 @@ async def mcp_exec_command(
         }
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
+    # Time the wait even on timeout/cancel — the tool really waited that long.
+    _shell_started = time.monotonic()
     try:
-        result, resolved_shell = await asyncio.to_thread(
-            _run_command_sync,
-            command,
-            timeout_seconds,
-            resolved_workdir,
-            normalized_shell_type,
-            resolve_shell_session_id(),
-        )
+        try:
+            result, resolved_shell = await asyncio.to_thread(
+                _run_command_sync,
+                command,
+                timeout_seconds,
+                resolved_workdir,
+                normalized_shell_type,
+                resolve_shell_session_id(),
+            )
+        finally:
+            record_shell_wait(_shell_started)
     except CommandCancelled:
         payload = {
             "command": command,
