@@ -30,7 +30,7 @@ interface CronJobMetaPayload {
   default_team_timeout_seconds?: number;
 }
 
-const TARGET_CHANNELS = ["tui", "web", "feishu", "whatsapp", "wecom", "xiaoyi", "wechat", "dingtalk"];
+const TARGET_CHANNELS = ["tui", "web", "feishu", "slack", "whatsapp", "wecom", "xiaoyi", "wechat", "dingtalk"];
 
 let cachedCronMeta: CronJobMetaPayload | null = null;
 

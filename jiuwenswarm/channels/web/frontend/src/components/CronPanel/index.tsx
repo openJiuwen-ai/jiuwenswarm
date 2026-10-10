@@ -149,10 +149,10 @@ function PaginationBar({
 const PROACTIVE_AUTO_JOB_ID = 'proactive-tick-auto';
 
 // 用于展示已有任务的推送频道（含历史数据可能存在的 wecom/wechat）
-const KNOWN_TARGET_KEYS = ['web', 'tui', 'xiaoyi', 'feishu', 'dingtalk', 'whatsapp', 'wecom', 'wechat'];
+const KNOWN_TARGET_KEYS = ['web', 'tui', 'xiaoyi', 'feishu', 'slack', 'dingtalk', 'whatsapp', 'wecom', 'wechat'];
 // 创建/编辑时可选的推送频道：wecom/wechat 已被 upstream 下架（见提交 e12d1952、d57567e4），
 // 不在下拉里出现，但已有数据仍按上面 KNOWN_TARGET_KEYS 正常展示
-const SELECTABLE_TARGET_KEYS = ['web', 'tui', 'xiaoyi', 'feishu', 'dingtalk', 'whatsapp'];
+const SELECTABLE_TARGET_KEYS = ['web', 'tui', 'xiaoyi', 'feishu', 'slack', 'dingtalk', 'whatsapp'];
 
 // 执行历史目前只有"该功能即将上线"占位（等 backend-requests.md #1 的真实数据接口交付），
 // 用户要求先不在界面上露出入口（tab + 行内"运行历史"菜单项），但保留代码，等后端接口交付后

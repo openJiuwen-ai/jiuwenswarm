@@ -831,6 +831,50 @@ class TestHandleEventStoreValidation:
         assert cron["exec_session_id"] == run_info["session_id"]
 
     @pytest.mark.asyncio
+    async def test_slack_push_addresses_the_slack_channel(self, tmp_path):
+        """A job with ``targets=slack`` pushes its result to the Slack channel.
+
+        ``_push_to_targets`` copies the stored target into the outbound
+        ``Message.channel_id``. The ChannelManager resolves that name to the
+        registered connector.
+        """
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await store.create_job(
+            name="digest",
+            cron_expr="0 0 9 * * ? *",
+            timezone="Asia/Shanghai",
+            description="post the digest",
+            targets="slack",
+            session_id="slack_T1_C1_U1",
+        )
+
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler)
+        await svc.reload()
+
+        run_id = f"{job.id}:1234"
+        svc.runs[run_id] = CronRunState(
+            run_id=run_id,
+            job_id=job.id,
+            wake_at_iso="2026-06-09T08:55:00+08:00",
+            push_at_iso="2026-06-09T09:00:00+08:00",
+            job_name=job.name,
+            targets=job.targets,
+            session_id=job.session_id,
+            chat_type=None,
+            timezone=job.timezone,
+            result_text="the digest",
+        )
+        ev = _Event(at_ts=time.time(), seq=1, kind="push_update", job_id=job.id, run_id=run_id)
+        await svc.handle_event(ev)
+
+        assert len(handler.published) == 1
+        msg = handler.published[0]
+        assert msg.channel_id == "slack"
+        assert msg.session_id == "slack_T1_C1_U1"
+        assert _cron_published_content(msg) == "the digest"
+
+    @pytest.mark.asyncio
     async def test_wake_executes_normally_when_job_present(self, tmp_path):
         store_file = tmp_path / "cron_jobs.json"
         store = CronJobStore(path=store_file)
