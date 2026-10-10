@@ -1,0 +1,168 @@
+.server-directory-picker__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: var(--color-backdrop);
+}
+
+.server-directory-picker {
+  display: flex;
+  width: min(620px, 100%);
+  max-height: min(720px, calc(100vh - 40px));
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 14px;
+  background: var(--color-surface-card);
+  box-shadow: var(--effect-shadow-xl);
+}
+
+.server-directory-picker__header,
+.server-directory-picker__path,
+.server-directory-picker__create,
+.server-directory-picker__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.server-directory-picker__header {
+  justify-content: space-between;
+}
+
+.server-directory-picker__header h2 {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 18px;
+}
+
+.server-directory-picker button {
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.server-directory-picker button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.server-directory-picker__header button,
+.server-directory-picker__path button {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+}
+
+.server-directory-picker__roots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.server-directory-picker__roots button,
+.server-directory-picker__list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  text-align: left;
+}
+
+.server-directory-picker__path {
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.server-directory-picker__path span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-directory-picker__list {
+  min-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border-default);
+  border-radius: 10px;
+}
+
+.server-directory-picker__list button {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
+.server-directory-picker__list button:hover,
+.server-directory-picker__roots button:hover {
+  background: var(--color-action-secondary);
+}
+
+.server-directory-picker__status {
+  display: flex;
+  min-height: 220px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.server-directory-picker__create input {
+  min-width: 0;
+  height: 34px;
+  flex: 1;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+}
+
+.server-directory-picker__create button,
+.server-directory-picker__actions button {
+  min-height: 34px;
+  padding: 0 14px;
+}
+
+.server-directory-picker__error {
+  color: var(--color-feedback-danger);
+  font-size: 12px;
+}
+
+.server-directory-picker__notice {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.server-directory-picker__actions {
+  justify-content: flex-end;
+}
+
+.server-directory-picker__actions .is-primary {
+  border-color: var(--color-action-primary);
+  background: var(--color-action-primary);
+  color: var(--color-action-primary-text);
+}
+
+.server-directory-picker .is-spinning {
+  animation: server-directory-picker-spin 1s linear infinite;
+}
+
+@keyframes server-directory-picker-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

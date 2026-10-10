@@ -1264,7 +1264,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const requestState = { revision: 0, changedMemberIds: new Set<string>() };
     teamMemberSnapshotRequestRef.current.set(sessionId, requestState);
     try {
-      const response = await request<{ members?: unknown; members_source?: string }>(
+      const response = await request<{ members?: unknown; members_source?: string; tasks?: unknown }>(
         'team.snapshot',
         { session_id: sessionId },
         { timeoutMs: 5000 },
@@ -1273,7 +1273,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         teamMemberSnapshotRequestRef.current.get(sessionId) !== requestState ||
         requestState.revision !== 0
       ) return;
-      if (response?.members_source !== 'live') return;
+      const durableJavaSnapshot = import.meta.env.VITE_JIUWENSWARM_BACKEND === 'java'
+        && response?.members_source === 'db';
+      if (response?.members_source !== 'live' && !durableJavaSnapshot) return;
       if (!Array.isArray(response?.members) || response.members.length === 0) return;
       const runtime = useSessionStore.getState().getRuntime(sessionId);
       if (runtime?.mode !== 'team') return;
@@ -1331,6 +1333,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const currentRuntime = useSessionStore.getState().getRuntime(sessionId);
       if (currentRuntime?.mode !== 'team') return;
       useSessionStore.getState().setTeamMembers(sessionId, members);
+      if (import.meta.env.VITE_JIUWENSWARM_BACKEND === 'java' && Array.isArray(response.tasks)) {
+        for (const raw of response.tasks) {
+          const task = normalizeTaskEvent(raw);
+          if (task) useSessionStore.getState().upsertTeamTask(sessionId, task);
+        }
+      }
       if (changedMemberIds.size === 0) {
         useSessionStore.getState().clearTeamConnectionPresentation(sessionId);
       } else {
@@ -1350,7 +1358,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   useEffect(() => {
     if (connectionState !== 'ready' || !activeSessionId || activeSessionMode !== 'team') return;
     const runtime = useSessionStore.getState().getRuntime(activeSessionId);
-    if (!runtime?.teamConnectionPresentation) return;
+    if (!runtime?.teamConnectionPresentation && import.meta.env.VITE_JIUWENSWARM_BACKEND !== 'java') return;
     void reconcileTeamMembersFromSnapshot(activeSessionId);
   }, [activeSessionId, activeSessionMode, connectionState, reconcileTeamMembersFromSnapshot]);
 
@@ -5044,6 +5052,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldDropDuplicatedEvent('team.task', payload)) {
           return;
         }
+        if (import.meta.env.VITE_JIUWENSWARM_BACKEND === 'java') markTeamConnectionStateChanged(sessionId);
         clearThinkingForVisibleOutput(sessionId);
         const p = payload as { payload?: { event?: unknown }; event?: unknown };
         const event = p.payload?.event || p.event;

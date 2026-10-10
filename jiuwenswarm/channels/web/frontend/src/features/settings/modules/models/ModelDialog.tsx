@@ -333,7 +333,8 @@ export function ModelDialog({
     void fetchModels();
   };
 
-  const anthropicUnavailable = Boolean(preset && (!preset.supports_anthropic || !preset.anthropic_base));
+  const anthropicUnavailable = import.meta.env?.VITE_JIUWENSWARM_BACKEND === 'java'
+    || Boolean(preset && (!preset.supports_anthropic || !preset.anthropic_base));
   const protocolOptions = [
     { value: 'openai', label: t('settingsPanel.models.protocols.openai') },
     {

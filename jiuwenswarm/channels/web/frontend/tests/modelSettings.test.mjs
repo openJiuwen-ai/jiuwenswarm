@@ -544,8 +544,11 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.match(page, /const reloadModels = useCallback[\s\S]*await loadModels\(\)/);
   assert.match(
     page,
-    /<SettingsSection\s+title=\{t\('settingsPanel\.models\.primaryModels'\)\}\s+separatedRows\s+action=\{\s*<Button variant="primary"[\s\S]{0,180}settingsPanel\.models\.addModel[\s\S]{0,40}<\/Button>\s*\}/,
+    /<SettingsSection\s+title=\{t\('settingsPanel\.models\.primaryModels'\)\}\s+separatedRows\s+action=\{\s*<>[\s\S]*?<Button variant="primary"[\s\S]{0,180}settingsPanel\.models\.addModel[\s\S]{0,40}<\/Button>\s*<\/>\s*\}/,
   );
+  assert.match(page, /VITE_JIUWENSWARM_BACKEND === 'java'[\s\S]*settings-models-import-input/);
+  assert.match(page, /parseModelConfigurationJson\(await file\.text\(\)\)/);
+  assert.match(page, /'model\.import'/);
   assert.match(page, /setDialog\(nextDialog\);\s*void loadCatalog\(\)/);
   assert.match(page, /type SaveModelsOptions = \{ errorScope\?: SettingsSaveErrorScope \};/);
   assert.match(page, /saveQueue\.enqueue\([\s\S]{0,320}\{ errorScope \},/);

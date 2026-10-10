@@ -103,6 +103,10 @@ async function selectProjectDirectoryViaBackend(
 export async function selectProjectDirectory(
   options?: { initialDir?: string },
 ): Promise<ProjectDirectoryPickResult> {
+  if (import.meta.env.VITE_JIUWENSWARM_BACKEND === 'java') {
+    const { openServerDirectoryPicker } = await import('./openServerDirectoryPicker');
+    return openServerDirectoryPicker(options?.initialDir);
+  }
   const pickDirectory = getProjectDirectoryApi();
   if (typeof pickDirectory === 'function') {
     try {
@@ -119,6 +123,31 @@ export async function selectProjectDirectory(
 
   return selectProjectDirectoryViaBackend(options?.initialDir);
 }
+
+export type ServerDirectoryEntry = { name: string; path: string };
+export type ServerDirectoryListing = {
+  path: string; name: string; parent_path: string; roots: ServerDirectoryEntry[];
+  entries: ServerDirectoryEntry[]; truncated: boolean;
+};
+
+export async function listServerDirectories(path = ''): Promise<ServerDirectoryListing> {
+  const { webRequest } = await import('../../services/webClient');
+  return webRequest<ServerDirectoryListing>('path.list_directories', { path });
+}
+
+async function directoryRequest(method: string, params: Record<string, unknown>): Promise<ProjectDirectoryPickResult> {
+  try {
+    const { webRequest } = await import('../../services/webClient');
+    const result = await webRequest<{ path?: string }>(method, params);
+    return normalizePickedPath(result.path);
+  } catch (error) {
+    return { ok: false, reason: 'failed', message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export const createServerDirectory = (parentPath: string, name: string) =>
+  directoryRequest('path.create_directory', { parent_path: parentPath, name });
+export const selectServerDirectory = (path: string) => directoryRequest('path.select_directory', { path });
 
 async function selectProjectFileViaBackend(
   options: SelectProjectFileOptions,
