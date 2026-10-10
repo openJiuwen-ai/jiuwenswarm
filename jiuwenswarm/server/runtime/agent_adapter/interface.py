@@ -1096,15 +1096,15 @@ class JiuWenSwarm:
     def _adapter_mode_for_request(request: AgentRequest) -> str:
         """选择 Deep / Code adapter。
 
-        Web 单 agent 一律走 DeepAdapter（办公模式）：前端路由过来的 code /
-        创意设计 work_mode 不再掉入 CodeAdapter，相关代码保留仅不可达。
-        Web 团队与 TUI / CLI / IM / cron 等历史客户端行为不变。
+        Web / Desktop 单 agent 一律走 DeepAdapter（办公模式）：前端路由过来的
+        code / 创意设计 work_mode 不再掉入 CodeAdapter，相关代码保留仅不可达。
+        团队与 TUI / CLI / IM / cron 等历史客户端行为不变。
         """
         params = request.params if isinstance(request.params, dict) else {}
         raw_mode = params.get("mode", "")
         mode = raw_mode.strip().lower() if isinstance(raw_mode, str) else ""
-        # Web 单 agent 一律办公（DeepAdapter）；Web 团队与历史客户端走原逻辑
-        if request.channel_id == "web" and not is_team_mode(mode):
+        # Web / Desktop 单 agent 一律办公（DeepAdapter）；团队与历史客户端走原逻辑
+        if request.channel_id in {"web", "desktop"} and not is_team_mode(mode):
             return "agent"
         if mode == "team.plan":
             return "code"
