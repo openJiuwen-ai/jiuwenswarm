@@ -1877,7 +1877,11 @@ class CronSchedulerService:
                 return error_text, False
             if result_text:
                 return result_text, True
-            return "[cron] 任务执行完成但未返回结果内容", False
+            # 流正常结束（is_complete、无 chat.error、无中断）但未提取到非空文本：
+            # 执行链路已完整走完（会话已创建、runner 已至 agent_finished），会话历史
+            # 已落盘，是可续跑的有效会话。按成功对待以回写 last_session_id，
+            # 避免「update 一次性表达式」等只做动作不产出文本的任务被误判失败。
+            return "[cron] 任务执行完成但未返回结果内容", True
 
         try:
             result = await asyncio.wait_for(_consume(), timeout=timeout_seconds)
