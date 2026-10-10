@@ -16,7 +16,7 @@ const VENDOR_ICON_KEYS = new Map<string, string>([
   ['baidu', 'baidu'],
   ['deepseek', 'deepseek'],
   ['kimi', 'kimi'],
-  ['maas', 'pangu'],
+  ['maas', 'huawei'],
   ['minimax', 'minimax'],
   ['mimo', 'mimo'],
   ['openrouter', 'openrouter'],
