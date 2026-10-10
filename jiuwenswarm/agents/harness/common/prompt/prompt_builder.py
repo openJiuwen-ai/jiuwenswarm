@@ -28,7 +28,8 @@ class PromptPriority(IntEnum):
     SAFETY = 13
     TASK_EXECUTION = 31
     SKILLS = 40
-    MEMORY = 57  # After the runtime Skills section (56), before Input (60).
+    EXTENSION_POLICY = 57  # After the runtime Skills section (56).
+    MEMORY = 58  # Fixed rules, followed by dynamic memory (59), before Input (60).
     INPUT = 60
     A2UI = 61
     OUTPUT = 65
