@@ -26,6 +26,13 @@ TOOL_PERMISSION_REQUEST_ID: contextvars.ContextVar[str] = contextvars.ContextVar
     default="",
 )
 
+# Conversation id for the active request. Bound beside TOOL_PERMISSION_CHANNEL_ID.
+TOOL_PERMISSION_CHAT_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "jiuwenswarm_tool_permission_chat_id",
+    default="",
+)
+
+
 # skills.rebuild 静默 follow-up：无 UI 审批，权限轨需自动放行。
 SKILLS_REBUILD_SILENT: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "jiuwenswarm_skills_rebuild_silent",
@@ -36,5 +43,6 @@ SKILLS_REBUILD_SILENT: contextvars.ContextVar[bool] = contextvars.ContextVar(
 __all__ = [
     "SKILLS_REBUILD_SILENT",
     "TOOL_PERMISSION_CHANNEL_ID",
+    "TOOL_PERMISSION_CHAT_ID",
     "TOOL_PERMISSION_REQUEST_ID",
 ]

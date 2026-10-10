@@ -39,6 +39,12 @@ class GatewayAdapter:
 
     methods: ClassVar[frozenset[str]] = frozenset()
 
+    # 以下两项只有插件包贡献的适配器会填（见 ``contributed`` 模块）：
+    # ``replaces`` 是本适配器顶替的宿主 method，顶替必须逐个声明；``source``
+    # 是贡献者标识，用于日志与报错。内置适配器留空。
+    replaces: ClassVar[frozenset[str]] = frozenset()
+    source: ClassVar[str] = ""
+
     async def handle(self, request: AgentRequest) -> AgentResponse:
         """处理一个已解析的 AgentRequest（E2A 信封 → AgentRequest 之后）。
 

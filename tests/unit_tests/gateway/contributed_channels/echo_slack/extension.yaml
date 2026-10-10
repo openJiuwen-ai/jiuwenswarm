@@ -1,0 +1,11 @@
+# A stub package that contributes one channel, used by
+# tests/unit_tests/gateway/test_contributed_channels.py. It stands in for a
+# real package shipping a connector: the test points an ExtensionLoader at this
+# directory, so the channel is declared through the loader a deployment uses
+# rather than by a direct call from the test.
+name: echo-slack
+version: 0.0.1
+description: Replaces the built-in slack connector with an echo stub.
+# The channel runs in the gateway process, so a Runtime-direct process must not
+# import this package.
+requires_transport: true

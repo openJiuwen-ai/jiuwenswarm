@@ -1793,6 +1793,10 @@ async def _run(
     from jiuwenswarm.common.cleanup import start_background_cleanup
     from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
     from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+    from jiuwenswarm.extensions.channel_contributions import (
+        contributed_channel_ids,
+        contributed_spec_for,
+    )
     from jiuwenswarm.gateway.cron import (
         CronController,
         CronSchedulerService,
@@ -1948,6 +1952,9 @@ async def _run(
         or os.getenv("HEARTBEAT_RELAY_CHANNEL_ID")
         or (str(cfg_target) if cfg_target is not None else "web")
     )
+    relay_spec = contributed_spec_for(str(heartbeat_relay_channel or "").strip().lower())
+    if relay_spec is not None and relay_spec.check_relay is not None:
+        relay_spec.check_relay(heartbeat_relay_channel, full_cfg)
 
     heartbeat_config = HealthCheckConfig(
         interval_seconds=heartbeat_interval,
@@ -2525,6 +2532,39 @@ async def _run(
             return all_fields_present, f"missing {','.join(required_fields)}" if not all_fields_present else ""
         return bool(enabled_raw), "enabled = false" if not enabled_raw else ""
 
+    async def _apply_contributed_channel(channel_name: str, conf: dict) -> None:
+        spec = contributed_spec_for(channel_name)
+        if spec is None or spec.factory is None:
+            return
+        for old_channel in channel_manager.pop_channels_by_id(channel_name):
+            await _stop_channel(old_channel, getattr(old_channel, "start_task", None), channel_name)
+        im_inbound.unregister_adapter(channel_name)
+        im_outbound.unregister_adapter(channel_name)
+
+        channel_conf = conf.get(channel_name) if isinstance(conf, dict) else None
+        enabled, reason = _is_channel_enabled(
+            channel_conf if isinstance(channel_conf, dict) else None,
+            list(spec.config_fields or ()),
+        )
+        if not enabled:
+            logger.info("[App] channels.%s disabled: %s", channel_name, reason)
+            return
+        try:
+            channels = spec.factory(dict(channel_conf), _DummyBus()) or ()
+        except Exception:
+            logger.exception("[App] %s failed to build channel %s", spec.source, channel_name)
+            return
+        for channel in channels:
+            if channel.channel_id != channel_name:
+                raise ValueError(f"channel {channel_name!r} factory returned {channel.channel_id!r}")
+            adapter = getattr(channel, "im_platform_adapter", None)
+            if adapter is not None:
+                im_inbound.register_adapter(channel_name, adapter)
+                im_outbound.register_adapter(channel_name, adapter)
+            channel_manager.register_channel(channel)
+            channel.start_task = asyncio.create_task(channel.start(), name=channel_name)
+            logger.info("[App] channel %s registered by %s", channel_name, spec.source)
+
     async def _apply_channel_config(conf: dict) -> None:
         nonlocal feishu_channel, feishu_task, xiaoyi_channel, xiaoyi_task
         nonlocal dingtalk_channel, dingtalk_task, telegram_channel, telegram_task
@@ -2549,7 +2589,7 @@ async def _run(
 
         restart_pending = channel_manager.pop_channel_restart_pending()
         changed_channels: list[str] = []
-        for channel_name in [
+        for channel_name in dict.fromkeys([
             "feishu",
             "feishu_enterprise",
             "xiaoyi",
@@ -2561,7 +2601,8 @@ async def _run(
             "wecom",
             "wechat",
             "ssh",
-        ]:
+            *contributed_channel_ids(),
+        ]):
             if _should_restart_channel(channel_name, _last_channels_conf, conf) or channel_name in restart_pending:
                 if channel_name in restart_pending and not _should_restart_channel(
                         channel_name, _last_channels_conf, conf
@@ -2572,6 +2613,11 @@ async def _run(
                     )
                 changed_channels.append(channel_name)
         _last_channels_conf = dict(conf or {})
+
+        for channel_name in tuple(changed_channels):
+            if contributed_spec_for(channel_name) is not None:
+                changed_channels.remove(channel_name)
+                await _apply_contributed_channel(channel_name, conf)
 
         if "feishu" in changed_channels:
             feishu_conf = conf.get("feishu") if isinstance(conf, dict) else {}
@@ -3421,7 +3467,7 @@ async def _run(
                 pass
             await xiaoyi_channel.stop()
         # ---- 从 channel_manager 清理所有动态注册的 channel 实例 ----
-        for _cid in ("feishu", "xiaoyi"):
+        for _cid in ("feishu", "xiaoyi", *contributed_channel_ids()):
             for ch in channel_manager.pop_channels_by_id(_cid):
                 task = getattr(ch, "start_task", None)
                 if task is not None:

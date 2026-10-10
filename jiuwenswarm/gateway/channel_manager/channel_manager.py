@@ -132,6 +132,7 @@ class ChannelManager(ABC):
         channel.on_message(self._on_channel_message)
         self._try_set_event_reporter(channel)
         self._try_wire_file_persist_hook(channel)
+        self._try_bind_agent_client(channel)
         logger.info("[ChannelManager] 已注册 Channel: channel_id=%s, 当前共 %d 个", cid, len(self._channels))
 
     def register_channel_with_inbound(
@@ -145,6 +146,12 @@ class ChannelManager(ABC):
         channel.on_message(on_message)
         self._try_set_event_reporter(channel)
         self._try_wire_file_persist_hook(channel)
+        self._try_bind_agent_client(channel)
+
+    def _try_bind_agent_client(self, channel: "BaseChannel") -> None:
+        bind = getattr(channel, "bind_agent_client", None)
+        if bind is not None:
+            bind(getattr(self._message_handler, "agent_client", None))
 
     def _try_wire_file_persist_hook(self, channel: "BaseChannel") -> None:
         """为 IM 通道注入附件落盘钩子（Phase 3：经 E2A 落盘到目标 AgentServer）。

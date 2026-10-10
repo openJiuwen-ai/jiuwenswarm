@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.schema.message import ContributedReqMethod, ReqMethod
 
 
 @dataclass
@@ -72,7 +72,7 @@ class AgentRequest:
     channel_id: str = ""
     session_id: str | None = None
     chat_id: str | None = None
-    req_method: ReqMethod | None = None
+    req_method: ReqMethod | ContributedReqMethod | None = None
     params: dict = field(default_factory=dict)
     is_stream: bool = False
     timestamp: float = 0.0

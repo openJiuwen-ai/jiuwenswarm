@@ -466,6 +466,24 @@ class ReqMethod(Enum):
     ISSUE_MATRIX = "issue.matrix"
 
 
+class ContributedReqMethod(str):
+    @property
+    def value(self) -> str:
+        return str(self)
+
+
+_contributed_req_methods: set[str] = set()
+
+
+def parse_req_method(value: str) -> ReqMethod | ContributedReqMethod:
+    try:
+        return ReqMethod(value)
+    except ValueError:
+        if value not in _contributed_req_methods:
+            raise
+        return ContributedReqMethod(value)
+
+
 class EventType(Enum):
     SESSION_ARCHIVED = "session.archived"
     SESSION_UNARCHIVED = "session.unarchived"
@@ -611,7 +629,7 @@ class Message:
     app_id: str | None = None  # V2: 应用实例标识，从 bot_id 拆出
     agent_ref: Any = None      # V2: AgentRef(mode, id)，后端智能体标识
     payload: dict | None = None
-    req_method: ReqMethod | None = None
+    req_method: ReqMethod | ContributedReqMethod | None = None
     event_type: EventType | None = None
     # 与 Mode.from_raw 的 fallback 对齐：客户端不传 mode 时落到 canonical
     # ``agent.work.normal``，避免 schema 默认值与 from_raw 不一致导致

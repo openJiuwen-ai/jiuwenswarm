@@ -311,7 +311,7 @@ class WechatDeliveryTarget(DeliveryTarget):
 # ── 工厂函数 ──
 
 
-def make_delivery_target(
+def make_builtin_delivery_target(
     channel_id: str,
     *,
     chat_id: str = "",
@@ -392,3 +392,27 @@ def make_delivery_target(
         )
     # fallback: 未知渠道，返回基础实例（不推荐）
     return WebDeliveryTarget(channel_id=_ch, ws_id=ws_id)
+
+
+def make_delivery_target(
+    channel_id: str,
+    *,
+    chat_id: str = "",
+    receive_id: str = "",
+    physical_user_id: str = "",
+    ws_id: str = "",
+    **kwargs: Any,
+) -> DeliveryTarget:
+    """Use a contributed target when declared, otherwise use built-in routing."""
+    from jiuwenswarm.extensions.channel_contributions import contributed_spec_for
+
+    spec = contributed_spec_for(channel_id)
+    factory = spec.delivery if spec and spec.delivery else make_builtin_delivery_target
+    return factory(
+        channel_id,
+        chat_id=chat_id,
+        receive_id=receive_id,
+        physical_user_id=physical_user_id,
+        ws_id=ws_id,
+        **kwargs,
+    )

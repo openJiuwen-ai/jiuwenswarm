@@ -1861,6 +1861,58 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
 
 
 @pytest.mark.asyncio
+async def test_skill_retrieval_prompt_accepts_per_turn_skill_provider(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        _skill_retrieval_prompt_mod,
+        "is_skill_retrieval_enabled",
+        lambda *_args: True,
+    )
+    builder = SystemPromptBuilder(language="cn")
+    builder.add_section(
+        PromptSection(name="skills", content={"cn": "Native skills"}, priority=40)
+    )
+    agent = _FakeToolAgent(builder)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=SimpleNamespace(tools=[SimpleNamespace(name="skill_index")]),
+        session=_FakeSession(),
+        extra={},
+    )
+    toolkit = SkillRetrievalToolkit(
+        skill_directories=[], artifact_root=tmp_path / "skillfs"
+    )
+    scope = [frozenset({"alpha"}), "Read alpha before this task."]
+    rail = SkillRetrievalPromptRail(toolkit=toolkit)
+    rail.set_skill_prompt_provider(lambda: tuple(scope))
+    rail.init(agent)
+    scoped_snapshot = rail._empty_prompt_snapshot()
+    monkeypatch.setattr(rail._prompt_skillfs, "prompt_snapshot", lambda: scoped_snapshot)
+
+    assert rail._prompt_snapshot(scoped=True) is scoped_snapshot
+    await rail.before_model_call(ctx)
+    assert "Read alpha before this task." in builder.build()
+    assert "Native skills" not in builder.build()
+
+    other_builder = SystemPromptBuilder(language="cn")
+    other_agent = _FakeToolAgent(other_builder)
+    other = SkillRetrievalPromptRail(toolkit=toolkit)
+    other.init(other_agent)
+    await other.before_model_call(
+        AgentCallbackContext(
+            agent=other_agent,
+            inputs=SimpleNamespace(tools=[SimpleNamespace(name="skill_index")]),
+            session=_FakeSession(),
+            extra={},
+        )
+    )
+    assert "Read alpha before this task." not in other_builder.build()
+
+    scope[:] = [None, ""]
+    await rail.before_model_call(ctx)
+    assert "Read alpha before this task." not in builder.build()
+
+
+@pytest.mark.asyncio
 async def test_skill_retrieval_prompt_clears_section_when_disabled(
     monkeypatch,
     tmp_path,

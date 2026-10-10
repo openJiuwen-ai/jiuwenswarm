@@ -1436,6 +1436,12 @@ extensions:
   # 扩展包搜索目录（字符串），用 ';' 分割多个目录：
   # EXTENSION_DIRS="E:/a;D:/b"
   extension_dirs: ${EXTENSION_DIRS:-jiuwenswarm/extensions}
+  # 允许已安装的扩展包顶替的内置元素，形如 "<kind>.<id>"，如 "channels.slack"
+  # 或 "adapters.session.list"。适配器按 RPC method 授权，一条一个 method。
+  # 默认空表：没有这一条授权，包声明的顶替会被拒绝。顶替还要包自己在清单里写
+  # replaces，两边都同意才生效。安全边界上的元素（工具权限校验、人工审批闸门）
+  # 写进来也无效，由源码常量拒绝。
+  allow_overrides: []
 
 # ============================================================
 # Hooks 配置

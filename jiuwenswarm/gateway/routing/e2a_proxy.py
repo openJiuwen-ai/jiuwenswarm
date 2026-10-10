@@ -225,7 +225,7 @@ async def proxy_unary_request(
 async def fetch_agent_unary(
     *,
     agent_client: Any,
-    req_method: ReqMethod,
+    req_method: ReqMethod | str,
     params: dict[str, Any] | None,
     session_id: str | None,
     user_id: str | None,
@@ -245,6 +245,7 @@ async def fetch_agent_unary(
             "code": SERVICE_UNAVAILABLE_CODE,
         }
 
+    method = req_method.value if isinstance(req_method, ReqMethod) else req_method
     response = None
     # request_id 撞号时请求尚未发出（拒绝发生在注册响应队列阶段），换号重试
     # 一次是安全的；不做这层重试，id 生成器偶发重复会直接变成用户可见的失败。
@@ -263,7 +264,7 @@ async def fetch_agent_unary(
             response = await send_agent_request_with_timeout(
                 agent_client,
                 env,
-                label=f"{label} {req_method.value}",
+                label=f"{label} {method}",
                 timeout_seconds=timeout_seconds,
             )
             break
@@ -277,14 +278,14 @@ async def fetch_agent_unary(
                 logger.warning(
                     "[%s] %s request_id 撞号，换号重试: request_id=%s",
                     label,
-                    req_method.value,
+                    method,
                     exc.request_id,
                 )
                 continue
             logger.error(
                 "[%s] %s request_id 重复撞号，放弃: request_id=%s",
                 label,
-                req_method.value,
+                method,
                 exc.request_id,
             )
             return False, {"error": str(exc), "code": SERVICE_UNAVAILABLE_CODE}
@@ -292,7 +293,7 @@ async def fetch_agent_unary(
             logger.warning(
                 "[%s] %s 转发失败: request_id=%s error=%s",
                 label,
-                req_method.value,
+                method,
                 getattr(env, "request_id", ""),
                 exc,
             )
@@ -310,7 +311,7 @@ async def fetch_agent_unary(
     )
     if not response.ok:
         return False, {
-            "error": str(payload.get("error") or f"{req_method.value} failed"),
+            "error": str(payload.get("error") or f"{method} failed"),
             "code": str(payload.get("code") or "BAD_REQUEST"),
         }
     return True, payload

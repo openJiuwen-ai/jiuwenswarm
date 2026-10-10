@@ -52,6 +52,10 @@ def _adapter(*, registered_send_tool: bool = False) -> JiuWenSwarmDeepAdapter:
     adapter._enable_auto_permission = False
     adapter._last_mode = "agent.work.normal"
     adapter._session_messaging_toolkit = None
+    # This fixture skips __init__, which normally creates the runtime tool context.
+    adapter._runtime_cron_tool_context = adapter_module._RuntimeCronToolContext(
+        tool_scope=f"test_{id(adapter):x}",
+    )
     return adapter
 
 

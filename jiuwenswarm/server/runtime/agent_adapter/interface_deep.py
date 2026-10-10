@@ -21,7 +21,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Mapping
-from contextlib import aclosing, asynccontextmanager, contextmanager
+from contextlib import ExitStack, aclosing, asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -51,6 +51,7 @@ from openjiuwen.core.foundation.llm import (
 from openjiuwen.core.foundation.llm.utils.provider_utils import is_openai_account_provider
 from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
 from openjiuwen.core.foundation.tool import ToolCard, McpServerConfig
+from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.common.logging import server_logger
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.checkpointer import CheckpointerFactory
@@ -387,6 +388,8 @@ from jiuwenswarm.symphony.llm import (
 )
 
 from jiuwenswarm.common.hooks_config import load_hooks_config
+from jiuwenswarm.extensions.registry import ExtensionRegistry
+from jiuwenswarm.extensions.sdk.agent_plugin import AgentPluginServices
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.stage_timer import StageTimer
 from jiuwenswarm.common.tool_ownership import mark_stateless, register_tool, unregister_tool
@@ -416,6 +419,7 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
     TOOL_PERMISSION_CHANNEL_ID,
+    TOOL_PERMISSION_CHAT_ID,
     TOOL_PERMISSION_REQUEST_ID,
 )
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
@@ -1926,6 +1930,7 @@ class JiuWenSwarmDeepAdapter:
         self._config_cache: dict[str, Any] = {}
         self._filesystem_rail: SysOperationRail | None = None
         self._skill_rail: SkillUseRail | None = None
+        self._agent_request_contexts: list[Callable[[AgentRequest], Any]] = []
         self._stream_event_rail: JiuSwarmStreamEventRail | None = None
         # Track session IDs currently executing on this adapter instance.
         # Used by process_interrupt to avoid aborting sessions that are not
@@ -2687,12 +2692,18 @@ class JiuWenSwarmDeepAdapter:
                     request, f"equipment change rejected at non-fresh turn: {reason}"
                 )
 
+        unmounted_runtime_tools = []
         try:
             await self._unload_plugins_for_request(params)
             await self._unload_agent_template_for_request(params)
+            if would_change:
+                for manager in getattr(self, "_agent_runtime_tools", ()):
+                    unmounted_runtime_tools.append((manager, await manager.unmount()))
             await self._load_agent_template_for_request(params)
             await self._load_plugins_for_request(params)
-        except (ValueError, RuntimeError) as exc:
+        except (ValueError, RuntimeError, BaseError) as exc:
+            for manager, tools in unmounted_runtime_tools:
+                await manager.remount(tools)
             return self._equipment_error_response(request, str(exc))
         from jiuwenswarm.server.runtime.session.session_metadata import (
             save_session_equipment,
@@ -2749,7 +2760,7 @@ class JiuWenSwarmDeepAdapter:
         )
 
     def _equipment_would_change(self, params: dict) -> tuple[bool, str]:
-        """Return whether passed equipment fields differ from the session handle."""
+        """Return whether requested equipment differs by name or version."""
         v = params["agent_template_name"]
         if not isinstance(v, str):
             return True, "agent_template_name illegal type"
@@ -2757,11 +2768,19 @@ class JiuWenSwarmDeepAdapter:
         current = self._loaded_agent_template[0] if self._loaded_agent_template else ""
         if v != current:
             return True, f"agent_template_name {current!r}→{v!r}"
+        if v and self._loaded_agent_template:
+            version = equipment.read_manifest_version(equipment.resolve_agent_template_dir(v))
+            if version != self._loaded_agent_template[2]:
+                return True, "agent template version changed"
         v = params["plugin_names"]
         if not isinstance(v, list):
             return True, "plugin_names illegal type"
         if set(self._loaded_plugins) != set(v):
             return True, "plugin set changed"
+        for name, (_record, loaded_version) in self._loaded_plugins.items():
+            version = equipment.read_manifest_version(equipment.resolve_plugin_dir(name))
+            if version != loaded_version:
+                return True, f"plugin version changed: {name}"
         return False, ""
 
     async def _unload_agent_template_for_request(self, params: dict) -> None:
@@ -5987,27 +6006,26 @@ class JiuWenSwarmDeepAdapter:
         toolkit = self._skill_retrieval_toolkit
         if toolkit is not None:
             return toolkit
-        toolkit = SkillRetrievalToolkit(
-            # Match SkillUseRail exactly: selected MCP-bundled Skills are part
-            # of this session's directory, while unselected MCPs stay hidden.
-            skill_directories=self._skill_scan_dirs,
-            # Shared taxonomy generations are built only from JiuwenSwarm's
-            # stable installed inventory. Session-selected MCP Skills remain
-            # visible through the live provider above and appear in a stale
-            # taxonomy under /newly_installed_skills.
-            index_skill_directories=lambda: [str(get_agent_skills_dir())],
-            disabled_skills=self._live_skill_retrieval_disabled_skills,
-            source_by_name=lambda: (
-                skill_sources_from_manager(self._skill_manager)
-                if self._skill_manager is not None
-                else {}
-            ),
-            session_scope=self._skill_retrieval_session_scope(),
-            config_base=self._config_base_cache,
-            settings=getattr(self, "_skill_retrieval_settings", None),
-            auto_build_index=True,
-            frozen_profile=getattr(self, "_restored_skill_retrieval_profile", None),
-        )
+        registry = ExtensionRegistry.current_instance()
+        inventory = registry.get_skill_inventory() if registry is not None else None
+        with (inventory[0]() if inventory is not None else nullcontext()):
+            toolkit = SkillRetrievalToolkit(
+                # Selected MCP Skill directories join the main Skill catalog.
+                skill_directories=self._skill_scan_dirs,
+                index_skill_directories=lambda: [str(get_agent_skills_dir())],
+                disabled_skills=self._live_skill_retrieval_disabled_skills,
+                visible_skill_names=inventory[1] if inventory is not None else None,
+                source_by_name=lambda: (
+                    skill_sources_from_manager(self._skill_manager)
+                    if self._skill_manager is not None
+                    else {}
+                ),
+                session_scope=self._skill_retrieval_session_scope(),
+                config_base=self._config_base_cache,
+                settings=getattr(self, "_skill_retrieval_settings", None),
+                auto_build_index=True,
+                frozen_profile=getattr(self, "_restored_skill_retrieval_profile", None),
+            )
         self._skill_retrieval_toolkit = toolkit
         self._skill_retrieval_environment = toolkit.environment
         self._persist_skill_retrieval_session_profile()
@@ -10180,6 +10198,20 @@ class JiuWenSwarmDeepAdapter:
         rails_list = []
         if self._skill_rail is not None:
             rails_list.append(self._skill_rail)
+        plugin_rails = (
+            self._instance.find_rail_by_name(ref.identity)
+            for record in getattr(self, "_agent_plugin_records", ())
+            for ref in record.refs
+            if ref.kind.value == "rail"
+        ) if self._instance is not None else ()
+        runtime_rails = (
+            rail
+            for manager in getattr(self, "_agent_runtime_tools", ())
+            for rail in manager.rails()
+        )
+        for rail in (*plugin_rails, *runtime_rails):
+            if rail is not None:
+                rails_list.append(rail)
         if self._context_assemble_rail is not None:
             rails_list.append(self._context_assemble_rail)
         if self._context_processor_rail is not None:
@@ -10926,6 +10958,7 @@ class JiuWenSwarmDeepAdapter:
         if agent_definition is not None and agent_definition.get("tools") != "*":
             from jiuwenswarm.runtime.tool_allowlist import install_tool_allowlist
             install_tool_allowlist(self._instance.ability_manager, agent_definition["tools"])
+        await self._load_agent_plugins()
         if self._enable_auto_permission:
             expected = PermissionRailGroup(
                 self._permission_rail, self._root_permission_queue_rail,
@@ -10942,6 +10975,53 @@ class JiuWenSwarmDeepAdapter:
             if self._capture_permission_version()[0] != self._permission_state.permission_epoch:
                 await self.reload_agent_config(config_base, reload_scopes={"permissions"})
         self._permission_state.clear_pending_permission()
+
+    async def _load_agent_plugin_spec(self, spec: Any) -> Any | None:
+        existing = {skill.name for skill in self._skill_rail.skills} if self._skill_rail else set()
+        spec.skills = [skill for skill in spec.skills if Path(skill.dir).name not in existing]
+        if not (spec.rails or spec.tools or spec.skills):
+            return None
+        return await self._instance.load_plugin_spec(spec)
+
+    async def _load_agent_plugins(self) -> None:
+        registry = ExtensionRegistry.current_instance()
+        if registry is None:
+            return
+        services = AgentPluginServices(
+            agent=self._instance,
+            load_plugin_spec=self._load_agent_plugin_spec,
+            register_request_context=self.register_agent_request_context,
+            register_runtime_tools=self.register_agent_runtime_tools,
+            runtime_context=self._runtime_cron_tool_context,
+        )
+        self._agent_plugin_records = [
+            record
+            for mount in registry.get_agent_plugins()
+            if (record := await mount(services)) is not None
+        ]
+
+    def register_agent_request_context(self, factory: Callable[[AgentRequest], Any]) -> None:
+        contexts = getattr(self, "_agent_request_contexts", None)
+        if contexts is None:
+            contexts = self._agent_request_contexts = []
+        contexts.append(factory)
+
+    def register_agent_runtime_tools(self, manager: Any) -> None:
+        managers = getattr(self, "_agent_runtime_tools", None)
+        if managers is None:
+            managers = self._agent_runtime_tools = []
+        managers.append(manager)
+
+    def _keep_agent_plugin_skills(self, config: DeepAgentConfig) -> None:
+        roots = [
+            str(Path(ref.identity).parent)
+            for record in getattr(self, "_agent_plugin_records", ())
+            for ref in record.refs
+            if ref.kind.value == "skill"
+        ]
+        if roots:
+            configured = [config.skills] if isinstance(config.skills, str) else config.skills or []
+            config.skills = list(dict.fromkeys([*roots, *configured]))
 
     async def load_user_rails(self) -> None:
         """动态加载用户自定义的 Rail 扩展."""
@@ -11275,6 +11355,7 @@ class JiuWenSwarmDeepAdapter:
             tool_cards=self._tool_cards if self._tool_cards else [],
             rails=rails_list,
         )
+        self._keep_agent_plugin_skills(deep_cfg)
         omitted_fields, reload_fingerprints = self._omit_unchanged_reload_fields(deep_cfg)
         try:
             self._instance.configure(deep_cfg)
@@ -11937,6 +12018,9 @@ class JiuWenSwarmDeepAdapter:
                     project_dir=self._project_dir,
                     require_execution_authorization=require_send_authorization,
                 )
+
+        for manager in getattr(self, "_agent_runtime_tools", ()):
+            await manager.refresh()
 
     def _refresh_acp_runtime_tools(
         self,
@@ -13315,6 +13399,10 @@ class JiuWenSwarmDeepAdapter:
         request: AgentRequest,
         inputs: dict[str, Any],
     ) -> dict[str, Any]:
+        params = request.params if isinstance(request.params, dict) else {}
+        registry = ExtensionRegistry.current_instance()
+        if registry is not None:
+            inputs = registry.prepare_agent_inputs(self._instance, params, inputs)
         if not self._enable_auto_permission:
             await self._discard_pending_core_interrupt_for_fresh_input(request, inputs)
             return inputs
@@ -15314,6 +15402,9 @@ class JiuWenSwarmDeepAdapter:
         request_token = TOOL_PERMISSION_REQUEST_ID.set(
             (request.request_id or "").strip()
         )
+        chat_token = TOOL_PERMISSION_CHAT_ID.set(
+            (getattr(request, "chat_id", "") or "").strip()
+        )
         command_token = None
         if self._is_session_scoped_adapter and self._sys_operation is not None:
             command_token = bind_command_execution(
@@ -15323,17 +15414,21 @@ class JiuWenSwarmDeepAdapter:
                     == OperationMode.SANDBOX
                 ),
             )
-        try:
-            yield
-        finally:
-            if permission_rail is not None:
-                permission_rail.run_permission_levels = previous_rail_levels
-            RUN_PERMISSIONS.reset(run_permissions_token)
-            reset_root_permission_request(root_invocation_token)
-            if command_token is not None:
-                reset_command_execution(command_token)
-            TOOL_PERMISSION_REQUEST_ID.reset(request_token)
-            TOOL_PERMISSION_CHANNEL_ID.reset(channel_token)
+        with ExitStack() as plugin_context:
+            try:
+                for factory in getattr(self, "_agent_request_contexts", ()):
+                    plugin_context.enter_context(factory(request))
+                yield
+            finally:
+                if permission_rail is not None:
+                    permission_rail.run_permission_levels = previous_rail_levels
+                RUN_PERMISSIONS.reset(run_permissions_token)
+                reset_root_permission_request(root_invocation_token)
+                if command_token is not None:
+                    reset_command_execution(command_token)
+                TOOL_PERMISSION_CHAT_ID.reset(chat_token)
+                TOOL_PERMISSION_REQUEST_ID.reset(request_token)
+                TOOL_PERMISSION_CHANNEL_ID.reset(channel_token)
 
     async def process_message_impl(
         self, request: AgentRequest, inputs: dict[str, Any]

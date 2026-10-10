@@ -95,6 +95,11 @@ class ExtensionRegistry:
         self._crypto_tool: CryptoUtility | None = None
         self._third_agent: ThirdAgentExtension | None = None
         self._application_plugins: dict[str, ApplicationPluginExtension] = {}
+        self._agent_plugins: list[Callable] = []
+        self._turn_fields: list[Callable] = []
+        self._final_filters: list[Callable] = []
+        self._agent_input_transforms: list[Callable] = []
+        self._skill_inventory: tuple[Callable, Callable] | None = None
         self.callback_framework = callback_framework
         self._config = ExtensionConfig(config=config, logger=logger)
 
@@ -103,6 +108,50 @@ class ExtensionRegistry:
         if cls._instance is None:
             raise RuntimeError("ExtensionRegistry 尚未初始化，请先调用 create_instance()")
         return cls._instance
+
+    @classmethod
+    def current_instance(cls) -> "ExtensionRegistry | None":
+        return cls._instance
+
+    def register_agent_plugin(self, mount: Callable) -> None:
+        self._agent_plugins.append(mount)
+
+    def get_agent_plugins(self) -> tuple[Callable, ...]:
+        return tuple(self._agent_plugins)
+
+    def register_turn_envelope_fields(self, provider: Callable) -> None:
+        self._turn_fields.append(provider)
+
+    def turn_envelope_fields(self, channel: str, metadata: dict | None) -> dict:
+        fields = {}
+        for provider in self._turn_fields:
+            added = provider(channel, metadata)
+            if fields.keys() & added.keys():
+                raise ValueError("turn envelope field contributed more than once")
+            fields.update(added)
+        return fields
+
+    def register_final_filter(self, predicate: Callable) -> None:
+        self._final_filters.append(predicate)
+
+    def suppress_final(self, request: Any, content: str) -> bool:
+        return any(predicate(request, content) for predicate in self._final_filters)
+
+    def register_agent_input_transform(self, transform: Callable) -> None:
+        self._agent_input_transforms.append(transform)
+
+    def prepare_agent_inputs(self, agent: Any, params: dict, inputs: dict) -> dict:
+        for transform in self._agent_input_transforms:
+            inputs = transform(agent, params, inputs)
+        return inputs
+
+    def register_skill_inventory(self, context_factory: Callable, visible_names: Callable) -> None:
+        if self._skill_inventory is not None:
+            raise ValueError("Skill inventory provider already registered")
+        self._skill_inventory = context_factory, visible_names
+
+    def get_skill_inventory(self) -> tuple[Callable, Callable] | None:
+        return self._skill_inventory
 
     @classmethod
     def create_instance(

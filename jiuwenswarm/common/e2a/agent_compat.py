@@ -10,7 +10,7 @@ from datetime import datetime
 from jiuwenswarm.common.e2a.gateway_normalize import E2A_INTERNAL_CONTEXT_KEY
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.schema.message import ContributedReqMethod, ReqMethod, parse_req_method
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +38,10 @@ def e2a_to_agent_request(env: E2AEnvelope) -> AgentRequest:
 
     metadata = ctx if ctx else None
     method_str = env.method
-    req_method: ReqMethod | None = None
+    req_method: ReqMethod | ContributedReqMethod | None = None
     if method_str:
         try:
-            req_method = ReqMethod(method_str)
+            req_method = parse_req_method(method_str)
         except ValueError:
             logger.error(
                 "[E2A][compat] unknown E2A method=%r request_id=%s",

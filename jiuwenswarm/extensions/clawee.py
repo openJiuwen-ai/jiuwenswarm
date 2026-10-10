@@ -16,7 +16,7 @@ from jiuwenswarm.common.e2a.wire_codec import (
     parse_agent_server_wire_unary,
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.schema.message import parse_req_method
 
 
 # 长生命周期事件循环：避免每次请求 asyncio.run() 新建循环导致 SDK 内部
@@ -69,7 +69,7 @@ def payload_to_request(request: dict[str, Any]) -> AgentRequest:
     """
     req_method = request.get("req_method")
     if req_method is not None and isinstance(req_method, str):
-        req_method = ReqMethod(req_method)
+        req_method = parse_req_method(req_method)
 
     return AgentRequest(
         request_id=request.get("request_id"),

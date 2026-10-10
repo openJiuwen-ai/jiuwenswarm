@@ -22,7 +22,7 @@ from jiuwenswarm.common.e2a.wire_codec import (
     encode_json_parse_error_wire,
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.schema.message import parse_req_method
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ def payload_to_request(data: dict[str, Any]) -> AgentRequest:
     """Parse a legacy JSON payload into ``AgentRequest``."""
     req_method = data.get("req_method")
     if req_method is not None and isinstance(req_method, str):
-        req_method = ReqMethod(req_method)
+        req_method = parse_req_method(req_method)
     metadata = data.get("metadata")
     if isinstance(metadata, dict):
         metadata = {
