@@ -32,11 +32,12 @@ class UserHookRail(DeepAgentRail):
 
     priority = 60
 
-    def __init__(self, hooks_config: HooksConfig):
+    def __init__(self, hooks_config: HooksConfig, *, subagent_type: str = ""):
         super().__init__()
         self._config = hooks_config
         self._executor = HookExecutor()
         self._blocking_state: ContextVar[dict | None] = ContextVar("user_hook_blocking_state", default=None)
+        self._subagent_type = str(subagent_type or "")
 
     @staticmethod
     def _session_id(ctx: AgentCallbackContext) -> str:
@@ -84,6 +85,7 @@ class UserHookRail(DeepAgentRail):
                 "tool_name": tool_name,
                 "tool_input": tool_args,
                 "session_id": self._session_id(ctx),
+                "subagent_type": self._subagent_type,
             },
         )
 
@@ -152,6 +154,7 @@ class UserHookRail(DeepAgentRail):
                 "tool_input": ctx.inputs.tool_args,
                 "tool_result": ctx.inputs.tool_result,
                 "session_id": self._session_id(ctx),
+                "subagent_type": self._subagent_type,
             },
         )
 
@@ -256,6 +259,7 @@ class UserHookRail(DeepAgentRail):
                 "tool_input": ctx.inputs.tool_args,
                 "error": str(getattr(ctx, "exception", "")),
                 "session_id": self._session_id(ctx),
+                "subagent_type": self._subagent_type,
             },
         )
 
@@ -277,6 +281,7 @@ class UserHookRail(DeepAgentRail):
                 "event": "Stop",
                 "final_response": getattr(ctx.inputs, "result", None),
                 "session_id": self._session_id(ctx),
+                "subagent_type": self._subagent_type,
             },
         )
 
