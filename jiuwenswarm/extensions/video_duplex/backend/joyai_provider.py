@@ -33,19 +33,40 @@ _TTS_TEMPERATURE = 0.2
 _ACTION_TEMPERATURE = 0.0
 _SYSTEM_PROMPT_KEY = "DEFAULT_SYSTEM_PROMPT_EN"
 _USER_KNOWLEDGE_GUARD = (
-    "【本轮动作约束】你必须自行选择官方动作。只依据当前或近期清晰画面、用户明确提供的信息和已确认的工具结果回答。"
-    "天气、新闻、价格、公司或品牌背景等外部或时效事实需要搜索核实，不得凭记忆猜测。"
-    "当且仅当搜索对象已经明确且需要外部核实时，必须在本次推理中一次性输出完整的 Delegate 动作："
-    "</response> 简短说明 </delegation> 包含明确对象和查询事项的可独立执行搜索请求。"
-    "Delegate 是不可拆分的原子动作；只说‘需要搜索’、‘我来查询’或其他搜索承诺却没有在同一输出中给出 </delegation>，均为无效动作。"
-    "不得先 Speak、再等待下一帧补发 Delegate，也不得用 </delegation> 询问‘这是什么’、‘哪个品牌’或‘请提供对象’。"
-    "若画面和会话历史都无法确认搜索所需的关键对象，只选择 Speak，说明缺少的信息并请用户调整画面或补充，不要 Delegate。"
-    "利用当前画面和会话历史解析‘这个品牌’、‘这个人’、‘这里’等指代。若先前因对象不明而追问，用户或后续清晰画面一旦补齐对象，"
-    "立即结合先前搜索意图输出一个完整 Delegate 动作，不要只承诺搜索。纯视觉问答无需搜索。"
+    "【本轮动作选择】Core Agent 可以使用搜索、网页、文件、代码和其他已接入的工具。"
+    "只有依据清晰画面、用户提供的信息或已确认的工具结果即可可靠回答时才选择 Speak。"
+    "凡用户要求查询外部或实时信息、读取或修改文件、计算或运行代码、创建产物、调用应用，"
+    "以及任何需要工具执行或核实的任务，都选择 Delegate；不必知道具体工具名称。"
+    "不要用‘无法获取实时信息’‘请自行查看网站’代替委托，也不要凭记忆猜测时效事实。"
+    "Delegate 必须在本次输出中同时包含简短说明和完整任务，格式严格为："
+    "</response> 我来处理。 </delegation> 保留用户对象、限制和输出要求的可独立执行任务。"
+    "例如‘今天香港天气怎么样？’应委托‘查询香港今天的天气并回答用户’；"
+    "‘读取指定报告并整理摘要’应委托读取文件和整理摘要，而不是说自己无法访问文件。"
+    "只说‘我来查询’却没有 </delegation> 不是 Delegate；不得先 Speak、再等下一帧补发。"
+    "先结合画面与会话历史解析‘这个’等指代；若执行所必需的对象仍不明确，选择 Speak 请用户补充。"
+    "一旦补齐对象，立即结合先前意图输出完整 Delegate 动作。纯视觉问答无需工具时直接 Speak。"
 )
 _RESPONSE_MARKER = re.compile(r"</?response>", flags=re.IGNORECASE)
 _SILENCE_MARKER = re.compile(r"</?silence>", flags=re.IGNORECASE)
 _DELEGATION_MARKER = re.compile(r"</?delegation>", flags=re.IGNORECASE)
+_PENDING_TOOL_REPLY = re.compile(
+    r"^(?:我(?:来|会|将|帮你|为您)|让我|I(?:'ll| will)|Let me)"
+    r".{0,100}(?:查询|搜索|查找|检索|核实|查看|识别|读取|写入|修改|编辑|打开|启动|"
+    r"运行|执行|创建|生成|转换|导出|保存|下载|上传|计算|调用|整理|汇总|"
+    r"check|look up|search|inspect|identify|read|write|edit|save|download|"
+    r"upload|create|generate|convert|export|run|execute|calculate)",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_REALTIME_LOOKUP = re.compile(
+    r"天气|气温|降雨|新闻|股价|汇率|weather|forecast|news|stock price|exchange rate",
+    flags=re.IGNORECASE,
+)
+_UNAVAILABLE_LOOKUP = re.compile(
+    r"无法(?:获取|查询|访问)|不能(?:获取|查询|访问)|无法联网|"
+    r"(?:can't|cannot|unable to) (?:access|fetch|check|search)",
+    flags=re.IGNORECASE,
+)
+_COMPLETED_VISUAL_REPLY = re.compile(r"画面中|图片中|我看到|可以看到|桌面上有(?!哪|什)")
 
 
 class JoyAIRateLimitError(RuntimeError):
@@ -125,6 +146,56 @@ def parse_action(raw_content: str) -> dict[str, str]:
     if not raw:
         return {"decision": "silence", "response": "", "delegation": ""}
     return {"decision": "response", "response": raw, "delegation": ""}
+
+
+def recover_unissued_delegation(
+    result: dict[str, Any], original_question: str,
+) -> dict[str, Any]:
+    """Do not present an unexecuted tool promise as a completed answer."""
+    question = original_question.strip()
+    response = str(result.get("response") or "").strip()
+    if (
+        result.get("decision") == "delegation"
+        and question
+        and not str(result.get("delegation") or "").strip()
+    ):
+        return {
+            **result,
+            "delegation": question,
+            "recovered_delegation": True,
+        }
+    if result.get("decision") != "response" or not question or not response:
+        return result
+    if _COMPLETED_VISUAL_REPLY.search(response):
+        return result
+    if not (
+        _PENDING_TOOL_REPLY.search(response)
+        or (_REALTIME_LOOKUP.search(question) and _UNAVAILABLE_LOOKUP.search(response))
+    ):
+        return result
+    return {
+        **result,
+        "decision": "delegation",
+        "response": "",
+        "delegation": question,
+        "recovered_delegation": True,
+    }
+
+
+def delegation_announcement(
+    task: str, preferred_language: object = "match", user_text: str = "",
+) -> str:
+    """Give the user a brief, visible acknowledgement for an actual queued task."""
+    task = re.sub(r"\s+", " ", str(task or "")).strip().rstrip("。.!！?？ ")
+    if len(task) > 72:
+        task = task[:71].rstrip() + "…"
+    language = normalize_response_language(preferred_language)
+    english = language == "en" or (
+        language == "match" and bool(user_text) and user_text.isascii()
+    )
+    if english:
+        return f"I'll handle this: {task}." if task else "I'll handle this."
+    return f"我来处理：{task}。" if task else "我来处理。"
 
 
 def ground_user_instruction(
