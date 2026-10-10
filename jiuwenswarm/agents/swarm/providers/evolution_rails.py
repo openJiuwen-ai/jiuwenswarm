@@ -40,6 +40,7 @@ from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.common.config import (
     get_evolution_review_feedback_min_confidence,
+    get_execution_grounded_gate_config,
     get_skill_evolution_enabled,
 )
 from jiuwenswarm.common.utils import get_agent_skills_dir
@@ -485,15 +486,87 @@ def _build_evolution_llm_from(model_config: dict[str, Any]) -> tuple[Any, str]:
     ), model_name
 
 
+def _maybe_attach_execution_gate(rail: SkillEvolutionRail, config: dict[str, Any] | None) -> list[Any]:
+    """Opt-in success-window gate in front of a native evolution rail.
+
+    Returns extra rails to mount (possibly empty). Mutates *rail* in place
+    when enabled so ``_allow_evolution_trigger`` consults the gate.
+    """
+    cfg = get_execution_grounded_gate_config(config)
+    if not cfg["enabled"]:
+        return []
+    from jiuwenswarm.agents.harness.common.rails.execution_grounded_gate import (
+        ExecutionGroundedGate,
+        ExecutionGroundedGateRail,
+        attach_execution_gate,
+    )
+
+    gate = ExecutionGroundedGate(
+        window=cfg["window"],
+        min_samples=cfg["min_samples"],
+    )
+    attach_execution_gate(rail, gate)
+    logger.info(
+        "[swarm.execution_gate] enabled window=%s min_samples=%s",
+        cfg["window"],
+        cfg["min_samples"],
+    )
+    return [ExecutionGroundedGateRail(gate)]
+
+
+def _maybe_attach_canary(
+    rail: SkillEvolutionRail, config: dict[str, Any] | None
+) -> list[Any]:
+    """Opt-in canary skill library on a native evolution rail.
+
+    When enabled, Skills written through the rail enter the library in
+    ``probation`` (admission wraps ``on_skill_written``) and a
+    ``CanarySkillRail`` is returned for mounting: it records task outcomes
+    through the bound library, attributing a task to the skills its
+    ``ctx.inputs.canary_skills`` names (empty/absent attribution records
+    nothing). Disabled by default; no effect on existing workspaces.
+
+    Returns the extra rails to mount (empty when disabled).
+    """
+    from jiuwenswarm.agents.harness.common.rails.canary_skill_library import (
+        get_canary_skill_config,
+    )
+
+    cfg = get_canary_skill_config(config)
+    if not cfg["enabled"]:
+        return []
+    from jiuwenswarm.agents.harness.common.rails.canary_skill_library import (
+        CanaryLibrary,
+        CanarySkillRail,
+        attach_canary_library,
+    )
+
+    library = CanaryLibrary(
+        core_strikes=cfg["core_strikes"],
+        promote_after=cfg["promote_after"],
+        attribution_floor=cfg["attribution_floor"],
+    )
+    attach_canary_library(rail, library)
+    logger.info(
+        "[swarm.canary] enabled core_strikes=%s promote_after=%s attribution_floor=%s",
+        cfg["core_strikes"],
+        cfg["promote_after"],
+        cfg["attribution_floor"],
+    )
+    return [CanarySkillRail(library)]
+
+
 def _build_evolution_approval_stack(
     rail: SkillEvolutionRail,
     *,
     review_runtime: EvolutionReviewRuntime,
     auto_save: bool,
     language: str,
+    extra_rails: list[Any] | None = None,
 ) -> list[Any]:
     """Return the approval interrupt plus evolution rail in registration order."""
-    return [
+    prefix = list(extra_rails or [])
+    return prefix + [
         EvolutionInterruptRail(
             review_runtime=review_runtime,
             submission_service=rail.approval_submission_service,
@@ -627,6 +700,8 @@ def build_team_skill_evolution_rail(
             config=ctx.config,
             trajectory_span_processor=inp.trajectory_span_processor,
         )
+        extra = _maybe_attach_execution_gate(rail, ctx.config)
+        extra = extra + _maybe_attach_canary(rail, ctx.config)
         logger.info(
             "[swarm.team_skill_evolution] built: skills_dir=%s, model=%s, "
             "auto_save=%s",
@@ -639,6 +714,7 @@ def build_team_skill_evolution_rail(
             review_runtime=review_runtime,
             auto_save=inp.auto_save,
             language=inp.language,
+            extra_rails=extra,
         )
     except Exception as exc:
         logger.warning(
@@ -837,6 +913,8 @@ def build_member_skill_evolution_rail(
             language=inp.language,
             trajectory_span_processor=inp.trajectory_span_processor,
         )
+        extra = _maybe_attach_execution_gate(rail, ctx.config)
+        extra = extra + _maybe_attach_canary(rail, ctx.config)
         logger.info(
             "[swarm.member_skill_evolution] built: model=%s, auto_save=%s, "
             "trajectory_span_processor=%s",
@@ -844,7 +922,7 @@ def build_member_skill_evolution_rail(
             True,
             bool(inp.trajectory_span_processor),
         )
-        return [rail]
+        return extra + [rail]
     except Exception as exc:
         logger.warning(
             "[swarm.member_skill_evolution] build failed: %s", exc, exc_info=True

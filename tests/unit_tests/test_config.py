@@ -21,6 +21,7 @@ from jiuwenswarm.common.config import (
     get_config_raw,
     get_evolution_auto_save_enabled,
     get_evolution_review_feedback_min_confidence,
+    get_execution_grounded_gate_config,
     get_sandbox_runtime,
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
@@ -1004,6 +1005,39 @@ class TestConfigFunctions:
     def test_evolution_review_feedback_min_confidence(self, raw, expected):
         config = {"react": {"evolution": {"review_feedback_min_confidence": raw}}}
         assert get_evolution_review_feedback_min_confidence(config) == expected
+
+    def test_execution_grounded_gate_defaults_disabled(self):
+        cfg = get_execution_grounded_gate_config({"react": {"evolution": {"skill_evolution": True}}})
+        assert cfg["enabled"] is False
+        assert cfg["window"] == 6
+        assert cfg["min_samples"] == 3
+        assert "min_confidence" not in cfg
+
+    def test_execution_grounded_gate_enabled_reads_fields(self):
+        cfg = get_execution_grounded_gate_config({
+            "react": {"evolution": {"execution_gate": {
+                "enabled": True, "window": 5, "min_samples": 2, "min_confidence": 0.8,
+            }}}
+        })
+        # min_confidence was removed in review (the gate never read it);
+        # unknown keys are ignored rather than propagated.
+        assert cfg == {"enabled": True, "window": 5, "min_samples": 2}
+
+    def test_execution_grounded_gate_min_samples_clamped_to_window(self):
+        # min_samples beyond the window is unreachable (deque maxlen) and
+        # would suppress evolution forever; the config reader clamps it.
+        cfg = get_execution_grounded_gate_config({
+            "react": {"evolution": {"execution_gate": {
+                "enabled": True, "window": 3, "min_samples": 9,
+            }}}
+        })
+        assert cfg == {"enabled": True, "window": 3, "min_samples": 3}
+
+    def test_execution_grounded_gate_ignores_top_level_evolution(self):
+        cfg = get_execution_grounded_gate_config({
+            "evolution": {"execution_gate": {"enabled": True}}
+        })
+        assert cfg["enabled"] is False
 
     @staticmethod
     def test_get_config_raw(temp_config_file: Path):
