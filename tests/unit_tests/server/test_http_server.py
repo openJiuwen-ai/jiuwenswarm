@@ -37,6 +37,34 @@ from jiuwenswarm.server.transports.http_sink import SSESink
 _HTTP_DIR = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "server"
 
 
+def test_websocket_door_stays_open_unless_asked() -> None:
+    from jiuwenswarm.server.startup_switches import resolve_websocket_enabled
+
+    assert resolve_websocket_enabled(env={}, config_section={}) is True
+    assert resolve_websocket_enabled(env={}, config_section={"enabled": False}) is False
+    assert (
+        resolve_websocket_enabled(
+            env={"AGENT_WS_ENABLED": "false"},
+            config_section={"enabled": True},
+        )
+        is False
+    )
+    assert resolve_websocket_enabled(env={"AGENT_WS_ENABLED": "true"}, config_section={}) is True
+
+
+def test_websocket_door_off_skips_listen_and_heartbeat() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    app = (root / "jiuwenswarm/server/app_agentserver.py").read_text(encoding="utf-8")
+    server = (root / "jiuwenswarm/server/agent_ws_server.py").read_text(encoding="utf-8")
+    assert "if websocket_enabled:" in app
+    assert "await front.start()" in app
+    assert "websocket_enabled=websocket_enabled" in app
+    assert "if self._websocket_enabled:" in server
+    assert "await self._heartbeat_runtime.start()" in server
+
+
 def test_http_is_off_unless_asked() -> None:
     assert resolve_http_server_settings(env={}, config_section={}) == (
         False,

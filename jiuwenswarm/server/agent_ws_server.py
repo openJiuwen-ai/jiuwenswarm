@@ -784,6 +784,7 @@ class AgentWebSocketServer:
         self._runtime_push_handler = None
         self._previous_runtime_push_handler = None
         self._runtime_services_started = False
+        self._websocket_enabled = True
         # RSI 服务域分发句柄（懒加载，见 _get_rsi_handlers）
         self._rsi_handlers = None
         # Optional production Provider injection point.  The concrete class is
@@ -1089,9 +1090,12 @@ class AgentWebSocketServer:
         self._previous_runtime_push_handler = install_runtime_push_handler(
             self._runtime_push_handler
         )
-        logger.info(
-            "[AgentWebSocketServer] 已启动: ws://%s:%s", self._host, self._port
-        )
+        if self._websocket_enabled:
+            logger.info(
+                "[AgentWebSocketServer] 已启动: ws://%s:%s", self._host, self._port
+            )
+        else:
+            logger.info("[AgentWebSocketServer] 运行时已启动，WebSocket 门关闭")
 
         self._asset_start_task = asyncio.create_task(self._start_asset_services())
 
@@ -1107,7 +1111,8 @@ class AgentWebSocketServer:
             while True:
                 try:
                     await self._runtime.start()
-                    await self._heartbeat_runtime.start()
+                    if self._websocket_enabled:
+                        await self._heartbeat_runtime.start()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "[AgentWebSocketServer] Runtime warmup failed; "
