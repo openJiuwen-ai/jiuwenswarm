@@ -368,6 +368,17 @@ class TestWsContext:
         services = AgentServerServices(SimpleNamespace(_agent_manager=1, _resolve_model=lambda _n: None))
         assert not hasattr(services, "host")
 
+    def test_two_contexts_share_one_toolbox(self) -> None:
+        from jiuwenswarm.server.app_services import AppServices
+
+        app = AppServices()
+        app.agent_manager = "shared-manager"
+        first = AgentServerServices(app)
+        second = AgentServerServices(app)
+        assert first.agent_manager == "shared-manager"
+        assert second.agent_manager is first.agent_manager
+        assert not hasattr(first, "host")
+
 
 class TestWsSink:
     async def test_send_response_uses_the_lock(self) -> None:

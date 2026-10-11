@@ -64,6 +64,13 @@ from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
 from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 from jiuwenswarm.runtime import AgentRuntime
+from jiuwenswarm.server.app_services import (
+    AppServices,
+    is_tcp_port_bindable,
+    parse_sandbox_host_port,
+    pick_free_tcp_port,
+    resolve_adapter,
+)
 from jiuwenswarm.server.context import build_ws_request_context
 from jiuwenswarm.server.dispatch import try_dispatch
 from jiuwenswarm.server.runtime.tokenizer_service import TokenizerService
@@ -114,7 +121,6 @@ from jiuwenswarm.common.config import (
     DEFAULT_SANDBOX_POLICY_FILE,
     DEFAULT_SANDBOX_STARTUP_MODE,
     get_config,
-    get_available_models,
     get_default_models,
     get_sandbox_endpoint,
     get_sandbox_runtime,
@@ -698,6 +704,21 @@ def _inject_plan_mode_activation_reminder(request: AgentRequest) -> None:
 # Key substrings whose presence marks a payload field as credential-like.
 
 
+class _AppField:
+    """把原来放在 WebSocket 服务器上的字段，转到进程工具箱里的同名数据。"""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __get__(self, obj: Any, objtype: type | None = None) -> Any:
+        if obj is None:
+            return self
+        return getattr(obj._ensure_app_services(), self.name)
+
+    def __set__(self, obj: Any, value: Any) -> None:
+        setattr(obj._ensure_app_services(), self.name, value)
+
+
 class AgentWebSocketServer:
     """Gateway 与 AgentServer 之间的 WebSocket 服务端（单例）.
 
@@ -711,6 +732,40 @@ class AgentWebSocketServer:
     """
 
     _instance: ClassVar[AgentWebSocketServer | None] = None
+
+    # 这些名字还在，好让原来的代码和测试继续写 server._agent_manager。
+    # 真正的数据在进程工具箱里，全进程这一份服务器只用一份。
+    _runtime = _AppField("runtime")
+    _agent_manager = _AppField("agent_manager")
+    _session_message_service = _AppField("session_message_service")
+    _proactive_engine = _AppField("proactive_engine")
+    _scheduler_service = _AppField("scheduler_service")
+    _scheduler_agent = _AppField("scheduler_agent")
+    _jiuwenbox_runner = _AppField("jiuwenbox_runner")
+    _session_stream_tasks = _AppField("session_stream_tasks")
+    _model_cache = _AppField("model_cache")
+    _default_model = _AppField("default_model")
+    _tokenizer_service = _AppField("tokenizer_service")
+    _tokenizer_warmup_tasks = _AppField("tokenizer_warmup_tasks")
+    _image_modality_refresh_task = _AppField("image_modality_refresh_task")
+
+    def _ensure_app_services(self) -> AppServices:
+        """拿出这一份服务器共用的工具箱。还没有就现造一个。"""
+
+        app = self.__dict__.get("_app_services")
+        if app is None:
+            app = AppServices()
+            self.__dict__["_app_services"] = app
+        if app.build_runtime is None:
+            app.build_runtime = self._build_runtime
+            app.plan_controller = _SERVER_PLAN_CONTROLLER
+        return app
+
+    @property
+    def app_services(self) -> AppServices:
+        """进程级工具箱。以后的 HTTP 应拿这一份，不要再新造一份。"""
+
+        return self._ensure_app_services()
 
     def __init__(
             self,
@@ -931,42 +986,9 @@ class AgentWebSocketServer:
         *,
         reason: str,
     ) -> None:
-        """Schedule a non-blocking tokenizer warm-up task.
+        """后台预热分词器。具体工作在进程工具箱里。"""
 
-        The service-level lock deduplicates overlapping resolutions. Keeping
-        each task until completion lets a reload submit its newest config
-        without cancelling an in-flight worker-thread download.
-        """
-
-        async def _run() -> None:
-            try:
-                result = await self._tokenizer_service.warm(config, reason=reason)
-                logger.info(
-                    "[AgentWebSocketServer] tokenizer warm-up finished: "
-                    "reason=%s warmed=%d degraded=%d failed=%d",
-                    reason,
-                    result.get("warmed", 0),
-                    result.get("degraded", 0),
-                    result.get("failed", 0),
-                )
-            except (
-                AttributeError,
-                ImportError,
-                KeyError,
-                OSError,
-                RuntimeError,
-                TypeError,
-                ValueError,
-            ) as exc:
-                logger.warning(
-                    "[AgentWebSocketServer] tokenizer warm-up failed: reason=%s error=%s",
-                    reason,
-                    exc,
-                )
-
-        task = asyncio.create_task(_run(), name=f"tokenizer-warmup:{reason}")
-        self._tokenizer_warmup_tasks.add(task)
-        task.add_done_callback(self._tokenizer_warmup_tasks.discard)
+        self._ensure_app_services().schedule_tokenizer_warmup(config, reason=reason)
 
     @staticmethod
     async def _start_symphony_recovery() -> None:
@@ -1154,31 +1176,11 @@ class AgentWebSocketServer:
     def schedule_image_modality_warmup(
         self, *, reason: str, reset_cache: bool = False
     ) -> None:
-        """把图像模态探针任务放进统一槽位调度。
+        """后台重探模型能不能看图。具体工作在进程工具箱里。"""
 
-        启动预热与模型配置变更重探共用 ``_image_modality_refresh_task`` 这一个
-        任务槽位：新任务启动前取消上一轮未完成的任务，避免启动预热在配置变化
-        后继续跑完并写回过期结论（新配置先 reset 缓存、旧任务随后覆盖）。
-        任务由 ``_stop_main_services`` 在 shutdown 时统一 cancel 回收。
-
-        Args:
-            reason: 传给 warm/refresh 的日志标签（"startup" / "model config change"）。
-            reset_cache: True 时先清空旧结论再探（配置变更场景），False 仅补探。
-        """
-        from jiuwenswarm.server.runtime.image_modality_warmup import (
-            refresh_image_modality_cache,
-            warm_image_modality_cache,
-        )
-
-        previous_task = self._image_modality_refresh_task
-        if previous_task is not None and not previous_task.done():
-            previous_task.cancel()
-        if reset_cache:
-            coro = refresh_image_modality_cache(get_config(), reason=reason)
-        else:
-            coro = warm_image_modality_cache(get_config(), reason=reason)
-        self._image_modality_refresh_task = asyncio.create_task(
-            coro, name=f"image-modality-warmup-{reason}"
+        self._ensure_app_services().schedule_image_modality_warmup(
+            reason=reason,
+            reset_cache=reset_cache,
         )
 
     async def _start_personal_context_best_effort(self) -> None:
@@ -1407,18 +1409,9 @@ class AgentWebSocketServer:
             self._scheduler_agent = None
 
     def _set_scheduler_agent(self, agent: Any) -> None:
-        """Pin the facade whose DeepAgent is retained by the scheduler."""
-        previous = getattr(self, "_scheduler_agent", None)
-        if previous is agent:
-            return
-        pin = getattr(self._agent_manager, "pin_agent", None)
-        if callable(pin):
-            pin(agent)
-        self._scheduler_agent = agent
-        if previous is not None:
-            unpin = getattr(self._agent_manager, "unpin_agent", None)
-            if callable(unpin):
-                unpin(previous)
+        """记住定时任务正在用的那个 Agent。数据在进程工具箱里。"""
+
+        self._ensure_app_services().set_scheduler_agent(agent)
 
     async def _process_request(self, *args: Any) -> Any:
         """在握手阶段执行 Origin 校验，兼容 legacy/new websockets APIs。"""
@@ -3243,19 +3236,7 @@ class AgentWebSocketServer:
         )
 
     def _execution_runtime(self) -> AgentRuntime:
-        runtime = getattr(self, "_runtime", None)
-        manager = getattr(self, "_agent_manager", None)
-        if runtime is None or runtime.agent_manager is not manager:
-            runtime = self._build_runtime(
-                agent_manager=manager,
-                plan_controller=_SERVER_PLAN_CONTROLLER,
-                reuse_dependencies=True,
-            )
-            self._runtime = runtime
-            runtime.set_session_message_service(
-                getattr(self, "_session_message_service", None)
-            )
-        return runtime
+        return self._ensure_app_services().execution_runtime()
 
     async def _send_runtime_event(
         self,
@@ -3661,16 +3642,7 @@ class AgentWebSocketServer:
     @staticmethod
     def _resolve_adapter(agent: Any) -> Any:
         """从 JiuwenSwarm 中提取底层 Deep/Code Adapter (持 _sys_operation_card 的实例)."""
-        if agent is None:
-            return None
-        for attr in ("_adapter", "adapter", "_active_adapter"):
-            inner = getattr(agent, attr, None)
-            if inner is not None and hasattr(inner, "apply_sandbox_runtime_patch"):
-                return inner
-        # 兜底: agent 本身有相关方法
-        if hasattr(agent, "apply_sandbox_runtime_patch"):
-            return agent
-        return None
+        return resolve_adapter(agent)
 
     @staticmethod
     def resolve_adapter(agent: Any) -> Any:
@@ -3680,67 +3652,28 @@ class AgentWebSocketServer:
     @staticmethod
     def _parse_sandbox_host_port(url: str) -> tuple[str, int]:
         """从 sandbox url 解析 host:port; 默认 127.0.0.1:8321."""
-        from jiuwenswarm.server.sandbox.host_port import parse_sandbox_host_port
-
         return parse_sandbox_host_port(url)
 
     @staticmethod
     def _is_tcp_port_bindable(host: str, port: int) -> bool:
-        """``True`` 表示当前能在 ``host:port`` 上 ``bind`` 成功 (即没有被占用)。
-
-        不去探测 ``/health`` 之类应用层信息——只看四层占用情况, 谁占着、占着的
-        是不是 jiuwenbox 都不关心。
-        """
-        import socket
-
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            try:
-                sock.bind((host, port))
-            except OSError:
-                return False
-            return True
-        finally:
-            sock.close()
+        """``True`` 表示当前能在 ``host:port`` 上 ``bind`` 成功 (即没有被占用)。"""
+        return is_tcp_port_bindable(host, port)
 
     @staticmethod
     def _pick_free_tcp_port(host: str) -> int:
-        """让内核挑一个空闲端口 (``bind`` 到 0); 仅用于绑定测试, 不会真正监听。
-
-        存在 TOCTOU 风险 (返回后端口可能立即被别人抢), 但接下来 uvicorn 起来
-        通常足够快; 即便撞上, uvicorn 自己会因 EADDRINUSE 失败, 上游再报错。
-        """
-        import socket
-
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind((host, 0))
-            return int(sock.getsockname()[1])
+        """让内核挑一个空闲端口。"""
+        return pick_free_tcp_port(host)
 
     def _allocate_internal_jiuwenbox_port(
         self,
         host: str,
         preferred_port: int,
     ) -> int:
-        """internal 模式下确定 jiuwenbox 实际监听端口。
-
-        - 若本 runner 已经在 ``host:preferred_port`` 上拥有一个仍在跑的 jiuwenbox,
-          直接复用 (避免重复 spawn);
-        - 否则若 ``preferred_port`` 当前无人占用, 用之;
-        - 再否则让内核挑一个空闲端口返回。
-        """
-        if self._jiuwenbox_runner.is_owned_listener(host, preferred_port):
-            return preferred_port
-        if self._is_tcp_port_bindable(host, preferred_port):
-            return preferred_port
-        new_port = self._pick_free_tcp_port(host)
-        logger.warning(
-            "[command.sandbox] preferred port %s:%d is busy; "
-            "allocating fresh port %d for new jiuwenbox instance",
+        """internal 模式下确定 jiuwenbox 实际监听端口。"""
+        return self._ensure_app_services().allocate_internal_jiuwenbox_port(
             host,
             preferred_port,
-            new_port,
         )
-        return new_port
 
     async def send_push(self, msg) -> bool:
         """AgentServer 主动向 Gateway 推送消息。
@@ -4080,33 +4013,8 @@ class AgentWebSocketServer:
             payload["upstream"] = True
 
     def _resolve_model(self, model_name: Optional[str] = None) -> Optional[Any]:
-        """Resolve model from jiuwenswarm config.
-
-        Args:
-            model_name: Requested model name, falls back to default if None or not found
-
-        Returns:
-            Model instance or None if config cannot be loaded
-        """
-        # Build model cache if not already done
-        if not self._model_cache:
-            self._build_model_cache()
-
-        # Resolve by name or use default
-        if model_name and model_name in self._model_cache:
-            return self._model_cache[model_name]
-        if model_name:
-            # 缓存是启动时的一次性快照，登录后新拿到的模型不在里面；静默回退到默认模型会让
-            # 用户"选了 A 却跑了 B"。所以未命中时重建一次再查，仍然没有才回退。
-            self._build_model_cache()
-            if model_name in self._model_cache:
-                return self._model_cache[model_name]
-            logger.warning(
-                "[_resolve_model] 模型 %r 不在可用列表里，回退到默认模型；可用模型: %s",
-                model_name,
-                sorted(self._model_cache),
-            )
-        return self._default_model
+        """按名字找模型。找不到就用默认的那个。"""
+        return self._ensure_app_services().resolve_model(model_name)
 
     def reset_model_cache(self) -> None:
         """清空模型缓存,下次 _resolve_model 触发懒重建。
@@ -4120,99 +4028,5 @@ class AgentWebSocketServer:
         self._default_model = None
 
     def _build_model_cache(self) -> None:
-        """Build model cache from jiuwenswarm config.yaml (reuse interface_deep logic)."""
-        # Use the same model building function as interface_deep
-        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import build_model_from_entry
-
-        config = get_config()
-
-        # Build from models.defaults list
-        # 用 get_available_models：配置的模型 + 登录后自动获得的模型都要能选中
-        for entry in get_available_models(config):
-            mcc = entry.get("model_client_config") or {}
-            model_name = mcc.get("model_name")
-            if not model_name:
-                continue
-            mco = entry.get("model_config_obj") or {}
-            self._model_cache[model_name] = build_model_from_entry(mcc, mco)
-
-        # Fallback to legacy format if needed (same as interface_deep._build_model_cache_legacy)
-        if not self._model_cache:
-            default_model_config = config.get("models", {}).get("default", {})
-            react_config = config.get("react", {})
-            mcc = dict(
-                default_model_config.get("model_client_config")
-                or react_config.get("model_client_config")
-                or {}
-            )
-            model_name = mcc.get("model_name") or react_config.get("model_name") or "gpt-4"
-            if "model_name" not in mcc:
-                mcc["model_name"] = model_name
-            mco = (
-                default_model_config.get("model_config_obj")
-                or react_config.get("model_config_obj")
-                or {}
-            )
-            self._model_cache[model_name] = build_model_from_entry(mcc, mco)
-
-        # Set default model (first one)
-        if self._model_cache:
-            first_name = next(iter(self._model_cache))
-            self._default_model = self._model_cache[first_name]
-            logger.info(
-                "[AgentServer] Built model cache with %d models, default=%s",
-                len(self._model_cache), first_name
-            )
-
-        # 追加 Opencode Zen 免费模型（内存态，不入 config.yaml）。
-        # 这些模型可被 _resolve_model 按名解析，但 _default_model 保持上面的用户自配模型。
-        try:
-            from jiuwenswarm.server.runtime.opencode_zen import (
-                get_zen_free_model_entries,
-            )
-            for zent in get_zen_free_model_entries():
-                zmcc = zent.get("model_client_config") or {}
-                zname = zmcc.get("model_name", "")
-                if zname and zname not in self._model_cache:
-                    self._model_cache[zname] = build_model_from_entry(
-                        zmcc, zent.get("model_config_obj") or {}
-                    )
-        except Exception:
-            logger.debug(
-                "[AgentServer] append zen free models to cache failed",
-                exc_info=True,
-            )
-
-        # 首次启动兜底：默认模型仍为 .env 占位符时，改选 Zen 免费模型（如
-        # DeepSeek V4 Flash）作为默认，避免把占位模型发往厂商。仅内存态生效。
-        if self._default_model is not None:
-            try:
-                from jiuwenswarm.common.model_config_validation import (
-                    is_placeholder_model_entry,
-                    model_client_config_view,
-                )
-                from jiuwenswarm.server.runtime.opencode_zen import (
-                    get_zen_default_free_model_entry,
-                )
-                if is_placeholder_model_entry(
-                    model_client_config_view(self._default_model.model_client_config)
-                ):
-                    zen_default = get_zen_default_free_model_entry()
-                    if zen_default is not None:
-                        zmcc = zen_default["model_client_config"]
-                        zname = zmcc["model_name"]
-                        self._model_cache[zname] = build_model_from_entry(
-                            zmcc, zen_default.get("model_config_obj") or {}
-                        )
-                        self._default_model = self._model_cache[zname]
-                        logger.info(
-                            "[AgentServer] default model is placeholder; "
-                            "fallback to zen free model=%s",
-                            zname,
-                        )
-            except Exception:
-                logger.debug(
-                    "[AgentServer] fallback default to zen free model failed",
-                    exc_info=True,
-                )
-
+        """按配置把能用的模型先装进缓存。具体工作在进程工具箱里。"""
+        self._ensure_app_services().build_model_cache()
