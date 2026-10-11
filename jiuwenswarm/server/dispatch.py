@@ -75,6 +75,7 @@ from jiuwenswarm.server.handlers.ops import (
 )
 from jiuwenswarm.server.handlers.permissions import handle_permissions_config
 from jiuwenswarm.server.handlers.sandbox import handle_command_sandbox
+from jiuwenswarm.server.handlers.schedule import handle_schedule_request
 
 Handler = Callable[[RequestContext], Awaitable[None]]
 
@@ -141,6 +142,19 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.MCP_REGISTER_CUSTOM: handle_mcp_register_custom,
     ReqMethod.MCP_DELETE_CUSTOM: handle_mcp_delete_custom,
     ReqMethod.MCP_SAVE_CREDENTIALS: handle_mcp_save_credentials,
+    ReqMethod.SCHEDULE_CHECK_CONFIG: handle_schedule_request,
+    ReqMethod.SCHEDULE_UPDATE_CONFIG: handle_schedule_request,
+    ReqMethod.SCHEDULE_CREATE: handle_schedule_request,
+    ReqMethod.SCHEDULE_RUN: handle_schedule_request,
+    ReqMethod.SCHEDULE_LIST: handle_schedule_request,
+    ReqMethod.SCHEDULE_STATUS: handle_schedule_request,
+    ReqMethod.SCHEDULE_LOGS: handle_schedule_request,
+    ReqMethod.SCHEDULE_CANCEL: handle_schedule_request,
+    ReqMethod.SCHEDULE_DELETE: handle_schedule_request,
+    ReqMethod.ISSUE_WATCH_ONCE: handle_schedule_request,
+    ReqMethod.ISSUE_STATE_LIST: handle_schedule_request,
+    ReqMethod.ISSUE_DELETE: handle_schedule_request,
+    ReqMethod.ISSUE_MATRIX: handle_schedule_request,
 }
 
 
