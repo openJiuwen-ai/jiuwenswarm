@@ -38,6 +38,25 @@ def _make_request(
     )
 
 
+async def _call(server, handler_name, ws, request, send_lock=None):
+    """调用拆出去的处理函数。测试如果换了打码函数，这次调用也用换过的。"""
+    from contextlib import nullcontext
+
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers import mcp_hub
+
+    handler = getattr(mcp_hub, handler_name)
+    ctx = build_ws_request_context(server, ws, request, send_lock or asyncio.Lock())
+    mask = server.__dict__.get("_mask_sensitive_fields")
+    patcher = (
+        patch.object(mcp_hub, "_mask_sensitive_fields", mask)
+        if mask is not None
+        else nullcontext()
+    )
+    with patcher:
+        await handler(ctx)
+
+
 class _FakeWS:
     def __init__(self) -> None:
         self.sent: list[str] = []
@@ -103,9 +122,7 @@ class TestHandleMcpList:
     @pytest.mark.anyio
     async def test_list_returns_marketplace_connectors(self) -> None:
         """mcp.list returns {type:list, items:[...]} from marketplace registry."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         ws = _FakeWS()
         request = _make_request(req_method=ReqMethod.MCP_LIST)
         send_lock = asyncio.Lock()
@@ -133,7 +150,7 @@ class TestHandleMcpList:
             "jiuwenswarm.server.runtime.mcp.marketplace.list_mcps_with_hub",
             new=AsyncMock(return_value=fake_marketplace),
         ):
-            await server._handle_mcp_list(ws, request, send_lock)
+            await _call(server, "handle_mcp_list", ws, request, send_lock)
 
         assert len(ws.sent) == 1
         payload = _extract_payload(json.loads(ws.sent[0]))
@@ -146,9 +163,7 @@ class TestHandleMcpList:
     @pytest.mark.anyio
     async def test_list_passes_filter_param(self) -> None:
         """mcp.list forwards filter/cache controls; invalid filters use builtin."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         ws = _FakeWS()
         send_lock = asyncio.Lock()
 
@@ -169,7 +184,7 @@ class TestHandleMcpList:
             "jiuwenswarm.server.runtime.mcp.marketplace.list_mcps_with_hub",
             side_effect=_fake,
         ):
-            await server._handle_mcp_list(
+            await _call(server, "handle_mcp_list", 
                 ws,
                 _make_request(
                     req_method=ReqMethod.MCP_LIST,
@@ -194,7 +209,7 @@ class TestHandleMcpList:
             "jiuwenswarm.server.runtime.mcp.marketplace.list_mcps_with_hub",
             side_effect=_fake,
         ):
-            await server._handle_mcp_list(
+            await _call(server, "handle_mcp_list", 
                 ws,
                 _make_request(req_method=ReqMethod.MCP_LIST, params={}),
                 send_lock,
@@ -211,7 +226,7 @@ class TestHandleMcpList:
             "jiuwenswarm.server.runtime.mcp.marketplace.list_mcps_with_hub",
             side_effect=_fake,
         ):
-            await server._handle_mcp_list(
+            await _call(server, "handle_mcp_list", 
                 ws,
                 _make_request(req_method=ReqMethod.MCP_LIST, params={"filter": "bogus"}),
                 send_lock,
@@ -230,9 +245,7 @@ class TestHandleMcpShow:
     @pytest.mark.anyio
     async def test_show_returns_connector_detail(self) -> None:
         """mcp.show with name returns {type:detail, item:{...}}."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         ws = _FakeWS()
         request = _make_request(
             req_method=ReqMethod.MCP_SHOW,
@@ -256,7 +269,7 @@ class TestHandleMcpShow:
             "jiuwenswarm.server.runtime.mcp.marketplace.show_mcp_with_hub",
             new=AsyncMock(return_value=fake_detail),
         ):
-            await server._handle_mcp_show(ws, request, send_lock)
+            await _call(server, "handle_mcp_show", ws, request, send_lock)
 
         assert len(ws.sent) == 1
         payload = _extract_payload(json.loads(ws.sent[0]))
@@ -267,9 +280,7 @@ class TestHandleMcpShow:
     @pytest.mark.anyio
     async def test_show_unknown_name_returns_not_found(self) -> None:
         """mcp.show with unknown name -> ok=False, code=MCP_NOT_FOUND."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         ws = _FakeWS()
         request = _make_request(
             req_method=ReqMethod.MCP_SHOW,
@@ -281,7 +292,7 @@ class TestHandleMcpShow:
             "jiuwenswarm.server.runtime.mcp.marketplace.show_mcp_with_hub",
             new=AsyncMock(return_value=None),
         ):
-            await server._handle_mcp_show(ws, request, send_lock)
+            await _call(server, "handle_mcp_show", ws, request, send_lock)
 
         assert len(ws.sent) == 1
         wire = json.loads(ws.sent[0])
@@ -295,14 +306,12 @@ class TestHandleMcpShow:
     @pytest.mark.anyio
     async def test_show_missing_name_returns_bad_request(self) -> None:
         """mcp.show with no name -> ok=False, code=MCP_BAD_REQUEST."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         ws = _FakeWS()
         request = _make_request(req_method=ReqMethod.MCP_SHOW, params={})
         send_lock = asyncio.Lock()
 
-        await server._handle_mcp_show(ws, request, send_lock)
+        await _call(server, "handle_mcp_show", ws, request, send_lock)
 
         assert len(ws.sent) == 1
         wire = json.loads(ws.sent[0])
@@ -317,9 +326,7 @@ class TestHandleMcpInstall:
 
     @pytest.mark.anyio
     async def test_install_returns_installed_package(self) -> None:
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         ws = _FakeWS()
         request = _make_request(
             req_method=ReqMethod.MCP_INSTALL,
@@ -332,7 +339,7 @@ class TestHandleMcpInstall:
             "jiuwenswarm.server.runtime.mcp.marketplace.install_hub_mcp",
             new=install,
         ):
-            await server._handle_mcp_install(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_install", ws, request, asyncio.Lock())
 
         install.assert_awaited_once_with("mcp-asset-uuid")
         payload = _extract_payload(json.loads(ws.sent[0]))
@@ -343,9 +350,7 @@ class TestHandleMcpInstall:
     @pytest.mark.anyio
     async def test_install_embeds_connect_result(self) -> None:
         """Embed the connect result in the Hub install response."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         server._agent_manager = SimpleNamespace(
             probe_mcp_live_connection=AsyncMock(return_value=(True, "")),
             sync_mcp_credentials=Mock(),
@@ -383,7 +388,7 @@ class TestHandleMcpInstall:
                 new=set_state,
             ),
         ):
-            await server._handle_mcp_install(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_install", ws, request, asyncio.Lock())
 
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "installed"
@@ -395,9 +400,7 @@ class TestHandleMcpInstall:
     @pytest.mark.anyio
     async def test_install_probe_failure_keeps_hub_install_retryable(self) -> None:
         """Keep a downloaded Hub package retryable when its probe fails."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         server._agent_manager = SimpleNamespace(
             probe_mcp_live_connection=AsyncMock(return_value=(False, "unreachable")),
             sync_mcp_credentials=Mock(),
@@ -426,7 +429,7 @@ class TestHandleMcpInstall:
                 new=rollback,
             ),
         ):
-            await server._handle_mcp_install(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_install", ws, request, asyncio.Lock())
 
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "installed"
@@ -436,15 +439,13 @@ class TestHandleMcpInstall:
 
     @pytest.mark.anyio
     async def test_install_requires_asset_id(self) -> None:
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         ws = _FakeWS()
         with patch(
             "jiuwenswarm.server.runtime.mcp.marketplace.install_hub_mcp",
             new=AsyncMock(side_effect=ValueError("Hub MCP asset id is required")),
         ):
-            await server._handle_mcp_install(
+            await _call(server, "handle_mcp_install", 
                 ws,
                 _make_request(req_method=ReqMethod.MCP_INSTALL),
                 asyncio.Lock(),
@@ -460,9 +461,7 @@ class TestHandleMcpUninstall:
 
     @pytest.mark.anyio
     async def test_uninstall_returns_removed_package(self) -> None:
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         ws = _FakeWS()
         request = _make_request(
             req_method=ReqMethod.MCP_UNINSTALL,
@@ -472,7 +471,7 @@ class TestHandleMcpUninstall:
             "jiuwenswarm.server.runtime.mcp.marketplace.uninstall_hub_mcp",
             return_value={"id": "mcp-asset-uuid", "name": "hub-mcp", "removed": True},
         ):
-            await server._handle_mcp_uninstall(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_uninstall", ws, request, asyncio.Lock())
 
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "uninstalled"
@@ -482,9 +481,7 @@ class TestHandleMcpUninstall:
     async def test_uninstall_applies_runtime_removal_clears_credentials_and_refreshes_skills(
         self,
     ) -> None:
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         order: list[tuple[str, str] | tuple[str]] = []
 
         class _AM:
@@ -504,7 +501,7 @@ class TestHandleMcpUninstall:
             "jiuwenswarm.server.runtime.mcp.marketplace.uninstall_hub_mcp",
             return_value={"id": "asset-uuid", "name": "hub-mcp", "removed": True},
         ):
-            await server._handle_mcp_uninstall(
+            await _call(server, "handle_mcp_uninstall", 
                 ws,
                 _make_request(
                     req_method=ReqMethod.MCP_UNINSTALL, params={"id": "asset-uuid"}
@@ -519,9 +516,7 @@ class TestHandleMcpUninstall:
 
     @pytest.mark.anyio
     async def test_uninstall_runtime_failure_is_degraded_success(self) -> None:
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         cleared: list[str] = []
         refreshed: list[bool] = []
 
@@ -541,7 +536,7 @@ class TestHandleMcpUninstall:
             "jiuwenswarm.server.runtime.mcp.marketplace.uninstall_hub_mcp",
             return_value={"id": "asset-uuid", "name": "hub-mcp", "removed": True},
         ):
-            await server._handle_mcp_uninstall(
+            await _call(server, "handle_mcp_uninstall", 
                 ws,
                 _make_request(
                     req_method=ReqMethod.MCP_UNINSTALL, params={"id": "asset-uuid"}
@@ -558,9 +553,7 @@ class TestHandleMcpUninstall:
 
     @pytest.mark.anyio
     async def test_uninstall_propagates_request_cancellation(self) -> None:
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         apply_started = asyncio.Event()
         apply_release = asyncio.Event()
         apply_finished = asyncio.Event()
@@ -592,7 +585,7 @@ class TestHandleMcpUninstall:
             return_value={"id": "asset-uuid", "name": "hub-mcp", "removed": True},
         ):
             handler = asyncio.create_task(
-                server._handle_mcp_uninstall(
+                _call(server, "handle_mcp_uninstall", 
                     ws,
                     _make_request(
                         req_method=ReqMethod.MCP_UNINSTALL,
@@ -615,15 +608,13 @@ class TestHandleMcpUninstall:
 
     @pytest.mark.anyio
     async def test_uninstall_unknown_asset_returns_not_found(self) -> None:
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         ws = _FakeWS()
         with patch(
             "jiuwenswarm.server.runtime.mcp.marketplace.uninstall_hub_mcp",
             side_effect=KeyError("not installed"),
         ):
-            await server._handle_mcp_uninstall(
+            await _call(server, "handle_mcp_uninstall", 
                 ws,
                 _make_request(
                     req_method=ReqMethod.MCP_UNINSTALL,
@@ -646,8 +637,7 @@ class TestHandleMcpConnect:
         """mcp.connect installs + connects (state=connected) but does NOT load
         the MCP into the agent — session-level enable is per chat.send. No
         apply_mcp_change, no reload; returns type=connected."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         applied = []
         probed = []
         class _AM:
@@ -667,11 +657,8 @@ class TestHandleMcpConnect:
         with patch(
             "jiuwenswarm.server.runtime.mcp.registry.connect_mcp",
             return_value=fake_entry,
-        ), patch(
-            "jiuwenswarm.server.agent_ws_server.get_config",
-            return_value={},
         ):
-            await server._handle_mcp_connect(ws, request, send_lock)
+            await _call(server, "handle_mcp_connect", ws, request, send_lock)
         assert len(ws.sent) == 1
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "connected"
@@ -683,12 +670,11 @@ class TestHandleMcpConnect:
     @pytest.mark.anyio
     async def test_connect_missing_name_returns_bad_request(self) -> None:
         """mcp.connect with no name -> MCP_BAD_REQUEST."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         server._agent_manager = type("AM", (), {"apply_mcp_change": lambda self_inner, n, a, **kw: None})()
         ws = _FakeWS()
         request = _make_request(req_method=ReqMethod.MCP_CONNECT, params={})
-        await server._handle_mcp_connect(ws, request, asyncio.Lock())
+        await _call(server, "handle_mcp_connect", ws, request, asyncio.Lock())
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "bad_request"
         assert payload["code"] == "MCP_BAD_REQUEST"
@@ -696,8 +682,7 @@ class TestHandleMcpConnect:
     @pytest.mark.anyio
     async def test_connect_credentials_required_returns_prompt_no_reload(self) -> None:
         """Form B missing token: type=credentials_required, no reload triggered."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         applied = []
         class _AM:
             async def apply_mcp_change(self_inner, name, action, *, enabled=True, target_channel_id=None):
@@ -716,7 +701,7 @@ class TestHandleMcpConnect:
                 "credential_kind": "token",
             },
         ):
-            await server._handle_mcp_connect(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_connect", ws, request, asyncio.Lock())
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "credentials_required"
         assert payload["required_tokens"] == ["GITHUB_TOKEN"]
@@ -732,8 +717,7 @@ class TestHandleMcpConnect:
         (it received a string, not an array). The credentials_required branch
         must pass item fields through unmasked (they are metadata, not secrets).
         """
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         # Use the REAL _mask_sensitive_fields 鈥?no stub.
         applied = []
         class _AM:
@@ -752,7 +736,7 @@ class TestHandleMcpConnect:
                 "credential_kind": "token",
             },
         ):
-            await server._handle_mcp_connect(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_connect", ws, request, asyncio.Lock())
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "credentials_required"
         assert payload["required_tokens"] == ["GITHUB_TOKEN", "ANOTHER_TOKEN"]
@@ -761,8 +745,7 @@ class TestHandleMcpConnect:
     @pytest.mark.anyio
     async def test_connect_remote_unreachable_redacts_probe_details_and_rolls_back(self, tmp_path) -> None:
         """Probe failures must not expose credentials through the WebSocket payload."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         applied = []
         class _AM:
             async def apply_mcp_change(self_inner, name, action, *, enabled=True, target_channel_id=None):
@@ -809,7 +792,7 @@ class TestHandleMcpConnect:
             "jiuwenswarm.server.runtime.mcp.registry._packages_dir",
             return_value=tmp_path,
         ):
-            await server._handle_mcp_connect(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_connect", ws, request, asyncio.Lock())
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "connect_failed"
         assert payload["code"] == "MCP_UNREACHABLE"
@@ -823,8 +806,7 @@ class TestHandleMcpConnect:
     async def test_connect_remote_reachable_proceeds_to_connected(self) -> None:
         """Remote-mcp host up: probe passes, state flips to connected.
         No apply_mcp_change — the MCP loads into the agent only on chat.send."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         applied = []
         probed = []
         class _AM:
@@ -848,11 +830,8 @@ class TestHandleMcpConnect:
         with patch(
             "jiuwenswarm.server.runtime.mcp.registry.connect_mcp",
             return_value=fake_entry,
-        ), patch(
-            "jiuwenswarm.server.agent_ws_server.get_config",
-            return_value={},
         ):
-            await server._handle_mcp_connect(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_connect", ws, request, asyncio.Lock())
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "connected"
         assert payload["applied"] is True
@@ -865,8 +844,7 @@ class TestHandleMcpConnect:
         connect time, not deferred to chat.send. If the probe fails the entry
         is rolled back and connect_failed is reported — the user never sees a
         phantom "connected" for an MCP whose subprocess can't start."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         applied = []
         probed = []
         class _AM:
@@ -894,7 +872,7 @@ class TestHandleMcpConnect:
             "jiuwenswarm.server.runtime.mcp.registry.rollback_failed_connect",
             side_effect=lambda n: rolled_back.append(n),
         ):
-            await server._handle_mcp_connect(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_connect", ws, request, asyncio.Lock())
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "connect_failed"
         assert payload["code"] == "MCP_UNREACHABLE"
@@ -907,8 +885,7 @@ class TestHandleMcpConnect:
 class TestHandleMcpDisconnect:
     @pytest.mark.anyio
     async def test_disconnect_removes_and_reloads(self) -> None:
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         applied = []
         class _AM:
             async def apply_mcp_change(self_inner, name, action, *, enabled=True, target_channel_id=None):
@@ -920,11 +897,8 @@ class TestHandleMcpDisconnect:
         with patch(
             "jiuwenswarm.server.runtime.mcp.registry.disconnect_mcp",
             return_value={"name": "github", "transport": "http"},
-        ), patch(
-            "jiuwenswarm.server.agent_ws_server.get_config",
-            return_value={},
         ):
-            await server._handle_mcp_disconnect(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_disconnect", ws, request, asyncio.Lock())
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "disconnected"
         assert payload["name"] == "github"
@@ -932,8 +906,7 @@ class TestHandleMcpDisconnect:
 
     @pytest.mark.anyio
     async def test_disconnect_unknown_returns_not_found(self) -> None:
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         server._agent_manager = type("AM", (), {"apply_mcp_change": lambda self_inner, n, a, **kw: None})()
         ws = _FakeWS()
         request = _make_request(req_method=ReqMethod.MCP_DISCONNECT, params={"name": "nope"})
@@ -941,7 +914,7 @@ class TestHandleMcpDisconnect:
             "jiuwenswarm.server.runtime.mcp.registry.disconnect_mcp",
             side_effect=KeyError("mcp 'nope' not found"),
         ):
-            await server._handle_mcp_disconnect(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_disconnect", ws, request, asyncio.Lock())
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "disconnect_failed"
         assert payload["code"] == "MCP_NOT_FOUND"
@@ -955,9 +928,7 @@ class TestHandleMcpDeleteCustom:
         """Connected: clear_mcp_credentials is called BEFORE delete_custom_mcp
         so _mcp_env_keys can still read the credential store; then handler
         tears down live server + refreshes skill rails."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         applied = []
         cleared = []
         refreshed = []
@@ -989,7 +960,7 @@ class TestHandleMcpDeleteCustom:
             "jiuwenswarm.server.runtime.mcp.registry.delete_custom_mcp",
             side_effect=_delete_stub,
         ):
-            await server._handle_mcp_delete_custom(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_delete_custom", ws, request, asyncio.Lock())
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "deleted"
         assert payload["name"] == "my-mcp"
@@ -1004,9 +975,7 @@ class TestHandleMcpDeleteCustom:
     @pytest.mark.anyio
     async def test_delete_registered_skips_live_teardown(self) -> None:
         """Registered (not connected): apply_mcp_change never called."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         applied = []
 
         class _AM:
@@ -1029,7 +998,7 @@ class TestHandleMcpDeleteCustom:
             "jiuwenswarm.server.runtime.mcp.registry.delete_custom_mcp",
             return_value={"name": "draft-mcp", "removed": True, "was_connected": False},
         ):
-            await server._handle_mcp_delete_custom(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_delete_custom", ws, request, asyncio.Lock())
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "deleted"
         assert payload["applied"] is True
@@ -1038,9 +1007,7 @@ class TestHandleMcpDeleteCustom:
     @pytest.mark.anyio
     async def test_delete_builtin_returns_bad_request(self) -> None:
         """Built-in: ValueError -> bad_request / MCP_BAD_REQUEST."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         server._agent_manager = type(
             "AM", (), {"apply_mcp_change": lambda self_inner, n, a, **kw: None}
         )()
@@ -1055,7 +1022,7 @@ class TestHandleMcpDeleteCustom:
                 "MCP 'amap' is a built-in marketplace package and cannot be deleted"
             ),
         ):
-            await server._handle_mcp_delete_custom(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_delete_custom", ws, request, asyncio.Lock())
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "bad_request"
         assert payload["code"] == "MCP_BAD_REQUEST"
@@ -1063,9 +1030,7 @@ class TestHandleMcpDeleteCustom:
     @pytest.mark.anyio
     async def test_delete_unknown_returns_not_found(self) -> None:
         """No state record -> KeyError -> delete_failed / MCP_NOT_FOUND."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
         server._agent_manager = type(
             "AM", (), {"apply_mcp_change": lambda self_inner, n, a, **kw: None}
         )()
@@ -1078,7 +1043,7 @@ class TestHandleMcpDeleteCustom:
             "jiuwenswarm.server.runtime.mcp.registry.delete_custom_mcp",
             side_effect=KeyError("mcp 'nope' not found in state"),
         ):
-            await server._handle_mcp_delete_custom(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_delete_custom", ws, request, asyncio.Lock())
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "delete_failed"
         assert payload["code"] == "MCP_NOT_FOUND"
@@ -1087,9 +1052,7 @@ class TestHandleMcpDeleteCustom:
     async def test_delete_apply_failure_still_reports_state_deleted(self) -> None:
         """Live teardown raises after state already deleted -> ok=True,
         applied=False with the error (server clears on next reload)."""
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server = SimpleNamespace()
 
         class _AM:
             async def apply_mcp_change(self_inner, name, action, *, enabled=True, target_channel_id=None):
@@ -1111,7 +1074,7 @@ class TestHandleMcpDeleteCustom:
             "jiuwenswarm.server.runtime.mcp.registry.delete_custom_mcp",
             return_value={"name": "my-mcp", "removed": True, "was_connected": True},
         ):
-            await server._handle_mcp_delete_custom(ws, request, asyncio.Lock())
+            await _call(server, "handle_mcp_delete_custom", ws, request, asyncio.Lock())
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "deleted"
         assert payload["applied"] is False
