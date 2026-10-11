@@ -1,0 +1,71 @@
+﻿file,phase,reason
+jiuwenswarm/agents/harness/common/auto_harness/__init__.py,阶段四,可选 Auto-Harness 延迟导入；轻量重置保持原有文件字段语义
+jiuwenswarm/agents/harness/common/auto_harness/state.py,阶段四,可选 Auto-Harness 延迟导入；轻量重置保持原有文件字段语义
+jiuwenswarm/agents/harness/common/plugins/rail_manager.py,阶段三,共享有版本指纹的 Rail 类配方；实例仍归具体 Agent
+jiuwenswarm/agents/harness/common/tools/__init__.py,阶段三、四,工具定义和工厂延迟解析，实际有状态工具保持独立
+jiuwenswarm/agents/swarm/__init__.py,阶段四,延迟加载既有工作模式的提供者，使用时保留注册行为
+jiuwenswarm/channels/desktop/desktop_app.py,阶段二、四,重启保留 Worker 子树；最终退出使用显式生命周期控制权
+jiuwenswarm/channels/desktop/electron/main.cjs,阶段二、四,重启保留 Worker 子树；最终退出使用显式生命周期控制权
+jiuwenswarm/channels/process_cli/machine.py,阶段三,单次调用 RunContext 与执行选项隔离；仍启动本地子进程 Runtime
+jiuwenswarm/channels/web/frontend/src/App.tsx,阶段二,重连游标、事件去重、状态恢复、历史回退及对应错误文案
+jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json,阶段二,重连游标、事件去重、状态恢复、历史回退及对应错误文案
+jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json,阶段二,重连游标、事件去重、状态恢复、历史回退及对应错误文案
+jiuwenswarm/channels/web/frontend/src/services/runtimeResume.ts,阶段二,重连游标、事件去重、状态恢复、历史回退及对应错误文案
+jiuwenswarm/channels/web/frontend/src/services/webClient.ts,阶段二,重连游标、事件去重、状态恢复、历史回退及对应错误文案
+jiuwenswarm/channels/web/frontend/tests/webClientRuntimeAck.test.mjs,阶段二,重连游标、事件去重、状态恢复、历史回退及对应错误文案
+jiuwenswarm/common/utils.py,阶段四,压缩 Front 日志配置解析路径，保留合法 YAML 的兼容语义
+jiuwenswarm/gateway/channel_manager/web/app_web_handlers.py,阶段二,转发 AgentServer 的权威运行状态及事件游标，去掉本地 busy 覆盖
+jiuwenswarm/gateway/channel_manager/web/web_connect.py,阶段二,转发 AgentServer 的权威运行状态及事件游标，去掉本地 busy 覆盖
+jiuwenswarm/runtime/execution_telemetry.py,阶段四,观察完成必需准备后的真实执行入口，避免以 ACK 当执行时间
+jiuwenswarm/runtime/kernel.py,阶段三,资源共享键、租约、准备合并、失效及使用中资源保护
+jiuwenswarm/runtime/project_lsp.py,阶段三、四,项目范围的 SDK LSP 资源租约与关闭
+jiuwenswarm/runtime/run_context.py,阶段三,不可变的单次预算、权限、工具和凭据上下文
+jiuwenswarm/runtime/service.py,阶段二,读取既有 Coordinator 的权威执行快照
+jiuwenswarm/server/agent_ws_server.py,阶段二、四,实际交付确认、内部跨会话执行归属，以及可选服务后台准备
+jiuwenswarm/server/control/repositories/session_repository.py,阶段二,Front 的颜色更新改为受锁保护的字段补丁
+jiuwenswarm/server/front/admission.py,阶段二,调用方请求去重、对象身份清理、warming 取消和可选运行快照
+jiuwenswarm/server/front/request_registry.py,阶段二,调用方请求去重、对象身份清理、warming 取消和可选运行快照
+jiuwenswarm/server/front/router.py,阶段二,调用方请求去重、对象身份清理、warming 取消和可选运行快照
+jiuwenswarm/server/ipc/client.py,阶段二、四,ACK/订阅协议、进程租约、连接清理及 Windows 管道存活检查
+jiuwenswarm/server/ipc/protocol.py,阶段二、四,ACK/订阅协议、进程租约、连接清理及 Windows 管道存活检查
+jiuwenswarm/server/ipc/server.py,阶段二、四,ACK/订阅协议、进程租约、连接清理及 Windows 管道存活检查
+jiuwenswarm/server/runtime/agent_adapter/interface.py,阶段三、四,共享模型/MCP 资源，独立运行上下文，Kernel 准备和执行入口观测
+jiuwenswarm/server/runtime/agent_adapter/interface_deep.py,阶段三、四,共享模型/MCP 资源，独立运行上下文，Kernel 准备和执行入口观测
+jiuwenswarm/server/runtime/agent_warm_pool.py,阶段三,后台预构建优先准备 Kernel，保留真实 session claim/pin 路径
+jiuwenswarm/server/runtime/session/lifecycle.py,阶段二、四,metadata 字段合并、缓存与生命周期锁；缩短 Windows 锁竞争等待
+jiuwenswarm/server/runtime/session/project_store.py,阶段二、四,metadata 字段合并、缓存与生命周期锁；缩短 Windows 锁竞争等待
+jiuwenswarm/server/runtime/session/session_metadata.py,阶段二、四,metadata 字段合并、缓存与生命周期锁；缩短 Windows 锁竞争等待
+jiuwenswarm/server/runtime/skill/skill_manager.py,阶段三,共享 Skill 元数据索引；向调用方返回独立可变快照
+jiuwenswarm/server/supervisor/identity.py,阶段二、四,Worker 选主/身份/重连、独立 dispatch、交付 ACK 及统一关闭期限
+jiuwenswarm/server/supervisor/runtime_supervisor.py,阶段二、四,Worker 选主/身份/重连、独立 dispatch、交付 ACK 及统一关闭期限
+jiuwenswarm/server/supervisor/shutdown.py,阶段二、四,Worker 选主/身份/重连、独立 dispatch、交付 ACK 及统一关闭期限
+jiuwenswarm/server/supervisor/worker_process.py,阶段二、四,Worker 选主/身份/重连、独立 dispatch、交付 ACK 及统一关闭期限
+jiuwenswarm/server/worker/dispatcher.py,阶段二、四,执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭
+jiuwenswarm/server/worker/event_store.py,阶段二、四,执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭
+jiuwenswarm/server/worker/gateway_bridge.py,阶段二、四,执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭
+jiuwenswarm/server/worker/lifecycle.py,阶段二、四,执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭
+jiuwenswarm/server/worker/main.py,阶段二、四,执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭
+jiuwenswarm/server/worker/service.py,阶段二、四,执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭
+jiuwenswarm/server/worker/signals.py,阶段二、四,执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭
+jiuwenswarm/server/worker/stub.py,阶段二、四,执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭
+scripts/jiuwenswarm.spec,阶段四,冻结程序的 Worker 入口参数转发及延迟导入打包支持
+scripts/jiuwenswarm_exe_entry.py,阶段四,冻结程序的 Worker 入口参数转发及延迟导入打包支持
+scripts/benchmarks/issue4689_chat.py,验收工具,阶段二至四的真实进程、执行入口或性能采样工具
+scripts/benchmarks/issue4689_front.py,验收工具,阶段二至四的真实进程、执行入口或性能采样工具
+scripts/benchmarks/issue4689_metadata.py,验收工具,阶段二至四的真实进程、执行入口或性能采样工具
+scripts/benchmarks/issue4689_native.py,验收工具,阶段二至四的真实进程、执行入口或性能采样工具
+scripts/benchmarks/issue4689_report.py,验收工具,阶段二至四的真实进程、执行入口或性能采样工具
+tests/system_tests/test_issue4689_project_lsp.py,回归测试,验证阶段二至四的功能、隔离、恢复或兼容性
+tests/unit_tests/agentserver/test_front_import_boundary.py,回归测试,验证阶段二至四的功能、隔离、恢复或兼容性
+tests/unit_tests/agentserver/test_personal_context_lifecycle.py,回归测试,验证阶段二至四的功能、隔离、恢复或兼容性
+tests/unit_tests/agentserver/test_runtime_worker_phase2.py,回归测试,验证阶段二至四的功能、隔离、恢复或兼容性
+tests/unit_tests/agentserver/test_worker_residency.py,回归测试,验证阶段二至四的功能、隔离、恢复或兼容性
+tests/unit_tests/agentserver/test_worker_shutdown_deadline.py,回归测试,验证阶段二至四的功能、隔离、恢复或兼容性
+tests/unit_tests/runtime/test_resource_kernel.py,回归测试,验证阶段二至四的功能、隔离、恢复或兼容性
+tests/unit_tests/runtime/test_run_context.py,回归测试,验证阶段二至四的功能、隔离、恢复或兼容性
+tests/unit_tests/server/test_metadata_cross_process.py,回归测试,验证阶段二至四的功能、隔离、恢复或兼容性
+tests/unit_tests/server/test_session_metadata.py,回归测试,验证阶段二至四的功能、隔离、恢复或兼容性
+tests/unit_tests/server/test_startup_harness_state.py,回归测试,验证阶段二至四的功能、隔离、恢复或兼容性
+tests/unit_tests/server/test_startup_logging_config.py,回归测试,验证阶段二至四的功能、隔离、恢复或兼容性
+tests/unit_tests/test_desktop_electron_contract.py,回归测试,验证阶段二至四的功能、隔离、恢复或兼容性
+tests/unit_tests/test_windows_resource_lock_latency.py,回归测试,验证阶段二至四的功能、隔离、恢复或兼容性

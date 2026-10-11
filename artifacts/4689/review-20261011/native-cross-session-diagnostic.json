@@ -1,0 +1,288 @@
+{
+  "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-r16gupgk\\data",
+  "profile": "desktop",
+  "scenario": "cross-session",
+  "gateway": false,
+  "before": {
+    "worker_instance": "0eae58cd856447f19503f2ab111da00e",
+    "cursor": 8,
+    "history_required": false,
+    "is_processing": true,
+    "dispatches": [
+      {
+        "dispatch_id": "ae36ead7dd9e4cf496c0f19471834735",
+        "request_id": "original-chat",
+        "active": true,
+        "phase": "executing",
+        "execution_id": "48b174ce1c1d4d29bd501ce4408dcf51",
+        "entered_at_ns": 275733417669000,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "48b174ce1c1d4d29bd501ce4408dcf51",
+        "session_id": "resident-session",
+        "request_id": "original-chat",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "running",
+        "created_at": 275733.046,
+        "started_at": 275733.046,
+        "finished_at": null,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "worker_pid": 20608,
+  "target_before": {
+    "worker_instance": "0eae58cd856447f19503f2ab111da00e",
+    "cursor": 8,
+    "history_required": false,
+    "is_processing": true,
+    "dispatches": [
+      {
+        "dispatch_id": "804d0333e7bc4ce4bc39af97b212e414",
+        "request_id": "sm_a77a2d1eab294249ae812b2149fce029",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "53f170e425c544a48049573ada4e1508",
+        "request_id": "session-message-sm_a77a2d1eab294249ae812b2149fce029",
+        "active": true,
+        "phase": "executing",
+        "execution_id": "",
+        "entered_at_ns": 275734632658200,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "cedeaf8b1e284e15b1dd6e0e0ee6b08d",
+        "session_id": "target-session",
+        "request_id": "session-message-sm_a77a2d1eab294249ae812b2149fce029",
+        "generation": 1,
+        "work_kind": "session_message",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "running",
+        "created_at": 275734.312,
+        "started_at": 275734.312,
+        "finished_at": null,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "after": {
+    "worker_instance": "0eae58cd856447f19503f2ab111da00e",
+    "cursor": 9,
+    "history_required": false,
+    "is_processing": true,
+    "dispatches": [
+      {
+        "dispatch_id": "ae36ead7dd9e4cf496c0f19471834735",
+        "request_id": "original-chat",
+        "active": true,
+        "phase": "executing",
+        "execution_id": "48b174ce1c1d4d29bd501ce4408dcf51",
+        "entered_at_ns": 275733417669000,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "48b174ce1c1d4d29bd501ce4408dcf51",
+        "session_id": "resident-session",
+        "request_id": "original-chat",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "running",
+        "created_at": 275733.046,
+        "started_at": 275733.046,
+        "finished_at": null,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "same_execution": true,
+  "final": {
+    "worker_instance": "0eae58cd856447f19503f2ab111da00e",
+    "cursor": 20,
+    "history_required": false,
+    "is_processing": false,
+    "dispatches": [
+      {
+        "dispatch_id": "ae36ead7dd9e4cf496c0f19471834735",
+        "request_id": "original-chat",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "48b174ce1c1d4d29bd501ce4408dcf51",
+        "entered_at_ns": 275733417669000,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "succeeded"
+        }
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "48b174ce1c1d4d29bd501ce4408dcf51",
+        "session_id": "resident-session",
+        "request_id": "original-chat",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 275733.046,
+        "started_at": 275733.046,
+        "finished_at": 275735.234,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "target_history_complete": true,
+  "target_snapshot": {
+    "session_id": "target-session",
+    "mode": "agent.work.normal",
+    "user_id": "acceptance-owner",
+    "channel_id": "web",
+    "title": "Target acceptance",
+    "work_mode": "work",
+    "project_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-r16gupgk\\data\\agent\\workspace",
+    "created_at": 1791696654.8450687,
+    "persist_session": false,
+    "last_user_message_at": 1791696654.8450687,
+    "last_message_at": 1791696665.96345,
+    "message_count": 3,
+    "channel_metadata": {
+      "_jiuwenswarm_cross_session": {
+        "message_id": "sm_a77a2d1eab294249ae812b2149fce029",
+        "source_session_id": "resident-session",
+        "source_request_id": "original-chat",
+        "source_tool_call_id": "fixture-cross-session",
+        "source_title": "Resident acceptance",
+        "chain_id": "sm_a77a2d1eab294249ae812b2149fce029",
+        "parent_message_id": "",
+        "hop_count": 1,
+        "language": "zh"
+      },
+      "project_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-r16gupgk\\data\\agent\\workspace"
+    },
+    "session_equipment": {
+      "agent_template_name": "",
+      "plugin_names": [],
+      "mcp": []
+    },
+    "project_id": "",
+    "model": "",
+    "cron_id": "",
+    "pinned": false,
+    "pin_order": 0,
+    "status": "idle",
+    "team_name": "",
+    "team_template_id": "",
+    "agent_group_name": "",
+    "runtime": {
+      "worker_instance": "0eae58cd856447f19503f2ab111da00e",
+      "cursor": 21,
+      "history_required": false,
+      "is_processing": false,
+      "dispatches": [
+        {
+          "dispatch_id": "804d0333e7bc4ce4bc39af97b212e414",
+          "request_id": "sm_a77a2d1eab294249ae812b2149fce029",
+          "active": false,
+          "phase": "handler_returned",
+          "execution_id": "",
+          "entered_at_ns": null,
+          "pending_interactions": [],
+          "terminal": null
+        },
+        {
+          "dispatch_id": "53f170e425c544a48049573ada4e1508",
+          "request_id": "session-message-sm_a77a2d1eab294249ae812b2149fce029",
+          "active": false,
+          "phase": "completed",
+          "execution_id": "cedeaf8b1e284e15b1dd6e0e0ee6b08d",
+          "entered_at_ns": 275734632658200,
+          "pending_interactions": [],
+          "terminal": {
+            "event_type": "runtime.completed",
+            "state": "succeeded"
+          }
+        }
+      ],
+      "executions": [
+        {
+          "execution_id": "cedeaf8b1e284e15b1dd6e0e0ee6b08d",
+          "session_id": "target-session",
+          "request_id": "session-message-sm_a77a2d1eab294249ae812b2149fce029",
+          "generation": 1,
+          "work_kind": "session_message",
+          "parent_execution_id": null,
+          "root_work_kind": null,
+          "root_request_id": null,
+          "waiting_control_id": null,
+          "state": "succeeded",
+          "created_at": 275734.312,
+          "started_at": 275734.312,
+          "finished_at": 275735.234,
+          "error": null,
+          "cancellation_requested": false
+        }
+      ]
+    },
+    "is_processing": false
+  },
+  "failure": {
+    "target_before": {
+      "dispatch_id": "53f170e425c544a48049573ada4e1508",
+      "request_id": "session-message-sm_a77a2d1eab294249ae812b2149fce029",
+      "active": true,
+      "phase": "executing",
+      "execution_id": "",
+      "entered_at_ns": 275734632658200,
+      "pending_interactions": [],
+      "terminal": null
+    },
+    "target_after": {
+      "dispatch_id": "53f170e425c544a48049573ada4e1508",
+      "request_id": "session-message-sm_a77a2d1eab294249ae812b2149fce029",
+      "active": false,
+      "phase": "completed",
+      "execution_id": "cedeaf8b1e284e15b1dd6e0e0ee6b08d",
+      "entered_at_ns": 275734632658200,
+      "pending_interactions": [],
+      "terminal": {
+        "event_type": "runtime.completed",
+        "state": "succeeded"
+      }
+    }
+  }
+}

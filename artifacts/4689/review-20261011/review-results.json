@@ -1,0 +1,1233 @@
+{
+  "generated_at": "2026-10-11T23:39:34.671702+08:00",
+  "baseline": "3fea8d1623a13646e935df9e96100ab7ad470aa4",
+  "reviewed_code_commit": "b126a8d1000a279570ba01619f423a5a9d575b18",
+  "original_review_head": "9fd2d889f8283f44982f5a724100e43fb67c80aa",
+  "scope_conclusion": "No out-of-plan business changes found; code confined to phases 2/3/4 plus their tests and evidence",
+  "product_files": 51,
+  "test_and_benchmark_files": 19,
+  "scope": [
+    {
+      "file": "jiuwenswarm/agents/harness/common/auto_harness/__init__.py",
+      "phase": "阶段四",
+      "reason": "可选 Auto-Harness 延迟导入；轻量重置保持原有文件字段语义"
+    },
+    {
+      "file": "jiuwenswarm/agents/harness/common/auto_harness/state.py",
+      "phase": "阶段四",
+      "reason": "可选 Auto-Harness 延迟导入；轻量重置保持原有文件字段语义"
+    },
+    {
+      "file": "jiuwenswarm/agents/harness/common/plugins/rail_manager.py",
+      "phase": "阶段三",
+      "reason": "共享有版本指纹的 Rail 类配方；实例仍归具体 Agent"
+    },
+    {
+      "file": "jiuwenswarm/agents/harness/common/tools/__init__.py",
+      "phase": "阶段三、四",
+      "reason": "工具定义和工厂延迟解析，实际有状态工具保持独立"
+    },
+    {
+      "file": "jiuwenswarm/agents/swarm/__init__.py",
+      "phase": "阶段四",
+      "reason": "延迟加载既有工作模式的提供者，使用时保留注册行为"
+    },
+    {
+      "file": "jiuwenswarm/channels/desktop/desktop_app.py",
+      "phase": "阶段二、四",
+      "reason": "重启保留 Worker 子树；最终退出使用显式生命周期控制权"
+    },
+    {
+      "file": "jiuwenswarm/channels/desktop/electron/main.cjs",
+      "phase": "阶段二、四",
+      "reason": "重启保留 Worker 子树；最终退出使用显式生命周期控制权"
+    },
+    {
+      "file": "jiuwenswarm/channels/process_cli/machine.py",
+      "phase": "阶段三",
+      "reason": "单次调用 RunContext 与执行选项隔离；仍启动本地子进程 Runtime"
+    },
+    {
+      "file": "jiuwenswarm/channels/web/frontend/src/App.tsx",
+      "phase": "阶段二",
+      "reason": "重连游标、事件去重、状态恢复、历史回退及对应错误文案"
+    },
+    {
+      "file": "jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json",
+      "phase": "阶段二",
+      "reason": "重连游标、事件去重、状态恢复、历史回退及对应错误文案"
+    },
+    {
+      "file": "jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json",
+      "phase": "阶段二",
+      "reason": "重连游标、事件去重、状态恢复、历史回退及对应错误文案"
+    },
+    {
+      "file": "jiuwenswarm/channels/web/frontend/src/services/runtimeResume.ts",
+      "phase": "阶段二",
+      "reason": "重连游标、事件去重、状态恢复、历史回退及对应错误文案"
+    },
+    {
+      "file": "jiuwenswarm/channels/web/frontend/src/services/webClient.ts",
+      "phase": "阶段二",
+      "reason": "重连游标、事件去重、状态恢复、历史回退及对应错误文案"
+    },
+    {
+      "file": "jiuwenswarm/channels/web/frontend/tests/webClientRuntimeAck.test.mjs",
+      "phase": "阶段二",
+      "reason": "重连游标、事件去重、状态恢复、历史回退及对应错误文案"
+    },
+    {
+      "file": "jiuwenswarm/common/utils.py",
+      "phase": "阶段四",
+      "reason": "压缩 Front 日志配置解析路径，保留合法 YAML 的兼容语义"
+    },
+    {
+      "file": "jiuwenswarm/gateway/channel_manager/web/app_web_handlers.py",
+      "phase": "阶段二",
+      "reason": "转发 AgentServer 的权威运行状态及事件游标，去掉本地 busy 覆盖"
+    },
+    {
+      "file": "jiuwenswarm/gateway/channel_manager/web/web_connect.py",
+      "phase": "阶段二",
+      "reason": "转发 AgentServer 的权威运行状态及事件游标，去掉本地 busy 覆盖"
+    },
+    {
+      "file": "jiuwenswarm/runtime/execution_telemetry.py",
+      "phase": "阶段四",
+      "reason": "观察完成必需准备后的真实执行入口，避免以 ACK 当执行时间"
+    },
+    {
+      "file": "jiuwenswarm/runtime/kernel.py",
+      "phase": "阶段三",
+      "reason": "资源共享键、租约、准备合并、失效及使用中资源保护"
+    },
+    {
+      "file": "jiuwenswarm/runtime/project_lsp.py",
+      "phase": "阶段三、四",
+      "reason": "项目范围的 SDK LSP 资源租约与关闭"
+    },
+    {
+      "file": "jiuwenswarm/runtime/run_context.py",
+      "phase": "阶段三",
+      "reason": "不可变的单次预算、权限、工具和凭据上下文"
+    },
+    {
+      "file": "jiuwenswarm/runtime/service.py",
+      "phase": "阶段二",
+      "reason": "读取既有 Coordinator 的权威执行快照"
+    },
+    {
+      "file": "jiuwenswarm/server/agent_ws_server.py",
+      "phase": "阶段二、四",
+      "reason": "实际交付确认、内部跨会话执行归属，以及可选服务后台准备"
+    },
+    {
+      "file": "jiuwenswarm/server/control/repositories/session_repository.py",
+      "phase": "阶段二",
+      "reason": "Front 的颜色更新改为受锁保护的字段补丁"
+    },
+    {
+      "file": "jiuwenswarm/server/front/admission.py",
+      "phase": "阶段二",
+      "reason": "调用方请求去重、对象身份清理、warming 取消和可选运行快照"
+    },
+    {
+      "file": "jiuwenswarm/server/front/request_registry.py",
+      "phase": "阶段二",
+      "reason": "调用方请求去重、对象身份清理、warming 取消和可选运行快照"
+    },
+    {
+      "file": "jiuwenswarm/server/front/router.py",
+      "phase": "阶段二",
+      "reason": "调用方请求去重、对象身份清理、warming 取消和可选运行快照"
+    },
+    {
+      "file": "jiuwenswarm/server/ipc/client.py",
+      "phase": "阶段二、四",
+      "reason": "ACK/订阅协议、进程租约、连接清理及 Windows 管道存活检查"
+    },
+    {
+      "file": "jiuwenswarm/server/ipc/protocol.py",
+      "phase": "阶段二、四",
+      "reason": "ACK/订阅协议、进程租约、连接清理及 Windows 管道存活检查"
+    },
+    {
+      "file": "jiuwenswarm/server/ipc/server.py",
+      "phase": "阶段二、四",
+      "reason": "ACK/订阅协议、进程租约、连接清理及 Windows 管道存活检查"
+    },
+    {
+      "file": "jiuwenswarm/server/runtime/agent_adapter/interface.py",
+      "phase": "阶段三、四",
+      "reason": "共享模型/MCP 资源，独立运行上下文，Kernel 准备和执行入口观测"
+    },
+    {
+      "file": "jiuwenswarm/server/runtime/agent_adapter/interface_deep.py",
+      "phase": "阶段三、四",
+      "reason": "共享模型/MCP 资源，独立运行上下文，Kernel 准备和执行入口观测"
+    },
+    {
+      "file": "jiuwenswarm/server/runtime/agent_warm_pool.py",
+      "phase": "阶段三",
+      "reason": "后台预构建优先准备 Kernel，保留真实 session claim/pin 路径"
+    },
+    {
+      "file": "jiuwenswarm/server/runtime/session/lifecycle.py",
+      "phase": "阶段二、四",
+      "reason": "metadata 字段合并、缓存与生命周期锁；缩短 Windows 锁竞争等待"
+    },
+    {
+      "file": "jiuwenswarm/server/runtime/session/project_store.py",
+      "phase": "阶段二、四",
+      "reason": "metadata 字段合并、缓存与生命周期锁；缩短 Windows 锁竞争等待"
+    },
+    {
+      "file": "jiuwenswarm/server/runtime/session/session_metadata.py",
+      "phase": "阶段二、四",
+      "reason": "metadata 字段合并、缓存与生命周期锁；缩短 Windows 锁竞争等待"
+    },
+    {
+      "file": "jiuwenswarm/server/runtime/skill/skill_manager.py",
+      "phase": "阶段三",
+      "reason": "共享 Skill 元数据索引；向调用方返回独立可变快照"
+    },
+    {
+      "file": "jiuwenswarm/server/supervisor/identity.py",
+      "phase": "阶段二、四",
+      "reason": "Worker 选主/身份/重连、独立 dispatch、交付 ACK 及统一关闭期限"
+    },
+    {
+      "file": "jiuwenswarm/server/supervisor/runtime_supervisor.py",
+      "phase": "阶段二、四",
+      "reason": "Worker 选主/身份/重连、独立 dispatch、交付 ACK 及统一关闭期限"
+    },
+    {
+      "file": "jiuwenswarm/server/supervisor/shutdown.py",
+      "phase": "阶段二、四",
+      "reason": "Worker 选主/身份/重连、独立 dispatch、交付 ACK 及统一关闭期限"
+    },
+    {
+      "file": "jiuwenswarm/server/supervisor/worker_process.py",
+      "phase": "阶段二、四",
+      "reason": "Worker 选主/身份/重连、独立 dispatch、交付 ACK 及统一关闭期限"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/dispatcher.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/event_store.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/gateway_bridge.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/lifecycle.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/main.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/service.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/signals.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/stub.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "scripts/jiuwenswarm.spec",
+      "phase": "阶段四",
+      "reason": "冻结程序的 Worker 入口参数转发及延迟导入打包支持"
+    },
+    {
+      "file": "scripts/jiuwenswarm_exe_entry.py",
+      "phase": "阶段四",
+      "reason": "冻结程序的 Worker 入口参数转发及延迟导入打包支持"
+    },
+    {
+      "file": "scripts/benchmarks/issue4689_chat.py",
+      "phase": "验收工具",
+      "reason": "阶段二至四的真实进程、执行入口或性能采样工具"
+    },
+    {
+      "file": "scripts/benchmarks/issue4689_front.py",
+      "phase": "验收工具",
+      "reason": "阶段二至四的真实进程、执行入口或性能采样工具"
+    },
+    {
+      "file": "scripts/benchmarks/issue4689_metadata.py",
+      "phase": "验收工具",
+      "reason": "阶段二至四的真实进程、执行入口或性能采样工具"
+    },
+    {
+      "file": "scripts/benchmarks/issue4689_native.py",
+      "phase": "验收工具",
+      "reason": "阶段二至四的真实进程、执行入口或性能采样工具"
+    },
+    {
+      "file": "scripts/benchmarks/issue4689_report.py",
+      "phase": "验收工具",
+      "reason": "阶段二至四的真实进程、执行入口或性能采样工具"
+    },
+    {
+      "file": "tests/system_tests/test_issue4689_project_lsp.py",
+      "phase": "回归测试",
+      "reason": "验证阶段二至四的功能、隔离、恢复或兼容性"
+    },
+    {
+      "file": "tests/unit_tests/agentserver/test_front_import_boundary.py",
+      "phase": "回归测试",
+      "reason": "验证阶段二至四的功能、隔离、恢复或兼容性"
+    },
+    {
+      "file": "tests/unit_tests/agentserver/test_personal_context_lifecycle.py",
+      "phase": "回归测试",
+      "reason": "验证阶段二至四的功能、隔离、恢复或兼容性"
+    },
+    {
+      "file": "tests/unit_tests/agentserver/test_runtime_worker_phase2.py",
+      "phase": "回归测试",
+      "reason": "验证阶段二至四的功能、隔离、恢复或兼容性"
+    },
+    {
+      "file": "tests/unit_tests/agentserver/test_worker_residency.py",
+      "phase": "回归测试",
+      "reason": "验证阶段二至四的功能、隔离、恢复或兼容性"
+    },
+    {
+      "file": "tests/unit_tests/agentserver/test_worker_shutdown_deadline.py",
+      "phase": "回归测试",
+      "reason": "验证阶段二至四的功能、隔离、恢复或兼容性"
+    },
+    {
+      "file": "tests/unit_tests/runtime/test_resource_kernel.py",
+      "phase": "回归测试",
+      "reason": "验证阶段二至四的功能、隔离、恢复或兼容性"
+    },
+    {
+      "file": "tests/unit_tests/runtime/test_run_context.py",
+      "phase": "回归测试",
+      "reason": "验证阶段二至四的功能、隔离、恢复或兼容性"
+    },
+    {
+      "file": "tests/unit_tests/server/test_metadata_cross_process.py",
+      "phase": "回归测试",
+      "reason": "验证阶段二至四的功能、隔离、恢复或兼容性"
+    },
+    {
+      "file": "tests/unit_tests/server/test_session_metadata.py",
+      "phase": "回归测试",
+      "reason": "验证阶段二至四的功能、隔离、恢复或兼容性"
+    },
+    {
+      "file": "tests/unit_tests/server/test_startup_harness_state.py",
+      "phase": "回归测试",
+      "reason": "验证阶段二至四的功能、隔离、恢复或兼容性"
+    },
+    {
+      "file": "tests/unit_tests/server/test_startup_logging_config.py",
+      "phase": "回归测试",
+      "reason": "验证阶段二至四的功能、隔离、恢复或兼容性"
+    },
+    {
+      "file": "tests/unit_tests/test_desktop_electron_contract.py",
+      "phase": "回归测试",
+      "reason": "验证阶段二至四的功能、隔离、恢复或兼容性"
+    },
+    {
+      "file": "tests/unit_tests/test_windows_resource_lock_latency.py",
+      "phase": "回归测试",
+      "reason": "验证阶段二至四的功能、隔离、恢复或兼容性"
+    }
+  ],
+  "repairs": [
+    [
+      "阶段二",
+      "Supervisor 关闭预算累加、kill 后存在无期限 wait",
+      "改为单个绝对 deadline；超时记录未完成的 ACK/退出/IPC 清理步骤，PID 身份不符拒绝 kill"
+    ],
+    [
+      "阶段二",
+      "同一调用方改换会话可以绕过活动 request_id 去重",
+      "去重使用调用方作用域；事件日志和订阅仍按会话查询，旧清理不能移除新对象"
+    ],
+    [
+      "阶段二",
+      "warming 的空执行快照会将已接收队列误报未处理",
+      "同时保留 Worker 接收状态与 Coordinator 的真实执行状态；有修正前失败证据"
+    ],
+    [
+      "阶段四",
+      "合法的行内 YAML logging 配置未被识别",
+      "无独立 logging 段时安全解析整个 YAML；保留常规 block 配置的快速路径"
+    ],
+    [
+      "阶段四",
+      "轻量 Auto-Harness 重置给未激活包新增 is_active 字段",
+      "仅修改已有的活动标记，保持原文件结构及重置幂等性"
+    ],
+    [
+      "验收工具",
+      "跨会话工具执行 ID 的首次采样过早",
+      "由 Coordinator 的权威执行记录读取重启前 ID；保留误判日志/诊断 JSON，连续真实运行通过"
+    ]
+  ],
+  "requirements": [
+    [
+      "二",
+      "断连只解除订阅，Worker 持有原执行",
+      "覆盖：retire_generation/detach 不取消已接收执行",
+      "WorkerDispatcher、WorkerGatewayBridge；真实 offline/tool/interaction/cross-session"
+    ],
+    [
+      "二",
+      "序号回放、状态快照与待答交互；不重发输入",
+      "覆盖：有界 2048 条 / 8 MiB 事件日志，游标过期走历史",
+      "event_store.py、runtimeResume.ts；回放边界单测、真实问答恢复及 once 工具计数"
+    ],
+    [
+      "二",
+      "实际 Front→Gateway 交付后才提交",
+      "覆盖：wire.ack；失败/超时 abort",
+      "gateway_bridge.py、runtime_supervisor.py、session provision；真实 failed-create + 正常 SDK 建会话"
+    ],
+    [
+      "二",
+      "独立 dispatch_id；调用方活动 request_id 去重",
+      "本轮补齐：去重跨同一调用方的会话生效；清理校验对象身份",
+      "request_registry.py、event_store.py；跨会话去重与旧对象清理测试"
+    ],
+    [
+      "二",
+      "接收、处理返回和执行完成区分；warming 可取消",
+      "本轮补齐：空 Coordinator 快照不覆盖已接收队列状态",
+      "dispatcher.py；修正前复现 false，修正后测试通过；真实 warming-cancel 模型调用为零"
+    ],
+    [
+      "二",
+      "metadata 字段合并、锁与事务/租约保留",
+      "覆盖：写前持锁读新值，按字段合并并管理缓存",
+      "session_metadata.py、lifecycle/project_store；真实两进程 64 轮并发 + session 回归"
+    ],
+    [
+      "二",
+      "规范化数据目录/profile 选主，AgentOS user_id 不选目录",
+      "覆盖：数据作用域、实例、协议、代码身份及 lifetime/startup locks",
+      "identity.py、IPC server、supervisor；两 AgentOS 目录同 session/request ID 的独立进程证据"
+    ],
+    [
+      "二",
+      "普通重启 detach；最终关闭共享 30 秒期限",
+      "本轮补齐：Supervisor ACK、进程退出/强制回收、IPC 清理共用 deadline",
+      "shutdown deadline 测试含真实子进程和 PID 重用拒绝；各真实进程场景 shutdown.done ok"
+    ],
+    [
+      "二",
+      "对外契约保持；Web 自动恢复，Gateway 转发权威状态",
+      "覆盖：既有 session.get_metadata 的可选参数/字段及内部订阅",
+      "Gateway 转发 + Web 46 项测试和构建；真实 Gateway WS 接回；浏览器点击流程未实测"
+    ],
+    [
+      "三",
+      "Kernel 管理可共享资源，租约保护生命周期",
+      "覆盖：模型、工具工厂、Rail 配方、Skill 索引、MCP、项目 LSP",
+      "kernel.py、适配器、Rail/Skill 管理器、project_lsp.py；资源与相关完整回归"
+    ],
+    [
+      "三",
+      "SessionExecution 与 RunContext 独立",
+      "按既有结构落地：复用 RuntimeSessionCoordinator/handles，不新建同名 SessionExecution 类",
+      "history/checkpoint/活动执行仍归会话；RunContext 保存单次 turn/budget/tools/permissions/credential；Process CLI 805 项"
+    ],
+    [
+      "三",
+      "共享键覆盖资源身份；凭据不明文进入键/日志",
+      "覆盖：可信 data/profile、project、mode、definition/capabilities/config、资源 ID/路由及 HMAC 引用",
+      "KernelIdentity/ResourceKey；ModelGroup 的有状态路由包装仍独立，单模型连接可租用"
+    ],
+    [
+      "三",
+      "有状态 Rail/工具及 Skill/MCP 快照保持归属",
+      "覆盖：共享类/工厂与索引；实际实例和会话选择独立",
+      "Rail scope、Skill、Agent、MCP 回归；MCP 实际子进程复用，PowerShell/MCP 各只产生 once"
+    ],
+    [
+      "三",
+      "配置失效保护执行；warm pool 转为 Kernel 准备",
+      "覆盖：失效资源退休，有租约时延迟关闭；真实 claim/pin 路径保留",
+      "ResourceKernel retire/release、adapter hot reload、agent_warm_pool；模型配置/凭据回归"
+    ],
+    [
+      "四",
+      "Front/控制面不依赖 Runtime 重导入",
+      "覆盖：真实 Front 子进程中运行控制查询并检查已加载模块",
+      "test_front_import_boundary.py 的完整模块列表；Worker warming 下仍可查询"
+    ],
+    [
+      "四",
+      "按配置迁移、模型身份/路由的依赖顺序准备",
+      "覆盖：迁移在模型和会话构造前，AGENT_READY 后释放执行队列",
+      "worker/lifecycle.py 和 dispatcher；真实首次执行、warming cancel、启动失败清理回归"
+    ],
+    [
+      "四",
+      "可选能力后台/首次使用，调用等待对应准备",
+      "覆盖主要代码路径；未逐一实测所有可选能力开启/异常组合",
+      "MCP 首用、Skill/Auto-Harness 延迟导入、PersonalContext/Proactive/Sandbox 后台准备，图像/Zen 既有后台复用"
+    ],
+    [
+      "四",
+      "先接现有 Worker，复用模型/MCP/认证/LSP/KVCache",
+      "覆盖：优先 try_connect，Worker 不重新加载 Runtime",
+      "同 PID/instance/execution 的真实重启；实际 MCP PID 相同；真实 LSP 共享/隔离；既有 KVCache owner 继续使用"
+    ],
+    [
+      "四",
+      "重连、崩溃、升级区分；不自动重放工具",
+      "覆盖重连/崩溃；升级身份/协议不符明确拒绝并要求显式生命周期处理",
+      "crash 记录 interrupted、换实例；工具 once；老协议/安装包升级未做端到端实测"
+    ],
+    [
+      "四",
+      "冻结参数和 Windows 存活检查兼容",
+      "代码/契约回归覆盖；Windows 源码真实进程覆盖",
+      "exe entry/spec、named pipe/owner lease；冻结 EXE 未实际构建验证"
+    ],
+    [
+      "边界",
+      "不新增多 Worker 调度/WarmSpare；维持 CLI/TUI 通路",
+      "保持：按数据目录隔离进程不等于新调度器",
+      "Process CLI 仍本地子进程 Runtime，远程 TUI 的 Gateway /tui 通路未改动"
+    ]
+  ],
+  "test_runs": [
+    {
+      "suite": "Process CLI / Python SDK / RunContext",
+      "log": "process-cli-sdk-final.log",
+      "selection": "tests/unit_tests/process_cli + sdks/python/tests + runtime/test_run_context.py",
+      "summary": "805 passed, 2 skipped, 1 warning in 62.06s (0:01:02)",
+      "failures": []
+    },
+    {
+      "suite": "AgentServer / Runtime / Server / Windows 锁",
+      "log": "runtime-front-session-final.log",
+      "selection": "tests/unit_tests/agentserver + runtime + server + test_windows_resource_lock_latency.py",
+      "summary": "83 failed, 7415 passed, 12 skipped, 3 warnings in 242.56s (0:04:02)",
+      "failures": [
+        "tests/unit_tests/agentserver/mcp/test_mcp_package_manifest.py::test_rejects_symlinked_declared_path",
+        "tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_auto_answer_reenters_native_projection_after_cwd_changes[False-glob]",
+        "tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_auto_answer_reenters_native_projection_after_cwd_changes[False-grep]",
+        "tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_auto_answer_reenters_native_projection_after_cwd_changes[False-list_files]",
+        "tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_auto_answer_reenters_native_projection_after_cwd_changes[True-glob]",
+        "tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_auto_answer_reenters_native_projection_after_cwd_changes[True-grep]",
+        "tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_auto_answer_reenters_native_projection_after_cwd_changes[True-list_files]",
+        "tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_pdf_keeps_its_workspace_not_cwd_resolution[ask]",
+        "tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_read_edit_and_grep_use_actual_workspace_files",
+        "tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_tool_deny_and_exact_external_path_survive_projection",
+        "tests/unit_tests/agentserver/permissions/test_permission_cold_build.py::test_manager_canonicalizes_first_workspace_before_real_child_build[project_dir]",
+        "tests/unit_tests/agentserver/permissions/test_permission_cold_build.py::test_manager_canonicalizes_first_workspace_before_real_child_build[workspace_dir]",
+        "tests/unit_tests/agentserver/permissions/test_reviewer_locations.py::test_symlink_location_uses_host_canonical_target",
+        "tests/unit_tests/agentserver/permissions/test_tool_decision_facts.py::test_read_pdf_requires_matching_invocation_path_facts",
+        "tests/unit_tests/agentserver/test_agent_manager_session_cleanup.py::test_same_key_creation_waits_for_old_root_cleanup",
+        "tests/unit_tests/agentserver/test_agentserver_cli_commands.py::test_handle_command_diff_returns_summary_payload",
+        "tests/unit_tests/agentserver/test_auto_permission_workspace_owner.py::test_auto_owner_lookup_skips_earlier_non_auto_runtime",
+        "tests/unit_tests/agentserver/test_auto_permission_workspace_owner.py::test_conflicting_concurrent_request_cannot_mutate_winner_metadata",
+        "tests/unit_tests/agentserver/test_auto_permission_workspace_owner.py::test_first_auto_request_selects_declared_root[project_dir]",
+        "tests/unit_tests/agentserver/test_auto_permission_workspace_owner.py::test_first_auto_request_selects_declared_root[workspace_dir]",
+        "tests/unit_tests/agentserver/test_auto_permission_workspace_owner.py::test_first_concurrent_requests_establish_one_session_owner",
+        "tests/unit_tests/agentserver/test_team_entity_store.py::test_team_entity_store_delete_does_not_follow_team_symlink",
+        "tests/unit_tests/agentserver/test_verified_download_assets.py::test_asset_owner_rejects_symlink_root",
+        "tests/unit_tests/agentserver/test_verified_download_assets.py::test_restart_recovery_keeps_asset_until_ttl_then_reclaims_it",
+        "tests/unit_tests/agentserver/test_verified_download_assets.py::test_revoke_removes_unexposed_staged_asset",
+        "tests/unit_tests/agentserver/test_verified_download_assets.py::test_stage_is_durable_private_and_commit_keeps_same_asset",
+        "tests/unit_tests/agentserver/test_verified_download_assets.py::test_stage_rejects_non_regular_source_without_residue[symlink]",
+        "tests/unit_tests/agentserver/test_verified_download_assets.py::test_symlink_claim_is_never_active_or_followed",
+        "tests/unit_tests/agentserver/test_workspace_paths.py::test_sanitize_review_ui_value_preserves_secrets_redaction",
+        "tests/unit_tests/agentserver/test_workspace_paths.py::test_sanitize_review_ui_value_relativizes_workspace_paths_and_preserves_other_paths",
+        "tests/unit_tests/agentserver/test_workspace_paths.py::test_sanitize_visible_text_preserves_current_path_when_stale_path_follows",
+        "tests/unit_tests/agentserver/test_workspace_paths.py::test_sanitize_visible_text_redacts_stale_sandbox_path_with_spaces",
+        "tests/unit_tests/agentserver/test_workspace_paths.py::test_sanitize_visible_value_preserves_current_paths_and_redacts_stale_paths",
+        "tests/unit_tests/agentserver/test_workspace_paths.py::test_sanitize_visible_value_sanitizes_mapping_keys",
+        "tests/unit_tests/server/hooks/test_executor.py::TestCommandHookE2E::test_additional_context_hook",
+        "tests/unit_tests/server/hooks/test_executor.py::TestCommandHookE2E::test_blocking_hook_via_exit_2",
+        "tests/unit_tests/server/hooks/test_executor.py::TestCommandHookE2E::test_blocking_hook_via_json_stdout",
+        "tests/unit_tests/server/hooks/test_executor.py::TestCommandHookE2E::test_modify_input_hook",
+        "tests/unit_tests/server/hooks/test_executor.py::TestCommandHookE2E::test_simple_logging_hook",
+        "tests/unit_tests/server/hooks/test_executor.py::TestCommandHookEnvVars::test_arguments_env_var_set",
+        "tests/unit_tests/server/hooks/test_executor.py::TestCommandHookEnvVars::test_tool_name_empty_when_missing",
+        "tests/unit_tests/server/hooks/test_executor.py::TestCommandHookEnvVars::test_tool_name_env_var_set",
+        "tests/unit_tests/server/hooks/test_executor.py::TestCommandHookExitCodes::test_exit_0_is_success",
+        "tests/unit_tests/server/hooks/test_executor.py::TestCommandHookExitCodes::test_exit_2_is_blocking",
+        "tests/unit_tests/server/hooks/test_executor.py::TestCommandHookShell::test_default_shell_bash",
+        "tests/unit_tests/server/hooks/test_executor.py::TestCommandHookShell::test_default_timeout_30",
+        "tests/unit_tests/server/hooks/test_executor.py::TestCommandHookShell::test_sh_shell",
+        "tests/unit_tests/server/hooks/test_executor.py::TestCommandHookTimeout::test_timeout_does_not_block_execution",
+        "tests/unit_tests/server/hooks/test_executor.py::TestCommandHookTimeout::test_timeout_returns_non_blocking_error",
+        "tests/unit_tests/server/hooks/test_executor.py::TestRunAll::test_dispatches_command_by_default",
+        "tests/unit_tests/server/hooks/test_executor.py::TestRunAll::test_parallel_execution",
+        "tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_blocked_tool_ends_react_without_another_model_call[hook0-False]",
+        "tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_blocked_tool_ends_react_without_another_model_call[hook0-True]",
+        "tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_blocked_tool_ends_react_without_another_model_call[hook1-False]",
+        "tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_blocked_tool_ends_react_without_another_model_call[hook1-True]",
+        "tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_full_task_loop_handles_a_block_once_and_preserves_user_action[goal-none-0]",
+        "tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_full_task_loop_handles_a_block_once_and_preserves_user_action[goal-none-1]",
+        "tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_full_task_loop_handles_a_block_once_and_preserves_user_action[goal-none-2]",
+        "tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_full_task_loop_handles_a_block_once_and_preserves_user_action[goal-replace-0]",
+        "tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_full_task_loop_handles_a_block_once_and_preserves_user_action[goal-resume-0]",
+        "tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_full_task_loop_handles_a_block_once_and_preserves_user_action[normal-none-0]",
+        "tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_full_task_loop_handles_a_block_once_and_preserves_user_action[normal-none-1]",
+        "tests/unit_tests/server/hooks/test_user_hook_rail.py::TestAfterInvoke::test_blocking_stop_hook_sets_feedback",
+        "tests/unit_tests/server/hooks/test_user_hook_rail.py::TestAfterInvoke::test_multiple_stop_hooks_both_run",
+        "tests/unit_tests/server/hooks/test_user_hook_rail.py::TestAfterToolCall::test_additional_context_appended_to_none_result",
+        "tests/unit_tests/server/hooks/test_user_hook_rail.py::TestAfterToolCall::test_appends_additional_context_to_model_message",
+        "tests/unit_tests/server/hooks/test_user_hook_rail.py::TestAfterToolCall::test_blocking_post_tool_triggers_feedback",
+        "tests/unit_tests/server/hooks/test_user_hook_rail.py::TestBeforeToolCall::test_additional_context_appended",
+        "tests/unit_tests/server/hooks/test_user_hook_rail.py::TestBeforeToolCall::test_blocking_hook_sets_skip_tool",
+        "tests/unit_tests/server/hooks/test_user_hook_rail.py::TestBeforeToolCall::test_blocking_takes_priority_over_modify",
+        "tests/unit_tests/server/hooks/test_user_hook_rail.py::TestBeforeToolCall::test_modifying_hook_updates_tool_args",
+        "tests/unit_tests/server/hooks/test_user_hook_rail.py::TestBeforeToolCall::test_modifying_hook_updates_tool_name",
+        "tests/unit_tests/server/hooks/test_user_hook_rail.py::test_post_tool_context_keeps_structured_tool_output_intact",
+        "tests/unit_tests/server/hooks/test_user_hook_rail.py::test_post_tool_context_reaches_the_error_message_of_a_failed_call",
+        "tests/unit_tests/server/marketplace/test_asset_mcp_publish_converter.py::test_remote_endpoint_is_installer_parameter_without_path_secrets[https://example.com/api/v2/mcp?key=private-query]",
+        "tests/unit_tests/server/marketplace/test_asset_mcp_publish_converter.py::test_remote_endpoint_is_installer_parameter_without_path_secrets[https://example.com/mcp/opaque-personal-access-credential]",
+        "tests/unit_tests/server/marketplace/test_asset_mcp_publish_converter.py::test_remote_redacts_every_header_env_and_query_value",
+        "tests/unit_tests/server/marketplace/test_asset_package_builder.py::test_preserves_executable_scripts_without_other_permission_bits",
+        "tests/unit_tests/server/marketplace/test_asset_package_builder.py::test_rejects_symlink_to_external_file",
+        "tests/unit_tests/server/marketplace/test_asset_publish_adapters.py::test_mcp_rejects_partial_placeholders_and_machine_paths[server2]",
+        "tests/unit_tests/server/marketplace/test_asset_publish_api.py::test_agent_describe_uses_resolved_package_name_for_publish_identity[agent_group-agent-group-mudhsgoh-agent-group-mudhsgoh-\\u624b\\u52a8\\u4e13\\u5bb6\\u56e2]",
+        "tests/unit_tests/server/marketplace/test_asset_publish_api.py::test_agent_describe_uses_resolved_package_name_for_publish_identity[agent_template-agent-mudhsgoh-\\u624b\\u52a8\\u4e13\\u5bb6-\\u624b\\u52a8\\u4e13\\u5bb6]",
+        "tests/unit_tests/server/marketplace/test_hub_publish_client.py::test_symlink_is_not_followed"
+      ]
+    },
+    {
+      "suite": "Gateway / E2A / AgentOS / Desktop",
+      "log": "gateway-agentos-desktop-final.log",
+      "selection": "gateway + e2a + test_agentos*.py + test_desktop*.py",
+      "summary": "2 failed, 1850 passed, 4 skipped, 1 warning, 21 subtests passed in 52.29s",
+      "failures": [
+        "tests/unit_tests/gateway/test_harmonyos_dev.py::test_dev_init_installs_when_devecocli_missing_and_verifies_skills",
+        "tests/unit_tests/gateway/test_upload_storage.py::test_safe_upload_filename_strips_unsafe_parts[..\\\\..\\\\evil.md-.._.._evil.md]"
+      ]
+    },
+    {
+      "suite": "Agent / RSI / Auto-Harness / PersonalContext / Rail",
+      "log": "agents-harness-skills-final.log",
+      "selection": "agents + rsi + auto_harness + personal_context + test_rail_manager_session_scope.py",
+      "summary": "2 failed, 926 passed, 1 skipped, 1 warning in 26.53s",
+      "failures": [
+        "tests/unit_tests/agents/test_shell_process_registry.py::test_kill_asyncio_shell_process",
+        "tests/unit_tests/agents/test_shell_process_registry.py::test_kill_shell_processes_for_session_tree"
+      ]
+    },
+    {
+      "suite": "模型配置 / 登录凭据 / MCP 内置 / Skill 环境",
+      "log": "model-auth-mcp-final.log",
+      "selection": "model/auth 配置回归和 Skill 环境用例，见保留日志中的 collected 列表",
+      "summary": "371 passed, 1 skipped in 14.19s",
+      "failures": []
+    },
+    {
+      "suite": "本轮修正与相关 Worker/Front/Desktop",
+      "log": "scoped-fixes-final4.log",
+      "selection": "Worker shutdown/residency/phase2、Front 模块边界、logging/harness state、Electron 契约",
+      "summary": "77 passed, 1 skipped in 7.41s",
+      "failures": []
+    },
+    {
+      "suite": "外部真实模型 SDK 续聊 + 真实 SDK LSP",
+      "log": "real-model-sdk-lsp.log",
+      "selection": "test_custom_agent_resume_binding_and_busy + test_issue4689_project_lsp.py",
+      "summary": "2 passed in 128.09s (0:02:08)",
+      "failures": []
+    }
+  ],
+  "web_runs": [
+    {
+      "script": "test:web-client-runtime-ack",
+      "log": "web-test-web-client-runtime-ack.log",
+      "passed": 7
+    },
+    {
+      "script": "test:session-event-gate",
+      "log": "web-test-session-event-gate.log",
+      "passed": 5
+    },
+    {
+      "script": "test:ws-event-dedup",
+      "log": "web-test-ws-event-dedup.log",
+      "passed": 5
+    },
+    {
+      "script": "test:chat-store-streaming",
+      "log": "web-test-chat-store-streaming.log",
+      "passed": 8
+    },
+    {
+      "script": "test:history-pagination",
+      "log": "web-test-history-pagination.log",
+      "passed": 11
+    },
+    {
+      "script": "test:history-record-reassembler",
+      "log": "web-test-history-record-reassembler.log",
+      "passed": 3
+    },
+    {
+      "script": "test:cross-session-message",
+      "log": "web-test-cross-session-message.log",
+      "passed": 3
+    },
+    {
+      "script": "test:i18n-locales",
+      "log": "web-test-i18n-locales.log",
+      "passed": 4
+    }
+  ],
+  "current_unique_failures": 87,
+  "baseline_selected_failure_count": 88,
+  "candidate_only_failures": [],
+  "lint": {
+    "candidate_issues": 77,
+    "baseline_issues": 77,
+    "candidate_only": []
+  },
+  "dependency_files_unchanged": true,
+  "dependency_sha256": {
+    "pyproject.toml": "c1b73ea4bd59589966b5dea97733e1200db3a5b6fe00a507e59a02febaca1c7c",
+    "uv.lock": "8ade92a94201e0be6cc7b483dfeac40d6613ac23c12ca8c86c632b5d97d2d9b0",
+    "jiuwenswarm/channels/web/frontend/package.json": "52063618c29ad12a1fe2ea808f7baf5258755db8b4d337ed5ed312ad2fd2805a",
+    "jiuwenswarm/channels/web/frontend/package-lock.json": "cfa7c21fa7b19feef82b8c5dd8461000e6e730dba518c4337d9b247c23d8f2fb"
+  },
+  "native_evidence": [
+    {
+      "file": "native-gateway-tool-final.json",
+      "scenario": "tool",
+      "profile": "desktop",
+      "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-5jpggl57\\data",
+      "worker_pid": 35488,
+      "same_worker": true,
+      "same_instance": true,
+      "same_target_execution": null,
+      "model_calls": 2,
+      "main_model_calls": 2,
+      "side_effects": [
+        "once"
+      ],
+      "shutdown": {
+        "kind": "shutdown.done",
+        "ok": true
+      },
+      "shutdown_ms": 265.8265,
+      "all_fields_preserved": null
+    },
+    {
+      "file": "native-gateway-interaction-final.json",
+      "scenario": "interaction",
+      "profile": "desktop",
+      "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-pv6mitgv\\data",
+      "worker_pid": 27076,
+      "same_worker": true,
+      "same_instance": true,
+      "same_target_execution": null,
+      "model_calls": 2,
+      "main_model_calls": 2,
+      "side_effects": [],
+      "shutdown": {
+        "kind": "shutdown.done",
+        "ok": true
+      },
+      "shutdown_ms": 273.0003,
+      "all_fields_preserved": null
+    },
+    {
+      "file": "native-offline.json",
+      "scenario": "offline",
+      "profile": "desktop",
+      "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-3vnjzr1i\\data",
+      "worker_pid": 36064,
+      "same_worker": true,
+      "same_instance": true,
+      "same_target_execution": null,
+      "model_calls": 1,
+      "main_model_calls": 1,
+      "side_effects": [],
+      "shutdown": {
+        "kind": "shutdown.done",
+        "ok": true
+      },
+      "shutdown_ms": 319.7006,
+      "all_fields_preserved": null
+    },
+    {
+      "file": "native-cancel.json",
+      "scenario": "cancel",
+      "profile": "desktop",
+      "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-1ajkdquu\\data",
+      "worker_pid": 27368,
+      "same_worker": true,
+      "same_instance": true,
+      "same_target_execution": null,
+      "model_calls": 1,
+      "main_model_calls": 1,
+      "side_effects": [],
+      "shutdown": {
+        "kind": "shutdown.done",
+        "ok": true
+      },
+      "shutdown_ms": 312.824,
+      "all_fields_preserved": null
+    },
+    {
+      "file": "native-queue-caller-final.json",
+      "scenario": "queue",
+      "profile": "desktop",
+      "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-br0fpxsz\\data",
+      "worker_pid": 37972,
+      "same_worker": true,
+      "same_instance": true,
+      "same_target_execution": null,
+      "model_calls": 2,
+      "main_model_calls": 2,
+      "side_effects": [],
+      "shutdown": {
+        "kind": "shutdown.done",
+        "ok": true
+      },
+      "shutdown_ms": 273.9057,
+      "all_fields_preserved": null
+    },
+    {
+      "file": "native-steer-caller-final.json",
+      "scenario": "steer",
+      "profile": "desktop",
+      "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-zv9yyzz8\\data",
+      "worker_pid": 27372,
+      "same_worker": true,
+      "same_instance": true,
+      "same_target_execution": null,
+      "model_calls": 2,
+      "main_model_calls": 2,
+      "side_effects": [],
+      "shutdown": {
+        "kind": "shutdown.done",
+        "ok": true
+      },
+      "shutdown_ms": 301.6967,
+      "all_fields_preserved": null
+    },
+    {
+      "file": "native-cross-session-accepted-final.json",
+      "scenario": "cross-session",
+      "profile": "desktop",
+      "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-me8zl312\\data",
+      "worker_pid": 17828,
+      "same_worker": true,
+      "same_instance": true,
+      "same_target_execution": true,
+      "model_calls": 3,
+      "main_model_calls": 3,
+      "side_effects": [],
+      "shutdown": {
+        "kind": "shutdown.done",
+        "ok": true
+      },
+      "shutdown_ms": 319.9205,
+      "all_fields_preserved": null
+    },
+    {
+      "file": "native-mcp.json",
+      "scenario": "mcp",
+      "profile": "desktop",
+      "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-wnq1lyh2\\data",
+      "worker_pid": 33440,
+      "same_worker": true,
+      "same_instance": true,
+      "same_target_execution": null,
+      "model_calls": 2,
+      "main_model_calls": 2,
+      "side_effects": [
+        "once"
+      ],
+      "shutdown": {
+        "kind": "shutdown.done",
+        "ok": true
+      },
+      "shutdown_ms": 481.2471,
+      "all_fields_preserved": null
+    },
+    {
+      "file": "native-failed-create.json",
+      "scenario": "failed-create",
+      "profile": "desktop",
+      "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-xegjhtzc\\data",
+      "worker_pid": 38480,
+      "same_worker": true,
+      "same_instance": true,
+      "same_target_execution": null,
+      "model_calls": 1,
+      "main_model_calls": 1,
+      "side_effects": [],
+      "shutdown": {
+        "kind": "shutdown.done",
+        "ok": true
+      },
+      "shutdown_ms": 366.4995,
+      "all_fields_preserved": null
+    },
+    {
+      "file": "native-warming-cancel-accepted-final.json",
+      "scenario": "warming-cancel",
+      "profile": "desktop",
+      "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-8ahsapr2\\data",
+      "worker_pid": 13768,
+      "same_worker": true,
+      "same_instance": true,
+      "same_target_execution": null,
+      "model_calls": 0,
+      "main_model_calls": 0,
+      "side_effects": [],
+      "shutdown": {
+        "kind": "shutdown.done",
+        "ok": true
+      },
+      "shutdown_ms": 6281.8184,
+      "all_fields_preserved": null
+    },
+    {
+      "file": "native-crash.json",
+      "scenario": "crash",
+      "profile": "desktop",
+      "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-_xm1vle1\\data",
+      "worker_pid": 3800,
+      "same_worker": false,
+      "same_instance": false,
+      "same_target_execution": null,
+      "model_calls": 1,
+      "main_model_calls": 1,
+      "side_effects": [],
+      "shutdown": {
+        "kind": "shutdown.done",
+        "ok": true
+      },
+      "shutdown_ms": 8308.351,
+      "all_fields_preserved": null
+    },
+    {
+      "file": "native-agentos-directory-a.json",
+      "scenario": "restart",
+      "profile": "agentos",
+      "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-of6azlol\\data",
+      "worker_pid": 33316,
+      "same_worker": true,
+      "same_instance": true,
+      "same_target_execution": null,
+      "model_calls": 1,
+      "main_model_calls": 1,
+      "side_effects": [],
+      "shutdown": {
+        "kind": "shutdown.done",
+        "ok": true
+      },
+      "shutdown_ms": 287.811,
+      "all_fields_preserved": null
+    },
+    {
+      "file": "native-agentos-directory-b.json",
+      "scenario": "restart",
+      "profile": "agentos",
+      "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-w22gtuku\\data",
+      "worker_pid": 24888,
+      "same_worker": true,
+      "same_instance": true,
+      "same_target_execution": null,
+      "model_calls": 1,
+      "main_model_calls": 1,
+      "side_effects": [],
+      "shutdown": {
+        "kind": "shutdown.done",
+        "ok": true
+      },
+      "shutdown_ms": 265.2343,
+      "all_fields_preserved": null
+    },
+    {
+      "file": "native-metadata-concurrency.json",
+      "scenario": null,
+      "profile": null,
+      "data_dir": null,
+      "worker_pid": null,
+      "same_worker": null,
+      "same_instance": null,
+      "same_target_execution": null,
+      "model_calls": null,
+      "main_model_calls": null,
+      "side_effects": null,
+      "shutdown": null,
+      "shutdown_ms": null,
+      "all_fields_preserved": true
+    }
+  ],
+  "performance_provenance": {
+    "code_commit": "fc7c36c975543008d1c43e00db256cb80329846a",
+    "rerun_in_this_review": false,
+    "metrics": {
+      "agent": {
+        "baseline": {
+          "listen": {
+            "n": 30,
+            "p50_ms": 338.8416,
+            "p95_ms": 353.0031
+          },
+          "session.list": {
+            "n": 30,
+            "p50_ms": 358.8874,
+            "p95_ms": 374.87
+          },
+          "session.list.response": {
+            "n": 30,
+            "p50_ms": 18.4767,
+            "p95_ms": 23.6171
+          },
+          "project.list": {
+            "n": 30,
+            "p50_ms": 372.1062,
+            "p95_ms": 388.5298
+          },
+          "project.list.response": {
+            "n": 30,
+            "p50_ms": 12.4029,
+            "p95_ms": 13.8289
+          },
+          "config.get": {
+            "n": 30,
+            "p50_ms": 438.9583,
+            "p95_ms": 455.1205
+          },
+          "config.get.response": {
+            "n": 30,
+            "p50_ms": 66.8485,
+            "p95_ms": 70.4212
+          },
+          "history.get": {
+            "n": 30,
+            "p50_ms": 443.3245,
+            "p95_ms": 458.4859
+          },
+          "history.get.response": {
+            "n": 30,
+            "p50_ms": 3.0279,
+            "p95_ms": 4.8545
+          },
+          "cold": {
+            "n": 30,
+            "p50_ms": 8224.2629,
+            "p95_ms": 10420.3243
+          },
+          "warm": {
+            "n": 100,
+            "p50_ms": 82.5261,
+            "p95_ms": 154.2954
+          }
+        },
+        "candidate": {
+          "listen": {
+            "n": 30,
+            "p50_ms": 243.594,
+            "p95_ms": 259.1544
+          },
+          "session.list": {
+            "n": 30,
+            "p50_ms": 266.3449,
+            "p95_ms": 280.8836
+          },
+          "session.list.response": {
+            "n": 30,
+            "p50_ms": 19.9779,
+            "p95_ms": 26.1794
+          },
+          "project.list": {
+            "n": 30,
+            "p50_ms": 277.3809,
+            "p95_ms": 292.9154
+          },
+          "project.list.response": {
+            "n": 30,
+            "p50_ms": 11.8838,
+            "p95_ms": 13.4647
+          },
+          "config.get": {
+            "n": 30,
+            "p50_ms": 348.0757,
+            "p95_ms": 364.5576
+          },
+          "config.get.response": {
+            "n": 30,
+            "p50_ms": 70.5435,
+            "p95_ms": 75.9149
+          },
+          "history.get": {
+            "n": 30,
+            "p50_ms": 352.224,
+            "p95_ms": 368.2736
+          },
+          "history.get.response": {
+            "n": 30,
+            "p50_ms": 3.0343,
+            "p95_ms": 4.1914
+          },
+          "cold": {
+            "n": 30,
+            "p50_ms": 7714.1908,
+            "p95_ms": 8010.837
+          },
+          "warm": {
+            "n": 100,
+            "p50_ms": 117.1518,
+            "p95_ms": 158.9635
+          }
+        }
+      },
+      "code.normal": {
+        "baseline": {
+          "listen": {
+            "n": 30,
+            "p50_ms": 338.8131,
+            "p95_ms": 381.5187
+          },
+          "session.list": {
+            "n": 30,
+            "p50_ms": 360.6993,
+            "p95_ms": 402.6648
+          },
+          "session.list.response": {
+            "n": 30,
+            "p50_ms": 18.3711,
+            "p95_ms": 26.4846
+          },
+          "project.list": {
+            "n": 30,
+            "p50_ms": 372.8537,
+            "p95_ms": 415.1821
+          },
+          "project.list.response": {
+            "n": 30,
+            "p50_ms": 12.4147,
+            "p95_ms": 13.9635
+          },
+          "config.get": {
+            "n": 30,
+            "p50_ms": 439.7983,
+            "p95_ms": 485.0951
+          },
+          "config.get.response": {
+            "n": 30,
+            "p50_ms": 67.5753,
+            "p95_ms": 70.8974
+          },
+          "history.get": {
+            "n": 30,
+            "p50_ms": 442.9454,
+            "p95_ms": 488.7169
+          },
+          "history.get.response": {
+            "n": 30,
+            "p50_ms": 3.0064,
+            "p95_ms": 3.8967
+          },
+          "cold": {
+            "n": 30,
+            "p50_ms": 8224.8683,
+            "p95_ms": 11123.4181
+          },
+          "warm": {
+            "n": 100,
+            "p50_ms": 94.5142,
+            "p95_ms": 153.424
+          }
+        },
+        "candidate": {
+          "listen": {
+            "n": 30,
+            "p50_ms": 243.2498,
+            "p95_ms": 259.9526
+          },
+          "session.list": {
+            "n": 30,
+            "p50_ms": 264.5264,
+            "p95_ms": 281.762
+          },
+          "session.list.response": {
+            "n": 30,
+            "p50_ms": 19.9604,
+            "p95_ms": 27.1875
+          },
+          "project.list": {
+            "n": 30,
+            "p50_ms": 276.2511,
+            "p95_ms": 293.5622
+          },
+          "project.list.response": {
+            "n": 30,
+            "p50_ms": 11.7992,
+            "p95_ms": 13.3977
+          },
+          "config.get": {
+            "n": 30,
+            "p50_ms": 346.3726,
+            "p95_ms": 370.0743
+          },
+          "config.get.response": {
+            "n": 30,
+            "p50_ms": 70.6731,
+            "p95_ms": 76.5076
+          },
+          "history.get": {
+            "n": 30,
+            "p50_ms": 350.0516,
+            "p95_ms": 373.5986
+          },
+          "history.get.response": {
+            "n": 30,
+            "p50_ms": 3.1948,
+            "p95_ms": 4.0475
+          },
+          "cold": {
+            "n": 30,
+            "p50_ms": 7869.5067,
+            "p95_ms": 7989.2672
+          },
+          "warm": {
+            "n": 100,
+            "p50_ms": 107.9724,
+            "p95_ms": 160.0035
+          }
+        }
+      }
+    }
+  },
+  "limitations": [
+    "冷 Worker P95 约 8 秒，未达到 2.5 秒；依赖锁定未改",
+    "性能正式采样属于此前 fc7c36c97；本轮为功能复核，没有重采 30/100 次 P95",
+    "88 个初轮失败在 develop 逐项复现；最终回归失败为其中子集，未清理无关基线缺陷",
+    "浏览器页面点击、冻结 EXE 及老协议安装升级未实测",
+    "工具副作用和 MCP 恢复使用真实 SDK/子进程及本地模型协议 fixture；外部真实模型续聊单独报告"
+  ]
+}

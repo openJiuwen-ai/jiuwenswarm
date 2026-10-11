@@ -1,0 +1,386 @@
+{
+  "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-pv6mitgv\\data",
+  "profile": "desktop",
+  "scenario": "interaction",
+  "gateway": true,
+  "interaction": {
+    "event_type": "chat.ask_user_question",
+    "request_id": "fixture-question",
+    "questions": [
+      {
+        "question": "Continue?",
+        "header": "Question",
+        "options": [],
+        "multi_select": false
+      }
+    ],
+    "source": "ask_user_interrupt",
+    "output_phase_id": "8dacef3e01ac4bcf96b0fbe809ced1b1",
+    "output_order": {
+      "request_id": "original-chat",
+      "sequence": 2
+    },
+    "timestamp": 1791697177332.5034,
+    "execution_id": "bb64bbd471c645aab49e367d21801d0f",
+    "session_id": "resident-session",
+    "runtime_event": {
+      "worker_instance": "b6164219492b4f7c9b246c583a25797d",
+      "sequence": 3,
+      "dispatch_id": "48a15692cf3c4e36b819f322fc3604f9"
+    }
+  },
+  "before": {
+    "worker_instance": "b6164219492b4f7c9b246c583a25797d",
+    "cursor": 6,
+    "history_required": false,
+    "is_processing": true,
+    "dispatches": [
+      {
+        "dispatch_id": "48a15692cf3c4e36b819f322fc3604f9",
+        "request_id": "original-chat",
+        "active": false,
+        "phase": "waiting_for_control",
+        "execution_id": "bb64bbd471c645aab49e367d21801d0f",
+        "entered_at_ns": 276245763127300,
+        "pending_interactions": [
+          {
+            "delta_kind": "custom",
+            "delta": {
+              "event_type": "chat.ask_user_question",
+              "request_id": "fixture-question",
+              "questions": [
+                {
+                  "question": "Continue?",
+                  "header": "Question",
+                  "options": [],
+                  "multi_select": false
+                }
+              ],
+              "source": "ask_user_interrupt",
+              "output_phase_id": "8dacef3e01ac4bcf96b0fbe809ced1b1",
+              "output_order": {
+                "request_id": "original-chat",
+                "sequence": 2
+              },
+              "timestamp": 1791697177332.5034,
+              "execution_id": "bb64bbd471c645aab49e367d21801d0f"
+            },
+            "event_type": "chat.ask_user_question",
+            "request_id": "fixture-question",
+            "questions": [
+              {
+                "question": "Continue?",
+                "header": "Question",
+                "options": [],
+                "multi_select": false
+              }
+            ],
+            "source": "ask_user_interrupt",
+            "output_phase_id": "8dacef3e01ac4bcf96b0fbe809ced1b1",
+            "output_order": {
+              "request_id": "original-chat",
+              "sequence": 2
+            },
+            "timestamp": 1791697177332.5034,
+            "execution_id": "bb64bbd471c645aab49e367d21801d0f"
+          }
+        ],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "bb64bbd471c645aab49e367d21801d0f",
+        "session_id": "resident-session",
+        "request_id": "original-chat",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": "fixture-question",
+        "state": "waiting_for_control",
+        "created_at": 276245.359,
+        "started_at": 276245.359,
+        "finished_at": null,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "worker_pid": 27076,
+  "after": {
+    "worker_instance": "b6164219492b4f7c9b246c583a25797d",
+    "cursor": 6,
+    "history_required": false,
+    "is_processing": true,
+    "dispatches": [
+      {
+        "dispatch_id": "48a15692cf3c4e36b819f322fc3604f9",
+        "request_id": "original-chat",
+        "active": false,
+        "phase": "waiting_for_control",
+        "execution_id": "bb64bbd471c645aab49e367d21801d0f",
+        "entered_at_ns": 276245763127300,
+        "pending_interactions": [
+          {
+            "delta_kind": "custom",
+            "delta": {
+              "event_type": "chat.ask_user_question",
+              "request_id": "fixture-question",
+              "questions": [
+                {
+                  "question": "Continue?",
+                  "header": "Question",
+                  "options": [],
+                  "multi_select": false
+                }
+              ],
+              "source": "ask_user_interrupt",
+              "output_phase_id": "8dacef3e01ac4bcf96b0fbe809ced1b1",
+              "output_order": {
+                "request_id": "original-chat",
+                "sequence": 2
+              },
+              "timestamp": 1791697177332.5034,
+              "execution_id": "bb64bbd471c645aab49e367d21801d0f"
+            },
+            "event_type": "chat.ask_user_question",
+            "request_id": "fixture-question",
+            "questions": [
+              {
+                "question": "Continue?",
+                "header": "Question",
+                "options": [],
+                "multi_select": false
+              }
+            ],
+            "source": "ask_user_interrupt",
+            "output_phase_id": "8dacef3e01ac4bcf96b0fbe809ced1b1",
+            "output_order": {
+              "request_id": "original-chat",
+              "sequence": 2
+            },
+            "timestamp": 1791697177332.5034,
+            "execution_id": "bb64bbd471c645aab49e367d21801d0f"
+          }
+        ],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "bb64bbd471c645aab49e367d21801d0f",
+        "session_id": "resident-session",
+        "request_id": "original-chat",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": "fixture-question",
+        "state": "waiting_for_control",
+        "created_at": 276245.359,
+        "started_at": 276245.359,
+        "finished_at": null,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "same_execution": true,
+  "restored_interactions": [
+    {
+      "delta_kind": "custom",
+      "delta": {
+        "event_type": "chat.ask_user_question",
+        "request_id": "fixture-question",
+        "questions": [
+          {
+            "question": "Continue?",
+            "header": "Question",
+            "options": [],
+            "multi_select": false
+          }
+        ],
+        "source": "ask_user_interrupt",
+        "output_phase_id": "8dacef3e01ac4bcf96b0fbe809ced1b1",
+        "output_order": {
+          "request_id": "original-chat",
+          "sequence": 2
+        },
+        "timestamp": 1791697177332.5034,
+        "execution_id": "bb64bbd471c645aab49e367d21801d0f"
+      },
+      "event_type": "chat.ask_user_question",
+      "request_id": "fixture-question",
+      "questions": [
+        {
+          "question": "Continue?",
+          "header": "Question",
+          "options": [],
+          "multi_select": false
+        }
+      ],
+      "source": "ask_user_interrupt",
+      "output_phase_id": "8dacef3e01ac4bcf96b0fbe809ced1b1",
+      "output_order": {
+        "request_id": "original-chat",
+        "sequence": 2
+      },
+      "timestamp": 1791697177332.5034,
+      "execution_id": "bb64bbd471c645aab49e367d21801d0f"
+    }
+  ],
+  "final": {
+    "worker_instance": "b6164219492b4f7c9b246c583a25797d",
+    "cursor": 14,
+    "history_required": false,
+    "is_processing": false,
+    "dispatches": [
+      {
+        "dispatch_id": "48a15692cf3c4e36b819f322fc3604f9",
+        "request_id": "original-chat",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "bb64bbd471c645aab49e367d21801d0f",
+        "entered_at_ns": 276245763127300,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "succeeded"
+        }
+      },
+      {
+        "dispatch_id": "e5780e972f73426ca7d394255367bd1f",
+        "request_id": "answer",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "",
+        "entered_at_ns": 276253632606400,
+        "pending_interactions": [],
+        "terminal": {
+          "delta_kind": "custom",
+          "delta": {
+            "event_type": "chat.final",
+            "content": "resident-worker-ok",
+            "output_phase_id": "990121783a6e4f35840f77990c10322d",
+            "output_order": {
+              "request_id": "answer",
+              "sequence": 3
+            },
+            "timestamp": 1791697184490.2769
+          },
+          "event_type": "chat.final",
+          "content": "resident-worker-ok",
+          "output_phase_id": "990121783a6e4f35840f77990c10322d",
+          "output_order": {
+            "request_id": "answer",
+            "sequence": 3
+          },
+          "timestamp": 1791697184490.2769
+        }
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "bb64bbd471c645aab49e367d21801d0f",
+        "session_id": "resident-session",
+        "request_id": "original-chat",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 276245.359,
+        "started_at": 276245.359,
+        "finished_at": 276253.781,
+        "error": null,
+        "cancellation_requested": false
+      },
+      {
+        "execution_id": "dbcee1e6bdcd402bafcfbad87c2fb60c",
+        "session_id": "resident-session",
+        "request_id": "fixture-question",
+        "generation": 1,
+        "work_kind": "control_input",
+        "parent_execution_id": "bb64bbd471c645aab49e367d21801d0f",
+        "root_work_kind": "chat_stream",
+        "root_request_id": "original-chat",
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 276253.562,
+        "started_at": 276253.562,
+        "finished_at": 276253.781,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "history_records": 8,
+  "model_calls": 2,
+  "main_model_calls": 2,
+  "side_effects": [],
+  "tool_names": [
+    "read_pdf",
+    "fetch_webpage",
+    "search_skill",
+    "install_skill",
+    "uninstall_skill",
+    "acp_chat",
+    "cron",
+    "cron_list_jobs",
+    "cron_get_job",
+    "cron_create_job",
+    "cron_update_job",
+    "cron_delete_job",
+    "cron_toggle_job",
+    "cron_preview_job",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "glob",
+    "list_files",
+    "grep",
+    "bash",
+    "powershell",
+    "skill_tool",
+    "subagent_spawn",
+    "subagent_wait",
+    "subagent_list",
+    "subagent_send_input",
+    "subagent_close",
+    "subagent_resume",
+    "todo_create",
+    "todo_list",
+    "todo_get",
+    "todo_modify",
+    "ask_user",
+    "heartbeat_list_jobs",
+    "heartbeat_get_job",
+    "heartbeat_create_job",
+    "heartbeat_update_job",
+    "heartbeat_delete_job",
+    "heartbeat_toggle_job",
+    "heartbeat_preview_job",
+    "heartbeat_run_now",
+    "heartbeat_cancel_run",
+    "submit_goal_report",
+    "get_current_goal",
+    "memory_search",
+    "memory_get",
+    "write_memory",
+    "edit_memory",
+    "read_memory",
+    "send_file_to_user"
+  ],
+  "same_worker": true,
+  "same_instance": true,
+  "shutdown": {
+    "kind": "shutdown.done",
+    "ok": true
+  },
+  "shutdown_ms": 273.0003
+}

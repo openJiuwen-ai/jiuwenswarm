@@ -1,0 +1,208 @@
+{
+  "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-1ajkdquu\\data",
+  "profile": "desktop",
+  "scenario": "cancel",
+  "gateway": false,
+  "before": {
+    "worker_instance": "942f3ff049844bd9a2f6469668014a0a",
+    "cursor": 1,
+    "history_required": false,
+    "is_processing": true,
+    "dispatches": [
+      {
+        "dispatch_id": "d7f9e8ce7d43454dba74839ceb642dc0",
+        "request_id": "original-chat",
+        "active": true,
+        "phase": "executing",
+        "execution_id": "22f8f510c2424c789d83c1d7b8d14f5f",
+        "entered_at_ns": 275485077497900,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "22f8f510c2424c789d83c1d7b8d14f5f",
+        "session_id": "resident-session",
+        "request_id": "original-chat",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "running",
+        "created_at": 275484.593,
+        "started_at": 275484.593,
+        "finished_at": null,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "worker_pid": 27368,
+  "after": {
+    "worker_instance": "942f3ff049844bd9a2f6469668014a0a",
+    "cursor": 1,
+    "history_required": false,
+    "is_processing": true,
+    "dispatches": [
+      {
+        "dispatch_id": "d7f9e8ce7d43454dba74839ceb642dc0",
+        "request_id": "original-chat",
+        "active": true,
+        "phase": "executing",
+        "execution_id": "22f8f510c2424c789d83c1d7b8d14f5f",
+        "entered_at_ns": 275485077497900,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "22f8f510c2424c789d83c1d7b8d14f5f",
+        "session_id": "resident-session",
+        "request_id": "original-chat",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "running",
+        "created_at": 275484.593,
+        "started_at": 275484.593,
+        "finished_at": null,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "same_execution": true,
+  "cancelled": {
+    "event_type": "chat.interrupt_result",
+    "intent": "cancel",
+    "success": true,
+    "message": "任务已取消"
+  },
+  "final": {
+    "worker_instance": "942f3ff049844bd9a2f6469668014a0a",
+    "cursor": 4,
+    "history_required": false,
+    "is_processing": false,
+    "dispatches": [
+      {
+        "dispatch_id": "d7f9e8ce7d43454dba74839ceb642dc0",
+        "request_id": "original-chat",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "22f8f510c2424c789d83c1d7b8d14f5f",
+        "entered_at_ns": 275485077497900,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "succeeded"
+        }
+      },
+      {
+        "dispatch_id": "49f07cc46d68427085c2dd35a23c92d1",
+        "request_id": "cancel",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "22f8f510c2424c789d83c1d7b8d14f5f",
+        "session_id": "resident-session",
+        "request_id": "original-chat",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 275484.593,
+        "started_at": 275484.593,
+        "finished_at": 275486.89,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "history_records": 1,
+  "model_calls": 1,
+  "main_model_calls": 1,
+  "side_effects": [],
+  "tool_names": [
+    "read_pdf",
+    "fetch_webpage",
+    "search_skill",
+    "install_skill",
+    "uninstall_skill",
+    "acp_chat",
+    "cron",
+    "cron_list_jobs",
+    "cron_get_job",
+    "cron_create_job",
+    "cron_update_job",
+    "cron_delete_job",
+    "cron_toggle_job",
+    "cron_preview_job",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "glob",
+    "list_files",
+    "grep",
+    "bash",
+    "powershell",
+    "skill_tool",
+    "subagent_spawn",
+    "subagent_wait",
+    "subagent_list",
+    "subagent_send_input",
+    "subagent_close",
+    "subagent_resume",
+    "todo_create",
+    "todo_list",
+    "todo_get",
+    "todo_modify",
+    "ask_user",
+    "heartbeat_list_jobs",
+    "heartbeat_get_job",
+    "heartbeat_create_job",
+    "heartbeat_update_job",
+    "heartbeat_delete_job",
+    "heartbeat_toggle_job",
+    "heartbeat_preview_job",
+    "heartbeat_run_now",
+    "heartbeat_cancel_run",
+    "submit_goal_report",
+    "get_current_goal",
+    "memory_search",
+    "memory_get",
+    "write_memory",
+    "edit_memory",
+    "read_memory",
+    "session_list",
+    "session_send_message",
+    "session_message_list",
+    "session_continue_queued",
+    "session_read",
+    "session_message_resolve",
+    "send_file_to_user"
+  ],
+  "same_worker": true,
+  "same_instance": true,
+  "shutdown": {
+    "kind": "shutdown.done",
+    "ok": true
+  },
+  "shutdown_ms": 312.824
+}

@@ -1,0 +1,121 @@
+{
+  "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-cdjks4ik\\data",
+  "profile": "desktop",
+  "scenario": "warming-cancel",
+  "gateway": false,
+  "warming_cancel": {
+    "event_type": "chat.interrupt_result",
+    "success": true,
+    "queued": true
+  },
+  "warming_cancel_ms": 496.015,
+  "before": {
+    "worker_instance": "76152bb3c7134256bddd1dd5a09de579",
+    "cursor": 0,
+    "history_required": false,
+    "is_processing": false,
+    "dispatches": [
+      {
+        "dispatch_id": "e92bb4881c7e49049d3eea44dbf5a29c",
+        "request_id": "original-chat",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "cancelled",
+          "error": "cancelled before runtime ready"
+        }
+      },
+      {
+        "dispatch_id": "9cb185f810134333810b782048ce4eed",
+        "request_id": "warming-cancel",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ]
+  },
+  "worker_pid": 2320,
+  "after": {
+    "worker_instance": "76152bb3c7134256bddd1dd5a09de579",
+    "cursor": 0,
+    "history_required": false,
+    "is_processing": false,
+    "dispatches": [
+      {
+        "dispatch_id": "e92bb4881c7e49049d3eea44dbf5a29c",
+        "request_id": "original-chat",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "cancelled",
+          "error": "cancelled before runtime ready"
+        }
+      },
+      {
+        "dispatch_id": "9cb185f810134333810b782048ce4eed",
+        "request_id": "warming-cancel",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ]
+  },
+  "final": {
+    "worker_instance": "76152bb3c7134256bddd1dd5a09de579",
+    "cursor": 0,
+    "history_required": false,
+    "is_processing": false,
+    "dispatches": [
+      {
+        "dispatch_id": "e92bb4881c7e49049d3eea44dbf5a29c",
+        "request_id": "original-chat",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "cancelled",
+          "error": "cancelled before runtime ready"
+        }
+      },
+      {
+        "dispatch_id": "9cb185f810134333810b782048ce4eed",
+        "request_id": "warming-cancel",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ]
+  },
+  "history_records": 0,
+  "model_calls": 0,
+  "main_model_calls": 0,
+  "side_effects": [],
+  "tool_names": [],
+  "same_worker": true,
+  "same_instance": true,
+  "shutdown": {
+    "kind": "shutdown.done",
+    "ok": true
+  },
+  "shutdown_ms": 7851.8353
+}

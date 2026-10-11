@@ -1,0 +1,1436 @@
+[
+  {
+    "cell": null,
+    "code": "F541",
+    "end_location": {
+      "column": 53,
+      "row": 155
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\agents\\harness\\common\\plugins\\rail_manager.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "\"扩展文件夹必须包含 rail.py 文件\"",
+          "end_location": {
+            "column": 53,
+            "row": 155
+          },
+          "location": {
+            "column": 30,
+            "row": 155
+          }
+        }
+      ],
+      "message": "Remove extraneous `f` prefix"
+    },
+    "location": {
+      "column": 30,
+      "row": 155
+    },
+    "message": "f-string without any placeholders",
+    "noqa_row": 155,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/f-string-missing-placeholders"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 460
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\agent_ws_server.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 418
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 418,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "F841",
+    "end_location": {
+      "column": 37,
+      "row": 7135
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\agent_ws_server.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 40,
+            "row": 7135
+          },
+          "location": {
+            "column": 21,
+            "row": 7135
+          }
+        }
+      ],
+      "message": "Remove assignment to unused variable `detail_raw_bytes`"
+    },
+    "location": {
+      "column": 21,
+      "row": 7135
+    },
+    "message": "Local variable `detail_raw_bytes` is assigned to but never used",
+    "noqa_row": 7135,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-variable"
+  },
+  {
+    "cell": null,
+    "code": "F841",
+    "end_location": {
+      "column": 17,
+      "row": 7248
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\agent_ws_server.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 20,
+            "row": 7248
+          },
+          "location": {
+            "column": 9,
+            "row": 7248
+          }
+        }
+      ],
+      "message": "Remove assignment to unused variable `included`"
+    },
+    "location": {
+      "column": 9,
+      "row": 7248
+    },
+    "message": "Local variable `included` is assigned to but never used",
+    "noqa_row": 7248,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-variable"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 275
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 272
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 272,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 280
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 276
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 276,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 285
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 281
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 281,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 288
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 286
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 286,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 94,
+      "row": 289
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 289
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 289,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 88,
+      "row": 290
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 290
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 290,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 79,
+      "row": 300
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 300
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 300,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 304
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 301
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 301,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 310
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 305
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 305,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 351
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 348
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 348,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 354
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 352
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 352,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 96,
+      "row": 359
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 359
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 359,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 362
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 360
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 360,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 371
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 363
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 363,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 374
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 372
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 372,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 378
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 375
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 375,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 383
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 379
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 379,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 387
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 384
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 384,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 62,
+      "row": 389
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 389
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 389,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 66,
+      "row": 390
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 390
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 390,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 56,
+      "row": 391
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 391
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 391,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 54,
+      "row": 392
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 392
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 392,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 93,
+      "row": 393
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 393
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 393,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 76,
+      "row": 394
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 394
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 394,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 65,
+      "row": 395
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 395
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 395,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 401
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 397
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 397,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 407
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 402
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 402,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 102,
+      "row": 408
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 408
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 408,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 413
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 409
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 409,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 417
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 414
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 414,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 421
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 418
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 418,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 90,
+      "row": 422
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 422
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 422,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 107,
+      "row": 423
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 423
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 423,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 78,
+      "row": 424
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 424
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 424,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 72,
+      "row": 429
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 429
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 429,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 459
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 430
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 430,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 463
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 460
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 460,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 468
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 464
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 464,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 476
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 469
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 469,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 84,
+      "row": 477
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 477
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 477,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 94,
+      "row": 478
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 478
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 478,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 79,
+      "row": 479
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 479
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 479,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 485
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 480
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 480,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 490
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 486
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 486,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 500
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 492
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 492,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 503
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 501
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 501,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 506
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 504
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 504,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 61,
+      "row": 507
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 507
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 507,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 71,
+      "row": 508
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 508
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 508,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 103,
+      "row": 509
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 509
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 509,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 70,
+      "row": 510
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 510
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 510,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 539
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 511
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 511,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 558
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 540
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 540,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 564
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 559
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 559,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 91,
+      "row": 565
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 565
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 565,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 98,
+      "row": 566
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 566
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 566,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 569
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 567
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 567,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 575
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 570
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 570,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 82,
+      "row": 576
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 576
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 576,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 87,
+      "row": 577
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 577
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 577,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 582
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 578
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 578,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 586
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 583
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 583,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 92,
+      "row": 587
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 587
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 587,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 90,
+      "row": 588
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 588
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 588,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 84,
+      "row": 589
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 589
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 589,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 55,
+      "row": 590
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 590
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 590,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 92,
+      "row": 591
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 591
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 591,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 56,
+      "row": 592
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 592
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 592,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 598
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 593
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 593,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 608
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 599
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 599,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 57,
+      "row": 609
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 609
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 609,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 616
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\agent_adapter\\interface_deep.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 610
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 610,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  },
+  {
+    "cell": null,
+    "code": "E402",
+    "end_location": {
+      "column": 2,
+      "row": 301
+    },
+    "filename": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\server\\runtime\\skill\\skill_manager.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 291
+    },
+    "message": "Module level import not at top of file",
+    "noqa_row": 291,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file"
+  }
+]

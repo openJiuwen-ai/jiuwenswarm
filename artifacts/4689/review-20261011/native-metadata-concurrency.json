@@ -1,0 +1,26 @@
+{
+  "writers": [
+    {
+      "role": "worker",
+      "pid": 34504,
+      "started_at_ns": 275724114302300,
+      "finished_at_ns": 275725568864500
+    },
+    {
+      "role": "front",
+      "pid": 11400,
+      "started_at_ns": 275724114377200,
+      "finished_at_ns": 275725582423400
+    }
+  ],
+  "overlap_ms": 1454.4873,
+  "final_fields": {
+    "message_count": 64,
+    "accent_color": "blue",
+    "title": "front-63",
+    "pinned": true,
+    "pin_order": 63
+  },
+  "all_fields_preserved": true,
+  "fixture": "two-native-Python-writers"
+}

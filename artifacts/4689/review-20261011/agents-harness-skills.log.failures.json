@@ -1,0 +1,4 @@
+[
+  "tests/unit_tests/agents/test_shell_process_registry.py::test_kill_asyncio_shell_process",
+  "tests/unit_tests/agents/test_shell_process_registry.py::test_kill_shell_processes_for_session_tree"
+]
