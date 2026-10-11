@@ -756,20 +756,26 @@ async def test_restart_keeps_queued_message_idle_until_user_continues(
         snapshot = await service.queued_for_target("target-1", "user-1")
         assert [item["message_id"] for item in snapshot] == [queued.message_id]
 
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.session import handle_session_message_continue_queued
+
         server = AgentWebSocketServer.__new__(AgentWebSocketServer)
         server._session_message_service = service
         ws = SimpleNamespace(send=AsyncMock())
-        await server._handle_session_message_continue_queued(
-            ws,
-            AgentRequest(
-                request_id="continue-1",
-                channel_id="web",
-                session_id="target-1",
-                req_method=ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED,
-                params={"session_id": "target-1"},
-                user_id="user-1",
-            ),
-            asyncio.Lock(),
+        await handle_session_message_continue_queued(
+            build_ws_request_context(
+                server,
+                ws,
+                AgentRequest(
+                    request_id="continue-1",
+                    channel_id="web",
+                    session_id="target-1",
+                    req_method=ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED,
+                    params={"session_id": "target-1"},
+                    user_id="user-1",
+                ),
+                asyncio.Lock(),
+            )
         )
         response = json.loads(ws.send.await_args.args[0])
         assert response["body"]["result"]["accepted"] is True

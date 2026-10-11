@@ -326,13 +326,13 @@ def test_agentserver_session_delete_is_transport_only() -> None:
 
 
 def test_agentserver_session_switch_is_runtime_adapter_only() -> None:
-    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "agent_ws_server.py"
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "handlers" / "session.py"
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     handlers = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_handle_session_switch"
+        and node.name == "handle_session_switch"
     ]
     assert len(handlers) == 1
     handler = handlers[0]
@@ -348,15 +348,14 @@ def test_agentserver_session_switch_is_runtime_adapter_only() -> None:
     }
 
     assert {
-        "_execution_runtime",
+        "execution_runtime",
         "prepare_session_switch",
         "commit_session_provision",
+        "send_response",
     } <= called_attributes
     assert {
         "SessionSwitchInput",
         "SessionProvisionCommitContext",
-        "encode_agent_response_for_wire",
-        "send_wire_payload",
     } <= called_names
     assert {
         "_prepare_session_switch_owner",

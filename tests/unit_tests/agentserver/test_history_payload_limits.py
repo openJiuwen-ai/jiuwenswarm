@@ -45,7 +45,9 @@ def make_large_tool_result_records(count: int = 20) -> list[dict]:
 
 
 def test_subagent_activity_history_record_is_restorable():
-    assert agent_ws_server_module._is_restorable_history_record(
+    from jiuwenswarm.server.handlers.session import _is_restorable_history_record
+
+    assert _is_restorable_history_record(
         {
             "id": "subagent-activity-1",
             "role": "assistant",
@@ -169,16 +171,20 @@ def test_history_get_sanitizes_large_restorable_records(monkeypatch):
         },
     }
 
-    monkeypatch.setattr(agent_ws_server_module, "history_exists", lambda session_id, **_kwargs: True)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "load_history_records",
+        "jiuwenswarm.server.handlers.session.history_exists",
+        lambda session_id, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.handlers.session.load_history_records",
         lambda session_id, **_kwargs: [large_record],
     )
 
     # get_conversation_history 现在返回 raw record（不在内部 sanitize）——
-    # sanitize 移到 _handle_history_get_stream 里调 split 时做。这里先验 raw 透传。
-    result = agent_ws_server_module.AgentWebSocketServer.get_conversation_history(
+    # sanitize 移到历史流里调 split 时做。这里先验 raw 透传。
+    from jiuwenswarm.server.handlers.session import get_conversation_history
+
+    result = get_conversation_history(
         "sess-large",
         1,
     )
