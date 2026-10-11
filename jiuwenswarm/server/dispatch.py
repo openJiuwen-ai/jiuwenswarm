@@ -22,6 +22,11 @@ from jiuwenswarm.server.handlers.agents import (
     handle_agents_tools_list,
     handle_agents_update,
 )
+from jiuwenswarm.server.handlers.bootstrap import (
+    handle_initialize,
+    handle_session_create,
+    handle_session_fork,
+)
 from jiuwenswarm.server.handlers.commands import (
     handle_command_add_dir,
     handle_command_btw,
@@ -181,6 +186,9 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.ISSUE_STATE_LIST: handle_schedule_request,
     ReqMethod.ISSUE_DELETE: handle_schedule_request,
     ReqMethod.ISSUE_MATRIX: handle_schedule_request,
+    ReqMethod.INITIALIZE: handle_initialize,
+    ReqMethod.SESSION_CREATE: handle_session_create,
+    ReqMethod.SESSION_FORK: handle_session_fork,
     ReqMethod.SESSION_LIST: handle_session_list,
     ReqMethod.SESSION_RENAME: handle_session_rename,
     ReqMethod.SESSION_REBIND_PROJECT: handle_session_rebind_project,
