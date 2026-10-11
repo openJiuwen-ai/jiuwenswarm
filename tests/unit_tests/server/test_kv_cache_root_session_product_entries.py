@@ -34,12 +34,12 @@ async def test_team_delete_handler_only_maps_runtime_result(monkeypatch):
     server._runtime = runtime
     server._execution_runtime = lambda: runtime
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server.encode_agent_response_for_wire",
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
         lambda response, **_kwargs: response,
     )
     send_wire = AsyncMock()
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server.send_wire_payload",
+        "jiuwenswarm.server.transports.ws_sink.send_wire_payload",
         send_wire,
     )
     request = AgentRequest(
@@ -48,8 +48,11 @@ async def test_team_delete_handler_only_maps_runtime_result(monkeypatch):
         req_method=ReqMethod.TEAM_DELETE,
         params={"mode": "team", "team_name": "team-a"},
     )
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers.team import handle_team_delete
+
     ws = object()
-    await server._handle_team_delete(ws, request, asyncio.Lock())
+    await handle_team_delete(build_ws_request_context(server, ws, request, asyncio.Lock()))
 
     runtime.delete_team.assert_awaited_once_with(team_name="team-a", channel_id="web")
     response = send_wire.await_args.args[1]

@@ -7,7 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 RUNTIME_DIR = Path(__file__).parents[3] / "jiuwenswarm" / "runtime"
 PROJECT_ROOT = Path(__file__).parents[3]
 FORBIDDEN_IMPORT_PREFIXES = (
@@ -386,13 +385,13 @@ def test_legacy_kvc_delete_orchestration_modules_are_removed() -> None:
 
 
 def test_agentserver_team_delete_is_transport_only() -> None:
-    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "agent_ws_server.py"
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "handlers" / "team.py"
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     handlers = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_handle_team_delete"
+        and node.name == "handle_team_delete"
     ]
     assert len(handlers) == 1
     handler_text = ast.unparse(handlers[0])

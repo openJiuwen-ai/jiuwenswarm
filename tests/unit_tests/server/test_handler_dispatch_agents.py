@@ -204,6 +204,39 @@ class TestDispatchTable:
         assert ReqMethod.SESSION_CREATE not in HANDLERS
         assert ReqMethod.SESSION_FORK not in HANDLERS
 
+    def test_team_and_swarmflow_control_are_registered(self) -> None:
+        from jiuwenswarm.server.handlers.team import (
+            handle_swarmflow_control,
+            handle_team_binding_create,
+            handle_team_binding_generate,
+            handle_team_bindings_list,
+            handle_team_delete,
+            handle_team_history_get,
+            handle_team_members_get,
+            handle_team_mq_publish,
+            handle_team_session_bind,
+            handle_team_snapshot,
+            handle_team_templates_list,
+        )
+
+        registered = {
+            ReqMethod.TEAM_TEMPLATES_LIST: handle_team_templates_list,
+            ReqMethod.TEAM_BINDINGS_LIST: handle_team_bindings_list,
+            ReqMethod.TEAM_BINDING_CREATE: handle_team_binding_create,
+            ReqMethod.TEAM_BINDING_GENERATE: handle_team_binding_generate,
+            ReqMethod.TEAM_SESSION_BIND: handle_team_session_bind,
+            ReqMethod.TEAM_DELETE: handle_team_delete,
+            ReqMethod.TEAM_SNAPSHOT: handle_team_snapshot,
+            ReqMethod.TEAM_MQ_PUBLISH: handle_team_mq_publish,
+            ReqMethod.TEAM_HISTORY_GET: handle_team_history_get,
+            ReqMethod.TEAM_MEMBERS_GET: handle_team_members_get,
+            ReqMethod.SWARMFLOW_PAUSE: handle_swarmflow_control,
+            ReqMethod.SWARMFLOW_RESUME: handle_swarmflow_control,
+            ReqMethod.SWARMFLOW_STOP: handle_swarmflow_control,
+        }
+        for method, handler in registered.items():
+            assert HANDLERS[method] is handler
+
     def test_mcp_commands_are_registered(self) -> None:
         from jiuwenswarm.server.handlers.mcp import handle_command_mcp
         from jiuwenswarm.server.handlers.mcp_hub import (
@@ -344,16 +377,32 @@ class TestWsSink:
 
 
 class TestWsDispatchStillKeepsUnmovedMethods:
-    def test_swarmflow_branches_remain_on_the_server(self) -> None:
+    def test_unmoved_methods_stay_on_the_server(self) -> None:
         from pathlib import Path
 
         source = Path("jiuwenswarm/server/agent_ws_server.py").read_text(encoding="utf-8")
         start = source.index("async def dispatch_parsed_request")
         end = source.index("\n    async def ", start + 1)
         body = source[start:end]
-        for name in ("SWARMFLOW_PAUSE", "SWARMFLOW_RESUME", "SWARMFLOW_STOP"):
-            assert f"ReqMethod.{name}" in body
+        for name in (
+            "SWARMFLOW_PAUSE",
+            "SWARMFLOW_RESUME",
+            "SWARMFLOW_STOP",
+            "TEAM_TEMPLATES_LIST",
+            "TEAM_DELETE",
+            "TEAM_HISTORY_GET",
+            "TEAM_MEMBERS_GET",
+        ):
+            assert f"ReqMethod.{name}" not in body
         assert "try_dispatch" in body
+        for name in (
+            "async def _handle_team_delete",
+            "async def _handle_team_snapshot",
+            "async def _handle_swarmflow_pause",
+            "async def _run_swarmflow_control",
+            "async def _handle_team_history_get",
+        ):
+            assert name not in source
         assert "_handle_agents_list" not in source
         for name in (
             "_handle_extensions_list",
@@ -392,6 +441,9 @@ class TestWsDispatchStillKeepsUnmovedMethods:
         assert "async def _handle_history_get" not in source
         assert "async def _handle_session_create" in source
         assert "async def _handle_session_fork" in source
+        assert "ReqMethod.HEARTBEAT_JOB" in body
+        assert 'startswith("rsi.")' in body
+        assert "async def _handle_unary" in source
 
 
 class TestExtensionHandlers:

@@ -906,7 +906,7 @@ def test_task_body_event_types_contains_only_created_and_updated() -> None:
 #
 # ``get_team_snapshot`` feeds BOTH the ``team.task.status_snapshot`` live
 # broadcast (emitted by ``_broadcast_team_state_snapshot``) AND the
-# ``team.snapshot`` RPC (served by ``agent_ws_server._handle_team_snapshot``).
+# ``team.snapshot`` RPC (served by ``handle_team_snapshot``).
 # So applying truncation here covers both exits (design D4).
 # =====================================================================
 
