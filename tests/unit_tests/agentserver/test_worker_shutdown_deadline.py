@@ -134,8 +134,9 @@ async def test_missing_shutdown_ack_forces_validated_native_child_exit(monkeypat
         started = time.monotonic()
         await asyncio.wait_for(supervisor.stop(terminate_worker=True), 0.6)
         assert time.monotonic() - started < 0.6
+        # Popen waits on this child's native process handle. A PID-only lookup
+        # after exit can observe PID reuse or a retained Windows process object.
         assert await worker.wait(timeout=2) is not None
-        assert not psutil.pid_exists(proc.pid)
     finally:
         supervisor._loop_task.cancel()
         await asyncio.gather(supervisor._loop_task, return_exceptions=True)
