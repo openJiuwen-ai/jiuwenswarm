@@ -22,7 +22,8 @@ def reset_harness_packages_state(path: Path | None = None) -> None:
         if data.get("native_version"):
             data["native_version"]["is_active"] = True
         for package in data.get("packages", []):
-            package["is_active"] = False
+            if package.get("is_active", False):
+                package["is_active"] = False
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         logger.warning("Auto-Harness package state reset failed", exc_info=True)

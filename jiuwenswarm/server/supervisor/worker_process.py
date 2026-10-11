@@ -9,6 +9,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -128,9 +129,11 @@ class WorkerProcess:
         proc = self._proc
         if proc is None or proc.poll() is not None:
             return
+        deadline = time.monotonic() + max(0.0, timeout)
         proc.terminate()
-        code = await self.wait(timeout=timeout)
+        code = await self.wait(timeout=max(0.0, deadline - time.monotonic()))
         if code is None:
             logger.warning("[Supervisor] worker did not exit after SIGTERM; killing")
             proc.kill()
-            await self.wait()
+            if await self.wait(timeout=max(0.0, deadline - time.monotonic())) is None:
+                logger.error("[Supervisor] worker exit could not be observed within the shutdown deadline")

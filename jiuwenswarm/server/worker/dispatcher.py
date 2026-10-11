@@ -463,8 +463,11 @@ class WorkerDispatcher:
                     executions = [asdict(item) for item in state.executions
                                   if item.request_id in allowed or item.root_request_id in allowed]
                     snapshot["executions"] = json.loads(json.dumps(executions, default=lambda value: value.value if isinstance(value, Enum) else str(value)))
-                    snapshot["is_processing"] = any(not item.state.terminal for item in state.executions
-                                                     if item.request_id in allowed or item.root_request_id in allowed)
+                    # Accepted warming/queued dispatches have no Coordinator
+                    # execution yet. An empty execution list must not clear them.
+                    snapshot["is_processing"] = snapshot["is_processing"] or any(
+                        not item.state.terminal for item in state.executions
+                        if item.request_id in allowed or item.root_request_id in allowed)
                     waiting = {item.waiting_control_id for item in state.executions
                                if not item.state.terminal and item.waiting_control_id}
                     for record in self._bridge.events.records.values():

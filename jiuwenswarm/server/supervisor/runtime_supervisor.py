@@ -57,6 +57,7 @@ def _is_server_push(payload: dict[str, Any]) -> bool:
 _HEARTBEAT_INTERVAL = 10.0
 _HEARTBEAT_TIMEOUT = 30.0
 _HELLO_TIMEOUT = 10.0
+_FINAL_SHUTDOWN_TIMEOUT = 30.0
 
 
 class RuntimeSupervisor:
@@ -255,11 +256,12 @@ class RuntimeSupervisor:
         final exit or upgrade, including after a validated reattachment.
         """
         conn = self._conn
+        deadline = time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT if terminate_worker else None
         if terminate_worker:
             self._terminating = True
-            await self._shutdown_owned_worker()
+            await self._shutdown_owned_worker(deadline=deadline)
         self._stopping = True
-        if conn is not None:
+        if conn is not None and not terminate_worker:
             try:
                 await conn.send({"kind": KIND_GATEWAY_DETACH, "remote": "front-stop"})
             except (OSError, RuntimeError):
@@ -267,6 +269,19 @@ class RuntimeSupervisor:
         self._owns_process = False
         self._process = None
         self._conn = None
+        if deadline is None:
+            await self._finish_stop(conn)
+        else:
+            cleanup = asyncio.create_task(self._finish_stop(conn))
+            done, _ = await asyncio.wait({cleanup}, timeout=max(0.0, deadline - time.monotonic()))
+            if cleanup in done:
+                await cleanup
+            else:
+                cleanup.cancel()
+                logger.error("[Supervisor] final shutdown deadline exhausted before IPC/task cleanup completed")
+        self._ipc_ready.set()
+
+    async def _finish_stop(self, conn: IpcConnection | None) -> None:
         if conn is not None:
             await conn.close()
         await self._cancel_side_tasks()
@@ -277,7 +292,6 @@ class RuntimeSupervisor:
             except asyncio.TimeoutError:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-        self._ipc_ready.set()
 
     async def _supervise(self) -> None:
         while not self._stopping:
@@ -730,26 +744,26 @@ class RuntimeSupervisor:
                 await conn.close()
             return
 
-    async def _shutdown_owned_worker(self) -> None:
+    async def _shutdown_owned_worker(self, *, deadline: float) -> None:
         conn = self._conn
         process = self._process
         if conn is not None:
             self._shutdown_done = asyncio.get_running_loop().create_future()
             try:
-                await conn.send({"kind": KIND_SHUTDOWN})
+                await asyncio.wait_for(conn.send({"kind": KIND_SHUTDOWN}), timeout=max(0.0, deadline - time.monotonic()))
                 if self._loop_task is not None:
-                    outcome = await asyncio.wait_for(asyncio.shield(self._shutdown_done), timeout=31.0)
+                    outcome = await asyncio.wait_for(asyncio.shield(self._shutdown_done), timeout=max(0.0, deadline - time.monotonic()))
                     if not outcome.get("ok"):
                         logger.error("[Supervisor] Worker shutdown incomplete: %s", outcome.get("error"))
             except (OSError, RuntimeError, asyncio.TimeoutError):
-                logger.warning("[Supervisor] Worker shutdown acknowledgement missing")
-        if process is not None and await process.wait(timeout=1.0) is None:
-            await process.stop(timeout=1.0)
+                logger.warning("[Supervisor] Worker shutdown acknowledgement missing or shutdown deadline exhausted")
+        if process is not None and await process.wait(timeout=max(0.0, deadline - time.monotonic())) is None:
+            await process.stop(timeout=max(0.0, deadline - time.monotonic()))
         if self._worker_pid is not None and self._worker_create_time is not None:
-            await asyncio.to_thread(self._reap_validated_worker)
+            await asyncio.to_thread(self._reap_validated_worker, deadline=deadline)
         self._process = None
 
-    def _reap_validated_worker(self) -> None:
+    def _reap_validated_worker(self, *, deadline: float) -> None:
         """Final-exit authority is explicit; a reused PID must never be killed."""
         import psutil
         try:
@@ -757,13 +771,16 @@ class RuntimeSupervisor:
             if process.create_time() != self._worker_create_time:
                 raise RuntimeError("Worker PID identity changed during final exit")
             try:
-                process.wait(timeout=1.0)
+                process.wait(timeout=max(0.0, deadline - time.monotonic()))
             except psutil.TimeoutExpired:
                 if process.create_time() != self._worker_create_time:
                     raise RuntimeError("Worker PID identity changed during final exit")
                 logger.error("[Supervisor] Worker final exit timed out; forcing validated process termination")
                 process.kill()
-                process.wait(timeout=1.0)
+                try:
+                    process.wait(timeout=max(0.0, deadline - time.monotonic()))
+                except psutil.TimeoutExpired:
+                    logger.error("[Supervisor] validated Worker exit could not be observed before the shutdown deadline")
         except psutil.NoSuchProcess:
             pass
         self._owns_process = False

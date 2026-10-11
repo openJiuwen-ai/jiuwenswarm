@@ -334,14 +334,18 @@ def _load_logging_config_from_yaml() -> dict[str, Any]:
         content = cf.read_text(encoding="utf-8")
         section = re.search(r'(?m)^(?:logging|[\"\']logging[\"\'])\s*:', content)
         if section is None:
+            # A valid flow mapping need not have a standalone logging section.
+            data = rt.load(content) or {}
+        else:
+            boundary = re.search(r"(?m)^[^\s#]", content[section.end():])
+            end = section.end() + boundary.start() if boundary else len(content)
+            try:
+                data = rt.load(content[section.start():end]) or {}
+            except Exception:
+                # A logging alias may reference an anchor from another section.
+                data = YAML(typ="safe").load(content) or {}
+        if not isinstance(data, dict):
             return {}
-        boundary = re.search(r"(?m)^[^\s#]", content[section.end():])
-        end = section.end() + boundary.start() if boundary else len(content)
-        try:
-            data = rt.load(content[section.start():end]) or {}
-        except Exception:
-            # A logging alias may reference an anchor from another section.
-            data = YAML(typ="safe").load(content) or {}
         raw = data.get("logging")
         if isinstance(raw, dict):
             return raw

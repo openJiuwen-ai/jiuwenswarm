@@ -50,7 +50,9 @@ class WorkerEventStore:
 
     def register(self, request: AgentRequest, dispatch_id: str) -> DispatchRecord:
         scope = request_scope(request)
-        key = (*scope, str(request.request_id or ""))
+        # Active IDs belong to the caller; changing Session cannot bypass the
+        # duplicate guard. Journal lookup and replay remain Session-scoped.
+        key = (*scope[:4], str(request.request_id or ""))
         if key in self._active:
             raise ValueError("duplicate active request_id")
         if len(self._active) >= 256:
@@ -67,7 +69,7 @@ class WorkerEventStore:
         if record is None:
             return
         record.active = False
-        key = (*record.scope, str(record.request.request_id or ""))
+        key = (*record.scope[:4], str(record.request.request_id or ""))
         if not record.is_processing and not record.interactions and self._active.get(key) == dispatch_id:
             del self._active[key]
         while len(self.records) > 512:
@@ -84,7 +86,7 @@ class WorkerEventStore:
                          if record.scope == scope and record.request.request_id == request.request_id), None)
         if existing is not None:
             if existing.active or existing.is_processing:
-                self._active[(*scope, str(request.request_id or ""))] = existing.dispatch_id
+                self._active[(*scope[:4], str(request.request_id or ""))] = existing.dispatch_id
             return existing
         return self.register(request, uuid.uuid4().hex)
 
