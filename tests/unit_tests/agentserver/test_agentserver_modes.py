@@ -33,7 +33,10 @@ class AgentWebSocketServerHarness(agent_ws_server_module.AgentWebSocketServer):
         )
 
     async def handle_stream_for_test(self, ws, request, send_lock):
-        await self._handle_stream(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers._default import handle_stream
+
+        await handle_stream(build_ws_request_context(self, ws, request, send_lock))
 
 
 def fake_encode_agent_chunk_for_wire(chunk, response_id, sequence):

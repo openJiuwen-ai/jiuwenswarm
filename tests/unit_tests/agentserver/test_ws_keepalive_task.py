@@ -17,6 +17,8 @@ from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.server import agent_ws_server
+from jiuwenswarm.server.context import build_ws_request_context
+from jiuwenswarm.server.handlers._default import handle_stream
 
 
 class _SessionRuntimeStub:
@@ -139,7 +141,7 @@ async def test_cancelled_stream_owner_cleans_keepalive_and_registry() -> None:
         is_stream=True,
     )
     handler_task = asyncio.create_task(
-        server._handle_stream_impl(object(), request, asyncio.Lock())
+        handle_stream(build_ws_request_context(server, object(), request, asyncio.Lock()))
     )
     await asyncio.wait_for(runtime_started.wait(), timeout=0.1)
     handler_task.cancel()
@@ -212,11 +214,11 @@ async def test_closed_connection_cleans_keepalive_and_registry(monkeypatch) -> N
         is_stream=True,
     )
 
-    await server._handle_stream_impl(
+    await handle_stream(build_ws_request_context(server, 
         ClosedWebSocket(),
         request,
         asyncio.Lock(),
-    )
+    ))
 
     assert send_attempted.is_set()
     assert not server._session_stream_tasks
@@ -278,11 +280,11 @@ async def test_stream_close_error_still_cleans_keepalive_and_registry() -> None:
     )
 
     with pytest.raises(RuntimeError, match="stream close failed"):
-        await server._handle_stream_impl(  # pylint: disable=protected-access
+        await handle_stream(build_ws_request_context(server,   # pylint: disable=protected-access
             object(),
             request,
             asyncio.Lock(),
-        )
+        ))
 
     assert not server._session_stream_tasks  # pylint: disable=protected-access
 
@@ -340,11 +342,11 @@ async def test_stream_keepalive_roundtrips_over_live_websocket(monkeypatch) -> N
 
     async def handle_connection(websocket) -> None:
         try:
-            await server._handle_stream_impl(  # pylint: disable=protected-access
+            await handle_stream(build_ws_request_context(server,   # pylint: disable=protected-access
                 websocket,
                 request,
                 asyncio.Lock(),
-            )
+            ))
             stream_finished.set()
             await hold_connection_open.wait()
         finally:
@@ -477,7 +479,7 @@ async def test_stream_keepalive_shutdown_does_not_depend_on_task_cancellation(
     ws = _FakeWebSocket()
 
     handler_task = real_asyncio.create_task(
-        server._handle_stream_impl(ws, request, real_asyncio.Lock())
+        handle_stream(build_ws_request_context(server, ws, request, real_asyncio.Lock()))
     )
     done, _ = await real_asyncio.wait({handler_task}, timeout=0.1)
     completed_without_cancellation = handler_task in done
@@ -564,11 +566,11 @@ async def test_stream_keepalive_cleanup_is_bounded_when_cancellation_is_ignored(
     )
 
     await asyncio.wait_for(
-        server._handle_stream_impl(
+        handle_stream(build_ws_request_context(server, 
             StubbornWebSocket(),
             request,
             asyncio.Lock(),
-        ),
+        )),
         timeout=0.2,
     )
 
@@ -643,7 +645,7 @@ async def test_stream_keepalive_is_sent_only_before_terminal_chunk(
     ws = SignallingWebSocket()
 
     handler_task = asyncio.create_task(
-        server._handle_stream_impl(ws, request, asyncio.Lock())
+        handle_stream(build_ws_request_context(server, ws, request, asyncio.Lock()))
     )
     await asyncio.wait_for(keepalive_sent.wait(), timeout=0.2)
     release_stream.set()
@@ -759,7 +761,7 @@ async def test_stream_keepalive_rechecks_activity_after_waiting_for_send_lock(
     await send_lock.hold()
     ws = _FakeWebSocket()
     handler_task = asyncio.create_task(
-        server._handle_stream_impl(ws, request, send_lock)
+        handle_stream(build_ws_request_context(server, ws, request, send_lock))
     )
 
     await asyncio.wait_for(both_waiters.wait(), timeout=0.2)
@@ -841,7 +843,7 @@ async def test_stream_keepalive_rechecks_stop_after_waiting_for_send_lock(
     )
     ws = _FakeWebSocket()
 
-    await server._handle_stream_impl(ws, request, DelayedLock())
+    await handle_stream(build_ws_request_context(server, ws, request, DelayedLock()))
 
     assert not ws.sent
     assert not server._session_stream_tasks

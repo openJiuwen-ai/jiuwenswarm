@@ -24,6 +24,10 @@ class ResponseSink(Protocol):
     async def send_chunk(self, chunk: AgentResponseChunk, *, sequence: int) -> bool:
         """送出历史记录的一片。返回是否写成功。"""
 
+    def open_stream_keepalive(self, request: Any) -> Any:
+        """流式对话空闲时，替这条连接发心跳块。没有这条能力时可以不实现。"""
+        ...
+
 
 class WSSink:
     """把一条完整响应编码后写回当前 WebSocket 连接。"""
@@ -54,3 +58,10 @@ class WSSink:
         )
         async with self._send_lock:
             return await send_wire_payload(self._ws, wire)
+
+    def open_stream_keepalive(self, request: Any) -> Any:
+        """流式对话一阵没新内容时，往这条连接发一块“还在”的提示。"""
+
+        import jiuwenswarm.server.agent_ws_server as ws_server
+
+        return ws_server._StreamKeepalive(self._ws, request, self._send_lock)

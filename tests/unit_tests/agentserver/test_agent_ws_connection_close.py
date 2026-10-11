@@ -6,6 +6,7 @@ import weakref
 import pytest
 from websockets.exceptions import ConnectionClosedError
 
+from jiuwenswarm.agents.harness.common.tools.cron import cron_tools
 from jiuwenswarm.common.e2a.gateway_normalize import (
     build_fallback_e2a,
     e2a_from_agent_fields,
@@ -15,7 +16,6 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.agent_ws_server import AdapterRegistry, AgentWebSocketServer
-from jiuwenswarm.agents.harness.common.tools.cron import cron_tools
 
 
 class FakeWebSocket:
@@ -41,11 +41,6 @@ class _AgentWsTestHarness(AgentWebSocketServer):
 
     async def handle_message_for_test(self, ws, raw: str, send_lock: asyncio.Lock) -> None:
         await self._handle_message(ws, raw, send_lock)
-
-
-class ClosedDuringUnaryServer(_AgentWsTestHarness):
-    async def _handle_unary(self, ws, request, send_lock) -> None:
-        raise ConnectionClosedError(None, None)
 
 
 class _FakeInterruptAgent:
@@ -136,7 +131,7 @@ async def _handle_cancel_cleanup_case(env) -> list[tuple[str, str]]:
 
 
 @pytest.mark.asyncio
-async def test_handle_message_treats_no_close_frame_as_disconnect(caplog) -> None:
+async def test_handle_message_treats_no_close_frame_as_disconnect(caplog, monkeypatch) -> None:
     target_logger = logging.getLogger("jiuwenswarm.server.agent_ws_server")
     target_logger.addHandler(caplog.handler)
     caplog.set_level(logging.INFO, logger=target_logger.name)
@@ -151,9 +146,16 @@ async def test_handle_message_treats_no_close_frame_as_disconnect(caplog) -> Non
     )
     try:
         # 用 __new__ 绕过 __init__：真实 __init__ 会注册 ConfigAdapter 接管
-        # config.get，导致请求走适配器路径、不再触发 _handle_unary 的关闭帧场景；
-        # 空注册表下 CONFIG_GET 落到 _handle_unary（本类覆写为抛 ConnectionClosedError）。
-        await ClosedDuringUnaryServer.__new__(ClosedDuringUnaryServer).handle_message_for_test(
+        # config.get，导致请求走适配器路径、不再走到默认回包；
+        # 空注册表下 CONFIG_GET 落到默认一次性回包，这里让它抛出连接已关。
+        async def raise_closed(_ctx) -> None:
+            raise ConnectionClosedError(None, None)
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.handlers._default.handle_unary",
+            raise_closed,
+        )
+        await _AgentWsTestHarness.__new__(_AgentWsTestHarness).handle_message_for_test(
             FakeWebSocket(),
             json.dumps(env.to_dict(), ensure_ascii=False),
             asyncio.Lock(),
@@ -233,16 +235,15 @@ async def test_handle_message_dispatches_registered_gateway_adapter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_handle_message_allows_health_check_without_req_method() -> None:
+async def test_handle_message_allows_health_check_without_req_method(monkeypatch) -> None:
     """Health checks omit method and must not hit the RSI prefix guard."""
     handled = []
 
-    class HealthCheckServer(_AgentWsTestHarness):
-        async def _handle_unary(self, ws, request, send_lock) -> None:
-            del ws, send_lock
-            handled.append(request)
+    async def record(ctx) -> None:
+        handled.append(ctx.request)
 
-    server = HealthCheckServer.__new__(HealthCheckServer)
+    monkeypatch.setattr("jiuwenswarm.server.handlers._default.handle_unary", record)
+    server = _AgentWsTestHarness.__new__(_AgentWsTestHarness)
     env = e2a_from_agent_fields(
         request_id="healthcheck-regression",
         channel_id="__health_check__",
@@ -275,10 +276,13 @@ async def test_handle_message_requires_req_method_enum_for_rsi_dispatch(monkeypa
             del ws, request, send_lock
             rsi_handled.append(True)
 
-        async def _handle_unary(self, ws, request, send_lock) -> None:
-            del ws, send_lock
-            unary_handled.append(request)
+    async def record_unary(ctx) -> None:
+        unary_handled.append(ctx.request)
 
+    monkeypatch.setattr(
+        "jiuwenswarm.server.handlers._default.handle_unary",
+        record_unary,
+    )
     monkeypatch.setattr(
         agent_ws_server_module,
         "e2a_to_agent_request",
@@ -640,7 +644,7 @@ async def test_manual_cancel_keeps_session_runtime() -> None:
 
 
 @pytest.mark.asyncio
-async def test_before_chat_hook_runs_before_auto_team_binding_and_only_once() -> None:
+async def test_before_chat_hook_runs_before_auto_team_binding_and_only_once(monkeypatch) -> None:
     server = _AgentWsTestHarness()
     order: list[str] = []
 
@@ -652,12 +656,12 @@ async def test_before_chat_hook_runs_before_auto_team_binding_and_only_once() ->
         assert request.params["hook_marker"] == "ready"
         order.append("binding")
 
-    async def unary(ws, request, send_lock) -> None:
+    async def unary(_ctx) -> None:
         order.append("unary")
 
     server._trigger_before_chat_request_hook = hook
     server._ensure_auto_team_binding_for_chat = bind
-    server._handle_unary = unary
+    monkeypatch.setattr("jiuwenswarm.server.handlers._default.handle_unary", unary)
     env = e2a_from_agent_fields(
         request_id="hook-order",
         channel_id="tui",
