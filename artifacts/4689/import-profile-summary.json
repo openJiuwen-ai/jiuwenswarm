@@ -1,0 +1,97 @@
+{
+  "source": "native-worker-importtime-lazy.log",
+  "scope": "diagnostic before final formal measurement",
+  "cumulative_values_overlap_do_not_sum": true,
+  "modules": [
+    {
+      "module": "openjiuwen.harness.tools.shell.bash._tool",
+      "self_us": 17,
+      "cumulative_us": 3837593
+    },
+    {
+      "module": "openjiuwen.harness.tools.shell.bash",
+      "self_us": 13,
+      "cumulative_us": 3837577
+    },
+    {
+      "module": "openjiuwen.harness.tools.shell",
+      "self_us": 15,
+      "cumulative_us": 3837564
+    },
+    {
+      "module": "openjiuwen.harness.tools",
+      "self_us": 802,
+      "cumulative_us": 3837549
+    },
+    {
+      "module": "openjiuwen.harness.prompts.tools.lsp_tool",
+      "self_us": 24,
+      "cumulative_us": 2558271
+    },
+    {
+      "module": "openjiuwen.harness.prompts.tools",
+      "self_us": 1676,
+      "cumulative_us": 2558247
+    },
+    {
+      "module": "openjiuwen.harness.prompts",
+      "self_us": 474,
+      "cumulative_us": 2537337
+    },
+    {
+      "module": "openjiuwen.harness.prompts.builder",
+      "self_us": 575,
+      "cumulative_us": 2530016
+    },
+    {
+      "module": "openjiuwen.core.single_agent.prompts.builder",
+      "self_us": 19,
+      "cumulative_us": 2528539
+    },
+    {
+      "module": "openjiuwen.core.single_agent.prompts",
+      "self_us": 17,
+      "cumulative_us": 2528520
+    },
+    {
+      "module": "openjiuwen.core.single_agent",
+      "self_us": 483,
+      "cumulative_us": 2528503
+    },
+    {
+      "module": "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+      "self_us": 29709,
+      "cumulative_us": 1785298
+    },
+    {
+      "module": "openjiuwen.core.session.agent",
+      "self_us": 466,
+      "cumulative_us": 1625767
+    },
+    {
+      "module": "openjiuwen.core.session",
+      "self_us": 705,
+      "cumulative_us": 1624949
+    },
+    {
+      "module": "openjiuwen.core.session.checkpointer",
+      "self_us": 577,
+      "cumulative_us": 1606974
+    },
+    {
+      "module": "openjiuwen.harness.tools.worktree",
+      "self_us": 513,
+      "cumulative_us": 1137172
+    },
+    {
+      "module": "openjiuwen.harness.tools.worktree.rails",
+      "self_us": 536,
+      "cumulative_us": 1126090
+    },
+    {
+      "module": "openjiuwen.harness.rails.base",
+      "self_us": 21,
+      "cumulative_us": 1124559
+    }
+  ]
+}

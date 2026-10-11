@@ -1,0 +1,299 @@
+{
+  "data_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-native-chat-dklie5zm\\data",
+  "profile": "desktop",
+  "scenario": "failed-create",
+  "gateway": false,
+  "before": {
+    "worker_instance": "f7c92b05f4aa45aabef9749a0d531cee",
+    "cursor": 1,
+    "history_required": false,
+    "is_processing": true,
+    "dispatches": [
+      {
+        "dispatch_id": "0bc93109fad24294906b68e2f2a47c4e",
+        "request_id": "original-chat",
+        "active": true,
+        "phase": "executing",
+        "execution_id": "8dfbe28f255640529c0569bea548dd01",
+        "entered_at_ns": 217986763865100,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "8dfbe28f255640529c0569bea548dd01",
+        "session_id": "resident-session",
+        "request_id": "original-chat",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "running",
+        "created_at": 217986.375,
+        "started_at": 217986.375,
+        "finished_at": null,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "worker_pid": 32076,
+  "create_failure": {
+    "protocol_version": "1.0",
+    "response_id": "failed-create",
+    "request_id": "failed-create",
+    "sequence": 0,
+    "is_final": true,
+    "status": "failed",
+    "response_kind": "e2a.error",
+    "timestamp": "2026-10-10T13:28:38.531957+00:00",
+    "provenance": {
+      "source_protocol": "e2a",
+      "converter": "gateway_protocol.e2a.gateway_normalize:e2a_response_from_agent_response",
+      "converted_at": "2026-10-10T13:28:38.531957+00:00",
+      "details": {
+        "kind": "legacy_agent_response",
+        "ok": false
+      }
+    },
+    "body": {
+      "code": "E2A.AGENT_ERROR",
+      "message": "Front could not deliver response to Gateway",
+      "details": {
+        "error": "Front could not deliver response to Gateway"
+      }
+    },
+    "jsonrpc_id": null,
+    "correlation_id": null,
+    "task_id": null,
+    "context_id": null,
+    "session_id": null,
+    "message_id": null,
+    "is_stream": false,
+    "identity_origin": "agent",
+    "channel": "web",
+    "user_id": null,
+    "agent_ref": null,
+    "source_agent_id": null,
+    "method": null,
+    "projections": {},
+    "channel_context": {},
+    "metadata": {},
+    "a2a_metadata": {},
+    "acp_meta": {}
+  },
+  "undelivered_creation": {
+    "protocol_version": "1.0",
+    "response_id": "failed-create",
+    "request_id": "failed-create",
+    "sequence": 0,
+    "is_final": true,
+    "status": "succeeded",
+    "response_kind": "e2a.complete",
+    "timestamp": "2026-10-10T13:28:38.524958+00:00",
+    "provenance": {
+      "source_protocol": "e2a",
+      "converter": "gateway_protocol.e2a.gateway_normalize:e2a_response_from_agent_response",
+      "converted_at": "2026-10-10T13:28:38.524958+00:00",
+      "details": {
+        "kind": "legacy_agent_response",
+        "ok": true
+      }
+    },
+    "body": {
+      "result": {
+        "sessionId": "web_1a12600557a_088d47250893",
+        "session_id": "web_1a12600557a_088d47250893",
+        "projectId": "default",
+        "projectDir": "",
+        "workMode": "work",
+        "persist_session": false,
+        "prewarm_hit": false,
+        "prewarm_status": "bypassed"
+      }
+    },
+    "jsonrpc_id": null,
+    "correlation_id": null,
+    "task_id": null,
+    "context_id": null,
+    "session_id": null,
+    "message_id": null,
+    "is_stream": false,
+    "identity_origin": "agent",
+    "channel": "web",
+    "user_id": null,
+    "agent_ref": null,
+    "source_agent_id": null,
+    "method": null,
+    "projections": {},
+    "channel_context": {},
+    "metadata": {},
+    "a2a_metadata": {},
+    "acp_meta": {}
+  },
+  "sessions_after_failed_delivery": [
+    "resident-session",
+    "web_1a12600557a_088d47250893"
+  ],
+  "sessions_before_failed_delivery": [
+    "resident-session"
+  ],
+  "create_lifecycle": [
+    {
+      "operation": "abort",
+      "session_id": "web_1a12600557a_088d47250893",
+      "state": "aborted"
+    }
+  ],
+  "after": {
+    "worker_instance": "f7c92b05f4aa45aabef9749a0d531cee",
+    "cursor": 1,
+    "history_required": false,
+    "is_processing": true,
+    "dispatches": [
+      {
+        "dispatch_id": "0bc93109fad24294906b68e2f2a47c4e",
+        "request_id": "original-chat",
+        "active": true,
+        "phase": "executing",
+        "execution_id": "8dfbe28f255640529c0569bea548dd01",
+        "entered_at_ns": 217986763865100,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "8dfbe28f255640529c0569bea548dd01",
+        "session_id": "resident-session",
+        "request_id": "original-chat",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "running",
+        "created_at": 217986.375,
+        "started_at": 217986.375,
+        "finished_at": null,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "same_execution": true,
+  "final": {
+    "worker_instance": "f7c92b05f4aa45aabef9749a0d531cee",
+    "cursor": 6,
+    "history_required": false,
+    "is_processing": false,
+    "dispatches": [
+      {
+        "dispatch_id": "0bc93109fad24294906b68e2f2a47c4e",
+        "request_id": "original-chat",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "8dfbe28f255640529c0569bea548dd01",
+        "entered_at_ns": 217986763865100,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "succeeded"
+        }
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "8dfbe28f255640529c0569bea548dd01",
+        "session_id": "resident-session",
+        "request_id": "original-chat",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 217986.375,
+        "started_at": 217986.375,
+        "finished_at": 217988.625,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "history_records": 2,
+  "model_calls": 1,
+  "main_model_calls": 1,
+  "side_effects": [],
+  "tool_names": [
+    "read_pdf",
+    "fetch_webpage",
+    "search_skill",
+    "install_skill",
+    "uninstall_skill",
+    "acp_chat",
+    "cron",
+    "cron_list_jobs",
+    "cron_get_job",
+    "cron_create_job",
+    "cron_update_job",
+    "cron_delete_job",
+    "cron_toggle_job",
+    "cron_preview_job",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "glob",
+    "list_files",
+    "grep",
+    "bash",
+    "powershell",
+    "skill_tool",
+    "subagent_spawn",
+    "subagent_wait",
+    "subagent_list",
+    "subagent_send_input",
+    "subagent_close",
+    "subagent_resume",
+    "todo_create",
+    "todo_list",
+    "todo_get",
+    "todo_modify",
+    "ask_user",
+    "heartbeat_list_jobs",
+    "heartbeat_get_job",
+    "heartbeat_create_job",
+    "heartbeat_update_job",
+    "heartbeat_delete_job",
+    "heartbeat_toggle_job",
+    "heartbeat_preview_job",
+    "heartbeat_run_now",
+    "heartbeat_cancel_run",
+    "submit_goal_report",
+    "get_current_goal",
+    "memory_search",
+    "memory_get",
+    "write_memory",
+    "edit_memory",
+    "read_memory",
+    "session_list",
+    "session_send_message",
+    "session_message_list",
+    "session_continue_queued",
+    "session_read",
+    "session_message_resolve",
+    "send_file_to_user"
+  ],
+  "same_worker": true,
+  "same_instance": true,
+  "shutdown": {
+    "kind": "shutdown.done",
+    "ok": true
+  },
+  "shutdown_ms": 378.8444
+}

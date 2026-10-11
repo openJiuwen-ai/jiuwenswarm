@@ -34,13 +34,14 @@ class Observer(importlib.abc.MetaPathFinder):
                 dispatch = module.MethodRouter._dispatch_control
                 async def observed(instance, ws, request, lock):
                     await dispatch(instance, ws, request, lock)
-                    prefixes = ("openjiuwen", "jiuwenswarm.agents.harness",
+                    prefixes = ("openjiuwen", "mcp", "jiuwenswarm.agents.harness",
                         "jiuwenswarm.server.runtime.agent_adapter",
-                        "jiuwenswarm.server.runtime.skill.skill_manager", "jiuwenswarm.runtime.project_lsp")
+                        "jiuwenswarm.server.runtime.skill.skill_manager", "jiuwenswarm.runtime.project_lsp",
+                        "jiuwenswarm.server.runtime.session.kv_cache")
                     hits = [name for name in sys.modules if any(name == p or name.startswith(p + ".") for p in prefixes)]
                     with open(os.environ["ISSUE4689_MODULE_OBSERVER"], "a", encoding="utf-8") as file:
                         file.write(json.dumps({"pid": os.getpid(), "method": request.req_method.value,
-                            "forbidden": hits}) + "\\n")
+                            "forbidden": hits, "loaded_modules": sorted(sys.modules)}) + "\\n")
                 module.MethodRouter._dispatch_control = observed
         spec.loader = Loader()
         return spec

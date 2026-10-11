@@ -1,0 +1,8 @@
+{
+  "platform": "Windows-10-10.0.26200-SP0",
+  "python": "3.11.15 | packaged by Anaconda, Inc. | (main, Jun 11 2026, 15:12:53) [MSC v.1942 64 bit (AMD64)]",
+  "baseline": "D:\\work_space\\jiuwenswarm-issue4689-baseline-20261010",
+  "candidate": ".",
+  "samples": 30,
+  "mode": "code.normal"
+}

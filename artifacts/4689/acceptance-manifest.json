@@ -1,0 +1,63 @@
+{
+  "report_date": "2026-10-11",
+  "timezone": "Asia/Shanghai",
+  "baseline": "3fea8d1623a13646e935df9e96100ab7ad470aa4",
+  "code_under_final_measurement": "fc7c36c975543008d1c43e00db256cb80329846a",
+  "branch": "feature/issue-4689-runtime-residency-20261010",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "python": "3.11.15 | packaged by Anaconda, Inc. | (main, Jun 11 2026, 15:12:53) [MSC v.1942 64 bit (AMD64)]",
+  "cpu": "Intel64 Family 6 Model 204 Stepping 2, GenuineIntel",
+  "logical_cpu_count": 16,
+  "memory_bytes": 33873752064,
+  "interpreter": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\.venv\\Scripts\\python.exe",
+  "dependencies": {
+    "openjiuwen": "0.1.18",
+    "jiuwenswarm-sdk": "distribution name not registered",
+    "agent-protocol": "distribution name not registered",
+    "gateway-protocol": "distribution name not registered",
+    "pydantic": "2.13.3",
+    "websockets": "15.0.1",
+    "httpx": "0.28.1",
+    "mcp": "1.29.0",
+    "ruamel.yaml": "0.19.1",
+    "pytest": "9.0.3",
+    "ruff": "0.15.15",
+    "uv": "0.12.5",
+    "psutil": "7.2.2"
+  },
+  "agent_core_revision": "6df9699e650b3ad9b9835b46ae3c3b7572adb04b",
+  "protocol_revision": "6edf9e36f8de8448b14339712217a263808626bb",
+  "sha256": {
+    "uv.lock": "8ade92a94201e0be6cc7b483dfeac40d6613ac23c12ca8c86c632b5d97d2d9b0",
+    "pyproject.toml": "c1b73ea4bd59589966b5dea97733e1200db3a5b6fe00a507e59a02febaca1c7c",
+    "jiuwenswarm/channels/web/frontend/package-lock.json": "cfa7c21fa7b19feef82b8c5dd8461000e6e730dba518c4337d9b247c23d8f2fb",
+    "jiuwenswarm/resources/config.yaml": "c2ab48a9701f11af8d995a3743b5cd8abd602e74aa8fa5301132e4754a411864"
+  },
+  "dependency_lock_unchanged": true,
+  "benchmark": {
+    "modes": [
+      "agent",
+      "code.normal"
+    ],
+    "front_samples_per_version_mode": 30,
+    "cold_worker_samples_per_version_mode": 30,
+    "warm_worker_samples_per_version_mode": 100,
+    "fixture": "local-openai-protocol",
+    "execution_entry": "prepared SDK DeepAgent.send_input",
+    "clock": "time.perf_counter_ns",
+    "percentile": "nearest rank",
+    "os_file_cache_cleared": false
+  },
+  "scope": "Issue4689 phases2,3,4 only; existing dependency versions retained",
+  "publication": "local commits, no push or MR",
+  "module_origins": {
+    "jiuwenswarm": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\__init__.py",
+    "jiuwenswarm_sdk": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\sdks\\python\\src\\jiuwenswarm_sdk\\__init__.py",
+    "openjiuwen": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-implementation-deps-20261010\\agent-core\\openjiuwen\\__init__.py",
+    "gateway_protocol": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-audit-deps-20261010\\agent-protocol\\gateway-protocol\\gateway_protocol\\__init__.py"
+  },
+  "checked_dependency_git_heads": {
+    "agent_core": "6df9699e650b3ad9b9835b46ae3c3b7572adb04b",
+    "protocol": "6edf9e36f8de8448b14339712217a263808626bb"
+  }
+}

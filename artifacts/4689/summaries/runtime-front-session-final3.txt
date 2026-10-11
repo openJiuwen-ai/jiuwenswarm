@@ -1,0 +1,123 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.15, pytest-9.0.3, pluggy-1.6.0
+rootdir: D:\work_space\jiuwenswarm-issue4689-implementation-20261010
+configfile: pytest.ini
+plugins: anyio-4.13.0, asyncio-1.3.0, cov-7.1.0, html-4.2.0, metadata-3.1.1, mock-3.15.1
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+
+----------------------------- live log collection -----------------------------
+2026-10-10 21:52:03 [INFO] Registered connector pool type: default
+2026-10-10 21:52:03 [INFO] Registered connector pool type: httpx
+2026-10-10 21:52:05 [INFO] Registered query expression support for milvus
+2026-10-10 21:52:05 [INFO] Registered query expression support for chroma
+2026-10-10 21:52:05 [INFO] Registered parser ExcelParser for .xlsx
+2026-10-10 21:52:05 [INFO] Registered parser ExcelParser for .csv
+2026-10-10 21:52:05 [INFO] Registered parser ExcelParser for .tsv
+2026-10-10 21:52:05 [INFO] Registered parser TxtMdParser for .txt
+[trace output omitted; summary follows]
+FAILED                                                                   [ 14%]
+FAILED                                                                   [ 14%]
+FAILED                                                                   [ 14%]
+FAILED                                                                   [ 14%]
+FAILED                                                                   [ 14%]
+FAILED                                                                   [ 14%]
+FAILED                                                                   [ 14%]
+FAILED                                                                   [ 14%]
+FAILED                                                                   [ 14%]
+FAILED                                                                   [ 15%]
+FAILED                                                                   [ 15%]
+FAILED                                                                   [ 87%]
+FAILED                                                                   [ 87%]
+FAILED                                                                   [ 87%]
+FAILED                                                                   [ 87%]
+FAILED                                                                   [ 87%]
+FAILED                                                                   [ 87%]
+FAILED                                                                   [ 87%]
+FAILED                                                                   [ 87%]
+FAILED                                                                   [ 87%]
+FAILED                                                                   [ 87%]
+FAILED                                                                   [ 87%]
+FAILED tests/unit_tests/agentserver/mcp/test_mcp_package_manifest.py::test_rejects_symlinked_declared_path
+FAILED tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_auto_answer_reenters_native_projection_after_cwd_changes[False-glob]
+FAILED tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_auto_answer_reenters_native_projection_after_cwd_changes[False-grep]
+FAILED tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_auto_answer_reenters_native_projection_after_cwd_changes[False-list_files]
+FAILED tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_auto_answer_reenters_native_projection_after_cwd_changes[True-glob]
+FAILED tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_auto_answer_reenters_native_projection_after_cwd_changes[True-grep]
+FAILED tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_auto_answer_reenters_native_projection_after_cwd_changes[True-list_files]
+FAILED tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_tool_deny_and_exact_external_path_survive_projection
+FAILED tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_read_edit_and_grep_use_actual_workspace_files
+FAILED tests/unit_tests/agentserver/permissions/test_native_path_alignment.py::test_pdf_keeps_its_workspace_not_cwd_resolution[ask]
+FAILED tests/unit_tests/agentserver/permissions/test_permission_cold_build.py::test_manager_canonicalizes_first_workspace_before_real_child_build[project_dir]
+FAILED tests/unit_tests/agentserver/permissions/test_permission_cold_build.py::test_manager_canonicalizes_first_workspace_before_real_child_build[workspace_dir]
+FAILED tests/unit_tests/agentserver/permissions/test_reviewer_locations.py::test_symlink_location_uses_host_canonical_target
+FAILED tests/unit_tests/agentserver/permissions/test_tool_decision_facts.py::test_read_pdf_requires_matching_invocation_path_facts
+FAILED tests/unit_tests/agentserver/test_agent_manager_session_cleanup.py::test_same_key_creation_waits_for_old_root_cleanup
+FAILED tests/unit_tests/agentserver/test_agentserver_cli_commands.py::test_handle_command_diff_returns_summary_payload
+FAILED tests/unit_tests/agentserver/test_auto_permission_workspace_owner.py::test_first_auto_request_selects_declared_root[workspace_dir]
+FAILED tests/unit_tests/agentserver/test_auto_permission_workspace_owner.py::test_first_auto_request_selects_declared_root[project_dir]
+FAILED tests/unit_tests/agentserver/test_auto_permission_workspace_owner.py::test_auto_owner_lookup_skips_earlier_non_auto_runtime
+FAILED tests/unit_tests/agentserver/test_auto_permission_workspace_owner.py::test_first_concurrent_requests_establish_one_session_owner
+FAILED tests/unit_tests/agentserver/test_auto_permission_workspace_owner.py::test_conflicting_concurrent_request_cannot_mutate_winner_metadata
+FAILED tests/unit_tests/agentserver/test_team_entity_store.py::test_team_entity_store_delete_does_not_follow_team_symlink
+FAILED tests/unit_tests/agentserver/test_verified_download_assets.py::test_stage_is_durable_private_and_commit_keeps_same_asset
+FAILED tests/unit_tests/agentserver/test_verified_download_assets.py::test_restart_recovery_keeps_asset_until_ttl_then_reclaims_it
+FAILED tests/unit_tests/agentserver/test_verified_download_assets.py::test_revoke_removes_unexposed_staged_asset
+FAILED tests/unit_tests/agentserver/test_verified_download_assets.py::test_symlink_claim_is_never_active_or_followed
+FAILED tests/unit_tests/agentserver/test_verified_download_assets.py::test_asset_owner_rejects_symlink_root
+FAILED tests/unit_tests/agentserver/test_verified_download_assets.py::test_stage_rejects_non_regular_source_without_residue[symlink]
+FAILED tests/unit_tests/agentserver/test_workspace_paths.py::test_sanitize_visible_value_preserves_current_paths_and_redacts_stale_paths
+FAILED tests/unit_tests/agentserver/test_workspace_paths.py::test_sanitize_visible_value_sanitizes_mapping_keys
+FAILED tests/unit_tests/agentserver/test_workspace_paths.py::test_sanitize_visible_text_redacts_stale_sandbox_path_with_spaces
+FAILED tests/unit_tests/agentserver/test_workspace_paths.py::test_sanitize_visible_text_preserves_current_path_when_stale_path_follows
+FAILED tests/unit_tests/agentserver/test_workspace_paths.py::test_sanitize_review_ui_value_relativizes_workspace_paths_and_preserves_other_paths
+FAILED tests/unit_tests/agentserver/test_workspace_paths.py::test_sanitize_review_ui_value_preserves_secrets_redaction
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestRunAll::test_dispatches_command_by_default
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestRunAll::test_parallel_execution
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestCommandHookExitCodes::test_exit_0_is_success
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestCommandHookExitCodes::test_exit_2_is_blocking
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestCommandHookEnvVars::test_arguments_env_var_set
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestCommandHookEnvVars::test_tool_name_env_var_set
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestCommandHookEnvVars::test_tool_name_empty_when_missing
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestCommandHookTimeout::test_timeout_returns_non_blocking_error
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestCommandHookTimeout::test_timeout_does_not_block_execution
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestCommandHookShell::test_default_shell_bash
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestCommandHookShell::test_sh_shell
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestCommandHookShell::test_default_timeout_30
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestCommandHookE2E::test_simple_logging_hook
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestCommandHookE2E::test_blocking_hook_via_json_stdout
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestCommandHookE2E::test_blocking_hook_via_exit_2
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestCommandHookE2E::test_modify_input_hook
+FAILED tests/unit_tests/server/hooks/test_executor.py::TestCommandHookE2E::test_additional_context_hook
+FAILED tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_blocked_tool_ends_react_without_another_model_call[hook0-False]
+FAILED tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_blocked_tool_ends_react_without_another_model_call[hook0-True]
+FAILED tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_blocked_tool_ends_react_without_another_model_call[hook1-False]
+FAILED tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_blocked_tool_ends_react_without_another_model_call[hook1-True]
+FAILED tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_full_task_loop_handles_a_block_once_and_preserves_user_action[goal-none-0]
+FAILED tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_full_task_loop_handles_a_block_once_and_preserves_user_action[goal-resume-0]
+FAILED tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_full_task_loop_handles_a_block_once_and_preserves_user_action[goal-replace-0]
+FAILED tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_full_task_loop_handles_a_block_once_and_preserves_user_action[normal-none-0]
+FAILED tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_full_task_loop_handles_a_block_once_and_preserves_user_action[goal-none-1]
+FAILED tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_full_task_loop_handles_a_block_once_and_preserves_user_action[goal-none-2]
+FAILED tests/unit_tests/server/hooks/test_user_hook_blocking_lifecycle.py::test_full_task_loop_handles_a_block_once_and_preserves_user_action[normal-none-1]
+FAILED tests/unit_tests/server/hooks/test_user_hook_rail.py::TestBeforeToolCall::test_blocking_hook_sets_skip_tool
+FAILED tests/unit_tests/server/hooks/test_user_hook_rail.py::TestBeforeToolCall::test_modifying_hook_updates_tool_args
+FAILED tests/unit_tests/server/hooks/test_user_hook_rail.py::TestBeforeToolCall::test_modifying_hook_updates_tool_name
+FAILED tests/unit_tests/server/hooks/test_user_hook_rail.py::TestBeforeToolCall::test_additional_context_appended
+FAILED tests/unit_tests/server/hooks/test_user_hook_rail.py::TestBeforeToolCall::test_blocking_takes_priority_over_modify
+FAILED tests/unit_tests/server/hooks/test_user_hook_rail.py::TestAfterToolCall::test_appends_additional_context_to_model_message
+FAILED tests/unit_tests/server/hooks/test_user_hook_rail.py::TestAfterToolCall::test_additional_context_appended_to_none_result
+FAILED tests/unit_tests/server/hooks/test_user_hook_rail.py::TestAfterToolCall::test_blocking_post_tool_triggers_feedback
+FAILED tests/unit_tests/server/hooks/test_user_hook_rail.py::TestAfterInvoke::test_blocking_stop_hook_sets_feedback
+FAILED tests/unit_tests/server/hooks/test_user_hook_rail.py::TestAfterInvoke::test_multiple_stop_hooks_both_run
+FAILED tests/unit_tests/server/hooks/test_user_hook_rail.py::test_post_tool_context_keeps_structured_tool_output_intact
+FAILED tests/unit_tests/server/hooks/test_user_hook_rail.py::test_post_tool_context_reaches_the_error_message_of_a_failed_call
+FAILED tests/unit_tests/server/marketplace/test_asset_mcp_publish_converter.py::test_remote_redacts_every_header_env_and_query_value
+FAILED tests/unit_tests/server/marketplace/test_asset_mcp_publish_converter.py::test_remote_endpoint_is_installer_parameter_without_path_secrets[https://example.com/mcp/opaque-personal-access-credential]
+FAILED tests/unit_tests/server/marketplace/test_asset_mcp_publish_converter.py::test_remote_endpoint_is_installer_parameter_without_path_secrets[https://example.com/api/v2/mcp?key=private-query]
+FAILED tests/unit_tests/server/marketplace/test_asset_package_builder.py::test_rejects_symlink_to_external_file
+FAILED tests/unit_tests/server/marketplace/test_asset_package_builder.py::test_preserves_executable_scripts_without_other_permission_bits
+FAILED tests/unit_tests/server/marketplace/test_asset_publish_adapters.py::test_mcp_rejects_partial_placeholders_and_machine_paths[server2]
+FAILED tests/unit_tests/server/marketplace/test_asset_publish_api.py::test_agent_describe_uses_resolved_package_name_for_publish_identity[agent_template-agent-mudhsgoh-\u624b\u52a8\u4e13\u5bb6-\u624b\u52a8\u4e13\u5bb6]
+FAILED tests/unit_tests/server/marketplace/test_asset_publish_api.py::test_agent_describe_uses_resolved_package_name_for_publish_identity[agent_group-agent-group-mudhsgoh-agent-group-mudhsgoh-\u624b\u52a8\u4e13\u5bb6\u56e2]
+FAILED tests/unit_tests/server/marketplace/test_hub_publish_client.py::test_symlink_is_not_followed
+===== 83 failed, 7442 passed, 12 skipped, 3 warnings in 241.56s (0:04:01) =====

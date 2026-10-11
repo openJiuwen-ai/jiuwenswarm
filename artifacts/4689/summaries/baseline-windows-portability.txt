@@ -1,0 +1,20 @@
+F.F...                                                                   [100%]
+================================== FAILURES ===================================
+______ test_dev_init_installs_when_devecocli_missing_and_verifies_skills ______
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000021204299E50>
+tmp_path = WindowsPath('C:/Users/24505/AppData/Local/Temp/pytest-of-24505/pytest-1257/test_dev_init_installs_when_de0')
+
+    @pytest.mark.asyncio
+    async def test_dev_init_installs_when_devecocli_missing_and_verifies_skills(
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ):
+        calls: list[list[str]] = []
+        which_values = {
+            "devecocli": [None, "/usr/local/bin/devecocli"],
+            "node": ["/usr/local/bin/node"],
+[trace output omitted; summary follows]
+FAILED tests/unit_tests/gateway/test_harmonyos_dev.py::test_dev_init_installs_when_devecocli_missing_and_verifies_skills
+FAILED tests/unit_tests/gateway/test_upload_storage.py::test_safe_upload_filename_strips_unsafe_parts[..\\..\\evil.md-.._.._evil.md]
+2 failed, 4 passed in 0.23s

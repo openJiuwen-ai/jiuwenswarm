@@ -1,0 +1,18 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.15, pytest-9.0.3, pluggy-1.6.0
+rootdir: D:\work_space\jiuwenswarm-issue4689-implementation-20261010
+configfile: pytest.ini
+plugins: anyio-4.13.0, asyncio-1.3.0, cov-7.1.0, html-4.2.0, metadata-3.1.1, mock-3.15.1
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 74 items
+
+tests/unit_tests/agentserver/test_worker_residency.py::test_duplicate_is_scoped_and_late_cleanup_cannot_remove_replacement PASSED [  1%]
+tests/unit_tests/agentserver/test_worker_residency.py::test_unary_reply_waits_for_real_gateway_delivery[True] PASSED [  2%]
+tests/unit_tests/agentserver/test_worker_residency.py::test_unary_reply_waits_for_real_gateway_delivery[False] PASSED [  4%]
+tests/unit_tests/agentserver/test_worker_residency.py::test_critical_reply_aborts_on_transport_detach PASSED [  5%]
+tests/unit_tests/agentserver/test_worker_residency.py::test_accepted_execution_survives_detach_and_publishes_on_new_connection PASSED [  6%]
+tests/unit_tests/agentserver/test_worker_residency.py::test_warming_queue_survives_reconnection PASSED [  8%]
+tests/unit_tests/agentserver/test_worker_residency.py::test_replay_is_bounded_and_caller_isolated_with_terminal_snapshot PASSED [  9%]
+tests/unit_tests/agentserver/test_worker_residency.py::test_replayed_frame_retains_authoritative_session_and_app_routing PASSED [ 10%]
+[trace output omitted; summary follows]
+======================== 73 passed, 1 skipped in 7.50s ========================

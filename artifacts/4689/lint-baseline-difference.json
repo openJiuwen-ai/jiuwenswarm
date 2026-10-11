@@ -1,0 +1,6 @@
+{
+  "candidate_existing_lint_count": 77,
+  "baseline_lint_count_in_same_files": 77,
+  "new_diagnostics": [],
+  "comparison": "code, message and source line; positions can shift"
+}

@@ -1,0 +1,23 @@
+
+----------------------------- live log collection -----------------------------
+2026-10-10 21:54:11 [INFO] setup plugin alembic.autogenerate.schemas
+2026-10-10 21:54:11 [INFO] setup plugin alembic.autogenerate.tables
+2026-10-10 21:54:11 [INFO] setup plugin alembic.autogenerate.types
+2026-10-10 21:54:11 [INFO] setup plugin alembic.autogenerate.constraints
+2026-10-10 21:54:11 [INFO] setup plugin alembic.autogenerate.defaults
+2026-10-10 21:54:11 [INFO] setup plugin alembic.autogenerate.comments
+2026-10-10 21:54:20 [INFO] loading built-in prompt resource C:\Users\24505\AppData\Local\Temp\jiuwenswarm-4689-implementation-deps-20261010\agent-core\openjiuwen\symphony\retrieval\common\prompts\retrieval_disclosure.yaml
+collected 1477 items
+
+tests/unit_tests/gateway/test_agent_client.py::test_agent_client_uses_shared_websocket_limit PASSED [  0%]
+tests/unit_tests/gateway/test_agent_client.py::test_server_push_frames_keep_wire_order_when_first_handler_waits[cross-session-turn-False-chat.final] PASSED [  0%]
+tests/unit_tests/gateway/test_agent_client.py::test_server_push_frames_keep_wire_order_when_first_handler_waits[interaction-1-False-chat.final] PASSED [  0%]
+tests/unit_tests/gateway/test_agent_client.py::test_server_push_frames_keep_wire_order_when_first_handler_waits[cross-session-turn-True-chat.final] PASSED [  0%]
+tests/unit_tests/gateway/test_agent_client.py::test_server_push_frames_keep_wire_order_when_first_handler_waits[interaction-1-True-chat.final] PASSED [  0%]
+[trace output omitted; summary follows]
+[2026-10-10 21:54:48] INFO jiuwenbox.server.etcd_sync.service: [PolicySync] applied mod_revision=2 default_updated=None updated=0 skipped=0
+[2026-10-10 21:54:48] WARNING jiuwenbox.server.etcd_sync.service: [PolicySync] applied mod_revision=7 default_updated=None updated=0 skipped=0 failed=1 failed_items=[{'sandbox_id': 'test'}]
+[2026-10-10 21:54:48] INFO jiuwenbox.server.etcd_sync.service: [PolicySync] applied mod_revision=7 default_updated=True updated=0 skipped=0
+FAILED tests/unit_tests/gateway/test_harmonyos_dev.py::test_dev_init_installs_when_devecocli_missing_and_verifies_skills
+FAILED tests/unit_tests/gateway/test_upload_storage.py::test_safe_upload_filename_strips_unsafe_parts[..\\..\\evil.md-.._.._evil.md]
+== 2 failed, 1471 passed, 4 skipped, 1 warning, 21 subtests passed in 40.66s ==

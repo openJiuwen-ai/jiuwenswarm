@@ -1,0 +1,38 @@
+
+> openjiuwen-web@0.1.0 prebuild
+> cd ../../../.. && node ./jiuwenswarm/scripts/generate-agent-folders.js
+
+扫描目录: D:\work_space\jiuwenswarm-issue4689-implementation-20261010\jiuwenswarm\resources\agent
+✅ 成功生成文件结构: D:\work_space\jiuwenswarm-issue4689-implementation-20261010\jiuwenswarm\resources\agent\workspace\agent-data.json
+📁 找到的文件夹: [
+  'workspace',
+  'workspace/memory',
+  'workspace/skills',
+  'workspace/skills/advanced-daily-report',
+  'workspace/skills/advanced-daily-report/analyzers',
+  'workspace/skills/advanced-daily-report/collectors',
+  'workspace/skills/advanced-daily-report/generators',
+  'workspace/skills/agent-creator',
+[middle build output omitted]
+dist/assets/less-B1dDrJ26.js                              97.07 kB │ gzip:    14.70 kB
+dist/assets/index-DEsuSXmU.js                             97.89 kB │ gzip:    28.46 kB
+dist/assets/index-DP1kLs41.js                            103.91 kB │ gzip:    34.37 kB
+dist/assets/php-C2utxBoR.js                              113.11 kB │ gzip:    28.76 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-m
+anualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+dist/assets/sequenceDiagram-3UESZ5HK-Bi_2iNYq.js         117.30 kB │ gzip:    31.17 kB
+dist/assets/mdx-Cmh6b_Ma.js                              136.11 kB │ gzip:    23.35 kB
+dist/assets/architectureDiagram-3BPJPVTR-BtFev-AD.js     149.54 kB │ gzip:    42.27 kB
+dist/assets/html-CfGypltT.js                             231.90 kB │ gzip:    28.31 kB
+dist/assets/ruby-CFI1P_5z.js                             425.79 kB │ gzip:    41.33 kB
+dist/assets/cytoscape.esm-CUqq0XTU.js                    443.69 kB │ gzip:   142.35 kB
+dist/assets/mermaid.core-6PQwVF6S.js                     583.95 kB │ gzip:   136.72 kB
+dist/assets/cynefin-VYW2F7L2-zkEPxgaF.js                 690.52 kB │ gzip:   155.06 kB
+dist/assets/TrajectoryPanel-u3NxLoxu.js                  695.70 kB │ gzip:   169.73 kB
+dist/assets/cpp-DddhVWhK.js                              796.96 kB │ gzip:    55.59 kB
+dist/assets/index-B-AjKbRd.js                          4,515.27 kB │ gzip: 1,346.33 kB
+✓ built in 51.41s

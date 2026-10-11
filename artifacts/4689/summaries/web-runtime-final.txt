@@ -1,0 +1,30 @@
+
+> openjiuwen-web@0.1.0 test:web-client-runtime-ack
+> esbuild src/services/webClient.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/web-client-runtime-ack/webClient.mjs --define:import.meta.env.DEV=false --define:import.meta.env.VITE_API_BASE=undefined --define:import.meta.env.VITE_WS_BASE=undefined && node --test tests/webClientRuntimeAck.test.mjs
+
+npm.cmd :
+所在位置 行:2 字符: 159
++ ... es/zh.json; npm.cmd run test:web-client-runtime-ack *> ../../../../ar ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+  node_modules\.cache\web-client-runtime-ack\webClient.mjs  704.1kb
+
+Done in 17ms
+🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙
+✔ runtime-ack request stays pending after gateway response and resolves exact ack (2.1381ms)
+✔ runtime-ack request rejects exact Host error while ordinary request keeps gateway semantics (0.5563ms)
+✔ abort keeps runtime-ack request rejected without waiting for Host event (2.1075ms)
+✔ request identity is bound before send and runtime errors preserve their code and payload (0.2944ms)
+✔ legacy content wrapping an acceptance is routed as ACK, not final output (0.2233ms)
+✔ timeout and disconnect reject runtime-ack requests after gateway acceptance (15.6679ms)
+✔ reconnect resumes the original event cursor without resubmitting input (30.2559ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 231.7596
