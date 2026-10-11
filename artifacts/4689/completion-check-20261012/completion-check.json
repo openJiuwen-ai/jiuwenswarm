@@ -1,0 +1,502 @@
+{
+  "generated_at": "2026-10-12T00:06:51.949629+08:00",
+  "issue": "https://gitcode.com/openJiuwen/jiuwenswarm/issues/4689",
+  "baseline": "3fea8d1623a13646e935df9e96100ab7ad470aa4",
+  "code_commit": "551ac7a111d234884b7de59caea238aec7ad549f",
+  "branch": "feature/issue-4689-runtime-residency-20261010",
+  "conclusion": "阶段二至四仓内改造按改进方案主线实施；不能宣称所有性能和端到端验收全部完成。",
+  "phases": [
+    [
+      "阶段二",
+      "仓内功能已实现并回归",
+      "Worker 持有执行，断连保留；序号回放与待答交互恢复；实际交付 ACK；独立 dispatch_id 与调用方去重；metadata 合并；目录/profile 隔离；统一关闭期限。",
+      "本轮另补齐 PersonalContext Rail 的可信数据目录，使其与 Host 使用同一目录。Web 的浏览器点击验收仍未实测。"
+    ],
+    [
+      "阶段三",
+      "共享资源和职责拆分已实现并回归",
+      "Kernel 及租约共享模型、工具工厂、Rail 配方、Skill 索引、MCP 和项目 LSP；RunContext 保存本次执行选项；状态型 Rail/工具/模型组路由保留 Agent 所有权。",
+      "SessionExecution 复用既有 RuntimeSessionCoordinator 与 handles，历史/checkpoint 保留会话归属；未新增同名总类。本轮补齐完整 Kernel 身份变化后的模型缓存失效。"
+    ],
+    [
+      "阶段四",
+      "常驻与启动路径改造已实现；验收未全部完成",
+      "Front 轻量控制面、优先连接旧 Worker；按依赖初始化；可选能力后台/首次使用；模型/MCP/LSP 复用，沿用 KVCache 进程所有权；Windows 与冻结入口适配。",
+      "冷 Worker 指标未达标；冻结 EXE、旧协议安装升级未做真实端到端验证；可选能力的全部开关/故障组合未逐一验收。"
+    ]
+  ],
+  "issue_goals": [
+    [
+      "1. Front 开始监听",
+      "P95 ≤300 ms",
+      "agent 259.15 ms；code.normal 259.95 ms",
+      "此前正式采样达标；本轮未重采 P95"
+    ],
+    [
+      "2. 控制面可用",
+      "P95 ≤500 ms",
+      "四类查询最大 P95：agent 368.27 ms；code.normal 373.60 ms",
+      "此前正式采样达标；本轮真实 Front 控制查询回归通过"
+    ],
+    [
+      "3. Gateway 不生成替代业务响应",
+      "真实状态/明确错误；业务来自 AgentServer",
+      "权威执行状态转发及交付 ACK；实际 Gateway 重启接回通过",
+      "功能覆盖"
+    ],
+    [
+      "4. Front 无重依赖",
+      "真实子进程模块检查；warming 控制面可用",
+      "本轮 test_front_import_boundary.py 真进程检查通过",
+      "功能覆盖"
+    ],
+    [
+      "5. Worker 常驻、重启接回",
+      "PID / 实例 / 原执行一致；Runtime 不重载",
+      "本轮 Worker PID 31112；实例与执行 ID 一致；工具 once；最终关闭成功",
+      "真进程通过"
+    ],
+    [
+      "6. chat 进入真实执行",
+      "已有 Worker P95 ≤500 ms；冷 Worker ≤2.5 s",
+      "warm：158.96 / 160.00 ms；cold：8010.84 / 7989.27 ms（agent / code.normal）",
+      "已有 Worker 的此前采样达标；冷 Worker 未达标"
+    ]
+  ],
+  "requirements": [
+    [
+      "二",
+      "断连只解除订阅，Worker 持有原执行",
+      "覆盖：retire_generation/detach 不取消已接收执行",
+      "WorkerDispatcher、WorkerGatewayBridge；真实 offline/tool/interaction/cross-session"
+    ],
+    [
+      "二",
+      "序号回放、状态快照与待答交互；不重发输入",
+      "覆盖：有界 2048 条 / 8 MiB 事件日志，游标过期走历史",
+      "event_store.py、runtimeResume.ts；回放边界单测、真实问答恢复及 once 工具计数"
+    ],
+    [
+      "二",
+      "实际 Front→Gateway 交付后才提交",
+      "覆盖：wire.ack；失败/超时 abort",
+      "gateway_bridge.py、runtime_supervisor.py、session provision；真实 failed-create + 正常 SDK 建会话"
+    ],
+    [
+      "二",
+      "独立 dispatch_id；调用方活动 request_id 去重",
+      "本轮补齐：去重跨同一调用方的会话生效；清理校验对象身份",
+      "request_registry.py、event_store.py；跨会话去重与旧对象清理测试"
+    ],
+    [
+      "二",
+      "接收、处理返回和执行完成区分；warming 可取消",
+      "本轮补齐：空 Coordinator 快照不覆盖已接收队列状态",
+      "dispatcher.py；修正前复现 false，修正后测试通过；真实 warming-cancel 模型调用为零"
+    ],
+    [
+      "二",
+      "metadata 字段合并、锁与事务/租约保留",
+      "覆盖：写前持锁读新值，按字段合并并管理缓存",
+      "session_metadata.py、lifecycle/project_store；真实两进程 64 轮并发 + session 回归"
+    ],
+    [
+      "二",
+      "规范化数据目录/profile 选主，AgentOS user_id 不选目录",
+      "覆盖：数据作用域、实例、协议、代码身份及 lifetime/startup locks",
+      "identity.py、IPC server、supervisor；两 AgentOS 目录同 session/request ID 的独立进程证据"
+    ],
+    [
+      "二",
+      "普通重启 detach；最终关闭共享 30 秒期限",
+      "本轮补齐：Supervisor ACK、进程退出/强制回收、IPC 清理共用 deadline",
+      "shutdown deadline 测试含真实子进程和 PID 重用拒绝；各真实进程场景 shutdown.done ok"
+    ],
+    [
+      "二",
+      "对外契约保持；Web 自动恢复，Gateway 转发权威状态",
+      "覆盖：既有 session.get_metadata 的可选参数/字段及内部订阅",
+      "Gateway 转发 + Web 46 项测试和构建；真实 Gateway WS 接回；浏览器点击流程未实测"
+    ],
+    [
+      "三",
+      "Kernel 管理可共享资源，租约保护生命周期",
+      "覆盖：模型、工具工厂、Rail 配方、Skill 索引、MCP、项目 LSP",
+      "kernel.py、适配器、Rail/Skill 管理器、project_lsp.py；资源与相关完整回归"
+    ],
+    [
+      "三",
+      "SessionExecution 与 RunContext 独立",
+      "按既有结构落地：复用 RuntimeSessionCoordinator/handles，不新建同名 SessionExecution 类",
+      "history/checkpoint/活动执行仍归会话；RunContext 保存单次 turn/budget/tools/permissions/credential；Process CLI 805 项"
+    ],
+    [
+      "三",
+      "共享键覆盖资源身份；凭据不明文进入键/日志",
+      "覆盖：可信 data/profile、project、mode、definition/capabilities/config、资源 ID/路由及 HMAC 引用",
+      "KernelIdentity/ResourceKey；ModelGroup 的有状态路由包装仍独立，单模型连接可租用"
+    ],
+    [
+      "三",
+      "有状态 Rail/工具及 Skill/MCP 快照保持归属",
+      "覆盖：共享类/工厂与索引；实际实例和会话选择独立",
+      "Rail scope、Skill、Agent、MCP 回归；MCP 实际子进程复用，PowerShell/MCP 各只产生 once"
+    ],
+    [
+      "三",
+      "配置失效保护执行；warm pool 转为 Kernel 准备",
+      "覆盖：失效资源退休，有租约时延迟关闭；真实 claim/pin 路径保留",
+      "ResourceKernel retire/release、adapter hot reload、agent_warm_pool；模型配置/凭据回归"
+    ],
+    [
+      "四",
+      "Front/控制面不依赖 Runtime 重导入",
+      "覆盖：真实 Front 子进程中运行控制查询并检查已加载模块",
+      "test_front_import_boundary.py 的完整模块列表；Worker warming 下仍可查询"
+    ],
+    [
+      "四",
+      "按配置迁移、模型身份/路由的依赖顺序准备",
+      "覆盖：迁移在模型和会话构造前，AGENT_READY 后释放执行队列",
+      "worker/lifecycle.py 和 dispatcher；真实首次执行、warming cancel、启动失败清理回归"
+    ],
+    [
+      "四",
+      "可选能力后台/首次使用，调用等待对应准备",
+      "覆盖主要代码路径；未逐一实测所有可选能力开启/异常组合",
+      "MCP 首用、Skill/Auto-Harness 延迟导入、PersonalContext/Proactive/Sandbox 后台准备，图像/Zen 既有后台复用"
+    ],
+    [
+      "四",
+      "先接现有 Worker，复用模型/MCP/认证/LSP/KVCache",
+      "覆盖：优先 try_connect，Worker 不重新加载 Runtime",
+      "同 PID/instance/execution 的真实重启；实际 MCP PID 相同；真实 LSP 共享/隔离；既有 KVCache owner 继续使用"
+    ],
+    [
+      "四",
+      "重连、崩溃、升级区分；不自动重放工具",
+      "覆盖重连/崩溃；升级身份/协议不符明确拒绝并要求显式生命周期处理",
+      "crash 记录 interrupted、换实例；工具 once；老协议/安装包升级未做端到端实测"
+    ],
+    [
+      "四",
+      "冻结参数和 Windows 存活检查兼容",
+      "代码/契约回归覆盖；Windows 源码真实进程覆盖",
+      "exe entry/spec、named pipe/owner lease；冻结 EXE 未实际构建验证"
+    ],
+    [
+      "边界",
+      "不新增多 Worker 调度/WarmSpare；维持 CLI/TUI 通路",
+      "保持：按数据目录隔离进程不等于新调度器",
+      "Process CLI 仍本地子进程 Runtime，远程 TUI 的 Gateway /tui 通路未改动"
+    ]
+  ],
+  "new_findings_and_repairs": [
+    [
+      "阶段二",
+      "PersonalContext Host 已改为可信目录，Rail 仍使用 Path.home()",
+      "Rail 改用 get_user_workspace_dir()；独立目录回归通过",
+      "../../../jiuwenswarm/server/runtime/agent_adapter/interface_deep.py"
+    ],
+    [
+      "阶段三",
+      "Kernel 完整身份变化后，模型指纹相同仍可能命中旧缓存",
+      "缓存命中同时校验 Kernel 身份；新执行获取新租约，原租约仍可使用",
+      "../../../tests/unit_tests/agentserver/test_adapter_kernel_invalidation.py"
+    ],
+    [
+      "验收测试",
+      "真实退出已由原生句柄确认，PID-only 查询仍可能显示存在",
+      "去掉 PID-only 断言，保留关闭预算及原生子进程 wait 退出断言；修正前失败日志保留",
+      "../../../tests/unit_tests/agentserver/test_worker_shutdown_deadline.py"
+    ]
+  ],
+  "current_test_runs": [
+    {
+      "suite": "PersonalContext / Kernel / 模型更新 / RunContext",
+      "log": "plan-recheck-focused.log.gz",
+      "summary": "140 passed, 1 warning in 14.20s",
+      "code_commit": "551ac7a111d234884b7de59caea238aec7ad549f"
+    },
+    {
+      "suite": "完整 Process CLI / Python SDK / RunContext",
+      "log": "plan-recheck-process-cli.log.gz",
+      "summary": "805 passed, 2 skipped, 1 warning in 65.43s (0:01:05)",
+      "code_commit": "551ac7a111d234884b7de59caea238aec7ad549f"
+    },
+    {
+      "suite": "Worker / Front 真进程导入边界 / 关闭 / 桌面入口契约",
+      "log": "plan-recheck-worker-front-final.log.gz",
+      "summary": "74 passed, 1 skipped in 7.90s",
+      "code_commit": "551ac7a111d234884b7de59caea238aec7ad549f"
+    },
+    {
+      "suite": "外部真实模型 SDK 续聊及真实 SDK LSP",
+      "log": "plan-recheck-real-sdk.log.gz",
+      "summary": "2 passed in 67.29s (0:01:07)",
+      "code_commit": "551ac7a111d234884b7de59caea238aec7ad549f"
+    }
+  ],
+  "native_worker_pid": 31112,
+  "native_side_effects": [
+    "once"
+  ],
+  "dependency_files_unchanged": [
+    "pyproject.toml",
+    "uv.lock",
+    "jiuwenswarm/channels/web/frontend/package.json",
+    "jiuwenswarm/channels/web/frontend/package-lock.json"
+  ],
+  "remote_tui_unchanged": true,
+  "new_product_files": [
+    "jiuwenswarm/server/runtime/agent_adapter/interface_deep.py"
+  ],
+  "performance_provenance": {
+    "code_commit": "fc7c36c975543008d1c43e00db256cb80329846a",
+    "rerun_in_this_review": false,
+    "metrics": {
+      "agent": {
+        "baseline": {
+          "listen": {
+            "n": 30,
+            "p50_ms": 338.8416,
+            "p95_ms": 353.0031
+          },
+          "session.list": {
+            "n": 30,
+            "p50_ms": 358.8874,
+            "p95_ms": 374.87
+          },
+          "session.list.response": {
+            "n": 30,
+            "p50_ms": 18.4767,
+            "p95_ms": 23.6171
+          },
+          "project.list": {
+            "n": 30,
+            "p50_ms": 372.1062,
+            "p95_ms": 388.5298
+          },
+          "project.list.response": {
+            "n": 30,
+            "p50_ms": 12.4029,
+            "p95_ms": 13.8289
+          },
+          "config.get": {
+            "n": 30,
+            "p50_ms": 438.9583,
+            "p95_ms": 455.1205
+          },
+          "config.get.response": {
+            "n": 30,
+            "p50_ms": 66.8485,
+            "p95_ms": 70.4212
+          },
+          "history.get": {
+            "n": 30,
+            "p50_ms": 443.3245,
+            "p95_ms": 458.4859
+          },
+          "history.get.response": {
+            "n": 30,
+            "p50_ms": 3.0279,
+            "p95_ms": 4.8545
+          },
+          "cold": {
+            "n": 30,
+            "p50_ms": 8224.2629,
+            "p95_ms": 10420.3243
+          },
+          "warm": {
+            "n": 100,
+            "p50_ms": 82.5261,
+            "p95_ms": 154.2954
+          }
+        },
+        "candidate": {
+          "listen": {
+            "n": 30,
+            "p50_ms": 243.594,
+            "p95_ms": 259.1544
+          },
+          "session.list": {
+            "n": 30,
+            "p50_ms": 266.3449,
+            "p95_ms": 280.8836
+          },
+          "session.list.response": {
+            "n": 30,
+            "p50_ms": 19.9779,
+            "p95_ms": 26.1794
+          },
+          "project.list": {
+            "n": 30,
+            "p50_ms": 277.3809,
+            "p95_ms": 292.9154
+          },
+          "project.list.response": {
+            "n": 30,
+            "p50_ms": 11.8838,
+            "p95_ms": 13.4647
+          },
+          "config.get": {
+            "n": 30,
+            "p50_ms": 348.0757,
+            "p95_ms": 364.5576
+          },
+          "config.get.response": {
+            "n": 30,
+            "p50_ms": 70.5435,
+            "p95_ms": 75.9149
+          },
+          "history.get": {
+            "n": 30,
+            "p50_ms": 352.224,
+            "p95_ms": 368.2736
+          },
+          "history.get.response": {
+            "n": 30,
+            "p50_ms": 3.0343,
+            "p95_ms": 4.1914
+          },
+          "cold": {
+            "n": 30,
+            "p50_ms": 7714.1908,
+            "p95_ms": 8010.837
+          },
+          "warm": {
+            "n": 100,
+            "p50_ms": 117.1518,
+            "p95_ms": 158.9635
+          }
+        }
+      },
+      "code.normal": {
+        "baseline": {
+          "listen": {
+            "n": 30,
+            "p50_ms": 338.8131,
+            "p95_ms": 381.5187
+          },
+          "session.list": {
+            "n": 30,
+            "p50_ms": 360.6993,
+            "p95_ms": 402.6648
+          },
+          "session.list.response": {
+            "n": 30,
+            "p50_ms": 18.3711,
+            "p95_ms": 26.4846
+          },
+          "project.list": {
+            "n": 30,
+            "p50_ms": 372.8537,
+            "p95_ms": 415.1821
+          },
+          "project.list.response": {
+            "n": 30,
+            "p50_ms": 12.4147,
+            "p95_ms": 13.9635
+          },
+          "config.get": {
+            "n": 30,
+            "p50_ms": 439.7983,
+            "p95_ms": 485.0951
+          },
+          "config.get.response": {
+            "n": 30,
+            "p50_ms": 67.5753,
+            "p95_ms": 70.8974
+          },
+          "history.get": {
+            "n": 30,
+            "p50_ms": 442.9454,
+            "p95_ms": 488.7169
+          },
+          "history.get.response": {
+            "n": 30,
+            "p50_ms": 3.0064,
+            "p95_ms": 3.8967
+          },
+          "cold": {
+            "n": 30,
+            "p50_ms": 8224.8683,
+            "p95_ms": 11123.4181
+          },
+          "warm": {
+            "n": 100,
+            "p50_ms": 94.5142,
+            "p95_ms": 153.424
+          }
+        },
+        "candidate": {
+          "listen": {
+            "n": 30,
+            "p50_ms": 243.2498,
+            "p95_ms": 259.9526
+          },
+          "session.list": {
+            "n": 30,
+            "p50_ms": 264.5264,
+            "p95_ms": 281.762
+          },
+          "session.list.response": {
+            "n": 30,
+            "p50_ms": 19.9604,
+            "p95_ms": 27.1875
+          },
+          "project.list": {
+            "n": 30,
+            "p50_ms": 276.2511,
+            "p95_ms": 293.5622
+          },
+          "project.list.response": {
+            "n": 30,
+            "p50_ms": 11.7992,
+            "p95_ms": 13.3977
+          },
+          "config.get": {
+            "n": 30,
+            "p50_ms": 346.3726,
+            "p95_ms": 370.0743
+          },
+          "config.get.response": {
+            "n": 30,
+            "p50_ms": 70.6731,
+            "p95_ms": 76.5076
+          },
+          "history.get": {
+            "n": 30,
+            "p50_ms": 350.0516,
+            "p95_ms": 373.5986
+          },
+          "history.get.response": {
+            "n": 30,
+            "p50_ms": 3.1948,
+            "p95_ms": 4.0475
+          },
+          "cold": {
+            "n": 30,
+            "p50_ms": 7869.5067,
+            "p95_ms": 7989.2672
+          },
+          "warm": {
+            "n": 100,
+            "p50_ms": 107.9724,
+            "p95_ms": 160.0035
+          }
+        }
+      }
+    }
+  },
+  "previous_regression_code": "b126a8d1000a279570ba01619f423a5a9d575b18",
+  "previous_regression_candidate_only_failures": [],
+  "previous_broad_unique_failures": 87,
+  "limitations": [
+    "冷 Worker P95 约 8 秒，未达到 2.5 秒；依赖锁定未改",
+    "性能正式采样属于此前 fc7c36c97；本轮为功能复核，没有重采 30/100 次 P95",
+    "88 个初轮失败在 develop 逐项复现；最终回归失败为其中子集，未清理无关基线缺陷",
+    "浏览器页面点击、冻结 EXE 及老协议安装升级未实测",
+    "工具副作用和 MCP 恢复使用真实 SDK/子进程及本地模型协议 fixture；外部真实模型续聊单独报告"
+  ]
+}
