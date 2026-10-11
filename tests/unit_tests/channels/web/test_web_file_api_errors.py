@@ -1,15 +1,16 @@
-"""Regression tests for malformed /file-api requests.
+"""Regression tests for malformed /file-api and malformed static-path requests.
 
 Each case used to raise inside the request handler, escape ``do_GET`` /
-``do_POST`` and drop the connection without a response (the client sees an
-empty reply and the gateway logs a traceback per request).  They must now be
-answered with a ``400`` JSON body instead.
+``do_POST`` / ``send_head`` and drop the connection without a response (the
+client sees an empty reply and the gateway logs a traceback per request).
+They must now be answered with a ``400`` JSON body instead.
 """
 
 from __future__ import annotations
 
 import io
 import logging
+import sys
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,7 @@ class _FileApiHandlerHarness(_SpaStaticHandler):
         body: bytes = b"",
     ) -> None:
         self.project_root = project_root
+        self.directory = str(project_root)
         self.command = command
         self.path = path
         self.headers = headers or {}
@@ -185,3 +187,39 @@ def test_file_api_post_valid_ws_debug_config_returns_200(tmp_path: Path, monkeyp
 
     status, _payload = _last(handler)
     assert status == 200
+
+
+def test_send_head_embedded_nul_returns_400(tmp_path: Path) -> None:
+    """``/%00`` must not escape ``send_head``.
+
+    ``handle_one_request`` only catches ``TimeoutError``; a ``ValueError`` from
+    ``Path.resolve()`` / ``os.path.commonpath`` reaches ``socketserver``'s error
+    handler and the connection is closed with no HTTP response at all.
+    """
+    handler = _make_handler(tmp_path, "/%00")
+
+    assert handler.send_head() is None
+    assert _last(handler) == (400, {"error": "invalid_path"})
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cross-drive paths only exist on Windows")
+def test_send_head_cross_drive_path_returns_400(tmp_path: Path) -> None:
+    """``/D:/x`` resolves onto another drive, so ``commonpath`` raises ValueError."""
+    handler = _make_handler(tmp_path, "/D:/x")
+
+    assert handler.send_head() is None
+    assert _last(handler) == (400, {"error": "invalid_path"})
+
+
+def test_send_head_clean_path_is_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A well-formed path must still fall through to the static branch, unguarded."""
+
+    def _stub(_self):
+        return io.BytesIO()
+
+    monkeypatch.setattr(app_web.SimpleHTTPRequestHandler, "send_head", _stub)
+    (tmp_path / "note.md").write_text("hi", encoding="utf-8")
+    handler = _make_handler(tmp_path, "/note.md")
+
+    assert handler.send_head() is not None
+    assert handler.responses == []

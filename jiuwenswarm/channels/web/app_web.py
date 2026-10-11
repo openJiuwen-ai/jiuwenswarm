@@ -2088,13 +2088,22 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def send_head(self):
-        parsed = urlparse(self.path)
-        req_path = unquote(parsed.path)
-        rel_path = req_path.lstrip("/") or "index.html"
+        # handle_one_request 只捕获 TimeoutError，ValueError 会穿透到 socketserver
+        # 的异常处理，连接被直接关掉且客户端收不到任何 HTTP 响应（不是 400，是连接
+        # 被重置）。跨盘符（/D:/x）和内嵌 NUL（/%00）的请求路径恰好会在这里抛
+        # ValueError，必须像 _resolve_project_path 一样转成 400。
+        try:
+            parsed = urlparse(self.path)
+            req_path = unquote(parsed.path)
+            rel_path = req_path.lstrip("/") or "index.html"
 
-        base_dir = Path(self.directory or os.getcwd()).resolve()
-        target = (base_dir / rel_path).resolve()
-        in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+            base_dir = Path(self.directory or os.getcwd()).resolve()
+            target = (base_dir / rel_path).resolve()
+            in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+        except (OSError, ValueError):
+            self._static_cache_control = None
+            self._write_json(400, {"error": "invalid_path"})
+            return None
 
         # 使用实际静态解析结果判定 SPA 入口, 覆盖 /、index.html 及路由回退。
         # 现存静态资源及其他 HTML 产物不需要桌面 Cookie。
