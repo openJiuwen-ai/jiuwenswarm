@@ -213,6 +213,11 @@ class TestDispatchTable:
         assert HANDLERS[ReqMethod.SESSION_CREATE] is handle_session_create
         assert HANDLERS[ReqMethod.SESSION_FORK] is handle_session_fork
 
+    def test_chat_cancel_is_registered(self) -> None:
+        from jiuwenswarm.server.handlers.chat import handle_chat_cancel
+
+        assert HANDLERS[ReqMethod.CHAT_CANCEL] is handle_chat_cancel
+
     def test_team_and_swarmflow_control_are_registered(self) -> None:
         from jiuwenswarm.server.handlers.team import (
             handle_swarmflow_control,
@@ -452,9 +457,13 @@ class TestWsDispatchStillKeepsUnmovedMethods:
         assert "async def _handle_session_fork" not in source
         assert "async def _handle_initialize" not in source
         assert "ReqMethod.ACP_TOOL_RESPONSE" in source
+        assert "ReqMethod.CHAT_CANCEL" not in body
         assert "ReqMethod.HEARTBEAT_JOB" in body
         assert 'startswith("rsi.")' in body
-        assert "async def _handle_unary" in source
+        assert "async def _handle_unary" not in source
+        assert "async def _handle_stream" not in source
+        assert "chat_default.handle_unary" in body
+        assert "chat_default.handle_stream" in body
 
 
 class TestExtensionHandlers:

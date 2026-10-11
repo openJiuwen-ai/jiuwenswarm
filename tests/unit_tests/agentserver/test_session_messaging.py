@@ -56,6 +56,8 @@ from jiuwenswarm.server.agent_ws_server import (
     AgentWebSocketServer,
     _strip_untrusted_session_message_context,
 )
+from jiuwenswarm.server.context import build_ws_request_context
+from jiuwenswarm.server.handlers._default import handle_stream, handle_unary
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
@@ -2277,7 +2279,7 @@ async def test_resume_turn_persists_each_repeated_question_correlation(
         lambda *args, **kwargs: None,
     )
 
-    await server._handle_stream_impl(object(), request, asyncio.Lock())
+    await handle_stream(build_ws_request_context(server, object(), request, asyncio.Lock()))
 
     rebound = store.waiting_for_resume(
         "target-1", "tool-call-third", "ask_user_interrupt"
@@ -2333,7 +2335,7 @@ async def test_stream_delivery_abort_marks_resumed_message_unknown(
         lambda *args, **kwargs: None,
     )
 
-    await server._handle_stream_impl(object(), request, asyncio.Lock())
+    await handle_stream(build_ws_request_context(server, object(), request, asyncio.Lock()))
 
     failed_delivery = store.get(waiting.message_id)
     assert failed_delivery.status == "unknown"
@@ -2386,7 +2388,7 @@ async def test_unary_disconnect_marks_resumed_message_unknown(
     )
 
     with pytest.raises(agent_ws_server_module.WebSocketConnectionClosed):
-        await server._handle_unary_impl(object(), request, asyncio.Lock())
+        await handle_unary(build_ws_request_context(server, object(), request, asyncio.Lock()))
 
     failed_delivery = store.get(waiting.message_id)
     assert failed_delivery.status == "unknown"
@@ -2441,7 +2443,7 @@ async def test_repeated_question_persistence_failure_marks_message_unknown(
     )
 
     with pytest.raises(RuntimeError, match="uncorrelated follow-up question"):
-        await server._handle_stream_impl(object(), request, asyncio.Lock())
+        await handle_stream(build_ws_request_context(server, object(), request, asyncio.Lock()))
 
     failed_persistence = store.get(waiting.message_id)
     assert failed_persistence.status == "unknown"
@@ -2696,9 +2698,9 @@ async def test_resumed_runtime_accepted_without_final_is_unknown(
     )
     try:
         if streaming:
-            await server._handle_stream_impl(object(), request, asyncio.Lock())
+            await handle_stream(build_ws_request_context(server, object(), request, asyncio.Lock()))
         else:
-            await server._handle_unary_impl(object(), request, asyncio.Lock())
+            await handle_unary(build_ws_request_context(server, object(), request, asyncio.Lock()))
 
         record = store.get(waiting.message_id)
         assert record is not None

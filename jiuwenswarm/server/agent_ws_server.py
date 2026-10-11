@@ -38,8 +38,6 @@ from jiuwenswarm.common.session_message import (
 )
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.constants import (
-    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
-    E2A_INTERNAL_CANCEL_SOURCE_KEY,
     E2A_WIRE_INTERNAL_METADATA_KEYS,
 )
 from jiuwenswarm.common.e2a.gateway_normalize import (
@@ -2079,105 +2077,21 @@ class AgentWebSocketServer:
             ):
                 await self._handle_rsi_request(ws, request, send_lock)
                 return
-            if request.req_method == ReqMethod.CHAT_CANCEL:
-                if isinstance(request.params, dict) and request.params.get("target_team_id"):
-                    await self._handle_cancel(ws, request, send_lock)
-                    return
-                if isinstance(request.params, dict) and request.params.get("wait_for_stop"):
-                    try:
-                        await self._execution_runtime().stop_session_for_archive(
-                            channel_id=request.channel_id or "default",
-                            session_id=request.session_id or "default",
-                        )
-                        response = AgentResponse(
-                            request_id=request.request_id, channel_id=request.channel_id,
-                            ok=True, payload={"success": True},
-                        )
-                    except Exception as exc:
-                        response = AgentResponse(
-                            request_id=request.request_id, channel_id=request.channel_id,
-                            ok=False, payload={"success": False, "error": str(exc)},
-                        )
-                    async with send_lock:
-                        await send_wire_payload(
-                            ws, encode_agent_response_for_wire(response, response_id=request.request_id)
-                        )
-                    return
-                # 中断请求：根据 intent 决定是否取消流式任务
-                sid = request.session_id or "default"
-                intent = request.params.get("intent", "cancel") if isinstance(request.params, dict) else "cancel"
-                cleanup_after_cancel = self._is_client_disconnect_cancel_request(request)
-
-                # 只有 cancel/supplement 才取消流式任务
-                # pause/resume 不取消，因为任务仍在运行（pause 在 checkpoint 阻塞，resume 解除阻塞）
-                stream_tasks: list[asyncio.Task] = []
-                if intent in ("cancel", "supplement"):
-                    entries = self._session_stream_tasks.get(sid, {})
-                    for stream_task, stream_stop_event in list(entries.items()):
-                        if stream_task.done():
-                            continue
-                        logger.info(
-                            "[AgentWebSocketServer] cancel: 终止 session 流式任务: session_id=%s intent=%s",
-                            sid,
-                            intent,
-                        )
-                        stream_stop_event.set()
-                        stream_task.cancel()
-                        stream_tasks.append(stream_task)
-
-                cancel_response: AgentResponse | None = None
-                try:
-                    # 专门处理 cancel，复用已有 agent（不再 fallthrough 到 _handle_unary）
-                    # allow_create=False：找不到已有 agent 时不 fallback 新建（见 _handle_cancel docstring）。
-                    cancel_response = await self._handle_cancel(
-                        ws,
-                        request,
-                        send_lock,
-                        allow_create=False,
-                        send_response=not cleanup_after_cancel,
-                    )
-                finally:
-                    if stream_tasks:
-                        results = await asyncio.gather(*stream_tasks, return_exceptions=True)
-                        for result in results:
-                            if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
-                                logger.warning(
-                                    "[AgentWebSocketServer] cancel: stream task cleanup failed: "
-                                    "session_id=%s intent=%s error=%s",
-                                    sid,
-                                    intent,
-                                    result,
-                                )
-                    if cleanup_after_cancel and intent in ("cancel", "supplement"):
-                        cleanup_succeeded = (
-                            await self._cleanup_client_disconnect_session_runtime(
-                                request
-                            )
-                        )
-                        if cancel_response is not None:
-                            if not cleanup_succeeded:
-                                cancel_response.ok = False
-                                cancel_response.payload = {
-                                    "event_type": "chat.interrupt_result",
-                                    "success": False,
-                                    "error": "session runtime cleanup failed",
-                                }
-                            wire = encode_agent_response_for_wire(
-                                cancel_response,
-                                response_id=request.request_id,
-                            )
-                            async with send_lock:
-                                await send_wire_payload(ws, wire)
-                return
             await self._ensure_auto_team_binding_for_chat(request)
             # chat.send 入口采集隐式反馈：用户在推荐后的文本回复关联到最近推荐。
             # best-effort，失败绝不影响主 chat 流（见方法实现）。
             if request.req_method == ReqMethod.CHAT_SEND:
                 await self._try_record_implicit_feedback(request)
+            if request.req_method == ReqMethod.ACP_TOOL_RESPONSE:
+                await self._handle_acp_tool_response(ws, request, send_lock)
+                return
+            from jiuwenswarm.server.handlers import _default as chat_default
+
+            chat_ctx = build_ws_request_context(self, ws, request, send_lock)
             if request.is_stream:
-                await self._handle_stream(ws, request, send_lock)
+                await chat_default.handle_stream(chat_ctx)
             else:
-                await self._handle_unary(ws, request, send_lock)
+                await chat_default.handle_unary(chat_ctx)
         except asyncio.CancelledError:
             # 流式任务被 interrupt 取消，正常退出无需报错
             logger.info(
@@ -2320,13 +2234,6 @@ class AgentWebSocketServer:
                 exc,
             )
 
-    @staticmethod
-    def _is_client_disconnect_cancel_request(request: AgentRequest) -> bool:
-        metadata = request.metadata if isinstance(request.metadata, dict) else {}
-        return (
-            str(metadata.get(E2A_INTERNAL_CANCEL_SOURCE_KEY) or "").strip()
-            == E2A_CANCEL_SOURCE_CLIENT_DISCONNECT
-        )
 
     async def _cleanup_client_disconnect_session_runtime(self, request: AgentRequest) -> bool:
         params = request.params if isinstance(request.params, dict) else {}
@@ -2385,33 +2292,6 @@ class AgentWebSocketServer:
 
         await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.BEFORE_CHAT_REQUEST, ctx)
 
-    async def _handle_cancel(
-        self,
-        ws: Any,
-        request: AgentRequest,
-        send_lock: asyncio.Lock,
-        *,
-        allow_create: bool = False,
-        send_response: bool = True,
-    ) -> AgentResponse:
-        """Cancel through the transport-independent Runtime operation."""
-        params = request.params if isinstance(request.params, dict) else {}
-        if params.get("target_team_id"):
-            resp = await self._cancel_targeted_expert(request)
-        else:
-            resp = await self._execution_runtime().cancel_request(
-                request,
-                allow_create=allow_create,
-            )
-
-        if send_response:
-            wire = encode_agent_response_for_wire(
-                resp,
-                response_id=request.request_id,
-            )
-            async with send_lock:
-                await send_wire_payload(ws, wire)
-        return resp
 
     @staticmethod
     def _resolve_code_language() -> str:
@@ -2580,101 +2460,9 @@ class AgentWebSocketServer:
                 )
         return result.restored
 
-    async def _handle_unary(
-        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
-    ) -> None:
-        await self._handle_unary_impl(ws, request, send_lock)
-
-    async def _handle_unary_impl(
-        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
-    ) -> None:
-        """非流式处理：调用 process_message，返回一条 E2AResponse 线 JSON。"""
-        if request.req_method == ReqMethod.ACP_TOOL_RESPONSE:
-            await self._handle_acp_tool_response(ws, request, send_lock)
-            return
-
-        runtime = self._execution_runtime()
-        resume_state = await self._open_session_message_resume(request)
-        resume_outcome = "unknown"
-        resume_error = "resumed turn ended before its outcome was confirmed"
-
-        async def _send_control_event(event: RuntimeEvent) -> None:
-            await self._send_runtime_event(
-                ws,
-                event,
-                send_lock,
-                streaming=False,
-                sequence=0,
-            )
-
-        outcome_tracker = _TurnOutcomeTracker()
-        try:
-            if request.req_method == ReqMethod.CHAT_ANSWER:
-                events = await runtime.answer_interaction(
-                    request,
-                    trigger_hook=False,
-                    on_control_event=_send_control_event,
-                )
-            else:
-                events = await runtime.invoke(
-                    request,
-                    trigger_hook=False,
-                    on_control_event=_send_control_event,
-                )
-
-            for event in events:
-                outcome_tracker.observe(event)
-                if event.event_type == "chat.ask_user_question":
-                    payload = event.payload if isinstance(event.payload, dict) else {}
-                    await self._persist_repeated_session_question(
-                        request,
-                        next_interrupt_request_id=str(
-                            payload.get("request_id") or ""
-                        ).strip(),
-                        next_interrupt_source=str(payload.get("source") or "").strip(),
-                        resume_state=resume_state,
-                    )
-                await self._send_runtime_event(
-                    ws,
-                    event,
-                    send_lock,
-                    streaming=False,
-                    sequence=0,
-                )
-            if resume_state is not None and resume_state.waiting_user:
-                outcome_tracker.waiting_user = True
-            resume_outcome = outcome_tracker.outcome()
-            resume_error = (
-                outcome_tracker.error
-                if resume_outcome == "failed"
-                else outcome_tracker.unconfirmed_error()
-                if resume_outcome == "unknown"
-                else ""
-            )
-        finally:
-            try:
-                await self._finalize_session_message_resume(
-                    request,
-                    resume_state,
-                    outcome=resume_outcome,
-                    error=resume_error,
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "[SessionMessaging] failed to finalize resumed unary turn: "
-                    "request_id=%s",
-                    request.request_id,
-                )
-        logger.info(
-            "[AgentWebSocketServer] 非流式响应已发送: request_id=%s",
-            request.request_id,
-        )
 
 
-    async def _handle_stream(
-        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
-    ) -> None:
-        await self._handle_stream_impl(ws, request, send_lock)
+
 
     async def _handle_heartbeat_job(
         self,
@@ -3242,139 +3030,6 @@ class AgentWebSocketServer:
             return SessionMessageExecutionResult(status="waiting_user")
         return SessionMessageExecutionResult(status="succeeded")
 
-    async def _handle_stream_impl(
-        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
-    ) -> None:
-        """流式处理：调用 process_message_stream，逐条发送 E2AResponse 线 JSON。"""
-        session_id = self._organization_stream_key(request)
-        resume_state = await self._open_session_message_resume(request)
-        resume_outcome = "unknown"
-        resume_error = "resumed turn ended before its outcome was confirmed"
-        current_task = asyncio.current_task()
-        stream_stop_event = asyncio.Event()
-        uses_session_runtime = AgentRuntime.uses_session_runtime(request)
-        if current_task is not None and not uses_session_runtime:
-            self._session_stream_tasks.setdefault(session_id, {})[current_task] = stream_stop_event
-
-        chunk_count = 0
-        outcome_tracker = _TurnOutcomeTracker()
-        keepalive = _StreamKeepalive(
-            ws,
-            request,
-            send_lock,
-        )
-        runtime_stream: Any | None = None
-
-        async def _send_control_event(event: RuntimeEvent) -> None:
-            await self._send_runtime_event(
-                ws,
-                event,
-                send_lock,
-                streaming=True,
-                sequence=chunk_count,
-            )
-        try:
-            if self._is_targeted_expert_chat(request):
-                runtime_stream = self._targeted_expert_runtime_stream(request)
-            else:
-                runtime_stream = self._execution_runtime().stream(
-                    request,
-                    trigger_hook=False,
-                    on_control_event=_send_control_event,
-                )
-            keepalive.start()
-            async for event in runtime_stream:
-                # Runtime control events normally use the callback above. Keep
-                # compatibility with custom Runtime implementations without
-                # consuming a wire sequence number or resetting the keepalive timer.
-                if event.event_type == PLAN_MODE_EXITED_EVENT_TYPE:
-                    await _send_control_event(event)
-                    continue
-                outcome_tracker.observe(event)
-                if event.event_type == "chat.ask_user_question":
-                    payload = event.payload if isinstance(event.payload, dict) else {}
-                    await self._persist_repeated_session_question(
-                        request,
-                        next_interrupt_request_id=str(
-                            payload.get("request_id") or ""
-                        ).strip(),
-                        next_interrupt_source=str(payload.get("source") or "").strip(),
-                        resume_state=resume_state,
-                    )
-                chunk_count += 1
-                # 通知 keepalive 有真实 chunk 发送，重置空闲计时。
-                keepalive.notify_activity(terminal=event.is_complete)
-                try:
-                    sent_original = await self._send_runtime_event(
-                        ws,
-                        event,
-                        send_lock,
-                        streaming=True,
-                        sequence=chunk_count - 1,
-                    )
-                    if not sent_original:
-                        logger.warning(
-                            "[AgentWebSocketServer] 流式响应因单个 chunk 超限而停止: "
-                            "request_id=%s seq=%s",
-                            request.request_id,
-                            chunk_count - 1,
-                        )
-                        return
-                except WebSocketConnectionClosed:
-                    logger.info(
-                        "[AgentWebSocketServer] 流式响应停止，WebSocket 已关闭: request_id=%s",
-                        request.request_id,
-                    )
-                    return
-            if resume_state is not None and resume_state.waiting_user:
-                outcome_tracker.waiting_user = True
-            resume_outcome = outcome_tracker.outcome()
-            resume_error = (
-                outcome_tracker.error
-                if resume_outcome == "failed"
-                else outcome_tracker.unconfirmed_error()
-                if resume_outcome == "unknown"
-                else ""
-            )
-        finally:
-            try:
-                # 尽早阻止新的 keepalive；Runtime 清理仍先完成，以尽快释放其资源。
-                keepalive.signal_stop()
-                try:
-                    if runtime_stream is not None:
-                        close_stream = getattr(runtime_stream, "aclose", None)
-                        if callable(close_stream):
-                            await close_stream()
-                finally:
-                    try:
-                        # 显式停止并唤醒 keepalive；Task.cancel 只作为有界的兜底。
-                        await keepalive.stop()
-                    finally:
-                        # 清除自身的宿主生命周期记录；同 session 的其它请求不受影响。
-                        entries = self._session_stream_tasks.get(session_id)
-                        if entries is not None and current_task is not None:
-                            entries.pop(current_task, None)
-                            if not entries:
-                                self._session_stream_tasks.pop(session_id, None)
-            finally:
-                try:
-                    await self._finalize_session_message_resume(
-                        request,
-                        resume_state,
-                        outcome=resume_outcome,
-                        error=resume_error,
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "[SessionMessaging] failed to finalize resumed stream turn: "
-                        "request_id=%s",
-                        request.request_id,
-                    )
-        logger.info(
-            "[AgentWebSocketServer] 流式响应已发送: request_id=%s 共 %s 个 chunk",
-            request.request_id,
-            chunk_count,
-        )
 
     async def _persist_repeated_session_question(
         self,

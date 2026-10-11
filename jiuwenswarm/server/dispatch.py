@@ -27,6 +27,12 @@ from jiuwenswarm.server.handlers.bootstrap import (
     handle_session_create,
     handle_session_fork,
 )
+from jiuwenswarm.server.handlers.chat import handle_chat_cancel
+from jiuwenswarm.server.handlers.organization import (
+    handle_a4p_request,
+    handle_org_snapshot,
+    handle_team_list,
+)
 from jiuwenswarm.server.handlers.commands import (
     handle_command_add_dir,
     handle_command_btw,
@@ -186,6 +192,7 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.ISSUE_STATE_LIST: handle_schedule_request,
     ReqMethod.ISSUE_DELETE: handle_schedule_request,
     ReqMethod.ISSUE_MATRIX: handle_schedule_request,
+    ReqMethod.CHAT_CANCEL: handle_chat_cancel,
     ReqMethod.INITIALIZE: handle_initialize,
     ReqMethod.SESSION_CREATE: handle_session_create,
     ReqMethod.SESSION_FORK: handle_session_fork,
@@ -209,6 +216,10 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.TEAM_SESSION_BIND: handle_team_session_bind,
     ReqMethod.TEAM_DELETE: handle_team_delete,
     ReqMethod.TEAM_SNAPSHOT: handle_team_snapshot,
+    ReqMethod.TEAM_LIST: handle_team_list,
+    ReqMethod.ORG_SNAPSHOT: handle_org_snapshot,
+    ReqMethod.A4P_CONFIG_GET: handle_a4p_request,
+    ReqMethod.A4P_CONFIG_UPDATE: handle_a4p_request,
     ReqMethod.TEAM_MQ_PUBLISH: handle_team_mq_publish,
     ReqMethod.TEAM_HISTORY_GET: handle_team_history_get,
     ReqMethod.TEAM_MEMBERS_GET: handle_team_members_get,

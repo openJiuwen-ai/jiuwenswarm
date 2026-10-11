@@ -99,6 +99,56 @@ class AgentServerServices:
         else:
             stored.pop(key, None)
 
+    @property
+    def session_stream_tasks(self) -> Any:
+        """正在流式输出的任务。取消对话时靠它找到该停的那一个。"""
+        return self._host._session_stream_tasks
+
+    async def send_runtime_event(
+        self,
+        sink: Any,
+        event: Any,
+        *,
+        streaming: bool,
+        sequence: int,
+    ) -> bool:
+        """把运行时的一条事件写回当前连接。太大写不进去时返回 False。"""
+        return await self._host._send_runtime_event(
+            getattr(sink, "_ws", None),
+            event,
+            getattr(sink, "_send_lock", None),
+            streaming=streaming,
+            sequence=sequence,
+        )
+
+    async def open_session_message_resume(self, request: Any) -> Any:
+        """如果这是在回答一个挂起的问题，先记下那封排队消息。"""
+        return await self._host._open_session_message_resume(request)
+
+    async def finalize_session_message_resume(
+        self,
+        request: Any,
+        resume_state: Any,
+        *,
+        outcome: str,
+        error: str,
+    ) -> None:
+        """这一轮结束时，把排队消息收尾。"""
+        await self._host._finalize_session_message_resume(
+            request,
+            resume_state,
+            outcome=outcome,
+            error=error,
+        )
+
+    async def persist_repeated_session_question(self, request: Any, **kwargs: Any) -> Any:
+        """用户还要再答一次时，把下一题和上一题对上。"""
+        return await self._host._persist_repeated_session_question(request, **kwargs)
+
+    async def cleanup_client_disconnect_session_runtime(self, request: Any) -> bool:
+        """对方断开后，清掉这条连接上还占着的会话运行状态。"""
+        return await self._host._cleanup_client_disconnect_session_runtime(request)
+
     async def send_push(self, msg: Any) -> bool:
         """往当前连接主动推一条消息。压缩上下文这类命令会在回包之外再用它。"""
         return await self._host.send_push(msg)

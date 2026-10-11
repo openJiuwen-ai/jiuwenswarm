@@ -1968,10 +1968,11 @@ async def test_agent_server_cancel_delegates_to_runtime_public_api() -> None:
         params={"intent": "cancel"},
     )
 
-    response = await server._handle_cancel(
-        None,
-        request,
-        asyncio.Lock(),
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers.chat import cancel_chat_request
+
+    response = await cancel_chat_request(
+        build_ws_request_context(server, None, request, asyncio.Lock()),
         send_response=False,
     )
 
