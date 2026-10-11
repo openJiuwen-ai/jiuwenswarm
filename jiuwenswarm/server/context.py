@@ -31,6 +31,23 @@ class AgentServerServices:
         return self._host._agent_manager
 
     @property
+    def jiuwenbox_runner(self) -> Any:
+        """本进程负责拉起的沙箱进程。"""
+        return self._host._jiuwenbox_runner
+
+    def parse_sandbox_host_port(self, url: str) -> Any:
+        """从沙箱地址里拆出主机名和端口。"""
+        return self._host._parse_sandbox_host_port(url)
+
+    def allocate_internal_jiuwenbox_port(self, host: str, preferred_port: int) -> int:
+        """内部启动沙箱时，优先用配置里的端口；被占用就换一个空闲端口。"""
+        return self._host._allocate_internal_jiuwenbox_port(host, preferred_port)
+
+    def resolve_adapter(self, agent: Any) -> Any:
+        """取出这个 Agent 的适配器。回退对话用的是同一套。"""
+        return self._host._resolve_adapter(agent)
+
+    @property
     def proactive_engine(self) -> Any:
         """主动推荐引擎。没装好时是空的。"""
         return self._host._proactive_engine
