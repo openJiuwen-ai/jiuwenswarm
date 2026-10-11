@@ -85,6 +85,20 @@ class AgentServerServices:
         """后台重探模型能不能看图，不挡住这次请求。"""
         self._host.schedule_image_modality_warmup(reason=reason, reset_cache=reset_cache)
 
+    def set_acp_client_capabilities(self, connection_id: str, capabilities: Any) -> None:
+        """记下这条连接报上来的客户端能力。
+
+        客户端能力就是对方说自己能做什么，比如能不能读文件。
+        只对 ACP 这种编辑器连接有意义。存放用的编号，和连接对象的编号是同一个整数。
+        """
+
+        key = int(connection_id)
+        stored = self._host._acp_client_capabilities_by_ws
+        if isinstance(capabilities, dict):
+            stored[key] = dict(capabilities)
+        else:
+            stored.pop(key, None)
+
     async def send_push(self, msg: Any) -> bool:
         """往当前连接主动推一条消息。压缩上下文这类命令会在回包之外再用它。"""
         return await self._host.send_push(msg)

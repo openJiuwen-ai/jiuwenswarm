@@ -159,10 +159,16 @@ class AgentWebSocketServerHarness(agent_ws_server_module.AgentWebSocketServer):
         self._find_team_session_ids_override = override
 
     async def handle_initialize_for_test(self, ws, request, send_lock):
-        await self._handle_initialize(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.bootstrap import handle_initialize
+
+        await handle_initialize(build_ws_request_context(self, ws, request, send_lock))
 
     async def handle_session_create_for_test(self, ws, request, send_lock):
-        await self._handle_session_create(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.bootstrap import handle_session_create
+
+        await handle_session_create(build_ws_request_context(self, ws, request, send_lock))
 
     async def handle_session_switch_for_test(self, ws, request, send_lock):
         from jiuwenswarm.server.context import build_ws_request_context
@@ -4396,10 +4402,14 @@ async def test_handle_message_uses_ws_scoped_acp_client_capabilities(monkeypatch
 
     captured = {}
 
-    async def fake_handle_session_create(ws, request, send_lock):
-        captured[id(ws)] = dict(request.metadata or {})
+    async def fake_handle_session_create(ctx):
+        captured[int(ctx.connection_id)] = dict(ctx.request.metadata or {})
 
-    monkeypatch.setattr(server, "_handle_session_create", fake_handle_session_create)
+    monkeypatch.setitem(
+        __import__("jiuwenswarm.server.dispatch", fromlist=["HANDLERS"]).HANDLERS,
+        ReqMethod.SESSION_CREATE,
+        fake_handle_session_create,
+    )
 
     env = e2a_from_agent_fields(
         request_id="req-session-create",

@@ -201,8 +201,17 @@ class TestDispatchTable:
         }
         for method, handler in registered.items():
             assert HANDLERS[method] is handler
-        assert ReqMethod.SESSION_CREATE not in HANDLERS
-        assert ReqMethod.SESSION_FORK not in HANDLERS
+
+    def test_bootstrap_methods_are_registered(self) -> None:
+        from jiuwenswarm.server.handlers.bootstrap import (
+            handle_initialize,
+            handle_session_create,
+            handle_session_fork,
+        )
+
+        assert HANDLERS[ReqMethod.INITIALIZE] is handle_initialize
+        assert HANDLERS[ReqMethod.SESSION_CREATE] is handle_session_create
+        assert HANDLERS[ReqMethod.SESSION_FORK] is handle_session_fork
 
     def test_team_and_swarmflow_control_are_registered(self) -> None:
         from jiuwenswarm.server.handlers.team import (
@@ -439,8 +448,10 @@ class TestWsDispatchStillKeepsUnmovedMethods:
             assert f"ReqMethod.{name}" not in body
         assert "async def _handle_session_switch" not in source
         assert "async def _handle_history_get" not in source
-        assert "async def _handle_session_create" in source
-        assert "async def _handle_session_fork" in source
+        assert "async def _handle_session_create" not in source
+        assert "async def _handle_session_fork" not in source
+        assert "async def _handle_initialize" not in source
+        assert "ReqMethod.ACP_TOOL_RESPONSE" in source
         assert "ReqMethod.HEARTBEAT_JOB" in body
         assert 'startswith("rsi.")' in body
         assert "async def _handle_unary" in source
