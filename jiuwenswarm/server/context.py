@@ -30,8 +30,21 @@ class AgentServerServices:
     def agent_manager(self) -> Any:
         return self._host._agent_manager
 
+    @property
+    def proactive_engine(self) -> Any:
+        """主动推荐引擎。没装好时是空的。"""
+        return self._host._proactive_engine
+
     def resolve_model(self, model_name: Optional[str] = None) -> Optional[Any]:
         return self._host._resolve_model(model_name)
+
+    def schedule_tokenizer_warmup(self, config: Any, *, reason: str) -> None:
+        """后台预热分词器，不挡住这次请求。"""
+        self._host._schedule_tokenizer_warmup(config, reason=reason)
+
+    def schedule_image_modality_warmup(self, *, reason: str, reset_cache: bool = False) -> None:
+        """后台重探模型能不能看图，不挡住这次请求。"""
+        self._host.schedule_image_modality_warmup(reason=reason, reset_cache=reset_cache)
 
 
 @dataclass
