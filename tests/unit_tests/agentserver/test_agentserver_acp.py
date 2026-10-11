@@ -160,10 +160,18 @@ class AgentWebSocketServerHarness(agent_ws_server_module.AgentWebSocketServer):
         await self._handle_session_create(ws, request, send_lock)
 
     async def handle_session_switch_for_test(self, ws, request, send_lock):
-        await self._handle_session_switch(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.session import handle_session_switch
+
+        await handle_session_switch(build_ws_request_context(self, ws, request, send_lock))
 
     async def handle_session_input_intent_for_test(self, ws, request, send_lock):
-        await self._handle_session_input_intent(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.session import handle_session_input_intent
+
+        await handle_session_input_intent(
+            build_ws_request_context(self, ws, request, send_lock)
+        )
 
     async def handle_team_delete_for_test(self, ws, request, send_lock):
         await self._handle_team_delete(ws, request, send_lock)
@@ -2684,6 +2692,10 @@ async def test_handle_session_switch_delegates_product_lifecycle(
         "encode_agent_response_for_wire",
         fake_encode_agent_response_for_wire,
     )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
+        fake_encode_agent_response_for_wire,
+    )
     monkeypatch.setattr(server, "_execution_runtime", lambda: runtime)
 
     request = AgentRequest(
@@ -2777,6 +2789,10 @@ async def test_handle_session_switch_records_foreground_before_ack(monkeypatch):
         "encode_agent_response_for_wire",
         fake_encode_agent_response_for_wire,
     )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
+        fake_encode_agent_response_for_wire,
+    )
     monkeypatch.setattr(server, "_execution_runtime", lambda: runtime)
 
     request = AgentRequest(
@@ -2830,6 +2846,10 @@ async def test_handle_session_input_intent_uses_transport_neutral_runtime_api(
     monkeypatch.setattr(
         agent_ws_server_module,
         "encode_agent_response_for_wire",
+        fake_encode_agent_response_for_wire,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -2928,6 +2948,10 @@ async def test_handle_session_switch_serializes_reentrant_requests(monkeypatch):
     monkeypatch.setattr(
         agent_ws_server_module,
         "encode_agent_response_for_wire",
+        fake_encode_agent_response_for_wire,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(server, "_execution_runtime", lambda: runtime)

@@ -16,6 +16,17 @@ def server_cls():
     return AgentWebSocketServer
 
 
+def _resolve(server, channel_id, session_id):
+    from jiuwenswarm.server.context import AgentServerServices
+    from jiuwenswarm.server.handlers.session import resolve_rewind_agent
+
+    return resolve_rewind_agent(
+        AgentServerServices(server),
+        channel_id,
+        session_id=session_id,
+    )
+
+
 def _returning(value):
     """Build an async stand-in for the wrapper's ``ensure_instance``.
 
@@ -54,7 +65,7 @@ def test_resolve_rewind_agent_prefers_session_scoped_instance(server_cls):
     server._agent_manager.get_agent_nowait.return_value = agent
     server._resolve_adapter = server_cls._resolve_adapter
 
-    pair = asyncio.run(server_cls._resolve_rewind_agent(server, "tui", session_id="sess-1"))
+    pair = asyncio.run(_resolve(server, "tui", "sess-1"))
     assert pair is not None
     deep, react = pair
     assert deep is session_deep
@@ -82,7 +93,7 @@ def test_resolve_rewind_agent_falls_back_to_root_when_no_session_adapter(server_
     server._agent_manager.get_agent_nowait.return_value = agent
     server._resolve_adapter = server_cls._resolve_adapter
 
-    pair = asyncio.run(server_cls._resolve_rewind_agent(server, "tui", session_id="missing"))
+    pair = asyncio.run(_resolve(server, "tui", "missing"))
     assert pair is not None
     deep, _react = pair
     assert deep is root_deep
@@ -134,9 +145,7 @@ def test_resolve_rewind_agent_finds_session_owner_across_cached_roots(server_cls
         _resolve_adapter=server_cls._resolve_adapter,
     )
 
-    pair = asyncio.run(
-        server_cls._resolve_rewind_agent(server, "tui", session_id="sess-code")
-    )
+    pair = asyncio.run(_resolve(server, "tui", "sess-code"))
     assert pair is not None
     deep, react = pair
     assert deep is session_deep

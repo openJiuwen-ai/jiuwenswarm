@@ -47,6 +47,15 @@ class AgentServerServices:
         """取出这个 Agent 的适配器。回退对话用的是同一套。"""
         return self._host._resolve_adapter(agent)
 
+    def execution_runtime(self) -> Any:
+        """会话和对话共用的运行时。切换会话、记下用户正在输入，都走这里。"""
+        return self._host._execution_runtime()
+
+    @property
+    def session_message_service(self) -> Any:
+        """跨会话排队消息。没装好时是空的。"""
+        return getattr(self._host, "_session_message_service", None)
+
     @property
     def proactive_engine(self) -> Any:
         """主动推荐引擎。没装好时是空的。"""

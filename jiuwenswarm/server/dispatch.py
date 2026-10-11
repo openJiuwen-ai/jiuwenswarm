@@ -76,6 +76,19 @@ from jiuwenswarm.server.handlers.ops import (
 from jiuwenswarm.server.handlers.permissions import handle_permissions_config
 from jiuwenswarm.server.handlers.sandbox import handle_command_sandbox
 from jiuwenswarm.server.handlers.schedule import handle_schedule_request
+from jiuwenswarm.server.handlers.session import (
+    handle_history_append_record,
+    handle_history_get,
+    handle_session_input_intent,
+    handle_session_list,
+    handle_session_message_continue_queued,
+    handle_session_plan_status,
+    handle_session_rebind_project,
+    handle_session_rename,
+    handle_session_rewind,
+    handle_session_rewind_context,
+    handle_session_switch,
+)
 
 Handler = Callable[[RequestContext], Awaitable[None]]
 
@@ -155,6 +168,19 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.ISSUE_STATE_LIST: handle_schedule_request,
     ReqMethod.ISSUE_DELETE: handle_schedule_request,
     ReqMethod.ISSUE_MATRIX: handle_schedule_request,
+    ReqMethod.SESSION_LIST: handle_session_list,
+    ReqMethod.SESSION_RENAME: handle_session_rename,
+    ReqMethod.SESSION_REBIND_PROJECT: handle_session_rebind_project,
+    ReqMethod.SESSION_SWITCH: handle_session_switch,
+    ReqMethod.SESSION_PLAN_STATUS: handle_session_plan_status,
+    ReqMethod.SESSION_INPUT_INTENT: handle_session_input_intent,
+    ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED: handle_session_message_continue_queued,
+    ReqMethod.SESSION_REWIND: handle_session_rewind,
+    ReqMethod.SESSION_REWIND_AND_RESTORE: handle_session_rewind,
+    ReqMethod.SESSION_REWIND_COMPACT: handle_session_rewind,
+    ReqMethod.SESSION_REWIND_CONTEXT: handle_session_rewind_context,
+    ReqMethod.HISTORY_GET: handle_history_get,
+    ReqMethod.HISTORY_APPEND_RECORD: handle_history_append_record,
 }
 
 

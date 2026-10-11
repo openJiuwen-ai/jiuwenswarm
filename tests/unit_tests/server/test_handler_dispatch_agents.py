@@ -169,6 +169,41 @@ class TestDispatchTable:
         for method in registered:
             assert HANDLERS[method] is handle_schedule_request
 
+    def test_session_history_and_rewind_are_registered(self) -> None:
+        from jiuwenswarm.server.handlers.session import (
+            handle_history_append_record,
+            handle_history_get,
+            handle_session_input_intent,
+            handle_session_list,
+            handle_session_message_continue_queued,
+            handle_session_plan_status,
+            handle_session_rebind_project,
+            handle_session_rename,
+            handle_session_rewind,
+            handle_session_rewind_context,
+            handle_session_switch,
+        )
+
+        registered = {
+            ReqMethod.SESSION_LIST: handle_session_list,
+            ReqMethod.SESSION_RENAME: handle_session_rename,
+            ReqMethod.SESSION_REBIND_PROJECT: handle_session_rebind_project,
+            ReqMethod.SESSION_SWITCH: handle_session_switch,
+            ReqMethod.SESSION_PLAN_STATUS: handle_session_plan_status,
+            ReqMethod.SESSION_INPUT_INTENT: handle_session_input_intent,
+            ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED: handle_session_message_continue_queued,
+            ReqMethod.SESSION_REWIND: handle_session_rewind,
+            ReqMethod.SESSION_REWIND_AND_RESTORE: handle_session_rewind,
+            ReqMethod.SESSION_REWIND_COMPACT: handle_session_rewind,
+            ReqMethod.SESSION_REWIND_CONTEXT: handle_session_rewind_context,
+            ReqMethod.HISTORY_GET: handle_history_get,
+            ReqMethod.HISTORY_APPEND_RECORD: handle_history_append_record,
+        }
+        for method, handler in registered.items():
+            assert HANDLERS[method] is handler
+        assert ReqMethod.SESSION_CREATE not in HANDLERS
+        assert ReqMethod.SESSION_FORK not in HANDLERS
+
     def test_mcp_commands_are_registered(self) -> None:
         from jiuwenswarm.server.handlers.mcp import handle_command_mcp
         from jiuwenswarm.server.handlers.mcp_hub import (
@@ -345,6 +380,18 @@ class TestWsDispatchStillKeepsUnmovedMethods:
         assert "ReqMethod.SCHEDULE_CHECK_CONFIG" not in body
         assert "ReqMethod.ISSUE_MATRIX" not in body
         assert "async def _handle_schedule_request" not in source
+        for name in (
+            "SESSION_LIST",
+            "SESSION_SWITCH",
+            "SESSION_REWIND",
+            "HISTORY_GET",
+            "HISTORY_APPEND_RECORD",
+        ):
+            assert f"ReqMethod.{name}" not in body
+        assert "async def _handle_session_switch" not in source
+        assert "async def _handle_history_get" not in source
+        assert "async def _handle_session_create" in source
+        assert "async def _handle_session_fork" in source
 
 
 class TestExtensionHandlers:
