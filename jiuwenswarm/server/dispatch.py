@@ -60,6 +60,7 @@ from jiuwenswarm.server.handlers.ops import (
     handle_proactive_tick,
 )
 from jiuwenswarm.server.handlers.permissions import handle_permissions_config
+from jiuwenswarm.server.handlers.sandbox import handle_command_sandbox
 
 Handler = Callable[[RequestContext], Awaitable[None]]
 
@@ -113,6 +114,7 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.COMMAND_RESUME: handle_command_resume,
     ReqMethod.COMMAND_SESSION: handle_command_session,
     ReqMethod.COMMAND_STATUS: handle_command_status,
+    ReqMethod.COMMAND_SANDBOX: handle_command_sandbox,
 }
 
 

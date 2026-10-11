@@ -121,7 +121,7 @@ class TestDispatchTable:
         assert HANDLERS[ReqMethod.AGENT_PREWARM_SYNC] is ops_handlers.handle_agent_prewarm_sync
         assert HANDLERS[ReqMethod.AUTH_CREDENTIALS_UPDATE] is ops_handlers.handle_auth_credentials_update
 
-    def test_generic_commands_are_registered_without_mcp_or_sandbox(self) -> None:
+    def test_generic_commands_are_registered_without_mcp(self) -> None:
         from jiuwenswarm.server.handlers import commands as command_handlers
 
         registered = {
@@ -143,7 +143,11 @@ class TestDispatchTable:
         for method, handler in registered.items():
             assert HANDLERS[method] is handler
         assert ReqMethod.COMMAND_MCP not in HANDLERS
-        assert ReqMethod.COMMAND_SANDBOX not in HANDLERS
+
+    def test_sandbox_command_is_registered(self) -> None:
+        from jiuwenswarm.server.handlers.sandbox import handle_command_sandbox
+
+        assert HANDLERS[ReqMethod.COMMAND_SANDBOX] is handle_command_sandbox
 
     async def test_unknown_method_falls_through(self) -> None:
         ctx, _sink = _ctx(ReqMethod.CHAT_SEND)
@@ -277,12 +281,12 @@ class TestWsDispatchStillKeepsUnmovedMethods:
             assert name not in source
         for name in ("EXTENSIONS_LIST", "HOOKS_LIST", "HARNESS_PACKAGES_DELETE"):
             assert f"ReqMethod.{name}" not in body
-        for name in ("COMMAND_MCP", "COMMAND_SANDBOX"):
-            assert f"ReqMethod.{name}" in body
+        assert "ReqMethod.COMMAND_MCP" in body
+        assert "ReqMethod.COMMAND_SANDBOX" not in body
         assert "async def _handle_command_workflows" not in source
         assert "async def _handle_command_compact" not in source
         assert "async def _handle_command_mcp" in source
-        assert "async def _handle_command_sandbox" in source
+        assert "async def _handle_command_sandbox" not in source
 
 
 class TestExtensionHandlers:
@@ -402,3 +406,29 @@ class TestPermissionAndOpsHandlers:
         assert sink.responses[0].ok is True
         assert sink.responses[0].payload["session_id"] == "sess_demo"
         assert sink.responses[0].payload["resumed"] is True
+
+
+class TestSandboxHandler:
+    async def test_unknown_sub_is_a_bad_request(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from jiuwenswarm.server.handlers import sandbox as sandbox_handlers
+
+        monkeypatch.setattr(sandbox_handlers, "_require_sandbox_supported", lambda: None)
+        monkeypatch.setattr(
+            sandbox_handlers,
+            "get_sandbox_endpoint",
+            lambda: {"type": "jiuwenbox"},
+        )
+        monkeypatch.setattr(sandbox_handlers, "get_sandbox_runtime", lambda: {"files": {}})
+        monkeypatch.setattr(sandbox_handlers, "validate_sandbox_files_runtime", lambda _files: None)
+        ctx, sink = _ctx(ReqMethod.COMMAND_SANDBOX, {"sub": "nope"})
+        await sandbox_handlers.handle_command_sandbox(ctx)
+        assert sink.responses[0].ok is False
+        assert sink.responses[0].payload["code"] == "SANDBOX_BAD_REQUEST"
+        assert "unknown sub" in sink.responses[0].payload["error"]
+
+    def test_non_linux_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from jiuwenswarm.server.handlers import sandbox as sandbox_handlers
+
+        monkeypatch.setattr(sandbox_handlers.sys, "platform", "win32")
+        with pytest.raises(ValueError, match="only supported on Linux"):
+            sandbox_handlers._require_sandbox_supported()
