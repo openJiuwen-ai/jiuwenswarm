@@ -55,6 +55,19 @@ class AgentServerServices:
     def resolve_model(self, model_name: Optional[str] = None) -> Optional[Any]:
         return self._host._resolve_model(model_name)
 
+    @property
+    def scheduler_service(self) -> Any:
+        """定时任务服务。第一次用到之前是空的。"""
+        return self._host._scheduler_service
+
+    @scheduler_service.setter
+    def scheduler_service(self, service: Any) -> None:
+        self._host._scheduler_service = service
+
+    def set_scheduler_agent(self, agent: Any) -> None:
+        """记住定时任务正在用的那个 Agent，避免它被提前丢掉。"""
+        self._host._set_scheduler_agent(agent)
+
     def schedule_tokenizer_warmup(self, config: Any, *, reason: str) -> None:
         """后台预热分词器，不挡住这次请求。"""
         self._host._schedule_tokenizer_warmup(config, reason=reason)

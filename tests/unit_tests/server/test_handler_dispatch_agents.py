@@ -148,6 +148,27 @@ class TestDispatchTable:
 
         assert HANDLERS[ReqMethod.COMMAND_SANDBOX] is handle_command_sandbox
 
+    def test_schedule_and_issue_are_registered(self) -> None:
+        from jiuwenswarm.server.handlers.schedule import handle_schedule_request
+
+        registered = {
+            ReqMethod.SCHEDULE_CHECK_CONFIG,
+            ReqMethod.SCHEDULE_UPDATE_CONFIG,
+            ReqMethod.SCHEDULE_CREATE,
+            ReqMethod.SCHEDULE_RUN,
+            ReqMethod.SCHEDULE_LIST,
+            ReqMethod.SCHEDULE_STATUS,
+            ReqMethod.SCHEDULE_LOGS,
+            ReqMethod.SCHEDULE_CANCEL,
+            ReqMethod.SCHEDULE_DELETE,
+            ReqMethod.ISSUE_WATCH_ONCE,
+            ReqMethod.ISSUE_STATE_LIST,
+            ReqMethod.ISSUE_DELETE,
+            ReqMethod.ISSUE_MATRIX,
+        }
+        for method in registered:
+            assert HANDLERS[method] is handle_schedule_request
+
     def test_mcp_commands_are_registered(self) -> None:
         from jiuwenswarm.server.handlers.mcp import handle_command_mcp
         from jiuwenswarm.server.handlers.mcp_hub import (
@@ -321,6 +342,9 @@ class TestWsDispatchStillKeepsUnmovedMethods:
         assert "async def _handle_command_mcp" not in source
         assert "async def _handle_command_sandbox" not in source
         assert "async def _handle_mcp_list" not in source
+        assert "ReqMethod.SCHEDULE_CHECK_CONFIG" not in body
+        assert "ReqMethod.ISSUE_MATRIX" not in body
+        assert "async def _handle_schedule_request" not in source
 
 
 class TestExtensionHandlers:
@@ -466,3 +490,40 @@ class TestSandboxHandler:
         monkeypatch.setattr(sandbox_handlers.sys, "platform", "win32")
         with pytest.raises(ValueError, match="only supported on Linux"):
             sandbox_handlers._require_sandbox_supported()
+
+
+class TestScheduleHandler:
+    async def test_check_config_uses_the_existing_scheduler(self) -> None:
+        from jiuwenswarm.server.handlers.schedule import handle_schedule_request
+
+        class _Scheduler:
+            def check_schedule_config(self) -> dict[str, bool]:
+                return {"enabled": True}
+
+        ctx, sink = _ctx(
+            ReqMethod.SCHEDULE_CHECK_CONFIG,
+            services=SimpleNamespace(scheduler_service=_Scheduler()),
+        )
+        await handle_schedule_request(ctx)
+        assert sink.responses[0].ok is True
+        assert sink.responses[0].payload == {"enabled": True}
+
+    async def test_issue_matrix_forwards_params(self) -> None:
+        from jiuwenswarm.server.handlers.schedule import handle_schedule_request
+
+        seen: dict[str, object] = {}
+
+        class _Scheduler:
+            async def refresh_issue_matrix(self, params: dict) -> dict[str, object]:
+                seen["params"] = params
+                return {"rows": 2}
+
+        ctx, sink = _ctx(
+            ReqMethod.ISSUE_MATRIX,
+            {"repo": "demo"},
+            services=SimpleNamespace(scheduler_service=_Scheduler()),
+        )
+        await handle_schedule_request(ctx)
+        assert sink.responses[0].ok is True
+        assert sink.responses[0].payload == {"rows": 2}
+        assert seen["params"] == {"repo": "demo"}
