@@ -22,6 +22,22 @@ from jiuwenswarm.server.handlers.agents import (
     handle_agents_tools_list,
     handle_agents_update,
 )
+from jiuwenswarm.server.handlers.commands import (
+    handle_command_add_dir,
+    handle_command_btw,
+    handle_command_chrome,
+    handle_command_compact,
+    handle_command_compact_partial,
+    handle_command_context,
+    handle_command_diff,
+    handle_command_model,
+    handle_command_recap,
+    handle_command_resume,
+    handle_command_session,
+    handle_command_simplify,
+    handle_command_status,
+    handle_command_workflows,
+)
 from jiuwenswarm.server.handlers.extensions import (
     handle_extensions_delete,
     handle_extensions_import,
@@ -83,6 +99,20 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.AGENT_RELOAD_CONFIG: handle_agent_reload_config,
     ReqMethod.AGENT_PREWARM_SYNC: handle_agent_prewarm_sync,
     ReqMethod.AUTH_CREDENTIALS_UPDATE: handle_auth_credentials_update,
+    ReqMethod.COMMAND_WORKFLOWS: handle_command_workflows,
+    ReqMethod.COMMAND_ADD_DIR: handle_command_add_dir,
+    ReqMethod.COMMAND_CHROME: handle_command_chrome,
+    ReqMethod.COMMAND_COMPACT: handle_command_compact,
+    ReqMethod.COMMAND_COMPACT_PARTIAL: handle_command_compact_partial,
+    ReqMethod.COMMAND_CONTEXT: handle_command_context,
+    ReqMethod.COMMAND_RECAP: handle_command_recap,
+    ReqMethod.COMMAND_BTW: handle_command_btw,
+    ReqMethod.COMMAND_DIFF: handle_command_diff,
+    ReqMethod.COMMAND_SIMPLIFY: handle_command_simplify,
+    ReqMethod.COMMAND_MODEL: handle_command_model,
+    ReqMethod.COMMAND_RESUME: handle_command_resume,
+    ReqMethod.COMMAND_SESSION: handle_command_session,
+    ReqMethod.COMMAND_STATUS: handle_command_status,
 }
 
 

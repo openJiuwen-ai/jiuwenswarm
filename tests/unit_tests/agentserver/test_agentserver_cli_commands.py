@@ -35,29 +35,48 @@ class AgentWebSocketServerHarness(agent_ws_server_module.AgentWebSocketServer):
             build_ws_request_context(self, ws, request, send_lock)
         )
 
+    async def _call_command(self, handler, ws, request, send_lock):
+        from jiuwenswarm.server.context import build_ws_request_context
+
+        await handler(build_ws_request_context(self, ws, request, send_lock))
+
     async def handle_command_add_dir_for_test(self, ws, request, send_lock):
-        await self._handle_command_add_dir(ws, request, send_lock)
+        from jiuwenswarm.server.handlers.commands import handle_command_add_dir
+
+        await self._call_command(handle_command_add_dir, ws, request, send_lock)
 
     async def handle_command_compact_for_test(self, ws, request, send_lock):
-        await self._handle_command_compact(ws, request, send_lock)
+        from jiuwenswarm.server.handlers.commands import handle_command_compact
+
+        await self._call_command(handle_command_compact, ws, request, send_lock)
 
     async def handle_command_diff_for_test(self, ws, request, send_lock):
-        await self._handle_command_diff(ws, request, send_lock)
+        from jiuwenswarm.server.handlers.commands import handle_command_diff
+
+        await self._call_command(handle_command_diff, ws, request, send_lock)
 
     async def handle_command_simplify_for_test(self, ws, request, send_lock):
-        await self._handle_command_simplify(ws, request, send_lock)
+        from jiuwenswarm.server.handlers.commands import handle_command_simplify
+
+        await self._call_command(handle_command_simplify, ws, request, send_lock)
 
     async def handle_command_model_for_test(self, ws, request, send_lock):
-        await self._handle_command_model(ws, request, send_lock)
+        from jiuwenswarm.server.handlers.commands import handle_command_model
+
+        await self._call_command(handle_command_model, ws, request, send_lock)
 
     async def handle_command_mcp_for_test(self, ws, request, send_lock):
         await self._handle_command_mcp(ws, request, send_lock)
 
     async def handle_command_resume_for_test(self, ws, request, send_lock):
-        await self._handle_command_resume(ws, request, send_lock)
+        from jiuwenswarm.server.handlers.commands import handle_command_resume
+
+        await self._call_command(handle_command_resume, ws, request, send_lock)
 
     async def handle_command_session_for_test(self, ws, request, send_lock):
-        await self._handle_command_session(ws, request, send_lock)
+        from jiuwenswarm.server.handlers.commands import handle_command_session
+
+        await self._call_command(handle_command_session, ws, request, send_lock)
 
     async def handle_permissions_config_for_test(self, ws, request, send_lock):
         from jiuwenswarm.server.context import build_ws_request_context
@@ -313,8 +332,7 @@ async def test_handle_command_add_dir_returns_path_and_remember(
         "tiered_overrides": True,
     }
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "persist_cli_trusted_directory",
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist.persist_cli_trusted_directory",
         lambda _raw: persist_stub,
     )
     reload_notify = MagicMock()
@@ -352,8 +370,7 @@ async def test_handle_command_add_dir_reports_reload_schedule_failure(
 ):
     monkeypatch.setattr(server.get_agent_manager(), "has_smart_permission_lifecycle", lambda _: True)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "persist_cli_trusted_directory",
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist.persist_cli_trusted_directory",
         lambda _raw: {"ok": True, "normalized": "/tmp/demo"},
     )
     monkeypatch.setattr(
@@ -391,8 +408,7 @@ async def test_handle_command_add_dir_sends_no_target_dirty_signal_without_waiti
         "normalized": "/tmp/demo",
     }
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "persist_cli_trusted_directory",
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist.persist_cli_trusted_directory",
         lambda _raw: persist_stub,
     )
     reload_started = asyncio.Event()
@@ -631,8 +647,7 @@ async def test_handle_command_compact_pushes_and_persists_usage_event(server, fa
     )
     monkeypatch.setattr(server, "send_push", mock_send_push)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "append_history_record",
+        "jiuwenswarm.server.handlers.commands.append_history_record",
         lambda **kwargs: persisted.append(kwargs),
     )
 

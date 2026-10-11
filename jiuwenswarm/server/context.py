@@ -46,6 +46,10 @@ class AgentServerServices:
         """后台重探模型能不能看图，不挡住这次请求。"""
         self._host.schedule_image_modality_warmup(reason=reason, reset_cache=reset_cache)
 
+    async def send_push(self, msg: Any) -> bool:
+        """往当前连接主动推一条消息。压缩上下文这类命令会在回包之外再用它。"""
+        return await self._host.send_push(msg)
+
 
 @dataclass
 class RequestContext:

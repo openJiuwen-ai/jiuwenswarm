@@ -121,6 +121,30 @@ class TestDispatchTable:
         assert HANDLERS[ReqMethod.AGENT_PREWARM_SYNC] is ops_handlers.handle_agent_prewarm_sync
         assert HANDLERS[ReqMethod.AUTH_CREDENTIALS_UPDATE] is ops_handlers.handle_auth_credentials_update
 
+    def test_generic_commands_are_registered_without_mcp_or_sandbox(self) -> None:
+        from jiuwenswarm.server.handlers import commands as command_handlers
+
+        registered = {
+            ReqMethod.COMMAND_WORKFLOWS: command_handlers.handle_command_workflows,
+            ReqMethod.COMMAND_ADD_DIR: command_handlers.handle_command_add_dir,
+            ReqMethod.COMMAND_CHROME: command_handlers.handle_command_chrome,
+            ReqMethod.COMMAND_COMPACT: command_handlers.handle_command_compact,
+            ReqMethod.COMMAND_COMPACT_PARTIAL: command_handlers.handle_command_compact_partial,
+            ReqMethod.COMMAND_CONTEXT: command_handlers.handle_command_context,
+            ReqMethod.COMMAND_RECAP: command_handlers.handle_command_recap,
+            ReqMethod.COMMAND_BTW: command_handlers.handle_command_btw,
+            ReqMethod.COMMAND_DIFF: command_handlers.handle_command_diff,
+            ReqMethod.COMMAND_SIMPLIFY: command_handlers.handle_command_simplify,
+            ReqMethod.COMMAND_MODEL: command_handlers.handle_command_model,
+            ReqMethod.COMMAND_RESUME: command_handlers.handle_command_resume,
+            ReqMethod.COMMAND_SESSION: command_handlers.handle_command_session,
+            ReqMethod.COMMAND_STATUS: command_handlers.handle_command_status,
+        }
+        for method, handler in registered.items():
+            assert HANDLERS[method] is handler
+        assert ReqMethod.COMMAND_MCP not in HANDLERS
+        assert ReqMethod.COMMAND_SANDBOX not in HANDLERS
+
     async def test_unknown_method_falls_through(self) -> None:
         ctx, _sink = _ctx(ReqMethod.CHAT_SEND)
         assert await try_dispatch(ctx) is False
@@ -253,6 +277,12 @@ class TestWsDispatchStillKeepsUnmovedMethods:
             assert name not in source
         for name in ("EXTENSIONS_LIST", "HOOKS_LIST", "HARNESS_PACKAGES_DELETE"):
             assert f"ReqMethod.{name}" not in body
+        for name in ("COMMAND_MCP", "COMMAND_SANDBOX"):
+            assert f"ReqMethod.{name}" in body
+        assert "async def _handle_command_workflows" not in source
+        assert "async def _handle_command_compact" not in source
+        assert "async def _handle_command_mcp" in source
+        assert "async def _handle_command_sandbox" in source
 
 
 class TestExtensionHandlers:
@@ -363,3 +393,12 @@ class TestPermissionAndOpsHandlers:
         await ops_handlers.handle_proactive_tick(ctx)
         assert sink.responses[0].ok is False
         assert "not initialized" in sink.responses[0].payload["error"]
+
+    async def test_resume_returns_the_requested_session(self) -> None:
+        from jiuwenswarm.server.handlers import commands as command_handlers
+
+        ctx, sink = _ctx(ReqMethod.COMMAND_RESUME, {"query": "sess_demo"})
+        await command_handlers.handle_command_resume(ctx)
+        assert sink.responses[0].ok is True
+        assert sink.responses[0].payload["session_id"] == "sess_demo"
+        assert sink.responses[0].payload["resumed"] is True
