@@ -896,6 +896,44 @@ def create_sandbox_sysop_card(
         return None
 
 
+def _registered_sandbox_owner_id(sysop_card: SysOperationCard) -> str | None:
+    """返回同 isolation key 已注册的 SANDBOX sysop id，无则 None。
+
+    库 ``SysOperationMgr``（``sys_operation_manager.py``）强制"一个 isolation key
+    template 只属于一个 sysop id"：同 key 异 id 的 ``add_sys_operation`` 抛
+    ValueError，且被 ``_inner_add_resource`` 的 try/except 吞成 Error 返回——而库
+    ``SysOperationSpec.resolve`` 只按 id get-or-create、不按 key 复用，拿不到
+    异常只拿到 None，harness factory 随即兜底出 LOCAL sysop（成员工具落宿主机）。
+    本 helper 与主 adapter ``_resolve_sys_operation`` 的 pre-add 复用
+    （``interface_deep.py: _get_registered_sys_operation_by_isolation_key``）同源：
+    构 ``SysOperation(card)`` 算出 key template（纯构造、零注册副作用），再查
+    ``SysOperationMgr._sandbox_key_owner_map`` 找 owner，成员 spec 对齐 owner id 后
+    ``resolve()`` 按 id 直接命中主 agent 的沙箱实例。
+    """
+    try:
+        from openjiuwen.core.runner.runner import Runner
+        from openjiuwen.core.sys_operation.sys_operation import SysOperation
+
+        template = SysOperation(sysop_card).isolation_key_template
+        if not template:
+            return None
+        registry = getattr(Runner.resource_mgr, "_resource_registry", None)
+        if registry is None:
+            return None
+        owner_map = getattr(registry.sys_operation(), "_sandbox_key_owner_map", {})
+        owner_id = owner_map.get(template)
+        if not owner_id:
+            return None
+        owner = Runner.resource_mgr.get_sys_operation(owner_id)
+        if owner is None or getattr(owner, "mode", None) != OperationMode.SANDBOX:
+            # owner map 与 registry 失配或指向非沙箱实例：不采用，走默认 id。
+            return None
+        return str(owner_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[sysop_builder] lookup registered sandbox owner failed: %s", exc)
+        return None
+
+
 def create_sandbox_sysop_spec(
     sandbox_url: str,
     sandbox_type: str,
@@ -919,6 +957,13 @@ def create_sandbox_sysop_spec(
     命中——成员 spec 设此项后，``DeepAgentSpec.build()`` 会 ``.resolve()`` 成
     SANDBOX ``SysOperation`` 实例，成员的 fs/shell/code 工具随之走沙箱。
 
+    id 策略：同 isolation key 已有注册的 SANDBOX sysop（通常为主 agent 的项目级
+    沙箱）时直接采用其 id——库 ``resolve()`` 按 id get-or-create，同 key 异 id 会被
+    "一个 key 一个 owner"校验拒绝且错误被吞、成员静默回落 LOCAL；对齐 owner id 后
+    ``resolve()`` 按 id 命中主 agent 实例，零 add 零冲突。无 owner 时用
+    ``team_sandbox_<team_id>`` 稳定 id（全队共用 → ``resolve()`` 只 add 一次），
+    后续主 adapter 的 pre-add owner-map 检查会反向复用它。
+
     Args:
         team_id: 稳定 spec id 后缀（用 ``spec.team_name``），全队共用一个 spec →
             ``resolve()`` 只 add 一次、成员间复用同一 ``SysOperation``。
@@ -940,11 +985,19 @@ def create_sandbox_sysop_spec(
     )
     if card is None or card.gateway_config is None:
         return None
-    stable_id = (
-        f"team_sandbox_{team_id}"
-        if team_id
-        else f"team_sandbox_{_sandbox_isolation_custom_id(project_dir, shared_dir=shared_dir, sandbox_url=sandbox_url)}"
-    )
+    owner_id = _registered_sandbox_owner_id(card)
+    if owner_id:
+        logger.info(
+            "[sysop_builder] team sandbox spec adopts registered sysop: owner_id=%s",
+            owner_id,
+        )
+        stable_id = owner_id
+    else:
+        stable_id = (
+            f"team_sandbox_{team_id}"
+            if team_id
+            else f"team_sandbox_{_sandbox_isolation_custom_id(project_dir, shared_dir=shared_dir, sandbox_url=sandbox_url)}"
+        )
     return SysOperationSpec(
         id=stable_id,
         mode=OperationMode.SANDBOX,

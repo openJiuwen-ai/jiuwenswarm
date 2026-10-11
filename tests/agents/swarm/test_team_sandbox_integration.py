@@ -17,7 +17,7 @@ import pytest
 
 from openjiuwen.agent_teams.schema.blueprint import LeaderSpec, TeamAgentSpec
 from openjiuwen.agent_teams.schema.deep_agent_spec import DeepAgentSpec
-from openjiuwen.core.sys_operation import OperationMode
+from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode, SysOperationCard
 
 from jiuwenswarm.agents.swarm import enrich_team_spec_for_swarm
 from jiuwenswarm.server.runtime.agent_adapter import sysop_builder as builder
@@ -147,3 +147,147 @@ def test_enrich_skips_sandbox_when_endpoint_unresolved(monkeypatch):
 
     for role in ("leader", "teammate"):
         assert spec.agents[role].sys_operation is None
+
+
+# ---------------------------------------------------------------------------
+# create_sandbox_sysop_spec id 策略：同 isolation key 已注册 → 采用 owner id
+# ---------------------------------------------------------------------------
+
+
+class _FakeRegistry:
+    def __init__(self, owner_map, sysops):
+        self._owner_map = owner_map
+        self._sysops = sysops
+
+    def sys_operation(self):
+        return SimpleNamespace(_sandbox_key_owner_map=self._owner_map)
+
+
+class _FakeResourceMgr:
+    def __init__(self, owner_map, sysops):
+        self._resource_registry = _FakeRegistry(owner_map, sysops)
+        self._sysops = sysops
+
+    def get_sys_operation(self, sysop_id):
+        return self._sysops.get(sysop_id)
+
+
+def _patch_resource_mgr(monkeypatch, owner_map, sysops):
+    """让 Runner.resource_mgr 返回指向 owner_map / sysops 的假注册表。"""
+    import openjiuwen.core.runner.runner as runner_mod
+
+    monkeypatch.setattr(
+        runner_mod.Runner,
+        "resource_mgr",
+        _FakeResourceMgr(owner_map, sysops),
+        raising=False,
+    )
+
+
+def _owner_map_with(card):
+    """按库 SysOperation 的真实算法算 key template，填 owner map。"""
+    from openjiuwen.core.sys_operation.sys_operation import SysOperation
+
+    template = SysOperation(card).isolation_key_template
+    fake_sandbox = SimpleNamespace(
+        id="f0d3af13c98a45d084f483cf1fb4c87b",
+        mode=OperationMode.SANDBOX,
+        isolation_key_template=template,
+    )
+    return {template: fake_sandbox.id}, {"f0d3af13c98a45d084f483cf1fb4c87b": fake_sandbox}
+
+
+def _patch_card_build(monkeypatch, card):
+    """绕开 create_sandbox_sysop_card 的重策略构造，直接喂固定 card。"""
+    monkeypatch.setattr(builder, "create_sandbox_sysop_card", lambda *a, **kw: card)
+
+
+def _make_sandbox_card():
+    from openjiuwen.core.sys_operation.config import (
+        ContainerScope,
+        PreDeployLauncherConfig,
+        SandboxGatewayConfig,
+        SandboxIsolationConfig,
+    )
+
+    return SysOperationCard(
+        mode=OperationMode.SANDBOX,
+        work_config=LocalWorkConfig(shell_allowlist=None),
+        gateway_config=SandboxGatewayConfig(
+            isolation=SandboxIsolationConfig(
+                container_scope=ContainerScope.CUSTOM,
+                custom_id="project_unit_ep_unit",
+            ),
+            launcher_config=PreDeployLauncherConfig(
+                base_url="http://sandbox.invalid",
+                sandbox_type="jiuwenbox",
+            ),
+        ),
+    )
+
+
+def test_spec_adopts_registered_owner_id(monkeypatch):
+    """同 isolation key 已有主 agent 沙箱 sysop：spec id 必须采用 owner id。
+
+    库 resolve() 只按 id get-or-create；同 key 异 id 的 add 被"一个 key 一个
+    owner"校验拒绝且错误被吞 → 成员静默回落 LOCAL。对齐 owner id 后 resolve()
+    按 id 命中主 agent 实例，零 add 零冲突。
+    """
+    card = _make_sandbox_card()
+    owner_map, sysops = _owner_map_with(card)
+    _patch_resource_mgr(monkeypatch, owner_map, sysops)
+    _patch_card_build(monkeypatch, card)
+
+    result = builder.create_sandbox_sysop_spec(
+        "http://sandbox.invalid",
+        "jiuwenbox",
+        team_id="unit_team",
+        startup_mode="external",
+    )
+
+    assert result is not None
+    assert result.id == "f0d3af13c98a45d084f483cf1fb4c87b"
+    assert result.mode == OperationMode.SANDBOX
+
+
+def test_spec_falls_back_to_team_id_without_owner(monkeypatch):
+    """无已注册 owner（首个注册方）：用 team_sandbox_<team> 稳定 id。"""
+    card = _make_sandbox_card()
+    _patch_resource_mgr(monkeypatch, {}, {})
+    _patch_card_build(monkeypatch, card)
+
+    result = builder.create_sandbox_sysop_spec(
+        "http://sandbox.invalid",
+        "jiuwenbox",
+        team_id="unit_team",
+        startup_mode="external",
+    )
+
+    assert result is not None
+    assert result.id == "team_sandbox_unit_team"
+    assert result.mode == OperationMode.SANDBOX
+
+
+def test_spec_ignores_local_owner(monkeypatch):
+    """owner map 指向 LOCAL 实例时不采用其 id（避免成员对齐到 LOCAL）。"""
+    card = _make_sandbox_card()
+    from openjiuwen.core.sys_operation.sys_operation import SysOperation
+
+    template = SysOperation(card).isolation_key_template
+    fake_local = SimpleNamespace(id="local_owner", mode=OperationMode.LOCAL)
+    _patch_resource_mgr(
+        monkeypatch,
+        {template: fake_local.id},
+        {fake_local.id: fake_local},
+    )
+    _patch_card_build(monkeypatch, card)
+
+    result = builder.create_sandbox_sysop_spec(
+        "http://sandbox.invalid",
+        "jiuwenbox",
+        team_id="unit_team",
+        startup_mode="external",
+    )
+
+    assert result is not None
+    assert result.id == "team_sandbox_unit_team"
