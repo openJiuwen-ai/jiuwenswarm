@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for AgentWebSocketServer._handle_team_members_get (/join seat validation).
+"""Tests for handle_team_members_get (/join seat validation).
 
 路线 B 后 server 退化为纯查询透传：mismatch 校验与对外文案均在 gateway，
 server 只查 member、过滤 human_agent、回 ok/members。查不到 → ok=False
@@ -47,13 +47,12 @@ async def _invoke(
     team_name: str = "jiwen-team_sess-1",
     channel_id: str = "feishu",
 ):
-    """Call _handle_team_members_get with ``query_team_human_members_for_join`` mocked.
+    """Call handle_team_members_get with ``query_team_human_members_for_join`` mocked.
 
     helpers_result 是 query_team_human_members_for_join 的新返回值（list[dict]，
     未 role 过滤，由 server 过滤 human_agent）。
     """
     from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
-    from jiuwenswarm.server import agent_ws_server
 
     ws = _FakeWS()
     lock = asyncio.Lock()
@@ -67,9 +66,10 @@ async def _invoke(
         ".query_team_human_members_for_join",
         _stub,
     ):
-        await agent_ws_server.AgentWebSocketServer._handle_team_members_get(
-            None, ws, request, lock
-        )
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.team import handle_team_members_get
+
+        await handle_team_members_get(build_ws_request_context(object(), ws, request, lock))
     assert len(ws.sent) == 1
     return parse_agent_server_wire_unary(json.loads(ws.sent[0]))
 

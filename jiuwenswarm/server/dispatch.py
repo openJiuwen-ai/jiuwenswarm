@@ -89,6 +89,19 @@ from jiuwenswarm.server.handlers.session import (
     handle_session_rewind_context,
     handle_session_switch,
 )
+from jiuwenswarm.server.handlers.team import (
+    handle_swarmflow_control,
+    handle_team_binding_create,
+    handle_team_binding_generate,
+    handle_team_bindings_list,
+    handle_team_delete,
+    handle_team_history_get,
+    handle_team_members_get,
+    handle_team_mq_publish,
+    handle_team_session_bind,
+    handle_team_snapshot,
+    handle_team_templates_list,
+)
 
 Handler = Callable[[RequestContext], Awaitable[None]]
 
@@ -181,6 +194,19 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.SESSION_REWIND_CONTEXT: handle_session_rewind_context,
     ReqMethod.HISTORY_GET: handle_history_get,
     ReqMethod.HISTORY_APPEND_RECORD: handle_history_append_record,
+    ReqMethod.TEAM_TEMPLATES_LIST: handle_team_templates_list,
+    ReqMethod.TEAM_BINDINGS_LIST: handle_team_bindings_list,
+    ReqMethod.TEAM_BINDING_CREATE: handle_team_binding_create,
+    ReqMethod.TEAM_BINDING_GENERATE: handle_team_binding_generate,
+    ReqMethod.TEAM_SESSION_BIND: handle_team_session_bind,
+    ReqMethod.TEAM_DELETE: handle_team_delete,
+    ReqMethod.TEAM_SNAPSHOT: handle_team_snapshot,
+    ReqMethod.TEAM_MQ_PUBLISH: handle_team_mq_publish,
+    ReqMethod.TEAM_HISTORY_GET: handle_team_history_get,
+    ReqMethod.TEAM_MEMBERS_GET: handle_team_members_get,
+    ReqMethod.SWARMFLOW_PAUSE: handle_swarmflow_control,
+    ReqMethod.SWARMFLOW_RESUME: handle_swarmflow_control,
+    ReqMethod.SWARMFLOW_STOP: handle_swarmflow_control,
 }
 
 
