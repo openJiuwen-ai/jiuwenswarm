@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -44,12 +46,31 @@ async def test_duplicate_is_scoped_and_late_cleanup_cannot_remove_replacement():
     other = await registry.register(request(user="other"))
     with pytest.raises(DuplicateRequestError):
         await registry.register(request())
+    with pytest.raises(DuplicateRequestError):
+        await registry.register(replace(request(), session_id="session-2"))
     assert await registry.cancel("chat-1", owner=request()) is first
     assert not other.cancelled.is_set()
     await registry.complete("chat-1", tracked=first)
     replacement = await registry.register(request())
     assert await registry.complete("chat-1", tracked=first) is None
     assert registry.get("chat-1", owner=request()) is replacement
+
+
+def test_worker_duplicate_guard_spans_caller_sessions_and_preserves_new_owner():
+    store = WorkerEventStore()
+    accepted = request()
+    store.register(accepted, "first")
+    second_session = replace(accepted, session_id="session-2")
+    with pytest.raises(ValueError, match="duplicate active request_id"):
+        store.register(second_session, "duplicate")
+    store.register(request(user="other"), "other-caller")
+    store.finish("first")
+    store.register(second_session, "replacement")
+    store.finish("first")
+    with pytest.raises(ValueError, match="duplicate active request_id"):
+        store.register(accepted, "late")
+    assert store.snapshot(accepted)["dispatches"][0]["dispatch_id"] == "first"
+    assert store.snapshot(second_session)["dispatches"][0]["dispatch_id"] == "replacement"
 
 
 @pytest.mark.asyncio
@@ -167,6 +188,34 @@ async def test_warming_queue_survives_reconnection():
     await dispatcher.mark_ready()
     await asyncio.sleep(0)
     assert invoked == ["chat-1"]
+    assert await dispatcher.drain(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_empty_execution_snapshot_does_not_hide_accepted_warming_work():
+    holder = ConnHolder()
+    conn = Connection()
+    generation = holder.open_session(conn)
+    bridge = WorkerGatewayBridge(holder)
+    dispatcher = WorkerDispatcher(bridge)
+
+    class Runtime:
+        def attach_gateway_connection(self, ws, lock):
+            pass
+
+        def get_session_snapshot(self, session_id):
+            return SimpleNamespace(executions=())
+
+    await dispatcher.bind_runtime(Runtime())
+    await dispatcher.handle({"kind": KIND_REQUEST, "dispatch_id": "warming",
+                             "payload": dump_agent_request(request())}, conn)
+    await asyncio.sleep(0)
+    await dispatcher._subscribe_locked({"query_id": "accepted-state", "payload": dump_agent_request(request())},
+                                       conn, generation)
+    state = conn.frames[-1]["payload"]
+    assert state["executions"] == []
+    assert state["dispatches"][0]["phase"] == "accepted"
+    assert state["is_processing"] is True
     assert await dispatcher.drain(timeout=1)
 
 

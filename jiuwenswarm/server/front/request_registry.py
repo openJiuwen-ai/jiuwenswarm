@@ -51,7 +51,7 @@ class RequestRegistry:
         if not request_id:
             return tracked
         async with self._lock:
-            key = (*request_scope(request), request_id)
+            key = (*request_scope(request)[:4], request_id)
             if key in self._items:
                 raise DuplicateRequestError("duplicate active request_id")
             self._items[key] = tracked
@@ -68,7 +68,7 @@ class RequestRegistry:
             current = tracked or self.get(request_id)
             if current is None:
                 return None
-            key = (*request_scope(current.request), request_id)
+            key = (*request_scope(current.request)[:4], request_id)
             if self._items.get(key) is current:
                 return self._items.pop(key)
             return None

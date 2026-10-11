@@ -373,12 +373,16 @@ server.run(transport="stdio")
                     target_before = await rpc(ws, f"target-before-{attempt}", "session.get_metadata", "target-session")
                     target_entered = next((item for item in target_before.get("runtime", {}).get("dispatches", [])
                                            if item.get("entered_at_ns")), None)
-                    if target_entered:
+                    target_execution_before = next((item for item in target_before.get("runtime", {}).get("executions", [])
+                        if target_entered and (item.get("request_id") == target_entered["request_id"]
+                                              or item.get("root_request_id") == target_entered["request_id"])), None)
+                    if target_entered and target_execution_before:
                         break
                     await asyncio.sleep(.05)
-                if not target_entered:
+                if not target_entered or not target_execution_before:
                     raise AssertionError("target execution did not enter before transport restart")
                 result["target_before"] = target_before["runtime"]
+                result["target_execution_before"] = target_execution_before
             if args.scenario == "failed-create":
                 existing_sessions = {path.name for path in session.parent.iterdir() if path.is_dir()}
                 await send(ws, "failed-create", "session.create", None,
@@ -485,8 +489,13 @@ server.run(transport="stdio")
                     raise AssertionError("cross-session target is missing from its scoped execution journal")
                 target_after = next(item for item in result["target_snapshot"]["runtime"]["dispatches"]
                                     if item["dispatch_id"] == target_entered["dispatch_id"])
-                if target_after["execution_id"] != target_entered["execution_id"]:
-                    raise AssertionError("cross-session target execution was replaced")
+                # The journal learns its execution ID from stream events. The
+                # model can be entered before the first event is published;
+                # compare the Coordinator's authoritative pre-restart ID.
+                if target_after["execution_id"] != target_execution_before["execution_id"]:
+                    result["failure"] = {"target_before": target_execution_before, "target_after": target_after}
+                    output.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+                    raise AssertionError(f"cross-session target execution was replaced: {result['failure']}")
                 result["same_target_execution"] = True
             history = session / "history.jsonl"
             result["history_records"] = len(history.read_text(encoding="utf-8").splitlines()) if history.exists() else 0
