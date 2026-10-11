@@ -6613,7 +6613,8 @@ class JiuWenSwarmDeepAdapter:
         # 指纹比对：模型配置未变且缓存非空时跳过重建，避免热更新时反复销毁/重建 Model 实例
         new_fp = self._models_config_fingerprint(config)
         if (
-            new_fp == self._last_models_config_fingerprint
+            previous == identity
+            and new_fp == self._last_models_config_fingerprint
             and self._model_cache
             and self._model is not None
         ):
@@ -11657,8 +11658,10 @@ class JiuWenSwarmDeepAdapter:
 
             if rail is None:
                 try:
+                    from jiuwenswarm.common.utils import get_user_workspace_dir
+
                     rail = PersonalContextRail(
-                        Path.home() / ".jiuwenswarm" / ".personal_context"
+                        get_user_workspace_dir() / ".personal_context"
                     )
                     await self._instance.register_rail(rail)
                 except Exception as exc:  # noqa: BLE001
