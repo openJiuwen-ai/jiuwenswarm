@@ -1,0 +1,69 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""WebSocket 查表：请求类型 → 业务函数。
+
+只给 WebSocket 用。HTTP 以后按路由直接调用 handlers，不经过这张表。
+还没搬出 WebSocket 类的请求不会出现在表里，仍走原来的判断。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+
+from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.server.context import RequestContext
+from jiuwenswarm.server.handlers.agents import (
+    handle_agents_create,
+    handle_agents_delete,
+    handle_agents_disable,
+    handle_agents_enable,
+    handle_agents_get,
+    handle_agents_list,
+    handle_agents_tools_list,
+    handle_agents_update,
+)
+from jiuwenswarm.server.handlers.extensions import (
+    handle_extensions_delete,
+    handle_extensions_import,
+    handle_extensions_list,
+    handle_extensions_toggle,
+    handle_harness_packages_activate,
+    handle_harness_packages_deactivate,
+    handle_harness_packages_delete,
+    handle_harness_packages_get,
+    handle_harness_packages_scan,
+    handle_hooks_list,
+)
+
+Handler = Callable[[RequestContext], Awaitable[None]]
+
+HANDLERS: dict[ReqMethod, Handler] = {
+    ReqMethod.AGENTS_LIST: handle_agents_list,
+    ReqMethod.AGENTS_GET: handle_agents_get,
+    ReqMethod.AGENTS_CREATE: handle_agents_create,
+    ReqMethod.AGENTS_UPDATE: handle_agents_update,
+    ReqMethod.AGENTS_DELETE: handle_agents_delete,
+    ReqMethod.AGENTS_ENABLE: handle_agents_enable,
+    ReqMethod.AGENTS_DISABLE: handle_agents_disable,
+    ReqMethod.AGENTS_TOOLS_LIST: handle_agents_tools_list,
+    ReqMethod.EXTENSIONS_LIST: handle_extensions_list,
+    ReqMethod.EXTENSIONS_IMPORT: handle_extensions_import,
+    ReqMethod.EXTENSIONS_DELETE: handle_extensions_delete,
+    ReqMethod.EXTENSIONS_TOGGLE: handle_extensions_toggle,
+    ReqMethod.HOOKS_LIST: handle_hooks_list,
+    ReqMethod.HARNESS_PACKAGES_GET: handle_harness_packages_get,
+    ReqMethod.HARNESS_PACKAGES_SCAN: handle_harness_packages_scan,
+    ReqMethod.HARNESS_PACKAGES_ACTIVATE: handle_harness_packages_activate,
+    ReqMethod.HARNESS_PACKAGES_DEACTIVATE: handle_harness_packages_deactivate,
+    ReqMethod.HARNESS_PACKAGES_DELETE: handle_harness_packages_delete,
+}
+
+
+async def try_dispatch(ctx: RequestContext) -> bool:
+    """命中查表就执行并返回 True。没有登记的请求返回 False，交给原来的判断。"""
+
+    handler = HANDLERS.get(ctx.request.req_method) if ctx.request.req_method else None
+    if handler is None:
+        return False
+    await handler(ctx)
+    return True
