@@ -166,8 +166,11 @@ class AgentServerServices:
 
         客户端能力就是对方说自己能做什么，比如能不能读文件。
         只对 ACP 这种编辑器连接有意义。存放用的编号，和连接对象的编号是同一个整数。
+        HTTP 没有这种按连接存放的能力，调用了直接返回。
         """
 
+        if self._connection is None:
+            return
         key = int(connection_id)
         stored = self._connection._acp_client_capabilities_by_ws
         if isinstance(capabilities, dict):
@@ -189,6 +192,15 @@ class AgentServerServices:
         sequence: int,
     ) -> bool:
         """把运行时的一条事件写回当前连接。太大写不进去时返回 False。"""
+        if self._connection is None:
+            from jiuwenswarm.server.transports.http_sink import deliver_runtime_event
+
+            return await deliver_runtime_event(
+                sink,
+                event,
+                streaming=streaming,
+                sequence=sequence,
+            )
         return await self._connection._send_runtime_event(
             getattr(sink, "_ws", None),
             event,
@@ -199,6 +211,8 @@ class AgentServerServices:
 
     async def open_session_message_resume(self, request: Any) -> Any:
         """如果这是在回答一个挂起的问题，先记下那封排队消息。"""
+        if self._connection is None:
+            return None
         return await self._connection._open_session_message_resume(request)
 
     async def finalize_session_message_resume(
@@ -210,6 +224,8 @@ class AgentServerServices:
         error: str,
     ) -> None:
         """这一轮结束时，把排队消息收尾。"""
+        if self._connection is None:
+            return
         await self._connection._finalize_session_message_resume(
             request,
             resume_state,
@@ -219,14 +235,20 @@ class AgentServerServices:
 
     async def persist_repeated_session_question(self, request: Any, **kwargs: Any) -> Any:
         """用户还要再答一次时，把下一题和上一题对上。"""
+        if self._connection is None:
+            return None
         return await self._connection._persist_repeated_session_question(request, **kwargs)
 
     async def cleanup_client_disconnect_session_runtime(self, request: Any) -> bool:
         """对方断开后，清掉这条连接上还占着的会话运行状态。"""
+        if self._connection is None:
+            return False
         return await self._connection._cleanup_client_disconnect_session_runtime(request)
 
     async def send_push(self, msg: Any) -> bool:
         """往当前连接主动推一条消息。压缩上下文这类命令会在回包之外再用它。"""
+        if self._connection is None:
+            return False
         return await self._connection.send_push(msg)
 
 

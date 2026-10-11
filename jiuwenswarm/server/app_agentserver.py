@@ -343,6 +343,12 @@ async def _start_runtime_backend(front: object, host: str, port: int) -> object:
             if callable(mark_degraded):
                 mark_degraded()
     log_startup_stage("ready")
+    from jiuwenswarm.server.agent_http_server import start_http_if_enabled
+
+    try:
+        await start_http_if_enabled(server.app_services)
+    except Exception as exc:
+        logger.warning("[AgentHTTPServer] start failed: %s", exc)
     return server
 
 
@@ -430,6 +436,12 @@ async def _run(host: str, port: int) -> None:
     finally:
         logger.info("[AgentServer] stopping…")
         stop_event.set()
+        try:
+            from jiuwenswarm.server.agent_http_server import stop_http_server
+
+            await stop_http_server()
+        except Exception as exc:
+            logger.warning("[AgentHTTPServer] stop failed: %s", exc)
         begin_drain = getattr(front, "begin_drain", None)
         if callable(begin_drain):
             begin_drain()
