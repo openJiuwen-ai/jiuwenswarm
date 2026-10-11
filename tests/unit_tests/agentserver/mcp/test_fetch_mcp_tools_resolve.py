@@ -46,7 +46,7 @@ class _FakeClient:
 @pytest.mark.anyio
 async def test_fetch_resolves_token_placeholder_before_connect(tmp_path, monkeypatch) -> None:
     """${BAIDU_ACCESS_TOKEN} in headers must be replaced with the stored value."""
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.handlers.mcp import _fetch_mcp_tools_from_config
 
     # CredentialStore backs onto <workspace>/connectors/credentials/<name>.json.
     # Patch get_workspace_dir so the store reads our temp file.
@@ -80,7 +80,7 @@ async def test_fetch_resolves_token_placeholder_before_connect(tmp_path, monkeyp
         "openjiuwen.core.runner.resources_manager.tool_manager.ToolMgr._create_client",
         side_effect=fake_create,
     ):
-        tools = await AgentWebSocketServer._fetch_mcp_tools_from_config(entry)
+        tools = await _fetch_mcp_tools_from_config(entry)
 
     # Token was injected into the client cfg's auth_headers (where openjiuwen's
     # SseClient reads it) — not the literal placeholder, not in params.headers.
@@ -96,7 +96,7 @@ async def test_fetch_resolves_token_placeholder_before_connect(tmp_path, monkeyp
 @pytest.mark.anyio
 async def test_fetch_no_placeholder_passes_through_unchanged(tmp_path, monkeypatch) -> None:
     """A form-A entry with no placeholders is not distorted by resolution."""
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.handlers.mcp import _fetch_mcp_tools_from_config
 
     cred_dir = tmp_path / "mcp" / "credentials"
     cred_dir.mkdir(parents=True, exist_ok=True)
@@ -117,5 +117,5 @@ async def test_fetch_no_placeholder_passes_through_unchanged(tmp_path, monkeypat
         "openjiuwen.core.runner.resources_manager.tool_manager.ToolMgr._create_client",
         side_effect=lambda cfg: (captured_cfg.__setitem__("cfg", cfg), _FakeClient(cfg))[1],
     ):
-        await AgentWebSocketServer._fetch_mcp_tools_from_config(entry)
+        await _fetch_mcp_tools_from_config(entry)
     assert captured_cfg["cfg"].server_path == "https://mcp.notion.com/mcp"

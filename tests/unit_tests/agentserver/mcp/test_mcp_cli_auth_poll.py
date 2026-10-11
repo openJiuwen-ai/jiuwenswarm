@@ -44,34 +44,36 @@ def _connected_item(name: str = "feishu") -> dict[str, Any]:
     }
 
 
-def _new_server():
-    """A bare AgentWebSocketServer with _await_cli_auth's deps mocked out.
+class _Poll:
+    """轮询本身不碰服务器。登录完成后的收尾用一个假函数顶上。"""
 
-    We only assert the returned contract (connected / auth_failed), so
-    _finalize_cli_auth (post-auth side-effects) is stubbed.
-    """
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    def __init__(self) -> None:
+        self.finalize = AsyncMock(return_value={
+            "type": "connected", "name": "feishu", "applied": True,
+            "item": _connected_item(),
+        })
 
-    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
-    server._finalize_cli_auth = AsyncMock(return_value={
-        "type": "connected", "name": "feishu", "applied": True,
-        "item": _connected_item(),
-    })
-    server._mask_sensitive_fields = lambda d: d
-    return server
+
+async def _await(poll: _Poll, *args, **kwargs):
+    from types import SimpleNamespace
+
+    from jiuwenswarm.server.handlers.mcp_hub import _await_cli_auth
+
+    with patch("jiuwenswarm.server.handlers.mcp_hub._finalize_cli_auth", poll.finalize):
+        return await _await_cli_auth(SimpleNamespace(), *args, **kwargs)
 
 
 @pytest.mark.anyio
 async def test_await_returns_connected_after_auth_completes() -> None:
     """Pending → pending → connected: returns the connected payload once."""
-    server = _new_server()
+    poll = _Poll()
 
     results = [_pending_item(), _pending_item(), _connected_item()]
     with patch(
         "jiuwenswarm.server.runtime.mcp.registry.complete_cli_auth",
         side_effect=results,
     ):
-        result = await server._await_cli_auth(
+        result = await _await(poll,
             "feishu", 0, max_attempts=10, delay=0,
         )
 
@@ -83,18 +85,18 @@ async def test_await_returns_connected_after_auth_completes() -> None:
 @pytest.mark.anyio
 async def test_await_returns_auth_failed_on_timeout() -> None:
     """If every attempt stays pending, returns auth_failed (no crash, no hang)."""
-    server = _new_server()
-    server._finalize_cli_auth = AsyncMock()  # must not run on timeout
+    poll = _Poll()
+    poll.finalize = AsyncMock()  # must not run on timeout
 
     with patch(
         "jiuwenswarm.server.runtime.mcp.registry.complete_cli_auth",
         return_value=_pending_item(),
     ):
-        result = await server._await_cli_auth(
+        result = await _await(poll,
             "feishu", 0, max_attempts=3, delay=0,
         )
 
-    server._finalize_cli_auth.assert_not_called()
+    poll.finalize.assert_not_called()
     assert result["type"] == "auth_failed"
     assert result["name"] == "feishu"
     assert "timed out" in str(result["error"]).lower()
@@ -103,18 +105,18 @@ async def test_await_returns_auth_failed_on_timeout() -> None:
 @pytest.mark.anyio
 async def test_await_returns_auth_failed_on_exception() -> None:
     """If complete_cli_auth raises, returns auth_failed (not crash)."""
-    server = _new_server()
-    server._finalize_cli_auth = AsyncMock()
+    poll = _Poll()
+    poll.finalize = AsyncMock()
 
     with patch(
         "jiuwenswarm.server.runtime.mcp.registry.complete_cli_auth",
         side_effect=RuntimeError("cli crashed"),
     ):
-        result = await server._await_cli_auth(
+        result = await _await(poll,
             "feishu", 0, max_attempts=10, delay=0,
         )
 
-    server._finalize_cli_auth.assert_not_called()
+    poll.finalize.assert_not_called()
     assert result["type"] == "auth_failed"
     assert "cli crashed" in str(result["error"])
 
@@ -129,7 +131,7 @@ async def test_await_multi_step_advances_step_index_then_connected() -> None:
     step — otherwise it re-queries step 0 forever (a real dead-loop on
     multi-step CLIs).
     """
-    server = _new_server()
+    poll = _Poll()
     calls: list[int] = []
 
     def fake_complete_cli_auth(name: str, step_index: int, **kw: Any) -> dict[str, Any]:
@@ -153,7 +155,7 @@ async def test_await_multi_step_advances_step_index_then_connected() -> None:
         "jiuwenswarm.server.runtime.mcp.registry.complete_cli_auth",
         side_effect=fake_complete_cli_auth,
     ):
-        result = await server._await_cli_auth(
+        result = await _await(poll,
             "feishu", 0, max_attempts=10, delay=0,
         )
 
@@ -169,8 +171,8 @@ async def test_await_returns_cancelled_when_user_cancels() -> None:
     hold-open RPC unwinds with ``cancelled`` instead of polling to timeout."""
     from jiuwenswarm.server.runtime.mcp import registry
 
-    server = _new_server()
-    server._finalize_cli_auth = AsyncMock()  # must not run on cancel
+    poll = _Poll()
+    poll.finalize = AsyncMock()  # must not run on cancel
 
     with (
         patch("jiuwenswarm.server.runtime.mcp.cli_driver.cancel_pending_auth_proc"),
@@ -182,13 +184,13 @@ async def test_await_returns_cancelled_when_user_cancels() -> None:
             "jiuwenswarm.server.runtime.mcp.registry.complete_cli_auth",
             return_value=_pending_item(),
         ):
-            result = await server._await_cli_auth(
+            result = await _await(poll,
                 "feishu", 0, max_attempts=10, delay=0,
             )
     finally:
         registry.clear_connect_cancel("feishu")
 
-    server._finalize_cli_auth.assert_not_called()
+    poll.finalize.assert_not_called()
     assert result["type"] == "cancelled"
     assert result["name"] == "feishu"
 
@@ -198,8 +200,8 @@ async def test_await_returns_cancelled_when_cancel_arrives_mid_poll() -> None:
     """Cancel landing between polls is picked up on the next iteration."""
     from jiuwenswarm.server.runtime.mcp import registry
 
-    server = _new_server()
-    server._finalize_cli_auth = AsyncMock()
+    poll = _Poll()
+    poll.finalize = AsyncMock()
 
     def _pending_then_cancel(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         # First poll returns pending, then the user cancels.
@@ -211,11 +213,11 @@ async def test_await_returns_cancelled_when_cancel_arrives_mid_poll() -> None:
             "jiuwenswarm.server.runtime.mcp.registry.complete_cli_auth",
             side_effect=_pending_then_cancel,
         ):
-            result = await server._await_cli_auth(
+            result = await _await(poll,
                 "feishu", 0, max_attempts=10, delay=0,
             )
     finally:
         registry.clear_connect_cancel("feishu")
 
-    server._finalize_cli_auth.assert_not_called()
+    poll.finalize.assert_not_called()
     assert result["type"] == "cancelled"
