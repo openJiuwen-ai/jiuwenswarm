@@ -28,7 +28,12 @@ class FakeWebSocket:
 
 class AgentWebSocketServerHarness(agent_ws_server_module.AgentWebSocketServer):
     async def handle_browser_runtime_restart_for_test(self, ws, request, send_lock):
-        await self._handle_browser_runtime_restart(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.ops import handle_browser_runtime_restart
+
+        await handle_browser_runtime_restart(
+            build_ws_request_context(self, ws, request, send_lock)
+        )
 
     async def handle_command_add_dir_for_test(self, ws, request, send_lock):
         await self._handle_command_add_dir(ws, request, send_lock)
@@ -55,7 +60,12 @@ class AgentWebSocketServerHarness(agent_ws_server_module.AgentWebSocketServer):
         await self._handle_command_session(ws, request, send_lock)
 
     async def handle_permissions_config_for_test(self, ws, request, send_lock):
-        await self._handle_permissions_config(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.permissions import handle_permissions_config
+
+        await handle_permissions_config(
+            build_ws_request_context(self, ws, request, send_lock)
+        )
 
     def get_agent_manager_for_test(self):
         return self._agent_manager
@@ -84,6 +94,10 @@ def patch_wire_encoder(monkeypatch):
     monkeypatch.setattr(
         agent_ws_server_module,
         "encode_agent_response_for_wire",
+        fake_encode_agent_response_for_wire,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
         fake_encode_agent_response_for_wire,
     )
 
@@ -245,11 +259,9 @@ async def test_browser_runtime_restart_resets_active_agent_runtimes(
 
 @pytest.mark.asyncio
 async def test_browser_runtime_restart_supports_sdk_without_runtime_reset():
-    reset_runtimes = (
-        await agent_ws_server_module._reset_active_browser_runtimes_if_available(
-            SimpleNamespace()
-        )
-    )
+    from jiuwenswarm.server.handlers.ops import _reset_active_browser_runtimes_if_available
+
+    reset_runtimes = await _reset_active_browser_runtimes_if_available(SimpleNamespace())
 
     assert reset_runtimes == 0
 
@@ -262,7 +274,9 @@ async def test_browser_runtime_restart_uses_identity_scoped_sdk_reset():
         calls.append(kwargs)
         return 1
 
-    reset_runtimes = await agent_ws_server_module._reset_requested_browser_runtime_if_available(
+    from jiuwenswarm.server.handlers.ops import _reset_requested_browser_runtime_if_available
+
+    reset_runtimes = await _reset_requested_browser_runtime_if_available(
         SimpleNamespace(
             reset_managed_browser_runtime=reset_managed_browser_runtime,
         ),
@@ -1759,7 +1773,7 @@ async def test_handle_permissions_config_does_not_block_on_slow_reload(server, f
     )
     reload_calls = []
     captured = {"models": {"default": "captured"}}
-    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: captured)
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: captured)
 
     async def _slow_reload(_config, _env, **kwargs):
         reload_calls.append((_config, _env, kwargs))

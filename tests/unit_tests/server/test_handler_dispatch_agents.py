@@ -29,6 +29,8 @@ from jiuwenswarm.server.context import AgentServerServices, build_ws_request_con
 from jiuwenswarm.server.dispatch import HANDLERS, try_dispatch
 from jiuwenswarm.server.handlers import agents as agents_handlers
 from jiuwenswarm.server.handlers import extensions as extensions_handlers
+from jiuwenswarm.server.handlers import ops as ops_handlers
+from jiuwenswarm.server.handlers import permissions as permissions_handlers
 
 
 @dataclass
@@ -95,6 +97,29 @@ class TestDispatchTable:
         assert HANDLERS[ReqMethod.EXTENSIONS_LIST] is extensions_handlers.handle_extensions_list
         assert HANDLERS[ReqMethod.HOOKS_LIST] is extensions_handlers.handle_hooks_list
         assert HANDLERS[ReqMethod.HARNESS_PACKAGES_DELETE] is extensions_handlers.handle_harness_packages_delete
+
+    def test_permission_and_ops_methods_are_registered(self) -> None:
+        permission_methods = {
+            ReqMethod.PERMISSIONS_TOOLS_GET,
+            ReqMethod.PERMISSIONS_TOOLS_SET,
+            ReqMethod.PERMISSIONS_TOOLS_UPDATE,
+            ReqMethod.PERMISSIONS_TOOLS_DELETE,
+            ReqMethod.PERMISSIONS_RULES_GET,
+            ReqMethod.PERMISSIONS_RULES_CREATE,
+            ReqMethod.PERMISSIONS_RULES_UPDATE,
+            ReqMethod.PERMISSIONS_RULES_DELETE,
+            ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET,
+            ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_DELETE,
+        }
+        for method in permission_methods:
+            assert HANDLERS[method] is permissions_handlers.handle_permissions_config
+        assert HANDLERS[ReqMethod.PROACTIVE_TICK] is ops_handlers.handle_proactive_tick
+        assert HANDLERS[ReqMethod.PROACTIVE_FEEDBACK] is ops_handlers.handle_proactive_feedback
+        assert HANDLERS[ReqMethod.BROWSER_RUNTIME_RESTART] is ops_handlers.handle_browser_runtime_restart
+        assert HANDLERS[ReqMethod.CONFIG_CACHE_CLEAR] is ops_handlers.handle_config_cache_clear
+        assert HANDLERS[ReqMethod.AGENT_RELOAD_CONFIG] is ops_handlers.handle_agent_reload_config
+        assert HANDLERS[ReqMethod.AGENT_PREWARM_SYNC] is ops_handlers.handle_agent_prewarm_sync
+        assert HANDLERS[ReqMethod.AUTH_CREDENTIALS_UPDATE] is ops_handlers.handle_auth_credentials_update
 
     async def test_unknown_method_falls_through(self) -> None:
         ctx, _sink = _ctx(ReqMethod.CHAT_SEND)
@@ -219,6 +244,10 @@ class TestWsDispatchStillKeepsUnmovedMethods:
             "_handle_hooks_list",
             "_handle_harness_packages_get",
             "_handle_harness_packages_delete",
+            "_handle_permissions_config",
+            "_handle_agent_reload_config",
+            "_handle_proactive_tick",
+            "_handle_browser_runtime_restart",
             "def _harness_error_code",
         ):
             assert name not in source
@@ -256,3 +285,81 @@ class TestExtensionHandlers:
         assert extensions_handlers._harness_error_code(ValueError("already active")) == "CONFLICT"
         assert extensions_handlers._harness_error_code(ValueError("package not found")) == "NOT_FOUND"
         assert extensions_handlers._harness_error_code(ValueError("native package")) == "BAD_REQUEST"
+
+
+def _install_fake_permissions_rpc(monkeypatch: pytest.MonkeyPatch, dispatch) -> None:
+    """挡住会拉起重依赖的权限包，只留这次测试要用的分发函数。"""
+    rpc_name = "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc"
+    for name in (
+        "jiuwenswarm.agents.harness.common.rails",
+        "jiuwenswarm.agents.harness.common.rails.permissions",
+    ):
+        if name not in sys.modules:
+            package = types.ModuleType(name)
+            package.__path__ = []
+            monkeypatch.setitem(sys.modules, name, package)
+    rpc = types.ModuleType(rpc_name)
+    rpc.dispatch_permissions_config_request = dispatch
+    monkeypatch.setitem(sys.modules, rpc_name, rpc)
+
+
+class TestPermissionAndOpsHandlers:
+    async def test_read_only_permission_does_not_reload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[object] = []
+
+        def _dispatch(request: AgentRequest) -> AgentResponse:
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={"tools": []},
+            )
+
+        _install_fake_permissions_rpc(monkeypatch, _dispatch)
+        services = SimpleNamespace(
+            agent_manager=SimpleNamespace(
+                schedule_permissions_reload=lambda config: calls.append(config)
+            )
+        )
+        ctx, sink = _ctx(ReqMethod.PERMISSIONS_TOOLS_GET, services=services)
+        await permissions_handlers.handle_permissions_config(ctx)
+        assert sink.responses[0].ok is True
+        assert calls == []
+
+    async def test_permission_update_schedules_reload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[object] = []
+
+        def _dispatch(request: AgentRequest) -> AgentResponse:
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={"updated": True},
+            )
+
+        _install_fake_permissions_rpc(monkeypatch, _dispatch)
+        monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: {"captured": True})
+        services = SimpleNamespace(
+            agent_manager=SimpleNamespace(
+                schedule_permissions_reload=lambda config: calls.append(config)
+            )
+        )
+        ctx, sink = _ctx(ReqMethod.PERMISSIONS_TOOLS_UPDATE, services=services)
+        await permissions_handlers.handle_permissions_config(ctx)
+        assert sink.responses[0].ok is True
+        assert calls == [{"captured": True}]
+
+    async def test_prewarm_rejects_a_missing_channel_list(self) -> None:
+        ctx, sink = _ctx(ReqMethod.AGENT_PREWARM_SYNC, {})
+        await ops_handlers.handle_agent_prewarm_sync(ctx)
+        assert sink.responses[0].ok is False
+        assert sink.responses[0].payload["code"] == "BAD_REQUEST"
+
+    async def test_proactive_tick_reports_missing_engine(self) -> None:
+        ctx, sink = _ctx(
+            ReqMethod.PROACTIVE_TICK,
+            services=SimpleNamespace(proactive_engine=None),
+        )
+        await ops_handlers.handle_proactive_tick(ctx)
+        assert sink.responses[0].ok is False
+        assert "not initialized" in sink.responses[0].payload["error"]

@@ -128,9 +128,6 @@ from jiuwenswarm.common.mode_matrix import (
     is_single_agent_mode,
     is_team_mode,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
-    get_permissions_config_req_methods,
-)
 from jiuwenswarm.agents.harness.common.a4p_rpc import get_a4p_req_methods
 from jiuwenswarm.common.config import (
     DEFAULT_SANDBOX_POLICY_FILE,
@@ -314,41 +311,6 @@ def _is_session_prewarm_model_eligible(
 
     default_identifiers = selected_identifiers or first_identifiers or set()
     return requested in default_identifiers
-
-
-async def _reset_active_browser_runtimes_if_available(browser_move: Any) -> int:
-    """Reset active browser runtimes when supported by the installed SDK."""
-    reset_runtimes = getattr(
-        browser_move,
-        "reset_active_browser_runtimes",
-        None,
-    )
-    if not callable(reset_runtimes):
-        logger.warning(
-            "[AgentWebSocketServer] installed openjiuwen does not support "
-            "reset_active_browser_runtimes; restarting the local browser "
-            "runtime server only"
-        )
-        return 0
-    return await reset_runtimes()
-
-
-async def _reset_requested_browser_runtime_if_available(
-    browser_move: Any,
-    params: dict[str, Any],
-) -> int:
-    """Prefer an identity-scoped reset and retain compatibility with older SDKs."""
-    reset_runtime = getattr(browser_move, "reset_managed_browser_runtime", None)
-    display_mode = str(params.get("display_mode") or "").strip().lower()
-    profile_name = str(params.get("profile_name") or "").strip()
-    if callable(reset_runtime) and display_mode and profile_name:
-        return await reset_runtime(
-            browser_key=str(params.get("browser_key") or "").strip(),
-            profile_name=profile_name,
-            display_mode=display_mode,
-            browser_binary=str(params.get("browser_binary") or "").strip(),
-        )
-    return await _reset_active_browser_runtimes_if_available(browser_move)
 
 
 def _log_background_session_kvc_failure(task: asyncio.Task) -> None:
@@ -2489,9 +2451,6 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.TEAM_DELETE:
                 await self._handle_team_delete(ws, request, send_lock)
                 return
-            if request.req_method in get_permissions_config_req_methods():
-                await self._handle_permissions_config(ws, request, send_lock)
-                return
             if request.req_method in get_a4p_req_methods():
                 await self._handle_a4p_request(ws, request, send_lock)
                 return
@@ -2509,12 +2468,6 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.TEAM_MQ_PUBLISH:
                 await self._handle_team_mq_publish(ws, request, send_lock)
-                return
-            if request.req_method == ReqMethod.PROACTIVE_TICK:
-                await self._handle_proactive_tick(ws, request, send_lock)
-                return
-            if request.req_method == ReqMethod.PROACTIVE_FEEDBACK:
-                await self._handle_proactive_feedback(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.COMMAND_WORKFLOWS:
                 await self._handle_command_workflows(ws, request, send_lock)
@@ -2617,21 +2570,6 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.COMMAND_STATUS:
                 await self._handle_command_status(ws, request, send_lock)
-                return
-            if request.req_method == ReqMethod.BROWSER_RUNTIME_RESTART:
-                await self._handle_browser_runtime_restart(ws, request, send_lock)
-                return
-            if request.req_method == ReqMethod.CONFIG_CACHE_CLEAR:
-                await self._handle_config_cache_clear(ws, request, send_lock)
-                return
-            if request.req_method == ReqMethod.AGENT_RELOAD_CONFIG:
-                await self._handle_agent_reload_config(ws, request, send_lock)
-                return
-            if request.req_method == ReqMethod.AGENT_PREWARM_SYNC:
-                await self._handle_agent_prewarm_sync(ws, request, send_lock)
-                return
-            if request.req_method == ReqMethod.AUTH_CREDENTIALS_UPDATE:
-                await self._handle_auth_credentials_update(ws, request, send_lock)
                 return
             # RSI 优化平台：16 个 rsi.* web method 统一分发（B2）
             if (
@@ -5864,25 +5802,6 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
-    async def _handle_permissions_config(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        """处理 permissions.* E2A 请求（与 Web ``register_method`` 同名 method）。"""
-        from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import \
-            dispatch_permissions_config_request
-
-        resp = dispatch_permissions_config_request(request)
-        read_only_methods = {
-            ReqMethod.PERMISSIONS_TOOLS_GET,
-            ReqMethod.PERMISSIONS_RULES_GET,
-            ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET,
-        }
-        if resp.ok and request.req_method not in read_only_methods:
-            # Preserve develop's capture time and outer request error handling.
-            self._agent_manager.schedule_permissions_reload(get_config())
-
-        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-        async with send_lock:
-            await send_wire_payload(ws, wire)
-
     async def _handle_a4p_request(
         self,
         ws: Any,
@@ -6038,106 +5957,6 @@ class AgentWebSocketServer:
             await send_wire_payload(ws, wire)
 
 
-    async def _handle_proactive_tick(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        """Handle proactive.tick request from CronScheduler.
-
-        This is called by Gateway's CronScheduler to trigger a recommendation tick.
-        Respects cooldown and daily limits.
-        """
-        if self._proactive_engine is None:
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": "ProactiveEngine not initialized"},
-            )
-        else:
-            try:
-                # Extract target_channel from params
-                params = request.params or {}
-                target_channel = params.get("target_channel")
-
-                # Run the tick (respects cooldown and daily limits)
-                success = await self._proactive_engine.tick_now(target_channel=target_channel)
-
-                status = "tick_executed" if success else "no_recommendation"
-                last_tick = self._proactive_engine.last_tick_at
-                if last_tick > 0:
-                    status = f"{status} (last_tick_at={last_tick:.0f})"
-
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=True,
-                    payload={"status": status, "success": success},
-                )
-            except Exception as e:
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=False,
-                    payload={"error": str(e)},
-                )
-
-        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-        async with send_lock:
-            await send_wire_payload(ws, wire)
-
-    async def _handle_proactive_feedback(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        """Handle proactive.feedback request from frontend.
-
-        Receives user feedback (like/dislike) on proactive recommendations.
-        Stores feedback in buffer for next tick to update strategy gradients.
-        """
-        try:
-            params = request.params or {}
-            rec_id = params.get("rec_id")
-            feedback_type = params.get("feedback_type")
-            # 前端从 message 上带的推荐元数据，history 尚未写入时兜底填充反馈记录。
-            rec_type = str(params.get("rec_type") or params.get("proactive_type") or "")
-            rec_target = str(params.get("rec_target") or params.get("proactive_target") or "")
-
-            if not rec_id or feedback_type not in ("explicit_like", "explicit_dislike"):
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=False,
-                    payload={
-                        "error": (
-                            "Invalid params: rec_id and feedback_type "
-                            "(explicit_like|explicit_dislike) required"
-                        ),
-                    },
-                )
-            else:
-                from jiuwenswarm.agents.harness.common.recommendation.feedback_collector import (
-                    RecMeta,
-                    record_explicit_feedback,
-                )
-                record_explicit_feedback(
-                    rec_id, feedback_type,
-                    meta=RecMeta(rec_type=rec_type, rec_target=rec_target),
-                )
-
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=True,
-                    payload={"status": "feedback_recorded", "rec_id": rec_id},
-                )
-        except Exception as e:
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": str(e)},
-            )
-
-        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-        async with send_lock:
-            await send_wire_payload(ws, wire)
-
-    @staticmethod
     def _organization_stream_key(request: AgentRequest) -> str:
         params = request.params if isinstance(request.params, dict) else {}
         session_id = request.session_id or "default"
@@ -10757,107 +10576,6 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
-    async def _handle_browser_runtime_restart(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        try:
-            from openjiuwen.harness.tools import browser_move
-
-            reset_runtimes = await _reset_requested_browser_runtime_if_available(
-                browser_move,
-                request.params or {},
-            )
-            result = browser_move.restart_local_browser_runtime_server()
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=True,
-                payload={
-                    "result": result,
-                    "reset_runtimes": reset_runtimes,
-                },
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[AgentWebSocketServer] browser.runtime_restart failed: %s", e)
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": str(e)},
-            )
-
-        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-        async with send_lock:
-            await send_wire_payload(ws, wire)
-
-    async def _handle_config_cache_clear(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        try:
-            from jiuwenswarm.agents.harness.common.memory.config import clear_config_cache
-
-            clear_config_cache()
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=True,
-                payload={"cleared": True},
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[AgentWebSocketServer] config.cache_clear failed: %s", e)
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": str(e)},
-            )
-
-        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-        async with send_lock:
-            await send_wire_payload(ws, wire)
-
-    async def _handle_agent_prewarm_sync(
-        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
-    ) -> None:
-        """Reconcile background prewarming for the Gateway's live channels."""
-        params = request.params if isinstance(request.params, dict) else {}
-        raw_channels = params.get("enabled_channels")
-        if not isinstance(raw_channels, list):
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": "enabled_channels must be a list", "code": "BAD_REQUEST"},
-            )
-        else:
-            stats = await self._agent_manager.sync_prewarm_channels(
-                [str(channel) for channel in raw_channels],
-                config=params.get("config"),
-                env=params.get("env"),
-            )
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=True,
-                payload=stats,
-            )
-        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-        async with send_lock:
-            await send_wire_payload(ws, wire)
-
-    async def _handle_auth_credentials_update(
-        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
-    ) -> None:
-        """Gateway 推回的登录模型凭据：续期后的新 token，或会话注销后的撤销。"""
-        from jiuwenswarm.common.auth.login_credentials import apply_credential_update
-
-        applied = apply_credential_update(request.params)
-        resp = AgentResponse(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            ok=applied,
-            payload={"applied": applied},
-        )
-        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-        async with send_lock:
-            await send_wire_payload(ws, wire)
-
     async def _reload_after_config_save(
         self,
         updated_keys: Any = None,
@@ -10874,140 +10592,6 @@ class AgentWebSocketServer:
             config_payload=config_payload,
             reload_options=reload_options,
         )
-
-    async def _handle_agent_reload_config(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        try:
-            params = request.params or {}
-            config_payload = params.get("config")
-            env_overrides = params.get("env")
-            target_channel_id = str(params.get("target_channel_id") or "").strip() or None
-            target_session_id = str(params.get("target_session_id") or "").strip() or None
-            raw_reload_scopes = params.get("reload_scopes")
-            reload_scopes = {
-                str(scope)
-                for scope in raw_reload_scopes
-                if isinstance(scope, str) and scope
-            } if isinstance(raw_reload_scopes, list) else set()
-
-            reload_kwargs = {}
-            if target_channel_id:
-                reload_kwargs["target_channel_id"] = target_channel_id
-            if target_session_id:
-                reload_kwargs["target_session_id"] = target_session_id
-            if reload_scopes:
-                reload_kwargs["reload_scopes"] = reload_scopes
-            if isinstance(config_payload, dict) and "a4p" in config_payload:
-                from jiuwenswarm.agents.harness.common.a4p_runtime import (
-                    get_a4p_config,
-                )
-
-                # Gateway snapshots may predate an AgentServer-owned config RPC.
-                config_payload = {**config_payload, "a4p": get_a4p_config()}
-            agent_reload_scopes = {
-                "model",
-                "multimodal",
-                "search",
-                "team",
-                "permissions",
-                "agent_runtime",
-            }
-            should_reload_agents = not reload_scopes or bool(reload_scopes & agent_reload_scopes)
-
-            # Model profiles are persisted by Gateway, but tokenizer artifacts
-            # are owned by this AgentServer process. Submit the warm-up in the
-            # background; context creation itself never downloads or waits.
-            should_warm_tokenizers = True
-            if reload_scopes:
-                should_warm_tokenizers = "model" in reload_scopes
-            if should_warm_tokenizers:
-                self._schedule_tokenizer_warmup(
-                    config_payload if isinstance(config_payload, dict) else get_config(),
-                    reason="model config change",
-                )
-
-            # 模型配置变了就重探图像模态：同一个 (api_base, model_name) 背后可能已换
-            # 端点 / 密钥 / 后端，旧结论不能留。跑在后台任务里——探针每个最多 5s，不该
-            # 把 reload 响应拖在这里；这个 loop 活到进程结束，结论一定能落进缓存。
-            should_refresh_image_modality = should_warm_tokenizers
-            if should_refresh_image_modality:
-                # 上一轮还没探完就又改了配置：旧结论已经作废，由统一调度入口
-                # 取消旧任务（含启动预热轮）后再 reset 缓存并重探。
-                self.schedule_image_modality_warmup(
-                    reason="model config change",
-                    reset_cache=True,
-                )
-            # 模型配置变更时刷新本进程的 Zen 免费模型缓存（与上方 image modality
-            # 刷新同一 model scope）。开关在启动时关闭后，后台重试循环已退出；
-            # 之后经 config.set 打开开关时，由 ConfigAdapter 或 models.zen_warm
-            # 再 warm 一次。放后台任务执行——warm 自带超时且失败后自动调度后台
-            # 重试，不阻塞 reload 响应。
-            if should_refresh_image_modality:
-                from jiuwenswarm.server.runtime.opencode_zen import warm_zen_free_models
-
-                asyncio.create_task(
-                    warm_zen_free_models(reason="agent.reload_config")
-                )
-            if should_reload_agents:
-                await self._agent_manager.reload_agents_config(
-                    config_payload,
-                    env_overrides,
-                    **reload_kwargs,
-                )
-                try:
-                    from jiuwenswarm.agents.harness.team import (
-                        stop_all_paused_team_session_runtimes_across_managers,
-                    )
-
-                    stopped = await stop_all_paused_team_session_runtimes_across_managers(
-                        reason="agent.reload_config: ",
-                    )
-                    if stopped:
-                        logger.info(
-                            "[AgentWebSocketServer] stopped paused team runtimes after agent.reload_config: "
-                            "count=%s request_id=%s reload_scopes=%s",
-                            stopped,
-                            request.request_id,
-                            sorted(reload_scopes),
-                        )
-                except Exception as exc:  # noqa: BLE001 - cleanup must not reject config reload
-                    logger.warning(
-                        "[AgentWebSocketServer] failed to stop paused team runtimes after agent.reload_config: %s",
-                        exc,
-                    )
-
-            # Hot-reload ProactiveEngine config if available
-            should_reload_proactive = not reload_scopes or bool(reload_scopes & {"model", "proactive", "agent_runtime"})
-            if self._proactive_engine is not None and should_reload_proactive:
-                cfg = get_config()
-                proactive_cfg = cfg.get("proactive_recommendation", {})
-                self._proactive_engine.reload_config(proactive_cfg)
-                # 重建 proactive agent——它启动时建一次，模型配置固化在实例里。
-                # 用户改模型后主 agent 会热更新，但 proactive agent 不在主 agent
-                # 链路里，不重建会继续用旧模型（可能已失效/欠费）。
-                try:
-                    from jiuwenswarm.server.runtime.proactive_adapter import build_proactive_agent
-                    self._proactive_engine.rebuild_proactive_agent(build_proactive_agent)
-                except Exception as exc:
-                    logger.warning("[AgentWebSocketServer] proactive agent rebuild failed: %s", exc)
-
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=True,
-                payload={"reloaded": True},
-            )
-        except Exception as e:
-            logger.exception("[AgentWebSocketServer] agent.reload_config failed: %s", e)
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": str(e)},
-            )
-
-        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-        async with send_lock:
-            await send_wire_payload(ws, wire)
 
     async def send_push(self, msg) -> bool:
         """AgentServer 主动向 Gateway 推送消息。

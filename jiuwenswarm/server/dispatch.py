@@ -34,6 +34,16 @@ from jiuwenswarm.server.handlers.extensions import (
     handle_harness_packages_scan,
     handle_hooks_list,
 )
+from jiuwenswarm.server.handlers.ops import (
+    handle_agent_prewarm_sync,
+    handle_agent_reload_config,
+    handle_auth_credentials_update,
+    handle_browser_runtime_restart,
+    handle_config_cache_clear,
+    handle_proactive_feedback,
+    handle_proactive_tick,
+)
+from jiuwenswarm.server.handlers.permissions import handle_permissions_config
 
 Handler = Callable[[RequestContext], Awaitable[None]]
 
@@ -56,6 +66,23 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.HARNESS_PACKAGES_ACTIVATE: handle_harness_packages_activate,
     ReqMethod.HARNESS_PACKAGES_DEACTIVATE: handle_harness_packages_deactivate,
     ReqMethod.HARNESS_PACKAGES_DELETE: handle_harness_packages_delete,
+    ReqMethod.PERMISSIONS_TOOLS_GET: handle_permissions_config,
+    ReqMethod.PERMISSIONS_TOOLS_SET: handle_permissions_config,
+    ReqMethod.PERMISSIONS_TOOLS_UPDATE: handle_permissions_config,
+    ReqMethod.PERMISSIONS_TOOLS_DELETE: handle_permissions_config,
+    ReqMethod.PERMISSIONS_RULES_GET: handle_permissions_config,
+    ReqMethod.PERMISSIONS_RULES_CREATE: handle_permissions_config,
+    ReqMethod.PERMISSIONS_RULES_UPDATE: handle_permissions_config,
+    ReqMethod.PERMISSIONS_RULES_DELETE: handle_permissions_config,
+    ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET: handle_permissions_config,
+    ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_DELETE: handle_permissions_config,
+    ReqMethod.PROACTIVE_TICK: handle_proactive_tick,
+    ReqMethod.PROACTIVE_FEEDBACK: handle_proactive_feedback,
+    ReqMethod.BROWSER_RUNTIME_RESTART: handle_browser_runtime_restart,
+    ReqMethod.CONFIG_CACHE_CLEAR: handle_config_cache_clear,
+    ReqMethod.AGENT_RELOAD_CONFIG: handle_agent_reload_config,
+    ReqMethod.AGENT_PREWARM_SYNC: handle_agent_prewarm_sync,
+    ReqMethod.AUTH_CREDENTIALS_UPDATE: handle_auth_credentials_update,
 }
 
 
