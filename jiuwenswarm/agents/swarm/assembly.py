@@ -114,6 +114,10 @@ def _build_shared_sandbox_spec(spec: Any, *, project_dir: str | None) -> Any:
     ``shared_dir=None`` → 同 isolation key → 复用同一项目级容器）。沙箱未启用 /
     企业版（isolation key 折入主 adapter 私有 ``shared_dir``，此层不可得）/
     解析失败时返回 None，成员维持 LOCAL，无回归。
+
+    此处只负责"把 spec 装到成员上"；真正的沙箱实例绑定由
+    ``TeamSharedSandboxSpec.resolve()`` 在 harness 构建期按 isolation key 复用
+    已注册的主 agent 沙箱完成——故本层无需（也不应）关心 owner 是否已注册。
     """
     runtime = get_sandbox_runtime()
     if not runtime.get("enabled") or is_enterprise():

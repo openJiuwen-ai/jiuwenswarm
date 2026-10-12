@@ -150,8 +150,10 @@ def test_enrich_skips_sandbox_when_endpoint_unresolved(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# create_sandbox_sysop_spec id 策略：同 isolation key 已注册 → 采用 owner id
+# create_sandbox_sysop_spec id 策略：借用句柄永不注册，resolve() 时才查 owner
 # ---------------------------------------------------------------------------
+
+_OWNER_ID = "f0d3af13c98a45d084f483cf1fb4c87b"
 
 
 class _FakeRegistry:
@@ -164,24 +166,35 @@ class _FakeRegistry:
 
 
 class _FakeResourceMgr:
+    """按 openjiuwen ``ResourceMgr`` 的关键语义实现，记录 remove 以便断言。"""
+
     def __init__(self, owner_map, sysops):
         self._resource_registry = _FakeRegistry(owner_map, sysops)
         self._sysops = sysops
+        self.removed: list[str] = []
 
     def get_sys_operation(self, sysop_id):
         return self._sysops.get(sysop_id)
+
+    def remove_sys_operation(self, sysop_id):
+        op = self._sysops.pop(sysop_id, None)
+        if op is None:
+            return None
+        self.removed.append(sysop_id)
+        registry = self._resource_registry
+        template = getattr(op, "isolation_key_template", None)
+        if template:
+            registry._owner_map.pop(template, None)
+        return op
 
 
 def _patch_resource_mgr(monkeypatch, owner_map, sysops):
     """让 Runner.resource_mgr 返回指向 owner_map / sysops 的假注册表。"""
     import openjiuwen.core.runner.runner as runner_mod
 
-    monkeypatch.setattr(
-        runner_mod.Runner,
-        "resource_mgr",
-        _FakeResourceMgr(owner_map, sysops),
-        raising=False,
-    )
+    fake = _FakeResourceMgr(owner_map, sysops)
+    monkeypatch.setattr(runner_mod.Runner, "resource_mgr", fake, raising=False)
+    return fake
 
 
 def _owner_map_with(card):
@@ -190,11 +203,11 @@ def _owner_map_with(card):
 
     template = SysOperation(card).isolation_key_template
     fake_sandbox = SimpleNamespace(
-        id="f0d3af13c98a45d084f483cf1fb4c87b",
+        id=_OWNER_ID,
         mode=OperationMode.SANDBOX,
         isolation_key_template=template,
     )
-    return {template: fake_sandbox.id}, {"f0d3af13c98a45d084f483cf1fb4c87b": fake_sandbox}
+    return {template: fake_sandbox.id}, {_OWNER_ID: fake_sandbox}
 
 
 def _patch_card_build(monkeypatch, card):
@@ -226,68 +239,194 @@ def _make_sandbox_card():
     )
 
 
-def test_spec_adopts_registered_owner_id(monkeypatch):
-    """同 isolation key 已有主 agent 沙箱 sysop：spec id 必须采用 owner id。
+def _build_spec(monkeypatch, *, owner_map, sysops):
+    """走完整 create_sandbox_sysop_spec，返回 (spec, fake_resource_mgr)。"""
+    card = _make_sandbox_card()
+    rm = _patch_resource_mgr(monkeypatch, owner_map, sysops)
+    _patch_card_build(monkeypatch, card)
+    spec = builder.create_sandbox_sysop_spec(
+        "http://sandbox.invalid",
+        "jiuwenbox",
+        team_id="unit_team",
+        startup_mode="external",
+    )
+    assert spec is not None
+    return spec, rm
 
-    库 resolve() 只按 id get-or-create；同 key 异 id 的 add 被"一个 key 一个
-    owner"校验拒绝且错误被吞 → 成员静默回落 LOCAL。对齐 owner id 后 resolve()
-    按 id 命中主 agent 实例，零 add 零冲突。
+
+def _simulate_native_harness_dispose(rm, sysop_id):
+    """逐行复现 ``native_harness.py:474-475`` 的销毁判定。"""
+    if rm.get_sys_operation(sysop_id) is not None:
+        rm.remove_sys_operation(sysop_id)
+
+
+# ---------------------------------------------------------------------------
+# id 策略
+# ---------------------------------------------------------------------------
+
+
+def test_spec_id_is_borrowed_handle_not_owner_id(monkeypatch):
+    """有已注册 owner 时 spec id 仍是借用句柄，**不得**对齐 owner id。
+
+    对齐 owner id 虽能让 ``resolve()`` 零 add 命中，但成员销毁时 dispose 会按同一
+    id 执行 ``remove_sys_operation``，连带摘掉主 agent 的沙箱并释放其 isolation
+    key。句柄与 owner 解耦是消除该串扰的前提。
     """
     card = _make_sandbox_card()
     owner_map, sysops = _owner_map_with(card)
-    _patch_resource_mgr(monkeypatch, owner_map, sysops)
-    _patch_card_build(monkeypatch, card)
+    spec, _rm = _build_spec(monkeypatch, owner_map=owner_map, sysops=sysops)
 
-    result = builder.create_sandbox_sysop_spec(
-        "http://sandbox.invalid",
-        "jiuwenbox",
-        team_id="unit_team",
-        startup_mode="external",
-    )
-
-    assert result is not None
-    assert result.id == "f0d3af13c98a45d084f483cf1fb4c87b"
-    assert result.mode == OperationMode.SANDBOX
+    assert spec.id == "team_sandbox_ref_unit_team"
+    assert spec.id != _OWNER_ID
+    assert spec.mode == OperationMode.SANDBOX
 
 
-def test_spec_falls_back_to_team_id_without_owner(monkeypatch):
-    """无已注册 owner（首个注册方）：用 team_sandbox_<team> 稳定 id。"""
-    card = _make_sandbox_card()
-    _patch_resource_mgr(monkeypatch, {}, {})
-    _patch_card_build(monkeypatch, card)
+def test_spec_id_is_stable_ref_handle_without_owner(monkeypatch):
+    """无已注册 owner（首个注册方）：id 仍为同一个借用句柄，保持稳定。"""
+    spec, _rm = _build_spec(monkeypatch, owner_map={}, sysops={})
 
-    result = builder.create_sandbox_sysop_spec(
-        "http://sandbox.invalid",
-        "jiuwenbox",
-        team_id="unit_team",
-        startup_mode="external",
-    )
-
-    assert result is not None
-    assert result.id == "team_sandbox_unit_team"
-    assert result.mode == OperationMode.SANDBOX
+    assert spec.id == "team_sandbox_ref_unit_team"
+    assert spec.mode == OperationMode.SANDBOX
 
 
 def test_spec_ignores_local_owner(monkeypatch):
-    """owner map 指向 LOCAL 实例时不采用其 id（避免成员对齐到 LOCAL）。"""
-    card = _make_sandbox_card()
+    """owner map 指向 LOCAL 实例时不复用（避免成员对齐到 LOCAL）。"""
     from openjiuwen.core.sys_operation.sys_operation import SysOperation
 
+    card = _make_sandbox_card()
     template = SysOperation(card).isolation_key_template
     fake_local = SimpleNamespace(id="local_owner", mode=OperationMode.LOCAL)
-    _patch_resource_mgr(
+    spec, _rm = _build_spec(
         monkeypatch,
-        {template: fake_local.id},
-        {fake_local.id: fake_local},
+        owner_map={template: fake_local.id},
+        sysops={fake_local.id: fake_local},
     )
+
+    assert spec.id == "team_sandbox_ref_unit_team"
+    assert spec.resolve() is None
+
+
+# ---------------------------------------------------------------------------
+# resolve()：真正把成员绑到已注册沙箱的那一步
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_returns_registered_sandbox_owner(monkeypatch):
+    """有 owner 时 ``resolve()`` 必须返回那个 SANDBOX 实例——而非 None。
+
+    这是原 bug 的行为性断言：库 ``resolve()`` 丢 ``Result`` 后静默回落 LOCAL，
+    成员工具落宿主机。此处直接断言拿到的是 mode=SANDBOX 的 owner 实例。
+    """
+    card = _make_sandbox_card()
+    owner_map, sysops = _owner_map_with(card)
+    spec, _rm = _build_spec(monkeypatch, owner_map=owner_map, sysops=sysops)
+
+    resolved = spec.resolve()
+
+    assert resolved is not None, "resolve() 返回 None，成员会回落 LOCAL"
+    assert resolved.id == _OWNER_ID
+    assert resolved.mode == OperationMode.SANDBOX
+
+
+def test_resolve_without_owner_returns_none_and_warns(monkeypatch, caplog):
+    """无 owner 可复用时返回 None 并打 WARNING（= 上线前既有行为，零回归）。
+
+    WARNING 是该降级唯一的可诊断线索，故必须响亮，不能是 debug。
+    """
+    spec, _rm = _build_spec(monkeypatch, owner_map={}, sysops={})
+
+    with caplog.at_level("WARNING", logger="jiuwenswarm.server.runtime.agent_adapter.sysop_builder"):
+        assert spec.resolve() is None
+
+    assert "team sandbox owner 未注册" in caplog.text
+    assert "team_sandbox_ref_unit_team" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# 回归锁：成员销毁不得影响主 agent 沙箱
+# ---------------------------------------------------------------------------
+
+
+def test_member_dispose_leaves_owner_registered(monkeypatch):
+    """成员 harness 销毁后，主 agent 沙箱实例与其 isolation key 必须仍在。
+
+    这是本次修复的核心不变量：借用句柄永不注册 ⇒ ``native_harness.dispose()``
+    的 ``get_sys_operation(id) is not None`` 判定恒假 ⇒ 不会走到 remove。
+    """
+    card = _make_sandbox_card()
+    owner_map, sysops = _owner_map_with(card)
+    spec, rm = _build_spec(monkeypatch, owner_map=owner_map, sysops=sysops)
+    template = next(iter(owner_map))
+
+    assert spec.resolve() is not None, "前置条件：成员先成功复用 owner"
+
+    _simulate_native_harness_dispose(rm, spec.id)
+
+    assert rm.removed == [], f"成员销毁摘掉了非己方资源：{rm.removed}"
+    assert rm.get_sys_operation(_OWNER_ID) is not None, "主 agent 沙箱被误注销"
+    assert template in rm._resource_registry._owner_map, "isolation key 被误释放"
+
+
+def test_id_aligned_handle_would_break_owner_on_dispose(monkeypatch):
+    """反证：若改回"id 对齐 owner"，dispose 确实会误伤——证明上一条断言有牙齿。
+
+    这条用例锁住的是设计决策本身：任何人把 id 改回 owner id 都会红。
+    """
+    card = _make_sandbox_card()
+    owner_map, sysops = _owner_map_with(card)
+    _rm = _patch_resource_mgr(monkeypatch, owner_map, sysops)
+    gateway = card.gateway_config
+
+    bad_spec = builder.TeamSharedSandboxSpec(
+        id=_OWNER_ID,  # 回归：借用句柄被改成 owner id
+        mode=OperationMode.SANDBOX,
+        work_config=LocalWorkConfig(shell_allowlist=None),
+        gateway_config=gateway,
+    )
+
+    _simulate_native_harness_dispose(_rm, bad_spec.id)
+
+    assert _rm.removed == [_OWNER_ID], "id 对齐 owner 时 dispose 必然误伤主 agent"
+    assert _rm.get_sys_operation(_OWNER_ID) is None
+
+
+# ---------------------------------------------------------------------------
+# 端到端：真实 enrich 路径必须保住 TeamSharedSandboxSpec 子类
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_preserves_team_shared_sandbox_spec_subclass(monkeypatch):
+    """走真实 ``enrich_team_spec_for_swarm`` 后成员上必须是真子类而非被压平的基类。
+
+    整个修复依赖 pydantic 在 ``assembly`` 的 ``model_copy(update=...)`` 与库的
+    ``agent_configurator`` 的 ``model_copy(update=...)`` 两处都不把子类压平成
+    ``SysOperationSpec``——一旦压平，``resolve()`` 回到库实现，成员又会静默
+    回落 LOCAL，且无任何日志。
+    """
+    import jiuwenswarm.agents.swarm.assembly as asm
+
+    card = _make_sandbox_card()
+    owner_map, sysops = _owner_map_with(card)
+    rm = _patch_resource_mgr(monkeypatch, owner_map, sysops)
     _patch_card_build(monkeypatch, card)
-
-    result = builder.create_sandbox_sysop_spec(
-        "http://sandbox.invalid",
-        "jiuwenbox",
-        team_id="unit_team",
-        startup_mode="external",
+    monkeypatch.setattr(asm, "get_sandbox_runtime", lambda: {"enabled": True})
+    monkeypatch.setattr(asm, "is_enterprise", lambda: False)
+    monkeypatch.setattr(asm, "get_sandbox_startup_mode", lambda: "external")
+    monkeypatch.setattr(
+        asm, "resolve_sandbox_endpoint", lambda: ("jiuwenbox", "http://sandbox.invalid")
     )
 
-    assert result is not None
-    assert result.id == "team_sandbox_unit_team"
+    spec = _make_team_spec()
+    enrich_team_spec_for_swarm(spec, session_id="s", mode="team", channel_id="web")
+
+    for role in ("leader", "teammate"):
+        member_sysop = spec.agents[role].sys_operation
+        assert isinstance(member_sysop, builder.TeamSharedSandboxSpec), (
+            f"{role} 的 sys_operation 被压平为 {type(member_sysop).__name__}，"
+            "resolve() 将退回库实现并静默回落 LOCAL"
+        )
+        assert member_sysop.id == "team_sandbox_ref_unit_team"
+        assert member_sysop.resolve() is not None, f"{role} 未绑定到已注册沙箱"
+        assert member_sysop.resolve().id == _OWNER_ID
+
+    assert rm.removed == []
