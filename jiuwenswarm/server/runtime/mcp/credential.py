@@ -209,7 +209,7 @@ class CredentialStore:
         # validation.
         if not n:
             raise ValueError(f"invalid mcp credential name: {name!r}")
-        if "/" in n or "\" in n or ".." in n:
+        if "/" in n or "\\" in n or ".." in n:
             raise ValueError(f"invalid mcp credential name: {name!r}")
         return self._root / f"{n}.json"
 
