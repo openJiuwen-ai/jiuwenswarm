@@ -542,7 +542,6 @@ class TestAdditionalHardcodedPaths:
         from jiuwenswarm.server.runtime.runtime_scope import RuntimeScopeKey
 
         scope = RuntimeScopeKey.from_ids()
-
         os.environ["JIUWENSWARM_EDITION"] = "enterprise"
         try:
             workspace = get_multi_tenant_user_workspace_dir(scope.workspace_key)
