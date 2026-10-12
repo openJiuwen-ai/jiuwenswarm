@@ -749,6 +749,23 @@ def build_permission_rail(
             )
             return previous
 
+        def _with_shell_network(cfg: dict[str, Any]) -> dict[str, Any]:
+            """Add the user/global ``permissions.shell_network`` rule (never the project file).
+
+            ``deny`` adds a deny rule; ``ask`` adds an ask rule only when it cannot
+            loosen the user's shell baseline. The project policy is enforced by the
+            Code guard rail and is deliberately not part of the engine snapshot.
+            """
+            try:
+                from jiuwenswarm.agents.harness.common.rails.permissions.project_policy import (
+                    with_shell_network_rule,
+                )
+
+                return with_shell_network_rule(cfg, inline_permissions)
+            except Exception as exc:  # noqa: BLE001 - the Code guard rail still enforces deny
+                logger.warning("[InterruptHelpers] shell_network rule skipped: %s", exc)
+                return cfg
+
         def _get_installed_permissions(session_id: str | None = None) -> dict[str, Any]:
             """Compose installed Global with fresh shared User/Session rules."""
 
@@ -769,7 +786,9 @@ def build_permission_rail(
                 # Non-interactive avatars retain their installed-policy contract.
                 getter = getattr(installed_permission_rail, "installed_permission_config", None)
                 installed = getter() if callable(getter) else permission_config
-                return normalize_permissions_for_runtime(deepcopy(installed))
+                return _with_shell_network(
+                    normalize_permissions_for_runtime(deepcopy(installed))
+                )
             sid = _effective_session_id(session_id)
             if enable_auto_permission:
                 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
@@ -781,12 +800,14 @@ def build_permission_rail(
                     )
             else:
                 user, session = load_user_permissions(), load_session_permissions(sid)
-            return compose_host_effective_permissions(
-                global_permissions=installed_global_permissions[0],
-                user_permissions=user,
-                session_permissions=session,
-                session_id=sid,
-                auto_mode=enable_auto_permission,
+            return _with_shell_network(
+                compose_host_effective_permissions(
+                    global_permissions=installed_global_permissions[0],
+                    user_permissions=user,
+                    session_permissions=session,
+                    session_id=sid,
+                    auto_mode=enable_auto_permission,
+                )
             )
 
         def _permission_scene_config() -> dict[str, Any]:

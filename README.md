@@ -95,6 +95,7 @@ uv pip install -e .
 ```
 
 > For detailed installation instructions, see: [Install Guide](docs/en/InstallGuide.md)
+>
 
 ## Quick Start
 
@@ -163,7 +164,6 @@ Capabilities differ per platform. Xiaoyi and WhatsApp are private chat only; Fei
 
 Full index: [Documentation](docs/README_EN.md)
 
-- Install and first run: [Install Guide](docs/en/InstallGuide.md) · [Quick Start](docs/en/Quickstart.md)
 - The Web UI layout: [Page Overview](docs/en/Page-Overview.md)
 - Configure providers: [Configuration](docs/en/Configuration.md)
 - Build and evolve capabilities: [Skills](docs/en/Skills.md) · [Skill Self-Evolution](docs/en/SkillSelfEvolution.md)

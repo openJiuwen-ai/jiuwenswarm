@@ -585,12 +585,18 @@ def _config_lock_path(config_path: Path) -> Path:
 
 
 @contextmanager
-def config_write_lock(*, lock_timeout: float = 10.0):
-    """Share the Global write boundary with layered permission transactions."""
+def config_write_lock(*, lock_timeout: float = 10.0, config_path: Path | None = None):
+    """Share the Global write boundary with layered permission transactions.
+
+    ``config_path`` selects the file whose sibling ``.lock`` is taken; it
+    defaults to the active ``CONFIG_YAML_PATH``. Startup migrations pass the
+    workspace config they resolved, which is the same file in a normal run.
+    """
+    target = config_path if config_path is not None else CONFIG_YAML_PATH
     if not _CONFIG_WRITE_LOCK.acquire(timeout=lock_timeout):
         raise TimeoutError("config write lock timed out")
     try:
-        with portalocker.Lock(str(_config_lock_path(CONFIG_YAML_PATH)), timeout=lock_timeout):
+        with portalocker.Lock(str(_config_lock_path(target)), timeout=lock_timeout):
             yield
     finally:
         _CONFIG_WRITE_LOCK.release()
@@ -3334,6 +3340,153 @@ def migrate_config_from_template(
         return True
 
     return False
+
+
+# ---------- Code 模式新增默认工具 / new default Code tools ----------
+
+# Tools added to the shipped template's ``modes.code.tools`` after installs
+# already had a config.yaml. The template merge above is purely additive per
+# key and never extends a list the user already has, so without this step an
+# existing install never sees them.
+#
+# To ship a future default Code tool: add it to the template's
+# ``modes.code.tools`` AND append its name here. A name that is not in the
+# template is ignored, so the template stays the single source of the default
+# (removing a tool from the template stops it being offered). Opt-in tools
+# (``git_publish``, ``git_review``) must never be listed.
+CODE_TOOLS_INTRODUCED_SINCE_TEMPLATE: tuple[str, ...] = (
+    "git_prepare",
+    "code_search",
+    "find_symbol",
+    "symbol_outline",
+    "run_tests",
+)
+
+# Sits next to config.yaml. Records every tool already offered once, so a tool
+# the user removes from ``modes.code.tools`` is never added back. Deleting the
+# file makes every template tool eligible again.
+CODE_TOOLS_OFFERED_STATE_FILE = ".code_tools_offered.json"
+
+
+def _code_tools_list(data: Any) -> Any | None:
+    """Return the ``modes.code.tools`` list object, or None when absent/not a list."""
+    if not isinstance(data, dict):
+        return None
+    modes = data.get("modes")
+    code = modes.get("code") if isinstance(modes, dict) else None
+    tools = code.get("tools") if isinstance(code, dict) else None
+    return tools if isinstance(tools, list) else None
+
+
+def _read_offered_code_tools(state_path: Path) -> set[str] | None:
+    """Offered-tool names; empty when the file is absent, None when unreadable."""
+    if not state_path.exists():
+        return set()
+    try:
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+        offered = raw.get("offered") if isinstance(raw, dict) else None
+        if not isinstance(offered, list) or not all(isinstance(t, str) for t in offered):
+            raise ValueError("expected {\"offered\": [<tool name>, ...]}")
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "[config] cannot read %s (%s); new default Code tools are not added "
+            "this start. Delete the file to have them offered again.",
+            state_path,
+            exc,
+        )
+        return None
+    return set(offered)
+
+
+def _write_offered_code_tools(state_path: Path, offered: set[str]) -> None:
+    payload = {
+        "version": 1,
+        "offered": sorted(offered),
+        "note": (
+            "Tools already offered to modes.code.tools once. A listed tool is not "
+            "added again if you remove it. Delete this file to offer them again."
+        ),
+    }
+    tmp = state_path.with_name(f"{state_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        _atomic_replace(tmp, state_path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def offer_new_code_tools(
+    template_path: Path,
+    user_config_path: Path,
+    state_path: Path | None = None,
+    *,
+    lock_timeout: float = 10.0,
+) -> list[str]:
+    """Append new default Code tools to an existing ``modes.code.tools`` once.
+
+    Only names in :data:`CODE_TOOLS_INTRODUCED_SINCE_TEMPLATE` that the shipped
+    template also lists are considered. Each is offered once: appended when
+    missing, then recorded in ``state_path`` whether it was appended or the
+    user already had it. A recorded tool is never appended again, so removing
+    it from the list is a lasting opt-out. Runs on every start, independent
+    of the ``config_version`` short-circuit of the template merge.
+
+    Does nothing when the user config has no ``modes.code.tools`` list (the
+    template merge owns a missing key) or when the state file is unreadable
+    (to avoid re-adding a tool the user removed).
+
+    Args:
+        template_path: Shipped config.yaml template.
+        user_config_path: The user's config.yaml.
+        state_path: Offered-tools record; defaults to
+            ``<config dir>/.code_tools_offered.json``.
+        lock_timeout: Seconds to wait for the config write lock.
+
+    Returns:
+        The tool names appended to the user's list (empty when none).
+    """
+    if not user_config_path.exists() or not template_path.exists():
+        return []
+    if state_path is None:
+        state_path = user_config_path.with_name(CODE_TOOLS_OFFERED_STATE_FILE)
+
+    template_tools = _code_tools_list(load_yaml_round_trip(template_path))
+    if template_tools is None:
+        return []
+    candidates = [t for t in CODE_TOOLS_INTRODUCED_SINCE_TEMPLATE if t in template_tools]
+    if not candidates:
+        return []
+
+    with config_write_lock(lock_timeout=lock_timeout, config_path=user_config_path):
+        offered = _read_offered_code_tools(state_path)
+        if offered is None:
+            return []
+        pending = [t for t in candidates if t not in offered]
+        if not pending:
+            return []
+        user_data = load_yaml_round_trip(user_config_path)
+        user_tools = _code_tools_list(user_data)
+        if user_tools is None:
+            return []
+        added = [t for t in pending if t not in user_tools]
+        if added:
+            user_tools.extend(added)
+            dump_yaml_round_trip(user_config_path, user_data)
+        _write_offered_code_tools(state_path, offered | set(pending))
+
+    if added:
+        logger.info(
+            "[config] added new default Code tools to modes.code.tools: %s. "
+            "To opt out, remove them from modes.code.tools in %s; they will not "
+            "be added again.",
+            ", ".join(added),
+            user_config_path,
+        )
+    return added
 
 
 # ---------- 模型配置管理 ----------

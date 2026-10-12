@@ -6,7 +6,13 @@ from __future__ import annotations
 
 JIUWENBOX_SANDBOX_EXECUTION_TOOLS = frozenset({"bash", "mcp_exec_command", "code"})
 ACP_IDE_EXECUTION_TOOLS = frozenset({"create_terminal"})
-UNKNOWN_PROVIDER_EXECUTION_TOOLS = frozenset({"cmd", "powershell"})
+# run_tests starts the project's test runner directly on the host (not through
+# JiuwenBox). It is listed here so the provider partition stays closed and
+# exhaustive; the manual review in automatic permission comes from its "code"
+# category (tool_capabilities._CODE_TOOLS) and its absence from
+# JIUWENBOX_SANDBOX_EXECUTION_TOOLS, checked by
+# requires_manual_execution_provider_review below.
+UNKNOWN_PROVIDER_EXECUTION_TOOLS = frozenset({"cmd", "powershell", "run_tests"})
 
 EXECUTION_PROVIDER_CONTRACT_UNVERIFIED = "execution_provider_contract_unverified"
 

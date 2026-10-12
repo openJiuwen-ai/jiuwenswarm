@@ -159,6 +159,16 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="50%">Long-context handling, conversation compression, and context offload mechanisms.</td>
     </tr>
     <tr>
+      <td width="22%"><strong>Verification Loop</strong></td>
+      <td width="28%"><a href="en/VerificationLoop.md">Verification Loop (run_tests)</a></td>
+      <td width="50%">Code-mode <code>run_tests</code>: runs the tests for changed files, returns a compact result, and counts as gate verification.</td>
+    </tr>
+    <tr>
+      <td width="22%"><strong>Lean coding profile</strong></td>
+      <td width="28%"><a href="en/LeanCodingProfile.md">Lean coding profile</a></td>
+      <td width="50%">Code profile for headless coding, benchmarks and CI: only coding tools are shown; ~56% less fixed prompt per call.</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>Skill Self-Evolution</strong></td>
       <td width="28%"><a href="en/SkillSelfEvolution.md">Skill Self-Evolution</a></td>
       <td width="50%">Skill iteration, self-optimization, and capability accumulation mechanisms.</td>
@@ -190,7 +200,7 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
     </tr>
     <tr>
       <td width="22%"><strong>Memory</strong></td>
-      <td width="28%"><a href="en/Memory.md">Memory</a> / <a href="en/AutoMemory.md">Auto Memory</a> / <a href="en/CodingMemory.md">Coding Memory</a> / <a href="en/TaskMemory.md">Task Memory</a></td>
+      <td width="28%"><a href="en/Memory.md">Memory</a> / <a href="en/AutoMemory.md">Auto Memory</a> / <a href="en/CodingMemory.md">Coding Memory</a> / <a href="en/RepoAwareTools.md">Repo-Aware Tools</a> / <a href="en/TaskMemory.md">Task Memory</a></td>
       <td width="50%">Supports short-term and long-term memory management, automatic post-conversation memory extraction, code-specific memory accumulation, and task experience retrieval, reuse, and continuous accumulation.</td>
     </tr>
     <tr>
@@ -205,11 +215,6 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <th width="22%">Category</th>
       <th width="28%">Documentation</th>
       <th width="50%">Description</th>
-    </tr>
-    <tr>
-      <td width="22%"><strong>Package EXE</strong></td>
-      <td width="28%"><a href="en/PackExeGuide.md">Package EXE Guide</a></td>
-      <td width="50%">Windows standalone executable packaging flow.</td>
     </tr>
     <tr>
       <td width="22%"><strong>Auto Update</strong></td>

@@ -2486,6 +2486,8 @@ _EXPECTED_CODE_RAIL_NAMES_LEADER: frozenset[str] = frozenset(
         registry.CODE_AGENT_MODE,
         registry.STRUCTURED_ASK_USER,
         registry.CONTEXT_PROCESSOR,
+        registry.IMPLEMENT_COMPLETENESS,
+        registry.CODE_COMPLETION_GATE,
         registry.CODE_AGENT_RAIL,
         registry.USER_HOOKS,
         TEAM_SKILL_USE,
@@ -2551,6 +2553,8 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
         registry.SYMPHONY_TOOLKIT,
         registry.A4P_INTENT_AUTHORIZATION,
         registry.CODE_EXTRA_TOOLS,
+        registry.RUN_TESTS,
+        registry.REPO_TOOLS,
         registry.CRON_TOOLS,
         registry.SEND_FILE,
         registry.SESSION_MESSAGING_TOOLS,
@@ -2589,6 +2593,8 @@ def test_normal_team_plan_leader_uses_deepagent_plan_profile() -> None:
     assert registry.TEAM_PLAN_APPROVAL in leader_types
     assert registry.CODE_RUNTIME_PROMPT not in leader_types
     assert registry.CODE_CODING_MEMORY not in leader_types
+    assert registry.IMPLEMENT_COMPLETENESS not in leader_types
+    assert registry.CODE_COMPLETION_GATE not in leader_types
     assert registry.CODE_AGENT_MODE not in teammate_types
     assert registry.TEAM_PLAN_APPROVAL not in teammate_types
 
@@ -2606,6 +2612,29 @@ def test_team_work_plan_leader_uses_deepagent_plan_profile() -> None:
     assert registry.TEAM_PLAN_APPROVAL in leader_types
     assert registry.CODE_AGENT_MODE not in teammate_types
     assert registry.TEAM_PLAN_APPROVAL not in teammate_types
+    assert registry.IMPLEMENT_COMPLETENESS not in leader_types
+    assert registry.CODE_COMPLETION_GATE not in leader_types
+
+
+@pytest.mark.parametrize("mode", ["code.team", "team.plan.code"])
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_code_completeness_rails_are_code_profile_only(mode: str, role: str) -> None:
+    rails, _ = build_member_capability_specs({}, mode, role)
+    rail_types = {spec.type for spec in rails}
+    assert registry.IMPLEMENT_COMPLETENESS in rail_types
+    assert registry.CODE_COMPLETION_GATE in rail_types
+
+
+@pytest.mark.parametrize("mode", ["team", "team.plan.normal", "team.work.plan"])
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_work_profiles_never_mount_code_completeness_rails(
+    mode: str,
+    role: str,
+) -> None:
+    rails, _ = build_member_capability_specs({}, mode, role)
+    rail_types = {spec.type for spec in rails}
+    assert registry.IMPLEMENT_COMPLETENESS not in rail_types
+    assert registry.CODE_COMPLETION_GATE not in rail_types
 
 
 def test_normal_team_plan_agent_mode_provider_builds_work_rail() -> None:

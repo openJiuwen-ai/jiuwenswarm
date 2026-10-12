@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
@@ -28,6 +28,7 @@ from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness.factory import apply_deep_agent_parts
 from openjiuwen.harness.prompts import resolve_language
+from openjiuwen.harness.rails import ModelAnomalyDetectionRail
 from openjiuwen.harness.rails import (
     AgentModeRail,
     CodingMemoryRail as _BaseCodingMemoryRail,
@@ -99,12 +100,41 @@ from jiuwenswarm.agents.harness.common.cua_defaults import (
 )
 from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
     build_code_system_prompt,
+    code_policy_flags,
 )
 from jiuwenswarm.agents.harness.code import spec as code_agent_spec
-from jiuwenswarm.agents.harness.code.rails import (
-    CodeTaskPlanningRail,
-    PlanApprovalInterruptRail,
+from jiuwenswarm.agents.harness.code.context_diet import (
+    ContextDietConfig,
+    load_context_diet_config,
 )
+from jiuwenswarm.agents.harness.code.lean_profile import (
+    PROFILE_DEFAULT,
+    PROFILE_LEAN,
+    LeanProfileConfig,
+    LeanToolFilterRail,
+    filter_names,
+    resolve_code_profile,
+)
+from jiuwenswarm.agents.harness.code.rails import (
+    CodeCompletionGateRail,
+    CodeTaskPlanningRail,
+    ContextDietTrimRail,
+    FailClosedShellPolicyGuardRail,
+    ImplementCompletenessRail,
+    PlanApprovalInterruptRail,
+    ReadRestoreRail,
+    ShellPolicyGuardRail,
+)
+from jiuwenswarm.agents.harness.code.repo_tools import (
+    CodeSearchTool,
+    FindSymbolTool,
+    LspBridge,
+    RepoMapRail,
+    SymbolOutlineTool,
+    permission_read_policy_factory,
+)
+from jiuwenswarm.agents.harness.code.verification import RunTestsTool
+from jiuwenswarm.agents.harness.code.verification.tool import sys_operation_is_sandboxed
 from jiuwenswarm.agents.harness.common.rails import (
     ProjectMemoryRail,
     StructuredAskUserRail,
@@ -443,6 +473,12 @@ _TOOL_BUILD_NAMES: dict[str, str] = {
     "tool_retrieval": "_build_tool_retrieval_toolkit",
     "acp_chat": "_build_acp_chat_tool",
     "request_a4p_intent_authorization": "_build_a4p_tools",
+    "run_tests": "_build_run_tests_tool",
+    # Repo-aware tools (docs/en/RepoAwareTools.md). Switch off by removing the
+    # name from modes.code.tools; tune under modes.code.repo_tools.
+    "code_search": "_build_code_search_tool",
+    "find_symbol": "_build_find_symbol_tool",
+    "symbol_outline": "_build_symbol_outline_tool",
 }
 
 _CODE_MULTIMODAL_TOOL_NAMES = frozenset(
@@ -576,6 +612,17 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # second time (or resolve to agent-core's deprecated RunKind rail).
         "HeartbeatRail",
         "SessionMessagingRouteRail",
+        "ImplementCompletenessRail",
+        "CodeCompletionGateRail",
+        "ShellPolicyGuardRail",
+        "ModelAnomalyDetectionRail",
+        # Repo map prompt section, gated by modes.code.repo_map.enabled.
+        "RepoMapRail",
+        # Context diet (modes.code.context_diet.trim.enabled, default on)
+        "ContextDietTrimRail",
+        "ReadRestoreRail",
+        # Lean profile filter (modes.code.profile: lean); mounted last when enabled.
+        "LeanToolFilterRail",
     })
 
     def __init__(self) -> None:
@@ -918,9 +965,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             react_config=config,
             model=model,
             card=agent_card,
-            system_prompt=build_code_system_prompt(
-                code_graph_profile=self._code_graph_flags(config_base).root_prompt_profile,
-            ),
+            system_prompt=self._build_code_system_prompt(config_base),
             workspace_root=(
                 str(self._permission_workspace_root)
                 if self._auto_permission_enabled_for_config(
@@ -1020,10 +1065,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # JiuWenSwarmDeepAdapter._sync_mcp_servers_for_runtime): TUI loads the
         # global-default set on init, web loads nothing. Mirror the deep
         # adapter so session children inherit it via _new_session_scoped_adapter.
-        self._channel_id = str(
-            (config or {}).get("channel_id") if isinstance(config, dict) else ""
-            or ""
-        ).strip() or getattr(self, "_channel_id", "")
+        self._channel_id = self._channel_id_from_config(
+            config, getattr(self, "_channel_id", "")
+        )
 
         self._is_cron_execution = self._channel_id == "__cron__"
 
@@ -1166,6 +1210,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         )
         self._instance.deep_config.tool_owner_id = tool_owner_id
         self._instance.ability_manager.set_owner_id(tool_owner_id)
+        await self._drop_anomaly_rail_when_disabled(config_base)
         self._code_spec_rails = list(self._instance.configured_rails())
         # Reloads never sync a caller-supplied Spec's tools, so the multimodal
         # config refresh must not track and rewrite them either.
@@ -1922,6 +1967,18 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             ),
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
             _RailBuildInfo("_security_rail", self._build_security_rail),
+            # Honour execution_guard.model_anomaly_detection_rail in Code mode.
+            # Without an explicit instance, DeepAgentSpec.build() lets agent-core
+            # add ModelAnomalyDetectionRail() with SDK defaults, ignoring the
+            # configured retries, repeat thresholds and tool_loop_compact. When
+            # the section says enabled: false the builder returns None and
+            # create_instance() removes agent-core's default instance again
+            # (_drop_anomaly_rail_when_disabled, via DeepAgent.unregister_rail).
+            _RailBuildInfo(
+                "_model_anomaly_detection_rail",
+                self._build_model_anomaly_detection_rail,
+                {"config_base": config_base},
+            ),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
             _RailBuildInfo(
                 "_session_messaging_route_rail",
@@ -1951,6 +2008,21 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo(
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
             ),
+            _RailBuildInfo(
+                "_implement_completeness_rail",
+                self._build_implement_completeness_rail,
+            ),
+            _RailBuildInfo(
+                "_code_completion_gate_rail",
+                self._build_code_completion_gate_rail,
+            ),
+            _RailBuildInfo("_shell_policy_guard_rail", self._build_shell_policy_guard_rail),
+            _RailBuildInfo("_repo_map_rail", self._build_repo_map_rail),
+            _RailBuildInfo(
+                "_context_diet_trim_rail",
+                self._build_context_diet_trim_rail,
+            ),
+            _RailBuildInfo("_read_restore_rail", self._build_read_restore_rail),
             _RailBuildInfo("_code_task_planning_rail", self._build_code_task_planning_rail),
             _RailBuildInfo("_code_agent_rail", self._build_code_agent_rail),
             _RailBuildInfo("_code_plan_approval_rail", self._build_plan_approval_rail),
@@ -1962,10 +2034,36 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             ),
         ]
 
+        # Lean coding profile: skip fixed rails that only add interactive, team
+        # or delegation features, and mount LeanToolFilterRail last so the model
+        # sees only the allow-listed coding tools. Default profile: unchanged.
+        lean = resolve_code_profile(config_base)
+        if lean.enabled:
+            skip = set(lean.skip_rails)
+            skipped = [info.attr_name for info in rail_infos if info.attr_name in skip]
+            rail_infos = [info for info in rail_infos if info.attr_name not in skip]
+            # Other adapter code reads these attributes directly; a skipped rail
+            # must read as "not built" (None), exactly like a failed build.
+            for attr_name in skipped:
+                setattr(self, attr_name, None)
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_lean_tool_filter_rail",
+                    self._build_lean_tool_filter_rail,
+                    {"lean": lean},
+                )
+            )
+            logger.info(
+                "[JiuwenSwarmCodeAdapter] lean coding profile: skipped rails=%s",
+                skipped,
+            )
+
         # 动态 Rails — 从 config.yaml::modes.code.rails 读取
         # 跳过已在固定列表中的 rail，避免重复注册
         mode_config = config_base.get("modes", {}).get("code", {})
         configured_rails = mode_config.get("rails") or []
+        if lean.enabled:
+            configured_rails = filter_names(configured_rails, lean.rails_allow)
 
         for rail_name in configured_rails:
             if rail_name in self._FIXED_RAIL_NAMES:
@@ -2168,6 +2266,37 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         )
         return CodePlanPrePermissionGuardRail(self._code_agent_mode_rail)
 
+    async def _drop_anomaly_rail_when_disabled(
+        self, config_base: dict[str, Any] | None
+    ) -> None:
+        """Honour ``execution_guard.model_anomaly_detection_rail.enabled: false``.
+
+        With the section disabled, ``_build_model_anomaly_detection_rail`` returns
+        None and ``DeepAgentSpec.build()`` lets agent-core add its own default
+        ``ModelAnomalyDetectionRail()``. An explicit ``enabled: false`` therefore
+        removes that default through agent-core's public
+        ``DeepAgent.unregister_rail``. A config without the section (or without
+        ``enabled``) keeps agent-core's default, as before.
+        """
+        try:
+            guard_cfg = (config_base or {}).get("execution_guard") or {}
+            section = guard_cfg.get("model_anomaly_detection_rail") if isinstance(guard_cfg, dict) else None
+            if not isinstance(section, dict) or section.get("enabled", None) is not False:
+                return
+            instance = self._instance
+            if instance is None:
+                return
+            for rail in list(instance.find_rails_by_type((ModelAnomalyDetectionRail,))):
+                await instance.unregister_rail(rail)
+                logger.info(
+                    "[JiuwenSwarmCodeAdapter] ModelAnomalyDetectionRail removed: "
+                    "execution_guard.model_anomaly_detection_rail.enabled is false"
+                )
+        except Exception as exc:  # noqa: BLE001 - never block agent creation on this
+            logger.warning(
+                "[JiuwenSwarmCodeAdapter] could not remove ModelAnomalyDetectionRail: %s", exc
+            )
+
     def _build_agent_mode_rail(
         self,
         config_base: dict[str, Any] | None = None,
@@ -2197,6 +2326,120 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         except Exception as exc:
             logger.warning("[JiuwenSwarmCodeAdapter] CodeAgentModeRail create failed: %s", exc)
             return None
+
+    @staticmethod
+    def _build_code_system_prompt(config_base: Any) -> str:
+        """Code system prompt with lean profile, tools, and ``modes.code.policy``."""
+        enabled, headless = code_policy_flags(config_base)
+        logger.info(
+            "[JiuwenSwarmCodeAdapter] coding policy: enabled=%s headless=%s",
+            enabled,
+            headless,
+        )
+        return build_code_system_prompt(
+            profile=(
+                PROFILE_LEAN
+                if resolve_code_profile(config_base).enabled
+                else PROFILE_DEFAULT
+            ),
+            tool_names=(
+                (config_base.get("modes", {}).get("code", {}) or {}).get("tools") or []
+            ),
+            policy_enabled=enabled,
+            policy_headless=headless,
+            code_graph_profile=resolve_code_graph_flags(config_base).root_prompt_profile,
+        )
+
+    @staticmethod
+    def _build_lean_tool_filter_rail(lean: LeanProfileConfig) -> LeanToolFilterRail | None:
+        """Mount the lean-profile tool/prompt filter (modes.code.profile: lean)."""
+        try:
+            return LeanToolFilterRail(lean)
+        except Exception as exc:  # noqa: BLE001 - same contract as the sibling rail builders
+            logger.warning(
+                "[JiuwenSwarmCodeAdapter] LeanToolFilterRail create failed: %s",
+                exc,
+            )
+            return None
+
+    @staticmethod
+    def _build_implement_completeness_rail() -> ImplementCompletenessRail | None:
+        """Track real mutations and language-appropriate verification."""
+        try:
+            return ImplementCompletenessRail()
+        except Exception as exc:
+            logger.warning(
+                "[JiuwenSwarmCodeAdapter] ImplementCompletenessRail create failed: %s",
+                exc,
+            )
+            return None
+
+    @staticmethod
+    def _build_code_completion_gate_rail() -> CodeCompletionGateRail | None:
+        """Continue incomplete implementation turns instead of accepting text."""
+        try:
+            return CodeCompletionGateRail()
+        except Exception as exc:
+            logger.warning(
+                "[JiuwenSwarmCodeAdapter] CodeCompletionGateRail create failed: %s",
+                exc,
+            )
+            return None
+
+    def _build_read_restore_rail(self) -> ReadRestoreRail | None:
+        """Re-register reads the session made in an earlier process (modes.code.read_restore)."""
+        try:
+            return ReadRestoreRail(config_getter=self._active_code_config)
+        except Exception as exc:  # noqa: BLE001 - same contract as the sibling builders
+            logger.warning(
+                "[JiuwenSwarmCodeAdapter] ReadRestoreRail create failed: %s",
+                exc,
+            )
+            return None
+
+    @staticmethod
+    def _channel_id_from_config(config: Any, previous: str | None = "") -> str:
+        """Channel id from the instance config, keeping *previous* when unset.
+
+        ``channel_id: None`` counts as unset (it used to become the string "None").
+        """
+        value = config.get("channel_id") if isinstance(config, dict) else None
+        text = str(value).strip() if value is not None else ""
+        return text or str(previous or "")
+
+    def _build_shell_policy_guard_rail(
+        self,
+    ) -> ShellPolicyGuardRail | FailClosedShellPolicyGuardRail:
+        """Guard for the deny-only project policy and the shell network policy.
+
+        Enforces ``<project>/.jiuwenswarm/permissions.yaml`` (never merged into the
+        permission engine) and ``permissions.shell_network``. Headless (process
+        CLI) runs get ``permissions.headless.shell_network`` (default ``deny``);
+        interactive defaults are unchanged (``allow``). If the guard cannot be
+        built, an ERROR is logged and a fail-closed guard is mounted instead,
+        refusing shell and file tools with an actionable message (the protection
+        is never silently dropped, and the session stays usable otherwise).
+        """
+        try:
+            config_base = getattr(self, "_config_base_cache", None) or {}
+            permissions = config_base.get("permissions") if isinstance(config_base, dict) else {}
+            permissions = permissions if isinstance(permissions, dict) else {}
+            headless = str(getattr(self, "_channel_id", "") or "") == "process_cli"
+            rail = ShellPolicyGuardRail(permissions=permissions, headless=headless)
+            logger.info(
+                "[JiuwenSwarmCodeAdapter] ShellPolicyGuardRail create success "
+                "(headless=%s engine=%s shell_network=%s)",
+                headless,
+                bool(permissions.get("enabled")),
+                permissions.get("shell_network", "allow"),
+            )
+            return rail
+        except Exception as exc:  # fail closed instead of dropping the guard
+            logger.exception(
+                "[JiuwenSwarmCodeAdapter] ShellPolicyGuardRail create failed; shell and file "
+                "tools are refused this session",
+            )
+            return FailClosedShellPolicyGuardRail(reason=f"{type(exc).__name__}: {exc}")
 
     @staticmethod
     def _build_code_task_planning_rail() -> CodeTaskPlanningRail | None:
@@ -2356,6 +2599,37 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             )
             return None
 
+    def _build_repo_map_rail(self) -> RepoMapRail | None:
+        """Build RepoMapRail (docs/en/RepoAwareTools.md).
+
+        Fixed rail gated by ``modes.code.repo_map.enabled`` (default on). The
+        rail injects one bounded repository map into the system prompt before
+        the first model call of a workspace and keeps it stable afterwards.
+        Never raises: a failure only disables the map.
+        """
+        mode_config = self._active_code_config().get("modes", {}).get("code", {}) or {}
+        cfg = mode_config.get("repo_map")
+        cfg = cfg if isinstance(cfg, dict) else {}
+        if not cfg.get("enabled", True):
+            logger.info("[JiuwenSwarmCodeAdapter] RepoMapRail disabled by modes.code.repo_map.enabled")
+            return None
+        try:
+            rail = RepoMapRail(
+                depth=int(cfg.get("depth", 2)),
+                max_chars=int(cfg.get("max_chars", 6000)),
+                ignored_dirs=self._repo_tools_ignored_dirs(),
+                read_policy_factory=self._repo_tools_read_policy_factory(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[JiuwenSwarmCodeAdapter] RepoMapRail create failed: %s", exc)
+            return None
+        logger.info(
+            "[JiuwenSwarmCodeAdapter] RepoMapRail create success (depth=%s max_chars=%s)",
+            rail.depth,
+            rail.max_chars,
+        )
+        return rail
+
     def _build_agent_md_prompt_rail(self) -> Any | None:
         """Build AgentMdPromptRail（agent.md/claude.md → prompt attachment）.
 
@@ -2473,9 +2747,67 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         return ContextAssembleRail()
 
     def _build_context_processor_rail(self) -> Any:
-        """构建 ContextProcessorRail — 复用父类逻辑."""
+        """构建 ContextProcessorRail — 复用父类逻辑，并按配置追加 context-diet 压缩窗口.
+
+        ``modes.code.context_diet.compaction`` 开启时（默认开），在父类构建的
+        Rail 上追加 :mod:`jiuwenswarm.agents.harness.code.context_diet.processors`
+        中的滑动窗口处理器；关闭或窗口为 0 时不做任何改动，预置处理器链保持原样。
+        """
         from jiuwenswarm.server.runtime.agent_adapter.interface_deep import _build_context_processor_rail
-        return _build_context_processor_rail(self._config_cache)
+        rail = _build_context_processor_rail(self._config_cache)
+        if rail is None:
+            return None
+        try:
+            from jiuwenswarm.agents.harness.code.context_diet.processors import (
+                build_compaction_processors,
+            )
+
+            pairs = build_compaction_processors(self._context_diet_config().compaction)
+            if pairs:
+                rail.add_processors(pairs)
+                logger.info(
+                    "[JiuwenSwarmCodeAdapter] context-diet compaction processors added: %s",
+                    ", ".join(f"{name}(keep_last_k={cfg.keep_last_k}, tools={cfg.tool_names})" for name, cfg in pairs),
+                )
+            else:
+                logger.info("[JiuwenSwarmCodeAdapter] context-diet compaction disabled by modes.code.context_diet.compaction")
+        except Exception as exc:  # noqa: BLE001 - never lose the base rail over an optional add-on
+            logger.warning("[JiuwenSwarmCodeAdapter] context-diet compaction setup failed: %s", exc)
+        return rail
+
+    def _context_diet_config(self) -> ContextDietConfig:
+        """Read ``modes.code.context_diet`` from the active Code config (missing = defaults)."""
+        return load_context_diet_config(self._active_code_config())
+
+    def _build_context_diet_trim_rail(self) -> ContextDietTrimRail | None:
+        """构建 ContextDietTrimRail — 工具结果入库裁剪.
+
+        受 ``modes.code.context_diet.trim.enabled`` 控制（默认开）。关闭时返回 None，
+        工具结果原样进入上下文，行为与未引入本 Rail 时完全一致。
+        """
+        try:
+            trim_cfg = self._context_diet_config().trim
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[JiuwenSwarmCodeAdapter] context-diet config unreadable, trim rail skipped: %s", exc)
+            return None
+        if not trim_cfg.enabled:
+            logger.info("[JiuwenSwarmCodeAdapter] ContextDietTrimRail disabled by modes.code.context_diet.trim.enabled")
+            return None
+        try:
+            rail = ContextDietTrimRail(trim_cfg)
+            logger.info(
+                "[JiuwenSwarmCodeAdapter] ContextDietTrimRail create success "
+                "(preset=%s bash_max_lines=%s bash_max_chars=%s grep_max_lines=%s read_file_max_lines=%s)",
+                self._context_diet_config().preset,
+                trim_cfg.bash_max_lines,
+                trim_cfg.bash_max_chars,
+                trim_cfg.grep_max_lines,
+                trim_cfg.read_file_max_lines,
+            )
+            return rail
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[JiuwenSwarmCodeAdapter] ContextDietTrimRail create failed: %s", exc)
+            return None
 
     def _build_skill_evolution_rail_via_config(self) -> Any:
         """构建 SkillEvolutionRail."""
@@ -3255,6 +3587,59 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             logger.warning("[JiuwenSwarmCodeAdapter] tool_retrieval build failed: %s", exc)
             return None
 
+    def _build_run_tests_tool(self, agent_id: str) -> Any | None:
+        """Build ``run_tests`` (focused test runs recorded as gate evidence).
+
+        Rooted at the runtime workspace (read lazily, so worktree switches are
+        followed) and tuned by ``modes.code.run_tests``.
+
+        Not registered when the session's SysOperation runs in a sandbox: the
+        test process would run the project's code on the host. The tool also
+        re-checks at every call, in case the SysOperation is replaced later.
+        """
+        mode_config = self._active_code_config().get("modes", {}).get("code", {}) or {}
+        cfg = mode_config.get("run_tests")
+        cfg = cfg if isinstance(cfg, dict) else {}
+
+        def _sandboxed() -> bool:
+            return sys_operation_is_sandboxed(
+                getattr(self, "_sys_operation_card", None)
+            ) or sys_operation_is_sandboxed(getattr(self, "_sys_operation", None))
+
+        if _sandboxed():
+            logger.warning(
+                "[JiuwenSwarmCodeAdapter] run_tests not registered: the session runs in a sandbox "
+                "and run_tests would execute project code on the host"
+            )
+            return None
+
+        def _root() -> str:
+            root = self._runtime_workspace_dir or self._project_dir
+            if root:
+                return str(root)
+            from openjiuwen.core.sys_operation.cwd import get_cwd
+
+            return get_cwd()
+
+        try:
+            return RunTestsTool(
+                _root,
+                agent_id=agent_id,
+                language=self._resolve_runtime_language(),
+                timeout=cfg.get("timeout", 600),
+                max_summary_chars=cfg.get("max_summary_chars", 6000),
+                spill=bool(cfg.get("spill", True)),
+                spill_dir=cfg.get("spill_dir") or None,
+                spill_max_bytes=cfg.get("spill_max_bytes", 52428800),
+                python=cfg.get("python") or None,
+                fallback_whole_suite=bool(cfg.get("fallback_whole_suite", False)),
+                inherit_runner_env=bool(cfg.get("inherit_runner_env", False)),
+                sandboxed=_sandboxed,
+            )
+        except Exception as exc:  # noqa: BLE001 - an optional tool must not break the agent
+            logger.warning("[JiuwenSwarmCodeAdapter] run_tests build failed: %s", exc)
+            return None
+
     def _build_acp_chat_tool(self, agent_id: str) -> Any | None:
         """Register acp_chat when at least one external ACP profile is configured."""
         acp_cfg = self._active_code_config().get("acp_agents")
@@ -3262,6 +3647,117 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             logger.info("[JiuwenSwarmCodeAdapter] acp_chat skipped: no acp_agents configured")
             return None
         return acp_chat
+
+    # ─── Repo-aware tools ────────────────────────────────
+
+    def _repo_tools_config(self) -> dict[str, Any]:
+        """Return ``modes.code.repo_tools`` (an empty dict when absent)."""
+        mode_config = self._active_code_config().get("modes", {}).get("code", {}) or {}
+        value = mode_config.get("repo_tools")
+        return value if isinstance(value, dict) else {}
+
+    def _repo_tools_ignored_dirs(self) -> object:
+        """Return ``modes.code.repo_tools.ignored_dirs`` as configured (None = built-in list).
+
+        Shared by the three repo tools and the repo map so one setting governs
+        which directory names are pruned everywhere.
+        """
+        return self._repo_tools_config().get("ignored_dirs")
+
+    def _repo_tools_root_resolver(self) -> Callable[[], str]:
+        """Return a callable giving the directory the repo tools search in.
+
+        Read lazily on every call so a workspace switch (project change,
+        worktree enter/exit) is picked up without rebuilding the tools. Falls
+        back to the sys_operation cwd when no project is bound.
+        """
+
+        def _resolve() -> str:
+            root = self._runtime_workspace_dir or self._project_dir
+            if root:
+                return str(root)
+            from openjiuwen.core.sys_operation.cwd import get_cwd
+
+            return get_cwd()
+
+        return _resolve
+
+    def _repo_tools_read_policy_factory(self) -> Callable[[Any], Any]:
+        """Read policy for the repo tools and the repo map, evaluated per call.
+
+        Mirrors what ``read_file`` gets: the effective permissions (only when
+        ``permissions.enabled``) and the deny-only project policy. Read lazily
+        so hot-reloaded permissions and edited project policies apply at once.
+        """
+        def _permissions() -> dict[str, Any]:
+            config_base = getattr(self, "_config_base_cache", None) or {}
+            value = config_base.get("permissions") if isinstance(config_base, dict) else None
+            return value if isinstance(value, dict) else {}
+
+        def _session_id() -> str | None:
+            return str(getattr(self, "_parent_session_id", None) or "").strip() or None
+
+        return permission_read_policy_factory(_permissions, _session_id)
+
+    def _build_code_search_tool(self, agent_id: str) -> Any:
+        """Build ``code_search`` (ripgrep-backed ranked search, DIRECT exposure)."""
+        cfg = self._repo_tools_config().get("code_search")
+        cfg = cfg if isinstance(cfg, dict) else {}
+        return CodeSearchTool(
+            self._repo_tools_root_resolver(),
+            agent_id=agent_id,
+            language=self._resolve_runtime_language(),
+            default_max_results=cfg.get("max_results", 40),
+            default_context=cfg.get("context", 3),
+            rg_path=cfg.get("rg_path") or None,
+            ignored_dirs=self._repo_tools_ignored_dirs(),
+            read_policy_factory=self._repo_tools_read_policy_factory(),
+        )
+
+    def _repo_tools_lsp_bridge(self) -> LspBridge:
+        cfg = self._repo_tools_config().get("symbols")
+        cfg = cfg if isinstance(cfg, dict) else {}
+        try:
+            timeout = float(cfg.get("lsp_timeout", 10.0))
+        except (TypeError, ValueError):
+            timeout = 10.0
+        return LspBridge(timeout=timeout)
+
+    def _build_find_symbol_tool(self, agent_id: str) -> Any:
+        """Build ``find_symbol`` (LSP when running, regex heuristics otherwise)."""
+        cfg = self._repo_tools_config().get("symbols")
+        cfg = cfg if isinstance(cfg, dict) else {}
+        search_cfg = self._repo_tools_config().get("code_search")
+        search_cfg = search_cfg if isinstance(search_cfg, dict) else {}
+        from jiuwenswarm.agents.harness.code.repo_tools import CodeSearchEngine
+
+        engine = CodeSearchEngine(
+            self._repo_tools_root_resolver(),
+            rg_path=search_cfg.get("rg_path") or None,
+            ignored_dirs=self._repo_tools_ignored_dirs(),
+            read_policy_factory=self._repo_tools_read_policy_factory(),
+        )
+        return FindSymbolTool(
+            self._repo_tools_root_resolver(),
+            engine=engine,
+            lsp=self._repo_tools_lsp_bridge(),
+            agent_id=agent_id,
+            language=self._resolve_runtime_language(),
+            default_max_results=cfg.get("max_results", 20),
+        )
+
+    def _build_symbol_outline_tool(self, agent_id: str) -> Any:
+        """Build ``symbol_outline`` (LSP documentSymbol or regex outline)."""
+        cfg = self._repo_tools_config().get("symbols")
+        cfg = cfg if isinstance(cfg, dict) else {}
+        return SymbolOutlineTool(
+            self._repo_tools_root_resolver(),
+            lsp=self._repo_tools_lsp_bridge(),
+            agent_id=agent_id,
+            language=self._resolve_runtime_language(),
+            default_max_symbols=cfg.get("max_outline_symbols", 200),
+            read_policy_factory=self._repo_tools_read_policy_factory(),
+        )
 
     def merge_member_mcp_configs(self, agent: Any, config_base: dict[str, Any]) -> int:
         """Merge enabled code-mode MCP configs into a team member agent."""

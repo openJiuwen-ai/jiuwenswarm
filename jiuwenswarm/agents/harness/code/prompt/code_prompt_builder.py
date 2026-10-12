@@ -2,8 +2,10 @@
 
 """Code mode prompt builder — English-only.
 
-Provides 7 static prompt sections.
-Each section is a PromptSection with English-only content.
+Provides 8 static prompt sections, plus an optional headless-only section.
+Each section is a PromptSection; the builder renders English. The coding
+execution policy sections also carry a Chinese (``cn``) variant so a future
+``cn`` builder can use them without new text.
 
 Sections are injected once at agent creation time (build_code_system_prompt).
 Dynamic content (time, runtime state, memory) is injected per-request by Rails.
@@ -11,9 +13,14 @@ Dynamic content (time, runtime state, memory) is injected per-request by Rails.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Collection, Mapping
 from enum import IntEnum
+from typing import Any
 
 from openjiuwen.harness.prompts import PromptSection, SystemPromptBuilder
+
+_lean_logger = logging.getLogger(__name__)
 
 
 # ─── Priority ────────────────────────────────────
@@ -23,6 +30,8 @@ class CodePromptPriority(IntEnum):
     INTRO = 10
     SYSTEM = 15
     DOING_TASKS = 25
+    CODING_POLICY = 27
+    HEADLESS_POLICY = 28
     USING_YOUR_TOOLS = 31
     ACTIONS_WITH_CARE = 35
     TONE_AND_STYLE = 45
@@ -94,24 +103,38 @@ def _code_system_prompt() -> PromptSection:
 # ─── Session Guidance ────────────────────────────
 
 
+# Behavioural guardrail shared by every prompt profile: a profile may drop
+# tool-specific guidance, but never this rule. (In a 20-instance SWE-bench Pro run,
+# a lean prompt without it tried GitHub / git-history lookups on 9 tasks instead of 2.)
+_NO_ANSWER_HUNTING_RULE = (
+    "- Do not mine git history (git log, git show, git blame, other branches) "
+    "or the network (GitHub, package indexes, docs sites) to discover how the "
+    "task was or should be solved elsewhere; solve it from the working tree, "
+    "your own reasoning, and running the code. git status/diff are fine, and "
+    "when the user explicitly asks for history (blame, log, a changelog), use it.\n"
+)
+
+
 def _code_session_guidance_prompt() -> PromptSection:
     """Session-specific guidance — subagent routing and search-tool usage."""
     content = (
         "# Session-specific guidance\n"
         "\n"
-        "- Invoke subagent_spawn with a specialized agent when the work at hand "
-        "fits that agent's description, then call subagent_wait in the same turn "
-        "(or use task_tool if that is the registered subagent tool). "
-        "Subagents help you parallelize independent queries "
-        "or keep the main context window free of bulky results, "
-        "but do not reach for them when they are not needed. "
-        "Critically, never duplicate work a subagent is already handling — "
+        "- Delegation rules live in the subagent tool descriptions; "
+        "never duplicate work a subagent is already handling — "
         "once you hand research to a subagent, "
         "do not run the same searches yourself.\n"
         "- For narrow, targeted lookups in the codebase "
         "(say, a particular file, class, or function), "
         "call grep or glob directly.\n"
-        "- For wider exploration or deep research across the codebase, "
+        "- When code_search, find_symbol, or symbol_outline are registered, "
+        "start with them: code_search returns ranked matches grouped by file "
+        "with context; find_symbol locates a definition or its usages by name; "
+        "symbol_outline lists a file's symbols with line numbers. "
+        "Then read_file only the range you need (offset/limit). "
+        "Fall back to grep/glob when those tools are not available.\n"
+        + _NO_ANSWER_HUNTING_RULE
+        + "- For wider exploration or deep research across the codebase, "
         "use subagent_spawn with subagent_type=\"explore_agent\", "
         "then subagent_wait in the same turn. "
         "It is slower than calling grep/glob yourself, "
@@ -124,6 +147,45 @@ def _code_session_guidance_prompt() -> PromptSection:
         "or answer questions about codebase structure.\n"
         "- plan_agent is for designing implementation approaches "
         "before writing code.\n"
+    )
+    return PromptSection(
+        name="code_session_guidance",
+        content={"en": content},
+        priority=CodePromptPriority.SESSION_GUIDANCE,
+    )
+
+
+# ─── Verification (only when run_tests is registered) ─────
+
+
+RUN_TESTS_GUIDANCE = (
+    "# Verifying changes\n"
+    "After editing code, verify with the run_tests tool: pass the changed "
+    "source files as `files` (or explicit test ids as `tests`). It runs the "
+    "focused tests, returns failing ids with their tracebacks, and counts as "
+    "verification. Use bash for tests only when run_tests cannot run them."
+)
+
+
+def _code_verification_guidance_prompt() -> PromptSection:
+    return PromptSection(
+        name="code_verification_guidance",
+        content={"en": RUN_TESTS_GUIDANCE},
+        priority=CodePromptPriority.SESSION_GUIDANCE,
+    )
+
+
+def _code_session_guidance_lean_prompt() -> PromptSection:
+    """Lean-profile session guidance: no sub-agents, search with the tools at hand."""
+    content = (
+        "# Session-specific guidance\n"
+        "\n"
+        "- Locate code with grep or glob (or code_search / find_symbol when "
+        "available), then read only the ranges you need with read_file.\n"
+        "- Work directly; there are no sub-agents, todo tools or user prompts "
+        "in this session. If you are blocked, state what is missing in your "
+        "final answer.\n"
+        + _NO_ANSWER_HUNTING_RULE
     )
     return PromptSection(
         name="code_session_guidance",
@@ -146,6 +208,12 @@ def _code_doing_tasks_prompt() -> PromptSection:
         'working directory. For example, if the user asks you to change "methodName" '
         'to snake case, do not reply with just "method_name", instead find the method '
         "in the code and modify the code.\n"
+        "- For an explicit implement, fix, add, refactor, or patch request, "
+        "do not introduce yourself, list capabilities, or stop at a design essay. "
+        "Orient with a few targeted reads, edit the real implementation in the same "
+        "stage, wire new helpers into existing entrypoints, and run the repository's "
+        "real focused tests before finishing. If the user names an API, flag, command, "
+        "or artifact, deliver that exact contract rather than an unused parallel helper.\n"
         "- You are highly capable and can help users "
         "accomplish ambitious tasks "
         "that would otherwise be too complex or time-consuming. "
@@ -248,7 +316,41 @@ def _code_doing_tasks_prompt() -> PromptSection:
     )
 
 
+
+def code_policy_flags(config):
+    """Stub: coding policy prompt sections land in PR-B."""
+    return False, False
+
+
 # ─── Using Your Tools ──────────────────────────────
+
+
+_TODO_SUBSECTION_START = "## Task planning (todos)\n"
+_TODO_SUBSECTION_END = "## Parallel tool calls\n"
+
+
+def _code_using_your_tools_lean_prompt() -> PromptSection:
+    """Lean-profile tool usage: the default section without the todo subsection."""
+    section = _code_using_your_tools_prompt()
+    content = section.content["en"]
+    start = content.find(_TODO_SUBSECTION_START)
+    end = content.find(_TODO_SUBSECTION_END)
+    if 0 <= start < end:
+        content = content[:start] + content[end:]
+    else:
+        # Headings changed upstream: keep the section rather than fail agent creation.
+        _lean_logger.warning(
+            "[code_prompt_builder] lean: todo subsection markers not found; section kept"
+        )
+    content = content.replace(
+        "- To search for files use glob or list_files instead of find or ls\n",
+        "- To search for files use glob instead of find or ls\n",
+    )
+    return PromptSection(
+        name=section.name,
+        content={"en": content},
+        priority=section.priority,
+    )
 
 
 def _code_using_your_tools_prompt() -> PromptSection:
@@ -266,6 +368,8 @@ def _code_using_your_tools_prompt() -> PromptSection:
         "or echo redirection\n"
         "- To search for files use glob or list_files instead of find or ls\n"
         "- To search the content of files, use grep instead of the bash grep command\n"
+        "- To locate code, prefer code_search over grep/rg pipelines and "
+        "find_symbol/symbol_outline over reading whole files\n"
         "- Reserve bash exclusively for system commands "
         "and terminal operations that require shell execution. "
         "If you are unsure and there is a relevant dedicated tool, "
@@ -274,14 +378,8 @@ def _code_using_your_tools_prompt() -> PromptSection:
         "if it is absolutely necessary.\n"
         "## Task planning (todos)\n"
         "\n"
-        "Use todo_create and todo_modify only when multi-phase work benefits from tracking. "
-        "Scale the list to complexity — do not create todos for every request.\n"
-        "- Skip for single-file edits, quick fixes, questions, "
-        "or work you can finish in one focused pass.\n"
-        "- Medium work (e.g. greenfield backend + frontend + verify): "
-        "2–3 outcome-based milestones, not one item per file or spec section.\n"
-        "- Complex work (many deliverables, large refactor, unclear order): "
-        "4–6 milestones max.\n"
+        "Use todo_create and todo_modify only when multi-phase work benefits from tracking; "
+        "the todo_create tool description says when to skip and how many items to use.\n"
         "- Call todo_create once before substantive work; "
         "prefer parallel with the first write/bash, not a todo-only round.\n"
         "- Mark milestones completed via todo_modify in the same response as the next work tool "
@@ -305,8 +403,6 @@ def _code_using_your_tools_prompt() -> PromptSection:
         "\n"
         "## Bash usage rules\n"
         "\n"
-        "- Working directory persists between commands, "
-        "but shell state does not.\n"
         "- Prefer one bash call per workflow step when commands "
         "share context or order matters. "
         "Chain dependent commands with && in a single bash call; "
@@ -356,6 +452,31 @@ def _code_using_your_tools_prompt() -> PromptSection:
 
 
 # ─── Actions with Care ───────────────────────────────
+
+
+def _code_doing_tasks_lean_prompt() -> PromptSection:
+    """Lean-profile doing-tasks section: no ask_user escalation (headless)."""
+    section = _code_doing_tasks_prompt()
+    ask_user_sentence = (
+        "Escalate to the user with ask_user only when you're genuinely stuck "
+        "after investigation, not as a first response to friction."
+    )
+    content = section.content["en"]
+    if ask_user_sentence in content:
+        content = content.replace(
+            ask_user_sentence,
+            "If you are genuinely stuck after investigation, say so plainly in "
+            "your final answer instead of guessing.",
+        )
+    else:
+        _lean_logger.warning(
+            "[code_prompt_builder] lean: ask_user sentence not found; wording changed upstream"
+        )
+    return PromptSection(
+        name=section.name,
+        content={"en": content},
+        priority=section.priority,
+    )
 
 
 def _code_actions_with_care_prompt() -> PromptSection:
@@ -493,16 +614,68 @@ _CODE_SECTION_GENERATORS = [
 # ─── Entry Point ──────────────────────────────────
 
 
-def build_code_system_prompt(*, code_graph_profile: str = "off") -> str:
+# Lean coding profile (modes.code.profile: lean): same sections, minus the parts
+# that describe sub-agents, todo tools, list_files and ask_user, which that
+# profile does not expose. See jiuwenswarm/agents/harness/code/lean_profile.py.
+_CODE_SECTION_GENERATORS_LEAN = [
+    _code_intro_prompt,
+    _code_system_prompt,
+    _code_session_guidance_lean_prompt,
+    _code_doing_tasks_lean_prompt,
+    _code_using_your_tools_lean_prompt,
+    _code_actions_with_care_prompt,
+    _code_tone_and_style_prompt,
+    _code_output_efficiency_prompt,
+]
+
+
+def build_code_system_prompt(
+    profile: str | Collection[str] | None = "default",
+    tool_names: Collection[str] | None = None,
+    *,
+    policy_enabled: bool = True,
+    policy_headless: bool = False,
+    code_graph_profile: str = "off",
+) -> str:
     """Build the complete code mode system prompt (English-only).
 
     Called once at agent creation time. Dynamic content (time, runtime state,
-    memory) is injected per-request by Rails.
+    memory) is injected per-request by Rails. ``profile="lean"`` builds the
+    shorter prompt of the lean coding profile; any other string builds the
+    default prompt unchanged.
+
+    Args:
+        profile: ``\"default\"`` / ``\"lean\"``. A non-string first argument is
+            treated as ``tool_names`` for back-compat with the verification-loop
+            call style ``build_code_system_prompt([\"run_tests\"])``.
+        tool_names: ``modes.code.tools`` as configured. Sections that describe
+            an optional tool (currently ``run_tests``) are added only when that
+            tool is listed; ``None`` keeps the historical prompt unchanged.
+        policy_enabled: add the coding execution policy section
+            (``modes.code.policy.enabled``, default on).
+        policy_headless: add the unattended-execution section
+            (``modes.code.policy.headless``, default off; for headless runs).
+        code_graph_profile: ``\"off\"`` / ``\"graph\"``. When ``\"graph\"``,
+            append Code Graph retrieval guidance to the system prompt.
     """
+    if not isinstance(profile, str):
+        if tool_names is None:
+            tool_names = profile
+        profile = "default"
+
     builder = SystemPromptBuilder(language="en")
 
-    for generator in _CODE_SECTION_GENERATORS:
+    generators = (
+        _CODE_SECTION_GENERATORS_LEAN if profile == "lean" else _CODE_SECTION_GENERATORS
+    )
+    for generator in generators:
         builder.add_section(generator())
+    if policy_enabled:
+        builder.add_section(_code_policy_prompt())
+    if policy_headless:
+        builder.add_section(_code_headless_policy_prompt())
+    if tool_names and "run_tests" in tool_names:
+        builder.add_section(_code_verification_guidance_prompt())
 
     prompt = builder.build()
     if code_graph_profile == "graph":

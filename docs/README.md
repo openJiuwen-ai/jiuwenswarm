@@ -169,6 +169,21 @@
       <td width="50%">超长上下文处理、会话压缩与上下文卸载机制。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>验证闭环</strong></td>
+      <td width="28%"><a href="zh/验证闭环.md">验证闭环</a></td>
+      <td width="50%">Code 模式 <code>run_tests</code>：按修改文件运行相关测试、精简结果、计入完成度门控的验证证据。</td>
+    </tr>
+    <tr>
+      <td width="22%"><strong>精简编码模式</strong></td>
+      <td width="28%"><a href="zh/精简编码模式.md">精简编码模式</a></td>
+      <td width="50%">面向无头编码/评测/CI 的 Code 配置档：只展示编码工具，每次调用固定提示减少约 56%。</td>
+    </tr>
+    <tr>
+      <td width="22%"><strong>上下文瘦身（Code 模式）</strong></td>
+      <td width="28%"><a href="zh/上下文瘦身.md">上下文瘦身</a></td>
+      <td width="50%">工具结果入库裁剪、轮中压缩窗口与提示去重；配置 <code>modes.code.context_diet</code>。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>单机多实例运行</strong></td>
       <td width="28%"><a href="zh/单机多实例运行.md">单机多实例运行</a></td>
       <td width="50%">在同一台机器上运行多个 JiuwenSwarm 实例的部署场景与配置。</td>
@@ -194,6 +209,11 @@
       <td width="50%">系统命令、文件操作、工具调用中的安全拦截与权限管控。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>Shell 权限策略</strong></td>
+      <td width="28%"><a href="zh/Shell权限策略.md">Shell权限策略</a></td>
+      <td width="50%">Shell 网络访问策略、无头运行默认禁网，以及只能拒绝、由 Code 模式守卫 Rail 执行的项目策略文件。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>E2A</strong></td>
       <td width="28%"><a href="zh/E2A-protocol.md">E2A-protocol</a></td>
       <td width="50%">Gateway 与 AgentServer 之间的统一请求信封协议。</td>
@@ -210,13 +230,8 @@
     </tr>
     <tr>
       <td width="22%"><strong>记忆</strong></td>
-      <td width="28%"><a href="zh/记忆.md">记忆</a> / <a href="zh/自动记忆.md">自动记忆</a> / <a href="zh/编码记忆.md">编码记忆</a> / <a href="zh/经验记忆.md">经验记忆</a> / <a href="zh/JiuwenMemory-SDK接入.md">JiuwenMemory SDK</a></td>
+      <td width="28%"><a href="zh/记忆.md">记忆</a> / <a href="zh/自动记忆.md">自动记忆</a> / <a href="zh/编码记忆.md">编码记忆</a> / <a href="zh/仓库感知工具.md">仓库感知工具</a> / <a href="zh/经验记忆.md">经验记忆</a> / <a href="zh/JiuwenMemory-SDK接入.md">JiuwenMemory SDK</a></td>
       <td width="50%">支持长短期记忆管理、对话后自动提取记忆、编码场景下的专属记忆沉淀，任务经验的检索、复用与持续积累，以及以 SDK 模式接入 agent-memory 记忆引擎。</td>
-    </tr>
-    <tr>
-      <td width="22%"><strong>TUI 模式</strong></td>
-      <td width="28%"><a href="zh/SLASH_COMMAND_ARCHITECTURE.md">Slash 命令架构</a> / <a href="zh/Slash命令表.md">Slash 命令速查</a> / <a href="zh/模式系统.md">模式系统</a> / <a href="zh/TUI使用SwarmFlow指南.md">SwarmFlow（TUI）</a> / <a href="zh/自动修复PR.md">自动修复 PR</a></td>
-      <td width="50%">支持 TUI 终端中的 Slash 命令体系、常用命令速查、PLAN / AGENT / CODE / TEAM 模式切换，SwarmFlow 开关、运行树查看与 HITL 回复，以及 <code>/autofix-pr</code> 自动修复 PR 直至检查通过。</td>
     </tr>
     <tr>
       <th colspan="3" align="left" bgcolor="#f3f4f6"><h3>📄 附录</h3></th>
@@ -225,11 +240,6 @@
       <th width="22%">分类</th>
       <th width="28%">文档链接</th>
       <th width="50%">内容</th>
-    </tr>
-    <tr>
-      <td width="22%"><strong>打包 EXE</strong></td>
-      <td width="28%"><a href="zh/打包exe指南.md">打包 exe 指南</a></td>
-      <td width="50%">Windows 独立执行程序打包流程。</td>
     </tr>
     <tr>
       <td width="22%"><strong>自动更新</strong></td>

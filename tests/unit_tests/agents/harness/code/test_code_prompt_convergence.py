@@ -132,6 +132,17 @@ def test_code_prompt_bounds_pre_change_exploration_and_verification():
     ) in text
 
 
+def test_code_prompt_requires_implementation_contract_delivery():
+    text = build_code_system_prompt()
+
+    assert (
+        "For an explicit implement, fix, add, refactor, or patch request, "
+        "do not introduce yourself, list capabilities, or stop at a design essay."
+    ) in text
+    assert "wire new helpers into existing entrypoints" in text
+    assert "deliver that exact contract rather than an unused parallel helper" in text
+
+
 def test_code_prompt_excludes_non_cc_convergence_rules():
     text = build_code_system_prompt()
 

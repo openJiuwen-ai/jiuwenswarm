@@ -103,6 +103,18 @@ if getattr(sys, "frozen", False):
                 else str(_uv_runtime)
             )
 
+    # Bundled ripgrep (scripts/fetch_ripgrep.py → vendor/ripgrep, not on PATH):
+    # point OPENJIUWEN_RG at it once `rg --version` has succeeded. The outcome
+    # is recorded in the environment, so child processes inherit it without
+    # re-running the check; a user-set OPENJIUWEN_RG/ICODE_RG always wins.
+    try:
+        from jiuwenswarm.common.bundled_ripgrep import configure_bundled_ripgrep
+
+        configure_bundled_ripgrep()
+    except Exception as _rg_exc:  # noqa: BLE001 - never block startup on an optional tool
+        # Logging is not configured yet; record it for the agent server's report.
+        os.environ.setdefault("JIUWENSWARM_BUNDLED_RG", f"unusable:self-check error: {_rg_exc}")
+
     # Windows: 防止 subprocess 弹出控制台窗口（console=False 编译时 git 等命令会弹出黑框）
     # Monkey-patch asyncio.create_subprocess_exec 和 subprocess.Popen，
     # 自动添加 CREATE_NO_WINDOW 标志

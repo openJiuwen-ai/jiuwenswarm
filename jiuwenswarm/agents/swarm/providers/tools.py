@@ -9,6 +9,7 @@ elements, each self-gated by the config source and filtered against the swarm
 * ``swarm.skill_toolkit`` — skill discovery / install / uninstall tools.
 * ``swarm.skill_retrieval`` — agentic installed skill tree retrieval tools.
 * ``swarm.user_todos`` — the personal todo tool.
+* ``swarm.run_tests`` — Code-mode focused test runs (``modes.code.tools`` gated).
 * ``swarm.video`` — the video-understanding tool (``models.video`` gated).
 * ``swarm.image_gen`` — the image-generation tool (``IMAGE_GEN_API_KEY`` gated).
 * ``swarm.video_gen`` — the video-generation tools (``models.video`` gated).
@@ -117,6 +118,7 @@ logger = logging.getLogger(__name__)
 SKILL_TOOLKIT = "swarm.skill_toolkit"
 SKILL_RETRIEVAL = "swarm.skill_retrieval"
 USER_TODOS = "swarm.user_todos"
+RUN_TESTS = "swarm.run_tests"
 VIDEO = "swarm.video"
 IMAGE_GEN = "swarm.image_gen"
 VIDEO_GEN = "swarm.video_gen"
@@ -125,6 +127,7 @@ XIAOYI_PHONE = "swarm.xiaoyi_phone"
 SYMPHONY_TOOLKIT = "swarm.symphony_toolkit"
 A4P_INTENT_AUTHORIZATION = "swarm.a4p_intent_authorization"
 CODE_EXTRA_TOOLS = "swarm.code_extra_tools"
+REPO_TOOLS = "swarm.repo_tools"
 
 # xiaoyi phone tool objects, gated by ``channels.xiaoyi.phone_tools_enabled``.
 _XIAOYI_PHONE_TOOLS = (
@@ -567,6 +570,74 @@ def build_user_todos(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any
     return _filter_whitelist(_build_user_todo_tools())
 
 
+class RunTestsInput(ConstructionInput):
+    """Construction inputs for the Code-mode ``run_tests`` tool."""
+
+    enabled: bool = param_field(default=False, description="Whether run_tests is listed in modes.code.tools.")
+    settings: dict[str, Any] = param_field(default_factory=dict, description="modes.code.run_tests")
+
+
+@harness_element(
+    kind=ElementKind.TOOL,
+    name=RUN_TESTS,
+    description="Code-mode run_tests: focused test runs whose results count as gate verification.",
+    input_model=RunTestsInput,
+)
+def build_run_tests(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
+    """Build ``run_tests`` rooted at the member workspace (empty when not listed)."""
+    inp = RunTestsInput.resolve(params, ctx)
+    if not inp.enabled:
+        return []
+    try:
+        from openjiuwen.harness.schema.build_context import parent_sys_operation
+
+        from jiuwenswarm.agents.harness.code.verification import RunTestsTool
+        from jiuwenswarm.agents.harness.code.verification.tool import (
+            sys_operation_is_sandboxed,
+        )
+    except Exception as exc:  # noqa: BLE001 - optional tool at assembly
+        logger.warning("[swarm.run_tests] import failed: %s", exc)
+        return []
+
+    def _sandboxed() -> bool:
+        return sys_operation_is_sandboxed(parent_sys_operation(ctx))
+
+    if _sandboxed():
+        # The test process would run the member's project code on the host.
+        logger.warning("[swarm.run_tests] not built: the member runs in a sandbox")
+        return []
+    root = _workspace_root(ctx) or getattr(ctx, "project_dir", None)
+
+    def _root() -> str:
+        if root:
+            return str(root)
+        from openjiuwen.core.sys_operation.cwd import get_cwd
+
+        return get_cwd()
+
+    cfg = inp.settings if isinstance(inp.settings, dict) else {}
+    language = "cn" if str(getattr(ctx, "language", "") or "").lower().startswith("cn") else "en"
+    try:
+        return [
+            RunTestsTool(
+                _root,
+                language=language,
+                timeout=cfg.get("timeout", 600),
+                max_summary_chars=cfg.get("max_summary_chars", 6000),
+                spill=bool(cfg.get("spill", True)),
+                spill_dir=cfg.get("spill_dir") or None,
+                spill_max_bytes=cfg.get("spill_max_bytes", 52428800),
+                python=cfg.get("python") or None,
+                fallback_whole_suite=bool(cfg.get("fallback_whole_suite", False)),
+                inherit_runner_env=bool(cfg.get("inherit_runner_env", False)),
+                sandboxed=_sandboxed,
+            )
+        ]
+    except Exception as exc:  # noqa: BLE001 - optional tool at assembly
+        logger.warning("[swarm.run_tests] construction failed: %s", exc)
+        return []
+
+
 @harness_element(
     kind=ElementKind.TOOL,
     name=VIDEO,
@@ -666,16 +737,135 @@ def build_code_extra_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> li
         return []
 
 
+def _repo_read_policy_factory(ctx: SwarmBuildContext) -> Any:
+    """Read policy for a member's repo tools (permissions from ``ctx.config``)."""
+    from jiuwenswarm.agents.harness.code.repo_tools import (
+        permission_read_policy_factory,
+    )
+
+    def _permissions() -> dict[str, Any]:
+        config = getattr(ctx, "config", None)
+        value = config.get("permissions") if isinstance(config, dict) else None
+        return value if isinstance(value, dict) else {}
+
+    def _session_id() -> str | None:
+        return str(getattr(ctx, "session_id", "") or "").strip() or None
+
+    return permission_read_policy_factory(_permissions, _session_id)
+
+
+class RepoToolsInput(ConstructionInput):
+    """Construction inputs for the repo-aware code tools."""
+
+    enabled: bool = param_field(default=True, description="Whether any repo tool is listed in modes.code.tools.")
+    tool_names: list[str] = param_field(
+        default_factory=lambda: ["code_search", "find_symbol", "symbol_outline"],
+        description="Which of code_search / find_symbol / symbol_outline to build.",
+    )
+    code_search: dict[str, Any] = param_field(default_factory=dict, description="modes.code.repo_tools.code_search")
+    symbols: dict[str, Any] = param_field(default_factory=dict, description="modes.code.repo_tools.symbols")
+    ignored_dirs: list[str] | None = param_field(
+        default=None,
+        description="modes.code.repo_tools.ignored_dirs (None = the built-in VCS/cache list).",
+    )
+
+
+@harness_element(
+    kind=ElementKind.TOOL,
+    name=REPO_TOOLS,
+    description="Repo-aware code tools: code_search, find_symbol, symbol_outline (DIRECT exposure).",
+    input_model=RepoToolsInput,
+)
+def build_repo_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
+    """Build the repo-aware tools rooted at the member workspace."""
+    inp = RepoToolsInput.resolve(params, ctx)
+    if not inp.enabled or not inp.tool_names:
+        return []
+    try:
+        from jiuwenswarm.agents.harness.code.repo_tools import (
+            CodeSearchEngine,
+            CodeSearchTool,
+            FindSymbolTool,
+            LspBridge,
+            SymbolOutlineTool,
+        )
+    except Exception as exc:  # noqa: BLE001 - tools are optional at assembly
+        logger.warning("[swarm.repo_tools] import failed: %s", exc)
+        return []
+    root = _workspace_root(ctx) or getattr(ctx, "project_dir", None)
+
+    def _root() -> str:
+        if root:
+            return str(root)
+        from openjiuwen.core.sys_operation.cwd import get_cwd
+
+        return get_cwd()
+
+    search_cfg = inp.code_search if isinstance(inp.code_search, dict) else {}
+    symbols_cfg = inp.symbols if isinstance(inp.symbols, dict) else {}
+    read_policy_factory = _repo_read_policy_factory(ctx)
+    try:
+        lsp_timeout = float(symbols_cfg.get("lsp_timeout", 10.0))
+    except (TypeError, ValueError):
+        lsp_timeout = 10.0
+    language = "cn" if str(getattr(ctx, "language", "") or "").lower().startswith("cn") else "en"
+    tools: list[Any] = []
+    try:
+        if "code_search" in inp.tool_names:
+            tools.append(
+                CodeSearchTool(
+                    _root,
+                    language=language,
+                    default_max_results=search_cfg.get("max_results", 40),
+                    default_context=search_cfg.get("context", 3),
+                    rg_path=search_cfg.get("rg_path") or None,
+                    ignored_dirs=inp.ignored_dirs,
+                    read_policy_factory=read_policy_factory,
+                )
+            )
+        if "find_symbol" in inp.tool_names:
+            tools.append(
+                FindSymbolTool(
+                    _root,
+                    engine=CodeSearchEngine(
+                        _root,
+                        rg_path=search_cfg.get("rg_path") or None,
+                        ignored_dirs=inp.ignored_dirs,
+                        read_policy_factory=read_policy_factory,
+                    ),
+                    lsp=LspBridge(timeout=lsp_timeout),
+                    language=language,
+                    default_max_results=symbols_cfg.get("max_results", 20),
+                )
+            )
+        if "symbol_outline" in inp.tool_names:
+            tools.append(
+                SymbolOutlineTool(
+                    _root,
+                    lsp=LspBridge(timeout=lsp_timeout),
+                    language=language,
+                    default_max_symbols=symbols_cfg.get("max_outline_symbols", 200),
+                    read_policy_factory=read_policy_factory,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 - tools are optional at assembly
+        logger.warning("[swarm.repo_tools] construction failed: %s", exc)
+        return []
+    return tools
+
+
 __all__ = [
     "SKILL_TOOLKIT",
     "SKILL_RETRIEVAL",
     "USER_TODOS",
+    "RUN_TESTS",
     "VIDEO",
     "IMAGE_GEN",
     "XIAOYI_PHONE",
     "SYMPHONY_TOOLKIT",
     "A4P_INTENT_AUTHORIZATION",
     "CODE_EXTRA_TOOLS",
+    "REPO_TOOLS",
     "vision_model_config_params",
     "audio_dedicated_configured",
     "audio_model_config_params",

@@ -60,7 +60,9 @@ _SHELL_TOOLS = {"bash", "cmd", "powershell", "mcp_exec_command", "create_termina
 
 def shell_tool_names() -> list[str]:
     return sorted(_SHELL_TOOLS)
-_CODE_TOOLS = {"code"}
+# run_tests executes the project's test code (and whatever extra_args select),
+# so it carries the same dynamic-execution risk class as a code tool.
+_CODE_TOOLS = {"code", "run_tests"}
 _PATH_TOOLS = {
     "apply_patch",
     "lsp",
