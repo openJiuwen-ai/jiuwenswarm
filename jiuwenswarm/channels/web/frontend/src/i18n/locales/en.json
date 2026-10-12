@@ -4431,5 +4431,32 @@
     "sectionError": "Error",
     "charUnit": "chars",
     "clickToViewDetail": "Click to view details"
+  },
+  "a4pSettings": {
+    "title": "A4P pre-authorization",
+    "enableTitle": "Enable A4P pre-authorization",
+    "description": "Batch-authorize the multiple permissions an Agent needs for tasks in a session, and pre-authorize permissions for scheduled tasks. Only applies in Default permissions mode."
+  },
+  "a4pAuthorization": {
+    "expandParams": "Expand parameters for {{name}}",
+    "collapseParams": "Collapse parameters for {{name}}",
+    "permissionScope": "Permission scope",
+    "selectedCount": "{{selected}} / {{total}} selected",
+    "readyRange": "Authorization will cover the selected permissions.",
+    "emptySelection": "Select at least one permission, or reject this request.",
+    "title": "A4P Pre-authorization Confirmation",
+    "reason": "Authorization reason",
+    "defaultReason": "Pre-authorize the following tool operations.",
+    "tools": {
+      "bash": "Run shell command",
+      "mcpExecCommand": "Run command",
+      "createTerminal": "Create terminal",
+      "writeFile": "Write file",
+      "editFile": "Edit file",
+      "acpChat": "Chat with agent"
+    },
+    "reject": "Reject",
+    "approve": "Authorize",
+    "waiting": "Processing..."
   }
 }

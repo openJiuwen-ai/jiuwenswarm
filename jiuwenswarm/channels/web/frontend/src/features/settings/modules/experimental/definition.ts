@@ -9,6 +9,7 @@ import {
   TaskFullDuplexSetting,
   TrajectoryUiSetting,
 } from './ExperimentalSettings';
+import { A4PSettings } from './A4PSettings';
 
 export const experimentalModule: SettingsModuleDefinition = {
   id: 'experimental',
@@ -40,6 +41,12 @@ export const experimentalModule: SettingsModuleDefinition = {
       id: 'a2ui',
       titleKey: 'settingsPanel.experimental.a2ui',
       items: [{ id: 'a2ui', component: 'custom', render: A2UISetting }],
+    },
+    {
+      id: 'a4p',
+      titleKey: 'a4pSettings.title',
+      separatedRows: true,
+      items: [{ id: 'a4p-settings', component: 'custom', render: A4PSettings }],
     },
     {
       id: 'trajectory-ui',

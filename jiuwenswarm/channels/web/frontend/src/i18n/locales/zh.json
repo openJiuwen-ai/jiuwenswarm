@@ -4416,5 +4416,32 @@
     "sectionError": "错误",
     "charUnit": "字符",
     "clickToViewDetail": "点击查看详情"
+  },
+  "a4pSettings": {
+    "title": "A4P预授权",
+    "enableTitle": "启用A4P预授权",
+    "description": "允许在会话中批量授权 Agent 执行任务所需的多项权限，并为定时任务预授权权限。仅在“默认权限”模式下生效。"
+  },
+  "a4pAuthorization": {
+    "expandParams": "展开 {{name}} 的参数",
+    "collapseParams": "收起 {{name}} 的参数",
+    "permissionScope": "授权范围",
+    "selectedCount": "已选 {{selected}} / {{total}} 项",
+    "readyRange": "将按所选权限授权",
+    "emptySelection": "请至少选择一项权限，或拒绝本次授权",
+    "title": "A4P 预授权确认",
+    "reason": "授权原因",
+    "defaultReason": "为以下工具操作申请预授权。",
+    "tools": {
+      "bash": "执行 Shell 命令",
+      "mcpExecCommand": "执行命令",
+      "createTerminal": "创建终端",
+      "writeFile": "写入文件",
+      "editFile": "编辑文件",
+      "acpChat": "与 Agent 对话"
+    },
+    "reject": "拒绝",
+    "approve": "授权",
+    "waiting": "处理中..."
   }
 }
