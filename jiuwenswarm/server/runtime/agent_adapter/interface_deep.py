@@ -270,6 +270,7 @@ _DEEPRESEARCH_CHECKPOINT_UNCERTAIN = "DEEPRESEARCH_CHECKPOINT_UNCERTAIN"
 _DEEPRESEARCH_CHECKPOINT_UNCERTAIN_MESSAGE = (
     "会话检查点状态不确定，请重试以重新加载会话。"
 )
+_SKILL_TURBO_MODEL_IDENTITY_KEY = "__skill_turbo_model_identity__"
 
 from jiuwenswarm.agents.harness.team.a2x.a2x_registry_runtime import (
     init_a2x_client,
@@ -14278,6 +14279,49 @@ class JiuWenSwarmDeepAdapter:
                     exc_info=True,
                 )
             return self._make_skill_turbo_resume_duplicate_placeholder(request)
+        resume_inputs = resume_ctx.get("inputs")
+        resume_metadata = resume_inputs.get("metadata") if isinstance(resume_inputs, dict) else None
+        model_identity = (
+            resume_metadata.get(_SKILL_TURBO_MODEL_IDENTITY_KEY)
+            if isinstance(resume_metadata, dict)
+            else None
+        )
+        try:
+            if not isinstance(model_identity, dict):
+                raise RuntimeError(
+                    "SkillTurbo resume context missing model identity; please restart the task"
+                )
+            model_ref = str(model_identity.get("model_ref") or "").strip()
+            saved_model_name = str(model_identity.get("model_name") or "").strip()
+            if not model_ref:
+                raise RuntimeError(
+                    "SkillTurbo resume context missing model_ref; please restart the task"
+                )
+            resolved_model = self._resolve_model_by_identity(model_ref)
+            actual_model_name = str(
+                getattr(resolved_model.model_config, "model_name", "") or ""
+            ).strip()
+            if saved_model_name and saved_model_name != actual_model_name:
+                raise ValueError(
+                    "SkillTurbo resume model identity mismatch: "
+                    f"expected {saved_model_name!r}, found {actual_model_name!r}"
+                )
+            self._apply_model_to_react_agent(resolved_model)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] SkillTurbo resume model restored: "
+                "model_name=%s model_ref=%s",
+                actual_model_name,
+                model_ref,
+            )
+        except Exception:
+            try:
+                await session.post_run()
+            except Exception:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] skill_turbo resume model restore post_run failed",
+                    exc_info=True,
+                )
+            raise
         pending = str(resume_ctx.get("pending_tool_call_id") or "")
         answer_rid = str(params.get("request_id") or "").strip()
         if pending and answer_rid and answer_rid != pending:
@@ -19585,6 +19629,14 @@ class JiuWenSwarmDeepAdapter:
         self._inject_extension_config_into_inputs(inputs)
         self._inject_model_selection_into_inputs(request, inputs)
 
+        await self._maybe_apply_pending_reload()
+        # SkillTurbo resume: 检测 answers + resume_ctx，走 SkillTurbo resume 路径
+        skill_turbo_resume_stream = await self._try_skill_turbo_resume(request, inputs)
+        if skill_turbo_resume_stream is not None:
+            async for chunk in skill_turbo_resume_stream:
+                yield chunk
+            return
+
         _req_model = (request.params.get("model_name") or "") if isinstance(request.params, dict) else ""
         if not self._has_valid_model_config(_req_model):
             yield AgentResponseChunk(
@@ -19593,13 +19645,6 @@ class JiuWenSwarmDeepAdapter:
                 payload={"event_type": "chat.error", "error": "模型未正确配置，请先配置模型信息"},
                 is_complete=True,
             )
-            return
-
-        # SkillTurbo resume: 检测 answers + resume_ctx，走 SkillTurbo resume 路径
-        skill_turbo_resume_stream = await self._try_skill_turbo_resume(request, inputs)
-        if skill_turbo_resume_stream is not None:
-            async for chunk in skill_turbo_resume_stream:
-                yield chunk
             return
 
         session_id = request.session_id or "default"
@@ -20135,7 +20180,29 @@ class JiuWenSwarmDeepAdapter:
             # 按请求选择模型（企业配置已在 create_instance 合并）
             resolved_model = self._resolve_model_for_request(request)
             self._apply_model_to_react_agent(resolved_model)
-            await self._maybe_apply_pending_reload()
+            model_name = str(
+                getattr(resolved_model.model_config, "model_name", "") or ""
+            ).strip()
+            model_refs = [
+                ref
+                for ref, keys in self._model_identity_to_keys.items()
+                if any(self._model_cache.get(key) is resolved_model for key in keys)
+            ]
+            request_metadata = (
+                dict(request.metadata) if isinstance(request.metadata, dict) else {}
+            )
+            if len(model_refs) == 1:
+                request_metadata[_SKILL_TURBO_MODEL_IDENTITY_KEY] = {
+                    "model_name": model_name,
+                    "model_ref": model_refs[0],
+                }
+            else:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] selected model identity unavailable "
+                    "for SkillTurbo resume: model_name=%s refs=%s",
+                    model_name,
+                    len(model_refs),
+                )
             request_env_tokens = self._bind_request_env_overlay()
             self._mark_session_active(session_id)
             session_active = True
@@ -20157,7 +20224,7 @@ class JiuWenSwarmDeepAdapter:
                     mode=mode,
                     request_id=request.request_id,
                     channel_id=request.channel_id,
-                    request_metadata=request.metadata,
+                    request_metadata=request_metadata,
                     trusted_dirs=inputs.get("trusted_dirs"),
                     cwd=inputs.get("cwd"),
                     workspace=inputs.get("workspace_dir"),
