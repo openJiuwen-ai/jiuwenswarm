@@ -4,6 +4,7 @@ import {
   A2UISetting,
   ExternalCliSettingsItem,
   ProactiveLimitsSetting,
+  RSISetting,
   TaskAsrSetting,
   TaskFullDuplexSetting,
   TrajectoryUiSetting,
@@ -29,6 +30,11 @@ export const experimentalModule: SettingsModuleDefinition = {
       id: 'external-cli-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',
       items: [{ id: 'external-cli-agents', component: 'custom', render: ExternalCliSettingsItem }],
+    },
+    {
+      id: 'rsi',
+      titleKey: 'settingsPanel.experimental.rsi',
+      items: [{ id: 'rsi-enabled', component: 'custom', render: RSISetting }],
     },
     {
       id: 'a2ui',
