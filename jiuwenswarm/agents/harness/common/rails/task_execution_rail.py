@@ -40,6 +40,7 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     snapshot_includes_persistent_todos,
 )
 from jiuwenswarm.common.tool_display import build_tool_display_name
+from jiuwenswarm.common.todo_snapshot import overlay_serial_todo_statuses
 from jiuwenswarm.common.utils import logger
 
 _ACTIVE_TASK_ID: ContextVar[str | None] = ContextVar(
@@ -53,38 +54,6 @@ SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY = (
 def get_current_task_id() -> str | None:
     """Return current task id for stream payload correlation."""
     return _ACTIVE_TASK_ID.get()
-
-
-_SERIAL_TODO_DONE_STATUSES = frozenset({"completed", "cancelled"})
-
-
-def overlay_serial_todo_statuses(
-    items: list[dict[str, Any]],
-    *,
-    done_statuses: frozenset[str] | None = None,
-) -> list[dict[str, Any]]:
-    """Hide out-of-order completed/in_progress rows from a UI snapshot.
-
-    RelayClaw treats only the last visible row as live and hides pending.
-    Showing a later completed item while an earlier one is still open
-    looks like the list is out of order. Shared by TaskExecutionRail
-    (task.update) and StreamEventRail (todo.updated).
-    """
-    done = done_statuses if done_statuses is not None else _SERIAL_TODO_DONE_STATUSES
-    overlay: list[dict[str, Any]] = []
-    found_open = False
-    for item in items:
-        copied = dict(item)
-        status = str(copied.get("status", "pending")).lower()
-        if status in done:
-            if found_open and status == "completed":
-                copied["status"] = "pending"
-        elif found_open:
-            copied["status"] = "pending"
-        else:
-            found_open = True
-        overlay.append(copied)
-    return overlay
 
 
 # 图像产物扩展名白名单
