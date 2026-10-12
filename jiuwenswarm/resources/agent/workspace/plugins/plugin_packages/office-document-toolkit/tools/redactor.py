@@ -14,7 +14,7 @@ class Redactor(Tool):
                 id="redactor",
                 name="redactor",
                 description=(
-                    "文档脱敏工具：自动识别并遮盖Word/Excel/PDF/TXT中的"
+                    "文档脱敏工具：自动识别并遮盖Word/Excel/TXT中的"
                     "身份证号、手机号、邮箱、银行卡号等敏感信息。"
                     "当用户需要脱敏文档时调用。"
                 ),
@@ -66,9 +66,13 @@ class Redactor(Tool):
                     file_path, patterns, str(base_dir)
                 )
             elif ext == ".pdf":
-                output_path, stats = self._redact_pdf(
-                    file_path, patterns, str(base_dir)
-                )
+                return {
+                    "success": False,
+                    "error": (
+                        "PDF 格式暂不支持真正脱敏，"
+                        "建议先转为 Word/TXT 脱敏后再转回 PDF"
+                    ),
+                }
             elif ext in (".txt", ".csv", ".md"):
                 output_path, stats = self._redact_text_file(
                     file_path, patterns, str(base_dir)
@@ -208,29 +212,6 @@ class Redactor(Tool):
             / f"{Path(file_path).stem}_redacted.xlsx"
         )
         wb.save(output_path)
-        return output_path, all_stats
-
-    def _redact_pdf(
-        self, file_path: str, patterns: list, output_dir: str
-    ) -> tuple:
-        from pypdf import PdfReader, PdfWriter
-
-        reader = PdfReader(file_path)
-        writer = PdfWriter()
-        all_stats: dict[str, int] = {}
-
-        for page in reader.pages:
-            text = page.extract_text() or ""
-            _, stats = self._redact_text(text, patterns)
-            all_stats.update(stats)
-            writer.add_page(page)
-
-        output_path = str(
-            Path(output_dir)
-            / f"{Path(file_path).stem}_redacted.pdf"
-        )
-        with open(output_path, "wb") as f:
-            writer.write(f)
         return output_path, all_stats
 
     def _redact_text_file(

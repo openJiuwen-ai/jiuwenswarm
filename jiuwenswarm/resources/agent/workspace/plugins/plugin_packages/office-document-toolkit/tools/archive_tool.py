@@ -141,6 +141,15 @@ class ArchiveTool(Tool):
         Path(extract_dir).mkdir(parents=True, exist_ok=True)
 
         with zipfile.ZipFile(archive_path, "r") as zf:
+            base = Path(extract_dir).resolve()
+            for member in zf.namelist():
+                if Path(member).is_absolute() or Path(member).drive:
+                    return {"error": f"检测到路径遍历条目: {member}"}
+                target = (base / member).resolve()
+                try:
+                    target.relative_to(base)
+                except ValueError:
+                    return {"error": f"检测到路径遍历条目: {member}"}
             zf.extractall(extract_dir)
             file_list = zf.namelist()
 
