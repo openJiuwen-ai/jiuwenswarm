@@ -103,6 +103,8 @@ DEEPRESEARCH_OUTLINE_CACHE_TEXT_CHARS = 64 * 1024
 # brief 完成态 metadata 缓存上限：给 config frame 其余字段（LLM/搜索配置）留余量，
 # 确保不击穿 64KiB frame 上限（DEEPRESEARCH_CONFIG_MAX_BYTES）。
 DEEPRESEARCH_BRIEF_METADATA_CACHE_TEXT_CHARS = 48 * 1024
+# 完成结果回传的顶级章节标题数量上限，与 execution.py 大纲卡章节解析截断一致。
+_COMPLETION_OUTLINE_SECTIONS_MAX = 20
 DEEPRESEARCH_ZIP_MAX_MEMBERS = 1024
 DEEPRESEARCH_ZIP_MEMBER_MAX_BYTES = 64 * 1024 * 1024
 DEEPRESEARCH_ZIP_TOTAL_MAX_BYTES = 128 * 1024 * 1024
@@ -467,6 +469,35 @@ def _clear_outline_json_cache(
         cache.pop(conversation, None)
         if not cache:
             _OUTLINE_JSON_CACHES.pop(key, None)
+
+
+def _outline_sections_from_parts(parts: list[str]) -> list[str]:
+    """按 sections 顺序提取一份完整有效大纲的顶级章节标题。
+
+    与 outline_interaction 中断标记同一解析口径（拼接分片后整体 json.loads）；
+    拼接不完整、解析失败或 sections/标题无效时返回空列表，调用方据此不
+    覆盖已有章节，也不从研究过程或报告正文猜测大纲。
+    """
+    if not isinstance(parts, list) or not parts:
+        return []
+    try:
+        outline = json.loads("".join(parts))
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(outline, dict):
+        return []
+    sections = outline.get("sections")
+    if not isinstance(sections, list) or not sections:
+        return []
+    titles: list[str] = []
+    for section in sections:
+        if not isinstance(section, dict):
+            return []
+        title = section.get("title")
+        if not isinstance(title, str) or not title.strip():
+            return []
+        titles.append(title.strip())
+    return titles[:_COMPLETION_OUTLINE_SECTIONS_MAX]
 
 
 def _get_cached_brief_metadata(route: dict[str, object]) -> dict[str, Any]:
@@ -2316,6 +2347,11 @@ async def _consume_stream(
             result["timing"] = timing
         return result
 
+    # 大纲编辑后的重新生成不再触发 outline_interaction 中断（max-rounds 自动
+    # 确认），大纲 JSON 缓存停留在旧版；增量解析本调用累积的大纲分片，跟踪
+    # 最后一份完整有效大纲的章节标题，completed 时随结果回传给 execution.py。
+    latest_outline_sections: list[str] = []
+
     async for raw in _iter_with_periodic_progress(
         _iter_ndjson_lines(
             proc.stdout,
@@ -2587,6 +2623,10 @@ async def _consume_stream(
             ):
                 if _cache_brief_metadata(route, brief_metadata):
                     completed_outcome["brief_upgrade_available"] = True
+            # SDK 最后生效大纲的顶级章节标题（编辑后重新生成与卡上旧版不同），
+            # execution.py 用它把完成文案「报告概览」与 state 同步成同一份章节。
+            if latest_outline_sections:
+                completed_outcome["outline_sections"] = list(latest_outline_sections)
             if html_style_status in {"applied", "fallback"}:
                 completed_outcome["html_style_status"] = html_style_status
                 if html_style_status == "fallback":
@@ -2635,6 +2675,11 @@ async def _consume_stream(
                 state.authoritative_section_indices.update(titles)
         for payload in route_chunk(chunk, state):
             await send(payload)
+        # 只跟踪专业版大纲流（brief 走 brief_outline，无大纲卡与「报告概览」）。
+        if chunk.get("agent") == "outline":
+            parsed_titles = _outline_sections_from_parts(state.outline_parts)
+            if parsed_titles:
+                latest_outline_sections = parsed_titles
     return outcome
 
 

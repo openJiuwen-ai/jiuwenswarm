@@ -1050,3 +1050,124 @@ def test_completion_content_question_gates():
     )
     # 兼容旧调用（无新参数）
     assert "生成完整报告" not in de._completion_content(brief_state)
+
+
+# ── P2 修复：编辑大纲后完成文案「报告概览」与 state 同步最后生效章节 ────────
+
+
+@pytest.mark.asyncio
+async def test_completed_applies_edited_outline_sections_to_summary_and_state():
+    """卡上大纲 A → 用户编辑 → SDK 生效大纲 C：完成摘要与完成 state 均使用 C。"""
+    state = {
+        "schema_version": 1,
+        "phase": "wait_outline",
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "conversation-1",
+        "outline_presented": True,
+        "outline_sections": ["用户画像", "行为习惯", "潜在需求"],
+        "requested_report_type": "professional",
+        "revision": 5,
+    }
+    answer = {
+        "status": "answered",
+        "answers": [{"selected_options": ["确认大纲，继续研究"]}],
+    }
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+        "outline_sections": ["用户画像", "行为习惯", "潜在需求与来源"],
+    }
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+    ):
+        result, saved = await _invoke(state=state, user_input=answer)
+
+    assert result["kind"] == "completed"
+    # 「报告概览」列出 SDK 最后生效章节（C），不再是卡上旧版（A）
+    assert "3. 潜在需求与来源" in result["content"]
+    # 持久化与返回的 state 同步为同一份章节
+    assert saved[-1]["outline_sections"] == ["用户画像", "行为习惯", "潜在需求与来源"]
+    assert result["state"]["outline_sections"] == [
+        "用户画像",
+        "行为习惯",
+        "潜在需求与来源",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_completed_keeps_outline_sections_when_outcome_field_invalid():
+    """回传字段缺失或无效（非列表/空列表/空标题/非字符串）：保持卡上原章节。"""
+    state = {
+        "schema_version": 1,
+        "phase": "wait_outline",
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "conversation-1",
+        "outline_presented": True,
+        "outline_sections": ["用户画像", "行为习惯", "潜在需求"],
+        "requested_report_type": "professional",
+        "revision": 5,
+    }
+    answer = {
+        "status": "answered",
+        "answers": [{"selected_options": ["确认大纲，继续研究"]}],
+    }
+    for invalid_field in ("not-a-list", [], ["章节A", ""], ["章节A", 3]):
+        completed = {
+            "status": "completed",
+            "conversation_id": "conversation-1",
+            "report_delivered": True,
+            "outline_sections": invalid_field,
+        }
+        with patch.object(
+            de,
+            "_call_deepresearch_stream_impl",
+            new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+        ):
+            result, saved = await _invoke(state=dict(state), user_input=answer)
+
+        assert result["kind"] == "completed"
+        assert "3. 潜在需求与来源" not in result["content"]
+        assert "3. 潜在需求" in result["content"]
+        assert saved[-1]["outline_sections"] == ["用户画像", "行为习惯", "潜在需求"]
+
+    # 字段整体缺失（直接确认、resume 未重新生成大纲）同样保持原值
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+    }
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+    ):
+        result, saved = await _invoke(state=dict(state), user_input=answer)
+
+    assert saved[-1]["outline_sections"] == ["用户画像", "行为习惯", "潜在需求"]
+    assert "3. 潜在需求" in result["content"]
+
+
+@pytest.mark.asyncio
+async def test_completed_ignores_outline_sections_without_presented_card():
+    """无大纲卡的完成（brief 等场景）：回传字段被忽略，完成文案不新增「报告概览」。"""
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+        "outline_sections": ["章节A", "章节B"],
+    }
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+    ):
+        result, saved = await _invoke(requested_report_type="brief")
+
+    assert result["kind"] == "completed"
+    assert "报告概览" not in result["content"]
+    assert "outline_sections" not in saved[-1]

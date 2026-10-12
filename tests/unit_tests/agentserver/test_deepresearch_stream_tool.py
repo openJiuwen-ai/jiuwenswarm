@@ -5135,3 +5135,107 @@ def test_cache_brief_metadata_rejects_empty_and_oversize(caplog):
         assert dt._get_cached_brief_metadata(route) == valid
     finally:
         dt._BRIEF_METADATA_CACHES.clear()
+
+
+# ── P2 修复：完成结果回传 SDK 最后生效的大纲章节标题 ───────────────────────
+
+
+def _completion_outline_json(titles: list[str]) -> str:
+    return json.dumps(
+        {
+            "title": "测试报告",
+            "sections": [
+                {"id": str(index + 1), "title": title}
+                for index, title in enumerate(titles)
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _outline_stream_lines(fragments: list[str]) -> list[str]:
+    return [
+        json.dumps({"agent": "outline", "content": fragment})
+        for fragment in fragments
+    ]
+
+
+async def _run_completed_stream(lines: list[str], tmp_path: Path) -> dict[str, Any]:
+    proc = _Proc(lines)
+    patches = _stream_patches(proc, route=_brief_upgrade_route())
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        stack.enter_context(
+            patch.object(dt, "WebSocketGatewayPushTransport", return_value=AsyncMock())
+        )
+        stack.enter_context(
+            patch.object(
+                dt,
+                "_write_report_artifacts_stream",
+                new=AsyncMock(return_value={"md": str(tmp_path / "r.md")}),
+            )
+        )
+        return json.loads(
+            await dt.deepresearch_stream._func(
+                action="start", query="q", report_type="professional"
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_completed_outcome_carries_outline_sections_from_fragments(tmp_path):
+    """分片大纲累积成完整 JSON：completed 结果按 sections 顺序回传顶级章节标题。"""
+    titles = ["用户画像", "行为习惯", "真实痛点", "潜在需求与来源", "消费决策逻辑"]
+    serialized = _completion_outline_json(titles)
+    lines = _outline_stream_lines(
+        [serialized[:80], serialized[80:180], serialized[180:]]
+    ) + _completed_stream_lines({"response_content": "# Professional"})
+
+    outcome = await _run_completed_stream(lines, tmp_path)
+
+    assert outcome == {
+        "status": "completed",
+        "conversation_id": "C1",
+        "report_delivered": True,
+        "outline_sections": titles,
+    }
+
+
+@pytest.mark.asyncio
+async def test_completed_outcome_keeps_last_valid_outline_sections(tmp_path):
+    """完整大纲之后又收到不完整分片：以最后一份完整有效版本为准。"""
+    valid_titles = ["章节A", "章节B"]
+    lines = _outline_stream_lines(
+        [_completion_outline_json(valid_titles), '{"title": ']
+    ) + _completed_stream_lines({"response_content": "# Professional"})
+
+    outcome = await _run_completed_stream(lines, tmp_path)
+
+    assert outcome["outline_sections"] == valid_titles
+
+
+@pytest.mark.asyncio
+async def test_completed_outcome_omits_outline_sections_when_fragments_incomplete(
+    tmp_path,
+):
+    """分片始终拼不成有效大纲：不回传空列表覆盖原值。"""
+    lines = _outline_stream_lines(
+        ['{"title": "测试报告", ', '"sections": [']
+    ) + _completed_stream_lines({"response_content": "# Professional"})
+
+    outcome = await _run_completed_stream(lines, tmp_path)
+
+    assert "outline_sections" not in outcome
+
+
+@pytest.mark.asyncio
+async def test_completed_outcome_omits_outline_sections_without_outline_stream(
+    tmp_path,
+):
+    """直接确认（完成调用内无大纲流）：字段缺失，不覆盖已有章节。"""
+    lines = _completed_stream_lines({"response_content": "# Professional"})
+
+    outcome = await _run_completed_stream(lines, tmp_path)
+
+    assert "outline_sections" not in outcome

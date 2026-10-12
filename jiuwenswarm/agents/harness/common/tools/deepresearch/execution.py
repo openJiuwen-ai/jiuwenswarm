@@ -650,6 +650,21 @@ def _outline_sections(outline_text: str) -> list[str]:
     ]
 
 
+def _validated_outline_sections(value: object) -> list[str]:
+    """校验流式回传的 outline_sections；不可用返回空列表，调用方不覆盖原值。"""
+    if not isinstance(value, list) or not value:
+        return []
+    titles: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            return []
+        title = item.strip()
+        if not title:
+            return []
+        titles.append(title)
+    return titles
+
+
 def _completion_content(
     state: Mapping[str, Any],
     html_style_status: Any = None,
@@ -870,6 +885,15 @@ async def _handle_outcome(
         ):
             html_style_phase = None
             html_style_reason_code = None
+        # 大纲编辑后 SDK 重新生成（max-rounds 自动确认，无中断标记，JSON 缓存
+        # 停留旧版）：出现过大纲卡时，把流式回传的最后生效章节标题先同步进
+        # state 再生成完成摘要，「报告概览」与持久化/返回的 state 因此用同一
+        # 份章节；字段缺失或无效时保持原值。
+        latest_outline_sections = _validated_outline_sections(
+            outcome.get("outline_sections")
+        )
+        if latest_outline_sections and state.get("outline_presented") is True:
+            state = {**state, "outline_sections": latest_outline_sections}
         content = _completion_content(
             state,
             html_style_status,
