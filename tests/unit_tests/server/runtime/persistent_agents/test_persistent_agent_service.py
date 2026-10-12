@@ -1,0 +1,405 @@
+"""SW-02: colleague definitions, the default 小九, settings, publication and deletion."""
+
+from __future__ import annotations
+
+import json
+import stat
+from datetime import datetime, timedelta, timezone
+from itertools import count
+
+import pytest
+from jiuwenswarm.server.runtime.persistent_agents.execution_models import (
+    AccessSnapshot,
+    ExecutionRecord,
+    RequestRecord,
+)
+from jiuwenswarm.server.runtime.persistent_agents.models import (
+    CapabilitySelection,
+    ColleagueSettings,
+    PersistentAgentError,
+)
+from jiuwenswarm.server.runtime.persistent_agents.repository import PersistentAgentRepository, TemplateStore
+from jiuwenswarm.server.runtime.persistent_agents.service import (
+    ConfiguredModelProvider,
+    PersistentAgentService,
+)
+from jiuwenswarm.server.runtime.persistent_agents.spec_provider import ConfigSnapshot, build_invocation
+
+from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
+from openjiuwen.core.foundation.store import InMemoryKVStore
+from openjiuwen.harness import persistent_agent as core
+from openjiuwen.harness.resources.extension_loader import find_agent_template_manifest, load_agent_template_package
+from openjiuwen.harness.schema.deep_agent_spec import TeamModelConfig
+
+SECRET = "sk-test-secret-value"
+NS = "workspace-1"
+
+
+class FakeModels:
+    def __init__(self, selections=("deepseek#0", "kimi#1"), default="deepseek#0"):
+        self.selections = set(selections)
+        self.default = default
+        self.api_key = SECRET
+
+    def default_selection(self):
+        return self.default
+
+    def resolve(self, selection, *, client_id):
+        if selection not in self.selections:
+            raise PersistentAgentError("model is not available", code="MODEL_NOT_FOUND")
+        name = selection.partition("#")[0]
+        return TeamModelConfig(
+            model_client_config=ModelClientConfig(
+                client_id=client_id,
+                client_provider="OpenAI",
+                api_key=self.api_key,
+                api_base="https://example.invalid/v1",
+                model_name=name,
+            ),
+            model_request_config=ModelRequestConfig(model=name),
+        )
+
+
+TEMPLATES = {
+    "system-architect": {
+        "id": "system-architect",
+        "displayName": {"zh": "系统架构工程师"},
+        "details": "梳理模块依赖并评审技术方案。",
+        "persona": "你是系统架构工程师，负责梳理依赖、评审方案并识别风险。",
+    }
+}
+
+
+def make_service(tmp_path, models=None):
+    ticks = count()
+    base = datetime(2026, 10, 12, 8, 0, tzinfo=timezone.utc)
+    return PersistentAgentService(
+        PersistentAgentRepository(tmp_path / "agents.sqlite3"),
+        TemplateStore(tmp_path / "templates"),
+        models=models or FakeModels(),
+        template_source=TEMPLATES.get,
+        clock=lambda: base + timedelta(seconds=next(ticks)),
+    )
+
+
+def settings(**changes) -> ColleagueSettings:
+    fields = {
+        "name": "研发同事",
+        "description": "负责整理研发进展。",
+        "tags": ("研发工程",),
+        "category": "development",
+        "capabilities": CapabilitySelection(model="deepseek#0", skills=("report-writer",)),
+    }
+    fields.update(changes)
+    return ColleagueSettings(**fields)
+
+
+def request_for(snapshot: ConfigSnapshot, request_id: str) -> RequestRecord:
+    return RequestRecord(
+        namespace_id=NS,
+        agent_id=snapshot.agent_id,
+        session_id="session-1",
+        request_id=request_id,
+        source_ref=f"source:{request_id}",
+        config_version=snapshot.config_version,
+        config_fingerprint=snapshot.fingerprint,
+        access=AccessSnapshot(
+            principal_ref="user-1",
+            startup_scope=frozenset({"chat"}),
+            source_scope=frozenset({"chat"}),
+            policy_revision="policy-1",
+        ),
+        request_input=core.RequestInput(kind="scheduled", text="整理进展", reply_target="conversation-1"),
+        received_at=datetime(2026, 10, 12, 9, 0, tzinfo=timezone.utc),
+    )
+
+
+class FakePorts:
+    async def record(self, execution, event):
+        return None
+
+    async def read_execution_log(self, execution, execution_id):
+        return ()
+
+    async def admit(self, execution, model_call_id):
+        raise AssertionError("not called")
+
+    async def report(self, execution, model_call_id, usage):
+        raise AssertionError("not called")
+
+
+def ports() -> core.PersistentPorts:
+    host = FakePorts()
+    return core.PersistentPorts(commit=host, budget=host, window_backend=InMemoryKVStore())
+
+
+def test_default_colleague_is_created_once_and_published(tmp_path):
+    service = make_service(tmp_path)
+
+    first = service.ensure_default_colleague(NS)
+    second = service.ensure_default_colleague(NS)
+
+    assert first is not None and first.name == "小九" and first.is_default
+    assert second.agent_id == first.agent_id
+    assert first.current_version == "v1"
+    assert [view.agent_id for view in service.list_colleagues(NS)] == [first.agent_id]
+
+
+def test_default_colleague_is_shared_by_services_on_the_same_store(tmp_path):
+    first = make_service(tmp_path).ensure_default_colleague(NS)
+    second = make_service(tmp_path).ensure_default_colleague(NS)
+
+    assert second.agent_id == first.agent_id
+    assert len(list((tmp_path / "templates").iterdir())) == 1
+
+
+def test_deleted_default_colleague_is_not_created_again(tmp_path):
+    service = make_service(tmp_path)
+    default = service.ensure_default_colleague(NS)
+
+    service.delete_colleague(NS, default.agent_id)
+
+    assert service.ensure_default_colleague(NS) is None
+    assert service.list_colleagues(NS) == []
+
+
+def test_default_colleague_without_models_is_created_unpublished(tmp_path):
+    service = make_service(tmp_path, FakeModels(selections=(), default=None))
+
+    default = service.ensure_default_colleague(NS)
+
+    assert default.current_version is None
+    with pytest.raises(PersistentAgentError) as caught:
+        service.current_snapshot(NS, default.agent_id)
+    assert caught.value.code == "NOT_PUBLISHED"
+
+
+def test_custom_colleague_gets_its_own_core_template_and_first_version(tmp_path):
+    service = make_service(tmp_path)
+
+    view = service.create_colleague(NS, settings())
+    template = load_agent_template_package(find_agent_template_manifest(tmp_path / "templates" / view.agent_id))
+    snapshot = service.current_snapshot(NS, view.agent_id)
+    spec = snapshot.load_spec()
+
+    assert view.current_version == "v1" and not view.has_unpublished_changes
+    assert template.agent_card.id == view.agent_id
+    assert spec.card.id == view.agent_id
+    assert spec.system_prompt == "你是研发同事。\n\n负责整理研发进展。"
+    assert spec.enable_task_loop is False
+    assert spec.model.model_client_config.client_id == f"jiuwenmate:{view.agent_id}"
+
+
+def test_colleague_created_from_template_uses_its_persona(tmp_path):
+    service = make_service(tmp_path)
+
+    view = service.create_colleague(NS, settings(description=""), template_id="system-architect")
+
+    assert view.source_template_id == "system-architect"
+    assert view.description == "梳理模块依赖并评审技术方案。"
+    assert service.read_settings(NS, view.agent_id).persona == TEMPLATES["system-architect"]["persona"]
+
+
+def test_each_colleague_owns_one_template(tmp_path):
+    service = make_service(tmp_path)
+    first = service.create_colleague(NS, settings(), template_id="system-architect")
+    second = service.create_colleague(NS, settings(name="另一位"), template_id="system-architect")
+
+    service.delete_colleague(NS, first.agent_id)
+
+    assert first.agent_id != second.agent_id
+    assert not (tmp_path / "templates" / first.agent_id).exists()
+    assert (tmp_path / "templates" / second.agent_id / "manifest.json").is_file()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "code"),
+    [
+        ({"template_id": "missing-template"}, "TEMPLATE_NOT_FOUND"),
+        ({"settings": settings(capabilities=CapabilitySelection(model="unknown#9"))}, "MODEL_NOT_FOUND"),
+    ],
+)
+def test_rejected_creation_leaves_nothing_behind(tmp_path, kwargs, code):
+    service = make_service(tmp_path)
+    value = kwargs.pop("settings", settings())
+
+    with pytest.raises(PersistentAgentError) as caught:
+        service.create_colleague(NS, value, **kwargs)
+
+    assert caught.value.code == code
+    assert service.list_colleagues(NS) == []
+    assert list((tmp_path / "templates").iterdir()) == []
+
+
+def test_settings_change_only_affects_requests_after_publication(tmp_path):
+    service = make_service(tmp_path)
+    view = service.create_colleague(NS, settings())
+    v1 = service.current_snapshot(NS, view.agent_id)
+    pinned = request_for(v1, "request-old")
+
+    updated = service.update_settings(
+        NS,
+        view.agent_id,
+        settings(persona="你是研发同事，只输出要点。", capabilities=CapabilitySelection(model="kimi#1")),
+    )
+
+    assert updated.has_unpublished_changes
+    assert service.current_snapshot(NS, view.agent_id).config_version == "v1"
+    assert service.read_settings(NS, view.agent_id).persona == "你是研发同事，只输出要点。"
+
+    published = service.publish(NS, view.agent_id)
+    v2 = service.current_snapshot(NS, view.agent_id)
+
+    assert published.config_version == "v2"
+    assert not service.get_colleague(NS, view.agent_id).has_unpublished_changes
+    assert v2.load_spec().system_prompt == "你是研发同事，只输出要点。"
+    old_spec, _ = build_invocation(
+        service.snapshot(NS, view.agent_id, pinned.config_version),
+        pinned,
+        ExecutionRecord(request_id="request-old", execution_id="e-1"),
+        ports=ports(),
+    )
+    new_spec, _ = build_invocation(
+        v2, request_for(v2, "request-new"), ExecutionRecord(request_id="request-new", execution_id="e-2"), ports=ports()
+    )
+    assert old_spec.model.model_client_config.model_name == "deepseek"
+    assert new_spec.model.model_client_config.model_name == "kimi"
+
+
+def test_publishing_unchanged_settings_keeps_the_version(tmp_path):
+    service = make_service(tmp_path)
+    view = service.create_colleague(NS, settings())
+    service.update_settings(NS, view.agent_id, settings())
+
+    assert service.publish(NS, view.agent_id).config_version == "v1"
+    assert not service.get_colleague(NS, view.agent_id).has_unpublished_changes
+
+
+def test_rotated_model_credentials_need_a_new_version(tmp_path):
+    models = FakeModels()
+    service = make_service(tmp_path, models)
+    view = service.create_colleague(NS, settings())
+
+    models.api_key = "sk-rotated"
+
+    assert service.publish(NS, view.agent_id).config_version == "v2"
+
+
+def test_failed_settings_store_restores_the_previous_template(tmp_path, monkeypatch):
+    service = make_service(tmp_path)
+    view = service.create_colleague(NS, settings(persona="原始人设"))
+
+    def fail(*args, **kwargs):
+        raise PersistentAgentError("colleague was changed concurrently", code="CONFLICT")
+
+    monkeypatch.setattr(service._repository, "update_settings", fail)
+    with pytest.raises(PersistentAgentError):
+        service.update_settings(NS, view.agent_id, settings(persona="新人设"))
+
+    assert service.read_settings(NS, view.agent_id).persona == "原始人设"
+    assert [p.name for p in (tmp_path / "templates").iterdir()] == [view.agent_id]
+
+
+def test_stale_settings_write_is_refused(tmp_path):
+    service = make_service(tmp_path)
+    view = service.create_colleague(NS, settings())
+    repository = service._repository
+    stale = repository.get(NS, view.agent_id)
+    service.update_settings(NS, view.agent_id, settings(name="新名字"))
+
+    with pytest.raises(PersistentAgentError) as caught:
+        repository.update_settings(
+            NS, view.agent_id, settings(), expected_revision=stale.revision, updated_at=stale.updated_at
+        )
+
+    assert caught.value.code == "CONFLICT"
+
+
+def test_deleted_colleague_and_versions_are_gone(tmp_path):
+    service = make_service(tmp_path)
+    view = service.create_colleague(NS, settings())
+
+    service.delete_colleague(NS, view.agent_id)
+
+    for call in (
+        lambda: service.get_colleague(NS, view.agent_id),
+        lambda: service.snapshot(NS, view.agent_id, "v1"),
+        lambda: service.delete_colleague(NS, view.agent_id),
+    ):
+        with pytest.raises(PersistentAgentError) as caught:
+            call()
+        assert caught.value.code == "NOT_FOUND"
+
+
+def test_namespaces_do_not_see_each_other(tmp_path):
+    service = make_service(tmp_path)
+    view = service.create_colleague(NS, settings())
+    other_default = service.ensure_default_colleague("workspace-2")
+
+    assert [item.agent_id for item in service.list_colleagues("workspace-2")] == [other_default.agent_id]
+    with pytest.raises(PersistentAgentError):
+        service.get_colleague("workspace-2", view.agent_id)
+
+
+def test_public_views_never_carry_model_credentials(tmp_path):
+    service = make_service(tmp_path)
+    view = service.create_colleague(NS, settings())
+
+    returned = [
+        view.to_dict(),
+        service.get_colleague(NS, view.agent_id).to_dict(),
+        service.publish(NS, view.agent_id).to_dict(),
+        service.read_settings(NS, view.agent_id).to_dict(),
+    ]
+
+    assert SECRET not in json.dumps(returned, ensure_ascii=False)
+    assert SECRET in service.current_snapshot(NS, view.agent_id).spec_json
+    assert stat.S_IMODE((tmp_path / "agents.sqlite3").stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"name": "x", "unknown": 1},
+        {"name": " "},
+        {"name": "x", "capabilities": {"model": "m", "secret": "s"}},
+        {"name": "x", "tags": "not-a-list"},
+    ],
+)
+def test_malformed_settings_are_rejected(data):
+    with pytest.raises(PersistentAgentError):
+        ColleagueSettings.from_dict(data)
+
+
+def test_configured_model_provider_uses_the_existing_model_catalog():
+    entries = [
+        {
+            "model_client_config": {
+                "model_name": "deepseek",
+                "client_provider": "OpenAI",
+                "api_key": SECRET,
+                "api_base": "https://example.invalid/v1",
+            },
+            "model_config_obj": {},
+        },
+        {
+            "model_client_config": {
+                "model_name": "kimi",
+                "client_provider": "OpenAI",
+                "api_key": "sk-other",
+                "api_base": "https://example.invalid/v1",
+            },
+            "model_config_obj": {},
+            "is_default": True,
+        },
+    ]
+    provider = ConfiguredModelProvider(lambda: entries)
+
+    model = provider.resolve("deepseek#0", client_id="jiuwenmate:a")
+
+    assert provider.default_selection() == "kimi#1"
+    assert model.model_client_config.api_key == SECRET
+    assert model.model_client_config.client_id == "jiuwenmate:a"
+    with pytest.raises(PersistentAgentError) as caught:
+        provider.resolve("missing", client_id="jiuwenmate:a")
+    assert caught.value.code == "MODEL_NOT_FOUND"
