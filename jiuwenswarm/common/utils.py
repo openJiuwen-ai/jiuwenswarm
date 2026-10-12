@@ -753,6 +753,7 @@ def _install_default_builtin_skills(
     - xlsx: 电子表格创建/读取/分析/编辑/修复（零格式损失，中文/CJK 友好）
     - pdf-extraction: PDF 文本/表格/元数据提取
     - pptx-generator: PowerPoint 演示文稿生成与编辑
+    - runtime-config-check: 只读、脱敏的模型 dotenv 配置排障
 
     Args:
         builtin_dir: 内置技能目录路径
@@ -777,6 +778,7 @@ def _install_default_builtin_skills(
         "xlsx",
         "pdf-extraction",
         "pptx-generator",
+        "runtime-config-check",
     ]
 
     if not builtin_dir.exists() or not builtin_dir.is_dir():
@@ -853,6 +855,7 @@ def ensure_default_builtin_skills() -> None:
         "xlsx",
         "pdf-extraction",
         "pptx-generator",
+        "runtime-config-check",
     ]
 
     user_skills_dir.mkdir(parents=True, exist_ok=True)

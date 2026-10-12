@@ -134,7 +134,9 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
         if preserve
         else {}
     )
-    loaded = load_dotenv(dotenv_path=dotenv_path, override=override)
+    # Windows PowerShell 5.1 writes a BOM with Set-Content -Encoding UTF8.
+    # utf-8-sig also accepts ordinary UTF-8; avoid a hidden U+FEFF in key 1.
+    loaded = load_dotenv(dotenv_path=dotenv_path, override=override, encoding="utf-8-sig")
     if saved:
         os.environ.update(saved)
     if preserve:
