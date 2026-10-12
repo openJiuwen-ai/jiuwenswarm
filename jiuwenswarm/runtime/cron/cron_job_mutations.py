@@ -258,6 +258,9 @@ def ensure_proactive_deletable(existing: CronJob | None, *, force: bool) -> None
 
 
 def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
+    if "_expected_legacy_model_name" in patch:
+        if existing.model_selection is not None or existing.model_name != patch["_expected_legacy_model_name"]:
+            return existing
     patch = filter_proactive_update_patch(existing, dict(patch or {}))
     updated = existing
     if "name" in patch:
@@ -344,7 +347,7 @@ def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
             else None
         )
         updated = replace(updated, model_name=new_model_name)
-        if "model_selection" not in patch:
+        if "model_selection" not in patch and new_model_name != existing.model_name:
             # 显式按名称选模型时，清除迁移留下的 ID 选择；否则调度请求
             # 同时带两个字段，执行侧会优先使用旧 model_selection。
             updated = replace(updated, model_selection=None)

@@ -1901,6 +1901,16 @@ async def _run(
     message_handler.set_outbound_pipeline(im_outbound)
 
     cron_store = await create_gateway_cron_store()
+    from jiuwenswarm.common.model_migration import migrate_legacy_cron_selections
+    from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
+
+    # Shared etcd jobs need the target user's catalog; that migration runs on
+    # the per-user resource/reference boundary, never using Gateway's catalog.
+    if load_cron_store_settings(get_config()).backend == "file":
+        try:
+            await migrate_legacy_cron_selections(cron_store, user_id=None)
+        except Exception:  # noqa: BLE001
+            logger.warning("Cron model-selection migration deferred", exc_info=True)
     cron_scheduler = CronSchedulerService(
         store=cron_store,
         agent_client=client,

@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import threading
-import uuid
 from pathlib import Path
 
+from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
 from jiuwenswarm.common.model_selection import ModelSelection
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
-_LOCK = threading.Lock()
 _SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}$")
 
 
@@ -34,21 +31,12 @@ def get_session_model_selection(session_id: str) -> ModelSelection | None:
     try:
         raw = json.loads(path.read_text(encoding="utf-8")).get("model_selection")
         return ModelSelection.model_validate(raw) if isinstance(raw, dict) else None
-    except (OSError, ValueError):
-        return None
+    except (OSError, ValueError) as exc:
+        raise ModelSelectionError(MODEL_GROUP_INVALID, "cannot read the session's model selection") from exc
 
 
 def set_session_model_selection(session_id: str, selection: ModelSelection) -> None:
-    path = _metadata_path(session_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with _LOCK:
-        data = {}
-        if path.is_file():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("session metadata must be an object")
-        data["model_selection"] = selection.model_dump()
-        temporary = path.with_name(f"metadata.{uuid.uuid4().hex}.tmp")
-        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(temporary, path)
+    from jiuwenswarm.server.runtime.session.session_metadata import update_session_model_selection
 
+    _metadata_path(session_id)  # Validate before entering the shared writer.
+    update_session_model_selection(session_id, selection.model_dump())
