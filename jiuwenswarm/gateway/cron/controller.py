@@ -316,7 +316,7 @@ class CronController:
         model_selection = params.get("model_selection")
         if model_selection is not None:
             from jiuwenswarm.common.model_selection import ModelSelection
-            from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+            from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver
             selection = ModelSelection.model_validate(model_selection)
             ModelSelectionResolver().resolve(selection)
             model_selection = selection.model_dump()
@@ -345,7 +345,7 @@ class CronController:
         timeout_seconds = params.get("timeout_seconds")
         # work_mode 解析(严格校验:非法值由 resolve_request_work_mode 返回 BAD_REQUEST);
         # 默认值按 controller 目标通道推断(tui→code,web/未设置→work)
-        from jiuwenswarm.server.runtime.session.work_mode import (
+        from jiuwenswarm.gateway.embedded.runtime.session.work_mode import (
             resolve_request_work_mode,
         )
 
@@ -380,7 +380,7 @@ class CronController:
             if caller_work_mode in ("code", "work"):
                 work_mode = caller_work_mode
         else:
-            from jiuwenswarm.server.runtime.session.project_store import (
+            from jiuwenswarm.gateway.embedded.runtime.session.project_store import (
                 resolve_cron_project_binding,
             )
 
@@ -490,7 +490,7 @@ class CronController:
                 else (existing.work_mode or DEFAULT_WEB_WORK_MODE)
             )
         else:
-            from jiuwenswarm.server.runtime.session.project_store import (
+            from jiuwenswarm.gateway.embedded.runtime.session.project_store import (
                 resolve_cron_job_patch,
             )
 

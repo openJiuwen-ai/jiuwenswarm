@@ -2188,8 +2188,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _session_selection_set(ws, req_id, params, session_id):
         from jiuwenswarm.common.model_selection import ModelSelection
-        from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
-        from jiuwenswarm.server.runtime.session.model_selection_store import set_session_model_selection
+        from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver
+        from jiuwenswarm.gateway.embedded.runtime.session.model_selection_store import set_session_model_selection
         try:
             target = str((params or {}).get("session_id") or session_id or "")
             selection = ModelSelection.model_validate((params or {}).get("model_selection"))
@@ -4715,7 +4715,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 and session_id
             ):
                 try:
-                    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+                    from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
                     meta = get_session_metadata(session_id, cache_bust=True)
                     if isinstance(meta, dict):
                         pd = meta.get("project_dir")
@@ -4879,7 +4879,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             deleted = await cc.delete_job(job_id)
         except Exception as exc:
-            from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+            from jiuwenswarm.gateway.embedded.runtime.session.lifecycle import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "DELETE_FAILED")
             await channel.send_response(
                 ws, req_id, ok=False, error=str(exc), code=code
