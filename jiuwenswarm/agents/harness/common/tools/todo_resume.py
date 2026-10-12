@@ -11,6 +11,7 @@ lifecycle dependencies.
 
 from __future__ import annotations
 
+import json
 import re
 import uuid as _uuid
 from typing import Any, List, Sequence
@@ -150,6 +151,205 @@ def filter_todos_by_generation(items: Sequence[Any], token: str | None) -> List[
         if not item_token or item_token == token:
             kept.append(item)
     return kept
+
+
+# 用户原话是「记一条待办」时写入。执行地图（绑定 / 首帧回放 / 工作工具推进）
+# 不装这些条目；todo_list 与明确的查改快照仍要看见它们。
+PERSISTENT_TODO_META_KEY = "persistent"
+TURN_USER_QUERY_KEY = "jiuwenclaw_turn_user_query"
+
+_BACKLOG_QUERY_MARKERS = (
+    "添加一个待办",
+    "添加待办",
+    "加个待办",
+    "新建待办",
+    "记一个待办",
+    "记个待办",
+    "提醒我",
+)
+_EXECUTE_NOW_MARKERS = (
+    "现在就做",
+    "马上做",
+    "开始做",
+    "开始执行",
+    "立刻做",
+    "立即执行",
+)
+_DISPLAY_TODO_TOOLS = frozenset({"todo_list", "todo_get"})
+
+
+def _todo_meta(item: Any) -> dict[str, Any] | None:
+    if isinstance(item, dict):
+        meta = item.get("meta_data")
+    else:
+        meta = getattr(item, "meta_data", None)
+    if isinstance(meta, dict):
+        return meta
+    return None
+
+
+def is_persistent_todo(item: Any) -> bool:
+    """True when the item was saved as a user reminder, not an execution step."""
+    meta = _todo_meta(item)
+    if meta is None:
+        return False
+    return meta.get(PERSISTENT_TODO_META_KEY) is True
+
+
+def mark_persistent_todo(item: Any) -> None:
+    """Stamp a todo so later turns still list it."""
+    meta = _todo_meta(item)
+    updated = dict(meta) if meta is not None else {}
+    updated[PERSISTENT_TODO_META_KEY] = True
+    if isinstance(item, dict):
+        item["meta_data"] = updated
+        return
+    item.meta_data = updated
+
+
+def clear_persistent_todo(item: Any) -> None:
+    """Drop the reminder mark so the item can enter the execution map."""
+    meta = _todo_meta(item)
+    if meta is None or PERSISTENT_TODO_META_KEY not in meta:
+        return
+    updated = dict(meta)
+    updated.pop(PERSISTENT_TODO_META_KEY, None)
+    cleared: dict[str, Any] | None = updated or None
+    if isinstance(item, dict):
+        item["meta_data"] = cleared
+        return
+    item.meta_data = cleared
+
+
+def filter_todos_for_execution(items: Sequence[Any], token: str | None) -> List[Any]:
+    """Generation view used for binding. Reminders never enter this map."""
+    visible = filter_todos_by_generation(items, token)
+    return [item for item in visible if not is_persistent_todo(item)]
+
+
+def filter_todos_for_display(items: Sequence[Any], token: str | None) -> List[Any]:
+    """List/read view: current-generation plan items plus reminders."""
+    kept: List[Any] = []
+    for item in items:
+        if is_persistent_todo(item):
+            kept.append(item)
+            continue
+        item_token = todo_item_generation_token(item)
+        if not token or not item_token or item_token == token:
+            kept.append(item)
+    return kept
+
+
+def is_backlog_todo_query(query: str) -> bool:
+    """True when this turn asks to remember a todo, not to run it now."""
+    text = (query or "").strip()
+    if not text:
+        return False
+    if _contains_any(text, _EXECUTE_NOW_MARKERS):
+        return False
+    return _contains_any(text, _BACKLOG_QUERY_MARKERS)
+
+
+def _contains_any(text: str, markers: Sequence[str]) -> bool:
+    for marker in markers:
+        if marker in text:
+            return True
+    return False
+
+
+def remember_turn_user_query(session: Any, query: str) -> None:
+    """Store this turn's user text where todo_create can read it."""
+    updater = getattr(session, "update_state", None)
+    if not callable(updater):
+        return
+    updater({TURN_USER_QUERY_KEY: query})
+
+
+def read_turn_user_query(session: Any) -> str:
+    """Return the user text stored for this turn, or empty."""
+    getter = getattr(session, "get_state", None)
+    if not callable(getter):
+        return ""
+    value = getter(TURN_USER_QUERY_KEY)
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def snapshot_includes_persistent_todos(
+    tool_name: str,
+    arguments: Any,
+    items: Sequence[Any],
+) -> bool:
+    """Whether this todo-tool snapshot should show reminders.
+
+    Listing always does. Create/modify does only when the call touched a
+    reminder, so a skill plan's own snapshot stays on the execution map.
+    """
+    if tool_name in _DISPLAY_TODO_TOOLS:
+        return True
+    persistent_ids = _persistent_ids(items)
+    if tool_name == "todo_create":
+        return bool(persistent_ids)
+    if tool_name != "todo_modify":
+        return False
+    return bool(_modify_target_ids(arguments) & persistent_ids)
+
+
+def _persistent_ids(items: Sequence[Any]) -> set[str]:
+    ids: set[str] = set()
+    for item in items:
+        if not is_persistent_todo(item):
+            continue
+        todo_id = _item_id(item)
+        if todo_id:
+            ids.add(todo_id)
+    return ids
+
+
+def _item_id(item: Any) -> str:
+    if isinstance(item, dict):
+        value = item.get("id")
+    else:
+        value = getattr(item, "id", None)
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def _modify_target_ids(arguments: Any) -> set[str]:
+    payload = _coerce_arguments(arguments)
+    if payload is None:
+        return set()
+    ids: set[str] = set()
+    raw_ids = payload.get("ids")
+    if isinstance(raw_ids, list):
+        for item in raw_ids:
+            if isinstance(item, str) and item:
+                ids.add(item)
+    todos = payload.get("todos")
+    if isinstance(todos, list):
+        for item in todos:
+            if not isinstance(item, dict):
+                continue
+            todo_id = item.get("id")
+            if isinstance(todo_id, str) and todo_id:
+                ids.add(todo_id)
+    return ids
+
+
+def _coerce_arguments(arguments: Any) -> dict[str, Any] | None:
+    if isinstance(arguments, dict):
+        return arguments
+    if not isinstance(arguments, str) or not arguments:
+        return None
+    try:
+        parsed = json.loads(arguments)
+    except ValueError:
+        return None
+    if isinstance(parsed, dict):
+        return parsed
+    return None
 
 
 def _todo_status_value(item: Any) -> str:

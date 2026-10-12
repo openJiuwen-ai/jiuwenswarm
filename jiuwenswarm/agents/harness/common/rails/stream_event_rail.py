@@ -41,10 +41,6 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
 from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
     strip_image_content_from_model_context,
 )
-from jiuwenswarm.agents.harness.common.tools.todo_resume import (
-    filter_todos_by_generation,
-    get_todo_generation_token,
-)
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyToolStreamHandler,
 )
@@ -57,6 +53,12 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
     overlay_serial_todo_statuses,
+)
+from jiuwenswarm.agents.harness.common.tools.todo_resume import (
+    filter_todos_for_display,
+    filter_todos_for_execution,
+    get_todo_generation_token,
+    snapshot_includes_persistent_todos,
 )
 from jiuwenswarm.common.tool_display import (
     build_tool_display_name,
@@ -1378,7 +1380,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 # The todo tool itself is loaded from the main workspace below, so
                 # this stays authoritative even when a resumed/supplement turn uses
                 # a different stream session object.
-                await self._emit_todo_updated(session, todo_sid)
+                await self._emit_todo_updated(
+                    session,
+                    todo_sid,
+                    tool_name=tool_name,
+                    arguments=getattr(tc, "arguments", None),
+                )
 
     # ------------------------------------------------------------------
     # on_model_exception: attempt context repair
@@ -1522,7 +1529,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         except Exception:
             logger.debug("tool_update emit failed", exc_info=True)
 
-    async def _emit_todo_updated(self, session: Session, session_id: str) -> None:
+    async def _emit_todo_updated(
+        self,
+        session: Session,
+        session_id: str,
+        *,
+        tool_name: str = "",
+        arguments: Any = None,
+    ) -> None:
         """Load the main agent's todo list and push a todo.updated event to the frontend."""
         todo_tool = self._get_todo_tool()
         if todo_tool is None:
@@ -1545,9 +1559,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             generation_token = get_todo_generation_token(session)
         except Exception:
             generation_token = None
-        if generation_token:
+        if generation_token or tool_name:
             before = len(todos_data)
-            todos_data = filter_todos_by_generation(todos_data, generation_token)
+            if snapshot_includes_persistent_todos(tool_name, arguments, todos_data):
+                todos_data = filter_todos_for_display(todos_data, generation_token)
+            else:
+                todos_data = filter_todos_for_execution(todos_data, generation_token)
             if len(todos_data) != before:
                 logger.info(
                     "[StreamEventRail] todo.updated filtered stale-generation "

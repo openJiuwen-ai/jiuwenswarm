@@ -32,12 +32,15 @@ from openjiuwen.core.single_agent.rail.base import (
 from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
 
+from jiuwenswarm.agents.harness.common.tools.todo_resume import (
+    filter_todos_for_display,
+    filter_todos_for_execution,
+    get_todo_generation_token,
+    remember_turn_user_query,
+    snapshot_includes_persistent_todos,
+)
 from jiuwenswarm.common.tool_display import build_tool_display_name
 from jiuwenswarm.common.utils import logger
-from jiuwenswarm.agents.harness.common.tools.todo_resume import (
-    filter_todos_by_generation,
-    get_todo_generation_token,
-)
 
 _ACTIVE_TASK_ID: ContextVar[str | None] = ContextVar(
     "active_task_id", default=None
@@ -1412,6 +1415,10 @@ class TaskExecutionRail(DeepAgentRail):
                     "[TaskExecutionRail] before_invoke: get_todo_generation_token failed",
                     exc_info=True,
                 )
+        if isinstance(ctx.inputs, InvokeInputs) and ctx.session is not None:
+            raw_query = ctx.inputs.query
+            query_text = raw_query if isinstance(raw_query, str) else ""
+            remember_turn_user_query(ctx.session, query_text)
         logger.info(
             "[TaskExecutionRail] before_invoke reset tracking: "
             "session_id=%s prev_todo_map_size=%d prev_active_tasks=%s "
@@ -1804,20 +1811,27 @@ class TaskExecutionRail(DeepAgentRail):
                 exc,
             )
 
-    def _load_todo_from_json(
-        self, session_id: str
-    ) -> list[dict[str, Any]]:
+    def _read_todo_file(self, session_id: str) -> list[dict[str, Any]]:
         todo_path = self._get_todo_workspace_path(session_id)
         if todo_path is None or not todo_path.exists():
             return []
-        with open(todo_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        with open(todo_path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
         if not isinstance(data, list):
             return []
-        # 请求隔离：剔除已被新一轮请求取代的旧代条目（token 不一致）。
-        # before_invoke 捕获的 token 覆盖本 invoke 内全部加载点，过滤后的
-        # _todo_map / task.update 快照天然不含跨请求残留。
-        return filter_todos_by_generation(data, self._todo_generation_token)
+        return data
+
+    def _load_todo_from_json(
+        self, session_id: str
+    ) -> list[dict[str, Any]]:
+        # 执行地图：旧代条目和用户记下的待办都不进 _todo_map，
+        # 因此不会被绑定，也不会在新一轮首帧回放。
+        data = self._read_todo_file(session_id)
+        return filter_todos_for_execution(data, self._todo_generation_token)
+
+    def _load_todo_for_display(self, session_id: str) -> list[dict[str, Any]]:
+        data = self._read_todo_file(session_id)
+        return filter_todos_for_display(data, self._todo_generation_token)
 
     def _get_todo_workspace_path(
         self, session_id: str
@@ -2085,8 +2099,15 @@ class TaskExecutionRail(DeepAgentRail):
         self._bind_context_after_todo_sync(
             completed_in_batch, current_map
         )
+        include_persistent = snapshot_includes_persistent_todos(
+            tool_name,
+            self._parse_work_tool_args(ctx),
+            self._read_todo_file(session_id),
+        )
         await self._emit_task_update_event(
-            ctx.session, parent_request_id
+            ctx.session,
+            parent_request_id,
+            include_persistent=include_persistent,
         )
 
     async def _flush_serial_todo_transitions(
@@ -2255,12 +2276,17 @@ class TaskExecutionRail(DeepAgentRail):
         self,
         session: Session,
         parent_request_id: str | None = None,
+        *,
+        include_persistent: bool = False,
     ) -> None:
         """Send full task list snapshot (all todos) to the frontend."""
         session_id = session.get_session_id()
-        # _load_todo_from_json 已按 generation token 过滤旧代条目
-        # （请求隔离），快照天然不含跨请求残留。
-        todo_items = self._load_todo_from_json(session_id)
+        # 执行快照不含用户记下的待办。查询/修改提醒时改走展示列表，
+        # 且不把展示列表写回 _todo_map。
+        if include_persistent:
+            todo_items = self._load_todo_for_display(session_id)
+        else:
+            todo_items = self._load_todo_from_json(session_id)
         todo_items = self._overlay_serial_todo_statuses(todo_items)
         todo_tasks = self._format_tasks_for_update(
             todo_items, source="todo"

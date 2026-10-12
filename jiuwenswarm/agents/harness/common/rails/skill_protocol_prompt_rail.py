@@ -57,8 +57,10 @@ _CN_PROTOCOL = """## 技能执行规范（强制）
 8. **工具降级**：SKILL.md 中提到的工具如果在当前环境中不存在，必须先告知用户该工具不可用并说明你打算如何替代，获得用户同意后再继续。不要花时间反复检查工具列表。
 9. **用户打断后的处置**：按用户**原话**判定意图，**禁止自己猜**：
    - 原话含"继续"/"接着做"/"刚才那个继续" → 继续当前技能流程。
+   - 原话是在查看、修改或删除待办（如「我有哪些待办事项」）→ 不是放弃。不要取消用户记下的待办。要开始做某一条时，先 `todo_modify` 把它改成 `in_progress`。
    - 其他情况（无关问题、闲聊、新任务、同技能新需求、显式取消、意图不明）→ 一律视为放弃原任务：
-     先用 `todo_modify` 把所有 `in_progress`/`pending` 项标为 `cancelled`，再回应新请求。
+     先用 `todo_modify` 把所有**执行计划**里的 `in_progress`/`pending` 项标为 `cancelled`，再回应新请求。
+     用户记下的待办（提醒、截止时间）不要因为一句新问话取消。
      若新请求需要技能，重新用 `skill_tool` 加载并**重建** todo，不要沿用旧 todo。
 
 ⚠️ 用户发 N 条消息 ≠ N 个并发任务；新消息**默认覆盖**旧任务，**不追加**。禁止措辞："让我先完成之前的"/"先把之前的收尾"/"两个都做"/"先 X 再 Y"（除非用户原话已明示并列）。仅凭 history 有两条任务消息就推断"用户想做两个"是错误推理。
@@ -98,9 +100,12 @@ Then execute the workflow; the rules below govern execution.
 8. **Tool fallback**: If a tool mentioned in SKILL.md does not exist in your current environment, you MUST first inform the user that the tool is unavailable and explain how you plan to substitute it. Only proceed after the user agrees. Do not spend time repeatedly checking the tool list.
 9. **Handling user interruption**: Decide intent strictly from the user's **literal words**, **never guess**:
    - Words include "continue" / "go on" / "resume the previous one" → continue the current skill flow.
+   - The user is listing, editing, or deleting todos → this is not abandonment. Do not cancel
+     reminders the user asked to keep. To start one, `todo_modify` it to `in_progress` first.
    - Anything else (unrelated question, small talk, a new task, a new requirement for the same skill,
-     explicit cancellation, unclear intent) → treat the original task as abandoned: first call
-     `todo_modify` to mark every `in_progress`/`pending` item `cancelled`, then respond to the new request.
+     explicit cancellation, unclear intent) → treat the original **execution plan** as abandoned:
+     first call `todo_modify` to mark that plan's `in_progress`/`pending` items `cancelled`, then
+     respond to the new request. Do not cancel a reminder just because the user asked something else.
      If the new request needs a skill, load it again via `skill_tool` and **rebuild** the todo list
      instead of reusing the old one.
 
