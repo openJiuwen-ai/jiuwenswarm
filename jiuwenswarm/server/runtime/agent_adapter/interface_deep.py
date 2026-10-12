@@ -20196,18 +20196,30 @@ class JiuWenSwarmDeepAdapter:
             request_metadata = (
                 dict(request.metadata) if isinstance(request.metadata, dict) else {}
             )
-            if len(model_refs) != 1:
+            model_ref = model_refs[0] if len(model_refs) == 1 else ""
+            model_keys = (
+                self._model_identity_to_keys.get(model_ref, [])
+                if model_ref
+                else []
+            )
+            model_identity_available = (
+                len(model_refs) == 1
+                and len(model_keys) == 1
+                and self._model_cache.get(model_keys[0]) is resolved_model
+            )
+            if not model_identity_available:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] selected model identity unavailable "
                     "for SkillTurbo resume: "
-                    "model_name=%s refs=%s",
+                    "model_name=%s refs=%s owners=%s",
                     model_name,
                     len(model_refs),
+                    len(model_keys),
                 )
             else:
                 request_metadata[_SKILL_TURBO_MODEL_IDENTITY_KEY] = {
                     "model_name": model_name,
-                    "model_ref": model_refs[0],
+                    "model_ref": model_ref,
                 }
             request_env_tokens = self._bind_request_env_overlay()
             self._mark_session_active(session_id)
