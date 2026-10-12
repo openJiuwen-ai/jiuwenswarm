@@ -3474,6 +3474,24 @@ class JiuWenSwarmDeepAdapter:
             raise RuntimeError("permission_external_input_adapter_unavailable")
         return selected
 
+    @staticmethod
+    async def _drain_history_preparation(task: asyncio.Task | None) -> None:
+        """Keep the session lock/owner until a cancelled thread read finishes."""
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        cancellation = None
+        drain = asyncio.gather(task, return_exceptions=True)
+        while True:
+            try:
+                await asyncio.shield(drain)
+                break
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+        if cancellation is not None:
+            raise cancellation
+
     async def _get_or_create_session_adapter(
         self,
         session_id: str | None,
@@ -3601,51 +3619,64 @@ class JiuWenSwarmDeepAdapter:
             create_started_at = time.monotonic()
             if permission_project_dir is not None:
                 config = {**(config or {}), "project_dir": permission_project_dir}
-            await adapter.create_instance(
-                config,
-                mode=self._session_instance_mode,
-                sub_mode=self._session_instance_sub_mode,
-                **self._session_instance_extra_create_kwargs(),
-            )
-            adapter.persist_skill_retrieval_session_profile()
-            instance_ready_at = time.monotonic()
+            history_preparation = None
+            if history_before_request_id:
+                from jiuwenswarm.agents.harness.common.session_ops_service import prefetch_session_history
 
-            await adapter.start_interaction(session_id=sid)
-            interaction_ready_at = time.monotonic()
-
-            self._session_adapters[sid] = adapter
-            # A brand-new session adapter is created from ``_session_instance_config``
-            # (which may predate the latest global reload). If a global reload left a
-            # pending ``config_base``, apply it now so the new session reflects the
-            # same configuration as already-existing sessions that reload lazily.
-            # ``_reload_session_adapter_if_stale`` owns the version bookkeeping
-            # (including the no-pending case, where it silently catches up).
-            await self._reload_session_adapter_if_stale(
-                sid,
-                adapter,
-                host_external_input=host_external_input,
-            )
-            # 服务重启 / adapter 被驱逐后重建时，context_engine 内存池为空，
-            # 而 chat.send 主路径不会回灌磁盘 history.jsonl——继续历史会话时
-            # 模型将拿到空上下文。这里在新建 adapter 后从磁盘恢复上下文
-            # （全新会话磁盘无历史，warmup 内部会静默跳过）。
+                history_preparation = asyncio.create_task(
+                    run_history_io(prefetch_session_history, sid,
+                        history_before_request_id=history_before_request_id),
+                    name=f"session-history-prepare:{sid}",
+                )
             try:
-                from jiuwenswarm.agents.harness.common.session_ops_service import (
-                    warmup_session_context,
+                await adapter.create_instance(
+                    config,
+                    mode=self._session_instance_mode,
+                    sub_mode=self._session_instance_sub_mode,
+                    **self._session_instance_extra_create_kwargs(),
                 )
+                adapter.persist_skill_retrieval_session_profile()
+                instance_ready_at = time.monotonic()
 
-                await warmup_session_context(
-                    deep_agent=getattr(adapter, "_instance", None),
-                    session_id=sid,
-                    history_before_request_id=history_before_request_id,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] session context warmup failed: "
-                    "session_id=%s error=%s",
+                await adapter.start_interaction(session_id=sid)
+                interaction_ready_at = time.monotonic()
+
+                self._session_adapters[sid] = adapter
+                # A brand-new child uses the template config. Apply any pending
+                # global reload before restoring context or accepting input.
+                await self._reload_session_adapter_if_stale(
                     sid,
-                    exc,
+                    adapter,
+                    host_external_input=host_external_input,
                 )
+                history_snapshot = None
+                if history_preparation is not None:
+                    try:
+                        history_snapshot = await history_preparation
+                    except Exception as exc:
+                        logger.debug("session history preparation failed for %s: %s", sid, exc)
+                # Restart/eviction restoration still uses the original context
+                # conversion after SDK initialization, start and config reload.
+                try:
+                    from jiuwenswarm.agents.harness.common.session_ops_service import (
+                        warmup_session_context,
+                    )
+
+                    await warmup_session_context(
+                        deep_agent=getattr(adapter, "_instance", None),
+                        session_id=sid,
+                        history_before_request_id=history_before_request_id,
+                        **({"history_snapshot": history_snapshot} if history_snapshot is not None else {}),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] session context warmup failed: "
+                        "session_id=%s error=%s",
+                        sid,
+                        exc,
+                    )
+            finally:
+                await self._drain_history_preparation(history_preparation)
             if requested_mcp_scan_names is not None or restored_profile is not None:
                 adapter.mark_session_mcp_reconcile_started()
             self._touch_session_adapter(sid)
@@ -13603,10 +13634,24 @@ class JiuWenSwarmDeepAdapter:
         self, request: SendInputRequest, *, send: Any = None,
     ) -> bool:
         sender = send if send is not None else self._instance.send_input
+        # Source and frozen acceptance use the same boundary after permission
+        # dispatch has prepared the actual SDK input. Custom continuation
+        # senders are not labelled as a DeepAgent.send_input measurement.
+        from jiuwenswarm.runtime.execution_telemetry import observe_sdk_entry, sdk_entry_sink
+
+        if send is None and (sdk_entry_sink.get() is not None or os.environ.get("JIUWENSWARM_SDK_ENTRY_LOG")):
+
+            async def measured_sender(actual_request: SendInputRequest) -> Any:
+                observe_sdk_entry(actual_request, sender)
+                return await sender(actual_request)
+
+            sdk_sender = measured_sender
+        else:
+            sdk_sender = sender
         if not self._enable_auto_permission:
-            await sender(request)
+            await sdk_sender(request)
             return False
-        return await self._permission_dispatch.send(request, sender)
+        return await self._permission_dispatch.send(request, sdk_sender)
 
 
     def _permission_context_messages(

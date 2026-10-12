@@ -329,8 +329,9 @@ class WorkerDispatcher:
             return
         gen_token = begin_request_generation(generation)
         dispatch_token = begin_request_dispatch(dispatch_id)
-        from jiuwenswarm.runtime.execution_telemetry import execution_entry_sink
+        from jiuwenswarm.runtime.execution_telemetry import execution_entry_sink, sdk_entry_sink
         entry_token = execution_entry_sink.set(self._bridge.observe_execution_entry)
+        minimum_token = sdk_entry_sink.set(getattr(runtime, "observe_execution_minimum_ready", None))
         token, box = begin_delivery_tracking()
         error = ""
         ok = True
@@ -344,6 +345,7 @@ class WorkerDispatcher:
             )
         finally:
             execution_entry_sink.reset(entry_token)
+            sdk_entry_sink.reset(minimum_token)
             end_delivery_tracking(token)
             end_request_generation(gen_token)
             end_request_dispatch(dispatch_token)
