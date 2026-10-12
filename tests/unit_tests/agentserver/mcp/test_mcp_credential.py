@@ -336,3 +336,17 @@ def test_build_prompt_deveco_has_no_doc_url_only_label(tmp_path: Path) -> None:
     assert out["doc_label"] == "请填写本地 DevEco 安装路径"
     assert out["fields"]["DEVECO_PATH"]["type"] == "text"
 
+
+
+# --- defensive path validation in CredentialStore._path ---
+
+
+@pytest.mark.parametrize(
+    "bad_name", ["../../evil", "a/b", "a\\b", "..", "", "   "]
+)
+def test_credential_store_path_rejects_traversal(tmp_path, bad_name) -> None:
+    """Defense-in-depth: _path is the choke point for every credential file
+    operation; traversal or empty names must raise, not build a path."""
+    store = cred.CredentialStore(workspace_dir=tmp_path)
+    with pytest.raises(ValueError, match="invalid mcp credential name"):
+        store._path(bad_name)

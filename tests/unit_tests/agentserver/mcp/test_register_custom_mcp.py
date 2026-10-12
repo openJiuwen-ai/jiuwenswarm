@@ -414,3 +414,36 @@ def test_get_mcp_custom_returns_config_fields_for_edit_prefill(tmp_path: Path, m
     assert detail["headers"] == {"Authorization": "Bearer abc"}
     assert detail["env"] == {"FOO": "bar"}
     assert detail["timeout_s"] == 30
+
+
+# --- name validation (path traversal rejection) ---
+
+
+@pytest.mark.parametrize(
+    "bad_name",
+    ["../../etc/cron.d/evil", "a/b", "a\\b", "..", "foo/../bar", ".hidden"],
+)
+def test_register_custom_rejects_traversal_names(bad_name, monkeypatch, tmp_path) -> None:
+    """Names feed filesystem paths (credentials/skills/pkg dirs); path
+    separators and '..' must be rejected before anything is written."""
+    with pytest.raises(ValueError, match="mcp name must match"):
+        registry.register_custom_mcp(bad_name, {"transport": "stdio", "command": "x"})
+
+
+@pytest.mark.parametrize("good_name", ["amap", "baidu-map", "my.mcp_v2"])
+def test_register_custom_accepts_safe_names(good_name, monkeypatch) -> None:
+    """Preset-style names (alphanumerics, dot/dash/underscore) stay valid."""
+    _patch_state_store(monkeypatch)
+    registry.register_custom_mcp(
+        good_name, {"transport": "stdio", "command": "x", "args": []}
+    )
+
+
+def test_save_credentials_rejects_traversal_names(monkeypatch, tmp_path) -> None:
+    """save_mcp_credentials feeds CredentialStore paths the same way."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.mcp.credential.get_workspace_dir",
+        lambda: tmp_path,
+    )
+    with pytest.raises(ValueError, match="mcp name must match"):
+        registry.save_mcp_credentials("../../evil", {"TOKEN": "x"})
