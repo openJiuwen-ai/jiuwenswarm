@@ -1,5 +1,5 @@
 import { readOutputOrder } from '../sessionOutput';
-import type { OutputOrder } from '../../types/message';
+import type { McpAppResult, OutputOrder } from '../../types/message';
 import { parseSkillTreePath, type SkillTreePath } from '../../types/skillTree';
 import { parseBeamSearchProgress, type BeamSearchProgress } from '../../types/beamSearch';
 import type { AutoReviewerMetadata } from '../../types';
@@ -249,6 +249,25 @@ export interface NormalizedToolResult {
   /** 仅 symphony_compose_graph 的合法 planned_graph 前端展示投影。 */
   mermaid?: string;
   reviewer?: AutoReviewerMetadata;
+  mcpApp?: McpAppResult;
+}
+
+/** Project the backend's ``raw_output.mcp_app`` block (MCP Apps tool UI). */
+export function parseMcpAppResult(value: unknown): McpAppResult | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const { server, tool, resourceUri } = record;
+  if (typeof server !== 'string' || !server) return undefined;
+  if (typeof tool !== 'string' || !tool) return undefined;
+  if (typeof resourceUri !== 'string' || !resourceUri.startsWith('ui://')) return undefined;
+  const toolResult = asRecord(record.toolResult);
+  return {
+    server,
+    tool,
+    resourceUri,
+    arguments: asRecord(record.arguments) ?? {},
+    ...(toolResult ? { toolResult } : {}),
+  };
 }
 
 export interface NormalizedToolUpdate {
@@ -388,6 +407,7 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
     !timedOut
       ? plannedGraphToMermaid(rawOutputRecord)
       : undefined;
+  const mcpApp = parseMcpAppResult(rawOutputRecord?.mcp_app);
 
   return {
     toolName,
@@ -400,6 +420,7 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
     skillTree,
     beamSearch,
     ...(mermaid ? { mermaid } : {}),
+    ...(mcpApp ? { mcpApp } : {}),
     reviewer,
   };
 }
