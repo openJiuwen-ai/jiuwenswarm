@@ -42,7 +42,7 @@ from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
-    merge_evolution_disabled_skills,
+    evolution_disabled_skill_names,
 )
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 
@@ -463,7 +463,7 @@ def build_team_skill_evolution_rail(
             auto_save=inp.auto_save,
             review_trigger=inp.review_trigger,
             team_id=inp.team_id,
-            disabled_skills=merge_evolution_disabled_skills(
+            disabled_skills=evolution_disabled_skill_names(
                 load_execution_disabled_skills()
             ),
         )
@@ -653,7 +653,7 @@ def build_member_skill_evolution_rail(
             signal_trigger=inp.signal_trigger,
             review_trigger=inp.review_trigger,
             trajectory_span_processor=get_trajectory_span_processor(),
-            disabled_skills=merge_evolution_disabled_skills(
+            disabled_skills=evolution_disabled_skill_names(
                 load_execution_disabled_skills()
             ),
         )

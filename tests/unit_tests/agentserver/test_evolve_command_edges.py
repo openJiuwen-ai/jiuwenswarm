@@ -5,8 +5,10 @@ import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
+from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
+    evolution_disabled_skill_names,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
@@ -115,11 +117,6 @@ async def test_evolve_slash_allows_team_without_lazy_registering(monkeypatch):
 @pytest.mark.anyio
 async def test_evolve_slash_lazy_init_registers_active_review_rails(monkeypatch, auto_save):
     monkeypatch.delenv("EVOLUTION_REVIEW_TRIGGER", raising=False)
-    monkeypatch.setattr(
-        evolution_helpers,
-        "get_builtin_skill_names",
-        lambda: {"builtin-demo"},
-    )
 
     class _FakeSkillEvolutionRail:
         pass
@@ -207,8 +204,8 @@ async def test_evolve_slash_lazy_init_registers_active_review_rails(monkeypatch,
         "signal_trigger": True,
         # Rail always persists experiences; config auto_save only gates version merge.
         "auto_save": True,
-        # Execution-disabled + package builtins (sorted by merge_evolution_disabled_skills).
-        "disabled_skills": ["builtin-demo", "disabled-demo"],
+        # Execution-disabled ∪ package builtins (standalone evolution deny fallback).
+        "disabled_skills": evolution_disabled_skill_names(["disabled-demo"]),
         "language": "en",
     }
 
