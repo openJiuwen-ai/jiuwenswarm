@@ -556,14 +556,18 @@ async def test_prepare_code_mode_chat_turn_uses_injected_agent_manager() -> None
     default_manager.get_agent.assert_not_called()
 
 
-def test_agent_lookup_uses_plan_sub_mode_and_workspace_dir() -> None:
+def test_agent_lookup_uses_plan_sub_mode_and_project_dir() -> None:
     from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
     manager = AgentManager.__new__(AgentManager)
     manager.service_id = "default"
     manager.agent_id = "office"
     request = SimpleNamespace(
-        params={"mode": "code.plan", "workspace_dir": "E:/workspace/demo-project"}
+        params={
+            "mode": "code.plan",
+            "project_dir": "E:/workspace/demo-project",
+            "workspace_dir": "E:/workspace/internal-agent-data",
+        }
     )
     mode, sub_mode, project_dir = manager._agent_lookup_from_request(request)
     assert mode == "code"
