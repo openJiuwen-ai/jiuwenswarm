@@ -510,6 +510,63 @@ async def test_complete_skill_turbo_outer_todo_updates_status_and_returns_events
 
 
 @pytest.mark.asyncio
+async def test_complete_skill_turbo_outer_todo_recovers_parallel_task_after_saved_task_completed():
+    class _TodoTool:
+        def __init__(self):
+            self.todos = [
+                SimpleNamespace(
+                    id="research",
+                    status=SimpleNamespace(value="completed"),
+                ),
+                SimpleNamespace(
+                    id="create_ppt",
+                    status=SimpleNamespace(value="in_progress"),
+                ),
+            ]
+            self.updated = None
+
+        async def load_todos(self, _session_id):
+            return self.todos
+
+        async def _update_todos(self, session_id, updates, todos):
+            self.updated = (session_id, updates, todos)
+            task_id = updates[0]["id"]
+            target = next(todo for todo in self.todos if todo.id == task_id)
+            target.status = SimpleNamespace(value="completed")
+
+    class _TaskRail:
+        def external_todo_completion_events(
+            self, session_id, task_id, *, parent_request_id
+        ):
+            assert session_id == "sess-parallel"
+            assert task_id == "create_ppt"
+            return [
+                SimpleNamespace(
+                    type="task.complete",
+                    payload={"task_id": "todo:create_ppt"},
+                )
+            ]
+
+    todo_tool = _TodoTool()
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._task_execution_rail = _TaskRail()
+    adapter._get_todo_modify_tool = lambda _session_id: todo_tool
+
+    chunks = await adapter._complete_skill_turbo_outer_todo(
+        session_id="sess-parallel",
+        request_id="resume-parallel",
+        channel_id="web",
+        resume_ctx={"outer_task_id": "todo:research"},
+    )
+
+    assert todo_tool.updated is not None
+    assert todo_tool.updated[1] == [
+        {"id": "create_ppt", "status": "completed"}
+    ]
+    assert [chunk.payload["event_type"] for chunk in chunks] == ["task.complete"]
+
+
+@pytest.mark.asyncio
 async def test_clear_resume_ctx_persists_across_sessions():
     """clear_resume_ctx 后新 session load_resume_ctx 必须返回 None。
 

@@ -14607,7 +14607,9 @@ class JiuWenSwarmDeepAdapter:
         if not todos:
             return []
 
-        task_id = str(resume_ctx.get("outer_task_id") or "").removeprefix("todo:")
+        saved_task_id = str(resume_ctx.get("outer_task_id") or "").removeprefix("todo:")
+        task_id = saved_task_id
+        target = next((todo for todo in todos if str(todo.id) == task_id), None)
         if not task_id:
             active = []
             for todo in todos:
@@ -14624,9 +14626,8 @@ class JiuWenSwarmDeepAdapter:
                 )
                 return []
             task_id = str(active[0].id)
-
-        target = next((todo for todo in todos if str(todo.id) == task_id), None)
-        if target is None:
+            target = active[0]
+        elif target is None:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] SkillTurbo resume outer todo missing: "
                 "task_id=%s session_id=%s",
@@ -14636,6 +14637,26 @@ class JiuWenSwarmDeepAdapter:
             return []
 
         status = getattr(getattr(target, "status", None), "value", None)
+        if status == TodoStatus.COMPLETED.value:
+            active = []
+            for todo in todos:
+                todo_status = getattr(todo, "status", None)
+                status_value = getattr(todo_status, "value", None)
+                if status_value == TodoStatus.IN_PROGRESS.value:
+                    active.append(todo)
+            if len(active) != 1:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] SkillTurbo resume completion skipped: "
+                    "saved outer task already completed and active_todos=%d "
+                    "saved_task_id=%s session_id=%s",
+                    len(active),
+                    saved_task_id,
+                    session_id,
+                )
+                return []
+            target = active[0]
+            task_id = str(target.id)
+            status = getattr(getattr(target, "status", None), "value", None)
         if status != TodoStatus.IN_PROGRESS.value:
             logger.info(
                 "[JiuWenSwarmDeepAdapter] SkillTurbo resume outer todo not in progress: "
