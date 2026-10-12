@@ -1310,6 +1310,51 @@ def _enrich_leader_event(parsed: dict[str, Any], chunk: Any) -> dict[str, Any]:
 _TEAM_TOOL_RESULT_TEXT_LIMIT = 512
 
 
+def _clip_tool_result_value(value: Any) -> tuple[Any, int, bool]:
+    """Clip long strings inside a tool-result field.
+
+    Returns the clipped value, the total length of strings visited, and whether
+    any string was clipped. Dict and list values are walked so a nested
+    ``raw_output`` string cannot bypass the limit. Containers are copied only
+    when a child changes.
+    """
+    if isinstance(value, str):
+        if len(value) <= _TEAM_TOOL_RESULT_TEXT_LIMIT:
+            return value, len(value), False
+        return value[:_TEAM_TOOL_RESULT_TEXT_LIMIT], len(value), True
+    if isinstance(value, dict):
+        original_size = 0
+        truncated = False
+        rebuilt: dict[Any, Any] | None = None
+        for key, item in value.items():
+            new_item, item_size, item_truncated = _clip_tool_result_value(item)
+            original_size += item_size
+            truncated = truncated or item_truncated
+            if new_item is not item:
+                if rebuilt is None:
+                    rebuilt = dict(value)
+                rebuilt[key] = new_item
+        return (value if rebuilt is None else rebuilt), original_size, truncated
+    if isinstance(value, (list, tuple)):
+        original_size = 0
+        truncated = False
+        rebuilt_items: list[Any] | None = None
+        for index, item in enumerate(value):
+            new_item, item_size, item_truncated = _clip_tool_result_value(item)
+            original_size += item_size
+            truncated = truncated or item_truncated
+            if new_item is not item:
+                if rebuilt_items is None:
+                    rebuilt_items = list(value)
+                rebuilt_items[index] = new_item
+        if rebuilt_items is None:
+            return value, original_size, truncated
+        if isinstance(value, tuple):
+            return tuple(rebuilt_items), original_size, truncated
+        return rebuilt_items, original_size, truncated
+    return value, 0, False
+
+
 def _truncate_team_tool_result_event(parsed: dict[str, Any]) -> dict[str, Any]:
     """Trim large team tool result fields before forwarding them to clients."""
     if parsed.get("event_type") != "chat.tool_result":
@@ -1319,14 +1364,12 @@ def _truncate_team_tool_result_event(parsed: dict[str, Any]) -> dict[str, Any]:
     truncated = False
     original_size = 0
     for key in ("result", "raw_output"):
-        value = next_event.get(key)
-        if not isinstance(value, str):
+        if key not in next_event:
             continue
-        original_size += len(value)
-        if len(value) <= _TEAM_TOOL_RESULT_TEXT_LIMIT:
-            continue
-        next_event[key] = value[:_TEAM_TOOL_RESULT_TEXT_LIMIT]
-        truncated = True
+        new_value, value_size, value_truncated = _clip_tool_result_value(next_event[key])
+        original_size += value_size
+        truncated = truncated or value_truncated
+        next_event[key] = new_value
 
     if truncated:
         next_event["truncated"] = True

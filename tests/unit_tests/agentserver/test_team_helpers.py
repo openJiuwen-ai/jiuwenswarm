@@ -5586,3 +5586,77 @@ async def test_await_runner_pool_release_stops_entry_that_stays_running(monkeypa
     await team_helpers._await_runner_pool_release("oc_team", "sess")
 
     assert stopped == [{"team_name": "oc_team", "session_id": "sess"}]
+
+
+def test_truncate_team_tool_result_clips_nested_raw_output_strings() -> None:
+    limit = team_helpers._TEAM_TOOL_RESULT_TEXT_LIMIT
+    full_markdown = "x" * (limit + 100)
+    short_note = "ok"
+    raw_output = {"result": full_markdown, "note": short_note}
+    parsed = {
+        "event_type": "chat.tool_result",
+        "result": "y" * (limit + 10),
+        "raw_output": raw_output,
+        "tool_name": "read_file_content",
+    }
+
+    clipped = team_helpers._truncate_team_tool_result_event(parsed)
+
+    assert clipped["truncated"] is True
+    assert clipped["original_size"] == (limit + 10) + (limit + 100) + len(short_note)
+    assert clipped["result"] == "y" * limit
+    assert clipped["raw_output"]["result"] == "x" * limit
+    assert clipped["raw_output"]["note"] == short_note
+    assert clipped["tool_name"] == "read_file_content"
+    assert raw_output["result"] == full_markdown
+    assert parsed["raw_output"] is raw_output
+
+
+def test_truncate_team_tool_result_leaves_short_nested_text_untouched() -> None:
+    raw_output = {"result": "short", "rows": ["a", "b"]}
+    parsed = {
+        "event_type": "chat.tool_result",
+        "result": "preview",
+        "raw_output": raw_output,
+    }
+
+    clipped = team_helpers._truncate_team_tool_result_event(parsed)
+
+    assert "truncated" not in clipped
+    assert "original_size" not in clipped
+    assert clipped["raw_output"] is raw_output
+
+
+def test_truncate_team_tool_result_ignores_other_events() -> None:
+    parsed = {"event_type": "chat.delta", "result": "z" * 1000}
+
+    assert team_helpers._truncate_team_tool_result_event(parsed) is parsed
+
+
+def test_truncate_team_tool_result_clips_top_level_list_and_tuple() -> None:
+    limit = team_helpers._TEAM_TOOL_RESULT_TEXT_LIMIT
+    long_text = "x" * (limit + 20)
+    nested_text = "y" * (limit + 5)
+    raw_list = [long_text, "ok", {"note": nested_text}]
+    parsed = {"event_type": "chat.tool_result", "raw_output": raw_list}
+
+    clipped = team_helpers._truncate_team_tool_result_event(parsed)
+
+    assert isinstance(clipped["raw_output"], list)
+    assert clipped["truncated"] is True
+    assert clipped["original_size"] == (limit + 20) + len("ok") + (limit + 5)
+    assert clipped["raw_output"][0] == "x" * limit
+    assert clipped["raw_output"][1] == "ok"
+    assert clipped["raw_output"][2]["note"] == "y" * limit
+    assert raw_list[0] == long_text
+    assert parsed["raw_output"] is raw_list
+
+    raw_tuple = ("z" * (limit + 3), "ok")
+    parsed_tuple = {"event_type": "chat.tool_result", "raw_output": raw_tuple}
+    clipped_tuple = team_helpers._truncate_team_tool_result_event(parsed_tuple)
+
+    assert isinstance(clipped_tuple["raw_output"], tuple)
+    assert clipped_tuple["raw_output"][0] == "z" * limit
+    assert clipped_tuple["raw_output"][1] == "ok"
+    assert clipped_tuple["original_size"] == (limit + 3) + len("ok")
+    assert raw_tuple[0] == "z" * (limit + 3)
