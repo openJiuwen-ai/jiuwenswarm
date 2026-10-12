@@ -20,7 +20,10 @@ from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    JiuWenSwarmDeepAdapter,
+    _SKILL_TURBO_MODEL_IDENTITY_KEY,
+)
 from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
     SKILL_TURBO_RESUME_CTX_KEY,
     clear_resume_ctx,
@@ -158,7 +161,18 @@ async def _async_none():
 
 
 async def _async_resume_ctx():
-    return {"pending_tool_call_id": "skill_turbo-tc-ask_user-1", "plan_code": "x"}
+    return {
+        "pending_tool_call_id": "skill_turbo-tc-ask_user-1",
+        "plan_code": "x",
+        "inputs": {
+            "metadata": {
+                _SKILL_TURBO_MODEL_IDENTITY_KEY: {
+                    "model_name": "glm-5.2",
+                    "model_ref": "model-ref-1",
+                }
+            }
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -182,6 +196,12 @@ async def test_try_skill_turbo_resume_continues_with_outer_interrupt_when_ctx(
     sentinel = object()
     adapter._make_skill_turbo_resume_stream = (
         lambda **_kwargs: sentinel  # type: ignore[method-assign]
+    )
+    restored_models = []
+    model = SimpleNamespace(model_config=SimpleNamespace(model_name="glm-5.2"))
+    adapter._resolve_model_by_identity = lambda ref: model  # type: ignore[method-assign]
+    adapter._apply_model_to_react_agent = (  # type: ignore[method-assign]
+        lambda resolved: restored_models.append(resolved)
     )
     request = AgentRequest(
         request_id="req-1",
@@ -219,6 +239,52 @@ async def test_try_skill_turbo_resume_continues_with_outer_interrupt_when_ctx(
         lambda _session, _ctx: _async_none(),
     )
     assert await adapter._try_skill_turbo_resume(request, {}) is sentinel
+    assert restored_models == [model]
+
+
+@pytest.mark.asyncio
+async def test_process_stream_applies_pending_reload_before_skill_turbo_resume():
+    """Pending reload must complete before SkillTurbo resume restores the model."""
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._is_session_scoped_adapter = True
+    adapter._instance = SimpleNamespace()
+    adapter._deepresearch_rewrite_tx_uncertain = False
+    events = []
+
+    async def apply_pending_reload():
+        events.append("reload")
+
+    async def try_resume(_request, _inputs):
+        events.append("resume")
+
+        async def stream():
+            yield SimpleNamespace(is_complete=True)
+
+        return stream()
+
+    adapter._maybe_apply_pending_reload = apply_pending_reload  # type: ignore[method-assign]
+    adapter._try_skill_turbo_resume = try_resume  # type: ignore[method-assign]
+    adapter._refresh_stale_mcp_tool_lists = (  # type: ignore[method-assign]
+        lambda: _async_none()
+    )
+    adapter._inject_extension_config_into_inputs = lambda *_args: None  # type: ignore[method-assign]
+    adapter._inject_model_selection_into_inputs = lambda *_args: None  # type: ignore[method-assign]
+    adapter._is_subagent_approval_answer = lambda *_args: False  # type: ignore[method-assign]
+
+    request = AgentRequest(
+        request_id="req-order",
+        channel_id="officeclaw",
+        session_id="sess-order",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "resume"},
+    )
+    chunks = [
+        chunk
+        async for chunk in adapter._process_message_stream_impl(request, {})
+    ]
+
+    assert events == ["reload", "resume"]
+    assert len(chunks) == 1
 
 
 async def _async_in_flight_resume_ctx():
