@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_ITERATIONS = 200
 _DEFAULT_COMPLETION_TIMEOUT = 600.0
+# The leader coordinates the whole team for the lifetime of a long-horizon
+# task, so its inner ReAct loop must never be cut short. ``None`` means
+# unbounded. ``completion_timeout`` is left alone: on the team path it only sets
+# the slow-round log threshold and never aborts a round.
+_LEADER_UNBOUNDED_BUDGET = {"max_iterations": None}
 _DEFAULT_AGENT_WORKSPACE = {"stable_base": True}
 _DEFAULT_TEAM_WORKSPACE = {"enabled": True}
 _DEFAULT_TRANSPORT = {"type": "inprocess"}
@@ -391,6 +396,10 @@ def _build_agents_config(
             max_iterations=max_iterations,
             completion_timeout=completion_timeout,
         )
+
+    # Applied after the merge on purpose: a cap written by an older config
+    # template must not survive and truncate a long-running leader.
+    agents["leader"].update(_LEADER_UNBOUNDED_BUDGET)
 
     if set(agents.keys()) == {"leader"}:
         logger.info(
