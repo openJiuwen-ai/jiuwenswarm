@@ -18,6 +18,7 @@ import yaml
 from playwright.async_api import async_playwright
 
 import issue4689_native as native
+from issue4689_performance import discover_node_binary
 
 
 async def until(predicate, timeout=90):
@@ -29,6 +30,16 @@ async def until(predicate, timeout=90):
 
 
 async def run(args):
+    node = discover_node_binary(args.node)
+    if node is None:
+        raise FileNotFoundError("Node was not found on PATH; pass --node or set JIUWENSWARM_NODE_EXECUTABLE")
+    try:
+        version = subprocess.run([str(node), "--version"], check=True, capture_output=True,
+                                 text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"Node executable could not run --version: {node}") from exc
+    if not version.startswith("v") or not version[1:2].isdigit():
+        raise RuntimeError(f"configured executable did not identify itself as Node: {node}")
     native.GATEWAY = True
     root = Path(args.code).resolve()
     output = Path(args.output).resolve()
@@ -40,7 +51,8 @@ async def run(args):
     fixture.scenario = args.scenario
     model = ThreadingHTTPServer(("127.0.0.1", 0), fixture)
     threading.Thread(target=model.serve_forever, daemon=True).start()
-    result = {"scenario": args.scenario, "surface": "actual-Web-UI/Chromium/Gateway/native-Worker"}
+    result = {"scenario": args.scenario, "surface": "actual-Web-UI/Chromium/Gateway/native-Worker",
+              "node_executable": str(node), "node_version": version}
     with tempfile.TemporaryDirectory(prefix="jiuwenswarm-4689-browser-", ignore_cleanup_errors=True) as directory:
         data = Path(directory) / "data"
         config_dir = data / "config"
@@ -102,7 +114,7 @@ async def run(args):
                         raise
                     await asyncio.sleep(.25)
         front, gateway = launch_front(), launch_gateway()
-        frontend = subprocess.Popen(["D:/nodejs/node.exe", str(root / "jiuwenswarm/channels/web/frontend/node_modules/vite/bin/vite.js"),
+        frontend = subprocess.Popen([str(node), str(root / "jiuwenswarm/channels/web/frontend/node_modules/vite/bin/vite.js"),
             "--host", "127.0.0.1", "--port", str(ui_port)], cwd=root / "jiuwenswarm/channels/web/frontend", env=env, stdout=log, stderr=log)
         worker = None
         frames, errors = [], []
@@ -253,4 +265,5 @@ if __name__ == "__main__":
     parser.add_argument("--output", required=True)
     parser.add_argument("--scenario", choices=("tool", "interaction", "cancel"), default="tool")
     parser.add_argument("--reload", action="store_true")
+    parser.add_argument("--node", help="Node executable; otherwise use JIUWENSWARM_NODE_EXECUTABLE or PATH")
     asyncio.run(run(parser.parse_args()))

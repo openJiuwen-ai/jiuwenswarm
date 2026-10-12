@@ -80,6 +80,7 @@ class ModelFixture(BaseHTTPRequestHandler):
     calls = 0
     main_calls = 0
     names = []
+    supplemental_consumed = False
     scenario = "restart"
     counter = None
 
@@ -91,10 +92,12 @@ class ModelFixture(BaseHTTPRequestHandler):
         type(self).calls += 1
         type(self).names = [tool.get("function", {}).get("name") for tool in request.get("tools", [])]
         fixture = type(self)
-        main = "[4689-original]" in json.dumps(request.get("messages", []))
+        message_text = json.dumps(request.get("messages", []))
+        main = "[4689-original]" in message_text
         tool = None
         if main:
             fixture.main_calls += 1
+            fixture.supplemental_consumed |= "Supplemental input" in message_text
             fixture.entered.set()
             if fixture.main_calls == 1 and fixture.scenario == "tool":
                 target = str(fixture.counter).replace("'", "''")
@@ -175,6 +178,36 @@ async def send(ws, request_id, method, session_id, params=None, *, stream=False)
 async def rpc(ws, request_id, method, session_id, params=None):
     await send(ws, request_id, method, session_id, params)
     return payload(await response(ws, request_id))
+
+
+async def authoritative_cancel(ws, log_path, *, warming):
+    """Gateway intent ACK is followed by the actual Worker terminal state."""
+    deadline = time.monotonic() + 30
+    attempt = 0
+    while True:
+        metadata = await rpc(ws, f"cancel-state-{attempt}", "session.get_metadata", "resident-session")
+        current = metadata.get("runtime") or {}
+        attempt += 1
+        original = next((item for item in current.get("dispatches", [])
+                         if item.get("request_id") == "original-chat"), None)
+        state = (original or {}).get("terminal") or {}
+        stopped = bool(original and not original.get("active") and state.get("state") in {"cancelled", "succeeded"})
+        # The model is deliberately blocked. A prepared execution cannot finish
+        # naturally; stopping it without releasing that gate proves cancellation.
+        if stopped and not current.get("is_processing"):
+            if warming:
+                assert state.get("state") == "cancelled" and not original.get("entered_at_ns"), current
+                assert ModelFixture.main_calls == 0, "warming cancellation entered the actual model"
+            else:
+                assert original.get("entered_at_ns") and ModelFixture.main_calls == 1, current
+                assert not ModelFixture.release.is_set(), "model gate must stay closed until cancellation completes"
+            # Gateway logs this only after awaiting the actual AgentServer
+            # response, so stopping its process cannot cut off that delivery.
+            if "AgentServer 中断响应: request_id=" in log_path.read_text(encoding="utf-8", errors="replace"):
+                return current
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Gateway intent was acknowledged but original Worker cancellation/delivery did not finish")
+        await asyncio.sleep(.025)
 
 
 async def open_front(front_port, suffix=""):
@@ -301,6 +334,23 @@ server.run(transport="stdio")
         ModelFixture.scenario = args.scenario
         ModelFixture.counter = data / "side-effects.txt"
         log = output.with_suffix(".log").open("wb")
+        if GATEWAY:
+            # Match the actual Desktop launch: initialize one isolated workspace
+            # before independently spawned Gateway and Worker can migrate it.
+            # This is functional acceptance, never the cold-performance driver.
+            preparation = subprocess.run([sys.executable, "-c",
+                "from jiuwenswarm.common.utils import prepare_runtime_workspace; "
+                "prepare_runtime_workspace(cleanup_stale_descs=False); "
+                "from jiuwenswarm.common.config import migrate_model_business_ids; migrate_model_business_ids(); "
+                "from jiuwenswarm.common.model_migration import migrate_legacy_model_selections; migrate_legacy_model_selections()"],
+                cwd=code, env=env, stdout=log, stderr=log, timeout=90)
+            if preparation.returncode:
+                log.close()
+                model_server.shutdown()
+                model_server.server_close()
+                raise RuntimeError("Desktop workspace preparation did not complete")
+            env["JIUWENSWARM_RUNTIME_WORKSPACE_READY"] = "1"
+            result["workspace_prepared_before_gateway_and_front"] = True
         def launch():
             return subprocess.Popen([getattr(args, "front_executable", None) or sys.executable,
                 "-m", "jiuwenswarm.server.app_agentserver", "--port", str(front_port)],
@@ -329,7 +379,11 @@ server.run(transport="stdio")
                 result["warming_cancel"] = await rpc(ws, "warming-cancel", "chat.interrupt", "resident-session",
                     {"intent": "cancel", "request_id": "original-chat"})
                 result["warming_cancel_ms"] = (time.perf_counter_ns() - started_cancel) / 1e6
-                if not result["warming_cancel"].get("success"):
+                if GATEWAY and result["warming_cancel"].get("accepted") is True:
+                    result["warming_cancel_ack_ms"] = result["warming_cancel_ms"]
+                    result["warming_cancel_runtime"] = await authoritative_cancel(ws, output.with_suffix(".log"), warming=True)
+                    result["warming_cancel_ms"] = (time.perf_counter_ns() - started_cancel) / 1e6
+                elif not result["warming_cancel"].get("success"):
                     raise AssertionError("warming request was not cancelled")
             while not ModelFixture.entered.is_set() and args.scenario != "warming-cancel":
                 worker_processes = [(child.pid, child.create_time()) for child in
@@ -355,7 +409,8 @@ server.run(transport="stdio")
             if args.scenario in {"queue", "steer"}:
                 await send(ws, "supplemental", "chat.send", "resident-session",
                            {"query": "[4689-original] Supplemental input for the same execution", "mode": args.mode,
-                            **({"input_mode": "steer"} if args.scenario == "steer" else {})}, stream=True)
+                            **({"input_mode": "steer"} if args.scenario == "steer" else
+                               {"input_mode": "follow_up"} if GATEWAY else {})}, stream=True)
                 await asyncio.sleep(.15)
             snapshot = await rpc(ws, "before", "session.get_metadata", "resident-session")
             runtime = snapshot.get("runtime", {})
@@ -453,14 +508,16 @@ server.run(transport="stdio")
                     "query": "yes", "answers": [{"question": "Continue?", "selected_options": ["yes"]}]}, stream=True)
             if args.scenario == "cancel":
                 cancelled = await rpc(ws, "cancel", "chat.interrupt", "resident-session", {"intent": "cancel"})
-                if not cancelled.get("success"):
+                if GATEWAY and cancelled.get("accepted") is True:
+                    result["cancelled_runtime"] = await authoritative_cancel(ws, output.with_suffix(".log"), warming=False)
+                elif not cancelled.get("success"):
                     raise AssertionError("reconnected execution was not cancelled")
                 result["cancelled"] = cancelled
             if args.scenario == "crash" and not result["after"].get("interrupted"):
                 raise AssertionError("crashed Worker execution was not reported interrupted")
             ModelFixture.release.set()
             finished_requests = set()
-            expected_requests = {"original-chat", "supplemental"} if args.scenario == "queue" else {
+            expected_requests = {"original-chat", "supplemental"} if args.scenario == "queue" and not GATEWAY else {
                 "answer" if args.scenario == "interaction" else "original-chat"}
             while args.scenario not in {"cancel", "crash", "warming-cancel"}:
                 wire = json.loads(await asyncio.wait_for(ws.recv(), 30))
@@ -501,9 +558,34 @@ server.run(transport="stdio")
             history = session / "history.jsonl"
             result["history_records"] = len(history.read_text(encoding="utf-8").splitlines()) if history.exists() else 0
             if args.scenario in {"queue", "steer"}:
+                if args.scenario == "queue":
+                    result["queue_evidence"] = {"model_consumed_input": ModelFixture.supplemental_consumed,
+                        "main_model_calls": ModelFixture.main_calls,
+                        "completed_requests": sorted(finished_requests),
+                        "history": history.read_text(encoding="utf-8")}
                 result["supplemental_persisted"] = "Supplemental input" in history.read_text(encoding="utf-8")
                 if not result["supplemental_persisted"]:
                     raise AssertionError("supplemental input absent from durable history")
+                if args.scenario == "queue":
+                    result["queued_input_consumed_by_model"] = ModelFixture.supplemental_consumed
+                    if not ModelFixture.supplemental_consumed or ModelFixture.main_calls < 2:
+                        raise AssertionError("queue ACK did not lead to actual model execution of the input")
+                    rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines() if line]
+                    if len([row for row in rows if row.get("role") == "user"
+                            and "Supplemental input" in str(row.get("content", ""))]) != 1:
+                        raise AssertionError("queued input was duplicated in durable history")
+                    if not GATEWAY:
+                        before_dispatches = {item["request_id"]: item for item in result["before"]["dispatches"]}
+                        final_dispatches = {item["request_id"]: item for item in result["final"]["dispatches"]}
+                        if before_dispatches["supplemental"].get("entered_at_ns"):
+                            raise AssertionError("ordinary queued input entered before its predecessor completed")
+                        if any(final_dispatches[rid].get("active") for rid in expected_requests):
+                            raise AssertionError("queue final response preceded authoritative execution completion")
+                        if len({final_dispatches[rid].get("execution_id") for rid in expected_requests}) != 2:
+                            raise AssertionError("ordinary queued requests did not receive distinct executions")
+                        if len([row for row in rows if row.get("role") == "user"
+                                and row.get("request_id") == "original-chat"]) != 1:
+                            raise AssertionError("original queued input was absent or duplicated in durable history")
             if args.scenario == "crash":
                 same_worker = False
             else:
