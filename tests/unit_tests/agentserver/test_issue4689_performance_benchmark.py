@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,30 @@ def row(label, cost=1000, **overrides):
 def test_nearest_rank_does_not_interpolate_away_the_slowest_sample(benchmark):
     result = benchmark.population([10, 100, 20, 30])
     assert result == {"n": 4, "mean_ms": 40, "p50_ms": 20, "p95_ms": 100, "p99_ms": 100}
+
+
+def test_source_observer_preserves_public_sdk_method_metadata(benchmark, monkeypatch):
+    async def send_input(instance, request):
+        return request
+
+    send_input.__module__ = "openjiuwen.harness.deep_agent"
+    send_input.__qualname__ = "DeepAgent.send_input"
+    agent = type("DeepAgent", (), {"send_input": send_input})
+    module = SimpleNamespace(DeepAgent=agent)
+    original_loader = SimpleNamespace(exec_module=lambda _module: None)
+    spec = SimpleNamespace(loader=original_loader)
+    original_meta_path = sys.meta_path[:]
+    monkeypatch.setattr("importlib.machinery.PathFinder.find_spec", lambda *_args: spec)
+    try:
+        namespace = {}
+        exec(benchmark.SDK_OBSERVER, namespace)
+        observed = sys.meta_path[0].find_spec("openjiuwen.harness.deep_agent")
+        observed.loader.exec_module(module)
+        assert agent.send_input.__module__ == send_input.__module__
+        assert agent.send_input.__qualname__ == send_input.__qualname__
+        assert agent.send_input.__wrapped__ is send_input
+    finally:
+        sys.meta_path[:] = original_meta_path
 
 
 def test_threshold_failure_preserves_both_populations(benchmark):

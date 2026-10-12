@@ -27,7 +27,7 @@ from issue4689_front import seed, terminate_owned
 from issue4689_native import ModelFixture, open_front, payload, port, send
 
 OBSERVER = '''
-import importlib.abc, importlib.machinery, json, os, sys, time
+import functools, importlib.abc, importlib.machinery, json, os, sys, time
 class Observer(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname != "openjiuwen.harness.deep_agent":
@@ -42,6 +42,7 @@ class Observer(importlib.abc.MetaPathFinder):
             def exec_module(self, module):
                 original.exec_module(module)
                 send_input = module.DeepAgent.send_input
+                @functools.wraps(send_input)
                 async def timed(instance, request):
                     stamp = time.perf_counter_ns()
                     with open(os.environ["ISSUE4689_ENTRY_LOG"], "a", encoding="utf-8") as file:
