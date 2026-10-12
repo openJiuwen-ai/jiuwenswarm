@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -38,6 +39,31 @@ from jiuwenswarm.gateway.routing.agent_client import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_peer_ip(host_or_url: str | None) -> str:
+    """从 URL 取出对端地址，只给审计日志的 DSTIP 用。解析失败时记成 "-"。"""
+    text = str(host_or_url or "").strip()
+    if not text:
+        return "-"
+    host = urlsplit(text if "://" in text else f"//{text}").hostname or text
+    host = host.strip().strip("[]")
+    if not host:
+        return "-"
+    try:
+        socket.inet_pton(socket.AF_INET, host)
+        return host
+    except OSError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return "-"
+    for info in infos:
+        addr = info[4][0] if info and info[4] else ""
+        if addr:
+            return str(addr)
+    return "-"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -334,8 +360,6 @@ class HttpSseAgentServerClient(AgentServerClient):
     async def send_request(
         self, envelope: E2AEnvelope, *, base_url: str | None = None
     ) -> AgentResponse:
-        from jiuwenswarm.common.audit_net import resolve_peer_ip
-
         with AuditTimer() as timer:
             http = self._ensure_http()
             api_root = self._resolve_api_root(base_url)
@@ -343,7 +367,7 @@ class HttpSseAgentServerClient(AgentServerClient):
             assembled = assemble_rest_request(envelope, base_url=api_root)
             channel_id = str(envelope.channel or "web")
             rid = str(envelope.request_id or "")
-            peer_ip = resolve_peer_ip(assembled.url or api_root)
+            peer_ip = _resolve_peer_ip(assembled.url or api_root)
             logger.info(
                 "[E2A][out][http][unary] request_id=%s method=%s %s %s rpc=%s",
                 rid,
