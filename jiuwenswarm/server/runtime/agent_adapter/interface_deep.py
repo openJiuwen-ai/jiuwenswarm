@@ -14609,12 +14609,12 @@ class JiuWenSwarmDeepAdapter:
 
         task_id = str(resume_ctx.get("outer_task_id") or "").removeprefix("todo:")
         if not task_id:
-            active = [
-                todo
-                for todo in todos
-                if getattr(getattr(todo, "status", None), "value", None)
-                == TodoStatus.IN_PROGRESS.value
-            ]
+            active = []
+            for todo in todos:
+                todo_status = getattr(todo, "status", None)
+                status_value = getattr(todo_status, "value", None)
+                if status_value == TodoStatus.IN_PROGRESS.value:
+                    active.append(todo)
             if len(active) != 1:
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] SkillTurbo resume completion skipped: "

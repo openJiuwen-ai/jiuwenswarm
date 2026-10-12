@@ -496,6 +496,18 @@ async def test_complete_skill_turbo_outer_todo_updates_status_and_returns_events
         "task.update",
     ]
 
+    todo_tool.todo.status = SimpleNamespace(value="in_progress")
+    fallback_chunks = await adapter._complete_skill_turbo_outer_todo(
+        session_id="sess-1",
+        request_id="resume-1",
+        channel_id="web",
+        resume_ctx={},
+    )
+    assert [chunk.payload["event_type"] for chunk in fallback_chunks] == [
+        "task.complete",
+        "task.update",
+    ]
+
 
 @pytest.mark.asyncio
 async def test_clear_resume_ctx_persists_across_sessions():
