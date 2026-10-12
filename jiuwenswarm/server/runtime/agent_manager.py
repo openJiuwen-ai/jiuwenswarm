@@ -14,7 +14,6 @@ from typing import Any, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
-from jiuwenswarm.agents.harness.team import get_team_manager
 from jiuwenswarm.common.config import get_config, get_default_models
 from jiuwenswarm.common.mode_matrix import is_team_mode
 
@@ -1054,6 +1053,8 @@ class AgentManager:
                         reload_kwargs["target_session_id"] = target_session
                     await agent.reload_agent_config(**reload_kwargs)
                 try:
+                    from jiuwenswarm.agents.harness.team import get_team_manager
+
                     team_config = effective_config if isinstance(effective_config, dict) else get_config()
                     await get_team_manager(channel_id).update_evolution_config(team_config)
                 except Exception as exc:

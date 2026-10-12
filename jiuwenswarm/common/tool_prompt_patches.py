@@ -60,16 +60,37 @@ def patch_async_dict_content(
     return True
 
 
-def apply_tool_prompt_patches() -> None:
-    """Apply all Swarm-owned tool-result prompt patches."""
-    from openjiuwen.harness.tools.filesystem import ReadFileTool
-
+def _patch_read_file_tool(read_file_tool: type[Any]) -> None:
     patch_async_dict_content(
-        ReadFileTool,
+        read_file_tool,
         "_read_image",
         patch_id="read-file-image-understanding-skill",
         replacements={_READ_FILE_VISION_HINT: _READ_FILE_SKILL_HINT},
     )
 
 
-__all__ = ["apply_tool_prompt_patches", "patch_async_dict_content"]
+def apply_tool_prompt_patches() -> None:
+    """Apply all Swarm-owned tool-result prompt patches."""
+    from openjiuwen.harness.tools.filesystem import ReadFileTool
+
+    _patch_read_file_tool(ReadFileTool)
+
+
+def register_tool_prompt_import_hook() -> None:
+    """Patch ReadFileTool when ``filesystem`` loads, without importing it now."""
+    from jiuwenswarm.common.import_hook import register_post_import_hook
+
+    def _on_filesystem_loaded(module: Any) -> None:
+        _patch_read_file_tool(module.ReadFileTool)
+
+    register_post_import_hook(
+        "openjiuwen.harness.tools.filesystem",
+        _on_filesystem_loaded,
+    )
+
+
+__all__ = [
+    "apply_tool_prompt_patches",
+    "patch_async_dict_content",
+    "register_tool_prompt_import_hook",
+]

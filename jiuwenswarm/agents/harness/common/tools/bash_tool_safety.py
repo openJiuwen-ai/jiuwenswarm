@@ -256,7 +256,11 @@ def _patch_shell_execution_plan() -> None:
 
 
 def install_shell_tool_safety_hooks() -> None:
-    """Idempotently wire safety checks into harness shell tools."""
+    """Idempotently wire safety checks into harness shell tools.
+
+    Imports the tool classes. Startup uses ``register_shell_safety_import_hook``
+    so the import waits until something actually loads BashTool.
+    """
     global _installed
     if _installed:
         return
@@ -276,6 +280,35 @@ def install_shell_tool_safety_hooks() -> None:
     _installed = True
 
 
+def _on_bash_tool_loaded(module: Any) -> None:
+    _patch_tool_class(module.BashTool, "bash")
+    _patch_shell_execution_plan()
+    global _installed
+    _installed = True
+
+
+def _on_powershell_tool_loaded(module: Any) -> None:
+    _patch_tool_class(module.PowerShellTool, "powershell")
+
+
+def register_shell_safety_import_hook() -> None:
+    """Patch BashTool / PowerShellTool when their modules load.
+
+    Does not import those modules. A command that loads the class therefore
+    runs with the safety wrapper already installed.
+    """
+    from jiuwenswarm.common.import_hook import register_post_import_hook
+
+    register_post_import_hook(
+        "openjiuwen.harness.tools.shell.bash._tool",
+        _on_bash_tool_loaded,
+    )
+    register_post_import_hook(
+        "openjiuwen.harness.tools.shell.powershell._tool",
+        _on_powershell_tool_loaded,
+    )
+
+
 def reset_installed_flag() -> None:
     """Reset the installed flag so hooks can be re-applied (for testing)."""
     global _installed
@@ -291,5 +324,6 @@ __all__ = [
     "_shell_mismatch",
     "_wrap_invoke",
     "install_shell_tool_safety_hooks",
+    "register_shell_safety_import_hook",
     "reset_installed_flag",
 ]

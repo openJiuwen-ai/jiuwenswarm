@@ -14,21 +14,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from openjiuwen.agent_teams.agent.team_agent import TeamAgent
+import functools
+import inspect
+
 from openjiuwen.agent_teams.paths import team_home
 from openjiuwen.agent_teams.runtime.pool import RuntimeState
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.agent_teams.context import reset_session_id, set_session_id
 from openjiuwen.core.runner import Runner
-from openjiuwen.core.foundation.llm import Model
 from openjiuwen.core.common.logging import server_logger
-from openjiuwen.harness import DeepAgent
-from openjiuwen.harness.rails import (
-    SkillEvolutionRail,
-    SkillUseRail,
-    TeamSkillCreateRail,
-    TeamSkillEvolutionRail,
-)
 from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.utils import get_user_workspace_dir
@@ -85,6 +79,72 @@ from jiuwenswarm.common.invocation_context.model_trace import export_trace_heade
 from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 
 logger = logging.getLogger(__name__)
+
+_TEAM_TYPES_READY = False
+
+
+def _ensure_team_types() -> None:
+    """Load DeepAgent and rail classes on the first team operation, not at import."""
+    global _TEAM_TYPES_READY
+    global TeamAgent, Model, DeepAgent
+    global SkillEvolutionRail, SkillUseRail, TeamSkillCreateRail, TeamSkillEvolutionRail
+    if _TEAM_TYPES_READY:
+        return
+    from openjiuwen.agent_teams.agent.team_agent import TeamAgent as _TeamAgent
+    from openjiuwen.core.foundation.llm import Model as _Model
+    from openjiuwen.harness import DeepAgent as _DeepAgent
+    from openjiuwen.harness.rails import (
+        SkillEvolutionRail as _SkillEvolutionRail,
+        SkillUseRail as _SkillUseRail,
+        TeamSkillCreateRail as _TeamSkillCreateRail,
+        TeamSkillEvolutionRail as _TeamSkillEvolutionRail,
+    )
+
+    TeamAgent = _TeamAgent
+    Model = _Model
+    DeepAgent = _DeepAgent
+    SkillEvolutionRail = _SkillEvolutionRail
+    SkillUseRail = _SkillUseRail
+    TeamSkillCreateRail = _TeamSkillCreateRail
+    TeamSkillEvolutionRail = _TeamSkillEvolutionRail
+    _TEAM_TYPES_READY = True
+
+
+def _bind_team_types(fn):
+    if getattr(fn, "_team_types_bound", False):
+        return fn
+    if inspect.isasyncgenfunction(fn):
+        @functools.wraps(fn)
+        async def wrapped(*args, **kwargs):
+            _ensure_team_types()
+            async for item in fn(*args, **kwargs):
+                yield item
+    elif inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def wrapped(*args, **kwargs):
+            _ensure_team_types()
+            return await fn(*args, **kwargs)
+    else:
+        @functools.wraps(fn)
+        def wrapped(*args, **kwargs):
+            _ensure_team_types()
+            return fn(*args, **kwargs)
+    wrapped._team_types_bound = True
+    return wrapped
+
+
+class _TeamManagerMeta(type):
+    def __new__(mcs, name, bases, namespace):
+        for key, value in list(namespace.items()):
+            if key == "__init__" or key.startswith("__"):
+                continue
+            if isinstance(value, staticmethod):
+                namespace[key] = staticmethod(_bind_team_types(value.__func__))
+            elif isinstance(value, classmethod):
+                namespace[key] = classmethod(_bind_team_types(value.__func__))
+            elif inspect.isfunction(value):
+                namespace[key] = _bind_team_types(value)
+        return super().__new__(mcs, name, bases, namespace)
 
 # Wall-clock cap for a single external command (pg_isready, systemctl, etc.).
 _SUBPROCESS_TIMEOUT_SEC = 120.0
@@ -294,6 +354,8 @@ async def _purge_runtime_skill_mounts(runtime: Any, skill_dirs: list[Path]) -> N
     finder = getattr(runtime, "find_rails", None)
     if not callable(finder):
         return
+    from openjiuwen.harness.rails import SkillUseRail
+
     rails = finder(SkillUseRail)
     if not rails:
         return
@@ -351,7 +413,7 @@ def _runner_team_runtime_manager(runner: Any) -> Any:
     return manager
 
 
-class TeamManager:
+class TeamManager(metaclass=_TeamManagerMeta):
     """Manage team instances across sessions."""
 
     def __init__(self):

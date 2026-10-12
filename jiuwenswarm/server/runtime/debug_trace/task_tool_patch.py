@@ -157,4 +157,17 @@ def apply_task_tool_debug_patch() -> None:
     _PATCH_APPLIED = True
 
 
-__all__ = ["apply_task_tool_debug_patch"]
+def register_task_tool_debug_import_hook() -> None:
+    """Patch TaskTool when its module loads, without importing it now."""
+    from jiuwenswarm.common.import_hook import register_post_import_hook
+
+    def _on_task_tool_loaded(_module: object) -> None:
+        apply_task_tool_debug_patch()
+
+    register_post_import_hook(
+        "openjiuwen.harness.tools.subagent.task_tool",
+        _on_task_tool_loaded,
+    )
+
+
+__all__ = ["apply_task_tool_debug_patch", "register_task_tool_debug_import_hook"]
