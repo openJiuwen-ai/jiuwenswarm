@@ -375,6 +375,8 @@ class TeamManager:
         # describes the single actual round admitted for a Session and owns
         # its admission release until terminal/cancel cleanup.
         self._active_rounds: dict[str, _ActiveTeamRound] = {}
+        self._session_turn_started: Callable[[str, str], None] | None = None
+        self._session_turn_ended: Callable[[str, str], None] | None = None
         # session_id → cron team round completion state. Lifetime-coupled to
         # _pending_waiters: set by _try_finish_cron_team_stream, popped by the
         # finisher coroutines once the cron stream ends.
@@ -550,6 +552,12 @@ class TeamManager:
             }:
                 current_round.continued_after_flow = True
 
+        # The user-visible round ends before resident streams/runtime cleanup.
+        ends_user_round = terminal or event_type in {
+            "chat.error", "team.error", "chat.ask_user_question",
+        }
+        if current_round is not None and self._session_turn_ended is not None and ends_user_round:
+            self._session_turn_ended(session_id, current_round.request_id)
         waiters = list(self._pending_waiters.get(session_id, ()))
         exclusive_request_id = self._exclusive_waiters.get(session_id)
         if exclusive_request_id is not None:
@@ -726,6 +734,11 @@ class TeamManager:
             },
         )
 
+    def set_session_turn_observer(
+        self, started: Callable[[str, str], None], ended: Callable[[str, str], None]
+    ) -> None:
+        self._session_turn_started, self._session_turn_ended = started, ended
+
     def begin_round(
         self,
         session_id: str,
@@ -749,6 +762,8 @@ class TeamManager:
             defer_terminal_release=defer_terminal_release,
             terminal_armed=terminal_armed,
         )
+        if self._session_turn_started is not None:
+            self._session_turn_started(session_id, request_id)
 
     async def finish_round(self, session_id: str) -> None:
         """Finish the current round on a runtime terminal event."""

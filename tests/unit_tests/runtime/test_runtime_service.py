@@ -47,6 +47,101 @@ async def _collect_events(stream) -> list[RuntimeEvent]:
     return [event async for event in stream]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intent", ["cancel", "pause"])
+async def test_session_cancel_outcome_survives_cleanup_and_cannot_end_new_turn(monkeypatch, intent):
+    from jiuwenswarm.runtime import request as request_module
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def cancel(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return AgentResponse(request_id="stop", channel_id="web", ok=True,
+                             payload={"event_type": "chat.interrupt_result", "success": intent == "pause"})
+
+    monkeypatch.setattr(request_module, "cancel_request", cancel)
+    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock())
+    runtime.record_session_turn_started("s1", "old")
+    await runtime._session_coordinator.register_session("s1", "web")
+    runtime._session_coordinator.cancel_execution = AsyncMock()
+    task = asyncio.create_task(runtime.cancel_request(AgentRequest(
+        request_id="stop", channel_id="web", session_id="s1",
+        req_method=ReqMethod.CHAT_CANCEL, params={"intent": intent},
+    )))
+    await entered.wait()
+    assert runtime.is_session_busy_for_lifecycle("s1") is (intent == "pause")
+    runtime.record_session_turn_started("s1", "new")
+    release.set()
+    response = await task
+    assert response.payload["event_type"] == "chat.interrupt_result"
+    runtime.record_session_turn_event("s1", "old", {"event_type": "chat.final"})
+    assert runtime.is_session_busy_for_lifecycle("s1")
+    runtime.record_session_turn_event("s1", "new", {"event_type": "chat.final"})
+    assert not runtime.is_session_busy_for_lifecycle("s1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intent,success,busy", [("pause", True, False), ("pause", False, True), ("supplement", True, True)])
+async def test_session_interrupt_uses_stop_button_semantics(monkeypatch, intent, success, busy):
+    from jiuwenswarm.runtime import request as request_module
+
+    monkeypatch.setattr(request_module, "cancel_request", AsyncMock(return_value=AgentResponse(
+        request_id="stop", channel_id="web", ok=True,
+        payload={"event_type": "chat.interrupt_result", "success": success},
+    )))
+    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock())
+    runtime.record_session_turn_started("s1", "turn", team=True)
+    await runtime.cancel_request(AgentRequest(request_id="stop", channel_id="web", session_id="s1",
+                                            req_method=ReqMethod.CHAT_CANCEL, params={"intent": intent}))
+    assert runtime.is_session_busy_for_lifecycle("s1") is busy
+
+
+def test_session_team_and_goal_intermediate_final_do_not_end_visible_turn():
+    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock())
+    runtime.record_session_turn_started("single", "round")
+    runtime.record_session_turn_event("single", "round", {"content": "done"}, complete=True)
+    assert not runtime.is_session_busy_for_lifecycle("single")
+    runtime.record_session_turn_started("team", "round", team=True)
+    runtime.record_session_turn_event("team", "round", {"event_type": "chat.final"})
+    assert runtime.is_session_busy_for_lifecycle("team")
+    runtime.record_session_turn_event("team", "round", {"event_type": "chat.processing_status", "is_processing": False})
+    assert not runtime.is_session_busy_for_lifecycle("team")
+    runtime.record_session_turn_started("goal", "round")
+    runtime.record_session_turn_event("goal", "round", {"event_type": "chat.final", "goal_intermediate": True})
+    assert runtime.is_session_busy_for_lifecycle("goal")
+
+
+@pytest.mark.parametrize("final_first", [True, False])
+def test_goal_completion_order_matches_frontend_processing(final_first):
+    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock())
+    runtime.record_session_turn_event("goal-order", "snapshot", {"event_type": "goal.snapshot", "goal": {"status": "active"}})
+    runtime.record_session_turn_started("goal-order", "round")
+    final = {"event_type": "chat.final"}
+    completed = {"event_type": "goal.updated", "goal": {"status": "completed"}}
+    for payload in (final, completed) if final_first else (completed, final):
+        runtime.record_session_turn_event("goal-order", "round", payload)
+    # Like the frontend, a final received while the Goal was active waits for
+    # the session processing event. A Goal update alone does not close a turn.
+    assert runtime.is_session_busy_for_lifecycle("goal-order") is final_first
+    runtime.record_session_turn_event("goal-order", "round", {"event_type": "chat.processing_status", "is_processing": False})
+    assert not runtime.is_session_busy_for_lifecycle("goal-order")
+
+
+@pytest.mark.asyncio
+async def test_team_terminal_observer_closes_current_round():
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    manager = TeamManager()
+    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock(), team_execution_controller=manager)
+    runtime.record_session_turn_started("team", "first", team=True)
+    runtime.record_session_turn_interrupted("team", "first")
+    manager.begin_round("team", "second", terminal_armed=True)
+    assert runtime.is_session_busy_for_lifecycle("team")
+    await manager.broadcast_event("team", {"event_type": "chat.processing_status", "is_processing": False, "is_complete": True})
+    assert not runtime.is_session_busy_for_lifecycle("team")
+
+
 class FakeAgentManager:
     def __init__(self) -> None:
         self.cancel_calls: list[str] = []
@@ -271,6 +366,22 @@ async def test_permission_control_ack_precedes_continuation_completion(streaming
         await runtime.close()
 
 
+def test_session_answer_continuation_terminal_closes_the_original_visible_turn():
+    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock())
+    runtime.record_session_turn_started("answer-session", "original")
+    runtime.record_session_turn_event("answer-session", "original", {"event_type": "chat.ask_user_question"})
+    runtime.begin_session_turn(AgentRequest(
+        request_id="answer-transport", channel_id="web", session_id="answer-session",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"source": "ask_user_interrupt", "request_id": "question", "answers": [{}]},
+    ))
+    assert runtime.is_session_busy_for_lifecycle("answer-session")
+    runtime.record_session_turn_event("answer-session", "answer-transport", {"event_type": "runtime.accepted"})
+    assert runtime.is_session_busy_for_lifecycle("answer-session")
+    runtime.record_session_turn_event("answer-session", "answer-transport", {"event_type": "chat.final"})
+    assert not runtime.is_session_busy_for_lifecycle("answer-session")
+
+
 class AskUserAgent(FakeAgent):
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         return AgentResponse(
@@ -433,6 +544,7 @@ async def test_start_and_close_are_idempotent() -> None:
 
     await runtime.start()
     await runtime.start()
+    runtime.record_session_turn_started("runtime-close-turn", "turn")
     await runtime.close()
     await runtime.close()
 
@@ -441,6 +553,7 @@ async def test_start_and_close_are_idempotent() -> None:
     assert manager.cleanup_calls == 1
     assert runtime.started is False
     assert runtime.closed is True
+    assert runtime._session_turns == {}
 
 
 @pytest.mark.asyncio
@@ -1192,6 +1305,7 @@ async def test_cleanup_session_does_not_require_runtime_start() -> None:
         initializer=AsyncMock(),
         plan_controller=plan,
     )
+    runtime.record_session_turn_started("disconnect-during-start", "turn")
 
     cleaned = await runtime.cleanup_session(
         channel_id="tui",
@@ -1204,6 +1318,9 @@ async def test_cleanup_session_does_not_require_runtime_start() -> None:
         ("tui", "disconnect-during-start")
     ]
     assert plan.reset_calls == ["disconnect-during-start"]
+    assert "disconnect-during-start" not in runtime._session_turns
+    runtime.record_session_turn_event("disconnect-during-start", "turn", {"event_type": "chat.final"})
+    assert "disconnect-during-start" not in runtime._session_turns
 
 
 @pytest.mark.asyncio
@@ -1215,6 +1332,7 @@ async def test_cleanup_session_can_defer_plan_reset_for_transactional_delete() -
         initializer=AsyncMock(),
         plan_controller=plan,
     )
+    runtime.record_session_turn_started("transactional-delete", "turn")
 
     cleaned = await runtime.cleanup_session(
         channel_id="web",
@@ -1225,6 +1343,7 @@ async def test_cleanup_session_can_defer_plan_reset_for_transactional_delete() -
     assert cleaned is True
     assert manager.cleanup_session_calls == [("web", "transactional-delete")]
     assert plan.reset_calls == []
+    assert runtime.is_session_busy_for_lifecycle("transactional-delete")
 
 
 @pytest.mark.asyncio
@@ -1243,6 +1362,7 @@ async def test_cleanup_session_preserves_plan_and_original_failure(
         initializer=AsyncMock(),
         plan_controller=plan,
     )
+    runtime.record_session_turn_started("cleanup-failure-session", "turn")
 
     with pytest.raises(type(cleanup_error)) as caught:
         await runtime.cleanup_session(
@@ -1251,6 +1371,7 @@ async def test_cleanup_session_preserves_plan_and_original_failure(
         )
 
     assert caught.value is cleanup_error
+    assert runtime.is_session_busy_for_lifecycle("cleanup-failure-session")
     assert manager.cleanup_session_calls == [
         ("web", "cleanup-failure-session")
     ]

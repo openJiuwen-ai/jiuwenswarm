@@ -664,6 +664,9 @@ def _install_internal_heartbeat_runtime(server, agent) -> None:
     class Runtime:
         agent_manager = manager
 
+        def begin_session_turn(self, request) -> None:
+            pass
+
         def stream(
             self,
             request,

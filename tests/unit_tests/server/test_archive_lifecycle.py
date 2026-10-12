@@ -103,6 +103,8 @@ def archive(tmp_path, monkeypatch):
     sm._METADATA_CACHE.clear()
     runtime = SimpleNamespace(
         is_session_running=Mock(return_value=False),
+        is_session_busy_for_lifecycle=Mock(return_value=False),
+        forget_session_turn=Mock(),
         stop_session_for_archive=AsyncMock(),
         delete_session=AsyncMock(return_value=SimpleNamespace(ok=True)),
     )
@@ -276,11 +278,13 @@ async def test_delete_stop_failure_preserves_fence_and_allows_same_operation_ret
     original = lc.state("session", "sess_a")["operation"]["operation_id"]
     assert (root / "sessions/sess_a").exists()
     assert lc.projection("session", "sess_a")["execution_blocked"]
+    runtime.forget_session_turn.assert_not_called()
     with pytest.raises(lc.LifecycleError):
         await service.session("sess_a", "unarchive", "web")
     runtime.stop_session_for_archive.side_effect = None
     await service.session("sess_a", "delete", "web")
     assert lc.state("session", "sess_a")["operation"]["operation_id"] == original
+    runtime.forget_session_turn.assert_called_once_with("sess_a")
 
 
 @pytest.mark.asyncio
@@ -324,7 +328,7 @@ async def test_busy_session_archive_has_no_side_effects(archive):
     service, create, root, runtime = archive
     directory = create()
     before = (directory / "metadata.json").read_bytes()
-    runtime.is_session_running.return_value = True
+    runtime.is_session_busy_for_lifecycle.return_value = True
     with pytest.raises(lc.LifecycleError) as error:
         await service.session("sess_a", "archive", "web")
     assert error.value.code == "SESSION_BUSY"
@@ -337,9 +341,11 @@ async def test_busy_session_archive_has_no_side_effects(archive):
     assert delete_error.value.code == "SESSION_BUSY"
     runtime.stop_session_for_archive.assert_not_awaited()
     runtime.delete_session.assert_not_awaited()
+    runtime.forget_session_turn.assert_not_called()
     lc.guard("sess_a")
-    runtime.is_session_running.return_value = False
+    runtime.is_session_busy_for_lifecycle.return_value = False
     await service.session("sess_a", "archive", "web")
+    runtime.forget_session_turn.assert_called_once_with("sess_a")
 
 
 @pytest.mark.parametrize("state", ["queued", "running", "waiting_for_control", "succeeded", "failed", "cancelled"])
@@ -362,7 +368,7 @@ def test_runtime_running_check_counts_only_running(state, monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["archive", "delete"])
 @pytest.mark.parametrize("phase", ["running", "pausing", "idle", "paused"])
-async def test_local_runner_team_execution_controls_lifecycle_busy(
+async def test_local_runner_team_residual_execution_does_not_control_lifecycle_busy(
     archive, monkeypatch, action, phase,
 ):
     from openjiuwen.agent_teams.agent.member_activity import MemberActivityRegistry
@@ -398,15 +404,7 @@ async def test_local_runner_team_execution_controls_lifecycle_busy(
     runtime._session_coordinator = SimpleNamespace(snapshot_session=lambda sid: None)
     runtime.is_session_running = lambda sid: AgentRuntime.is_session_running(runtime, sid)
 
-    if phase in {"running", "pausing"}:
-        with pytest.raises(lc.LifecycleError) as error:
-            await service.session("sess_a", action, "web")
-        assert error.value.code == "SESSION_BUSY"
-        assert (root / "sessions/sess_a").exists()
-        runtime.stop_session_for_archive.assert_not_awaited()
-        runtime.delete_session.assert_not_awaited()
-    else:
-        assert (await service.session("sess_a", action, "web"))["ok"]
+    assert (await service.session("sess_a", action, "web"))["ok"]
 
 
 @pytest.mark.asyncio
@@ -472,13 +470,13 @@ async def test_chat_preparation_does_not_block_archive(archive, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_admission_does_not_mark_session_busy_before_team_binding(archive, monkeypatch):
+async def test_chat_admission_blocks_lifecycle_before_team_binding(archive, monkeypatch):
     from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.runtime.service import AgentRuntime
     from jiuwenswarm.server import agent_ws_server as module
     from jiuwenswarm.agents.harness.team import team_manager
 
-    service, create, _, runtime = archive
+    service, create, root, runtime = archive
     create()
     monkeypatch.setattr(team_manager, "_team_manager", None)
     runtime._pending_chat_requests = {}
@@ -486,6 +484,11 @@ async def test_chat_admission_does_not_mark_session_busy_before_team_binding(arc
     runtime.is_session_running = lambda sid: AgentRuntime.is_session_running(runtime, sid)
     runtime.begin_chat_request = lambda sid, rid: AgentRuntime.begin_chat_request(runtime, sid, rid)
     runtime.end_chat_request = lambda sid, rid: AgentRuntime.end_chat_request(runtime, sid, rid)
+    visible_runtime = AgentRuntime()
+    runtime.begin_session_turn = visible_runtime.begin_session_turn
+    runtime.is_session_busy_for_lifecycle = visible_runtime.is_session_busy_for_lifecycle
+    runtime.record_session_turn_event = visible_runtime.record_session_turn_event
+    runtime.forget_session_turn = visible_runtime.forget_session_turn
     entered = asyncio.Event()
     release = asyncio.Event()
     request = SimpleNamespace(
@@ -512,16 +515,30 @@ async def test_chat_admission_does_not_mark_session_busy_before_team_binding(arc
         await release.wait()
 
     server._ensure_auto_team_binding_for_chat = wait_for_binding
-    server._handle_stream = AsyncMock()
+
+    async def finish_stream(_ws, _request, _send_lock):
+        runtime.record_session_turn_event("sess_a", request.request_id, {
+            "event_type": "chat.processing_status", "is_processing": False,
+        })
+
+    server._handle_stream = finish_stream
     task = asyncio.create_task(server._handle_message(object(), "{}", asyncio.Lock()))
     try:
         await asyncio.wait_for(entered.wait(), 3)
         assert not runtime.is_session_running("sess_a")
-        assert (await service.session("sess_a", "archive", "web"))["ok"]
+        assert runtime.is_session_busy_for_lifecycle("sess_a")
+        for action in ("archive", "delete"):
+            with pytest.raises(lc.LifecycleError) as error:
+                await service.session("sess_a", action, "web")
+            assert error.value.code == "SESSION_BUSY"
+        assert (root / "sessions/sess_a").exists()
     finally:
         release.set()
         await task
     assert not runtime.is_session_running("sess_a")
+    assert not runtime.is_session_busy_for_lifecycle("sess_a")
+    assert runtime._pending_chat_requests == {}
+    assert (await service.session("sess_a", "archive", "web"))["ok"]
 
 
 def test_conflicts_and_batch_validation(archive):
@@ -555,7 +572,7 @@ async def test_delete_cron_sessions_refuses_running_child_and_removes_idle(archi
     # delete_job stops the cron runs (stop_job_runs) before deleting their
     # sessions; a child still running here means the run leaked.  Refuse it
     # with SESSION_BUSY rather than force-deleting a live stream underneath.
-    runtime.is_session_running.side_effect = lambda sid: sid == "cron_running"
+    runtime.is_session_busy_for_lifecycle.side_effect = lambda sid: sid == "cron_running"
 
     async def delete_session(*, channel_id, session_id):
         shutil.rmtree(lc.resolve_session(session_id))
@@ -611,7 +628,7 @@ async def test_project_batch_archive_partial_and_delete_only_archived(archive):
         meta["project_dir"] = project.project_dir
         lc.atomic_json(path / "metadata.json", meta)
     await service.session("sess_archived", "archive", "web")
-    runtime.is_session_running.side_effect = lambda sid: sid == "sess_busy"
+    runtime.is_session_busy_for_lifecycle.side_effect = lambda sid: sid == "sess_busy"
     result = await service.project_batch(project.project_id, "archive", "web")
     assert result["succeeded_count"] == result["failed_count"] == 1
     assert {item["session_id"] for item in result["results"]} == {
@@ -647,8 +664,8 @@ async def test_project_batch_archive_partial_and_delete_only_archived(archive):
     with pytest.raises(lc.LifecycleError) as error:
         await service.session("sess_busy", "delete", "web")
     assert error.value.code == "SESSION_BUSY"
-    runtime.is_session_running.side_effect = None
-    runtime.is_session_running.return_value = False
+    runtime.is_session_busy_for_lifecycle.side_effect = None
+    runtime.is_session_busy_for_lifecycle.return_value = False
     assert (await service.session("sess_busy", "delete", "web"))["ok"]
 
 
@@ -991,6 +1008,7 @@ async def test_parked_team_stream_delete_proceeds_and_stops_runtime(archive, mon
     runtime.delete_session.assert_awaited_once()
     # An executing leader still keeps delete busy.
     create("sess_b")
+    runtime.is_session_busy_for_lifecycle.side_effect = lambda sid: sid == "sess_b"
     with pytest.raises(lc.LifecycleError) as error:
         await service.session("sess_b", "delete", "web")
     assert error.value.code == "SESSION_BUSY"
@@ -1294,22 +1312,18 @@ async def test_pin_reindex_failure_keeps_operation_retryable(archive, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_busy_after_flow_end_reports_finishing_hint(archive):
+@pytest.mark.parametrize("action", ["archive", "delete"])
+async def test_ended_turn_residual_execution_does_not_block_lifecycle(archive, action):
     service, create, _, runtime = archive
     create()
-    # swarmflow.stop/自然完成后：round 仍在收尾（busy），但已无用户可停止的
-    # 执行——报错改为"稍后重试"并携带 finishing 标记供前端区分文案。
+    # 用户可见轮次已结束，执行残留不参与门禁。
     runtime.is_session_running = Mock(return_value=True)
     runtime.has_parked_team_streams = Mock(return_value=False)
     runtime.is_team_round_finishing = Mock(return_value=True)
 
-    with pytest.raises(lc.LifecycleError) as error:
-        await service.session("sess_a", "archive", "web")
-
-    assert error.value.code == "SESSION_BUSY"
-    assert error.value.details["finishing"] is True
-    assert "收尾" in str(error.value)
-    assert "stop it before" not in str(error.value)
+    assert (await service.session("sess_a", action, "web"))["ok"]
+    runtime.is_session_running.assert_not_called()
+    runtime.is_team_round_finishing.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1318,6 +1332,7 @@ async def test_busy_running_round_keeps_stop_hint(archive):
     create()
     # flow 仍在执行（或 round 与 flow 无关）：保持原有"先停止"引导。
     runtime.is_session_running = Mock(return_value=True)
+    runtime.is_session_busy_for_lifecycle.return_value = True
     runtime.has_parked_team_streams = Mock(return_value=False)
     runtime.is_team_round_finishing = Mock(return_value=False)
 
@@ -1550,7 +1565,7 @@ async def test_delete_stops_heartbeat_instead_of_reporting_busy(archive, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_delete_reports_busy_when_heartbeat_refuses_to_stop(archive, monkeypatch):
+async def test_ended_turn_residual_heartbeat_does_not_block_delete(archive, monkeypatch):
     from jiuwenswarm.runtime.service import AgentRuntime
     from jiuwenswarm.runtime.session import SessionWorkKind
     from jiuwenswarm.runtime.session.model import SessionExecutionState
@@ -1581,13 +1596,10 @@ async def test_delete_reports_busy_when_heartbeat_refuses_to_stop(archive, monke
     runtime.has_parked_team_streams = lambda sid: AgentRuntime.has_parked_team_streams(probe, sid)
     runtime.stop_heartbeat_runs = lambda sid: AgentRuntime.stop_heartbeat_runs(probe, sid)
     assert await admission.try_begin_heartbeat("heartbeat_run", "run-1")
-    # Stopping failed: the run is still live, so the ordinary busy check must
-    # still keep the session out of deletion.
-    with pytest.raises(lc.LifecycleError) as error:
-        await service.session("heartbeat_run", "delete", "web")
-    assert error.value.code == "SESSION_BUSY"
+    # 后台清理未收敛，不改变已结束轮次的门禁结果。
+    assert (await service.session("heartbeat_run", "delete", "web"))["ok"]
     assert admission.is_heartbeat_active("heartbeat_run")
-    runtime.delete_session.assert_not_awaited()
+    runtime.delete_session.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1613,7 +1625,7 @@ async def test_archive_releases_subagents_instead_of_reporting_busy(archive):
 
 
 @pytest.mark.asyncio
-async def test_busy_details_mark_subagent_finishing(archive):
+async def test_running_turn_is_busy_without_subagent_finishing_probe(archive):
     service, create, _, runtime = archive
     create("subagent_finishing")
 
@@ -1621,16 +1633,15 @@ async def test_busy_details_mark_subagent_finishing(archive):
         return True
 
     runtime.is_session_running = Mock(return_value=True)
+    runtime.is_session_busy_for_lifecycle.return_value = True
     runtime.stop_subagent_runtimes = release
     runtime.is_subagent_finishing = lambda sid, *, channel_id="": True
     with pytest.raises(lc.LifecycleError) as error:
         await service.session("subagent_finishing", "delete", "web")
     assert error.value.code == "SESSION_BUSY"
-    # 已被要求停止、仍在收尾：前端走"稍后重试"文案，而不是让用户去停止一个
-    # 已经停过的会话。
-    assert error.value.details["finishing"] is True
-    assert error.value.details["subagent_finishing"] is True
-    assert "请稍后重试" in str(error.value)
+    assert "finishing" not in error.value.details
+    assert "stop it before" in str(error.value)
+    runtime.is_session_running.assert_not_called()
     runtime.delete_session.assert_not_awaited()
 
 

@@ -68,6 +68,11 @@ from jiuwenswarm.common.session_message import (
 )
 
 
+class _SessionTurnRuntimeStub:
+    def begin_session_turn(self, request) -> None:
+        pass
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source", ["ask_user_interrupt", "permission_interrupt"])
 @pytest.mark.parametrize("cancel_stream", [False, True])
@@ -1084,9 +1089,11 @@ async def test_agentserver_pauses_mailbox_around_online_delete(
         async def abort_target_delete(self, session_id):
             ordering.append(("abort", session_id))
 
-    class _Runtime:
+    class _Runtime(_SessionTurnRuntimeStub):
         session_message_service = None
         is_session_running = staticmethod(lambda session_id: False)
+        is_session_busy_for_lifecycle = staticmethod(lambda session_id: False)
+        forget_session_turn = staticmethod(lambda session_id: None)
 
         async def stop_session_for_archive(self, **kwargs):
             return None
@@ -1916,7 +1923,7 @@ async def test_agentserver_executes_claimed_message_in_target_runtime(
 
     captured = {}
 
-    class _Runtime:
+    class _Runtime(_SessionTurnRuntimeStub):
         agent_manager = object()
 
         def stream(self, request, **kwargs):
@@ -2008,7 +2015,7 @@ async def test_agentserver_persists_question_correlation_before_push(
     record = store.claim(queued.message_id, "execution-1", "run-1")
     ordering = []
 
-    class _Runtime:
+    class _Runtime(_SessionTurnRuntimeStub):
         agent_manager = object()
 
         def stream(self, request, **kwargs):
@@ -2086,7 +2093,7 @@ async def test_failed_session_question_releases_runtime_wait(
     queued, _ = _enqueue(store, key="question-failed")
     record = store.claim(queued.message_id, "execution-1", "run-1")
 
-    class _Runtime:
+    class _Runtime(_SessionTurnRuntimeStub):
         agent_manager = object()
         release_session_message_interactions = AsyncMock()
 
@@ -2231,7 +2238,7 @@ async def test_resume_turn_persists_each_repeated_question_correlation(
         },
     )
 
-    class _Runtime:
+    class _Runtime(_SessionTurnRuntimeStub):
         def stream(self, request, **kwargs):
             async def events():
                 yield RuntimeEvent(
@@ -2301,7 +2308,7 @@ async def test_stream_delivery_abort_marks_resumed_message_unknown(
         },
     )
 
-    class _Runtime:
+    class _Runtime(_SessionTurnRuntimeStub):
         def stream(self, request, **kwargs):
             async def events():
                 yield RuntimeEvent(
@@ -2354,7 +2361,7 @@ async def test_unary_disconnect_marks_resumed_message_unknown(
         },
     )
 
-    class _Runtime:
+    class _Runtime(_SessionTurnRuntimeStub):
         async def answer_interaction(self, request, **kwargs):
             return [
                 RuntimeEvent(
@@ -2408,7 +2415,7 @@ async def test_repeated_question_persistence_failure_marks_message_unknown(
         },
     )
 
-    class _Runtime:
+    class _Runtime(_SessionTurnRuntimeStub):
         def stream(self, request, **kwargs):
             async def events():
                 yield RuntimeEvent(
@@ -2509,7 +2516,7 @@ async def test_agentserver_treats_error_events_as_failed(
     queued, _ = _enqueue(store, key=f"execute-{event_type}")
     record = store.claim(queued.message_id, "execution-1", "run-1")
 
-    class _Runtime:
+    class _Runtime(_SessionTurnRuntimeStub):
         agent_manager = object()
 
         def stream(self, request, **kwargs):
@@ -2546,7 +2553,7 @@ async def test_agentserver_does_not_treat_runtime_accepted_as_completion(
     queued, _ = _enqueue(store, key="execute-accepted")
     record = store.claim(queued.message_id, "execution-1", "run-1")
 
-    class _Runtime:
+    class _Runtime(_SessionTurnRuntimeStub):
         agent_manager = object()
 
         def stream(self, request, **kwargs):
@@ -2589,7 +2596,7 @@ async def test_agentserver_acceptance_followed_by_final_is_success(
     queued, _ = _enqueue(store, key="execute-accepted-final")
     record = store.claim(queued.message_id, "execution-1", "run-1")
 
-    class _Runtime:
+    class _Runtime(_SessionTurnRuntimeStub):
         agent_manager = object()
 
         def stream(self, request, **kwargs):
@@ -2666,7 +2673,7 @@ async def test_resumed_runtime_accepted_without_final_is_unknown(
         is_complete=True,
     )
 
-    class _Runtime:
+    class _Runtime(_SessionTurnRuntimeStub):
         async def answer_interaction(self, request, **kwargs):
             return [accepted]
 
@@ -3553,7 +3560,7 @@ async def test_cross_session_steer_runtime_receipt_is_not_task_completion(tmp_pa
     sent = await service.send_message(_source('steer'), target_session_id='target-1', message='adjust current task', input_mode='steer')
     await service.stop()
     record = store.claim(sent['message_id'], 'delivery-id', 'delivery-run')
-    class Runtime:
+    class Runtime(_SessionTurnRuntimeStub):
         start = AsyncMock()
         create_or_resume_session = AsyncMock(return_value='target-1')
         async def stream(self, request, **kwargs):
@@ -3666,7 +3673,7 @@ async def test_mailbox_task_does_not_overwrite_incoming_steer_author(tmp_path, m
     if agent_source:
         boundary.update(message_origin='cross_session_agent', session_message_id='sm-new',
                         cross_session={'message_id': 'sm-new', 'source_session_id': 'other-source'})
-    class Runtime:
+    class Runtime(_SessionTurnRuntimeStub):
         async def stream(self, request, **kwargs):
             yield RuntimeEvent(request_id=request.request_id, channel_id='web', session_id='target-1', payload=boundary)
             yield RuntimeEvent(request_id=request.request_id, channel_id='web', session_id='target-1', payload={'event_type': 'chat.final', 'content': 'done'})

@@ -2470,6 +2470,7 @@ class AgentWebSocketServer:
                 runtime = self._execution_runtime()
                 runtime.begin_chat_request(request.session_id, request.request_id)
                 pending_chat_request = (runtime, request.session_id, request.request_id)
+                runtime.begin_session_turn(request)
 
             # Extensions must observe and may normalize chat input before
             # automatic team binding or any other request-side effect. Runtime
@@ -2899,6 +2900,9 @@ class AgentWebSocketServer:
                 request.request_id,
                 e,
             )
+            if pending_chat_request is not None:
+                runtime, sid, rid = pending_chat_request
+                runtime.record_session_turn_event(sid, rid, {"event_type": "chat.error"})
             wire = AgentWebSocketServer._send_error_response(
                 ws,
                 request,
@@ -3597,6 +3601,7 @@ class AgentWebSocketServer:
     async def execute_internal_heartbeat(self, request: AgentRequest) -> None:
         """Execute an AgentServer-owned Heartbeat through the shared Runtime."""
         channel_id = request.channel_id or "web"
+        self._execution_runtime().begin_session_turn(request)
         params = request.params if isinstance(request.params, dict) else {}
         prompt = str(params.get("content") or params.get("query") or "")
         await self.send_push(
@@ -3864,6 +3869,7 @@ class AgentWebSocketServer:
             }
 
         async def start_processing() -> None:
+            self._execution_runtime().begin_session_turn(request)
             await self.send_push(
                 build_server_push_message(
                     session_id=record.target_session_id,
@@ -4434,6 +4440,10 @@ class AgentWebSocketServer:
         streaming: bool,
         sequence: int,
     ) -> bool:
+        runtime = getattr(self, "_runtime", None)
+        observer = getattr(runtime, "record_session_turn_event", None)
+        if callable(observer):
+            observer(event.session_id or "default", event.request_id, event.payload, complete=event.is_complete)
         if event.event_type == PLAN_MODE_EXITED_EVENT_TYPE:
             await self.send_push(
                 {
@@ -11602,6 +11612,14 @@ class AgentWebSocketServer:
         payload 格式与 AgentResponse.payload 一致，
         可含 event_type 等字段供 Gateway 转为 Message 派发到 Channel。
         """
+        if isinstance(msg, dict):
+            runtime = getattr(self, "_runtime", None)
+            observer = getattr(runtime, "record_session_turn_event", None)
+            if callable(observer):
+                observer(
+                    str(msg.get("session_id") or ""), str(msg.get("request_id") or ""),
+                    msg.get("payload"), complete=bool(msg.get("is_complete")),
+                )
         if self._current_ws is None or self._current_send_lock is None:
             logger.warning(
                 "[AgentWebSocketServer] send_push 失败: 无活跃 Gateway 连接"

@@ -422,9 +422,7 @@ class SessionArchiveService:
             return False
         if not active.exists():
             return False
-        # Running cron sessions must still stop before deletion: nothing in
-        # this path owns their runs.  Heartbeat runs were stopped above.
-        return self.runtime.is_session_running(session_id)
+        return self.runtime.is_session_busy_for_lifecycle(session_id)
 
     async def _session(
         self,
@@ -473,6 +471,7 @@ class SessionArchiveService:
                 )
             if not pending:
                 if action == "archive" and archived.exists():
+                    self.runtime.forget_session_turn(session_id)
                     return dict(
                         session_id=session_id,
                         ok=True,
@@ -496,27 +495,10 @@ class SessionArchiveService:
                 action,
                 active,
             ):
-                details = {"stop_pending": False}
-                message = f"Session is running; stop it before {action}"
-                probe = getattr(self.runtime, "is_team_round_finishing", None)
-                if callable(probe) and probe(session_id):
-                    # swarmflow.stop/自然完成后 leader 仍在收尾汇报：会话正在
-                    # 自行结束，引导稍后重试，而不是让用户先停止一个无活可停的
-                    # 会话。finishing 标记供前端区分两种 busy 文案。
-                    details["finishing"] = True
-                    message = "swarm flow 已结束，会话回合收尾中，请稍后重试"
-                else:
-                    probe = getattr(self.runtime, "is_subagent_finishing", None)
-                    if callable(probe) and probe(
-                        session_id, channel_id=owner_channel_id
-                    ):
-                        # subagent 常驻直到显式释放：已被要求停止、仍在收尾，
-                        # 用户无活可停。finishing 让前端走"稍后重试"文案，
-                        # subagent_finishing 供后续把文案区分到 subagent。
-                        details["finishing"] = True
-                        details["subagent_finishing"] = True
-                        message = "subagent 正在收尾，会话稍后自动结束，请稍后重试"
-                raise lc.LifecycleError("SESSION_BUSY", message, details)
+                raise lc.LifecycleError(
+                    "SESSION_BUSY", f"Session is running; stop it before {action}",
+                    {"stop_pending": False},
+                )
             operation = lc.begin(
                 "session", session_id, action, block_execution=True
             )
@@ -581,6 +563,7 @@ class SessionArchiveService:
                         session_id=session_id, ok=True, project_id=project_id
                     )
                     lc.complete("session", session_id, deleted=True, result=payload)
+                    self.runtime.forget_session_turn(session_id)
                     return payload
                 source, destination = (
                     (active, archived) if action == "archive" else (archived, active)
@@ -650,6 +633,8 @@ class SessionArchiveService:
                 lc.complete(
                     "session", session_id, archived=action == "archive", result=payload
                 )
+                if action == "archive":
+                    self.runtime.forget_session_turn(session_id)
                 if deferred_pin_reindex:
                     payload["_pins_reindex_required"] = deferred_pin_reindex_required
                 return payload

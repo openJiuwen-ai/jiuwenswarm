@@ -15,6 +15,7 @@ import logging
 import uuid
 from contextlib import aclosing
 from dataclasses import replace
+from functools import partial
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
@@ -347,6 +348,9 @@ class AgentRuntime:
         # Covers chat admission and preparation before the Team adapter creates
         # its own in-flight marker (including first-run Team construction).
         self._pending_chat_requests: dict[str, set[str]] = {}
+        # User-visible turn outcome, independent of execution/stream settlement.
+        # The request ID prevents an old completion from ending a newer turn.
+        self._session_turns: dict[str, dict[str, Any]] = {}
         self._stateless_agents: dict[str, Any] = {}
         # A one-shot command may pause for one or more interactions before it
         # exits. Keep the declared root Agent pinned to that active Session so
@@ -362,6 +366,9 @@ class AgentRuntime:
             tuple[SessionLifecycleTarget, tuple[Any, ...]],
         ] = {}
         if team_execution_controller is not None:
+            set_turn_observer = getattr(team_execution_controller, "set_session_turn_observer", None)
+            if callable(set_turn_observer):
+                set_turn_observer(partial(self.record_session_turn_started, team=True), self.record_session_turn_ended)
             set_reporter = getattr(
                 team_execution_controller,
                 "set_session_inactive_reporter",
@@ -1093,6 +1100,13 @@ class AgentRuntime:
             raise RuntimeStateError("runtime is already closed")
         from jiuwenswarm.runtime.request import cancel_request
 
+        params = request.params if isinstance(request.params, dict) else {}
+        session_id = request.session_id or "default"
+        turn = self._session_turns.get(session_id)
+        intent = str(params.get("intent") or "cancel")
+        # The stop outcome does not wait for residual tasks to settle.
+        if intent == "cancel" and not params.get("wait_for_stop") and not params.get("target_team_id"):
+            self.record_session_turn_interrupted(session_id, str(params.get("target_request_id") or ""))
         response = await cancel_request(
             self._agent_manager,
             request,
@@ -1115,6 +1129,18 @@ class AgentRuntime:
                 request.session_id,
                 request_id=target_request_id or None,
             )
+        if self._session_turns.get(session_id) is turn and response.ok and isinstance(response.payload, dict):
+            if intent == "pause" and response.payload.get("success"):
+                self.record_session_turn_interrupted(session_id, turn["request_id"] if turn else "")
+            elif (
+                intent == "resume"
+                and response.payload.get("success")
+                and response.payload.get("has_active_task") is not False
+            ):
+                self.record_session_turn_started(
+                    session_id, turn["request_id"] if turn else request.request_id,
+                    team=bool(turn and turn.get("team")), restart=True,
+                )
         return response
 
     async def cancel_all_inflight_work(
@@ -1335,6 +1361,7 @@ class AgentRuntime:
             work_kind = self.session_work_kind(request)
             if work_kind is not None:
                 await self._ensure_session_registered(request)
+                self.begin_session_turn(request)
                 if work_kind is SessionWorkKind.CONTROL_INPUT:
                     return await self._deliver_control(
                         request, on_control_event=on_control_event,
@@ -1383,6 +1410,7 @@ class AgentRuntime:
             (foreground or self._starts_goal(request))
             and not self._request_targets_team(request)
         )
+        self._record_session_turn_team(request, team=not admitted)
         interrupt_resume = self._is_interrupt_resume_request(request)
         interaction_answer = (
             interrupt_resume or request.req_method == ReqMethod.CHAT_ANSWER
@@ -1457,6 +1485,7 @@ class AgentRuntime:
                 default_agent_ref=request.agent_ref,
                 default_complete=True,
             )
+            self._record_turn_event(request, event)
             await self._mark_pending_interaction(event)
             if admission_started and self._event_confirms_user_turn(event):
                 await self._supersede_bypassed_session_messages(request)
@@ -1551,6 +1580,8 @@ class AgentRuntime:
                 raise end_error
         if cancellation is not None:
             raise cancellation
+        for event in events:
+            self._record_turn_event(request, event)
         return events
 
     async def answer_interaction(
@@ -1764,6 +1795,7 @@ class AgentRuntime:
         work_kind = self.session_work_kind(request, background=background)
         if work_kind is not None:
             await self._ensure_session_registered(request)
+            self.begin_session_turn(request)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
                 events = await self._deliver_control(
                     request, on_control_event=on_control_event,
@@ -1898,11 +1930,13 @@ class AgentRuntime:
         )
         activity_execution_started = False
         activity_execution_succeeded = False
-        admitted = (
+        targets_team = (
             (is_chat_turn or self._starts_goal(request))
-            and not background
-            and not self._request_targets_team(request)
+            and not background and self._request_targets_team(request)
         )
+        admitted = (is_chat_turn or self._starts_goal(request)) and not background and not targets_team
+        if not background:
+            self._record_session_turn_team(request, team=bool(targets_team))
         interrupt_resume = self._is_interrupt_resume_request(request)
         interaction_answer = (
             interrupt_resume or request.req_method == ReqMethod.CHAT_ANSWER
@@ -2037,6 +2071,7 @@ class AgentRuntime:
                     ):
                         supersede_attempted = True
                         await self._supersede_bypassed_session_messages(request)
+                    self._record_turn_event(request, event)
                     yield event
                 activity_execution_succeeded = True
             finally:
@@ -2146,13 +2181,15 @@ class AgentRuntime:
         if cancellation is not None:
             raise cancellation
         if error is not None:
-            yield RuntimeEvent.error(
+            event = RuntimeEvent.error(
                 request_id=request.request_id,
                 channel_id=channel_id,
                 session_id=request.session_id,
                 error=error,
                 metadata=request.metadata,
             )
+            self._record_turn_event(request, event)
+            yield event
 
     async def _stream_session_input_started(
         self, request: AgentRequest, owner_channel: str,
@@ -2288,6 +2325,7 @@ class AgentRuntime:
                 if matching_ack:
                     await on_control_event(event)
                 else:
+                    self._record_turn_event(request, event)
                     events.append(event)
         finally:
             close_stream = getattr(response_stream, "aclose", None)
@@ -2325,6 +2363,7 @@ class AgentRuntime:
                     default_agent_ref=request.agent_ref,
                 )
                 await self._mark_pending_interaction(event)
+                self._record_turn_event(request, event)
                 yield event
         finally:
             close_stream = getattr(response_stream, "aclose", None)
@@ -2367,10 +2406,116 @@ class AgentRuntime:
         )
         if reset_plan_state:
             self._plan_controller.reset_session(session_id)
+            if cleaned:
+                self.forget_session_turn(session_id)
         return cleaned
 
     def begin_chat_request(self, session_id: str, request_id: str) -> None:
         self._pending_chat_requests.setdefault(session_id, set()).add(request_id)
+
+    def record_session_turn_started(
+        self, session_id: str, request_id: str, *, team: bool | None = None, restart: bool = False
+    ) -> None:
+        turn = self._session_turns.get(session_id)
+        if turn is not None and turn["request_id"] == str(request_id) and not restart:
+            if team is not None:
+                turn["team"] = team
+            return
+        from jiuwenswarm.server.runtime.session.lifecycle import guard
+        guard(session_id)
+        self._session_turns[session_id] = {
+            "request_id": str(request_id), "running": True, "team": bool(team),
+            "goal_active": bool(turn and turn.get("goal_active")),
+        }
+
+    def record_session_turn_ended(self, session_id: str, request_id: str) -> None:
+        turn = self._session_turns.get(session_id)
+        if turn is None or not turn.get("running"):
+            return
+        if request_id and turn["request_id"] != str(request_id):
+            return
+        # Replace the record so a delayed pause/resume sees the state change.
+        self._session_turns[session_id] = {**turn, "running": False}
+
+    def record_session_turn_interrupted(self, session_id: str, request_id: str = "") -> None:
+        self.record_session_turn_ended(session_id, request_id)
+
+    def forget_session_turn(self, session_id: str) -> None:
+        self._session_turns.pop(session_id, None)
+
+    def is_session_busy_for_lifecycle(self, session_id: str) -> bool:
+        return bool(self._session_turns.get(session_id, {}).get("running"))
+
+    def _record_session_turn_team(self, request: AgentRequest, *, team: bool) -> None:
+        turn = self._session_turns.get(request.session_id or "")
+        if turn is not None and request.request_id in (turn["request_id"], turn.get("answer_id")):
+            turn["team"] = team
+
+    def begin_session_turn(self, request: AgentRequest) -> None:
+        params = request.params if isinstance(request.params, dict) else {}
+        if not request.session_id or params.get("target_team_id") or params.get("attach_goal"):
+            return
+        if self._is_session_input_request(request):
+            return
+        turn = self._session_turns.get(request.session_id)
+        if turn is not None and (
+            request.req_method is ReqMethod.CHAT_ANSWER or self._is_interrupt_resume_request(request)
+        ):
+            self.record_session_turn_started(
+                request.session_id, turn["request_id"],
+                team=turn.get("team"), restart=not turn.get("running"),
+            )
+            self._session_turns[request.session_id]["answer_id"] = request.request_id
+            return
+        if request.req_method in self._chat_turn_methods() or self._starts_goal(request):
+            self.record_session_turn_started(request.session_id, request.request_id)
+
+    def _record_turn_event(self, request: AgentRequest, event: RuntimeEvent) -> None:
+        self.record_session_turn_event(
+            request.session_id or "default",
+            request.request_id,
+            event.payload,
+            complete=event.is_complete,
+        )
+
+    def record_session_turn_event(
+        self, session_id: str, request_id: str, payload: dict | None, *, complete: bool = False
+    ) -> None:
+        from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES
+
+        if payload is None and complete:
+            payload = {}
+        if not isinstance(payload, dict) or payload.get("target_team_id"):
+            return
+        turn = self._session_turns.get(session_id)
+        kind = payload.get("event_type") or ("chat.final" if complete else "")
+        if kind in {"goal.updated", "goal.snapshot"}:
+            goal = payload.get("goal")
+            if isinstance(goal, dict):
+                # A snapshot can precede the first admitted turn.
+                if turn is None and goal.get("status") == "active":
+                    turn = self._session_turns[session_id] = {"request_id": str(request_id), "running": False}
+                if turn is not None:
+                    turn["goal_active"] = goal.get("status") == "active"
+            return
+        if turn is None:
+            return
+        request_id = str(payload.get("turn_request_id") or request_id)
+        if request_id == turn.get("answer_id"):
+            request_id = turn["request_id"]
+        if request_id and turn["request_id"] != request_id:
+            return
+        if kind == "chat.processing_status" and payload.get("is_processing") is False:
+            self.record_session_turn_ended(session_id, request_id)
+        elif kind in TERMINAL_ERROR_EVENT_TYPES or kind == "chat.ask_user_question":
+            self.record_session_turn_ended(session_id, request_id)
+        elif kind == "chat.final":
+            if (
+                not payload.get("goal_intermediate")
+                and not turn.get("team")
+                and not turn.get("goal_active")
+            ):
+                self.record_session_turn_ended(session_id, request_id)
 
     def end_chat_request(self, session_id: str, request_id: str) -> None:
         requests = self._pending_chat_requests.get(session_id)
@@ -2588,6 +2733,8 @@ class AgentRuntime:
             quiesce_session=self._quiesce_agent_session_for_delete,
             dispose_session=self._dispose_agent_session_after_resource_release,
         )
+        if result.ok:
+            self.forget_session_turn(session_id)
         return result
 
     async def delete_team(
@@ -2721,6 +2868,7 @@ class AgentRuntime:
                     self._checkpointer_started = False
             self._started = False
             self._closed = True
+            self._session_turns.clear()
             if cleanup_errors:
                 raise cleanup_errors[0]
 

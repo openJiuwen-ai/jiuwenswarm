@@ -223,6 +223,9 @@ class PortableRuntime:
     def begin_chat_request(self, session_id: str, request_id: str) -> None:
         self._pending_chat_requests.setdefault(session_id, set()).add(request_id)
 
+    def begin_session_turn(self, request: AgentRequest) -> None:
+        pass
+
     def end_chat_request(self, session_id: str, request_id: str) -> None:
         requests = self._pending_chat_requests.get(session_id)
         if requests is None:
@@ -974,6 +977,24 @@ async def test_physical_disconnect_keeps_ack_only_and_cleanup_order(
     assert server._current_ws is None
     assert server._current_send_lock is None
     assert server._session_stream_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_complete_server_push_ends_turn_without_event_type():
+    from jiuwenswarm.runtime import AgentRuntime
+
+    trace: list[str] = []
+    server, manager, _ = make_server(trace, agent=None)
+    runtime = server._runtime = AgentRuntime(agent_manager=manager)
+    server._current_ws = RecordingWebSocket(trace)
+    server._current_send_lock = asyncio.Lock()
+    runtime.record_session_turn_started("push-complete", "turn")
+
+    assert await server.send_push({
+        "channel_id": "web", "session_id": "push-complete", "request_id": "turn",
+        "payload": {"content": "done"}, "is_complete": True,
+    })
+    assert not runtime.is_session_busy_for_lifecycle("push-complete")
 
 
 @pytest.mark.asyncio
