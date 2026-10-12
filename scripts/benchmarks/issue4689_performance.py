@@ -48,6 +48,12 @@ STAGE_OBSERVER = r'''
 import functools, inspect, threading
 _trace_lock = threading.Lock()
 _targets = {
+ "jiuwenswarm.server.supervisor.worker_process": ["WorkerProcess.spawn"],
+ "jiuwenswarm.server.supervisor.runtime_supervisor": ["RuntimeSupervisor._bring_up"],
+ "jiuwenswarm.server.ipc.server": ["IpcServer.start"],
+ "jiuwenswarm.extensions.manager": ["ExtensionManager.load_all_extensions"],
+ "jiuwenswarm.runtime.kernel": ["ResourceKernel.acquire", "ResourceKernel.acquire_async"],
+ "jiuwenswarm.server.worker.dispatcher": ["WorkerDispatcher._run_request"],
  "jiuwenswarm.common.utils": ["prepare_runtime_workspace", "prepare_workspace",
    "ensure_default_builtin_skills", "ensure_config_migrated_from_template",
    "cleanup_stale_openjiuwen_descs", "setup_logger"],
@@ -80,7 +86,12 @@ _import_targets = set(_targets) | {"openjiuwen.harness.tools", "openjiuwen.harne
  "jiuwenswarm.server.agent_ws_server", "jiuwenswarm.common.schema.agent"}
 def _record(stage, begin, error=None):
     row={"stage":stage,"begin_ns":begin,"end_ns":time.perf_counter_ns(),
-         "pid":os.getpid(),"thread":threading.get_ident()}
+         "pid":os.getpid(),"thread":threading.get_ident(),
+         "requested_mode":os.environ.get("ISSUE4689_REQUESTED_MODE"),
+         "profile":os.environ.get("JIUWENSWARM_RUNTIME_PROFILE", "desktop"),
+         "frozen":bool(getattr(sys,"frozen",False))}
+    started=os.environ.get("ISSUE4689_TRIAL_START_NS")
+    if started: row["from_front_spawn_ms"]=(row["end_ns"]-int(started))/1e6
     if error is not None: row["error_type"]=type(error).__name__
     with _trace_lock, open(os.environ["ISSUE4689_STAGE_LOG"],"a",encoding="utf-8") as f:
         f.write(json.dumps(row)+"\n")
@@ -427,6 +438,8 @@ async def trial(args, label: str, case: str, iteration: int, root: Path,
     stages = output / f"{name}.stages.jsonl"
     env["ISSUE4689_ENTRY_LOG"] = str(entries)
     env["ISSUE4689_STAGE_LOG"] = str(stages)
+    if args.trace:
+        env["ISSUE4689_REQUESTED_MODE"] = args.mode
     if executable:
         # Both official EXEs must contain the identical observation-only hook at
         # the local adapter's actual SDK sender boundary. No snapshot fallback.
@@ -445,6 +458,8 @@ async def trial(args, label: str, case: str, iteration: int, root: Path,
     try:
         with (output / f"{name}.log").open("wb") as log:
             started = time.perf_counter_ns()
+            if args.trace:
+                env["ISSUE4689_TRIAL_START_NS"] = str(started)
             proc = subprocess.Popen(command, cwd=code, env=env, stdout=log, stderr=log)
             identity.update(started_at_ns=started, front_launcher_pid=proc.pid)
             if case == "front":
