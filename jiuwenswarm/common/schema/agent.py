@@ -10,12 +10,30 @@ gateway 独立版就绪后随 common 副本收敛，别名删除。
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Any
+
 from gateway_protocol.e2a.agent_models import (
-    AgentRequest,
+    AgentRequest as _GatewayAgentRequest,
     AgentResponse,
     AgentResponseChunk,
     PermissionContext,
 )
+
+
+@dataclass
+class AgentRequest(_GatewayAgentRequest):
+    """Agent 请求（Gateway → AgentServer），含 AgentServer-only 运行时绑定."""
+
+    # AgentServer-only runtime dispatch result. The facade resolves it before
+    # MCP reconciliation so the root adapter and session child consume the
+    # same manifest-derived binding without resolving the package twice.
+    trusted_runtime_binding: dict[str, Any] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
 
 __all__ = [
     "AgentRequest",

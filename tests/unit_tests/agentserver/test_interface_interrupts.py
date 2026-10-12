@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
@@ -15,7 +18,7 @@ from jiuwenswarm.common.e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 
 
@@ -50,6 +53,51 @@ class _FakeTeamManager:
         self.cancel_calls.append((session_id, reason))
         self.cancel_dispositions.append(workflow_disposition)
         return self.cancel_result
+
+
+@pytest.mark.asyncio
+async def test_external_interrupt_keeps_stream_consumer_for_aborted_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claw = _InterruptHarness()
+    response = AgentResponse(
+        request_id="req-cancel",
+        channel_id="web",
+        payload={
+            "event_type": "chat.interrupt_result",
+            "intent": "cancel",
+            "success": True,
+            "message": "已请求取消 External Harness 任务",
+        },
+    )
+    adapter = SimpleNamespace(
+        process_interrupt=AsyncMock(return_value=response),
+        is_external_harness_session=lambda session_id: session_id == "external-session",
+    )
+    monkeypatch.setattr(claw, "_ensure_adapter", lambda mode=None: adapter)
+    monkeypatch.setattr(claw, "_adapter_mode_for_request", lambda request: "deep")
+    monkeypatch.setattr(
+        claw.session_manager_for_test,
+        "cancel_session_task",
+        AsyncMock(side_effect=AssertionError("External stream consumer must remain")),
+    )
+    monkeypatch.setattr(
+        claw,
+        "_cancel_team_work_for_session",
+        AsyncMock(side_effect=AssertionError("External cancel must not use team cleanup")),
+    )
+    request = AgentRequest(
+        request_id="req-cancel",
+        channel_id="web",
+        session_id="external-session",
+        req_method=ReqMethod.CHAT_CANCEL,
+        params={"intent": "cancel", "mode": "agent"},
+    )
+
+    result = await claw.process_interrupt_for_test(request)
+
+    assert result is response
+    adapter.process_interrupt.assert_awaited_once_with(request)
 
 
 def _build_team_interrupt_request(
