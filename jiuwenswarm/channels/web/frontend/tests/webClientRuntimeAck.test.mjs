@@ -214,3 +214,37 @@ test('reconnect resumes the original event cursor without resubmitting input', a
     await webClient.disconnect();
   }
 });
+
+test('a fresh page subscribes to the execution discovered in session metadata', async () => {
+  const fresh = new webClient.constructor();
+  await fresh.connect();
+  const socket = FakeWebSocket.instance;
+  const sent = [];
+  const originalSend = socket.send;
+  socket.send = function (raw) {
+    sent.push(JSON.parse(raw));
+    originalSend.call(this, raw);
+  };
+  let processing;
+  const off = fresh.on('chat.processing_status', (event) => { processing = event.payload.is_processing; });
+  try {
+    const pending = fresh.request('session.get_metadata', { session_id: 'fresh-session' });
+    await Promise.resolve();
+    socket.receive({ type: 'res', id: socket.lastRequest.id, ok: true, payload: {
+      runtime: { worker_instance: 'existing-worker', is_processing: true },
+    } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const subscription = socket.lastRequest;
+    assert.deepEqual(subscription.params, { session_id: 'fresh-session',
+      runtime_resume: { worker_instance: 'existing-worker', after: 0 } });
+    socket.receive({ type: 'res', id: subscription.id, ok: true, payload: {
+      runtime: { worker_instance: 'existing-worker', is_processing: true, history_required: false },
+    } });
+    await pending;
+    assert.equal(processing, true);
+    assert.deepEqual(sent.map((request) => request.method), ['session.get_metadata', 'session.get_metadata']);
+  } finally {
+    off();
+    await fresh.disconnect();
+  }
+});

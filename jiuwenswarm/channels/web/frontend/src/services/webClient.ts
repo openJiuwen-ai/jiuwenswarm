@@ -325,6 +325,25 @@ class WebClient {
         this.pending.delete(id);
         reject(error);
       }
+    }).then(async (value) => {
+      if (
+        method === 'session.get_metadata' &&
+        !params?.runtime_resume &&
+        typeof params?.session_id === 'string'
+      ) {
+        const runtime = (value as { runtime?: Record<string, unknown> } | null)?.runtime;
+        if (runtime?.is_processing === true && typeof runtime.worker_instance === 'string') {
+          // A freshly loaded page has no stream cursor yet. Reattach to the
+          // existing execution through its snapshot, never by sending input.
+          await this.resumeExecutions([
+            {
+              session_id: params.session_id,
+              runtime_resume: { worker_instance: runtime.worker_instance, after: 0 },
+            },
+          ]);
+        }
+      }
+      return value;
     });
   }
 
@@ -460,8 +479,8 @@ class WebClient {
     return null;
   }
 
-  private async resumeExecutions(): Promise<void> {
-    for (const query of this.runtimeResume.queries()) {
+  private async resumeExecutions(queries = this.runtimeResume.queries()): Promise<void> {
+    for (const query of queries) {
       try {
         const metadata = await this.request<{ runtime?: Record<string, unknown> }>('session.get_metadata', query, {
           timeoutMs: 10_000,

@@ -302,7 +302,8 @@ server.run(transport="stdio")
         ModelFixture.counter = data / "side-effects.txt"
         log = output.with_suffix(".log").open("wb")
         def launch():
-            return subprocess.Popen([sys.executable, "-m", "jiuwenswarm.server.app_agentserver", "--port", str(front_port)],
+            return subprocess.Popen([getattr(args, "front_executable", None) or sys.executable,
+                "-m", "jiuwenswarm.server.app_agentserver", "--port", str(front_port)],
                                     cwd=code, env=env, stdout=log, stderr=log)
         proc = launch()
         gateway_proc = None
@@ -566,6 +567,16 @@ server.run(transport="stdio")
                         child.wait(timeout=5)
                 except psutil.NoSuchProcess:
                     pass
+            if getattr(args, "front_executable", None):
+                import gzip
+                for path in data.rglob("*"):
+                    if path.is_file() and (path.suffix in {".log", ".json"} or "error" in path.name):
+                        destination = output.parent / (output.stem + "-frozen-logs") / path.relative_to(data)
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        destination.with_suffix(destination.suffix + ".gz").write_bytes(gzip.compress(path.read_bytes(), mtime=0))
+            if not output.exists():
+                result["incomplete"] = True
+                output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
             log.close()
             model_server.shutdown()
             model_server.server_close()
@@ -580,4 +591,5 @@ if __name__ == "__main__":
     parser.add_argument("--scenario", default="restart", choices=("restart", "tool", "mcp", "interaction", "offline", "cancel", "crash", "queue", "steer", "cross-session", "warming-cancel", "failed-create"))
     parser.add_argument("--profile", default="desktop", choices=("desktop", "agentos"))
     parser.add_argument("--gateway", action="store_true")
+    parser.add_argument("--front-executable", help="Optional actual frozen executable for Front/Worker acceptance")
     asyncio.run(run(parser.parse_args()))
