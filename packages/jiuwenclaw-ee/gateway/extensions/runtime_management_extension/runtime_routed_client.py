@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -15,13 +16,12 @@ from urllib.parse import urlsplit
 import httpx
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.local_env_config import read_env
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.gateway.routing.agent_client import AgentServerClient
-from .pod_http_client import HttpSseAgentServerClient
 
 from .agent_authorization import authorize_agent
 from .invoke_ids import apply_invoke_ids_to_envelope
+from .pod_http_client import HttpSseAgentServerClient
 from .session_route_client import (
     FatalRouteError,
     RetryableRouteError,
@@ -108,7 +108,7 @@ def _is_routeless_envelope(envelope: E2AEnvelope) -> bool:
 
 def _rebind_timeout() -> float:
     try:
-        value = float(read_env("GATEWAY_RUNTIME_SESSION_REBIND_TIMEOUT", "2"))
+        value = float(os.getenv("GATEWAY_RUNTIME_SESSION_REBIND_TIMEOUT", "2"))
     except (TypeError, ValueError):
         return 2.0
     return value if value > 0 else 2.0
@@ -120,11 +120,11 @@ def _default_http_base() -> str:
     须指向 Agent ``http_server``（默认 ``AGENT_HTTP_PORT=8766``），
     **不要**打 WS 口 ``AGENT_SERVER_PORT=18092``（对该口发 HTTP 会 426/400 且无 JSON）。
     """
-    explicit = read_env("GATEWAY_RUNTIME_DEFAULT_HTTP_BASE", "").strip()
+    explicit = os.getenv("GATEWAY_RUNTIME_DEFAULT_HTTP_BASE", "").strip()
     if explicit:
         return explicit.rstrip("/")
-    host = read_env("AGENT_SERVER_HOST", "127.0.0.1").strip() or "127.0.0.1"
-    port = read_env("AGENT_HTTP_PORT", "8766").strip() or "8766"
+    host = os.getenv("AGENT_SERVER_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    port = os.getenv("AGENT_HTTP_PORT", "8766").strip() or "8766"
     return f"http://{host}:{port}"
 
 
@@ -320,6 +320,15 @@ class RuntimeRoutedAgentClient(AgentServerClient):
     async def connect(self, uri: str) -> None:
         _ = uri
         self._connected = True
+
+    def set_or_update_server_config(
+        self,
+        *,
+        config: dict[str, Any],
+        env: dict[str, str] | None = None,
+    ) -> None:
+        """develop 的客户端接口要求实现这个方法。runtime 客户端不缓存这份配置。"""
+        _ = config, env
 
     @property
     def server_ready(self) -> bool:

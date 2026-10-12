@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from jiuwenswarm.extensions.sdk.agent_server_client import AgentServerClientExtension
 from jiuwenswarm.extensions.types import ExtensionConfig
@@ -31,7 +32,7 @@ class RuntimeManagementExtension(AgentServerClientExtension):
     async def shutdown(self) -> None:
         try:
             await self._client.disconnect()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("[RuntimeManagement] shutdown error: %s", exc)
 
     def setup_gateway_shutdown_signals(self, shutdown_requested: asyncio.Event) -> None:
@@ -66,8 +67,20 @@ class RuntimeManagementExtension(AgentServerClientExtension):
                     logger.info("[RuntimeManagement] 无法注册 %s: %s", sig, exc)
 
 
+def runtime_client_requested(env: dict[str, str] | None = None) -> bool:
+    """只有环境变量写成 runtime 时，这个扩展才占用南向客户端。"""
+    source = os.environ if env is None else env
+    mode = str(source.get("GATEWAY_AGENT_CLIENT_MODE") or "").strip().lower()
+    return mode == "runtime"
+
+
 async def register_extensions(registry) -> list[RuntimeManagementExtension]:
-    """注册 Runtime 路由扩展。"""
+    """注册 Runtime 路由扩展。不是 runtime 模式时不注册，避免盖掉 WebSocket。"""
+    if not runtime_client_requested():
+        logger.info(
+            "[RuntimeManagement] GATEWAY_AGENT_CLIENT_MODE 不是 runtime，不注册 runtime 客户端"
+        )
+        return []
     client = RuntimeRoutedAgentClient()
     ext = RuntimeManagementExtension(client)
     registry.register_agent_server_client(ext)

@@ -5,12 +5,12 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 
 import httpx
 
-from jiuwenswarm.common.local_env_config import read_env
-from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
+from .link_mtls import LinkMTLSConfig
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ class RuntimeSessionRouteClient:
         root = (
             (
                 base_url
-                or read_env("GATEWAY_RUNTIME_MANAGER_URL", "http://127.0.0.1:8091")
+                or os.getenv("GATEWAY_RUNTIME_MANAGER_URL", "http://127.0.0.1:8091")
             )
             .strip()
             .rstrip("/")
@@ -79,7 +79,7 @@ class RuntimeSessionRouteClient:
         if (
             self._link_mtls.profile is not None
             and base_url is None
-            and not read_env("GATEWAY_RUNTIME_MANAGER_URL", "")
+            and not os.getenv("GATEWAY_RUNTIME_MANAGER_URL", "")
         ):
             root = "link://runtime"
         root = self._link_mtls.resolve_endpoint(root, role="runtime")
@@ -93,7 +93,7 @@ class RuntimeSessionRouteClient:
             timeout = timeout_seconds
             if timeout is None:
                 try:
-                    timeout = float(read_env("GATEWAY_RUNTIME_MANAGER_TIMEOUT", "300"))
+                    timeout = float(os.getenv("GATEWAY_RUNTIME_MANAGER_TIMEOUT", "300"))
                 except (TypeError, ValueError):
                     timeout = 300.0
             if timeout <= 0:

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -20,14 +21,14 @@ from jiuwenswarm.common.e2a.constants import (
 )
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-from jiuwenswarm.common.local_env_config import read_env
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
 from jiuwenswarm.gateway.routing.agent_client import (
     AGENT_REQUEST_TIMEOUT_SECONDS,
     AgentServerClient,
 )
-from jiuwenswarm.common.audit_emit import AuditTimer, emit_audit_evt, emit_audit_ua
+
+from .audit_emit import AuditTimer, emit_audit_evt, emit_audit_ua
+from .link_mtls import LinkMTLSConfig
 from .pod_rest_map import assemble_rest_request, normalize_agent_http_base
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ logger = logging.getLogger(__name__)
 def _env_int(name: str, default: int) -> int:
     """读进程级环境变量并转 int；非数字/≤0 时回退默认值。"""
     try:
-        value = int(float(read_env(name, "").strip()))
+        value = int(float(os.getenv(name, "").strip()))
     except (TypeError, ValueError):
         return default
     return value if value > 0 else default
