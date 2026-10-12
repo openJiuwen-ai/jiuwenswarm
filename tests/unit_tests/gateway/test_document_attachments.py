@@ -63,7 +63,7 @@ def test_document_blacklist_helpers():
 @pytest.mark.parametrize("extra_bytes", [0, 1])
 def test_browser_document_100_mib_boundary(tmp_path: Path, monkeypatch, extra_bytes):
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.attachments.document_attachments.get_agent_sessions_dir",
+        "jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments.get_agent_sessions_dir",
         lambda: tmp_path,
     )
     content = b"x" * (100 * 1024 * 1024 + extra_bytes)
