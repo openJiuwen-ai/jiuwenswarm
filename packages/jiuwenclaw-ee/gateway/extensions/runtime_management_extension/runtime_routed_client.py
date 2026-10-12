@@ -18,7 +18,7 @@ from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.local_env_config import read_env
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.gateway.routing.agent_client import AgentServerClient
-from jiuwenswarm.gateway.routing.http_agent_client import HttpSseAgentServerClient
+from .pod_http_client import HttpSseAgentServerClient
 
 from .agent_authorization import authorize_agent
 from .invoke_ids import apply_invoke_ids_to_envelope
