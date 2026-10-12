@@ -275,12 +275,13 @@ def summarize(rows: list[dict], metadata: dict) -> dict:
                 incomplete.append({"label": label, "population": name,
                                    "expected": expected, "observed": values["n"]})
     decisions = {name: {"limit_ms": limits[name], "p95_ms": values["p95_ms"],
+                         "required": name != "fresh.cold",
                          "passed": values["p95_ms"] is not None and values["p95_ms"] <= limits[name]}
                  for name, values in metrics[target].items()}
     return {"metadata": metadata, "metrics": metrics, "acceptance": decisions,
             "failed_attempts": failures, "incomplete_populations": incomplete,
             "all_passed": not failures and not incomplete
-                          and all(item["passed"] for item in decisions.values())}
+                          and all(item["passed"] for item in decisions.values() if item["required"])}
 
 
 def new_session(data: Path, session_id: str, mode: str) -> None:

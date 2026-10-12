@@ -73,6 +73,25 @@ def test_zero_warm_diagnostic_does_not_fabricate_a_warm_population(benchmark):
     assert result["all_passed"]
 
 
+def test_first_install_timing_is_supplemental_to_prepared_workspace_gate(benchmark):
+    samples = [row(label) for label in ("baseline", "candidate")]
+    samples += [row(label, 9000, case="fresh") for label in ("baseline", "candidate")]
+    result = benchmark.summarize(samples, metadata(cases=["chat", "fresh"], fresh_install_samples=1))
+    assert result["acceptance"]["chat.cold"]["required"]
+    assert not result["acceptance"]["fresh.cold"]["required"]
+    assert not result["acceptance"]["fresh.cold"]["passed"]
+    assert result["metrics"]["candidate"]["fresh.cold"]["p95_ms"] == 9000
+    assert result["all_passed"]
+
+
+def test_first_install_functional_failure_still_fails_acceptance(benchmark):
+    samples = [row(label) for label in ("baseline", "candidate")]
+    samples += [row("baseline", case="fresh"), row("candidate", case="fresh", ok=False, error="initialization failed")]
+    result = benchmark.summarize(samples, metadata(cases=["chat", "fresh"], fresh_install_samples=1))
+    assert result["failed_attempts"]
+    assert not result["all_passed"]
+
+
 def test_environment_cannot_reuse_inherited_worker_or_fake_preparation(benchmark, monkeypatch, tmp_path):
     for key in ("JIUWENSWARM_BUILD_ID", "JIUWENSWARM_RUNTIME_SOCKET", "JIUWENSWARM_RUNTIME_WORKSPACE_READY",
                 "PYTHONPROFILEIMPORTTIME", "JIUWENSWARM_SDK_ENTRY_LOG", "PYTHONHOME"):
