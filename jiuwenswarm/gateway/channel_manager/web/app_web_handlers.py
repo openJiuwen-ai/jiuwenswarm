@@ -1071,6 +1071,32 @@ def _install_managed_external_cli_runtime_if_needed(cli_agent: str) -> dict[str,
     return payload
 
 
+def _remove_custom_external_cli_agent(cli_agent: str) -> None:
+    """Drop a custom agent from the team configuration, then uninstall it.
+
+    The configuration goes first: it may only name installed agents.
+
+    Raises:
+        ValueError: When ``cli_agent`` is not an installed custom agent.
+    """
+    from jiuwenswarm.common.config import EXTERNAL_CLI_AGENTS_CONFIG_PATH, update_external_cli_agents_in_config
+    from jiuwenswarm.common.config_panel.config_set_handlers import get_nested_config_value
+    from jiuwenswarm.common.custom_agent_runtime import get_custom_agent, remove_custom_agent
+
+    if get_custom_agent(cli_agent) is None:
+        raise ValueError(f"custom agent not found: {cli_agent}")
+    configured = get_nested_config_value(get_config_raw(), EXTERNAL_CLI_AGENTS_CONFIG_PATH, [])
+    if isinstance(configured, list):
+        remaining = [
+            item
+            for item in configured
+            if not (isinstance(item, dict) and item.get("cli_agent") == cli_agent) and item != cli_agent
+        ]
+        if len(remaining) != len(configured):
+            update_external_cli_agents_in_config(remaining, _build_external_cli_publish_url())
+    remove_custom_agent(cli_agent)
+
+
 def _snapshot_codex_dependency_install_status() -> dict[str, Any]:
     return _snapshot_external_cli_dependency_install_status("codex")
 
@@ -2182,6 +2208,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         payload = _install_managed_external_cli_runtime_if_needed(cli_agent)
         await channel.send_response(ws, req_id, ok=True, payload=payload)
+
+    async def _external_cli_custom_agent_remove(ws, req_id, params, session_id):
+        cli_agent = str((params or {}).get("cli_agent") or "").strip().lower()
+        try:
+            await asyncio.to_thread(_remove_custom_external_cli_agent, cli_agent)
+        except ValueError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
+            return
+        await channel.send_response(ws, req_id, ok=True, payload={"cli_agent": cli_agent})
 
     async def _request_zen_warmup() -> None:
         from jiuwenswarm.gateway.zen_query import request_zen_warmup
@@ -5081,6 +5116,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("external_cli.codex_install_status", _external_cli_codex_install_status)
     channel.register_method("external_cli.install_status", _external_cli_install_status)
     channel.register_method("external_cli.install", _external_cli_install)
+    channel.register_method("external_cli.custom_agent.remove", _external_cli_custom_agent_remove)
 
     async def _proxy_config_request(ws, req_id, params, session_id, user_id=None, *, req_method):
         """经 E2A 在目标 AgentServer 注入目录执行配置请求（仅 AgentOS 多用户调用）。

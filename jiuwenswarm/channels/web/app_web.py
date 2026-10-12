@@ -1895,6 +1895,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/file-api/skills/upload-temp":
             self._handle_skills_upload_temp()
             return
+        if parsed.path == "/file-api/external-cli/custom-agents":
+            self._handle_custom_agent_upload()
+            return
         if parsed.path == "/file-api/skills/import":
             self._handle_skills_import_upload()
             return
@@ -2000,6 +2003,26 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         )
 
         status, payload = handle_skills_upload_temp_http(
+            content_type=self.headers.get("Content-Type", ""),
+            body=self._read_request_body(),
+        )
+        self._write_json(status, payload)
+
+    def _handle_custom_agent_upload(self) -> None:
+        from jiuwenswarm.channels.web.custom_agent_upload_http import (
+            MAX_CUSTOM_AGENT_UPLOAD_BYTES,
+            handle_custom_agent_upload_http,
+        )
+
+        # Custom agents install into this machine's user workspace, which a
+        # routed multi-user AgentServer does not share.
+        if _uses_agentos_routing():
+            self._write_json(503, {"error": "custom agents are not supported in AgentOS mode"})
+            return
+        if self._parse_content_length() > MAX_CUSTOM_AGENT_UPLOAD_BYTES:
+            self._write_json(413, {"error": "upload too large"})
+            return
+        status, payload = handle_custom_agent_upload_http(
             content_type=self.headers.get("Content-Type", ""),
             body=self._read_request_body(),
         )

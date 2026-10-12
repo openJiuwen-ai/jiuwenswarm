@@ -15,12 +15,17 @@ import '../agent/AgentSettings.css';
 import './VideoDuplexModelSettings.css';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
+  EXTERNAL_CLI_CUSTOM_AGENTS_CONFIG_KEY,
   ExternalCliAgentsSection,
   applyExternalCliAgentAtomicUpdates,
+  externalCliAgentDisplayName,
+  externalCliAgentKinds,
   externalCliDependencyInstalls,
   externalCliSaveValidationMessage,
   externalCliKey,
+  parseExternalCliCustomAgents,
   type ExternalCliAgentKind,
+  type ExternalCliCustomAgent,
   type ExternalCliConfigSaveResult,
   type ExternalCliPendingChoice,
 } from '../../../../components/ExternalCliAgentsSection';
@@ -36,13 +41,28 @@ import {
   hasUnsavedExternalCliChanges,
 } from './externalCliInstallState';
 
-const CLI_DEFAULTS: Record<string, string> = Object.fromEntries(
-  EXTERNAL_CLI_AGENT_KINDS.flatMap((agent) => [
-    [externalCliKey(agent, 'enabled'), 'false'],
-    [externalCliKey(agent, 'use_builtin'), 'false'],
-    [externalCliKey(agent, 'cli_path'), ''],
-  ]),
-);
+function externalCliDefaults(agents: ExternalCliAgentKind[]): Record<string, string> {
+  return Object.fromEntries(
+    agents.flatMap((agent) => [
+      [externalCliKey(agent, 'enabled'), 'false'],
+      [externalCliKey(agent, 'use_builtin'), 'false'],
+      [externalCliKey(agent, 'cli_path'), ''],
+    ]),
+  );
+}
+
+const CUSTOM_AGENT_UPLOAD_URL = '/file-api/external-cli/custom-agents';
+
+/** Upload a provider wheel (and optional CLI executable); resolves to the installed agent. */
+async function uploadCustomAgent(wheel: File, cli: File | null): Promise<ExternalCliCustomAgent> {
+  const form = new FormData();
+  form.append('wheel', wheel);
+  if (cli) form.append('cli', cli);
+  const response = await fetch(CUSTOM_AGENT_UPLOAD_URL, { method: 'POST', body: form });
+  const payload = (await response.json().catch(() => ({}))) as { agent?: ExternalCliCustomAgent; error?: string };
+  if (!response.ok || !payload.agent) throw new Error(payload.error || `HTTP ${response.status}`);
+  return payload.agent;
+}
 
 /** Auto-dismiss both the save-failure banner and the auto-save success notice after this delay. */
 const NOTICE_AUTO_DISMISS_MS = 8000;
@@ -168,6 +188,7 @@ function ExternalCliSettings({
   const { t } = useTranslation();
   const {
     isConnected,
+    request,
     externalCliInstallBusy,
     externalCliInstallStatuses,
     externalCliPendingChoices,
@@ -179,10 +200,15 @@ function ExternalCliSettings({
     onSelectExternalCliPath,
     onTrackExternalCliDependencyInstalls,
   } = useSettingsServices();
+  const customAgentsJson = config[EXTERNAL_CLI_CUSTOM_AGENTS_CONFIG_KEY];
+  const customAgents = useMemo(() => parseExternalCliCustomAgents(customAgentsJson), [customAgentsJson]);
+  const agentKinds = useMemo(() => externalCliAgentKinds(customAgents), [customAgents]);
   const sourceValues = useMemo(
     () =>
-      Object.fromEntries(Object.entries(CLI_DEFAULTS).map(([key, fallback]) => [key, String(config[key] ?? fallback)])),
-    [config],
+      Object.fromEntries(
+        Object.entries(externalCliDefaults(agentKinds)).map(([key, fallback]) => [key, String(config[key] ?? fallback)]),
+      ),
+    [agentKinds, config],
   );
   // User choices deferred behind a dependency install. Held at the App layer
   // and session storage so they survive navigation and full page refreshes.
@@ -223,7 +249,7 @@ function ExternalCliSettings({
   const installAgents = EXTERNAL_CLI_AGENT_KINDS.filter(
     (agent) => externalCliInstallStatuses?.[agent]?.status === 'running',
   );
-  const installAgentNames = installAgents.map((agent) => (agent === 'claude' ? 'Claude' : 'Codex')).join(' / ');
+  const installAgentNames = installAgents.map(externalCliAgentDisplayName).join(' / ');
   const installBusy = externalCliInstallBusy === true;
   const disabled = inheritedDisabled || saving || installBusy || !isConnected;
   useUnsavedChanges('external-cli', changed);
@@ -346,13 +372,13 @@ function ExternalCliSettings({
       return;
     }
     const updates: Record<string, string> = {};
-    for (const agent of EXTERNAL_CLI_AGENT_KINDS) {
+    for (const agent of agentKinds) {
       applyExternalCliAgentAtomicUpdates(updates, agent, draftValues, savedValues);
     }
     if (!Object.keys(updates).length) return;
     // Pre-validate against the latest detect results: fail fast with a
     // localized message before the backend rejects with its raw English error.
-    for (const agent of EXTERNAL_CLI_AGENT_KINDS) {
+    for (const agent of agentKinds) {
       const validation = externalCliSaveValidationMessage(agent, draftValues, detectResults[agent], t);
       if (validation) {
         setSaveError(validation);
@@ -447,9 +473,7 @@ function ExternalCliSettings({
       {autoSavedAgents.length ? (
         <div className="settings-experimental-cli__install-running settings-experimental-cli__install-running--success" role="status">
           {t('config.externalCli.autoSaved', {
-            agents: autoSavedAgents
-              .map((agent) => (agent === 'claude' ? 'Claude' : 'Codex'))
-              .join(' / '),
+            agents: autoSavedAgents.map(externalCliAgentDisplayName).join(' / '),
           })}
         </div>
       ) : null}
@@ -460,6 +484,26 @@ function ExternalCliSettings({
       ) : null}
       <ExternalCliAgentsSection
         draftValues={draftValues}
+        customAgents={customAgents}
+        onUploadCustomAgent={async (wheel, cli) => {
+          const agent = await uploadCustomAgent(wheel, cli);
+          // A re-upload replaces the agent in place and keeps its switches.
+          const next = [...customAgents.filter((item) => item.name !== agent.name), agent];
+          onConfigPatch({ [EXTERNAL_CLI_CUSTOM_AGENTS_CONFIG_KEY]: JSON.stringify(next) });
+        }}
+        onRemoveCustomAgent={async (cliAgent) => {
+          try {
+            await request('external_cli.custom_agent.remove', { cli_agent: cliAgent });
+          } catch (error) {
+            setSaveError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
+            return;
+          }
+          const next = customAgents.filter((item) => item.name !== cliAgent);
+          onConfigPatch({
+            [EXTERNAL_CLI_CUSTOM_AGENTS_CONFIG_KEY]: JSON.stringify(next),
+            ...externalCliDefaults([cliAgent]),
+          });
+        }}
         onChange={(key, value) => {
           setDraftValues((current) => ({ ...current, [key]: value }));
           setSaveError('');

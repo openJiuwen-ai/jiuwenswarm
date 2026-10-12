@@ -4424,3 +4424,38 @@ async def test_external_cli_install_status_reports_managed_provider_runtime(
     assert response["payload"]["cli_agent"] == "acme"
     assert response["payload"]["status"] == "idle"
     assert response["payload"]["runtime"]["runtime_state"] == "update_required"
+
+
+@pytest.mark.asyncio
+async def test_external_cli_custom_agent_remove_drops_config_before_uninstalling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.common import custom_agent_runtime
+
+    calls: list[tuple[str, object]] = []
+    configured = [{"cli_agent": "claude"}, {"cli_agent": "acme", "cli_path": "/opt/acme"}]
+    monkeypatch.setattr(
+        custom_agent_runtime,
+        "get_custom_agent",
+        lambda name: custom_agent_runtime.CustomAgent(name=name, distribution="d", version="1") if name == "acme" else None,
+    )
+    monkeypatch.setattr(custom_agent_runtime, "remove_custom_agent", lambda name: calls.append(("remove", name)))
+    monkeypatch.setattr(
+        app_web_handlers,
+        "get_config_raw",
+        lambda: {"modes": {"team": {"jiuwen_team": {"external_cli_agents": configured}}}},
+    )
+    monkeypatch.setattr(
+        config_module,
+        "update_external_cli_agents_in_config",
+        lambda agents, publish_url: calls.append(("config", agents)),
+    )
+
+    removed = await _call_external_cli("external_cli.custom_agent.remove", "acme")
+    missing = await _call_external_cli("external_cli.custom_agent.remove", "missing")
+
+    assert removed["ok"] is True
+    assert calls == [("config", [{"cli_agent": "claude"}]), ("remove", "acme")]
+    assert missing["ok"] is False
+    assert missing["code"] == "BAD_REQUEST"

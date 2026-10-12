@@ -278,10 +278,21 @@ export function normalizePermissionsMode(value: unknown): PermissionsMode | unde
   return undefined;
 }
 
+// Switches of uploaded custom agents: `external_cli_agent_<name>_<suffix>`.
+const CUSTOM_EXTERNAL_CLI_KEY_PATTERN = /^external_cli_agent_[a-z0-9][a-z0-9_-]*_(enabled|use_builtin|cli_path)$/;
+
+function settingsConfigField(key: string): ConfigFieldContract | undefined {
+  const field = SETTINGS_CONFIG_FIELD_BY_KEY.get(key);
+  if (field) return field;
+  const match = CUSTOM_EXTERNAL_CLI_KEY_PATTERN.exec(key);
+  if (!match) return undefined;
+  return yamlField(key, 'experimental', match[1] === 'cli_path' ? 'text' : 'boolean', 'modes.team.jiuwen_team.external_cli_agents');
+}
+
 export function normalizeSettingsConfigUpdates(updates: Record<string, string>): Record<string, string> {
   return Object.fromEntries(
     Object.entries(updates).map(([key, value]) => {
-      const field = SETTINGS_CONFIG_FIELD_BY_KEY.get(key);
+      const field = settingsConfigField(key);
       if (!field) throw new Error(`Unknown settings config key: ${key}`);
       return [key, field.kind === 'boolean' ? value : value.trim()];
     }),

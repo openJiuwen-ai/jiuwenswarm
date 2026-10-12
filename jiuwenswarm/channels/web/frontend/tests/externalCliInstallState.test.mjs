@@ -171,8 +171,9 @@ test('typing or pasting an external CLI path triggers a debounced detection', ()
 
   assert.match(sectionSource, /const EXTERNAL_CLI_AUTO_DETECT_DELAY_MS = 400/);
   assert.match(sectionSource, /changeCliPath\(cliAgent, cliPathKey, event\.target\.value\)/);
-  assert.match(sectionSource, /void detect\('claude', claudeCliPath\)/);
-  assert.match(sectionSource, /void detect\('codex', codexCliPath\)/);
+  // Every listed agent (built-in or uploaded) is detected after its own path changes.
+  assert.match(sectionSource, /for \(const \[cliAgent, cliPath\] of currentPaths\)/);
+  assert.match(sectionSource, /void detect\(cliAgent, cliPath\)/);
   assert.match(sectionSource, /detectRequestIdsRef\.current\[cliAgent\] !== requestId/);
   assert.match(sectionSource, /delete next\[cliAgent\]/);
 });
@@ -199,7 +200,7 @@ test('saving a disabled external CLI clears its stale detected path without a re
   assert.match(sectionSource, /updates\[useBuiltinKey\] = enabled && useBuiltin \? 'true' : 'false'/);
   assert.match(sectionSource, /updates\[cliPathKey\] = enabled && !useBuiltin \? cliPath : ''/);
   assert.match(sectionSource, /const observedCliPathsRef = useRef/);
-  assert.match(sectionSource, /observedCliPathsRef\.current\[cliAgent\] = currentPaths\[cliAgent\]/);
+  assert.match(sectionSource, /observedCliPathsRef\.current\[cliAgent\] = cliPath/);
   assert.match(sectionSource, /clearDetectResult\(cliAgent\)/);
 });
 
@@ -223,4 +224,34 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
 
   assert.match(zhLocale, /"detectHint": "未填写路径时从系统 PATH 查找；填写路径后检测指定的 CLI 可执行文件/);
   assert.match(enLocale, /"detectHint": "Leave the path empty to search the system PATH/);
+});
+
+test('uploaded custom agents are listed after Claude and Codex', async () => {
+  const section = await import('../node_modules/.cache/external-cli-section/components/ExternalCliAgentsSection.mjs');
+  const customAgents = section.parseExternalCliCustomAgents(
+    JSON.stringify([
+      { name: 'opencode', version: '0.1.0', summary: 'OpenCode', has_cli: true },
+      { name: '', version: '1' },
+      'not-an-object',
+    ]),
+  );
+
+  assert.deepEqual(customAgents, [{ name: 'opencode', version: '0.1.0', summary: 'OpenCode', has_cli: true }]);
+  assert.deepEqual(section.externalCliAgentKinds(customAgents), ['claude', 'codex', 'opencode']);
+  assert.equal(section.externalCliAgentDisplayName('opencode'), 'opencode');
+  assert.deepEqual(section.parseExternalCliCustomAgents('not json'), []);
+  assert.deepEqual(section.parseExternalCliCustomAgents(undefined), []);
+});
+
+test('custom agent switches are accepted settings keys', async () => {
+  const contract = await import('../node_modules/.cache/external-cli-section/features/settings/services/settingsContract.mjs');
+
+  assert.deepEqual(
+    contract.normalizeSettingsConfigUpdates({
+      external_cli_agent_opencode_enabled: 'true',
+      external_cli_agent_opencode_cli_path: ' /opt/opencode ',
+    }),
+    { external_cli_agent_opencode_enabled: 'true', external_cli_agent_opencode_cli_path: '/opt/opencode' },
+  );
+  assert.throws(() => contract.normalizeSettingsConfigUpdates({ external_cli_agent_opencode_bogus: 'x' }));
 });

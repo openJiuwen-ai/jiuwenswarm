@@ -110,7 +110,6 @@ _SWARMFLOW_ENABLED_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
 _SWARMFLOW_BUDGET_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
 _TEAM_DISPATCH_MODE_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode")
 _TEAM_TASK_VERIFICATION_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
-_EXTERNAL_CLI_AGENTS_PATH = ("modes", "team", "jiuwen_team", "external_cli_agents")
 _KV_CACHE_CONFIG_KEY = "kv_cache_affinity_config"
 _KV_CACHE_ENABLED_KEY = "enable_kv_cache_affinity"
 
@@ -196,31 +195,15 @@ def _flatten_symphony(raw: dict[str, Any]) -> dict[str, str]:
 
 
 def _flatten_external_cli(raw: dict[str, Any]) -> dict[str, str]:
-    agents = _nested(raw, _EXTERNAL_CLI_AGENTS_PATH, [])
-    configured: dict[str, dict[str, str]] = {}
-    if isinstance(agents, list):
-        for item in agents:
-            if isinstance(item, str):
-                cli_agent, cli_path = item.strip(), ""
-            elif isinstance(item, dict):
-                cli_agent = str(item.get("cli_agent") or "").strip()
-                cli_path = str(item.get("cli_path") or item.get("codex_bin") or "").strip()
-            else:
-                continue
-            if cli_agent:
-                configured[cli_agent] = {"cli_path": cli_path}
-    return {
-        "external_cli_agent_claude_enabled": "true" if "claude" in configured else "false",
-        "external_cli_agent_claude_use_builtin": (
-            "true" if "claude" in configured and not configured["claude"].get("cli_path") else "false"
-        ),
-        "external_cli_agent_claude_cli_path": configured.get("claude", {}).get("cli_path", ""),
-        "external_cli_agent_codex_enabled": "true" if "codex" in configured else "false",
-        "external_cli_agent_codex_use_builtin": (
-            "true" if "codex" in configured and not configured["codex"].get("cli_path") else "false"
-        ),
-        "external_cli_agent_codex_cli_path": configured.get("codex", {}).get("cli_path", ""),
-    }
+    from jiuwenswarm.common.config_panel.config_set_handlers import (
+        EXTERNAL_CLI_CUSTOM_AGENTS_KEY,
+        custom_agents_config_value,
+        flatten_external_cli_agents_for_config_panel,
+    )
+
+    flat = flatten_external_cli_agents_for_config_panel(raw)
+    flat[EXTERNAL_CLI_CUSTOM_AGENTS_KEY] = custom_agents_config_value()
+    return flat
 
 
 def _flatten_modes_team(raw: dict[str, Any]) -> dict[str, str]:
