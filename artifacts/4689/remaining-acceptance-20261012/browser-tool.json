@@ -1,0 +1,12 @@
+{
+  "scenario": "tool",
+  "surface": "actual-Web-UI/Chromium/Gateway/native-Worker",
+  "passed": false,
+  "error": "TimeoutError: Locator.click: Timeout 30000ms exceeded.\nCall log:\n  - waiting for get_by_test_id(\"chat-panel-input-send\")\n    - locator resolved to <button disabled type=\"button\" data-variant=\"send\" data-tooltip=\"发送 (Enter)\" data-testid=\"chat-panel-input-send\" class=\"chat-input-btn chat-input-btn--send chat-input-btn--disabled\">…</button>\n  - attempting click action\n    2 × waiting for element to be visible, enabled and stable\n      - element is not stable\n    - retrying click action\n    - waiting 20ms\n    - waiting for element to be visible, enabled and stable\n    - element is not stable\n  2 × retrying click action\n      - waiting 100ms\n      - waiting for element to be visible, enabled and stable\n      - element is not enabled\n  8 × retrying click action\n      - waiting 500ms\n      - waiting for element to be visible, enabled and stable\n      - element is not enabled\n  49 × retrying click action\n       - waiting 500ms\n       - waiting for element to be visible, enabled and stable\n       - element is visible, enabled and stable\n       - scrolling into view if needed\n       - done scrolling\n       - <div class=\"model-setup-guide__mask\"></div> from <div aria-live=\"polite\" class=\"model-setup-guide\" data-testid=\"model-setup-guide\">…</div> subtree intercepts pointer events\n  - retrying click action\n    - waiting 500ms\n",
+  "browser_errors": [],
+  "owner_shutdown_exit_code": 0,
+  "owner_shutdown": {
+    "kind": "shutdown.done",
+    "ok": true
+  }
+}

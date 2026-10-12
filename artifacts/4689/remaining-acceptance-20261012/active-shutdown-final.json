@@ -1,0 +1,146 @@
+{
+  "surface": "Windows/native-Front/Worker/SDK/PowerShell",
+  "fixture": "local-openai-protocol",
+  "scenario": "active-final-shutdown",
+  "code_commit": "ee9b4819d1b28d22c4d7249039d757ce9725ffb3",
+  "original_chat_submissions": 1,
+  "worker_pid": 30780,
+  "worker_created": 1791793312.3343627,
+  "before": {
+    "worker_instance": "1a7d281f5e0e4197bff4ca4ab814e89b",
+    "cursor": 5,
+    "history_required": false,
+    "is_processing": true,
+    "dispatches": [
+      {
+        "dispatch_id": "97bcffa8de754096bbca7318460fe72b",
+        "request_id": "active-shutdown-chat",
+        "active": true,
+        "phase": "executing",
+        "execution_id": "88853819eeaf4822be3714dff11c7960",
+        "entered_at_ns": 372392180702300,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "88853819eeaf4822be3714dff11c7960",
+        "session_id": "shutdown-session",
+        "request_id": "active-shutdown-chat",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "running",
+        "created_at": 372391.312,
+        "started_at": 372391.312,
+        "finished_at": null,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "model_calls_before_shutdown": 2,
+  "history_before": "{\"role\": \"user\", \"content\": \"Earlier persisted input\"}\n{\"role\": \"assistant\", \"content\": \"Earlier persisted output\"}\n{\"id\": \"active-shutdown-chat:user\", \"role\": \"user\", \"request_id\": \"active-shutdown-chat\", \"channel_id\": \"web\", \"timestamp\": 1791793321.7649915, \"content\": \"[4689-original] Execute the tool once, then continue waiting\", \"mode\": \"agent\"}\n{\"id\": \"active-shutdown-chat:assistant\", \"role\": \"assistant\", \"request_id\": \"57ab63085bf84942bbae07ec13e12371\", \"channel_id\": \"web\", \"timestamp\": \"2026-10-12T08:22:03.142823+00:00\", \"content\": \"\", \"event_type\": \"context.usage\", \"schema_version\": \"context-usage.v1\", \"phase\": \"post_call\", \"session_id\": \"shutdown-session\", \"product_session_id\": \"shutdown-session\", \"execution_session_id\": \"shutdown-session\", \"context_owner_id\": \"jiuwenswarm|shutdown-session|default_context_id\", \"agent_id\": \"jiuwenswarm\", \"team_id\": null, \"member_name\": null, \"invocation_id\": \"e97f88d9e22744caa9f7cb4f0b1e88c4\", \"parent_invocation_id\": null, \"delegation_id\": null, \"agent_path\": [\"jiuwenswarm\"], \"depth\": 0, \"cache_identity\": \"shutdown-session\", \"parent_cache_identity\": \"shutdown-session\", \"cache_mode\": \"provider\", \"cache_scope\": \"session\", \"sequence\": 0, \"provider\": \"OpenAI\", \"model\": \"fixture-model\", \"deployment\": null, \"context_snapshot_id\": \"80370b003af54dffa14a14b90a4accff\", \"context_changes\": {\"message_event\": \"initial\", \"system_prompt_changed\": false, \"skills_changed\": false, \"attachments_changed\": false, \"tools_changed\": false, \"stable_prefix_changed\": false}, \"measurement_cache\": {\"hit\": \"miss\", \"reused_parts\": [], \"recomputed_parts\": [\"messages\", \"skills\", \"system_prompt\", \"tools\"], \"message_revision\": 2, \"measurement_version\": \"1\"}, \"context_window\": {\"limit_tokens\": 262144, \"input_tokens\": 31120, \"occupancy_rate\": 0.11871337890625, \"tokens_source\": \"string_length_fallback\", \"local_estimated_input_tokens\": 31120, \"reconciliation_delta_tokens\": null, \"context_snapshot_id\": \"80370b003af54dffa14a14b90a4accff\"}, \"parts\": {\"system_prompt\": {\"category\": \"system_prompt\", \"tokens\": 2865, \"percentage_of_window\": 0.010929107666015625, \"percentage_of_input\": 0.09206298200514139, \"estimated\": true, \"tokenizer\": \"unicode_codepoints\", \"carrier\": \"system_message\", \"source\": \"string_length_fallback\", \"measurement_source\": \"string_length_fallback\", \"fallback_reason\": \"model_tokenizer_spec_missing\", \"fallback_tokenizer_model\": null, \"order\": null, \"stable_id\": null}, \"skills\": {\"category\": \"skills\", \"tokens\": 1390, \"percentage_of_window\": 0.00530242919921875, \"percentage_of_input\": 0.04466580976863753, \"estimated\": true, \"tokenizer\": \"unicode_codepoints\", \"carrier\": \"system_message\", \"source\": \"string_length_fallback\", \"measurement_source\": \"string_length_fallback\", \"fallback_reason\": \"model_tokenizer_spec_missing\", \"fallback_tokenizer_model\": null, \"order\": null, \"stable_id\": null}, \"tools\": {\"category\": \"tools\", \"tokens\": 26666, \"percentage_of_window\": 0.10172271728515625, \"percentage_of_input\": 0.8568766066838046, \"estimated\": true, \"tokenizer\": \"unicode_codepoints\", \"carrier\": \"tools\", \"source\": \"string_length_fallback\", \"measurement_source\": \"string_length_fallback\", \"fallback_reason\": \"model_tokenizer_spec_missing\", \"fallback_tokenizer_model\": null, \"order\": null, \"stable_id\": null}, \"messages\": {\"category\": \"messages\", \"tokens\": 199, \"percentage_of_window\": 0.000759124755859375, \"percentage_of_input\": 0.006394601542416453, \"estimated\": true, \"tokenizer\": \"unicode_codepoints\", \"carrier\": \"context_message\", \"source\": \"string_length_fallback\", \"measurement_source\": \"string_length_fallback\", \"fallback_reason\": \"model_tokenizer_spec_missing\", \"fallback_tokenizer_model\": null, \"order\": null, \"stable_id\": null}}, \"kv_cache\": {\"request\": {\"input_tokens\": null, \"cache_read_tokens\": null, \"cache_miss_tokens\": null, \"cache_write_tokens\": null, \"hit_rate\": null, \"status\": \"not_reported\", \"source\": \"not_reported\", \"authoritative\": false, \"miss_tokens_derived\": false, \"cache_mode\": null, \"cache_scope\": null, \"invalid_reason\": null}, \"session\": {\"scope\": \"session\", \"aggregation_method\": \"token_weighted\", \"aggregation_key\": {\"session_id\": \"shutdown-session\", \"provider\": \"OpenAI\", \"model\": \"fixture-model\", \"deployment\": \"\", \"cache_mode\": \"provider\", \"cache_scope\": \"session\", \"product_session_id\": \"shutdown-session\", \"execution_session_id\": \"shutdown-session\", \"cache_identity\": \"shutdown-session\", \"parent_cache_identity\": \"shutdown-session\", \"team_id\": null, \"agent_id\": \"jiuwenswarm\", \"member_name\": null}, \"calls_total\": 1, \"calls_observed\": 0, \"calls_partial\": 0, \"calls_not_reported\": 1, \"input_tokens_total\": 0, \"cache_read_tokens_total\": 0, \"cache_miss_tokens_total\": 0, \"cache_write_tokens_total\": null, \"cache_write_coverage\": \"none\", \"average_input_per_call\": null, \"weighted_hit_rate\": null, \"average_cache_read_per_call\": null, \"average_cache_miss_per_call\": null, \"status\": \"not_reported\", \"data_quality\": \"not_reported\"}, \"measurement_cache\": {\"hit\": \"miss\", \"reused_parts\": [], \"recomputed_parts\": [\"messages\", \"skills\", \"system_prompt\", \"tools\"], \"message_revision\": 2, \"measurement_version\": \"1\"}, \"context_changes\": {\"message_event\": \"initial\", \"system_prompt_changed\": false, \"skills_changed\": false, \"attachments_changed\": false, \"tools_changed\": false, \"stable_prefix_changed\": false}, \"management\": {}, \"diagnostics\": {\"status\": \"not_collected\"}}, \"session_kv_cache_hit_rate\": null, \"measurement\": {\"category_source\": \"string_length_fallback\", \"total_source\": \"string_length_fallback\", \"tokenizer\": \"unicode_codepoints\", \"estimated\": true, \"authoritative_total\": false, \"measurement_version\": \"1\", \"context_snapshot_id\": \"80370b003af54dffa14a14b90a4accff\"}, \"rate\": 11.871337890625, \"context_max\": 262144, \"tokens_used\": 31120, \"context_usage_summary\": {\"used_tokens\": 31120, \"limit_tokens\": 262144, \"occupancy_rate\": 0.11871337890625, \"percentage\": 11.871337890625}, \"mode\": \"agent\"}\n{\"id\": \"active-shutdown-chat:assistant\", \"role\": \"assistant\", \"request_id\": \"active-shutdown-chat\", \"channel_id\": \"web\", \"timestamp\": 1791793323.163438, \"content\": \"\", \"event_type\": \"chat.tool_call\", \"tool_call\": {\"name\": \"powershell\", \"arguments\": \"{\\\"command\\\": \\\"Add-Content -LiteralPath 'C:\\\\\\\\Users\\\\\\\\24505\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\jiuwenswarm-4689-active-shutdown-icgo3ygg\\\\\\\\data\\\\\\\\side-effects.txt' -Value once; Start-Sleep -Seconds 3\\\"}\", \"tool_call_id\": \"fixture-side-effect\"}, \"output_phase_id\": \"ab0ce2d4a4f3458eb2d5c2fd63e375dd\", \"output_order\": {\"request_id\": \"active-shutdown-chat\", \"sequence\": 2}, \"mode\": \"agent\"}\n{\"id\": \"active-shutdown-chat:assistant\", \"role\": \"assistant\", \"request_id\": \"active-shutdown-chat\", \"channel_id\": \"web\", \"timestamp\": 1791793326.556447, \"content\": \"\", \"event_type\": \"chat.tool_result\", \"result\": \"success=True data={'content': \\\"Command: Add-Content -LiteralPath 'C:\\\\\\\\Users\\\\\\\\24505\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\jiuwenswarm-4689-active-shutdown-icgo3ygg\\\\\\\\data\\\\\\\\side-effects.txt' -Value once; Start-Sleep -Seconds 3\\\\nStdout: (empty)\\\\n\\\\nStderr: (empty)\\\\nExit Code: 0\\\"} error=None extracted_content=None include_extracted_content_only_once=False long_term_memory=None\", \"tool_name\": \"powershell\", \"tool_call_id\": \"fixture-side-effect\", \"rendered_result\": \"Command: Add-Content -LiteralPath 'C:\\\\Users\\\\24505\\\\AppData\\\\Local\\\\Temp\\\\jiuwenswarm-4689-active-shutdown-icgo3ygg\\\\data\\\\side-effects.txt' -Value once; Start-Sleep -Seconds 3\\nStdout: (empty)\\n\\nStderr: (empty)\\nExit Code: 0\", \"success\": true, \"output_phase_id\": \"ab0ce2d4a4f3458eb2d5c2fd63e375dd\", \"output_order\": {\"request_id\": \"active-shutdown-chat\", \"sequence\": 4}, \"mode\": \"agent\"}\n",
+  "shutdown": {
+    "kind": "shutdown.done",
+    "ok": true
+  },
+  "native_process_exit_code": 0,
+  "blocked_model_released_after_exit": true,
+  "shutdown_ms": 1357.031,
+  "shutdown_steps": [
+    {
+      "stage": "drain.begin",
+      "pid": 30780,
+      "at_ns": 372396716041200,
+      "tasks": 1
+    },
+    {
+      "stage": "cancel.done",
+      "pid": 30780,
+      "at_ns": 372396724332400,
+      "matched": 1,
+      "cancelled": 1,
+      "timed_out": []
+    },
+    {
+      "stage": "drain.done",
+      "pid": 30780,
+      "at_ns": 372396724894800,
+      "ok": true,
+      "stopped_accepting": true,
+      "queued": 0
+    },
+    {
+      "stage": "session_history.flush.done",
+      "pid": 30780,
+      "at_ns": 372396786215200,
+      "ok": true
+    },
+    {
+      "stage": "session_metadata.flush.done",
+      "pid": 30780,
+      "at_ns": 372396786240400,
+      "ok": true
+    },
+    {
+      "stage": "kv_cache_application_owner.close.done",
+      "pid": 30780,
+      "at_ns": 372396787759600
+    },
+    {
+      "stage": "kernel.close.done",
+      "pid": 30780,
+      "at_ns": 372396788172300
+    },
+    {
+      "stage": "server.close.done",
+      "pid": 30780,
+      "at_ns": 372396789043200
+    }
+  ],
+  "history_after": "{\"role\": \"user\", \"content\": \"Earlier persisted input\"}\n{\"role\": \"assistant\", \"content\": \"Earlier persisted output\"}\n{\"id\": \"active-shutdown-chat:user\", \"role\": \"user\", \"request_id\": \"active-shutdown-chat\", \"channel_id\": \"web\", \"timestamp\": 1791793321.7649915, \"content\": \"[4689-original] Execute the tool once, then continue waiting\", \"mode\": \"agent\"}\n{\"id\": \"active-shutdown-chat:assistant\", \"role\": \"assistant\", \"request_id\": \"57ab63085bf84942bbae07ec13e12371\", \"channel_id\": \"web\", \"timestamp\": \"2026-10-12T08:22:03.142823+00:00\", \"content\": \"\", \"event_type\": \"context.usage\", \"schema_version\": \"context-usage.v1\", \"phase\": \"post_call\", \"session_id\": \"shutdown-session\", \"product_session_id\": \"shutdown-session\", \"execution_session_id\": \"shutdown-session\", \"context_owner_id\": \"jiuwenswarm|shutdown-session|default_context_id\", \"agent_id\": \"jiuwenswarm\", \"team_id\": null, \"member_name\": null, \"invocation_id\": \"e97f88d9e22744caa9f7cb4f0b1e88c4\", \"parent_invocation_id\": null, \"delegation_id\": null, \"agent_path\": [\"jiuwenswarm\"], \"depth\": 0, \"cache_identity\": \"shutdown-session\", \"parent_cache_identity\": \"shutdown-session\", \"cache_mode\": \"provider\", \"cache_scope\": \"session\", \"sequence\": 0, \"provider\": \"OpenAI\", \"model\": \"fixture-model\", \"deployment\": null, \"context_snapshot_id\": \"80370b003af54dffa14a14b90a4accff\", \"context_changes\": {\"message_event\": \"initial\", \"system_prompt_changed\": false, \"skills_changed\": false, \"attachments_changed\": false, \"tools_changed\": false, \"stable_prefix_changed\": false}, \"measurement_cache\": {\"hit\": \"miss\", \"reused_parts\": [], \"recomputed_parts\": [\"messages\", \"skills\", \"system_prompt\", \"tools\"], \"message_revision\": 2, \"measurement_version\": \"1\"}, \"context_window\": {\"limit_tokens\": 262144, \"input_tokens\": 31120, \"occupancy_rate\": 0.11871337890625, \"tokens_source\": \"string_length_fallback\", \"local_estimated_input_tokens\": 31120, \"reconciliation_delta_tokens\": null, \"context_snapshot_id\": \"80370b003af54dffa14a14b90a4accff\"}, \"parts\": {\"system_prompt\": {\"category\": \"system_prompt\", \"tokens\": 2865, \"percentage_of_window\": 0.010929107666015625, \"percentage_of_input\": 0.09206298200514139, \"estimated\": true, \"tokenizer\": \"unicode_codepoints\", \"carrier\": \"system_message\", \"source\": \"string_length_fallback\", \"measurement_source\": \"string_length_fallback\", \"fallback_reason\": \"model_tokenizer_spec_missing\", \"fallback_tokenizer_model\": null, \"order\": null, \"stable_id\": null}, \"skills\": {\"category\": \"skills\", \"tokens\": 1390, \"percentage_of_window\": 0.00530242919921875, \"percentage_of_input\": 0.04466580976863753, \"estimated\": true, \"tokenizer\": \"unicode_codepoints\", \"carrier\": \"system_message\", \"source\": \"string_length_fallback\", \"measurement_source\": \"string_length_fallback\", \"fallback_reason\": \"model_tokenizer_spec_missing\", \"fallback_tokenizer_model\": null, \"order\": null, \"stable_id\": null}, \"tools\": {\"category\": \"tools\", \"tokens\": 26666, \"percentage_of_window\": 0.10172271728515625, \"percentage_of_input\": 0.8568766066838046, \"estimated\": true, \"tokenizer\": \"unicode_codepoints\", \"carrier\": \"tools\", \"source\": \"string_length_fallback\", \"measurement_source\": \"string_length_fallback\", \"fallback_reason\": \"model_tokenizer_spec_missing\", \"fallback_tokenizer_model\": null, \"order\": null, \"stable_id\": null}, \"messages\": {\"category\": \"messages\", \"tokens\": 199, \"percentage_of_window\": 0.000759124755859375, \"percentage_of_input\": 0.006394601542416453, \"estimated\": true, \"tokenizer\": \"unicode_codepoints\", \"carrier\": \"context_message\", \"source\": \"string_length_fallback\", \"measurement_source\": \"string_length_fallback\", \"fallback_reason\": \"model_tokenizer_spec_missing\", \"fallback_tokenizer_model\": null, \"order\": null, \"stable_id\": null}}, \"kv_cache\": {\"request\": {\"input_tokens\": null, \"cache_read_tokens\": null, \"cache_miss_tokens\": null, \"cache_write_tokens\": null, \"hit_rate\": null, \"status\": \"not_reported\", \"source\": \"not_reported\", \"authoritative\": false, \"miss_tokens_derived\": false, \"cache_mode\": null, \"cache_scope\": null, \"invalid_reason\": null}, \"session\": {\"scope\": \"session\", \"aggregation_method\": \"token_weighted\", \"aggregation_key\": {\"session_id\": \"shutdown-session\", \"provider\": \"OpenAI\", \"model\": \"fixture-model\", \"deployment\": \"\", \"cache_mode\": \"provider\", \"cache_scope\": \"session\", \"product_session_id\": \"shutdown-session\", \"execution_session_id\": \"shutdown-session\", \"cache_identity\": \"shutdown-session\", \"parent_cache_identity\": \"shutdown-session\", \"team_id\": null, \"agent_id\": \"jiuwenswarm\", \"member_name\": null}, \"calls_total\": 1, \"calls_observed\": 0, \"calls_partial\": 0, \"calls_not_reported\": 1, \"input_tokens_total\": 0, \"cache_read_tokens_total\": 0, \"cache_miss_tokens_total\": 0, \"cache_write_tokens_total\": null, \"cache_write_coverage\": \"none\", \"average_input_per_call\": null, \"weighted_hit_rate\": null, \"average_cache_read_per_call\": null, \"average_cache_miss_per_call\": null, \"status\": \"not_reported\", \"data_quality\": \"not_reported\"}, \"measurement_cache\": {\"hit\": \"miss\", \"reused_parts\": [], \"recomputed_parts\": [\"messages\", \"skills\", \"system_prompt\", \"tools\"], \"message_revision\": 2, \"measurement_version\": \"1\"}, \"context_changes\": {\"message_event\": \"initial\", \"system_prompt_changed\": false, \"skills_changed\": false, \"attachments_changed\": false, \"tools_changed\": false, \"stable_prefix_changed\": false}, \"management\": {}, \"diagnostics\": {\"status\": \"not_collected\"}}, \"session_kv_cache_hit_rate\": null, \"measurement\": {\"category_source\": \"string_length_fallback\", \"total_source\": \"string_length_fallback\", \"tokenizer\": \"unicode_codepoints\", \"estimated\": true, \"authoritative_total\": false, \"measurement_version\": \"1\", \"context_snapshot_id\": \"80370b003af54dffa14a14b90a4accff\"}, \"rate\": 11.871337890625, \"context_max\": 262144, \"tokens_used\": 31120, \"context_usage_summary\": {\"used_tokens\": 31120, \"limit_tokens\": 262144, \"occupancy_rate\": 0.11871337890625, \"percentage\": 11.871337890625}, \"mode\": \"agent\"}\n{\"id\": \"active-shutdown-chat:assistant\", \"role\": \"assistant\", \"request_id\": \"active-shutdown-chat\", \"channel_id\": \"web\", \"timestamp\": 1791793323.163438, \"content\": \"\", \"event_type\": \"chat.tool_call\", \"tool_call\": {\"name\": \"powershell\", \"arguments\": \"{\\\"command\\\": \\\"Add-Content -LiteralPath 'C:\\\\\\\\Users\\\\\\\\24505\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\jiuwenswarm-4689-active-shutdown-icgo3ygg\\\\\\\\data\\\\\\\\side-effects.txt' -Value once; Start-Sleep -Seconds 3\\\"}\", \"tool_call_id\": \"fixture-side-effect\"}, \"output_phase_id\": \"ab0ce2d4a4f3458eb2d5c2fd63e375dd\", \"output_order\": {\"request_id\": \"active-shutdown-chat\", \"sequence\": 2}, \"mode\": \"agent\"}\n{\"id\": \"active-shutdown-chat:assistant\", \"role\": \"assistant\", \"request_id\": \"active-shutdown-chat\", \"channel_id\": \"web\", \"timestamp\": 1791793326.556447, \"content\": \"\", \"event_type\": \"chat.tool_result\", \"result\": \"success=True data={'content': \\\"Command: Add-Content -LiteralPath 'C:\\\\\\\\Users\\\\\\\\24505\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\jiuwenswarm-4689-active-shutdown-icgo3ygg\\\\\\\\data\\\\\\\\side-effects.txt' -Value once; Start-Sleep -Seconds 3\\\\nStdout: (empty)\\\\n\\\\nStderr: (empty)\\\\nExit Code: 0\\\"} error=None extracted_content=None include_extracted_content_only_once=False long_term_memory=None\", \"tool_name\": \"powershell\", \"tool_call_id\": \"fixture-side-effect\", \"rendered_result\": \"Command: Add-Content -LiteralPath 'C:\\\\Users\\\\24505\\\\AppData\\\\Local\\\\Temp\\\\jiuwenswarm-4689-active-shutdown-icgo3ygg\\\\data\\\\side-effects.txt' -Value once; Start-Sleep -Seconds 3\\nStdout: (empty)\\n\\nStderr: (empty)\\nExit Code: 0\", \"success\": true, \"output_phase_id\": \"ab0ce2d4a4f3458eb2d5c2fd63e375dd\", \"output_order\": {\"request_id\": \"active-shutdown-chat\", \"sequence\": 4}, \"mode\": \"agent\"}\n",
+  "history_sha256": "aaf6044728bfde989aea9d635025fa6beac1e96c70ec7ad930adc887fc51b6e5",
+  "metadata_after": {
+    "session_id": "shutdown-session",
+    "mode": "agent.work.normal",
+    "channel_id": "web",
+    "user_id": "acceptance-owner",
+    "title": "Active shutdown acceptance",
+    "work_mode": "work",
+    "project_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-active-shutdown-icgo3ygg\\data\\agent\\workspace",
+    "created_at": 1791793312.017593,
+    "last_user_message_at": 1791793321.7649915,
+    "persist_session": false,
+    "last_message_at": 1791793326.563444,
+    "channel_metadata": {
+      "project_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-active-shutdown-icgo3ygg\\data\\agent\\workspace"
+    },
+    "message_count": 4,
+    "delivery_context": {
+      "delivery_kind": "server_push",
+      "session_id": "shutdown-session",
+      "channel_id": "web",
+      "source_request_id": "active-shutdown-chat",
+      "updated_at": 1791793321.787854,
+      "route_metadata": {
+        "project_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-active-shutdown-icgo3ygg\\data\\agent\\workspace"
+      }
+    },
+    "session_equipment": {
+      "agent_template_name": "",
+      "plugin_names": [],
+      "mcp": []
+    }
+  },
+  "side_effects": [
+    "once"
+  ],
+  "model_calls_after_shutdown": 2,
+  "passed": true,
+  "fixture_cancelled_connections": 1
+}

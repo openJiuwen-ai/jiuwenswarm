@@ -1,0 +1,1473 @@
+[
+  {
+    "direction": "received",
+    "at_ns": 347302571023100,
+    "wire": {
+      "type": "connected"
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347306792773300,
+    "wire": {
+      "type": "connected"
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347307610318000,
+    "wire": {
+      "type": "connected"
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347308786288400,
+    "wire": {
+      "type": "connected"
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309413327000,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq2v_1",
+      "method": "cron.job.list",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309413449600,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq2w_2",
+      "method": "config.get",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309413504800,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq2w_3",
+      "method": "video.search.list",
+      "params": {
+        "search_session_id": "task-duplex:browser-session",
+        "offset": 0
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347309426667200,
+    "wire": {
+      "type": "event",
+      "event": "connection.ack",
+      "payload": {
+        "session_id": "sess_1a12db59e9b_7099d1",
+        "mode": "BUILD",
+        "tools": [],
+        "protocol_version": "1.0"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309426803700,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq3a_4",
+      "method": "cron.job.list",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309443715300,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq3o_5",
+      "method": "external_cli.install_status",
+      "params": {
+        "cli_agent": "claude"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309443886800,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq3p_6",
+      "method": "external_cli.install_status",
+      "params": {
+        "cli_agent": "codex"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309443940500,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq3p_7",
+      "method": "config.get",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309443990800,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq3p_8",
+      "method": "session.get_metadata",
+      "params": {
+        "session_id": "browser-session"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309444036900,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq3p_9",
+      "method": "locale.get_conf",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309444085700,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq3q_10",
+      "method": "personal_context.runtime.get_config",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309444124700,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq3q_11",
+      "method": "history.get",
+      "params": {
+        "session_id": "browser-session",
+        "cursor": null,
+        "limit": 50
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309444156800,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq3q_12",
+      "method": "command.goal",
+      "params": {
+        "session_id": "browser-session",
+        "action": "get",
+        "mode": "agent"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309444184900,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq3q_13",
+      "method": "session.plan_status",
+      "params": {
+        "session_id": "browser-session"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309444211400,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq3q_14",
+      "method": "config.get",
+      "params": {}
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347309459461000,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq2w_2",
+      "ok": true,
+      "payload": {
+        "model_provider": "",
+        "model": "",
+        "api_base": "",
+        "api_key": "",
+        "endpoint_profile": "",
+        "video_api_base": "",
+        "video_api_key": "",
+        "video_model": "",
+        "video_provider": "",
+        "video_endpoint_profile": "",
+        "video_vendor_key": "",
+        "video_plan": "",
+        "video_context_window_tokens": "",
+        "video_enabled": "false",
+        "video_gen_api_base": "",
+        "video_gen_api_key": "",
+        "video_gen_model": "",
+        "video_gen_provider": "",
+        "video_gen_protocol": "",
+        "video_gen_context_window_tokens": "",
+        "video_gen_enabled": "",
+        "visual_gen_api_base": "",
+        "visual_gen_api_key": "",
+        "visual_gen_model": "",
+        "visual_gen_provider": "",
+        "visual_gen_protocol": "",
+        "visual_gen_context_window_tokens": "",
+        "visual_gen_enabled": "",
+        "audio_api_base": "",
+        "audio_api_key": "",
+        "audio_model": "",
+        "audio_provider": "",
+        "audio_endpoint_profile": "",
+        "audio_vendor_key": "",
+        "audio_plan": "",
+        "audio_context_window_tokens": "",
+        "audio_enabled": "false",
+        "vision_api_base": "",
+        "vision_api_key": "",
+        "vision_model": "",
+        "vision_provider": "",
+        "vision_endpoint_profile": "",
+        "vision_vendor_key": "",
+        "vision_plan": "",
+        "vision_context_window_tokens": "",
+        "vision_enabled": "false",
+        "email_address": "",
+        "email_token": "",
+        "embed_api_key": "",
+        "embed_api_base": "",
+        "embed_model": "",
+        "jina_api_key": "",
+        "bocha_api_key": "",
+        "serper_api_key": "",
+        "perplexity_api_key": "",
+        "github_token": "",
+        "teamskills_market_url": "",
+        "teamskills_user_token": "",
+        "teamskills_system_token": "",
+        "teamskills_allowed_download_hosts": "",
+        "free_search_ddg_enabled": "false",
+        "free_search_bing_enabled": "false",
+        "free_search_proxy_url": "",
+        "asr_api_base": "",
+        "asr_api_key": "",
+        "asr_model": "",
+        "skills": "",
+        "max_iterations": "",
+        "completion_timeout": "",
+        "team_name": "",
+        "lifecycle": "",
+        "teammate_mode": "",
+        "spawn_mode": "",
+        "member_name": "",
+        "display_name": "",
+        "persona": "",
+        "agent_key": "",
+        "role_type": "",
+        "prompt_hint": "",
+        "app_version": "0.2.5.beta1",
+        "runtime_platform": "default",
+        "external_cli_agents_supported": "true",
+        "setup_guide_enabled": "true",
+        "rsi_enabled": "true",
+        "context_engine_enabled": "true",
+        "kv_cache_affinity_enabled": "false",
+        "permissions_profile": "full_access",
+        "permissions_enabled": "false",
+        "skill_evolution": "false",
+        "ttse_enabled": "false",
+        "memory_forbidden_enabled": "false",
+        "memory_forbidden_description": {
+          "en": "The following content is forbidden to remember: (To be supplemented by users, e.g., height, weight, name, etc. Separate items with commas recommended)",
+          "zh": "以下内容禁止记忆：（用户自行补充，如身高、体重、姓名等，建议用逗号分隔）"
+        },
+        "a2ui_enabled": "false",
+        "trajectory_ui_enabled": "false",
+        "team_organization_ui_enabled": "false",
+        "task_full_duplex_enabled": "false",
+        "task_asr_enabled": "false",
+        "swarmflow_enabled": "false",
+        "external_cli_agent_claude_enabled": "false",
+        "external_cli_agent_claude_use_builtin": "false",
+        "external_cli_agent_claude_cli_path": "",
+        "external_cli_agent_codex_enabled": "false",
+        "external_cli_agent_codex_use_builtin": "false",
+        "external_cli_agent_codex_cli_path": "",
+        "symphony_enabled": "false",
+        "symphony_evolution_enabled": "false",
+        "skill_retrieval_enabled": "false",
+        "skill_retrieval_index_enabled": "false",
+        "skill_retrieval_max_results": "10",
+        "skill_retrieval_max_output_chars": "12000",
+        "skill_retrieval_max_list_entries": "40",
+        "skill_retrieval_incremental_notice_max_chars": "4000",
+        "team_0_name": "jiuwen_team",
+        "team_0_lifecycle": "persistent",
+        "team_0_teammate_mode": "build_mode",
+        "team_0_spawn_mode": "inprocess",
+        "team_0_enable_permissions": "false",
+        "team_0_external_cli_agents": "[]",
+        "team_0_leader_member_name": "team-leader",
+        "team_0_leader_display_name": "团队领导",
+        "team_0_leader_persona": "天才项目管理专家，擅长任务分解和团队协调",
+        "team_0_leader_agent_key": "jiuwen_team_leader",
+        "team_0_teammate_agent_key": "",
+        "team_0_predefined_members": "[]",
+        "proactive_recommendation_enabled": "false",
+        "proactive_recommendation_max_recommend_per_day": "10",
+        "proactive_recommendation_max_rounds_per_tick": "20",
+        "enable_free_models": "false"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347309461116800,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq2v_1",
+      "ok": true,
+      "payload": {
+        "jobs": []
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347309481654700,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq3a_4",
+      "ok": true,
+      "payload": {
+        "jobs": []
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347309482370800,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq3o_5",
+      "ok": true,
+      "payload": {
+        "status": "idle",
+        "phase": "idle",
+        "progress_kind": "",
+        "error": "",
+        "last_log": "",
+        "log_tail": [],
+        "started_at": 0.0,
+        "finished_at": 0.0,
+        "updated_at": 0.0,
+        "downloaded_bytes": 0,
+        "total_bytes": 0,
+        "bytes_per_second": 0.0,
+        "eta_seconds": 0.0,
+        "artifact_index": 0,
+        "artifact_count": 0,
+        "current_package": "",
+        "current_version": "",
+        "download_attempt": 0,
+        "download_max_attempts": 0,
+        "switching_source": false,
+        "cli_agent": "claude"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347309482668700,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq3p_6",
+      "ok": true,
+      "payload": {
+        "status": "idle",
+        "phase": "idle",
+        "progress_kind": "",
+        "error": "",
+        "last_log": "",
+        "log_tail": [],
+        "started_at": 0.0,
+        "finished_at": 0.0,
+        "updated_at": 0.0,
+        "downloaded_bytes": 0,
+        "total_bytes": 0,
+        "bytes_per_second": 0.0,
+        "eta_seconds": 0.0,
+        "artifact_index": 0,
+        "artifact_count": 0,
+        "current_package": "",
+        "current_version": "",
+        "download_attempt": 0,
+        "download_max_attempts": 0,
+        "switching_source": false,
+        "cli_agent": "codex"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347309483429100,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq3p_7",
+      "ok": true,
+      "payload": {
+        "model_provider": "",
+        "model": "",
+        "api_base": "",
+        "api_key": "",
+        "endpoint_profile": "",
+        "video_api_base": "",
+        "video_api_key": "",
+        "video_model": "",
+        "video_provider": "",
+        "video_endpoint_profile": "",
+        "video_vendor_key": "",
+        "video_plan": "",
+        "video_context_window_tokens": "",
+        "video_enabled": "false",
+        "video_gen_api_base": "",
+        "video_gen_api_key": "",
+        "video_gen_model": "",
+        "video_gen_provider": "",
+        "video_gen_protocol": "",
+        "video_gen_context_window_tokens": "",
+        "video_gen_enabled": "",
+        "visual_gen_api_base": "",
+        "visual_gen_api_key": "",
+        "visual_gen_model": "",
+        "visual_gen_provider": "",
+        "visual_gen_protocol": "",
+        "visual_gen_context_window_tokens": "",
+        "visual_gen_enabled": "",
+        "audio_api_base": "",
+        "audio_api_key": "",
+        "audio_model": "",
+        "audio_provider": "",
+        "audio_endpoint_profile": "",
+        "audio_vendor_key": "",
+        "audio_plan": "",
+        "audio_context_window_tokens": "",
+        "audio_enabled": "false",
+        "vision_api_base": "",
+        "vision_api_key": "",
+        "vision_model": "",
+        "vision_provider": "",
+        "vision_endpoint_profile": "",
+        "vision_vendor_key": "",
+        "vision_plan": "",
+        "vision_context_window_tokens": "",
+        "vision_enabled": "false",
+        "email_address": "",
+        "email_token": "",
+        "embed_api_key": "",
+        "embed_api_base": "",
+        "embed_model": "",
+        "jina_api_key": "",
+        "bocha_api_key": "",
+        "serper_api_key": "",
+        "perplexity_api_key": "",
+        "github_token": "",
+        "teamskills_market_url": "",
+        "teamskills_user_token": "",
+        "teamskills_system_token": "",
+        "teamskills_allowed_download_hosts": "",
+        "free_search_ddg_enabled": "false",
+        "free_search_bing_enabled": "false",
+        "free_search_proxy_url": "",
+        "asr_api_base": "",
+        "asr_api_key": "",
+        "asr_model": "",
+        "skills": "",
+        "max_iterations": "",
+        "completion_timeout": "",
+        "team_name": "",
+        "lifecycle": "",
+        "teammate_mode": "",
+        "spawn_mode": "",
+        "member_name": "",
+        "display_name": "",
+        "persona": "",
+        "agent_key": "",
+        "role_type": "",
+        "prompt_hint": "",
+        "app_version": "0.2.5.beta1",
+        "runtime_platform": "default",
+        "external_cli_agents_supported": "true",
+        "setup_guide_enabled": "true",
+        "rsi_enabled": "true",
+        "context_engine_enabled": "true",
+        "kv_cache_affinity_enabled": "false",
+        "permissions_profile": "full_access",
+        "permissions_enabled": "false",
+        "skill_evolution": "false",
+        "ttse_enabled": "false",
+        "memory_forbidden_enabled": "false",
+        "memory_forbidden_description": {
+          "en": "The following content is forbidden to remember: (To be supplemented by users, e.g., height, weight, name, etc. Separate items with commas recommended)",
+          "zh": "以下内容禁止记忆：（用户自行补充，如身高、体重、姓名等，建议用逗号分隔）"
+        },
+        "a2ui_enabled": "false",
+        "trajectory_ui_enabled": "false",
+        "team_organization_ui_enabled": "false",
+        "task_full_duplex_enabled": "false",
+        "task_asr_enabled": "false",
+        "swarmflow_enabled": "false",
+        "external_cli_agent_claude_enabled": "false",
+        "external_cli_agent_claude_use_builtin": "false",
+        "external_cli_agent_claude_cli_path": "",
+        "external_cli_agent_codex_enabled": "false",
+        "external_cli_agent_codex_use_builtin": "false",
+        "external_cli_agent_codex_cli_path": "",
+        "symphony_enabled": "false",
+        "symphony_evolution_enabled": "false",
+        "skill_retrieval_enabled": "false",
+        "skill_retrieval_index_enabled": "false",
+        "skill_retrieval_max_results": "10",
+        "skill_retrieval_max_output_chars": "12000",
+        "skill_retrieval_max_list_entries": "40",
+        "skill_retrieval_incremental_notice_max_chars": "4000",
+        "team_0_name": "jiuwen_team",
+        "team_0_lifecycle": "persistent",
+        "team_0_teammate_mode": "build_mode",
+        "team_0_spawn_mode": "inprocess",
+        "team_0_enable_permissions": "false",
+        "team_0_external_cli_agents": "[]",
+        "team_0_leader_member_name": "team-leader",
+        "team_0_leader_display_name": "团队领导",
+        "team_0_leader_persona": "天才项目管理专家，擅长任务分解和团队协调",
+        "team_0_leader_agent_key": "jiuwen_team_leader",
+        "team_0_teammate_agent_key": "",
+        "team_0_predefined_members": "[]",
+        "proactive_recommendation_enabled": "false",
+        "proactive_recommendation_max_recommend_per_day": "10",
+        "proactive_recommendation_max_rounds_per_tick": "20",
+        "enable_free_models": "false"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309483661700,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq4u_15",
+      "method": "models.list",
+      "params": {}
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347309487835300,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq3p_9",
+      "ok": true,
+      "payload": {
+        "preferred_language": "zh"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309488408400,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq4y_16",
+      "method": "config.get",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309488857400,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq4y_17",
+      "method": "command.goal",
+      "params": {
+        "session_id": "browser-session",
+        "action": "get",
+        "mode": "agent"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347309489095700,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq3q_11",
+      "ok": true,
+      "payload": {
+        "accepted": true,
+        "session_id": "browser-session",
+        "cursor": null,
+        "limit": 50
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347309489251600,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq3q_14",
+      "ok": true,
+      "payload": {
+        "model_provider": "",
+        "model": "",
+        "api_base": "",
+        "api_key": "",
+        "endpoint_profile": "",
+        "video_api_base": "",
+        "video_api_key": "",
+        "video_model": "",
+        "video_provider": "",
+        "video_endpoint_profile": "",
+        "video_vendor_key": "",
+        "video_plan": "",
+        "video_context_window_tokens": "",
+        "video_enabled": "false",
+        "video_gen_api_base": "",
+        "video_gen_api_key": "",
+        "video_gen_model": "",
+        "video_gen_provider": "",
+        "video_gen_protocol": "",
+        "video_gen_context_window_tokens": "",
+        "video_gen_enabled": "",
+        "visual_gen_api_base": "",
+        "visual_gen_api_key": "",
+        "visual_gen_model": "",
+        "visual_gen_provider": "",
+        "visual_gen_protocol": "",
+        "visual_gen_context_window_tokens": "",
+        "visual_gen_enabled": "",
+        "audio_api_base": "",
+        "audio_api_key": "",
+        "audio_model": "",
+        "audio_provider": "",
+        "audio_endpoint_profile": "",
+        "audio_vendor_key": "",
+        "audio_plan": "",
+        "audio_context_window_tokens": "",
+        "audio_enabled": "false",
+        "vision_api_base": "",
+        "vision_api_key": "",
+        "vision_model": "",
+        "vision_provider": "",
+        "vision_endpoint_profile": "",
+        "vision_vendor_key": "",
+        "vision_plan": "",
+        "vision_context_window_tokens": "",
+        "vision_enabled": "false",
+        "email_address": "",
+        "email_token": "",
+        "embed_api_key": "",
+        "embed_api_base": "",
+        "embed_model": "",
+        "jina_api_key": "",
+        "bocha_api_key": "",
+        "serper_api_key": "",
+        "perplexity_api_key": "",
+        "github_token": "",
+        "teamskills_market_url": "",
+        "teamskills_user_token": "",
+        "teamskills_system_token": "",
+        "teamskills_allowed_download_hosts": "",
+        "free_search_ddg_enabled": "false",
+        "free_search_bing_enabled": "false",
+        "free_search_proxy_url": "",
+        "asr_api_base": "",
+        "asr_api_key": "",
+        "asr_model": "",
+        "skills": "",
+        "max_iterations": "",
+        "completion_timeout": "",
+        "team_name": "",
+        "lifecycle": "",
+        "teammate_mode": "",
+        "spawn_mode": "",
+        "member_name": "",
+        "display_name": "",
+        "persona": "",
+        "agent_key": "",
+        "role_type": "",
+        "prompt_hint": "",
+        "app_version": "0.2.5.beta1",
+        "runtime_platform": "default",
+        "external_cli_agents_supported": "true",
+        "setup_guide_enabled": "true",
+        "rsi_enabled": "true",
+        "context_engine_enabled": "true",
+        "kv_cache_affinity_enabled": "false",
+        "permissions_profile": "full_access",
+        "permissions_enabled": "false",
+        "skill_evolution": "false",
+        "ttse_enabled": "false",
+        "memory_forbidden_enabled": "false",
+        "memory_forbidden_description": {
+          "en": "The following content is forbidden to remember: (To be supplemented by users, e.g., height, weight, name, etc. Separate items with commas recommended)",
+          "zh": "以下内容禁止记忆：（用户自行补充，如身高、体重、姓名等，建议用逗号分隔）"
+        },
+        "a2ui_enabled": "false",
+        "trajectory_ui_enabled": "false",
+        "team_organization_ui_enabled": "false",
+        "task_full_duplex_enabled": "false",
+        "task_asr_enabled": "false",
+        "swarmflow_enabled": "false",
+        "external_cli_agent_claude_enabled": "false",
+        "external_cli_agent_claude_use_builtin": "false",
+        "external_cli_agent_claude_cli_path": "",
+        "external_cli_agent_codex_enabled": "false",
+        "external_cli_agent_codex_use_builtin": "false",
+        "external_cli_agent_codex_cli_path": "",
+        "symphony_enabled": "false",
+        "symphony_evolution_enabled": "false",
+        "skill_retrieval_enabled": "false",
+        "skill_retrieval_index_enabled": "false",
+        "skill_retrieval_max_results": "10",
+        "skill_retrieval_max_output_chars": "12000",
+        "skill_retrieval_max_list_entries": "40",
+        "skill_retrieval_incremental_notice_max_chars": "4000",
+        "team_0_name": "jiuwen_team",
+        "team_0_lifecycle": "persistent",
+        "team_0_teammate_mode": "build_mode",
+        "team_0_spawn_mode": "inprocess",
+        "team_0_enable_permissions": "false",
+        "team_0_external_cli_agents": "[]",
+        "team_0_leader_member_name": "team-leader",
+        "team_0_leader_display_name": "团队领导",
+        "team_0_leader_persona": "天才项目管理专家，擅长任务分解和团队协调",
+        "team_0_leader_agent_key": "jiuwen_team_leader",
+        "team_0_teammate_agent_key": "",
+        "team_0_predefined_members": "[]",
+        "proactive_recommendation_enabled": "false",
+        "proactive_recommendation_max_recommend_per_day": "10",
+        "proactive_recommendation_max_rounds_per_tick": "20",
+        "enable_free_models": "false"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347309518971500,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq4y_16",
+      "ok": true,
+      "payload": {
+        "model_provider": "",
+        "model": "",
+        "api_base": "",
+        "api_key": "",
+        "endpoint_profile": "",
+        "video_api_base": "",
+        "video_api_key": "",
+        "video_model": "",
+        "video_provider": "",
+        "video_endpoint_profile": "",
+        "video_vendor_key": "",
+        "video_plan": "",
+        "video_context_window_tokens": "",
+        "video_enabled": "false",
+        "video_gen_api_base": "",
+        "video_gen_api_key": "",
+        "video_gen_model": "",
+        "video_gen_provider": "",
+        "video_gen_protocol": "",
+        "video_gen_context_window_tokens": "",
+        "video_gen_enabled": "",
+        "visual_gen_api_base": "",
+        "visual_gen_api_key": "",
+        "visual_gen_model": "",
+        "visual_gen_provider": "",
+        "visual_gen_protocol": "",
+        "visual_gen_context_window_tokens": "",
+        "visual_gen_enabled": "",
+        "audio_api_base": "",
+        "audio_api_key": "",
+        "audio_model": "",
+        "audio_provider": "",
+        "audio_endpoint_profile": "",
+        "audio_vendor_key": "",
+        "audio_plan": "",
+        "audio_context_window_tokens": "",
+        "audio_enabled": "false",
+        "vision_api_base": "",
+        "vision_api_key": "",
+        "vision_model": "",
+        "vision_provider": "",
+        "vision_endpoint_profile": "",
+        "vision_vendor_key": "",
+        "vision_plan": "",
+        "vision_context_window_tokens": "",
+        "vision_enabled": "false",
+        "email_address": "",
+        "email_token": "",
+        "embed_api_key": "",
+        "embed_api_base": "",
+        "embed_model": "",
+        "jina_api_key": "",
+        "bocha_api_key": "",
+        "serper_api_key": "",
+        "perplexity_api_key": "",
+        "github_token": "",
+        "teamskills_market_url": "",
+        "teamskills_user_token": "",
+        "teamskills_system_token": "",
+        "teamskills_allowed_download_hosts": "",
+        "free_search_ddg_enabled": "false",
+        "free_search_bing_enabled": "false",
+        "free_search_proxy_url": "",
+        "asr_api_base": "",
+        "asr_api_key": "",
+        "asr_model": "",
+        "skills": "",
+        "max_iterations": "",
+        "completion_timeout": "",
+        "team_name": "",
+        "lifecycle": "",
+        "teammate_mode": "",
+        "spawn_mode": "",
+        "member_name": "",
+        "display_name": "",
+        "persona": "",
+        "agent_key": "",
+        "role_type": "",
+        "prompt_hint": "",
+        "app_version": "0.2.5.beta1",
+        "runtime_platform": "default",
+        "external_cli_agents_supported": "true",
+        "setup_guide_enabled": "true",
+        "rsi_enabled": "true",
+        "context_engine_enabled": "true",
+        "kv_cache_affinity_enabled": "false",
+        "permissions_profile": "full_access",
+        "permissions_enabled": "false",
+        "skill_evolution": "false",
+        "ttse_enabled": "false",
+        "memory_forbidden_enabled": "false",
+        "memory_forbidden_description": {
+          "en": "The following content is forbidden to remember: (To be supplemented by users, e.g., height, weight, name, etc. Separate items with commas recommended)",
+          "zh": "以下内容禁止记忆：（用户自行补充，如身高、体重、姓名等，建议用逗号分隔）"
+        },
+        "a2ui_enabled": "false",
+        "trajectory_ui_enabled": "false",
+        "team_organization_ui_enabled": "false",
+        "task_full_duplex_enabled": "false",
+        "task_asr_enabled": "false",
+        "swarmflow_enabled": "false",
+        "external_cli_agent_claude_enabled": "false",
+        "external_cli_agent_claude_use_builtin": "false",
+        "external_cli_agent_claude_cli_path": "",
+        "external_cli_agent_codex_enabled": "false",
+        "external_cli_agent_codex_use_builtin": "false",
+        "external_cli_agent_codex_cli_path": "",
+        "symphony_enabled": "false",
+        "symphony_evolution_enabled": "false",
+        "skill_retrieval_enabled": "false",
+        "skill_retrieval_index_enabled": "false",
+        "skill_retrieval_max_results": "10",
+        "skill_retrieval_max_output_chars": "12000",
+        "skill_retrieval_max_list_entries": "40",
+        "skill_retrieval_incremental_notice_max_chars": "4000",
+        "team_0_name": "jiuwen_team",
+        "team_0_lifecycle": "persistent",
+        "team_0_teammate_mode": "build_mode",
+        "team_0_spawn_mode": "inprocess",
+        "team_0_enable_permissions": "false",
+        "team_0_external_cli_agents": "[]",
+        "team_0_leader_member_name": "team-leader",
+        "team_0_leader_display_name": "团队领导",
+        "team_0_leader_persona": "天才项目管理专家，擅长任务分解和团队协调",
+        "team_0_leader_agent_key": "jiuwen_team_leader",
+        "team_0_teammate_agent_key": "",
+        "team_0_predefined_members": "[]",
+        "proactive_recommendation_enabled": "false",
+        "proactive_recommendation_max_recommend_per_day": "10",
+        "proactive_recommendation_max_rounds_per_tick": "20",
+        "enable_free_models": "false"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309519435100,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq5u_18",
+      "method": "models.list",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347309619629300,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjq8l_19",
+      "method": "session.input.intent",
+      "params": {
+        "session_id": "browser-session",
+        "intent_id": "43c3ca48-4d88-4c8e-a516-0c2dafb2f1be",
+        "view_id": "9f19593d-978a-42ef-937f-811f46ab6979",
+        "mode": "agent.work.normal"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347309620590800,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq8l_19",
+      "ok": false,
+      "payload": {},
+      "error": "unknown method: session.input.intent",
+      "code": "METHOD_NOT_FOUND"
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347309752431000,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq2w_3",
+      "ok": true,
+      "payload": {
+        "jobs": [],
+        "next_offset": null,
+        "replay": true
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347309768797500,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq3p_8",
+      "ok": true,
+      "payload": {
+        "session_id": "browser-session",
+        "mode": "agent.work.normal",
+        "channel_id": "web",
+        "user_id": "acceptance-owner",
+        "title": "Browser acceptance",
+        "work_mode": "work",
+        "project_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-browser-qe12a50e\\data\\agent\\workspace",
+        "created_at": 1791768230.4220223,
+        "last_user_message_at": 1791768230.4220223,
+        "project_id": "",
+        "persist_session": false,
+        "model": "",
+        "cron_id": "",
+        "pinned": false,
+        "pin_order": 0,
+        "status": "idle",
+        "team_name": "",
+        "team_template_id": "",
+        "agent_group_name": ""
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347314388629700,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq3q_13",
+      "ok": true,
+      "payload": {
+        "session_id": "browser-session",
+        "in_plan": false
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347314389896700,
+    "wire": {
+      "type": "event",
+      "event": "todo.updated",
+      "payload": {
+        "event_type": "todo.updated",
+        "todos": [],
+        "session_id": "browser-session"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347314392311600,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq4u_15",
+      "ok": true,
+      "payload": {
+        "models": [
+          {
+            "model_id": "mdl_fixture",
+            "model_name": "fixture-model",
+            "api_base": "http://127.0.0.1:52035/v1",
+            "api_key": "local-fixture",
+            "model_provider": "OpenAI",
+            "temperature": 0,
+            "reasoning_level": "",
+            "is_default": true,
+            "is_agentos": false,
+            "is_free": false,
+            "alias": "",
+            "origin_index": 0,
+            "vendor_key": "",
+            "plan": "",
+            "endpoint_profile": "",
+            "context_window_tokens": 262144
+          }
+        ],
+        "model_groups": [],
+        "active_model": "fixture-model"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347314398792000,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjtxd_20",
+      "method": "project.list",
+      "params": {
+        "filter": "all",
+        "work_mode": "work"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347314401046300,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq5u_18",
+      "ok": true,
+      "payload": {
+        "models": [
+          {
+            "model_id": "mdl_fixture",
+            "model_name": "fixture-model",
+            "api_base": "http://127.0.0.1:52035/v1",
+            "api_key": "local-fixture",
+            "model_provider": "OpenAI",
+            "temperature": 0,
+            "reasoning_level": "",
+            "is_default": true,
+            "is_agentos": false,
+            "is_free": false,
+            "alias": "",
+            "origin_index": 0,
+            "vendor_key": "",
+            "plan": "",
+            "endpoint_profile": "",
+            "context_window_tokens": 262144
+          }
+        ],
+        "model_groups": [],
+        "active_model": "fixture-model"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347314411901700,
+    "wire": {
+      "type": "event",
+      "event": "history.message",
+      "payload": {
+        "event_type": "history.message",
+        "status": "done",
+        "session_id": "browser-session",
+        "subagent_id": "",
+        "total_pages": null,
+        "page_idx": null,
+        "cursor": null,
+        "next_cursor": null,
+        "has_more": false,
+        "snapshot_id": null,
+        "snapshot_end": 0
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347314411990200,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjtxm_21",
+      "method": "command.workflows",
+      "params": {
+        "session_id": "browser-session",
+        "action": "list"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347314413750400,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq3q_10",
+      "ok": true,
+      "payload": {
+        "configured": false,
+        "master_enabled": false,
+        "collection_enabled": false,
+        "agent_use_enabled": false,
+        "strategy_profile": "agent",
+        "max_pages_per_directory": 20,
+        "max_subdirectories_per_directory": 20,
+        "model_index": 0,
+        "model_id": "openai:fixture-model",
+        "fetch_services": []
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347314414128300,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq3q_12",
+      "ok": true,
+      "payload": {
+        "action": "get",
+        "message": "No goal in this session.",
+        "goal": null,
+        "record": null,
+        "cleared_goal": null,
+        "existing_goal": null,
+        "requested_objective": null,
+        "code": null
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347314414249200,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjq4y_17",
+      "ok": true,
+      "payload": {
+        "action": "get",
+        "message": "No goal in this session.",
+        "goal": null,
+        "record": null,
+        "cleared_goal": null,
+        "existing_goal": null,
+        "requested_objective": null,
+        "code": null
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347314424190200,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjtxd_20",
+      "ok": true,
+      "payload": {
+        "projects": [
+          {
+            "project_id": "default",
+            "name": "默认项目",
+            "project_dir": "",
+            "pinned": false,
+            "pin_order": 0,
+            "is_default": true,
+            "hidden": false,
+            "lifecycle_operation": null,
+            "execution_blocked": false,
+            "stop_pending": false,
+            "work_mode": "work",
+            "git": {
+              "enabled": false,
+              "repo_root": "",
+              "initialized_by_jiuwenswarm": false,
+              "detected_at": 0,
+              "status": "disabled",
+              "branch": "",
+              "error": "",
+              "error_code": "",
+              "hint": "",
+              "is_dirty": false
+            },
+            "session_count": 1,
+            "last_message_at": null,
+            "last_user_message_at": 1791768230.4220223,
+            "created_at": 0,
+            "updated_at": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347314424358800,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjty2_22",
+      "method": "project.pinned_sessions",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347314424400600,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjty3_23",
+      "method": "project.get_sessions",
+      "params": {
+        "project_id": "default",
+        "limit": 10
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347314426310300,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjtxm_21",
+      "ok": true,
+      "payload": {
+        "type": "workflow_run_snapshot",
+        "action": "list",
+        "session_id": "browser-session",
+        "workflows": [],
+        "total": 0,
+        "has_more": false
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347314431796700,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjty2_22",
+      "ok": true,
+      "payload": {
+        "sessions": []
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347314435439000,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjty3_23",
+      "ok": true,
+      "payload": {
+        "sessions": [
+          {
+            "session_id": "browser-session",
+            "title": "Browser acceptance",
+            "created_at": 1791768230.4220223,
+            "last_message_at": 0,
+            "message_count": 0,
+            "mode": "agent.work.normal",
+            "team_name": "",
+            "agent_group_name": "",
+            "pinned": false,
+            "pin_order": 0,
+            "project_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-browser-qe12a50e\\data\\agent\\workspace",
+            "project_id": "",
+            "cron_id": "",
+            "last_user_message_at": 1791768230.4220223,
+            "model": "",
+            "work_mode": "work",
+            "lifecycle_operation": null,
+            "execution_blocked": false,
+            "stop_pending": false
+          }
+        ],
+        "total": 1
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347314435768500,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjtyf_24",
+      "method": "updater.check",
+      "params": {
+        "manual": false
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347315091977400,
+    "wire": {
+      "type": "event",
+      "event": "task.global_running",
+      "payload": {
+        "event_type": "task.global_running",
+        "running": false,
+        "count": 0
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347315156210700,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjtyf_24",
+      "ok": true,
+      "payload": {
+        "current_version": "0.2.5.beta1",
+        "latest_version": "0.2.7",
+        "state": "update_available",
+        "has_update": true,
+        "install_mode": "pip",
+        "release_notes": "",
+        "published_at": "",
+        "source_type": "pypi",
+        "asset_name": "workswarm-0.2.5-py3-none-any.whl",
+        "matched_asset": "workswarm-0.2.5-py3-none-any.whl",
+        "download_url": "https://mirrors.aliyun.com/pypi/packages/cd/80/539dd662dd49629e43c1a3cd65d0fae0c78eb236615b2a5d8ac1b0c85257/workswarm-0.2.5-py3-none-any.whl#sha256=9b076bbb485a0739f519a7c9b66a5ed8716c7111dd74394b6952aa8e2ef3d115",
+        "downloaded_path": "",
+        "downloaded_bytes": 0,
+        "total_bytes": 0,
+        "error": "",
+        "checked_at": 1791768245.5583475,
+        "installing": false,
+        "restart_command": "",
+        "platform": "win32",
+        "platform_supported": true
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347319380195700,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kjxrr_25",
+      "method": "video.search.list",
+      "params": {
+        "search_session_id": "task-duplex:browser-session",
+        "offset": 0
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347319388948700,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kjxrr_25",
+      "ok": true,
+      "payload": {
+        "jobs": [],
+        "next_offset": null,
+        "replay": true
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347329375783000,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kk5he_26",
+      "method": "video.search.list",
+      "params": {
+        "search_session_id": "task-duplex:browser-session",
+        "offset": 0
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347329384747500,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kk5he_26",
+      "ok": true,
+      "payload": {
+        "jobs": [],
+        "next_offset": null,
+        "replay": true
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347338787663100,
+    "wire": {
+      "type": "ping"
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 347339385884300,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4kkd7g_27",
+      "method": "video.search.list",
+      "params": {
+        "search_session_id": "task-duplex:browser-session",
+        "offset": 0
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 347339393034700,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4kkd7g_27",
+      "ok": true,
+      "payload": {
+        "jobs": [],
+        "next_offset": null,
+        "replay": true
+      }
+    }
+  }
+]

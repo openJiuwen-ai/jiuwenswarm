@@ -1,0 +1,14 @@
+[
+  {
+    "dll": "libcrypto-3-x64.dll",
+    "source": "D:\\anaconda\\envs\\debug\\Library\\bin\\libcrypto-3-x64.dll",
+    "missing_exports": [
+      "X509_STORE_get1_objects"
+    ]
+  },
+  {
+    "dll": "libssl-3-x64.dll",
+    "source": "D:\\anaconda\\envs\\debug\\Library\\bin\\libssl-3-x64.dll",
+    "missing_exports": []
+  }
+]

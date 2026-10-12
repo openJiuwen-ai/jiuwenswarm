@@ -1,0 +1,1582 @@
+{
+  "code_commit": "ee9b4819d1b28d22c4d7249039d757ce9725ffb3",
+  "log_archives": [
+    {
+      "file": "active-shutdown-driver.log.gz",
+      "original_bytes": 244,
+      "compressed_bytes": 163,
+      "raw_sha256": "2e183c5f8f51ad2dfc8674b12000f376242ad551b45cd3e438d2dd81e4d5f271",
+      "sha256": "6150d6638efa05a6547e6bc4e8558478c9c17ea622290c549ab6739b1ea3f70a"
+    },
+    {
+      "file": "active-shutdown-final.log.gz",
+      "original_bytes": 421155,
+      "compressed_bytes": 39706,
+      "raw_sha256": "c563073b8dacf8604f195ee56332409245c03b7a63ce30648f4d8f1159068d7b",
+      "sha256": "f7b33112653d64b30027db2ce9b97ad8b176ad155a42bcb0ddfbf4b6858614e8"
+    },
+    {
+      "file": "active-shutdown-initial-driver.log.gz",
+      "original_bytes": 3278,
+      "compressed_bytes": 966,
+      "raw_sha256": "6712408473632bb595c87a7a3435fda643998283b99b4064b7e3b4e166518b7d",
+      "sha256": "fef1e57f8fe3de74cfdc97a38825a216bf23cefef80e9a31ae91893901611238"
+    },
+    {
+      "file": "browser-cancel-driver.log.gz",
+      "original_bytes": 5760,
+      "compressed_bytes": 1117,
+      "raw_sha256": "ad980415db18c22e93cfcb93926e7f0d312ecd81a7819d88349839dd897af62d",
+      "sha256": "31d731a5044663fd6520fdb136bebd0f3fc54196467a0748373c3bb6d93406dd"
+    },
+    {
+      "file": "browser-cancel-final-driver.log.gz",
+      "original_bytes": 25066,
+      "compressed_bytes": 1808,
+      "raw_sha256": "94fa9660b6cbe2332bd4a241a7f3003df1d025fd5b22e1486c074e2892d1178c",
+      "sha256": "4e318b693a95bbf3b89c31e82fd6d6d51995bfc587ba86a6ba42c0bd8e92b3a1"
+    },
+    {
+      "file": "browser-cancel-final.log.gz",
+      "original_bytes": 471418,
+      "compressed_bytes": 47878,
+      "raw_sha256": "3df0e67c4936bc80c75ba3ffb1d525d54a3b2cd0fa464689b63299b623bcab04",
+      "sha256": "74daa900c0d19c1635b1c1b487daab6f3618a24dbf124a772a528eb400d3f2dc"
+    },
+    {
+      "file": "browser-cancel.log.gz",
+      "original_bytes": 549995,
+      "compressed_bytes": 56436,
+      "raw_sha256": "488b84f455ed63e9cf6d60834ca28990c35fbca802cd0c68d81fb9d28c3fb062",
+      "sha256": "66c84fccda76d1e1dd81ac6df234b508feede377ac5821469a0acaddf324c0d4"
+    },
+    {
+      "file": "browser-first-launch-driver.log.gz",
+      "original_bytes": 6832,
+      "compressed_bytes": 1305,
+      "raw_sha256": "234a4b838cbb57f1884aba90e57c8c087a73f5599bcca4cc98fdab604dc2139e",
+      "sha256": "272ec549f4a54273bd4ce8d9549ade7ff2c1e834988a2d5e45a995d1554ea032"
+    },
+    {
+      "file": "browser-first-launch-runtime.log.gz",
+      "original_bytes": 226312,
+      "compressed_bytes": 25287,
+      "raw_sha256": "96848b2e9a3a1cbb90319c61fb27163f2418503c98c83c4db736b234d62693e7",
+      "sha256": "5fbe24d5e71da758503529bc159d0bb9222588a27f5e94a6a9472423af0fa5f8"
+    },
+    {
+      "file": "browser-interaction-driver.log.gz",
+      "original_bytes": 4598,
+      "compressed_bytes": 1069,
+      "raw_sha256": "09c435b75624842d5448ec74a339b1c3942958abf16eed299724090dcc94576d",
+      "sha256": "8b1f9598d93fdda2bc79e70b7c9aa29b830949e581d9492a4a1e35a465974282"
+    },
+    {
+      "file": "browser-interaction-final-driver.log.gz",
+      "original_bytes": 30626,
+      "compressed_bytes": 2216,
+      "raw_sha256": "2f1c04633a7232cd3216f2c89bd32ec3a9d4dcab6ddb661a8252b10a12be2716",
+      "sha256": "00e29e10d9e953b3b6ded83131b05658739acbd8da0a569520a42380bd7dcf01"
+    },
+    {
+      "file": "browser-interaction-final.log.gz",
+      "original_bytes": 484895,
+      "compressed_bytes": 49578,
+      "raw_sha256": "53ba752f6eb7a90fc56a1e6f54e2d38d235a7b936ef1644bc127cd73d397e634",
+      "sha256": "495c8cb351c7d00dac2cd1eca8bf0ccbe643ffac4b0c5d2f09caeab7d74481aa"
+    },
+    {
+      "file": "browser-interaction.log.gz",
+      "original_bytes": 543945,
+      "compressed_bytes": 53738,
+      "raw_sha256": "38a9cd2c1a5f5c2f7303f9ba79f92072864c7df3fb3645ffa4be12f4c6eb4e8f",
+      "sha256": "bdfb5169f11ca29ab25714da2bb855d02541b2c891cb156d30f2af36eb0f353b"
+    },
+    {
+      "file": "browser-launch-missing-shell.log.gz",
+      "original_bytes": 5354,
+      "compressed_bytes": 1178,
+      "raw_sha256": "460f09eeaa7325858575b41a3b37b233a1a741424fd29cf96ca0c98fb418c1e4",
+      "sha256": "1e638ebe025a2a55a43367cd5ca489dcb9e43ee3948c8055bfc119c872b2e7fe"
+    },
+    {
+      "file": "browser-reload-after-fix-driver.log.gz",
+      "original_bytes": 27940,
+      "compressed_bytes": 2175,
+      "raw_sha256": "7b5d17182f667a7986a444b8348b161a3decd0379f03aeee0a5076d56dcbed93",
+      "sha256": "177cfb936a5ff6aaa0961446b5b8e1f2dc02d16a7e69f7e85840a3db139b648a"
+    },
+    {
+      "file": "browser-reload-after-fix.log.gz",
+      "original_bytes": 507742,
+      "compressed_bytes": 51420,
+      "raw_sha256": "43bca6184bc50a0d1c325cb0d2fe2a49845d1ee8031f42c7a49f5ae38f4b011c",
+      "sha256": "a468690d911cc09cab354f61e6e3f2f4dd938c03a7689fced75454d386c73929"
+    },
+    {
+      "file": "browser-reload-interaction-driver.log.gz",
+      "original_bytes": 5268,
+      "compressed_bytes": 1143,
+      "raw_sha256": "4d9db9a27d102c4b66cf0a4c214205a3a7fd81c28d1253caa46870f6ccb29a3c",
+      "sha256": "824d5df5c08a672ed64df15ceebcc1a3abee5000a3539b19c88b37511b5d604d"
+    },
+    {
+      "file": "browser-reload-interaction-final-driver.log.gz",
+      "original_bytes": 5268,
+      "compressed_bytes": 1137,
+      "raw_sha256": "1cdcd0264b26edc67e16dfa63bcf0570c714c1ed64966209dd517121b676b5e7",
+      "sha256": "0ba670208745bc3d36a7459897391e282db9b22bdfe6b786e4df380ced570531"
+    },
+    {
+      "file": "browser-reload-interaction-final.log.gz",
+      "original_bytes": 446724,
+      "compressed_bytes": 44630,
+      "raw_sha256": "8613d05bfb2a97515e908b347ada540060147e90f6ec43489d8d2c59e837551c",
+      "sha256": "da2ef8db978b90a44d6367cd21e3f791c7ae19952301a5b922c8ea2aa279829a"
+    },
+    {
+      "file": "browser-reload-interaction.log.gz",
+      "original_bytes": 447750,
+      "compressed_bytes": 44962,
+      "raw_sha256": "425544b93b9ff9c0a4a5e5f1383731f142115312028d2052f3413991a5fb478c",
+      "sha256": "abb54133c694823fecdd360cb937e0fc30230e1b74cd74e776e56e981938cfe8"
+    },
+    {
+      "file": "browser-reload-verified-driver.log.gz",
+      "original_bytes": 4488,
+      "compressed_bytes": 1060,
+      "raw_sha256": "2e10392a82bd1ebeb20ab3af42578bc59633fb1978994a4633760ed03c282325",
+      "sha256": "4a29c64fe2d57c7657cbe778ceb9eee26ed8bc45f1b22b483d531bce4e40b6f5"
+    },
+    {
+      "file": "browser-reload-verified.log.gz",
+      "original_bytes": 593734,
+      "compressed_bytes": 60546,
+      "raw_sha256": "425874b5d891488a164e4506c04f2ac3c24ea2a75d72d3a5b5b0426c9db503af",
+      "sha256": "20d001ac19be649fb6ec666fc264c763cd8ec4b2c20546303b0941397da54aed"
+    },
+    {
+      "file": "browser-tool-after-fix-driver.log.gz",
+      "original_bytes": 380,
+      "compressed_bytes": 206,
+      "raw_sha256": "a5a13e7d5379ddb70c3d198b2403e1412a6315a3fc49b4dfad6ce7bbc54df0bd",
+      "sha256": "eb3f29938b44113371ad29dc7d21c7eb09a52f5c99068b306b0c1dd17a5b2d48"
+    },
+    {
+      "file": "browser-tool-after-fix.log.gz",
+      "original_bytes": 487105,
+      "compressed_bytes": 48286,
+      "raw_sha256": "b28bc89ceef7cc1c44b2faf791cc17e48e1212e980182daad6f8f1e74b037ded",
+      "sha256": "4b6161858ce663eebbb3b783f9b9bda538137ff88c871361b44cc3e49daf4928"
+    },
+    {
+      "file": "browser-tool-driver.log.gz",
+      "original_bytes": 7170,
+      "compressed_bytes": 1478,
+      "raw_sha256": "0aa94679f9023c81fa0036f8f789f0812cb9c214eab159e47217e7367c162ac7",
+      "sha256": "58ce29a4ccf196aa6df424dedcff592c494bd1c85e59537b4dfd672701c78a42"
+    },
+    {
+      "file": "browser-tool-final-driver.log.gz",
+      "original_bytes": 2808,
+      "compressed_bytes": 722,
+      "raw_sha256": "a51e4f35054c97ff51c2b18936b4ce6b28025ff8bb98e896f54020635d33a782",
+      "sha256": "ed0a6456af750ebbf2dcca25281f5662d91bc65700be8612dfd10f7e582829ad"
+    },
+    {
+      "file": "browser-tool-final.log.gz",
+      "original_bytes": 480811,
+      "compressed_bytes": 48229,
+      "raw_sha256": "7bd83994c95d3236b3505dfcd5559540e43eb3064bebc6f12e37736b6c90e388",
+      "sha256": "8e97dd452587e53ec6129c0203cb337d4fe816b738ea5871d9b0627a108215c0"
+    },
+    {
+      "file": "browser-tool-pass-driver.log.gz",
+      "original_bytes": 23346,
+      "compressed_bytes": 1764,
+      "raw_sha256": "a3c9605223b92c271aaaea4d7047178e54583079e0767006c579962d36e94fc1",
+      "sha256": "8f57dd7644036342d952e4c210d1b2ca22af003c897efb87edd4ec3c4ff000e5"
+    },
+    {
+      "file": "browser-tool-pass.log.gz",
+      "original_bytes": 484418,
+      "compressed_bytes": 48573,
+      "raw_sha256": "81b5345e96c79e1140d2e2453b6b481c251754f4bfaa9d0c0904ad31a349fe9e",
+      "sha256": "93e25c8dcef9a7bc0367b79ea298645b268b861a5ee3eb3c5f9c9351ab0fd174"
+    },
+    {
+      "file": "browser-tool.log.gz",
+      "original_bytes": 270195,
+      "compressed_bytes": 22559,
+      "raw_sha256": "da783ae3c5aa0ab7bc50e550297d781a7d2e6ada27e1ca98f2584896320760ea",
+      "sha256": "03609556a0529d330aa73f7a7c5230bf42e38f94af9e29406a9ef04742b51a1b"
+    },
+    {
+      "file": "chat-agent-driver.log.gz",
+      "original_bytes": 50186,
+      "compressed_bytes": 2690,
+      "raw_sha256": "af9e95616ea95a62c4fa8595d9d73e7870c9e6146e55480a081492eaa33e2257",
+      "sha256": "0ee7e0770dfbc619a705d9b966571391017f4d20fbb420ba09fd713057bac9a6"
+    },
+    {
+      "file": "chat-agent.baseline-0.log.gz",
+      "original_bytes": 2078547,
+      "compressed_bytes": 102903,
+      "raw_sha256": "c35c0b0e470a1b6bd0157843f0e032bdae2b17cd82eb90440fe8bbb599a0eb6c",
+      "sha256": "d2f01348510cbdcc557ca4d4f6c8ba89b3ef544b24013c7d80bf0b7b82a4f950"
+    },
+    {
+      "file": "chat-agent.baseline-1.log.gz",
+      "original_bytes": 313756,
+      "compressed_bytes": 32977,
+      "raw_sha256": "a18917ae10325cf7927c2958986abe847a5f9badfac779f277e1cc601a2d553f",
+      "sha256": "243c778879c1cb5ff52fe6efd4840f7105a8f21b04322e01f6de7873b53d312d"
+    },
+    {
+      "file": "chat-agent.baseline-10.log.gz",
+      "original_bytes": 315045,
+      "compressed_bytes": 33124,
+      "raw_sha256": "38b7d29cbbf3380bb9a475574d4de00864c180dc8811772cae3e918439d6c526",
+      "sha256": "8b49adfcad1e22af0af5034958ebb5ebc034769a7fd1f59a432ac625a7863168"
+    },
+    {
+      "file": "chat-agent.baseline-11.log.gz",
+      "original_bytes": 313808,
+      "compressed_bytes": 32985,
+      "raw_sha256": "f7aaf787665d63829fbfcf1421d76e66f6889fca6e5b7ea43f90dc6a6a56f745",
+      "sha256": "f4e2721cf0e7e0497af743d63b39cf3a9c04dfdda206b03bd3d33da35775c35e"
+    },
+    {
+      "file": "chat-agent.baseline-12.log.gz",
+      "original_bytes": 313911,
+      "compressed_bytes": 33038,
+      "raw_sha256": "43881b8fbaa901913519d09ee20df37b55b69fbd4a0513869905160a2d334465",
+      "sha256": "593473c7814c40fcc58d36bdadceb8b6b0b4a94e30affe6ce089591d609a18b1"
+    },
+    {
+      "file": "chat-agent.baseline-13.log.gz",
+      "original_bytes": 313898,
+      "compressed_bytes": 33070,
+      "raw_sha256": "01d7801fa33c29a0bda625a68621acd3d599b69b2bc46587a0bb5b2b39f9d9a0",
+      "sha256": "ebe4ac7329066cd9f1713bf8f8371b573d9b5d9908421a79e1007b22186077d6"
+    },
+    {
+      "file": "chat-agent.baseline-14.log.gz",
+      "original_bytes": 315188,
+      "compressed_bytes": 33275,
+      "raw_sha256": "2c178341ec8237477072dd34b670296797a90ec074efcaf46e40b832112a12ad",
+      "sha256": "f9252470ae6c78dab95945ea6ab1813c9b414df098269e7fef0a277669029b77"
+    },
+    {
+      "file": "chat-agent.baseline-15.log.gz",
+      "original_bytes": 313834,
+      "compressed_bytes": 33017,
+      "raw_sha256": "c32c09ad24a9c3fd2417ac376c5d8829b1e5178a44dc547d40bd7ced6d426971",
+      "sha256": "2297db3b2d7775588baca1cedade14a470175d05db09c8a236ff654f73f3ffb1"
+    },
+    {
+      "file": "chat-agent.baseline-16.log.gz",
+      "original_bytes": 313746,
+      "compressed_bytes": 32970,
+      "raw_sha256": "a231a5032537c937d9610a31eb1b0a6a6fc503626adcabbdac6a5af8f3bb0f70",
+      "sha256": "a9569eab3bf99fc6c8fb133b9142562bc85f31882a645b29a4033f0211d0f3a9"
+    },
+    {
+      "file": "chat-agent.baseline-17.log.gz",
+      "original_bytes": 315275,
+      "compressed_bytes": 33356,
+      "raw_sha256": "465a031d45301d4dc8cda4fb566dfac6bdb205ef7e8eadc58a9dd5105977302a",
+      "sha256": "c26fc8a0cf4273da2e8a90689027c4bec4b36b1676d3cd8872eb510aa9ce86b5"
+    },
+    {
+      "file": "chat-agent.baseline-18.log.gz",
+      "original_bytes": 313776,
+      "compressed_bytes": 32996,
+      "raw_sha256": "7f139b3faccd76f4a792c15e131840d94b8238b1b2114918f9be28a4db80f32e",
+      "sha256": "5b0e18567e18a36e00aa6c9a9fcc41a2cec82f931642e1362afbd9f7d7e32b9f"
+    },
+    {
+      "file": "chat-agent.baseline-19.log.gz",
+      "original_bytes": 315226,
+      "compressed_bytes": 33250,
+      "raw_sha256": "0af23f1e7b1ab33bf00b13963ca91b9a02d55abab1f1f7666bd36a4a2dc54181",
+      "sha256": "72cf712c97f67294ea057fc53835c81cd591100d045c0fcc9ccede4fac99c6ef"
+    },
+    {
+      "file": "chat-agent.baseline-2.log.gz",
+      "original_bytes": 315109,
+      "compressed_bytes": 33136,
+      "raw_sha256": "645d5cc331a06cc93656304e6d92a10ebca4b977ef30e556240209e5fbdfefe9",
+      "sha256": "ec273cfa211b606e647ceb5db7903c413f0489d7a018ea059701b7ef64b3ffc7"
+    },
+    {
+      "file": "chat-agent.baseline-20.log.gz",
+      "original_bytes": 313868,
+      "compressed_bytes": 33026,
+      "raw_sha256": "495782ad1a11b8052dea1bfcb120d1cd5882fc1428daabec083465e6319e188a",
+      "sha256": "740237567d1971ba5a1782cbcdc2058a4cb9e4648fc9f3d858809ac2ec0d6f22"
+    },
+    {
+      "file": "chat-agent.baseline-21.log.gz",
+      "original_bytes": 313902,
+      "compressed_bytes": 33034,
+      "raw_sha256": "e1c1fc926ac4f758167c4fccff59a113a9a4cb5be94b7a2ba9acc92df59bae7f",
+      "sha256": "1fcec91db2bf3d134cb2b5f66c9f727ce7c6e6beb047044bc24d9770c7fc8627"
+    },
+    {
+      "file": "chat-agent.baseline-22.log.gz",
+      "original_bytes": 315063,
+      "compressed_bytes": 33151,
+      "raw_sha256": "70a403b83672687fdec991fff354af0303a6a15ca2620df2b8aa351899baf4cb",
+      "sha256": "46d80bef2ab43d4190ba920648998aaa8744b8238f610161fc70963ebfdfad19"
+    },
+    {
+      "file": "chat-agent.baseline-23.log.gz",
+      "original_bytes": 315253,
+      "compressed_bytes": 33264,
+      "raw_sha256": "b9cedc43cd9ba4fb534f78c9c251ee6c6668f4e1baeef597d78d8339e11d6539",
+      "sha256": "764a34e91c658a97c88f1d3aca372e6188783b3f651775bce8d12a5e87bc598e"
+    },
+    {
+      "file": "chat-agent.baseline-24.log.gz",
+      "original_bytes": 315047,
+      "compressed_bytes": 33217,
+      "raw_sha256": "eac2a28bbe30f4b11a91ad9cacbfc52fca786e356c14ccb59333660545d32174",
+      "sha256": "c489ed545526c50a130563e3528410dad674d0786038607897bf3e73fc0323dd"
+    },
+    {
+      "file": "chat-agent.baseline-25.log.gz",
+      "original_bytes": 315196,
+      "compressed_bytes": 33295,
+      "raw_sha256": "d5e533118f6fc520dfaf908fb9e69e056aa99383ad71619fc1261d1df0bb0240",
+      "sha256": "912f4ea42e0edd614c0ba3337fc4baa221b6b608b7490ca57c164f958055a1cf"
+    },
+    {
+      "file": "chat-agent.baseline-26.log.gz",
+      "original_bytes": 315716,
+      "compressed_bytes": 33284,
+      "raw_sha256": "92379c8d7a137c629c4fabf1d94cc4ad0d9fe11046f96ca2621d68180ee7e438",
+      "sha256": "5e35507e4dfacc23a00dbda35480716ab9b9ba98ad185a64297ca0959d8d0e19"
+    },
+    {
+      "file": "chat-agent.baseline-27.log.gz",
+      "original_bytes": 315238,
+      "compressed_bytes": 33221,
+      "raw_sha256": "1e1a100684ab948e209a2dfe134c1a0b27d21aafa2810e05177a5deccb66ba7e",
+      "sha256": "4da0f6877decef79fbd61faa02d2742b4975bd3eb8a62b10e99e5535aa5ed7a9"
+    },
+    {
+      "file": "chat-agent.baseline-28.log.gz",
+      "original_bytes": 315107,
+      "compressed_bytes": 33157,
+      "raw_sha256": "aa982ff6b4575f44a8b9e18995b5813bc7aaca869b85c500d77d07c299b6bc3c",
+      "sha256": "383b948142df06524ef3b7040661bbaed5b272cfdfdadd2012108b841599d1c5"
+    },
+    {
+      "file": "chat-agent.baseline-29.log.gz",
+      "original_bytes": 315195,
+      "compressed_bytes": 33210,
+      "raw_sha256": "8b1334de7e742107847aec8b82e01f2d3bc898654365b0c4f3d89de2415098f5",
+      "sha256": "b4ff1ac10b33e10c697a43fa79738b2768225bcd8d99644b8cc7bab4394ef2d1"
+    },
+    {
+      "file": "chat-agent.baseline-3.log.gz",
+      "original_bytes": 315298,
+      "compressed_bytes": 33319,
+      "raw_sha256": "a54b372cbb3b4c19dd56005cfb8e172ea11ef409ddf5ce67ced37ba3a14187f9",
+      "sha256": "9d819d60224e85c1fcf543c65852fa24ef7a57840d7a95eca6d42be3b775a82a"
+    },
+    {
+      "file": "chat-agent.baseline-4.log.gz",
+      "original_bytes": 315107,
+      "compressed_bytes": 33228,
+      "raw_sha256": "02853069c719ce6d254dcc2ccddbec5c9ec3ae46ba38a265158c901faac4ff9a",
+      "sha256": "9a0e94e1918ee7ea1513510262f343d860f2657894b528f8d44dd20bbbbc4e57"
+    },
+    {
+      "file": "chat-agent.baseline-5.log.gz",
+      "original_bytes": 313845,
+      "compressed_bytes": 33026,
+      "raw_sha256": "99e53b46df5dbe25fa3f7781adfded128ca068c92710afa0cb766559cc69c826",
+      "sha256": "621a26173522992a380cddff02f2db018106d9a3ba00f320c77bf799b8aa5735"
+    },
+    {
+      "file": "chat-agent.baseline-6.log.gz",
+      "original_bytes": 315235,
+      "compressed_bytes": 33270,
+      "raw_sha256": "e42a450ca25549215e9193432b115189eb2379bd4cfa66335305e5cf343955b4",
+      "sha256": "d3234b59dcfef3540d162bec8978f1652f1fdcde542eb2a93b4803a3d716c86a"
+    },
+    {
+      "file": "chat-agent.baseline-7.log.gz",
+      "original_bytes": 313752,
+      "compressed_bytes": 32966,
+      "raw_sha256": "e9d68a01e9172d660b2e7bba9928201139d536a9dfa7813d521d87c18745d729",
+      "sha256": "94403f47d2bfe8a3de9580e1fb1c172b8fa5b99ccde8d7e852679bef52de5bf4"
+    },
+    {
+      "file": "chat-agent.baseline-8.log.gz",
+      "original_bytes": 313756,
+      "compressed_bytes": 32980,
+      "raw_sha256": "a0e950d88a180ed9a73d7b8369d62e1f0ece22eecbc7aae00fc469e8b63bb1b3",
+      "sha256": "a8def96a0bbdd34eafa2371d477026870137ba2789f5b9f6b1293181be952df1"
+    },
+    {
+      "file": "chat-agent.baseline-9.log.gz",
+      "original_bytes": 313937,
+      "compressed_bytes": 33075,
+      "raw_sha256": "493d6fb12decf503b5a1ccd834fd43feb502b21c18cf21f0f65584ded25cac4e",
+      "sha256": "3b97405c5d1bbcf660457ca360235452d751dd953125ccfab38de11858e7ef65"
+    },
+    {
+      "file": "chat-agent.candidate-0.log.gz",
+      "original_bytes": 1973225,
+      "compressed_bytes": 95468,
+      "raw_sha256": "bf605db15f91369fdc494f5fc48f896b3ae3499e04d50a0ccb57c19201007be6",
+      "sha256": "a398298640ed6b5e1ce8c5011433aab438e17e866cbbc7534b0b5674b21b480d"
+    },
+    {
+      "file": "chat-agent.candidate-1.log.gz",
+      "original_bytes": 315141,
+      "compressed_bytes": 33173,
+      "raw_sha256": "dd4cff99c3dad61e2ba5aa3e206669e0eacbafe86d40a22c5b9f74609b85efa8",
+      "sha256": "d724ba29c26145442bb1d1c787fc8af6b871d5e31f5a32ad23ead5c280588276"
+    },
+    {
+      "file": "chat-agent.candidate-10.log.gz",
+      "original_bytes": 315255,
+      "compressed_bytes": 33285,
+      "raw_sha256": "9de0ff8830537a5f9599804a8a0d91962771caf4fb991fb13b9c2a90de45e63a",
+      "sha256": "a51811b462d309362d146ed09b77600a50aaf00c525db0a243d914aba422f59f"
+    },
+    {
+      "file": "chat-agent.candidate-11.log.gz",
+      "original_bytes": 313894,
+      "compressed_bytes": 33071,
+      "raw_sha256": "b9d64d1824fc2f083da61d4a4d5162fe50e3efa9c07ba3066a498faba06e189b",
+      "sha256": "126488fc0418865b7e7758e36019893608cce5fa154376dc017a2637ba489b10"
+    },
+    {
+      "file": "chat-agent.candidate-12.log.gz",
+      "original_bytes": 315076,
+      "compressed_bytes": 33167,
+      "raw_sha256": "9ce993564937650a194b1ec67ecf2d4e28bc1c80236233f4ae554784961dd3bd",
+      "sha256": "2a09cfda42c0b83ea4efa3f8a9948a2dec220da661b50cef7a40455044cb1caf"
+    },
+    {
+      "file": "chat-agent.candidate-13.log.gz",
+      "original_bytes": 315226,
+      "compressed_bytes": 33261,
+      "raw_sha256": "f428b85af83d93bd79efa76e9f00b42f059412e8f09ec68d20bad2a3eff41463",
+      "sha256": "9b4049601f3d4c521766c01ea456d9af3399c5325f37ee0b325f25999f06c6a5"
+    },
+    {
+      "file": "chat-agent.candidate-14.log.gz",
+      "original_bytes": 315255,
+      "compressed_bytes": 33264,
+      "raw_sha256": "e599d849c1224dc12df74897ccdbf5fb35b17d67ae009e6f3c0c505253eff818",
+      "sha256": "79942db0bdafe54f207ff5fa63c1ff65c5a51361199abdd13862ae6aabaded60"
+    },
+    {
+      "file": "chat-agent.candidate-15.log.gz",
+      "original_bytes": 315405,
+      "compressed_bytes": 33336,
+      "raw_sha256": "23259ea29ad5ecb8a67ab613f359fcff237b7a0c5121d3d27bcadc31c5dbab6a",
+      "sha256": "094a87f7e7d3f449846e80cf0494d7580a874b0a372d1077c4800ad71e430b55"
+    },
+    {
+      "file": "chat-agent.candidate-16.log.gz",
+      "original_bytes": 315315,
+      "compressed_bytes": 33272,
+      "raw_sha256": "1fb806c92fa761a9321e8cd261df4d973e65421799a203bc302643388d4f0a69",
+      "sha256": "a88e89dd145333184473642d70aae91ff70a7d793ee8b6a0a9f90bf08ab517d9"
+    },
+    {
+      "file": "chat-agent.candidate-17.log.gz",
+      "original_bytes": 315316,
+      "compressed_bytes": 33270,
+      "raw_sha256": "de572b4b14c7a9fcb456a53e583afb4eae6575d58cb18f935b9098a7676def9c",
+      "sha256": "bc754316d36faf6c20bd555f87a9b83105c440ad0e19ffd6fa2337bf1eef0271"
+    },
+    {
+      "file": "chat-agent.candidate-18.log.gz",
+      "original_bytes": 315255,
+      "compressed_bytes": 33364,
+      "raw_sha256": "691a0446070a0eeb3ae88ebf069d8e496ce1fa73c81232e57685a8d011de8f44",
+      "sha256": "8307ddd1656b658432d7fd7206967cd9e69a153d24af317231981d4796f045af"
+    },
+    {
+      "file": "chat-agent.candidate-19.log.gz",
+      "original_bytes": 315108,
+      "compressed_bytes": 33200,
+      "raw_sha256": "bc7cc273db5dd4d4ad6d2cf614b1af768f542b3c90c993496d58de547525e9fa",
+      "sha256": "054c66cb75778f60ea194a45ed54c72770d57b8542abcb48a4b0936d53d7d013"
+    },
+    {
+      "file": "chat-agent.candidate-2.log.gz",
+      "original_bytes": 315112,
+      "compressed_bytes": 33210,
+      "raw_sha256": "832ba39826fa533dfbeea5728fa5e7c01f6c1487d74abf8a95e22e8c092b4fb2",
+      "sha256": "971a9d045fe37fb0ac814bfd45d694d9b16b5b9c31e47de359b386260586e4dd"
+    },
+    {
+      "file": "chat-agent.candidate-20.log.gz",
+      "original_bytes": 315347,
+      "compressed_bytes": 33281,
+      "raw_sha256": "899ac845fba1d0561a69ffc6ae6d852a94aebf677a972c2a8c6b7b1db057c30a",
+      "sha256": "6a87a425055ed0b6d8e932c1428eb2227b1a17cc240131cca77d8ef689332647"
+    },
+    {
+      "file": "chat-agent.candidate-21.log.gz",
+      "original_bytes": 315199,
+      "compressed_bytes": 33230,
+      "raw_sha256": "4a5c2a20f7da095d7abe4151d8b5a78c9b6f451e3bca75892929a3cf821761cb",
+      "sha256": "bb8b98fc81d53d82118efd26e313e3499fe431408340cde1747578142abed86d"
+    },
+    {
+      "file": "chat-agent.candidate-22.log.gz",
+      "original_bytes": 315132,
+      "compressed_bytes": 33201,
+      "raw_sha256": "a27eb2b0009fce982c1509fdf48dc185a12eac76225a270714a6ed79f22894b8",
+      "sha256": "ef8603d06401cc3ecc59592d551ea60bc4f4b0191090a2909aa6544748957170"
+    },
+    {
+      "file": "chat-agent.candidate-23.log.gz",
+      "original_bytes": 315252,
+      "compressed_bytes": 33309,
+      "raw_sha256": "cd8ce2dae13d0edea443e5def70b873eb2be45cb43e34978cfa28e5f65995648",
+      "sha256": "c635a09f86b2f54e54d770a70dd9589ff38e198a0c5abbdc856743bc4fee0a54"
+    },
+    {
+      "file": "chat-agent.candidate-24.log.gz",
+      "original_bytes": 315286,
+      "compressed_bytes": 33268,
+      "raw_sha256": "196c40738b40a36be0f904a94e48883bc22bf37309f79a0da2fe2c9f93ebcbae",
+      "sha256": "1605ae722668de959d873646cd4eed1f85fe8366268c7d85f9165d766f7e98ee"
+    },
+    {
+      "file": "chat-agent.candidate-25.log.gz",
+      "original_bytes": 315277,
+      "compressed_bytes": 33295,
+      "raw_sha256": "100fbe24862ff7649ab7b699624ba7c2ec47b9db6af1c88e85ff0d22ab4da32e",
+      "sha256": "946702330c47fec7e10415e5c3d60341feb8186fd67cec3fb9b9c1bb9570600f"
+    },
+    {
+      "file": "chat-agent.candidate-26.log.gz",
+      "original_bytes": 315287,
+      "compressed_bytes": 33267,
+      "raw_sha256": "369484a0bb2dd3fdddf397f39084d23b2a55db8b352609604ded770f4d5ec3ad",
+      "sha256": "6e3e678a604996e2b4b64ef23c517be65b11b2ab7f86a5bb461110075bf68844"
+    },
+    {
+      "file": "chat-agent.candidate-27.log.gz",
+      "original_bytes": 315134,
+      "compressed_bytes": 33207,
+      "raw_sha256": "b5b7d89eaa16de20532e465778378137c1491403443e3e172836ce65c4cf30c7",
+      "sha256": "1a68219aebc9a72d8ed62f14c9b720d50c4ec1c5c45d350a7633c4511ac6b49f"
+    },
+    {
+      "file": "chat-agent.candidate-28.log.gz",
+      "original_bytes": 315164,
+      "compressed_bytes": 33244,
+      "raw_sha256": "0f1d5333e8fd54719f5c46ff5e08e6ec3b5aae1698277e8370599058d2dbefe1",
+      "sha256": "972cf91501fc26d46bfb0a88528287776e3488edc520e5522b5cc8f123dd487f"
+    },
+    {
+      "file": "chat-agent.candidate-29.log.gz",
+      "original_bytes": 315285,
+      "compressed_bytes": 33266,
+      "raw_sha256": "84f5311dc0f4bff376ec92f9c927aab0afb0c901c52a87394e4e2d90c9bd8bfa",
+      "sha256": "7e5dc934ec19b8f59ecae79834a435ca3cde778008d46c5c7ac76524508bed65"
+    },
+    {
+      "file": "chat-agent.candidate-3.log.gz",
+      "original_bytes": 315264,
+      "compressed_bytes": 33286,
+      "raw_sha256": "528ba71a16a4f31cdf658b8222b9e4f22828769e127da021689a0cf48d89d4cc",
+      "sha256": "544095709f98e83f309e598126a801df77660658969545b0aabbb530541a73cf"
+    },
+    {
+      "file": "chat-agent.candidate-4.log.gz",
+      "original_bytes": 315262,
+      "compressed_bytes": 33250,
+      "raw_sha256": "3a6d74a2cfddfa195ef956032a8dc44bf1c446759469a6b4ade2f93d18779659",
+      "sha256": "6e4e92f4b9572e8eda1ca1ec5ece5efd301ba7569960527bbf743cd82d239507"
+    },
+    {
+      "file": "chat-agent.candidate-5.log.gz",
+      "original_bytes": 315348,
+      "compressed_bytes": 33300,
+      "raw_sha256": "fd82021d5fe5ae049d8cb438325fb2a83f1a680a275a2327eed032ed4756bc87",
+      "sha256": "1b50b3dae853291bd4fef50674f069592057e6adf17071d6acfe827778cefed8"
+    },
+    {
+      "file": "chat-agent.candidate-6.log.gz",
+      "original_bytes": 315085,
+      "compressed_bytes": 33175,
+      "raw_sha256": "c90b717086f58240f268b4be2ad3fdf0adca6c3c083927ed6a9f9af799f7b480",
+      "sha256": "83cac9f4026d61f44831022187477731fe2dbd52d797f089fe841fdfc13a014a"
+    },
+    {
+      "file": "chat-agent.candidate-7.log.gz",
+      "original_bytes": 315263,
+      "compressed_bytes": 33249,
+      "raw_sha256": "979c92760ba21a8b0dfc9a0e1695859171dd1595ddfacbf324ad172eab83e81d",
+      "sha256": "73e27432d0fb68a77e6afd59758b5ba2295ec718f1a4ba67a65cfb920a38fbd8"
+    },
+    {
+      "file": "chat-agent.candidate-8.log.gz",
+      "original_bytes": 315320,
+      "compressed_bytes": 33289,
+      "raw_sha256": "b89acc95cb69448c9f7a3bd3a1f2e524768e4a0964cf543fe3aeda8a59a06156",
+      "sha256": "4569159e25f88ca0b6bdcf99288534410e19d88298473e932ee80f32f1622e4a"
+    },
+    {
+      "file": "chat-agent.candidate-9.log.gz",
+      "original_bytes": 315237,
+      "compressed_bytes": 33269,
+      "raw_sha256": "ddcd6d424dcb96045362f729c1afa744727113508dc13fed4f2b7659c6156f51",
+      "sha256": "ab4114105b0055cbe495fef2c38505165ce2f6b1c3a866770f2f5d5f34165632"
+    },
+    {
+      "file": "chat-code-driver.log.gz",
+      "original_bytes": 50014,
+      "compressed_bytes": 2583,
+      "raw_sha256": "80eeecbeb0e8e5c736577e333ed4f127f8327ed21a327cef0937cef84730b445",
+      "sha256": "a2a3737cfe36cbebd476815e6a306a36ef9459857d6d0fe160c6730fb8241022"
+    },
+    {
+      "file": "chat-code.baseline-0.log.gz",
+      "original_bytes": 1549922,
+      "compressed_bytes": 78867,
+      "raw_sha256": "ff94ef1cbd24f150503cb9802b86de278e770f9ffee67994136afa2017b68044",
+      "sha256": "f0a4228844ae2907f42fc21e8b612e60c9744ddd84f474ac5042439c448e73a1"
+    },
+    {
+      "file": "chat-code.baseline-1.log.gz",
+      "original_bytes": 288078,
+      "compressed_bytes": 30553,
+      "raw_sha256": "c8f2e7bb790b054815835b2d9a9ce9f93b15bb595df85efaef009f1751d850c8",
+      "sha256": "960a010b844c0fba8627b8ec3ddfdbeeba68fc57750d876c1a285df3cdc09288"
+    },
+    {
+      "file": "chat-code.baseline-10.log.gz",
+      "original_bytes": 288096,
+      "compressed_bytes": 30641,
+      "raw_sha256": "6f42435515e54912165064f22e12d78f91f605d8e36335ccaf0193fdcdef278b",
+      "sha256": "3f4311c02a4926cb94bf708776649337db4e58da8cd0f3a24b160e44447338b9"
+    },
+    {
+      "file": "chat-code.baseline-11.log.gz",
+      "original_bytes": 288124,
+      "compressed_bytes": 30634,
+      "raw_sha256": "7ed44a2af742b2e530223b0b6c1f1c5b3ede6773bfcb0e8c696f754c3dce806c",
+      "sha256": "ec240cec5876fdd09d78fe9bad9bd030cdd4986fb659aa3617e855c6deb6e509"
+    },
+    {
+      "file": "chat-code.baseline-12.log.gz",
+      "original_bytes": 288248,
+      "compressed_bytes": 30634,
+      "raw_sha256": "dc04ed046a9456ffe1649c23489ac5882ba4350c7a11f318edbe4e2bbf9eafd7",
+      "sha256": "d06f3f5e99b97ed71f8860be681364df24b124483b2bbf14a17c9d94691b406b"
+    },
+    {
+      "file": "chat-code.baseline-13.log.gz",
+      "original_bytes": 288156,
+      "compressed_bytes": 30593,
+      "raw_sha256": "f77c6ea84118e6da003b3ca748edd5fd3e5b5520259db5c824ef22b89fbaa6ca",
+      "sha256": "6f6743c48269a45abf541cefe567bd6e5dad305bee3fd3f06b6fa00183cf714f"
+    },
+    {
+      "file": "chat-code.baseline-14.log.gz",
+      "original_bytes": 288094,
+      "compressed_bytes": 30600,
+      "raw_sha256": "687dce1a435439a8e481105c32cea5f0bba113cc507a7b630f872c26f938cf4c",
+      "sha256": "d5660f92cc93620efb54ce21b6c902baf75abc09c66eea1c125e65639af7ca38"
+    },
+    {
+      "file": "chat-code.baseline-15.log.gz",
+      "original_bytes": 288108,
+      "compressed_bytes": 30600,
+      "raw_sha256": "1916203a5d1cf8b2ca2c1b388a5342134c332afdc953a56894b093ea09394808",
+      "sha256": "283e4b2c129a2d0a952b5e5932797b7d4103262ad5c313103af26b2200bb4036"
+    },
+    {
+      "file": "chat-code.baseline-16.log.gz",
+      "original_bytes": 288068,
+      "compressed_bytes": 30557,
+      "raw_sha256": "bed555093e3f5bff663da946e2b5b9b7b8e22fd2f5c8630ce7116f7e5eba14d8",
+      "sha256": "61ef19758daee271f5bca9e0bd8009fe5177e64133c4f22be51641c3c3fb9f4a"
+    },
+    {
+      "file": "chat-code.baseline-17.log.gz",
+      "original_bytes": 288204,
+      "compressed_bytes": 30625,
+      "raw_sha256": "c1203f0f949d1cee59779b3e2d0f14e4d631f89ed937b4444b8988f4a6aa58a3",
+      "sha256": "63a76f65508edfd335191d05b709aaf2511126c8141eec74514e3a076d43118f"
+    },
+    {
+      "file": "chat-code.baseline-18.log.gz",
+      "original_bytes": 288124,
+      "compressed_bytes": 30619,
+      "raw_sha256": "3e7580dc45c5650d74d1f29ebdfba8194c669923108ff5f72001292558e8c48d",
+      "sha256": "5761d6c9b66c9137de42d916a78eaadd8bb4d34072f15469ca20387da15db34c"
+    },
+    {
+      "file": "chat-code.baseline-19.log.gz",
+      "original_bytes": 288068,
+      "compressed_bytes": 30585,
+      "raw_sha256": "682ad5a9d867caa1abd6a9f0decf016aafddecc7342d1beb46af00414d54fdeb",
+      "sha256": "3864768dff4f6f80afb1120a928a089b0f3a11399a50d4e3072d6bd96a69e907"
+    },
+    {
+      "file": "chat-code.baseline-2.log.gz",
+      "original_bytes": 288076,
+      "compressed_bytes": 30536,
+      "raw_sha256": "271d95da882b3bb7cb3cbc1701667a9889e77b5ba415b49d5cf3b224cf27d4c4",
+      "sha256": "cdffcef92f6f45390ce66abab03aeffd4302e91d66a8badd9439242bc30f7ab1"
+    },
+    {
+      "file": "chat-code.baseline-20.log.gz",
+      "original_bytes": 288230,
+      "compressed_bytes": 30610,
+      "raw_sha256": "7a51d01e42dfdc7fa5618aeceb8ce808c9a84be28978a45135224f8d5bb74619",
+      "sha256": "046c4eb1fd98ba92834a370c2d052a3c40253b04fed8a5d1b8588329fd271afb"
+    },
+    {
+      "file": "chat-code.baseline-21.log.gz",
+      "original_bytes": 288276,
+      "compressed_bytes": 30699,
+      "raw_sha256": "b06a93ff2d545d8446b3a89461de90456d89e5dc31ee1104904186d1ad6c2505",
+      "sha256": "d8f508d55758603cde3fd51eb2504e5553a3b0ce18468be7970516be3b4b3235"
+    },
+    {
+      "file": "chat-code.baseline-22.log.gz",
+      "original_bytes": 288080,
+      "compressed_bytes": 30599,
+      "raw_sha256": "cde2d2e193476a8c650a6e494a8a965e0382ea967def10e7424952f841383cb5",
+      "sha256": "9d41c56f8abd84693fdad45e6ce54660b706933911fbf48829955f13e0eb32fc"
+    },
+    {
+      "file": "chat-code.baseline-23.log.gz",
+      "original_bytes": 288190,
+      "compressed_bytes": 30600,
+      "raw_sha256": "fc5973483d1f0a8404ae6e52153721914c1b1e3d58602b867c351342f3cecb04",
+      "sha256": "75618dad1af5a31380941aec06e7b5d60500fda161557f690ebe8052d8bd0bb0"
+    },
+    {
+      "file": "chat-code.baseline-24.log.gz",
+      "original_bytes": 288124,
+      "compressed_bytes": 30693,
+      "raw_sha256": "a8764a83f90ac444c52055a301d4bb741e473abb2e2eb3d09283aa6ddd897351",
+      "sha256": "4a2fc2f83c6864bf032422ae4e2675f0b7b3da543cd41aa19b1cb00738f95e14"
+    },
+    {
+      "file": "chat-code.baseline-25.log.gz",
+      "original_bytes": 288128,
+      "compressed_bytes": 30569,
+      "raw_sha256": "0d381be29574acc43e4fb1cdd0090ed1acb55607bff03a587c0aeac0a323d3e5",
+      "sha256": "b1c23da7d224c838752cef1047d8212e20a22b5fd57fdd2972bd77d2bdea27e6"
+    },
+    {
+      "file": "chat-code.baseline-26.log.gz",
+      "original_bytes": 288126,
+      "compressed_bytes": 30632,
+      "raw_sha256": "421ad7aa87e90c62df4caec06861e52a5d8da713580ff6185b9a93ba108f753a",
+      "sha256": "5f7b45a33098e72acbb6f09cddbb78a933d74ca06db57f2421c284f6d31a21a3"
+    },
+    {
+      "file": "chat-code.baseline-27.log.gz",
+      "original_bytes": 288188,
+      "compressed_bytes": 30625,
+      "raw_sha256": "e28361597a80076602898571083ba6d3d45fe5cc0c1e84b23ce13c32e13f3906",
+      "sha256": "5ab4c0be8b5564d0505228a4e24b11fbce6c5047509d46cf56ce61f20e0861a5"
+    },
+    {
+      "file": "chat-code.baseline-28.log.gz",
+      "original_bytes": 288258,
+      "compressed_bytes": 30677,
+      "raw_sha256": "febe1a3c6f2298a4096634461c47760e44fa70bf8b4be7c17989a247bea13443",
+      "sha256": "6f633709a1e2b15bac242fa187664be9757f0b10d2d2723f46d2a8501c55d311"
+    },
+    {
+      "file": "chat-code.baseline-29.log.gz",
+      "original_bytes": 288098,
+      "compressed_bytes": 30573,
+      "raw_sha256": "29ece0049889db708d8f8a5d54886d41a1befa8de3bb572c534f19480e9ec50c",
+      "sha256": "20c31f4af7f681bccac58f344847910cfb5483c5ec1f74005d18c46eb42ec7c9"
+    },
+    {
+      "file": "chat-code.baseline-3.log.gz",
+      "original_bytes": 288120,
+      "compressed_bytes": 30615,
+      "raw_sha256": "4171878ac90ea1d208195845af333203caf6df194ca6e2664783c2a8521dc7ef",
+      "sha256": "7cbf26942d38091effaaf57660166f78e2c50145d98c6eee478ebf6b3e1bac51"
+    },
+    {
+      "file": "chat-code.baseline-4.log.gz",
+      "original_bytes": 288090,
+      "compressed_bytes": 30585,
+      "raw_sha256": "cf4d6ea725995f5e4e98a39457ac3ff8c862faa3db1a516899e08e8d3476e9d0",
+      "sha256": "0be9c561b8da02cc4b3608c7af9fd6673499b632ab1f876e1f579623ea3bee7c"
+    },
+    {
+      "file": "chat-code.baseline-5.log.gz",
+      "original_bytes": 288048,
+      "compressed_bytes": 30555,
+      "raw_sha256": "5d5933daaf89f3e306456c5cf8594e604768a93f0352e8f991777ac692567d9d",
+      "sha256": "b62006ac9d613c608832fc70b21236c1c742722080f5ded077e52a274f77bd1a"
+    },
+    {
+      "file": "chat-code.baseline-6.log.gz",
+      "original_bytes": 288090,
+      "compressed_bytes": 30593,
+      "raw_sha256": "9e411175d6709f090f7c41bda31c0cb42d328f003c8031cf848e3d172166ee40",
+      "sha256": "1e91a84a3ccd9b8ae036d2761734ad4f15ecb7798379820a976449e5cf0eb0d6"
+    },
+    {
+      "file": "chat-code.baseline-7.log.gz",
+      "original_bytes": 288228,
+      "compressed_bytes": 30688,
+      "raw_sha256": "57ce9720be9665dcaab95438d144d5ef489054310e150ddd3045c17630dee391",
+      "sha256": "ec959c8f1a8698d8fc0c7ff940328dda44f0c405d915c6cd5dd4966dd006fc65"
+    },
+    {
+      "file": "chat-code.baseline-8.log.gz",
+      "original_bytes": 288226,
+      "compressed_bytes": 30703,
+      "raw_sha256": "3804d50143daaf9a228f5a6f4dbb5f19f020140bda4c4db8efe7df73ad81ca09",
+      "sha256": "9fd1d27d5b98d0f017cc38601cfe1b8ba92ca20c0b9194deb5e0c527942d7fba"
+    },
+    {
+      "file": "chat-code.baseline-9.log.gz",
+      "original_bytes": 288046,
+      "compressed_bytes": 30604,
+      "raw_sha256": "bc10e9d4b90f6d3dbb5f84c2ac9ab6ceafae8c489308cb174a6ff4f18286b953",
+      "sha256": "0a5d8e8d9c102e1a3e05d790a7afac98ee0349be7b8b601ba3db7a4773945c77"
+    },
+    {
+      "file": "chat-code.candidate-0.log.gz",
+      "original_bytes": 1555193,
+      "compressed_bytes": 80918,
+      "raw_sha256": "6a4dd7961c7e748d882da6cc97a0fd70c50e009e349e13292dfc899031bedf09",
+      "sha256": "fc3e2162acfb74234009fe454807a3b53beb83e26a4b9a1eb159424179bf0e19"
+    },
+    {
+      "file": "chat-code.candidate-1.log.gz",
+      "original_bytes": 288248,
+      "compressed_bytes": 30707,
+      "raw_sha256": "3ad48846aa05917193840a443aedd1c4af232660725ea202f708758a71abb6f6",
+      "sha256": "b22fc3bb45706a0c612a698eb21ac03f1ef92fb6f37a181adea355b41c6ca3e5"
+    },
+    {
+      "file": "chat-code.candidate-10.log.gz",
+      "original_bytes": 288143,
+      "compressed_bytes": 30748,
+      "raw_sha256": "15d6b4e01eb584ce4ab38ff121603f58f37553a9a10aa7011ab49bbf2d6d89fb",
+      "sha256": "8f3215b693c054773d0187a802743b769f10856ff9b1cd3464fd65028ec3b2b7"
+    },
+    {
+      "file": "chat-code.candidate-11.log.gz",
+      "original_bytes": 288269,
+      "compressed_bytes": 30748,
+      "raw_sha256": "f47f0a75b526ac6c37f46adca56bab5e3068a82ce1930337f8b8f2edf396c81e",
+      "sha256": "b1299f07260224436c65f07a9460568072a5a8943ce4b31cdd3468280f7c1a88"
+    },
+    {
+      "file": "chat-code.candidate-12.log.gz",
+      "original_bytes": 288173,
+      "compressed_bytes": 30714,
+      "raw_sha256": "17cf9f6c92d2eabf45c215da51881e68fe922c451b7756a8e0685c5ddd5f1f27",
+      "sha256": "ef836f1726ae37bfc13336ae60371ad30a230ae21f2284aa5671cdbfbb2df2fb"
+    },
+    {
+      "file": "chat-code.candidate-13.log.gz",
+      "original_bytes": 288277,
+      "compressed_bytes": 30739,
+      "raw_sha256": "1ae469dc08607fadb3a79481096f6dee18f548237b1362e9a6132309f8efe22d",
+      "sha256": "56be09fd10f2d3e28f2faf737e1e246f7462d12ed63ceaf8b0839e53c54ecac0"
+    },
+    {
+      "file": "chat-code.candidate-14.log.gz",
+      "original_bytes": 288117,
+      "compressed_bytes": 30645,
+      "raw_sha256": "40d6e1ebade50067a5db7face928faaffcbcd5ed825befcc56553fb8e9014f14",
+      "sha256": "da71b471cef0fa4df90838a4f592dbc2c87b0254cdb731e31173049e5020f1e4"
+    },
+    {
+      "file": "chat-code.candidate-15.log.gz",
+      "original_bytes": 288145,
+      "compressed_bytes": 30661,
+      "raw_sha256": "90393f1d897b4d8414cfdfff1f040d69246e789062a593a792778017552cf2eb",
+      "sha256": "f7ac242a76239a48a64b153a2ef7096971767f384f28d6b285883989e8355b22"
+    },
+    {
+      "file": "chat-code.candidate-16.log.gz",
+      "original_bytes": 288175,
+      "compressed_bytes": 30710,
+      "raw_sha256": "9e3ed45201867751f4bab304cbf211b05aa706137672c798f5a34218981b35c9",
+      "sha256": "8705381abdb13df9c882c9d2df6810c8d22e9195c1724349e817fab98e72520a"
+    },
+    {
+      "file": "chat-code.candidate-17.log.gz",
+      "original_bytes": 288119,
+      "compressed_bytes": 30695,
+      "raw_sha256": "160731cbc7122a8341ab29613ab40ee8f47eb749c78d499a50a4c682526c3f03",
+      "sha256": "2b4a98dc40650c3428a96ea8f80e1e6c9a5eb3a8e923e843f73971a02cf8706a"
+    },
+    {
+      "file": "chat-code.candidate-18.log.gz",
+      "original_bytes": 288205,
+      "compressed_bytes": 30738,
+      "raw_sha256": "0202e59a99d8cdba2930f155467b5bb354a4c1a37cf69233a936980738660ae7",
+      "sha256": "60bf288d707ffa09fe215e5da517e01baf329a27e986b718a3e551dae8f21ea2"
+    },
+    {
+      "file": "chat-code.candidate-19.log.gz",
+      "original_bytes": 288267,
+      "compressed_bytes": 30731,
+      "raw_sha256": "5b171b4015cb8f25b8320331f3d1b2486b63e78f96a1c1247950bf058dc8c5c6",
+      "sha256": "cf4b431de9aa6a6e394af356edc954a5ddddd530ac917d966abffcc007ccaf17"
+    },
+    {
+      "file": "chat-code.candidate-2.log.gz",
+      "original_bytes": 288246,
+      "compressed_bytes": 30745,
+      "raw_sha256": "623c30ff9b78dec08c281a4046a4873f7326afbb055581b402d514e9ec430f15",
+      "sha256": "cbb1728fee68f3eefdee69469b21da9d9182363f3cdfecf70cd9588beb52b413"
+    },
+    {
+      "file": "chat-code.candidate-20.log.gz",
+      "original_bytes": 288147,
+      "compressed_bytes": 30704,
+      "raw_sha256": "9bc5395a400798d3c84cb20c2533c7cbde5f16307a16c989715d633b86536154",
+      "sha256": "07664a107e73309b41dec627b783006d379bbb1dcadb72c9b8eb66b278dc80dd"
+    },
+    {
+      "file": "chat-code.candidate-21.log.gz",
+      "original_bytes": 288267,
+      "compressed_bytes": 30806,
+      "raw_sha256": "6e0ff0ebdacce89b168edb4a23eddf59e9ad96c3012a3d23057cf589c4bd6633",
+      "sha256": "4fd61633ffa997d623062c64f7e80352616f0c001cd71a858e1ac16cea9f7bca"
+    },
+    {
+      "file": "chat-code.candidate-22.log.gz",
+      "original_bytes": 288119,
+      "compressed_bytes": 30709,
+      "raw_sha256": "d981b0e81a08b361e8d03cc919c5c7253fe7d810dde4a72936208e2ca8139f52",
+      "sha256": "f6313c1f6140f0556877313b088fc9d712af2112bc7237e72179cffd7659c3c7"
+    },
+    {
+      "file": "chat-code.candidate-23.log.gz",
+      "original_bytes": 288145,
+      "compressed_bytes": 30703,
+      "raw_sha256": "8a5a47403e8ea086dea22e26ffce81576e266faabe360018b35973f5e4fdca11",
+      "sha256": "930f727809bfc23f005526deebcddb94ef94fe14bb48b6ac5db283ba8f00f9b0"
+    },
+    {
+      "file": "chat-code.candidate-24.log.gz",
+      "original_bytes": 288207,
+      "compressed_bytes": 30718,
+      "raw_sha256": "f76b4509b561c22ce061b02135a0c5c84fd0768b586f571230a0316c606e735f",
+      "sha256": "6f688f6c351ce3df1e02e1330833702fb427356368e020c9905990acb1b930ee"
+    },
+    {
+      "file": "chat-code.candidate-25.log.gz",
+      "original_bytes": 288137,
+      "compressed_bytes": 30610,
+      "raw_sha256": "0ae101f45cd02cee8e2322a3ff3cb614cb4862b7063396887e3f77b76819e8fa",
+      "sha256": "62a371ad52a5f335a7580b6d3c3f7f0dea52334065e2f853de5d5f74b6603dfe"
+    },
+    {
+      "file": "chat-code.candidate-26.log.gz",
+      "original_bytes": 288179,
+      "compressed_bytes": 30757,
+      "raw_sha256": "1e8d7e910381452dba99060e4ff2269cbe5235c096e57a5544519ee514b163e0",
+      "sha256": "88ac8fde4c95d7be89b9ed8b1168d420f1d4f0ea9fd9b3ab59b72f20ced21507"
+    },
+    {
+      "file": "chat-code.candidate-27.log.gz",
+      "original_bytes": 288175,
+      "compressed_bytes": 30670,
+      "raw_sha256": "4f08f64b0a437a54246d23d5071a786b25e8e371d76c3267511a16b55ae073e1",
+      "sha256": "14294778861126b53a1a24894a746808dde5b332059d20da17afab5e9a9a4819"
+    },
+    {
+      "file": "chat-code.candidate-28.log.gz",
+      "original_bytes": 288119,
+      "compressed_bytes": 30675,
+      "raw_sha256": "494ed13d58e049398a002f9da9893e38502b2c97573f1417597c13466005a3a9",
+      "sha256": "42886984e04cd0ced9e6b003006ff67f17250abef5d436c01f7abf47e59330b8"
+    },
+    {
+      "file": "chat-code.candidate-29.log.gz",
+      "original_bytes": 288297,
+      "compressed_bytes": 30737,
+      "raw_sha256": "098605ce0321c7c935f6b46361ae8d5250463a7b1d373fb3f944f231cf13690d",
+      "sha256": "eb038de6edc119134da67f16c92166855bfc7c992f95c7ed4f984fbebd42044c"
+    },
+    {
+      "file": "chat-code.candidate-3.log.gz",
+      "original_bytes": 288124,
+      "compressed_bytes": 30647,
+      "raw_sha256": "4062fb1562f7bd2e14bb40d6797d74504fc778276dac1fa365925d4d2c17de0a",
+      "sha256": "b5afe81afb04e75aeb5389065be880b543b137764a02bccfee0f608fd0f17f37"
+    },
+    {
+      "file": "chat-code.candidate-4.log.gz",
+      "original_bytes": 288126,
+      "compressed_bytes": 30703,
+      "raw_sha256": "0630ef179410ab9419ea391694d735bf1d218ba5174e46c0edb062bc74b2d471",
+      "sha256": "fc81322a38c42120ebca36fc1ff8f350a6acf6e6f69626afae8ad2cb5cc20497"
+    },
+    {
+      "file": "chat-code.candidate-5.log.gz",
+      "original_bytes": 288186,
+      "compressed_bytes": 30717,
+      "raw_sha256": "a1704b59062e60c56fc30838c1094ee03b902e9b9b563c18b989505717abb44a",
+      "sha256": "49750c93d020ec4e2dd522b8ca02ed11c96b741f53c4b63efae1d44eabf880fa"
+    },
+    {
+      "file": "chat-code.candidate-6.log.gz",
+      "original_bytes": 288280,
+      "compressed_bytes": 30761,
+      "raw_sha256": "e165541e884ea17e162bcabe3224a97547a093cf81a32b5150863f814e599f99",
+      "sha256": "137dc7d601b93748f44d0e13d9f5512edf8a89c4e54627e0482bdc518a2547f4"
+    },
+    {
+      "file": "chat-code.candidate-7.log.gz",
+      "original_bytes": 288248,
+      "compressed_bytes": 30765,
+      "raw_sha256": "85955f4b953ba87cf7101af3e3dd3bd4c26acba8d601214fd300cd6456441009",
+      "sha256": "d361aac5ffe6c386bfdd98ab545e9055536d3cae1258e88fb68ed3a0a4e5cbfd"
+    },
+    {
+      "file": "chat-code.candidate-8.log.gz",
+      "original_bytes": 288304,
+      "compressed_bytes": 30751,
+      "raw_sha256": "6ef40e5d6492a7f43a0b80145f5cb7ebb3918b6229c131ed0ed342678ba0313d",
+      "sha256": "82aa360aa1643272604109dfb94af7ab66fd3cefe416a0ffa9defc4f7d57f794"
+    },
+    {
+      "file": "chat-code.candidate-9.log.gz",
+      "original_bytes": 288274,
+      "compressed_bytes": 30682,
+      "raw_sha256": "5f8ec02c666b95f175277bd59fdce8d792ef141ba73b08da5f9002b7d8d9dd62",
+      "sha256": "3eb68b92ed902c7e67c33d2301c740f706655d3d25dfdebddab349948e84de37"
+    },
+    {
+      "file": "front-agent-driver.log.gz",
+      "original_bytes": 7556,
+      "compressed_bytes": 707,
+      "raw_sha256": "cf23d5ce865dd113342baebeeb4a9fce7d08161b3b6d24c44f445f2367191dff",
+      "sha256": "c5fc132aba045bdc7b34d72075d84adb444b3efa8c9b2131da6f665fa4b3db82"
+    },
+    {
+      "file": "front-code-driver.log.gz",
+      "original_bytes": 7572,
+      "compressed_bytes": 736,
+      "raw_sha256": "ca0752a627165149d86a0c8ed23a43efe12bd915fbaaf194ce24b5cd644f61a0",
+      "sha256": "ac9e5aeb2819cf635e95de61a4e9f4c6574957a807f8b9e5db04ed157d765821"
+    },
+    {
+      "file": "frozen-build-lazy-fixed.log.gz",
+      "original_bytes": 108248,
+      "compressed_bytes": 5024,
+      "raw_sha256": "8c36dccc4e77a29fc095b4b0a7be4842206451ddbbf678b12b889302a4090924",
+      "sha256": "15866523e2dd1fccc3f83ecc7ec19ec9458ed3a78641c55ec94c49d7ef4c0eba"
+    },
+    {
+      "file": "frozen-build-ssl-fixed.log.gz",
+      "original_bytes": 95092,
+      "compressed_bytes": 4868,
+      "raw_sha256": "d770f109d99907481c8d7aa480190c1e62d675c97951478be4b4745cd8f5d2fa",
+      "sha256": "0dab1259a8685368460e560ad03d24202549d209a50c67d36a9d8406ec429593"
+    },
+    {
+      "file": "frozen-build.log.gz",
+      "original_bytes": 95096,
+      "compressed_bytes": 4877,
+      "raw_sha256": "e5bb5a3717e0dd251c719e12dde0a2abc53f047a747ac741789a91773ff02037",
+      "sha256": "05776ef140e2608c2a046c2bcffdde66ba124c7910ece4dfafbe728e7d541bf2"
+    },
+    {
+      "file": "frozen-diagnostic-driver.log.gz",
+      "original_bytes": 2592,
+      "compressed_bytes": 697,
+      "raw_sha256": "866faca7fb77105162c32f4e8debe23bb1adbef22d52660cd1d16ac00220ac51",
+      "sha256": "ac6487e9fc576db482d38b5b78c2a81e8a928f84fa143e6365cffae1331a9eb0"
+    },
+    {
+      "file": "frozen-diagnostic.log.gz",
+      "original_bytes": 2518,
+      "compressed_bytes": 794,
+      "raw_sha256": "cecf425f5fbd31db67b5b3899f2154b9b857eac2ac48f3f0471950c1885c6219",
+      "sha256": "4878c2a611baf69ce593753bfa4d4bee8d60b1117e7031235a65e9362a1ede0f"
+    },
+    {
+      "file": "frozen-tool-driver.log.gz",
+      "original_bytes": 2592,
+      "compressed_bytes": 698,
+      "raw_sha256": "82ca3e8c1437fe231f139cb9a6777dd24b6cd9760a5b38998eff6f3d890c379d",
+      "sha256": "e7a7fbe27315062d9fb9b7bcdc81672b713bd43b76cb52ed7545a4131c7c9329"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed-driver.log.gz",
+      "original_bytes": 172,
+      "compressed_bytes": 116,
+      "raw_sha256": "ec3725e541df61c60811668c666faa1d1c2160f2c8bce553df90fb42c4c2bda6",
+      "sha256": "0805efb19caa14ddd0990f6f3ca3a3b7ca2c3f59c64dfe483c87f2b110752591"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed.log.gz",
+      "original_bytes": 5990,
+      "compressed_bytes": 1118,
+      "raw_sha256": "dcac879e5eb193f111db2213eda5506010975141f287fee97efae8f34605c1c4",
+      "sha256": "fdd182161cc2cdf9dc87364c8a560f3f702d38da1efae69932a9977b02031079"
+    },
+    {
+      "file": "frozen-tool-ssl-fixed-driver.log.gz",
+      "original_bytes": 2592,
+      "compressed_bytes": 697,
+      "raw_sha256": "866faca7fb77105162c32f4e8debe23bb1adbef22d52660cd1d16ac00220ac51",
+      "sha256": "ac6487e9fc576db482d38b5b78c2a81e8a928f84fa143e6365cffae1331a9eb0"
+    },
+    {
+      "file": "frozen-tool-ssl-fixed.log.gz",
+      "original_bytes": 2518,
+      "compressed_bytes": 782,
+      "raw_sha256": "861292f97cefaa7f2bf04c52e0f9b0a93f6c3194f6bfef6991f4554b3b2da4f3",
+      "sha256": "c8278409c82ab37208468e87c2bdd059076fc7cccaca4e681de355960bafa35b"
+    },
+    {
+      "file": "frozen-tool.log.gz",
+      "original_bytes": 2518,
+      "compressed_bytes": 796,
+      "raw_sha256": "3048055f113874fa0670224b11a7374a281bfbead36e8b23e57bf1e907c15d2e",
+      "sha256": "01be02d0aff3f8a0f4042c83cb24dafd63ff88224d3f53853b669025c8fcc1e0"
+    },
+    {
+      "file": "optional-default-driver.log.gz",
+      "original_bytes": 5052,
+      "compressed_bytes": 1261,
+      "raw_sha256": "20ca37cfb52b118b282b31fc967e4f4825c7c66f6d93e1e418129f6e8fb1ade9",
+      "sha256": "b0815fe248a698a01216d96665263cd2d39fd79ef15dbf39272bb1c2dc20b2b1"
+    },
+    {
+      "file": "optional-default-final-driver.log.gz",
+      "original_bytes": 710,
+      "compressed_bytes": 266,
+      "raw_sha256": "10c7ed3fc986f8e91e5d6361f2674160e3812e87e1e613b1fe6abc78816819a5",
+      "sha256": "4af6ebce2ad5cb69db94842286904f1ab7d429695b45bb34450b6efd87270c20"
+    },
+    {
+      "file": "optional-default-final.log.gz",
+      "original_bytes": 410723,
+      "compressed_bytes": 39232,
+      "raw_sha256": "caefc0f4c76cbcb9f2c59b0fc1e092029c314386845216a9f8c2f0cdbe01ad7b",
+      "sha256": "39aca440e97622e920b467dffecbbf3f82ff1398a15955cb2a092ae3d27197be"
+    },
+    {
+      "file": "optional-default.log.gz",
+      "original_bytes": 39959,
+      "compressed_bytes": 4901,
+      "raw_sha256": "2975c72b465b4d800f717908d11bbc94e4e1560cf3930680ba8cf1cf86fc07c9",
+      "sha256": "2255642ae78e7093ef472a9c1d46bc2a3dc0ce5b9ba977a82eb0e4e13b53bc9a"
+    },
+    {
+      "file": "optional-enabled-driver.log.gz",
+      "original_bytes": 5052,
+      "compressed_bytes": 1261,
+      "raw_sha256": "cca4b84a19da1ee46bb910b1d531d4531697337d2f6476714d9c4d74ceb77d80",
+      "sha256": "5060775795161ae6c2099a23de5683060bc128aa6ed83ac298e1106e237d1882"
+    },
+    {
+      "file": "optional-enabled-final-driver.log.gz",
+      "original_bytes": 710,
+      "compressed_bytes": 265,
+      "raw_sha256": "78680dbb2a7ad5f71e9286c87990ba6198dab363ef9ab2d41e76bcc2e57410dc",
+      "sha256": "1e9f91c6bc069236f2a427cdab72337da6dc4fc418b938c0eb0e4515df5366d6"
+    },
+    {
+      "file": "optional-enabled-final.log.gz",
+      "original_bytes": 419984,
+      "compressed_bytes": 40504,
+      "raw_sha256": "961bb3d51ddd2c4e62f89d02d85e06b99d1dd5d4f8deb3558c80d9d3451e7bef",
+      "sha256": "ebb1ba525666a66541e644b833426a360841d6041a3eb35d292f13aae325fe15"
+    },
+    {
+      "file": "optional-enabled-verified-driver.log.gz",
+      "original_bytes": 710,
+      "compressed_bytes": 265,
+      "raw_sha256": "78680dbb2a7ad5f71e9286c87990ba6198dab363ef9ab2d41e76bcc2e57410dc",
+      "sha256": "1e9f91c6bc069236f2a427cdab72337da6dc4fc418b938c0eb0e4515df5366d6"
+    },
+    {
+      "file": "optional-enabled-verified.log.gz",
+      "original_bytes": 422393,
+      "compressed_bytes": 40735,
+      "raw_sha256": "81494c93abffe532a78ca56694e9f6bba352cb2e79186f24f173b0b7d5b0edba",
+      "sha256": "aee641008be140cdf77120c9e4623d1269234cb725c1cbc915edd1a15765bf9f"
+    },
+    {
+      "file": "optional-enabled.log.gz",
+      "original_bytes": 44310,
+      "compressed_bytes": 5716,
+      "raw_sha256": "92f5ec6384b4bda1f6e599a78109448b3d31427df31e4aec018c6d7e6af488b8",
+      "sha256": "e189928c2b4e2f70cfb621b10b86e52968c029aacaa4f180f8f2ff1a7607b962"
+    },
+    {
+      "file": "optional-faults-driver.log.gz",
+      "original_bytes": 5052,
+      "compressed_bytes": 1262,
+      "raw_sha256": "f1a8be45c7392ba35f6f8aa767219fc94cb86d632896c1be8f1d58d7e42b63a6",
+      "sha256": "c5a2afd9308cedea38fc33ea63470c7b2661f816bee0d7aefea8fb6e12708394"
+    },
+    {
+      "file": "optional-faults-final-driver.log.gz",
+      "original_bytes": 708,
+      "compressed_bytes": 270,
+      "raw_sha256": "9229de6486a80c1b536bb04f0c94130572d5173d115b67b19538833c0cc46f3d",
+      "sha256": "796af50be4361d583e6d2f1afbb9dce37881ab7a029c2c264da6e7afad91ec66"
+    },
+    {
+      "file": "optional-faults-final.log.gz",
+      "original_bytes": 397905,
+      "compressed_bytes": 39170,
+      "raw_sha256": "aa084263a58a08a55dfd74dee875114314a0ae7a2bad2a38e3bebb758a2b5bf2",
+      "sha256": "541cc0c11707a2669e8240a79f9c5d0eef662d6449114a125ecbff084749fdd7"
+    },
+    {
+      "file": "optional-faults.log.gz",
+      "original_bytes": 20237,
+      "compressed_bytes": 3753,
+      "raw_sha256": "1b980f6c7922f756e2d6622c6f20c6b06c7d5b1d9d8a293d8f5027065c3a2906",
+      "sha256": "9050d4de03915ad0a6ec62052793fd529d6596bbe0b5b468d94e18ee35be1a89"
+    },
+    {
+      "file": "optional-mcp-failure-driver.log.gz",
+      "original_bytes": 5052,
+      "compressed_bytes": 1262,
+      "raw_sha256": "39a09d2917a908f2c275f6d8d0d733d83101a3860d1d5cb2fc213d3bd3fa872b",
+      "sha256": "a4d6879d8a2e4af2224a5aae17c3f62a542930d816a04cf60a2a659f52348b81"
+    },
+    {
+      "file": "optional-mcp-failure-final-driver.log.gz",
+      "original_bytes": 718,
+      "compressed_bytes": 271,
+      "raw_sha256": "d1e666c8209844a7bd226861d61d410a1a114601b737f39e68ba634e99108982",
+      "sha256": "4d779e31fc36be937158e4d84452db1f84938c1981f2b01b0fd496dea02d8a91"
+    },
+    {
+      "file": "optional-mcp-failure-final.log.gz",
+      "original_bytes": 417952,
+      "compressed_bytes": 40046,
+      "raw_sha256": "5956f1cbfd9fa593a32050468ff96591ea66bee99dc30897969bf6b54aec51c1",
+      "sha256": "d0656824d07e4236a9b6a157368ba09a086ebf8927aa0919cb4e86bea0672dd0"
+    },
+    {
+      "file": "optional-mcp-failure-verified-driver.log.gz",
+      "original_bytes": 718,
+      "compressed_bytes": 271,
+      "raw_sha256": "d1e666c8209844a7bd226861d61d410a1a114601b737f39e68ba634e99108982",
+      "sha256": "4d779e31fc36be937158e4d84452db1f84938c1981f2b01b0fd496dea02d8a91"
+    },
+    {
+      "file": "optional-mcp-failure-verified.log.gz",
+      "original_bytes": 423473,
+      "compressed_bytes": 41562,
+      "raw_sha256": "c1d201b11d1586d3f16af1048dfd28b58bb46d93c7fad5251cd09c493b1f5bac",
+      "sha256": "c0282f1d1f7a38ffbd086355b9b9b06edd60c4a552f253e24948ee5122226559"
+    },
+    {
+      "file": "optional-mcp-failure.log.gz",
+      "original_bytes": 44310,
+      "compressed_bytes": 5722,
+      "raw_sha256": "794178cf4195d367489c550db3701c4b195bc0e062aede270cd2515af9256af4",
+      "sha256": "3bbe1a105819f914eb2dae9d957a03fd957500c0dedfb232d594a695d3ce348b"
+    },
+    {
+      "file": "upgrade-code-before-fix-driver.log.gz",
+      "original_bytes": 190,
+      "compressed_bytes": 130,
+      "raw_sha256": "1a3bfbaa297ae0923382dfc64682902637f0a5a69a6c786669fdc935ead8685c",
+      "sha256": "48518676e4a715f5d742ab930cfb9e788740ad9ce2f91609085a5313128210ce"
+    },
+    {
+      "file": "upgrade-code-before-fix.log.gz",
+      "original_bytes": 814995,
+      "compressed_bytes": 76825,
+      "raw_sha256": "7b888683022c957888dd80aadba9ff7db307e336757f5cebc0c081eb5357f75b",
+      "sha256": "5a8fc85a5dff3fc9556e0c6e029451fcadeacbed5d4b400dcff305f301fb29c8"
+    },
+    {
+      "file": "upgrade-protocol-driver.log.gz",
+      "original_bytes": 186,
+      "compressed_bytes": 129,
+      "raw_sha256": "927413e8d609159b4e9f29d7147735822fa85dc72bd8d853c98270f63aa0a02d",
+      "sha256": "eb3aa532d2be738a5647e595ec8f013e771bc1e5fa08c3b9f6c5a7ceed8887f1"
+    },
+    {
+      "file": "upgrade-protocol.log.gz",
+      "original_bytes": 816572,
+      "compressed_bytes": 76876,
+      "raw_sha256": "2dcc643ee7844eeaa3cb8e748f16f8b6f0962adcb1e984bf47eedd432dc592d0",
+      "sha256": "9658bc0d7914ce3a2b7dcaca3083b148da4bbc5f06ab6210658a98f3fee3e2cf"
+    },
+    {
+      "file": "web-build.log.gz",
+      "original_bytes": 68314,
+      "compressed_bytes": 9805,
+      "raw_sha256": "14b518808a22bacf001ea1b7103249850a71c0abe89ceffb2f10523ccdacd190",
+      "sha256": "53321ddd9a474771909f487afecf818a4e34feab7f727dc0efba815468887101"
+    },
+    {
+      "file": "web-chat-store-streaming.log.gz",
+      "original_bytes": 2838,
+      "compressed_bytes": 956,
+      "raw_sha256": "b0f14727f3ae74921f6a87738b26b2437fae2f6a9a49f62696b94099e307ad83",
+      "sha256": "043351f2c79ca4aef2eb9e00335c5d36655fe96eb8e6d7a53da970fc64108377"
+    },
+    {
+      "file": "web-cross-session-message.log.gz",
+      "original_bytes": 2630,
+      "compressed_bytes": 965,
+      "raw_sha256": "001cacd275a511a21af778694c6c0d2306a96eabe9ea374296d0908b8770594a",
+      "sha256": "66fb1cf731308ef1de414edf4fbe4e463465e9875e4623c25b0dacb02f9afdd1"
+    },
+    {
+      "file": "web-history-pagination.log.gz",
+      "original_bytes": 2560,
+      "compressed_bytes": 872,
+      "raw_sha256": "3d1e6c3566ca640983c430f62413d384fa690735edc8c45bad82cf640283782d",
+      "sha256": "32203edf4c0360e676151308585f29089aeb7e60ebb9710d54419e184f0ea0eb"
+    },
+    {
+      "file": "web-history-record-reassembler.log.gz",
+      "original_bytes": 1022,
+      "compressed_bytes": 453,
+      "raw_sha256": "a2ba035c15c341f3d9e129453ebd4a3888925ad6f33b020f53e087423661ce02",
+      "sha256": "28c4c1216763459367ae03eb2dcb8e5dd9e09bca0e8dc1c405165881db911041"
+    },
+    {
+      "file": "web-i18n-locales.log.gz",
+      "original_bytes": 660,
+      "compressed_bytes": 396,
+      "raw_sha256": "673d87ae63e2e5d42f8bc99f7a3d34a5789c473e80968b5dd6ebb0817e307956",
+      "sha256": "39505c2dec05e667549b279844b9e60325f433312a3198cf3de83853f15a598b"
+    },
+    {
+      "file": "web-reload-regression.log.gz",
+      "original_bytes": 3554,
+      "compressed_bytes": 1208,
+      "raw_sha256": "a8cb4a3273962dc79f6863b646d4b5726f5bdf3b8bab5f7e5fb7c529eab947b2",
+      "sha256": "799392459b2c0b1c0a33c588a1f16e05b89e59a4a1e0fb7545e6aee00e44b758"
+    },
+    {
+      "file": "web-session-event-gate.log.gz",
+      "original_bytes": 1682,
+      "compressed_bytes": 627,
+      "raw_sha256": "6d331e4de8e99907c14a4a6f6ed32e1998e640f75881f9684a217e10df183fed",
+      "sha256": "41c620dc500b453d20af6ffc38cff415cae9fa7e17d6d9dc80543afca23bb050"
+    },
+    {
+      "file": "web-web-client-runtime-ack.log.gz",
+      "original_bytes": 3574,
+      "compressed_bytes": 1231,
+      "raw_sha256": "14ed1cef27d06bd9f45366a51cb150791d1a2a8d84f93aded1eed54c30fb2fa9",
+      "sha256": "63789d5a9f843c6e8d2ced720f5d635f94b3aae25f0886ca05232758cc7bd7a3"
+    },
+    {
+      "file": "web-ws-event-dedup.log.gz",
+      "original_bytes": 1560,
+      "compressed_bytes": 540,
+      "raw_sha256": "cd480cdc4aee0f891336db61b778c3cf4129e3b02e2880cc10173b0b15d518d9",
+      "sha256": "c0b3d1c9b0413e3d2772b10feac6e6112fe7d970ee23c64082b2148ad112c62c"
+    },
+    {
+      "file": "worker-front-desktop-regression.log.gz",
+      "original_bytes": 20608,
+      "compressed_bytes": 2935,
+      "raw_sha256": "8e1355957dc827f331a6cc830334ac5f434de5b63a4e5b0aef6a7f3ce567c303",
+      "sha256": "f8a857abcb7c00df80f3edf28c0f593734e5be2ec6f180784128b0eef3a941b5"
+    },
+    {
+      "file": "frozen-diagnostic-frozen-logs/agent/.logs/agent_server.log.gz",
+      "compressed_bytes": 1073,
+      "sha256": "33f902b2243a183154dc2aab9b3d894d2a947cc2c9105d98220627073b035787"
+    },
+    {
+      "file": "frozen-diagnostic-frozen-logs/agent/.logs/channel.log.gz",
+      "compressed_bytes": 20,
+      "sha256": "46b50c321b39e89a491b6727a01628c34245605a30beb3e7414c5e01cff90e6e"
+    },
+    {
+      "file": "frozen-diagnostic-frozen-logs/agent/.logs/faulthandler-agentserver.log.gz",
+      "compressed_bytes": 642,
+      "sha256": "6ec5a249db327c7eda5aaf688017c476af782c642a52c97a4646f045882b0290"
+    },
+    {
+      "file": "frozen-diagnostic-frozen-logs/agent/.logs/full.log.gz",
+      "compressed_bytes": 1073,
+      "sha256": "33f902b2243a183154dc2aab9b3d894d2a947cc2c9105d98220627073b035787"
+    },
+    {
+      "file": "frozen-diagnostic-frozen-logs/agent/.logs/gateway.log.gz",
+      "compressed_bytes": 412,
+      "sha256": "eea55e12ac7f8d0cb8c93f2ce60f89d908dd2755133f31486fe09e4cbad0bc1b"
+    },
+    {
+      "file": "frozen-diagnostic-frozen-logs/agent/.logs/permissions.log.gz",
+      "compressed_bytes": 20,
+      "sha256": "46b50c321b39e89a491b6727a01628c34245605a30beb3e7414c5e01cff90e6e"
+    },
+    {
+      "file": "frozen-diagnostic-frozen-logs/agent/sessions/resident-session/metadata.json.gz",
+      "compressed_bytes": 228,
+      "sha256": "c8794fb1ee5947de7cb9bb18e872df1ab1ebc664cefb64d3c0755d8fb362f773"
+    },
+    {
+      "file": "frozen-diagnostic-frozen-logs/agent/workspace/agent-data.json.gz",
+      "compressed_bytes": 5956,
+      "sha256": "115c1dc332ddcf1eebc9f76c517edc4fc0158ec545a9396416983d4ebc984455"
+    },
+    {
+      "file": "frozen-diagnostic-frozen-logs/agent/workspace/skills/skills_state.json.gz",
+      "compressed_bytes": 193,
+      "sha256": "b2d9eee4e91685d726ed32f787fd92316665178b21013bbb24b2ba7657841347"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed-frozen-logs/agent/.logs/agent_server.log.gz",
+      "compressed_bytes": 3788,
+      "sha256": "d83437cc104b4ecfe3d38ef6d132a103d3cdbe540525e79128d6d9dc872d7502"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed-frozen-logs/agent/.logs/channel.log.gz",
+      "compressed_bytes": 20,
+      "sha256": "46b50c321b39e89a491b6727a01628c34245605a30beb3e7414c5e01cff90e6e"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed-frozen-logs/agent/.logs/faulthandler-agentserver.log.gz",
+      "compressed_bytes": 20,
+      "sha256": "46b50c321b39e89a491b6727a01628c34245605a30beb3e7414c5e01cff90e6e"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed-frozen-logs/agent/.logs/full.log.gz",
+      "compressed_bytes": 3788,
+      "sha256": "d83437cc104b4ecfe3d38ef6d132a103d3cdbe540525e79128d6d9dc872d7502"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed-frozen-logs/agent/.logs/gateway.log.gz",
+      "compressed_bytes": 1727,
+      "sha256": "28ad1870692e28c1a9a6cbf7d1327df7dd02c6baa68e2860018195beca38c800"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed-frozen-logs/agent/.logs/permissions.log.gz",
+      "compressed_bytes": 20,
+      "sha256": "46b50c321b39e89a491b6727a01628c34245605a30beb3e7414c5e01cff90e6e"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed-frozen-logs/agent/lifecycle/resources/session_resident-session.json.gz",
+      "compressed_bytes": 96,
+      "sha256": "ff2b6e1829a5773648f81fb2136ca7d7fc2b74d9fd16e3258886e64e28c7f0fa"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed-frozen-logs/agent/sessions/resident-session/metadata.json.gz",
+      "compressed_bytes": 447,
+      "sha256": "8d07b2e85012580b64ea4e878ae7dec2c0a6b0979c8c1e900539879876a8aefc"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed-frozen-logs/agent/workspace/agent-data.json.gz",
+      "compressed_bytes": 5956,
+      "sha256": "115c1dc332ddcf1eebc9f76c517edc4fc0158ec545a9396416983d4ebc984455"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed-frozen-logs/agent/workspace/skills/huawei-cloud-maas-setup/models.json.gz",
+      "compressed_bytes": 573,
+      "sha256": "fc29200207c49864b9164f7cb1e5ba05ffa1072fb5c228d984e5a0974198f065"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed-frozen-logs/agent/workspace/skills/local-doc-ocr/_meta.json.gz",
+      "compressed_bytes": 113,
+      "sha256": "f68db0589f0a1918d6928804e09f4aca936b21b5f0b5f61a5e9be39b98bdbe91"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed-frozen-logs/agent/workspace/skills/skills_state.json.gz",
+      "compressed_bytes": 419,
+      "sha256": "0600dabde9f46779add1e5c5fce785eb388224850d113ec17df63bac3b99e117"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed-frozen-logs/agent/workspace/skills/xlsx/_meta.json.gz",
+      "compressed_bytes": 113,
+      "sha256": "7b41085699ec358731bba96e15612325fc4297b8857e82f83ce1a7c960756b9f"
+    },
+    {
+      "file": "frozen-tool-lazy-fixed-frozen-logs/config/runtime_state/resident-session.05efe12ea54d4694.skill-retrieval.json.gz",
+      "compressed_bytes": 202,
+      "sha256": "d7b69c70bd35da381fb8a80b4e103e02580615b9da6ed1ad1d97e9521149a903"
+    },
+    {
+      "file": "frozen-tool-ssl-fixed-frozen-logs/agent/.logs/agent_server.log.gz",
+      "compressed_bytes": 944,
+      "sha256": "9abcb14778a134b8f28723d652cfb07649f52b6713c75a64191e5a5f97ca17fc"
+    },
+    {
+      "file": "frozen-tool-ssl-fixed-frozen-logs/agent/.logs/channel.log.gz",
+      "compressed_bytes": 20,
+      "sha256": "46b50c321b39e89a491b6727a01628c34245605a30beb3e7414c5e01cff90e6e"
+    },
+    {
+      "file": "frozen-tool-ssl-fixed-frozen-logs/agent/.logs/faulthandler-agentserver.log.gz",
+      "compressed_bytes": 20,
+      "sha256": "46b50c321b39e89a491b6727a01628c34245605a30beb3e7414c5e01cff90e6e"
+    },
+    {
+      "file": "frozen-tool-ssl-fixed-frozen-logs/agent/.logs/full.log.gz",
+      "compressed_bytes": 944,
+      "sha256": "9abcb14778a134b8f28723d652cfb07649f52b6713c75a64191e5a5f97ca17fc"
+    },
+    {
+      "file": "frozen-tool-ssl-fixed-frozen-logs/agent/.logs/gateway.log.gz",
+      "compressed_bytes": 1009,
+      "sha256": "243fb23c873a604ed07b9176eb7a10191d22572152f115978eadac980ae84c63"
+    },
+    {
+      "file": "frozen-tool-ssl-fixed-frozen-logs/agent/.logs/permissions.log.gz",
+      "compressed_bytes": 20,
+      "sha256": "46b50c321b39e89a491b6727a01628c34245605a30beb3e7414c5e01cff90e6e"
+    },
+    {
+      "file": "frozen-tool-ssl-fixed-frozen-logs/agent/sessions/resident-session/metadata.json.gz",
+      "compressed_bytes": 228,
+      "sha256": "25c21064239c0966b9e463fae30d5a2dff43b90961ed7438e38d0227d6312ae5"
+    },
+    {
+      "file": "frozen-tool-ssl-fixed-frozen-logs/agent/workspace/agent-data.json.gz",
+      "compressed_bytes": 5956,
+      "sha256": "115c1dc332ddcf1eebc9f76c517edc4fc0158ec545a9396416983d4ebc984455"
+    },
+    {
+      "file": "frozen-tool-ssl-fixed-frozen-logs/agent/workspace/skills/huawei-cloud-maas-setup/models.json.gz",
+      "compressed_bytes": 573,
+      "sha256": "fc29200207c49864b9164f7cb1e5ba05ffa1072fb5c228d984e5a0974198f065"
+    },
+    {
+      "file": "frozen-tool-ssl-fixed-frozen-logs/agent/workspace/skills/local-doc-ocr/_meta.json.gz",
+      "compressed_bytes": 113,
+      "sha256": "f68db0589f0a1918d6928804e09f4aca936b21b5f0b5f61a5e9be39b98bdbe91"
+    },
+    {
+      "file": "frozen-tool-ssl-fixed-frozen-logs/agent/workspace/skills/skills_state.json.gz",
+      "compressed_bytes": 408,
+      "sha256": "8ca2bc42d9bf577f5f15d588241f475d16a11ca6be32222bb754fc0f663b8103"
+    },
+    {
+      "file": "frozen-tool-ssl-fixed-frozen-logs/agent/workspace/skills/xlsx/_meta.json.gz",
+      "compressed_bytes": 113,
+      "sha256": "7b41085699ec358731bba96e15612325fc4297b8857e82f83ce1a7c960756b9f"
+    }
+  ],
+  "total_compressed_bytes": 5229533,
+  "note": "Original logs retained locally; gzip preserves exact original bytes. Failed attempts retained as evidence. Generated build/dist binaries excluded."
+}

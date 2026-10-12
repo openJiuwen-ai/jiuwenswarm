@@ -1,0 +1,2438 @@
+{
+  "scenario": "mcp-failure",
+  "transport": "real-Front/Worker/SDK; local model protocol fixture",
+  "warming_controls": {
+    "session.list": "succeeded",
+    "project.list": "succeeded",
+    "config.get": "succeeded",
+    "history.get": "succeeded"
+  },
+  "capabilities": {
+    "skills": {
+      "wire": {
+        "protocol_version": "1.0",
+        "response_id": "optional-0",
+        "request_id": "optional-0",
+        "sequence": 0,
+        "is_final": true,
+        "status": "succeeded",
+        "response_kind": "e2a.complete",
+        "timestamp": "2026-10-12T06:23:17.997544+00:00",
+        "provenance": {
+          "source_protocol": "e2a",
+          "converter": "gateway_protocol.e2a.gateway_normalize:e2a_response_from_agent_response",
+          "converted_at": "2026-10-12T06:23:17.997544+00:00",
+          "details": {
+            "kind": "legacy_agent_response",
+            "ok": true
+          }
+        },
+        "body": {
+          "result": {
+            "skills": [
+              {
+                "name": "agent-creator",
+                "description": "Agent 模板包的创建与更新器：从自然语言创建可被 JiuwenSwarm 加载的 agent 模板包，或在同一流程的 update mode 下修改已有自定义专家。\n触发词：创建 agent模板包、创建模板包、生成 agent 模板、新建 agent、做一个 agent、create agent template、建一个专家、做一个专家、agent 脚手架、scaffold agent、修改专家、编辑专家、更新专家、调整专家、modify expert、update expert。当用户说「帮我做一个能 XX 的 agent」「创建一个 XX 专家」「改一下 XX 专家」「更新已有专家」时，务必使用本 skill。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\agent-creator\\SKILL.md",
+                "source": "builtin",
+                "display_name": "agent-creator",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "agent-group-creator",
+                "description": "从自然语言创建可被 JiuwenSwarm 加载和安装的专家团（agent_group）包，包含 Leader、专家成员、协作指令及可选共享技能。用户提出“创建专家团”“组建专家团队”“做一个多专家协作团队”时使用；创建单个专家使用 agent-creator，执行已有专家团的业务任务不使用本技能。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\agent-group-creator\\SKILL.md",
+                "source": "builtin",
+                "display_name": "agent-group-creator",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "baoyu-image-gen",
+                "description": "AI image generation with OpenAI GPT Image 2, Azure OpenAI, Google, OpenRouter, DashScope, Z.AI GLM-Image, MiniMax, Jimeng, Seedream, Replicate and Agnes APIs. Supports text-to-image, reference images, aspect ratios, and batch generation from saved prompt files. Sequential by default; use batch parallel generation when the user already has multiple prompts or wants stable multi-image throughput. Use when user asks to generate, create, or draw images.",
+                "version": null,
+                "metadata": {
+                  "openclaw": {
+                    "homepage": "https://github.com/JimLiu/baoyu-skills#baoyu-image-gen",
+                    "requires": {
+                      "anyBins": [
+                        "bun",
+                        "npx"
+                      ]
+                    }
+                  }
+                },
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\baoyu-image-gen\\SKILL.md",
+                "source": "builtin",
+                "display_name": "baoyu-image-gen",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "docx-pro",
+                "description": "Professional Word (.docx) document generation, faithful text replacement, Markdown round-trip conversion, document inspection, TOC insertion and watermarking. Use when the user asks to create rich-formatted Word documents (cover page, TOC, multi-level headings, styled tables with merged cells, images, code blocks, quotes, headers/footers, page numbers, watermarks), replace or batch-replace text in existing docx files while preserving every other byte and all formatting (handles text split across runs, tables, headers/footers), convert Markdown to docx or docx to Markdown, inspect document structure, insert TOC fields, or add text watermarks to existing docx files. Triggers on docx-pro, 生成 Word 文档, 生成报告文档, 富格式文档, Word 替换, Word 文本替换, Word 保真替换, 批量替换, 合同替换, 替换甲方, Markdown 转 Word, Word 转 Markdown, md 转 docx, docx 转 md, 插入目录, 添加水印, 文档结构分析, 专业排版.",
+                "description_cn": "专业 Word 文档工具集：从零生成富格式 Word（封面/目录/主题/合并单元格表格/图片/代码块/页眉页脚/水印）、保真文本替换（跨 run 定位、表格/页眉页脚全覆盖、其余字节零改动、支持批量映射与预览）、Markdown 双向转换、文档结构检查、目录插入与水印添加。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\docx-pro\\SKILL.md",
+                "source": "builtin",
+                "display_name": "docx-pro",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "huawei-cloud-maas-setup",
+                "description": "引导用户完成华为云 MaaS 服务购买和 API 配置。脚本自动完成授权更新、API Key 创建、模型开通；用户只需完成登录、充值、选择要开通的模型。整个流程预计 3-5 分钟。 适用于首次运行配置、华为云 MaaS 服务开通、API 凭证获取、模型服务配置等场景。 当用户提到华为云、MaaS、Maas、开通模型服务、配置 API、首次配置、引导配置、 一键配置等意图时触发。",
+                "allowed_tools": [
+                  "bash",
+                  "ask_user"
+                ],
+                "version": null,
+                "author": "",
+                "tags": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\huawei-cloud-maas-setup\\SKILL.md",
+                "source": "builtin",
+                "display_name": "huawei-cloud-maas-setup",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "local-doc-ocr",
+                "version": null,
+                "author": "海河（李昂）",
+                "license": "MIT",
+                "category": "文档处理 / OCR",
+                "platforms": [
+                  "workbuddy",
+                  "claude-code",
+                  "cursor",
+                  "ima",
+                  "qclaw"
+                ],
+                "description": "本地离线 OCR——将扫描件 PDF/图片提取为文字。双引擎：(A) RapidOCR 纯本地离线一键出 .md（默认保底、不联网、不占 token、可批量）；(B) 支持多模态读图能力的 Agent 逐页读图（高质量，擅长表格/手写/印章，如 WorkBuddy 的 Read 工具）。全程本机处理，适合涉密/敏感与隐私资料。触发词：OCR、识别、读PDF、读一下这份、把这个读出来、转成文字、扫描件提取、图片转文字、识别扫描件、PDF转文字、手写识别、提取图片里的字、这份文件读不出来、资料入库（如喂给知识库）时遇到扫描件。注：用户说\"识别隐患/安全隐患\"属安全检查类技能，本技能只做文字提取。",
+                "agent_created": true,
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\local-doc-ocr\\SKILL.md",
+                "source": "builtin",
+                "display_name": "local-doc-ocr",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "pdf-extraction",
+                "description": "Extract text, tables, and metadata from PDFs using pdfplumber",
+                "version": null,
+                "author": "claude-office-skills",
+                "license": "MIT",
+                "category": "pdf",
+                "tags": [
+                  "pdf",
+                  "extraction",
+                  "text",
+                  "tables"
+                ],
+                "department": "All",
+                "models": {
+                  "recommended": [
+                    "claude-sonnet-4",
+                    "claude-opus-4"
+                  ],
+                  "compatible": [
+                    "claude-3-5-sonnet",
+                    "gpt-4",
+                    "gpt-4o"
+                  ]
+                },
+                "mcp": {
+                  "server": "office-mcp",
+                  "tools": [
+                    "extract_text_from_pdf",
+                    "extract_tables_from_pdf"
+                  ]
+                },
+                "capabilities": [
+                  "text_extraction",
+                  "table_extraction",
+                  "data_mining"
+                ],
+                "languages": [
+                  "en",
+                  "zh"
+                ],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\pdf-extraction\\SKILL.md",
+                "source": "builtin",
+                "display_name": "pdf-extraction",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "plugin-creator",
+                "description": "Plugin 插件包的创建与更新器：从自然语言创建可被 JiuwenSwarm 加载的 plugin 插件包，或在同一流程的 update mode 下修改已有自定义插件。\n触发词：创建插件、创建 plugin、做一个插件、plugin 脚手架、修改插件、编辑插件、更新插件、调整插件、create plugin package、插件包、帮我做一个 XX 插件、给 agent 加 XX 能力包。当用户说「帮我做一个 XX 插件」「创建一个能力扩展包」「改一下 XX 插件」时，务必使用本 skill。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\plugin-creator\\SKILL.md",
+                "source": "builtin",
+                "display_name": "plugin-creator",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "pptx-generator",
+                "description": "Generate, edit, and read PowerPoint presentations. Create from scratch with PptxGenJS (cover, TOC, content, section divider, summary slides), edit existing PPTX via XML workflows, or extract text with markitdown. Triggers: PPT, PPTX, PowerPoint, presentation, slide, deck, slides.",
+                "license": "MIT",
+                "metadata": {
+                  "version": "1.0",
+                  "category": "productivity",
+                  "sources": [
+                    "https://gitbrent.github.io/PptxGenJS/",
+                    "https://github.com/microsoft/markitdown"
+                  ]
+                },
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\pptx-generator\\SKILL.md",
+                "source": "builtin",
+                "display_name": "pptx-generator",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "rsi-program-dataset-creator",
+                "description": "Use for program evolution — improving a working program by repeated search against a measured score, rather than by one edit. Covers both halves: deciding what is measured and how a candidate program is scored, and writing that decision into the task folder the run reads (`task.json`, `seed/`, `run/scorecard.json`, every parameter set). Triggers on \"make this code faster\", \"search for a better implementation\", staging or debugging a task folder, writing a scorecard or an evaluator, and on a `PROBE_REFUSED`, `SEARCH_FAILED` or `ARTIFACT_BUNDLE_INCOMPLETE` a run came back with.",
+                "metadata": "",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\rsi-program-dataset-creator\\SKILL.md",
+                "source": "builtin",
+                "display_name": "rsi-program-dataset-creator",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "skill-creator",
+                "description": "Unified entry point for all Skill creators. Routes skill creation and editing requests to the correct specialized creator. Use whenever the user wants to create a new Skill, edit an existing Skill from chat, or when the conversation scene is create_skill / edit_skill. Chooses among skill-creator-normal, swarmskill-creator, and skill-omni-creation, then ensures the final Skill package is delivered via send_file_to_user (never silently installed to workspace). Do not bypass this entry by calling specialized creators directly for create_skill / edit_skill scenes.",
+                "description_cn": "所有 Skill Creator 的统一入口。按场景与类型路由到 skill-creator-normal、swarmskill-creator 或 skill-omni-creation；创建/修改 Skill 时优先选用本 Skill，不要绕过本入口直接调用各专项 creator。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\skill-creator\\SKILL.md",
+                "source": "builtin",
+                "display_name": "skill-creator",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "skill-creator-normal",
+                "description": "Create new single-agent skills, modify and improve existing single-agent skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.",
+                "description_cn": "创建、修改、优化和评估单智能体技能。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\skill-creator-normal\\SKILL.md",
+                "source": "builtin",
+                "display_name": "skill-creator-normal",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "skill-omni-creation",
+                "description": "当用户说「从这个链接/URL生成skill」「把这个网页/教程做成skill」「从这个视频提取步骤」时触发。先读取此 SKILL.md，再按步骤调用 scripts/ 下的 Python 脚本完成：爬取网页或下载视频 → 下载图片/抽帧 → 生成标准 Skill Markdown 文件；若内容需要编程实现，自动编写并验证配套脚本（scripts/）。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\skill-omni-creation\\SKILL.md",
+                "source": "builtin",
+                "display_name": "skill-omni-creation",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "swarmskill-creator",
+                "description": "Creates, converts, or modifies Swarm Skills — the multi-role (多角色团队) extension of the Skills standard, optionally with an executable SwarmFlow orchestration script.\nUse when building or refactoring a multi-agent team, generating workflow (工作流/编排) orchestration code, or upgrading a single-agent skill into a collaborating team.\nDo NOT use for ordinary single-agent skills — use create-skill instead.\n",
+                "description_cn": "创建、转换或修改多角色 Swarm Skill；普通单智能体技能使用 `skill-creator`。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\swarmskill-creator\\SKILL.md",
+                "source": "builtin",
+                "display_name": "swarmskill-creator",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "xlsx",
+                "description": "Open, create, read, analyze, edit, repair, or validate spreadsheet files (.xlsx, .xlsm, .xltx, .csv, .tsv) with zero format loss, with first-class support for Chinese / CJK content. Use whenever the user asks to create, build, modify, fill, analyze, read, repair, validate, or format any spreadsheet, workbook, report, dashboard, budget, financial model, pivot table, or tabular data file. Handles Chinese text, encodings (UTF-8 / GB18030 / GBK), full-width characters, CJK fonts in rendering, and Chinese number/date conventions (¥, 万/亿, 年/月/日). Covers: creating new workbooks from scratch, reading and analyzing existing files, editing existing workbooks while preserving pivot tables / VBA macros / charts / sparklines / conditional formatting / named ranges, formula recalculation and validation, visual review of results, and applying professional formatting. Triggers on 'spreadsheet', 'Excel', 'workbook', '表格', '工作簿', '.xlsx', '.xlsm', '.csv', 'pivot table', '透视表', 'macro', '宏', 'chart', '图表', 'financial model', '财务模型', 'formula', '公式', or any request to produce tabular data.",
+                "license": "MIT",
+                "metadata": {
+                  "version": "2.0",
+                  "category": "productivity",
+                  "locale": "zh-CN-aware",
+                  "sources": [
+                    "ECMA-376 Office Open XML File Formats",
+                    "Microsoft Open XML SDK documentation"
+                  ]
+                },
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\xlsx\\SKILL.md",
+                "source": "builtin",
+                "display_name": "xlsx",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "advanced-daily-report",
+                "version": null,
+                "description": "进阶版日报生成器，支持多数据源采集、工作分析、趋势对比、周报月报聚合",
+                "tags": [
+                  "report",
+                  "automation",
+                  "productivity",
+                  "daily",
+                  "weekly",
+                  "monthly",
+                  "advanced"
+                ],
+                "allowed_tools": [
+                  "read_memory",
+                  "write_memory",
+                  "bash",
+                  "read_file",
+                  "write_file"
+                ],
+                "author": "",
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\advanced-daily-report\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "akg-agents",
+                "description": "代理执行 AKG 算子任务。先检查固定仓库与分支；若 `~/.akg/check_env.md` 不存在则强制 `FULL_SETUP=true`；忽略所有 `akg_cli` 检查和使用；后端代码生成直接执行 `run_workflow.py --workflow kernelgen`。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\akg-agents\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "ascend-moe-optimizer-auto-trace",
+                "description": "为昇腾算子在源码中接入 TRACE_POINT 与 MoeTracing，串通 trace_preprocessor、profiling tensor、point_map.json、 save_profiling_data 与 trace_collector 生成 Chrome trace。强调门禁 G1–G5：全链路预处理与 OPP、profiling 为数据输出最后一位、 整条编译与示例脚本联调、落盘路径在 spawn 前 resolve。遵循函数级粒度与就地扩展，禁止另注册 xxx_profiling 类第二入口， 保持原 Op 与 torch.ops 名称及签名不变。在用户提到算子打点、Profiling、Chrome trace、MoeTracing，或将结论写入本 skill 时读取。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\ascend-moe-optimizer-auto-trace\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "ascend-moe-optimizer-trace-analyzer",
+                "description": "在用户提供 Chrome/Perfetto trace.json、或排查 Ascend 上 MoE/FusedDeepMoe 等算子性能时使用。按 phase、category、core group、tid 统计耗时、overlap、bubble，输出 CSV、Markdown 报告与确定性诊断；可选外部 LLM 扩写分析。默认 phase 映射面向 UMDK FusedDeepMoe，其它 trace 需替换或扩展 config/phase_map.yaml。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\ascend-moe-optimizer-trace-analyzer\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "cross-channel-history-retrieval",
+                "description": "跨会话检索聊天原文（记忆不足时再用）。在回答任何关于历史事件、日期、人物、过去对话的问题时，如果记忆中没有相关信息或不足以回答，则需要使用跨会话检索聊天原文。用 mcp_exec_command 执行 scripts/search_history.py，读 ~/.jiuwenswarm/agent/sessions/*/history.json。支持 channel、session_id、关键词、时间窗。如果搜索结果不足，尝试用不同的关键词再次搜索。",
+                "allowed_tools": [
+                  "mcp_exec_command"
+                ],
+                "version": null,
+                "author": "",
+                "tags": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\cross-channel-history-retrieval\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "deepep-to-cam-converter",
+                "description": "识别代码中可替换为CAM算子的DeepEP算子，基于实际运行参数校验约束，自动完成通信域转换（NCCL->HCCL）、设备适配（CUDA->NPU）及算子替换。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\deepep-to-cam-converter\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "delayed-restart-app",
+                "description": "安排延迟重启本 Agent 所在的服务（JiuwenSwarm app）。执行后当前 Agent 进程会被终止并重新启动，当前会话会断开。用于用户要求重启、配置更新需生效、或服务异常需重载时。使用 bash 调用脚本。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\delayed-restart-app\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "doc-update",
+                "description": "以源码为唯一事实来源，系统性核对并更新项目文档，确保内容与实现一致、多语言文档 1:1 对齐、结构完整。",
+                "trigger": "用户提到\"刷文档\"、\"更新文档\"、\"check 文档\"、\"doc audit\"、\"文档审查\"等关键词时加载。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\doc-update\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "dynamic-memory-cli",
+                "description": "Operate a dynamic, UT-backed agent memory with atomic Pending publication, merged Pending/Built search, Memory Snapshot and history cursor state, Built-only validation, and exact-content migration. Use when an agent Harness must extract memory asynchronously while foreground work continues, publish immediately searchable Pending UTs, build them into a stable index, or inspect and recover an eternal-conversation memory project.",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\dynamic-memory-cli\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "financial-document-parser",
+                "description": "Extract and analyze data from invoices, receipts, bank statements, and financial documents. Categorize expenses, track recurring charges, and generate expense reports. Use when user provides financial PDFs or images.",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\financial-document-parser\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "gitcode-api",
+                "description": "使用 gitcode-api 命令行工具访问 GitCode REST API。适用于需要查询仓库、Issue、Pull Request、文件内容、用户、组织、搜索结果，或需要获取 Issue 与 Pull Request 模版的场景。还可用于总结仓库最近 commit / PR / issue、责任人、模块、风险或对外接口影响。",
+                "version": null,
+                "metadata": {
+                  "version": "1.0.0"
+                },
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\gitcode-api\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "harmonyos-dev-suite",
+                "description": "Unified HarmonyOS development entry skill for ArkTS, ArkUI, DevEco CLI, build/run/debug, device logs, testing, multi-device adaptation, atomic services, native development, stability diagnosis, and optional HarmonyOS atomic Skill routing. Use when the user mentions HarmonyOS, OpenHarmony, HongMeng, 鸿蒙, ArkTS, ArkUI, DevEco, .ets, oh-package.json5, build-profile.json5, HAP/HAR/App, emulator, hilog, hdc, hvigor, or HarmonyOS app development.",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\harmonyos-dev-suite\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "llm-wiki",
+                "description": "Build and maintain a persistent knowledge base (LLM Wiki) using native backend tools. Supports ingesting PDFs, Markdown, and TXT files, and querying or linting the data. Use this whenever the user wants to add, retrieve, or manage their own local knowledge base and documents.",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\llm-wiki\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "openJiuwen-DeepSearch",
+                "description": "知识增强型深度检索与深度研究，支持查询规划、信息收集、理解反思、研究报告生成等多 Agent 协同。使用场景：金融分析研报、学术与政策研究、企业级深度搜索等复杂推理任务，可以生成Markdown、Doc和Html格式的研究报告。**每次使用该技能之前都先完整阅读一遍SKILL.md学习技能。**",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\openJiuwen-DeepSearch\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "ppt-creation",
+                "description": "当任务要求创建、读取、解析、提取、编辑、修改、合并、拆分、转换或检查 PPT / 幻灯片 / 演示文稿 / deck / slides / presentation / .pptx 文件时使用。本 skill 以内置模板为版面底座，让 Agent 在内容区自由设计；支持原生 PptxGenJS 绘制、可选组件、用户素材、论文原图和合规网络素材。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\ppt-creation\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "multimodal_skill"
+              },
+              {
+                "name": "project-maintainer",
+                "description": "Use when initializing or updating structured in-repository project-maintenance docs; exploring existing code; analyzing a full project or repository; documenting complete source symbol coverage, coverage maps, symbol audit maps, or health for every top-level class, top-level function, and class method; summarizing git history; using project-maintainer as maintenance-aware context during a bug fix, feature change, or refactor; or syncing docs after verified code changes.",
+                "license": "Apache-2.0",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\project-maintainer\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "skill-gen-4-enterprise-doc",
+                "description": "Turn SOPs, URLs, or stated intent into an installed skill package. Use when the user asks to generate a skill from a document, link, or workflow. Follow SKILL.md, reference/sop-structure-pipeline.md, and reference/generator-worker-spec.md; finish by promoting the draft into the runtime skills directory (see reference/operator-playbook.md) in the same turn.",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\skill-gen-4-enterprise-doc\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "skvm-general",
+                "description": "Drive the skvm CLI on behalf of a user to profile models, AOT-compile skills, run skill-assisted tasks, run benchmarks, and manage compiled proposals. Trigger when the user asks to \"profile\", \"aot-compile\", \"bench\", \"run a single ad-hoc task with a skill\", or asks about skvm proposals. Do NOT trigger for `jit-optimize` or when the user wants to optimize/improve a skill — use the sibling `skvm-jit` skill instead.",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\skvm-general\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "skvm-jit",
+                "description": "Trigger `skvm jit-optimize` with post-task evidence so it generates a reviewable optimization proposal for a skill. Use after finishing a task that was driven by any skill (not just SkVM-compiled ones) when the outcome was a failure, was partial, or the skill's instructions clearly caused confusion or an unnecessary detour. Clean successful runs usually do not need an optimization pass. For general skvm usage (profile/aot-compile/bench/proposals), use the sibling `skvm-general` skill instead.",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\skvm-jit\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              }
+            ]
+          }
+        },
+        "jsonrpc_id": null,
+        "correlation_id": null,
+        "task_id": null,
+        "context_id": null,
+        "session_id": null,
+        "message_id": null,
+        "is_stream": false,
+        "identity_origin": "agent",
+        "channel": "web",
+        "user_id": null,
+        "agent_ref": null,
+        "source_agent_id": null,
+        "method": null,
+        "projections": {},
+        "channel_context": {},
+        "metadata": {},
+        "a2a_metadata": {},
+        "acp_meta": {}
+      },
+      "payload": {
+        "skills": [
+          {
+            "name": "agent-creator",
+            "description": "Agent 模板包的创建与更新器：从自然语言创建可被 JiuwenSwarm 加载的 agent 模板包，或在同一流程的 update mode 下修改已有自定义专家。\n触发词：创建 agent模板包、创建模板包、生成 agent 模板、新建 agent、做一个 agent、create agent template、建一个专家、做一个专家、agent 脚手架、scaffold agent、修改专家、编辑专家、更新专家、调整专家、modify expert、update expert。当用户说「帮我做一个能 XX 的 agent」「创建一个 XX 专家」「改一下 XX 专家」「更新已有专家」时，务必使用本 skill。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\agent-creator\\SKILL.md",
+            "source": "builtin",
+            "display_name": "agent-creator",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "agent-group-creator",
+            "description": "从自然语言创建可被 JiuwenSwarm 加载和安装的专家团（agent_group）包，包含 Leader、专家成员、协作指令及可选共享技能。用户提出“创建专家团”“组建专家团队”“做一个多专家协作团队”时使用；创建单个专家使用 agent-creator，执行已有专家团的业务任务不使用本技能。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\agent-group-creator\\SKILL.md",
+            "source": "builtin",
+            "display_name": "agent-group-creator",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "baoyu-image-gen",
+            "description": "AI image generation with OpenAI GPT Image 2, Azure OpenAI, Google, OpenRouter, DashScope, Z.AI GLM-Image, MiniMax, Jimeng, Seedream, Replicate and Agnes APIs. Supports text-to-image, reference images, aspect ratios, and batch generation from saved prompt files. Sequential by default; use batch parallel generation when the user already has multiple prompts or wants stable multi-image throughput. Use when user asks to generate, create, or draw images.",
+            "version": null,
+            "metadata": {
+              "openclaw": {
+                "homepage": "https://github.com/JimLiu/baoyu-skills#baoyu-image-gen",
+                "requires": {
+                  "anyBins": [
+                    "bun",
+                    "npx"
+                  ]
+                }
+              }
+            },
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\baoyu-image-gen\\SKILL.md",
+            "source": "builtin",
+            "display_name": "baoyu-image-gen",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "docx-pro",
+            "description": "Professional Word (.docx) document generation, faithful text replacement, Markdown round-trip conversion, document inspection, TOC insertion and watermarking. Use when the user asks to create rich-formatted Word documents (cover page, TOC, multi-level headings, styled tables with merged cells, images, code blocks, quotes, headers/footers, page numbers, watermarks), replace or batch-replace text in existing docx files while preserving every other byte and all formatting (handles text split across runs, tables, headers/footers), convert Markdown to docx or docx to Markdown, inspect document structure, insert TOC fields, or add text watermarks to existing docx files. Triggers on docx-pro, 生成 Word 文档, 生成报告文档, 富格式文档, Word 替换, Word 文本替换, Word 保真替换, 批量替换, 合同替换, 替换甲方, Markdown 转 Word, Word 转 Markdown, md 转 docx, docx 转 md, 插入目录, 添加水印, 文档结构分析, 专业排版.",
+            "description_cn": "专业 Word 文档工具集：从零生成富格式 Word（封面/目录/主题/合并单元格表格/图片/代码块/页眉页脚/水印）、保真文本替换（跨 run 定位、表格/页眉页脚全覆盖、其余字节零改动、支持批量映射与预览）、Markdown 双向转换、文档结构检查、目录插入与水印添加。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\docx-pro\\SKILL.md",
+            "source": "builtin",
+            "display_name": "docx-pro",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "huawei-cloud-maas-setup",
+            "description": "引导用户完成华为云 MaaS 服务购买和 API 配置。脚本自动完成授权更新、API Key 创建、模型开通；用户只需完成登录、充值、选择要开通的模型。整个流程预计 3-5 分钟。 适用于首次运行配置、华为云 MaaS 服务开通、API 凭证获取、模型服务配置等场景。 当用户提到华为云、MaaS、Maas、开通模型服务、配置 API、首次配置、引导配置、 一键配置等意图时触发。",
+            "allowed_tools": [
+              "bash",
+              "ask_user"
+            ],
+            "version": null,
+            "author": "",
+            "tags": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\huawei-cloud-maas-setup\\SKILL.md",
+            "source": "builtin",
+            "display_name": "huawei-cloud-maas-setup",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "local-doc-ocr",
+            "version": null,
+            "author": "海河（李昂）",
+            "license": "MIT",
+            "category": "文档处理 / OCR",
+            "platforms": [
+              "workbuddy",
+              "claude-code",
+              "cursor",
+              "ima",
+              "qclaw"
+            ],
+            "description": "本地离线 OCR——将扫描件 PDF/图片提取为文字。双引擎：(A) RapidOCR 纯本地离线一键出 .md（默认保底、不联网、不占 token、可批量）；(B) 支持多模态读图能力的 Agent 逐页读图（高质量，擅长表格/手写/印章，如 WorkBuddy 的 Read 工具）。全程本机处理，适合涉密/敏感与隐私资料。触发词：OCR、识别、读PDF、读一下这份、把这个读出来、转成文字、扫描件提取、图片转文字、识别扫描件、PDF转文字、手写识别、提取图片里的字、这份文件读不出来、资料入库（如喂给知识库）时遇到扫描件。注：用户说\"识别隐患/安全隐患\"属安全检查类技能，本技能只做文字提取。",
+            "agent_created": true,
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\local-doc-ocr\\SKILL.md",
+            "source": "builtin",
+            "display_name": "local-doc-ocr",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "pdf-extraction",
+            "description": "Extract text, tables, and metadata from PDFs using pdfplumber",
+            "version": null,
+            "author": "claude-office-skills",
+            "license": "MIT",
+            "category": "pdf",
+            "tags": [
+              "pdf",
+              "extraction",
+              "text",
+              "tables"
+            ],
+            "department": "All",
+            "models": {
+              "recommended": [
+                "claude-sonnet-4",
+                "claude-opus-4"
+              ],
+              "compatible": [
+                "claude-3-5-sonnet",
+                "gpt-4",
+                "gpt-4o"
+              ]
+            },
+            "mcp": {
+              "server": "office-mcp",
+              "tools": [
+                "extract_text_from_pdf",
+                "extract_tables_from_pdf"
+              ]
+            },
+            "capabilities": [
+              "text_extraction",
+              "table_extraction",
+              "data_mining"
+            ],
+            "languages": [
+              "en",
+              "zh"
+            ],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\pdf-extraction\\SKILL.md",
+            "source": "builtin",
+            "display_name": "pdf-extraction",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "plugin-creator",
+            "description": "Plugin 插件包的创建与更新器：从自然语言创建可被 JiuwenSwarm 加载的 plugin 插件包，或在同一流程的 update mode 下修改已有自定义插件。\n触发词：创建插件、创建 plugin、做一个插件、plugin 脚手架、修改插件、编辑插件、更新插件、调整插件、create plugin package、插件包、帮我做一个 XX 插件、给 agent 加 XX 能力包。当用户说「帮我做一个 XX 插件」「创建一个能力扩展包」「改一下 XX 插件」时，务必使用本 skill。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\plugin-creator\\SKILL.md",
+            "source": "builtin",
+            "display_name": "plugin-creator",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "pptx-generator",
+            "description": "Generate, edit, and read PowerPoint presentations. Create from scratch with PptxGenJS (cover, TOC, content, section divider, summary slides), edit existing PPTX via XML workflows, or extract text with markitdown. Triggers: PPT, PPTX, PowerPoint, presentation, slide, deck, slides.",
+            "license": "MIT",
+            "metadata": {
+              "version": "1.0",
+              "category": "productivity",
+              "sources": [
+                "https://gitbrent.github.io/PptxGenJS/",
+                "https://github.com/microsoft/markitdown"
+              ]
+            },
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\pptx-generator\\SKILL.md",
+            "source": "builtin",
+            "display_name": "pptx-generator",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "rsi-program-dataset-creator",
+            "description": "Use for program evolution — improving a working program by repeated search against a measured score, rather than by one edit. Covers both halves: deciding what is measured and how a candidate program is scored, and writing that decision into the task folder the run reads (`task.json`, `seed/`, `run/scorecard.json`, every parameter set). Triggers on \"make this code faster\", \"search for a better implementation\", staging or debugging a task folder, writing a scorecard or an evaluator, and on a `PROBE_REFUSED`, `SEARCH_FAILED` or `ARTIFACT_BUNDLE_INCOMPLETE` a run came back with.",
+            "metadata": "",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\rsi-program-dataset-creator\\SKILL.md",
+            "source": "builtin",
+            "display_name": "rsi-program-dataset-creator",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "skill-creator",
+            "description": "Unified entry point for all Skill creators. Routes skill creation and editing requests to the correct specialized creator. Use whenever the user wants to create a new Skill, edit an existing Skill from chat, or when the conversation scene is create_skill / edit_skill. Chooses among skill-creator-normal, swarmskill-creator, and skill-omni-creation, then ensures the final Skill package is delivered via send_file_to_user (never silently installed to workspace). Do not bypass this entry by calling specialized creators directly for create_skill / edit_skill scenes.",
+            "description_cn": "所有 Skill Creator 的统一入口。按场景与类型路由到 skill-creator-normal、swarmskill-creator 或 skill-omni-creation；创建/修改 Skill 时优先选用本 Skill，不要绕过本入口直接调用各专项 creator。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\skill-creator\\SKILL.md",
+            "source": "builtin",
+            "display_name": "skill-creator",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "skill-creator-normal",
+            "description": "Create new single-agent skills, modify and improve existing single-agent skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.",
+            "description_cn": "创建、修改、优化和评估单智能体技能。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\skill-creator-normal\\SKILL.md",
+            "source": "builtin",
+            "display_name": "skill-creator-normal",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "skill-omni-creation",
+            "description": "当用户说「从这个链接/URL生成skill」「把这个网页/教程做成skill」「从这个视频提取步骤」时触发。先读取此 SKILL.md，再按步骤调用 scripts/ 下的 Python 脚本完成：爬取网页或下载视频 → 下载图片/抽帧 → 生成标准 Skill Markdown 文件；若内容需要编程实现，自动编写并验证配套脚本（scripts/）。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\skill-omni-creation\\SKILL.md",
+            "source": "builtin",
+            "display_name": "skill-omni-creation",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "swarmskill-creator",
+            "description": "Creates, converts, or modifies Swarm Skills — the multi-role (多角色团队) extension of the Skills standard, optionally with an executable SwarmFlow orchestration script.\nUse when building or refactoring a multi-agent team, generating workflow (工作流/编排) orchestration code, or upgrading a single-agent skill into a collaborating team.\nDo NOT use for ordinary single-agent skills — use create-skill instead.\n",
+            "description_cn": "创建、转换或修改多角色 Swarm Skill；普通单智能体技能使用 `skill-creator`。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\swarmskill-creator\\SKILL.md",
+            "source": "builtin",
+            "display_name": "swarmskill-creator",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "xlsx",
+            "description": "Open, create, read, analyze, edit, repair, or validate spreadsheet files (.xlsx, .xlsm, .xltx, .csv, .tsv) with zero format loss, with first-class support for Chinese / CJK content. Use whenever the user asks to create, build, modify, fill, analyze, read, repair, validate, or format any spreadsheet, workbook, report, dashboard, budget, financial model, pivot table, or tabular data file. Handles Chinese text, encodings (UTF-8 / GB18030 / GBK), full-width characters, CJK fonts in rendering, and Chinese number/date conventions (¥, 万/亿, 年/月/日). Covers: creating new workbooks from scratch, reading and analyzing existing files, editing existing workbooks while preserving pivot tables / VBA macros / charts / sparklines / conditional formatting / named ranges, formula recalculation and validation, visual review of results, and applying professional formatting. Triggers on 'spreadsheet', 'Excel', 'workbook', '表格', '工作簿', '.xlsx', '.xlsm', '.csv', 'pivot table', '透视表', 'macro', '宏', 'chart', '图表', 'financial model', '财务模型', 'formula', '公式', or any request to produce tabular data.",
+            "license": "MIT",
+            "metadata": {
+              "version": "2.0",
+              "category": "productivity",
+              "locale": "zh-CN-aware",
+              "sources": [
+                "ECMA-376 Office Open XML File Formats",
+                "Microsoft Open XML SDK documentation"
+              ]
+            },
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\agent\\workspace\\skills\\xlsx\\SKILL.md",
+            "source": "builtin",
+            "display_name": "xlsx",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "advanced-daily-report",
+            "version": null,
+            "description": "进阶版日报生成器，支持多数据源采集、工作分析、趋势对比、周报月报聚合",
+            "tags": [
+              "report",
+              "automation",
+              "productivity",
+              "daily",
+              "weekly",
+              "monthly",
+              "advanced"
+            ],
+            "allowed_tools": [
+              "read_memory",
+              "write_memory",
+              "bash",
+              "read_file",
+              "write_file"
+            ],
+            "author": "",
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\advanced-daily-report\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "akg-agents",
+            "description": "代理执行 AKG 算子任务。先检查固定仓库与分支；若 `~/.akg/check_env.md` 不存在则强制 `FULL_SETUP=true`；忽略所有 `akg_cli` 检查和使用；后端代码生成直接执行 `run_workflow.py --workflow kernelgen`。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\akg-agents\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "ascend-moe-optimizer-auto-trace",
+            "description": "为昇腾算子在源码中接入 TRACE_POINT 与 MoeTracing，串通 trace_preprocessor、profiling tensor、point_map.json、 save_profiling_data 与 trace_collector 生成 Chrome trace。强调门禁 G1–G5：全链路预处理与 OPP、profiling 为数据输出最后一位、 整条编译与示例脚本联调、落盘路径在 spawn 前 resolve。遵循函数级粒度与就地扩展，禁止另注册 xxx_profiling 类第二入口， 保持原 Op 与 torch.ops 名称及签名不变。在用户提到算子打点、Profiling、Chrome trace、MoeTracing，或将结论写入本 skill 时读取。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\ascend-moe-optimizer-auto-trace\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "ascend-moe-optimizer-trace-analyzer",
+            "description": "在用户提供 Chrome/Perfetto trace.json、或排查 Ascend 上 MoE/FusedDeepMoe 等算子性能时使用。按 phase、category、core group、tid 统计耗时、overlap、bubble，输出 CSV、Markdown 报告与确定性诊断；可选外部 LLM 扩写分析。默认 phase 映射面向 UMDK FusedDeepMoe，其它 trace 需替换或扩展 config/phase_map.yaml。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\ascend-moe-optimizer-trace-analyzer\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "cross-channel-history-retrieval",
+            "description": "跨会话检索聊天原文（记忆不足时再用）。在回答任何关于历史事件、日期、人物、过去对话的问题时，如果记忆中没有相关信息或不足以回答，则需要使用跨会话检索聊天原文。用 mcp_exec_command 执行 scripts/search_history.py，读 ~/.jiuwenswarm/agent/sessions/*/history.json。支持 channel、session_id、关键词、时间窗。如果搜索结果不足，尝试用不同的关键词再次搜索。",
+            "allowed_tools": [
+              "mcp_exec_command"
+            ],
+            "version": null,
+            "author": "",
+            "tags": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\cross-channel-history-retrieval\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "deepep-to-cam-converter",
+            "description": "识别代码中可替换为CAM算子的DeepEP算子，基于实际运行参数校验约束，自动完成通信域转换（NCCL->HCCL）、设备适配（CUDA->NPU）及算子替换。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\deepep-to-cam-converter\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "delayed-restart-app",
+            "description": "安排延迟重启本 Agent 所在的服务（JiuwenSwarm app）。执行后当前 Agent 进程会被终止并重新启动，当前会话会断开。用于用户要求重启、配置更新需生效、或服务异常需重载时。使用 bash 调用脚本。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\delayed-restart-app\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "doc-update",
+            "description": "以源码为唯一事实来源，系统性核对并更新项目文档，确保内容与实现一致、多语言文档 1:1 对齐、结构完整。",
+            "trigger": "用户提到\"刷文档\"、\"更新文档\"、\"check 文档\"、\"doc audit\"、\"文档审查\"等关键词时加载。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\doc-update\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "dynamic-memory-cli",
+            "description": "Operate a dynamic, UT-backed agent memory with atomic Pending publication, merged Pending/Built search, Memory Snapshot and history cursor state, Built-only validation, and exact-content migration. Use when an agent Harness must extract memory asynchronously while foreground work continues, publish immediately searchable Pending UTs, build them into a stable index, or inspect and recover an eternal-conversation memory project.",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\dynamic-memory-cli\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "financial-document-parser",
+            "description": "Extract and analyze data from invoices, receipts, bank statements, and financial documents. Categorize expenses, track recurring charges, and generate expense reports. Use when user provides financial PDFs or images.",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\financial-document-parser\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "gitcode-api",
+            "description": "使用 gitcode-api 命令行工具访问 GitCode REST API。适用于需要查询仓库、Issue、Pull Request、文件内容、用户、组织、搜索结果，或需要获取 Issue 与 Pull Request 模版的场景。还可用于总结仓库最近 commit / PR / issue、责任人、模块、风险或对外接口影响。",
+            "version": null,
+            "metadata": {
+              "version": "1.0.0"
+            },
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\gitcode-api\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "harmonyos-dev-suite",
+            "description": "Unified HarmonyOS development entry skill for ArkTS, ArkUI, DevEco CLI, build/run/debug, device logs, testing, multi-device adaptation, atomic services, native development, stability diagnosis, and optional HarmonyOS atomic Skill routing. Use when the user mentions HarmonyOS, OpenHarmony, HongMeng, 鸿蒙, ArkTS, ArkUI, DevEco, .ets, oh-package.json5, build-profile.json5, HAP/HAR/App, emulator, hilog, hdc, hvigor, or HarmonyOS app development.",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\harmonyos-dev-suite\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "llm-wiki",
+            "description": "Build and maintain a persistent knowledge base (LLM Wiki) using native backend tools. Supports ingesting PDFs, Markdown, and TXT files, and querying or linting the data. Use this whenever the user wants to add, retrieve, or manage their own local knowledge base and documents.",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\llm-wiki\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "openJiuwen-DeepSearch",
+            "description": "知识增强型深度检索与深度研究，支持查询规划、信息收集、理解反思、研究报告生成等多 Agent 协同。使用场景：金融分析研报、学术与政策研究、企业级深度搜索等复杂推理任务，可以生成Markdown、Doc和Html格式的研究报告。**每次使用该技能之前都先完整阅读一遍SKILL.md学习技能。**",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\openJiuwen-DeepSearch\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "ppt-creation",
+            "description": "当任务要求创建、读取、解析、提取、编辑、修改、合并、拆分、转换或检查 PPT / 幻灯片 / 演示文稿 / deck / slides / presentation / .pptx 文件时使用。本 skill 以内置模板为版面底座，让 Agent 在内容区自由设计；支持原生 PptxGenJS 绘制、可选组件、用户素材、论文原图和合规网络素材。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\ppt-creation\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "multimodal_skill"
+          },
+          {
+            "name": "project-maintainer",
+            "description": "Use when initializing or updating structured in-repository project-maintenance docs; exploring existing code; analyzing a full project or repository; documenting complete source symbol coverage, coverage maps, symbol audit maps, or health for every top-level class, top-level function, and class method; summarizing git history; using project-maintainer as maintenance-aware context during a bug fix, feature change, or refactor; or syncing docs after verified code changes.",
+            "license": "Apache-2.0",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\project-maintainer\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "skill-gen-4-enterprise-doc",
+            "description": "Turn SOPs, URLs, or stated intent into an installed skill package. Use when the user asks to generate a skill from a document, link, or workflow. Follow SKILL.md, reference/sop-structure-pipeline.md, and reference/generator-worker-spec.md; finish by promoting the draft into the runtime skills directory (see reference/operator-playbook.md) in the same turn.",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\skill-gen-4-enterprise-doc\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "skvm-general",
+            "description": "Drive the skvm CLI on behalf of a user to profile models, AOT-compile skills, run skill-assisted tasks, run benchmarks, and manage compiled proposals. Trigger when the user asks to \"profile\", \"aot-compile\", \"bench\", \"run a single ad-hoc task with a skill\", or asks about skvm proposals. Do NOT trigger for `jit-optimize` or when the user wants to optimize/improve a skill — use the sibling `skvm-jit` skill instead.",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\skvm-general\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "skvm-jit",
+            "description": "Trigger `skvm jit-optimize` with post-task evidence so it generates a reviewable optimization proposal for a skill. Use after finishing a task that was driven by any skill (not just SkVM-compiled ones) when the outcome was a failure, was partial, or the skill's instructions clearly caused confusion or an unnecessary detour. Clean successful runs usually do not need an optimization pass. For general skvm usage (profile/aot-compile/bench/proposals), use the sibling `skvm-general` skill instead.",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\skvm-jit\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          }
+        ]
+      }
+    },
+    "MCP": {
+      "wire": {
+        "protocol_version": "1.0",
+        "response_id": "optional-1",
+        "request_id": "optional-1",
+        "sequence": 0,
+        "is_final": true,
+        "status": "succeeded",
+        "response_kind": "e2a.complete",
+        "timestamp": "2026-10-12T06:23:55.971682+00:00",
+        "provenance": {
+          "source_protocol": "e2a",
+          "converter": "gateway_protocol.e2a.gateway_normalize:e2a_response_from_agent_response",
+          "converted_at": "2026-10-12T06:23:55.971682+00:00",
+          "details": {
+            "kind": "legacy_agent_response",
+            "ok": true
+          }
+        },
+        "body": {
+          "result": {
+            "type": "list",
+            "items": [
+              {
+                "id": "527993ffd3aa4fc2bd67727a056b9d59",
+                "name": "harmonyos-mcp",
+                "package_name": "harmonyos-mcp",
+                "display_name": "鸿蒙 HarmonyOS",
+                "description": "通过 MCP 接入鸿蒙 HarmonyOS 开发能力，支持跨端调用、应用流转、HMS Core 服务集成，助力鸿蒙应用开发。",
+                "category": "Software Development",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/527993ffd3aa4fc2bd67727a056b9d59/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=c1b962032f73a2c7449c11a686d5a991142bea8ee071b224dceca8090d7c3cb2",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": [
+                  "开发编程"
+                ]
+              },
+              {
+                "id": "7f568e45d8954aba9bcc790fdddf82fc",
+                "name": "huaweiyun-mcp",
+                "package_name": "huaweiyun-mcp",
+                "display_name": "华为云 ECS",
+                "description": "通过 MCP 管理华为云服务，支持 ECS 实例查询与生命周期管理，以及更多云资源操作，用自然语言完成云上运维。",
+                "category": "Software Development",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/7f568e45d8954aba9bcc790fdddf82fc/1.0.1/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=05c308793f749c5622b3d1feed88c23753369af375e42fa8f0c43fc8724e17db",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.1",
+                "tags": [
+                  "开发编程"
+                ]
+              },
+              {
+                "id": "e7c9971f0cdf47a7a0cf1f840765acf2",
+                "name": "amap",
+                "package_name": "amap",
+                "display_name": "高德地图",
+                "description": "接入高德地图各类位置服务，包括地点搜索、路线规划（驾车/公交/步行/骑行）、地址正逆解析、天气查询等。",
+                "category": "Lifestyle & Health",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/e7c9971f0cdf47a7a0cf1f840765acf2/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=23823e91fdefd925333e9817bfb4320d2ffdc16008b0253863d9f58b0d5b03c8",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": []
+              },
+              {
+                "id": "5653980c74944e6e873b300f3749656b",
+                "name": "baidu-map",
+                "package_name": "baidu-map",
+                "display_name": "百度地图",
+                "description": "接入百度地图各类位置服务，包括地点搜索、路线规划（驾车/公交/步行/骑行）、地址正逆解析、天气查询等。",
+                "category": "Lifestyle & Health",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/5653980c74944e6e873b300f3749656b/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=38d22a71541bd67930bf47a5825eb39b1156f1f26c783081bef5c9a5c624dedc",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": [
+                  "生活与健康"
+                ]
+              },
+              {
+                "id": "919f508cc91143a1b295be97f8b4bcee",
+                "name": "ctrip-wendao",
+                "package_name": "ctrip-wendao",
+                "display_name": "携程问道",
+                "description": "通过携程问道 API 获取旅行规划与攻略。支持酒店查询、机票搜索、景点推荐、行程规划、美食住宿攻略。",
+                "category": "Lifestyle & Health",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/919f508cc91143a1b295be97f8b4bcee/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=754da1acd32cbc3978b665521801aa15081578efa035cd3cdb4d874ab949e6b3",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": [
+                  "生活与健康"
+                ]
+              },
+              {
+                "id": "d9665968537247718932825ef3417b25",
+                "name": "cue-omni-reader",
+                "package_name": "cue-omni-reader",
+                "display_name": "Omni Reader 多模态解析",
+                "description": "将任意文档解析为 Markdown（不限格式）：视频解析（ASR 语音识别+画面视觉分析+关键帧提取）、扫描件/图片 OCR、PDF/Word/Excel/PPT、网页解析、音频转文字、压缩包解析全覆盖。上传本地文件或输入 URL 即可。",
+                "category": "Multimodal & Media",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/294417848/d9665968537247718932825ef3417b25/1.0.1/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=4365678b2a161b6c41a30f7294127e76b3c2bc3b5f499907959869b959b5f671",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.1",
+                "tags": []
+              },
+              {
+                "id": "7af9cd942d404b50ae4fa1ce86d02464",
+                "name": "dingtalk",
+                "package_name": "dingtalk",
+                "display_name": "钉钉",
+                "description": "通过命令行管理钉钉全产品能力：AI 表格、考勤、日历、群聊与机器人、通讯录、开放平台文档、DING 消息、钉钉文档、钉钉云盘、AI 听记、邮箱、OA 审批、日志、待办。",
+                "category": "Office Productivity",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/7af9cd942d404b50ae4fa1ce86d02464/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=165148149ffb3a9e069bf90c708b0465f4a3c71f1c9196a5b65f83ede258546d",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": [
+                  "办公与生产力"
+                ]
+              },
+              {
+                "id": "134f94a6f2c94e56894a9230ece42974",
+                "name": "feishu",
+                "package_name": "feishu",
+                "display_name": "飞书",
+                "description": "通过命令行管理飞书/Lark 全产品能力：即时通讯、邮箱、日历、云文档、电子表格、多维表格（Base）、幻灯片、画板、知识库、云空间、妙记、视频会议、任务、审批、考勤、通讯录、OKR 等。",
+                "category": "Office Productivity",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/134f94a6f2c94e56894a9230ece42974/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=10ef643abbb0ed6f93d7d17b4de2227e0708377149b660cc1ccdecde526105c8",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": []
+              },
+              {
+                "id": "59a9d5fdbf624fcc96f8ea65bad321ef",
+                "name": "gitcode",
+                "package_name": "gitcode",
+                "display_name": "GitCode",
+                "description": "通过 CLI 和内置技能管理 GitCode 平台：仓库、Issue、PR、流水线、代码评审。支持仓库接入、PR 创建/评审、Issue 分诊、流水线分析、提交前检查。",
+                "category": "Software Development",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/59a9d5fdbf624fcc96f8ea65bad321ef/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=91c66628473feec16ec390cfbb19548d9b75b2b02e46cfae71daf04e202758fe",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": []
+              },
+              {
+                "id": "3a7c8d57e02f420c97992c6f6572c939",
+                "name": "github",
+                "package_name": "github",
+                "display_name": "GitHub",
+                "description": "在 GitHub 上克隆、推送代码，查看和管理仓库与 Pull Request，用自然语言完成代码协作。",
+                "category": "Software Development",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/3a7c8d57e02f420c97992c6f6572c939/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=0bf57737648c8e837763754e0aabfe88020d5989b3de2d4bb78854fed2f2c342",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": [
+                  "开发编程"
+                ]
+              },
+              {
+                "id": "e9f8dee41809496eb64bca3052551e93",
+                "name": "netease-mail",
+                "package_name": "netease-mail",
+                "display_name": "网易邮箱",
+                "description": "通过 IMAP/SMTP 连接邮箱，支持收发邮件、搜索、附件下载。支持 163、126、yeah.net 等网易邮箱及其他标准 IMAP/SMTP 邮箱。",
+                "category": "Office Productivity",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/e9f8dee41809496eb64bca3052551e93/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=491a728fcc73b63ab29dcc19f0d9a8481d14c09381b6093ab8596ed3b34d8da7",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": []
+              },
+              {
+                "id": "2f16fbbb69d04aa89be7dd74afd93507",
+                "name": "qcc-company",
+                "package_name": "qcc-company",
+                "display_name": "企查查",
+                "description": "查询和核实企业工商登记信息。支持股东结构、实际控制人、受益所有人、高管团队、对外投资、财务数据、年报及上市信息查询，用自然语言快速完成企业身份核验与背景调查。",
+                "category": "Data Science & Research",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/2f16fbbb69d04aa89be7dd74afd93507/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=a9fe2c0c7c71531305587b507e73a2ddf968cbadc3e3e4a3c9bf16c6648cadb3",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": [
+                  "金融与理财",
+                  "合规与法律"
+                ]
+              },
+              {
+                "id": "30b3c16f87be453297b4513d252a3be5",
+                "name": "ssh-mcp-server",
+                "package_name": "ssh-mcp-server",
+                "display_name": "SSH 远程访问",
+                "description": "通过 SSH 连接远程主机，用自然语言执行远程命令。支持远程命令执行、文件操作、进程管理、服务控制等运维场景。",
+                "category": "Software Development",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/30b3c16f87be453297b4513d252a3be5/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=3b883b91c4d121eaa7a20e0d23ac2f50f59d58e32b958b3aeb3610cbc8b9b68a",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": [
+                  "开发编程"
+                ]
+              },
+              {
+                "id": "7127f180f3fb498e9d10dd2b08bc9562",
+                "name": "tmeet",
+                "package_name": "tmeet",
+                "display_name": "腾讯会议",
+                "description": "通过命令行创建、查询和管理腾讯会议。支持快速发起会议、查看日程安排、管理参会人员。",
+                "category": "Office Productivity",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/7127f180f3fb498e9d10dd2b08bc9562/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=32b7b9231c2c18ba231d1746ead98d1ec1270272795bc676d31f2ad0a46adba2",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": [
+                  "办公与生产力"
+                ]
+              },
+              {
+                "id": "ef0cfb824ea1433aab8854552152e1f9",
+                "name": "tyc-mcp",
+                "package_name": "tyc-mcp",
+                "display_name": "天眼查",
+                "description": "通过天眼查 MCP 查询多维度企业数据。支持工商登记、股东结构、司法风险、知识产权、董监高、经营数据等 160+ 项企业数据能力，用自然语言完成企业尽调与商业情报分析。",
+                "category": "Data Science & Research",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/ef0cfb824ea1433aab8854552152e1f9/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=607594e243ae78f383ed8de29d0385b8600ea714574a305dd9885b28805f58b4",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": [
+                  "合规与法律"
+                ]
+              },
+              {
+                "id": "7f19cd24da844c79bca04fbb887cc884",
+                "name": "wecom",
+                "package_name": "wecom",
+                "display_name": "企业微信",
+                "description": "企业微信10 人及以下企业支持消息、文档、日程、会议、待办等MCP能力； 10 人以上企业仅支持创建、读取文档和智能表格。",
+                "category": "Office Productivity",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/7f19cd24da844c79bca04fbb887cc884/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=1062bb1993f65de02e6df534dbb6f7937f589a213bcd1e84b0d4e585100d7fa7",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": []
+              },
+              {
+                "id": "27e15c1ab2c74374948f1ef8133510ec",
+                "name": "wind-finance",
+                "package_name": "wind-finance",
+                "display_name": "Wind 金融数据",
+                "description": "通过自然语言查询股票、基金、指数、债券、公告、财经新闻和宏观经济数据。",
+                "category": "Finance & Wealth Management",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/27e15c1ab2c74374948f1ef8133510ec/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=3f2dc091d766fa2596bae726759231068ed893b185ab4ed7d1025b3d939f8d60",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": [
+                  "金融与理财"
+                ]
+              },
+              {
+                "id": "5525f750b9254df191d25d0a3d3725c1",
+                "name": "yingmi-mcp",
+                "package_name": "yingmi-mcp",
+                "display_name": "盈米MCP",
+                "description": "查询基金与市场数据，完成基金研究、组合分析、财富规划及金融内容生成。",
+                "category": "Finance & Wealth Management",
+                "integration_type": "",
+                "connection_state": "disconnected",
+                "has_bundled_skills": false,
+                "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/5525f750b9254df191d25d0a3d3725c1/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=8ab0b1b7dd06ce095c7ef1318ee17606701ee62fbfbfd86c22ab161ec6c4ae96",
+                "source": "hub",
+                "installed": false,
+                "version": "1.0.0",
+                "tags": [
+                  "金融与理财"
+                ]
+              }
+            ]
+          }
+        },
+        "jsonrpc_id": null,
+        "correlation_id": null,
+        "task_id": null,
+        "context_id": null,
+        "session_id": null,
+        "message_id": null,
+        "is_stream": false,
+        "identity_origin": "agent",
+        "channel": "web",
+        "user_id": null,
+        "agent_ref": null,
+        "source_agent_id": null,
+        "method": null,
+        "projections": {},
+        "channel_context": {},
+        "metadata": {},
+        "a2a_metadata": {},
+        "acp_meta": {}
+      },
+      "payload": {
+        "type": "list",
+        "items": [
+          {
+            "id": "527993ffd3aa4fc2bd67727a056b9d59",
+            "name": "harmonyos-mcp",
+            "package_name": "harmonyos-mcp",
+            "display_name": "鸿蒙 HarmonyOS",
+            "description": "通过 MCP 接入鸿蒙 HarmonyOS 开发能力，支持跨端调用、应用流转、HMS Core 服务集成，助力鸿蒙应用开发。",
+            "category": "Software Development",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/527993ffd3aa4fc2bd67727a056b9d59/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=c1b962032f73a2c7449c11a686d5a991142bea8ee071b224dceca8090d7c3cb2",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": [
+              "开发编程"
+            ]
+          },
+          {
+            "id": "7f568e45d8954aba9bcc790fdddf82fc",
+            "name": "huaweiyun-mcp",
+            "package_name": "huaweiyun-mcp",
+            "display_name": "华为云 ECS",
+            "description": "通过 MCP 管理华为云服务，支持 ECS 实例查询与生命周期管理，以及更多云资源操作，用自然语言完成云上运维。",
+            "category": "Software Development",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/7f568e45d8954aba9bcc790fdddf82fc/1.0.1/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=05c308793f749c5622b3d1feed88c23753369af375e42fa8f0c43fc8724e17db",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.1",
+            "tags": [
+              "开发编程"
+            ]
+          },
+          {
+            "id": "e7c9971f0cdf47a7a0cf1f840765acf2",
+            "name": "amap",
+            "package_name": "amap",
+            "display_name": "高德地图",
+            "description": "接入高德地图各类位置服务，包括地点搜索、路线规划（驾车/公交/步行/骑行）、地址正逆解析、天气查询等。",
+            "category": "Lifestyle & Health",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/e7c9971f0cdf47a7a0cf1f840765acf2/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=23823e91fdefd925333e9817bfb4320d2ffdc16008b0253863d9f58b0d5b03c8",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": []
+          },
+          {
+            "id": "5653980c74944e6e873b300f3749656b",
+            "name": "baidu-map",
+            "package_name": "baidu-map",
+            "display_name": "百度地图",
+            "description": "接入百度地图各类位置服务，包括地点搜索、路线规划（驾车/公交/步行/骑行）、地址正逆解析、天气查询等。",
+            "category": "Lifestyle & Health",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/5653980c74944e6e873b300f3749656b/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=38d22a71541bd67930bf47a5825eb39b1156f1f26c783081bef5c9a5c624dedc",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": [
+              "生活与健康"
+            ]
+          },
+          {
+            "id": "919f508cc91143a1b295be97f8b4bcee",
+            "name": "ctrip-wendao",
+            "package_name": "ctrip-wendao",
+            "display_name": "携程问道",
+            "description": "通过携程问道 API 获取旅行规划与攻略。支持酒店查询、机票搜索、景点推荐、行程规划、美食住宿攻略。",
+            "category": "Lifestyle & Health",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/919f508cc91143a1b295be97f8b4bcee/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=754da1acd32cbc3978b665521801aa15081578efa035cd3cdb4d874ab949e6b3",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": [
+              "生活与健康"
+            ]
+          },
+          {
+            "id": "d9665968537247718932825ef3417b25",
+            "name": "cue-omni-reader",
+            "package_name": "cue-omni-reader",
+            "display_name": "Omni Reader 多模态解析",
+            "description": "将任意文档解析为 Markdown（不限格式）：视频解析（ASR 语音识别+画面视觉分析+关键帧提取）、扫描件/图片 OCR、PDF/Word/Excel/PPT、网页解析、音频转文字、压缩包解析全覆盖。上传本地文件或输入 URL 即可。",
+            "category": "Multimodal & Media",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/294417848/d9665968537247718932825ef3417b25/1.0.1/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=4365678b2a161b6c41a30f7294127e76b3c2bc3b5f499907959869b959b5f671",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.1",
+            "tags": []
+          },
+          {
+            "id": "7af9cd942d404b50ae4fa1ce86d02464",
+            "name": "dingtalk",
+            "package_name": "dingtalk",
+            "display_name": "钉钉",
+            "description": "通过命令行管理钉钉全产品能力：AI 表格、考勤、日历、群聊与机器人、通讯录、开放平台文档、DING 消息、钉钉文档、钉钉云盘、AI 听记、邮箱、OA 审批、日志、待办。",
+            "category": "Office Productivity",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/7af9cd942d404b50ae4fa1ce86d02464/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=165148149ffb3a9e069bf90c708b0465f4a3c71f1c9196a5b65f83ede258546d",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": [
+              "办公与生产力"
+            ]
+          },
+          {
+            "id": "134f94a6f2c94e56894a9230ece42974",
+            "name": "feishu",
+            "package_name": "feishu",
+            "display_name": "飞书",
+            "description": "通过命令行管理飞书/Lark 全产品能力：即时通讯、邮箱、日历、云文档、电子表格、多维表格（Base）、幻灯片、画板、知识库、云空间、妙记、视频会议、任务、审批、考勤、通讯录、OKR 等。",
+            "category": "Office Productivity",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/134f94a6f2c94e56894a9230ece42974/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=10ef643abbb0ed6f93d7d17b4de2227e0708377149b660cc1ccdecde526105c8",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": []
+          },
+          {
+            "id": "59a9d5fdbf624fcc96f8ea65bad321ef",
+            "name": "gitcode",
+            "package_name": "gitcode",
+            "display_name": "GitCode",
+            "description": "通过 CLI 和内置技能管理 GitCode 平台：仓库、Issue、PR、流水线、代码评审。支持仓库接入、PR 创建/评审、Issue 分诊、流水线分析、提交前检查。",
+            "category": "Software Development",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/59a9d5fdbf624fcc96f8ea65bad321ef/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=91c66628473feec16ec390cfbb19548d9b75b2b02e46cfae71daf04e202758fe",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": []
+          },
+          {
+            "id": "3a7c8d57e02f420c97992c6f6572c939",
+            "name": "github",
+            "package_name": "github",
+            "display_name": "GitHub",
+            "description": "在 GitHub 上克隆、推送代码，查看和管理仓库与 Pull Request，用自然语言完成代码协作。",
+            "category": "Software Development",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/3a7c8d57e02f420c97992c6f6572c939/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=0bf57737648c8e837763754e0aabfe88020d5989b3de2d4bb78854fed2f2c342",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": [
+              "开发编程"
+            ]
+          },
+          {
+            "id": "e9f8dee41809496eb64bca3052551e93",
+            "name": "netease-mail",
+            "package_name": "netease-mail",
+            "display_name": "网易邮箱",
+            "description": "通过 IMAP/SMTP 连接邮箱，支持收发邮件、搜索、附件下载。支持 163、126、yeah.net 等网易邮箱及其他标准 IMAP/SMTP 邮箱。",
+            "category": "Office Productivity",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/e9f8dee41809496eb64bca3052551e93/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=491a728fcc73b63ab29dcc19f0d9a8481d14c09381b6093ab8596ed3b34d8da7",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": []
+          },
+          {
+            "id": "2f16fbbb69d04aa89be7dd74afd93507",
+            "name": "qcc-company",
+            "package_name": "qcc-company",
+            "display_name": "企查查",
+            "description": "查询和核实企业工商登记信息。支持股东结构、实际控制人、受益所有人、高管团队、对外投资、财务数据、年报及上市信息查询，用自然语言快速完成企业身份核验与背景调查。",
+            "category": "Data Science & Research",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/2f16fbbb69d04aa89be7dd74afd93507/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=a9fe2c0c7c71531305587b507e73a2ddf968cbadc3e3e4a3c9bf16c6648cadb3",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": [
+              "金融与理财",
+              "合规与法律"
+            ]
+          },
+          {
+            "id": "30b3c16f87be453297b4513d252a3be5",
+            "name": "ssh-mcp-server",
+            "package_name": "ssh-mcp-server",
+            "display_name": "SSH 远程访问",
+            "description": "通过 SSH 连接远程主机，用自然语言执行远程命令。支持远程命令执行、文件操作、进程管理、服务控制等运维场景。",
+            "category": "Software Development",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/30b3c16f87be453297b4513d252a3be5/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=3b883b91c4d121eaa7a20e0d23ac2f50f59d58e32b958b3aeb3610cbc8b9b68a",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": [
+              "开发编程"
+            ]
+          },
+          {
+            "id": "7127f180f3fb498e9d10dd2b08bc9562",
+            "name": "tmeet",
+            "package_name": "tmeet",
+            "display_name": "腾讯会议",
+            "description": "通过命令行创建、查询和管理腾讯会议。支持快速发起会议、查看日程安排、管理参会人员。",
+            "category": "Office Productivity",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/7127f180f3fb498e9d10dd2b08bc9562/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=32b7b9231c2c18ba231d1746ead98d1ec1270272795bc676d31f2ad0a46adba2",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": [
+              "办公与生产力"
+            ]
+          },
+          {
+            "id": "ef0cfb824ea1433aab8854552152e1f9",
+            "name": "tyc-mcp",
+            "package_name": "tyc-mcp",
+            "display_name": "天眼查",
+            "description": "通过天眼查 MCP 查询多维度企业数据。支持工商登记、股东结构、司法风险、知识产权、董监高、经营数据等 160+ 项企业数据能力，用自然语言完成企业尽调与商业情报分析。",
+            "category": "Data Science & Research",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/ef0cfb824ea1433aab8854552152e1f9/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=607594e243ae78f383ed8de29d0385b8600ea714574a305dd9885b28805f58b4",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": [
+              "合规与法律"
+            ]
+          },
+          {
+            "id": "7f19cd24da844c79bca04fbb887cc884",
+            "name": "wecom",
+            "package_name": "wecom",
+            "display_name": "企业微信",
+            "description": "企业微信10 人及以下企业支持消息、文档、日程、会议、待办等MCP能力； 10 人以上企业仅支持创建、读取文档和智能表格。",
+            "category": "Office Productivity",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/7f19cd24da844c79bca04fbb887cc884/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=1062bb1993f65de02e6df534dbb6f7937f589a213bcd1e84b0d4e585100d7fa7",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": []
+          },
+          {
+            "id": "27e15c1ab2c74374948f1ef8133510ec",
+            "name": "wind-finance",
+            "package_name": "wind-finance",
+            "display_name": "Wind 金融数据",
+            "description": "通过自然语言查询股票、基金、指数、债券、公告、财经新闻和宏观经济数据。",
+            "category": "Finance & Wealth Management",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/27e15c1ab2c74374948f1ef8133510ec/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=3f2dc091d766fa2596bae726759231068ed893b185ab4ed7d1025b3d939f8d60",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": [
+              "金融与理财"
+            ]
+          },
+          {
+            "id": "5525f750b9254df191d25d0a3d3725c1",
+            "name": "yingmi-mcp",
+            "package_name": "yingmi-mcp",
+            "display_name": "盈米MCP",
+            "description": "查询基金与市场数据，完成基金研究、组合分析、财富规划及金融内容生成。",
+            "category": "Finance & Wealth Management",
+            "integration_type": "",
+            "connection_state": "disconnected",
+            "has_bundled_skills": false,
+            "icon": "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/agent-mcps/692ed38e7156f746d25fec52/5525f750b9254df191d25d0a3d3725c1/1.0.0/icon.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=HST3U7DX9SKHQTGCKV2Y%2F20261012%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20261012T062338Z&X-Amz-Expires=557&X-Amz-SignedHeaders=host&X-Amz-Security-Token=ggpjbi1ub3J0aC00UQJ7ImFjY2VzcyI6IkhTVDNVN0RYOVNLSFFUR0NLVjJZIiwiaXNzdWVkX2F0IjoxNzkxNzg1ODgwMjg3LCJtZXRob2RzIjpbInRva2VuIl0sInJvbGUiOltdLCJyb2xldGFnZXMiOltdLCJ0aW1lb3V0X2F0IjoxNzkxNzg2NzgwMjg3LCJ1c2VyIjp7ImRvbWFpbiI6eyJpZCI6ImUxNTUyODJhMjQzNTRhYjdiZGY3OTI4ZjcxMmIzNzk3IiwibmFtZSI6ImRzY2xvdWRzIn0sImlkIjoiODU1NTkzODE0YzhlNDEyMzkxMjA1NjI0YTVjOTQ5NDUiLCJuYW1lIjoib3Blbmppd2VuX29ubGluZSIsInBhc3N3b3JkX2V4cGlyZXNfYXQiOiIiLCJ1c2VyX3R5cGUiOjE2fX1iVUh3hOvM5K1rjPpQ4hryM_CFB-_SyQSCjPuNPBg0Mf5vSpxdbdm0OAdeGZ3tbrokeHplOni10WbXzmo4xD3oefCvYfWE67BPP0O-hrhs_CttnOSRYn0aT7pNONKGC8e9tyPKiOGdk13pUDin0DdplybXskn-hjsWxAURuk8bwU93YLvJbeMqGIIoXBXYYmMuPquCnbtDNl25mtnQz1KPBynBmhmfw1IAv3zTBMvzA_5swaplnML3fLhb7QgBNDaS1eqd8W11r8e9uyOv4ojyUJDprqv6mpnY_p0F0uyAeNY6N9NKdkbq8W82CZANbwCTtE-xN5RvBh6bKD4pd-eZ&X-Amz-Signature=8ab0b1b7dd06ce095c7ef1318ee17606701ee62fbfbfd86c22ab161ec6c4ae96",
+            "source": "hub",
+            "installed": false,
+            "version": "1.0.0",
+            "tags": [
+              "金融与理财"
+            ]
+          }
+        ]
+      }
+    },
+    "PersonalContext": {
+      "wire": {
+        "protocol_version": "1.0",
+        "response_id": "optional-2",
+        "request_id": "optional-2",
+        "sequence": 0,
+        "is_final": true,
+        "status": "succeeded",
+        "response_kind": "e2a.complete",
+        "timestamp": "2026-10-12T06:23:55.975712+00:00",
+        "provenance": {
+          "source_protocol": "e2a",
+          "converter": "gateway_protocol.e2a.gateway_normalize:e2a_response_from_agent_response",
+          "converted_at": "2026-10-12T06:23:55.975712+00:00",
+          "details": {
+            "kind": "legacy_agent_response",
+            "ok": true
+          }
+        },
+        "body": {
+          "result": {
+            "configured": false,
+            "collection_enabled": false,
+            "agent_use_enabled": false,
+            "state": "CREATED",
+            "pipeline_running": false,
+            "pipeline_queue_size": 0,
+            "fetch_service_states": {},
+            "fetch_service_errors": {},
+            "fetch_run_progress": {},
+            "context_root": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\.personal_context\\workspace\\context",
+            "context_ready": false,
+            "last_error": null
+          }
+        },
+        "jsonrpc_id": null,
+        "correlation_id": null,
+        "task_id": null,
+        "context_id": null,
+        "session_id": null,
+        "message_id": null,
+        "is_stream": false,
+        "identity_origin": "agent",
+        "channel": "web",
+        "user_id": null,
+        "agent_ref": null,
+        "source_agent_id": null,
+        "method": null,
+        "projections": {},
+        "channel_context": {},
+        "metadata": {},
+        "a2a_metadata": {},
+        "acp_meta": {}
+      },
+      "payload": {
+        "configured": false,
+        "collection_enabled": false,
+        "agent_use_enabled": false,
+        "state": "CREATED",
+        "pipeline_running": false,
+        "pipeline_queue_size": 0,
+        "fetch_service_states": {},
+        "fetch_service_errors": {},
+        "fetch_run_progress": {},
+        "context_root": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-qxxa3o2m\\data\\.personal_context\\workspace\\context",
+        "context_ready": false,
+        "last_error": null
+      }
+    },
+    "Sandbox-Windows": {
+      "wire": {
+        "protocol_version": "1.0",
+        "response_id": "optional-3",
+        "request_id": "optional-3",
+        "sequence": 0,
+        "is_final": true,
+        "status": "failed",
+        "response_kind": "e2a.error",
+        "timestamp": "2026-10-12T06:23:55.979230+00:00",
+        "provenance": {
+          "source_protocol": "e2a",
+          "converter": "gateway_protocol.e2a.gateway_normalize:e2a_response_from_agent_response",
+          "converted_at": "2026-10-12T06:23:55.979230+00:00",
+          "details": {
+            "kind": "legacy_agent_response",
+            "ok": false
+          }
+        },
+        "body": {
+          "code": "E2A.AGENT_ERROR",
+          "message": "/sandbox is only supported on Linux (current platform: 'win32'); jiuwenbox depends on Linux-only kernel features (bwrap / Landlock / namespaces) and cannot run on Windows or macOS.",
+          "details": {
+            "error": "/sandbox is only supported on Linux (current platform: 'win32'); jiuwenbox depends on Linux-only kernel features (bwrap / Landlock / namespaces) and cannot run on Windows or macOS.",
+            "code": "SANDBOX_BAD_REQUEST"
+          }
+        },
+        "jsonrpc_id": null,
+        "correlation_id": null,
+        "task_id": null,
+        "context_id": null,
+        "session_id": null,
+        "message_id": null,
+        "is_stream": false,
+        "identity_origin": "agent",
+        "channel": "web",
+        "user_id": null,
+        "agent_ref": null,
+        "source_agent_id": null,
+        "method": null,
+        "projections": {},
+        "channel_context": {},
+        "metadata": {},
+        "a2a_metadata": {},
+        "acp_meta": {}
+      },
+      "payload": {
+        "code": "E2A.AGENT_ERROR",
+        "message": "/sandbox is only supported on Linux (current platform: 'win32'); jiuwenbox depends on Linux-only kernel features (bwrap / Landlock / namespaces) and cannot run on Windows or macOS.",
+        "details": {
+          "error": "/sandbox is only supported on Linux (current platform: 'win32'); jiuwenbox depends on Linux-only kernel features (bwrap / Landlock / namespaces) and cannot run on Windows or macOS.",
+          "code": "SANDBOX_BAD_REQUEST"
+        }
+      }
+    },
+    "Zen-policy": {
+      "wire": {
+        "protocol_version": "1.0",
+        "response_id": "optional-4",
+        "request_id": "optional-4",
+        "sequence": 0,
+        "is_final": true,
+        "status": "succeeded",
+        "response_kind": "e2a.complete",
+        "timestamp": "2026-10-12T06:23:55.984270+00:00",
+        "provenance": {
+          "source_protocol": "e2a",
+          "converter": "gateway_protocol.e2a.gateway_normalize:e2a_response_from_agent_response",
+          "converted_at": "2026-10-12T06:23:55.984270+00:00",
+          "details": {
+            "kind": "legacy_agent_response",
+            "ok": true
+          }
+        },
+        "body": {
+          "result": {
+            "models": []
+          }
+        },
+        "jsonrpc_id": null,
+        "correlation_id": null,
+        "task_id": null,
+        "context_id": null,
+        "session_id": null,
+        "message_id": null,
+        "is_stream": false,
+        "identity_origin": "agent",
+        "channel": "web",
+        "user_id": null,
+        "agent_ref": null,
+        "source_agent_id": null,
+        "method": null,
+        "projections": {},
+        "channel_context": {},
+        "metadata": {},
+        "a2a_metadata": {},
+        "acp_meta": {}
+      },
+      "payload": {
+        "models": []
+      }
+    }
+  },
+  "chat_completed": true,
+  "health": {
+    "state": "AGENT_READY",
+    "transport_ready": true,
+    "control_ready": true,
+    "runtime_warming": true,
+    "agent_ready": true,
+    "draining": false,
+    "failed": false,
+    "failed_reason": null,
+    "last_error": null,
+    "retrying": false,
+    "capabilities": {
+      "transport": true,
+      "control": true,
+      "execution": true
+    },
+    "ok": true
+  },
+  "passed": true,
+  "shutdown_exit_code": 0
+}

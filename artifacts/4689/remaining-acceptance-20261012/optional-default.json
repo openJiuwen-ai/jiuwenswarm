@@ -1,0 +1,12 @@
+{
+  "scenario": "default",
+  "transport": "real-Front/Worker/SDK; local model protocol fixture",
+  "warming_controls": {
+    "session.list": "succeeded",
+    "project.list": "succeeded",
+    "config.get": "succeeded"
+  },
+  "passed": false,
+  "error": "AssertionError: {'wire': {'protocol_version': '1.0', 'response_id': 'control-3', 'request_id': 'control-3', 'sequence': 0, 'is_final': True, 'status': 'failed', 'response_kind': 'e2a.error', 'timestamp': '2026-10-12T06:20:25.456086+00:00', 'provenance': {'source_protocol': 'e2a', 'converter': 'gateway_protocol.e2a.gateway_normalize:e2a_response_from_agent_response', 'converted_at': '2026-10-12T06:20:25.456086+00:00', 'details': {'kind': 'legacy_agent_response', 'ok': False}}, 'body': {'code': 'E2A.AGENT_ERROR', 'message': 'invalid page_idx or session history not found', 'details': {'error': 'invalid page_idx or session history not found', 'code': 'NOT_FOUND'}}, 'jsonrpc_id': None, 'correlation_id': None, 'task_id': None, 'context_id': None, 'session_id': None, 'message_id': None, 'is_stream': False, 'identity_origin': 'agent', 'channel': 'web', 'user_id': None, 'agent_ref': None, 'source_agent_id': None, 'method': None, 'projections': {}, 'channel_context': {}, 'metadata': {}, 'a2a_metadata': {}, 'acp_meta': {}}, 'payload': {'code': 'E2A.AGENT_ERROR', 'message': 'invalid page_idx or session history not found', 'details': {'error': 'invalid page_idx or session history not found', 'code': 'NOT_FOUND'}}}",
+  "shutdown_exit_code": 0
+}

@@ -1,0 +1,339 @@
+{
+  "scenario": "tool",
+  "surface": "actual-Web-UI/Chromium/Gateway/native-Worker",
+  "before": {
+    "worker_instance": "679bcd21d986463cbd7e65eb3c19d88d",
+    "cursor": 4,
+    "history_required": false,
+    "is_processing": true,
+    "dispatches": [
+      {
+        "dispatch_id": "efce7cc80fad45e09bc2a2b25edd6839",
+        "request_id": "req_mv4ko1y1_13",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "9485efef7b834395a90701500f19bfd5",
+        "request_id": "req_mv4ko1y1_12",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "succeeded"
+        }
+      },
+      {
+        "dispatch_id": "d6bbef4a3df640cb8fc41522e53db105",
+        "request_id": "req_mv4ko1zd_17",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "succeeded"
+        }
+      },
+      {
+        "dispatch_id": "4da86072b71049b9805014b8a95561c8",
+        "request_id": "req_mv4ko5eu_21",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "1254a51eaa804d25aaf4178fbe6e19c9",
+        "request_id": "interrupt_1a12db8c689_7b100a",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "45aae31f26b04808b5c5b753f0636473",
+        "request_id": "req_mv4ko5mo_25",
+        "active": true,
+        "phase": "executing",
+        "execution_id": "4d885f96d27742baa6df2127953d3a78",
+        "entered_at_ns": 347516498729400,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "1efe21933d1142d0954411b87a92fdeb",
+        "session_id": "browser-session",
+        "request_id": "req_mv4ko1y1_12",
+        "generation": 1,
+        "work_kind": "goal_control",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 347512.359,
+        "started_at": 347512.359,
+        "finished_at": 347512.609,
+        "error": null,
+        "cancellation_requested": false
+      },
+      {
+        "execution_id": "d7a8030a4ff148f996e5601fef1ce7ff",
+        "session_id": "browser-session",
+        "request_id": "req_mv4ko1zd_17",
+        "generation": 1,
+        "work_kind": "goal_control",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 347512.578,
+        "started_at": 347512.578,
+        "finished_at": 347512.609,
+        "error": null,
+        "cancellation_requested": false
+      },
+      {
+        "execution_id": "4d885f96d27742baa6df2127953d3a78",
+        "session_id": "browser-session",
+        "request_id": "req_mv4ko5mo_25",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "running",
+        "created_at": 347516.187,
+        "started_at": 347516.187,
+        "finished_at": null,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "worker_pid": 10128,
+  "before_execution_ids": [
+    "1efe21933d1142d0954411b87a92fdeb",
+    "d7a8030a4ff148f996e5601fef1ce7ff",
+    "4d885f96d27742baa6df2127953d3a78"
+  ],
+  "after": {
+    "worker_instance": "679bcd21d986463cbd7e65eb3c19d88d",
+    "cursor": 6,
+    "history_required": false,
+    "is_processing": true,
+    "dispatches": [
+      {
+        "dispatch_id": "efce7cc80fad45e09bc2a2b25edd6839",
+        "request_id": "req_mv4ko1y1_13",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "9485efef7b834395a90701500f19bfd5",
+        "request_id": "req_mv4ko1y1_12",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "succeeded"
+        }
+      },
+      {
+        "dispatch_id": "d6bbef4a3df640cb8fc41522e53db105",
+        "request_id": "req_mv4ko1zd_17",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "succeeded"
+        }
+      },
+      {
+        "dispatch_id": "4da86072b71049b9805014b8a95561c8",
+        "request_id": "req_mv4ko5eu_21",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "1254a51eaa804d25aaf4178fbe6e19c9",
+        "request_id": "interrupt_1a12db8c689_7b100a",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "45aae31f26b04808b5c5b753f0636473",
+        "request_id": "req_mv4ko5mo_25",
+        "active": true,
+        "phase": "executing",
+        "execution_id": "4d885f96d27742baa6df2127953d3a78",
+        "entered_at_ns": 347516498729400,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "1a30154af0d6466290f7c8ea38d7e8b5",
+        "request_id": "req_mv4kois4_40",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "5759c8877ee94ec6a9415b8097836db3",
+        "request_id": "req_mv4kois4_39",
+        "active": true,
+        "phase": "accepted",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "d5950680a0db46d2b70ba495fad1cde4",
+        "request_id": "req_mv4koisw_41",
+        "active": true,
+        "phase": "accepted",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "1efe21933d1142d0954411b87a92fdeb",
+        "session_id": "browser-session",
+        "request_id": "req_mv4ko1y1_12",
+        "generation": 1,
+        "work_kind": "goal_control",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 347512.359,
+        "started_at": 347512.359,
+        "finished_at": 347512.609,
+        "error": null,
+        "cancellation_requested": false
+      },
+      {
+        "execution_id": "d7a8030a4ff148f996e5601fef1ce7ff",
+        "session_id": "browser-session",
+        "request_id": "req_mv4ko1zd_17",
+        "generation": 1,
+        "work_kind": "goal_control",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 347512.578,
+        "started_at": 347512.578,
+        "finished_at": 347512.609,
+        "error": null,
+        "cancellation_requested": false
+      },
+      {
+        "execution_id": "4d885f96d27742baa6df2127953d3a78",
+        "session_id": "browser-session",
+        "request_id": "req_mv4ko5mo_25",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "running",
+        "created_at": 347516.187,
+        "started_at": 347516.187,
+        "finished_at": null,
+        "error": null,
+        "cancellation_requested": false
+      },
+      {
+        "execution_id": "eb1a216b86e841668d671868b43dae21",
+        "session_id": "browser-session",
+        "request_id": "req_mv4koisw_41",
+        "generation": 1,
+        "work_kind": "goal_control",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 347533.25,
+        "started_at": 347533.25,
+        "finished_at": 347533.25,
+        "error": null,
+        "cancellation_requested": false
+      },
+      {
+        "execution_id": "2c5aef45e263468383ef6a1429ce80a8",
+        "session_id": "browser-session",
+        "request_id": "req_mv4kois4_39",
+        "generation": 1,
+        "work_kind": "goal_control",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 347533.25,
+        "started_at": 347533.25,
+        "finished_at": 347533.25,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "passed": false,
+  "error": "AssertionError: ",
+  "browser_errors": [
+    "WebSocket 连接异常",
+    "WebSocket 连接异常"
+  ],
+  "owner_shutdown_exit_code": 0,
+  "owner_shutdown": {
+    "kind": "shutdown.done",
+    "ok": true
+  }
+}

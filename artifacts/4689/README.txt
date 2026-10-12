@@ -1,5 +1,16 @@
 Issue #4689 阶段二、三、四交付说明
-报告日期：2026-10-11（Asia/Shanghai）
+最终复核日期：2026-10-12（Asia/Shanghai）
+
+最新入口：remaining-acceptance-20261012/issue4689-remaining-acceptance.html。
+最终产品代码：ee9b4819d1b28d22c4d7249039d757ce9725ffb3。
+最新正式样本位于 remaining-acceptance-20261012/front-*.jsonl、chat-*.jsonl。
+实现与功能验收符合批准的阶段二、三、四改进方案；性能未全部达标。
+code.normal 的 Front P95 仍超过 300ms，两个模式冷 Worker 均超过 2.5 秒。
+依用户授权保留现有依赖，并如实记录未达标结果，不扩大改造范围。
+历史报告、patch、bundle 的提交和数值只代表各自生成时的版本。
+当前源码及最新附件以本实施分支为准；推送结果以最终回复的远端 SHA 核对为准。
+
+以下为 2026-10-11 历史交付说明，保留作为审查记录。
 
 先打开 issue4689-acceptance.html。它可以离线阅读，表格和结论完整写入 HTML。
 解压完整证据包到同一目录后，报告中的相对链接可打开原始采样和测试摘要。
@@ -11,7 +22,7 @@ Issue #4689 阶段二、三、四交付说明
 
 验收：Front / 控制面 / 已有 Worker 性能达标；冷 Worker 约 8 秒，未达 2.5 秒。
 失败、既有回归失败和未覆盖的验证如实列在报告内。
-没有推送分支或创建 MR。
+生成这份历史报告时尚未推送分支或创建 MR。
 
 材料：
 - acceptance-results.json：两个模式、两个版本的 P50 / P95 与样本数。

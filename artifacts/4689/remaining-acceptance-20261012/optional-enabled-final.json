@@ -1,0 +1,1916 @@
+{
+  "scenario": "enabled",
+  "transport": "real-Front/Worker/SDK; local model protocol fixture",
+  "warming_controls": {
+    "session.list": "succeeded",
+    "project.list": "succeeded",
+    "config.get": "succeeded",
+    "history.get": "succeeded"
+  },
+  "capabilities": {
+    "skills": {
+      "wire": {
+        "protocol_version": "1.0",
+        "response_id": "optional-0",
+        "request_id": "optional-0",
+        "sequence": 0,
+        "is_final": true,
+        "status": "succeeded",
+        "response_kind": "e2a.complete",
+        "timestamp": "2026-10-12T06:23:17.964342+00:00",
+        "provenance": {
+          "source_protocol": "e2a",
+          "converter": "gateway_protocol.e2a.gateway_normalize:e2a_response_from_agent_response",
+          "converted_at": "2026-10-12T06:23:17.964342+00:00",
+          "details": {
+            "kind": "legacy_agent_response",
+            "ok": true
+          }
+        },
+        "body": {
+          "result": {
+            "skills": [
+              {
+                "name": "agent-creator",
+                "description": "Agent 模板包的创建与更新器：从自然语言创建可被 JiuwenSwarm 加载的 agent 模板包，或在同一流程的 update mode 下修改已有自定义专家。\n触发词：创建 agent模板包、创建模板包、生成 agent 模板、新建 agent、做一个 agent、create agent template、建一个专家、做一个专家、agent 脚手架、scaffold agent、修改专家、编辑专家、更新专家、调整专家、modify expert、update expert。当用户说「帮我做一个能 XX 的 agent」「创建一个 XX 专家」「改一下 XX 专家」「更新已有专家」时，务必使用本 skill。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\agent-creator\\SKILL.md",
+                "source": "builtin",
+                "display_name": "agent-creator",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "agent-group-creator",
+                "description": "从自然语言创建可被 JiuwenSwarm 加载和安装的专家团（agent_group）包，包含 Leader、专家成员、协作指令及可选共享技能。用户提出“创建专家团”“组建专家团队”“做一个多专家协作团队”时使用；创建单个专家使用 agent-creator，执行已有专家团的业务任务不使用本技能。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\agent-group-creator\\SKILL.md",
+                "source": "builtin",
+                "display_name": "agent-group-creator",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "baoyu-image-gen",
+                "description": "AI image generation with OpenAI GPT Image 2, Azure OpenAI, Google, OpenRouter, DashScope, Z.AI GLM-Image, MiniMax, Jimeng, Seedream, Replicate and Agnes APIs. Supports text-to-image, reference images, aspect ratios, and batch generation from saved prompt files. Sequential by default; use batch parallel generation when the user already has multiple prompts or wants stable multi-image throughput. Use when user asks to generate, create, or draw images.",
+                "version": null,
+                "metadata": {
+                  "openclaw": {
+                    "homepage": "https://github.com/JimLiu/baoyu-skills#baoyu-image-gen",
+                    "requires": {
+                      "anyBins": [
+                        "bun",
+                        "npx"
+                      ]
+                    }
+                  }
+                },
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\baoyu-image-gen\\SKILL.md",
+                "source": "builtin",
+                "display_name": "baoyu-image-gen",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "docx-pro",
+                "description": "Professional Word (.docx) document generation, faithful text replacement, Markdown round-trip conversion, document inspection, TOC insertion and watermarking. Use when the user asks to create rich-formatted Word documents (cover page, TOC, multi-level headings, styled tables with merged cells, images, code blocks, quotes, headers/footers, page numbers, watermarks), replace or batch-replace text in existing docx files while preserving every other byte and all formatting (handles text split across runs, tables, headers/footers), convert Markdown to docx or docx to Markdown, inspect document structure, insert TOC fields, or add text watermarks to existing docx files. Triggers on docx-pro, 生成 Word 文档, 生成报告文档, 富格式文档, Word 替换, Word 文本替换, Word 保真替换, 批量替换, 合同替换, 替换甲方, Markdown 转 Word, Word 转 Markdown, md 转 docx, docx 转 md, 插入目录, 添加水印, 文档结构分析, 专业排版.",
+                "description_cn": "专业 Word 文档工具集：从零生成富格式 Word（封面/目录/主题/合并单元格表格/图片/代码块/页眉页脚/水印）、保真文本替换（跨 run 定位、表格/页眉页脚全覆盖、其余字节零改动、支持批量映射与预览）、Markdown 双向转换、文档结构检查、目录插入与水印添加。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\docx-pro\\SKILL.md",
+                "source": "builtin",
+                "display_name": "docx-pro",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "huawei-cloud-maas-setup",
+                "description": "引导用户完成华为云 MaaS 服务购买和 API 配置。脚本自动完成授权更新、API Key 创建、模型开通；用户只需完成登录、充值、选择要开通的模型。整个流程预计 3-5 分钟。 适用于首次运行配置、华为云 MaaS 服务开通、API 凭证获取、模型服务配置等场景。 当用户提到华为云、MaaS、Maas、开通模型服务、配置 API、首次配置、引导配置、 一键配置等意图时触发。",
+                "allowed_tools": [
+                  "bash",
+                  "ask_user"
+                ],
+                "version": null,
+                "author": "",
+                "tags": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\huawei-cloud-maas-setup\\SKILL.md",
+                "source": "builtin",
+                "display_name": "huawei-cloud-maas-setup",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "local-doc-ocr",
+                "version": null,
+                "author": "海河（李昂）",
+                "license": "MIT",
+                "category": "文档处理 / OCR",
+                "platforms": [
+                  "workbuddy",
+                  "claude-code",
+                  "cursor",
+                  "ima",
+                  "qclaw"
+                ],
+                "description": "本地离线 OCR——将扫描件 PDF/图片提取为文字。双引擎：(A) RapidOCR 纯本地离线一键出 .md（默认保底、不联网、不占 token、可批量）；(B) 支持多模态读图能力的 Agent 逐页读图（高质量，擅长表格/手写/印章，如 WorkBuddy 的 Read 工具）。全程本机处理，适合涉密/敏感与隐私资料。触发词：OCR、识别、读PDF、读一下这份、把这个读出来、转成文字、扫描件提取、图片转文字、识别扫描件、PDF转文字、手写识别、提取图片里的字、这份文件读不出来、资料入库（如喂给知识库）时遇到扫描件。注：用户说\"识别隐患/安全隐患\"属安全检查类技能，本技能只做文字提取。",
+                "agent_created": true,
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\local-doc-ocr\\SKILL.md",
+                "source": "builtin",
+                "display_name": "local-doc-ocr",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "pdf-extraction",
+                "description": "Extract text, tables, and metadata from PDFs using pdfplumber",
+                "version": null,
+                "author": "claude-office-skills",
+                "license": "MIT",
+                "category": "pdf",
+                "tags": [
+                  "pdf",
+                  "extraction",
+                  "text",
+                  "tables"
+                ],
+                "department": "All",
+                "models": {
+                  "recommended": [
+                    "claude-sonnet-4",
+                    "claude-opus-4"
+                  ],
+                  "compatible": [
+                    "claude-3-5-sonnet",
+                    "gpt-4",
+                    "gpt-4o"
+                  ]
+                },
+                "mcp": {
+                  "server": "office-mcp",
+                  "tools": [
+                    "extract_text_from_pdf",
+                    "extract_tables_from_pdf"
+                  ]
+                },
+                "capabilities": [
+                  "text_extraction",
+                  "table_extraction",
+                  "data_mining"
+                ],
+                "languages": [
+                  "en",
+                  "zh"
+                ],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\pdf-extraction\\SKILL.md",
+                "source": "builtin",
+                "display_name": "pdf-extraction",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "plugin-creator",
+                "description": "Plugin 插件包的创建与更新器：从自然语言创建可被 JiuwenSwarm 加载的 plugin 插件包，或在同一流程的 update mode 下修改已有自定义插件。\n触发词：创建插件、创建 plugin、做一个插件、plugin 脚手架、修改插件、编辑插件、更新插件、调整插件、create plugin package、插件包、帮我做一个 XX 插件、给 agent 加 XX 能力包。当用户说「帮我做一个 XX 插件」「创建一个能力扩展包」「改一下 XX 插件」时，务必使用本 skill。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\plugin-creator\\SKILL.md",
+                "source": "builtin",
+                "display_name": "plugin-creator",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "pptx-generator",
+                "description": "Generate, edit, and read PowerPoint presentations. Create from scratch with PptxGenJS (cover, TOC, content, section divider, summary slides), edit existing PPTX via XML workflows, or extract text with markitdown. Triggers: PPT, PPTX, PowerPoint, presentation, slide, deck, slides.",
+                "license": "MIT",
+                "metadata": {
+                  "version": "1.0",
+                  "category": "productivity",
+                  "sources": [
+                    "https://gitbrent.github.io/PptxGenJS/",
+                    "https://github.com/microsoft/markitdown"
+                  ]
+                },
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\pptx-generator\\SKILL.md",
+                "source": "builtin",
+                "display_name": "pptx-generator",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "rsi-program-dataset-creator",
+                "description": "Use for program evolution — improving a working program by repeated search against a measured score, rather than by one edit. Covers both halves: deciding what is measured and how a candidate program is scored, and writing that decision into the task folder the run reads (`task.json`, `seed/`, `run/scorecard.json`, every parameter set). Triggers on \"make this code faster\", \"search for a better implementation\", staging or debugging a task folder, writing a scorecard or an evaluator, and on a `PROBE_REFUSED`, `SEARCH_FAILED` or `ARTIFACT_BUNDLE_INCOMPLETE` a run came back with.",
+                "metadata": "",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\rsi-program-dataset-creator\\SKILL.md",
+                "source": "builtin",
+                "display_name": "rsi-program-dataset-creator",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "skill-creator",
+                "description": "Unified entry point for all Skill creators. Routes skill creation and editing requests to the correct specialized creator. Use whenever the user wants to create a new Skill, edit an existing Skill from chat, or when the conversation scene is create_skill / edit_skill. Chooses among skill-creator-normal, swarmskill-creator, and skill-omni-creation, then ensures the final Skill package is delivered via send_file_to_user (never silently installed to workspace). Do not bypass this entry by calling specialized creators directly for create_skill / edit_skill scenes.",
+                "description_cn": "所有 Skill Creator 的统一入口。按场景与类型路由到 skill-creator-normal、swarmskill-creator 或 skill-omni-creation；创建/修改 Skill 时优先选用本 Skill，不要绕过本入口直接调用各专项 creator。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\skill-creator\\SKILL.md",
+                "source": "builtin",
+                "display_name": "skill-creator",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "skill-creator-normal",
+                "description": "Create new single-agent skills, modify and improve existing single-agent skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.",
+                "description_cn": "创建、修改、优化和评估单智能体技能。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\skill-creator-normal\\SKILL.md",
+                "source": "builtin",
+                "display_name": "skill-creator-normal",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "skill-omni-creation",
+                "description": "当用户说「从这个链接/URL生成skill」「把这个网页/教程做成skill」「从这个视频提取步骤」时触发。先读取此 SKILL.md，再按步骤调用 scripts/ 下的 Python 脚本完成：爬取网页或下载视频 → 下载图片/抽帧 → 生成标准 Skill Markdown 文件；若内容需要编程实现，自动编写并验证配套脚本（scripts/）。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\skill-omni-creation\\SKILL.md",
+                "source": "builtin",
+                "display_name": "skill-omni-creation",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "swarmskill-creator",
+                "description": "Creates, converts, or modifies Swarm Skills — the multi-role (多角色团队) extension of the Skills standard, optionally with an executable SwarmFlow orchestration script.\nUse when building or refactoring a multi-agent team, generating workflow (工作流/编排) orchestration code, or upgrading a single-agent skill into a collaborating team.\nDo NOT use for ordinary single-agent skills — use create-skill instead.\n",
+                "description_cn": "创建、转换或修改多角色 Swarm Skill；普通单智能体技能使用 `skill-creator`。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\swarmskill-creator\\SKILL.md",
+                "source": "builtin",
+                "display_name": "swarmskill-creator",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "xlsx",
+                "description": "Open, create, read, analyze, edit, repair, or validate spreadsheet files (.xlsx, .xlsm, .xltx, .csv, .tsv) with zero format loss, with first-class support for Chinese / CJK content. Use whenever the user asks to create, build, modify, fill, analyze, read, repair, validate, or format any spreadsheet, workbook, report, dashboard, budget, financial model, pivot table, or tabular data file. Handles Chinese text, encodings (UTF-8 / GB18030 / GBK), full-width characters, CJK fonts in rendering, and Chinese number/date conventions (¥, 万/亿, 年/月/日). Covers: creating new workbooks from scratch, reading and analyzing existing files, editing existing workbooks while preserving pivot tables / VBA macros / charts / sparklines / conditional formatting / named ranges, formula recalculation and validation, visual review of results, and applying professional formatting. Triggers on 'spreadsheet', 'Excel', 'workbook', '表格', '工作簿', '.xlsx', '.xlsm', '.csv', 'pivot table', '透视表', 'macro', '宏', 'chart', '图表', 'financial model', '财务模型', 'formula', '公式', or any request to produce tabular data.",
+                "license": "MIT",
+                "metadata": {
+                  "version": "2.0",
+                  "category": "productivity",
+                  "locale": "zh-CN-aware",
+                  "sources": [
+                    "ECMA-376 Office Open XML File Formats",
+                    "Microsoft Open XML SDK documentation"
+                  ]
+                },
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\xlsx\\SKILL.md",
+                "source": "builtin",
+                "display_name": "xlsx",
+                "installed": true,
+                "enabled": true,
+                "is_builtin": false,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "has_evolutions": false,
+                "skill_type": "skill"
+              },
+              {
+                "name": "advanced-daily-report",
+                "version": null,
+                "description": "进阶版日报生成器，支持多数据源采集、工作分析、趋势对比、周报月报聚合",
+                "tags": [
+                  "report",
+                  "automation",
+                  "productivity",
+                  "daily",
+                  "weekly",
+                  "monthly",
+                  "advanced"
+                ],
+                "allowed_tools": [
+                  "read_memory",
+                  "write_memory",
+                  "bash",
+                  "read_file",
+                  "write_file"
+                ],
+                "author": "",
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\advanced-daily-report\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "akg-agents",
+                "description": "代理执行 AKG 算子任务。先检查固定仓库与分支；若 `~/.akg/check_env.md` 不存在则强制 `FULL_SETUP=true`；忽略所有 `akg_cli` 检查和使用；后端代码生成直接执行 `run_workflow.py --workflow kernelgen`。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\akg-agents\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "ascend-moe-optimizer-auto-trace",
+                "description": "为昇腾算子在源码中接入 TRACE_POINT 与 MoeTracing，串通 trace_preprocessor、profiling tensor、point_map.json、 save_profiling_data 与 trace_collector 生成 Chrome trace。强调门禁 G1–G5：全链路预处理与 OPP、profiling 为数据输出最后一位、 整条编译与示例脚本联调、落盘路径在 spawn 前 resolve。遵循函数级粒度与就地扩展，禁止另注册 xxx_profiling 类第二入口， 保持原 Op 与 torch.ops 名称及签名不变。在用户提到算子打点、Profiling、Chrome trace、MoeTracing，或将结论写入本 skill 时读取。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\ascend-moe-optimizer-auto-trace\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "ascend-moe-optimizer-trace-analyzer",
+                "description": "在用户提供 Chrome/Perfetto trace.json、或排查 Ascend 上 MoE/FusedDeepMoe 等算子性能时使用。按 phase、category、core group、tid 统计耗时、overlap、bubble，输出 CSV、Markdown 报告与确定性诊断；可选外部 LLM 扩写分析。默认 phase 映射面向 UMDK FusedDeepMoe，其它 trace 需替换或扩展 config/phase_map.yaml。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\ascend-moe-optimizer-trace-analyzer\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "cross-channel-history-retrieval",
+                "description": "跨会话检索聊天原文（记忆不足时再用）。在回答任何关于历史事件、日期、人物、过去对话的问题时，如果记忆中没有相关信息或不足以回答，则需要使用跨会话检索聊天原文。用 mcp_exec_command 执行 scripts/search_history.py，读 ~/.jiuwenswarm/agent/sessions/*/history.json。支持 channel、session_id、关键词、时间窗。如果搜索结果不足，尝试用不同的关键词再次搜索。",
+                "allowed_tools": [
+                  "mcp_exec_command"
+                ],
+                "version": null,
+                "author": "",
+                "tags": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\cross-channel-history-retrieval\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "deepep-to-cam-converter",
+                "description": "识别代码中可替换为CAM算子的DeepEP算子，基于实际运行参数校验约束，自动完成通信域转换（NCCL->HCCL）、设备适配（CUDA->NPU）及算子替换。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\deepep-to-cam-converter\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "delayed-restart-app",
+                "description": "安排延迟重启本 Agent 所在的服务（JiuwenSwarm app）。执行后当前 Agent 进程会被终止并重新启动，当前会话会断开。用于用户要求重启、配置更新需生效、或服务异常需重载时。使用 bash 调用脚本。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\delayed-restart-app\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "doc-update",
+                "description": "以源码为唯一事实来源，系统性核对并更新项目文档，确保内容与实现一致、多语言文档 1:1 对齐、结构完整。",
+                "trigger": "用户提到\"刷文档\"、\"更新文档\"、\"check 文档\"、\"doc audit\"、\"文档审查\"等关键词时加载。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\doc-update\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "dynamic-memory-cli",
+                "description": "Operate a dynamic, UT-backed agent memory with atomic Pending publication, merged Pending/Built search, Memory Snapshot and history cursor state, Built-only validation, and exact-content migration. Use when an agent Harness must extract memory asynchronously while foreground work continues, publish immediately searchable Pending UTs, build them into a stable index, or inspect and recover an eternal-conversation memory project.",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\dynamic-memory-cli\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "financial-document-parser",
+                "description": "Extract and analyze data from invoices, receipts, bank statements, and financial documents. Categorize expenses, track recurring charges, and generate expense reports. Use when user provides financial PDFs or images.",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\financial-document-parser\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "gitcode-api",
+                "description": "使用 gitcode-api 命令行工具访问 GitCode REST API。适用于需要查询仓库、Issue、Pull Request、文件内容、用户、组织、搜索结果，或需要获取 Issue 与 Pull Request 模版的场景。还可用于总结仓库最近 commit / PR / issue、责任人、模块、风险或对外接口影响。",
+                "version": null,
+                "metadata": {
+                  "version": "1.0.0"
+                },
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\gitcode-api\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "harmonyos-dev-suite",
+                "description": "Unified HarmonyOS development entry skill for ArkTS, ArkUI, DevEco CLI, build/run/debug, device logs, testing, multi-device adaptation, atomic services, native development, stability diagnosis, and optional HarmonyOS atomic Skill routing. Use when the user mentions HarmonyOS, OpenHarmony, HongMeng, 鸿蒙, ArkTS, ArkUI, DevEco, .ets, oh-package.json5, build-profile.json5, HAP/HAR/App, emulator, hilog, hdc, hvigor, or HarmonyOS app development.",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\harmonyos-dev-suite\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": true,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "llm-wiki",
+                "description": "Build and maintain a persistent knowledge base (LLM Wiki) using native backend tools. Supports ingesting PDFs, Markdown, and TXT files, and querying or linting the data. Use this whenever the user wants to add, retrieve, or manage their own local knowledge base and documents.",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\llm-wiki\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "openJiuwen-DeepSearch",
+                "description": "知识增强型深度检索与深度研究，支持查询规划、信息收集、理解反思、研究报告生成等多 Agent 协同。使用场景：金融分析研报、学术与政策研究、企业级深度搜索等复杂推理任务，可以生成Markdown、Doc和Html格式的研究报告。**每次使用该技能之前都先完整阅读一遍SKILL.md学习技能。**",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\openJiuwen-DeepSearch\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "ppt-creation",
+                "description": "当任务要求创建、读取、解析、提取、编辑、修改、合并、拆分、转换或检查 PPT / 幻灯片 / 演示文稿 / deck / slides / presentation / .pptx 文件时使用。本 skill 以内置模板为版面底座，让 Agent 在内容区自由设计；支持原生 PptxGenJS 绘制、可选组件、用户素材、论文原图和合规网络素材。",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\ppt-creation\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "multimodal_skill"
+              },
+              {
+                "name": "project-maintainer",
+                "description": "Use when initializing or updating structured in-repository project-maintenance docs; exploring existing code; analyzing a full project or repository; documenting complete source symbol coverage, coverage maps, symbol audit maps, or health for every top-level class, top-level function, and class method; summarizing git history; using project-maintainer as maintenance-aware context during a bug fix, feature change, or refactor; or syncing docs after verified code changes.",
+                "license": "Apache-2.0",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\project-maintainer\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "skill-gen-4-enterprise-doc",
+                "description": "Turn SOPs, URLs, or stated intent into an installed skill package. Use when the user asks to generate a skill from a document, link, or workflow. Follow SKILL.md, reference/sop-structure-pipeline.md, and reference/generator-worker-spec.md; finish by promoting the draft into the runtime skills directory (see reference/operator-playbook.md) in the same turn.",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\skill-gen-4-enterprise-doc\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "skvm-general",
+                "description": "Drive the skvm CLI on behalf of a user to profile models, AOT-compile skills, run skill-assisted tasks, run benchmarks, and manage compiled proposals. Trigger when the user asks to \"profile\", \"aot-compile\", \"bench\", \"run a single ad-hoc task with a skill\", or asks about skvm proposals. Do NOT trigger for `jit-optimize` or when the user wants to optimize/improve a skill — use the sibling `skvm-jit` skill instead.",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\skvm-general\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              },
+              {
+                "name": "skvm-jit",
+                "description": "Trigger `skvm jit-optimize` with post-task evidence so it generates a reviewable optimization proposal for a skill. Use after finishing a task that was driven by any skill (not just SkVM-compiled ones) when the outcome was a failure, was partial, or the skill's instructions clearly caused confusion or an unnecessary detour. Clean successful runs usually do not need an optimization pass. For general skvm usage (profile/aot-compile/bench/proposals), use the sibling `skvm-general` skill instead.",
+                "version": null,
+                "author": "",
+                "tags": [],
+                "allowed_tools": [],
+                "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\skvm-jit\\SKILL.md",
+                "source": "builtin",
+                "is_builtin": true,
+                "is_builtin_source": true,
+                "proprietary": false,
+                "installed": false,
+                "has_evolutions": false,
+                "enabled": true,
+                "config": {
+                  "enabled": true
+                },
+                "skill_type": "skill"
+              }
+            ]
+          }
+        },
+        "jsonrpc_id": null,
+        "correlation_id": null,
+        "task_id": null,
+        "context_id": null,
+        "session_id": null,
+        "message_id": null,
+        "is_stream": false,
+        "identity_origin": "agent",
+        "channel": "web",
+        "user_id": null,
+        "agent_ref": null,
+        "source_agent_id": null,
+        "method": null,
+        "projections": {},
+        "channel_context": {},
+        "metadata": {},
+        "a2a_metadata": {},
+        "acp_meta": {}
+      },
+      "payload": {
+        "skills": [
+          {
+            "name": "agent-creator",
+            "description": "Agent 模板包的创建与更新器：从自然语言创建可被 JiuwenSwarm 加载的 agent 模板包，或在同一流程的 update mode 下修改已有自定义专家。\n触发词：创建 agent模板包、创建模板包、生成 agent 模板、新建 agent、做一个 agent、create agent template、建一个专家、做一个专家、agent 脚手架、scaffold agent、修改专家、编辑专家、更新专家、调整专家、modify expert、update expert。当用户说「帮我做一个能 XX 的 agent」「创建一个 XX 专家」「改一下 XX 专家」「更新已有专家」时，务必使用本 skill。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\agent-creator\\SKILL.md",
+            "source": "builtin",
+            "display_name": "agent-creator",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "agent-group-creator",
+            "description": "从自然语言创建可被 JiuwenSwarm 加载和安装的专家团（agent_group）包，包含 Leader、专家成员、协作指令及可选共享技能。用户提出“创建专家团”“组建专家团队”“做一个多专家协作团队”时使用；创建单个专家使用 agent-creator，执行已有专家团的业务任务不使用本技能。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\agent-group-creator\\SKILL.md",
+            "source": "builtin",
+            "display_name": "agent-group-creator",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "baoyu-image-gen",
+            "description": "AI image generation with OpenAI GPT Image 2, Azure OpenAI, Google, OpenRouter, DashScope, Z.AI GLM-Image, MiniMax, Jimeng, Seedream, Replicate and Agnes APIs. Supports text-to-image, reference images, aspect ratios, and batch generation from saved prompt files. Sequential by default; use batch parallel generation when the user already has multiple prompts or wants stable multi-image throughput. Use when user asks to generate, create, or draw images.",
+            "version": null,
+            "metadata": {
+              "openclaw": {
+                "homepage": "https://github.com/JimLiu/baoyu-skills#baoyu-image-gen",
+                "requires": {
+                  "anyBins": [
+                    "bun",
+                    "npx"
+                  ]
+                }
+              }
+            },
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\baoyu-image-gen\\SKILL.md",
+            "source": "builtin",
+            "display_name": "baoyu-image-gen",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "docx-pro",
+            "description": "Professional Word (.docx) document generation, faithful text replacement, Markdown round-trip conversion, document inspection, TOC insertion and watermarking. Use when the user asks to create rich-formatted Word documents (cover page, TOC, multi-level headings, styled tables with merged cells, images, code blocks, quotes, headers/footers, page numbers, watermarks), replace or batch-replace text in existing docx files while preserving every other byte and all formatting (handles text split across runs, tables, headers/footers), convert Markdown to docx or docx to Markdown, inspect document structure, insert TOC fields, or add text watermarks to existing docx files. Triggers on docx-pro, 生成 Word 文档, 生成报告文档, 富格式文档, Word 替换, Word 文本替换, Word 保真替换, 批量替换, 合同替换, 替换甲方, Markdown 转 Word, Word 转 Markdown, md 转 docx, docx 转 md, 插入目录, 添加水印, 文档结构分析, 专业排版.",
+            "description_cn": "专业 Word 文档工具集：从零生成富格式 Word（封面/目录/主题/合并单元格表格/图片/代码块/页眉页脚/水印）、保真文本替换（跨 run 定位、表格/页眉页脚全覆盖、其余字节零改动、支持批量映射与预览）、Markdown 双向转换、文档结构检查、目录插入与水印添加。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\docx-pro\\SKILL.md",
+            "source": "builtin",
+            "display_name": "docx-pro",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "huawei-cloud-maas-setup",
+            "description": "引导用户完成华为云 MaaS 服务购买和 API 配置。脚本自动完成授权更新、API Key 创建、模型开通；用户只需完成登录、充值、选择要开通的模型。整个流程预计 3-5 分钟。 适用于首次运行配置、华为云 MaaS 服务开通、API 凭证获取、模型服务配置等场景。 当用户提到华为云、MaaS、Maas、开通模型服务、配置 API、首次配置、引导配置、 一键配置等意图时触发。",
+            "allowed_tools": [
+              "bash",
+              "ask_user"
+            ],
+            "version": null,
+            "author": "",
+            "tags": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\huawei-cloud-maas-setup\\SKILL.md",
+            "source": "builtin",
+            "display_name": "huawei-cloud-maas-setup",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "local-doc-ocr",
+            "version": null,
+            "author": "海河（李昂）",
+            "license": "MIT",
+            "category": "文档处理 / OCR",
+            "platforms": [
+              "workbuddy",
+              "claude-code",
+              "cursor",
+              "ima",
+              "qclaw"
+            ],
+            "description": "本地离线 OCR——将扫描件 PDF/图片提取为文字。双引擎：(A) RapidOCR 纯本地离线一键出 .md（默认保底、不联网、不占 token、可批量）；(B) 支持多模态读图能力的 Agent 逐页读图（高质量，擅长表格/手写/印章，如 WorkBuddy 的 Read 工具）。全程本机处理，适合涉密/敏感与隐私资料。触发词：OCR、识别、读PDF、读一下这份、把这个读出来、转成文字、扫描件提取、图片转文字、识别扫描件、PDF转文字、手写识别、提取图片里的字、这份文件读不出来、资料入库（如喂给知识库）时遇到扫描件。注：用户说\"识别隐患/安全隐患\"属安全检查类技能，本技能只做文字提取。",
+            "agent_created": true,
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\local-doc-ocr\\SKILL.md",
+            "source": "builtin",
+            "display_name": "local-doc-ocr",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "pdf-extraction",
+            "description": "Extract text, tables, and metadata from PDFs using pdfplumber",
+            "version": null,
+            "author": "claude-office-skills",
+            "license": "MIT",
+            "category": "pdf",
+            "tags": [
+              "pdf",
+              "extraction",
+              "text",
+              "tables"
+            ],
+            "department": "All",
+            "models": {
+              "recommended": [
+                "claude-sonnet-4",
+                "claude-opus-4"
+              ],
+              "compatible": [
+                "claude-3-5-sonnet",
+                "gpt-4",
+                "gpt-4o"
+              ]
+            },
+            "mcp": {
+              "server": "office-mcp",
+              "tools": [
+                "extract_text_from_pdf",
+                "extract_tables_from_pdf"
+              ]
+            },
+            "capabilities": [
+              "text_extraction",
+              "table_extraction",
+              "data_mining"
+            ],
+            "languages": [
+              "en",
+              "zh"
+            ],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\pdf-extraction\\SKILL.md",
+            "source": "builtin",
+            "display_name": "pdf-extraction",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "plugin-creator",
+            "description": "Plugin 插件包的创建与更新器：从自然语言创建可被 JiuwenSwarm 加载的 plugin 插件包，或在同一流程的 update mode 下修改已有自定义插件。\n触发词：创建插件、创建 plugin、做一个插件、plugin 脚手架、修改插件、编辑插件、更新插件、调整插件、create plugin package、插件包、帮我做一个 XX 插件、给 agent 加 XX 能力包。当用户说「帮我做一个 XX 插件」「创建一个能力扩展包」「改一下 XX 插件」时，务必使用本 skill。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\plugin-creator\\SKILL.md",
+            "source": "builtin",
+            "display_name": "plugin-creator",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "pptx-generator",
+            "description": "Generate, edit, and read PowerPoint presentations. Create from scratch with PptxGenJS (cover, TOC, content, section divider, summary slides), edit existing PPTX via XML workflows, or extract text with markitdown. Triggers: PPT, PPTX, PowerPoint, presentation, slide, deck, slides.",
+            "license": "MIT",
+            "metadata": {
+              "version": "1.0",
+              "category": "productivity",
+              "sources": [
+                "https://gitbrent.github.io/PptxGenJS/",
+                "https://github.com/microsoft/markitdown"
+              ]
+            },
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\pptx-generator\\SKILL.md",
+            "source": "builtin",
+            "display_name": "pptx-generator",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "rsi-program-dataset-creator",
+            "description": "Use for program evolution — improving a working program by repeated search against a measured score, rather than by one edit. Covers both halves: deciding what is measured and how a candidate program is scored, and writing that decision into the task folder the run reads (`task.json`, `seed/`, `run/scorecard.json`, every parameter set). Triggers on \"make this code faster\", \"search for a better implementation\", staging or debugging a task folder, writing a scorecard or an evaluator, and on a `PROBE_REFUSED`, `SEARCH_FAILED` or `ARTIFACT_BUNDLE_INCOMPLETE` a run came back with.",
+            "metadata": "",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\rsi-program-dataset-creator\\SKILL.md",
+            "source": "builtin",
+            "display_name": "rsi-program-dataset-creator",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "skill-creator",
+            "description": "Unified entry point for all Skill creators. Routes skill creation and editing requests to the correct specialized creator. Use whenever the user wants to create a new Skill, edit an existing Skill from chat, or when the conversation scene is create_skill / edit_skill. Chooses among skill-creator-normal, swarmskill-creator, and skill-omni-creation, then ensures the final Skill package is delivered via send_file_to_user (never silently installed to workspace). Do not bypass this entry by calling specialized creators directly for create_skill / edit_skill scenes.",
+            "description_cn": "所有 Skill Creator 的统一入口。按场景与类型路由到 skill-creator-normal、swarmskill-creator 或 skill-omni-creation；创建/修改 Skill 时优先选用本 Skill，不要绕过本入口直接调用各专项 creator。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\skill-creator\\SKILL.md",
+            "source": "builtin",
+            "display_name": "skill-creator",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "skill-creator-normal",
+            "description": "Create new single-agent skills, modify and improve existing single-agent skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.",
+            "description_cn": "创建、修改、优化和评估单智能体技能。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\skill-creator-normal\\SKILL.md",
+            "source": "builtin",
+            "display_name": "skill-creator-normal",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "skill-omni-creation",
+            "description": "当用户说「从这个链接/URL生成skill」「把这个网页/教程做成skill」「从这个视频提取步骤」时触发。先读取此 SKILL.md，再按步骤调用 scripts/ 下的 Python 脚本完成：爬取网页或下载视频 → 下载图片/抽帧 → 生成标准 Skill Markdown 文件；若内容需要编程实现，自动编写并验证配套脚本（scripts/）。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\skill-omni-creation\\SKILL.md",
+            "source": "builtin",
+            "display_name": "skill-omni-creation",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "swarmskill-creator",
+            "description": "Creates, converts, or modifies Swarm Skills — the multi-role (多角色团队) extension of the Skills standard, optionally with an executable SwarmFlow orchestration script.\nUse when building or refactoring a multi-agent team, generating workflow (工作流/编排) orchestration code, or upgrading a single-agent skill into a collaborating team.\nDo NOT use for ordinary single-agent skills — use create-skill instead.\n",
+            "description_cn": "创建、转换或修改多角色 Swarm Skill；普通单智能体技能使用 `skill-creator`。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\swarmskill-creator\\SKILL.md",
+            "source": "builtin",
+            "display_name": "swarmskill-creator",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "xlsx",
+            "description": "Open, create, read, analyze, edit, repair, or validate spreadsheet files (.xlsx, .xlsm, .xltx, .csv, .tsv) with zero format loss, with first-class support for Chinese / CJK content. Use whenever the user asks to create, build, modify, fill, analyze, read, repair, validate, or format any spreadsheet, workbook, report, dashboard, budget, financial model, pivot table, or tabular data file. Handles Chinese text, encodings (UTF-8 / GB18030 / GBK), full-width characters, CJK fonts in rendering, and Chinese number/date conventions (¥, 万/亿, 年/月/日). Covers: creating new workbooks from scratch, reading and analyzing existing files, editing existing workbooks while preserving pivot tables / VBA macros / charts / sparklines / conditional formatting / named ranges, formula recalculation and validation, visual review of results, and applying professional formatting. Triggers on 'spreadsheet', 'Excel', 'workbook', '表格', '工作簿', '.xlsx', '.xlsm', '.csv', 'pivot table', '透视表', 'macro', '宏', 'chart', '图表', 'financial model', '财务模型', 'formula', '公式', or any request to produce tabular data.",
+            "license": "MIT",
+            "metadata": {
+              "version": "2.0",
+              "category": "productivity",
+              "locale": "zh-CN-aware",
+              "sources": [
+                "ECMA-376 Office Open XML File Formats",
+                "Microsoft Open XML SDK documentation"
+              ]
+            },
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\agent\\workspace\\skills\\xlsx\\SKILL.md",
+            "source": "builtin",
+            "display_name": "xlsx",
+            "installed": true,
+            "enabled": true,
+            "is_builtin": false,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "has_evolutions": false,
+            "skill_type": "skill"
+          },
+          {
+            "name": "advanced-daily-report",
+            "version": null,
+            "description": "进阶版日报生成器，支持多数据源采集、工作分析、趋势对比、周报月报聚合",
+            "tags": [
+              "report",
+              "automation",
+              "productivity",
+              "daily",
+              "weekly",
+              "monthly",
+              "advanced"
+            ],
+            "allowed_tools": [
+              "read_memory",
+              "write_memory",
+              "bash",
+              "read_file",
+              "write_file"
+            ],
+            "author": "",
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\advanced-daily-report\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "akg-agents",
+            "description": "代理执行 AKG 算子任务。先检查固定仓库与分支；若 `~/.akg/check_env.md` 不存在则强制 `FULL_SETUP=true`；忽略所有 `akg_cli` 检查和使用；后端代码生成直接执行 `run_workflow.py --workflow kernelgen`。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\akg-agents\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "ascend-moe-optimizer-auto-trace",
+            "description": "为昇腾算子在源码中接入 TRACE_POINT 与 MoeTracing，串通 trace_preprocessor、profiling tensor、point_map.json、 save_profiling_data 与 trace_collector 生成 Chrome trace。强调门禁 G1–G5：全链路预处理与 OPP、profiling 为数据输出最后一位、 整条编译与示例脚本联调、落盘路径在 spawn 前 resolve。遵循函数级粒度与就地扩展，禁止另注册 xxx_profiling 类第二入口， 保持原 Op 与 torch.ops 名称及签名不变。在用户提到算子打点、Profiling、Chrome trace、MoeTracing，或将结论写入本 skill 时读取。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\ascend-moe-optimizer-auto-trace\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "ascend-moe-optimizer-trace-analyzer",
+            "description": "在用户提供 Chrome/Perfetto trace.json、或排查 Ascend 上 MoE/FusedDeepMoe 等算子性能时使用。按 phase、category、core group、tid 统计耗时、overlap、bubble，输出 CSV、Markdown 报告与确定性诊断；可选外部 LLM 扩写分析。默认 phase 映射面向 UMDK FusedDeepMoe，其它 trace 需替换或扩展 config/phase_map.yaml。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\ascend-moe-optimizer-trace-analyzer\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "cross-channel-history-retrieval",
+            "description": "跨会话检索聊天原文（记忆不足时再用）。在回答任何关于历史事件、日期、人物、过去对话的问题时，如果记忆中没有相关信息或不足以回答，则需要使用跨会话检索聊天原文。用 mcp_exec_command 执行 scripts/search_history.py，读 ~/.jiuwenswarm/agent/sessions/*/history.json。支持 channel、session_id、关键词、时间窗。如果搜索结果不足，尝试用不同的关键词再次搜索。",
+            "allowed_tools": [
+              "mcp_exec_command"
+            ],
+            "version": null,
+            "author": "",
+            "tags": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\cross-channel-history-retrieval\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "deepep-to-cam-converter",
+            "description": "识别代码中可替换为CAM算子的DeepEP算子，基于实际运行参数校验约束，自动完成通信域转换（NCCL->HCCL）、设备适配（CUDA->NPU）及算子替换。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\deepep-to-cam-converter\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "delayed-restart-app",
+            "description": "安排延迟重启本 Agent 所在的服务（JiuwenSwarm app）。执行后当前 Agent 进程会被终止并重新启动，当前会话会断开。用于用户要求重启、配置更新需生效、或服务异常需重载时。使用 bash 调用脚本。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\delayed-restart-app\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "doc-update",
+            "description": "以源码为唯一事实来源，系统性核对并更新项目文档，确保内容与实现一致、多语言文档 1:1 对齐、结构完整。",
+            "trigger": "用户提到\"刷文档\"、\"更新文档\"、\"check 文档\"、\"doc audit\"、\"文档审查\"等关键词时加载。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\doc-update\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "dynamic-memory-cli",
+            "description": "Operate a dynamic, UT-backed agent memory with atomic Pending publication, merged Pending/Built search, Memory Snapshot and history cursor state, Built-only validation, and exact-content migration. Use when an agent Harness must extract memory asynchronously while foreground work continues, publish immediately searchable Pending UTs, build them into a stable index, or inspect and recover an eternal-conversation memory project.",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\dynamic-memory-cli\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "financial-document-parser",
+            "description": "Extract and analyze data from invoices, receipts, bank statements, and financial documents. Categorize expenses, track recurring charges, and generate expense reports. Use when user provides financial PDFs or images.",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\financial-document-parser\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "gitcode-api",
+            "description": "使用 gitcode-api 命令行工具访问 GitCode REST API。适用于需要查询仓库、Issue、Pull Request、文件内容、用户、组织、搜索结果，或需要获取 Issue 与 Pull Request 模版的场景。还可用于总结仓库最近 commit / PR / issue、责任人、模块、风险或对外接口影响。",
+            "version": null,
+            "metadata": {
+              "version": "1.0.0"
+            },
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\gitcode-api\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "harmonyos-dev-suite",
+            "description": "Unified HarmonyOS development entry skill for ArkTS, ArkUI, DevEco CLI, build/run/debug, device logs, testing, multi-device adaptation, atomic services, native development, stability diagnosis, and optional HarmonyOS atomic Skill routing. Use when the user mentions HarmonyOS, OpenHarmony, HongMeng, 鸿蒙, ArkTS, ArkUI, DevEco, .ets, oh-package.json5, build-profile.json5, HAP/HAR/App, emulator, hilog, hdc, hvigor, or HarmonyOS app development.",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\harmonyos-dev-suite\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": true,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "llm-wiki",
+            "description": "Build and maintain a persistent knowledge base (LLM Wiki) using native backend tools. Supports ingesting PDFs, Markdown, and TXT files, and querying or linting the data. Use this whenever the user wants to add, retrieve, or manage their own local knowledge base and documents.",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\llm-wiki\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "openJiuwen-DeepSearch",
+            "description": "知识增强型深度检索与深度研究，支持查询规划、信息收集、理解反思、研究报告生成等多 Agent 协同。使用场景：金融分析研报、学术与政策研究、企业级深度搜索等复杂推理任务，可以生成Markdown、Doc和Html格式的研究报告。**每次使用该技能之前都先完整阅读一遍SKILL.md学习技能。**",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\openJiuwen-DeepSearch\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "ppt-creation",
+            "description": "当任务要求创建、读取、解析、提取、编辑、修改、合并、拆分、转换或检查 PPT / 幻灯片 / 演示文稿 / deck / slides / presentation / .pptx 文件时使用。本 skill 以内置模板为版面底座，让 Agent 在内容区自由设计；支持原生 PptxGenJS 绘制、可选组件、用户素材、论文原图和合规网络素材。",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\ppt-creation\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "multimodal_skill"
+          },
+          {
+            "name": "project-maintainer",
+            "description": "Use when initializing or updating structured in-repository project-maintenance docs; exploring existing code; analyzing a full project or repository; documenting complete source symbol coverage, coverage maps, symbol audit maps, or health for every top-level class, top-level function, and class method; summarizing git history; using project-maintainer as maintenance-aware context during a bug fix, feature change, or refactor; or syncing docs after verified code changes.",
+            "license": "Apache-2.0",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\project-maintainer\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "skill-gen-4-enterprise-doc",
+            "description": "Turn SOPs, URLs, or stated intent into an installed skill package. Use when the user asks to generate a skill from a document, link, or workflow. Follow SKILL.md, reference/sop-structure-pipeline.md, and reference/generator-worker-spec.md; finish by promoting the draft into the runtime skills directory (see reference/operator-playbook.md) in the same turn.",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\skill-gen-4-enterprise-doc\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "skvm-general",
+            "description": "Drive the skvm CLI on behalf of a user to profile models, AOT-compile skills, run skill-assisted tasks, run benchmarks, and manage compiled proposals. Trigger when the user asks to \"profile\", \"aot-compile\", \"bench\", \"run a single ad-hoc task with a skill\", or asks about skvm proposals. Do NOT trigger for `jit-optimize` or when the user wants to optimize/improve a skill — use the sibling `skvm-jit` skill instead.",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\skvm-general\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          },
+          {
+            "name": "skvm-jit",
+            "description": "Trigger `skvm jit-optimize` with post-task evidence so it generates a reviewable optimization proposal for a skill. Use after finishing a task that was driven by any skill (not just SkVM-compiled ones) when the outcome was a failure, was partial, or the skill's instructions clearly caused confusion or an unnecessary detour. Clean successful runs usually do not need an optimization pass. For general skvm usage (profile/aot-compile/bench/proposals), use the sibling `skvm-general` skill instead.",
+            "version": null,
+            "author": "",
+            "tags": [],
+            "allowed_tools": [],
+            "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\jiuwenswarm\\resources\\agent\\workspace\\skills\\skvm-jit\\SKILL.md",
+            "source": "builtin",
+            "is_builtin": true,
+            "is_builtin_source": true,
+            "proprietary": false,
+            "installed": false,
+            "has_evolutions": false,
+            "enabled": true,
+            "config": {
+              "enabled": true
+            },
+            "skill_type": "skill"
+          }
+        ]
+      }
+    },
+    "MCP": {
+      "wire": {
+        "protocol_version": "1.0",
+        "response_id": "optional-1",
+        "request_id": "optional-1",
+        "sequence": 0,
+        "is_final": true,
+        "status": "succeeded",
+        "response_kind": "e2a.complete",
+        "timestamp": "2026-10-12T06:23:22.997447+00:00",
+        "provenance": {
+          "source_protocol": "e2a",
+          "converter": "gateway_protocol.e2a.gateway_normalize:e2a_response_from_agent_response",
+          "converted_at": "2026-10-12T06:23:22.997447+00:00",
+          "details": {
+            "kind": "legacy_agent_response",
+            "ok": true
+          }
+        },
+        "body": {
+          "result": {
+            "type": "list",
+            "items": []
+          }
+        },
+        "jsonrpc_id": null,
+        "correlation_id": null,
+        "task_id": null,
+        "context_id": null,
+        "session_id": null,
+        "message_id": null,
+        "is_stream": false,
+        "identity_origin": "agent",
+        "channel": "web",
+        "user_id": null,
+        "agent_ref": null,
+        "source_agent_id": null,
+        "method": null,
+        "projections": {},
+        "channel_context": {},
+        "metadata": {},
+        "a2a_metadata": {},
+        "acp_meta": {}
+      },
+      "payload": {
+        "type": "list",
+        "items": []
+      }
+    },
+    "PersonalContext": {
+      "wire": {
+        "protocol_version": "1.0",
+        "response_id": "optional-2",
+        "request_id": "optional-2",
+        "sequence": 0,
+        "is_final": true,
+        "status": "succeeded",
+        "response_kind": "e2a.complete",
+        "timestamp": "2026-10-12T06:23:23.000247+00:00",
+        "provenance": {
+          "source_protocol": "e2a",
+          "converter": "gateway_protocol.e2a.gateway_normalize:e2a_response_from_agent_response",
+          "converted_at": "2026-10-12T06:23:23.000247+00:00",
+          "details": {
+            "kind": "legacy_agent_response",
+            "ok": true
+          }
+        },
+        "body": {
+          "result": {
+            "configured": false,
+            "collection_enabled": false,
+            "agent_use_enabled": false,
+            "state": "CREATED",
+            "pipeline_running": false,
+            "pipeline_queue_size": 0,
+            "fetch_service_states": {},
+            "fetch_service_errors": {},
+            "fetch_run_progress": {},
+            "context_root": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\.personal_context\\workspace\\context",
+            "context_ready": false,
+            "last_error": null
+          }
+        },
+        "jsonrpc_id": null,
+        "correlation_id": null,
+        "task_id": null,
+        "context_id": null,
+        "session_id": null,
+        "message_id": null,
+        "is_stream": false,
+        "identity_origin": "agent",
+        "channel": "web",
+        "user_id": null,
+        "agent_ref": null,
+        "source_agent_id": null,
+        "method": null,
+        "projections": {},
+        "channel_context": {},
+        "metadata": {},
+        "a2a_metadata": {},
+        "acp_meta": {}
+      },
+      "payload": {
+        "configured": false,
+        "collection_enabled": false,
+        "agent_use_enabled": false,
+        "state": "CREATED",
+        "pipeline_running": false,
+        "pipeline_queue_size": 0,
+        "fetch_service_states": {},
+        "fetch_service_errors": {},
+        "fetch_run_progress": {},
+        "context_root": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-optional-30l6he74\\data\\.personal_context\\workspace\\context",
+        "context_ready": false,
+        "last_error": null
+      }
+    },
+    "Sandbox-Windows": {
+      "wire": {
+        "protocol_version": "1.0",
+        "response_id": "optional-3",
+        "request_id": "optional-3",
+        "sequence": 0,
+        "is_final": true,
+        "status": "failed",
+        "response_kind": "e2a.error",
+        "timestamp": "2026-10-12T06:23:23.032785+00:00",
+        "provenance": {
+          "source_protocol": "e2a",
+          "converter": "gateway_protocol.e2a.gateway_normalize:e2a_response_from_agent_response",
+          "converted_at": "2026-10-12T06:23:23.032785+00:00",
+          "details": {
+            "kind": "legacy_agent_response",
+            "ok": false
+          }
+        },
+        "body": {
+          "code": "E2A.AGENT_ERROR",
+          "message": "/sandbox is only supported on Linux (current platform: 'win32'); jiuwenbox depends on Linux-only kernel features (bwrap / Landlock / namespaces) and cannot run on Windows or macOS.",
+          "details": {
+            "error": "/sandbox is only supported on Linux (current platform: 'win32'); jiuwenbox depends on Linux-only kernel features (bwrap / Landlock / namespaces) and cannot run on Windows or macOS.",
+            "code": "SANDBOX_BAD_REQUEST"
+          }
+        },
+        "jsonrpc_id": null,
+        "correlation_id": null,
+        "task_id": null,
+        "context_id": null,
+        "session_id": null,
+        "message_id": null,
+        "is_stream": false,
+        "identity_origin": "agent",
+        "channel": "web",
+        "user_id": null,
+        "agent_ref": null,
+        "source_agent_id": null,
+        "method": null,
+        "projections": {},
+        "channel_context": {},
+        "metadata": {},
+        "a2a_metadata": {},
+        "acp_meta": {}
+      },
+      "payload": {
+        "code": "E2A.AGENT_ERROR",
+        "message": "/sandbox is only supported on Linux (current platform: 'win32'); jiuwenbox depends on Linux-only kernel features (bwrap / Landlock / namespaces) and cannot run on Windows or macOS.",
+        "details": {
+          "error": "/sandbox is only supported on Linux (current platform: 'win32'); jiuwenbox depends on Linux-only kernel features (bwrap / Landlock / namespaces) and cannot run on Windows or macOS.",
+          "code": "SANDBOX_BAD_REQUEST"
+        }
+      }
+    },
+    "Zen-policy": {
+      "wire": {
+        "protocol_version": "1.0",
+        "response_id": "optional-4",
+        "request_id": "optional-4",
+        "sequence": 0,
+        "is_final": true,
+        "status": "succeeded",
+        "response_kind": "e2a.complete",
+        "timestamp": "2026-10-12T06:23:23.038604+00:00",
+        "provenance": {
+          "source_protocol": "e2a",
+          "converter": "gateway_protocol.e2a.gateway_normalize:e2a_response_from_agent_response",
+          "converted_at": "2026-10-12T06:23:23.038604+00:00",
+          "details": {
+            "kind": "legacy_agent_response",
+            "ok": true
+          }
+        },
+        "body": {
+          "result": {
+            "models": []
+          }
+        },
+        "jsonrpc_id": null,
+        "correlation_id": null,
+        "task_id": null,
+        "context_id": null,
+        "session_id": null,
+        "message_id": null,
+        "is_stream": false,
+        "identity_origin": "agent",
+        "channel": "web",
+        "user_id": null,
+        "agent_ref": null,
+        "source_agent_id": null,
+        "method": null,
+        "projections": {},
+        "channel_context": {},
+        "metadata": {},
+        "a2a_metadata": {},
+        "acp_meta": {}
+      },
+      "payload": {
+        "models": []
+      }
+    },
+    "PersonalContext-enable": {
+      "wire": {
+        "protocol_version": "1.0",
+        "response_id": "optional-5",
+        "request_id": "optional-5",
+        "sequence": 0,
+        "is_final": true,
+        "status": "failed",
+        "response_kind": "e2a.error",
+        "timestamp": "2026-10-12T06:23:23.042605+00:00",
+        "provenance": {
+          "source_protocol": "e2a",
+          "converter": "gateway_protocol.e2a.gateway_normalize:e2a_response_from_agent_response",
+          "converted_at": "2026-10-12T06:23:23.042605+00:00",
+          "details": {
+            "kind": "legacy_agent_response",
+            "ok": false
+          }
+        },
+        "body": {
+          "code": "E2A.AGENT_ERROR",
+          "message": "PersonalContext 尚未配置，请先开启总开关。",
+          "details": {
+            "error": "PersonalContext 尚未配置，请先开启总开关。",
+            "code": "154000",
+            "status": "CONTEXT_PROACTIVE_CONFIG_INVALID"
+          }
+        },
+        "jsonrpc_id": null,
+        "correlation_id": null,
+        "task_id": null,
+        "context_id": null,
+        "session_id": null,
+        "message_id": null,
+        "is_stream": false,
+        "identity_origin": "agent",
+        "channel": "web",
+        "user_id": null,
+        "agent_ref": null,
+        "source_agent_id": null,
+        "method": null,
+        "projections": {},
+        "channel_context": {},
+        "metadata": {},
+        "a2a_metadata": {},
+        "acp_meta": {}
+      },
+      "payload": {
+        "code": "E2A.AGENT_ERROR",
+        "message": "PersonalContext 尚未配置，请先开启总开关。",
+        "details": {
+          "error": "PersonalContext 尚未配置，请先开启总开关。",
+          "code": "154000",
+          "status": "CONTEXT_PROACTIVE_CONFIG_INVALID"
+        }
+      }
+    },
+    "Proactive": {
+      "wire": {
+        "protocol_version": "1.0",
+        "response_id": "optional-6",
+        "request_id": "optional-6",
+        "sequence": 0,
+        "is_final": true,
+        "status": "succeeded",
+        "response_kind": "e2a.complete",
+        "timestamp": "2026-10-12T06:23:23.049609+00:00",
+        "provenance": {
+          "source_protocol": "e2a",
+          "converter": "gateway_protocol.e2a.gateway_normalize:e2a_response_from_agent_response",
+          "converted_at": "2026-10-12T06:23:23.049609+00:00",
+          "details": {
+            "kind": "legacy_agent_response",
+            "ok": true
+          }
+        },
+        "body": {
+          "result": {
+            "status": "no_recommendation (last_tick_at=1791786203)",
+            "success": false
+          }
+        },
+        "jsonrpc_id": null,
+        "correlation_id": null,
+        "task_id": null,
+        "context_id": null,
+        "session_id": null,
+        "message_id": null,
+        "is_stream": false,
+        "identity_origin": "agent",
+        "channel": "web",
+        "user_id": null,
+        "agent_ref": null,
+        "source_agent_id": null,
+        "method": null,
+        "projections": {},
+        "channel_context": {},
+        "metadata": {},
+        "a2a_metadata": {},
+        "acp_meta": {}
+      },
+      "payload": {
+        "status": "no_recommendation (last_tick_at=1791786203)",
+        "success": false
+      }
+    }
+  },
+  "chat_completed": true,
+  "health": {
+    "state": "AGENT_READY",
+    "transport_ready": true,
+    "control_ready": true,
+    "runtime_warming": true,
+    "agent_ready": true,
+    "draining": false,
+    "failed": false,
+    "failed_reason": null,
+    "last_error": null,
+    "retrying": false,
+    "capabilities": {
+      "transport": true,
+      "control": true,
+      "execution": true
+    },
+    "ok": true
+  },
+  "passed": true,
+  "shutdown_exit_code": 0
+}

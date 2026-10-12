@@ -1,0 +1,13 @@
+{
+  "mobile": {
+    "width": 390,
+    "scroll": 390
+  },
+  "page_errors": [],
+  "report_sha256": "c5d7d464da2793631726bfaeb614a7ae6178b3ad2be2c759c404f45b8c33d661",
+  "screenshots": [
+    "report-desktop.png",
+    "report-mobile.png",
+    "report-scope-preview.png"
+  ]
+}

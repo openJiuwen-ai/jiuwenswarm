@@ -1,0 +1,185 @@
+{
+  "scenario": "interaction",
+  "surface": "actual-Web-UI/Chromium/Gateway/native-Worker",
+  "before": {
+    "worker_instance": "5ad2198176e04359bd17507e54e4b9b0",
+    "cursor": 6,
+    "history_required": false,
+    "is_processing": true,
+    "dispatches": [
+      {
+        "dispatch_id": "afc2d8c3130b4094ac66de805d0adff8",
+        "request_id": "req_mv4vkwzh_12",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "85e13a0d97654864a72a40edd7950a21",
+        "request_id": "req_mv4vkwzg_11",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "succeeded"
+        }
+      },
+      {
+        "dispatch_id": "b04248e226424a119fe2ce4cce71b7a0",
+        "request_id": "req_mv4vkx0x_17",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "succeeded"
+        }
+      },
+      {
+        "dispatch_id": "69d1a86c06bd4e56ae55e5a8e39a1639",
+        "request_id": "req_mv4vl25x_22",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "5fddf666c7af48b6950b48a4313e296b",
+        "request_id": "interrupt_1a12ed07e64_5f0ba7",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "96f642cdd88d47e695c38789d3b8a984",
+        "request_id": "req_mv4vl2e5_26",
+        "active": false,
+        "phase": "waiting_for_control",
+        "execution_id": "dea2deacd5224622bec19bba397388a1",
+        "entered_at_ns": 365848075062500,
+        "pending_interactions": [
+          {
+            "delta_kind": "custom",
+            "delta": {
+              "event_type": "chat.ask_user_question",
+              "request_id": "fixture-question",
+              "questions": [
+                {
+                  "question": "Continue?",
+                  "header": "Question",
+                  "options": [],
+                  "multi_select": false
+                }
+              ],
+              "source": "ask_user_interrupt",
+              "output_phase_id": "a90aecb39c094fac87114d6a68f94d95",
+              "output_order": {
+                "request_id": "req_mv4vl2e5_26",
+                "sequence": 2
+              },
+              "timestamp": 1791786779419.9062,
+              "execution_id": "dea2deacd5224622bec19bba397388a1"
+            },
+            "event_type": "chat.ask_user_question",
+            "request_id": "fixture-question",
+            "questions": [
+              {
+                "question": "Continue?",
+                "header": "Question",
+                "options": [],
+                "multi_select": false
+              }
+            ],
+            "source": "ask_user_interrupt",
+            "output_phase_id": "a90aecb39c094fac87114d6a68f94d95",
+            "output_order": {
+              "request_id": "req_mv4vl2e5_26",
+              "sequence": 2
+            },
+            "timestamp": 1791786779419.9062,
+            "execution_id": "dea2deacd5224622bec19bba397388a1"
+          }
+        ],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "7a58e3d69ecd463f83195e7f8adfb6c0",
+        "session_id": "browser-session",
+        "request_id": "req_mv4vkwzg_11",
+        "generation": 1,
+        "work_kind": "goal_control",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 365842.234,
+        "started_at": 365842.234,
+        "finished_at": 365842.562,
+        "error": null,
+        "cancellation_requested": false
+      },
+      {
+        "execution_id": "7ddc119202134f7dbd16bc66ca53fdc2",
+        "session_id": "browser-session",
+        "request_id": "req_mv4vkx0x_17",
+        "generation": 1,
+        "work_kind": "goal_control",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 365842.531,
+        "started_at": 365842.531,
+        "finished_at": 365842.562,
+        "error": null,
+        "cancellation_requested": false
+      },
+      {
+        "execution_id": "dea2deacd5224622bec19bba397388a1",
+        "session_id": "browser-session",
+        "request_id": "req_mv4vl2e5_26",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": "fixture-question",
+        "state": "waiting_for_control",
+        "created_at": 365847.875,
+        "started_at": 365847.875,
+        "finished_at": null,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "worker_pid": 3640,
+  "before_execution_ids": [
+    "dea2deacd5224622bec19bba397388a1"
+  ],
+  "passed": false,
+  "error": "Error: Page.evaluate: Error: WebSocket 连接异常\n    at WebClient.createWebError (http://127.0.0.1:63400/src/services/webClient.ts:551:19)\n    at ws.onerror (http://127.0.0.1:63400/src/services/webClient.ts:129:28)",
+  "browser_errors": [],
+  "owner_shutdown_exit_code": 0,
+  "owner_shutdown": {
+    "kind": "shutdown.done",
+    "ok": true
+  }
+}

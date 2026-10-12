@@ -1,0 +1,405 @@
+{
+  "generated_at": "2026-10-12T16:21:05.469858+08:00",
+  "audit_type": "只读代码及变更范围复核；本审查未另行运行重测试",
+  "issue": "https://gitcode.com/openJiuwen/jiuwenswarm/issues/4689",
+  "baseline": "3fea8d1623a13646e935df9e96100ab7ad470aa4",
+  "code_commit": "ee9b4819d1b28d22c4d7249039d757ce9725ffb3",
+  "branch": "feature/issue-4689-runtime-residency-20261010",
+  "counts": {
+    "product_and_packaging_files": 50,
+    "embedded_frontend_test_files": 1,
+    "all_test_and_benchmark_files": 25,
+    "tracked_evidence_files": 172,
+    "all_changed_files": 247
+  },
+  "scope_conclusion": "未发现实质性计划外产品功能修改。所有产品及打包文件均可对应用户批准的阶段二、三、四；测试、性能驱动和报告为对应验收支持材料。",
+  "product_scope": [
+    {
+      "file": "jiuwenswarm/agents/harness/common/auto_harness/__init__.py",
+      "phase": "阶段四",
+      "reason": "可选 Auto-Harness 延迟导入；轻量重置保持原有文件字段语义"
+    },
+    {
+      "file": "jiuwenswarm/agents/harness/common/auto_harness/state.py",
+      "phase": "阶段四",
+      "reason": "可选 Auto-Harness 延迟导入；轻量重置保持原有文件字段语义"
+    },
+    {
+      "file": "jiuwenswarm/agents/harness/common/plugins/rail_manager.py",
+      "phase": "阶段三",
+      "reason": "共享有版本指纹的 Rail 类配方；实例仍归具体 Agent"
+    },
+    {
+      "file": "jiuwenswarm/agents/harness/common/tools/__init__.py",
+      "phase": "阶段三、四",
+      "reason": "工具定义和工厂延迟解析，实际有状态工具保持独立"
+    },
+    {
+      "file": "jiuwenswarm/agents/swarm/__init__.py",
+      "phase": "阶段四",
+      "reason": "延迟加载既有工作模式的提供者，使用时保留注册行为"
+    },
+    {
+      "file": "jiuwenswarm/channels/desktop/desktop_app.py",
+      "phase": "阶段二、四",
+      "reason": "重启保留 Worker 子树；最终退出使用显式生命周期控制权"
+    },
+    {
+      "file": "jiuwenswarm/channels/desktop/electron/main.cjs",
+      "phase": "阶段二、四",
+      "reason": "重启保留 Worker 子树；最终退出使用显式生命周期控制权"
+    },
+    {
+      "file": "jiuwenswarm/channels/process_cli/machine.py",
+      "phase": "阶段三",
+      "reason": "单次调用 RunContext 与执行选项隔离；仍启动本地子进程 Runtime"
+    },
+    {
+      "file": "jiuwenswarm/channels/web/frontend/src/App.tsx",
+      "phase": "阶段二",
+      "reason": "重连游标、事件去重、状态恢复、历史回退及对应错误文案"
+    },
+    {
+      "file": "jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json",
+      "phase": "阶段二",
+      "reason": "重连游标、事件去重、状态恢复、历史回退及对应错误文案"
+    },
+    {
+      "file": "jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json",
+      "phase": "阶段二",
+      "reason": "重连游标、事件去重、状态恢复、历史回退及对应错误文案"
+    },
+    {
+      "file": "jiuwenswarm/channels/web/frontend/src/services/runtimeResume.ts",
+      "phase": "阶段二",
+      "reason": "重连游标、事件去重、状态恢复、历史回退及对应错误文案"
+    },
+    {
+      "file": "jiuwenswarm/channels/web/frontend/src/services/webClient.ts",
+      "phase": "阶段二",
+      "reason": "连接恢复及新页面加载通过既有 session.get_metadata 可选 runtime_resume 订阅原执行，恢复权威状态、待答交互和历史回退；事件去重，不重新提交输入。包含同文件的少量非语义格式化。"
+    },
+    {
+      "file": "jiuwenswarm/common/utils.py",
+      "phase": "阶段四",
+      "reason": "压缩 Front 日志配置解析路径，保留合法 YAML 的兼容语义"
+    },
+    {
+      "file": "jiuwenswarm/gateway/channel_manager/web/app_web_handlers.py",
+      "phase": "阶段二",
+      "reason": "转发 AgentServer 的权威运行状态及事件游标，去掉本地 busy 覆盖"
+    },
+    {
+      "file": "jiuwenswarm/gateway/channel_manager/web/web_connect.py",
+      "phase": "阶段二",
+      "reason": "转发 AgentServer 的权威运行状态及事件游标，去掉本地 busy 覆盖"
+    },
+    {
+      "file": "jiuwenswarm/runtime/execution_telemetry.py",
+      "phase": "阶段四",
+      "reason": "观察完成必需准备后的真实执行入口，避免以 ACK 当执行时间"
+    },
+    {
+      "file": "jiuwenswarm/runtime/kernel.py",
+      "phase": "阶段三",
+      "reason": "资源共享键、租约、准备合并、失效及使用中资源保护"
+    },
+    {
+      "file": "jiuwenswarm/runtime/project_lsp.py",
+      "phase": "阶段三、四",
+      "reason": "项目范围的 SDK LSP 资源租约与关闭"
+    },
+    {
+      "file": "jiuwenswarm/runtime/run_context.py",
+      "phase": "阶段三",
+      "reason": "不可变的单次预算、权限、工具和凭据上下文"
+    },
+    {
+      "file": "jiuwenswarm/runtime/service.py",
+      "phase": "阶段二",
+      "reason": "读取既有 Coordinator 的权威执行快照"
+    },
+    {
+      "file": "jiuwenswarm/server/agent_ws_server.py",
+      "phase": "阶段二、四",
+      "reason": "实际交付确认、内部跨会话执行归属，以及可选服务后台准备"
+    },
+    {
+      "file": "jiuwenswarm/server/control/repositories/session_repository.py",
+      "phase": "阶段二",
+      "reason": "Front 的颜色更新改为受锁保护的字段补丁"
+    },
+    {
+      "file": "jiuwenswarm/server/front/admission.py",
+      "phase": "阶段二",
+      "reason": "调用方请求去重、对象身份清理、warming 取消和可选运行快照"
+    },
+    {
+      "file": "jiuwenswarm/server/front/request_registry.py",
+      "phase": "阶段二",
+      "reason": "调用方请求去重、对象身份清理、warming 取消和可选运行快照"
+    },
+    {
+      "file": "jiuwenswarm/server/front/router.py",
+      "phase": "阶段二",
+      "reason": "调用方请求去重、对象身份清理、warming 取消和可选运行快照"
+    },
+    {
+      "file": "jiuwenswarm/server/ipc/client.py",
+      "phase": "阶段二、四",
+      "reason": "ACK/订阅协议、进程租约、连接清理及 Windows 管道存活检查"
+    },
+    {
+      "file": "jiuwenswarm/server/ipc/protocol.py",
+      "phase": "阶段二、四",
+      "reason": "ACK/订阅协议、进程租约、连接清理及 Windows 管道存活检查"
+    },
+    {
+      "file": "jiuwenswarm/server/ipc/server.py",
+      "phase": "阶段二、四",
+      "reason": "ACK/订阅协议、进程租约、连接清理及 Windows 管道存活检查"
+    },
+    {
+      "file": "jiuwenswarm/server/runtime/agent_adapter/interface.py",
+      "phase": "阶段三、四",
+      "reason": "共享模型/MCP 资源，独立运行上下文，Kernel 准备和执行入口观测"
+    },
+    {
+      "file": "jiuwenswarm/server/runtime/agent_adapter/interface_deep.py",
+      "phase": "阶段二、三、四",
+      "reason": "PersonalContext Rail 与 Host 同用可信数据目录；模型/MCP 租约、完整 Kernel 身份变化后的缓存失效、独立 RunContext、Kernel 准备及真实执行入口观测。原执行仍使用原资源租约。"
+    },
+    {
+      "file": "jiuwenswarm/server/runtime/agent_warm_pool.py",
+      "phase": "阶段三",
+      "reason": "后台预构建优先准备 Kernel，保留真实 session claim/pin 路径"
+    },
+    {
+      "file": "jiuwenswarm/server/runtime/session/lifecycle.py",
+      "phase": "阶段二、四",
+      "reason": "metadata 字段合并、缓存与生命周期锁；缩短 Windows 锁竞争等待"
+    },
+    {
+      "file": "jiuwenswarm/server/runtime/session/project_store.py",
+      "phase": "阶段二、四",
+      "reason": "metadata 字段合并、缓存与生命周期锁；缩短 Windows 锁竞争等待"
+    },
+    {
+      "file": "jiuwenswarm/server/runtime/session/session_metadata.py",
+      "phase": "阶段二、四",
+      "reason": "metadata 字段合并、缓存与生命周期锁；缩短 Windows 锁竞争等待"
+    },
+    {
+      "file": "jiuwenswarm/server/runtime/skill/skill_manager.py",
+      "phase": "阶段三",
+      "reason": "共享 Skill 元数据索引；向调用方返回独立可变快照"
+    },
+    {
+      "file": "jiuwenswarm/server/supervisor/identity.py",
+      "phase": "阶段二、四",
+      "reason": "Worker 选主/身份/重连、独立 dispatch、交付 ACK 及统一关闭期限"
+    },
+    {
+      "file": "jiuwenswarm/server/supervisor/runtime_supervisor.py",
+      "phase": "阶段二、四",
+      "reason": "Worker 选主/身份/重连、独立 dispatch、交付 ACK 及统一关闭期限"
+    },
+    {
+      "file": "jiuwenswarm/server/supervisor/shutdown.py",
+      "phase": "阶段二、四",
+      "reason": "Worker 选主/身份/重连、独立 dispatch、交付 ACK 及统一关闭期限"
+    },
+    {
+      "file": "jiuwenswarm/server/supervisor/worker_process.py",
+      "phase": "阶段二、四",
+      "reason": "Worker 选主/身份/重连、独立 dispatch、交付 ACK 及统一关闭期限"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/dispatcher.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/event_store.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/gateway_bridge.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/lifecycle.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/main.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/service.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/signals.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "jiuwenswarm/server/worker/stub.py",
+      "phase": "阶段二、四",
+      "reason": "执行归属、事件日志、订阅恢复、排队取消、准备编排及最终关闭"
+    },
+    {
+      "file": "scripts/jiuwenswarm.spec",
+      "phase": "阶段四",
+      "reason": "补齐 Worker/生命周期控制入口及本次延迟模块的冻结收集；Windows Conda 支撑的 venv 按解释器 sys.base_prefix 选择成对 OpenSSL DLL，修复实际冻结 Worker 的 SSL ABI 缺失；未改变依赖版本。"
+    },
+    {
+      "file": "scripts/jiuwenswarm_exe_entry.py",
+      "phase": "阶段四",
+      "reason": "冻结程序 -m 模块参数转发，使常驻 Worker 和显式生命周期控制仍调用各自真实模块入口。"
+    }
+  ],
+  "support_files": [
+    "jiuwenswarm/channels/web/frontend/tests/webClientRuntimeAck.test.mjs",
+    "scripts/benchmarks/issue4689_browser.py",
+    "scripts/benchmarks/issue4689_chat.py",
+    "scripts/benchmarks/issue4689_front.py",
+    "scripts/benchmarks/issue4689_metadata.py",
+    "scripts/benchmarks/issue4689_native.py",
+    "scripts/benchmarks/issue4689_optional.py",
+    "scripts/benchmarks/issue4689_report.py",
+    "scripts/benchmarks/issue4689_upgrade.py",
+    "tests/system_tests/test_issue4689_project_lsp.py",
+    "tests/unit_tests/agentserver/test_adapter_kernel_invalidation.py",
+    "tests/unit_tests/agentserver/test_front_import_boundary.py",
+    "tests/unit_tests/agentserver/test_personal_context_lifecycle.py",
+    "tests/unit_tests/agentserver/test_personal_context_rail_registration.py",
+    "tests/unit_tests/agentserver/test_runtime_worker_phase2.py",
+    "tests/unit_tests/agentserver/test_worker_residency.py",
+    "tests/unit_tests/agentserver/test_worker_shutdown_deadline.py",
+    "tests/unit_tests/runtime/test_resource_kernel.py",
+    "tests/unit_tests/runtime/test_run_context.py",
+    "tests/unit_tests/server/test_metadata_cross_process.py",
+    "tests/unit_tests/server/test_session_metadata.py",
+    "tests/unit_tests/server/test_startup_harness_state.py",
+    "tests/unit_tests/server/test_startup_logging_config.py",
+    "tests/unit_tests/test_desktop_electron_contract.py",
+    "tests/unit_tests/test_windows_resource_lock_latency.py"
+  ],
+  "unchanged_checks": [
+    {
+      "path": "pyproject.toml",
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "3fea8d1623a13646e935df9e96100ab7ad470aa4..ee9b4819d1b28d22c4d7249039d757ce9725ffb3",
+        "--",
+        "pyproject.toml"
+      ],
+      "exit_code": 0,
+      "unchanged": true
+    },
+    {
+      "path": "uv.lock",
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "3fea8d1623a13646e935df9e96100ab7ad470aa4..ee9b4819d1b28d22c4d7249039d757ce9725ffb3",
+        "--",
+        "uv.lock"
+      ],
+      "exit_code": 0,
+      "unchanged": true
+    },
+    {
+      "path": "jiuwenswarm/channels/web/frontend/package.json",
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "3fea8d1623a13646e935df9e96100ab7ad470aa4..ee9b4819d1b28d22c4d7249039d757ce9725ffb3",
+        "--",
+        "jiuwenswarm/channels/web/frontend/package.json"
+      ],
+      "exit_code": 0,
+      "unchanged": true
+    },
+    {
+      "path": "jiuwenswarm/channels/web/frontend/package-lock.json",
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "3fea8d1623a13646e935df9e96100ab7ad470aa4..ee9b4819d1b28d22c4d7249039d757ce9725ffb3",
+        "--",
+        "jiuwenswarm/channels/web/frontend/package-lock.json"
+      ],
+      "exit_code": 0,
+      "unchanged": true
+    },
+    {
+      "path": "jiuwenswarm/channels/cli",
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "3fea8d1623a13646e935df9e96100ab7ad470aa4..ee9b4819d1b28d22c4d7249039d757ce9725ffb3",
+        "--",
+        "jiuwenswarm/channels/cli"
+      ],
+      "exit_code": 0,
+      "unchanged": true
+    }
+  ],
+  "approved_plan_adaptations": [
+    {
+      "topic": "SessionExecution",
+      "implementation": "复用既有 RuntimeSessionCoordinator 与 SessionExecution handles；历史、checkpoint、活动执行、交互和取消仍归具体会话/执行。独立 RunContext 保存本次 turn、budget、host tools、permissions 及凭据上下文。",
+      "difference_from_issue_original": "未新增一个同名的大型 SessionExecution 总类。此为用户批准的改进方案选择，不能宣传为逐字照搬原文结构。"
+    },
+    {
+      "topic": "Kernel 与 warm pool",
+      "implementation": "共享模型资源、工具定义/工厂、Rail 类配方、MCP 连接、Skill 元数据索引及项目 LSP 租约；后台预构建改为 Kernel 准备，有状态 Rail/工具/模型组路由仍归 Agent。保留真实 session claim、pin、执行所有权与资源租约。",
+      "difference_from_issue_original": "Issue 原文希望 Kernel cache 完全替代 session-bound prewarm/claim/pin；改进方案明确保留上述契约，不做全量删除。"
+    },
+    {
+      "topic": "初始化编排",
+      "implementation": "先完成配置迁移、模型身份和路由准备，再构造依赖资源，仅将独立或可选准备置于后台/首次使用。",
+      "difference_from_issue_original": "不盲目并行存在依赖的初始化步骤。"
+    },
+    {
+      "topic": "兼容与数据隔离",
+      "implementation": "保留桌面、AgentOS 的接口、身份和数据隔离契约；Process CLI 仍本地子进程 Runtime，远程 TUI 仍 Gateway /tui 通路。",
+      "difference_from_issue_original": "原文非目标排除了兼容保留的讨论；用户最终实施计划显式要求保留这些契约。"
+    }
+  ],
+  "latest_changes_in_scope": [
+    {
+      "commit": "551ac7a111d234884b7de59caea238aec7ad549f",
+      "phase": "阶段二、三",
+      "changes": "PersonalContext Rail 改用可信数据目录；模型缓存命中同时要求完整 Kernel 身份相同。"
+    },
+    {
+      "commit": "ee9b4819d1b28d22c4d7249039d757ce9725ffb3",
+      "phase": "阶段二、四",
+      "changes": "浏览器新页面加载自动恢复原执行订阅；实际冻结 EXE 所需延迟模块及 SSL DLL 配对。"
+    }
+  ],
+  "out_of_plan_business_changes": [],
+  "dependency_versions_changed": false,
+  "agent_core_or_agent_protocol_source_changed_by_this_branch": false,
+  "new_multi_worker_scheduler_or_warm_spare": false,
+  "nonsemantic_changes": [
+    "WebClient.ts 同文件少量格式化差异，没有新增对应业务行为。"
+  ],
+  "push_assessment": "实现范围和职责分离符合阶段二至四改进方案，可按用户此前允许记录未达性能指标后交付的授权推送；不得写成 Issue #4689 全部验收通过。",
+  "acceptance_caveat": "功能证据与性能达标必须分开。最新正式性能结果由同目录 remaining-acceptance-results.json 汇总；冷 Worker 2.5 秒指标仍未达标，Front 各工作模式是否满足 300 ms 以本轮原始采样为准，不得沿用旧版本的达标数字。"
+}

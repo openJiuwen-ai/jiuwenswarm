@@ -1,0 +1,12 @@
+{
+  "scenario": "interaction",
+  "surface": "actual-Web-UI/Chromium/Gateway/native-Worker",
+  "passed": false,
+  "error": "TimeoutError: Locator.wait_for: Timeout 90000ms exceeded.\nCall log:\n  - waiting for get_by_test_id(\"chat-panel-inline-question-card\") to be visible\n",
+  "browser_errors": [],
+  "owner_shutdown_exit_code": 0,
+  "owner_shutdown": {
+    "kind": "shutdown.done",
+    "ok": true
+  }
+}

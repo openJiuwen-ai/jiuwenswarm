@@ -1,0 +1,2217 @@
+[
+  {
+    "direction": "received",
+    "at_ns": 366923929371000,
+    "wire": {
+      "type": "connected"
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366927422446000,
+    "wire": {
+      "type": "connected"
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366928168233600,
+    "wire": {
+      "type": "connected"
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366929107507100,
+    "wire": {
+      "type": "connected"
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930021929900,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89dv_1",
+      "method": "cron.job.list",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930022044900,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89dv_2",
+      "method": "config.get",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930022173100,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89dv_3",
+      "method": "video.search.list",
+      "params": {
+        "search_session_id": "task-duplex:browser-session",
+        "offset": 0
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366930034956400,
+    "wire": {
+      "type": "event",
+      "event": "connection.ack",
+      "payload": {
+        "session_id": "sess_1a12ee10126_facaff",
+        "mode": "BUILD",
+        "tools": [],
+        "protocol_version": "1.0"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930035120700,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89e9_4",
+      "method": "cron.job.list",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930049010600,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89el_5",
+      "method": "external_cli.install_status",
+      "params": {
+        "cli_agent": "claude"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930049160700,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89el_6",
+      "method": "external_cli.install_status",
+      "params": {
+        "cli_agent": "codex"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930049324100,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89el_7",
+      "method": "config.get",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930049506600,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89el_8",
+      "method": "session.get_metadata",
+      "params": {
+        "session_id": "browser-session"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930049617900,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89em_9",
+      "method": "locale.get_conf",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930049682600,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89em_10",
+      "method": "personal_context.runtime.get_config",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930049736700,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89em_11",
+      "method": "history.get",
+      "params": {
+        "session_id": "browser-session",
+        "cursor": null,
+        "limit": 50
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930049790300,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89em_12",
+      "method": "command.goal",
+      "params": {
+        "session_id": "browser-session",
+        "action": "get",
+        "mode": "agent"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930049841300,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89em_13",
+      "method": "session.plan_status",
+      "params": {
+        "session_id": "browser-session"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930049890300,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89em_14",
+      "method": "config.get",
+      "params": {}
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366930060361500,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89dv_2",
+      "ok": true,
+      "payload": {
+        "model_provider": "",
+        "model": "",
+        "api_base": "",
+        "api_key": "",
+        "endpoint_profile": "",
+        "video_api_base": "",
+        "video_api_key": "",
+        "video_model": "",
+        "video_provider": "",
+        "video_endpoint_profile": "",
+        "video_vendor_key": "",
+        "video_plan": "",
+        "video_context_window_tokens": "",
+        "video_enabled": "false",
+        "video_gen_api_base": "",
+        "video_gen_api_key": "",
+        "video_gen_model": "",
+        "video_gen_provider": "",
+        "video_gen_protocol": "",
+        "video_gen_context_window_tokens": "",
+        "video_gen_enabled": "",
+        "visual_gen_api_base": "",
+        "visual_gen_api_key": "",
+        "visual_gen_model": "",
+        "visual_gen_provider": "",
+        "visual_gen_protocol": "",
+        "visual_gen_context_window_tokens": "",
+        "visual_gen_enabled": "",
+        "audio_api_base": "",
+        "audio_api_key": "",
+        "audio_model": "",
+        "audio_provider": "",
+        "audio_endpoint_profile": "",
+        "audio_vendor_key": "",
+        "audio_plan": "",
+        "audio_context_window_tokens": "",
+        "audio_enabled": "false",
+        "vision_api_base": "",
+        "vision_api_key": "",
+        "vision_model": "",
+        "vision_provider": "",
+        "vision_endpoint_profile": "",
+        "vision_vendor_key": "",
+        "vision_plan": "",
+        "vision_context_window_tokens": "",
+        "vision_enabled": "false",
+        "email_address": "",
+        "email_token": "",
+        "embed_api_key": "",
+        "embed_api_base": "",
+        "embed_model": "",
+        "jina_api_key": "",
+        "bocha_api_key": "",
+        "serper_api_key": "",
+        "perplexity_api_key": "",
+        "github_token": "",
+        "teamskills_market_url": "",
+        "teamskills_user_token": "",
+        "teamskills_system_token": "",
+        "teamskills_allowed_download_hosts": "",
+        "free_search_ddg_enabled": "false",
+        "free_search_bing_enabled": "false",
+        "free_search_proxy_url": "",
+        "asr_api_base": "",
+        "asr_api_key": "",
+        "asr_model": "",
+        "skills": "",
+        "max_iterations": "",
+        "completion_timeout": "",
+        "team_name": "",
+        "lifecycle": "",
+        "teammate_mode": "",
+        "spawn_mode": "",
+        "member_name": "",
+        "display_name": "",
+        "persona": "",
+        "agent_key": "",
+        "role_type": "",
+        "prompt_hint": "",
+        "app_version": "0.2.5.beta1",
+        "runtime_platform": "default",
+        "external_cli_agents_supported": "true",
+        "setup_guide_enabled": "true",
+        "rsi_enabled": "true",
+        "context_engine_enabled": "true",
+        "kv_cache_affinity_enabled": "false",
+        "permissions_profile": "full_access",
+        "permissions_enabled": "false",
+        "skill_evolution": "false",
+        "ttse_enabled": "false",
+        "memory_forbidden_enabled": "false",
+        "memory_forbidden_description": {
+          "en": "The following content is forbidden to remember: (To be supplemented by users, e.g., height, weight, name, etc. Separate items with commas recommended)",
+          "zh": "以下内容禁止记忆：（用户自行补充，如身高、体重、姓名等，建议用逗号分隔）"
+        },
+        "a2ui_enabled": "false",
+        "trajectory_ui_enabled": "false",
+        "team_organization_ui_enabled": "false",
+        "task_full_duplex_enabled": "false",
+        "task_asr_enabled": "false",
+        "swarmflow_enabled": "false",
+        "external_cli_agent_claude_enabled": "false",
+        "external_cli_agent_claude_use_builtin": "false",
+        "external_cli_agent_claude_cli_path": "",
+        "external_cli_agent_codex_enabled": "false",
+        "external_cli_agent_codex_use_builtin": "false",
+        "external_cli_agent_codex_cli_path": "",
+        "symphony_enabled": "false",
+        "symphony_evolution_enabled": "false",
+        "skill_retrieval_enabled": "false",
+        "skill_retrieval_index_enabled": "false",
+        "skill_retrieval_max_results": "10",
+        "skill_retrieval_max_output_chars": "12000",
+        "skill_retrieval_max_list_entries": "40",
+        "skill_retrieval_incremental_notice_max_chars": "4000",
+        "team_0_name": "jiuwen_team",
+        "team_0_lifecycle": "persistent",
+        "team_0_teammate_mode": "build_mode",
+        "team_0_spawn_mode": "inprocess",
+        "team_0_enable_permissions": "false",
+        "team_0_external_cli_agents": "[]",
+        "team_0_leader_member_name": "team-leader",
+        "team_0_leader_display_name": "团队领导",
+        "team_0_leader_persona": "天才项目管理专家，擅长任务分解和团队协调",
+        "team_0_leader_agent_key": "jiuwen_team_leader",
+        "team_0_teammate_agent_key": "",
+        "team_0_predefined_members": "[]",
+        "proactive_recommendation_enabled": "false",
+        "proactive_recommendation_max_recommend_per_day": "10",
+        "proactive_recommendation_max_rounds_per_tick": "20",
+        "enable_free_models": "false"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366930061385800,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89dv_1",
+      "ok": true,
+      "payload": {
+        "jobs": []
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366930078103600,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89e9_4",
+      "ok": true,
+      "payload": {
+        "jobs": []
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366930078484200,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89el_5",
+      "ok": true,
+      "payload": {
+        "status": "idle",
+        "phase": "idle",
+        "progress_kind": "",
+        "error": "",
+        "last_log": "",
+        "log_tail": [],
+        "started_at": 0.0,
+        "finished_at": 0.0,
+        "updated_at": 0.0,
+        "downloaded_bytes": 0,
+        "total_bytes": 0,
+        "bytes_per_second": 0.0,
+        "eta_seconds": 0.0,
+        "artifact_index": 0,
+        "artifact_count": 0,
+        "current_package": "",
+        "current_version": "",
+        "download_attempt": 0,
+        "download_max_attempts": 0,
+        "switching_source": false,
+        "cli_agent": "claude"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366930078605800,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89el_6",
+      "ok": true,
+      "payload": {
+        "status": "idle",
+        "phase": "idle",
+        "progress_kind": "",
+        "error": "",
+        "last_log": "",
+        "log_tail": [],
+        "started_at": 0.0,
+        "finished_at": 0.0,
+        "updated_at": 0.0,
+        "downloaded_bytes": 0,
+        "total_bytes": 0,
+        "bytes_per_second": 0.0,
+        "eta_seconds": 0.0,
+        "artifact_index": 0,
+        "artifact_count": 0,
+        "current_package": "",
+        "current_version": "",
+        "download_attempt": 0,
+        "download_max_attempts": 0,
+        "switching_source": false,
+        "cli_agent": "codex"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366930079481300,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89el_7",
+      "ok": true,
+      "payload": {
+        "model_provider": "",
+        "model": "",
+        "api_base": "",
+        "api_key": "",
+        "endpoint_profile": "",
+        "video_api_base": "",
+        "video_api_key": "",
+        "video_model": "",
+        "video_provider": "",
+        "video_endpoint_profile": "",
+        "video_vendor_key": "",
+        "video_plan": "",
+        "video_context_window_tokens": "",
+        "video_enabled": "false",
+        "video_gen_api_base": "",
+        "video_gen_api_key": "",
+        "video_gen_model": "",
+        "video_gen_provider": "",
+        "video_gen_protocol": "",
+        "video_gen_context_window_tokens": "",
+        "video_gen_enabled": "",
+        "visual_gen_api_base": "",
+        "visual_gen_api_key": "",
+        "visual_gen_model": "",
+        "visual_gen_provider": "",
+        "visual_gen_protocol": "",
+        "visual_gen_context_window_tokens": "",
+        "visual_gen_enabled": "",
+        "audio_api_base": "",
+        "audio_api_key": "",
+        "audio_model": "",
+        "audio_provider": "",
+        "audio_endpoint_profile": "",
+        "audio_vendor_key": "",
+        "audio_plan": "",
+        "audio_context_window_tokens": "",
+        "audio_enabled": "false",
+        "vision_api_base": "",
+        "vision_api_key": "",
+        "vision_model": "",
+        "vision_provider": "",
+        "vision_endpoint_profile": "",
+        "vision_vendor_key": "",
+        "vision_plan": "",
+        "vision_context_window_tokens": "",
+        "vision_enabled": "false",
+        "email_address": "",
+        "email_token": "",
+        "embed_api_key": "",
+        "embed_api_base": "",
+        "embed_model": "",
+        "jina_api_key": "",
+        "bocha_api_key": "",
+        "serper_api_key": "",
+        "perplexity_api_key": "",
+        "github_token": "",
+        "teamskills_market_url": "",
+        "teamskills_user_token": "",
+        "teamskills_system_token": "",
+        "teamskills_allowed_download_hosts": "",
+        "free_search_ddg_enabled": "false",
+        "free_search_bing_enabled": "false",
+        "free_search_proxy_url": "",
+        "asr_api_base": "",
+        "asr_api_key": "",
+        "asr_model": "",
+        "skills": "",
+        "max_iterations": "",
+        "completion_timeout": "",
+        "team_name": "",
+        "lifecycle": "",
+        "teammate_mode": "",
+        "spawn_mode": "",
+        "member_name": "",
+        "display_name": "",
+        "persona": "",
+        "agent_key": "",
+        "role_type": "",
+        "prompt_hint": "",
+        "app_version": "0.2.5.beta1",
+        "runtime_platform": "default",
+        "external_cli_agents_supported": "true",
+        "setup_guide_enabled": "true",
+        "rsi_enabled": "true",
+        "context_engine_enabled": "true",
+        "kv_cache_affinity_enabled": "false",
+        "permissions_profile": "full_access",
+        "permissions_enabled": "false",
+        "skill_evolution": "false",
+        "ttse_enabled": "false",
+        "memory_forbidden_enabled": "false",
+        "memory_forbidden_description": {
+          "en": "The following content is forbidden to remember: (To be supplemented by users, e.g., height, weight, name, etc. Separate items with commas recommended)",
+          "zh": "以下内容禁止记忆：（用户自行补充，如身高、体重、姓名等，建议用逗号分隔）"
+        },
+        "a2ui_enabled": "false",
+        "trajectory_ui_enabled": "false",
+        "team_organization_ui_enabled": "false",
+        "task_full_duplex_enabled": "false",
+        "task_asr_enabled": "false",
+        "swarmflow_enabled": "false",
+        "external_cli_agent_claude_enabled": "false",
+        "external_cli_agent_claude_use_builtin": "false",
+        "external_cli_agent_claude_cli_path": "",
+        "external_cli_agent_codex_enabled": "false",
+        "external_cli_agent_codex_use_builtin": "false",
+        "external_cli_agent_codex_cli_path": "",
+        "symphony_enabled": "false",
+        "symphony_evolution_enabled": "false",
+        "skill_retrieval_enabled": "false",
+        "skill_retrieval_index_enabled": "false",
+        "skill_retrieval_max_results": "10",
+        "skill_retrieval_max_output_chars": "12000",
+        "skill_retrieval_max_list_entries": "40",
+        "skill_retrieval_incremental_notice_max_chars": "4000",
+        "team_0_name": "jiuwen_team",
+        "team_0_lifecycle": "persistent",
+        "team_0_teammate_mode": "build_mode",
+        "team_0_spawn_mode": "inprocess",
+        "team_0_enable_permissions": "false",
+        "team_0_external_cli_agents": "[]",
+        "team_0_leader_member_name": "team-leader",
+        "team_0_leader_display_name": "团队领导",
+        "team_0_leader_persona": "天才项目管理专家，擅长任务分解和团队协调",
+        "team_0_leader_agent_key": "jiuwen_team_leader",
+        "team_0_teammate_agent_key": "",
+        "team_0_predefined_members": "[]",
+        "proactive_recommendation_enabled": "false",
+        "proactive_recommendation_max_recommend_per_day": "10",
+        "proactive_recommendation_max_rounds_per_tick": "20",
+        "enable_free_models": "false"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930079728900,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89fh_15",
+      "method": "models.list",
+      "params": {}
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366930101788200,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89em_9",
+      "ok": true,
+      "payload": {
+        "preferred_language": "zh"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930101869100,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89g3_16",
+      "method": "config.get",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930101930800,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89g4_17",
+      "method": "command.goal",
+      "params": {
+        "session_id": "browser-session",
+        "action": "get",
+        "mode": "agent"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366930105436100,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89em_11",
+      "ok": true,
+      "payload": {
+        "accepted": true,
+        "session_id": "browser-session",
+        "cursor": null,
+        "limit": 50
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366930105911600,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89em_14",
+      "ok": true,
+      "payload": {
+        "model_provider": "",
+        "model": "",
+        "api_base": "",
+        "api_key": "",
+        "endpoint_profile": "",
+        "video_api_base": "",
+        "video_api_key": "",
+        "video_model": "",
+        "video_provider": "",
+        "video_endpoint_profile": "",
+        "video_vendor_key": "",
+        "video_plan": "",
+        "video_context_window_tokens": "",
+        "video_enabled": "false",
+        "video_gen_api_base": "",
+        "video_gen_api_key": "",
+        "video_gen_model": "",
+        "video_gen_provider": "",
+        "video_gen_protocol": "",
+        "video_gen_context_window_tokens": "",
+        "video_gen_enabled": "",
+        "visual_gen_api_base": "",
+        "visual_gen_api_key": "",
+        "visual_gen_model": "",
+        "visual_gen_provider": "",
+        "visual_gen_protocol": "",
+        "visual_gen_context_window_tokens": "",
+        "visual_gen_enabled": "",
+        "audio_api_base": "",
+        "audio_api_key": "",
+        "audio_model": "",
+        "audio_provider": "",
+        "audio_endpoint_profile": "",
+        "audio_vendor_key": "",
+        "audio_plan": "",
+        "audio_context_window_tokens": "",
+        "audio_enabled": "false",
+        "vision_api_base": "",
+        "vision_api_key": "",
+        "vision_model": "",
+        "vision_provider": "",
+        "vision_endpoint_profile": "",
+        "vision_vendor_key": "",
+        "vision_plan": "",
+        "vision_context_window_tokens": "",
+        "vision_enabled": "false",
+        "email_address": "",
+        "email_token": "",
+        "embed_api_key": "",
+        "embed_api_base": "",
+        "embed_model": "",
+        "jina_api_key": "",
+        "bocha_api_key": "",
+        "serper_api_key": "",
+        "perplexity_api_key": "",
+        "github_token": "",
+        "teamskills_market_url": "",
+        "teamskills_user_token": "",
+        "teamskills_system_token": "",
+        "teamskills_allowed_download_hosts": "",
+        "free_search_ddg_enabled": "false",
+        "free_search_bing_enabled": "false",
+        "free_search_proxy_url": "",
+        "asr_api_base": "",
+        "asr_api_key": "",
+        "asr_model": "",
+        "skills": "",
+        "max_iterations": "",
+        "completion_timeout": "",
+        "team_name": "",
+        "lifecycle": "",
+        "teammate_mode": "",
+        "spawn_mode": "",
+        "member_name": "",
+        "display_name": "",
+        "persona": "",
+        "agent_key": "",
+        "role_type": "",
+        "prompt_hint": "",
+        "app_version": "0.2.5.beta1",
+        "runtime_platform": "default",
+        "external_cli_agents_supported": "true",
+        "setup_guide_enabled": "true",
+        "rsi_enabled": "true",
+        "context_engine_enabled": "true",
+        "kv_cache_affinity_enabled": "false",
+        "permissions_profile": "full_access",
+        "permissions_enabled": "false",
+        "skill_evolution": "false",
+        "ttse_enabled": "false",
+        "memory_forbidden_enabled": "false",
+        "memory_forbidden_description": {
+          "en": "The following content is forbidden to remember: (To be supplemented by users, e.g., height, weight, name, etc. Separate items with commas recommended)",
+          "zh": "以下内容禁止记忆：（用户自行补充，如身高、体重、姓名等，建议用逗号分隔）"
+        },
+        "a2ui_enabled": "false",
+        "trajectory_ui_enabled": "false",
+        "team_organization_ui_enabled": "false",
+        "task_full_duplex_enabled": "false",
+        "task_asr_enabled": "false",
+        "swarmflow_enabled": "false",
+        "external_cli_agent_claude_enabled": "false",
+        "external_cli_agent_claude_use_builtin": "false",
+        "external_cli_agent_claude_cli_path": "",
+        "external_cli_agent_codex_enabled": "false",
+        "external_cli_agent_codex_use_builtin": "false",
+        "external_cli_agent_codex_cli_path": "",
+        "symphony_enabled": "false",
+        "symphony_evolution_enabled": "false",
+        "skill_retrieval_enabled": "false",
+        "skill_retrieval_index_enabled": "false",
+        "skill_retrieval_max_results": "10",
+        "skill_retrieval_max_output_chars": "12000",
+        "skill_retrieval_max_list_entries": "40",
+        "skill_retrieval_incremental_notice_max_chars": "4000",
+        "team_0_name": "jiuwen_team",
+        "team_0_lifecycle": "persistent",
+        "team_0_teammate_mode": "build_mode",
+        "team_0_spawn_mode": "inprocess",
+        "team_0_enable_permissions": "false",
+        "team_0_external_cli_agents": "[]",
+        "team_0_leader_member_name": "team-leader",
+        "team_0_leader_display_name": "团队领导",
+        "team_0_leader_persona": "天才项目管理专家，擅长任务分解和团队协调",
+        "team_0_leader_agent_key": "jiuwen_team_leader",
+        "team_0_teammate_agent_key": "",
+        "team_0_predefined_members": "[]",
+        "proactive_recommendation_enabled": "false",
+        "proactive_recommendation_max_recommend_per_day": "10",
+        "proactive_recommendation_max_rounds_per_tick": "20",
+        "enable_free_models": "false"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366930116952300,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89g3_16",
+      "ok": true,
+      "payload": {
+        "model_provider": "",
+        "model": "",
+        "api_base": "",
+        "api_key": "",
+        "endpoint_profile": "",
+        "video_api_base": "",
+        "video_api_key": "",
+        "video_model": "",
+        "video_provider": "",
+        "video_endpoint_profile": "",
+        "video_vendor_key": "",
+        "video_plan": "",
+        "video_context_window_tokens": "",
+        "video_enabled": "false",
+        "video_gen_api_base": "",
+        "video_gen_api_key": "",
+        "video_gen_model": "",
+        "video_gen_provider": "",
+        "video_gen_protocol": "",
+        "video_gen_context_window_tokens": "",
+        "video_gen_enabled": "",
+        "visual_gen_api_base": "",
+        "visual_gen_api_key": "",
+        "visual_gen_model": "",
+        "visual_gen_provider": "",
+        "visual_gen_protocol": "",
+        "visual_gen_context_window_tokens": "",
+        "visual_gen_enabled": "",
+        "audio_api_base": "",
+        "audio_api_key": "",
+        "audio_model": "",
+        "audio_provider": "",
+        "audio_endpoint_profile": "",
+        "audio_vendor_key": "",
+        "audio_plan": "",
+        "audio_context_window_tokens": "",
+        "audio_enabled": "false",
+        "vision_api_base": "",
+        "vision_api_key": "",
+        "vision_model": "",
+        "vision_provider": "",
+        "vision_endpoint_profile": "",
+        "vision_vendor_key": "",
+        "vision_plan": "",
+        "vision_context_window_tokens": "",
+        "vision_enabled": "false",
+        "email_address": "",
+        "email_token": "",
+        "embed_api_key": "",
+        "embed_api_base": "",
+        "embed_model": "",
+        "jina_api_key": "",
+        "bocha_api_key": "",
+        "serper_api_key": "",
+        "perplexity_api_key": "",
+        "github_token": "",
+        "teamskills_market_url": "",
+        "teamskills_user_token": "",
+        "teamskills_system_token": "",
+        "teamskills_allowed_download_hosts": "",
+        "free_search_ddg_enabled": "false",
+        "free_search_bing_enabled": "false",
+        "free_search_proxy_url": "",
+        "asr_api_base": "",
+        "asr_api_key": "",
+        "asr_model": "",
+        "skills": "",
+        "max_iterations": "",
+        "completion_timeout": "",
+        "team_name": "",
+        "lifecycle": "",
+        "teammate_mode": "",
+        "spawn_mode": "",
+        "member_name": "",
+        "display_name": "",
+        "persona": "",
+        "agent_key": "",
+        "role_type": "",
+        "prompt_hint": "",
+        "app_version": "0.2.5.beta1",
+        "runtime_platform": "default",
+        "external_cli_agents_supported": "true",
+        "setup_guide_enabled": "true",
+        "rsi_enabled": "true",
+        "context_engine_enabled": "true",
+        "kv_cache_affinity_enabled": "false",
+        "permissions_profile": "full_access",
+        "permissions_enabled": "false",
+        "skill_evolution": "false",
+        "ttse_enabled": "false",
+        "memory_forbidden_enabled": "false",
+        "memory_forbidden_description": {
+          "en": "The following content is forbidden to remember: (To be supplemented by users, e.g., height, weight, name, etc. Separate items with commas recommended)",
+          "zh": "以下内容禁止记忆：（用户自行补充，如身高、体重、姓名等，建议用逗号分隔）"
+        },
+        "a2ui_enabled": "false",
+        "trajectory_ui_enabled": "false",
+        "team_organization_ui_enabled": "false",
+        "task_full_duplex_enabled": "false",
+        "task_asr_enabled": "false",
+        "swarmflow_enabled": "false",
+        "external_cli_agent_claude_enabled": "false",
+        "external_cli_agent_claude_use_builtin": "false",
+        "external_cli_agent_claude_cli_path": "",
+        "external_cli_agent_codex_enabled": "false",
+        "external_cli_agent_codex_use_builtin": "false",
+        "external_cli_agent_codex_cli_path": "",
+        "symphony_enabled": "false",
+        "symphony_evolution_enabled": "false",
+        "skill_retrieval_enabled": "false",
+        "skill_retrieval_index_enabled": "false",
+        "skill_retrieval_max_results": "10",
+        "skill_retrieval_max_output_chars": "12000",
+        "skill_retrieval_max_list_entries": "40",
+        "skill_retrieval_incremental_notice_max_chars": "4000",
+        "team_0_name": "jiuwen_team",
+        "team_0_lifecycle": "persistent",
+        "team_0_teammate_mode": "build_mode",
+        "team_0_spawn_mode": "inprocess",
+        "team_0_enable_permissions": "false",
+        "team_0_external_cli_agents": "[]",
+        "team_0_leader_member_name": "team-leader",
+        "team_0_leader_display_name": "团队领导",
+        "team_0_leader_persona": "天才项目管理专家，擅长任务分解和团队协调",
+        "team_0_leader_agent_key": "jiuwen_team_leader",
+        "team_0_teammate_agent_key": "",
+        "team_0_predefined_members": "[]",
+        "proactive_recommendation_enabled": "false",
+        "proactive_recommendation_max_recommend_per_day": "10",
+        "proactive_recommendation_max_rounds_per_tick": "20",
+        "enable_free_models": "false"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930117130900,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89gi_18",
+      "method": "models.list",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930345035100,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89mu_19",
+      "method": "config.set",
+      "params": {
+        "setup_guide_enabled": "false"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366930393991500,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w89o6_20",
+      "method": "session.input.intent",
+      "params": {
+        "session_id": "browser-session",
+        "intent_id": "26043f38-a4d8-4536-9ec2-1f29dcfcdb93",
+        "view_id": "2f5519c0-399c-4607-9561-01df4f681b9f",
+        "mode": "agent.work.normal"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366930636766300,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89o6_20",
+      "ok": false,
+      "payload": {},
+      "error": "unknown method: session.input.intent",
+      "code": "METHOD_NOT_FOUND"
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366930657216000,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89el_8",
+      "ok": true,
+      "payload": {
+        "session_id": "browser-session",
+        "mode": "agent.work.normal",
+        "channel_id": "web",
+        "user_id": "acceptance-owner",
+        "title": "Browser acceptance",
+        "work_mode": "work",
+        "project_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-browser-8tlvto_9\\data\\agent\\workspace",
+        "created_at": 1791787852.00103,
+        "last_user_message_at": 1791787852.00103,
+        "project_id": "",
+        "persist_session": false,
+        "model": "",
+        "cron_id": "",
+        "pinned": false,
+        "pin_order": 0,
+        "status": "idle",
+        "team_name": "",
+        "team_template_id": "",
+        "agent_group_name": ""
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366930660083600,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89dv_3",
+      "ok": true,
+      "payload": {
+        "jobs": [],
+        "next_offset": null,
+        "replay": true
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934513987100,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89em_13",
+      "ok": true,
+      "payload": {
+        "session_id": "browser-session",
+        "in_plan": false
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934515495900,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89mu_19",
+      "ok": true,
+      "payload": {
+        "updated": [
+          "setup_guide_enabled"
+        ],
+        "applied_without_restart": true
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934517725000,
+    "wire": {
+      "type": "event",
+      "event": "todo.updated",
+      "payload": {
+        "event_type": "todo.updated",
+        "todos": [],
+        "session_id": "browser-session"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934519191500,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89fh_15",
+      "ok": true,
+      "payload": {
+        "models": [
+          {
+            "model_id": "mdl_fixture",
+            "model_name": "fixture-model",
+            "api_base": "http://127.0.0.1:55506/v1",
+            "api_key": "local-fixture",
+            "model_provider": "OpenAI",
+            "temperature": 0,
+            "reasoning_level": "",
+            "is_default": true,
+            "is_agentos": false,
+            "is_free": false,
+            "alias": "",
+            "origin_index": 0,
+            "vendor_key": "",
+            "plan": "",
+            "endpoint_profile": "",
+            "context_window_tokens": 262144
+          }
+        ],
+        "model_groups": [],
+        "active_model": "fixture-model"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934519530000,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89gi_18",
+      "ok": true,
+      "payload": {
+        "models": [
+          {
+            "model_id": "mdl_fixture",
+            "model_name": "fixture-model",
+            "api_base": "http://127.0.0.1:55506/v1",
+            "api_key": "local-fixture",
+            "model_provider": "OpenAI",
+            "temperature": 0,
+            "reasoning_level": "",
+            "is_default": true,
+            "is_agentos": false,
+            "is_free": false,
+            "alias": "",
+            "origin_index": 0,
+            "vendor_key": "",
+            "plan": "",
+            "endpoint_profile": "",
+            "context_window_tokens": 262144
+          }
+        ],
+        "model_groups": [],
+        "active_model": "fixture-model"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934526764500,
+    "wire": {
+      "type": "event",
+      "event": "history.message",
+      "payload": {
+        "event_type": "history.message",
+        "status": "done",
+        "session_id": "browser-session",
+        "subagent_id": "",
+        "total_pages": null,
+        "page_idx": null,
+        "cursor": null,
+        "next_cursor": null,
+        "has_more": false,
+        "snapshot_id": null,
+        "snapshot_end": 0
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366934527199700,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w8cuy_21",
+      "method": "command.workflows",
+      "params": {
+        "session_id": "browser-session",
+        "action": "list"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934528528500,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89em_10",
+      "ok": true,
+      "payload": {
+        "configured": false,
+        "master_enabled": false,
+        "collection_enabled": false,
+        "agent_use_enabled": false,
+        "strategy_profile": "agent",
+        "max_pages_per_directory": 20,
+        "max_subdirectories_per_directory": 20,
+        "model_index": 0,
+        "model_id": "openai:fixture-model",
+        "fetch_services": []
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934529025900,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89em_12",
+      "ok": true,
+      "payload": {
+        "action": "get",
+        "message": "No goal in this session.",
+        "goal": null,
+        "record": null,
+        "cleared_goal": null,
+        "existing_goal": null,
+        "requested_objective": null,
+        "code": null
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934529298800,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w89g4_17",
+      "ok": true,
+      "payload": {
+        "action": "get",
+        "message": "No goal in this session.",
+        "goal": null,
+        "record": null,
+        "cleared_goal": null,
+        "existing_goal": null,
+        "requested_objective": null,
+        "code": null
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366934533733500,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w8cv7_22",
+      "method": "project.list",
+      "params": {
+        "filter": "all",
+        "work_mode": "work"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934549943200,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w8cv7_22",
+      "ok": true,
+      "payload": {
+        "projects": [
+          {
+            "project_id": "default",
+            "name": "默认项目",
+            "project_dir": "",
+            "pinned": false,
+            "pin_order": 0,
+            "is_default": true,
+            "hidden": false,
+            "lifecycle_operation": null,
+            "execution_blocked": false,
+            "stop_pending": false,
+            "work_mode": "work",
+            "git": {
+              "enabled": false,
+              "repo_root": "",
+              "initialized_by_jiuwenswarm": false,
+              "detected_at": 0,
+              "status": "disabled",
+              "branch": "",
+              "error": "",
+              "error_code": "",
+              "hint": "",
+              "is_dirty": false
+            },
+            "session_count": 1,
+            "last_message_at": null,
+            "last_user_message_at": 1791787852.00103,
+            "created_at": 0,
+            "updated_at": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366934550069200,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w8cvn_23",
+      "method": "project.pinned_sessions",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366934550119900,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w8cvo_24",
+      "method": "project.get_sessions",
+      "params": {
+        "project_id": "default",
+        "limit": 10
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934550170600,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w8cuy_21",
+      "ok": true,
+      "payload": {
+        "type": "workflow_run_snapshot",
+        "action": "list",
+        "session_id": "browser-session",
+        "workflows": [],
+        "total": 0,
+        "has_more": false
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934558204300,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w8cvn_23",
+      "ok": true,
+      "payload": {
+        "sessions": []
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934561120600,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w8cvo_24",
+      "ok": true,
+      "payload": {
+        "sessions": [
+          {
+            "session_id": "browser-session",
+            "title": "Browser acceptance",
+            "created_at": 1791787852.00103,
+            "last_message_at": 0,
+            "message_count": 0,
+            "mode": "agent.work.normal",
+            "team_name": "",
+            "agent_group_name": "",
+            "pinned": false,
+            "pin_order": 0,
+            "project_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-browser-8tlvto_9\\data\\agent\\workspace",
+            "project_id": "",
+            "cron_id": "",
+            "last_user_message_at": 1791787852.00103,
+            "model": "",
+            "work_mode": "work",
+            "lifecycle_operation": null,
+            "execution_blocked": false,
+            "stop_pending": false
+          }
+        ],
+        "total": 1
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366934802077300,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w8d2n_25",
+      "method": "chat.send",
+      "params": {
+        "session_id": "browser-session",
+        "content": "[4689-original] Browser acceptance, continue once",
+        "mode": "agent.work.normal",
+        "model_name": "fixture-model",
+        "project_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-browser-8tlvto_9\\data\\agent\\workspace",
+        "skills": [],
+        "enable_swarmflow": false
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934823093000,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w8d2n_25",
+      "ok": true,
+      "payload": {
+        "accepted": true,
+        "session_id": "browser-session"
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366934823208900,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w8d38_26",
+      "method": "project.list",
+      "params": {
+        "filter": "all",
+        "work_mode": "work"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934824175200,
+    "wire": {
+      "type": "event",
+      "event": "task.global_running",
+      "payload": {
+        "event_type": "task.global_running",
+        "running": false,
+        "count": 0
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934824733900,
+    "wire": {
+      "type": "event",
+      "event": "task.global_running",
+      "payload": {
+        "event_type": "task.global_running",
+        "running": false,
+        "count": 0
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934825574300,
+    "wire": {
+      "type": "event",
+      "event": "task.global_running",
+      "payload": {
+        "event_type": "task.global_running",
+        "running": true,
+        "count": 1
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934832298800,
+    "wire": {
+      "type": "event",
+      "event": "chat.processing_status",
+      "payload": {
+        "event_type": "chat.processing_status",
+        "session_id": "browser-session",
+        "is_processing": true,
+        "is_complete": false,
+        "request_id": "req_mv4w8d2n_25"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934838404600,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w8d38_26",
+      "ok": true,
+      "payload": {
+        "projects": [
+          {
+            "project_id": "default",
+            "name": "默认项目",
+            "project_dir": "",
+            "pinned": false,
+            "pin_order": 0,
+            "is_default": true,
+            "hidden": false,
+            "lifecycle_operation": null,
+            "execution_blocked": false,
+            "stop_pending": false,
+            "work_mode": "work",
+            "git": {
+              "enabled": false,
+              "repo_root": "",
+              "initialized_by_jiuwenswarm": false,
+              "detected_at": 0,
+              "status": "disabled",
+              "branch": "",
+              "error": "",
+              "error_code": "",
+              "hint": "",
+              "is_dirty": false
+            },
+            "session_count": 1,
+            "last_message_at": null,
+            "last_user_message_at": 1791787852.00103,
+            "created_at": 0,
+            "updated_at": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366934838578300,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w8d3o_27",
+      "method": "project.pinned_sessions",
+      "params": {}
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366934838638100,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w8d3o_28",
+      "method": "project.get_sessions",
+      "params": {
+        "project_id": "default",
+        "limit": 10
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934847024900,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w8d3o_27",
+      "ok": true,
+      "payload": {
+        "sessions": []
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366934847120200,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w8d3w_29",
+      "method": "project.get_sessions",
+      "params": {
+        "project_id": "default",
+        "limit": 10
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934853525400,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w8d3o_28",
+      "ok": true,
+      "payload": {
+        "sessions": [
+          {
+            "session_id": "browser-session",
+            "title": "Browser acceptance",
+            "created_at": 1791787852.00103,
+            "last_message_at": 1791787865.16619,
+            "message_count": 0,
+            "mode": "agent.work.normal",
+            "team_name": "",
+            "agent_group_name": "",
+            "pinned": false,
+            "pin_order": 0,
+            "project_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-browser-8tlvto_9\\data\\agent\\workspace",
+            "project_id": "",
+            "cron_id": "",
+            "last_user_message_at": 1791787865.16519,
+            "model": "fixture-model",
+            "work_mode": "work",
+            "lifecycle_operation": null,
+            "execution_blocked": false,
+            "stop_pending": false
+          }
+        ],
+        "total": 1
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366934857103700,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w8d3w_29",
+      "ok": true,
+      "payload": {
+        "sessions": [
+          {
+            "session_id": "browser-session",
+            "title": "Browser acceptance",
+            "created_at": 1791787852.00103,
+            "last_message_at": 1791787865.16619,
+            "message_count": 0,
+            "mode": "agent.work.normal",
+            "team_name": "",
+            "agent_group_name": "",
+            "pinned": false,
+            "pin_order": 0,
+            "project_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-browser-8tlvto_9\\data\\agent\\workspace",
+            "project_id": "",
+            "cron_id": "",
+            "last_user_message_at": 1791787865.16519,
+            "model": "fixture-model",
+            "work_mode": "work",
+            "lifecycle_operation": null,
+            "execution_blocked": false,
+            "stop_pending": false
+          }
+        ],
+        "total": 1
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366935039835300,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w8d99_30",
+      "method": "updater.check",
+      "params": {
+        "manual": false
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366935857340600,
+    "wire": {
+      "type": "event",
+      "event": "chat.output_phase",
+      "payload": {
+        "event_type": "chat.output_phase",
+        "output_phase_id": "c4af79f836744277a8962d475920939d",
+        "applied_input_ids": [],
+        "output_order": {
+          "request_id": "req_mv4w8d2n_25",
+          "sequence": 1
+        },
+        "timestamp": 1791787865956.9756,
+        "execution_id": "cd66be4fefd24277bf54b6e95584e066",
+        "session_id": "browser-session",
+        "request_id": "req_mv4w8d2n_25",
+        "runtime_event": {
+          "worker_instance": "9b366f4f314c4856a068d7679beaf66f",
+          "sequence": 1,
+          "dispatch_id": "84ca695359824bbe95856a1c646494fc"
+        }
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366935891198400,
+    "wire": {
+      "type": "event",
+      "event": "context.usage",
+      "payload": {
+        "event_type": "context.usage",
+        "schema_version": "context-usage.v1",
+        "phase": "post_call",
+        "request_id": "f0afc0c1d74f4782af735036ea90412a",
+        "session_id": "browser-session",
+        "product_session_id": "browser-session",
+        "execution_session_id": "browser-session",
+        "context_owner_id": "jiuwenswarm|browser-session|default_context_id",
+        "agent_id": "jiuwenswarm",
+        "team_id": null,
+        "member_name": null,
+        "invocation_id": "daeab3b9ba204c25b727f32c80738966",
+        "parent_invocation_id": null,
+        "delegation_id": null,
+        "agent_path": [
+          "jiuwenswarm"
+        ],
+        "depth": 0,
+        "cache_identity": "browser-session",
+        "parent_cache_identity": "browser-session",
+        "cache_mode": "provider",
+        "cache_scope": "session",
+        "sequence": 0,
+        "provider": "OpenAI",
+        "model": "fixture-model",
+        "deployment": null,
+        "timestamp": "2026-10-12T06:51:06.204722+00:00",
+        "context_snapshot_id": "9dd4d56f499b4202b8166e43fd38918f",
+        "context_changes": {
+          "message_event": "initial",
+          "system_prompt_changed": false,
+          "skills_changed": false,
+          "attachments_changed": false,
+          "tools_changed": false,
+          "stable_prefix_changed": false
+        },
+        "measurement_cache": {
+          "hit": "miss",
+          "reused_parts": [],
+          "recomputed_parts": [
+            "messages",
+            "skills",
+            "system_prompt",
+            "tools"
+          ],
+          "message_revision": 2,
+          "measurement_version": "1"
+        },
+        "context_window": {
+          "limit_tokens": 262144,
+          "input_tokens": 31082,
+          "occupancy_rate": 0.11856842041015625,
+          "tokens_source": "string_length_fallback",
+          "local_estimated_input_tokens": 31082,
+          "reconciliation_delta_tokens": null,
+          "context_snapshot_id": "9dd4d56f499b4202b8166e43fd38918f"
+        },
+        "parts": {
+          "system_prompt": {
+            "category": "system_prompt",
+            "tokens": 2844,
+            "percentage_of_window": 0.0108489990234375,
+            "percentage_of_input": 0.09149990348111448,
+            "estimated": true,
+            "tokenizer": "unicode_codepoints",
+            "carrier": "system_message",
+            "source": "string_length_fallback",
+            "measurement_source": "string_length_fallback",
+            "fallback_reason": "model_tokenizer_spec_missing",
+            "fallback_tokenizer_model": null,
+            "order": null,
+            "stable_id": null
+          },
+          "skills": {
+            "category": "skills",
+            "tokens": 1387,
+            "percentage_of_window": 0.005290985107421875,
+            "percentage_of_input": 0.044623898076056885,
+            "estimated": true,
+            "tokenizer": "unicode_codepoints",
+            "carrier": "system_message",
+            "source": "string_length_fallback",
+            "measurement_source": "string_length_fallback",
+            "fallback_reason": "model_tokenizer_spec_missing",
+            "fallback_tokenizer_model": null,
+            "order": null,
+            "stable_id": null
+          },
+          "tools": {
+            "category": "tools",
+            "tokens": 26666,
+            "percentage_of_window": 0.10172271728515625,
+            "percentage_of_input": 0.8579242005018982,
+            "estimated": true,
+            "tokenizer": "unicode_codepoints",
+            "carrier": "tools",
+            "source": "string_length_fallback",
+            "measurement_source": "string_length_fallback",
+            "fallback_reason": "model_tokenizer_spec_missing",
+            "fallback_tokenizer_model": null,
+            "order": null,
+            "stable_id": null
+          },
+          "messages": {
+            "category": "messages",
+            "tokens": 185,
+            "percentage_of_window": 0.000705718994140625,
+            "percentage_of_input": 0.005951997940930442,
+            "estimated": true,
+            "tokenizer": "unicode_codepoints",
+            "carrier": "context_message",
+            "source": "string_length_fallback",
+            "measurement_source": "string_length_fallback",
+            "fallback_reason": "model_tokenizer_spec_missing",
+            "fallback_tokenizer_model": null,
+            "order": null,
+            "stable_id": null
+          }
+        },
+        "kv_cache": {
+          "request": {
+            "input_tokens": null,
+            "cache_read_tokens": null,
+            "cache_miss_tokens": null,
+            "cache_write_tokens": null,
+            "hit_rate": null,
+            "status": "not_reported",
+            "source": "not_reported",
+            "authoritative": false,
+            "miss_tokens_derived": false,
+            "cache_mode": null,
+            "cache_scope": null,
+            "invalid_reason": null
+          },
+          "session": {
+            "scope": "session",
+            "aggregation_method": "token_weighted",
+            "aggregation_key": {
+              "session_id": "browser-session",
+              "provider": "OpenAI",
+              "model": "fixture-model",
+              "deployment": "",
+              "cache_mode": "provider",
+              "cache_scope": "session",
+              "product_session_id": "browser-session",
+              "execution_session_id": "browser-session",
+              "cache_identity": "browser-session",
+              "parent_cache_identity": "browser-session",
+              "team_id": null,
+              "agent_id": "jiuwenswarm",
+              "member_name": null
+            },
+            "calls_total": 1,
+            "calls_observed": 0,
+            "calls_partial": 0,
+            "calls_not_reported": 1,
+            "input_tokens_total": 0,
+            "cache_read_tokens_total": 0,
+            "cache_miss_tokens_total": 0,
+            "cache_write_tokens_total": null,
+            "cache_write_coverage": "none",
+            "average_input_per_call": null,
+            "weighted_hit_rate": null,
+            "average_cache_read_per_call": null,
+            "average_cache_miss_per_call": null,
+            "status": "not_reported",
+            "data_quality": "not_reported"
+          },
+          "measurement_cache": {
+            "hit": "miss",
+            "reused_parts": [],
+            "recomputed_parts": [
+              "messages",
+              "skills",
+              "system_prompt",
+              "tools"
+            ],
+            "message_revision": 2,
+            "measurement_version": "1"
+          },
+          "context_changes": {
+            "message_event": "initial",
+            "system_prompt_changed": false,
+            "skills_changed": false,
+            "attachments_changed": false,
+            "tools_changed": false,
+            "stable_prefix_changed": false
+          },
+          "management": {},
+          "diagnostics": {
+            "status": "not_collected"
+          }
+        },
+        "session_kv_cache_hit_rate": null,
+        "measurement": {
+          "category_source": "string_length_fallback",
+          "total_source": "string_length_fallback",
+          "tokenizer": "unicode_codepoints",
+          "estimated": true,
+          "authoritative_total": false,
+          "measurement_version": "1",
+          "context_snapshot_id": "9dd4d56f499b4202b8166e43fd38918f"
+        },
+        "rate": 11.856842041015625,
+        "context_max": 262144,
+        "tokens_used": 31082,
+        "context_usage_summary": {
+          "used_tokens": 31082,
+          "limit_tokens": 262144,
+          "occupancy_rate": 0.11856842041015625,
+          "percentage": 11.856842041015625
+        },
+        "execution_id": "cd66be4fefd24277bf54b6e95584e066",
+        "runtime_event": {
+          "worker_instance": "9b366f4f314c4856a068d7679beaf66f",
+          "sequence": 2,
+          "dispatch_id": "84ca695359824bbe95856a1c646494fc"
+        }
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366935906259000,
+    "wire": {
+      "type": "event",
+      "event": "chat.ask_user_question",
+      "payload": {
+        "event_type": "chat.ask_user_question",
+        "request_id": "fixture-question",
+        "questions": [
+          {
+            "question": "Continue?",
+            "header": "Question",
+            "options": [],
+            "multi_select": false
+          }
+        ],
+        "source": "ask_user_interrupt",
+        "output_phase_id": "c4af79f836744277a8962d475920939d",
+        "output_order": {
+          "request_id": "req_mv4w8d2n_25",
+          "sequence": 2
+        },
+        "timestamp": 1791787866208.4858,
+        "execution_id": "cd66be4fefd24277bf54b6e95584e066",
+        "session_id": "browser-session",
+        "runtime_event": {
+          "worker_instance": "9b366f4f314c4856a068d7679beaf66f",
+          "sequence": 3,
+          "dispatch_id": "84ca695359824bbe95856a1c646494fc"
+        }
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366935915048800,
+    "wire": {
+      "type": "event",
+      "event": "chat.final",
+      "payload": {
+        "session_id": "browser-session",
+        "content": "",
+        "execution_id": "cd66be4fefd24277bf54b6e95584e066",
+        "final_mode": "patch_segment",
+        "output_phase_id": "c4af79f836744277a8962d475920939d",
+        "output_order": {
+          "request_id": "req_mv4w8d2n_25",
+          "sequence": 3
+        },
+        "timestamp": 1791787866215.1338,
+        "request_id": "req_mv4w8d2n_25",
+        "runtime_event": {
+          "worker_instance": "9b366f4f314c4856a068d7679beaf66f",
+          "sequence": 4,
+          "dispatch_id": "84ca695359824bbe95856a1c646494fc"
+        }
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366935915796400,
+    "wire": {
+      "type": "event",
+      "event": "chat.final",
+      "payload": {
+        "session_id": "browser-session",
+        "content": "",
+        "execution_id": "cd66be4fefd24277bf54b6e95584e066",
+        "request_id": "req_mv4w8d2n_25",
+        "runtime_event": {
+          "worker_instance": "9b366f4f314c4856a068d7679beaf66f",
+          "sequence": 6,
+          "dispatch_id": "84ca695359824bbe95856a1c646494fc"
+        }
+      }
+    }
+  },
+  {
+    "direction": "sent",
+    "at_ns": 366935922278600,
+    "wire": {
+      "type": "req",
+      "id": "req_mv4w8dxs_31",
+      "method": "session.get_metadata",
+      "params": {
+        "session_id": "browser-session"
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366935951607300,
+    "wire": {
+      "type": "res",
+      "id": "req_mv4w8dxs_31",
+      "ok": true,
+      "payload": {
+        "session_id": "browser-session",
+        "mode": "agent.work.normal",
+        "channel_id": "web",
+        "user_id": "acceptance-owner",
+        "title": "Browser acceptance",
+        "work_mode": "work",
+        "project_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-browser-8tlvto_9\\data\\agent\\workspace",
+        "created_at": 1791787852.00103,
+        "last_user_message_at": 1791787865.175191,
+        "model": "fixture-model",
+        "persist_session": false,
+        "last_message_at": 1791787866.222087,
+        "message_count": 3,
+        "channel_metadata": {
+          "query": {
+            "user_id": [
+              "acceptance-owner"
+            ]
+          },
+          "method": "chat.send",
+          "ws_id": "c6fc6255733341539384edc870d01d2b",
+          "user_id": "acceptance-owner",
+          "auth_session": "",
+          "project_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-browser-8tlvto_9\\data\\agent\\workspace"
+        },
+        "delivery_context": {
+          "delivery_kind": "server_push",
+          "session_id": "browser-session",
+          "channel_id": "web",
+          "source_request_id": "req_mv4w8d2n_25",
+          "updated_at": 1791787865.18514,
+          "route_metadata": {
+            "query": {
+              "user_id": [
+                "acceptance-owner"
+              ]
+            },
+            "method": "chat.send",
+            "ws_id": "c6fc6255733341539384edc870d01d2b",
+            "user_id": "acceptance-owner",
+            "auth_session": "",
+            "project_dir": "C:\\Users\\24505\\AppData\\Local\\Temp\\jiuwenswarm-4689-browser-8tlvto_9\\data\\agent\\workspace"
+          }
+        },
+        "session_equipment": {
+          "agent_template_name": "",
+          "plugin_names": [],
+          "mcp": []
+        },
+        "project_id": "",
+        "cron_id": "",
+        "pinned": false,
+        "pin_order": 0,
+        "status": "idle",
+        "team_name": "",
+        "team_template_id": "",
+        "agent_group_name": "",
+        "runtime": {
+          "worker_instance": "9b366f4f314c4856a068d7679beaf66f",
+          "cursor": 6,
+          "history_required": false,
+          "is_processing": true,
+          "dispatches": [
+            {
+              "dispatch_id": "c5963994395a48dcae53c89ccccd25eb",
+              "request_id": "req_mv4w89em_13",
+              "active": false,
+              "phase": "handler_returned",
+              "execution_id": "",
+              "entered_at_ns": null,
+              "pending_interactions": [],
+              "terminal": null
+            },
+            {
+              "dispatch_id": "f5b83784a2ff4c8f8d4007d235da63fc",
+              "request_id": "req_mv4w89em_12",
+              "active": false,
+              "phase": "completed",
+              "execution_id": "",
+              "entered_at_ns": null,
+              "pending_interactions": [],
+              "terminal": {
+                "event_type": "runtime.completed",
+                "state": "succeeded"
+              }
+            },
+            {
+              "dispatch_id": "2a19d80afe7947d0b9b7c81056eebfc3",
+              "request_id": "req_mv4w89g4_17",
+              "active": false,
+              "phase": "completed",
+              "execution_id": "",
+              "entered_at_ns": null,
+              "pending_interactions": [],
+              "terminal": {
+                "event_type": "runtime.completed",
+                "state": "succeeded"
+              }
+            },
+            {
+              "dispatch_id": "d78cc6111ef745d2b7de6eb3c5bae208",
+              "request_id": "req_mv4w8cuy_21",
+              "active": false,
+              "phase": "handler_returned",
+              "execution_id": "",
+              "entered_at_ns": null,
+              "pending_interactions": [],
+              "terminal": null
+            },
+            {
+              "dispatch_id": "3b5083f2a85741acbd189428b28865ce",
+              "request_id": "interrupt_1a12ee11438_4c3094",
+              "active": false,
+              "phase": "handler_returned",
+              "execution_id": "",
+              "entered_at_ns": null,
+              "pending_interactions": [],
+              "terminal": null
+            },
+            {
+              "dispatch_id": "84ca695359824bbe95856a1c646494fc",
+              "request_id": "req_mv4w8d2n_25",
+              "active": false,
+              "phase": "waiting_for_control",
+              "execution_id": "cd66be4fefd24277bf54b6e95584e066",
+              "entered_at_ns": 366935101811400,
+              "pending_interactions": [
+                {
+                  "delta_kind": "custom",
+                  "delta": {
+                    "event_type": "chat.ask_user_question",
+                    "request_id": "fixture-question",
+                    "questions": [
+                      {
+                        "question": "Continue?",
+                        "header": "Question",
+                        "options": [],
+                        "multi_select": false
+                      }
+                    ],
+                    "source": "ask_user_interrupt",
+                    "output_phase_id": "c4af79f836744277a8962d475920939d",
+                    "output_order": {
+                      "request_id": "req_mv4w8d2n_25",
+                      "sequence": 2
+                    },
+                    "timestamp": 1791787866208.4858,
+                    "execution_id": "cd66be4fefd24277bf54b6e95584e066"
+                  },
+                  "event_type": "chat.ask_user_question",
+                  "request_id": "fixture-question",
+                  "questions": [
+                    {
+                      "question": "Continue?",
+                      "header": "Question",
+                      "options": [],
+                      "multi_select": false
+                    }
+                  ],
+                  "source": "ask_user_interrupt",
+                  "output_phase_id": "c4af79f836744277a8962d475920939d",
+                  "output_order": {
+                    "request_id": "req_mv4w8d2n_25",
+                    "sequence": 2
+                  },
+                  "timestamp": 1791787866208.4858,
+                  "execution_id": "cd66be4fefd24277bf54b6e95584e066"
+                }
+              ],
+              "terminal": null
+            }
+          ],
+          "executions": [
+            {
+              "execution_id": "6da785fa249b4183b00b1c658f0bc740",
+              "session_id": "browser-session",
+              "request_id": "req_mv4w89em_12",
+              "generation": 1,
+              "work_kind": "goal_control",
+              "parent_execution_id": null,
+              "root_work_kind": null,
+              "root_request_id": null,
+              "waiting_control_id": null,
+              "state": "succeeded",
+              "created_at": 366931.031,
+              "started_at": 366931.031,
+              "finished_at": 366931.281,
+              "error": null,
+              "cancellation_requested": false
+            },
+            {
+              "execution_id": "dd4e524969d24b8685f59e452d7e9eeb",
+              "session_id": "browser-session",
+              "request_id": "req_mv4w89g4_17",
+              "generation": 1,
+              "work_kind": "goal_control",
+              "parent_execution_id": null,
+              "root_work_kind": null,
+              "root_request_id": null,
+              "waiting_control_id": null,
+              "state": "succeeded",
+              "created_at": 366931.25,
+              "started_at": 366931.25,
+              "finished_at": 366931.281,
+              "error": null,
+              "cancellation_requested": false
+            },
+            {
+              "execution_id": "cd66be4fefd24277bf54b6e95584e066",
+              "session_id": "browser-session",
+              "request_id": "req_mv4w8d2n_25",
+              "generation": 1,
+              "work_kind": "chat_stream",
+              "parent_execution_id": null,
+              "root_work_kind": null,
+              "root_request_id": null,
+              "waiting_control_id": "fixture-question",
+              "state": "waiting_for_control",
+              "created_at": 366934.796,
+              "started_at": 366934.796,
+              "finished_at": null,
+              "error": null,
+              "cancellation_requested": false
+            }
+          ]
+        },
+        "is_processing": true
+      }
+    }
+  },
+  {
+    "direction": "received",
+    "at_ns": 366936406052100,
+    "wire": {
+      "type": "connected"
+    }
+  }
+]

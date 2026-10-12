@@ -1,0 +1,310 @@
+{
+  "scenario": "cancel",
+  "surface": "actual-Web-UI/Chromium/Gateway/native-Worker",
+  "before": {
+    "worker_instance": "fb8c59f4b482478396afeeb4ecc61dbb",
+    "cursor": 1,
+    "history_required": false,
+    "is_processing": true,
+    "dispatches": [
+      {
+        "dispatch_id": "a3885b683fc443d79b4e056937b035c5",
+        "request_id": "req_mv4ktx3z_13",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "5cde5fd2b33c4461b4107178c44747ca",
+        "request_id": "req_mv4ktx3y_12",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "succeeded"
+        }
+      },
+      {
+        "dispatch_id": "d48477ef045744e08c011d409f0f446d",
+        "request_id": "req_mv4ktx5j_17",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "succeeded"
+        }
+      },
+      {
+        "dispatch_id": "e959d4dbac9844a9b2ee49724cd44f6a",
+        "request_id": "req_mv4ku0x0_21",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "8e8b2e1bf3154287977b977bafcbecdc",
+        "request_id": "interrupt_1a12dbcf5cc_f91c31",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "06f9c9c824074d17ab129b43b95d0a82",
+        "request_id": "req_mv4ku18k_26",
+        "active": true,
+        "phase": "executing",
+        "execution_id": "ddd64cae2a7f4eda9c0ee16755f795bf",
+        "entered_at_ns": 347790585499500,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "06f6e68ef0104e23bd8c436f82d6df4c",
+        "session_id": "browser-session",
+        "request_id": "req_mv4ktx3y_12",
+        "generation": 1,
+        "work_kind": "goal_control",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 347786.812,
+        "started_at": 347786.812,
+        "finished_at": 347787.093,
+        "error": null,
+        "cancellation_requested": false
+      },
+      {
+        "execution_id": "85645734d7f847db9ecc8d853ffa8e42",
+        "session_id": "browser-session",
+        "request_id": "req_mv4ktx5j_17",
+        "generation": 1,
+        "work_kind": "goal_control",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 347787.062,
+        "started_at": 347787.062,
+        "finished_at": 347787.093,
+        "error": null,
+        "cancellation_requested": false
+      },
+      {
+        "execution_id": "ddd64cae2a7f4eda9c0ee16755f795bf",
+        "session_id": "browser-session",
+        "request_id": "req_mv4ku18k_26",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "running",
+        "created_at": 347790.437,
+        "started_at": 347790.437,
+        "finished_at": null,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "worker_pid": 29652,
+  "before_execution_ids": [
+    "ddd64cae2a7f4eda9c0ee16755f795bf"
+  ],
+  "after": {
+    "worker_instance": "fb8c59f4b482478396afeeb4ecc61dbb",
+    "cursor": 2,
+    "history_required": false,
+    "is_processing": true,
+    "dispatches": [
+      {
+        "dispatch_id": "a3885b683fc443d79b4e056937b035c5",
+        "request_id": "req_mv4ktx3z_13",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "5cde5fd2b33c4461b4107178c44747ca",
+        "request_id": "req_mv4ktx3y_12",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "succeeded"
+        }
+      },
+      {
+        "dispatch_id": "d48477ef045744e08c011d409f0f446d",
+        "request_id": "req_mv4ktx5j_17",
+        "active": false,
+        "phase": "completed",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": {
+          "event_type": "runtime.completed",
+          "state": "succeeded"
+        }
+      },
+      {
+        "dispatch_id": "e959d4dbac9844a9b2ee49724cd44f6a",
+        "request_id": "req_mv4ku0x0_21",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "8e8b2e1bf3154287977b977bafcbecdc",
+        "request_id": "interrupt_1a12dbcf5cc_f91c31",
+        "active": false,
+        "phase": "handler_returned",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "06f9c9c824074d17ab129b43b95d0a82",
+        "request_id": "req_mv4ku18k_26",
+        "active": true,
+        "phase": "executing",
+        "execution_id": "ddd64cae2a7f4eda9c0ee16755f795bf",
+        "entered_at_ns": 347790585499500,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "f2a33b3bed334f3a90c4a05b18c82475",
+        "request_id": "req_mv4kudwd_40",
+        "active": true,
+        "phase": "accepted",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      },
+      {
+        "dispatch_id": "6fe93ed0a39741e58762cedc5f6aee59",
+        "request_id": "req_mv4kudwd_39",
+        "active": true,
+        "phase": "accepted",
+        "execution_id": "",
+        "entered_at_ns": null,
+        "pending_interactions": [],
+        "terminal": null
+      }
+    ],
+    "executions": [
+      {
+        "execution_id": "06f6e68ef0104e23bd8c436f82d6df4c",
+        "session_id": "browser-session",
+        "request_id": "req_mv4ktx3y_12",
+        "generation": 1,
+        "work_kind": "goal_control",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 347786.812,
+        "started_at": 347786.812,
+        "finished_at": 347787.093,
+        "error": null,
+        "cancellation_requested": false
+      },
+      {
+        "execution_id": "85645734d7f847db9ecc8d853ffa8e42",
+        "session_id": "browser-session",
+        "request_id": "req_mv4ktx5j_17",
+        "generation": 1,
+        "work_kind": "goal_control",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 347787.062,
+        "started_at": 347787.062,
+        "finished_at": 347787.093,
+        "error": null,
+        "cancellation_requested": false
+      },
+      {
+        "execution_id": "ddd64cae2a7f4eda9c0ee16755f795bf",
+        "session_id": "browser-session",
+        "request_id": "req_mv4ku18k_26",
+        "generation": 1,
+        "work_kind": "chat_stream",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "running",
+        "created_at": 347790.437,
+        "started_at": 347790.437,
+        "finished_at": null,
+        "error": null,
+        "cancellation_requested": false
+      },
+      {
+        "execution_id": "30b8d1a969d04c978481e41e95b32531",
+        "session_id": "browser-session",
+        "request_id": "req_mv4kudwd_39",
+        "generation": 1,
+        "work_kind": "goal_control",
+        "parent_execution_id": null,
+        "root_work_kind": null,
+        "root_request_id": null,
+        "waiting_control_id": null,
+        "state": "succeeded",
+        "created_at": 347806.859,
+        "started_at": 347806.859,
+        "finished_at": 347806.859,
+        "error": null,
+        "cancellation_requested": false
+      }
+    ]
+  },
+  "passed": false,
+  "error": "TimeoutError: ",
+  "browser_errors": [
+    "WebSocket 连接异常",
+    "WebSocket 连接异常"
+  ],
+  "owner_shutdown_exit_code": 0,
+  "owner_shutdown": {
+    "kind": "shutdown.done",
+    "ok": true
+  }
+}

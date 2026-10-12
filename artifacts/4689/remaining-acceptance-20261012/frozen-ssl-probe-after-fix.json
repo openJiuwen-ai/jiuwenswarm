@@ -1,0 +1,24 @@
+{
+  "frozen": true,
+  "executable": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\artifacts\\4689\\remaining-acceptance-20261012\\frozen-dist\\workswarm\\workswarm.exe",
+  "_ssl": {
+    "ok": true,
+    "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\artifacts\\4689\\remaining-acceptance-20261012\\frozen-dist\\workswarm\\_internal\\_ssl.pyd",
+    "openssl": "OpenSSL 3.5.7 9 Jun 2026"
+  },
+  "ssl": {
+    "ok": true,
+    "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\artifacts\\4689\\remaining-acceptance-20261012\\frozen-dist\\workswarm\\_internal\\ssl.py",
+    "openssl": "OpenSSL 3.5.7 9 Jun 2026"
+  },
+  "redis": {
+    "ok": true,
+    "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\artifacts\\4689\\remaining-acceptance-20261012\\frozen-dist\\workswarm\\_internal\\redis\\__init__.py",
+    "openssl": null
+  },
+  "portalocker": {
+    "ok": true,
+    "path": "D:\\work_space\\jiuwenswarm-issue4689-implementation-20261010\\artifacts\\4689\\remaining-acceptance-20261012\\frozen-dist\\workswarm\\_internal\\portalocker\\__init__.py",
+    "openssl": null
+  }
+}
