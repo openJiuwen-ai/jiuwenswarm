@@ -28,6 +28,7 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
     validate_affinity_invariant,
 )
 from jiuwenswarm.common.security.base_crypto import get_crypto_provider
+from jiuwenswarm.common.runtime_model_config import apply_runtime_model_config
 from jiuwenswarm.common.utils import (
     get_config_dir,
     get_config_file,
@@ -255,7 +256,7 @@ def get_config():
             except (ValueError, TypeError):
                 logger.warning("Ignoring malformed AgentOS %s deployment config", section)
 
-    return config_base
+    return apply_runtime_model_config(config_base)
 
 
 def get_configured_read_image_multimodal(

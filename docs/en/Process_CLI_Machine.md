@@ -1,5 +1,8 @@
 # One-shot Process CLI machine execution
 
+For ordinary terminal commands with a prompt, see
+[model connection flags](Process_CLI_Model.md).
+
 `jiuwenswarm-process --run-json FILE` (noninteractive) and
 `jiuwenswarm-process --run-jsonl` (duplex) execute one single-root-Agent request
 through `InProcessRuntimeClient` and the shared Runtime Public API. It does not
