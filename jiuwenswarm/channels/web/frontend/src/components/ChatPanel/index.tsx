@@ -292,6 +292,9 @@ export function AgentActivityCard({
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const taskQueue = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.taskQueue ?? []);
   const queuedSessionMessages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.queuedSessionMessages ?? []);
+  const canContinueQueuedSessionMessages = useChatStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.canContinueQueuedSessionMessages ?? false
+  );
   const queuePaused = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.queuePaused ?? false);
   const removeFromTaskQueue = useChatStore((s) => s.removeFromTaskQueue);
   const reorderTaskQueue = useChatStore((s) => s.reorderTaskQueue);
@@ -299,6 +302,7 @@ export function AgentActivityCard({
   const setInputValue = useChatStore((s) => s.setInputValue);
 
   const isAgentMode = mode === 'agent';
+  const visibleTaskQueue = isAgentMode ? taskQueue : [];
 
   // 有等待任务时自动展开
   useEffect(() => {
@@ -322,7 +326,7 @@ export function AgentActivityCard({
     };
   }, [dragIndex]);
 
-  if (!isAgentMode || (taskQueue.length === 0 && queuedSessionMessages.length === 0)) {
+  if (visibleTaskQueue.length === 0 && queuedSessionMessages.length === 0) {
     return null;
   }
 
@@ -484,14 +488,16 @@ export function AgentActivityCard({
             {queuedSessionMessages.length > 0 && (
               <div className="team-event-group-row team-event-group-row--activity" data-testid="chat-panel-cross-session-queue-section">
                 <span>{t('chatUi.crossSessionMessageQueue')}</span>
-                <button
-                  type="button"
-                  data-testid="chat-panel-cross-session-queue-resume"
-                  onClick={handleContinueQueuedSessionMessages}
-                  style={{ marginLeft: 'auto', border: 0, background: 'transparent', color: 'var(--color-text-primary)', cursor: 'pointer' }}
-                >
-                  {t('chat.resume')}
-                </button>
+                {canContinueQueuedSessionMessages && (
+                  <button
+                    type="button"
+                    data-testid="chat-panel-cross-session-queue-resume"
+                    onClick={handleContinueQueuedSessionMessages}
+                    style={{ marginLeft: 'auto', border: 0, background: 'transparent', color: 'var(--color-text-primary)', cursor: 'pointer' }}
+                  >
+                    {t('chat.resume')}
+                  </button>
+                )}
               </div>
             )}
             {queuedSessionMessages.map((message) => (
@@ -518,7 +524,7 @@ export function AgentActivityCard({
                 </span>
               </div>
             ))}
-            {queuedSessionMessages.length > 0 && taskQueue.length > 0 && (
+            {queuedSessionMessages.length > 0 && visibleTaskQueue.length > 0 && (
               <div className="team-event-group-row team-event-group-row--activity" data-testid="chat-panel-task-queue-local-section" style={{ alignItems: 'center' }}>
                 <span>{t('chatUi.localMessageQueue')}</span>
                 {queuePaused && (
@@ -531,7 +537,7 @@ export function AgentActivityCard({
                 )}
               </div>
             )}
-            {taskQueue.map((task, index) => (
+            {visibleTaskQueue.map((task, index) => (
               <div
                 key={task.id}
                 className="team-event-group-row team-event-group-row--activity"

@@ -27,16 +27,13 @@ async def test_client_close_drains_both_writers_after_runtime_close(
     both_started = threading.Barrier(2, timeout=3)
 
     class RuntimeStub:
-        async def cancel_all_team_stream_tasks(self, *, reason):
-            calls.append("team")
-
         async def close(self):
             calls.append("runtime")
             if runtime_failure:
                 raise RuntimeError("runtime close failed")
 
     def flush(timeout):
-        assert calls[:2] == ["team", "runtime"]
+        assert calls[:1] == ["runtime"]
         assert timeout > 0
         both_started.wait()
         calls.append("flush")
@@ -50,7 +47,7 @@ async def test_client_close_drains_both_writers_after_runtime_close(
             await client.close()
     else:
         await client.close()
-    assert calls == ["team", "runtime", "flush", "flush"]
+    assert calls == ["runtime", "flush", "flush"]
 
 
 @pytest.mark.asyncio
@@ -82,9 +79,6 @@ async def test_command_drains_writers_after_slow_close_consumes_its_window(
             if session_cancelled:
                 raise asyncio.CancelledError
             return True
-
-        async def cancel_all_team_stream_tasks(self, *, reason):
-            await asyncio.sleep(0.1)
 
         async def close(self):
             await asyncio.sleep(0.1)

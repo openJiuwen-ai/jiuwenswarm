@@ -633,6 +633,8 @@ def test_build_member_capability_specs_rail_names(
     rail_names = {spec.type for spec in rails_specs}
 
     expected = _TEAM_SHARED_RAIL_NAMES | extra_rails
+    if role == "leader":
+        expected = expected | {registry.SESSION_MESSAGING_ROUTE}
     if role == "teammate":
         expected = expected | {registry.TASK_PLANNING}
 
@@ -647,7 +649,7 @@ def test_build_member_capability_specs_rail_names(
 
 @pytest.mark.parametrize("role", ["leader", "teammate"])
 def test_build_member_capability_specs_tool_names(role: str) -> None:
-    """Only the leader declares A4P on top of the common tool set."""
+    """Only the leader adds A4P and durable cross-Session messaging tools."""
     config = {"agents": {"leader": {"skills": []}, "teammate": {"skills": []}}}
 
     _, tool_specs = build_member_capability_specs(config, "team", role)
@@ -656,6 +658,7 @@ def test_build_member_capability_specs_tool_names(role: str) -> None:
     expected = set(_COMMON_TOOL_NAMES)
     if role == "leader":
         expected.add(registry.A4P_INTENT_AUTHORIZATION)
+        expected.add(registry.SESSION_MESSAGING_TOOLS)
     assert tool_names == expected
     assert all(isinstance(spec, BuiltinToolSpec) for spec in tool_specs)
 
@@ -2406,6 +2409,7 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
     if mode == "team.plan.code":
         expected_rails = expected_rails - {registry.CODE_CONFIRM_INTERRUPT}
     assert expected_rails <= rail_names
+    assert registry.SESSION_MESSAGING_ROUTE in rail_names
     assert registry.CODE_TASK_PLANNING not in rail_names
     assert registry.TEAM_SKILL_EVOLUTION in rail_names
     assert registry.STRUCTURED_ASK_USER in rail_names
@@ -2440,6 +2444,7 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
         registry.CODE_EXTRA_TOOLS,
         registry.CRON_TOOLS,
         registry.SEND_FILE,
+        registry.SESSION_MESSAGING_TOOLS,
     }
 
 

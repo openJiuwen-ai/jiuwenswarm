@@ -522,13 +522,10 @@ async def test_runtime_client_session_methods_only_delegate_to_runtime() -> None
 
 
 @pytest.mark.asyncio
-async def test_runtime_client_close_drains_team_work_before_runtime() -> None:
+async def test_runtime_client_close_delegates_to_runtime_owner() -> None:
     calls: list[str] = []
 
     class RuntimeStub:
-        async def cancel_all_team_stream_tasks(self, *, reason):
-            calls.append(f"team:{reason}")
-
         async def close(self):
             calls.append("close")
 
@@ -536,32 +533,24 @@ async def test_runtime_client_close_drains_team_work_before_runtime() -> None:
 
     await client.close()
 
-    assert calls == [
-        "team:[process CLI close] ",
-        "close",
-    ]
+    assert calls == ["close"]
 
 
 @pytest.mark.asyncio
-async def test_runtime_client_close_attempts_every_stage_after_cleanup_failure() -> (
-    None
-):
+async def test_runtime_client_close_propagates_runtime_failure() -> None:
     calls: list[str] = []
 
     class RuntimeStub:
-        async def cancel_all_team_stream_tasks(self, *, reason):
-            calls.append("team")
-            raise RuntimeError("team cleanup failed")
-
         async def close(self):
             calls.append("close")
+            raise RuntimeError("runtime cleanup failed")
 
     client = InProcessRuntimeClient(RuntimeStub())
 
-    with pytest.raises(RuntimeError, match="team cleanup failed"):
+    with pytest.raises(RuntimeError, match="runtime cleanup failed"):
         await client.close()
 
-    assert calls == ["team", "close"]
+    assert calls == ["close"]
 
 
 @pytest.mark.parametrize(

@@ -13,7 +13,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import deprecate_mode, is_plan_mode, is_single_agent_mode
+from jiuwenswarm.common.mode_matrix import (
+    deprecate_mode,
+    is_plan_mode,
+    is_single_agent_mode,
+    is_team_mode,
+)
 from jiuwenswarm.runtime.session_input import (
     SessionInputQueueRequiredError,
     SessionInputRejectedError,
@@ -226,7 +231,7 @@ class SessionMessageService:
         mode = deprecate_mode(metadata.get("mode"))
         channel_id = str(metadata.get("channel_id") or "").strip().lower()
         return bool(
-            is_single_agent_mode(mode)
+            (is_single_agent_mode(mode) or is_team_mode(mode))
             and channel_id in {"web", "tui"}
             and not str(metadata.get("cron_id") or "").strip()
         )
@@ -345,8 +350,15 @@ class SessionMessageService:
         )
         return {"queue_paused": bool(reason), "queue_pause_reason": reason}
 
-    async def _queue_summary(self, session_id: str, user_id: str) -> dict[str, Any]:
-        queued = await self.queued_for_target(session_id, user_id)
+    async def _queue_summary(
+        self,
+        session_id: str,
+        user_id: str,
+        *,
+        queued: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        if queued is None:
+            queued = await self.queued_for_target(session_id, user_id)
         blocking = await self._store_call(self._store.blocking_states, [session_id])
         pause = self._queue_pause_state(session_id, blocking.get(session_id))
         return {
@@ -562,9 +574,13 @@ class SessionMessageService:
                     hop_count=hop_count,
                     input_mode=input_mode,
                     effective_input_mode=(
-                        "" if input_mode == "steer" and self._must_queue(
-                            target_session_id, current_target_metadata
-                        ) else input_mode
+                        ""
+                        if input_mode == "steer"
+                        and self._must_queue(
+                            target_session_id,
+                            current_target_metadata,
+                        )
+                        else input_mode
                     ),
                 )
             except SessionMessageLimitExceeded as exc:
@@ -648,6 +664,15 @@ class SessionMessageService:
             target_session_id=session_id,
         )
         return [self._message_projection(record) for record in records]
+
+    async def queue_state_for_target(
+        self, session_id: str, user_id: str,
+    ) -> dict[str, Any]:
+        """Return durable queue state for target-session UI recovery."""
+
+        queued = await self.queued_for_target(session_id, user_id)
+        summary = await self._queue_summary(session_id, user_id, queued=queued)
+        return {"messages": queued, **summary}
 
     async def continue_queued_for_target(
         self, session_id: str, user_id: str
@@ -942,7 +967,31 @@ class SessionMessageService:
             target_session_id in self._blocked_targets
             or target_session_id in self._restart_held_targets
         )
-        if self._stopping or target_blocked or worker_busy:
+        if self._stopping:
+            logger.debug(
+                "[SessionMessaging] delivery worker not started: service stopping; "
+                "session_id=%s input_mode=%s",
+                target_session_id,
+                input_mode or "task",
+            )
+            return
+        if target_blocked:
+            logger.debug(
+                "[SessionMessaging] delivery worker held: session_id=%s "
+                "input_mode=%s blocked=%s restart_held=%s",
+                target_session_id,
+                input_mode or "task",
+                target_session_id in self._blocked_targets,
+                target_session_id in self._restart_held_targets,
+            )
+            return
+        if worker_busy:
+            logger.debug(
+                "[SessionMessaging] delivery worker already running: "
+                "session_id=%s input_mode=%s",
+                target_session_id,
+                input_mode or "task",
+            )
             return
         worker = asyncio.create_task(
             self._consume_target(target_session_id, input_mode),

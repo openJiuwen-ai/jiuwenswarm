@@ -559,6 +559,7 @@ def _build_team_capability_specs(
     ]
     if role == "leader":
         rails_specs.append(RailSpec(type=registry.STRUCTURED_ASK_USER))
+        rails_specs.append(RailSpec(type=registry.SESSION_MESSAGING_ROUTE))
         if is_team_plan_mode(mode):
             rails_specs.extend(
                 [
@@ -594,6 +595,7 @@ def _build_team_capability_specs(
     ]
     if role == "leader":
         tool_specs.append(BuiltinToolSpec(type=registry.A4P_INTENT_AUTHORIZATION))
+        tool_specs.append(BuiltinToolSpec(type=registry.SESSION_MESSAGING_TOOLS))
     return rails_specs, tool_specs
 
 
@@ -624,6 +626,9 @@ def _build_code_capability_specs(
 
     if is_team_plan_leader:
         rails_specs.append(RailSpec(type=registry.TEAM_PLAN_APPROVAL))
+
+    if role == "leader":
+        rails_specs.append(RailSpec(type=registry.SESSION_MESSAGING_ROUTE))
 
     if enable_permissions and role == "teammate":
         rails_specs.append(
@@ -664,6 +669,7 @@ def _build_code_capability_specs(
     ]
     if role == "leader":
         tool_specs.append(BuiltinToolSpec(type=registry.A4P_INTENT_AUTHORIZATION))
+        tool_specs.append(BuiltinToolSpec(type=registry.SESSION_MESSAGING_TOOLS))
     return rails_specs, tool_specs
 
 

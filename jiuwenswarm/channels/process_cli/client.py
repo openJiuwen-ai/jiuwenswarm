@@ -288,17 +288,8 @@ class InProcessRuntimeClient:
         )
 
     async def close(self) -> None:
-        # AgentRuntime.close() owns Session Coordinator and AgentManager
-        # cleanup.  Team requests also keep a process-wide producer whose
-        # stream deliberately survives a completed round, so stop only that
-        # extra Runtime-owned stage before closing the Runtime itself.
+        """Close the Runtime and flush pending Session persistence writes."""
         cleanup_errors: list[BaseException] = []
-        try:
-            await self._runtime.cancel_all_team_stream_tasks(
-                reason="[process CLI close] ",
-            )
-        except BaseException as exc:
-            cleanup_errors.append(exc)
         try:
             await self._runtime.close()
         except BaseException as exc:

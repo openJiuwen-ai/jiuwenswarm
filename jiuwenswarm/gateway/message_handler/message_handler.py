@@ -21,6 +21,7 @@ from jiuwenswarm.runtime.host_services import (
     install_runtime_wake_handler,
     restore_runtime_wake_handler,
 )
+from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
 from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
 from jiuwenswarm.gateway.channel_manager.base import ChannelType
 from jiuwenswarm.gateway.im_pipeline.im_session_input import (
@@ -3877,7 +3878,14 @@ class MessageHandler(ABC):
     def _should_emit_processing_status_for_stream(msg: "Message") -> bool:
         from jiuwenswarm.common.schema.message import ReqMethod
 
-        return msg.req_method == ReqMethod.CHAT_SEND
+        if msg.req_method != ReqMethod.CHAT_SEND:
+            return False
+        # An attach-only stream is a pure observation subscription: it must
+        # neither raise the Session's processing state on start nor block the
+        # authoritative is_processing=False of the streams that actually own
+        # the turn (a blocked terminal leaves the busy map stuck on True).
+        params = msg.params if isinstance(msg.params, dict) else {}
+        return params.get(TEAM_ATTACH_ONLY_PARAM) is not True
 
     def _session_has_streams_blocking_processing_false(
         self, session_id: str | None, *, exclude_rid: str | None = None

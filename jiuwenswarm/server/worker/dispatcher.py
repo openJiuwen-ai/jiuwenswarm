@@ -59,7 +59,7 @@ class WorkerDispatcher:
             self._queued = []
             live = self._bridge.holder.generation
         if attached:
-            runtime.attach_gateway_connection(self._bridge, self._lock)
+            await runtime.attach_gateway_connection(self._bridge, self._lock)
         for generation, request in queued:
             if self._draining or generation != live:
                 logger.info(
@@ -93,7 +93,7 @@ class WorkerDispatcher:
                 self._attached = True
                 runtime = self._runtime
             if runtime is not None:
-                runtime.attach_gateway_connection(self._bridge, self._lock)
+                await runtime.attach_gateway_connection(self._bridge, self._lock)
             return True
         if kind == KIND_GATEWAY_DETACH:
             await self.detach_gateway(message.get("remote"))

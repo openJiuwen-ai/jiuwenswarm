@@ -1159,7 +1159,7 @@ class WebChannel(BaseWsChannel):
                         if not getattr(w, "closed", False):
                             ws_set.add(w)
         if not ws_set:
-            logger.debug(
+            logger.info(
                 "[WebChannel] session_id=%s has no connected ws, dropping msg id=%s ws_id=%s",
                 msg.session_id, getattr(msg, "id", ""), request_ws_id,
             )

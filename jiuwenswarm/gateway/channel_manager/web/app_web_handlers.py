@@ -2683,6 +2683,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         def _attach_runtime_status(ok: bool, payload: dict[str, Any]) -> None:
             if ok:
                 payload["is_processing"] = channel.is_session_busy(target_session_id)
+                # The busy map drives the stop button on page reload; expose
+                # the value it served for that session's metadata request.
+                logger.info(
+                    "[WebHandlers] session.get_metadata runtime status: "
+                    "session_id=%s is_processing=%s",
+                    target_session_id,
+                    payload["is_processing"],
+                )
 
         await proxy_unary_request(
             channel=channel,

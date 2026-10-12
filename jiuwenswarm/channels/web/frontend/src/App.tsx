@@ -69,6 +69,7 @@ import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
 import { webRequest } from './services/webClient';
+import { attachTeamSession, resetTeamAttachments } from './services/teamAttach';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
@@ -711,6 +712,18 @@ function AppContent({
     useSubagentStore.getState().hydrateRuntime(sessionId);
   }, [sessionId]);
 
+  // 进入 team 会话时挂接实时事件订阅（attach_only）：mailbox / 后台触发的
+  // 轮次输出才能实时到达前端。失败仅记录并静默降级（下次进入或重连重试），
+  // 不打断会话使用。
+  useEffect(() => {
+    if (!sessionId || sessionId === 'new') return;
+    const sessionRuntime = useSessionStore.getState().getRuntime(sessionId);
+    if (sessionRuntime?.mode !== 'team') return;
+    attachTeamSession(sessionId, sessionRuntime.mode).catch((error) => {
+      console.warn('[teamAttach] failed to attach session:', sessionId, error);
+    });
+  }, [sessionId]);
+
   const {
     setCurrentSession,
     setAvailableModels,
@@ -1098,6 +1111,18 @@ function AppContent({
       // store 静默清空，且无其它重试入口，导致 project 页签定时任务空白直到
       // 侧边栏重新挂载。这里在每次连接可用后补齐拉取。
       void useCronStore.getState().loadJobs();
+      // 断线重连后旧的 team attach 订阅已随连接终止（后端随之移除 waiter）；
+      // 清空防重复标记并对当前停留的 team 会话重挂，恢复实时事件流。
+      resetTeamAttachments();
+      const activeSessionId = sessionIdRef.current;
+      if (activeSessionId && activeSessionId !== 'new') {
+        const sessionRuntime = useSessionStore.getState().getRuntime(activeSessionId);
+        if (sessionRuntime?.mode === 'team') {
+          attachTeamSession(activeSessionId, sessionRuntime.mode).catch((error) => {
+            console.warn('[teamAttach] failed to re-attach session:', activeSessionId, error);
+          });
+        }
+      }
     },
     onDisconnect: () => {
       console.log('Disconnected');
@@ -1666,7 +1691,11 @@ function AppContent({
       const response = await request<Session>('session.get_metadata', {
         session_id: targetSessionId,
       });
-      const { queued_session_messages: queuedMessages, ...session } = response;
+      const {
+        queued_session_messages: queuedMessages,
+        can_continue_queued_session_messages: canContinueQueuedMessages,
+        ...session
+      } = response;
       if ((session as unknown as Record<string, unknown>).archived === true) {
         if (sessionIdRef.current === targetSessionId) {
           navigate({ kind: 'chat-new' }, { replace: true });
@@ -1687,6 +1716,10 @@ function AppContent({
             }))
         );
       }
+      useChatStore.getState().setCanContinueQueuedSessionMessages(
+        targetSessionId,
+        canContinueQueuedMessages === true,
+      );
       upsertSessionMetadata(session, { setCurrent: sessionIdRef.current === targetSessionId });
       useWorkspaceStore.getState().upsertSession(session);
       // is_processing 由 Gateway 在 session.get_metadata 响应入队前读取当前
@@ -1780,6 +1813,7 @@ function AppContent({
   const handleContinueQueuedSessionMessages = useCallback(async (targetSessionId: string) => {
     try {
       await request('session.message.continue_queued', { session_id: targetSessionId });
+      useChatStore.getState().setCanContinueQueuedSessionMessages(targetSessionId, false);
     } catch {
       toast.open({ content: t('network.resumeFailed'), variant: 'error' });
     }

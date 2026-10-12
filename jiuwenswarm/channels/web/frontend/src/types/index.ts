@@ -51,6 +51,7 @@ export interface Session {
     content: string;
     status: string;
   }>;
+  can_continue_queued_session_messages?: boolean;
   current_task?: string;
   tools?: string[];
   team_name?: string;
