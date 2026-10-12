@@ -20191,18 +20191,33 @@ class JiuWenSwarmDeepAdapter:
             request_metadata = (
                 dict(request.metadata) if isinstance(request.metadata, dict) else {}
             )
-            if len(model_refs) == 1:
-                request_metadata[_SKILL_TURBO_MODEL_IDENTITY_KEY] = {
-                    "model_name": model_name,
-                    "model_ref": model_refs[0],
-                }
-            else:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] selected model identity unavailable "
-                    "for SkillTurbo resume: model_name=%s refs=%s",
+            if len(model_refs) != 1:
+                logger.error(
+                    "[JiuWenSwarmDeepAdapter] selected model identity unavailable; "
+                    "rejecting request before SkillTurbo can suspend: "
+                    "model_name=%s refs=%s",
                     model_name,
                     len(model_refs),
                 )
+                yield AgentResponseChunk(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    payload={
+                        "event_type": "chat.error",
+                        "error_code": "model_identity_unavailable",
+                        "error": (
+                            "当前模型身份无法唯一确定，无法安全恢复 SkillTurbo 任务，"
+                            "请刷新模型配置后重试"
+                        ),
+                    },
+                    is_complete=True,
+                    metadata=request.metadata or {},
+                )
+                return
+            request_metadata[_SKILL_TURBO_MODEL_IDENTITY_KEY] = {
+                "model_name": model_name,
+                "model_ref": model_refs[0],
+            }
             request_env_tokens = self._bind_request_env_overlay()
             self._mark_session_active(session_id)
             session_active = True
