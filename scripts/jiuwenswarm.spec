@@ -249,7 +249,15 @@ http2_submodules = [
 ]
 
 # 部分包需要显式声明隐藏导入
-hiddenimports = collect_submodules("jiuwenswarm.server.worker") + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
+lazy_runtime_submodules = []
+for lazy_package in (
+    "jiuwenswarm.agents.harness.common.auto_harness",
+    "jiuwenswarm.agents.harness.common.tools",
+    "jiuwenswarm.agents.swarm",
+):
+    lazy_runtime_submodules += collect_submodules(lazy_package)
+
+hiddenimports = collect_submodules("jiuwenswarm.server.worker") + lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
     "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
     # ``--doctor`` imports these targets dynamically before business imports.
@@ -486,6 +494,20 @@ mcp_a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+# A venv backed by Conda can have another Conda installation earlier on PATH.
+# Dependency discovery then finds an OpenSSL DLL without the symbols required
+# by the interpreter's _ssl.pyd. Keep the interpreter's own DLL pair together.
+if os.name == "nt":
+    _python_ssl_dir = Path(sys.base_prefix) / "Library" / "bin"
+    for _ssl_dll in ("libssl-3-x64.dll", "libcrypto-3-x64.dll"):
+        _ssl_source = _python_ssl_dir / _ssl_dll
+        if _ssl_source.is_file():
+            for _analysis in (a, mcp_a):
+                _analysis.binaries = [
+                    item for item in _analysis.binaries
+                    if os.path.normcase(item[0]) != os.path.normcase(_ssl_dll)
+                ] + [(_ssl_dll, str(_ssl_source), "BINARY")]
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 mcp_pyz = PYZ(mcp_a.pure, mcp_a.zipped_data, cipher=block_cipher)
