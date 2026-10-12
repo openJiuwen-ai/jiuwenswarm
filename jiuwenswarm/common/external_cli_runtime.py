@@ -956,9 +956,14 @@ def _safe_extract_wheel(wheel_path: Path, destination: Path) -> None:
                 if relative_path.is_absolute() or ".." in relative_path.parts:
                     raise RuntimeError(f"unsafe wheel entry: {member.filename}")
                 target = destination.joinpath(*relative_path.parts).resolve()
-                if os.path.commonpath((destination_resolved, target)) != str(
-                    destination_resolved
-                ):
+                try:
+                    under_destination = os.path.commonpath(
+                        (destination_resolved, target)
+                    ) == str(destination_resolved)
+                except ValueError:
+                    # Windows: different-drive paths raise ValueError from commonpath.
+                    under_destination = False
+                if not under_destination:
                     raise RuntimeError(f"unsafe wheel entry: {member.filename}")
                 if member.is_dir():
                     target.mkdir(parents=True, exist_ok=True)

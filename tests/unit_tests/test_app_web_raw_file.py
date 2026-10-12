@@ -179,3 +179,46 @@ def test_verified_download_get_and_head_use_conventional_staged_file_handler(
         server.shutdown()
         thread.join()
         server.server_close()
+
+def test_spa_send_head_cross_drive_commonpath_falls_back_to_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows cross-drive commonpath ValueError should SPA-fallback, not crash."""
+    import os
+
+    (tmp_path / "index.html").write_text("spa-index", encoding="utf-8")
+    (tmp_path / "page.html").write_text("page", encoding="utf-8")
+
+    class Handler(_SpaStaticHandler):
+        project_root = tmp_path
+        workspace_root = tmp_path / "agent"
+        agent_teams_root = tmp_path / "agent-teams"
+        logs_root = tmp_path / "logs"
+        auto_harness_root = tmp_path / "auto-harness"
+        api_target = ""
+        ws_target = ""
+        directory = str(tmp_path)
+
+    def boom(_paths):
+        raise ValueError("Paths don't have the same drive")
+
+    monkeypatch.setattr(os.path, "commonpath", boom)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("GET", "/page.html")
+        response = connection.getresponse()
+        try:
+            assert response.status == 200
+            body = response.read()
+            assert b"spa-index" in body
+        finally:
+            connection.close()
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
