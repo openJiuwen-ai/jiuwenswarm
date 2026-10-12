@@ -34,6 +34,9 @@ def entries(monkeypatch):
                 "verify_ssl": False,
                 "custom_headers": {
                     "Authorization": "Bearer old-secret",
+                    "API-Key": "old-api-key",
+                    "X-API-KEY": "old-x-api-key",
+                    "Proxy-Authorization": "Bearer old-proxy-key",
                     "X-Title": "app",
                 },
             },

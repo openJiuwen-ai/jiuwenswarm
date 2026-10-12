@@ -67,6 +67,44 @@ def test_nested_scope_restores_on_exception():
     assert apply_runtime_model_config(base) is base and base == before
 
 
+@pytest.mark.parametrize(
+    "modality", ["video", "audio", "vision", "image_gen", "video_gen"]
+)
+def test_chat_override_preserves_independent_models_without_mutating_config(
+    monkeypatch, modality
+):
+    multimodal = {
+        "enabled": True,
+        "model_client_config": {
+            "model_name": "independent-" + modality,
+            "api_key": "multimodal-key",
+        },
+        "model_config_obj": {"temperature": 0.1},
+    }
+    base = {
+        "models": {
+            "defaults": [_entry("original")],
+            "groups": [{"is_default": True}],
+            "agentos": [_entry("agentos")],
+            modality: multimodal,
+            "future_model_setting": {"enabled": True},
+        }
+    }
+    before = deepcopy(base)
+    monkeypatch.setattr(config, "get_config_file", lambda: "unused-model-config.yaml")
+    monkeypatch.setattr(config, "_read_with_retry", lambda path: base)
+    with runtime_model_config(_entry("temporary")):
+        models = config.get_config()["models"]
+        assert models["defaults"][0] == _entry("temporary")
+        assert models["groups"] == [] and models["agentos"] == []
+        assert models[modality] == multimodal
+        assert models["future_model_setting"] == {"enabled": True}
+        models[modality]["model_client_config"]["api_key"] = "changed"
+        assert config.get_config()["models"][modality] == multimodal
+    assert base == before
+    assert config.get_config()["models"][modality] == multimodal
+
+
 @pytest.mark.asyncio
 async def test_parallel_channels_are_isolated_and_child_tasks_inherit():
     base = {"models": {"defaults": [_entry("web-default")]}}

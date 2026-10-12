@@ -37,5 +37,9 @@ def apply_runtime_model_config(config: dict[str, Any]) -> dict[str, Any]:
     result = dict(config)
     # A scoped connection is authoritative, including for child Agents.
     # Default groups and AgentOS fallback entries must not reroute it.
-    result["models"] = {"defaults": [deepcopy(entry)], "groups": [], "agentos": []}
+    # Keep independent multimodal connections and future model settings. Copy
+    # the section so scoped reads cannot mutate the shared parsed config.
+    models = deepcopy(config.get("models") or {})
+    models.update(defaults=[deepcopy(entry)], groups=[], agentos=[])
+    result["models"] = models
     return result

@@ -138,12 +138,17 @@ def prepare_model_options(
     else:
         headers = client.get("custom_headers")
         if isinstance(headers, dict):
-            client["custom_headers"] = {
-                name: value
-                for name, value in headers.items()
-                if name.lower()
-                not in {"authorization", "api-key", "x-api-key", "proxy-authorization"}
+            authentication_headers = {
+                "authorization",
+                "api-key",
+                "x-api-key",
+                "proxy-authorization",
             }
+            filtered_headers = {}
+            for name, value in headers.items():
+                if name.lower() not in authentication_headers:
+                    filtered_headers[name] = value
+            client["custom_headers"] = filtered_headers
     client["model_name"] = model_name
     client["api_key"] = api_key
     entry["model_client_config"] = client
