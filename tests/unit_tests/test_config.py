@@ -2129,3 +2129,54 @@ channels:
         assert f"push_id: {token}" in text
         assert f"push_id: '{token}'" not in text
         assert f'push_id: "{token}"' not in text
+
+
+class TestConfigDirOverride:
+    """JIUWENSWARM_CONFIG_DIR must actually move where config.yaml is read from.
+
+    The variable is documented as the way to isolate configuration between
+    instances on one machine, and the diagnostics endpoint reports it as an
+    active settings source. It was consulted for sys.path only, so an operator
+    following the docs silently ran on the default config while being told the
+    override was in effect.
+    """
+
+    @staticmethod
+    def _fresh_paths(monkeypatch: pytest.MonkeyPatch, value: str | None):
+        from jiuwenswarm.common import utils
+
+        if value is None:
+            monkeypatch.delenv("JIUWENSWARM_CONFIG_DIR", raising=False)
+        else:
+            monkeypatch.setenv("JIUWENSWARM_CONFIG_DIR", value)
+        # Snapshot the whole path cache so teardown restores it; resetting only
+        # _initialized would leave _config_dir pointing at tmp_path for later tests.
+        for name in ("_initialized", "_config_dir", "_workspace_dir", "_root_dir"):
+            monkeypatch.setattr(utils, name, getattr(utils, name))
+        monkeypatch.setattr(utils, "_initialized", False)
+        return utils.get_config_file()
+
+    def test_override_moves_the_config_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        target = tmp_path / "instance-a"
+        target.mkdir()
+        assert self._fresh_paths(monkeypatch, str(target)) == target / "config.yaml"
+
+    def test_two_overrides_isolate_from_each_other(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        a = self._fresh_paths(monkeypatch, str(tmp_path / "a"))
+        b = self._fresh_paths(monkeypatch, str(tmp_path / "b"))
+        assert a != b, "instances sharing one config file are not isolated"
+
+    def test_blank_override_falls_back_to_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        blank = self._fresh_paths(monkeypatch, "  ")
+        unset = self._fresh_paths(monkeypatch, None)
+        assert blank == unset
+
+    def test_user_home_is_expanded(self, monkeypatch: pytest.MonkeyPatch):
+        got = self._fresh_paths(monkeypatch, "~/some-instance-config")
+        assert "~" not in str(got)

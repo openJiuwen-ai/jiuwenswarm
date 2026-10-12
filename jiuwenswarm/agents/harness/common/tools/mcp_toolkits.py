@@ -16,6 +16,7 @@ from jiuwenswarm.agents.harness.common.tools.trusted_search_tool_adapter import 
     refresh_paid_search_metadata,
 )
 from jiuwenswarm.agents.harness.common.tools.search_tools import configured_paid_search_providers
+from jiuwenswarm.agents.harness.common.tools.paper_search_tools import paper_search
 from jiuwenswarm.agents.harness.common.tools.web_fetch_tools import mcp_fetch_webpage
 
 _SEARCH_ABILITY_MANAGERS = WeakSet()
@@ -68,7 +69,8 @@ def get_mcp_tools() -> list[Tool]:
         tools.append(mcp_paid_search)
     if _is_free_search_enabled():
         tools.append(mcp_free_search)
-    tools.extend([mcp_fetch_webpage, mcp_exec_command])
+    # paper_search needs no key, so like fetch it is always registered.
+    tools.extend([mcp_fetch_webpage, mcp_exec_command, paper_search])
     return tools
 
 
@@ -76,6 +78,7 @@ __all__ = [
     "mcp_free_search",
     "mcp_paid_search",
     "mcp_fetch_webpage",
+    "paper_search",
     "mcp_exec_command",
     "get_mcp_tools",
 ]

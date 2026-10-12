@@ -15,6 +15,8 @@ elements, each self-gated by the config source and filtered against the swarm
 * ``swarm.visual_gen`` — the image-generation tool (Visual processing config gated).
 * ``swarm.xiaoyi_phone`` — the xiaoyi phone tools (channel-switch gated).
 * ``swarm.code_extra_tools`` — code-mode-exclusive ``acp_chat``.
+* ``swarm.paper_search`` — scholarly search over arXiv / OpenAlex / Crossref /
+  PubMed / Semantic Scholar (keyless, so always built).
 
 The generic web / vision / audio tools are provided by openjiuwen
 (``core.web_search`` / ``core.web_fetch`` / ``core.web_paid_search`` /
@@ -47,6 +49,7 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     complete_multimodal_model_configured,
     multimodal_model_enabled,
 )
+from jiuwenswarm.agents.harness.common.tools.paper_search_tools import paper_search
 from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
     SkillRetrievalToolkit,
     build_model_discovery_settings,
@@ -117,6 +120,7 @@ VISUAL_GEN = "swarm.visual_gen"
 XIAOYI_PHONE = "swarm.xiaoyi_phone"
 SYMPHONY_TOOLKIT = "swarm.symphony_toolkit"
 CODE_EXTRA_TOOLS = "swarm.code_extra_tools"
+PAPER_SEARCH = "swarm.paper_search"
 
 # xiaoyi phone tool objects, gated by ``channels.xiaoyi.phone_tools_enabled``.
 _XIAOYI_PHONE_TOOLS = (
@@ -605,6 +609,16 @@ def build_symphony_toolkit(params: dict[str, Any], ctx: SwarmBuildContext) -> li
     return _build_symphony_tools(ctx)
 
 
+@harness_element(
+    kind=ElementKind.TOOL,
+    name=PAPER_SEARCH,
+    description="Scholarly paper search over arXiv / OpenAlex / Crossref / PubMed / Semantic Scholar.",
+)
+def build_paper_search(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
+    """Build the whitelist-filtered ``paper_search`` tool the research skills call."""
+    return _filter_whitelist(_mark_stateless([paper_search]))
+
+
 class CodeExtraToolsInput(ConstructionInput):
     """Construction inputs for the code-extra tools."""
 
@@ -643,6 +657,7 @@ __all__ = [
     "XIAOYI_PHONE",
     "SYMPHONY_TOOLKIT",
     "CODE_EXTRA_TOOLS",
+    "PAPER_SEARCH",
     "vision_model_config_params",
     "audio_dedicated_configured",
     "audio_model_config_params",
@@ -650,4 +665,5 @@ __all__ = [
     "build_code_extra_tools",
     "skill_retrieval_toolkit_for_context",
     "visible_skill_names_for_list_skill",
+    "build_paper_search",
 ]
