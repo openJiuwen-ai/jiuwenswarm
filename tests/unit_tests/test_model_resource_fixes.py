@@ -1,6 +1,7 @@
 """Regression coverage for the stable-ID model-pool contract."""
 
 from copy import deepcopy
+from importlib import import_module
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -126,19 +127,34 @@ async def test_config_adapter_registers_resource_methods(catalog_state):
         assert response.ok, response.payload
 
 
-def test_stale_metadata_snapshot_cannot_erase_selection(tmp_path, monkeypatch):
-    from jiuwenswarm.server.runtime.session import session_metadata as metadata
+@pytest.mark.parametrize("runtime", ["server.runtime", "gateway.embedded.runtime"])
+def test_stale_metadata_snapshot_cannot_erase_selection(tmp_path, monkeypatch, runtime):
+    metadata = import_module(f"jiuwenswarm.{runtime}.session.session_metadata")
+    store = import_module(f"jiuwenswarm.{runtime}.session.model_selection_store")
     from jiuwenswarm.server.runtime.session.session_info import to_session_info
 
     monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(store, "get_agent_sessions_dir", lambda: tmp_path)
     original = {"session_id": "selection-race", "title": "before"}
     metadata._write_metadata_sync("selection-race", original)
     selection = {"type": "model_group", "id": "mgp_a", "route_id": "rte_b"}
-    metadata.update_session_model_selection("selection-race", selection)
+    store.set_session_model_selection("selection-race", ModelSelection.model_validate(selection))
     latest = metadata._write_metadata_sync("selection-race", {**original, "title": "after"})
     assert latest["model_selection"] == selection
     assert latest["title"] == "after"
     assert to_session_info(latest)["model_selection"] == selection
+
+
+def test_gateway_resolver_rejects_all_disabled_routes(catalog_state):
+    from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver as GatewayResolver
+
+    catalog_state["models"]["groups"] = [{
+        "model_group_id": "mgp_a",
+        "routes": [{"route_id": "rte_a", "model_id": "mdl_a", "enabled": False}],
+    }]
+    with pytest.raises(ModelSelectionError) as caught:
+        GatewayResolver(ModelCatalog(catalog_state)).resolve(ModelSelection(type="model_group", id="mgp_a"))
+    assert caught.value.code == "MODEL_GROUP_INVALID"
 
 
 def test_hot_edit_recompiles_same_selection(catalog_state, monkeypatch):
