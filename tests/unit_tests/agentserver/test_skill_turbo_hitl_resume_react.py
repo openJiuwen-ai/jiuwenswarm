@@ -404,6 +404,100 @@ async def test_save_resume_ctx_clears_stale_resume_in_flight():
 
 
 @pytest.mark.asyncio
+async def test_save_resume_ctx_persists_outer_task_id():
+    """HITL resume checkpoint keeps the outer Todo id for finalization."""
+    checkpoint: dict = {}
+
+    class _CheckpointSession:
+        def __init__(self):
+            self._state: dict = {}
+
+        async def pre_run(self, inputs=None):
+            self._state = copy.deepcopy(checkpoint)
+
+        async def post_run(self):
+            checkpoint.clear()
+            checkpoint.update(copy.deepcopy(self._state))
+
+        def update_state(self, mapping):
+            self._state.update(mapping)
+
+        def get_state(self, key):
+            return copy.deepcopy(self._state.get(key))
+
+    writer = _CheckpointSession()
+    await save_resume_ctx(
+        writer,
+        plan_code="plan-x",
+        inputs={},
+        pending_tool_call_id="skill_turbo-tc-ask_user-outer-task",
+        task_states=None,
+        outer_task_id="todo:create_ppt",
+    )
+    await writer.post_run()
+
+    reader = _CheckpointSession()
+    loaded = await load_resume_ctx(reader)
+    assert loaded is not None
+    assert loaded["outer_task_id"] == "create_ppt"
+
+
+@pytest.mark.asyncio
+async def test_complete_skill_turbo_outer_todo_updates_status_and_returns_events():
+    class _TodoTool:
+        def __init__(self):
+            self.todo = SimpleNamespace(
+                id="create_ppt",
+                status=SimpleNamespace(value="in_progress"),
+            )
+            self.updated = None
+
+        async def load_todos(self, _session_id):
+            return [self.todo]
+
+        async def _update_todos(self, session_id, updates, todos):
+            self.updated = (session_id, updates, todos)
+            self.todo.status = SimpleNamespace(value="completed")
+
+    class _TaskRail:
+        def external_todo_completion_events(
+            self, session_id, task_id, *, parent_request_id
+        ):
+            assert session_id == "sess-1"
+            assert task_id == "create_ppt"
+            return [
+                SimpleNamespace(
+                    type="task.complete",
+                    payload={"task_id": "todo:create_ppt"},
+                ),
+                SimpleNamespace(
+                    type="task.update",
+                    payload={"completed_tasks": 1},
+                ),
+            ]
+
+    todo_tool = _TodoTool()
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._task_execution_rail = _TaskRail()
+    adapter._get_todo_modify_tool = lambda _session_id: todo_tool
+
+    chunks = await adapter._complete_skill_turbo_outer_todo(
+        session_id="sess-1",
+        request_id="resume-1",
+        channel_id="web",
+        resume_ctx={"outer_task_id": "todo:create_ppt"},
+    )
+
+    assert todo_tool.updated is not None
+    assert todo_tool.updated[0] == "sess-1"
+    assert todo_tool.updated[1] == [{"id": "create_ppt", "status": "completed"}]
+    assert [chunk.payload["event_type"] for chunk in chunks] == [
+        "task.complete",
+        "task.update",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_clear_resume_ctx_persists_across_sessions():
     """clear_resume_ctx 后新 session load_resume_ctx 必须返回 None。
 
