@@ -7839,10 +7839,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         ac = _resolve(agent_client)
         if ac is None or not getattr(ac, "server_ready", False):
             # Agent 未就绪时本地处理（无 agent 实例可用）
-            from jiuwenswarm.agents.harness.common.auto_harness import (
-                _HARNESS_PACKAGES_FILE,
-                AutoHarnessService,
-            )
+            from jiuwenswarm.agents.harness.common.auto_harness import _HARNESS_PACKAGES_FILE
             from pathlib import Path
 
             try:
