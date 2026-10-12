@@ -101,7 +101,11 @@ def test_lean_profile_skips_listed_rails_and_mounts_the_filter_last(adapter):
     for kept in (
         "_code_filesystem_rail",
         "_project_memory_rail",
-        "_code_execution_discipline_rail",
+        *(
+            ("_code_execution_discipline_rail",)
+            if _CODE_EXECUTION_DISCIPLINE_AVAILABLE
+            else ()
+        ),
         "_implement_completeness_rail",
         "_code_completion_gate_rail",
         "_context_processor_rail",
