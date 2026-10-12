@@ -1609,6 +1609,7 @@ class TeamManager:
         single-session behavior because their bootstrap resources are scoped to
         one active session per channel.
         """
+        distributed = self._is_distributed_mode(get_config())
         normalized_previous = str(previous_session_id or "").strip()
         if normalized_previous and normalized_previous != target_session_id:
             # Product foreground/task facts own KVC offload.  A navigation
@@ -1617,9 +1618,10 @@ class TeamManager:
                 normalized_previous,
                 reason=f"{reason}session-switch: ",
                 offload=False,
+                preserve_organization=not distributed,
             )
 
-        if not self._is_distributed_mode(get_config()):
+        if not distributed:
             logger.info(
                 "[TeamManager] %sprepare_session_switch skipped for local runtime target=%s",
                 reason,
@@ -3175,8 +3177,9 @@ class TeamManager:
         reason: str = "",
         *,
         offload: bool = True,
+        preserve_organization: bool = False,
     ) -> bool:
-        """Stop a parked Runner team runtime without touching active streams."""
+        """Stop a parked runtime; local navigation may preserve organization Teams."""
         async with self._get_lifecycle_lock(session_id):
             if self.has_stream_task(session_id):
                 logger.debug(
@@ -3192,6 +3195,25 @@ class TeamManager:
                     session_id,
                 )
                 return False
+
+            if preserve_organization:
+                from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+                runtime_mgr = _runner_team_runtime_manager(GLOBAL_RUNNER)
+                entry = await runtime_mgr.pool.get(team_name)
+                if entry is not None and entry.current_session_id == session_id:
+                    backend = entry.agent.team_backend
+                    org_manager = getattr(backend, "org_task_manager", None)
+                    if getattr(org_manager, "organization_id", None):
+                        # A parked organization leader still receives task reviews
+                        # and final-report delivery while another session is visible.
+                        logger.info(
+                            "[TeamManager] preserve organization runtime during session switch: "
+                            "session_id=%s team_name=%s",
+                            session_id,
+                            team_name,
+                        )
+                        return False
 
             if offload:
                 await self._report_session_inactive(session_id)

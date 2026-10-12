@@ -647,3 +647,96 @@ async def test_root_summary_delivery_turn_relays_owner_output() -> None:
     )
     assert received_inputs == [{"query": "deliver"}]
     assert relayed == [("chat.final", "org_root_delivery", "root-team")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "team_id", "owner_team_id", "ends_owner_processing"),
+    [
+        ("org_root_delivery", "owner-team", "owner-team", True),
+        ("org_root_background", "owner-team", "owner-team", True),
+        ("org_root_background", "expert-team", "owner-team", False),
+        ("org_expert_background", "expert-team", "owner-team", False),
+        ("org_summary_background", "summary-team", "owner-team", False),
+    ],
+)
+async def test_org_turn_closes_only_owner_processing(
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    team_id: str,
+    owner_team_id: str,
+    ends_owner_processing: bool,
+) -> None:
+    from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    monkeypatch.setattr(
+        session_metadata,
+        "get_session_metadata",
+        lambda _session_id, **_kwargs: {"team_name": owner_team_id},
+    )
+
+    class _Agent:
+        spec = SimpleNamespace(metadata={"channel_id": "web", "expert_team": True})
+
+        async def stream(self, inputs, session):
+            yield SimpleNamespace(payload={"event_type": "chat.final", "content": "done"})
+            yield SimpleNamespace(payload={"event_type": "team.completed"})
+
+    agent = _Agent()
+    entry = SimpleNamespace(agent=agent, current_session_id="sess-1", state=RuntimeState.PAUSED)
+
+    async def _get(_team_id):
+        return entry
+
+    async def _post_run():
+        return None
+
+    async def _activate(_spec, _session_id, _inputs):
+        return SimpleNamespace(
+            agent=agent,
+            action=SimpleNamespace(kind=RunActionKind.RESUME_FROM_PAUSE),
+            session=SimpleNamespace(post_run=_post_run),
+        )
+
+    async def _finalize(**_kwargs):
+        return None
+
+    runtime = SimpleNamespace(
+        pool=SimpleNamespace(get=_get), activate=_activate, finalize=_finalize,
+    )
+    transport = SimpleNamespace(send_push=AsyncMock(return_value=True))
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime, push_transport=transport)
+
+    async def _relay(_chunk, **kwargs):
+        await launcher.push_expert_payload(
+            {"event_type": "chat.final", "content": "done"},
+            team_id=team_id, session_id="sess-1", channel_id="web",
+            round_id=kwargs["round_id"], frame_sequence=0, source=kwargs["source"],
+        )
+        return {"event_type": "chat.final", "role": "leader"}
+
+    launcher._relay_expert_chunk = _relay
+    assert await launcher.run_organization_turn(
+        team_id, "sess-1", {"query": "finish", "_org_relay_source": source}, source=source,
+    )
+
+    pushes = [call.args[0] for call in transport.send_push.call_args_list]
+    event_types = [push["payload"]["event_type"] for push in pushes]
+    assert event_types == (
+        ["chat.final", "chat.processing_status"] if ends_owner_processing else ["chat.final"]
+    )
+    if ends_owner_processing:
+        wire = build_server_push_wire(pushes[-1])
+        chunk = parse_agent_server_wire_chunk(wire)
+        message = MessageHandler._chunk_to_message(chunk, "sess-1")
+        browser_event = WebChannel._build_event_payload(message, "chat.processing_status")
+        assert browser_event["is_processing"] is False
+        assert browser_event["is_complete"] is True
+        assert browser_event["team_id"] == team_id
