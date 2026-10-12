@@ -62,6 +62,42 @@ _agent_observability_active: bool = False
 # unless force was ever used.
 _force_ever_enabled: bool = False
 
+# When the shared provider is owned by the unified telemetry runtime (relay
+# injects OTEL env), the SDK init path ignores agent-side exporter settings,
+# so local jsonl output stops. Attaching the file exporter as a fan-out span
+# processor keeps jsonl flowing alongside the unified OTLP export.
+_file_exporter_fanout: Any | None = None
+
+
+def _attach_file_exporter_fanout(traces_dir: str, cfg: Any) -> None:
+    global _file_exporter_fanout
+    if _file_exporter_fanout is not None:
+        return
+    try:
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+        from openjiuwen.extensions.observability.file_exporter import TraceFileExporter
+        from openjiuwen.extensions.observability.setup import (
+            get_observability_runtime,
+            is_initialized,
+        )
+
+        if not is_initialized():
+            return
+        exporter = TraceFileExporter(
+            root_dir=traces_dir,
+            retention_days=int(cfg.get("file_retention_days", 7)),
+        )
+        processor = BatchSpanProcessor(exporter)
+        get_observability_runtime().add_span_processors((processor,))
+        _file_exporter_fanout = processor
+        logger.info(
+            "[AgentObservability] file exporter attached as fan-out processor: traces_dir=%s",
+            traces_dir,
+        )
+    except Exception as exc:
+        logger.warning("[AgentObservability] file exporter fan-out failed: %s", exc)
+
 
 def sync_agent_observability(*, force: bool = False) -> None:
     """Synchronize single-agent observability state with current config.
@@ -132,6 +168,8 @@ def sync_agent_observability(*, force: bool = False) -> None:
                     "[AgentObservability] reusing existing observability provider "
                     "(owned by another subsystem)"
                 )
+                if cfg.get("exporter", "otlp_grpc") == "file":
+                    _attach_file_exporter_fanout(traces_dir, cfg)
             elif cfg.get("exporter", "otlp_grpc") == "file":
                 logger.info(
                     "[AgentObservability] enabled: exporter=%s traces_dir=%s",
@@ -155,7 +193,7 @@ def sync_agent_observability(*, force: bool = False) -> None:
 
 def shutdown_agent_observability() -> None:
     """Shutdown single-agent observability (on disable or process exit)."""
-    global _agent_observability_active
+    global _agent_observability_active, _file_exporter_fanout
     try:
         if not shutdown_trajectory_runtime(demand="agent"):
             logger.warning("[AgentObservability] trajectory runtime did not drain cleanly")
@@ -166,6 +204,7 @@ def shutdown_agent_observability() -> None:
     try:
         release_observability()
         _agent_observability_active = False
+        _file_exporter_fanout = None
         logger.info("[AgentObservability] disabled")
     except Exception as exc:
         logger.warning("[AgentObservability] shutdown failed: %s", exc)

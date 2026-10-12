@@ -993,6 +993,7 @@ class RichTelemetryCallbacks:
                     lambda: self._bounded_json(
                         kwargs.get("inputs"),
                         redact=self._config.redact_prompts,
+                        max_chars=self._config.attribute_value_max_length,
                     ),
                 )
                 if arguments is not None:
@@ -1075,6 +1076,7 @@ class RichTelemetryCallbacks:
                         lambda: self._bounded_json(
                             result_value,
                             redact=self._config.redact_completions,
+                            max_chars=self._config.attribute_value_max_length,
                         ),
                     )
                     if result is not None:
@@ -2065,14 +2067,14 @@ class RichTelemetryCallbacks:
         return self._find_tool_span(kwargs)
 
     @staticmethod
-    def _bounded_json(value: Any, *, redact: bool) -> str:
+    def _bounded_json(value: Any, *, redact: bool, max_chars: int) -> str:
         if redact:
             return "[REDACTED]"
         try:
             serialized = json.dumps(value, ensure_ascii=False, default=str)
         except (TypeError, ValueError):
             serialized = str(value)
-        return serialized[:4096]
+        return serialized[:max_chars]
 
 
 __all__ = [
