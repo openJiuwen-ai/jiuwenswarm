@@ -89,10 +89,10 @@ def test_http_modules_do_not_use_the_websocket_dispatch() -> None:
         text = (_HTTP_DIR / name).read_text(encoding="utf-8")
         assert "dispatch_parsed_request" not in text
         assert "agent_ws_server" not in text
-        assert "server.dispatch" not in text
-    rpc_text = (_HTTP_DIR / "http_rpc.py").read_text(encoding="utf-8")
-    assert "dispatch_parsed_request" not in rpc_text
-    assert "agent_ws_server" not in rpc_text
+        if name != "agent_http_routes.py":
+            assert "server.dispatch" not in text
+    routes_text = (_HTTP_DIR / "agent_http_routes.py").read_text(encoding="utf-8")
+    assert "http_rpc" not in routes_text
 
 
 @pytest.mark.asyncio
@@ -365,41 +365,75 @@ async def test_events_route_is_an_sse_stream(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_rpc_unknown_method_stays_http_200() -> None:
+async def test_rpc_url_is_closed() -> None:
     async with _app_client() as client:
-        response = await client.post("/api/v1/rpc/not.a.method", json={})
-    assert response.status_code == 200
-    body = response.json()
-    assert body["ok"] is False
-    assert body["error"]["code"] == "UNKNOWN_METHOD"
+        unknown = await client.post("/api/v1/rpc/not.a.method", json={})
+        skills = await client.post("/api/v1/rpc/skills.list", json={})
+    assert unknown.status_code == 404
+    assert skills.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_rpc_known_method_calls_the_handler_table(monkeypatch) -> None:
-    seen: dict[str, object] = {}
+async def test_dedicated_session_url_calls_the_same_handler(monkeypatch) -> None:
+    seen: list[dict[str, object]] = []
 
-    async def _dispatch(ctx: RequestContext) -> bool:
-        seen["method"] = ctx.request.req_method
-        seen["limit"] = (ctx.request.params or {}).get("limit")
+    async def _dispatch(ctx: RequestContext) -> None:
+        params = ctx.request.params or {}
+        seen.append(
+            {
+                "method": ctx.request.req_method,
+                "session_id": params.get("session_id"),
+                "title": params.get("title"),
+            }
+        )
         await ctx.sink.send_response(
             AgentResponse(
                 request_id=ctx.request.request_id,
                 channel_id=ctx.request.channel_id,
                 ok=True,
-                payload={"agents": ["a"]},
+                payload={"session_id": "sess-new"},
             )
         )
-        return True
 
-    monkeypatch.setattr("jiuwenswarm.server.dispatch.try_dispatch", _dispatch)
+    from jiuwenswarm.server.dispatch import HANDLERS
+
+    monkeypatch.setitem(HANDLERS, ReqMethod.SESSION_CREATE, _dispatch)
+    monkeypatch.setitem(HANDLERS, ReqMethod.SESSION_DELETE, _dispatch)
     async with _app_client() as client:
-        response = await client.post(
-            "/api/v1/rpc/agents.list",
-            headers={"x-request-id": "req-r", "x-session-id": "sess-r"},
-            json={"limit": 1},
+        created = await client.post(
+            "/api/v1/sessions",
+            headers={"x-request-id": "req-c"},
+            json={"title": "你好"},
         )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["data"] == {"agents": ["a"]}
-    assert body["request_id"] == "req-r"
-    assert seen == {"method": ReqMethod.AGENTS_LIST, "limit": 1}
+        removed = await client.delete(
+            "/api/v1/sessions/sess-1",
+            headers={"x-request-id": "req-d"},
+        )
+    assert created.status_code == 200
+    assert created.json()["data"]["session_id"] == "sess-new"
+    assert removed.status_code == 200
+    assert seen[0]["method"] is ReqMethod.SESSION_CREATE
+    assert seen[0]["title"] == "你好"
+    assert seen[1]["method"] is ReqMethod.SESSION_DELETE
+    assert seen[1]["session_id"] == "sess-1"
+
+
+def test_unhandled_urls_are_not_registered() -> None:
+    app = build_http_app(AppServices())
+    routes = {
+        (method, route.path)
+        for route in app.routes
+        for method in (getattr(route, "methods", None) or set())
+    }
+    assert ("GET", "/api/v1/skills") not in routes
+    assert ("POST", "/api/v1/skills/install") not in routes
+    assert ("GET", "/api/v1/plugins") not in routes
+    assert ("POST", "/api/v1/plugins/install") not in routes
+    assert ("GET", "/api/v1/channels/feishu/config") not in routes
+    assert ("POST", "/api/v1/updater/actions/check") not in routes
+    assert ("GET", "/api/v1/heartbeat/config") not in routes
+    assert ("POST", "/api/v1/sessions") in routes
+    assert ("POST", "/api/v1/mcp/actions/list") in routes
+    assert ("POST", "/api/v1/sessions/{session_id}/swarmflow/actions/pause") in routes
+    assert ("POST", "/api/v1/proactive/actions/feedback") in routes
+    assert ("POST", "/api/v1/rpc/{method}") not in routes

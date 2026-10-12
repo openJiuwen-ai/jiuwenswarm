@@ -2,8 +2,9 @@
 
 """HTTP 路由。每条路径直接调用一个处理函数，不查 WebSocket 的消息流水线。
 
-runtime 客户端按路径表来：探活、聊天、事件流，以及没有单独网址时的 /rpc/{方法名}。
-原先的列 Agent 和 /chat 仍保留。
+和 dev-stable 一样：路径表里的动作各有自己的网址，例如新建对话是
+``POST /sessions``。没有专用网址的方法不在这里接收。
+原先的列 Agent 和 ``/chat`` 仍保留。
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from jiuwenswarm.common.log_context import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.server import http_chat, http_rpc
+from jiuwenswarm.server import http_chat
 from jiuwenswarm.server.app_services import AppServices
 from jiuwenswarm.server.context import AgentServerServices, RequestContext
 from jiuwenswarm.server.handlers import agents as agent_handlers
@@ -125,49 +126,114 @@ def build_http_app(app_services: AppServices) -> FastAPI:
             media_type="text/event-stream",
         )
 
-    @app.post(f"{API_PREFIX}/rpc/{{method}}")
-    async def rpc(method: str, request: Request):
-        body = await _read_json(request)
-        try:
-            req_method = ReqMethod(method)
-        except ValueError:
-            return JSONResponse(
-                {
-                    "request_id": _header(request, "x-request-id", "http"),
-                    "ok": False,
-                    "error": {
-                        "code": "UNKNOWN_METHOD",
-                        "message": method,
-                        "details": {},
-                    },
-                }
-            )
-        is_stream = _wants_stream(request)
-        sink = SSESink() if is_stream else UnaryHTTPSink()
-        ctx = _context_from_runtime(
+    _register_declared_routes(app, app_services)
+    return app
+
+
+def _register_declared_routes(app: FastAPI, app_services: AppServices) -> None:
+    """只注册已经有处理函数的专用网址。技能、插件、频道配置这些先不挂。"""
+    from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
+        declared_http_routes,
+    )
+
+    for method, verb, path in declared_http_routes():
+        handler = _handler_for(method)
+        if handler is None:
+            continue
+        app.add_api_route(
+            f"{API_PREFIX}{path}",
+            _make_method_endpoint(app_services, method, handler),
+            methods=[verb],
+            name=f"{verb} {path}",
+        )
+    history = _handler_for(ReqMethod.HISTORY_GET.value)
+    if history is not None:
+        app.add_api_route(
+            f"{API_PREFIX}/sessions/{{session_id}}/history/stream",
+            _make_method_endpoint(
+                app_services, ReqMethod.HISTORY_GET.value, history, force_stream=True
+            ),
+            methods=["GET"],
+            name="GET /sessions/{session_id}/history/stream",
+        )
+
+
+def _handler_for(method_name: str):
+    """注册网址时就定下处理函数。聊天交给聊天适配，其余直接用处理函数表里的那一个。"""
+    from jiuwenswarm.server.dispatch import HANDLERS
+
+    try:
+        req_method = ReqMethod(method_name)
+    except ValueError:
+        return None
+    if http_chat.is_http_chat_method(req_method):
+        return http_chat.handle_http_chat
+    return HANDLERS.get(req_method)
+
+
+def _make_method_endpoint(
+    app_services: AppServices,
+    method_name: str,
+    handler,
+    *,
+    force_stream: bool = False,
+):
+    async def endpoint(request: Request):
+        return await _serve_method(
             app_services,
             request,
-            body,
-            req_method=req_method,
-            sink=sink,
-            is_stream=is_stream,
+            method_name,
+            handler,
+            force_stream=force_stream,
         )
-        if is_stream:
 
-            async def _run(current: RequestContext) -> None:
-                await http_rpc.handle_http_rpc(current, is_stream=True)
+    endpoint.__name__ = "http_" + method_name.replace(".", "_")
+    return endpoint
 
-            return _stream_response(ctx, _run)
-        await invoke_unary(
-            ctx,
-            lambda current: http_rpc.handle_http_rpc(current, is_stream=False),
-        )
+
+async def _serve_method(
+    app_services: AppServices,
+    request: Request,
+    method_name: str,
+    handler,
+    *,
+    force_stream: bool,
+):
+    """专用网址直接调用注册时定下的处理函数。路径和查询里的参数并进请求体。"""
+    try:
+        req_method = ReqMethod(method_name)
+    except ValueError:
         return JSONResponse(
-            _client_json(ctx.sink.body or {}),
-            status_code=ctx.sink.status_code,
+            {
+                "request_id": _header(request, "x-request-id", "http"),
+                "ok": False,
+                "error": {
+                    "code": "UNKNOWN_METHOD",
+                    "message": method_name,
+                    "details": {},
+                },
+            }
         )
-
-    return app
+    params: dict[str, Any] = dict(request.query_params)
+    params.update(dict(request.path_params or {}))
+    params.update(await _read_json(request))
+    is_stream = force_stream or _wants_stream(request)
+    sink = SSESink() if is_stream else UnaryHTTPSink()
+    ctx = _context_from_runtime(
+        app_services,
+        request,
+        params,
+        req_method=req_method,
+        sink=sink,
+        is_stream=is_stream,
+    )
+    if is_stream:
+        return _stream_response(ctx, handler)
+    await invoke_unary(ctx, handler)
+    return JSONResponse(
+        _client_json(ctx.sink.body or {}),
+        status_code=ctx.sink.status_code,
+    )
 
 
 async def _runtime_chat(app_services: AppServices, request: Request, req_method: ReqMethod):
@@ -340,6 +406,9 @@ async def _session_id_from_request(request: Request) -> str:
     header = str(request.headers.get("x-session-id") or "").strip()
     if header:
         return header
+    path_id = str((request.path_params or {}).get("session_id") or "").strip()
+    if path_id:
+        return path_id
     query = str(request.query_params.get("session_id") or "").strip()
     if query:
         return query
