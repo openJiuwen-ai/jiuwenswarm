@@ -349,6 +349,24 @@ async def test_pause_cancels_only_prompt_and_resume_waits_for_runtime_event() ->
     await controller.close()
 
 
+@pytest.mark.asyncio
+async def test_interaction_reader_distinguishes_eof_from_blank_answer() -> None:
+    reader = QueueLineReader()
+    controller = LiveSessionInputController(
+        client=BlockingClient(),  # type: ignore[arg-type]
+        root_request=root_request(),
+        read_line=reader,
+        on_ready=lambda: None,
+        on_receipt=lambda _receipt: None,
+    )
+    reader.values.put_nowait("\n")
+    assert await controller.read_interaction_line() == ""
+    reader.values.put_nowait(None)
+    with pytest.raises(EOFError):
+        await controller.read_interaction_line()
+    await controller.close()
+
+
 class AppClient:
     latest: AppClient | None = None
 
