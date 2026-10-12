@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -174,10 +175,88 @@ def test_render_parses_skills_from_text_when_not_declared():
     assert "帮我写文档" in envelope["content"]
 
 
+def test_render_carries_the_clock_in_the_message_not_the_system_prompt():
+    # The system prompt states no date on purpose: it precedes the conversation,
+    # so a value that ticks between calls invalidates the KV-cache prefix. The
+    # envelope is the newest message at the end of the context, so the same
+    # value costs nothing there. Every rendered turn must therefore carry it.
+    envelope = _envelope(_turn().render())
+
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \(UTC\+08:00, Asia/Shanghai\)",
+        envelope["timestamp"],
+    )
+
+
+def test_system_channel_turns_carry_the_clock_too():
+    # A cron turn is the one most likely to need a date, and no person typed it.
+    envelope = _envelope(_turn(channel="cron").render())
+
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \(UTC\+08:00, Asia/Shanghai\)",
+        envelope["timestamp"],
+    )
+
+
+def test_a2ui_client_events_are_rendered_with_this_turn_s_clock(monkeypatch):
+    # ``render`` returns the A2UI prompt before it builds its own envelope, so
+    # the clock has to travel with the call or the turn reaches the model with
+    # no date at any position. It is threaded rather than recomputed inside the
+    # A2UI builder, so a declared timezone reaches a client event exactly as it
+    # reaches an ordinary message.
+    from jiuwenswarm.server.runtime.a2ui import integration
+
+    seen: dict = {}
+
+    def _capture(content, *, channel, language, clock=None):
+        seen["clock"] = clock
+        return "rendered"
+
+    monkeypatch.setattr(integration, "build_user_prompt_if_a2ui_event", _capture)
+
+    turn = _turn(
+        text={"type": "a2ui.client_event", "event": {}},
+        metadata={"timezone": "Europe/Paris"},
+    )
+
+    assert turn.render() == "rendered"
+    assert seen["clock"].keys() == turn.clock_fields().keys()
+    assert seen["clock"]["timestamp"].endswith("Europe/Paris)")
+
+
+def test_declared_timezone_reaches_the_envelope():
+    # ``_resolve_timezone`` honours a caller-declared zone; the clock helper the
+    # A2UI payload shares must go through it rather than pinning a default.
+    envelope = _envelope(_turn(metadata={"timezone": "Europe/Paris"}).render())
+
+    assert envelope["timestamp"].endswith(", Europe/Paris)")
+
+
 def test_render_passes_through_non_text_payloads():
     marker = object()
 
     assert _turn(text=marker).render() is marker
+
+
+def test_resume_payloads_are_not_given_a_clock():
+    # An ``InteractiveInput`` resuming an interrupt is its own payload and is
+    # matched structurally by the agent framework; there is no field to state a
+    # clock in without changing what the framework receives. It is also the one
+    # turn that does not need one -- the turn it resumes stated a timestamp
+    # moments earlier and it is still in context.
+    #
+    # The pass-through test above already pins identity, but it passes an
+    # ``object()``, which has no ``__dict__`` and so cannot express the way a
+    # clock would plausibly be added here: written onto the payload in place and
+    # the same object returned. This one is mutable, so the attribute check bites.
+    class _Resume:
+        pass
+
+    payload = _Resume()
+    before = dict(vars(payload))
+
+    assert _turn(text=payload).render() is payload
+    assert vars(payload) == before
 
 
 def test_render_prefixes_interaction_context():

@@ -96,13 +96,18 @@ class UserTurn:
             self.text,
             channel=self.channel,
             language=self.language,
+            clock=self.clock_fields(),
         )
         if a2ui_prompt is not None:
             return a2ui_prompt
 
         if not isinstance(self.text, (str, dict)):
             # InteractiveInput and friends resume an interrupt; they are their
-            # own payload and must reach the agent untouched.
+            # own payload and must reach the agent untouched. They carry no
+            # clock and are not given one: the turn being resumed stated one
+            # moments earlier and it is still in context, and there is no field
+            # to add one to without changing a payload the agent framework
+            # matches on structurally.
             return self.text
 
         content = self.text
@@ -122,6 +127,26 @@ class UserTurn:
         rendered += json.dumps(envelope, ensure_ascii=False)
         return rendered
 
+    def clock_fields(self) -> dict[str, str]:
+        """Return the ``timestamp`` field this turn's prompt states.
+
+        One key rather than two: :func:`_render_timestamp` puts the UTC offset
+        and the IANA zone name inside the timestamp itself, so the model reads
+        a single time value rather than joining two envelope fields.
+
+        The clock belongs here, in the newest message at the end of the context,
+        and deliberately not in the system prompt: a value that ticks between
+        model calls at the head of the context invalidates the whole KV-cache
+        prefix, so every turn would pay to re-encode the entire conversation.
+
+        Public because a renderer that bypasses :meth:`_build_envelope` -- the
+        A2UI client-event payload is the one that does -- must state the same
+        clock, resolved the same way, rather than reaching the model with no
+        date at any position.
+        """
+        tz_name, tz = self._resolve_timezone()
+        return {"timestamp": _render_timestamp(datetime.now(tz), tz_name)}
+
     def _build_envelope(
         self,
         content: Any,
@@ -132,11 +157,9 @@ class UserTurn:
         """Assemble the JSON envelope body for ``content``."""
         is_system = prompt_channel in _SYSTEM_CHANNELS
         is_agent_session = prompt_channel == "agent_session"
-        tz_name, tz = self._resolve_timezone()
-        now = datetime.now(tz)
         envelope: dict[str, Any] = {
             "source": "system" if is_system else prompt_channel,
-            "timestamp": _render_timestamp(now, tz_name),
+            **self.clock_fields(),
             "preferred_response_language": self.language,
             "content": content,
             "type": (
