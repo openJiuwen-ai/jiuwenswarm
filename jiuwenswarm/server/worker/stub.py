@@ -46,6 +46,11 @@ async def serve_stub(
     runtime_loaded = False
     instance = uuid.uuid4().hex
     try:
+        # Match the resident service: identity belongs to this process, even
+        # when a Front reconnects after the source checkout has changed.
+        from jiuwenswarm.server.supervisor.identity import code_identity
+
+        worker_code_identity = await asyncio.to_thread(code_identity)
         while True:
             conn = await server.accept()
             generation += 1
@@ -57,6 +62,7 @@ async def serve_stub(
                     exit_on_request=exit_on_request,
                     runtime_loaded=runtime_loaded,
                     instance=instance,
+                    code_identity_value=worker_code_identity,
                 )
             except (OSError, asyncio.IncompleteReadError):
                 runtime_loaded = True
@@ -76,6 +82,7 @@ async def _serve_one(
     exit_on_request: bool,
     runtime_loaded: bool,
     instance: str,
+    code_identity_value: str | None = None,
 ) -> bool:
     from jiuwenswarm.server.supervisor.identity import code_identity, data_scope
 
@@ -91,7 +98,7 @@ async def _serve_one(
             "runtime_loaded": runtime_loaded,
             "generation": generation,
             "data_scope": data_scope(),
-            "code_identity": code_identity(),
+            "code_identity": code_identity_value if code_identity_value is not None else code_identity(),
         }
     )
     if ready_delay > 0:

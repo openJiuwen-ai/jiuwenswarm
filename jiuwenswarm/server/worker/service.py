@@ -40,12 +40,19 @@ async def serve_worker(socket_path: str, *, host: str, port: int) -> None:
     signals = RuntimeSignalSink(holder, on_ready=dispatcher.mark_ready)
     server = IpcServer(socket_path)
     await server.start()
+    signals.ipc_ready()
     logger.info("[Worker] ipc listening: %s", socket_path)
     loaded: dict[str, Any] = {"runtime": None}
     runtime_task: asyncio.Task | None = None
     instance = bridge.events.instance
     shutdown_conn: IpcConnection | None = None
     try:
+        # This is the identity of this process's loaded code, not the source
+        # currently on disk at the next Front reconnect. A new Front must
+        # reject this Worker after a source/dependency upgrade.
+        from jiuwenswarm.server.supervisor.identity import code_identity
+
+        worker_code_identity = await asyncio.to_thread(code_identity)
         while True:
             conn = await server.accept()
             generation = holder.open_session(conn)
@@ -55,6 +62,7 @@ async def serve_worker(socket_path: str, *, host: str, port: int) -> None:
                     runtime_loaded=loaded["runtime"] is not None,
                     generation=generation,
                     instance=instance,
+                    code_identity_value=worker_code_identity,
                 )
             except (OSError, RuntimeError):
                 await _retire_session(holder, dispatcher)
@@ -65,7 +73,7 @@ async def serve_worker(socket_path: str, *, host: str, port: int) -> None:
                     _load_runtime(host, port, signals, dispatcher, loaded),
                     name="runtime-load",
                 )
-            elif holder.last_readiness is not None:
+            if holder.last_readiness is not None:
                 await conn.send(holder.last_readiness)
             try:
                 keep_running = await _read_session(conn, dispatcher)
@@ -261,9 +269,10 @@ async def _send_hello(
     runtime_loaded: bool,
     generation: int,
     instance: str,
+    code_identity_value: str | None = None,
 ) -> None:
     from jiuwenswarm.server.supervisor.identity import code_identity, data_scope
-    identity = await asyncio.to_thread(code_identity)
+    identity = code_identity_value if code_identity_value is not None else await asyncio.to_thread(code_identity)
     await conn.send(
         {
             "kind": KIND_HELLO,
