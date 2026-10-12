@@ -14,10 +14,8 @@ export * from '../features/workspace/projectTypes';
 
 // 会话类型
 /** Stable selection DTO used by session/cron/runtime APIs. */
-export type ModelSelection = {
-  type: 'model' | 'model_group';
-  id: string;
-};
+export type ModelSelection =
+  { type: 'model'; id: string; route_id?: never } | { type: 'model_group'; id: string; route_id?: string | null };
 
 export interface Session {
   session_id: string;
@@ -61,11 +59,11 @@ export interface Session {
   /** 首次 AgentGroup 绑定时锁定的 leader 身份；旧 session 可能没有该字段。 */
   team_leader_identity?: unknown;
   // ---- session.list 扩展字段 ----
-  channel_id?: string;         // 渠道ID
-  user_id?: string;            // 创建人ID
-  last_message_at?: number;    // 最近对话时间(Unix时间戳)
+  channel_id?: string; // 渠道ID
+  user_id?: string; // 创建人ID
+  last_message_at?: number; // 最近对话时间(Unix时间戳)
   last_user_message_at?: number; // 最后一条用户消息时间(Unix时间戳)
-  cron_id?: string;            // 定时任务ID；非空表示 cron 触发的会话，侧栏仅归属定时任务分组
+  cron_id?: string; // 定时任务ID；非空表示 cron 触发的会话，侧栏仅归属定时任务分组
   /** 后端保存的会话级装备快照，用于刷新页面后恢复插件/MCP选择。 */
   session_equipment?: {
     agent_template_name?: string;
@@ -119,6 +117,8 @@ export interface ModelEntry {
   model_name: string;
   api_base: string;
   api_key: string;
+  /** The backend has a stored credential but intentionally does not return it. */
+  has_api_key?: boolean;
   model_provider: string;
   timeout?: number;
   temperature?: number;
@@ -169,7 +169,6 @@ export type ModelGroup = {
   is_default?: boolean | null;
   routes: ModelRoute[];
   request_config?: Record<string, unknown> | null;
-  routing?: Record<string, unknown> | null;
 };
 
 export type ModelSelectionReference = {

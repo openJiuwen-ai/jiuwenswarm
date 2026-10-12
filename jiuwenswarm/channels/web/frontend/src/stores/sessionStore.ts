@@ -787,7 +787,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const runtime = get().runtimes[sessionId];
     const selection = runtime?.selectedModelSelection;
     if (selection?.type && selection.id) {
-      return { model_selection: { type: selection.type, id: selection.id } };
+      return { model_selection: { ...selection } };
     }
     const modelName = get().getEffectiveModelName(sessionId);
     return modelName ? { model_name: modelName } : {};

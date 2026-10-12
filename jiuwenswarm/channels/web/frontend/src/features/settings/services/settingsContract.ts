@@ -321,5 +321,13 @@ export function buildModelsSavePayload(models: ModelEntry[]): Record<string, unk
   if (models.length === 0) {
     throw new Error('At least one model is required');
   }
-  return { models };
+  return {
+    models: models.map(({ has_api_key: hasApiKey, ...model }) => {
+      if (hasApiKey && !model.api_key.trim()) {
+        const { api_key: _unchangedApiKey, ...modelWithoutApiKey } = model;
+        return modelWithoutApiKey;
+      }
+      return model;
+    }),
+  };
 }

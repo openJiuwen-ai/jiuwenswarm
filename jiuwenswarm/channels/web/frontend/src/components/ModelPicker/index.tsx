@@ -32,7 +32,8 @@ const MENU_GAP = 10;
 const MENU_MAX_HEIGHT = 300;
 
 function isSameSelection(left: ModelSelection | null | undefined, right: ModelSelection): boolean {
-  return Boolean(left && left.type === right.type && left.id === right.id);
+  return Boolean(left && left.type === right.type && left.id === right.id
+    && (left.type !== 'model_group' || left.route_id === (right.type === 'model_group' ? right.route_id : undefined)));
 }
 
 /** A shared model catalog and menu, with selection owned by the caller. */
@@ -145,10 +146,11 @@ export default function ModelPicker({
 
   function handleSelectModel(model: ModelEntry): void {
     setOpen(false);
-    onChange(model.model_name);
     if (onSelectionChange && model.model_id?.trim()) {
       onSelectionChange({ type: 'model', id: model.model_id.trim() });
+      return;
     }
+    onChange(model.model_name);
   }
 
   function handleSelectGroup(group: ModelGroup): void {
@@ -280,8 +282,8 @@ export default function ModelPicker({
                     const active = isSameSelection(selection, { type: 'model_group', id: groupId });
                     const canSelect = Boolean(onSelectionChange);
                     return (
-                      <button
-                        key={groupId}
+                      <Fragment key={groupId}>
+                        <button
                         type="button"
                         disabled={!canSelect}
                         onClick={() => handleSelectGroup(modelGroup)}
@@ -314,7 +316,36 @@ export default function ModelPicker({
                             <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
                           </svg>
                         )}
-                      </button>
+                        </button>
+                        {modelGroup.routes
+                          .filter((route) => route.enabled !== false && Boolean(route.route_id))
+                          .map((route) => {
+                            const routeSelection: ModelSelection = {
+                              type: 'model_group', id: groupId, route_id: route.route_id!,
+                            };
+                            const routeModel = models.find((model) => model.model_id === route.model_id);
+                            const routeLabel = routeModel?.alias?.trim() || routeModel?.model_name || route.model_id;
+                            const routeActive = isSameSelection(selection, routeSelection);
+                            return (
+                              <button
+                                key={route.route_id}
+                                type={'button'}
+                                disabled={!canSelect}
+                                onClick={() => { setOpen(false); onSelectionChange?.(routeSelection); }}
+                                className={clsx('chat-mode-select__option', routeActive && 'chat-mode-select__option--active')}
+                                role={'menuitemradio'}
+                                aria-checked={routeActive}
+                                title={route.route_id}
+                                data-testid={testIdPrefix + '-group-route-option'}
+                                data-variant={route.route_id}
+                              >
+                                <span className={'chat-mode-select__option-main'}>
+                                  <span className={'chat-mode-select__label'}>{'↳ '}{routeLabel}</span>
+                                </span>
+                              </button>
+                            );
+                          })}
+                      </Fragment>
                     );
                   })}
                   {group.models.map((model, index) => {

@@ -1004,6 +1004,14 @@ test('settings contract rejects unknown keys and normalizes supported values', (
   assert.throws(() => normalizeSettingsConfigUpdates({ unknown: 'x' }), /Unknown settings config key/);
   assert.deepEqual(buildModelsSavePayload([{ model_name: 'test' }]), { models: [{ model_name: 'test' }] });
   assert.deepEqual(
+    buildModelsSavePayload([{ model_name: 'stored', api_key: '', has_api_key: true }]),
+    { models: [{ model_name: 'stored' }] },
+  );
+  assert.deepEqual(
+    buildModelsSavePayload([{ model_name: 'updated', api_key: 'new-secret', has_api_key: true }]),
+    { models: [{ model_name: 'updated', api_key: 'new-secret' }] },
+  );
+  assert.deepEqual(
     buildModelValidationPayload({
       model_name: 'm',
       api_base: 'https://example.test',

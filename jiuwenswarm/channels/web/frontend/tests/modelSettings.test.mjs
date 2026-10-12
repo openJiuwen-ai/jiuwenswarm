@@ -517,7 +517,10 @@ test('adding a model replaces only the placeholder primary model', () => {
   const agentOs = { model_name: 'backup', alias: 'backup', is_agentos: true };
 
   const replaced = addEditableModel([placeholder, existing, agentOs], added);
-  assert.deepEqual(replaced.map((model) => model.alias), ['new', 'existing', 'backup']);
+  assert.deepEqual(
+    replaced.map((model) => model.alias),
+    ['new', 'existing', 'backup'],
+  );
   assert.equal(replaced[0].is_default, true);
   assert.equal(replaced.includes(placeholder), false);
 
@@ -632,27 +635,29 @@ test('provider search is isolated from unrelated session-store updates', () => {
 
 test('models are listed flat without same-name auto grouping', () => {
   const page = source('src/features/settings/modules/models/ModelsSettings.tsx');
+  const groupsPage = source('src/features/settings/modules/models/ModelGroupsSettings.tsx');
   const settingsCss = source('src/features/settings/SettingsPage.css');
   const settingsAssets = source('src/assets/settings/index.ts');
   const zh = JSON.parse(source('src/i18n/locales/zh.json'));
   const en = JSON.parse(source('src/i18n/locales/en.json'));
 
-  assert.match(page, /import \{ Check, CheckCircle2, ChevronDown \} from 'lucide-react'/);
-  assert.doesNotMatch(page, /copyModelName|settings-models-group-route-copy-btn/);
-  assert.match(page, /settings-models-group-route-test-btn/);
-  assert.match(page, /if \(model\) void testSavedModel\(model, modelIndex\)/);
+  assert.match(page, /import \{ ModelGroupsSettings \} from '\.\/ModelGroupsSettings'/);
+  assert.match(groupsPage, /import \{ CheckCircle2, ChevronDown \} from 'lucide-react'/);
+  assert.doesNotMatch(groupsPage, /copyModelName|settings-models-group-route-copy-btn/);
+  assert.match(groupsPage, /settings-models-group-route-test-btn/);
+  assert.match(groupsPage, /if \(model\) onTestModel\(model, modelIndex\)/);
   assert.match(settingsAssets, /ConnectivityIcon from '\.\/actions\/connectivity\.svg\?react'/);
   assert.match(settingsAssets, /test: ConnectivityIcon/);
-  assert.doesNotMatch(page, /ChevronRight|expandedModelGroups|getModelDisplayGroups|setGroupDefaultModel/);
+  assert.doesNotMatch(groupsPage, /ChevronRight|expandedModelGroups|getModelDisplayGroups|setGroupDefaultModel/);
   assert.match(page, /models\.map\(\(model, index\) => renderModelCard\(model, index\)\)/);
   assert.match(page, /const canSetPrimary = !readOnly && !isPrimary/);
   assert.doesNotMatch(page, /settings-model-group__header|groupOrdinal|isDuplicate/);
   assert.doesNotMatch(settingsCss, /\.settings-model-group\s*\{/);
   assert.match(settingsCss, /\.settings-models-group-card\s*\{/);
   assert.match(settingsCss, /\.settings-models-group-route\s*\{/);
-  assert.match(page, /settings-models-group-card__toggle/);
+  assert.match(groupsPage, /settings-models-group-card__toggle/);
   assert.match(page, /promoteGroupRouteDefault/);
-  assert.match(page, /settingsPanel\.models\.modelGroupsManagement/);
+  assert.match(groupsPage, /settingsPanel\.models\.modelGroupsManagement/);
   assert.equal(zh.settingsPanel.models.modelGroups, '模型组');
   assert.equal(en.settingsPanel.models.modelGroups, 'Model groups');
   assert.equal(zh.settingsPanel.models.modelGroupsManagement, '模型组管理');

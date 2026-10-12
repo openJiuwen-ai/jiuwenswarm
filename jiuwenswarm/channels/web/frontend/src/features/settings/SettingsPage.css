@@ -119,6 +119,11 @@
   margin-bottom: 28px;
 }
 
+/* Models owns its title through the primary tabs, so omit the duplicate page heading. */
+.settings-page__content:has(.settings-page__module[data-settings-module='models']) > .settings-page__header {
+  display: none;
+}
+
 .settings-page__header-copy {
   min-width: 0;
 }
@@ -684,11 +689,39 @@
   gap: 16px;
 }
 
+.settings-page__module[data-settings-module='models'] {
+  box-sizing: border-box;
+  width: min(816px, 100%);
+  padding-top: 20px;
+  margin-inline: auto;
+}
+
+.settings-models__models-pane {
+  width: 100%;
+}
+
+.settings-models__models-pane > .free-models-banner,
+.settings-models__models-pane > .free-models-card {
+  width: 100%;
+  margin-bottom: 16px;
+}
+
+.settings-models__models-pane .settings-section__heading {
+  min-height: 32px;
+  margin-bottom: 16px;
+}
+
+.settings-models__models-pane .settings-section__heading h2 {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
 .settings-models__tabs {
   width: fit-content;
-  margin-bottom: 32px;
-  font-size: 16px;
-  line-height: 24px;
+  margin-bottom: 30px;
+  font-size: 24px;
+  line-height: 36px;
 }
 
 .settings-models__tabs.tabs--bordered {

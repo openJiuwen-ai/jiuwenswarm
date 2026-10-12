@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { GripVertical } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { ModelEntry, ModelGroup } from '../../../../types';
+import type { ModelEntry, ModelGroup, ModelRoute } from '../../../../types';
 import { Button } from '../../../../components/ui';
 import { Form, FormDialog, useForm, type FormItem } from '../../../../components/form';
 import { SettingsConfirmDialog } from '../../components';
@@ -11,13 +11,21 @@ import { getVendorLabel } from './ModelProviderSelect';
 
 type ModelGroupDraft = {
   name: string;
-  modelIds: string[];
+  routes: RouteDraft[];
 };
 
-function moveModelId(ids: string[], modelId: string, nextIndex: number): string[] {
-  const index = ids.indexOf(modelId);
-  if (index < 0 || nextIndex < 0 || nextIndex >= ids.length || index === nextIndex) return ids;
-  const next = [...ids];
+type RouteDraft = ModelRoute & { _key: string };
+
+let nextTemporaryRouteKey = 0;
+function temporaryRouteKey(): string {
+  nextTemporaryRouteKey += 1;
+  return `new-route-${nextTemporaryRouteKey}`;
+}
+
+function moveRoute(routes: RouteDraft[], routeKey: string, nextIndex: number): RouteDraft[] {
+  const index = routes.findIndex((route) => route._key === routeKey);
+  if (index < 0 || nextIndex < 0 || nextIndex >= routes.length || index === nextIndex) return routes;
+  const next = [...routes];
   const [item] = next.splice(index, 1);
   next.splice(nextIndex, 0, item);
   return next;
@@ -34,23 +42,22 @@ function ModelRouteMultiSelect({
   onBlur,
 }: {
   id: string;
-  value: string[];
+  value: RouteDraft[];
   disabled: boolean;
   invalid: boolean;
   options: readonly { key: string; label: string }[];
   emptyText: string;
-  onChange: (next: string[]) => void;
+  onChange: (next: RouteDraft[]) => void;
   onBlur: () => void;
 }): JSX.Element {
   const { t } = useTranslation();
   const [draggingId, setDraggingId] = useState<string | null>(null);
-  const selected = new Set(value);
   const optionByKey = new Map(options.map((option) => [option.key, option]));
-  const addableOption = options.find((option) => !selected.has(option.key));
+  const addableOption = options[0];
 
-  const replaceModel = (currentId: string, nextId: string) => {
-    if (!nextId || (nextId !== currentId && selected.has(nextId))) return;
-    onChange(value.map((id) => (id === currentId ? nextId : id)));
+  const replaceModel = (routeKey: string, nextId: string) => {
+    if (!nextId) return;
+    onChange(value.map((route) => route._key === routeKey ? { ...route, model_id: nextId } : route));
   };
 
   return (
@@ -79,23 +86,23 @@ function ModelRouteMultiSelect({
               <span>{t('settingsPanel.models.modelGroupTableActions')}</span>
             </div>
             <div className="settings-model-group-multiselect__selected">
-              {value.map((modelId, index) => {
-                const option = optionByKey.get(modelId);
-                const label = option?.label || modelId;
+              {value.map((route, index) => {
+                const option = optionByKey.get(route.model_id);
+                const label = option?.label || route.model_id;
                 return (
                   <div
-                    key={modelId}
+                    key={route._key}
                     className="settings-model-group-multiselect__route"
-                    data-dragging={draggingId === modelId || undefined}
+                    data-dragging={draggingId === route._key || undefined}
                     data-testid="settings-model-group-dialog-route-row"
-                    data-variant={modelId}
+                    data-variant={route.route_id || route._key}
                     onDragOver={(event) => {
                       if (!disabled) event.preventDefault();
                     }}
                     onDrop={(event) => {
                       event.preventDefault();
                       const sourceId = draggingId || event.dataTransfer.getData('text/plain');
-                      if (sourceId) onChange(moveModelId(value, sourceId, index));
+                      if (sourceId) onChange(moveRoute(value, sourceId, index));
                       setDraggingId(null);
                     }}
                   >
@@ -104,9 +111,9 @@ function ModelRouteMultiSelect({
                       aria-hidden
                       draggable={!disabled}
                       onDragStart={(event) => {
-                        setDraggingId(modelId);
+                        setDraggingId(route._key);
                         event.dataTransfer.effectAllowed = 'move';
-                        event.dataTransfer.setData('text/plain', modelId);
+                        event.dataTransfer.setData('text/plain', route._key);
                       }}
                       onDragEnd={() => setDraggingId(null)}
                     >
@@ -115,16 +122,15 @@ function ModelRouteMultiSelect({
                     <select
                       className="settings-model-group-multiselect__route-select"
                       aria-label={t('settingsPanel.models.modelGroupTableModel')}
-                      value={modelId}
+                      value={route.model_id}
                       disabled={disabled}
                       title={label}
-                      onChange={(event) => replaceModel(modelId, event.target.value)}
+                      onChange={(event) => replaceModel(route._key, event.target.value)}
                     >
                       {options.map((candidate) => (
                         <option
                           key={candidate.key}
                           value={candidate.key}
-                          disabled={candidate.key !== modelId && selected.has(candidate.key)}
                         >
                           {candidate.label}
                         </option>
@@ -135,9 +141,9 @@ function ModelRouteMultiSelect({
                         size="sm"
                         variant="quiet"
                         disabled={disabled || index === 0}
-                        onClick={() => onChange(moveModelId(value, modelId, 0))}
+                        onClick={() => onChange(moveRoute(value, route._key, 0))}
                         data-testid="settings-model-group-dialog-route-default"
-                        data-variant={modelId}
+                        data-variant={route.route_id || route._key}
                       >
                         {t('settingsPanel.models.modelGroupRouteDefault')}
                       </Button>
@@ -145,9 +151,9 @@ function ModelRouteMultiSelect({
                         size="sm"
                         variant="quiet"
                         disabled={disabled}
-                        onClick={() => onChange(value.filter((id) => id !== modelId))}
+                        onClick={() => onChange(value.filter((item) => item._key !== route._key))}
                         data-testid="settings-model-group-dialog-route-delete"
-                        data-variant={modelId}
+                        data-variant={route.route_id || route._key}
                       >
                         {t('common.delete')}
                       </Button>
@@ -162,7 +168,11 @@ function ModelRouteMultiSelect({
             className="settings-model-group-multiselect__add"
             disabled={disabled || !addableOption}
             onClick={() => {
-              if (addableOption) onChange([...value, addableOption.key]);
+              if (addableOption) onChange([...value, {
+                _key: temporaryRouteKey(),
+                model_id: addableOption.key,
+                enabled: true,
+              }]);
             }}
             data-testid="settings-model-group-dialog-add-route-btn"
           >
@@ -193,7 +203,10 @@ export function ModelGroupDialog({
   const initialValues = useMemo<ModelGroupDraft>(
     () => ({
       name: group?.display_name?.trim() || '',
-      modelIds: (group?.routes ?? []).map((route) => route.model_id).filter(Boolean),
+      routes: (group?.routes ?? []).map((route, index) => ({
+        ...route,
+        _key: route.route_id || `existing-route-${index}`,
+      })),
     }),
     [group],
   );
@@ -225,7 +238,7 @@ export function ModelGroupDialog({
         placeholder: t('settingsPanel.models.modelGroupNamePlaceholder'),
       },
       {
-        name: 'modelIds',
+        name: 'routes',
         label: t('settingsPanel.models.modelGroupModels'),
         component: 'custom',
         required: true,
@@ -256,7 +269,7 @@ export function ModelGroupDialog({
               : t('settingsPanel.validation.required'),
         },
       ],
-      modelIds: [
+      routes: [
         {
           trigger: ['change', 'blur'] as const,
           validator: (value: unknown) =>
@@ -276,7 +289,9 @@ export function ModelGroupDialog({
       await onSave(
         buildModelGroupUpsertPayload({
           displayName: String(result.values.name ?? ''),
-          modelIds: Array.isArray(result.values.modelIds) ? result.values.modelIds.map(String) : [],
+          routes: Array.isArray(result.values.routes)
+            ? result.values.routes.map(({ _key, ...route }) => route)
+            : [],
           group,
         }),
       );
