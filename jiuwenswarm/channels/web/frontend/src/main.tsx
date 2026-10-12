@@ -45,14 +45,22 @@ function resolveOpenSourceSettingsRequest(request: SettingsRequest): SettingsReq
   return request
 }
 
+const runnerQuery = new URLSearchParams(window.location.search)
+const runnerSessionId = window.location.pathname === '/share-export-runner'
+  ? runnerQuery.get('session_id')?.trim() || null
+  : null
 const runnerJobId = window.location.pathname === '/share-export-runner'
-  ? new URLSearchParams(window.location.search).get('job_id')?.trim() || null
+  ? runnerQuery.get('job_id')?.trim() || null
   : null
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <A2UIProvider onAction={handleA2UIAction}>
-    {runnerJobId ? (
-      <ShareImageExportRunner jobId={runnerJobId} />
+    {runnerJobId || runnerSessionId ? (
+      <ShareImageExportRunner
+        jobId={runnerJobId}
+        sessionId={runnerSessionId}
+        locale={runnerQuery.get('locale')}
+      />
     ) : (
       <App
         settingsPageDefinition={openSourceSettingsPageDefinition}

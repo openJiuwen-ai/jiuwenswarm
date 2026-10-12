@@ -28,6 +28,7 @@ export interface JiuwenElectronDesktopApi {
   closeWindow: () => Promise<boolean>;
   getCloseAction: () => Promise<'ask' | 'hide' | 'quit' | null>;
   setCloseAction: (action: 'ask' | 'hide' | 'quit') => Promise<boolean>;
+  exportShareImage: (sessionId: string, locale: string) => Promise<boolean>;
   downloadFile: (url: string, filename: string) => Promise<boolean>;
   installUpdate: (installerPath: string) => Promise<boolean>;
   saveDataUrl: (dataUrl: string, filename: string) => Promise<{ ok: boolean; cancelled?: boolean }>;

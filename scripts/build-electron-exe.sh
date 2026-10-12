@@ -202,6 +202,7 @@ mkdir -p "$APP_DIR"
 echo "  Copying Electron desktop shell..."
 cp "$DESKTOP_DIR/main.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/browser_panels.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/share_image_export.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/preload.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/target_mcp_wrapper.cjs" "$APP_DIR/"
 
