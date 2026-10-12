@@ -1,0 +1,213 @@
+{
+  "version": "1.0.0",
+  "packageType": "plugin",
+  "id": "office-document-toolkit",
+  "name": "办公文档能力包",
+  "description": "支持PDF、Word、Excel、PPT文档解析、格式互转、批量处理、编辑修改、数据变换、PDF操控、高级排版、邮件合并、文档比较、打包压缩与文档脱敏，实现文档整理、数据汇总与报告输出",
+  "displayName": {
+    "en": "Office Document Toolkit",
+    "zh": "办公文档能力包"
+  },
+  "displayDescription": {
+    "en": "Comprehensive office document toolkit: parse, convert, batch-process, edit, transform, manipulate PDFs, style reports, mail merge, compare, archive and redact across PDF, Word, Excel, PPT.",
+    "zh": "支持PDF、Word、Excel、PPT文档解析、格式互转、批量处理、编辑修改、数据变换、PDF操控、高级排版、邮件合并、文档比较、打包与脱敏"
+  },
+  "category": "Engineering",
+  "source": "local",
+  "defaultInitInput": {
+    "zh": "帮我把这50个Excel文件合并成一个表",
+    "en": "Merge these 50 Excel files into one table"
+  },
+  "tags": [
+    {
+      "en": "Document Processing",
+      "zh": "文档处理"
+    },
+    {
+      "en": "Format Conversion",
+      "zh": "格式互转"
+    },
+    {
+      "en": "Batch & Transform",
+      "zh": "批量与变换"
+    }
+  ],
+  "quickInputs": [
+    {
+      "en": "Merge these 50 Excel files into one table",
+      "zh": "帮我把这50个Excel文件合并成一个表"
+    },
+    {
+      "en": "Compare the differences between these two Word documents",
+      "zh": "比较这两个Word文档的差异"
+    },
+    {
+      "en": "Fill Word template with Excel data to batch generate contracts",
+      "zh": "用这份Excel数据批量填充Word模板生成合同"
+    }
+  ],
+  "skills": [
+    {
+      "dir": "./skills/office-document-workflow",
+      "mode": "all"
+    }
+  ],
+  "tools": [
+    {
+      "file": "tools/document_parser.py",
+      "class": "DocumentParser",
+      "displayName": {
+        "en": "Document Parser",
+        "zh": "文档解析器"
+      },
+      "displayDescription": {
+        "en": "Parse PDF, Word, Excel, PPT files to extract text, tables and structured content.",
+        "zh": "解析PDF、Word、Excel、PPT文件，提取文本、表格与结构化内容"
+      }
+    },
+    {
+      "file": "tools/document_generator.py",
+      "class": "DocumentGenerator",
+      "displayName": {
+        "en": "Document Generator",
+        "zh": "文档生成器"
+      },
+      "displayDescription": {
+        "en": "Generate PDF, Word, Excel, PPT files from structured content and templates.",
+        "zh": "根据结构化内容与模板生成PDF、Word、Excel、PPT文件"
+      }
+    },
+    {
+      "file": "tools/data_summarizer.py",
+      "class": "DataSummarizer",
+      "displayName": {
+        "en": "Data Summarizer",
+        "zh": "数据汇总器"
+      },
+      "displayDescription": {
+        "en": "Aggregate, summarize and organize multi-source data into structured reports.",
+        "zh": "汇总、整理多源数据并生成结构化报告"
+      }
+    },
+    {
+      "file": "tools/format_converter.py",
+      "class": "FormatConverter",
+      "displayName": {
+        "en": "Format Converter",
+        "zh": "格式转换器"
+      },
+      "displayDescription": {
+        "en": "Convert between PDF, Word, Excel, CSV, PPT and Markdown formats.",
+        "zh": "支持PDF↔Word、PDF→Excel、Excel↔CSV、PPT→PDF、Markdown→Word/PPT等格式互转"
+      }
+    },
+    {
+      "file": "tools/batch_processor.py",
+      "class": "BatchProcessor",
+      "displayName": {
+        "en": "Batch Processor",
+        "zh": "批量处理器"
+      },
+      "displayDescription": {
+        "en": "Batch rename, merge Excel/Word, batch convert formats and traverse folders.",
+        "zh": "批量重命名、合并多个Excel/Word、批量转格式、遍历文件夹"
+      }
+    },
+    {
+      "file": "tools/document_editor.py",
+      "class": "DocumentEditor",
+      "displayName": {
+        "en": "Document Editor",
+        "zh": "文档编辑器"
+      },
+      "displayDescription": {
+        "en": "Edit existing Word/Excel/PPT: replace text, append content, write cells, apply templates, track changes.",
+        "zh": "编辑已有Word/Excel/PPT：替换文本、追加内容、写入单元格、套用模板、修订追踪"
+      }
+    },
+    {
+      "file": "tools/excel_transformer.py",
+      "class": "ExcelTransformer",
+      "displayName": {
+        "en": "Excel Transformer",
+        "zh": "数据变换器"
+      },
+      "displayDescription": {
+        "en": "Vlookup, pivot, filter, dedupe, encoding convert, sort, split/merge text.",
+        "zh": "vlookup合并、数据透视、筛选去重、编码清洗、排序、文本拆分/合并"
+      }
+    },
+    {
+      "file": "tools/pdf_manipulator.py",
+      "class": "PDFManipulator",
+      "displayName": {
+        "en": "PDF Manipulator",
+        "zh": "PDF操控器"
+      },
+      "displayDescription": {
+        "en": "Merge, split, compress, encrypt, watermark and extract pages/images from PDFs.",
+        "zh": "PDF合并、拆分、压缩、加密、加水印、提取指定页/图片"
+      }
+    },
+    {
+      "file": "tools/report_styler.py",
+      "class": "ReportStyler",
+      "displayName": {
+        "en": "Report Styler",
+        "zh": "报告美化器"
+      },
+      "displayDescription": {
+        "en": "Add auto TOC, header/footer, charts, cover page and unified theme to Word/PPT.",
+        "zh": "Word自动目录、页眉页脚页码、图表插入、封面页、统一主题样式"
+      }
+    },
+    {
+      "file": "tools/mail_merge_tool.py",
+      "class": "MailMergeTool",
+      "displayName": {
+        "en": "Mail Merge Tool",
+        "zh": "邮件合并器"
+      },
+      "displayDescription": {
+        "en": "Batch fill Word templates with Excel/CSV data to generate personalized documents.",
+        "zh": "用Excel/CSV数据批量填充Word模板生成个性化文档"
+      }
+    },
+    {
+      "file": "tools/doc_comparator.py",
+      "class": "DocComparator",
+      "displayName": {
+        "en": "Doc Comparator",
+        "zh": "文档比较器"
+      },
+      "displayDescription": {
+        "en": "Compare two Word/Excel/PDF/CSV documents and output added, removed and modified content.",
+        "zh": "对比两个Word/Excel/PDF/CSV文档差异，输出增删改内容"
+      }
+    },
+    {
+      "file": "tools/archive_tool.py",
+      "class": "ArchiveTool",
+      "displayName": {
+        "en": "Archive Tool",
+        "zh": "打包压缩器"
+      },
+      "displayDescription": {
+        "en": "Pack multiple files into ZIP or extract ZIP archives.",
+        "zh": "将多个文件打包成ZIP或解压ZIP压缩包"
+      }
+    },
+    {
+      "file": "tools/redactor.py",
+      "class": "Redactor",
+      "displayName": {
+        "en": "Redactor",
+        "zh": "文档脱敏器"
+      },
+      "displayDescription": {
+        "en": "Auto-detect and redact sensitive info (ID, phone, email, bank card) in documents.",
+        "zh": "自动识别并遮盖文档中的身份证号、手机号、邮箱、银行卡号等敏感信息"
+      }
+    }
+  ]
+}
