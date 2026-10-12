@@ -1,0 +1,59 @@
+{
+  "version": "1.0.0",
+  "packageType": "agent_template",
+  "agentCard": {
+    "id": "system-architect",
+    "name": "架构师",
+    "description": "精通后端系统架构设计，梳理模块依赖关系，开展方案评审与风险识别，输出可落地技术改造思路"
+  },
+  "persona": {
+    "dir": "./persona"
+  },
+  "skills": [
+    {
+      "dir": "./skills/arch-design",
+      "mode": "all"
+    },
+    {
+      "dir": "./skills/arch-review",
+      "mode": "all"
+    },
+    {
+      "dir": "./skills/arch-evolution",
+      "mode": "all"
+    },
+    {
+      "dir": "./skills/arch-engineering",
+      "mode": "all"
+    },
+    {
+      "dir": "./skills/arch-assess",
+      "mode": "all"
+    }
+  ],
+  "displayName": {
+    "en": "System Architect",
+    "zh": "系统架构工程师"
+  },
+  "displayDescription": {
+    "en": "Expert in backend architecture design, module dependency analysis, solution review, risk identification, and actionable technical transformation strategies.",
+    "zh": "精通后端系统架构设计与演进规划，梳理模块依赖关系，开展方案评审与风险识别，输出可落地技术改造思路。"
+  },
+  "category": "Engineering",
+  "avatar": "",
+  "source": "local",
+  "defaultInitInput": {
+    "zh": "帮我分析当前系统架构，梳理模块依赖关系，识别潜在风险并给出可落地的改造方案",
+    "en": "Help me analyze the current system architecture, map module dependencies, identify risks, and propose actionable transformation plans"
+  },
+  "tags": [
+    { "en": "Architecture Design", "zh": "架构设计" },
+    { "en": "Domain Modeling", "zh": "领域建模" },
+    { "en": "Technical Review", "zh": "方案评审" }
+  ],
+  "quickInputs": [
+    { "en": "Help me analyze the current system architecture, map module dependencies, identify risks, and propose actionable transformation plans", "zh": "帮我分析当前系统架构，梳理模块依赖关系，识别潜在风险并给出可落地的改造方案" },
+    { "en": "Compare microservices vs modular monolith for my scenario and write an ADR", "zh": "帮我对比微服务与模块化单体架构，权衡取舍并写一份 ADR" },
+    { "en": "Review my architecture design and identify scalability and reliability risks", "zh": "评审我的架构设计，识别可扩展性与高可用风险" }
+  ]
+}
