@@ -979,11 +979,12 @@ async def test_terminal_and_stop_persist_checkpoint(
         params={"query": "hello"},
     )
 
-    await external_harness_helpers.process_external_harness_stream(
+    async for _ in external_harness_helpers.process_external_harness_stream(
         adapter,
         request,
         {"query": "hello"},
-    )
+    ):
+        pass
     await external_harness_helpers.stop_external_harness(adapter)
 
     assert len(persisted) >= 1

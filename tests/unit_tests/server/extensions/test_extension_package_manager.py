@@ -878,6 +878,9 @@ class TestCreateInstallUninstall:
                 },
             },
         )
+        sdk_file = package / "sdk" / "codex"
+        sdk_file.parent.mkdir(parents=True, exist_ok=True)
+        sdk_file.write_text("", encoding="utf-8")
 
         catalog.install_agent_template({"id": "codex-expert"})
 
@@ -888,7 +891,7 @@ class TestCreateInstallUninstall:
         assert runtime is not None
         assert runtime.provider_name == "codex"
         assert runtime.provider_version == "1.2.3"
-        assert runtime.sdk_paths == ["sdk/codex"]
+        assert runtime.sdk_paths == [str(sdk_file.resolve())]
         assert runtime.config == {"model": "test-model"}
         assert next(
             entry
@@ -940,7 +943,7 @@ class TestCreateInstallUninstall:
     @pytest.mark.parametrize(
         ("runtime", "error_field"),
         [
-            ({"provider_name": "codex", "sdk_paths": ["C:/external/sdk"]}, "sdk_paths"),
+            ({"provider_name": "codex", "sdk_paths": ["missing/sdk"]}, "missing"),
             ({"provider_name": "codex", "provider_version": 3}, "provider_version"),
             ({"provider_name": "codex", "config": []}, "config"),
         ],
@@ -962,8 +965,12 @@ class TestCreateInstallUninstall:
             },
         )
 
-        with pytest.raises(ValueError, match=error_field):
-            catalog.install_agent_template({"id": "malformed-runtime"})
+        if error_field == "missing":
+            with pytest.raises(FileNotFoundError):
+                catalog.install_agent_template({"id": "malformed-runtime"})
+        else:
+            with pytest.raises(ValueError, match=error_field):
+                catalog.install_agent_template({"id": "malformed-runtime"})
 
         assert catalog.read_agent_template_marketplace_entries() == []
 
