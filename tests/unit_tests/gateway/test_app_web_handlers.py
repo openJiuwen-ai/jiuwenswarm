@@ -4315,3 +4315,112 @@ def test_a4p_gateway_registers_only_configuration_and_authorization():
         "a4p.config.get", "a4p.config.update", "a4p.authorization.complete",
         "a4p.authorization.pending", "a4p.authorization.reject", "a4p.authorization.reprepare",
     }
+
+
+def _use_managed_provider_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    frozen: bool,
+    runtime_state: str = "not_installed",
+) -> list[SimpleNamespace]:
+    """Expose a third-party ``acme`` runtime and capture install threads instead of running them."""
+    from jiuwenswarm.common import external_cli_runtime
+
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS",
+        dict(app_web_handlers._EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS),
+    )
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES",
+        dict(app_web_handlers._EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES),
+    )
+    monkeypatch.setattr(external_cli_runtime, "external_cli_runtime_names", lambda: ("claude", "codex", "acme"))
+    monkeypatch.setattr(
+        external_cli_runtime,
+        "get_external_cli_runtime_status",
+        lambda cli_agent: {"runtime_state": runtime_state, "managed": True, "cli_agent": cli_agent},
+    )
+    monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: frozen)
+    created_threads: list[SimpleNamespace] = []
+
+    class _Thread:
+        def __init__(self, *, target: object, args: tuple[str, ...], name: str, daemon: bool) -> None:
+            created_threads.append(SimpleNamespace(target=target, args=args, name=name, daemon=daemon))
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(app_web_handlers.threading, "Thread", _Thread)
+    return created_threads
+
+
+async def _call_external_cli(method: str, cli_agent: str) -> dict:
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    await channel.methods[method](object(), f"req-{method}", {"cli_agent": cli_agent}, "sess-external-cli")
+    return channel.responses[-1]
+
+
+@pytest.mark.asyncio
+async def test_external_cli_install_starts_managed_provider_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    created_threads = _use_managed_provider_runtime(monkeypatch, frozen=True)
+
+    response = await _call_external_cli("external_cli.install", "acme")
+
+    assert response["ok"] is True
+    assert response["payload"]["cli_agent"] == "acme"
+    assert response["payload"]["status"] == "running"
+    assert response["payload"]["runtime"]["runtime_state"] == "not_installed"
+    assert len(created_threads) == 1
+    assert created_threads[0].target is app_web_handlers._run_managed_external_cli_runtime_install
+    assert created_threads[0].args == ("acme",)
+
+
+@pytest.mark.asyncio
+async def test_external_cli_install_skips_a_current_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    created_threads = _use_managed_provider_runtime(monkeypatch, frozen=True, runtime_state="current")
+
+    response = await _call_external_cli("external_cli.install", "acme")
+
+    assert response["ok"] is True
+    assert response["payload"]["status"] == "succeeded"
+    assert created_threads == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cli_agent", "frozen", "code"),
+    [
+        ("missing", True, "BAD_REQUEST"),
+        ("acme", False, "UNSUPPORTED"),
+    ],
+)
+async def test_external_cli_install_rejects_unknown_or_unmanaged_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    cli_agent: str,
+    frozen: bool,
+    code: str,
+) -> None:
+    created_threads = _use_managed_provider_runtime(monkeypatch, frozen=frozen)
+
+    response = await _call_external_cli("external_cli.install", cli_agent)
+
+    assert response["ok"] is False
+    assert response["code"] == code
+    assert created_threads == []
+
+
+@pytest.mark.asyncio
+async def test_external_cli_install_status_reports_managed_provider_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_managed_provider_runtime(monkeypatch, frozen=True, runtime_state="update_required")
+
+    response = await _call_external_cli("external_cli.install_status", "acme")
+
+    assert response["ok"] is True
+    assert response["payload"]["cli_agent"] == "acme"
+    assert response["payload"]["status"] == "idle"
+    assert response["payload"]["runtime"]["runtime_state"] == "update_required"
