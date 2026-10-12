@@ -2148,7 +2148,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         from jiuwenswarm.common.config_panel.model_resource_handlers import model_resource_handler
 
         await model_resource_handler(
-            channel, ws, req_id, params, session_id, operation,
+            channel, ws, req_id, params, session_id, operation=operation,
             on_config_saved=on_config_saved, agent_client=_resolve(agent_client),
         )
 
