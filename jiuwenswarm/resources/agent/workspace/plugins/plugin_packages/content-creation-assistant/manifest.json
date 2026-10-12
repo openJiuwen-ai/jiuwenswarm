@@ -1,0 +1,89 @@
+{
+  "version": "1.0.0",
+  "packageType": "plugin",
+  "id": "content-creation-assistant",
+  "name": "内容创作辅助插件",
+  "description": "协助撰写高质量内容，覆盖起草、增强、审阅三大阶段七个场景",
+  "displayName": {
+    "en": "Content Creation Assistant Plugin",
+    "zh": "内容创作辅助插件"
+  },
+  "displayDescription": {
+    "en": "Full-chain content creation assistant covering drafting, enhancement, and review across seven scenes.",
+    "zh": "从材料启动到成稿收口的全链路内容创作辅助，覆盖起草、增强、审阅三大阶段七个场景。"
+  },
+  "category": "Design",
+  "source": "local",
+  "defaultInitInput": {
+    "zh": "帮我分析以下材料，判断文档类型，搭建结构并写出开篇正文",
+    "en": "Analyze the following materials, determine document type, build structure, and write the opening passage"
+  },
+  "tags": [
+    {
+      "en": "Content Drafting",
+      "zh": "内容起草"
+    },
+    {
+      "en": "Content Enhancement",
+      "zh": "内容增强"
+    },
+    {
+      "en": "Content Review",
+      "zh": "内容审阅"
+    }
+  ],
+  "quickInputs": [
+    {
+      "en": "Analyze the following materials, determine document type, build structure, and write the opening passage",
+      "zh": "帮我分析以下材料，判断文档类型，搭建结构并写出开篇正文"
+    },
+    {
+      "en": "Supplement research and citations for my draft, and polish the text",
+      "zh": "为我的文稿补充调研引用并润色文本"
+    },
+    {
+      "en": "Review my draft paragraph by paragraph and give revision feedback",
+      "zh": "逐段审阅我的文稿并给出修改反馈"
+    }
+  ],
+  "skills": [
+    {
+      "dir": "./skills/content-drafting",
+      "mode": "all"
+    },
+    {
+      "dir": "./skills/content-enhancement",
+      "mode": "all"
+    },
+    {
+      "dir": "./skills/content-review",
+      "mode": "all"
+    }
+  ],
+  "tools": [
+    {
+      "file": "tools/document_exporter.py",
+      "class": "DocumentExporter",
+      "displayName": {
+        "en": "Document Exporter",
+        "zh": "文档导出器"
+      },
+      "displayDescription": {
+        "en": "Export structured documents with TOC, citation list, and metadata to formatted Markdown files.",
+        "zh": "将结构化文档导出为带目录、引用列表和元数据的格式化 Markdown 文件。"
+      }
+    },
+    {
+      "file": "tools/citation_formatter.py",
+      "class": "CitationFormatter",
+      "displayName": {
+        "en": "Citation Formatter",
+        "zh": "引用格式化器"
+      },
+      "displayDescription": {
+        "en": "Format citation entries according to GB/T 7714, APA, MLA, or simple inline styles.",
+        "zh": "按 GB/T 7714、APA、MLA 或简洁行内格式标准化引用条目。"
+      }
+    }
+  ]
+}
