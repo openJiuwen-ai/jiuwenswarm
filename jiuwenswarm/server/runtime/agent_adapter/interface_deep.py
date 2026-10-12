@@ -2061,6 +2061,7 @@ class JiuWenSwarmDeepAdapter:
         self._session_adapter_versions: dict[str, int] = {}
         self._session_adapter_reload_failures: dict[str, tuple[int, float, bool]] = {}
         self._pending_session_reload_config_base: dict[str, Any] | None = None
+        self._pending_session_reload_config_stamp: tuple[int, int] | None = None
         self._pending_session_reload_env_overrides: dict[str, Any] | None = None
         self._pending_session_reload_scopes: set[str] | None = None
         self._session_instance_config: dict[str, Any] | None = None
@@ -3043,6 +3044,7 @@ class JiuWenSwarmDeepAdapter:
                 permission_only_children.append(sid)
         self._session_adapter_config_version += 1
         self._pending_session_reload_config_base = copy.deepcopy(config_base)
+        self._pending_session_reload_config_stamp = self._current_config_file_stamp()
         self._pending_session_reload_env_overrides = (
             copy.deepcopy(env_overrides) if isinstance(env_overrides, dict) else None
         )
@@ -3065,11 +3067,14 @@ class JiuWenSwarmDeepAdapter:
         adapter: "JiuWenSwarmDeepAdapter",
         *,
         host_external_input: bool = False,
+        freshly_built: bool = False,
     ) -> None:
         current_version = self._session_adapter_config_version
         if self._session_adapter_versions.get(session_id, 0) >= current_version:
             return
         config_base = self._pending_session_reload_config_base
+        if isinstance(config_base, dict) and freshly_built:
+            config_base = self._permissions_from_newer_disk(config_base)
         if not isinstance(config_base, dict):
             self._session_adapter_versions[session_id] = current_version
             self._session_adapter_reload_failures.pop(session_id, None)
@@ -3625,6 +3630,7 @@ class JiuWenSwarmDeepAdapter:
                 sid,
                 adapter,
                 host_external_input=host_external_input,
+                freshly_built=True,
             )
             # 服务重启 / adapter 被驱逐后重建时，context_engine 内存池为空，
             # 而 chat.send 主路径不会回灌磁盘 history.jsonl——继续历史会话时
@@ -9747,6 +9753,76 @@ class JiuWenSwarmDeepAdapter:
             completion_timeout=resolve_task_loop_completion_timeout(config),
         )
 
+    @staticmethod
+    def _current_config_file_stamp() -> tuple[int, int] | None:
+        """Return the on-disk config identity captured with a pending reload."""
+        from jiuwenswarm.common.utils import get_config_file
+
+        try:
+            stat_result = get_config_file().stat()
+        except OSError:
+            return None
+        return stat_result.st_mtime_ns, stat_result.st_size
+
+    def _permissions_from_newer_disk(self, config_base: dict[str, Any]) -> dict[str, Any]:
+        """Keep a just-built session on disk permissions when the snapshot is older.
+
+        An existing session still receives the published snapshot. This only
+        stops a session created from a newer config file from being switched
+        back on by a parent snapshot taken before that write.
+        """
+        pending_stamp = self._pending_session_reload_config_stamp
+        current_stamp = self._current_config_file_stamp()
+        if pending_stamp is None or current_stamp is None or pending_stamp >= current_stamp:
+            return config_base
+        live = get_config()
+        permissions = live.get("permissions", {}) if isinstance(live, dict) else {}
+        if not isinstance(permissions, dict):
+            permissions = {}
+        updated = copy.deepcopy(config_base)
+        updated["permissions"] = copy.deepcopy(permissions)
+        return updated
+
+    @staticmethod
+    def _permissions_explicitly_disabled(config_base: dict[str, Any] | None) -> bool:
+        """Return whether this snapshot turns the permission guard off.
+
+        A reload that omits ``permissions`` is not a disable. Only an explicit
+        ``enabled: false`` removes the live rail.
+        """
+        if not isinstance(config_base, dict):
+            return False
+        permissions = config_base.get("permissions")
+        return isinstance(permissions, dict) and permissions.get("enabled") is False
+
+    async def _unregister_permission_rail_if_disabled(
+        self,
+        config_base: dict[str, Any] | None,
+        *,
+        detached_rail: Any | None = None,
+    ) -> None:
+        """Drop a manual rail from the running instance when permissions turn off."""
+        if self._is_cron_execution or not self._permissions_explicitly_disabled(config_base):
+            return
+        if isinstance(config_base, dict) and self._uses_smart_permission_lifecycle(config_base):
+            return
+        rail = self._permission_rail if detached_rail is None else detached_rail
+        if detached_rail is None:
+            self._permission_rail = None
+        instance = getattr(self, "_instance", None)
+        unregister = getattr(instance, "unregister_rail", None) if instance is not None else None
+        if rail is None or not callable(unregister):
+            return
+        try:
+            result = unregister(rail)
+            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                await result
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] permission rail unregister failed: %s",
+                exc,
+            )
+
     def _update_permission_rail(self, config_base: dict[str, Any] | None) -> None:
         """原地更新已有 PermissionRail 配置，或在首次启用时新建。"""
         if self._is_cron_execution:
@@ -9765,17 +9841,29 @@ class JiuWenSwarmDeepAdapter:
         )
 
         permission_config = config_base.get("permissions", {}) if config_base else {}
+        if not isinstance(permission_config, dict):
+            permission_config = {}
         session_id = str(getattr(self, "_parent_session_id", None) or "").strip() or None
+        enabled = bool(permission_config.get("enabled", False))
+        if self._permission_rail is not None and self._permissions_explicitly_disabled(config_base):
+            self._permission_rail = None
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] _permission_rail removed because permissions are disabled"
+            )
+            return
         if self._permission_rail is not None:
+            replacer = getattr(self._permission_rail, "replace_installed_global_permissions", None)
+            if callable(replacer):
+                replacer(copy.deepcopy(permission_config))
             effective = compose_host_effective_permissions(
-                global_permissions=permission_config if isinstance(permission_config, dict) else {},
+                global_permissions=permission_config,
                 user_permissions=load_user_permissions(),
                 session_permissions=load_session_permissions(session_id),
                 session_id=session_id,
             )
             self._permission_rail.update_config(effective)
             logger.info("[JiuWenSwarmDeepAdapter] _permission_rail config hot-updated")
-        elif permission_config.get("enabled", False):
+        elif enabled:
             self._permission_rail = build_permission_rail(
                 config=config_base,
                 llm=self._model,
@@ -11350,7 +11438,17 @@ class JiuWenSwarmDeepAdapter:
                 )
             self._filesystem_rail = None
 
-        rails_list = self._get_current_agent_rails(config, config_base)
+        previous_permission_rail = self._permission_rail
+        try:
+            rails_list = self._get_current_agent_rails(config, config_base)
+        except BaseException:
+            self._permission_rail = previous_permission_rail
+            raise
+        if self._permission_rail is None and previous_permission_rail is not None:
+            await self._unregister_permission_rail_if_disabled(
+                config_base,
+                detached_rail=previous_permission_rail,
+            )
 
         # 加载用户自定义的 Rail 扩展
         await self.load_user_rails()
