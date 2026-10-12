@@ -55,7 +55,7 @@
 
 | ID | 特性：要做什么 | 怎样证明做成 | 开工硬前置 | 状态 | 负责人 | 证据与对端条件 |
 | --- | --- | --- | --- | --- | --- | --- |
-| SW-01 | 固定 SDK 版本、建立公开协议适配与契约测试；新增 `spec_provider.py`、`execution_models.py`；核对既有依赖声明位置 | 能构造合法 Spec / Context / RequestInput；字段错配明确拒绝；识别未开放能力，不能绕过 core 校验执行；测试替身与真实 SDK 类型一致 | 无 | 待开始 | 待分配 | 对端 PA-01～PA-05 |
+| SW-01 | 固定 SDK 版本、建立公开协议适配与契约测试；新增 `spec_provider.py`、`execution_models.py`；核对既有依赖声明位置 | 能构造合法 Spec / Context / RequestInput；字段错配明确拒绝；识别未开放能力，不能绕过 core 校验执行；测试替身与真实 SDK 类型一致 | 无 | 待验收 | 待分配 | 宿主组件通过，联合验收待完成。SDK 固定为 huenrui_agent-core `12cf92bd71dedb3c39309b72fd8519b5ad9134e6`（`pyproject.toml` 主依赖、harmony 依赖与 `tool.uv.sources` 三处）；宿主仅开放 `construction`，`workspace_read` 待 SW-14。`.venv/bin/python -m pytest tests/unit_tests/server/runtime/persistent_agents/test_core_contract.py -o addopts="--asyncio-mode=auto"`：32 passed。core 正式执行仍停在 PA-10（哨兵测试覆盖），续做停在 PA-18；对端 PA-01～PA-05 |
 | SW-02 | 新建 AI 同事定义、存储和管理服务；调用现有 Template、模型和能力管理接口 | 自定义创建、首次使用自动创建默认小九且不重复创建、设置读取 / 发布、删除可用；同事与 Template 一对一；新版数据独立保存；Request 固定配置快照，新请求用新配置 | SW-01 | 待开始 | 待分配 | 验收证据待补充 |
 | SW-03 | 新建 Session / Request / Execution 关联仓库及新版群会话映射 | 同一 Agent 同一群稳定复用 Session；跨 Agent、跨群、Web 与 IM 私聊隔离；补充消息是新 Request；重启能查回队列和已派发任务；不会因字符串截断造成 Session 碰撞 | SW-01 | 待开始 | 待分配 | SW-02 联调 |
 | SW-04 | 实现 `ports/commit.py` 与事件、候选输出存储；队列由 AgentServer 生命周期持有 | 重交 event_id 不重复；普通日志保存失败不阻断后续关键事件；关键事件落盘失败抛异常；final 缺少候选内容时失败；候选和 final 重交后保持原 ID；读日志校验归属并按序返回 | SW-03 | 待开始 | 待分配 | PA-04、PA-08、PA-15、PA-17 |
@@ -153,7 +153,7 @@ python -m pytest tests/integration_tests/persistent_agents -q
 
 | 交付节点 | 状态 | 负责人 | 验收证据或待办 |
 | --- | --- | --- | --- |
-| S0：契约与宿主基线 | 待开始 | 待分配 | 协议适配、存储和预算验证 |
+| S0：契约与宿主基线 | 进行中 | 待分配 | SW-01 宿主组件通过；存储和预算验证待 SW-02～SW-06 |
 | S1：私聊闭环 | 待开始 | 待分配 | 等待 PA-05、PA-06、PA-08、PA-10 的正式执行链路接通后联合验收 |
 | S2a：飞书群协作 | 待开始 | 待分配 | 群消息、主动响应、真实 @ 与隔离验证 |
 | S2b：资源、定时任务与管理 | 待开始 | 待分配 | Agent 资源隔离、定时触发和管理查询 |
@@ -167,6 +167,7 @@ python -m pytest tests/integration_tests/persistent_agents -q
 | 2026-10-09 | 收窄本轮范围，移出确认恢复、授权知识版本、跨来源失效、主动学习和扩展执行模式；保留停止 / 取消 | SW-12 改为控制服务；SW-15、SW-20 不纳入本轮；主链路 17 项、扩展 2 项，完成数仍为 0 |
 | 2026-10-09 | 新版独立开发、独立存储 | 删除 SW-17 数据迁移任务；SW-18 改为新旧版隔离验收；主链路 16 项、扩展 2 项，完成数仍为 0 |
 | 2026-10-09 | 将定时任务纳入主线 | SW-19 从扩展项移入资源与管理工作线；主链路 17 项、扩展 1 项，完成数仍为 0 |
+| 2026-10-12 | SW-01：固定 agent-core 版本，新增 `persistent_agents/spec_provider.py`、`execution_models.py` 与契约测试 | 32 项契约测试通过；仅使用替身端口，状态为待验收，完成数仍为 0 |
 
 ## 5. 新旧版本隔离与公共能力复用
 
