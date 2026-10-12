@@ -96,6 +96,23 @@ class ModelRoutingRail(DeepAgentRail):
                 return raw.strip()
         return ""
 
+    def _resolve_request_routing_enabled(self, ctx: AgentCallbackContext) -> bool:
+        """每请求读取 relay 的 auto 档开关（``params.enable_routing`` → run_context.extra）。
+
+        注入链：adapter 把 ``request.params["enable_routing"]`` 写入
+        ``inputs["run"]["context"]["extra"]["enable_routing"]``，DeepAgent
+        ``_normalize_inputs`` 再把它带进 ``InvokeInputs.run_context.extra``。
+
+        严格判 ``is True``：adapter 侧已按 ``is True`` 过滤，这里再兜一层，
+        任何非布尔真值（含字符串 "true"）都不算开启。
+
+        注意：``run_context`` 经 ``effective_inputs`` **按引用**透传进内层
+        ReActAgent，但 ``ctx.extra`` 不跨层 —— 开关只能从 ``run_context.extra`` 读。
+        """
+        run_context = getattr(getattr(ctx, "inputs", None), "run_context", None)
+        extra = getattr(run_context, "extra", None)
+        return isinstance(extra, dict) and extra.get("enable_routing") is True
+
     def _find_cap_by_name(
         self, name: str, *, prefer_provider: Optional[str] = None
     ) -> Optional[ModelCapability]:
@@ -125,6 +142,17 @@ class ModelRoutingRail(DeepAgentRail):
         self._request_mode = ""
 
         try:
+            # --- auto 档：本阶段只观察、不路由 ---
+            # relay 的 auto 档下发保底具体模型名 + enable_routing=True。此处**只打日志**，
+            # 并在任何决策逻辑之前 return：候选池注入 / 分类器 / 实际 set_llm 均为后续阶段。
+            # 状态已在上面复位，故 return 后 before_model_call 仍是空操作。
+            if self._resolve_request_routing_enabled(ctx):
+                logger.info(
+                    "[ModelRouting] enable_routing=true (log-only, no switch); selection=%s",
+                    self._resolve_request_selection(ctx) or "(none)",
+                )
+                return
+
             # 从 ctx.inputs.query 提取用户查询文本（before_invoke 时无 messages 列表）
             query = getattr(getattr(ctx, "inputs", None), "query", None) or ""
             prompt_text = _unwrap_user_message(str(query)) if query else ""

@@ -24,6 +24,9 @@ from jiuwenswarm.agents.harness.common.rails.model_routing import (
     ModelCapability,
     ModelRoutingRail,
 )
+from jiuwenswarm.agents.harness.common.rails.model_routing import (
+    model_routing_rail as _rail_module,
+)
 
 
 class _FakeModel:
@@ -277,3 +280,74 @@ async def test_mode_switch_prefers_marked_model_even_when_later():
     used = ctx.extra.get("_model_routing_used_cap")
     assert used is not None
     assert used.model_id == "maas"
+
+
+# ---- auto 档 enable_routing 门控（本阶段只观察、不路由）---- #
+
+
+def _ctx_extra(extra: dict, agent: _FakeAgent | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        agent=agent,
+        inputs=SimpleNamespace(
+            query="你好，帮我写一个函数",
+            run_context=SimpleNamespace(extra=extra),
+            response=None,
+        ),
+        extra={},
+    )
+
+
+def test_resolve_request_routing_enabled_only_accepts_strict_true():
+    rail = _rail()
+    assert rail._resolve_request_routing_enabled(_ctx_extra({"enable_routing": True})) is True
+    # 非布尔真值一律不算开启：adapter 侧已按 is True 过滤，这里再兜一层。
+    for value in (False, None, "true", "True", 1, 0, {}, []):
+        assert rail._resolve_request_routing_enabled(_ctx_extra({"enable_routing": value})) is False
+    assert rail._resolve_request_routing_enabled(_ctx_extra({})) is False
+
+
+def test_resolve_request_routing_enabled_false_without_run_context():
+    rail = _rail()
+    ctx = SimpleNamespace(agent=None, inputs=SimpleNamespace(query=""), extra={})
+    assert rail._resolve_request_routing_enabled(ctx) is False
+
+
+@pytest.mark.asyncio
+async def test_before_invoke_enable_routing_logs_and_never_switches(monkeypatch):
+    """开关为真 → 打日志并 return；不切模型、不注入 thinking。
+
+    直接 patch 模块级 ``logger``：``jiuwenswarm.common.utils`` 的 logger 自带 handler、
+    不向 root propagate，且 handler 在导入期就绑定了原始 stderr 流 —— caplog（root 级）
+    与 capfd（fd 级）都抓不到。
+    """
+    logged: list[str] = []
+    monkeypatch.setattr(
+        _rail_module.logger,
+        "info",
+        lambda msg, *args, **kwargs: logged.append(msg % args if args else msg),
+    )
+    rail = _rail()
+    agent = _FakeAgent("deepseek-v4.1-flash")
+    ctx = _ctx_extra({"enable_routing": True, "model_selection": "auto"}, agent=agent)
+
+    await rail.before_invoke(ctx)
+
+    assert any("enable_routing=true" in line for line in logged)
+    # 保底模型未被切换
+    assert agent.model_name == "deepseek-v4.1-flash"
+    assert ctx.extra.get("_model_routing_used_cap") is None
+    # 状态已复位 → before_model_call 仍是空操作
+    assert rail._request_thinking == "default"
+    assert rail._request_mode == ""
+    await rail.before_model_call(ctx)
+    assert "llm_call_kwargs" not in ctx.extra
+
+
+@pytest.mark.asyncio
+async def test_before_invoke_gate_leaves_gear_keyword_path_intact():
+    """开关缺省时，档位关键字照旧真路由（门控不影响既有四档行为）。"""
+    rail = _rail()
+    agent = _FakeAgent("gpt-5.4")
+    await rail.before_invoke(_ctx("auto", agent=agent))
+    assert rail._request_mode == "auto"
+    assert rail._request_thinking == "medium"

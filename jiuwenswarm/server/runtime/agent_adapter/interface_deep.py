@@ -5855,6 +5855,34 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] model_selection injected: value=%s", raw
             )
 
+    @staticmethod
+    def _inject_model_routing_into_inputs(
+        request: AgentRequest, inputs: dict[str, Any]
+    ) -> None:
+        """把 ``params.enable_routing`` 注入 ``inputs["run"]["context"]["extra"]["enable_routing"]``。
+
+        relay 的 auto 档在 ``params.model_name`` 上仍下发**保底具体模型名**，另置
+        ``enable_routing=True`` 表达「本帧模型名可被路由覆盖」。开关经这里写进
+        ``run_context.extra``，供 ``ModelRoutingRail.before_invoke`` 每请求读取。
+
+        严格判 ``is True``：缺省 / ``False`` / 非布尔（含字符串 "true"）一律**不写**，
+        避免任何异常输入把 rail 从「跳过」翻成「真路由」。params 是白名单消费
+        （``_build_inputs`` 逐键 ``params.get``），故 relay 侧必须显式列出该键。
+        """
+        params = request.params if isinstance(request.params, dict) else {}
+        if params.get("enable_routing") is not True:
+            return
+        run_extra = (
+            inputs.setdefault("run", {})
+            .setdefault("context", {})
+            .setdefault("extra", {})
+        )
+        if isinstance(run_extra, dict):
+            run_extra["enable_routing"] = True
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] enable_routing injected: value=True"
+            )
+
     def _refresh_multimodal_configs(
         self,
         config_base: dict[str, Any],
@@ -19426,6 +19454,7 @@ class JiuWenSwarmDeepAdapter:
 
         self._inject_extension_config_into_inputs(inputs)
         self._inject_model_selection_into_inputs(request, inputs)
+        self._inject_model_routing_into_inputs(request, inputs)
 
         _req_model = (request.params.get("model_name") or "") if isinstance(request.params, dict) else ""
         if not self._has_valid_model_config(_req_model):
@@ -20220,6 +20249,7 @@ class JiuWenSwarmDeepAdapter:
 
         self._inject_extension_config_into_inputs(inputs)
         self._inject_model_selection_into_inputs(request, inputs)
+        self._inject_model_routing_into_inputs(request, inputs)
 
         is_skill_turbo_resume_request = bool(_params.get("answers")) and (
             str(_params.get("source") or "").strip() == "ask_user_interrupt"
