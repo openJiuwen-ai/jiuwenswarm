@@ -276,7 +276,11 @@ async def test_process_stream_applies_pending_reload_before_skill_turbo_resume()
         channel_id="test-channel",
         session_id="sess-order",
         req_method=ReqMethod.CHAT_SEND,
-        params={"query": "resume"},
+        params={
+            "query": "resume",
+            "answers": [{"question": "页数", "selected_options": ["10"]}],
+            "source": "ask_user_interrupt",
+        },
     )
     chunks = [
         chunk
@@ -285,75 +289,6 @@ async def test_process_stream_applies_pending_reload_before_skill_turbo_resume()
 
     assert events == ["reload", "resume"]
     assert len(chunks) == 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("model_refs", [[], ["model-ref-1", "model-ref-2"]])
-async def test_process_stream_rejects_non_unique_skill_turbo_model_identity(
-    monkeypatch, model_refs
-):
-    """A resumable request must stop when its model identity is not unique."""
-    adapter = object.__new__(JiuWenSwarmDeepAdapter)
-    adapter._is_session_scoped_adapter = True
-    adapter._instance = SimpleNamespace()
-    adapter._deepresearch_rewrite_tx_uncertain = False
-    model = SimpleNamespace(model_config=SimpleNamespace(model_name="glm-5.2"))
-    adapter._model_cache = {"glm-5.2#0": model}
-    adapter._model_identity_to_keys = {
-        ref: ["glm-5.2#0"] for ref in model_refs
-    }
-    adapter._resolve_model_for_request = lambda _request: model  # type: ignore[method-assign]
-    adapter._apply_model_to_react_agent = lambda _model: None  # type: ignore[method-assign]
-    adapter._has_valid_model_config = lambda _model_name: True  # type: ignore[method-assign]
-    adapter._maybe_apply_pending_reload = lambda: _async_none()  # type: ignore[method-assign]
-    adapter._bind_runtime_cron_context = lambda **_kwargs: None  # type: ignore[method-assign]
-    adapter._reset_stream_runtime_context = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
-    adapter._run_cleanup_steps = lambda _steps: None  # type: ignore[method-assign]
-    adapter._runtime_cron_tool_context = SimpleNamespace(
-        remember_current_binding=lambda: None
-    )
-    adapter._config_base_cache = {}
-    adapter._refresh_standard_agent_permissions_body = lambda _request: None  # type: ignore[method-assign]
-    adapter._bind_agent_permissions_base = lambda: None  # type: ignore[method-assign]
-    adapter._update_permission_rail = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
-    adapter._is_subagent_approval_answer = lambda *_args: False  # type: ignore[method-assign]
-    adapter._refresh_stale_mcp_tool_lists = lambda: _async_none()  # type: ignore[method-assign]
-    adapter._inject_extension_config_into_inputs = lambda *_args: None  # type: ignore[method-assign]
-    adapter._inject_model_selection_into_inputs = lambda *_args: None  # type: ignore[method-assign]
-    adapter._deepresearch_artifact_output_dir = lambda _path: ""  # type: ignore[method-assign]
-    adapter._wants_attach_goal = lambda _params: False  # type: ignore[method-assign]
-    adapter._structured_goal_op_from_request = lambda _request: None  # type: ignore[method-assign]
-    adapter._should_parse_tui_goal_slash = lambda **_kwargs: False  # type: ignore[method-assign]
-    adapter._handle_slash_command = lambda *_args, **_kwargs: _async_none()  # type: ignore[method-assign]
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.setup_permission_context",
-        lambda _request: None,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.setup_permissions_session_scope",
-        lambda _session_id: None,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.is_enterprise",
-        lambda: True,
-    )
-
-    request = AgentRequest(
-        request_id="req-model-identity",
-        channel_id="test-channel",
-        session_id="sess-model-identity",
-        req_method=ReqMethod.CHAT_SEND,
-        params={"query": "生成PPT", "mode": "agent"},
-    )
-    chunks = [
-        chunk
-        async for chunk in adapter._process_message_stream_impl(request, {})
-    ]
-
-    assert len(chunks) == 1
-    assert chunks[0].is_complete is True
-    assert chunks[0].payload["event_type"] == "chat.error"
-    assert chunks[0].payload["error_code"] == "model_identity_unavailable"
 
 
 async def _async_in_flight_resume_ctx():

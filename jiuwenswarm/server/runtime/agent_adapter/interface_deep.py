@@ -3529,10 +3529,11 @@ class JiuWenSwarmDeepAdapter:
             reset_workspace_key(wk_token)
 
     async def _maybe_apply_pending_reload(self) -> ReloadResult | None:
-        if self._pending_reload is None or self._adapter_is_working():
+        pending_reload = getattr(self, "_pending_reload", None)
+        if pending_reload is None or self._adapter_is_working():
             return None
         async with self._reload_lock:
-            pending = self._pending_reload
+            pending = getattr(self, "_pending_reload", None)
             if pending is None or self._adapter_is_working():
                 return None
             config_base, env_overrides = pending
@@ -19629,7 +19630,11 @@ class JiuWenSwarmDeepAdapter:
         self._inject_extension_config_into_inputs(inputs)
         self._inject_model_selection_into_inputs(request, inputs)
 
-        await self._maybe_apply_pending_reload()
+        is_skill_turbo_resume_request = bool(_params.get("answers")) and (
+            str(_params.get("source") or "").strip() == "ask_user_interrupt"
+        )
+        if is_skill_turbo_resume_request:
+            await self._maybe_apply_pending_reload()
         # SkillTurbo resume: 检测 answers + resume_ctx，走 SkillTurbo resume 路径
         skill_turbo_resume_stream = await self._try_skill_turbo_resume(request, inputs)
         if skill_turbo_resume_stream is not None:
@@ -20177,6 +20182,7 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] permission rail agent-level bind failed: %s",
                     exc,
                 )
+            await self._maybe_apply_pending_reload()
             # 按请求选择模型（企业配置已在 create_instance 合并）
             resolved_model = self._resolve_model_for_request(request)
             self._apply_model_to_react_agent(resolved_model)
@@ -20192,32 +20198,18 @@ class JiuWenSwarmDeepAdapter:
                 dict(request.metadata) if isinstance(request.metadata, dict) else {}
             )
             if len(model_refs) != 1:
-                logger.error(
-                    "[JiuWenSwarmDeepAdapter] selected model identity unavailable; "
-                    "rejecting request before SkillTurbo can suspend: "
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] selected model identity unavailable "
+                    "for SkillTurbo resume: "
                     "model_name=%s refs=%s",
                     model_name,
                     len(model_refs),
                 )
-                yield AgentResponseChunk(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    payload={
-                        "event_type": "chat.error",
-                        "error_code": "model_identity_unavailable",
-                        "error": (
-                            "当前模型身份无法唯一确定，无法安全恢复 SkillTurbo 任务，"
-                            "请刷新模型配置后重试"
-                        ),
-                    },
-                    is_complete=True,
-                    metadata=request.metadata or {},
-                )
-                return
-            request_metadata[_SKILL_TURBO_MODEL_IDENTITY_KEY] = {
-                "model_name": model_name,
-                "model_ref": model_refs[0],
-            }
+            else:
+                request_metadata[_SKILL_TURBO_MODEL_IDENTITY_KEY] = {
+                    "model_name": model_name,
+                    "model_ref": model_refs[0],
+                }
             request_env_tokens = self._bind_request_env_overlay()
             self._mark_session_active(session_id)
             session_active = True

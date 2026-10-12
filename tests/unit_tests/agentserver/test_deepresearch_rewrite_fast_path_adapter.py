@@ -1544,7 +1544,7 @@ def _entry_adapter(monkeypatch):
     monkeypatch.setattr(adapter, "_inject_extension_config_into_inputs", Mock())
     monkeypatch.setattr(adapter, "_has_valid_model_config", Mock(return_value=True))
     monkeypatch.setattr(adapter, "_handle_slash_command", AsyncMock(return_value=None))
-    monkeypatch.setattr(adapter, "_resolve_model_for_request", Mock(return_value=None))
+    monkeypatch.setattr(adapter, "_resolve_model_for_request", Mock(return_value=adapter._model))
     monkeypatch.setattr(adapter, "_resolve_model_name", Mock(return_value="test"))
     monkeypatch.setattr(adapter, "_apply_model_to_react_agent", Mock())
     monkeypatch.setattr(adapter, "_maybe_apply_pending_reload", AsyncMock())

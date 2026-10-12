@@ -465,10 +465,11 @@ def _adapter_ready_for_followup_execution(monkeypatch: pytest.MonkeyPatch) -> Ji
         get_context_usage=lambda **_kwargs: {},
     )
     adapter._is_session_scoped_adapter = True  # pylint: disable=protected-access
+    model = SimpleNamespace(model_config=SimpleNamespace(model_name="test-model"))
     monkeypatch.setattr(adapter, "_has_valid_model_config", lambda _model_name="": True)
     monkeypatch.setattr(adapter, "_bind_runtime_cron_context", lambda **_kwargs: None)
     monkeypatch.setattr(adapter, "_reset_runtime_cron_context", lambda _tokens: None)
-    monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda _request: None)
+    monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda _request: model)
     monkeypatch.setattr(adapter, "_apply_model_to_react_agent", lambda _model: None)
     monkeypatch.setattr(adapter, "_mark_session_active", lambda _session_id: None)
     monkeypatch.setattr(adapter, "_register_session_agent_task", lambda _session_id: None)
@@ -614,7 +615,13 @@ async def test_team_stream_injects_image_tool_context_for_non_vision_model(
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(adapter, "_has_valid_model_config", lambda _model_name="": True)
-    monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda _request: object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_model_for_request",
+        lambda _request: SimpleNamespace(
+            model_config=SimpleNamespace(model_name="test-model")
+        ),
+    )
     monkeypatch.setattr(adapter, "_apply_model_to_react_agent", lambda _model: None)
     monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "cn")
     monkeypatch.setattr(adapter, "_native_image_input_enabled", lambda *_args: False)
