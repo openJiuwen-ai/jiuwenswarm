@@ -1649,7 +1649,6 @@ async def _fetch_all_sessions_from_agent(
 ) -> list[dict[str, Any]]:
     """Remote 模式下从 AgentServer ``session.list`` 分页拉取全量会话 metadata。"""
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-    from jiuwenswarm.common.schema.message import ReqMethod
 
     if agent_client is None:
         return []
@@ -4075,7 +4074,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ac = _resolve(agent_client)
             if ac is not None and getattr(ac, "server_ready", False):
                 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-                from jiuwenswarm.common.schema.message import ReqMethod
 
                 try:
                     env = e2a_from_agent_fields(

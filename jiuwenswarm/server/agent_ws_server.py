@@ -1383,7 +1383,6 @@ class AgentWebSocketServer:
     async def _handle_sandbox_config(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """处理 sandbox.* 配置 E2A 请求 (officeAce 经 WS 控制沙箱开关/启动方式/文件/网络)."""
         from jiuwenswarm.server.sandbox_config_rpc import dispatch_sandbox_config_request
-        from jiuwenswarm.common.schema.message import ReqMethod
 
         resp = dispatch_sandbox_config_request(request)
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
