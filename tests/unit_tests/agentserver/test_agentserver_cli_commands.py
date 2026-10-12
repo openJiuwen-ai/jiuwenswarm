@@ -454,7 +454,6 @@ async def test_handle_command_diff_includes_session_extra_history_roots(
         )[2],
     )
     from jiuwenswarm.server.handlers import _shared as _shared_handlers
-    from jiuwenswarm.server.handlers import commands as commands_handlers
 
     for _mod in (_shared_handlers, commands_handlers):
         monkeypatch.setattr(

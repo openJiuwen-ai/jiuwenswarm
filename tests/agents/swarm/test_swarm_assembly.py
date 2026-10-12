@@ -2710,7 +2710,6 @@ def test_browser_subagent_teammates_get_distinct_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Two teammates in the same session never share a browser_key."""
-    from unittest.mock import MagicMock
     from jiuwenswarm.agents.swarm.providers import code_subagents as _cs
 
     keys: list[str] = []
